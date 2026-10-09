@@ -27,162 +27,58 @@ from ndnsf_distributed_inference.runtime_v1 import ModelFragmentKey, ProviderFra
 from py_repoclient import capability_from_ack as repo_client_capability_from_ack
 
 
-class _FakeRepoStore:
-    def __init__(self) -> None:
-        self.objects: dict[str, tuple[RepoObjectManifest, bytes]] = {}
-
-    def inventory(self) -> list[str]:
-        return list(self.objects)
-
-    def migration_diagnostics(self) -> dict:
-        return {"state": "complete", "artifactWritesEnabled": True}
-
-
 class AppCoreEnvelopeMigrationTest(unittest.TestCase):
-    def test_repo_ack_carries_only_core_provider_capability_hint(self) -> None:
-        repo = RepoNodeApp.__new__(RepoNodeApp)
-        repo.repo_node = "/repo/A"
-        repo.service_name = "/NDNSF/DistributedRepo"
-        repo.capability = StorageCapability(
-            repo_node="/repo/A",
-            free_bytes=1024,
-            used_bytes=128,
-            recent_load=0.25,
-            availability_score=0.9,
-            failure_domain="rack-1",
-            storage_classes=("model",),
-            repo_mode="persistent",
-            accepts_backup_replica=True,
-        )
-        repo.capacity_bytes = 1024
-        repo.memory_cache_bytes = 4096
-        repo._cache_bytes = 256
-        repo._db = None
-        repo._store = _FakeRepoStore()
-        repo._persistence = repo._store
-        repo._has_manifest = lambda _name: False
-        repo._has_object = lambda _name: False
-        repo._capability = lambda: repo.capability
-        repo._runtime_snapshot = lambda: {
-            "metricsTimestampMs": 1,
-            "inflightReads": 0,
-            "inflightWrites": 0,
-            "inflightRepair": 0,
-            "queueDepth": 0,
-            "storageReadLatencyMs": 0.0,
-            "storageWriteLatencyMs": 0.0,
-            "rejected": 0,
-        }
+    def test_retired_python_repo_cannot_create_a_provider_or_capability(self):
+        from py_repoclient import RepoCompatibilityError
 
-        decision = repo._ack(b'{"operation":"CAPABILITY"}')
-        fields = parse_ack_metadata(decision.payload)
-        hint = ProviderCapabilityHint.from_ack_fields(fields)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for operation, call in (
+                ("RepoNodeApp", lambda: RepoNodeApp(database_path=root / "repo.sqlite3")),
+                ("StorageCapability", lambda: StorageCapability(repo_node="/repo/A", free_bytes=1024)),
+                ("RepoObjectManifest", lambda: RepoObjectManifest(object_name="/model/stage0")),
+            ):
+                with self.subTest(operation=operation):
+                    with self.assertRaises(RepoCompatibilityError) as error:
+                        call()
+                    self.assertEqual(error.exception.code, "SPEC192_COMPATIBILITY_V1")
+                    self.assertEqual(error.exception.operation, operation)
+                    self.assertEqual(list(root.iterdir()), [])
 
-        self.assertTrue(decision.status)
-        self.assertNotIn("repoNode", fields)
-        self.assertEqual(set(fields), {"providerCapabilityHint"})
-        self.assertEqual(hint.provider_name, "/repo/A")
-        self.assertEqual(hint.service_payload["freeBytes"], 1024)
-        self.assertEqual(hint.service_payload_schema, "ndnsf-repo-capability-v2")
+    def test_core_hint_roundtrip_survives_retirement_of_python_repo_decoders(self):
+        from py_repoclient import RepoCompatibilityError
 
-    def test_network_repo_client_parses_core_capability_hint_from_ack(self) -> None:
-        repo = RepoNodeApp.__new__(RepoNodeApp)
-        repo.repo_node = "/repo/A"
-        repo.service_name = "/NDNSF/DistributedRepo"
-        repo.capability = StorageCapability(repo_node="/repo/A", free_bytes=2048)
-        repo.capacity_bytes = 2048
-        repo.memory_cache_bytes = 0
-        repo._cache_bytes = 0
-        repo._db = None
-        repo._store = _FakeRepoStore()
-        repo._persistence = repo._store
-        repo._has_manifest = lambda _name: False
-        repo._has_object = lambda _name: False
-        repo._capability = lambda: repo.capability
-        repo._runtime_snapshot = lambda: {
-            "metricsTimestampMs": 1,
-            "inflightReads": 0,
-            "inflightWrites": 0,
-            "inflightRepair": 0,
-            "queueDepth": 0,
-            "storageReadLatencyMs": 0.0,
-            "storageWriteLatencyMs": 0.0,
-            "rejected": 0,
-        }
-        decision = repo._ack(b'{"operation":"STORE","objectName":"/missing"}')
-
-        candidate = AckCandidate(
-            "/provider/repo-A",
-            "/NDNSF/DistributedRepo",
-            "req-1",
-            decision.status,
-            decision.message,
-            decision.payload,
-        )
-        fields = NetworkDistributedRepoClient._parse_ack_payload(candidate.payload)
-
-        self.assertEqual(fields["repoNode"], "/repo/A")
-        self.assertEqual(int(fields["freeBytes"]), 2048)
-
-    def test_distributed_repo_client_prefers_core_hint_over_conflicting_legacy_fields(self) -> None:
         hint = ProviderCapabilityHint(
-            provider_name="/repo/core",
-            service_name="/NDNSF/DistributedRepo",
+            provider_name="/repo/core", service_name="/NDNSF/DistributedRepo",
             runtime_hint=GenericProviderRuntimeHint(
-                provider_name="/repo/core",
-                capacity_hints={"freeBytes": 4096},
-            ),
+                provider_name="/repo/core", capacity_hints={"freeBytes": 4096}),
             service_payload_schema="ndnsf-repo-capability-v1",
-            service_payload={
-                "repoNode": "/repo/core",
-                "freeBytes": 4096,
-                "usedBytes": 12,
-                "load": 0.1,
-                "availability": 0.95,
-                "storageClasses": ["model", "intermediate"],
-                "repoMode": "persistent",
-            },
-        )
+            service_payload={"repoNode": "/repo/core", "freeBytes": 4096})
         payload = encode_ack_metadata({
-            "repoNode": "/repo/legacy",
-            "freeBytes": 1,
-            **hint.to_ack_fields(),
-        })
+            "repoNode": "/repo/legacy", "freeBytes": 1, **hint.to_ack_fields()})
+        fields = parse_ack_metadata(payload)
+        decoded = ProviderCapabilityHint.from_ack_fields(fields)
+        self.assertEqual(decoded.provider_name, "/repo/core")
+        self.assertEqual(decoded.service_payload["freeBytes"], 4096)
+        self.assertEqual(fields["repoNode"], "/repo/legacy")
         candidate = AckCandidate(
-            "/provider/repo",
-            "/NDNSF/DistributedRepo",
-            "req-1",
-            True,
-            "repo-ready",
-            payload,
-        )
+            "/provider/repo", "/NDNSF/DistributedRepo", "req-1", True, "repo-ready", payload)
+        with self.assertRaises(RepoCompatibilityError) as error:
+            repo_client_capability_from_ack(candidate)
+        self.assertEqual(error.exception.code, "SPEC192_COMPATIBILITY_V1")
+        self.assertEqual(error.exception.operation, "capability_from_ack")
 
-        capability = repo_client_capability_from_ack(candidate)
+    def test_retired_network_client_cannot_emit_a_collaboration(self):
+        from py_repoclient import RepoCompatibilityError
 
-        self.assertIsNotNone(capability)
-        self.assertEqual(capability.repo_node, "/repo/core")
-        self.assertEqual(capability.free_bytes, 4096)
-        self.assertEqual(list(capability.storage_classes), ["model", "intermediate"])
+        class User:
+            def begin_collaboration(self, *args, **kwargs):
+                raise AssertionError("retired Python Repo client sent a request")
 
-    def test_repo_operation_helper_emits_core_status_and_data_reference(self) -> None:
-        repo = RepoNodeApp.__new__(RepoNodeApp)
-        repo.repo_node = "/repo/A"
-        repo.service_name = "/NDNSF/DistributedRepo"
-        manifest = RepoObjectManifest(
-            object_name="/model/stage0",
-            object_type="model-artifact",
-            sha256="abc123",
-            size=12,
-            segment_count=2,
-        )
-
-        payload = repo._operation_status_payload("STORE", "stored", manifest=manifest)
-        status = ServiceOperationStatus.from_dict(payload["operationStatus"])
-
-        self.assertTrue(status.terminal)
-        self.assertEqual(status.operation, "STORE")
-        self.assertEqual(payload["dataProductReference"]["object_name"], "/model/stage0")
-        self.assertEqual(payload["dataProductReference"]["object_class"], "model-artifact")
+        with self.assertRaises(RepoCompatibilityError) as error:
+            NetworkDistributedRepoClient(User(), "/NDNSF/DistributedRepo")
+        self.assertEqual(error.exception.code, "SPEC192_COMPATIBILITY_V1")
+        self.assertEqual(error.exception.operation, "NetworkDistributedRepoClient")
 
     def test_di_inventory_manager_exposes_core_capability_hint(self) -> None:
         key = ModelFragmentKey(

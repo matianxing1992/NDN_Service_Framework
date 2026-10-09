@@ -88,6 +88,21 @@ class PreflightMutationTests(unittest.TestCase):
         self.assertNotEqual(before, after)
         self.assertFalse(self.output.exists())
 
+    def test_retired_cohort_inputs_cannot_change_or_disappear(self):
+        before, names = preflight.source_candidate(ROOT)
+        actual = preflight.sha256
+        for name in ("tests/python/test_spec164_migration_rollback.py",
+                     "tests/python/retired_repo_fixture.py",
+                     "tests/python/test_ndnsf_core_boundary_imports.py"):
+            with self.subTest(name=name):
+                self.assertIn(name, names)
+                with mock.patch.object(preflight, "sha256", side_effect=lambda path:
+                        "00" * 32 if path == ROOT / name else actual(path)):
+                    changed, same_names = preflight.source_candidate(ROOT)
+                self.assertEqual(names, same_names)
+                self.assertNotEqual(before, changed)
+        self.assertFalse(self.output.exists())
+
     def test_missing_source_is_rejected_before_output(self):
         self.reject("MISSING_SOURCE", source_files=["missing-native-input.cpp"])
         actual = Path.is_file
@@ -205,6 +220,9 @@ class PreflightMutationTests(unittest.TestCase):
         for name, registration in (
                 ("tests/integration-tests/spec192-removed-fixture.cpp", "index"),
                 ("tests/unit-tests/distributed-repo-removed.t.cpp", "index"),
+                ("tests/python/test_spec164_removed.py", "index"),
+                ("tests/python/test_spec164_removed.py", "HEAD"),
+                ("tests/python/retired_repo_removed.py", "index"),
                 ("ndn-service-framework/staged-removed.cpp", "HEAD")):
             with self.subTest(name=name, registration=registration):
                 def registered(command, **kwargs):

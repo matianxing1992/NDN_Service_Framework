@@ -18,13 +18,13 @@
 | T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例与6OriginalData nativeunit全部PASS；生产及test native targets重建PASS，当前7个O17子场景待T009/T010。 | 2026-10-08 15:52 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前surface/真实local与network/profile边界按api-inventory和surface-batch核对；current native完整suite及网络仍待运行，不继承旧PASS。 | 2026-10-08 15:52 -05:00 |
-| T008 | IN_PROGRESS | T001,T002,T004,T005 | 两个binding重建/import/library PASS；Python扩展cohort94PASS/39退休失配fail/2collectionerror，待修复旧测试与currentnetwork。 | 2026-10-08 |
-| T009 | PARTIAL | T002–T008 | SDK2全build/import/167dep、完整native及16mutation PASS；progress projection4、真实ACK4、退休migration保全2 PASS。当前新harness使旧receipt失效；剩余旧Python断言、新增fence/整锁replay负例、fresh seal/ASAN/convergence/network。 | 2026-10-08 |
+| T008 | IN_PROGRESS | T001,T002,T004,T005 | 两个binding重建/import/library PASS；退休测试按真实拒绝/源码保全边界收口，33-file cohort117PASS；evidence/python-retirement-20261008/python-cohort-2.json。currentnetwork仍待完整资格。 | 2026-10-08 |
+| T009 | PARTIAL | T002–T008 | SDK2全build/import/167dep、完整native及16mutation PASS；progress projection4、真实ACK4、退休migration保全2、新fence3 PASS。当前新harness使旧receipt失效；剩余整锁replay负例、fresh seal/ASAN/convergence/network。 | 2026-10-08 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
 
-下一步把其余退休Python状态机断言改为真实compatibility/零副作用边界，保留pure codec及当前native行为；补新fence edit/deletion与整锁progress-only replay负例，再fresh seal和完整dynamic/convergence。SDK2 normal green及全部首失败保留；不能启动完整资格。按[Spec文档预算](spec.md#implementation-and-documentation-budget)只维护本表、必要contract与原始evidence，不续写batch卡或重复进度。
+下一步补整锁progress-only replay负例，再fresh seal和完整dynamic/convergence。SDK2 normal及117项Python边界回归green，全部首失败保留；尚不能启动完整资格。按[Spec文档预算](spec.md#implementation-and-documentation-budget)只维护本表、必要contract与原始evidence，不续写batch卡或重复进度。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding
