@@ -836,6 +836,173 @@ BOOST_AUTO_TEST_CASE(OperationOwnedArtifactWithoutReceiptStoreIsHidden)
   BOOST_CHECK(node.get(legacy.objectName) == bytes);
 }
 
+BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
+{
+  TempRoot temporary;
+  const ndn::Name servicePrefix(repo::RepoClient::DEFAULT_SERVICE_NAME);
+  BootstrapProfile profile;
+  profile.groupPrefix = "/ndnsf/spec202/early-seed/group";
+  profile.syncPrefix = "/ndnsf/spec202/early-seed/sync";
+  profile.userNode = "/ndnsf/spec202/early-seed/user";
+  profile.providerNode = "/ndnsf/spec202/early-seed/provider";
+  profile.userIdentity = "/test/user/spec202/early-seed";
+  profile.providerIdentity = "/test/provider/spec202/early-seed";
+  profile.attributeAuthority = "/test/aa/spec202/early-seed";
+  profile.providerCount = 3;
+  profile.providerCanActAsUser = true;
+  const std::vector<std::string> operations{"STORE", "STATUS"};
+  profile.serviceName = repoService(servicePrefix, "STORE");
+  profile.additionalServices.push_back(repoService(servicePrefix, "STATUS"));
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  auto publisher = makeRepoPublisherUser(environment, 0, servicePrefix, operations);
+  const std::vector<repo::RepoArtifactTarget> targets{
+    {"/logical/early-seed", environment.provider(0).getName().toUri(), servicePrefix.toUri()},
+    {"/logical/early-B", environment.provider(1).getName().toUri(), servicePrefix.toUri()},
+    {"/logical/early-C", environment.provider(2).getName().toUri(), servicePrefix.toUri()}};
+  const auto storeService = repoService(servicePrefix, "STORE");
+  auto stores = std::make_shared<std::atomic<unsigned>>(0);
+  for (size_t index = 1; index < targets.size(); ++index) {
+    environment.provider(index).addService(storeService,
+      [] (const ndn_service_framework::RequestMessage&) {
+        ndn_service_framework::ServiceProvider::AckDecision decision;
+        decision.status = true;
+        decision.message = "repo-ready";
+        return decision;
+      },
+      [stores] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+                const ndn_service_framework::RequestMessage&) {
+        stores->fetch_add(1);
+        ndn_service_framework::ResponseMessage response;
+        response.setStatus(false);
+        response.setErrorInfo("unexpected STORE after seed failure");
+        return response;
+      });
+  }
+  repo::ArtifactLimits limits;
+  repo::StorageCapability capability;
+  capability.repoNode = targets[0].repoNode;
+  capability.repoMode = "persistent";
+  capability.freeBytes = 8 * 1024 * 1024;
+  environment.enableProductionIngressForTest();
+  const auto principal = environment.user().getName().toUri();
+  for (const bool corrupt : {false, true}) {
+    const auto label = corrupt ? "corrupt-seed" : "missing-seed";
+    const auto root = temporary.path() / label;
+    const auto objects = root / "objects";
+    const auto database = root / "artifact-v2.sqlite";
+    auto openNode = [&] {
+      return std::make_shared<repo::RepoNode>(servicePrefix, capability,
+        std::make_shared<repo::FilesystemRepoStoreBackend>(
+          objects.string(), 1024 * 1024, 4096, label),
+        targets[0].repoNode, targets[0].providerIdentity, database.string(), limits);
+    };
+    auto node = openNode();
+    node->registerServices(environment.provider(0));
+    const std::vector<uint8_t> bytes{0x73, 0x65, 0x65, 0x64};
+    const auto reference = makeReference(label, bytes);
+    repo::PublishOperationIntent intent;
+    intent.idempotencyKeyDigest = repo::digestPublishIdempotencyKey(label);
+    intent.reference = reference;
+    intent.generation = 1;
+    intent.seed = targets[0];
+    intent.consistency = "ALL";
+    intent.targets = targets;
+    intent.requestDigest = repo::makePublishRequestDigest(
+      reference, intent.generation, intent.seed, intent.consistency, targets);
+    const auto operationId = repo::makePublishOperationId(
+      principal, intent.seed, intent.idempotencyKeyDigest);
+    const auto intentJson = intent.toJson();
+    const auto accepted = dispatchRepoRequest(environment.provider(0), environment.user().getName(),
+      storeService, std::vector<uint8_t>(intentJson.begin(), intentJson.end()), label);
+    BOOST_REQUIRE_MESSAGE(accepted.getStatus(), accepted.getErrorInfo());
+    repo::ArtifactStoreRequest write;
+    write.operationId = operationId;
+    write.generation = 1;
+    write.reference = reference;
+    write.bytes = bytes;
+    const auto committed = dispatchRepoRequest(environment.provider(0), environment.user().getName(),
+      storeService, write.toWire(limits), std::string(label) + "-store");
+    BOOST_REQUIRE_MESSAGE(committed.getStatus(), committed.getErrorInfo());
+    const auto receiptWire = responseBytes(committed);
+    const auto seedReceipt = repo::RepoArtifactCommitReceipt::fromJson(
+      std::string(receiptWire.begin(), receiptWire.end()), limits).toJson();
+    {
+      repo::SqliteArtifactMetadataStore catalog(database.string(), true, 15);
+      const auto operation = catalog.lookupPublishOperation(operationId, principal);
+      BOOST_REQUIRE(operation);
+      const auto interruptedAt = static_cast<uint64_t>(std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+      for (auto target : operation->status.targets) {
+        if (target.target == targets[0]) continue;
+        target.state = target.target == targets[1] ? "IN_FLIGHT" : "QUEUED";
+        target.attemptCount = target.target == targets[1] ? 1 : 0;
+        catalog.updatePublishOperationTarget(operationId, target, interruptedAt);
+      }
+    }
+    releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+    node.reset();
+    const auto payload = committedPayloadPath(objects, reference);
+    if (corrupt) writeFile(payload, {0x62, 0x61, 0x64, 0x21});
+    else BOOST_REQUIRE(fs::remove(payload));
+    node = openNode();
+    node->registerServices(environment.provider(0), publisher, 5000, 20000);
+    repo::SqliteArtifactMetadataStore catalog(database.string(), false, 15);
+    environment.pumpUntilWithAttributeAuthority([&] {
+      const auto operation = catalog.lookupPublishOperation(operationId, principal);
+      return operation && operation->status.state == "FAILED";
+    });
+    const auto terminal = catalog.lookupPublishOperation(operationId, principal);
+    BOOST_REQUIRE(terminal);
+    BOOST_CHECK_EQUAL(terminal->status.state, "FAILED");
+    for (const auto& target : terminal->status.targets) {
+      if (target.target == targets[0]) {
+        BOOST_CHECK_EQUAL(target.state, "COMMITTED");
+        BOOST_REQUIRE(target.receipt);
+        BOOST_CHECK_EQUAL(target.receipt->toJson(), seedReceipt);
+      }
+      else if (target.target == targets[1]) {
+        BOOST_CHECK_EQUAL(target.state, "UNKNOWN");
+        BOOST_CHECK_EQUAL(target.attemptCount, 1U);
+        BOOST_CHECK_EQUAL(target.failureCode, "repo-target-outcome-unknown");
+        BOOST_CHECK(!target.receipt);
+      }
+      else {
+        BOOST_CHECK_EQUAL(target.state, "NOT_ATTEMPTED");
+        BOOST_CHECK_EQUAL(target.attemptCount, 0U);
+        BOOST_CHECK(target.failureCode.empty());
+        BOOST_CHECK(!target.receipt);
+      }
+    }
+    const auto aggregateJson = catalog.lookupAggregateReceipt(terminal->status.receiptId);
+    BOOST_REQUIRE(aggregateJson);
+    const auto aggregate = repo::ArtifactCommitReceipt::fromJson(*aggregateJson);
+    BOOST_CHECK_EQUAL(aggregate.achievedReplicas, 1U);
+    BOOST_REQUIRE_EQUAL(aggregate.replicaCommits.size(), targets.size());
+    for (const auto& replica : aggregate.replicaCommits) {
+      if (replica.repoNode == targets[1].repoNode) {
+        BOOST_CHECK_EQUAL(replica.state, "FAILED");
+        BOOST_CHECK_EQUAL(replica.failureReason, "repo-target-outcome-unknown");
+      }
+      if (replica.repoNode == targets[2].repoNode) {
+        BOOST_CHECK_EQUAL(replica.state, "SKIPPED");
+        BOOST_CHECK(replica.failureReason.empty());
+      }
+    }
+    BOOST_CHECK_EQUAL(stores->load(), 0U);
+    std::this_thread::sleep_for(50ms);
+    const auto reread = catalog.lookupPublishOperation(operationId, principal);
+    BOOST_REQUIRE(reread);
+    BOOST_CHECK_EQUAL(reread->status.toJson(), terminal->status.toJson());
+    const auto rereadAggregate = catalog.lookupAggregateReceipt(terminal->status.receiptId);
+    BOOST_REQUIRE(rereadAggregate);
+    BOOST_CHECK_EQUAL(*rereadAggregate, *aggregateJson);
+    releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+    node.reset();
+  }
+}
+
 BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
 {
   TempRoot temporary;

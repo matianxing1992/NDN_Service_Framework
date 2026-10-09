@@ -584,13 +584,6 @@ RepoNode::runPublishOperationPass(const std::string& operationId)
     verifyArtifactBytes(m_core, manifest, status.reference);
   }
   catch (...) {
-    for (auto& target : status.targets) {
-      if (isPublishTargetPending(target)) {
-        target.state = "FAILED";
-        target.failureCode = "repo-seed-source-invalid";
-        target.receipt.reset();
-      }
-    }
     finalize("FAILED", nowMilliseconds());
     return false;
   }

@@ -13,13 +13,13 @@
 | --- | --- | --- | --- | --- |
 | T001 | DONE | user scope | api-inventory逐header/overload→TU/target/output/case；owner overlay分类、DB002–004前置及只读release PASS。150-input完整snapshot/manifest保存；实际rebuild/runtime资格明确归T009。 | 2026-10-08 13:12 -05:00 |
 | T002 | PARTIAL | T001 | destination恢复修复已落地；SDK9完整In-App28/Persistent5 normal及dynamic PASS，旧SDK5失败仅历史。证据见T009 SDK9 normal/dynamic JSON；R01–R05逐项closing核对及最终复现待关闭。 | 2026-10-09 |
-| T003 | PARTIAL | T001 | attempted ledger及owner probe预算修复已落地；SDK9完整Persistent5/877断言normal/dynamic PASS。旧SDK5业务失败已被当前回归替代；R06逐项closing及最终network资格待关闭，证据见T009。 | 2026-10-09 |
+| T003 | PARTIAL | T001 | DB003 early seed HIGH已做red→7-line删除→focused green：真实reopen/missing及corrupt seed共58/58断言PASS；B UNKNOWN/count1、C NOT_ATTEMPTED/count0、seed receipt/aggregate与zeroSTORE/terminal reread保留。scope复审STATIC_PASS；见T009 SDK10 early-seed-{red-v2,green}.json。R06晚期及当前完整normal/dynamic/network待资格。 | 2026-10-09 |
 | T004 | PARTIAL | T001 | import durability修复已落地；SDK9完整import unit4/49及integration6/145含真实CLI normal/dynamic PASS。证据见T009；R07逐项closing、独立复现及当前network仍待资格。 | 2026-10-09 |
 | T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例与6OriginalData nativeunit全部PASS；生产及test native targets重建PASS，当前7个O17子场景待T009/T010。 | 2026-10-08 15:52 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK9完整98-case surface/local conformance及1655断言normal/dynamic PASS，证据见T009；公开inventory保留，network/profile资格尚未关闭。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK9两个binding重建/import/library及33-file cohort117PASS；见candidate-build-20261009-sdk9/sdk9-normal-validation.json。current crosslanguage/DI network仍待完整资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | source281e03c8/688：[SDK10](evidence/candidate-build-20261009-sdk10/)3 focused/scope复审、1092-entry封存及ASAN construction PASS。main configure/native build(18m43.582s)/install PASS，bindings由98970继续；9+7 executor32022等待六步receipt，sealed v1等待9+7 PASS。SDK9仅历史，network未启动；下一步当前runtime→独立复现/恢复→closing。failure-log保留闭包诊断。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | 新source d75cf28e/688：T003 early seed修复及58/58 focused PASS、scope STATIC_PASS。[SDK10](evidence/candidate-build-20261009-sdk10/)六步receipt aee9272b仅pre-repair构建；已停止旧资格队列，失败/构建/红绿记录保留。下一步冻结SDK11，重建受影响consumer与ASAN→完整normal/dynamic→独立复现→closing；network未启动。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
@@ -41,7 +41,7 @@
 
 ## Phase 3: User Story 1 - Honest Publication
 
-- [ ] T003 [US1] 修复`RepoNode.cpp::runPublishOperationPass` sourcefailure对pendingtarget的attempt区分，使用既有三Provider workerintegrationfixture真实B请求→timeout→C源读取失败验证UNKNOWN/count1与terminalaggregate/seedreceipt不变；focused回归和证据同任务。**Design binding**: DB003 READY_FOR_IMPLEMENTATION afterT001；无schema/wire变化，重要字段state/attemptCount/failureCode/receipt保留nativeowner；asan-ubsan，新增并发ownership才tsan。
+- [ ] T003 [US1] 修复`RepoNode.cpp::runPublishOperationPass` sourcefailure对pendingtarget的attempt区分；三Provider fixture覆盖B请求→timeout→C源读取失败及reopen后早期seed missing/corrupt，验证UNKNOWN/count1、未尝试目标/zeroSTORE与terminalaggregate/seedreceipt不变；focused回归和证据同任务。**Design binding**: DB003 READY_FOR_IMPLEMENTATION afterT001；无schema/wire变化，重要字段state/attemptCount/failureCode/receipt保留nativeowner；asan-ubsan，新增并发ownership才tsan。
 
 ## Phase 4: User Story 4 - Recover Durable Import
 
