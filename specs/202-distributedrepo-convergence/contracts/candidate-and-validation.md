@@ -29,9 +29,9 @@ source/intent audit →cohesive focused native red/repair →五lane fixed-snaps
 
 未解决semantic/security/owner/wiring/evidence HIGH，产品convergence保持BLOCK；允许focused red/repair，不启动broad qualification。设计就绪与产品合格是不同结论。所有新任务含Design binding；不明确的入口/字段/迁移影响先补契约。
 
-## Dynamic Gate Card
+## Dynamic Gate Evidence
 
-每logical batch一张：冻结source/toolchain/output、名义/边界/非法/lifecycle顺序矩阵、C++ selector、timeout/repetitions、oracle、首失败。
+使用既有evidence日志/JSON记录冻结source/toolchain/output、名义/边界/非法/lifecycle顺序矩阵、C++ selector、timeout/repetitions、oracle和首失败；tasks.md只引用结果，不新增batch卡或重复报告。
 
 - destination/worker native修复：默认`asan-ubsan`，观察路径/FD/回调寿命、no UAF/leak/UB；若变更新并发ownership，则增加独立`tsan` gate。
 - parser behavior出现实质变化：`parser-fuzz`有界输入语料并运行生产C++ codec；只做字符串文档纠错不虚构动态需求。

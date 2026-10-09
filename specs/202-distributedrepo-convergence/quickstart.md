@@ -1,6 +1,6 @@
 # Quickstart Validation Guide
 
-本文件是后续实施指南；本轮没有运行下列build/test/network命令。产品修复与当前convergence未PASS前，只允许focusedrepair，不启动fullqualification。
+本文件说明复现入口；当前执行结果只在tasks.md及其引用的原始evidence中维护。产品修复、适用动态门与当前convergence未PASS前，只允许focusedrepair，不启动fullqualification。
 
 ## Readiness
 
