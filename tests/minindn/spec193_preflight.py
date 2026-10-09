@@ -62,11 +62,14 @@ SOURCE_REQUIRED = (
     "tests/minindn/spec202_build_candidate.py",
     "tests/integration-tests/ndnsf-integration-fixture.cpp",
     "tests/integration-tests/ndnsf-integration-fixture.hpp",
+    "tests/python/test_ndnsf_core_boundary_imports.py",
+    "tests/python/test_ndnsf_app_core_envelope_migration.py",
 )
 SOURCE_PATTERNS = (
     "tests/unit-tests/*repo*.cpp", "tests/unit-tests/spec193*.cpp",
     "tests/integration-tests/spec192*.cpp", "tests/python/*repo*.py",
-    "tests/python/test_spec192*.py", "tests/minindn/spec193*.conf",
+    "tests/python/test_spec192*.py", "tests/python/test_spec164*.py",
+    "tests/minindn/spec193*.conf",
     "tests/minindn/test_spec*preflight.py", "tests/minindn/test_spec202*.py",
 )
 BUILD_TARGETS = (
@@ -132,6 +135,65 @@ def candidate_build_environment(root, fresh, source, build, bindings=False):
                                  str(root / "NDNSF-DistributedRepo/pythonWrapper"),
                                  str(root / "NDNSF-DistributedInference"))))
     return values
+
+
+def design_acceptance_digest(path):
+    """Exclude only explicitly declared qualification progress from identity."""
+    path = require_file(path, "DESIGN")
+    if path.name not in ("tasks.md", "validation-matrix.md"):
+        return sha256(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise PreflightError("MALFORMED_DESIGN", "invalid document encoding") from error
+    label = "PROGRESS" if path.name == "tasks.md" else "QUALIFICATION STATUS"
+    start = "<!-- SPEC202 " + label + " START -->"
+    end = "<!-- SPEC202 " + label + " END -->"
+    if text.count(start) != 1 or text.count(end) != 1 or text.index(start) >= text.index(end):
+        raise PreflightError("MALFORMED_DESIGN", "invalid progress markers: " + str(path))
+    before, progress = text.split(start)
+    progress, after = progress.split(end)
+    if path.name == "tasks.md":
+        if re.findall(r"(?m)^## .+$", progress) != [
+                "## Execution Progress", "## Current Checkpoint"]:
+            raise PreflightError("MALFORMED_DESIGN", "unexpected task progress sections")
+        text = before + start + end + after
+        ids = re.findall(r"(?m)^- \[[ x]\] (T\d{3})\b", text)
+        if (set(ids) != {"T%03d" % number for number in range(1, 11)} or len(ids) != 10 or
+                "## Design binding" not in text or "## Dependencies & Execution Order" not in text):
+            raise PreflightError("MALFORMED_DESIGN", "missing or duplicate acceptance tasks")
+        text = re.sub(r"(?m)^- \[[ x]\] (T\d{3})\b", r"- [ ] \1", text)
+    else:
+        if len(progress.strip().splitlines()) != 1 or not progress.strip().startswith("**Status**:"):
+            raise PreflightError("MALFORMED_DESIGN", "unexpected matrix progress content")
+        text = before + start + end + after
+        headers = (
+            "| ID | Scenario / public entry | Independent oracle | Closing owner | Round 1 | Round 2 |",
+            "| ID | Production entry / parameter classes | Required oracle | Task | Status |")
+        if any(text.count(header) != 1 for header in headers):
+            raise PreflightError("MALFORMED_DESIGN", "invalid acceptance matrix headers")
+        ids, lines = [], []
+        for line in text.splitlines(keepends=True):
+            match = re.match(r"\|\s*([AOLNPR]\d{2})\s*\|", line)
+            if match:
+                case = match.group(1)
+                cells = line.rstrip("\n").split("|")
+                native = case.startswith("R")
+                if len(cells) != (7 if native else 8):
+                    raise PreflightError("MALFORMED_DESIGN", "invalid matrix row: " + case)
+                ids.append(case)
+                cells[-2] = " PROGRESS "
+                if not native:
+                    cells[-3] = " PROGRESS "
+                line = "|".join(cells) + ("\n" if line.endswith("\n") else "")
+            lines.append(line)
+        expected = {prefix + "%02d" % number for prefix, count in (
+            ("A", 22), ("O", 17), ("L", 4), ("N", 10), ("P", 6), ("R", 7))
+                    for number in range(1, count + 1)}
+        if set(ids) != expected or len(ids) != len(expected):
+            raise PreflightError("MALFORMED_DESIGN", "missing or duplicate acceptance cases")
+        text = "".join(lines)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def participates_in_source(name):
@@ -404,9 +466,12 @@ def check(root, output, topology, source_sha, source_files, roles,
     if len(set(repo_users)) != len(repo_users) or len(set(repo_providers)) != len(repo_providers):
         raise PreflightError("DUPLICATE_PRINCIPAL", "Repo ACL principals")
     files = {}
+    progress_provenance = {}
     for name in DESIGN_FILES:
         path = require_file(root / name, "DESIGN")
-        files[name] = sha256(path)
+        files[name] = design_acceptance_digest(path)
+        if path.name in ("tasks.md", "validation-matrix.md"):
+            progress_provenance[name] = sha256(path)
     for name in source_files:
         path = require_file(root / name, "SOURCE")
         if name not in files:
@@ -476,14 +541,16 @@ def check(root, output, topology, source_sha, source_files, roles,
         "legacy_importer": include_importer,
         "repo_users": list(repo_users), "repo_providers": list(repo_providers),
         "files": dict(sorted(files.items())),
+        "progress_provenance": progress_provenance,
     }
-    identity = {key: value for key, value in state.items() if key != "source_revision"}
+    provenance_fields = ("source_revision", "progress_provenance")
+    identity = {key: value for key, value in state.items() if key not in provenance_fields}
     encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
     state["candidate_lock_sha256"] = hashlib.sha256(encoded).hexdigest()
     if lock_path is not None:
         locked = json.loads(require_file(lock_path, "CANDIDATE_LOCK")
                             .read_text(encoding="utf-8"))
-        if {key: value for key, value in locked.items() if key != "source_revision"} != \
-                {key: value for key, value in state.items() if key != "source_revision"}:
+        if {key: value for key, value in locked.items() if key not in provenance_fields} != \
+                {key: value for key, value in state.items() if key not in provenance_fields}:
             raise PreflightError("CANDIDATE_MISMATCH", str(lock_path))
     return state

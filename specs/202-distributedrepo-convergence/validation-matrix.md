@@ -1,6 +1,8 @@
 # Validation Matrix: DistributedRepo Convergence
 
+<!-- SPEC202 QUALIFICATION STATUS START -->
 **Status**: NOT_RUN for current Spec202 qualification.
+<!-- SPEC202 QUALIFICATION STATUS END -->
 **Source definitions**: [Spec193 stable cases](../193-distributedrepo-multinode-api-campaign/coverage-matrix.md#stable-cases)作为保留的historical input；原59 case描述/oracle完整继承。历史candidate PASS不填入当前round。parent owner见traceability，最终T010统一资格。
 
 ## Inherited Stable Cases

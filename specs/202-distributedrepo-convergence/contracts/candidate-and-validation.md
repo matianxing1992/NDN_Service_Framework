@@ -10,6 +10,8 @@ source closure执行门必须拒绝缺文件、source/artifact mismatch、depend
 
 显式SDK source/build pair必须在每个实际consumer的编译include顺序中优先于共同global prefix，以实际compiler dependency证明使用的headers，不能只查Waf单个变量。OpenABE解析/deep-clone产生的policy独占其子树；root销毁必须释放全部descendants。SDK lifetime修复不改变publicABI、有效policy/crypto语义或通用ZObject计数约定；保留原SDK工作树，在隔离源中修复、审查及重建，并重做受影响动态门。
 
+`spec193_preflight.design_acceptance_digest(path)`只对202 tasks/matrix生成显式acceptance projection，其余文件仍用完整SHA。tasks只排除标记包围的progress/checkpoint区并归一化checkbox，保留全部任务正文、依赖和design binding；matrix只排除标记包围的qualification status及明确表头所定义的round/native status cells，保留ID、scenario、oracle、owner及其余文字。缺标记、错表头/列数、缺少或重复任务/case立即拒绝。完整文档SHA保留在lock的`progress_provenance`，只该字段和Git revision不参与identity/replay equality。status-only edit必须稳定，requirement/dependency/design-binding/schema edit必须失效；不得泛化删除Markdown或豁免整份任务文档。
+
 ## Change Invalidation Matrix
 
 | Change plane | Earliest required gate | Invalidated evidence |
