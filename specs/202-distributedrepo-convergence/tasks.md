@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前SDK11完整surface/local conformance98case normal1655/dynamic v3 1657断言PASS，DB007 STATIC_PASS，公开inventory保留。见T009；独立复现与network/profile资格待关闭，旧SDK9结果仅历史。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | 当前SDK11两binding fresh重建/import、33-file Python117PASS及全部7 native dynamic v3 PASS。见T009；不宣称Python instrumentation，sealed复现与crosslanguage/DI network待资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | aeb815ea/688; receipt 2f1f6f2f. C++ 7 PASS (`ldd -r` clean); Python 33 files/117 tests PASS. [native](evidence/native-api-aeb815-20261010-r1/native-test-manifest.json), [Python](evidence/python-api-aeb815-20261010-r1/python-test-manifest.json). CLI import/reopen, unsuppressed ASAN/UBSAN, fresh convergence remain OPEN. | 2026-10-10 |
+| T009 | PARTIAL | T002–T008 | aeb815ea/688; receipt 2f1f6f2f. C++7 PASS (ldd -r); Python33/117 PASS; production CLI import/reopen/parity PASS. [native](evidence/native-api-aeb815-20261010-r1/native-test-manifest.json), [Python](evidence/python-api-aeb815-20261010-r1/python-test-manifest.json). ASAN/UBSAN, fresh convergence remain OPEN. | 2026-10-10 |
 | T010 | IN_PROGRESS | T009 | 正式冻结d75cf28e/688的两轮68场景/59ID共136次campaign状态仍按matrix记录为FAIL_STOPPED。f8011aa0候选的单轮ARTIFACT_BASELINE仅是修复后本地回归，不替代统一candidate、59 cases两轮、逐actor maps/pcap/finite exits/cleanup/storage/consumer/wire/cross-run检查；全项通过前保持OPEN。 | 2026-10-10 |
 
 ## Current Checkpoint
