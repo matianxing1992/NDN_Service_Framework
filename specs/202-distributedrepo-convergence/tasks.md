@@ -7,7 +7,7 @@
 <!-- SPEC202 PROGRESS START -->
 ## Execution Progress
 
-**Updated**: 2026-10-09
+**Updated**: 2026-10-10
 
 | Task | Status | Depends on | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
@@ -19,8 +19,8 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前SDK11完整surface/local conformance98case normal1655/dynamic v3 1657断言PASS，DB007 STATIC_PASS，公开inventory保留。见T009；独立复现与network/profile资格待关闭，旧SDK9结果仅历史。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | 当前SDK11两binding fresh重建/import、33-file Python117PASS及全部7 native dynamic v3 PASS。见T009；不宣称Python instrumentation，sealed复现与crosslanguage/DI network待资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | source d75cf28e/688；[SDK11](evidence/candidate-build-20261009-sdk11/)，receipt ce2207fd；normal9/dynamic7/sealed v5完整9组PASS，restore/INTEGRITY/closing PASS；T002–004/R01–07关闭。网络v1 aux误分类FAIL保留；v2/75028已FAIL_STOPPED：round1 A05独立验收PASS，ARTIFACT_BASELINE的vm20-same-key-changed-request-rejected native子进程SIGSEGV(-11)，cleanup PASS，根因未确认。先定位/修复并补真实回归，再按失效矩阵更新候选与完整资格；T005–010保持OPEN。 | 2026-10-09 |
-| T010 | IN_PROGRESS | T009 | 冻结d75cf28e/688与声明six profiles；两轮68场景/59ID共136次执行准备完成，release绑定normal/dynamic/sealed/restore/integrity/closing及harness hashes；新run逐actor maps/pcap/finite exits/cleanup/storage/consumer/wire/cross-run验收，未出完整PASS前保持OPEN。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | 旧正式候选d75cf28e/688、SDK11证据及T002–004/R01–07结果保留。follow-up候选source f8011aa0/688：[fresh build receipt](evidence/candidate-build-conflict-fix-20261010/) b382a3b3；7个C++ Repo/conformance目标PASS、33个Python文件117 tests PASS，详见 [native](evidence/repo-api-native-tests-20261010-r1/native-test-manifest.json) / [Python](evidence/repo-api-python-tests-20261010-r1/python-test-manifest.json)。本地 MiniNDN ARTIFACT_BASELINE 单轮PASS、cleanup PASS；changed-key拒绝正确，根因定位为standalone client teardown并已回归，详见 [run manifest](evidence/verify-conflict-shutdown-20261010-r3/run-manifest.json)。正式两轮campaign仍FAIL_STOPPED；其他convergence/独立qualification未关闭，T009保持PARTIAL。 | 2026-10-10 |
+| T010 | IN_PROGRESS | T009 | 正式冻结d75cf28e/688的两轮68场景/59ID共136次campaign状态仍按matrix记录为FAIL_STOPPED。f8011aa0候选的单轮ARTIFACT_BASELINE仅是修复后本地回归，不替代统一candidate、59 cases两轮、逐actor maps/pcap/finite exits/cleanup/storage/consumer/wire/cross-run检查；全项通过前保持OPEN。 | 2026-10-10 |
 
 ## Current Checkpoint
 
