@@ -8183,6 +8183,13 @@ def main() -> int:
             Nfdc.setStrategy(host, SERVICE_PREFIX, Nfdc.STRATEGY_MULTICAST)
             Nfdc.setStrategy(host, DI_SERVICE, Nfdc.STRATEGY_MULTICAST)
 
+        capture_filter = "udp"
+        if args.campaign_case == "O17_ROUTE":
+            # Capture non-initial IP fragments too. A BPF "udp" filter sees
+            # only the first IPv4 fragment, making signed SVS Data incomplete.
+            capture_filter = (
+                "ip proto 17 or ip proto 6 or "
+                "ip6 protochain 17 or ip6 protochain 6")
         for host_name in HOST_ROLES:
             capture_path = args.output_dir / "pcap" / (host_name + ".pcap")
             capture_path.parent.mkdir(parents=True, exist_ok=True)
@@ -8190,8 +8197,7 @@ def main() -> int:
                 ndn, args.output_dir, processes, host_name,
                 "nfd-udp-trace-" + host_name,
                 ["tcpdump", "--immediate-mode", "-i", "any", "-U", "-n", "-w",
-                 str(capture_path),
-                 "udp or tcp" if args.campaign_case == "O17_ROUTE" else "udp"],
+                 str(capture_path), capture_filter],
                 node_environment(ndn.net[host_name], REPO),
             )
             capture["capture_path"] = capture_path

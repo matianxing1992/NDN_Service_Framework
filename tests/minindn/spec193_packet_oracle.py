@@ -257,8 +257,35 @@ def _denial_signed_packets(path: Path, publisher_prefixes: list):
                     inner_wire = bytes(content)
                     inner_name, _, _, inner_signature = parse_data(inner_wire)
                 else:
-                    if any(len(outer_name) > len(prefix) and outer_name[:len(prefix)] == prefix
-                           for prefix in producer_prefixes):
+                    publisher_match = any(
+                        len(outer_name) > len(prefix) and outer_name[:len(prefix)] == prefix
+                        for prefix in producer_prefixes)
+                    mapping_name = any(
+                        Component.get_type(component) == Component.TYPE_GENERIC and
+                        bytes(Component.get_value(component)) == b"MAPPING"
+                        for component in outer_name)
+                    if publisher_match and mapping_name:
+                        try:
+                            content_fields = list(_fields(bytes(content)))
+                            mappings = [value for field_type, value, _ in content_fields
+                                        if field_type == 205]
+                            if (not mappings or any(field_type not in (201, 205)
+                                                    for field_type, _, _ in content_fields)):
+                                raise ValueError("unsupported mapping fields")
+                            applications = []
+                            for mapping in mappings:
+                                applications.extend(record[1]
+                                                    for record in _mapping_entries(mapping))
+                            if not applications:
+                                raise ValueError("empty mapping")
+                        except (ValueError, IndexError, TypeError, RuntimeError) as error:
+                            raise RuntimeError(
+                                "INCONCLUSIVE metadata denial: malformed SVS mapping") from error
+                        yield {"outer_wire": wire, "outer_name": outer_uri,
+                               "outer_signature": outer_signature,
+                               "svs_applications": applications}
+                        continue
+                    if publisher_match:
                         raise RuntimeError("INCONCLUSIVE metadata denial: unsupported SVS inner content")
                     continue
                 yield {"outer_wire": wire, "outer_name": outer_uri,
@@ -297,6 +324,15 @@ def verify_metadata_denial(output: Path, service_prefix: str, user: str,
         for packet in _denial_signed_packets(
                 output / "pcap" / (host + ".pcap"),
                 [user + "/user", *[provider + "/provider" for provider in providers.values()]]):
+            if "svs_applications" in packet:
+                provider_publication = any(
+                    packet["outer_name"].startswith(provider + "/provider/")
+                    for provider in providers.values())
+                if (provider_publication and
+                        any(application in forbidden
+                            for application in packet["svs_applications"])):
+                    raise RuntimeError("ungranted metadata probe advertised ACK/Response: " + host)
+                continue
             name = packet["inner_name"]
             if name in forbidden:
                 raise RuntimeError("ungranted metadata probe received ACK/Response: " + host)

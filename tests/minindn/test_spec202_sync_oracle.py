@@ -217,6 +217,26 @@ class SyncMappingOracleTests(unittest.TestCase):
                               side_effect=transport_outputs or [dump(values) for values in captures]):
                     return verify_metadata_denial(directory, "/Repo", self.user, data_name, providers)
             self.assertEqual(verify([packets] * 3)["ack_or_response_count"], 0)
+
+            def mapping_publication(application):
+                producer = "/test/A/provider/700"
+                mapping = self.mapping(seq=4, application=application, producer=producer)
+                return bytes(make_data(
+                    producer + "/test/group/t=1234/MAPPING/seq=1/seq=4",
+                    MetaInfo(), mapping, signer=self.signer))
+
+            unrelated_mapping = mapping_publication(
+                "/test/A/NDNSF/ACK/" + quote(self.user, safe="") +
+                "/Repo/DATA_RECEIPT/previous-request")
+            self.assertEqual(
+                verify([packets, packets + [unrelated_mapping], packets])[
+                    "ack_or_response_count"], 0)
+            advertised_ack = mapping_publication(
+                "/test/A/NDNSF/ACK/" + quote(self.user, safe="") +
+                "/Repo/DATA_RECEIPT" + ids[0])
+            with self.assertRaisesRegex(RuntimeError, "ACK/Response"):
+                verify([packets, packets + [advertised_ack], packets])
+
             with self.assertRaisesRegex(RuntimeError, "lacks both"):
                 verify([packets, packets, packets[:1]])
             ack = packet("/test/A/NDNSF/ACK/" + quote(self.user, safe="") +
