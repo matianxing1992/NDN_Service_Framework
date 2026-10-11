@@ -48,3 +48,24 @@ def test_serving_manifest_requires_canonical_materialization(tmp_path):
     assert 'path' not in artifact
     assert artifact['materialization'] == 'post-selection-canonical-assembly'
     assert artifact['role'] == '/Backbone'
+
+
+def test_actual_cold_and_warm_arguments_pass_the_envelope_key(tmp_path):
+    tree = ast.parse(SOURCE.read_text())
+    warm = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                and node.name == 'build_warm_user_args')
+    cold = next(node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id == 'user_common'
+                        for target in node.targets))
+    envelope = tmp_path / 'security/request-envelope.key'
+    namespace = dict(common=['--config', 'policy.yaml'], envelope_key_file=envelope,
+        ARTIFACT_REFERENCES=tmp_path / 'references.json',
+        args_cli=SimpleNamespace(model='yolo.pt', input_size=32, native_providers=False),
+        ack_timeout_ms=1500, timeout_ms=90000, user_async_workers=1, native_request_count=4,
+        native_assets=None, preflight_requests=0, warm_duration_s=0, warm_interval_ms=0,
+        warm_requests=3)
+    exec(compile(ast.Module(body=[warm, cold], type_ignores=[]), str(SOURCE), 'exec',
+                 flags=__future__.annotations.compiler_flag), namespace)
+    for args in (namespace['user_common'], namespace['build_warm_user_args']()):
+        assert args.count('--envelope-key-file') == 1
+        assert args[args.index('--envelope-key-file') + 1] == str(envelope)

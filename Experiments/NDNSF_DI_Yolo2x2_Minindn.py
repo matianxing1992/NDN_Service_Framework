@@ -6636,6 +6636,7 @@ def main() -> None:
 
         def build_warm_user_args() -> list[str]:
             warm_user_args = common + [
+                "--envelope-key-file", str(envelope_key_file),
                 "--artifact-references-file",
                 str(ARTIFACT_REFERENCES),
                 "--model", args_cli.model,
@@ -6729,6 +6730,7 @@ def main() -> None:
         envelope_key_file = ensure_request_envelope_key(OUT)
         native_request_count = cold_requests + warm_requests if native_assets is not None else cold_requests
         user_common = common + [
+            "--envelope-key-file", str(envelope_key_file),
             "--artifact-references-file",
             str(ARTIFACT_REFERENCES),
             "--model", args_cli.model,
