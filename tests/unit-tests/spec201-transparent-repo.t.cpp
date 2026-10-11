@@ -18,6 +18,7 @@
 #include <sys/wait.h>
 #include <cstdlib>
 #include <atomic>
+#include <chrono>
 
 namespace {
 using namespace ndnsf_distributed_repo;
@@ -595,6 +596,47 @@ BOOST_AUTO_TEST_CASE(CatalogParseCacheEvictsBeyondEntryBound)
   catalogParses = 0;
   BOOST_REQUIRE_EQUAL(store->listManifests().size(), 4097U);
   BOOST_CHECK_GT(catalogParses.load(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(JsonQuotingPreservesLegacyBytesAndLargeMetadata)
+{
+  RepoObjectManifest metadata;
+  metadata.objectName = "/actual/producer/serialization";
+  metadata.policyEpoch = "a\\b\"c\n\r\t";
+  metadata.keyReferenceId = std::string("\0\x1b\xff", 3);
+  metadata.operationId = "utf8-\xc3\xa9";
+  const auto encoded = metadata.toJson();
+  BOOST_CHECK_NE(encoded.find("\"policyEpoch\":\"a\\\\b\\\"c\\n\\r\\t\""), std::string::npos);
+  const auto opaqueExpected = std::string("\"keyReferenceId\":\"") +
+    metadata.keyReferenceId + "\"";
+  BOOST_CHECK_NE(encoded.find(opaqueExpected), std::string::npos);
+  BOOST_CHECK_NE(encoded.find("\"operationId\":\"utf8-\xc3\xa9\""), std::string::npos);
+  metadata.policyEpoch = "epoch";
+  metadata.keyReferenceId = "key-reference";
+  for (size_t i = 0; i < 128; ++i) {
+    auto name = ndn::Name("/actual/producer/serialization")
+      .append(std::string(256, 'x')).appendSegment(i);
+    metadata.packetNames.push_back(name.toUri(ndn::name::UriFormat::CANONICAL));
+  }
+  const auto expected = metadata.toJson();
+  BOOST_REQUIRE_GT(expected.size(), 32U * 1024U);
+  // Frozen from the old production serializer in both URI profiles.
+  BOOST_CHECK_EQUAL(sha256Hex(std::vector<uint8_t>(expected.begin(), expected.end())),
+                    "0c3776d01c4ca861a013c664ca09ddafd57fbdad31e16ce775b9d031235932cb");
+  BOOST_TEST_MESSAGE("REPO_JSON_QUOTE_BASELINE_SHA256 " <<
+    sha256Hex(std::vector<uint8_t>(expected.begin(), expected.end())));
+  constexpr size_t repetitions = 1000;
+  size_t encodedBytes = 0;
+  const auto start = std::chrono::steady_clock::now();
+  for (size_t i = 0; i < repetitions; ++i) {
+    const auto current = metadata.toJson();
+    BOOST_REQUIRE(current == expected);
+    encodedBytes += current.size();
+  }
+  const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+    std::chrono::steady_clock::now() - start).count();
+  BOOST_TEST_MESSAGE("REPO_JSON_QUOTE_BENCH repetitions=" << repetitions <<
+    " encodedBytes=" << encodedBytes << " elapsed_us=" << elapsed);
 }
 
 BOOST_AUTO_TEST_CASE(AtomicPacketSetBackendPreservesWireAcrossReuseAndRestart)

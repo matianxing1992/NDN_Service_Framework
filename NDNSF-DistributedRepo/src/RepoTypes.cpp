@@ -38,32 +38,33 @@ isAmbiguousCommitError(const std::exception& error)
 std::string
 jsonQuote(const std::string& value)
 {
-  std::ostringstream os;
-  os << '"';
+  std::string encoded;
+  encoded.reserve(value.size() + 2);
+  encoded.push_back('"');
   for (char ch : value) {
     switch (ch) {
     case '\\':
-      os << "\\\\";
+      encoded.append("\\\\");
       break;
     case '"':
-      os << "\\\"";
+      encoded.append("\\\"");
       break;
     case '\n':
-      os << "\\n";
+      encoded.append("\\n");
       break;
     case '\r':
-      os << "\\r";
+      encoded.append("\\r");
       break;
     case '\t':
-      os << "\\t";
+      encoded.append("\\t");
       break;
     default:
-      os << ch;
+      encoded.push_back(ch);
       break;
     }
   }
-  os << '"';
-  return os.str();
+  encoded.push_back('"');
+  return encoded;
 }
 
 double
