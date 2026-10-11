@@ -4534,15 +4534,16 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
             env["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"] = str(
                 env.get("SPEC181_PROVIDER_RECIPIENT_KEY_MAP") or
                 env.get("SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP", ""))
-            env["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"] = str(
-                ROOT / "specs/180-ack-driven-cross-model-qualification"
-                / "contracts/artifact-policy-authority.pub")
             # Resolve the selected external config before MiniNDN changes
             # child HOME/cwd. An explicit root must never fall back to another
             # authority key under the operator's default directory.
             config_root = (env.get("NDNSF_SPEC180_CONFIG_ROOT") or
                            str(Path.home() / ".config" / "ndnsf" / "spec180"))
             env["NDNSF_SPEC180_CONFIG_ROOT"] = str(Path(config_root).expanduser().resolve())
+            env["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"] = str(Path(
+                env.get("SPEC181_GRANT_AUTHORITY_PUBLIC_KEY") or
+                (Path(env["NDNSF_SPEC180_CONFIG_ROOT"]) / "artifact-policy-authority.pub")
+            ).expanduser().resolve())
             if not (Path(env["NDNSF_SPEC180_CONFIG_ROOT"])
                     / "artifact-policy-authority.key").is_file():
                 raise RunnerError(

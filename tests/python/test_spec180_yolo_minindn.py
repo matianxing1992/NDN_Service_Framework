@@ -267,6 +267,13 @@ def test_live_case_child_epoch_matches_publication(monkeypatch, tmp_path,
     monkeypatch.setenv("SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP", str(tmp_path / "keys.json"))
     monkeypatch.setenv("NDNSF_SPEC180_CONFIG_ROOT", str(tmp_path))
     (tmp_path / "artifact-policy-authority.key").write_text("preflight fixture")
+    public_key = tmp_path / "artifact-policy-authority.pub"
+    if mutation == "FORGED_AUTHORITY":
+        public_key = tmp_path / "explicit-authority.pub"
+        monkeypatch.setenv("SPEC181_GRANT_AUTHORITY_PUBLIC_KEY", str(public_key))
+    else:
+        monkeypatch.delenv("SPEC181_GRANT_AUTHORITY_PUBLIC_KEY", raising=False)
+    public_key.write_text("preflight public-key fixture; no crypto assertion")
     publication_inputs, child_environment = {}, {}
     def binding(_case, _output, inputs):
         publication_inputs.update(inputs)
@@ -291,6 +298,7 @@ def test_live_case_child_epoch_matches_publication(monkeypatch, tmp_path,
     if expected == requested:
         assert child_environment["SPEC181_REQUESTER_PRIVATE_KEY"]
         assert child_environment["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"]
+        assert child_environment["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"] == str(public_key)
 
 
 def test_live_case_build_rejection_has_no_network_side_effect(monkeypatch, tmp_path):
