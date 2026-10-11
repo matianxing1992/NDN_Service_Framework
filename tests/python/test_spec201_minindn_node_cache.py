@@ -12,6 +12,33 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_yolo_split_node_files_survive_result_directory_changes(tmp_path):
+    source = ROOT / 'Experiments/NDNSF_DI_YoloSplit_Minindn.py'
+    tree = ast.parse(source.read_text())
+    start = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                 and node.name == 'start')
+    captured, processes = [], []
+    def get_popen(node, command, **kwargs):
+        captured.append(kwargs['envDict'])
+        return SimpleNamespace()
+    scope = dict(ARTIFACT_CACHE_ROOT=tmp_path / 'persistent',
+                 getPopen=get_popen, log=lambda _: None,
+                 subprocess=SimpleNamespace(STDOUT=-2))
+    exec(compile(ast.Module(body=[start], type_ignores=[]), str(source), 'exec',
+                 flags=__future__.annotations.compiler_flag), scope)
+    try:
+        for run in ['first', 'second']:
+            scope['OUT'] = tmp_path / run
+            scope['OUT'].mkdir()
+            scope['start'](SimpleNamespace(name='ucla'), 'provider', 'app', {}, processes)
+        for key in ['NDNSF_ARTIFACT_CACHE_DIR', 'NDNSF_REQUEST_LARGE_DATA_DIR']:
+            assert captured[0][key] == captured[1][key]
+            assert str(tmp_path / 'persistent/ndn/ucla') in captured[0][key]
+    finally:
+        for _, stream, _ in processes:
+            stream.close()
+
+
 def test_replica_children_use_their_node_transport_and_home(tmp_path, monkeypatch):
     tree = ast.parse((ROOT / 'Experiments/NDNSF_RepoOriginalPackets_Minindn.py').read_text())
     main = next(node for node in tree.body if isinstance(node, ast.FunctionDef)

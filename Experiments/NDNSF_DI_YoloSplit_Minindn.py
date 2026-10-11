@@ -27,6 +27,7 @@ from minindn.util import getPopen  # noqa: E402
 
 TOPO = REPO / "Experiments/Topology/AI_Lab.conf"
 OUT = REPO / "results/yolo_split_minindn_auto"
+ARTIFACT_CACHE_ROOT = Path("/var/tmp/ndnsf-di-yolo-split-artifacts")
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_split"
 CONFIG = OUT / "yolo_policy.yaml"
 GEN_POLICY = "/tmp/ndnsf-di-yolo-split-policy"
@@ -55,7 +56,11 @@ def start(node, name, cmd, env, procs):
     f = path.open("wb")
     log(f"start {name} on {node.name}: {cmd}")
     node_env = dict(env)
-    node_env["NDNSF_ARTIFACT_CACHE_DIR"] = str(OUT / "artifact-cache" / node.name)
+    # MiniNDN nodes share the host filesystem. Keep each node's files outside
+    # OUT, which generate_auto_split_policy resets before every run.
+    node_cache = ARTIFACT_CACHE_ROOT / "ndn" / node.name
+    node_env["NDNSF_ARTIFACT_CACHE_DIR"] = str(node_cache)
+    node_env["NDNSF_REQUEST_LARGE_DATA_DIR"] = str(node_cache / "requester-publications")
     p = getPopen(node, cmd, envDict=node_env, shell=True,
                  stdout=f, stderr=subprocess.STDOUT)
     procs.append((p, f, path))
@@ -211,6 +216,12 @@ def main() -> None:
     if args_cli.quick_smoke:
         return quick_smoke()
 
+    ARTIFACT_CACHE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+    cache_stat = ARTIFACT_CACHE_ROOT.lstat()
+    if (ARTIFACT_CACHE_ROOT.is_symlink() or not ARTIFACT_CACHE_ROOT.is_dir() or
+            cache_stat.st_uid != os.geteuid() or
+            cache_stat.st_mode & 0o077 or (cache_stat.st_mode & 0o700) != 0o700):
+        raise SystemExit("ARTIFACT_CACHE_ROOT_MUST_BE_PRIVATE_AND_OWNED_BY_RUN_USER")
     setLogLevel("info")
     generate_auto_split_policy()
     Minindn.cleanUp()
