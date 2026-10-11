@@ -69,3 +69,42 @@ def test_actual_cold_and_warm_arguments_pass_the_envelope_key(tmp_path):
     for args in (namespace['user_common'], namespace['build_warm_user_args']()):
         assert args.count('--envelope-key-file') == 1
         assert args[args.index('--envelope-key-file') + 1] == str(envelope)
+
+
+def test_model_generation_preserves_runtime_key_ownership(tmp_path):
+    tree = ast.parse(SOURCE.read_text())
+    helper = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                  and node.name == 'run_user_python_step')
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == 'run_user_python_step')
+    outputs = next(keyword.value for keyword in call.keywords
+                   if keyword.arg == 'writable_outputs')
+    model = tmp_path / 'model'
+    model.mkdir()
+    policy = tmp_path / 'policy.yaml'
+    policy.write_text('services: []')
+    security = tmp_path / 'security'
+    security.mkdir()
+    key = security / 'request-envelope.key'
+    key.write_bytes(bytes(32))
+    key.chmod(0o600)
+    original = key.stat()
+    commands, ownership = [], []
+    namespace = dict(Path=Path, OUT=tmp_path, CONFIG=policy,
+        os=SimpleNamespace(environ={'SUDO_USER': 'generation', 'SUDO_UID': '1000',
+                                   'SUDO_GID': '1000'}, geteuid=lambda: 0,
+                           chown=lambda *args: ownership.append(args)),
+        pwd=SimpleNamespace(getpwnam=lambda _: SimpleNamespace(pw_dir='/generation')),
+        subprocess=SimpleNamespace(run=lambda args, **kwargs: commands.append(args)))
+    exec(compile(ast.Module(body=[helper], type_ignores=[]), str(SOURCE), 'exec',
+                 flags=__future__.annotations.compiler_flag), namespace)
+    paths = eval(compile(ast.Expression(outputs), str(SOURCE), 'eval'), namespace)
+    namespace['run_user_python_step'](['generate'], cwd=str(ROOT), env={},
+        writable_path=tmp_path, writable_outputs=paths)
+    assert ownership == [(tmp_path, 1000, 1000)]
+    assert [args[-1] for args in commands if args[0] == 'chown'] == [str(model), str(policy)]
+    assert all(str(security) not in args for args in commands)
+    assert key.stat().st_uid == original.st_uid
+    assert key.stat().st_mode == original.st_mode
+    assert key.read_bytes() == bytes(32)

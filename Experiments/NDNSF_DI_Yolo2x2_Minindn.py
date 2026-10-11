@@ -116,14 +116,21 @@ def python_cmd(script: str, argv: list[str], *, repo: Path = REPO,
     return f"cd {perf.shell_quote(repo)} && exec python3 {args}"
 
 
-def run_user_python_step(command: list[str], *, cwd: str, env: dict[str, str], writable_path: Path) -> None:
+def run_user_python_step(command: list[str], *, cwd: str, env: dict[str, str],
+                         writable_path: Path, writable_outputs: tuple[Path, ...] = ()) -> None:
     """Run pre-MiniNDN Python generation in the invoking user's Python env."""
     sudo_user = os.environ.get("SUDO_USER", "")
     sudo_uid = os.environ.get("SUDO_UID", "")
     sudo_gid = os.environ.get("SUDO_GID", "")
     if os.geteuid() == 0 and sudo_user and sudo_uid and sudo_gid:
         writable_path.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["chown", "-R", f"{sudo_uid}:{sudo_gid}", str(writable_path)], check=True)
+        # Only generated model/policy outputs belong to the generation user.
+        # Runtime journals and private keys must retain their runtime owner.
+        os.chown(writable_path, int(sudo_uid), int(sudo_gid))
+        for output in writable_outputs:
+            if output.exists():
+                subprocess.run(["chown", "-R", f"{sudo_uid}:{sudo_gid}",
+                                str(output)], check=True)
         user_home = pwd.getpwnam(sudo_user).pw_dir
         env = {**env, "HOME": user_home}
         env_args = []
@@ -6070,7 +6077,8 @@ def main() -> None:
     run_user_python_step(split_command,
                          cwd=str(REPO),
                          env={**os.environ, "PYTHONPATH": py_path},
-                         writable_path=OUT)
+                         writable_path=OUT,
+                         writable_outputs=(OUT / "model", CONFIG))
     apply_yolo_repo_operation_policy(CONFIG, PY_DIR / "yolo_policy.yaml")
     service_name = load_policy_service_name(CONFIG)
     write_execution_frontier_summary(layout, CONFIG)
