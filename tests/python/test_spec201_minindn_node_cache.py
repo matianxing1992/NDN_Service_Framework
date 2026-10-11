@@ -2,7 +2,9 @@
 import ast
 import os
 import shlex
+import xml.etree.ElementTree as ET
 from types import SimpleNamespace
+import pytest
 import __future__
 from pathlib import Path
 
@@ -36,6 +38,31 @@ def test_replica_children_use_their_node_transport_and_home(tmp_path, monkeypatc
     finally:
         for stream in streams:
             stream.close()
+
+
+def test_replica_face_uses_the_link_interface_and_rejects_ambiguity():
+    tree = ast.parse((ROOT / 'Experiments/NDNSF_RepoOriginalPackets_Minindn.py').read_text())
+    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                and node.name == 'main')
+    face = next(node for node in main.body if isinstance(node, ast.FunctionDef)
+                and node.name == 'face')
+    ns = {'n': 'ndn:/localhost/nfd/status/1'}
+    scope = dict(NS=ns)
+    exec(compile(ast.Module(body=[face], type_ignores=[]), '<replica-face>', 'exec'), scope)
+    report = ET.fromstring('<nfdStatus xmlns="ndn:/localhost/nfd/status/1"><faces>'
+        '<face><faceId>261</faceId><remoteUri>udp4://10.0.0.5:6363</remoteUri></face>'
+        '</faces></nfdStatus>')
+    peer = SimpleNamespace(name='user', IP=lambda: '10.0.0.1')
+    links = [(object(), SimpleNamespace(IP=lambda: '10.0.0.5'))]
+    node = SimpleNamespace(connectionsTo=lambda _: links)
+    assert scope['face'](report, node, peer).findtext('n:faceId', namespaces=ns) == '261'
+    links.append(links[0])
+    with pytest.raises(RuntimeError, match='ambiguous physical link'):
+        scope['face'](report, node, peer)
+    links.pop()
+    report.find('n:faces', ns).append(report.find('n:faces/n:face', ns))
+    with pytest.raises(RuntimeError, match='ambiguous physical face'):
+        scope['face'](report, node, peer)
 
 
 def test_qwen_node_cache_is_independent_of_run_home(tmp_path):

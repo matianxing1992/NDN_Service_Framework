@@ -120,8 +120,11 @@ def main():
             if value is None or int(value.text) != 0:
                 raise RuntimeError("CS disabled readback failed: " + field)
 
-    def face(tree, peer):
-        uri = "://" + peer.IP() + ":6363"
+    def face(tree, node, peer):
+        links = node.connectionsTo(peer)
+        if len(links) != 1:
+            raise RuntimeError("missing or ambiguous physical link to " + peer.name)
+        uri = "://" + links[0][1].IP() + ":6363"
         matches = [item for item in tree.findall("n:faces/n:face", NS)
                    if (item.findtext("n:remoteUri", namespaces=NS) or "").endswith(uri)]
         if len(matches) != 1:
@@ -198,7 +201,7 @@ def main():
             elif stage == "restart-r1":
                 start_server("r1")
             tree = status(user, stage + "-user-route-before")
-            wanted = face(tree, ndn.net[target]).findtext("n:faceId", namespaces=NS)
+            wanted = face(tree, user, ndn.net[target]).findtext("n:faceId", namespaces=NS)
             if not wanted:
                 raise RuntimeError("missing target face identity")
             for entry in tree.findall("n:rib/n:ribEntry", NS):
@@ -240,12 +243,13 @@ def main():
                 require_zero_cs(before[node])
                 require_zero_cs(after[node])
             for replica in ("r1", "r2"):
-                old, new = face(before[replica], user), face(after[replica], user)
+                old, new = (face(before[replica], ndn.net[replica], user),
+                            face(after[replica], ndn.net[replica], user))
                 if old.findtext("n:faceId", namespaces=NS) != new.findtext("n:faceId", namespaces=NS):
                     raise RuntimeError("network face lifetime changed within retrieval")
                 deltas[replica] = counter(new, "outgoing") - counter(old, "outgoing")
-            incoming = counter(face(after["user"], ndn.net[target]), "incoming") - counter(
-                face(before["user"], ndn.net[target]), "incoming")
+            incoming = counter(face(after["user"], user, ndn.net[target]), "incoming") - counter(
+                face(before["user"], user, ndn.net[target]), "incoming")
             if deltas[target] < 3 or deltas["r2" if target == "r1" else "r1"] != 0 or incoming < 3:
                 raise RuntimeError("actual network egress does not prove intended replica")
             phases.append({"stage": stage, "target": target, "faceId": wanted,
