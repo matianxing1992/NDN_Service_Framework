@@ -114,6 +114,20 @@ def main():
     def status(node, label):
         return ET.fromstring(run(node, label, ["nfdc", "status", "report", "xml"]))
 
+    def fresh_status(node, label):
+        # MustBeFresh still permits an unexpired management dataset. Fence
+        # each counter snapshot with a subsequent changed Face dataset.
+        previous = ET.tostring(status(node, label + "-cached").find("n:faces", NS))
+        deadline = time.monotonic() + args.timeout_s
+        attempt = 0
+        while time.monotonic() < deadline:
+            current = status(node, label + "-fresh-" + str(attempt))
+            if ET.tostring(current.find("n:faces", NS)) != previous:
+                return current
+            attempt += 1
+            time.sleep(0.05)
+        raise RuntimeError("fresh Face dataset deadline exceeded: " + node.name)
+
     def require_zero_cs(tree):
         for field in ("capacity", "nEntries"):
             value = tree.find("n:cs/n:" + field, NS)
@@ -224,7 +238,7 @@ def main():
                        for hop in longest.findall("n:nextHops/n:nextHop", NS)]
                 if ids != [wanted]:
                     raise RuntimeError("packet FIB does not select exactly one intended Repo")
-            before = {node: status(ndn.net[node], stage + "-" + node + "-before")
+            before = {node: fresh_status(ndn.net[node], stage + "-" + node + "-before")
                       for node in ("user", "r1", "r2")}
             destination = output / stage
             destination.mkdir()
@@ -236,7 +250,7 @@ def main():
                 "--verify-original-packets", seed, destination])
             if b"ORIGINAL_PACKET_WIRE_ORACLE_PASS packets=3" not in oracle:
                 raise RuntimeError("missing C++ full-wire oracle proof")
-            after = {node: status(ndn.net[node], stage + "-" + node + "-after")
+            after = {node: fresh_status(ndn.net[node], stage + "-" + node + "-after")
                      for node in ("user", "r1", "r2")}
             deltas = {}
             for node in before:

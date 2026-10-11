@@ -65,6 +65,35 @@ def test_replica_face_uses_the_link_interface_and_rejects_ambiguity():
         scope['face'](report, node, peer)
 
 
+@pytest.mark.parametrize('changes', [True, False])
+def test_replica_counter_snapshot_waits_for_fresh_dataset(changes):
+    tree = ast.parse((ROOT / 'Experiments/NDNSF_RepoOriginalPackets_Minindn.py').read_text())
+    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                and node.name == 'main')
+    fresh = next(node for node in main.body if isinstance(node, ast.FunctionDef)
+                 and node.name == 'fresh_status')
+    ns = {'n': 'ndn:/localhost/nfd/status/1'}
+    calls, elapsed = [], [0.0]
+    def status(node, label):
+        calls.append(label)
+        value = 1 if changes and len(calls) >= 3 else 0
+        return ET.fromstring('<nfdStatus xmlns="ndn:/localhost/nfd/status/1">'
+            '<faces><face><faceId>' + str(value) + '</faceId></face></faces></nfdStatus>')
+    def sleep(seconds):
+        elapsed[0] += seconds
+    scope = dict(NS=ns, ET=ET, status=status, args=SimpleNamespace(timeout_s=0.2),
+                 time=SimpleNamespace(monotonic=lambda: elapsed[0], sleep=sleep))
+    exec(compile(ast.Module(body=[fresh], type_ignores=[]), '<fresh-status>', 'exec'), scope)
+    if changes:
+        result = scope['fresh_status'](SimpleNamespace(name='r1'), 'snapshot')
+        assert result.findtext('n:faces/n:face/n:faceId', namespaces=ns) == '1'
+        assert len(calls) == 3
+    else:
+        with pytest.raises(RuntimeError, match='fresh Face dataset deadline'):
+            scope['fresh_status'](SimpleNamespace(name='r1'), 'snapshot')
+    assert len(calls) == len(set(calls))
+
+
 def test_qwen_node_cache_is_independent_of_run_home(tmp_path):
     source = ROOT / 'Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py'
     tree = ast.parse(source.read_text())
