@@ -1,5 +1,6 @@
 """The actual YOLO policy authorizes the migrated native Repo call chain."""
 from pathlib import Path
+import ast
 import re
 
 from ndnsf_distributed_inference.policy import load_or_generate_deployment
@@ -44,3 +45,16 @@ def test_compute_providers_can_read_without_repo_write_or_delete_grants(tmp_path
     for operation in ('STORE', 'STORE_RANGE', 'COMMIT_RANGES', 'ABORT_RANGES', 'DELETE'):
         assert not readers.intersection(deployment.service_policy(PREFIX + operation).users)
         assert all(PREFIX + operation not in users[actor] for actor in readers)
+
+
+def test_native_publisher_uses_the_advertised_repo_epoch():
+    tree = ast.parse((CONFIG.parent / 'controller.py').read_text())
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name == '_deploy_artifacts_to_repo')
+    reference = next(node for node in ast.walk(function) if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Name) and node.func.id == 'ArtifactReference')
+    epoch = next(field.value.value for field in reference.keywords
+                 if field.arg == 'policy_epoch' and isinstance(field.value, ast.Constant))
+    source = (ROOT / 'NDNSF-DistributedRepo/src/RepoNode.cpp').read_text()
+    advertised = re.search(r'capability\.policyEpoch\s*=\s*"([^"]+)"', source).group(1)
+    assert epoch == advertised

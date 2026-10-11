@@ -397,7 +397,8 @@ def _deploy_artifacts_to_repo(config: str, generated_policy_dir: str,
                 root_manifest_name="",
                 format_version="raw-file-v1",
                 publisher_identity=canonical_name_uri(Name.from_str(deployment.controller)),
-                policy_epoch="/Policy/yolo-2x2/v1",
+                # This is the Repo capability epoch, not the model's ACL epoch.
+                policy_epoch="repo-policy-v1",
             )
             requirements = ArtifactCapabilityRequirements()
             requirements.artifact = reference
