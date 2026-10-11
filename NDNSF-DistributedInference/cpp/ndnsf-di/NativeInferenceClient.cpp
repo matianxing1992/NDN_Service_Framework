@@ -837,10 +837,13 @@ void enqueueOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& o
   }
 }
 
-void dispatchPlacementProbeIntent(
+void dispatchPlacementProbeIntentOnce(
   const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   const NativePlacementProbeIntentV1& intent,
   std::shared_ptr<const NativeOfferBindingContext> cacheContext,
+  const std::chrono::steady_clock::time_point probeDeadline,
+  const std::uint64_t sourceAttempt,
+  const bool remeasurement,
   std::function<void(NativePlacementProbeRoundV1)> onComplete)
 {
   struct FanIn
@@ -860,7 +863,6 @@ void dispatchPlacementProbeIntent(
     return;
   }
 
-  const auto sourceAttempt = operation->attempt;
   const auto user = operation->user;
   const auto runtime = operation->runtime;
   const auto encoded = operation->encodedRequest;
@@ -888,7 +890,7 @@ void dispatchPlacementProbeIntent(
   try {
     user->postToIo([operation, user, runtime, encoded, intent, fanIn, cacheContext,
                     sourceAttempt, service, requester, requestId, deadlineMs,
-                    roster, rosterDigest] {
+                    roster, rosterDigest, probeDeadline, remeasurement] {
       NativeJson currentBoots = NativeJson::object();
       try {
         const auto now = static_cast<std::uint64_t>(
@@ -954,7 +956,7 @@ void dispatchPlacementProbeIntent(
             }
           }
           const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-            operation->deadline - std::chrono::steady_clock::now()).count();
+            std::min(operation->deadline, probeDeadline) - std::chrono::steady_clock::now()).count();
           if (remaining <= 0) {
             completeOne(std::nullopt);
             continue;
@@ -1023,7 +1025,7 @@ void dispatchPlacementProbeIntent(
 
           auto sendProbe =
             [operation, user, service, observer, requestId, sourceAttempt,
-             scopeDigest, nonce, probeRequest, targetedTokens]
+             scopeDigest, nonce, probeRequest, targetedTokens, probeDeadline, remeasurement]
             (NativeJson peerBootEpochHints, bool cacheOnly,
              std::function<void(std::optional<NativeJson>)> completion) mutable {
               auto completeOne =
@@ -1033,7 +1035,9 @@ void dispatchPlacementProbeIntent(
                   if (!once->exchange(true)) completion(std::move(response));
                 };
               const std::string recordPrefix = cacheOnly
-                ? "NDNSF_DI_NATIVE_PLACEMENT_CACHE" : "NDNSF_DI_NATIVE_PLACEMENT_PROBE";
+                ? "NDNSF_DI_NATIVE_PLACEMENT_CACHE" : (remeasurement
+                    ? "NDNSF_DI_NATIVE_PLACEMENT_PROBE_REMEASURE"
+                    : "NDNSF_DI_NATIVE_PLACEMENT_PROBE");
               try {
               bool operationIsStale;
               {
@@ -1047,7 +1051,7 @@ void dispatchPlacementProbeIntent(
                 return;
               }
               const auto remaining = std::chrono::duration_cast<
-                std::chrono::milliseconds>(operation->deadline -
+                std::chrono::milliseconds>(std::min(operation->deadline, probeDeadline) -
                   std::chrono::steady_clock::now()).count();
               if (remaining <= 0) {
                 completeOne(std::nullopt);
@@ -1090,6 +1094,8 @@ void dispatchPlacementProbeIntent(
                              << " rttPairs=" << measure.at("rtt_pairs").dump()
                              << " goodputEdges=" << measure.at("goodput_edges").dump()
                              << " payloadBytes=" << measureWire.size()
+                             << " scopeDigest=" << scopeDigest
+                             << " intentNonce=" << nonce
                              << " invocation=NDNSF_Targeted";
               logRuntimeEvidence(dispatchRecord.str());
               const auto requestName = user->RequestServiceTargeted(
@@ -1147,7 +1153,8 @@ void dispatchPlacementProbeIntent(
                       recordPrefix + "_RESPONSE requestId=" +
                       requestId + " observer=" + observer +
                       " status=accepted payloadBytes=" +
-                      std::to_string(bytes.size()) + " targetedTokenPairs=" +
+                      std::to_string(bytes.size()) + " scopeDigest=" + scopeDigest +
+                      " intentNonce=" + nonce + " targetedTokenPairs=" +
                       targetedBatchCountEvidence(response));
                     completeOne(std::move(parsed));
                   }
@@ -1182,7 +1189,8 @@ void dispatchPlacementProbeIntent(
             };
           auto authorizeAndMeasure =
             [operation, user, observer, requestId, sourceAttempt, scopeDigest,
-             probeRequest, authorizationTargets, sendMeasurement, completeOne, targetedTokens]() mutable {
+             probeRequest, authorizationTargets, sendMeasurement, completeOne, targetedTokens,
+             probeDeadline]() mutable {
           if (authorizationTargets.empty()) {
             sendMeasurement();
             return;
@@ -1253,7 +1261,7 @@ void dispatchPlacementProbeIntent(
               continue;
             }
             const auto grantRemaining = std::chrono::duration_cast<
-              std::chrono::milliseconds>(operation->deadline -
+              std::chrono::milliseconds>(std::min(operation->deadline, probeDeadline) -
                 std::chrono::steady_clock::now()).count();
             if (grantRemaining <= 0) {
               settleGrant(target, false);
@@ -1366,7 +1374,7 @@ void dispatchPlacementProbeIntent(
             const auto boot = currentBoots.find(target);
             if (boot != currentBoots.end()) cachedBoots[target] = *boot;
           }
-          if (cachedBoots.size() != authorizationTargets.size() || !cacheContext) {
+          if (remeasurement || cachedBoots.size() != authorizationTargets.size() || !cacheContext) {
             fallback();
             continue;
           }
@@ -1416,6 +1424,87 @@ void dispatchPlacementProbeIntent(
       if (complete && round) complete(std::move(*round));
     }
   }
+}
+
+void dispatchPlacementProbeIntent(
+  const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+  const NativePlacementProbeIntentV1& intent,
+  std::shared_ptr<const NativeOfferBindingContext> context,
+  std::function<void(NativePlacementProbeRoundV1)> onComplete)
+{
+  // One logical planning round, with at most one fresh-scope remeasurement
+  // per unstable observer. All grants and measurements share this deadline.
+  const auto deadline = std::min(operation->deadline,
+    std::chrono::steady_clock::now() + std::chrono::milliseconds(5000));
+  const auto sourceAttempt = [&] {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    return operation->attempt;
+  }();
+  dispatchPlacementProbeIntentOnce(operation, intent, context, deadline, sourceAttempt, false,
+    [operation, context, deadline, sourceAttempt, onComplete = std::move(onComplete)]
+    (NativePlacementProbeRoundV1 first) mutable {
+      const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+      bool stale;
+      {
+        std::lock_guard<std::mutex> lock(operation->mutex);
+        stale = operation->cancelled->load() || operation->phase != DiRequestPhase::Planning ||
+          operation->attempt != sourceAttempt || (context && context->attempt != sourceAttempt);
+      }
+      const auto retry = !stale && context && std::chrono::steady_clock::now() < deadline
+        ? selectNativePlacementProbeRemeasurementV1(*context, first, now)
+        : NativePlacementProbeIntentV1{};
+      if (retry.observers.empty()) {
+        onComplete(std::move(first));
+        return;
+      }
+      for (const auto& observer : retry.observers) {
+        logRuntimeEvidence("NDNSF_DI_NATIVE_PLACEMENT_PROBE_REMEASURE_SELECTED requestId=" +
+          operation->coreRequestId + " observer=" + observer.observerProvider +
+          " reason=ARRIVAL_DISPERSION_UNSTABLE priorScopeDigest=" +
+          first.responseByObserver.at(observer.observerProvider).at("scope_digest").get<std::string>());
+      }
+      dispatchPlacementProbeIntentOnce(operation, retry, context, deadline, sourceAttempt, true,
+        [operation, context, deadline, sourceAttempt,
+         first = std::move(first), onComplete = std::move(onComplete)]
+        (NativePlacementProbeRoundV1 second) mutable {
+          bool stale;
+          {
+            std::lock_guard<std::mutex> lock(operation->mutex);
+            stale = operation->cancelled->load() || operation->phase != DiRequestPhase::Planning ||
+              operation->attempt != sourceAttempt;
+          }
+          const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<
+            std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+          if (stale || std::chrono::steady_clock::now() >= deadline ||
+              context->placementObservationSnapshot.at("expires_at_ms").get<std::uint64_t>() <= now) {
+            onComplete(std::move(first));
+            return;
+          }
+          NativePlacementObservationSnapshotV4 snapshot;
+          snapshot.value = {{"provider_offers", context->placementObservationSnapshot.at("provider_offers")},
+                            {"eligible_link_observations", NativeJson::array()}};
+          snapshot.expiresAtMs = context->placementObservationSnapshot.at("expires_at_ms").get<std::uint64_t>();
+          const auto admitted = mergeNativePlacementProbeRoundV1(snapshot, second, *context, now);
+          for (auto& response : second.responseByObserver) {
+            const auto requested = std::find_if(second.intent.observers.begin(), second.intent.observers.end(),
+              [&](const auto& observer) { return observer.observerProvider == response.first; });
+            const auto& rows = admitted.value.at("eligible_link_observations");
+            const auto count = std::count_if(rows.begin(), rows.end(), [&](const auto& row) {
+              return row.at("source_kind") == "TARGETED_RESPONSE" && row.at("reported_by") == response.first;
+            });
+            if (requested == second.intent.observers.end() ||
+                static_cast<std::size_t>(count) != requested->rttPairs.size() + requested->goodputEdges.size())
+              continue;
+            // Replace the observer's entire reply together with its own nonce.
+            // Missing/rejected retries retain the original UNKNOWN evidence.
+            first.intentNonceByObserver.at(response.first) =
+              second.intentNonceByObserver.at(response.first);
+            first.responseByObserver.at(response.first) = std::move(response.second);
+          }
+          onComplete(std::move(first));
+        });
+    });
 }
 
 int conversationWaitBudgetMs(

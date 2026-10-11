@@ -87,6 +87,14 @@ struct NativePlacementProbeRoundV1
   std::map<std::string, NativeJson> responseByObserver;
 };
 
+/** Select only fully admitted observers with estimator-confirmed unstable trains.
+ * A caller may remeasure each selected observer once using a fresh scope;
+ * invalid, missing, expired and other unknown samples do not qualify. */
+NativePlacementProbeIntentV1 selectNativePlacementProbeRemeasurementV1(
+  const NativeOfferBindingContext& context,
+  const NativePlacementProbeRoundV1& round,
+  std::uint64_t nowMs);
+
 struct NativePlacementObservationSnapshotV4
 {
   NativeJson value;

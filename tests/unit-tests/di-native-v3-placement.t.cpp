@@ -4490,6 +4490,35 @@ BOOST_AUTO_TEST_CASE(Spec196PlacementRequestsOnlyItsMissingDirectedGoodputEdges)
   rejectForgedMetadata("probe_source_send_gaps_ms", NativeJson::array({-1.0, 0.01}));
   rejectForgedMetadata("probe_source_send_gaps_ms", NativeJson::array({500.001, 0.01}));
   rejectForgedMetadata("probe_source_send_gaps_ms", NativeJson::array({0.01}));
+  BOOST_CHECK(selectNativePlacementProbeRemeasurementV1(input.context, round, 200).observers.empty());
+  auto unstable = round;
+  auto& unstableRow = unstable.responseByObserver.at(requested.observerProvider)["observations"][1];
+  auto gaps = std::vector<double>(15, 4.096);
+  constexpr auto half = ndn_service_framework::NETWORK_PROBE_WARMED_MEASURED_SEGMENTS / 2;
+  for (std::size_t i = 0; i < half; ++i)
+    gaps[ndn_service_framework::NETWORK_PROBE_WARMED_START + half + i] *= 3;
+  unstableRow["probe_data_arrival_gaps_ms"] = gaps;
+  unstableRow["probe_train_goodput_mbps"] = nullptr;
+  unstableRow["probe_rate_status"] = "UNKNOWN";
+  unstableRow["probe_rate_reason"] = "ARRIVAL_DISPERSION_UNSTABLE";
+  const auto remeasurement = selectNativePlacementProbeRemeasurementV1(input.context, unstable, 200);
+  BOOST_REQUIRE_EQUAL(remeasurement.observers.size(), 1U);
+  BOOST_CHECK_EQUAL(remeasurement.observers.front().observerProvider, requested.observerProvider);
+  BOOST_CHECK_EQUAL(remeasurement.observers.front().goodputEdges.size(), requested.goodputEdges.size());
+  BOOST_CHECK_EQUAL(remeasurement.observers.front().rttPairs.size(), requested.rttPairs.size());
+  auto forgedRetry = unstable;
+  forgedRetry.responseByObserver.at(requested.observerProvider)["observations"][1]
+    ["probe_source_timing_validated"] = false;
+  BOOST_CHECK(selectNativePlacementProbeRemeasurementV1(input.context, forgedRetry, 200).observers.empty());
+  auto wrongNonce = unstable;
+  wrongNonce.responseByObserver.at(requested.observerProvider)["intent_nonce"] = "foreign";
+  BOOST_CHECK(selectNativePlacementProbeRemeasurementV1(input.context, wrongNonce, 200).observers.empty());
+  auto missingRow = unstable;
+  missingRow.responseByObserver.at(requested.observerProvider)["observations"].erase(0);
+  missingRow.responseByObserver.at(requested.observerProvider)["omitted_rtt_count"] = std::uint64_t{1};
+  BOOST_CHECK(selectNativePlacementProbeRemeasurementV1(input.context, missingRow, 200).observers.empty());
+  BOOST_CHECK(selectNativePlacementProbeRemeasurementV1(input.context, unstable,
+    input.context.deadlineMs).observers.empty());
   auto invalidGoodputProfile = round;
   invalidGoodputProfile.responseByObserver.at(requested.observerProvider)
     ["observations"][1]["probe_profile_validated"] = false;

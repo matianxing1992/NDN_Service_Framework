@@ -145,6 +145,37 @@ def _validate_native_probe_evidence(user_text: _EvidenceSnapshot, request_id: st
             {row.get("observer") for row in responses} !=
             {row.get("observer") for row in dispatch}):
         raise RuntimeError("SPEC196_NATIVE_TARGETED_RESPONSE_INCOMPLETE")
+    # A repeat is a distinct fresh-scope RPC, bounded to once per observer.
+    # Keep the original one-round coverage checks above unchanged.
+    remeasure = user_text.rows("NDNSF_DI_NATIVE_PLACEMENT_PROBE_REMEASURE_DISPATCH ", request_id)
+    remeasure_responses = user_text.rows("NDNSF_DI_NATIVE_PLACEMENT_PROBE_REMEASURE_RESPONSE ", request_id)
+    selected = user_text.rows("NDNSF_DI_NATIVE_PLACEMENT_PROBE_REMEASURE_SELECTED ", request_id)
+    original_by_observer = {row["observer"]: row for row in dispatch}
+    selected_by_observer = {row.get("observer"): row for row in selected}
+    repeated_by_observer = {row.get("observer"): row for row in remeasure}
+    if (len(selected_by_observer) != len(selected) or
+            len(repeated_by_observer) != len(remeasure) or
+            set(selected_by_observer) != set(repeated_by_observer) or
+            not set(repeated_by_observer).issubset(original_by_observer) or
+            len(remeasure_responses) != len(remeasure)):
+        raise RuntimeError("SPEC201_NATIVE_REMEASUREMENT_BUDGET_INVALID")
+    for observer, repeated in repeated_by_observer.items():
+        original = original_by_observer[observer]
+        selection = selected_by_observer[observer]
+        replies = [row for row in remeasure_responses if row.get("observer") == observer]
+        if (selection.get("reason") != "ARRIVAL_DISPERSION_UNSTABLE" or
+                selection.get("priorScopeDigest") != original.get("scopeDigest") or
+                repeated.get("invocation") != "NDNSF_Targeted" or
+                any(repeated.get(field) != original.get(field) for field in
+                    ("attempt", "rttCount", "goodputEdgeCount", "rttPairs", "goodputEdges")) or
+                not repeated.get("scopeDigest", "").startswith("sha256:") or
+                repeated.get("scopeDigest") == original.get("scopeDigest") or
+                not repeated.get("intentNonce") or
+                repeated.get("intentNonce") == original.get("intentNonce") or
+                len(replies) != 1 or replies[0].get("status") != "accepted" or
+                any(replies[0].get(field) != repeated.get(field) for field in
+                    ("scopeDigest", "intentNonce"))):
+            raise RuntimeError("SPEC201_NATIVE_REMEASUREMENT_BINDING_INVALID")
     snapshot = user_text.rows("NDNSF_DI_NATIVE_PLACEMENT_OBSERVATION_SNAPSHOT ", request_id)
     accepted_snapshots = [row for row in snapshot
                           if row.get("requestId") == request_id and
@@ -264,6 +295,8 @@ def _validate_native_probe_evidence(user_text: _EvidenceSnapshot, request_id: st
         "requestId": request_id,
         "probeDispatches": dispatch,
         "probeResponses": responses,
+        "probeRemeasurements": remeasure,
+        "probeRemeasurementResponses": remeasure_responses,
         "cacheQueryDispatches": cache_queries,
         "cacheQueryResponses": cache_responses,
         "cacheQueryResults": cache_results,

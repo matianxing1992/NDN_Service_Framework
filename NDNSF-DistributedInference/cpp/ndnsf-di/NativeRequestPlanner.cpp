@@ -2318,6 +2318,43 @@ mergeNativePlacementProbeRoundV1(
   return result;
 }
 
+NativePlacementProbeIntentV1 selectNativePlacementProbeRemeasurementV1(
+  const NativeOfferBindingContext& context,
+  const NativePlacementProbeRoundV1& round,
+  const std::uint64_t nowMs)
+{
+  NativePlacementProbeIntentV1 selected;
+  try {
+    const auto& ack = context.placementObservationSnapshot;
+    if (context.deadlineMs <= nowMs ||
+        ack.at("expires_at_ms").get<std::uint64_t>() <= nowMs)
+      return selected;
+    NativePlacementObservationSnapshotV4 snapshot;
+    snapshot.value = {{"provider_offers", ack.at("provider_offers")},
+                      {"eligible_link_observations", NativeJson::array()}};
+    snapshot.expiresAtMs = ack.at("expires_at_ms").get<std::uint64_t>();
+    const auto admitted = mergeNativePlacementProbeRoundV1(snapshot, round, context, nowMs);
+    if (admitted.expiresAtMs <= nowMs) return selected;
+    for (const auto& observer : round.intent.observers) {
+      std::size_t rows = 0;
+      bool unstable = false;
+      for (const auto& item : admitted.value.at("eligible_link_observations")) {
+        if (item.at("source_kind") != "TARGETED_RESPONSE" ||
+            item.at("reported_by") != observer.observerProvider) continue;
+        ++rows;
+        const auto& row = item.at("row");
+        unstable = unstable || (row.at("kind") == "ACTIVE_PROBE_GOODPUT" &&
+          row.value("probe_rate_status", std::string{}) == "UNKNOWN" &&
+          row.value("probe_rate_reason", std::string{}) == "ARRIVAL_DISPERSION_UNSTABLE");
+      }
+      if (unstable && rows == observer.rttPairs.size() + observer.goodputEdges.size())
+        selected.observers.push_back(observer);
+    }
+  }
+  catch (const std::exception&) { selected.observers.clear(); }
+  return selected;
+}
+
 bool isCompleteNativePlacementProbeCacheResponseV1(
   const NativeOfferBindingContext& context,
   const NativePlacementProbeObserverV1& observer,
