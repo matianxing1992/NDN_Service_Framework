@@ -1035,12 +1035,17 @@ def policy_text(provider_names: list[str], stage_roles: list[str],
 
 def env_for(home: Path, node: str, *,
             require_snapshot_evidence: bool = False,
-            requester_publication_root: Path | None = None) -> dict[str, str]:
+            requester_publication_root: Path | None = None,
+            artifact_cache_root: Path | None = None) -> dict[str, str]:
     env = {"HOME": str(home), "NDN_CLIENT_CONF": str(home / ".ndn/client.conf"),
            "NDN_CLIENT_PIB": "pib-sqlite3:" + str(home / "pib"),
            "NDN_CLIENT_TPM": "tpm-file:" + str(home / "tpm"),
            "NDN_CLIENT_TRANSPORT": f"unix:///run/nfd/{node}.sock",
            "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
+    if artifact_cache_root is not None:
+        # MiniNDN nodes share the host filesystem: keep the node's app cache
+        # outside disposable homes so rebuilding the topology reuses its files.
+        env["NDNSF_ARTIFACT_CACHE_DIR"] = str(artifact_cache_root / "ndn" / node)
     # Required RuntimeEvidence stage/terminal records use WARN. Without a
     # default, the failure monitor cannot see native request failures.
     env["NDN_LOG"] = os.environ.get("NDNSF_NDN_LOG") or "*=WARN"
@@ -2664,7 +2669,8 @@ def main(argv=None, *, _supervised=False) -> int:
                             stdout=handle, stderr=subprocess.STDOUT)
             processes.append((proc, handle, log))
             return proc, log
-        authority_env = env_for(homes[args.controller_node], args.controller_node)
+        authority_env = env_for(homes[args.controller_node], args.controller_node,
+                                artifact_cache_root=artifact_cache_root)
         # Bind Controller's fenced generation store to this immutable run.
         # The default global /tmp path can retain a stale writer lock after a
         # manually interrupted MiniNDN run and would poison later candidates.
@@ -2703,7 +2709,7 @@ def main(argv=None, *, _supervised=False) -> int:
             provider = provider_names[index]; directory = provider_dirs[index]
             provider_roles = provider_role_argument(
                 stages[index]["role"], args.provider_role_mode)
-            env = env_for(homes[node], node)
+            env = env_for(homes[node], node, artifact_cache_root=artifact_cache_root)
             env.update({"SPEC181_GRANT_AUTHORITY_PUBLIC_KEY": str(directory / "authority-public.pem"),
                         "SPEC181_PROVIDER_RECIPIENT_KEY_MAP": str(directory / "recipient-key-map.json"),
                         "NDNSF_DI_WORKER_BINARY": str(assembly_worker_binary)})
@@ -2727,7 +2733,8 @@ def main(argv=None, *, _supervised=False) -> int:
             wait_for_marker(proc, log, ("NDNSF_DI_NATIVE_PROVIDER_READY", "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"), args.startup_timeout_s)
         requester_env = env_for(
             homes[args.user_node], args.user_node,
-            requester_publication_root=run_root / "requester-publications",
+            requester_publication_root=artifact_cache_root / "ndn" / args.user_node / "requester-publications",
+            artifact_cache_root=artifact_cache_root,
             require_snapshot_evidence=(
                 args.placement_strategy == "native-observation-aware-v4"))
         # Large canonical objects require an explicit, finite requester-side

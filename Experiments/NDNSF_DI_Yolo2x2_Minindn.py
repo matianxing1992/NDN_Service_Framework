@@ -6118,6 +6118,7 @@ def main() -> None:
                 service_roles=load_policy_roles(CONFIG),
                 timeout_ms=timeout_ms,
                 ack_timeout_ms=ack_timeout_ms,
+                cache_root=ARTIFACT_CACHE_ROOT / "native-requester-packages",
             )
             from native_probe_validation_links import render_anchored_probe_validation_schema
             anchored_schema = render_anchored_probe_validation_schema(

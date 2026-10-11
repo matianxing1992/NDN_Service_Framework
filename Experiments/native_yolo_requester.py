@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -72,6 +73,71 @@ def _public_key_id(public_path: Path) -> str:
     raw = key.public_bytes(serialization.Encoding.Raw,
                            serialization.PublicFormat.Raw)
     return _digest_bytes(raw)
+
+
+def _cached_yolo_package(cache_root: Path, identity: dict[str, Any],
+                         exporter, checkpoint: Path, input_size: int,
+                         controller: str, *, fixture_path: Path | None = None
+                         ) -> tuple[Path, Path, dict, bytes]:
+    """Keep one signed immutable package and content key per export identity."""
+    if cache_root.is_symlink():
+        raise RuntimeError("YOLO_PACKAGE_CACHE_SYMLINK")
+    cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root_stat = cache_root.stat()
+    if root_stat.st_uid != os.geteuid() or root_stat.st_mode & 0o077:
+        raise RuntimeError("YOLO_PACKAGE_CACHE_OWNER_INVALID")
+    directory = cache_root / _digest_value(identity)[7:]
+    if directory.is_symlink():
+        raise RuntimeError("YOLO_PACKAGE_CACHE_SYMLINK")
+    directory.mkdir(mode=0o700, exist_ok=True)
+    fd = os.open(directory / "cache.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        marker = directory / "cache-identity.json"
+        package = directory / "canonical-package"
+        registry = directory / "catalogue-registry.json"
+        key_path = directory / "content.key"
+        if marker.exists():
+            if marker.is_symlink() or json.loads(marker.read_text()) != identity:
+                raise RuntimeError("YOLO_PACKAGE_CACHE_IDENTITY_MISMATCH")
+            manifest = json.loads((package / "manifest.json").read_text())
+        else:
+            private, public = _write_ed25519_keypair(directory, "catalogue")
+            _write_json(registry, {"status": "CONFIGURED", "catalogue": {
+                "authorityId": controller + "/catalogue",
+                "keyId": "yolo-catalogue-" + _public_key_id(public)[7:],
+                "publicKeyAlgorithm": "ed25519", "signatureAlgorithm": "ed25519",
+                "publicKeyPath": public.name,
+                "publicKeySha256": _digest_bytes(public.read_bytes()),
+            }})
+            try:
+                manifest = exporter.build_package(
+                    checkpoint, package, input_size=input_size,
+                    signing_key=private, registry_path=registry,
+                    fixture_path=fixture_path)
+            finally:
+                private.unlink(missing_ok=True)
+        if key_path.is_symlink():
+            raise RuntimeError("YOLO_PACKAGE_CONTENT_KEY_INVALID")
+        try:
+            key_fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(key_fd, "wb") as key_file:
+                key_file.write(os.urandom(32))
+                key_file.flush()
+                os.fsync(key_file.fileno())
+        key_stat = key_path.stat()
+        if (not key_path.is_file() or key_stat.st_uid != os.geteuid() or
+                key_stat.st_mode & 0o077 or key_stat.st_size != 32):
+            raise RuntimeError("YOLO_PACKAGE_CONTENT_KEY_INVALID")
+        key = key_path.read_bytes()
+        if not marker.exists():
+            _write_json(marker, identity)
+        return package, registry, manifest, key
+    finally:
+        os.close(fd)
 
 
 def remap_yolo_semantic_partition(
@@ -190,7 +256,8 @@ def prepare_native_yolo_assets(
         run_id: str, service_name: str, model_uri: str, group: str,
         requester: str, controller: str, authority: str,
         providers: list[str], service_roles: list[str],
-        timeout_ms: int, ack_timeout_ms: int) -> dict[str, Any]:
+        timeout_ms: int, ack_timeout_ms: int,
+        cache_root: Path | None = None) -> dict[str, Any]:
     """Export and bind all run-specific catalog, grant, and offer inputs."""
     if len(providers) < 2 or len(providers) > 16 or len(set(providers)) != len(providers):
         raise RuntimeError("SPEC196_YOLO_PROVIDER_ROSTER_INVALID")
@@ -209,20 +276,22 @@ def prepare_native_yolo_assets(
         raise RuntimeError(f"SPEC196_YOLO_BUNDLE_ALREADY_EXISTS:{bundle_root}")
     bundle_root.mkdir(parents=True, mode=0o700)
     package_dir = bundle_root / "canonical-package"
-    catalogue_private, catalogue_public = _write_ed25519_keypair(
-        bundle_root, "catalogue")
     catalogue_registry = bundle_root / "catalogue-registry.json"
-    _write_json(catalogue_registry, {
-        "status": "CONFIGURED",
-        "catalogue": {
-            "authorityId": controller + "/catalogue",
-            "keyId": "spec196-yolo-catalogue-ed25519-" + run_id,
-            "publicKeyAlgorithm": "ed25519",
-            "signatureAlgorithm": "ed25519",
-            "publicKeyPath": catalogue_public.name,
-            "publicKeySha256": _digest_bytes(catalogue_public.read_bytes()),
-        },
-    })
+    catalogue_private = None
+    if cache_root is None:
+        catalogue_private, catalogue_public = _write_ed25519_keypair(
+            bundle_root, "catalogue")
+        _write_json(catalogue_registry, {
+            "status": "CONFIGURED",
+            "catalogue": {
+                "authorityId": controller + "/catalogue",
+                "keyId": "spec196-yolo-catalogue-ed25519-" + run_id,
+                "publicKeyAlgorithm": "ed25519",
+                "signatureAlgorithm": "ed25519",
+                "publicKeyPath": catalogue_public.name,
+                "publicKeySha256": _digest_bytes(catalogue_public.read_bytes()),
+            },
+        })
 
     repo = Path(__file__).resolve().parents[1]
     exporter_path = repo / "tools/ndnsf-di/export_spec180_yolo26_onnx.py"
@@ -233,12 +302,32 @@ def prepare_native_yolo_assets(
     exporter = importlib.util.module_from_spec(module_spec)
     sys.modules[module_spec.name] = exporter
     module_spec.loader.exec_module(exporter)
+    cached_content_key = None
     try:
-        manifest = exporter.build_package(
-            checkpoint, package_dir, input_size=input_size,
-            signing_key=catalogue_private, registry_path=catalogue_registry)
+        if cache_root is None:
+            manifest = exporter.build_package(
+                checkpoint, package_dir, input_size=input_size,
+                signing_key=catalogue_private, registry_path=catalogue_registry)
+        else:
+            from importlib.metadata import version
+            fixture_path = Path(exporter.DEFAULT_FIXTURE).resolve(strict=True)
+            identity = {
+                "schema": "yolo-package-cache-v1", "controller": controller,
+                "requester": requester, "authority": authority, "modelUri": model_uri,
+                "checkpointDigest": _digest_bytes(checkpoint.read_bytes()),
+                "inputSize": int(input_size),
+                "exporterDigest": _digest_bytes(exporter_path.read_bytes()),
+                "fixtureDigest": _digest_bytes(fixture_path.read_bytes()),
+                "torchVersion": version("torch"), "onnxVersion": version("onnx"),
+                "ultralyticsVersion": version("ultralytics"),
+                "numpyVersion": version("numpy"),
+            }
+            package_dir, catalogue_registry, manifest, cached_content_key = _cached_yolo_package(
+                cache_root, identity, exporter, checkpoint, input_size, controller,
+                fixture_path=fixture_path)
     finally:
-        catalogue_private.unlink(missing_ok=True)
+        if catalogue_private is not None:
+            catalogue_private.unlink(missing_ok=True)
 
     ndnsf_root = str(repo / "NDNSF-DistributedInference")
     if ndnsf_root not in sys.path:
@@ -286,13 +375,14 @@ def prepare_native_yolo_assets(
     requester_private, requester_public = _write_ed25519_keypair(
         bundle_root, "requester")
     content_key = bundle_root / "content.key"
-    content_key.write_bytes(os.urandom(32))
+    content_key.write_bytes(cached_content_key if cached_content_key is not None else os.urandom(32))
     content_key.chmod(0o600)
     authority_public_shared = bundle_root / "authority-public.pem"
     authority_public_shared.write_bytes(authority_public.read_bytes())
     authority_public_shared.chmod(0o644)
     protection_epoch = "epoch-1"
-    content_key_id = "spec196-yolo-content-" + run_id
+    content_key_id = "spec196-yolo-content-" + (
+        _digest_bytes(cached_content_key)[7:] if cached_content_key is not None else run_id)
 
     provider_material: dict[str, dict[str, str]] = {}
     offer_public_key_files: dict[str, str] = {}
@@ -419,8 +509,8 @@ def prepare_native_yolo_assets(
                 "digest": canonical_source_digest,
                 "model_manifest_digest": manifest_digest,
                 "canonical_graph_digest": canonical_graph_digest,
-                "file": "canonical-package/canonical/yolo26n.onnx",
-                "initializer_file": "canonical-package/" + str(manifest["weights"]["path"]),
+                "file": str(graph_path.resolve()),
+                "initializer_file": str(weights_path.resolve()),
                 "initializer_digest": str(manifest["weights"]["digest"]),
             },
             "recipe": {
@@ -522,8 +612,10 @@ def prepare_native_yolo_assets(
         "authority_binary_config": authority_config_path,
         "authority_dir": authority_dir,
         "provider_material": provider_material,
-        "runtime_inputs": sorted(path for path in bundle_root.rglob("*")
-                                 if path.is_file()),
+        "runtime_inputs": sorted(set(
+            [path for path in bundle_root.rglob("*") if path.is_file()] +
+            [path for path in package_dir.rglob("*") if path.is_file()] +
+            [catalogue_registry, catalogue_registry.parent / "catalogue-public.pem"])),
         "roles": list(splitter["components"][1]["roles"]),
         "model": model_json,
         "manifest_digest": manifest_digest,
