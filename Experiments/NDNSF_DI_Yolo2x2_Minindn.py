@@ -165,7 +165,6 @@ def native_provider_cmd(argv: list[str],
         "--workers", str(workers),
         "--handler-threads", str(handler_threads),
         "--ack-threads", str(ack_threads),
-        "--artifact-references", str(ARTIFACT_REFERENCES),
         "--artifact-cache-dir", str(
             artifact_cache_root / "providers" /
             provider_cache_namespace(provider_identity(provider_id))),
