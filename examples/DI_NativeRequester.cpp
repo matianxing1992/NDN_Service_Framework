@@ -6,6 +6,9 @@
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
+#include "ndn-service-framework/PublishedContentName.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -41,7 +44,9 @@ onSignal(int)
 }
 
 std::vector<std::uint8_t>
-readBytes(const std::filesystem::path& path, std::uint64_t limit)
+readBytes(const std::filesystem::path& path, std::uint64_t limit,
+          std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::time_point::max())
 {
   std::ifstream input(path, std::ios::binary | std::ios::ate);
   if (!input)
@@ -51,8 +56,14 @@ readBytes(const std::filesystem::path& path, std::uint64_t limit)
     throw std::runtime_error("requester input file exceeds its configured limit");
   std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
   input.seekg(0);
-  if (!bytes.empty() && !input.read(reinterpret_cast<char*>(bytes.data()), bytes.size()))
-    throw std::runtime_error("requester input file read failed");
+  for (std::size_t offset = 0; offset < bytes.size();) {
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw std::runtime_error("requester input file deadline expired");
+    const auto length = std::min<std::size_t>(1U << 20, bytes.size() - offset);
+    if (!input.read(reinterpret_cast<char*>(bytes.data() + offset), length))
+      throw std::runtime_error("requester input file read failed");
+    offset += length;
+  }
   return bytes;
 }
 
@@ -401,6 +412,115 @@ writeResult(const Result& result, const std::filesystem::path& path)
     throw std::runtime_error("requester output could not be written");
 }
 
+class NativeRepoSourceOwner final : public RepositorySourceProvider
+{
+public:
+  NativeRepoSourceOwner(std::filesystem::path root, std::filesystem::path base,
+                        ndn::Name producer,
+                        std::shared_ptr<ndnsf_distributed_repo::RepoSourceProvider> preparedOwner)
+    : m_root(std::move(root)), m_base(std::move(base)), m_producer(std::move(producer)),
+      m_preparedOwner(std::move(preparedOwner)),
+      m_api(ndnsf_distributed_repo::ArtifactRepositoryApi::makeInApp(
+        {m_root, m_producer.toUri(ndn::name::UriFormat::CANONICAL)}))
+  {
+    if (m_producer.empty())
+      throw std::invalid_argument("native Repo source Producer is missing");
+  }
+
+  NativeCanonicalSource load(const RepositorySourceRequest& request,
+                             const Fallback&) const override
+  try {
+    const auto catalog = nativeParseJson(request.catalogConfigurationJson);
+    const auto& source = catalog.at("source");
+    const auto checkDeadline = [&] {
+      if (std::chrono::steady_clock::now() >= request.deadline)
+        throw RepositorySourceError(RepositorySourceError::Kind::Timeout,
+                                    "native Repo source deadline expired");
+    };
+    const auto loadFile = [&] (const char* fileField, const char* digestField,
+                              const char* label) {
+      checkDeadline();
+      const auto path = (m_base / source.at(fileField).get<std::string>()).lexically_normal();
+      const auto digest = source.at(digestField).get<std::string>();
+      const auto sizeField = std::string(label) == "source" ? "bytes" : "initializer_bytes";
+      const auto size = source.contains(sizeField)
+        ? source.at(sizeField).get<std::uint64_t>() : std::filesystem::file_size(path);
+      if (digest.size() != 71 || digest.rfind("sha256:", 0) != 0 ||
+          size == 0 || size > request.maxSourceBytes)
+        throw RepositorySourceError(RepositorySourceError::Kind::Unavailable,
+                                    "native Repo source identity or size is invalid");
+      ndnsf_distributed_repo::ArtifactReference reference;
+      const auto modelName = catalog.at("model").at("model_name").get<std::string>();
+      const auto modelDigest = source.at("model_manifest_digest").get<std::string>();
+      if (modelDigest.size() != 71 || modelDigest.rfind("sha256:", 0) != 0)
+        throw std::runtime_error("native Repo source lacks verified model identity");
+      const auto modelHash = ndn_service_framework::makeNamingDigestComponent(modelDigest.substr(7));
+      ndn_service_framework::PublishedContentName semantic;
+      semantic.kind = std::string(label) == "source"
+        ? ndn_service_framework::ContentDataKind::ModelFile
+        : ndn_service_framework::ContentDataKind::Initializer;
+      semantic.label = path.filename().string();
+      semantic.modelName = modelName;
+      semantic.modelIdentity = ndn_service_framework::computeNamingDigest("ndnsf-naming/sdk-model", {
+        {1, 2, std::vector<std::uint8_t>(modelName.begin(), modelName.end())},
+        {2, 4, std::vector<std::uint8_t>(modelHash.value(), modelHash.value() + modelHash.value_size())}});
+      auto name = semantic.contentPrefix(m_producer, digest.substr(7));
+      reference.logicalName = name.toUri(ndn::name::UriFormat::CANONICAL);
+      reference.publisherIdentity = m_producer.toUri(ndn::name::UriFormat::CANONICAL);
+      reference.contentDigest = digest.substr(7);
+      reference.sizeBytes = size;
+      ndn_service_framework::checkNamingNameSize(name);
+      reference.formatVersion = "raw-file-v1";
+      reference.policyEpoch = "plaintext-v1";
+      const auto existing = m_api.lookupLocalCommitUntil(reference, request.deadline);
+      if (!existing) {
+        const auto published = m_api.publishFileUntil(path.string(), reference, request.deadline);
+        if (!published.handle || !published.receipt)
+          throw std::runtime_error("native Repo source publication has no receipt");
+      }
+      checkDeadline();
+      const auto output = m_root / "materialized" / digest.substr(7);
+      std::filesystem::create_directories(output.parent_path());
+      struct RemoveMaterializedFile {
+        std::filesystem::path path;
+        ~RemoveMaterializedFile() { std::error_code error; std::filesystem::remove(path, error); }
+      } cleanup{output};
+      m_api.fetchFileUntil(reference, output.string(), request.deadline);
+      auto bytes = readBytes(output, request.maxSourceBytes, request.deadline);
+      if (bytes.size() != size || nativePlanningDigest(bytes.data(), bytes.size()) != digest)
+        throw std::runtime_error("native Repo source fetch failed content verification");
+      checkDeadline();
+      std::cout << "NATIVE_REPO_SOURCE_API label=" << label << " bytes=" << size
+                << " deduplicated=" << existing.has_value() << std::endl;
+      return bytes;
+    };
+    NativeCanonicalSource result;
+    result.modelBytes = loadFile("file", "digest", "source");
+    if (source.contains("initializer_file"))
+      result.initializerBytes = loadFile("initializer_file", "initializer_digest", "initializer");
+    return result;
+  }
+  catch (const std::exception&) {
+    if (std::chrono::steady_clock::now() >= request.deadline)
+      throw RepositorySourceError(RepositorySourceError::Kind::Timeout,
+                                  "native Repo source deadline expired");
+    throw;
+  }
+
+  std::optional<NativePreparedCanonicalPublication> lookupPrepared(
+    const RepositoryPreparedLookupRequest& request) const override
+  {
+    return m_preparedOwner->lookupPrepared(request);
+  }
+
+private:
+  std::filesystem::path m_root;
+  std::filesystem::path m_base;
+  ndn::Name m_producer;
+  std::shared_ptr<ndnsf_distributed_repo::RepoSourceProvider> m_preparedOwner;
+  mutable ndnsf_distributed_repo::ArtifactRepositoryApi m_api;
+};
+
 int
 run(int argc, char** argv)
 {
@@ -486,7 +606,9 @@ run(int argc, char** argv)
         path.string(), 1U << 20, 1U << 20, "native-requester-canonical"));
     auto sourceOwner = std::make_shared<ndnsf_distributed_repo::RepoSourceProvider>(
       std::move(repo));
-    runtimeConfig.repositorySourceProvider = sourceOwner;
+    runtimeConfig.repositorySourceProvider = std::make_shared<NativeRepoSourceOwner>(
+      path / "native-artifact-api", base,
+      ndn::Name(config.get<std::string>("core.requester_identity")), std::move(sourceOwner));
   }
   if (const auto compatibility = config.get_child_optional("cache_compatibility")) {
     if (compatibility->get<bool>("enabled", false)) {

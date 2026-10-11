@@ -233,9 +233,20 @@ public:
   ArtifactRepositoryApi(const ArtifactRepositoryApi&) = delete;
   ArtifactRepositoryApi& operator=(const ArtifactRepositoryApi&) = delete;
 
+  /** Store file bytes under a canonical Producer-owned logical reference.
+   * This API does not publish a manifest graph or original signed Data packets.
+   * Use raw-file-v1 with an empty rootManifestName when no graph exists.
+   * It must not assert a nonexistent independently published manifest name.
+   * Persistent transfer uses the existing Core invocation naming contract.
+   */
   ArtifactPublishResult
   publishFile(const std::string& sourcePath,
               const ArtifactReference& reference);
+
+  ArtifactPublishResult
+  publishFileUntil(const std::string& sourcePath,
+                   const ArtifactReference& reference,
+                   std::chrono::steady_clock::time_point deadline);
 
   ArtifactPublishResult
   publishFile(const std::string& sourcePath,
@@ -291,6 +302,16 @@ public:
                     int timeoutMs = 0,
                     uint64_t maxAgeMs = 0) const;
 
+  std::optional<ArtifactLocalCommitRecord>
+  lookupLocalCommitUntil(
+    const ArtifactReference& reference,
+    std::chrono::steady_clock::time_point deadline) const;
+
+  void
+  fetchFileUntil(const ArtifactReference& reference,
+                 const std::string& destinationPath,
+                 std::chrono::steady_clock::time_point deadline) const;
+
 private:
   struct Impl;
 
@@ -306,16 +327,6 @@ private:
   getPublishStatusUntil(const PublishOperationHandle& handle,
                         std::chrono::steady_clock::time_point deadline,
                         int requestTimeoutMs) const;
-
-  std::optional<ArtifactLocalCommitRecord>
-  lookupLocalCommitUntil(
-    const ArtifactReference& reference,
-    std::chrono::steady_clock::time_point deadline) const;
-
-  void
-  fetchFileUntil(const ArtifactReference& reference,
-                 const std::string& destinationPath,
-                 std::chrono::steady_clock::time_point deadline) const;
 
   explicit ArtifactRepositoryApi(std::unique_ptr<Impl> impl);
 

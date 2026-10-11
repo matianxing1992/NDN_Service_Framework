@@ -2155,7 +2155,7 @@ def main(argv=None, *, _supervised=False) -> int:
         source_cache_objects.append(
             (initializer_digest, initializer_path.stat().st_size))
     source_cache_hit = validate_model_source_repository(
-        model_source_repository, source_cache_objects)
+        model_source_repository / "native-artifact-api", source_cache_objects)
     if args.cache_compatibility_mode and not source_cache_hit:
         raise SystemExit("MODEL_SOURCE_CACHE_REQUIRED_FOR_COMPATIBILITY_MODE")
     print("MODEL_SOURCE_CACHE " + json.dumps({
@@ -2241,6 +2241,8 @@ def main(argv=None, *, _supervised=False) -> int:
     catalog = {
         "schema": "ndnsf-di-native-request-catalog-v1", "model": model_descriptor,
         "source": {"data_name": f"/catalog/{MODEL_FAMILY}/source", "digest": source_digest,
+                    "bytes": canonical_source_bytes,
+                    "initializer_bytes": canonical_initializer_bytes,
                     "model_manifest_digest": manifest_digest,
                     "canonical_graph_digest": canonical_source_digest,
                     **({"initializer_digest": initializer_digest}

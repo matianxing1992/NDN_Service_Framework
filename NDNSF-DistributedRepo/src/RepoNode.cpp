@@ -1576,6 +1576,11 @@ RepoNode::validatePersistentWriteIdentity(const ArtifactReference& reference,
     throw std::runtime_error(
       "repo-publish-intent-required: Persistent writes require an authenticated principal");
   }
+  reference.validateProducerOwnership();
+  if (!operationOwner && ndn::Name(reference.publisherIdentity) != ndn::Name(requesterIdentity)) {
+    throw std::runtime_error(
+      "repo-publish-producer-mismatch: authenticated publisher must own the artifact namespace");
+  }
 
   if (operationOwner) {
     validateCanonicalRepoName(operationOwner->repoNode, m_artifactLimits,
@@ -1584,9 +1589,9 @@ RepoNode::validatePersistentWriteIdentity(const ArtifactReference& reference,
                               "operationOwner.providerIdentity");
     validateCanonicalRepoName(operationOwner->servicePrefix, m_artifactLimits,
                               "operationOwner.servicePrefix");
-    if (requesterIdentity != operationOwner->providerIdentity ||
-        operationOwner->repoNode == m_repoNode ||
-        operationOwner->providerIdentity == m_providerIdentity) {
+    if (ndn::Name(requesterIdentity) != ndn::Name(operationOwner->providerIdentity) ||
+        ndn::Name(operationOwner->repoNode) == ndn::Name(m_repoNode) ||
+        ndn::Name(operationOwner->providerIdentity) == ndn::Name(m_providerIdentity)) {
       throw std::runtime_error(
         "repo-publish-replica-owner-unauthorized: replica write must come from another authenticated seed Provider");
     }
@@ -2168,7 +2173,7 @@ RepoNode::artifactCapability() const
 {
   ArtifactCapability capability;
   capability.repoNode = m_repoNode;
-  capability.formatVersions = {"artifact-manifest-v2", "exact-packet-v1"};
+  capability.formatVersions = {"artifact-manifest-v2", "exact-packet-v1", "raw-file-v1"};
   capability.digestAlgorithms = {"sha256"};
   capability.signatureAlgorithms = {"rsa-sha256", "ecdsa-sha256", "ed25519"};
   capability.maxArtifactBytes = m_artifactLimits.maxArtifactBytes;
@@ -2467,9 +2472,18 @@ RepoNode::handlePublishIntent(const std::vector<uint8_t>& request,
   }
   const std::string wire(request.begin(), request.end());
   const auto intent = PublishOperationIntent::fromJson(wire, m_artifactLimits);
-  if (intent.seed.repoNode != m_repoNode ||
-      intent.seed.providerIdentity != m_providerIdentity ||
-      intent.seed.servicePrefix != m_servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)) {
+  intent.reference.validateProducerOwnership();
+  if (intent.reference.toJson() != intent.reference.canonicalized().toJson()) {
+    throw std::runtime_error(
+      "repo-publish-reference-noncanonical: normalize reference before binding its request digest");
+  }
+  if (ndn::Name(intent.reference.publisherIdentity) != ndn::Name(requesterIdentity)) {
+    throw std::runtime_error(
+      "repo-publish-producer-mismatch: authenticated publisher must own the artifact namespace");
+  }
+  if (ndn::Name(intent.seed.repoNode) != ndn::Name(m_repoNode) ||
+      ndn::Name(intent.seed.providerIdentity) != ndn::Name(m_providerIdentity) ||
+      ndn::Name(intent.seed.servicePrefix) != m_servicePrefix) {
     throw std::runtime_error(
       "repo-publish-seed-mismatch: intent must be submitted to its exact selected seed tuple");
   }

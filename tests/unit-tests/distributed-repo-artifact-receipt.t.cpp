@@ -78,13 +78,13 @@ ArtifactReference
 makeReference(const std::string& name, const std::vector<uint8_t>& bytes)
 {
   ArtifactReference reference;
-  reference.logicalName = "/" + name;
+  reference.logicalName = "/spec192/user/model/" + name;
   reference.contentDigest = digest(bytes);
   reference.sizeBytes = bytes.size();
-  reference.rootManifestName = "/spec192/artifacts/" + name;
-  reference.publisherIdentity = "/spec192/publisher";
+  reference.rootManifestName = "/spec192/user/manifest/" + name;
+  reference.publisherIdentity = "/spec192/user";
   reference.policyEpoch = "repo-policy-v1";
-  return reference;
+  return reference.canonicalized();
 }
 
 ndn::security::Certificate
@@ -355,7 +355,11 @@ BOOST_AUTO_TEST_CASE(PublishOperationDigestsMatchKnownAnswers)
     makePublishOperationId("/spec192/user", seed, keyDigest),
     "a0aa24e8f9edd06bd0f7dc82e2f1b3bc3fdf3308b7bca05174c8586e0b7a326e");
 
-  const auto reference = makeReference("known-answer", {'A', 'B', 'C'});
+  auto reference = makeReference("known-answer", {'A', 'B', 'C'});
+  // Fixed legacy digest transcript: do not change its URI spelling or identity.
+  reference.logicalName = "/known-answer";
+  reference.rootManifestName = "/spec192/artifacts/known-answer";
+  reference.publisherIdentity = "/spec192/publisher";
   const std::vector<RepoArtifactTarget> reversedTargets{seed, replica};
   const std::vector<RepoArtifactTarget> sortedTargets{replica, seed};
   const auto reversedDigest = makePublishRequestDigest(
@@ -627,7 +631,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
     (temporary.path() / "repo-payloads").string(), 4096, 1024,
     "spec192-persistent-receipt-owner");
   auto node = std::make_shared<RepoNode>(
-    servicePrefix, capability, store, logicalRepo, provider.getName().toUri(),
+    servicePrefix, capability, store, logicalRepo, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE),
     metadataPath);
   node->registerServices(provider);
   SqliteArtifactMetadataStore durableCatalog(metadataPath, false, 15);
@@ -637,7 +641,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   const auto directReference = makeReference("PUBLISH_STATUS-direct-store", directBytes);
   const auto callerIdentity = std::string("/spec192/user");
   const RepoArtifactTarget localSeed{
-    logicalRepo, provider.getName().toUri(), servicePrefix.toUri()};
+    logicalRepo, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   ArtifactStoreRequest direct;
   direct.generation = 1;
   direct.reference = directReference;
@@ -656,7 +660,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   BOOST_CHECK(!response.getStatus());
   BOOST_CHECK(!node->core().has(artifactStorageObjectName(unjournaledReference)));
   BOOST_CHECK(!durableCatalog.lookupPersistentLocation(
-    unjournaledReference, logicalRepo, provider.getName().toUri(), 0));
+    unjournaledReference, logicalRepo, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE), 0));
   BOOST_CHECK_EQUAL(countPersistentReceipts(metadataPath, unjournaledReference), 0U);
 
   const auto forgedOwnerReference = makeReference(
@@ -665,13 +669,13 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   forgedOwner.operationId = "operation-forged-replica-owner";
   forgedOwner.reference = forgedOwnerReference;
   forgedOwner.operationOwner = RepoArtifactTarget{
-    "/logical/remote-seed", "/spec192/seed-provider", servicePrefix.toUri()};
+    "/logical/remote-seed", "/spec192/seed-provider", servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   response = dispatch(provider, storeName, forgedOwner.toWire(),
                       "forged-replica-owner-store");
   BOOST_CHECK(!response.getStatus());
   BOOST_CHECK(!node->core().has(artifactStorageObjectName(forgedOwnerReference)));
   BOOST_CHECK(!durableCatalog.lookupPersistentLocation(
-    forgedOwnerReference, logicalRepo, provider.getName().toUri(), 0));
+    forgedOwnerReference, logicalRepo, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE), 0));
   BOOST_CHECK_EQUAL(countPersistentReceipts(metadataPath, forgedOwnerReference), 0U);
 
   PublishOperationIntent directIntent;
@@ -698,7 +702,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   const auto directReceipt = RepoArtifactCommitReceipt::fromJson(responseString(response));
   BOOST_CHECK_EQUAL(directReceipt.repoNode, logicalRepo);
-  BOOST_CHECK_EQUAL(directReceipt.providerIdentity, provider.getName().toUri());
+  BOOST_CHECK_EQUAL(directReceipt.providerIdentity, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE));
   BOOST_CHECK(directReceipt.reference == directReference);
   BOOST_CHECK_EQUAL(directReceipt.operationId, direct.operationId);
   BOOST_CHECK_EQUAL(directReceipt.generation, direct.generation);
@@ -712,19 +716,19 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   const auto directLocation = ArtifactLocationRecord::fromJson(responseString(response));
   BOOST_CHECK_EQUAL(directLocation.repoNode, logicalRepo);
-  BOOST_CHECK_EQUAL(directLocation.providerIdentity, provider.getName().toUri());
+  BOOST_CHECK_EQUAL(directLocation.providerIdentity, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE));
   BOOST_CHECK(directLocation.reference == directReference);
   BOOST_CHECK_EQUAL(directLocation.operationId, direct.operationId);
   BOOST_CHECK_EQUAL(directLocation.generation, direct.generation);
   BOOST_CHECK_EQUAL(directLocation.locationVersion, 1U);
   BOOST_CHECK_EQUAL(directLocation.routeState, "ROUTABLE");
   BOOST_CHECK(durableCatalog.lookupPersistentLocation(
-    directReference, logicalRepo, provider.getName().toUri(), 0).has_value());
+    directReference, logicalRepo, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE), 0).has_value());
   BOOST_CHECK(durableCatalog.hasPersistentCommitReceipt(
-    directReference, logicalRepo, provider.getName().toUri(),
+    directReference, logicalRepo, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE),
     direct.operationId, directReceipt.receiptId, direct.generation));
   BOOST_CHECK(!durableCatalog.hasPersistentCommitReceipt(
-    directReference, logicalRepo, provider.getName().toUri(),
+    directReference, logicalRepo, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE),
     direct.operationId, "receipt-from-another-operation", direct.generation));
   checkPersistentReceiptRow(metadataPath, directLocation);
 
@@ -810,7 +814,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   response = dispatch(provider, storeRangeName, first.toWire(), "ranged-first");
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   BOOST_CHECK(!durableCatalog.lookupPersistentLocation(
-    rangedReference, logicalRepo, provider.getName().toUri(), 0));
+    rangedReference, logicalRepo, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE), 0));
 
   ArtifactRangeWriteRequest second = first;
   second.offsetBytes = 3;
@@ -818,7 +822,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   response = dispatch(provider, storeRangeName, second.toWire(), "ranged-second");
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   BOOST_CHECK(!durableCatalog.lookupPersistentLocation(
-    rangedReference, logicalRepo, provider.getName().toUri(), 0));
+    rangedReference, logicalRepo, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE), 0));
 
   ArtifactRangeCommitRequest commit;
   commit.operationId = operation;
@@ -829,7 +833,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   const auto rangedReceipt = RepoArtifactCommitReceipt::fromJson(responseString(response));
   BOOST_CHECK_EQUAL(rangedReceipt.repoNode, logicalRepo);
-  BOOST_CHECK_EQUAL(rangedReceipt.providerIdentity, provider.getName().toUri());
+  BOOST_CHECK_EQUAL(rangedReceipt.providerIdentity, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE));
   BOOST_CHECK(rangedReceipt.reference == rangedReference);
   BOOST_CHECK_EQUAL(rangedReceipt.operationId, operation);
   BOOST_CHECK_EQUAL(rangedReceipt.generation, 1U);
@@ -843,7 +847,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   const auto rangedLocation = ArtifactLocationRecord::fromJson(responseString(response));
   BOOST_CHECK_EQUAL(rangedLocation.repoNode, logicalRepo);
-  BOOST_CHECK_EQUAL(rangedLocation.providerIdentity, provider.getName().toUri());
+  BOOST_CHECK_EQUAL(rangedLocation.providerIdentity, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE));
   BOOST_CHECK(rangedLocation.reference == rangedReference);
   BOOST_CHECK_EQUAL(rangedLocation.operationId, operation);
   BOOST_CHECK_EQUAL(rangedLocation.generation, 1U);
@@ -963,7 +967,7 @@ BOOST_AUTO_TEST_CASE(RangeAbortIsOwnerBoundAndExpiredStagingReleasesCapacity)
     (temporary.path() / "objects").string(), 4096, 1024,
     "spec192-range-abort-owner");
   auto node = std::make_shared<RepoNode>(
-    servicePrefix, capability, store, logicalRepo, provider.getName().toUri(),
+    servicePrefix, capability, store, logicalRepo, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE),
     metadataPath);
   node->registerServices(provider);
 
@@ -972,7 +976,7 @@ BOOST_AUTO_TEST_CASE(RangeAbortIsOwnerBoundAndExpiredStagingReleasesCapacity)
   const auto abortService = makeRepoServiceName(servicePrefix, "ABORT_RANGES");
   const auto commitService = makeRepoServiceName(servicePrefix, "COMMIT_RANGES");
   const RepoArtifactTarget seed{
-    logicalRepo, provider.getName().toUri(), servicePrefix.toUri()};
+    logicalRepo, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   const std::vector<uint8_t> ownedBytes{0x10, 0x20, 0x30, 0x40};
   const auto ownedReference = makeReference("owner-bound", ownedBytes);
   ArtifactRangeWriteRequest write;
@@ -1341,9 +1345,9 @@ BOOST_AUTO_TEST_CASE(ServerAndClientDefaultsAndOverrideKeepRegisteredStatusPrefi
   BOOST_CHECK_EQUAL(RepoClient::DEFAULT_SERVICE_NAME,
                     "/NDNSF/DistributedRepo/Object/v1");
   PersistentRepoServerConfig serverConfig;
-  BOOST_CHECK_EQUAL(serverConfig.servicePrefix.toUri(), RepoClient::DEFAULT_SERVICE_NAME);
+  BOOST_CHECK_EQUAL(serverConfig.servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE), RepoClient::DEFAULT_SERVICE_NAME);
   PersistentRepoClientConfig clientConfig;
-  BOOST_CHECK_EQUAL(clientConfig.servicePrefix.toUri(), RepoClient::DEFAULT_SERVICE_NAME);
+  BOOST_CHECK_EQUAL(clientConfig.servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE), RepoClient::DEFAULT_SERVICE_NAME);
 
   TempRoot temporary;
   ndn::Face face;
@@ -1365,11 +1369,11 @@ BOOST_AUTO_TEST_CASE(ServerAndClientDefaultsAndOverrideKeepRegisteredStatusPrefi
   auto node = std::make_shared<RepoNode>(
     serverConfig.servicePrefix, capability,
     makeTieredRepoStore((temporary.path() / "custom.sqlite3").string(), 4096),
-    capability.repoNode, provider.getName().toUri());
+    capability.repoNode, provider.getName().toUri(ndn::name::UriFormat::ALTERNATE));
   node->registerServices(provider);
 
   const auto customStatus = makeRepoServiceName(clientConfig.servicePrefix, "STATUS");
-  BOOST_CHECK_EQUAL(customStatus.toUri(), "/spec192/custom-repo/v2/STATUS");
+  BOOST_CHECK_EQUAL(customStatus.toUri(ndn::name::UriFormat::ALTERNATE), "/spec192/custom-repo/v2/STATUS");
   auto response = dispatch(provider, customStatus, {}, "custom-status");
   BOOST_CHECK(response.getStatus());
   const auto defaultStatus = makeRepoServiceName(

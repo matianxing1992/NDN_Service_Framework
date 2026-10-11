@@ -79,15 +79,15 @@ ArtifactReference
 fixtureReference()
 {
   return ArtifactReference{
-    "/app/model/v1",
+    "/app/provider/model/v1",
     "sha256",
     FIXTURE_SHA256,
     sizeof(FIXTURE_BYTES) - 1,
     "artifact-manifest-v2",
-    "/app/manifest/v1",
+    "/app/provider/manifest/v1",
     "/app/provider",
     "epoch-1",
-  };
+  }.canonicalized();
 }
 
 InAppRepoConfig
@@ -316,11 +316,12 @@ BOOST_AUTO_TEST_CASE(FullReferenceIsTheCatalogKeyNotDigestAlone)
   writeFile(source, FIXTURE_BYTES);
   auto first = fixtureReference();
   auto second = first;
-  second.logicalName = "/app/model/v2";
+  second.logicalName = "/app/provider-2/model/v2";
   second.formatVersion = "exact-packet-v1";
-  second.rootManifestName = "/app/manifest/v2";
+  second.rootManifestName = "/app/provider-2/manifest/v2";
   second.publisherIdentity = "/app/provider-2";
   second.policyEpoch = "epoch-2";
+  second = second.canonicalized();
   BOOST_REQUIRE(first.sameBytes(second));
   BOOST_REQUIRE(!sameReference(first, second));
 
@@ -627,7 +628,7 @@ BOOST_AUTO_TEST_CASE(CanonicalProducerReferenceRoundTripsThroughNativeApi)
   const auto destination = directory.path() / "fetched.bin";
   writeFile(source, FIXTURE_BYTES);
   auto reference = fixtureReference();
-  reference.logicalName = ndn::Name("/app/provider/NDNSF-DI/model/name=fixture")
+  reference.logicalName = ndn::Name("/app/provider/NDNSF-DI/model").append("name=fixture")
                             .toUri(ndn::name::UriFormat::CANONICAL);
   reference.rootManifestName = ndn::Name(reference.logicalName).append("MANIFEST")
                                 .toUri(ndn::name::UriFormat::CANONICAL);
@@ -641,6 +642,110 @@ BOOST_AUTO_TEST_CASE(CanonicalProducerReferenceRoundTripsThroughNativeApi)
   api.fetchFile(reference, destination.string());
   BOOST_CHECK_EQUAL(readFile(destination), FIXTURE_BYTES);
   BOOST_CHECK_EQUAL(api.publishFile(source.string(), reference).deduplicated, true);
+}
+
+BOOST_AUTO_TEST_CASE(DeadlinePublicationRejectsExpiredAttemptAndCacheSurvivesSourceRemoval)
+{
+  TemporaryDirectory temporary("deadline-cache");
+  const auto source = temporary.path() / "source.bin";
+  const auto output = temporary.path() / "fetched.bin";
+  const auto reference = fixtureReference();
+  auto api = ArtifactRepositoryApi::makeInApp(makeConfig(temporary.path() / "repo"));
+  writeFile(source, FIXTURE_BYTES);
+  BOOST_CHECK_EXCEPTION(
+    api.publishFileUntil(source.string(), reference, std::chrono::steady_clock::now()),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("repo-operation-timeout:") == 0;
+    });
+  BOOST_CHECK(!api.lookupLocalCommit(reference));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  BOOST_REQUIRE(api.publishFileUntil(source.string(), reference, deadline).receipt);
+  fs::remove(source);
+  BOOST_REQUIRE(api.lookupLocalCommitUntil(reference, deadline));
+  api.fetchFileUntil(reference, output.string(), deadline);
+  BOOST_CHECK_EQUAL(readFile(output), FIXTURE_BYTES);
+}
+
+BOOST_AUTO_TEST_CASE(FetchDeadlineDuringSyncPreservesPreviousDestination)
+{
+  TemporaryDirectory temporary("fetch-sync-deadline");
+  const auto source = temporary.path() / "source.bin";
+  const auto destination = temporary.path() / "destination.bin";
+  auto api = ArtifactRepositoryApi::makeInApp(makeConfig(temporary.path() / "repo"));
+  const auto reference = fixtureReference();
+  writeFile(source, FIXTURE_BYTES);
+  writeFile(destination, "previous content");
+  BOOST_REQUIRE(api.publishFile(source.string(), reference).receipt);
+  {
+    spec202_test::ScopedFault fault(destination, spec202_test::Fault::SyncDelay, 250);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    BOOST_CHECK_EXCEPTION(api.fetchFileUntil(reference, destination.string(), deadline),
+      std::runtime_error, [] (const std::runtime_error& error) {
+        return std::string(error.what()).find("repo-artifact-fetch-deadline-exceeded:") == 0;
+      });
+    BOOST_CHECK_GE(fault.hits(), 1U);
+  }
+  BOOST_CHECK_EQUAL(readFile(destination), "previous content");
+  BOOST_REQUIRE(api.lookupLocalCommit(reference));
+}
+
+BOOST_AUTO_TEST_CASE(EquivalentUriReferencesReuseOneNativeCommit)
+{
+  TemporaryDirectory temporary("uri-identity");
+  const auto source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_BYTES);
+  auto api = ArtifactRepositoryApi::makeInApp(makeConfig(temporary.path() / "repo"));
+  const auto canonical = fixtureReference();
+  auto alternate = canonical;
+  alternate.logicalName = ndn::Name(canonical.logicalName).toUri(ndn::name::UriFormat::ALTERNATE);
+  alternate.rootManifestName = ndn::Name(canonical.rootManifestName).toUri(ndn::name::UriFormat::ALTERNATE);
+  alternate.publisherIdentity = ndn::Name(canonical.publisherIdentity).toUri(ndn::name::UriFormat::ALTERNATE);
+  api.publishFile(source.string(), alternate);
+  const auto first = api.lookupLocalCommit(canonical);
+  BOOST_REQUIRE(first);
+  api.publishFile(source.string(), canonical);
+  const auto second = api.lookupLocalCommit(alternate);
+  BOOST_REQUIRE(second);
+  BOOST_CHECK_EQUAL(first->localCommitId, second->localCommitId);
+}
+
+BOOST_AUTO_TEST_CASE(ForeignProducerReferenceRejectedBeforeSourceAccess)
+{
+  TemporaryDirectory temporary("foreign-producer");
+  auto api = ArtifactRepositoryApi::makeInApp(makeConfig(temporary.path() / "repo"));
+  auto reference = fixtureReference();
+  reference.publisherIdentity = "/app/provider-other";
+  BOOST_CHECK_THROW(api.publishFile("/nonexistent/source", reference), ArtifactValidationError);
+  reference = fixtureReference();
+  reference.rootManifestName = "/app/provider-other/manifest";
+  BOOST_CHECK_THROW(api.publishFile("/nonexistent/source", reference), ArtifactValidationError);
+}
+
+BOOST_AUTO_TEST_CASE(RawFileReferenceDoesNotInventManifestGraph)
+{
+  TemporaryDirectory temporary("raw-file-reference");
+  auto reference = fixtureReference();
+  reference.formatVersion = "raw-file-v1";
+  reference.rootManifestName.clear();
+  ArtifactCapabilityRequirements requirements;
+  requirements.artifact = reference;
+  BOOST_CHECK_NO_THROW(requirements.validate());
+  BOOST_CHECK_NO_THROW(reference.canonicalized().validateProducerOwnership());
+  const RepoArtifactTarget seed{"/repo/one", "/repo/one/provider", "/repo/service"};
+  BOOST_CHECK_NO_THROW(makePublishRequestDigest(reference, 1, seed, "ONE", {seed}));
+  const auto source = temporary.path() / "source.bin";
+  const auto destination = temporary.path() / "destination.bin";
+  writeFile(source, FIXTURE_BYTES);
+  auto api = ArtifactRepositoryApi::makeInApp(makeConfig(temporary.path() / "repo"));
+  const auto result = api.publishFile(source.string(), reference);
+  BOOST_REQUIRE(result.handle);
+  BOOST_CHECK_EQUAL(result.handle->reference.formatVersion, "raw-file-v1");
+  BOOST_CHECK(result.handle->reference.rootManifestName.empty());
+  api.fetchFile(reference, destination.string());
+  BOOST_CHECK_EQUAL(readFile(destination), FIXTURE_BYTES);
+  reference.rootManifestName = reference.logicalName;
+  BOOST_CHECK_THROW(reference.validate(), ArtifactValidationError);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

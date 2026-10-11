@@ -246,8 +246,17 @@ statRegularFile(int fd, const std::string& path, uint64_t expectedSize,
   return status;
 }
 
+void
+requireFileDeadline(std::chrono::steady_clock::time_point deadline)
+{
+  if (std::chrono::steady_clock::now() >= deadline)
+    throw std::runtime_error("repo-operation-timeout: local file deadline expired");
+}
+
 std::string
-hashFileDescriptor(int fd, const std::string& path, uint64_t expectedSize)
+hashFileDescriptor(int fd, const std::string& path, uint64_t expectedSize,
+                   std::chrono::steady_clock::time_point deadline =
+                     std::chrono::steady_clock::time_point::max())
 {
   const auto before = statRegularFile(
     fd, path, expectedSize, "repo-artifact-file-invalid");
@@ -256,6 +265,7 @@ hashFileDescriptor(int fd, const std::string& path, uint64_t expectedSize)
   std::array<uint8_t, COPY_CHUNK_BYTES> buffer{};
   uint64_t offset = 0;
   while (offset < expectedSize) {
+    requireFileDeadline(deadline);
     const auto amount = static_cast<size_t>(
       std::min<uint64_t>(buffer.size(), expectedSize - offset));
     const auto count = ::pread(fd, buffer.data(), amount,
@@ -302,7 +312,9 @@ nowMilliseconds()
 void
 copySourceToStore(int sourceFd, const std::string& sourcePath,
                   const ArtifactReference& reference,
-                  FilesystemArtifactPayloadStore& store)
+                  FilesystemArtifactPayloadStore& store,
+                  std::chrono::steady_clock::time_point deadline =
+                    std::chrono::steady_clock::time_point::max())
 {
   const auto payloadRef = payloadReference(reference);
   const auto before = statRegularFile(
@@ -315,6 +327,7 @@ copySourceToStore(int sourceFd, const std::string& sourcePath,
     std::array<uint8_t, COPY_CHUNK_BYTES> buffer{};
     uint64_t offset = 0;
     while (offset < reference.sizeBytes) {
+      requireFileDeadline(deadline);
       const auto amount = static_cast<size_t>(
         std::min<uint64_t>(buffer.size(), reference.sizeBytes - offset));
       const auto count = ::pread(sourceFd, buffer.data(), amount,
@@ -353,7 +366,9 @@ copySourceToStore(int sourceFd, const std::string& sourcePath,
       throw std::runtime_error(
         "repo-artifact-source-digest-mismatch: source does not match ArtifactReference");
     }
+    requireFileDeadline(deadline);
     store.flush(payloadRef, LOCAL_GENERATION);
+    requireFileDeadline(deadline);
     store.finalize(payloadRef, LOCAL_GENERATION);
   }
   catch (...) {
@@ -368,7 +383,9 @@ copySourceToStore(int sourceFd, const std::string& sourcePath,
 
 void
 verifyCommittedPayload(const ArtifactReference& reference,
-                       FilesystemArtifactPayloadStore& store)
+                       FilesystemArtifactPayloadStore& store,
+                       std::chrono::steady_clock::time_point deadline =
+                         std::chrono::steady_clock::time_point::max())
 {
   const auto payloadRef = payloadReference(reference);
   const auto path = store.committedPath(payloadRef);
@@ -377,7 +394,7 @@ verifyCommittedPayload(const ArtifactReference& reference,
     throwSystem("repo-artifact-committed-read-failed", "open", path);
   }
   FileDescriptor fd(rawFd);
-  if (hashFileDescriptor(fd.get(), path, reference.sizeBytes) !=
+  if (hashFileDescriptor(fd.get(), path, reference.sizeBytes, deadline) !=
       payloadRef.contentDigest) {
     throw std::runtime_error(
       "repo-artifact-committed-corrupt: committed payload size or digest mismatch");
@@ -2580,13 +2597,25 @@ ArtifactPublishResult
 ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
                                    const ArtifactReference& reference)
 {
+  return publishFileUntil(sourcePath, reference,
+                          std::chrono::steady_clock::time_point::max());
+}
+
+ArtifactPublishResult
+ArtifactRepositoryApi::publishFileUntil(const std::string& sourcePath,
+                                        const ArtifactReference& inputReference,
+                                        std::chrono::steady_clock::time_point deadline)
+{
+  const auto reference = inputReference.canonicalized();
+  reference.validateProducerOwnership();
   if (!m_impl) {
     throw std::logic_error("repo-inapp-api-moved-from: API has no active owner");
   }
   if (!m_impl->inApp) {
     throw std::logic_error("repo-artifact-lifecycle-mismatch: publishFile(path, reference) is In-App only");
   }
-  std::lock_guard<std::mutex> operationGuard(m_impl->operationMutex);
+  auto operationGuard = lockOperationUntil(m_impl->operationMutex, deadline,
+                                           "In-App publication operation");
   auto& owner = *m_impl->inApp;
   if (!owner.metadataStore.artifactWritesEnabled()) {
     const auto migration = owner.metadataStore.migrationDiagnostics();
@@ -2613,31 +2642,33 @@ ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
       throw std::runtime_error(
         "repo-artifact-commit-payload-missing: historical local commit has no payload");
     }
-    if (hashFileDescriptor(sourceFd.get(), sourcePath, reference.sizeBytes) !=
+    if (hashFileDescriptor(sourceFd.get(), sourcePath, reference.sizeBytes, deadline) !=
         payloadRef.contentDigest) {
       throw std::runtime_error(
         "repo-artifact-source-digest-mismatch: source does not match ArtifactReference");
     }
-    verifyCommittedPayload(reference, owner.payloadStore);
+    verifyCommittedPayload(reference, owner.payloadStore, deadline);
     localCommit = *existing;
   }
   else {
     if (payloadExists) {
-      if (hashFileDescriptor(sourceFd.get(), sourcePath, reference.sizeBytes) !=
+      if (hashFileDescriptor(sourceFd.get(), sourcePath, reference.sizeBytes, deadline) !=
           payloadRef.contentDigest) {
         throw std::runtime_error(
           "repo-artifact-source-digest-mismatch: source does not match ArtifactReference");
       }
-      verifyCommittedPayload(reference, owner.payloadStore);
+      verifyCommittedPayload(reference, owner.payloadStore, deadline);
       resumed = true;
     }
     else {
       copySourceToStore(sourceFd.get(), sourcePath, reference,
-                        owner.payloadStore);
+                        owner.payloadStore, deadline);
     }
+    requireFileDeadline(deadline);
     localCommit = owner.metadataStore.recordLocalCommit(reference, nowMilliseconds());
   }
 
+  requireFileDeadline(deadline);
   const auto ended = std::chrono::steady_clock::now();
   const auto elapsed = std::chrono::duration<double, std::milli>(ended - started).count();
   return makePublishResult(localCommit, existing.has_value(), resumed, elapsed);
@@ -2645,11 +2676,13 @@ ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
 
 PublishOperationHandle
 ArtifactRepositoryApi::beginPublishFileImpl(
-  const std::string& sourcePath, const ArtifactReference& reference,
+  const std::string& sourcePath, const ArtifactReference& inputReference,
   const SelectedRepoSet& selected, const std::string& idempotencyKey,
   std::chrono::steady_clock::time_point deadline,
   PublishOperationStatus* acceptedStatus)
 {
+  const auto reference = inputReference.canonicalized();
+  reference.validateProducerOwnership();
   if (!m_impl) {
     throw std::logic_error("repo-persistent-api-moved-from: API has no active owner");
   }
@@ -3083,10 +3116,12 @@ ArtifactRepositoryApi::getPublishStatusUntil(
 
 ArtifactPublishResult
 ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
-                                   const ArtifactReference& reference,
+                                   const ArtifactReference& inputReference,
                                    const SelectedRepoSet& selected,
                                    int timeoutMs)
 {
+  const auto reference = inputReference.canonicalized();
+  reference.validateProducerOwnership();
   if (!m_impl) {
     throw std::logic_error("repo-persistent-api-moved-from: API has no active owner");
   }
@@ -3217,9 +3252,11 @@ ArtifactRepositoryApi::fetchFile(const ArtifactReference& reference,
 
 void
 ArtifactRepositoryApi::fetchFileUntil(
-  const ArtifactReference& reference, const std::string& destinationPath,
+  const ArtifactReference& inputReference, const std::string& destinationPath,
   std::chrono::steady_clock::time_point deadline) const
 {
+  auto reference = inputReference.canonicalized();
+  reference.validateProducerOwnership();
   if (!m_impl) {
     throw std::logic_error("repo-inapp-api-moved-from: API has no active owner");
   }
@@ -3234,7 +3271,12 @@ ArtifactRepositoryApi::fetchFileUntil(
     throw std::invalid_argument(
       "repo-artifact-destination-invalid: destination path is required");
   }
-  const auto localCommit = owner.metadataStore.lookupLocalCommit(reference);
+  auto localCommit = owner.metadataStore.lookupLocalCommit(reference);
+  // Explicit compatibility read; never rewrite a historical reference or receipt.
+  if (!localCommit && reference.toJson() != inputReference.toJson()) {
+    localCommit = owner.metadataStore.lookupLocalCommit(inputReference);
+    if (localCommit) reference = inputReference;
+  }
   if (!localCommit) {
     throw std::runtime_error(
       "repo-artifact-not-found: no durable local commit matches the full reference");
@@ -3306,6 +3348,7 @@ ArtifactRepositoryApi::fetchFileUntil(
     std::array<uint8_t, COPY_CHUNK_BYTES> buffer{};
     uint64_t offset = 0;
     while (offset < reference.sizeBytes) {
+      requireFileDeadline(deadline);
       const auto amount = static_cast<size_t>(std::min<uint64_t>(
         buffer.size(), reference.sizeBytes - offset));
       const auto count = ::pread(payloadFd.get(), buffer.data(), amount,
@@ -3340,9 +3383,11 @@ ArtifactRepositoryApi::fetchFileUntil(
       throw std::runtime_error(
         "repo-artifact-digest-mismatch: fetched bytes failed full verification");
     }
+    requireFileDeadline(deadline);
     if (::fsync(temporaryFd.get()) != 0) {
       throwSystem("repo-artifact-destination-sync-failed", "fsync", temporary.string());
     }
+    requireFileDeadline(deadline);
     const int rawFd = temporaryFd.release();
     if (::close(rawFd) != 0) {
       throwSystem("repo-artifact-destination-close-failed", "close", temporary.string());
@@ -3797,9 +3842,11 @@ ArtifactRepositoryApi::lookupLocalCommit(const ArtifactReference& reference) con
 
 std::optional<ArtifactLocalCommitRecord>
 ArtifactRepositoryApi::lookupLocalCommitUntil(
-  const ArtifactReference& reference,
+  const ArtifactReference& inputReference,
   std::chrono::steady_clock::time_point deadline) const
 {
+  const auto reference = inputReference.canonicalized();
+  reference.validateProducerOwnership();
   if (!m_impl) {
     throw std::logic_error("repo-inapp-api-moved-from: API has no active owner");
   }
@@ -3807,7 +3854,11 @@ ArtifactRepositoryApi::lookupLocalCommitUntil(
   auto operationGuard = lockOperationUntil(
     m_impl->operationMutex, deadline, "In-App lookup operation");
   reference.validate(m_impl->inApp->limits);
-  return m_impl->inApp->metadataStore.lookupLocalCommit(reference);
+  auto result = m_impl->inApp->metadataStore.lookupLocalCommit(reference);
+  if (!result && reference.toJson() != inputReference.toJson()) {
+    result = m_impl->inApp->metadataStore.lookupLocalCommit(inputReference);
+  }
+  return result;
 }
 
 ArtifactCommitReceipt

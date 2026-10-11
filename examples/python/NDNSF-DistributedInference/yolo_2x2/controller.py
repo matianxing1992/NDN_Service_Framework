@@ -21,6 +21,7 @@ from ndnsf_distributed_inference.app_sdk.canonical_artifacts import canonical_mo
 from ndnsf_distributed_inference.naming import (
     NamingDigestField, canonical_name_uri, compute_naming_digest,
     make_naming_digest_component,
+    make_semantic_content_prefix,
 )
 from ndnsf_distributed_inference.app_sdk.controller import APPController
 from ndnsf_distributed_inference.app_sdk import (
@@ -376,116 +377,121 @@ def _deploy_artifacts_to_repo(config: str, generated_policy_dir: str,
         adaptive_admission=False,
     )
     user.start()
-    repo = RepoClient(
-        user=user,
-        repo_service_name=REPO_SERVICE,
-        ack_timeout_ms=1500,
-        timeout_ms=60000,
-    )
-    api = repo.artifact_api
-
-    def publish_binding(source: Path, *, logical_name: str, filename: str,
-                        role: str, use: str, object_type: str) -> dict:
-        payload_digest = hashlib.sha256(source.read_bytes()).hexdigest()
-        reference = ArtifactReference(
-            logical_name=logical_name,
-            content_digest=payload_digest,
-            size_bytes=source.stat().st_size,
-            root_manifest_name=logical_name + "/root",
-            publisher_identity=canonical_name_uri(Name.from_str(deployment.controller)),
-            policy_epoch="/Policy/yolo-2x2/v1",
+    try:
+        repo = RepoClient(
+            user=user,
+            repo_service_name=REPO_SERVICE,
+            ack_timeout_ms=1500,
+            timeout_ms=60000,
         )
-        requirements = ArtifactCapabilityRequirements()
-        requirements.artifact = reference
-        candidates = api.discover_repo_candidates(requirements, 60000).candidates
-        if len(candidates) < replication_factor:
-            raise RuntimeError(
-                f"Repo discovery returned {len(candidates)} candidates; "
-                f"need {replication_factor}")
-        selected = SelectedRepoSet()
-        targets = []
-        for candidate in candidates[:replication_factor]:
-            target = SelectedRepoTarget()
-            target.repo_node = candidate.repo_node
-            target.provider_identity = candidate.provider_identity
-            target.service_prefix = candidate.service_prefix
-            targets.append(target)
-        selected.targets = targets
-        selected.seed_repo_id = selected.targets[0].repo_node
-        selected.consistency = RepoWriteConsistency.ALL
-        result = repo.publish_file(source, reference, selected, timeout_ms=60000)
-        if (result.handle is None or result.receipt is None
-                or result.achieved_replicas < replication_factor):
-            raise RuntimeError(f"native Repo publish failed for {logical_name}")
-        uri = "urn:ndnsf:repo-artifact:" + hashlib.sha256(
-            result.handle.to_json().encode("utf-8")).hexdigest()
-        projection = DIArtifactReference(
-            uri=uri,
-            digest="sha256:" + payload_digest,
-            size_bytes=source.stat().st_size,
-            mount_path=filename,
-        )
-        binding = binding_from_native_handle(
-            result.handle, projection, role=role, use=use)
-        return {
-            "repoBinding": binding.to_dict(),
-            "filename": filename,
-            "kind": object_type,
-            "metadata": {"kind": object_type},
-        }
+        api = repo.artifact_api
 
-    service = deployment.service_policy(yolo_inference_service(deployment))
-    artifacts = {artifact.role: artifact for artifact in service.artifacts}
-    # The split model identity binds the actual complete role/file set; an
-    # individual shard's payload digest is only its own content identity.
-    model_digest = "sha256:" + compute_naming_digest("ndnsf-naming/yolo-split-model", [
-        NamingDigestField(1, 2, service.model_name.encode("utf-8")),
-        NamingDigestField(2, 5, json.dumps({
-            role: hashlib.sha256(Path(artifact.path).read_bytes()).hexdigest()
-            for role, artifact in artifacts.items()
-        }, sort_keys=True, separators=(",", ":")).encode("utf-8")),
-    ])
-    runner_payload = build_runner_script()
-    runner_hash = hashlib.sha256(runner_payload).hexdigest()[:16]
-    artifact_references = {"roles": {}}
-    layout = str(service.metadata.get("layout", "2x2"))
-    with tempfile.TemporaryDirectory(prefix="ndnsf-di-yolo-repo-publish-") as temp:
-        runner_path = Path(temp) / "runner.py"
-        runner_path.write_bytes(runner_payload)
-        for role in service.roles:
-            artifact = artifacts[role]
-            model_path = Path(artifact.path)
-            model_name = canonical_model_object_name(
-                publisher=deployment.controller, model_name=service.model_name,
-                model_digest=model_digest, object_kind="model-file",
-                object_label=role + "/model.onnx",
-                object_digest="sha256:" + hashlib.sha256(model_path.read_bytes()).hexdigest())
-            artifact_references["roles"][role] = {
-                "model": publish_binding(
-                    model_path,
-                    logical_name=model_name,
-                    filename=model_path.name,
-                    role=role,
-                    use="model",
-                    object_type=artifact.kind or "onnx-model",
-                ),
-                "runner": publish_binding(
-                    runner_path,
-                    logical_name=make_content_data_prefix(
-                        deployment.controller, "blob", "yolo-" + layout + "-runner.py",
-                        hashlib.sha256(runner_payload).hexdigest(),
-                        '{"encoding":"raw"}'),
-                    filename="runner.py",
-                    role=role,
-                    use="runtime",
-                    object_type="runtime-script",
-                ),
+        def publish_binding(source: Path, *, logical_name: str, filename: str,
+                            role: str, use: str, object_type: str) -> dict:
+            payload_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            reference = ArtifactReference(
+                logical_name=logical_name,
+                content_digest=payload_digest,
+                size_bytes=source.stat().st_size,
+                # Native File API has no independently published root manifest.
+                root_manifest_name="",
+                format_version="raw-file-v1",
+                publisher_identity=canonical_name_uri(Name.from_str(deployment.controller)),
+                policy_epoch="/Policy/yolo-2x2/v1",
+            )
+            requirements = ArtifactCapabilityRequirements()
+            requirements.artifact = reference
+            candidates = api.discover_repo_candidates(requirements, 60000).candidates
+            if len(candidates) < replication_factor:
+                raise RuntimeError(
+                    f"Repo discovery returned {len(candidates)} candidates; "
+                    f"need {replication_factor}")
+            selected = SelectedRepoSet()
+            targets = []
+            for candidate in candidates[:replication_factor]:
+                target = SelectedRepoTarget()
+                target.repo_node = candidate.repo_node
+                target.provider_identity = candidate.provider_identity
+                target.service_prefix = candidate.service_prefix
+                targets.append(target)
+            selected.targets = targets
+            selected.seed_repo_id = selected.targets[0].repo_node
+            selected.consistency = RepoWriteConsistency.ALL
+            result = repo.publish_file(source, reference, selected, timeout_ms=60000)
+            if (result.handle is None or result.receipt is None
+                    or result.achieved_replicas < replication_factor):
+                raise RuntimeError(f"native Repo publish failed for {logical_name}")
+            uri = "urn:ndnsf:repo-artifact:" + hashlib.sha256(
+                result.handle.to_json().encode("utf-8")).hexdigest()
+            projection = DIArtifactReference(
+                uri=uri,
+                digest="sha256:" + payload_digest,
+                size_bytes=source.stat().st_size,
+                mount_path=filename,
+            )
+            binding = binding_from_native_handle(
+                result.handle, projection, role=role, use=use)
+            return {
+                "repoBinding": binding.to_dict(),
+                "filename": filename,
+                "kind": object_type,
+                "metadata": {"kind": object_type},
             }
-            print("YOLO_2X2_CONTROLLER_REPO_OBJECT", role, model_name, flush=True)
-    target = Path(artifact_references_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        json.dumps(artifact_references, indent=2, sort_keys=True), encoding="utf-8")
+
+        service = deployment.service_policy(yolo_inference_service(deployment))
+        artifacts = {artifact.role: artifact for artifact in service.artifacts}
+        # The split model identity binds the actual complete role/file set; an
+        # individual shard's payload digest is only its own content identity.
+        model_digest = "sha256:" + compute_naming_digest("ndnsf-naming/yolo-split-model", [
+            NamingDigestField(1, 2, service.model_name.encode("utf-8")),
+            NamingDigestField(2, 5, json.dumps({
+                role: hashlib.sha256(Path(artifact.path).read_bytes()).hexdigest()
+                for role, artifact in artifacts.items()
+            }, sort_keys=True, separators=(",", ":")).encode("utf-8")),
+        ])
+        runner_payload = build_runner_script()
+        runner_hash = hashlib.sha256(runner_payload).hexdigest()[:16]
+        artifact_references = {"roles": {}}
+        layout = str(service.metadata.get("layout", "2x2"))
+        with tempfile.TemporaryDirectory(prefix="ndnsf-di-yolo-repo-publish-") as temp:
+            runner_path = Path(temp) / "runner.py"
+            runner_path.write_bytes(runner_payload)
+            for role in service.roles:
+                artifact = artifacts[role]
+                model_path = Path(artifact.path)
+                model_name = canonical_model_object_name(
+                    publisher=deployment.controller, model_name=service.model_name,
+                    model_digest=model_digest, object_kind="model-file",
+                    object_label=role + "/model.onnx",
+                    object_digest="sha256:" + hashlib.sha256(model_path.read_bytes()).hexdigest())
+                artifact_references["roles"][role] = {
+                    "model": publish_binding(
+                        model_path,
+                        logical_name=model_name,
+                        filename=model_path.name,
+                        role=role,
+                        use="model",
+                        object_type=artifact.kind or "onnx-model",
+                    ),
+                    "runner": publish_binding(
+                        runner_path,
+                        logical_name=canonical_name_uri(make_semantic_content_prefix(
+                            deployment.controller,
+                            {"kind": "blob", "label": "yolo-" + layout + "-runner.py"},
+                            hashlib.sha256(runner_payload).hexdigest())),
+                        filename="runner.py",
+                        role=role,
+                        use="runtime",
+                        object_type="runtime-script",
+                    ),
+                }
+                print("YOLO_2X2_CONTROLLER_REPO_OBJECT", role, model_name, flush=True)
+        target = Path(artifact_references_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(artifact_references, indent=2, sort_keys=True), encoding="utf-8")
+    finally:
+        user.stop()
 
 
 if __name__ == "__main__":

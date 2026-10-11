@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import os
 import subprocess
+from contextlib import ExitStack
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
@@ -346,7 +347,7 @@ def main() -> int:
     if args.dry_run:
         print("Run YOLO 2x2 provider", args.provider_id, args.role or args.roles)
         return 0
-    with optional_local_nfd(args.start_local_nfd):
+    with optional_local_nfd(args.start_local_nfd), ExitStack() as cleanup:
         grant_deployment = load_or_generate_deployment(
             args.config, args.generated_policy_dir)
         grant_authority_public_key, grant_recipient_private_key, grant_authority_identity = (
@@ -395,6 +396,7 @@ def main() -> int:
                 permission_wait_ms=6000,
                 adaptive_admission=False,
             )
+            cleanup.callback(repo_user.stop)
             repo_user.start()
             repo_client = RepoClient(
                 user=repo_user,
@@ -487,8 +489,6 @@ def main() -> int:
                 return 0
         try:
             provider.stop()
-            if repo_user is not None:
-                repo_user.stop()
         except Exception:
             pass
         runner_thread.join(timeout=3)

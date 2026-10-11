@@ -181,9 +181,9 @@ queueAuthenticatedResponseForApiTest(
   const auto responseName = ndn_service_framework::makeResponseNameV2(
     providerIdentity, environment.user().getName(), serviceName, requestId);
   response.setAuthenticatedTransportEvidence(
-    responseName.toUri(),
-    environment.provider(signerIndex).getSigningCertificateName().toUri(),
-    "spec192-api-callback-fixture", providerIdentity.toUri());
+    responseName.toUri(ndn::name::UriFormat::ALTERNATE),
+    environment.provider(signerIndex).getSigningCertificateName().toUri(ndn::name::UriFormat::ALTERNATE),
+    "spec192-api-callback-fixture", providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE));
   auto* user = &environment.user();
   environment.userFace().getIoContext().post(
     [user, providerIdentity, requestId, response = std::move(response)] {
@@ -216,16 +216,17 @@ sha256(const std::vector<uint8_t>& bytes)
 }
 
 repo::ArtifactReference
-makeReference(const std::string& name, const std::vector<uint8_t>& bytes)
+makeReference(const std::string& name, const std::vector<uint8_t>& bytes,
+              const ndn::Name& producer = ndn::Name("/test/user/spec170"))
 {
   repo::ArtifactReference reference;
-  reference.logicalName = "/" + name;
+  reference.logicalName = ndn::Name(producer).append("model").append(name).toUri(ndn::name::UriFormat::ALTERNATE);
   reference.contentDigest = sha256(bytes);
   reference.sizeBytes = bytes.size();
-  reference.rootManifestName = "/spec192/persistent/" + name;
-  reference.publisherIdentity = "/test/publisher/spec192";
+  reference.rootManifestName = ndn::Name(producer).append("manifest").append(name).toUri(ndn::name::UriFormat::ALTERNATE);
+  reference.publisherIdentity = producer.toUri(ndn::name::UriFormat::ALTERNATE);
   reference.policyEpoch = "repo-policy-v1";
-  return reference;
+  return reference.canonicalized();
 }
 
 ndn_service_framework::ResponseMessage
@@ -551,14 +552,8 @@ makeRepoPublisherUser(NdnsfIntegrationEnvironment& environment, size_t index,
   security.encapsulatedDataValidator = std::make_shared<ndn::svs::BaseValidator>();
   ndn::svs::SVSPubSubOptions pubSubOptions;
   pubSubOptions.useTimestamp = false;
-  // Provider ingress interprets the final producer-node component as the
-  // process session ID. Keep each simulated publisher in its own namespace;
-  // the provider index is not a session number shared across publishers.
-  auto producerNode = environment.profile().providerNode;
-  if (index != 0) {
-    producerNode.append("p" + std::to_string(index));
-  }
-  producerNode.append("repo-publisher-user").append("0");
+  // A Provider acting as User has the actual actor prefix and a distinct role/session.
+  auto producerNode = ndn::Name(providerIdentity).append("user").append("1");
   auto pubSub = std::make_shared<ndn::svs::SVSPubSub>(
     environment.profile().syncPrefix, producerNode,
     environment.providerFace(index),
@@ -567,15 +562,15 @@ makeRepoPublisherUser(NdnsfIntegrationEnvironment& environment, size_t index,
   publisherUser->attachLocalMockPubSubForTest(std::move(pubSub));
 
   ndn_service_framework::PermissionResponse permissions;
-  permissions.setTargetIdentity(providerIdentity.toUri());
+  permissions.setTargetIdentity(providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE));
   permissions.setPermissionKind(ndn_service_framework::tlv::UserPermission);
   permissions.setPolicyEpoch(1);
   for (size_t targetIndex = 0; targetIndex < environment.providerCount(); ++targetIndex) {
     const auto targetProvider = environment.provider(targetIndex).getName();
     for (const auto& operation : operations) {
       ndn_service_framework::PermissionEntry entry;
-      entry.setProviderName(targetProvider.toUri());
-      entry.setServiceName(repoService(servicePrefix, operation).toUri());
+      entry.setProviderName(targetProvider.toUri(ndn::name::UriFormat::ALTERNATE));
+      entry.setServiceName(repoService(servicePrefix, operation).toUri(ndn::name::UriFormat::ALTERNATE));
       entry.setToken("");
       entry.setTtl(0);
       entry.setVersion(1);
@@ -604,10 +599,10 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
   BootstrapProfile profile;
   profile.groupPrefix = "/ndnsf/spec202/owner-budget/group";
   profile.syncPrefix = "/ndnsf/spec202/owner-budget/sync";
-  profile.userNode = "/ndnsf/spec202/owner-budget/user";
-  profile.providerNode = "/ndnsf/spec202/owner-budget/provider";
   profile.userIdentity = "/test/user/spec202/owner-budget";
   profile.providerIdentity = "/test/provider/spec202/owner-budget";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
   profile.attributeAuthority = "/test/aa/spec202/owner-budget";
   profile.providerCount = 2;
   profile.providerCanActAsUser = true;
@@ -618,11 +613,11 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
   BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
   auto publisher = makeRepoPublisherUser(environment, 1, servicePrefix, operations);
   const repo::RepoArtifactTarget owner{
-    "/logical/spec202/owner-budget-seed", environment.provider(0).getName().toUri(),
-    servicePrefix.toUri()};
+    "/logical/spec202/owner-budget-seed", environment.provider(0).getName().toUri(ndn::name::UriFormat::ALTERNATE),
+    servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   const repo::RepoArtifactTarget target{
-    "/logical/spec202/owner-budget-target", environment.provider(1).getName().toUri(),
-    servicePrefix.toUri()};
+    "/logical/spec202/owner-budget-target", environment.provider(1).getName().toUri(ndn::name::UriFormat::ALTERNATE),
+    servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   auto objects = temporary.path() / "objects";
   auto database = temporary.path() / "artifact-v2.sqlite";
   repo::StorageCapability capability;
@@ -673,7 +668,7 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
       const auto payload = request.getPayload();
       const auto query = repo::PublishOperationStatusRequest::fromJson(
         std::string(payload.begin(), payload.end()));
-      if (requester.toUri() != target.providerIdentity ||
+      if (requester.toUri(ndn::name::UriFormat::ALTERNATE) != target.providerIdentity ||
           query.operationId != snapshot.operationId || !query.target ||
           !(*query.target == target)) {
         ndn_service_framework::ResponseMessage denied;
@@ -692,9 +687,9 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
   const std::vector<uint8_t> bytes{0x62, 0x75, 0x64, 0x67};
   const auto attempt = [&] (const std::string& suffix) {
     repo::ArtifactStoreRequest write;
-    write.reference = makeReference("owner-budget-" + suffix, bytes);
+    write.reference = makeReference("owner-budget-" + suffix, bytes, profile.userIdentity);
     write.operationId = repo::makePublishOperationId(
-      environment.user().getName().toUri(), owner,
+      environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE), owner,
       repo::digestPublishIdempotencyKey("owner-budget-" + suffix));
     write.generation = 1;
     write.bytes = bytes;
@@ -717,7 +712,7 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
     seedCatalog.updatePublishOperationTarget(write.operationId,
       {target, "IN_FLIGHT", 1, 1, std::nullopt, {}}, 1);
     auto acceptedOperation = seedCatalog.lookupPublishOperation(
-      write.operationId, environment.user().getName().toUri());
+      write.operationId, environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE));
     BOOST_REQUIRE(acceptedOperation);
     status = acceptedOperation->status;
     status.validate();
@@ -844,10 +839,10 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
   BootstrapProfile profile;
   profile.groupPrefix = "/ndnsf/spec202/early-seed/group";
   profile.syncPrefix = "/ndnsf/spec202/early-seed/sync";
-  profile.userNode = "/ndnsf/spec202/early-seed/user";
-  profile.providerNode = "/ndnsf/spec202/early-seed/provider";
   profile.userIdentity = "/test/user/spec202/early-seed";
   profile.providerIdentity = "/test/provider/spec202/early-seed";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
   profile.attributeAuthority = "/test/aa/spec202/early-seed";
   profile.providerCount = 3;
   profile.providerCanActAsUser = true;
@@ -859,9 +854,9 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
   BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
   auto publisher = makeRepoPublisherUser(environment, 0, servicePrefix, operations);
   const std::vector<repo::RepoArtifactTarget> targets{
-    {"/logical/early-seed", environment.provider(0).getName().toUri(), servicePrefix.toUri()},
-    {"/logical/early-B", environment.provider(1).getName().toUri(), servicePrefix.toUri()},
-    {"/logical/early-C", environment.provider(2).getName().toUri(), servicePrefix.toUri()}};
+    {"/logical/early-seed", environment.provider(0).getName().toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)},
+    {"/logical/early-B", environment.provider(1).getName().toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)},
+    {"/logical/early-C", environment.provider(2).getName().toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)}};
   const auto storeService = repoService(servicePrefix, "STORE");
   auto stores = std::make_shared<std::atomic<unsigned>>(0);
   for (size_t index = 1; index < targets.size(); ++index) {
@@ -887,7 +882,7 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
   capability.repoMode = "persistent";
   capability.freeBytes = 8 * 1024 * 1024;
   environment.enableProductionIngressForTest();
-  const auto principal = environment.user().getName().toUri();
+  const auto principal = environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE);
   for (const bool corrupt : {false, true}) {
     const auto label = corrupt ? "corrupt-seed" : "missing-seed";
     const auto root = temporary.path() / label;
@@ -902,7 +897,7 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
     auto node = openNode();
     node->registerServices(environment.provider(0));
     const std::vector<uint8_t> bytes{0x73, 0x65, 0x65, 0x64};
-    const auto reference = makeReference(label, bytes);
+    const auto reference = makeReference(label, bytes, profile.userIdentity);
     repo::PublishOperationIntent intent;
     intent.idempotencyKeyDigest = repo::digestPublishIdempotencyKey(label);
     intent.reference = reference;
@@ -1014,10 +1009,10 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
   BootstrapProfile profile;
   profile.groupPrefix = "/ndnsf/spec202/source-loss-isolated/group";
   profile.syncPrefix = "/ndnsf/spec202/source-loss-isolated/sync";
-  profile.userNode = "/ndnsf/spec202/source-loss-isolated/user";
-  profile.providerNode = "/ndnsf/spec202/source-loss-isolated/provider";
   profile.userIdentity = "/test/user/spec202/source-loss-isolated";
   profile.providerIdentity = "/test/provider/spec202/source-loss-isolated";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
   profile.attributeAuthority = "/test/aa/spec202/source-loss-isolated";
   profile.providerCount = 3;
   profile.providerCanActAsUser = true;
@@ -1048,11 +1043,11 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
   const auto replicaProvider = environment.provider(1).getName();
   const auto unselectedProvider = environment.provider(2).getName();
   const repo::RepoArtifactTarget seed{
-    seedRepo, seedProvider.toUri(), servicePrefix.toUri()};
+    seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   const repo::RepoArtifactTarget replica{
-    replicaRepo, replicaProvider.toUri(), servicePrefix.toUri()};
+    replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   const repo::RepoArtifactTarget unselected{
-    unselectedRepo, unselectedProvider.toUri(), servicePrefix.toUri()};
+    unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   const auto seedRoot = temporary.path() / "seed";
   const auto seedObjects = seedRoot / "objects";
   const auto seedDatabase = seedRoot / "artifact-v2.sqlite";
@@ -1073,7 +1068,7 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
     servicePrefix, replicaCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       replicaObjects.string(), 1024 * 1024, 4096, "spec192-recovery-replica"),
-    replicaRepo, replicaProvider.toUri(), replicaDatabase.string(), artifactLimits);
+    replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), replicaDatabase.string(), artifactLimits);
   replicaNode->registerServices(environment.provider(1), publisherUsers[1], 1500, 8000);
   repo::StorageCapability unselectedCapability = seedCapability;
   unselectedCapability.repoNode = unselectedRepo;
@@ -1081,7 +1076,7 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
     servicePrefix, unselectedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       unselectedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-unselected"),
-    unselectedRepo, unselectedProvider.toUri(), unselectedDatabase.string(), artifactLimits);
+    unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), unselectedDatabase.string(), artifactLimits);
   unselectedNode->registerServices(
     environment.provider(2), publisherUsers[2], 1500, 8000);
   BOOST_REQUIRE(unselectedNode);
@@ -1096,7 +1091,7 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
     servicePrefix, seedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       seedObjects.string(), 1024 * 1024, 4096, "spec202-source-loss-seed"),
-    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+    seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   sourceLossSeed->registerServices(environment.provider(0));
   unselectedNode->registerServices(environment.provider(2), publisherUsers[2], 1500, 8000);
   environment.enableProductionIngressForTest();
@@ -1106,7 +1101,7 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
     });
   });
   const std::vector<uint8_t> lossBytes{0x6c, 0x6f, 0x73};
-  const auto lossReference = makeReference("spec202-source-loss", lossBytes);
+  const auto lossReference = makeReference("spec202-source-loss", lossBytes, profile.userIdentity);
   const auto lossSource = temporary.path() / "source-loss.bin";
   writeFile(lossSource, lossBytes);
   repo::SelectedRepoSet lossPlacement;
@@ -1120,7 +1115,7 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
       lossPlacement, "spec202-source-loss-key", 120000);
   });
   BOOST_REQUIRE_EQUAL(persistentReceiptRows(
-    seedDatabase, seedRepo, seedProvider.toUri(), lossReference), 1);
+    seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 1);
   const auto lossAccepted = runWithFacePump(environment, [&] {
     return recoveryStatusApi.getPublishStatus(lossHandle, 12000);
   });
@@ -1193,7 +1188,7 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
   auto lateBObserved = std::make_shared<std::atomic<unsigned>>(0);
   auto& lossObserver = environment.userPubSub();
   const auto lossSubscription = lossObserver.subscribeToProducer(
-    ndn::Name(environment.profile().providerNode).append("p1"),
+    ndn::Name(replicaProvider).append("provider"),
     [held, lateBObserved, replicaProvider, storeService,
      requester = publisherUsers[0]->getName()] (
       const ndn::svs::SVSPubSub::SubscriptionData& publication) {
@@ -1219,7 +1214,7 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
     servicePrefix, seedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       seedObjects.string(), 1024 * 1024, 4096, "spec202-source-loss-recovered"),
-    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+    seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   sourceLossSeed->registerServices(environment.provider(0), publisherUsers[0], 1500, 8000);
   const auto lossStatus = waitForTerminalPublish(
     environment, recoveryStatusApi, lossHandle);
@@ -1248,11 +1243,11 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
     }
   }
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    replicaDatabase, replicaRepo, replicaProvider.toUri(), lossReference), 0);
+    replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 0);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(), lossReference), 0);
+    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 0);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    seedDatabase, seedRepo, seedProvider.toUri(), lossReference), 1);
+    seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 1);
   repo::SqliteArtifactMetadataStore lossCatalog(seedDatabase.string(), false, 15);
   const auto lossAggregate = lossCatalog.lookupAggregateReceipt(lossStatus.receiptId);
   BOOST_REQUIRE(lossAggregate);
@@ -1289,10 +1284,10 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BootstrapProfile profile;
   profile.groupPrefix = "/ndnsf/spec192/recovery/group";
   profile.syncPrefix = "/ndnsf/spec192/recovery/sync";
-  profile.userNode = "/ndnsf/spec192/recovery/user";
-  profile.providerNode = "/ndnsf/spec192/recovery/provider";
   profile.userIdentity = "/test/user/spec192/recovery";
   profile.providerIdentity = "/test/provider/spec192/recovery";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
   profile.attributeAuthority = "/test/aa/spec192/recovery";
   profile.providerCount = 3;
   profile.providerCanActAsUser = true;
@@ -1323,11 +1318,11 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   const auto replicaProvider = environment.provider(1).getName();
   const auto unselectedProvider = environment.provider(2).getName();
   const repo::RepoArtifactTarget seed{
-    seedRepo, seedProvider.toUri(), servicePrefix.toUri()};
+    seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   const repo::RepoArtifactTarget replica{
-    replicaRepo, replicaProvider.toUri(), servicePrefix.toUri()};
+    replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   const repo::RepoArtifactTarget unselected{
-    unselectedRepo, unselectedProvider.toUri(), servicePrefix.toUri()};
+    unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   const auto seedRoot = temporary.path() / "seed";
   const auto seedObjects = seedRoot / "objects";
   const auto seedDatabase = seedRoot / "artifact-v2.sqlite";
@@ -1348,7 +1343,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     servicePrefix, replicaCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       replicaObjects.string(), 1024 * 1024, 4096, "spec192-recovery-replica"),
-    replicaRepo, replicaProvider.toUri(), replicaDatabase.string(), artifactLimits);
+    replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), replicaDatabase.string(), artifactLimits);
   replicaNode->registerServices(environment.provider(1), publisherUsers[1], recoveryAckMs, 20000);
   repo::StorageCapability unselectedCapability = seedCapability;
   unselectedCapability.repoNode = unselectedRepo;
@@ -1356,7 +1351,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     servicePrefix, unselectedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       unselectedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-unselected"),
-    unselectedRepo, unselectedProvider.toUri(), unselectedDatabase.string(), artifactLimits);
+    unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), unselectedDatabase.string(), artifactLimits);
   unselectedNode->registerServices(
     environment.provider(2), publisherUsers[2], recoveryAckMs, 20000);
   BOOST_REQUIRE(unselectedNode);
@@ -1364,7 +1359,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     servicePrefix, seedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       seedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-seed"),
-    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+    seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   seedNode->registerServices(environment.provider(0));
 
   environment.enableProductionIngressForTest();
@@ -1375,7 +1370,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   });
 
   const std::vector<uint8_t> bytes{0x53, 0x70, 0x65, 0x63};
-  auto reference = makeReference("restart-pending-target", bytes);
+  auto reference = makeReference("restart-pending-target", bytes, profile.userIdentity);
   const auto canonicalDigest = reference.contentDigest;
   std::transform(reference.contentDigest.begin(), reference.contentDigest.end(),
                  reference.contentDigest.begin(), [] (char value) {
@@ -1394,7 +1389,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
               intent.targets.end());
   intent.requestDigest = repo::makePublishRequestDigest(
     reference, intent.generation, seed, intent.consistency, intent.targets);
-  const auto submittingPrincipal = environment.user().getName().toUri();
+  const auto submittingPrincipal = environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE);
   const auto operationId = repo::makePublishOperationId(
     submittingPrincipal, seed, intent.idempotencyKeyDigest);
 
@@ -1417,17 +1412,17 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   const auto deleteService = repoService(servicePrefix, "DELETE");
   const std::vector<uint8_t> unacceptedBytes{0x75, 0x6e, 0x61, 0x75};
   const auto unacceptedReference = makeReference(
-    "matching-owner-without-journal", unacceptedBytes);
+    "matching-owner-without-journal", unacceptedBytes, profile.userIdentity);
   const auto verifyUnacceptedSeedState = [&] {
     const auto objectName = repo::artifactStorageObjectName(unacceptedReference);
     BOOST_CHECK(!seedNode->core().has(objectName));
     BOOST_CHECK(!fs::exists(committedPayloadPath(seedObjects, unacceptedReference)));
     BOOST_CHECK_EQUAL(repoManifestCount(seedObjects), 0U);
     BOOST_CHECK_EQUAL(persistentReceiptRows(
-      seedDatabase, seedRepo, seedProvider.toUri(), unacceptedReference), 0);
+      seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), unacceptedReference), 0);
     repo::SqliteArtifactMetadataStore catalog(seedDatabase.string(), false, 15);
     BOOST_CHECK(!catalog.lookupPersistentLocation(
-      unacceptedReference, seedRepo, seedProvider.toUri(), 0));
+      unacceptedReference, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), 0));
   };
   repo::ArtifactStoreRequest unacceptedStore;
   unacceptedStore.operationId = repo::makePublishOperationId(
@@ -1668,7 +1663,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   // artifact envelopes. Exercise each exposed generic Repo mutation against
   // the production handlers, using the exact object names the artifact API
   // derives so a legacy request cannot bypass receipt ownership.
-  const auto legacyStoreReference = makeReference("legacy-generic-store", unacceptedBytes);
+  const auto legacyStoreReference = makeReference("legacy-generic-store", unacceptedBytes, profile.userIdentity);
   const auto legacyStoreManifest = makeLegacyManifest(
     legacyStoreReference, "spec192-legacy-store");
   denied = dispatchLegacyMutation(
@@ -1677,7 +1672,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK_MESSAGE(!denied.getStatus(), denied.getErrorInfo());
   BOOST_CHECK(!unselectedNode->core().has(legacyStoreManifest.objectName));
 
-  const auto legacyRangeReference = makeReference("legacy-generic-range", unacceptedBytes);
+  const auto legacyRangeReference = makeReference("legacy-generic-range", unacceptedBytes, profile.userIdentity);
   const auto legacyRangeManifest = makeLegacyManifest(
     legacyRangeReference, "spec192-legacy-range");
   const std::vector<uint8_t> rangeFirstHalf(
@@ -1698,7 +1693,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     std::exception);
   unselectedNode->core().abortRanges(legacyRangeManifest.objectName);
 
-  const auto legacyCommitReference = makeReference("legacy-generic-commit", unacceptedBytes);
+  const auto legacyCommitReference = makeReference("legacy-generic-commit", unacceptedBytes, profile.userIdentity);
   const auto legacyCommitManifest = makeLegacyManifest(
     legacyCommitReference, "spec192-legacy-commit");
   repo::FilesystemArtifactPayloadStore legacyCommitPayloadStore(
@@ -1733,7 +1728,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
                     legacyStagedRangesBefore.front().lengthBytes);
   unselectedNode->core().abortRanges(legacyCommitManifest.objectName);
 
-  const auto legacyAbortReference = makeReference("legacy-generic-abort", unacceptedBytes);
+  const auto legacyAbortReference = makeReference("legacy-generic-abort", unacceptedBytes, profile.userIdentity);
   const auto legacyAbortManifest = makeLegacyManifest(
     legacyAbortReference, "spec192-legacy-abort");
   repo::FilesystemArtifactPayloadStore legacyAbortPayloadStore(
@@ -1769,7 +1764,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   unselectedNode->core().abortRanges(legacyAbortManifest.objectName);
 
   const auto legacyManifestReference = makeReference(
-    "legacy-generic-manifest", unacceptedBytes);
+    "legacy-generic-manifest", unacceptedBytes, profile.userIdentity);
   auto legacyManifest = makeLegacyManifest(
     legacyManifestReference, "spec192-legacy-manifest");
   // If the persistent network guard is missing, this valid metadata-only
@@ -1785,7 +1780,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK(!unselectedNode->core().has(legacyManifest.objectName));
   BOOST_CHECK_EQUAL(repoManifestCount(unselectedObjects), manifestsBeforeLegacyManifest);
 
-  const auto legacyInsertReference = makeReference("legacy-generic-insert", unacceptedBytes);
+  const auto legacyInsertReference = makeReference("legacy-generic-insert", unacceptedBytes, profile.userIdentity);
   repo::RepoDataReference dataReference;
   dataReference.objectName = repo::artifactStorageObjectName(legacyInsertReference);
   dataReference.dataPrefix = "/spec192/legacy-source";
@@ -1797,7 +1792,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     "legacy-generic-insert");
   BOOST_CHECK_MESSAGE(!denied.getStatus(), denied.getErrorInfo());
 
-  const auto legacyDeleteReference = makeReference("legacy-generic-delete", unacceptedBytes);
+  const auto legacyDeleteReference = makeReference("legacy-generic-delete", unacceptedBytes, profile.userIdentity);
   const auto legacyDeleteName = repo::artifactStorageObjectName(legacyDeleteReference);
   unselectedNode->core().put(legacyDeleteName, unacceptedBytes,
                              "artifact-v2-bytes", 1, legacyDeleteReference.policyEpoch);
@@ -1808,19 +1803,19 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   (void)unselectedNode->core().handleDelete(repo::toBytes(legacyDeleteName));
 
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(),
+    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE),
     legacyStoreReference), 0);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(),
+    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE),
     legacyRangeReference), 0);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(),
+    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE),
     legacyCommitReference), 0);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(),
+    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE),
     legacyAbortReference), 0);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(),
+    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE),
     legacyManifestReference), 0);
   BOOST_CHECK(!fs::exists(committedPayloadPath(unselectedObjects, legacyStoreReference)));
   BOOST_CHECK(!fs::exists(committedPayloadPath(unselectedObjects, legacyRangeReference)));
@@ -1933,11 +1928,11 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK(!fs::exists(committedPayloadPath(unselectedObjects, reference)));
   BOOST_CHECK_EQUAL(repoManifestCount(unselectedObjects), 0U);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(), reference), 0);
+    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), reference), 0);
   {
     repo::SqliteArtifactMetadataStore catalog(unselectedDatabase.string(), false, 15);
     BOOST_CHECK(!catalog.lookupPersistentLocation(
-      reference, unselectedRepo, unselectedProvider.toUri(), 0));
+      reference, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), 0));
   }
   const auto replicaManifest = makeArtifactManifestForWrite(reference, operationId,
                                                             intent.generation);
@@ -1958,16 +1953,16 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     artifactLimits);
   BOOST_CHECK_EQUAL(replicaReceipt.operationId, operationId);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    replicaDatabase, replicaRepo, replicaProvider.toUri(), reference), 1);
+    replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), reference), 1);
   BOOST_CHECK_EQUAL(currentLocationVersion(
-    replicaDatabase, reference, replicaRepo, replicaProvider.toUri()), 1U);
+    replicaDatabase, reference, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE)), 1U);
   assertArtifactVisibility(*replicaNode, 1, replicaManifest, bytes, true,
                            "replica-receipt-committed");
 
   // A proof cached while the selected target is IN_FLIGHT must not authorize
   // a durable receipt after the owner records that target as UNKNOWN.
   const std::vector<uint8_t> lateCommitBytes{0x6c, 0x61, 0x74, 0x65};
-  const auto lateCommitReference = makeReference("stale-owner-proof", lateCommitBytes);
+  const auto lateCommitReference = makeReference("stale-owner-proof", lateCommitBytes, profile.userIdentity);
   auto lateCommitIntent = intent;
   lateCommitIntent.idempotencyKeyDigest = repo::digestPublishIdempotencyKey(
     "spec192-stale-owner-proof-key");
@@ -2072,7 +2067,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK(replicaNode->core().has(lateCommitManifest.objectName));
   BOOST_CHECK(fs::exists(committedPayloadPath(replicaObjects, lateCommitReference)));
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    replicaDatabase, replicaRepo, replicaProvider.toUri(), lateCommitReference), 0);
+    replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), lateCommitReference), 0);
   assertArtifactVisibility(*replicaNode, 1, lateCommitManifest, lateCommitBytes,
                            false, "replica-stale-owner-proof-denied");
   releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
@@ -2088,7 +2083,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     servicePrefix, seedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       seedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-seed"),
-    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+    seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   BOOST_TEST_MESSAGE("Spec192 recovery: registering replacement seed RepoNode");
   recoveredSeedNode->registerServices(
     environment.provider(0), publisherUsers[0], recoveryAckMs, 20000);
@@ -2154,13 +2149,13 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK_EQUAL(recoveredReplica->receipt->receiptId, replicaReceipt.receiptId);
   BOOST_CHECK_EQUAL(recoveredReplica->attemptCount, 2U);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    seedDatabase, seedRepo, seedProvider.toUri(), reference), 1);
+    seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), reference), 1);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    replicaDatabase, replicaRepo, replicaProvider.toUri(), reference), 1);
+    replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), reference), 1);
   BOOST_CHECK_EQUAL(currentLocationVersion(
-    seedDatabase, reference, seedRepo, seedProvider.toUri()), 1U);
+    seedDatabase, reference, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE)), 1U);
   BOOST_CHECK_EQUAL(currentLocationVersion(
-    replicaDatabase, reference, replicaRepo, replicaProvider.toUri()), 1U);
+    replicaDatabase, reference, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE)), 1U);
 
   // Count 2 is durable before its STORE can be emitted. A later owner restart
   // must replay that same operation ID once in the new worker pass; the target
@@ -2169,7 +2164,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   recoveredSeedNode.reset();
   const std::vector<uint8_t> exhaustedReplayBytes{0x72, 0x65, 0x70};
   const auto exhaustedReplayReference = makeReference(
-    "restart-exhausted-replay", exhaustedReplayBytes);
+    "restart-exhausted-replay", exhaustedReplayBytes, profile.userIdentity);
   const std::string exhaustedReplayKey =
     "spec192-recovery-exhausted-replay-key";
   repo::PublishOperationIntent exhaustedReplayIntent;
@@ -2190,7 +2185,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     servicePrefix, seedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       seedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-seed"),
-    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+    seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   exhaustedSeedNode->registerServices(environment.provider(0));
   const auto exhaustedIntentJson = exhaustedReplayIntent.toJson();
   const std::vector<uint8_t> exhaustedIntentWire(
@@ -2258,7 +2253,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     servicePrefix, seedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       seedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-seed"),
-    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+    seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   recoveredSeedNode->registerServices(
     environment.provider(0), publisherUsers[0], recoveryAckMs, 20000);
   repo::PublishOperationHandle exhaustedReplayHandle;
@@ -2278,7 +2273,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
                     exhaustedReplayOperationId);
   BOOST_CHECK_EQUAL(exhaustedReplayStoreCalls->load(), 1U);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    replicaDatabase, replicaRepo, replicaProvider.toUri(),
+    replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE),
     exhaustedReplayReference), 1);
 
   releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
@@ -2287,7 +2282,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     servicePrefix, seedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       seedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-seed"),
-    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+    seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   recoverySeedNode->registerServices(
     environment.provider(0), publisherUsers[0], recoveryAckMs, 20000);
 
@@ -2346,7 +2341,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
 
   const std::vector<uint8_t> reconciliationBytes{0x72, 0x65, 0x63};
   const auto reconciliationReference = makeReference(
-    "target-reconciliation", reconciliationBytes);
+    "target-reconciliation", reconciliationBytes, profile.userIdentity);
   const auto reconciliationSource = temporary.path() / "target-reconciliation.bin";
   writeFile(reconciliationSource, reconciliationBytes);
   repo::SelectedRepoSet reconciliationPlacement;
@@ -2378,22 +2373,22 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_REQUIRE(reconciledTarget->receipt);
   BOOST_CHECK_EQUAL(reconciledTarget->attemptCount, 2U);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    replicaDatabase, replicaRepo, replicaProvider.toUri(),
+    replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE),
     reconciliationReference), 1);
   BOOST_CHECK_EQUAL(currentLocationVersion(
     replicaDatabase, reconciliationReference, replicaRepo,
-    replicaProvider.toUri()), 1U);
+    replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE)), 1U);
   BOOST_CHECK_EQUAL(commitThenErrorCalls->load(), 2U);
   BOOST_CHECK(fs::exists(committedPayloadPath(
     replicaObjects, reconciliationReference)));
 
   // Reopen all owners with the original budgets before timeout/source-loss.
   const auto replicaLocationBeforeReopen = currentLocationRecord(
-    replicaDatabase, reference, replicaRepo, replicaProvider.toUri());
+    replicaDatabase, reference, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE));
   const auto replayLocationBeforeReopen = currentLocationRecord(
-    replicaDatabase, exhaustedReplayReference, replicaRepo, replicaProvider.toUri());
+    replicaDatabase, exhaustedReplayReference, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE));
   const auto seedLocationBeforeReopen = currentLocationRecord(
-    seedDatabase, reference, seedRepo, seedProvider.toUri());
+    seedDatabase, reference, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE));
   std::weak_ptr<repo::RepoNode> previousSeed = recoverySeedNode;
   std::weak_ptr<repo::RepoNode> previousReplica = replicaNode;
   std::weak_ptr<repo::RepoNode> previousUnselected = unselectedNode;
@@ -2416,37 +2411,37 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     servicePrefix, replicaCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       replicaObjects.string(), 1024 * 1024, 4096, "spec192-recovery-replica"),
-    replicaRepo, replicaProvider.toUri(), replicaDatabase.string(), artifactLimits);
+    replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), replicaDatabase.string(), artifactLimits);
   replicaNode->registerServices(environment.provider(1), publisherUsers[1], 1500, 8000);
   replicaNode->registerServices(environment.provider(2));
   unselectedNode = std::make_shared<repo::RepoNode>(
     servicePrefix, unselectedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       unselectedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-unselected"),
-    unselectedRepo, unselectedProvider.toUri(), unselectedDatabase.string(), artifactLimits);
+    unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), unselectedDatabase.string(), artifactLimits);
   recoverySeedNode = std::make_shared<repo::RepoNode>(
     servicePrefix, seedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       seedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-seed"),
-    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+    seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   recoverySeedNode->registerServices(
     environment.provider(0), publisherUsers[0], 1500, 8000);
   const auto seedLocationAfterReopen = currentLocationRecord(
-    seedDatabase, reference, seedRepo, seedProvider.toUri());
+    seedDatabase, reference, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE));
   BOOST_CHECK_EQUAL(seedLocationAfterReopen.receiptId, seedLocationBeforeReopen.receiptId);
   BOOST_CHECK_EQUAL(seedLocationAfterReopen.locationVersion, seedLocationBeforeReopen.locationVersion);
   const auto replicaLocationAfterReopen = currentLocationRecord(
-    replicaDatabase, reference, replicaRepo, replicaProvider.toUri());
+    replicaDatabase, reference, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE));
   const auto replayLocationAfterReopen = currentLocationRecord(
-    replicaDatabase, exhaustedReplayReference, replicaRepo, replicaProvider.toUri());
+    replicaDatabase, exhaustedReplayReference, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE));
   BOOST_CHECK_EQUAL(replicaLocationAfterReopen.receiptId, replicaLocationBeforeReopen.receiptId);
   BOOST_CHECK_EQUAL(replicaLocationAfterReopen.locationVersion, replicaLocationBeforeReopen.locationVersion);
   BOOST_CHECK_EQUAL(replayLocationAfterReopen.receiptId, replayLocationBeforeReopen.receiptId);
   BOOST_CHECK_EQUAL(replayLocationAfterReopen.locationVersion, replayLocationBeforeReopen.locationVersion);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    replicaDatabase, replicaRepo, replicaProvider.toUri(), reference), 1);
+    replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), reference), 1);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    replicaDatabase, replicaRepo, replicaProvider.toUri(), exhaustedReplayReference), 1);
+    replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), exhaustedReplayReference), 1);
 
   environment.provider(1).addService(
     storeService, std::move(readyAck),
@@ -2455,7 +2450,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   // Keep this within maxChunkBytes so the selected request uses STORE, the
   // exact operation covered by delayedStore above.
   const std::vector<uint8_t> timeoutBytes{0x74, 0x69, 0x6d};
-  const auto timeoutReference = makeReference("target-timeout", timeoutBytes);
+  const auto timeoutReference = makeReference("target-timeout", timeoutBytes, profile.userIdentity);
   const auto timeoutSource = temporary.path() / "target-timeout.bin";
   writeFile(timeoutSource, timeoutBytes);
   repo::SelectedRepoSet timeoutPlacement;
@@ -2498,9 +2493,9 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK(!unknownTarget->receipt);
   BOOST_CHECK_EQUAL(delayedStoreCalls->load(), 2U);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    seedDatabase, seedRepo, seedProvider.toUri(), timeoutReference), 1);
+    seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), timeoutReference), 1);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    replicaDatabase, replicaRepo, replicaProvider.toUri(), timeoutReference), 0);
+    replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), timeoutReference), 0);
   BOOST_CHECK(!fs::exists(committedPayloadPath(replicaObjects, timeoutReference)));
 
   const auto lateResponseDrainDeadline = std::chrono::steady_clock::now() + 2s;
@@ -2516,11 +2511,11 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     servicePrefix, seedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       seedObjects.string(), 1024 * 1024, 4096, "spec202-source-loss-seed"),
-    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+    seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   sourceLossSeed->registerServices(environment.provider(0));
   unselectedNode->registerServices(environment.provider(2), publisherUsers[2], 1500, 8000);
   const std::vector<uint8_t> lossBytes{0x6c, 0x6f, 0x73};
-  const auto lossReference = makeReference("spec202-source-loss", lossBytes);
+  const auto lossReference = makeReference("spec202-source-loss", lossBytes, profile.userIdentity);
   const auto lossSource = temporary.path() / "source-loss.bin";
   writeFile(lossSource, lossBytes);
   repo::SelectedRepoSet lossPlacement;
@@ -2534,7 +2529,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
       lossPlacement, "spec202-source-loss-key", 120000);
   });
   BOOST_REQUIRE_EQUAL(persistentReceiptRows(
-    seedDatabase, seedRepo, seedProvider.toUri(), lossReference), 1);
+    seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 1);
   const auto lossAccepted = runWithFacePump(environment, [&] {
     return recoveryStatusApi.getPublishStatus(lossHandle, 12000);
   });
@@ -2607,7 +2602,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   auto lateBObserved = std::make_shared<std::atomic<unsigned>>(0);
   auto& lossObserver = environment.userPubSub();
   const auto lossSubscription = lossObserver.subscribeToProducer(
-    ndn::Name(environment.profile().providerNode).append("p1"),
+    ndn::Name(replicaProvider).append("provider"),
     [held, lateBObserved, replicaProvider, storeService,
      requester = publisherUsers[0]->getName()] (
       const ndn::svs::SVSPubSub::SubscriptionData& publication) {
@@ -2633,7 +2628,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     servicePrefix, seedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       seedObjects.string(), 1024 * 1024, 4096, "spec202-source-loss-recovered"),
-    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+    seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   sourceLossSeed->registerServices(environment.provider(0), publisherUsers[0], 1500, 8000);
   const auto lossStatus = waitForTerminalPublish(
     environment, recoveryStatusApi, lossHandle);
@@ -2662,11 +2657,11 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     }
   }
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    replicaDatabase, replicaRepo, replicaProvider.toUri(), lossReference), 0);
+    replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 0);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(), lossReference), 0);
+    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 0);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
-    seedDatabase, seedRepo, seedProvider.toUri(), lossReference), 1);
+    seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 1);
   repo::SqliteArtifactMetadataStore lossCatalog(seedDatabase.string(), false, 15);
   const auto lossAggregate = lossCatalog.lookupAggregateReceipt(lossStatus.receiptId);
   BOOST_REQUIRE(lossAggregate);
@@ -2701,10 +2696,10 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   BootstrapProfile profile;
   profile.groupPrefix = "/ndnsf/spec192/persistent/group";
   profile.syncPrefix = "/ndnsf/spec192/persistent/sync";
-  profile.userNode = "/ndnsf/spec192/persistent/user";
-  profile.providerNode = "/ndnsf/spec192/persistent/provider";
   profile.userIdentity = "/test/user/spec192/persistent";
   profile.providerIdentity = "/test/provider/spec192/persistent";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
   profile.attributeAuthority = "/test/aa/spec192/persistent";
   profile.providerCount = 3;
   profile.providerCanActAsUser = true;
@@ -2735,7 +2730,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   std::set<std::string> expectedProviders;
   for (size_t index = 0; index < environment.providerCount(); ++index) {
     const std::string logicalRepo = "/logical/spec192/repo-" + std::to_string(index);
-    const auto providerIdentity = environment.provider(index).getName().toUri();
+    const auto providerIdentity = environment.provider(index).getName().toUri(ndn::name::UriFormat::ALTERNATE);
     expectedProviders.insert(providerIdentity);
     const auto repoRoot = temporary.path() / ("repo-" + std::to_string(index));
     const auto objectRoot = repoRoot / "objects";
@@ -2787,15 +2782,9 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
 
   const std::vector<uint8_t> discoveryBytes{0x10, 0x11, 0x12, 0x13, 0x14};
   repo::ArtifactCapabilityRequirements requirements;
-  requirements.artifact = makeReference("discovery-probe", discoveryBytes);
-  requirements.rootSignatureAlgorithm = "rsa-sha256";
-  requirements.chunkBytes = 4;
-  requirements.rootEncodedBytes = 1;
-  requirements.pageEncodedBytes = 1;
-  requirements.pageEntries = 1;
-  requirements.manifestDepth = 1;
-  requirements.requireResume = true;
-  requirements.requireReplicaReceipts = true;
+  requirements.artifact = makeReference("discovery-probe", discoveryBytes, profile.userIdentity);
+  requirements.artifact.formatVersion = "raw-file-v1";
+  requirements.artifact.rootManifestName.clear();
   const auto discovered = runWithFacePump(environment, [&] {
     return discoveryApi.discoverRepoCandidates(requirements,
                                                discoveryConfig.requestTimeoutMs);
@@ -2804,17 +2793,17 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   std::set<std::string> discoveredProviders;
   std::set<std::string> discoveredRepos;
   for (const auto& candidate : discovered.candidates) {
-    discoveredProviders.insert(candidate.providerIdentity.toUri());
+    discoveredProviders.insert(candidate.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE));
     discoveredRepos.insert(candidate.repoNode);
-    BOOST_CHECK_NE(candidate.repoNode, candidate.providerIdentity.toUri());
-    BOOST_CHECK_EQUAL(candidate.servicePrefix.toUri(), servicePrefix.toUri());
+    BOOST_CHECK_NE(candidate.repoNode, candidate.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE));
+    BOOST_CHECK_EQUAL(candidate.servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE));
     BOOST_CHECK(candidate.capability.supportsReplicaReceipts);
     BOOST_CHECK_EQUAL(repoManifestCount(repoRoots.at(candidate.repoNode)), 0U);
     BOOST_CHECK(!fs::exists(committedPayloadPath(
       repoRoots.at(candidate.repoNode), requirements.artifact)));
     BOOST_CHECK_EQUAL(persistentReceiptRows(
       metadataDatabases.at(candidate.repoNode), candidate.repoNode,
-      candidate.providerIdentity.toUri(), requirements.artifact), 0);
+      candidate.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE), requirements.artifact), 0);
   }
   BOOST_CHECK(discoveredProviders == expectedProviders);
   BOOST_CHECK_EQUAL(discoveredRepos.size(), 3);
@@ -2842,7 +2831,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
                            consistency == repo::RepoWriteConsistency::Quorum ? 2 : 3),
       0xa1, 0xb2, 0xc3,
     };
-    const auto reference = makeReference("direct-" + label, bytes);
+    const auto reference = makeReference("direct-" + label, bytes, profile.userIdentity);
     const auto sourcePath = temporary.path() / ("source-" + label + ".bin");
     writeFile(sourcePath, bytes);
     auto placement = selected;
@@ -2872,10 +2861,10 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
       if (replica->state == "COMMITTED") {
         ++committed;
         ++expectedManifestCounts[target.repoNode];
-        BOOST_CHECK_EQUAL(replica->providerIdentity, target.providerIdentity.toUri());
+        BOOST_CHECK_EQUAL(replica->providerIdentity, target.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE));
         BOOST_CHECK_EQUAL(persistentReceiptRows(
           metadataDatabases.at(target.repoNode), target.repoNode,
-          target.providerIdentity.toUri(), reference), 1);
+          target.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE), reference), 1);
         BOOST_CHECK(fs::exists(payloadPath));
         BOOST_CHECK(readFile(payloadPath) == bytes);
         BOOST_CHECK_EQUAL(repoManifestCount(repoRoots.at(target.repoNode)),
@@ -2888,7 +2877,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
                          << " failure=" << replica->failureReason);
         BOOST_CHECK_EQUAL(persistentReceiptRows(
           metadataDatabases.at(target.repoNode), target.repoNode,
-          target.providerIdentity.toUri(), reference), 0);
+          target.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE), reference), 0);
         BOOST_CHECK(!fs::exists(payloadPath));
         BOOST_CHECK_EQUAL(repoManifestCount(repoRoots.at(target.repoNode)),
                           expectedManifestCounts[target.repoNode]);
@@ -2902,7 +2891,9 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   oneTarget.seedRepoId = oneTarget.targets.front().repoNode;
   oneTarget.consistency = repo::RepoWriteConsistency::All;
   const std::vector<uint8_t> selectedBytes{0x73, 0x65, 0x6c, 0x65, 0x63, 0x74, 0x65, 0x64};
-  const auto selectedReference = makeReference("selected-only", selectedBytes);
+  auto selectedReference = makeReference("selected-only", selectedBytes, profile.userIdentity);
+  selectedReference.formatVersion = "raw-file-v1";
+  selectedReference.rootManifestName.clear();
   const auto selectedPath = temporary.path() / "selected-only.bin";
   writeFile(selectedPath, selectedBytes);
   const auto selectedResult = runWithFacePump(environment, [&] {
@@ -2919,7 +2910,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
     const auto payloadPath = committedPayloadPath(repoRoots.at(candidate.repoNode), selectedReference);
     const auto rowCount = persistentReceiptRows(
       metadataDatabases.at(candidate.repoNode), candidate.repoNode,
-      candidate.providerIdentity.toUri(), selectedReference);
+      candidate.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE), selectedReference);
     if (wasSelected) {
       ++expectedManifestCounts[candidate.repoNode];
       BOOST_CHECK_EQUAL(rowCount, 1);
@@ -2949,11 +2940,11 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   BOOST_CHECK_EQUAL(persistentReceiptRows(
     metadataDatabases.at(oneTarget.targets.front().repoNode),
     oneTarget.targets.front().repoNode,
-    oneTarget.targets.front().providerIdentity.toUri(), selectedReference), 2);
+    oneTarget.targets.front().providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE), selectedReference), 2);
   BOOST_CHECK_EQUAL(currentLocationVersion(
     metadataDatabases.at(oneTarget.targets.front().repoNode), selectedReference,
     oneTarget.targets.front().repoNode,
-    oneTarget.targets.front().providerIdentity.toUri()), 2U);
+    oneTarget.targets.front().providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE)), 2U);
 
   auto changedSelection = oneTarget;
   const auto changedCandidate = std::find_if(
@@ -2991,11 +2982,11 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   BOOST_CHECK_EQUAL(persistentReceiptRows(
     metadataDatabases.at(oneTarget.targets.front().repoNode),
     oneTarget.targets.front().repoNode,
-    oneTarget.targets.front().providerIdentity.toUri(), selectedReference), 3);
+    oneTarget.targets.front().providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE), selectedReference), 3);
   BOOST_CHECK_EQUAL(currentLocationVersion(
     metadataDatabases.at(oneTarget.targets.front().repoNode), selectedReference,
     oneTarget.targets.front().repoNode,
-    oneTarget.targets.front().providerIdentity.toUri()), 3U);
+    oneTarget.targets.front().providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE)), 3U);
   const auto historicalStatus = runWithFacePump(environment, [&] {
     return selectedWriteApi.getPublishStatus(firstHandle, 8000);
   });
@@ -3012,7 +3003,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   const auto repairedTarget = std::find_if(
     repairedStatus.targets.begin(), repairedStatus.targets.end(), [&oneTarget] (const auto& item) {
       return item.target.repoNode == oneTarget.targets.front().repoNode &&
-             item.target.providerIdentity == oneTarget.targets.front().providerIdentity.toUri();
+             item.target.providerIdentity == oneTarget.targets.front().providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE);
     });
   BOOST_REQUIRE(repairedTarget != repairedStatus.targets.end());
   BOOST_REQUIRE(repairedTarget->receipt);
@@ -3058,7 +3049,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
       repoRoots.at(candidate.repoNode), selectedReference);
     const auto rowCount = persistentReceiptRows(
       metadataDatabases.at(candidate.repoNode), candidate.repoNode,
-      candidate.providerIdentity.toUri(), selectedReference);
+      candidate.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE), selectedReference);
     BOOST_CHECK_EQUAL(rowCount, expectedRows);
     BOOST_CHECK_EQUAL(fs::exists(payloadPath), expectedRows != 0);
     if (expectedRows != 0) {
@@ -3080,7 +3071,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   std::reverse(permutedQuorumTargets.targets.begin(),
                permutedQuorumTargets.targets.end());
   const std::vector<uint8_t> quorumBytes{0x71, 0x75, 0x6f, 0x72, 0x75, 0x6d};
-  const auto quorumReference = makeReference("quorum-order", quorumBytes);
+  const auto quorumReference = makeReference("quorum-order", quorumBytes, profile.userIdentity);
   const auto quorumPath = temporary.path() / "quorum-order.bin";
   writeFile(quorumPath, quorumBytes);
   const auto quorumResult = runWithFacePump(environment, [&] {
@@ -3136,14 +3127,14 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
       repoRoots.at(candidate.repoNode), quorumReference);
     const auto rowCount = persistentReceiptRows(
       metadataDatabases.at(candidate.repoNode), candidate.repoNode,
-      candidate.providerIdentity.toUri(), quorumReference);
+      candidate.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE), quorumReference);
     BOOST_CHECK_EQUAL(rowCount, quorumWrites);
     BOOST_CHECK_EQUAL(fs::exists(payloadPath), quorumWrites != 0);
     if (quorumWrites != 0) {
       BOOST_CHECK(readFile(payloadPath) == quorumBytes);
       BOOST_CHECK_EQUAL(currentLocationVersion(
         metadataDatabases.at(candidate.repoNode), quorumReference,
-        candidate.repoNode, candidate.providerIdentity.toUri()),
+        candidate.repoNode, candidate.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE)),
         static_cast<uint64_t>(quorumWrites));
     }
     BOOST_CHECK_EQUAL(repoManifestCount(repoRoots.at(candidate.repoNode)),
@@ -3177,7 +3168,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
     const auto replica = std::find_if(handle.replicaCommits.begin(), handle.replicaCommits.end(),
       [&target] (const auto& item) {
         return item.repoNode == target.repoNode &&
-               item.providerIdentity == target.providerIdentity.toUri() &&
+               item.providerIdentity == target.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE) &&
                item.state == "COMMITTED";
       });
     if (replica == handle.replicaCommits.end()) {
@@ -3193,7 +3184,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
     const auto& replica = findFetchReplica(handle, target);
     repo::ArtifactLocationRecord location;
     location.repoNode = target.repoNode;
-    location.providerIdentity = provider.toUri();
+    location.providerIdentity = provider.toUri(ndn::name::UriFormat::ALTERNATE);
     location.operationId = replica.operationId;
     location.receiptId = replica.receiptId;
     location.reference = handle.reference;
@@ -3216,7 +3207,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
       location.receiptId = "spec192-fetch-conflicting-receipt";
     }
     location.routeState = "ROUTABLE";
-    location.forwardingHint = target.servicePrefix.toUri();
+    location.forwardingHint = target.servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE);
     return location.toJson();
   };
   const auto providerIndexFor = [&] (const ndn::Name& provider) {
@@ -3251,7 +3242,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
        const ndn_service_framework::RequestMessage& requestMessage, size_t) mutable {
       if (providers.empty()) return;
       const auto provider = providers.front();
-      const auto providerUri = provider.toUri();
+      const auto providerUri = provider.toUri(ndn::name::UriFormat::ALTERNATE);
       const auto providerIndex = providerIndexFor(provider);
       if (serviceName == fetchStatusService) {
         if (const auto delay = responseDelayMs.find(providerUri);
@@ -3368,7 +3359,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
     });
   BOOST_REQUIRE(seedTarget != fetchHandle.selectedTargets.end());
   const auto seedProvider = seedTarget->providerIdentity;
-  const auto seedUri = seedProvider.toUri();
+  const auto seedUri = seedProvider.toUri(ndn::name::UriFormat::ALTERNATE);
 
   for (auto mode : {spec202_test::Fault::SyncError, spec202_test::Fault::SyncDelay}) {
     for (bool existing : {false, true}) {
@@ -3384,7 +3375,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
       }
       std::set<std::string> withheld;
       for (const auto& target : fetchHandle.selectedTargets)
-        if (target.providerIdentity != seedProvider) withheld.insert(target.providerIdentity.toUri());
+        if (target.providerIdentity != seedProvider) withheld.insert(target.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE));
       auto api = repo::ArtifactRepositoryApi::makePersistent(environment.user(), fetchConfig);
       repo::ArtifactFetchResult failure;
       bool failed = false;
@@ -3817,7 +3808,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   const auto seedReplica = std::find_if(fetchHandle.replicaCommits.begin(),
     fetchHandle.replicaCommits.end(), [&seedTarget] (const auto& replica) {
       return replica.repoNode == seedTarget->repoNode &&
-             replica.providerIdentity == seedTarget->providerIdentity.toUri();
+             replica.providerIdentity == seedTarget->providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE);
     });
   BOOST_REQUIRE(seedReplica != fetchHandle.replicaCommits.end());
   const auto seedReplicaIndex = static_cast<size_t>(std::distance(
@@ -3980,7 +3971,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   const std::vector<uint8_t> archivedBytes{
     0x61, 0x72, 0x63, 0x68, 0x69, 0x76, 0x65, 0x2d, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65,
   };
-  const auto archivedReference = makeReference("inapp-archive", archivedBytes);
+  const auto archivedReference = makeReference("inapp-archive", archivedBytes, profile.userIdentity);
   const auto archivedSourcePath = temporary.path() / "inapp-archive.bin";
   writeFile(archivedSourcePath, archivedBytes);
   const repo::InAppRepoConfig inAppConfig{
@@ -4034,7 +4025,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
 
   const std::vector<uint8_t> blockedLocalBytes{0x62, 0x75, 0x73, 0x79};
   const auto blockedLocalReference = makeReference(
-    "archive-source-operation-lock", blockedLocalBytes);
+    "archive-source-operation-lock", blockedLocalBytes, profile.userIdentity);
   const auto blockedLocalPath = temporary.path() / "archive-source-lock.bin";
   writeFile(blockedLocalPath, blockedLocalBytes);
   std::atomic<bool> blockedLocalPublishStarted{false};
@@ -4160,14 +4151,14 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
       ++expectedManifestCounts[target.repoNode];
       BOOST_CHECK_EQUAL(persistentReceiptRows(
         metadataDatabases.at(target.repoNode), target.repoNode,
-        target.providerIdentity.toUri(), archivedReference), 1);
+        target.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE), archivedReference), 1);
       BOOST_CHECK(readFile(payloadPath) == archivedBytes);
     }
     else {
       BOOST_CHECK_EQUAL(replica->state, "SKIPPED");
       BOOST_CHECK_EQUAL(persistentReceiptRows(
         metadataDatabases.at(target.repoNode), target.repoNode,
-        target.providerIdentity.toUri(), archivedReference), 0);
+        target.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE), archivedReference), 0);
       BOOST_CHECK(!fs::exists(payloadPath));
     }
     BOOST_CHECK_EQUAL(repoManifestCount(repoRoots.at(target.repoNode)),
@@ -4178,7 +4169,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   // artifact receipt remains immutable while the backing object changes.
   const std::vector<uint8_t> availabilityBytes{0x41, 0x56, 0x41, 0x49};
   const auto availabilityReference = makeReference(
-    "availability-state-matrix", availabilityBytes);
+    "availability-state-matrix", availabilityBytes, profile.userIdentity);
   const auto availabilitySource = temporary.path() / "availability-state-matrix.bin";
   writeFile(availabilitySource, availabilityBytes);
   const auto availabilityPublished = runWithFacePump(environment, [&] {
@@ -4251,7 +4242,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   handleWithSkippedReplica.selectedTargets.push_back(skippedTarget);
   repo::ArtifactReplicaCommit skippedReplica;
   skippedReplica.repoNode = skippedTarget.repoNode;
-  skippedReplica.providerIdentity = skippedTarget.providerIdentity.toUri();
+  skippedReplica.providerIdentity = skippedTarget.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE);
   skippedReplica.operationId = handleWithSkippedReplica.replicaCommits.front().operationId;
   skippedReplica.reference = availabilityReference;
   skippedReplica.completedAtMs = handleWithSkippedReplica.replicaCommits.front().completedAtMs;
@@ -4294,7 +4285,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   BOOST_CHECK_EQUAL(availabilityWithSkippedReplica.locations[1].repoNode,
                     skippedTarget.repoNode);
   BOOST_CHECK_EQUAL(availabilityWithSkippedReplica.locations[1].providerIdentity,
-                    skippedTarget.providerIdentity.toUri());
+                    skippedTarget.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE));
   BOOST_CHECK_EQUAL(availabilityWithSkippedReplica.locations[1].generation, 0U);
   BOOST_CHECK_EQUAL(availabilityWithSkippedReplica.locations[1].reachability,
                     "UNKNOWN");
@@ -4316,7 +4307,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
     const auto& target = availabilityPublished.handle->selectedTargets.front();
     repo::ArtifactLocationRecord location;
     location.repoNode = target.repoNode;
-    location.providerIdentity = target.providerIdentity.toUri();
+    location.providerIdentity = target.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE);
     location.operationId = replica.operationId;
     location.receiptId = replica.receiptId;
     location.reference = availabilityReference;
@@ -4327,7 +4318,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
       std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count()) + 60000;
     location.routeState = replica.routeState;
-    location.forwardingHint = target.servicePrefix.toUri();
+    location.forwardingHint = target.servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE);
     const auto wire = location.toJson();
     return makeSyntheticResponse(ndn::Buffer(wire.begin(), wire.end()));
   };
@@ -4862,14 +4853,14 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
 
   const auto originalLocation = currentLocationRecord(
     availabilityMetadata, availabilityReference, availabilityRepo,
-    availabilityProvider.toUri());
+    availabilityProvider.toUri(ndn::name::UriFormat::ALTERNATE));
   const auto nowMs = static_cast<uint64_t>(
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
   BOOST_REQUIRE_GT(nowMs, originalLocation.committedAtMs + 1);
   const auto expiredAtMs = nowMs - 1;
   mutateCurrentLocation(availabilityMetadata, availabilityReference,
-    availabilityRepo, availabilityProvider.toUri(),
+    availabilityRepo, availabilityProvider.toUri(ndn::name::UriFormat::ALTERNATE),
     "UPDATE artifact_locations SET expires_at_ms=? WHERE repo_node=? AND provider_identity=? AND logical_name=? AND digest_algorithm=? AND content_digest=? AND size_bytes=? AND format_version=? AND root_manifest_name=? AND publisher_identity=? AND policy_epoch=?",
     [expiredAtMs] (sqlite3_stmt* statement, int index) {
       return sqlite3_bind_int64(statement, index,
@@ -4883,9 +4874,9 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   BOOST_CHECK_EQUAL(expiredAvailability.locations[0].reachability, "REACHABLE");
   BOOST_CHECK_EQUAL(expiredAvailability.locations[0].objectPresence, "UNKNOWN");
   BOOST_CHECK_EQUAL(expiredAvailability.locations[0].providerIdentity,
-                    availabilityProvider.toUri());
+                    availabilityProvider.toUri(ndn::name::UriFormat::ALTERNATE));
   mutateCurrentLocation(availabilityMetadata, availabilityReference,
-    availabilityRepo, availabilityProvider.toUri(),
+    availabilityRepo, availabilityProvider.toUri(ndn::name::UriFormat::ALTERNATE),
     "UPDATE artifact_locations SET expires_at_ms=? WHERE repo_node=? AND provider_identity=? AND logical_name=? AND digest_algorithm=? AND content_digest=? AND size_bytes=? AND format_version=? AND root_manifest_name=? AND publisher_identity=? AND policy_epoch=?",
     [&originalLocation] (sqlite3_stmt* statement, int index) {
       return sqlite3_bind_int64(statement, index,
@@ -4897,7 +4888,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   const auto wrongReceiptId = selectedResult.receipt->replicaCommits.front().receiptId;
   BOOST_REQUIRE_NE(wrongReceiptId, availabilityLocalReceiptId);
   mutateCurrentLocation(availabilityMetadata, availabilityReference,
-    availabilityRepo, availabilityProvider.toUri(),
+    availabilityRepo, availabilityProvider.toUri(ndn::name::UriFormat::ALTERNATE),
     "UPDATE artifact_locations SET receipt_id=? WHERE repo_node=? AND provider_identity=? AND logical_name=? AND digest_algorithm=? AND content_digest=? AND size_bytes=? AND format_version=? AND root_manifest_name=? AND publisher_identity=? AND policy_epoch=?",
     [&wrongReceiptId] (sqlite3_stmt* statement, int index) {
       return sqlite3_bind_text(statement, index, wrongReceiptId.c_str(), -1,
@@ -4911,9 +4902,9 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   BOOST_CHECK_EQUAL(mismatchedReceiptAvailability.locations[0].objectPresence,
                     "UNKNOWN");
   BOOST_CHECK_EQUAL(mismatchedReceiptAvailability.locations[0].providerIdentity,
-                    availabilityProvider.toUri());
+                    availabilityProvider.toUri(ndn::name::UriFormat::ALTERNATE));
   mutateCurrentLocation(availabilityMetadata, availabilityReference,
-    availabilityRepo, availabilityProvider.toUri(),
+    availabilityRepo, availabilityProvider.toUri(ndn::name::UriFormat::ALTERNATE),
     "UPDATE artifact_locations SET receipt_id=? WHERE repo_node=? AND provider_identity=? AND logical_name=? AND digest_algorithm=? AND content_digest=? AND size_bytes=? AND format_version=? AND root_manifest_name=? AND publisher_identity=? AND policy_epoch=?",
     [&availabilityLocalReceiptId] (sqlite3_stmt* statement, int index) {
       return sqlite3_bind_text(statement, index, availabilityLocalReceiptId.c_str(), -1,
@@ -4978,7 +4969,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   // Keep the direct seed commit within the fixture's single-STORE chunk cap.
   const std::vector<uint8_t> staleReplayBytes{0x72, 0x65, 0x73};
   const auto staleReplayReference = makeReference(
-    "accepted-stale-replica-replay", staleReplayBytes);
+    "accepted-stale-replica-replay", staleReplayBytes, profile.userIdentity);
   BOOST_REQUIRE_EQUAL(staleReplayReference.sizeBytes, staleReplayBytes.size());
   BOOST_REQUIRE(staleReplayBytes.size() <= artifactLimits.maxChunkBytes);
   const auto staleReplaySource = temporary.path() / "accepted-stale-replica.bin";
@@ -4986,12 +4977,12 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   const std::string staleReplayKey = "spec192-stale-replay-key";
   const repo::RepoArtifactTarget staleReplaySeed{
     oneTarget.targets.front().repoNode,
-    oneTarget.targets.front().providerIdentity.toUri(),
-    oneTarget.targets.front().servicePrefix.toUri()};
+    oneTarget.targets.front().providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE),
+    oneTarget.targets.front().servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   const repo::RepoArtifactTarget staleReplayReplicaTarget{
     staleReplayReplica->repoNode,
-    staleReplayReplica->providerIdentity.toUri(),
-    staleReplayReplica->servicePrefix.toUri()};
+    staleReplayReplica->providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE),
+    staleReplayReplica->servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   repo::PublishOperationIntent staleReplayIntent;
   staleReplayIntent.idempotencyKeyDigest =
     repo::digestPublishIdempotencyKey(staleReplayKey);
@@ -5012,7 +5003,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
     staleReplayIntent.seed, staleReplayIntent.consistency,
     staleReplayIntent.targets);
   const auto staleReplayOperationId = repo::makePublishOperationId(
-    environment.user().getName().toUri(), staleReplaySeed,
+    environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE), staleReplaySeed,
     staleReplayIntent.idempotencyKeyDigest);
   size_t staleReplaySeedIndex = environment.providerCount();
   size_t staleReplayReplicaIndex = environment.providerCount();
@@ -5128,7 +5119,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   environment.disconnectProviderPeerTransportForTest();
   const std::vector<uint8_t> unavailableBytes{0x75, 0x6e, 0x61};
   const auto unavailableReference = makeReference(
-    "unavailable-selected-seed", unavailableBytes);
+    "unavailable-selected-seed", unavailableBytes, profile.userIdentity);
   const auto unavailablePath = temporary.path() / "unavailable-selected-seed.bin";
   writeFile(unavailablePath, unavailableBytes);
   BOOST_CHECK_EXCEPTION(
@@ -5148,7 +5139,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   for (const auto& candidate : discovered.candidates) {
     BOOST_CHECK_EQUAL(persistentReceiptRows(
       metadataDatabases.at(candidate.repoNode), candidate.repoNode,
-      candidate.providerIdentity.toUri(), unavailableReference), 0);
+      candidate.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE), unavailableReference), 0);
     BOOST_CHECK(!fs::exists(committedPayloadPath(
       repoRoots.at(candidate.repoNode), unavailableReference)));
   }
@@ -5169,10 +5160,10 @@ BOOST_AUTO_TEST_CASE(PersistentApiFetchHealthStateSerializesConcurrentCalls)
   BootstrapProfile profile;
   profile.groupPrefix = "/ndnsf/spec192/fetch-health/group";
   profile.syncPrefix = "/ndnsf/spec192/fetch-health/sync";
-  profile.userNode = "/ndnsf/spec192/fetch-health/user";
-  profile.providerNode = "/ndnsf/spec192/fetch-health/provider";
   profile.userIdentity = "/test/user/spec192/fetch-health";
   profile.providerIdentity = "/test/provider/spec192/fetch-health";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
   profile.attributeAuthority = "/test/aa/spec192/fetch-health";
   profile.providerCount = 2;
   profile.providerCanActAsUser = true;
@@ -5197,7 +5188,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiFetchHealthStateSerializesConcurrentCalls)
 
   const std::vector<uint8_t> bytes{0x73, 0x70, 0x65, 0x63, 0x31, 0x39, 0x32};
   repo::ArtifactHandle handle;
-  handle.reference = makeReference("fetch-health-concurrency", bytes);
+  handle.reference = makeReference("fetch-health-concurrency", bytes, profile.userIdentity);
   handle.lifecycleMode = "PERSISTENT";
   handle.seedRepoId = "/logical/spec192/fetch-health/repo-0";
   handle.writeConsistency = "ALL";
@@ -5217,7 +5208,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiFetchHealthStateSerializesConcurrentCalls)
 
     repo::ArtifactReplicaCommit replica;
     replica.repoNode = repoNode;
-    replica.providerIdentity = providerIdentity.toUri();
+    replica.providerIdentity = providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE);
     replica.receiptId = receiptId;
     replica.operationId = operationId;
     replica.reference = handle.reference;
@@ -5228,7 +5219,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiFetchHealthStateSerializesConcurrentCalls)
     replica.locationVersion = 1;
     replica.routeState = "ROUTABLE";
     replica.state = "COMMITTED";
-    replica.forwardingHint = servicePrefix.toUri();
+    replica.forwardingHint = servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE);
     handle.replicaCommits.push_back(std::move(replica));
   }
   handle.validate();

@@ -90,13 +90,13 @@ ndnsf_distributed_repo::ArtifactReference
 makeReference(const std::string& name, const std::vector<uint8_t>& bytes)
 {
   ndnsf_distributed_repo::ArtifactReference reference;
-  reference.logicalName = "/" + name;
+  reference.logicalName = "/spec192/publisher-restart/model/" + name;
   reference.contentDigest = sha256(bytes);
   reference.sizeBytes = bytes.size();
-  reference.rootManifestName = "/spec192/persistent-service/" + name;
-  reference.publisherIdentity = "/spec192/publisher";
+  reference.rootManifestName = "/spec192/publisher-restart/manifest/" + name;
+  reference.publisherIdentity = "/spec192/publisher-restart";
   reference.policyEpoch = "repo-policy-v1";
-  return reference;
+  return reference.canonicalized();
 }
 
 ndn_service_framework::ResponseMessage
@@ -399,7 +399,7 @@ BOOST_AUTO_TEST_CASE(NetworkRegistrationCoversOperationsAndRetainsRepoLifetime)
         ndn::Name("/spec192/request").append(operation),
         request);
       BOOST_CHECK_MESSAGE(
-        response.getErrorInfo() != "No handler registered for " + serviceName.toUri(),
+        response.getErrorInfo() != "No handler registered for " + serviceName.toUri(ndn::name::UriFormat::ALTERNATE),
         "production Repo handler was not registered for " << operation);
     }
 
@@ -409,7 +409,7 @@ BOOST_AUTO_TEST_CASE(NetworkRegistrationCoversOperationsAndRetainsRepoLifetime)
       ndn::Name("/spec192/capability"), ndn_service_framework::RequestMessage{});
     BOOST_CHECK(capabilityResponse.getStatus());
     BOOST_CHECK_EQUAL(
-      makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "STATUS").toUri(),
+      makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "STATUS").toUri(ndn::name::UriFormat::ALTERNATE),
       "/NDNSF/DistributedRepo/Object/v1/STATUS");
   }
 
@@ -504,10 +504,10 @@ BOOST_AUTO_TEST_CASE(AcceptedPublishRecoversFromSeedReceiptAfterOwnerRestart)
   const std::vector<uint8_t> bytes{0x53, 0x70, 0x65, 0x63, 0x31, 0x39, 0x32};
   const auto reference = makeReference("restart-receipt", bytes);
   const RepoArtifactTarget seed{
-    repoNode, providerName.toUri(), servicePrefix.toUri()};
+    repoNode, providerName.toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   const RepoArtifactTarget other{
     "/logical/restart-replica", "/spec192/provider-replica",
-    servicePrefix.toUri()};
+    servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
   const std::string key = "spec192-restart-idempotency-key";
   PublishOperationIntent intent;
   intent.idempotencyKeyDigest = digestPublishIdempotencyKey(key);
@@ -519,7 +519,7 @@ BOOST_AUTO_TEST_CASE(AcceptedPublishRecoversFromSeedReceiptAfterOwnerRestart)
   intent.requestDigest = makePublishRequestDigest(
     reference, 1, seed, intent.consistency, intent.targets);
   const auto operationId = makePublishOperationId(
-    callerName.toUri(), seed, intent.idempotencyKeyDigest);
+    callerName.toUri(ndn::name::UriFormat::ALTERNATE), seed, intent.idempotencyKeyDigest);
   const auto storeService = makeRepoServiceName(servicePrefix, "STORE");
   const auto statusService = makeRepoServiceName(servicePrefix, "STATUS");
   ndnsf_distributed_repo::RepoArtifactCommitReceipt seedReceiptBeforeRestart;
@@ -536,11 +536,17 @@ BOOST_AUTO_TEST_CASE(AcceptedPublishRecoversFromSeedReceiptAfterOwnerRestart)
       servicePrefix, capability,
       std::make_shared<FilesystemRepoStoreBackend>(
         objectRoot.string(), 4096, 1024, "spec192-restart-seed"),
-      repoNode, providerName.toUri(), database);
+      repoNode, providerName.toUri(ndn::name::UriFormat::ALTERNATE), database);
     node->registerServices(provider);
 
     const auto intentJson = intent.toJson();
     std::vector<uint8_t> intentWire(intentJson.begin(), intentJson.end());
+    const auto foreign = dispatch(provider, ndn::Name("/spec192/foreign-publisher"),
+                                  storeService, intentWire, "foreign-publish-intent");
+    BOOST_CHECK(!foreign.getStatus());
+    BOOST_CHECK_NE(foreign.getErrorInfo().find("repo-publish-producer-mismatch"),
+                   std::string::npos);
+    BOOST_CHECK_EQUAL(queryCount(database, "artifact_publish_operations"), 0);
     auto response = dispatch(provider, callerName, storeService, intentWire,
                              "publish-intent");
     BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
@@ -603,7 +609,7 @@ BOOST_AUTO_TEST_CASE(AcceptedPublishRecoversFromSeedReceiptAfterOwnerRestart)
       servicePrefix, capability,
       std::make_shared<FilesystemRepoStoreBackend>(
         objectRoot.string(), 4096, 1024, "spec192-restart-seed"),
-      repoNode, providerName.toUri(), database);
+      repoNode, providerName.toUri(ndn::name::UriFormat::ALTERNATE), database);
     node->registerServices(provider, publisherUser, 100, 1000);
 
     const PublishOperationStatusRequest query{1, operationId};
@@ -701,7 +707,8 @@ BOOST_AUTO_TEST_CASE(NetworkRegistrationRejectsStackOwnedRepoBeforePublishingHan
     makeRepoServiceName(ndn::Name("/NDNSF/DistributedRepo"), "CAPABILITY"),
     ndn::Name("/spec192/stack"), ndn_service_framework::RequestMessage{});
   BOOST_CHECK_EQUAL(missing.getErrorInfo(),
-                    "No handler registered for /NDNSF/DistributedRepo/CAPABILITY");
+                    "No handler registered for " +
+                    makeRepoServiceName(ndn::Name("/NDNSF/DistributedRepo"), "CAPABILITY").toUri());
 }
 
 BOOST_AUTO_TEST_CASE(ArtifactAndCoreLogicalRepoIdsMustMatch)

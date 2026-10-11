@@ -427,6 +427,8 @@ PYBIND11_MODULE(_py_repoclient, m)
                    &repo::ArtifactLimits::maxCryptographicOperations);
 
   py::class_<repo::ArtifactReference>(m, "ArtifactReference")
+    .def("canonicalized", &repo::ArtifactReference::canonicalized)
+    .def("validate_producer_ownership", &repo::ArtifactReference::validateProducerOwnership)
     .def(py::init([] (std::string logicalName,
                       std::string contentDigest,
                       uint64_t sizeBytes,

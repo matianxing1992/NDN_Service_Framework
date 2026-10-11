@@ -437,7 +437,8 @@ isHex(const std::string& value)
 bool
 isKnownFormat(const std::string& value)
 {
-  return value == "artifact-manifest-v2" || value == "exact-packet-v1";
+  return value == "artifact-manifest-v2" || value == "exact-packet-v1" ||
+         value == "raw-file-v1";
 }
 
 bool
@@ -537,7 +538,7 @@ ArtifactCapabilityRequirements::validate(const ArtifactLimits& hardLimits) const
       manifestDepth != 0 || requireResume || requireReplicaReceipts) {
     throw ArtifactValidationError(
       artifact_error::InvalidCapability,
-      "exact-packet-v1 cannot be negotiated with artifact-manifest-v2 requirements");
+      "file and exact-packet formats cannot negotiate signed manifest graph requirements");
   }
 }
 
@@ -615,6 +616,34 @@ ArtifactReference::toJson() const
 {
   validate();
   return referenceJson(*this);
+}
+
+ArtifactReference
+ArtifactReference::canonicalized() const
+{
+  validate();
+  auto result = *this;
+  result.logicalName = ndn::Name(logicalName).toUri(ndn::name::UriFormat::CANONICAL);
+  if (!rootManifestName.empty())
+    result.rootManifestName = ndn::Name(rootManifestName).toUri(ndn::name::UriFormat::CANONICAL);
+  result.publisherIdentity = ndn::Name(publisherIdentity).toUri(ndn::name::UriFormat::CANONICAL);
+  return result;
+}
+
+void
+ArtifactReference::validateProducerOwnership() const
+{
+  validate();
+  const ndn::Name producer(publisherIdentity);
+  const ndn::Name logical(logicalName);
+  const ndn::Name root(rootManifestName);
+  if (producer.empty() || logical.size() <= producer.size() ||
+      !producer.isPrefixOf(logical) ||
+      (formatVersion != "raw-file-v1" &&
+       (root.size() <= producer.size() || !producer.isPrefixOf(root)))) {
+    throw ArtifactValidationError(artifact_error::InvalidManifest,
+      "artifact references must belong to the complete publisher namespace");
+  }
 }
 
 ArtifactReference
@@ -1685,7 +1714,8 @@ makePublishRequestDigest(const ArtifactReference& reference, uint64_t generation
                                   "publish request digest inputs are invalid");
   }
   validateCanonicalName(reference.logicalName, ArtifactLimits{}, "logicalName");
-  validateCanonicalName(reference.rootManifestName, ArtifactLimits{}, "rootManifestName");
+  if (reference.formatVersion != "raw-file-v1")
+    validateCanonicalName(reference.rootManifestName, ArtifactLimits{}, "rootManifestName");
   validateCanonicalName(reference.publisherIdentity, ArtifactLimits{}, "publisherIdentity");
   validateCanonicalName(seed.repoNode, ArtifactLimits{}, "seed.repoNode");
   validateCanonicalName(seed.providerIdentity, ArtifactLimits{}, "seed.providerIdentity");

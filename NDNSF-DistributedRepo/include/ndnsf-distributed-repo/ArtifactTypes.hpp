@@ -115,7 +115,15 @@ struct ArtifactReference
       throw ArtifactValidationError(
         artifact_error::UnsupportedFormat, "unsupported artifact format " + formatVersion);
     }
-    validateName(rootManifestName, limits, "rootManifestName");
+    if (formatVersion == "raw-file-v1") {
+      if (!rootManifestName.empty()) {
+        throw ArtifactValidationError(artifact_error::InvalidManifest,
+          "raw-file-v1 must not declare an unpublished root manifest");
+      }
+    }
+    else {
+      validateName(rootManifestName, limits, "rootManifestName");
+    }
     validateName(publisherIdentity, limits, "publisherIdentity");
     validateIdentifier(policyEpoch, 256, "policyEpoch", artifact_error::InvalidManifest);
   }
@@ -148,6 +156,10 @@ struct ArtifactReference
   }
 
   std::string toJson() const;
+  /** Normalize URI spelling without changing existing signed serialization. */
+  ArtifactReference canonicalized() const;
+  /** New publication boundary: both references belong to the actual Producer. */
+  void validateProducerOwnership() const;
   static ArtifactReference
   fromJson(const std::string& wire, const ArtifactLimits& limits = {});
 };
