@@ -1,11 +1,41 @@
 """Recreating MiniNDN homes does not rename a node's application cache."""
 import ast
-import __future__
 import os
+import shlex
+from types import SimpleNamespace
+import __future__
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_replica_children_use_their_node_transport_and_home(tmp_path, monkeypatch):
+    tree = ast.parse((ROOT / 'Experiments/NDNSF_RepoOriginalPackets_Minindn.py').read_text())
+    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                and node.name == 'main')
+    launch = next(node for node in main.body if isinstance(node, ast.FunctionDef)
+                  and node.name == 'launch')
+    captured = []
+    def get_popen(node, command, **kwargs):
+        captured.append((node.name, kwargs['envDict']))
+        return SimpleNamespace(pid=len(captured))
+    streams = []
+    namespace = dict(os=os, shlex=shlex, output=tmp_path, streams=streams,
+                     children=[], owned=[], getPopen=get_popen)
+    monkeypatch.setenv('HOME', '/launcher/home')
+    monkeypatch.setenv('NDN_CLIENT_TRANSPORT', 'unix:///wrong/socket')
+    exec(compile(ast.Module(body=[launch], type_ignores=[]), '<replica-launch>', 'exec'), namespace)
+    try:
+        for name in ['r1', 'r2', 'user']:
+            namespace['launch'](SimpleNamespace(name=name), name, ['oracle'])
+        for name, environment in captured:
+            assert environment['NDN_CLIENT_TRANSPORT'] == 'unix:///run/nfd/' + name + '.sock'
+            assert environment['LD_LIBRARY_PATH'] == '/usr/local/lib'
+            assert 'HOME' not in environment
+    finally:
+        for stream in streams:
+            stream.close()
 
 
 def test_qwen_node_cache_is_independent_of_run_home(tmp_path):

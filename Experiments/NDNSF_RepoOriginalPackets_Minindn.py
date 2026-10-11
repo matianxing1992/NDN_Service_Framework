@@ -87,8 +87,12 @@ def main():
         path = output / (label + ".log")
         stream = path.open("wb")
         streams.append(stream)
+        node_env = dict(os.environ, LD_LIBRARY_PATH="/usr/local/lib",
+                        NDN_CLIENT_TRANSPORT="unix:///run/nfd/" + node.name + ".sock")
+        # getPopen supplies the node HOME; the launcher HOME must not replace it.
+        node_env.pop("HOME", None)
         process = getPopen(node, "exec " + shlex.join(list(map(str, command))),
-            envDict=dict(os.environ, LD_LIBRARY_PATH="/usr/local/lib"), shell=True,
+            envDict=node_env, shell=True,
             stdout=stream, stderr=stream)
         record = {"label": label, "pid": process.pid, "exit": None}
         children.append(record)
