@@ -134,6 +134,31 @@ def main():
             if value is None or int(value.text) != 0:
                 raise RuntimeError("CS disabled readback failed: " + field)
 
+    def route_matches(tree, wanted):
+        for name in names:
+            entries = [entry for entry in tree.findall("n:fib/n:fibEntry", NS)
+                       if covers(entry.findtext("n:prefix", namespaces=NS), name)]
+            if not entries:
+                return False
+            longest = max(entries, key=lambda entry: len(Name.from_str(
+                entry.findtext("n:prefix", namespaces=NS))))
+            ids = [hop.findtext("n:faceId", namespaces=NS)
+                   for hop in longest.findall("n:nextHops/n:nextHop", NS)]
+            if ids != [wanted]:
+                return False
+        return True
+
+    def wait_route(node, label, wanted):
+        deadline = time.monotonic() + args.timeout_s
+        attempt = 0
+        while time.monotonic() < deadline:
+            tree = status(node, label + "-" + str(attempt))
+            if route_matches(tree, wanted):
+                return
+            attempt += 1
+            time.sleep(0.05)
+        raise RuntimeError("packet FIB does not select exactly one intended Repo")
+
     def face(tree, node, peer):
         links = node.connectionsTo(peer)
         if len(links) != 1:
@@ -228,16 +253,7 @@ def main():
                              route.findtext("n:origin", namespaces=NS)])
             run(user, stage + "-add-route", ["nfdc", "route", "add", "prefix", prefix,
                 "nexthop", wanted, "origin", "255", "cost", "0"])
-            tree = status(user, stage + "-user-route-after")
-            for name in names:
-                entries = [entry for entry in tree.findall("n:fib/n:fibEntry", NS)
-                           if covers(entry.findtext("n:prefix", namespaces=NS), name)]
-                longest = max(entries, key=lambda entry: len(Name.from_str(
-                    entry.findtext("n:prefix", namespaces=NS))))
-                ids = [hop.findtext("n:faceId", namespaces=NS)
-                       for hop in longest.findall("n:nextHops/n:nextHop", NS)]
-                if ids != [wanted]:
-                    raise RuntimeError("packet FIB does not select exactly one intended Repo")
+            wait_route(user, stage + "-user-route-after", wanted)
             before = {node: fresh_status(ndn.net[node], stage + "-" + node + "-before")
                       for node in ("user", "r1", "r2")}
             destination = output / stage

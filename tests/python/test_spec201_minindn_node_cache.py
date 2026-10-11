@@ -94,6 +94,42 @@ def test_replica_counter_snapshot_waits_for_fresh_dataset(changes):
     assert len(calls) == len(set(calls))
 
 
+@pytest.mark.parametrize('changes', [True, False])
+def test_replica_route_wait_preserves_exact_target_requirement(changes):
+    tree = ast.parse((ROOT / 'Experiments/NDNSF_RepoOriginalPackets_Minindn.py').read_text())
+    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                and node.name == 'main')
+    functions = [node for node in main.body if isinstance(node, ast.FunctionDef)
+                 and node.name in ('route_matches', 'wait_route')]
+    ns = {'n': 'ndn:/localhost/nfd/status/1'}
+    calls, elapsed = [], [0.0]
+    def status(node, label):
+        calls.append(label)
+        value = '266' if changes and len(calls) >= 3 else '264'
+        return ET.fromstring('<nfdStatus xmlns="ndn:/localhost/nfd/status/1"><fib>'
+            '<fibEntry><prefix>/producer</prefix><nextHops><nextHop><faceId>' + value +
+            '</faceId></nextHop></nextHops></fibEntry></fib></nfdStatus>')
+    def sleep(seconds):
+        elapsed[0] += seconds
+    scope = dict(NS=ns, ET=ET, names=['/producer/data'], status=status,
+        covers=lambda prefix, name: name.startswith(prefix + '/'),
+        Name=SimpleNamespace(from_str=lambda value: value.split('/')),
+        args=SimpleNamespace(timeout_s=0.2),
+        time=SimpleNamespace(monotonic=lambda: elapsed[0], sleep=sleep))
+    exec(compile(ast.Module(body=functions, type_ignores=[]), '<route-wait>', 'exec'), scope)
+    if changes:
+        scope['wait_route'](SimpleNamespace(name='user'), 'route', '266')
+        assert len(calls) == 3
+        report = status(None, 'ambiguous')
+        entry = report.find('n:fib/n:fibEntry/n:nextHops', ns)
+        entry.append(ET.fromstring('<nextHop xmlns="ndn:/localhost/nfd/status/1">'
+                                  '<faceId>264</faceId></nextHop>'))
+        assert not scope['route_matches'](report, '266')
+    else:
+        with pytest.raises(RuntimeError, match='exactly one intended Repo'):
+            scope['wait_route'](SimpleNamespace(name='user'), 'route', '266')
+
+
 def test_qwen_node_cache_is_independent_of_run_home(tmp_path):
     source = ROOT / 'Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py'
     tree = ast.parse(source.read_text())
