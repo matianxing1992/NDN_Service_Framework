@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前SDK11完整surface/local conformance98case normal1655/dynamic v3 1657断言PASS，DB007 STATIC_PASS，公开inventory保留。见T009；独立复现与network/profile资格待关闭，旧SDK9结果仅历史。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | 当前SDK11两binding fresh重建/import、33-file Python117PASS及全部7 native dynamic v3 PASS。见T009；不宣称Python instrumentation，sealed复现与crosslanguage/DI network待资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | 原native/Python/CLI PASS和r15–22红测保留；r23/24均3红，inline仅去排队；r25观测PASS，r26–28同binary仍3红。[证据](evidence/diagnostic-e529c434-20261010/pump-r25-r28-manifest.json)。Provider共享IO，5ms泵占1.10s/主线程CPU1.07s；r29轻量GDB栈不可归因且扰动超时。下一步有效栈定位同步回调，并复核移后payload长度；完整dynamic/新收敛/T010 OPEN。 | 2026-10-10 |
+| T009 | PARTIAL | T002–T008 | 原native/Python/CLI PASS保留；有效栈定位SVS名称匹配CPU。隔离ndn-cxx ac189f60固定字串快路径，222headers未变；真实库开启leaks：Regex9/229、短复现31、原恢复302均PASS。[证据](evidence/diagnostic-e529c434-20261010/literal-regex-r30-r39-manifest.json)。原库对照仍3红。下一步清诊断、修移后长度分派、全受影响dynamic/新收敛与统一candidate封存；T010 OPEN。 | 2026-10-10 |
 | T010 | IN_PROGRESS | T009 | 正式冻结d75cf28e/688的两轮68场景/59ID共136次campaign状态仍按matrix记录为FAIL_STOPPED。f8011aa0候选的单轮ARTIFACT_BASELINE仅是修复后本地回归，不替代统一candidate、59 cases两轮、逐actor maps/pcap/finite exits/cleanup/storage/consumer/wire/cross-run检查；全项通过前保持OPEN。 | 2026-10-10 |
 
 ## Current Checkpoint
