@@ -31,42 +31,6 @@ artifact_security:
   sandbox:
     kind: ""
 
-# generated authorization summary
-# Read-only review aid derived from services[].users/providers.
-authorization_summary:
-  users:
-    - identity: /NDNSF-DistributeInference/example/user
-      services:
-        - /AI/YOLO/2x2Inference
-        - /NDNSF/DistributedRepo/Object/v1/INSERT
-        - /NDNSF/DistributedRepo/Object/v1/MANIFEST
-        - /NDNSF/DistributedRepo/Object/v1/FETCH
-        - /NDNSF/DistributedRepo/Object/v1/INVENTORY
-        - /NDNSF/DistributedRepo/Object/v1/STATUS
-        - /NDNSF/DistributedRepo/Object/v1/DELETE
-        - /NDNSF/DistributedRepo/Object/v1/CATALOG_QUERY
-  providers:
-    - identity: /NDNSF-DistributeInference/example/provider
-      services:
-        - service: /AI/YOLO/2x2Inference
-          roles: all
-    - identity: /NDNSF-DistributeInference/example/provider/A
-      services:
-        - service: /AI/YOLO/2x2Inference
-          roles: all
-    - identity: /NDNSF-DistributeInference/example/provider/B
-      services:
-        - service: /AI/YOLO/2x2Inference
-          roles: all
-    - identity: /NDNSF-DistributeInference/example/provider/C
-      services:
-        - service: /AI/YOLO/2x2Inference
-          roles: all
-    - identity: /NDNSF-DistributeInference/example/provider/D
-      services:
-        - service: /NDNSF/DistributedRepo/Object/v1/INSERT
-          roles: []
-
 # generated model-plan section
 # Edit users/providers per service to grant
 # exact identities permission. roles/dependencies/input/output are
@@ -138,14 +102,58 @@ services:
     roles: []
     dependencies: []
 
+  - name: /NDNSF/DistributedRepo/Object/v1/CAPABILITY
+    model: /NDNSF/DistributedRepo/Object/v1/CAPABILITY
+    users: &repo_readers
+      - /NDNSF-DistributeInference/example/user
+      - /NDNSF-DistributeInference/example/controller
+      - /NDNSF-DistributeInference/example/provider
+      - /NDNSF-DistributeInference/example/provider/A
+      - /NDNSF-DistributeInference/example/provider/B
+      - /NDNSF-DistributeInference/example/provider/C
+    providers: &repo_providers
+      - identity: /NDNSF-DistributeInference/example/provider/D
+        roles: []
+    roles: []
+    dependencies: []
+  - name: /NDNSF/DistributedRepo/Object/v1/STORE
+    model: /NDNSF/DistributedRepo/Object/v1/STORE
+    users: &repo_writers
+      - /NDNSF-DistributeInference/example/user
+      - /NDNSF-DistributeInference/example/controller
+    providers: *repo_providers
+    roles: []
+    dependencies: []
+  - name: /NDNSF/DistributedRepo/Object/v1/STORE_RANGE
+    model: /NDNSF/DistributedRepo/Object/v1/STORE_RANGE
+    users: *repo_writers
+    providers: *repo_providers
+    roles: []
+    dependencies: []
+  - name: /NDNSF/DistributedRepo/Object/v1/COMMIT_RANGES
+    model: /NDNSF/DistributedRepo/Object/v1/COMMIT_RANGES
+    users: *repo_writers
+    providers: *repo_providers
+    roles: []
+    dependencies: []
+  - name: /NDNSF/DistributedRepo/Object/v1/ABORT_RANGES
+    model: /NDNSF/DistributedRepo/Object/v1/ABORT_RANGES
+    users: *repo_writers
+    providers: *repo_providers
+    roles: []
+    dependencies: []
+  - name: /NDNSF/DistributedRepo/Object/v1/FETCH_RANGE
+    model: /NDNSF/DistributedRepo/Object/v1/FETCH_RANGE
+    users: *repo_readers
+    providers: *repo_providers
+    roles: []
+    dependencies: []
   - name: /NDNSF/DistributedRepo/Object/v1/INSERT
     model: /NDNSF/DistributedRepo/Object/v1/INSERT
     users:
       - /NDNSF-DistributeInference/example/user
       - /NDNSF-DistributeInference/example/controller
-    providers: &repo_providers
-      - identity: /NDNSF-DistributeInference/example/provider/D
-        roles: []
+    providers: *repo_providers
     roles: []
     dependencies: []
   - name: /NDNSF/DistributedRepo/Object/v1/MANIFEST
@@ -157,7 +165,7 @@ services:
     dependencies: []
   - name: /NDNSF/DistributedRepo/Object/v1/FETCH
     model: /NDNSF/DistributedRepo/Object/v1/FETCH
-    users: *repo_users
+    users: *repo_readers
     providers: *repo_providers
     roles: []
     dependencies: []
@@ -169,9 +177,7 @@ services:
     dependencies: []
   - name: /NDNSF/DistributedRepo/Object/v1/STATUS
     model: /NDNSF/DistributedRepo/Object/v1/STATUS
-    users:
-      - /NDNSF-DistributeInference/example/user
-      - /NDNSF-DistributeInference/example/controller
+    users: *repo_readers
     providers: *repo_providers
     roles: []
     dependencies: []
