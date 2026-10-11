@@ -11,7 +11,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -68,17 +70,39 @@ pumpFaces(ndn::DummyClientFace& userFace,
           bool pumpProviderFaces,
           const std::function<bool()>& done)
 {
+  const char* pumpTrace = std::getenv("NDNSF_SPEC202_PUMP_TRACE");
+  const bool trace = pumpTrace && pumpTrace[0] == '1' && pumpTrace[1] == '\0';
+  const auto pump = [&] (ndn::DummyClientFace& face, const char* role, size_t index) {
+    if (!trace) {
+      face.processEvents(ndn::time::milliseconds(5));
+      return;
+    }
+    const auto wallStart = std::chrono::system_clock::now();
+    const auto start = std::chrono::steady_clock::now();
+    face.processEvents(ndn::time::milliseconds(5));
+    const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - start).count();
+    if (elapsedUs >= 50000) {
+      const auto startUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        wallStart.time_since_epoch()).count();
+      std::ostringstream line;
+      line << "[DEBUG-spec202-pump] role=" << role << " index=" << index
+           << " io=" << &face.getIoContext() << " begin_us=" << startUs
+           << " elapsed_us=" << elapsedUs << '\n';
+      std::cerr << line.str();
+    }
+  };
   for (int i = 0; i < 200 && !done(); ++i) {
     // NAC-ABE Producers request the Attribute Authority public parameters as
     // soon as they are constructed. Process the authority first so its Data is
     // available before the User/Provider event loops are pumped in this round.
     if (pumpAttributeAuthority) {
-      attributeAuthorityFace.processEvents(ndn::time::milliseconds(5));
+      pump(attributeAuthorityFace, "authority", 0);
     }
-    userFace.processEvents(ndn::time::milliseconds(5));
+    pump(userFace, "user", 0);
     if (pumpProviderFaces) {
-      for (auto* providerFace : providerFaces) {
-        providerFace->processEvents(ndn::time::milliseconds(5));
+      for (size_t index = 0; index < providerFaces.size(); ++index) {
+        pump(*providerFaces[index], "provider", index);
       }
     }
     userFace.getIoContext().restart();
