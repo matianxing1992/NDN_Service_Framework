@@ -1344,6 +1344,103 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerFetchesCanonicalSourceAfterSelection)
   BOOST_CHECK_EQUAL(prepared.metadata.at("modelManifestDigest"), rootDigest);
   BOOST_CHECK(!prepared.metadata.at("assembledModelDigest").empty());
 
+  const auto sharedModel = std::filesystem::path(options.cacheDir) /
+    "assembled-content" / prepared.metadata.at("assembledModelDigest").substr(7) /
+    "model.onnx";
+  BOOST_REQUIRE(std::filesystem::is_regular_file(sharedModel));
+  BOOST_CHECK(std::filesystem::equivalent(sharedModel, prepared.path));
+
+  // A new protected transport reference changes the certified root and recipe,
+  // but identical validated model bytes still occupy the same physical file.
+  auto secondRootText = rootText;
+  const auto sourcePosition = secondRootText.find(sourceName.toUri());
+  BOOST_REQUIRE(sourcePosition != std::string::npos);
+  const auto secondSourceName = ndn::Name(sourceName).append("new-protection");
+  secondRootText.replace(sourcePosition, sourceName.toUri().size(), secondSourceName.toUri());
+  const std::vector<std::uint8_t> secondRoot(secondRootText.begin(), secondRootText.end());
+  auto secondProjection = makeProviderAssemblyProjection(
+    providerAssemblyDigest(secondRoot), profileDigest, sourceIdentity.graphDigest,
+    sourceIdentity.initializerDigest);
+  const auto secondRootName = ndn::Name(rootName).append("new-protection");
+  secondProjection.canonicalArtifactName = secondRootName.toUri();
+  auto secondFetchers = fetchers;
+  secondFetchers.getArtifact = [=] (const ndn::Name& name) -> std::optional<ndn::Buffer> {
+    if (name != secondRootName) return std::nullopt;
+    return ndn::Buffer(secondRoot.data(), secondRoot.size());
+  };
+  secondFetchers.fetchEncryptedLargeData = [=] (
+      const ndn::Name& name, const ndn::Name& service) -> std::optional<ndn::Buffer> {
+    if (name != secondSourceName || service != ndn::Name("/LLM/Qwen"))
+      return std::nullopt;
+    return ndn::Buffer(source.data(), source.size());
+  };
+  const auto secondPrepared = prepareNativeCanonicalOnnxRole(
+    secondFetchers, secondProjection, options);
+  BOOST_CHECK_NE(prepared.path, secondPrepared.path);
+  BOOST_CHECK_NE(prepared.metadata.at("modelManifestDigest"),
+                 secondPrepared.metadata.at("modelManifestDigest"));
+  BOOST_CHECK(std::filesystem::equivalent(prepared.path, secondPrepared.path));
+  BOOST_CHECK(std::filesystem::equivalent(sharedModel, secondPrepared.path));
+
+  auto concurrentOptions = options;
+  concurrentOptions.cacheDir += "-shared-processes";
+  std::filesystem::remove_all(concurrentOptions.cacheDir, cleanupError);
+  const auto child = ::fork();
+  BOOST_REQUIRE(child >= 0);
+  if (child == 0) {
+    try {
+      prepareNativeCanonicalOnnxRole(fetchers, projection, concurrentOptions);
+      ::_exit(0);
+    }
+    catch (...) { ::_exit(1); }
+  }
+  NativeModelRunnerSpec concurrentPrepared;
+  try {
+    concurrentPrepared = prepareNativeCanonicalOnnxRole(
+      secondFetchers, secondProjection, concurrentOptions);
+  }
+  catch (...) {
+    int childStatus = 0;
+    while (::waitpid(child, &childStatus, 0) < 0 && errno == EINTR) {}
+    throw;
+  }
+  int childStatus = 0;
+  pid_t waited;
+  do { waited = ::waitpid(child, &childStatus, 0); } while (waited < 0 && errno == EINTR);
+  BOOST_REQUIRE_EQUAL(waited, child);
+  BOOST_REQUIRE(WIFEXITED(childStatus));
+  BOOST_REQUIRE_EQUAL(WEXITSTATUS(childStatus), 0);
+  unsigned sharedPaths = 0;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(concurrentOptions.cacheDir)) {
+    if (entry.path().filename() == "model.onnx") {
+      BOOST_CHECK(std::filesystem::equivalent(entry.path(), concurrentPrepared.path));
+      ++sharedPaths;
+    }
+  }
+  BOOST_CHECK_EQUAL(sharedPaths, 3U);
+
+  auto symlinkOptions = options;
+  symlinkOptions.cacheDir += "-shared-symlink";
+  std::filesystem::remove_all(symlinkOptions.cacheDir, cleanupError);
+  std::filesystem::create_directories(symlinkOptions.cacheDir);
+  std::filesystem::create_directory_symlink(
+    std::filesystem::path(options.cacheDir) / "assembled-content",
+    std::filesystem::path(symlinkOptions.cacheDir) / "assembled-content");
+  BOOST_CHECK_EXCEPTION(
+    prepareNativeCanonicalOnnxRole(fetchers, projection, symlinkOptions),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("SHARED_CACHE_PATH_INVALID") != std::string::npos;
+    });
+
+  {
+    std::ofstream corrupt(sharedModel, std::ios::binary | std::ios::trunc);
+    corrupt << "corrupted shared model";
+  }
+  BOOST_CHECK_THROW(
+    prepareNativeCanonicalOnnxRole(secondFetchers, secondProjection, options),
+    std::runtime_error);
+
   const auto missingCacheDir = options.cacheDir + "-missing-source";
   std::filesystem::remove_all(missingCacheDir, cleanupError);
   auto missingSource = fetchers;

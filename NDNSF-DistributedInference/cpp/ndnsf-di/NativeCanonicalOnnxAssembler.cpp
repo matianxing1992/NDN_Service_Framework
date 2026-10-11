@@ -46,6 +46,8 @@ namespace ndnsf::di {
 
 namespace {
 
+constexpr const char* ProtectedPlaintextLeaseSuffix = ".ndnsf-di-provider-lease";
+
 void
 reportArtifactCleanupFailure(const char* phase) noexcept
 {
@@ -590,6 +592,59 @@ safeRole(std::string role)
   return role.empty() ? "role" : role;
 }
 
+// Authorization and signed manifests remain recipe-specific. Only already
+// validated, identical plaintext model bytes share physical storage locally.
+void
+writeSharedAssembledModel(const std::filesystem::path& cacheRoot,
+                         const std::filesystem::path& destination,
+                         const std::vector<std::uint8_t>& bytes,
+                         const std::string& digest)
+{
+  const auto sharedRoot = cacheRoot / "assembled-content";
+  const auto directory = sharedRoot / digest.substr(7);
+  const auto model = directory / "model.onnx";
+  for (const auto& path : {sharedRoot, directory, model}) {
+    if (std::filesystem::is_symlink(std::filesystem::symlink_status(path)))
+      throw std::runtime_error("DI_NATIVE_ASSEMBLY_SHARED_CACHE_PATH_INVALID");
+    requireAssemblyDirectoryUnderCacheRoot(cacheRoot, path);
+  }
+  std::filesystem::create_directories(directory);
+  if (!std::filesystem::exists(model)) {
+    const auto stagingRoot = cacheRoot / ".staging";
+    if (std::filesystem::is_symlink(std::filesystem::symlink_status(stagingRoot)))
+      throw std::runtime_error("DI_NATIVE_ASSEMBLY_SHARED_CACHE_PATH_INVALID");
+    requireAssemblyDirectoryUnderCacheRoot(cacheRoot, stagingRoot);
+    // Existing PID leases let the next Provider reclaim a killed writer.
+    const auto temporaryDirectory = makeStagingDirectory(cacheRoot);
+    const auto marker = temporaryDirectory.parent_path() /
+      (temporaryDirectory.filename().string() + ProtectedPlaintextLeaseSuffix);
+    try {
+      const auto temporaryModel = temporaryDirectory / "model.onnx";
+      writeFileAtomic(temporaryModel, bytes);
+      std::error_code error;
+      // A competing process may already have committed this content. Never
+      // replace its inode: existing recipe hardlinks must continue sharing it.
+      std::filesystem::create_hard_link(temporaryModel, model, error);
+      if (error && error != std::errc::file_exists)
+        throw std::runtime_error("DI_NATIVE_ASSEMBLY_SHARED_CACHE_COMMIT_FAILED");
+      std::filesystem::remove_all(temporaryDirectory);
+      std::filesystem::remove(marker);
+    }
+    catch (...) {
+      std::error_code cleanupError;
+      std::filesystem::remove_all(temporaryDirectory, cleanupError);
+      if (!cleanupError)
+        std::filesystem::remove(marker, cleanupError);
+      throw;
+    }
+  }
+  if (std::filesystem::is_symlink(std::filesystem::symlink_status(model)) ||
+      !std::filesystem::is_regular_file(model) ||
+      sha256File(model, bytes.size()) != digest)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_SHARED_CACHE_CONFLICT");
+  std::filesystem::create_hard_link(model, destination);
+}
+
 std::string
 protectedAssembledCacheKey(const NativeSelectionProjectionV3& projection,
                            const std::string& roleAssemblySpecDigest,
@@ -693,8 +748,6 @@ placementResidencyIdentity(const NativeSelectionProjectionV3& projection)
 } // namespace
 
 namespace {
-
-constexpr const char* ProtectedPlaintextLeaseSuffix = ".ndnsf-di-provider-lease";
 
 void
 eraseProtectedPlaintextCacheDirectory(const std::filesystem::path& directory) noexcept
@@ -2931,7 +2984,7 @@ prepareNativeCanonicalOnnxRole(
         logAssemblyProgressLine(projection, "CACHE_MODEL_WRITE_BEGIN", 0.94,
                                 static_cast<std::uint64_t>(modelBytes.size()),
                                 "model.onnx");
-        writeFileAtomic(finalModel, modelBytes);
+        writeSharedAssembledModel(options.cacheDir, finalModel, modelBytes, digest);
         logAssemblyProgressLine(projection, "CACHE_MODEL_WRITE_DONE", 0.96,
                                 static_cast<std::uint64_t>(modelBytes.size()),
                                 "model.onnx");
@@ -2980,7 +3033,7 @@ prepareNativeCanonicalOnnxRole(
       throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_CONFLICT");
     }
     if (!protectedRole && !std::filesystem::exists(finalModel)) {
-      writeFileAtomic(finalModel, modelBytes);
+      writeSharedAssembledModel(options.cacheDir, finalModel, modelBytes, digest);
     }
     if (std::filesystem::exists(finalManifest) &&
         readFile(finalManifest, MaxAssemblyMetadataBytes) != manifestBytes) {
