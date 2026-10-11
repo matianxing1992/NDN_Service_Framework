@@ -422,4 +422,4 @@ auto fetched = api.fetchFile(*published.handle, "output.bin", timeout);
 | 目录同步 | catalogSnapshot→更新/删除→catalogDelta→catalogLookup | epoch 增长、tombstone、删除对象不再可见；O14–15/N09 |
 | Python/C++ 互通与 DI | native publish→Python get_receipt/fetch_file，反方向及 DI resolver | 同 reference/receipt/digest；未授权及 warm-cache 不交付内容；P01–04 |
 
-当前 T009/T010 尚未关闭，恢复发布测试仍有 late ACK 红测；完整 sanitizer 与统一 candidate 的两轮 MiniNDN 资格未完成。上述清单、调用示例和 case 映射不构成“所有 API 无 bug”的证明。下一步保持现有调试 checkpoint，完成 ACK 延迟定位，再按 Spec202 对冻结候选执行全量验收。
+当前 T009/T010 尚未关闭。隔离 ndn-cxx 字面量匹配修复后，真实依赖库下的短复现及原恢复发布测试均已在开启 leak 检测时通过；清理诊断和修复移后长度判断的 Core 正在重新构建。完整 sanitizer 与统一 candidate 的两轮 MiniNDN 资格未完成。上述清单、调用示例和 case 映射不构成“所有 API 无 bug”的证明。当前进度以 tasks.md 为准；下一步完成全部受影响测试、新收敛和候选封存，再执行全量 MiniNDN 验收。
