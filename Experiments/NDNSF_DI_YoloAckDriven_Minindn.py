@@ -33,6 +33,7 @@ from typing import Any, Mapping
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ARTIFACT_CACHE_ROOT = Path("/var/tmp/ndnsf-di-yolo-artifacts")
 # The publication/manifest path imports the repository client before child
 # processes are spawned.  Keep the launcher import boundary identical to the
 # child PYTHONPATH below; otherwise a real entrypoint run fails before MiniNDN
@@ -91,6 +92,7 @@ def _sif_bind_args() -> list[str]:
     bind_roots = [
         ROOT / "results",
         ROOT / "specs",
+        DEFAULT_ARTIFACT_CACHE_ROOT,
         Path("/run/nfd"),
         operator_home / ".local/state/ndnsf/spec180",
         operator_home / ".config/ndnsf/spec180",
@@ -567,6 +569,9 @@ class MiniNdnCaseRuntime:
                  inputs: Mapping[str, Any] | None = None) -> None:
         self.binding = binding
         self.inputs = dict(inputs or {})
+        # MiniNDN nodes share the host filesystem.  Keep the same per-node
+        # and per-Producer cache files when a new results directory is used.
+        self.artifact_cache_root = DEFAULT_ARTIFACT_CACHE_ROOT
         self._legacy = None
         self._ndn = None
         self._started_phases: set[str] = set()
@@ -590,6 +595,8 @@ class MiniNdnCaseRuntime:
         if self._ndn is not None:
             raise RunnerError("CASE_RUNTIME_NETWORK_ALREADY_STARTED")
         legacy = self._legacy_module()
+        self.artifact_cache_root = legacy.resolve_artifact_cache_root(
+            self.artifact_cache_root, self.binding.output)
         # The host Python extension may need an explicit NAC-ABE preload to
         # resolve symbols from the candidate build.  MiniNDN's node shells and
         # NFD must not inherit that preload: it is an application-side repair
@@ -1038,8 +1045,9 @@ class MiniNdnCaseRuntime:
                 "--handler-threads", "1",
                 "--ack-threads", "1",
                 "--artifact-cache-dir", str(
-                    self.binding.output / "native-artifact-cache" /
-                    identity.rsplit("/", 1)[-1]),
+                    self.artifact_cache_root / "providers" /
+                    ("provider-" + hashlib.sha256(
+                        identity.encode("utf-8")).hexdigest())),
                 "--selection-offer-key-file", str(key_path),
                 "--offer-backend", "onnxruntime-cpu",
                 "--offer-can-provision",
@@ -1495,7 +1503,7 @@ class MiniNdnCaseRuntime:
                 proc, log_path = legacy.start(
                     node_handles[spec.node], spec.name, node_command,
                     node_env, procs, output_dir=self.binding.output,
-                    artifact_cache_root=self.binding.output / "artifact-cache",
+                    artifact_cache_root=self.artifact_cache_root,
                 )
                 started.append((spec, proc, log_path))
                 # The repository's ServiceProvider constructor fetches the

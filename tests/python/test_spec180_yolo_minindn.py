@@ -1132,6 +1132,9 @@ def test_case_process_specs_are_explicit_and_ack_driven(tmp_path: Path):
     assert str(inputs["envelope_key_file"]) in user.command
     assert user.ready_marker == "YOLO_ACK_DRIVEN_RESULT"
     provider_commands = [item.command for item in specs if item.name.startswith("provider-")]
+    assert all(str(module.DEFAULT_ARTIFACT_CACHE_ROOT / "providers") in command
+               and str(output / "native-artifact-cache") not in command
+               for command in provider_commands)
     assert all("--selection-offer-key-file" in command
                for command in provider_commands)
     assert all("di-native-provider" in command
@@ -1670,6 +1673,7 @@ def test_start_network_failure_stops_partial_network_and_normalizes_error(
         AppManager=lambda *_args, **_kwargs: None,
         Nfd=object(),
         perf=SimpleNamespace(wait_for_nfd_sockets=fail_wait),
+        resolve_artifact_cache_root=lambda root, _output: root,
     )
 
     with pytest.raises(module.RunnerError,
