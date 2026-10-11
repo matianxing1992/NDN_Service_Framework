@@ -10468,6 +10468,7 @@ namespace ndn_service_framework
                               {"messageType", messageType}});
         }
 
+        const auto plaintextBytes = plaintext.size();
         auto encryptAndPost = [this, messageName, requestId, serviceName, messageType,
                                keyId = key.keyId, epochId = key.epochId,
                                keyBytes = key.key, ad = std::move(ad),
@@ -10625,7 +10626,7 @@ namespace ndn_service_framework
         // request can make progress; only an oversized response uses the
         // independent fetch pool to avoid blocking the Face event loop.
         const auto inlineLimit = responseLargeDataThresholdBytes();
-        if (inlineLimit > 0 && plaintext.size() > inlineLimit &&
+        if (inlineLimit > 0 && plaintextBytes > inlineLimit &&
             m_fetchPool.getThreadCount() != 0 &&
             m_fetchPool.post(encryptAndPost)) {
             return;
