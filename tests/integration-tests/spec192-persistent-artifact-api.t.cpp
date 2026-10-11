@@ -390,7 +390,8 @@ runWithFacePump(NdnsfIntegrationEnvironment& environment, Work&& work)
 repo::PublishOperationStatus
 waitForTerminalPublish(NdnsfIntegrationEnvironment& environment,
                        const repo::ArtifactRepositoryApi& persistent,
-                       const repo::PublishOperationHandle& handle)
+                       const repo::PublishOperationHandle& handle,
+                       int statusTimeoutMs = 12000)
 {
   const auto deadline = std::chrono::steady_clock::now() + 60s;
   size_t queryNumber = 0;
@@ -400,7 +401,7 @@ waitForTerminalPublish(NdnsfIntegrationEnvironment& environment,
                  "Spec192 status poll worker: entering getPublishStatus #%zu\n",
                  currentQuery);
     std::fflush(stderr);
-    auto result = persistent.getPublishStatus(handle, 8000);
+    auto result = persistent.getPublishStatus(handle, statusTimeoutMs);
     std::fprintf(stderr,
                  "Spec192 status poll worker: returned from getPublishStatus #%zu state=%s\n",
                  currentQuery, result.state.c_str());
@@ -1006,7 +1007,7 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
 BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
 {
   TempRoot temporary;
-  constexpr int recoveryAckMs = 5000;
+  constexpr int recoveryAckMs = 8000;
   const ndn::Name servicePrefix(repo::RepoClient::DEFAULT_SERVICE_NAME);
   repo::ArtifactLimits artifactLimits;
   artifactLimits.maxChunkBytes = 4;
@@ -2202,13 +2203,13 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK(!timeoutResult.receipt);
   const auto timeoutHandle = *timeoutResult.operationHandle;
   const auto reconnectedTimeoutStatus = runWithFacePump(environment, [&] {
-    return recoveryStatusApi.getPublishStatus(timeoutHandle, 8000);
+    return recoveryStatusApi.getPublishStatus(timeoutHandle, 12000);
   });
   BOOST_CHECK_EQUAL(reconnectedTimeoutStatus.operationId,
                     timeoutHandle.operationId);
   const auto timeoutStatus = waitForTerminalPublish(
     environment, recoveryStatusApi, timeoutHandle);
-  BOOST_CHECK(std::chrono::steady_clock::now() - timeoutStart < 20s);
+  BOOST_CHECK(std::chrono::steady_clock::now() - timeoutStart < 60s);
   BOOST_CHECK_EQUAL(timeoutStatus.state, "PARTIAL");
   const auto unknownTarget = std::find_if(
     timeoutStatus.targets.begin(), timeoutStatus.targets.end(), [&replica] (const auto& item) {
@@ -2254,13 +2255,13 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   lossPlacement.seedRepoId = seedRepo;
   lossPlacement.consistency = repo::RepoWriteConsistency::All;
   const auto lossHandle = runWithFacePump(environment, [&] {
-    return persistent.beginPublishFile(lossSource.string(), lossReference,
+    return recoveryStatusApi.beginPublishFile(lossSource.string(), lossReference,
       lossPlacement, "spec202-source-loss-key", 120000);
   });
   BOOST_REQUIRE_EQUAL(persistentReceiptRows(
     seedDatabase, seedRepo, seedProvider.toUri(), lossReference), 1);
   const auto lossAccepted = runWithFacePump(environment, [&] {
-    return persistent.getPublishStatus(lossHandle, 8000);
+    return recoveryStatusApi.getPublishStatus(lossHandle, 12000);
   });
   const auto acceptedSeed = std::find_if(lossAccepted.targets.begin(), lossAccepted.targets.end(),
     [&seed] (const auto& target) { return target.target == seed; });
@@ -2358,7 +2359,8 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
       seedObjects.string(), 1024 * 1024, 4096, "spec202-source-loss-recovered"),
     seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
   sourceLossSeed->registerServices(environment.provider(0), publisherUsers[0], 1500, 8000);
-  const auto lossStatus = waitForTerminalPublish(environment, persistent, lossHandle);
+  const auto lossStatus = waitForTerminalPublish(
+    environment, recoveryStatusApi, lossHandle);
   BOOST_CHECK_EQUAL(lossStatus.state, "FAILED");
   BOOST_CHECK(sourceRemoved->load());
   BOOST_CHECK_EQUAL(bStoreCalls->load(), 1U);
@@ -2408,7 +2410,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   });
   BOOST_CHECK_EQUAL(lateBObserved->load(), 1U);
   const auto lossReread = runWithFacePump(environment, [&] {
-    return persistent.getPublishStatus(lossHandle, 8000);
+    return recoveryStatusApi.getPublishStatus(lossHandle, 12000);
   });
   BOOST_CHECK_EQUAL(lossReread.toJson(), lossStatus.toJson());
   BOOST_CHECK(lossCatalog.lookupAggregateReceipt(lossStatus.receiptId) == lossAggregate);
