@@ -82,7 +82,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/spec201-invocation-names.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedInference/cpp/ndnsf-di'],
                 use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
-                defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
+                defines=['HAVE_TESTS', 'NDN_SVS_HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     bld.program(target='../spec201-transparent-repo',

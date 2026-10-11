@@ -1423,7 +1423,9 @@ namespace ndn_service_framework{
                                       std::function<void(bool, const std::string&)> onPublished = {});
             void publishHybridEncodedMessage(const ndn::Name& messageName,
                                              ndn::Buffer plaintext,
-                                             std::function<void(bool, const std::string&)> onPublished = {});
+                                             std::function<void(bool, const std::string&)> onPublished,
+                                             std::string expectedSelectionContext,
+                                             std::optional<ControllerVersion> expectedControllerVersion);
             bool decryptHybridMessage(const ndn::Name& messageName,
                                       const ndn::Block& envelopeBlock,
                                       const ndn::Name& expectedActor,

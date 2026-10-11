@@ -173,6 +173,24 @@ struct InvocationNamesOracle
   }
   static uint64_t committed(ServiceUser& user, const ndn::Name& id)
   { return user.m_pendingCalls.at(id).selectionPublishedAtUs; }
+  static auto publisher(ServiceUser& user) { return user.m_svsps; }
+  static void select(ServiceUser& user, const ndn::Name& id, const ndn::Name& provider,
+                     std::function<void(bool)> completion)
+  { user.PublishServiceSelectionMessageV2(provider, user.m_pendingCalls.at(id).serviceName,
+                                        id, std::move(completion)); }
+  static void invalidate(ServiceUser& user, const ndn::Name& id, int kind)
+  {
+    if (kind == 1) user.m_pendingCalls.erase(id);
+    else if (kind == 2) user.m_pendingCalls.at(id).timedOut = true;
+    else if (kind == 3) changeAttempt(user, id);
+    else if (kind == 5) {
+      auto version = user.getControllerVersion().value_or(ControllerVersion{});
+      ++version.controllerGenerationTimestamp;
+      ++version.controllerEpoch;
+      user.adoptControllerVersion(version);
+    }
+    else if (kind == 6) user.m_controllerPrefix = ndn::Name("/configured/controller/without-status");
+  }
 };
 } // namespace ndn_service_framework::test
 
@@ -205,6 +223,80 @@ test::BootstrapProfile profile()
 }
 
 BOOST_AUTO_TEST_SUITE(Spec201InvocationNames)
+
+BOOST_AUTO_TEST_CASE(SelectionWaitsForEarlierAsyncPublicationAndRechecksOwner)
+{
+  EnvValue async("NDNSF_SVS_ASYNC_PUBLISH", "1");
+  for (int invalidation = 0; invalidation != 7; ++invalidation) {
+    auto config = profile();
+    bool released = false, completed = false, accepted = false;
+    size_t retries = 0, callbacks = 0;
+    test::NdnsfIntegrationEnvironment environment(config);
+    environment.bootstrap();
+    environment.enableProductionIngressForTest();
+    auto& user = environment.user();
+    user.setUseTokens(false);
+    const auto publisher = InvocationNamesOracle::publisher(user);
+    BOOST_REQUIRE(publisher);
+    publisher->setPreparedPublicationCommitHookForTest([&](ndn::svs::SeqNo) {
+      if (!released) {
+        ++retries;
+        throw std::runtime_error("injected earlier async commit retry");
+      }
+    });
+    const ndn::Name id("/selection/awaiting/async");
+    RequestMessage request;
+    request.setPolicyEpoch(user.getCurrentPolicyEpoch(config.serviceName));
+    InvocationNamesOracle::seed(user, id, config.serviceName, {config.providerIdentity}, request);
+    const auto earlier = ndn::Name(config.userIdentity).append("NDNSF").append("status");
+    const ndn::Buffer bytes{1, 2, 3};
+    publisher->publishAsync(earlier, ndn::span<const uint8_t>(bytes.data(), bytes.size()));
+    BOOST_REQUIRE_GT(publisher->getPublicationPreparationStats().outstanding, 0U);
+    const auto encryptions = user.getHybridCryptoCounters().symmetric_encrypt_count.load();
+    InvocationNamesOracle::select(user, id, config.providerIdentity, [&](bool ok) {
+      ++callbacks;
+      accepted = ok;
+      completed = true;
+      BOOST_CHECK(released);
+    });
+    ndn::Scheduler scheduler(environment.userFace().getIoContext());
+    std::function<void()> invalidateAfterFence;
+    if (invalidation == 4) {
+      // The User Face is manually pumped: invalidate before its first posted
+      // publication continuation, after the real Selection preparation call.
+      InvocationNamesOracle::changeAttempt(user, id);
+      released = true;
+    }
+    else {
+      invalidateAfterFence = [&] {
+        if (user.getHybridCryptoCounters().symmetric_encrypt_count.load() == encryptions) {
+          scheduler.schedule(ndn::time::milliseconds(1), invalidateAfterFence);
+          return;
+        }
+        // Only this Selection uses User hybrid encryption after the baseline.
+        // Its Face continuation has run and the blocked predecessor prevents
+        // acceptance; no wall-time guess determines owner invalidation.
+        BOOST_CHECK(!completed);
+        InvocationNamesOracle::invalidate(user, id, invalidation);
+        released = true;
+      };
+      scheduler.schedule(ndn::time::milliseconds(1), invalidateAfterFence);
+    }
+    environment.pumpUntilWithAttributeAuthority([&] {
+      return completed && publisher->getPublicationPreparationStats().outstanding == 0;
+    });
+    if (invalidation != 4) BOOST_CHECK_GT(retries, 0U);
+    BOOST_REQUIRE(completed);
+    BOOST_CHECK_EQUAL(callbacks, 1U);
+    BOOST_CHECK_EQUAL(accepted, invalidation == 0);
+    BOOST_CHECK_EQUAL(publisher->getPublicationPreparationStats().outstanding, 0U);
+    if (invalidation == 0) {
+      const auto& originals = InvocationNamesOracle::packets(user, id, config.providerIdentity);
+      BOOST_CHECK(!originals.empty());
+    }
+    publisher->setPreparedPublicationCommitHookForTest({});
+  }
+}
 
 BOOST_AUTO_TEST_CASE(ContextKeepsFullActorServiceAndTypedRequestIdentity)
 {

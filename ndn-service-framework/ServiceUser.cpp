@@ -15886,16 +15886,42 @@ void ServiceUser::finishRequestAckOnEventLoop(
     {
         const auto plaintextBlock = message.WireEncode();
         auto plaintext = ndn::Buffer(plaintextBlock.begin(), plaintextBlock.end());
+        std::string expectedSelectionContext;
+        std::optional<ControllerVersion> expectedControllerVersion;
+        if (hybridMessageTypeForName(messageName, identity) == "SELECTION") {
+            bool matched = false;
+            for (const auto& pending : m_pendingCalls) {
+                const auto selection = parseServiceSelectionNameV2(messageName, identity, pending.second.serviceName);
+                const auto decision = parseServiceSelectionDecisionNameV2(messageName, identity, pending.second.serviceName);
+                const auto request = selection ? selection->requestId : decision ? decision->requestId : ndn::Name();
+                if (request.empty() || request != pending.first) continue;
+                if (matched) throw std::runtime_error("ambiguous Selection preparation context");
+                matched = true;
+                const auto provider = selection ? selection->providerName : decision->providerName;
+                const auto prepared = pending.second.selectionPreparationContextsByProvider.find(provider.toUri());
+                expectedSelectionContext = selection && prepared != pending.second.selectionPreparationContextsByProvider.end()
+                    ? prepared->second : selectionRetryContext(request, provider);
+                expectedControllerVersion = getControllerVersion(pending.second.serviceName);
+            }
+            if (!matched) {
+                if (onPublished) onPublished(false, "Selection lacks pending preparation context");
+                return;
+            }
+        }
         boost::asio::post(m_face.getIoContext(),
-            [this, messageName, plaintext = std::move(plaintext), onPublished]() mutable {
-                try { publishHybridEncodedMessage(messageName, std::move(plaintext), onPublished); }
+            [this, messageName, plaintext = std::move(plaintext), onPublished,
+             expectedSelectionContext = std::move(expectedSelectionContext), expectedControllerVersion]() mutable {
+                try { publishHybridEncodedMessage(messageName, std::move(plaintext), onPublished,
+                        std::move(expectedSelectionContext), expectedControllerVersion); }
                 catch (const std::exception& error) { if (onPublished) onPublished(false, error.what()); }
             });
     }
 
     void ServiceUser::publishHybridEncodedMessage(const ndn::Name& messageName,
                                                   ndn::Buffer plaintext,
-                                                  std::function<void(bool, const std::string&)> onPublished)
+                                                  std::function<void(bool, const std::string&)> onPublished,
+                                                  std::string expectedSelectionContext,
+                                                  std::optional<ControllerVersion> expectedControllerVersion)
     {
         ndn::Name serviceName;
         ndn::Name requestId;
@@ -15923,6 +15949,17 @@ void ServiceUser::finishRequestAckOnEventLoop(
 
         const auto messageType = hybridMessageTypeForName(messageName, identity);
         const auto accessAttribute = hybridAccessAttributeForName(messageName, serviceName, identity);
+        ndn::Name selectionProvider;
+        if (messageType == "SELECTION") {
+            if (const auto parsed = parseServiceSelectionNameV2(messageName, identity, serviceName))
+                selectionProvider = parsed->providerName;
+            else if (const auto parsed = parseServiceSelectionDecisionNameV2(messageName, identity, serviceName))
+                selectionProvider = parsed->providerName;
+            else {
+                if (onPublished) onPublished(false, "Selection lacks exact Provider context");
+                return;
+            }
+        }
         auto key = m_hybridMessageCrypto.getOrCreateSendKey(
             serviceName, senderPrefix, accessAttribute, messageType, m_hybridCryptoCounters);
 
@@ -16016,6 +16053,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                               {"messageType", messageType}});
         }
         auto encryptAndPost = [this, messageName, requestId, serviceName, messageType, onPublished,
+                               selectionProvider, expectedSelectionContext, expectedControllerVersion,
                                keyId = key.keyId, epochId = key.epochId,
                                keyBytes = key.key, ad = std::move(ad),
                                plaintext = std::move(plaintext),
@@ -16041,11 +16079,14 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 error = e.what();
             }
             const auto aesEndUs = timelineSteadyMicroseconds();
-            boost::asio::post(m_face.getIoContext(),
+            auto publish = std::make_shared<std::function<void()>>();
+            std::weak_ptr<std::function<void()>> weakPublish = publish;
+            *publish =
                 [this, messageName, requestId, serviceName, messageType, onPublished,
+                 selectionProvider, expectedSelectionContext, expectedControllerVersion,
                  keyId, epochId, aesStartUs, aesEndUs, wrappedKeyAttached,
                  ciphertextBytes, error = std::move(error),
-                 buffer = std::move(buffer)]() mutable {
+                 buffer = std::move(buffer), weakPublish, cryptoReported = false]() mutable {
                 if (messageType == "REQUEST" || messageType == "SELECTION") {
                     const auto owner = m_pendingCalls.find(requestId);
                     if (owner == m_pendingCalls.end() || owner->second.timedOut ||
@@ -16061,6 +16102,53 @@ void ServiceUser::finishRequestAckOnEventLoop(
                     if (onPublished) onPublished(false, error);
                     return;
                 }
+                if (!cryptoReported) {
+                    ++m_hybridCryptoCounters.symmetric_encrypt_count;
+                    if (m_useTokens) {
+                        if (messageType == "REQUEST" || messageType == "RESPONSE")
+                            ++m_hybridCryptoCounters.user_token_symmetric_encrypt_count;
+                        if (messageType == "ACK" || messageType == "SELECTION")
+                            ++m_hybridCryptoCounters.provider_token_symmetric_encrypt_count;
+                    }
+                    cryptoReported = true;
+                }
+                // Synchronous SVS publication advances the async commit cursor.
+                // Let earlier reserved publications finish before committing a
+                // SELECTION. Poll on the Face so its async commits can run; the
+                // original invocation timeout/cancellation is checked above on
+                // every continuation. The weak self-reference owns no cycle.
+                const auto preparation = m_svsps ? m_svsps->getPublicationPreparationStats()
+                    : ndn::svs::SVSPubSub::PublicationPreparationStats{};
+                if (messageType == "SELECTION" && (preparation.failed || preparation.cancelled)) {
+                    if (onPublished) onPublished(false, "earlier SVS publication failed or was cancelled");
+                    return;
+                }
+                if (messageType == "SELECTION" && preparation.outstanding != 0) {
+                    if (const auto retry = weakPublish.lock()) {
+                        m_scheduler.schedule(ndn::time::milliseconds(1),
+                            [retry] { (*retry)(); });
+                    }
+                    return;
+                }
+                if (messageType == "SELECTION") {
+                    // Check the original prepared context once when ready,
+                    // rather than rehash assignments on each waiting tick.
+                    std::string rejection;
+                    try {
+                        if (!authorizeControllerTransition(serviceName, ProtectedTransition::SELECTION) ||
+                            getControllerVersion(serviceName) != expectedControllerVersion ||
+                            selectionRetryContext(requestId, selectionProvider) != expectedSelectionContext) {
+                            rejection = "Selection authorization or preparation context changed";
+                        }
+                    }
+                    catch (const std::exception& failure) {
+                        rejection = failure.what();
+                    }
+                    if (!rejection.empty()) {
+                        if (onPublished) onPublished(false, rejection);
+                        return;
+                    }
+                }
                 if (m_timelineTrace) {
                     logTimelineTrace("user", "aes_gcm_encrypt_done", requestId,
                                      {{"serviceName", serviceName.toUri()},
@@ -16072,15 +16160,6 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                      {{"serviceName", serviceName.toUri()},
                                       {"messageName", messageName.toUri()},
                                       {"mode", "hybrid"}});
-                }
-                ++m_hybridCryptoCounters.symmetric_encrypt_count;
-                if (m_useTokens) {
-                    if (messageType == "REQUEST" || messageType == "RESPONSE") {
-                        ++m_hybridCryptoCounters.user_token_symmetric_encrypt_count;
-                    }
-                    if (messageType == "ACK" || messageType == "SELECTION") {
-                        ++m_hybridCryptoCounters.provider_token_symmetric_encrypt_count;
-                    }
                 }
                 const auto queuedAtUs = nowMicroseconds();
                 NDN_LOG_DEBUG("[NDNSF_HYBRID] role=user event=HYBRID_PUBLISH"
@@ -16183,7 +16262,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                           {"mode", "hybrid"}});
                     }
                 }
-            });
+            };
+            boost::asio::post(m_face.getIoContext(), [publish] { (*publish)(); });
         };
         if (m_handlerPool.getThreadCount() == 0 ||
             !m_handlerPool.post(encryptAndPost)) {
