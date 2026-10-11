@@ -170,7 +170,9 @@ BOOST_AUTO_TEST_CASE(PacketIdentitySurvivesUriAliasesTwoReplicasAndRestart)
   {
     RepoNode first(ndn::Name("/repo/one"), fixture.capability(), fixture.store("one"));
     RepoNode second(ndn::Name("/repo/two"), fixture.capability(), fixture.store("two"));
-    BOOST_CHECK_EQUAL(first.putDataPacket(alternate, wire).objectName, canonical);
+    const auto firstCommit = first.putDataPacket(alternate, wire);
+    BOOST_CHECK_EQUAL(firstCommit.objectName, canonical);
+    BOOST_CHECK(firstCommit.dataReceiptId.empty());
     BOOST_CHECK_EQUAL(RepoClient::putDataPacket(second, wire).objectName, canonical);
     BOOST_CHECK(first.hasDataPacket(canonical));
     BOOST_CHECK(first.hasDataPacket(alternate));
@@ -192,6 +194,20 @@ BOOST_AUTO_TEST_CASE(PacketIdentitySurvivesUriAliasesTwoReplicasAndRestart)
     RepoCore second(fixture.capability(), fixture.store("two"));
     BOOST_CHECK(second.getDataPacket(alternate) == wire);
   }
+}
+
+BOOST_AUTO_TEST_CASE(ConfiguredPacketStoreKeepsCompleteReceiptOwner)
+{
+  Fixture fixture;
+  const auto name = packetName();
+  const auto wire = packet(name);
+  RepoNode repo(ndn::Name("/repo/service"), fixture.capability(), fixture.store("owned"),
+                fixture.capability().repoNode, "/repo/provider");
+  const auto commit = repo.putDataPacket(name.toUri(ndn::name::UriFormat::ALTERNATE), wire);
+  BOOST_CHECK(!commit.dataReceiptId.empty());
+  BOOST_CHECK_EQUAL(commit.dataReceiptRepoNode, fixture.capability().repoNode);
+  BOOST_CHECK_EQUAL(commit.dataReceiptProviderIdentity, "/repo/provider");
+  BOOST_CHECK(repo.getDataPacket(name.toUri(ndn::name::UriFormat::CANONICAL)) == wire);
 }
 
 BOOST_AUTO_TEST_CASE(ConflictsAndForeignNamesPreserveCommittedWire)

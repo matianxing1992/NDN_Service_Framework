@@ -1016,6 +1016,11 @@ RepoNode::putDataPacket(const std::string& dataName,
                         const std::vector<uint8_t>& wire)
 {
   std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
+  // Standalone storage has no authenticated Provider receipt owner. Do not
+  // forward its logical Repo ID as half of a persistent receipt identity.
+  if (m_providerIdentity.empty()) {
+    return m_core.putDataPacket(dataName, wire);
+  }
   return m_core.putDataPacket(dataName, wire, m_repoNode, m_providerIdentity);
 }
 
