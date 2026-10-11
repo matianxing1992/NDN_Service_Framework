@@ -47,6 +47,18 @@ NativeJson oracle()
   if (!file) throw std::runtime_error("missing V3 placement oracle");
   return NativeJson::parse(file);
 }
+std::string resignOfferAcceptingRole(const std::string& wire, const std::string& addedRole);
+
+std::string uriProfileFixturePolicy(const NativeJson& fixture)
+{
+  auto policy = fixture.at("policy");
+  for (auto& entry : policy.at("entries")) {
+    for (const auto* field : {"provider", "service", "keyLocatorPrefix", "certificateName"})
+      entry[field] = ndn::Name(entry.at(field).get<std::string>()).toUri();
+  }
+  return policy.dump();
+}
+
 struct Input
 {
   NativeOfferBindingContext context;
@@ -56,9 +68,13 @@ struct Input
   std::string ackDigest;
   NativeInspectedModel inspected;
   NativeSplitCandidate split;
-  Input(const NativeJson& f, const NativeJson& sample)
+  Input(const NativeJson& f, const NativeJson& sample, bool useUriProfile = false)
   {
     context = {"request", 1, "/service", f.at("model_digest"), f.at("graph_digest"), 900};
+    if (useUriProfile) {
+      context.requestId = ndn::Name(context.requestId).toUri();
+      context.serviceName = ndn::Name(context.serviceName).toUri();
+    }
     context.deadlineMs = sample.value<std::uint64_t>("deadline_ms", 900);
     ackDigest = f.at("ack_digest");
     const auto& r = f.at("role");
@@ -110,10 +126,19 @@ struct Input
       [&](const NativeInspectedModel&, const NativeSplitCandidate&, const NativeRequestControl&) { return roles; });
     NativeRequestControl control{"request", 1, std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
     roles = preparation.prepareRoles(inspected, split, control);
-    NativeOfferAdmission admission(f.at("policy").dump(),
+    NativeOfferAdmission admission(useUriProfile ? uriProfileFixturePolicy(f) : f.at("policy").dump(),
       {{f.at("key_id").get<std::string>(), f.at("public_pem").get<std::string>()}}, f.at("candidate"));
     for (const auto& item : sample.at("offers")) {
-      const auto wire = item.get<std::string>();
+      auto wire = item.get<std::string>();
+      if (useUriProfile) {
+        auto value = nativeParseJson(wire);
+        value["provider"] = ndn::Name(value.at("provider").get<std::string>()).toUri();
+        value["service"] = context.serviceName;
+        value["request_id"] = context.requestId;
+        value["topology"]["provider"] = value.at("provider");
+        wire = resignOfferAcceptingRole(nativeCanonicalJson(value),
+          value.at("accepted_roles").front().get<std::string>());
+      }
       const auto offer = decodeNativeProviderOfferV3(wire);
       ndn_service_framework::AckSelectionCandidate ack;
       ack.providerName = ndn::Name(offer.provider);
@@ -1470,7 +1495,7 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   const auto sample = std::find_if(f.at("seal_cases").begin(), f.at("seal_cases").end(),
     [](const auto& value) { return value.at("name") == "cpu"; });
   BOOST_REQUIRE(sample != f.at("seal_cases").end());
-  Input input(f, *sample);
+  Input input(f, *sample, true);
   class Splitter final : public NativeModelSplitStrategy {
   public:
     explicit Splitter(NativeSplitCandidate candidate) : value(std::move(candidate)) {}
@@ -1485,7 +1510,7 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   binding.manifestDigest = input.inspected.modelManifestDigest;
   binding.recipeDigest = input.roles.front().recipeDigest;
   for (const auto& role : input.roles) {
-    binding.sourceByRole[role.selectedRole] = "/catalog/root";
+    binding.sourceByRole[role.selectedRole] = ndn::Name("/catalog/root").toUri();
     binding.artifactNameByRole[role.selectedRole] = "/catalog/artifact";
     binding.artifactDigestByRole[role.selectedRole] = role.artifactDigest;
   }
@@ -1498,14 +1523,14 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
       return binding;
     },
     [&](const auto&, const auto&, const auto&) { return input.roles; });
-  NativeOfferAdmission admission(f.at("policy").dump(), {{f.at("key_id"), f.at("public_pem")}}, f.at("candidate"));
+  NativeOfferAdmission admission(uriProfileFixturePolicy(f), {{f.at("key_id"), f.at("public_pem")}}, f.at("candidate"));
   const auto key = [](char c) {
     const std::string bytes(32, c);
     return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
       reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()), EVP_PKEY_free);
   };
   NativeGrantIssuerConfig issuerConfig;
-  issuerConfig.authorityIdentity = "/authority"; issuerConfig.requesterIdentity = "/requester";
+  issuerConfig.authorityIdentity = ndn::Name("/authority").toUri(); issuerConfig.requesterIdentity = ndn::Name("/requester").toUri();
   issuerConfig.protectionEpoch = input.roles.front().protectionEpoch;
   issuerConfig.keyId = "fixture-key"; issuerConfig.authorityPrivateKey = key('a');
   issuerConfig.requesterPublicKey = key('b'); issuerConfig.allowedModelManifests = {binding.manifestDigest};
@@ -1517,10 +1542,10 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   NativeRequestRuntime runtime;
   runtime.contract = {input.context.serviceName, "task", input.inspected.descriptor.adapterId,
     input.inspected.descriptor.adapter.descriptorDigest(), nativePlanningDigest("composition"), nativePlanningDigest("task")};
-  runtime.requesterIdentity = "/requester"; runtime.protectionEpoch = issuerConfig.protectionEpoch;
+  runtime.requesterIdentity = ndn::Name("/requester").toUri(); runtime.protectionEpoch = issuerConfig.protectionEpoch;
   runtime.security = {nativePlanningDigest("runtime-policy"), true};
   runtime.budget.maxPolicyMs = 1000;
-  runtime.grants = std::make_shared<NativeAuthenticatedGrantClient>("/requester", key('b'), "/authority",
+  runtime.grants = std::make_shared<NativeAuthenticatedGrantClient>(ndn::Name("/requester").toUri(), key('b'), ndn::Name("/authority").toUri(),
     authorityPublic, std::make_shared<NativeArtifactGrantIssuer>(issuerConfig),
     [&](const auto& name, const auto&, const auto&) { ++grantPublications; return name; });
   NativeApplicationInput application;
@@ -1549,7 +1574,7 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   const auto selected = planned.corePlan.participantSelector->select(closure.candidates, planned.corePlan.roles);
   BOOST_REQUIRE_EQUAL(selected.size(), 1U);
   BOOST_CHECK_EQUAL(selected.front().provider.toUri(), planned.terminalProvider);
-  BOOST_CHECK_EQUAL(selected.front().artifactDataName.toUri(), "/catalog/root");
+  BOOST_CHECK_EQUAL(selected.front().artifactDataName.toUri(), ndn::Name("/catalog/root").toUri());
   BOOST_CHECK(!selected.front().assignmentPayload.empty());
 
   NativeConversationTurn leaseTurn;
@@ -1869,13 +1894,16 @@ BOOST_AUTO_TEST_CASE(RequestPlannerAcquiresIndependentRoleGrantsConcurrently)
   BOOST_CHECK_GE(peakIssues.load(), 2U);
 }
 
+enum class ProbeRemeasurementFixture { None, Stable, Unstable, Timeout };
+
 void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
                              bool timeoutTargetedMeasurement = false,
                              bool cancelAfterTargetedMeasurement = false,
                              bool spoofMeasurementSigner = false,
                              bool verifyLateBootstrapRelease = false,
                              bool timeoutCacheQuery = false,
-                             bool cancelDuringCacheQuery = false)
+                             bool cancelDuringCacheQuery = false,
+                             ProbeRemeasurementFixture remeasurement = ProbeRemeasurementFixture::None)
 {
   using namespace ndn_service_framework;
   class User final : public test::LocalServiceUser {
@@ -2015,7 +2043,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
   if (scenario == 16)
   BOOST_REQUIRE(probeSample != f.at("seal_cases").end());
   auto ownedInput = std::make_shared<Input>(f,
-    scenario == 16 ? *probeSample : *sample);
+    scenario == 16 ? *probeSample : *sample, true);
   if (scenario == 16)
     makeInterRoleProbeInput(*ownedInput);
   const auto& input = *ownedInput;
@@ -2063,8 +2091,8 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
           // intent and scoring path through NativeInferenceClient.
         }
         else if (invalidIntent) {
-          observer.observerProvider = "/provider/b";
-          observer.goodputEdges.push_back({"/provider/a", "/provider/b"});
+          observer.observerProvider = ndn::Name("/provider/b").toUri();
+          observer.goodputEdges.push_back({ndn::Name("/provider/a").toUri(), ndn::Name("/provider/b").toUri()});
         }
         else if (useAllowedRttPair && !context.allowedRttPairs.empty()) {
           const auto& pair = context.allowedRttPairs.front();
@@ -2075,10 +2103,10 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
             {observer.observerProvider, requestedRttTarget});
         }
         else {
-          observer.observerProvider = "/provider/b";
-          requestedRttTarget = "/provider/a";
+          observer.observerProvider = ndn::Name("/provider/b").toUri();
+          requestedRttTarget = ndn::Name("/provider/a").toUri();
           requestedObserver = observer.observerProvider;
-          observer.rttPairs.push_back({"/provider/b", "/provider/a"});
+          observer.rttPairs.push_back({ndn::Name("/provider/b").toUri(), ndn::Name("/provider/a").toUri()});
         }
         if (!useObservationAwareStrategy) {
           NativePlacementProbeIntentV1 intent;
@@ -2160,25 +2188,24 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
     });
   owners.reset();
   BOOST_REQUIRE(!weakOwners.expired());
-  if (scenario == 16) {
-    user->setRequestPublisher([] (const auto&, const auto&, const auto&,
-                                 const auto&, const auto&, std::size_t) {});
-  }
+  user->setRequestPublisher([] (const auto&, const auto&, const auto&,
+                               const auto&, const auto&, std::size_t) {});
   // Every public-client scenario reaches Core plan commit and therefore needs
   // the same existing REQUEST-LARGE wrapped-key and policy state. Without
   // this test-only bootstrap the production path correctly tries NAC-ABE
   // wrapping, but the LocalMock fixture has no Controller/AA to answer it.
   user->prepareHybridSendKeyForTest(ndn::Name("/service"), "REQUEST-LARGE");
+  user->prepareHybridSendKeyForTest(ndn::Name("/service"), "SELECTION");
   if (scenario == 14 || scenario == 15 || scenario == 16) {
     PermissionResponse permissions;
-    permissions.setTargetIdentity("/requester");
+    permissions.setTargetIdentity(ndn::Name("/requester").toUri());
     permissions.setPermissionKind(tlv::UserPermission);
     permissions.setPolicyEpoch(1);
     std::vector<ndn::Name> authorizedServices{ndn::Name("/service")};
     if (scenario == 16)
       authorizedServices.emplace_back(NETWORK_PROBE_SERVICE);
     for (const auto& service : authorizedServices) {
-      for (const auto* provider : {"/provider/a", "/provider/b"}) {
+      for (const auto& provider : {ndn::Name("/provider/a").toUri(), ndn::Name("/provider/b").toUri()}) {
         PermissionEntry entry;
         entry.setProviderName(provider);
         entry.setServiceName(service.toUri());
@@ -2205,12 +2232,16 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
   if (scenario == 13) {
     NativeConversationConfig conversationConfig;
     conversationConfig.authenticationKeys = {std::vector<std::uint8_t>(32, 0x5a)};
-    conversationConfig.requesterIdentity = "/requester";
-    conversationConfig.serviceName = "/service";
+    conversationConfig.requesterIdentity = ndn::Name("/requester").toUri();
+    conversationConfig.serviceName = ndn::Name("/service").toUri();
     conversationConfig.securityDomainDigest = nativePlanningDigest("policy");
     conversationConfig.nowMs = [] { return std::uint64_t{2'000'000'000'000}; };
     conversations = std::make_shared<NativeConversationCoordinator>(
       std::move(conversationConfig));
+  }
+  // Selection commits require a publisher even when the fixture intercepts
+  // REQUEST dispatch. Keep a real local SVS publisher on the DummyClientFace.
+  {
     ndn::svs::SecurityOptions security(keyChain);
     security.interestSigner = std::make_shared<ndn::svs::BaseSigner>();
     security.dataSigner->signingInfo = ndn::security::signingByCertificate(requesterCert);
@@ -2225,7 +2256,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
     user->attachLocalMockPubSubForTest(std::move(pubSub));
   }
   if ((scenario >= 3 && scenario <= 13) || scenario == 15 || scenario == 16) {
-    for (const auto& provider : {std::string("/provider/a"), std::string("/provider/b")}) {
+    for (const auto& provider : {ndn::Name("/provider/a").toUri(), ndn::Name("/provider/b").toUri()}) {
       const auto cert = keyChain.createIdentity(ndn::Name(provider), ndn::RsaKeyParams(2048))
         .getDefaultKey().getDefaultCertificate();
       const auto bytes = cert.getPublicKey();
@@ -2246,15 +2277,15 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
   NativeArtifactBinding binding;
   binding.manifestDigest = input.inspected.modelManifestDigest; binding.recipeDigest = input.roles.front().recipeDigest;
   for (const auto& role : input.roles) {
-    binding.sourceByRole[role.selectedRole] = "/catalog/root";
-    binding.artifactNameByRole[role.selectedRole] = "/catalog/artifact";
+    binding.sourceByRole[role.selectedRole] = ndn::Name("/catalog/root").toUri();
+    binding.artifactNameByRole[role.selectedRole] = ndn::Name("/catalog/artifact").toUri();
     binding.artifactDigestByRole[role.selectedRole] = role.artifactDigest;
   }
   auto preparation = std::make_shared<NativeRequestPreparation>(registry,
     [ownedInput](const auto&, const auto&) { return ownedInput->inspected; },
     [binding](const auto&, const auto&, const auto&, const auto&) { return binding; },
     [ownedInput](const auto&, const auto&, const auto&) { return ownedInput->roles; });
-  auto admission = std::make_shared<NativeOfferAdmission>(f.at("policy").dump(),
+  auto admission = std::make_shared<NativeOfferAdmission>(uriProfileFixturePolicy(f),
     std::map<std::string, std::string>{{f.at("key_id"), f.at("public_pem")}}, f.at("candidate"));
   const auto key = [](char seed) {
     const std::string bytes(32, seed);
@@ -2262,29 +2293,29 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
       reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()), EVP_PKEY_free);
   };
   NativeGrantIssuerConfig issuer;
-  issuer.authorityIdentity = "/authority"; issuer.requesterIdentity = "/requester";
+  issuer.authorityIdentity = ndn::Name("/authority").toUri(); issuer.requesterIdentity = ndn::Name("/requester").toUri();
   issuer.protectionEpoch = input.roles.front().protectionEpoch; issuer.keyId = "fixture-key";
   issuer.authorityPrivateKey = key('a'); issuer.requesterPublicKey = key('b');
   issuer.allowedModelManifests = {binding.manifestDigest};
-  issuer.recipientPublicKeys = {{"/provider/a", key('c')}};
+  issuer.recipientPublicKeys = {{ndn::Name("/provider/a").toUri(), key('c')}};
   if ((scenario >= 3 && scenario <= 13) || scenario == 14 || scenario == 15 || scenario == 16)
-    issuer.recipientPublicKeys.emplace("/provider/b", key('d'));
+    issuer.recipientPublicKeys.emplace(ndn::Name("/provider/b").toUri(), key('d'));
   issuer.contentKey = [](const auto&, const auto&) { return std::vector<std::uint8_t>(32, 42); };
   std::string authorityPublic(32, '\0'); std::size_t size = authorityPublic.size();
   BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(issuer.authorityPrivateKey.get(),
     reinterpret_cast<unsigned char*>(authorityPublic.data()), &size), 1);
   NativeRequestRuntime runtime;
-  runtime.contract = {"/service", "task", input.inspected.descriptor.adapterId,
+  runtime.contract = {ndn::Name("/service").toUri(), "task", input.inspected.descriptor.adapterId,
     input.inspected.descriptor.adapter.descriptorDigest(), nativePlanningDigest("composition"), nativePlanningDigest("task")};
   if (scenario >= 3 && scenario <= 13) {
     runtime.contract.generationMode = "TOKEN_STREAMING";
     runtime.contract.tokenizerDigest = nativePlanningDigest("tokenizer");
   }
-  runtime.requesterIdentity = "/requester"; runtime.protectionEpoch = issuer.protectionEpoch;
+  runtime.requesterIdentity = ndn::Name("/requester").toUri(); runtime.protectionEpoch = issuer.protectionEpoch;
   runtime.security = {nativePlanningDigest("policy"), true}; runtime.budget.maxPolicyMs = 1000;
   if (scenario == 16)
     runtime.inputLayoutDigest = nativePlanningDigest("spec196-application-input-layout");
-  runtime.grants = std::make_shared<NativeAuthenticatedGrantClient>("/requester", key('b'), "/authority", authorityPublic,
+  runtime.grants = std::make_shared<NativeAuthenticatedGrantClient>(ndn::Name("/requester").toUri(), key('b'), ndn::Name("/authority").toUri(), authorityPublic,
     std::make_shared<NativeArtifactGrantIssuer>(issuer),
     [](const auto& name, const auto&, const auto&) { return name; });
   NativeModelRef model; static_cast<NativeModelDescriptor&>(model) = input.inspected.descriptor;
@@ -2337,10 +2368,10 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
         NativeConversationContinuation value;
         value.conversationId = "conv-spec182-public-1";
         value.parentContextEpoch = 0;
-        value.serviceName = "/service";
+        value.serviceName = ndn::Name("/service").toUri();
         const auto role = input.roles.front().selectedRole;
         value.planRoleMapDigest = nativePlanningDigest(nativeCanonicalJson(
-          NativeJson::array({NativeJson::array({role, "/provider/a"})})));
+          NativeJson::array({NativeJson::array({role, ndn::Name("/provider/a").toUri()})})));
         value.retentionDeadlineMs = 2'000'000'060'000ULL;
         value.mode = "FULL_CONTEXT";
         value.generationId = requestOptions.generation->generationId;
@@ -2374,6 +2405,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
     const auto submitOffer = [&](const ndn::Name& attemptId, const std::string& provider, std::uint64_t attempt) {
     auto offer = nativeParseJson(sample->at("offers").front().get<std::string>());
     offer["request_id"] = attemptId.toUri(); offer["provider"] = provider; offer["attempt"] = attempt;
+    offer["service"] = ndn::Name("/service").toUri();
     offer["topology"]["provider"] = provider;
     if (scenario == 16) {
       auto acceptedRoles = offer.at("accepted_roles").get<std::vector<std::string>>();
@@ -2404,7 +2436,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
       const std::vector<std::uint8_t> requestPayload(requestWire.begin(), requestWire.end());
       NativeProviderOfferV4Config config;
       config.provider = provider;
-      config.service = "/service";
+      config.service = ndn::Name("/service").toUri();
       config.bootEpoch = offer.at("boot_epoch").get<std::string>();
       config.signerKeyId = f.at("key_id").get<std::string>();
       config.signDigest = [&signingKey](const std::string& value) {
@@ -2462,9 +2494,9 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
       user->offer(attemptId, wire, v4Capability, closeAckWindow);
     });
     };
-    submitOffer(id, "/provider/a", 1);
+    submitOffer(id, ndn::Name("/provider/a").toUri(), 1);
     if (scenario == 14 || scenario == 15 || scenario == 16) {
-      submitOffer(id, "/provider/b", 1);
+      submitOffer(id, ndn::Name("/provider/b").toUri(), 1);
     }
     if (scenario == 16) {
       user->postToIo([user, id] { user->closeOffers(id); });
@@ -2500,6 +2532,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
     if (scenario == 16) {
       std::set<std::string> handledTargetedCalls;
       std::vector<std::pair<std::string, std::string>> targetedActions;
+      std::vector<NativeJson> measurementRequests;
       const auto answerTargetedCalls = [&] (bool deferMeasurement = false) {
         for (const auto& pending : user->pendingTargetedCalls()) {
           const auto& targetedId = pending.first;
@@ -2521,6 +2554,8 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
           }
           else {
             BOOST_REQUIRE(action == "measure" || action == "cache");
+            if (action == "measure")
+              measurementRequests.push_back(request);
             if (action == "cache" && cancelDuringCacheQuery) continue;
             if (action == "cache" && timeoutCacheQuery) {
               user->timeoutCallback(targetedId)(targetedId);
@@ -2531,7 +2566,9 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
             }
             if (action == "measure" && deferMeasurement)
               continue;
-            if (action == "measure" && timeoutTargetedMeasurement) {
+            if (action == "measure" && (timeoutTargetedMeasurement ||
+                (remeasurement == ProbeRemeasurementFixture::Timeout &&
+                 measurementRequests.size() == 2))) {
               const auto timeout = user->timeoutCallback(targetedId);
               timeout(targetedId);
               ResponseMessage lateUnavailable;
@@ -2599,6 +2636,19 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
                 {"probe_data_wire_bytes", NativeJson(std::vector<std::uint64_t>(16, 4400))},
                 {"data_name", source + "/NDNSF-DI/probe/goodput/" +
                   std::to_string(completedAtMs)}});
+              if (action == "measure" && remeasurement != ProbeRemeasurementFixture::None &&
+                  (measurementRequests.size() == 1 ||
+                   remeasurement == ProbeRemeasurementFixture::Unstable)) {
+                auto gaps = std::vector<double>(15, 4.096);
+                constexpr auto half = NETWORK_PROBE_WARMED_MEASURED_SEGMENTS / 2;
+                for (std::size_t i = 0; i < half; ++i)
+                  gaps[NETWORK_PROBE_WARMED_START + half + i] *= 3;
+                auto& row = payload["observations"].back();
+                row["probe_data_arrival_gaps_ms"] = gaps;
+                row["probe_train_goodput_mbps"] = nullptr;
+                row["probe_rate_status"] = "UNKNOWN";
+                row["probe_rate_reason"] = "ARRIVAL_DISPERSION_UNSTABLE";
+              }
             }
             if (action == "cache") {
               BOOST_CHECK_EQUAL(request.at("peer_boot_epochs").at(
@@ -2622,7 +2672,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
       const auto signerProvider =
         (spoofTargetedSigner && action == "authorize") ||
         (spoofMeasurementSigner && action == "measure") ?
-        (target.toUri() == "/provider/a" ? "/provider/b" : "/provider/a") :
+        (target.toUri() == ndn::Name("/provider/a").toUri() ? ndn::Name("/provider/b").toUri() : ndn::Name("/provider/a").toUri()) :
         target.toUri();
       response.setAuthenticatedTransportEvidence(
         target.toUri() + "/response",
@@ -2684,8 +2734,22 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
           values.push_back({{"action", action.first}, {"target", action.second}});
         return nativeCanonicalJson(values);
       }();
-      BOOST_CHECK_MESSAGE(targetedActions.size() == (spoofTargetedSigner ? 2U : 3U),
+      BOOST_CHECK_MESSAGE(targetedActions.size() ==
+                          (remeasurement != ProbeRemeasurementFixture::None ? 5U :
+                           spoofTargetedSigner ? 2U : 3U),
                           "targeted calls=" + actionSummary);
+      if (remeasurement != ProbeRemeasurementFixture::None) {
+        BOOST_REQUIRE_EQUAL(measurementRequests.size(), 2U);
+        const auto& first = measurementRequests[0];
+        const auto& second = measurementRequests[1];
+        for (const auto* field : {"request_id", "attempt", "requester_identity", "service",
+                                  "deadline_ms", "observer_provider", "rtt_pairs", "goodput_edges"})
+          BOOST_CHECK_MESSAGE(first.at(field) == second.at(field), field);
+        BOOST_CHECK(first.at("intent_nonce") != second.at("intent_nonce"));
+        BOOST_CHECK(first.at("scope_digest") != second.at("scope_digest"));
+        BOOST_CHECK_EQUAL(targetedActions[3].first, "authorize");
+        BOOST_CHECK_EQUAL(targetedActions[4].first, "measure");
+      }
       BOOST_REQUIRE(!targetedActions.empty());
       BOOST_CHECK_EQUAL(targetedActions[0].first, "cache");
       BOOST_CHECK_EQUAL(targetedActions[0].second, probePlacement->observer());
@@ -2710,7 +2774,9 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
                           "targeted round did not change the snapshot digest");
       if (!spoofTargetedSigner) {
         BOOST_REQUIRE(probePlacement->decision().is_object());
-        if (timeoutTargetedMeasurement || spoofMeasurementSigner) {
+        if (timeoutTargetedMeasurement || spoofMeasurementSigner ||
+            remeasurement == ProbeRemeasurementFixture::Unstable ||
+            remeasurement == ProbeRemeasurementFixture::Timeout) {
           BOOST_CHECK_EQUAL(probePlacement->decision().at("status")
                               .get<std::string>(), "BASELINE_FALLBACK");
           BOOST_CHECK(probePlacement->decision().at("edge_costs").empty());
@@ -2745,8 +2811,8 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
       receipt.successorContextEpoch = 1;
       receipt.originRequestId = id.toUri();
       receipt.originGenerationId = requestOptions.generation->generationId;
-      receipt.serviceName = "/service";
-      receipt.requesterIdentity = "/requester";
+      receipt.serviceName = ndn::Name("/service").toUri();
+      receipt.requesterIdentity = ndn::Name("/requester").toUri();
       receipt.securityDomainDigest = runtime.security.policyDigest;
       receipt.modelDigest = model.intentDigest();
       receipt.graphSemanticDigest = model.semanticsDigest;
@@ -2755,7 +2821,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
       receipt.roleSplitDigest = input.roles.front().recipeDigest;
       receipt.layoutDigest = input.roles.front().artifactProfileDigest;
       receipt.planRoleMapDigest = planRoleMapDigest;
-      receipt.providerIdentity = "/provider/a";
+      receipt.providerIdentity = ndn::Name("/provider/a").toUri();
       receipt.providerBootId = "/provider/a-boot";
       receipt.cacheEpoch = 1;
       receipt.prefixDigest = nativeConversationPrefixDigest({1, 2});
@@ -2783,8 +2849,8 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
 
       NativeConversationConfig shadowConfig;
       shadowConfig.authenticationKeys = {std::vector<std::uint8_t>(32, 0x5a)};
-      shadowConfig.requesterIdentity = "/requester";
-      shadowConfig.serviceName = "/service";
+      shadowConfig.requesterIdentity = ndn::Name("/requester").toUri();
+      shadowConfig.serviceName = ndn::Name("/service").toUri();
       shadowConfig.securityDomainDigest = runtime.security.policyDigest;
       shadowConfig.nowMs = [] { return std::uint64_t{2'000'000'000'000}; };
       NativeConversationCoordinator shadow(std::move(shadowConfig));
@@ -2811,10 +2877,10 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
         {"requestId", id.toUri()}, {"attemptEpoch", 1},
         {"generationId", requestOptions.generation->generationId}, {"planDigest", planDigest},
         {"conversationId", conversation->conversationId}, {"parentContextEpoch", 0},
-        {"successorContextEpoch", 1}, {"serviceName", "/service"},
+        {"successorContextEpoch", 1}, {"serviceName", ndn::Name("/service").toUri()},
         {"planRoleMapDigest", planRoleMapDigest}, {"roleName", role},
         {"receiptDigest", receipt.computedDigest()}, {"checkpointDigest", checkpoint.checkpointDigest},
-        {"providerIdentity", "/provider/a"}, {"providerBootId", receipt.providerBootId},
+        {"providerIdentity", ndn::Name("/provider/a").toUri()}, {"providerBootId", receipt.providerBootId},
         {"cacheEpoch", 1}, {"committed", true}});
       seedRecord(ndn::Name("/ndnsf-di/conversation/commit").append(role),
                  ndn::Buffer(ack.begin(), ack.end()));
@@ -2872,14 +2938,14 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
           }
           const auto& recovery = request.at("task").at("generation_recovery");
           BOOST_CHECK_EQUAL(recovery.at("attempt"), 2);
-          BOOST_CHECK_EQUAL(recovery.at("failed_provider"), "/provider/a");
+          BOOST_CHECK_EQUAL(recovery.at("failed_provider"), ndn::Name("/provider/a").toUri());
           BOOST_CHECK_EQUAL(recovery.at("committed_token_count"), scenario == 9 ? 0 : 1);
           BOOST_CHECK(recovery.at("committed_token_ids") == (scenario == 9 ? NativeJson::array() : NativeJson::array({1})));
           BOOST_CHECK_EQUAL(handle.requestId(), id.toUri());
           // These retained callbacks come from the old Core attempt.
           callbacks->onEvent(tokenEvent(9, 2, "1,9", "stale", "NONE"));
           callbacks->onComplete(finalPayload("stale"));
-          submitOffer(nextId, "/provider/b", 2);
+          submitOffer(nextId, ndn::Name("/provider/b").toUri(), 2);
           BOOST_REQUIRE(pumpUntil([&] { return user->committed(nextId) || handle.status() != NativeRequestStatus::Pending; }));
           if (handle.status() != NativeRequestStatus::Pending) handle.result(std::chrono::milliseconds(0));
           BOOST_REQUIRE(user->committed(nextId));
@@ -2930,7 +2996,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
     }
     auto lateResponse = user->responseCallback(id);
     auto lateTimeout = user->timeoutCallback(id);
-    ndn::Name responseProvider("/provider/a");
+    ndn::Name responseProvider(ndn::Name("/provider/a").toUri());
     if (scenario == 16) {
       responseProvider = user->terminalResponseProvider(id);
       BOOST_REQUIRE(!responseProvider.empty());
@@ -3028,6 +3094,24 @@ BOOST_AUTO_TEST_CASE(Spec196PublicClientRejectsUnallowlistedRttBeforeDispatch)
 BOOST_AUTO_TEST_CASE(Spec196PublicClientDispatchesTargetedProbeAndPlansMergedSnapshot)
 {
   runPublicClientScenario(16);
+}
+
+BOOST_AUTO_TEST_CASE(Spec201PublicClientRemeasuresUnstableTrainWithFreshScope)
+{
+  runPublicClientScenario(16, false, false, false, false, false, false, false,
+                        ProbeRemeasurementFixture::Stable);
+}
+
+BOOST_AUTO_TEST_CASE(Spec201PublicClientStopsAfterOneUnstableRemeasurement)
+{
+  runPublicClientScenario(16, false, false, false, false, false, false, false,
+                        ProbeRemeasurementFixture::Unstable);
+}
+
+BOOST_AUTO_TEST_CASE(Spec201PublicClientRemeasurementTimeoutIgnoresLateReply)
+{
+  runPublicClientScenario(16, false, false, false, false, false, false, false,
+                        ProbeRemeasurementFixture::Timeout);
 }
 
 BOOST_AUTO_TEST_CASE(Spec196PublicClientRejectsTargetedAuthorizationFromWrongSigner)

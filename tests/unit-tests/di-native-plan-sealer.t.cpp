@@ -340,6 +340,11 @@ BOOST_AUTO_TEST_CASE(PlanSealerEncodeRejectsIncompleteProjections)
 BOOST_AUTO_TEST_CASE(PreparedArtifactsReachGrantAcquisitionWithoutBackfill)
 {
   auto plan = oneRolePlan("t004-prepared", digest("ack"));
+  // This case crosses the real grant naming boundary, unlike alias-only
+  // placement fixtures. Bind the proposal to complete Producer identities.
+  plan.snapshot.offers[0].provider = ndn::Name("/provider/a").toUri();
+  plan.snapshot.offers[1].provider = ndn::Name("/provider/b").toUri();
+  plan.proposal = NativePreSplitFirstPlacement().propose(plan.snapshot, plan.candidate);
   auto registry = std::make_shared<NativeAdapterRegistry>();
   registry->freeze();
   auto published = plan.inputs.artifacts;
@@ -365,7 +370,8 @@ BOOST_AUTO_TEST_CASE(PreparedArtifactsReachGrantAcquisitionWithoutBackfill)
   placed.roles[0].requiredDeviceMemoryMb = 2253;
   plan.inputs.assemblyByRole.at(plan.role) = placed.roles[0];
   placed.providerByRole = plan.proposal.assignment.providerByRole;
-  placed.offerDigestByProvider = {{"provider-a", plan.snapshot.offers.front().offerDigest}};
+  placed.offerDigestByProvider = {{plan.snapshot.offers.front().provider,
+                                  plan.snapshot.offers.front().offerDigest}};
   plan.inputs.artifacts = preparation.ensureArtifacts(inspected, plan.candidate, placed, control);
   const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
   const NativeSecurityPolicySnapshot security{digest("policy"), true};

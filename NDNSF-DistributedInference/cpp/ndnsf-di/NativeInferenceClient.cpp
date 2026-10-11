@@ -3211,9 +3211,9 @@ NativeInferenceHandle NativeInferenceClient::requestImpl(
     // Core/Provider V2 names historically treat the request identity as a
     // suffix; introducing another path component breaks legacy filters and
     // compact-selection parsing even though the identity itself is unique.
-    operation->requestId = "/NDNSF/DI/REQUEST/" +
+    operation->requestId = ndn::Name("/NDNSF/DI/REQUEST/" +
       (m_requestOwnerScope.empty() ? std::string{} : m_requestOwnerScope + "-") +
-      std::to_string(NEXT_REQUEST_ID.fetch_add(1));
+      std::to_string(NEXT_REQUEST_ID.fetch_add(1))).toUri();
     operation->coreRequestId = operation->requestId;
     operation->attempt = 1;
     // Absolute budget: computed once from the submission clock; waits and
