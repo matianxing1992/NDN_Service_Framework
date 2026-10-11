@@ -78,6 +78,12 @@ private:
     uint64_t generation = 0;
   };
 
+  struct CachedManifest
+  {
+    std::string encoded;
+    RepoObjectManifest parsed;
+  };
+
   ArtifactReference artifactReference(const RepoObjectManifest& manifest) const;
   std::filesystem::path manifestPath(const std::string& objectName) const;
   std::filesystem::path receiptDirectory(const std::string& dataName,
@@ -101,6 +107,9 @@ private:
   mutable std::unordered_map<std::string, Reservation> m_reservations;
   mutable uint64_t m_reservedBytes = 0;
   mutable std::atomic<uint64_t> m_fullCopyFallbacks{0};
+  // Cache parsing only; every catalog scan still reads current sidecar bytes.
+  mutable std::unordered_map<std::string, CachedManifest> m_catalogParseCache;
+  mutable size_t m_catalogEncodedBytes = 0;
 };
 
 std::shared_ptr<RepoStoreBackend>

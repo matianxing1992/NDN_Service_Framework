@@ -530,11 +530,52 @@ FilesystemRepoStoreBackend::listManifests() const
   std::lock_guard<std::mutex> lock(m_mutex);
   std::vector<RepoObjectManifest> manifests;
   const fs::path directory = fs::path(m_rootPath) / "manifests";
+  constexpr size_t maxEncodedBytes = 64U * 1024U * 1024U;
+  constexpr size_t maxEntries = 4096;
+  std::set<std::string> present;
   for (const auto& entry : fs::directory_iterator(directory)) {
     if (!entry.is_regular_file() || entry.path().extension() != ".json") {
       continue;
     }
-    manifests.push_back(parseManifestJson(readText(entry.path())));
+    const auto key = entry.path().filename().string();
+    present.insert(key);
+    auto encoded = readText(entry.path());
+    auto found = m_catalogParseCache.find(key);
+    if (found != m_catalogParseCache.end() && found->second.encoded == encoded) {
+      manifests.push_back(found->second.parsed);
+      continue;
+    }
+    if (found != m_catalogParseCache.end()) {
+      m_catalogEncodedBytes -= found->second.encoded.size();
+      m_catalogParseCache.erase(found);
+    }
+    {
+      std::lock_guard<std::mutex> hooksLock(g_ioHooksMutex);
+      if (g_ioHooks.catalogParse) g_ioHooks.catalogParse();
+    }
+    auto parsed = parseManifestJson(encoded);
+    while (!m_catalogParseCache.empty() &&
+           (m_catalogParseCache.size() >= maxEntries ||
+            encoded.size() > maxEncodedBytes - m_catalogEncodedBytes)) {
+      auto victim = m_catalogParseCache.begin();
+      m_catalogEncodedBytes -= victim->second.encoded.size();
+      m_catalogParseCache.erase(victim);
+    }
+    if (encoded.size() <= maxEncodedBytes) {
+      const auto bytes = encoded.size();
+      m_catalogParseCache.emplace(key, CachedManifest{std::move(encoded), parsed});
+      m_catalogEncodedBytes += bytes;
+    }
+    manifests.push_back(std::move(parsed));
+  }
+  for (auto cached = m_catalogParseCache.begin(); cached != m_catalogParseCache.end();) {
+    if (!present.count(cached->first)) {
+      m_catalogEncodedBytes -= cached->second.encoded.size();
+      cached = m_catalogParseCache.erase(cached);
+    }
+    else {
+      ++cached;
+    }
   }
   std::sort(manifests.begin(), manifests.end(),
             [](const auto& lhs, const auto& rhs) {

@@ -1,4 +1,5 @@
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoPacketServer.hpp"
@@ -16,9 +17,21 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <cstdlib>
+#include <atomic>
 
 namespace {
 using namespace ndnsf_distributed_repo;
+
+std::atomic<size_t> catalogParses{0};
+void countCatalogParse() { ++catalogParses; }
+struct CatalogParseScope
+{
+  detail::FilesystemRepoStoreIoHooks previous;
+  CatalogParseScope()
+    : previous(detail::installFilesystemRepoStoreIoHooks({nullptr, nullptr, countCatalogParse}))
+  { catalogParses = 0; }
+  ~CatalogParseScope() { detail::installFilesystemRepoStoreIoHooks(previous); }
+};
 
 struct Fixture
 {
@@ -501,6 +514,87 @@ BOOST_AUTO_TEST_CASE(PacketFileCannotShadowLegacyAlternateStandalonePacket)
     });
   BOOST_CHECK(!store->has(canonical));
   BOOST_CHECK(repo.getDataPacket(canonical) == original);
+}
+
+BOOST_AUTO_TEST_CASE(CatalogParseReuseRequiresExactCurrentBytes)
+{
+  Fixture fixture;
+  const auto directory = fixture.root / "parse-cache";
+  auto store = makeFilesystemRepoStore(directory.string());
+  const auto wire = packet(packetName());
+  RepoObjectManifest metadata;
+  metadata.objectName = packetName().toUri(ndn::name::UriFormat::CANONICAL);
+  metadata.objectType = "ndn-data-wire";
+  metadata.packetNames = {metadata.objectName};
+  metadata.sha256 = sha256Hex(wire);
+  metadata.size = wire.size();
+  metadata.generation = 1;
+  metadata.policyEpoch = "epoch-a";
+  store->put(metadata, wire);
+  const auto sidecar = std::filesystem::directory_iterator(directory / "manifests")->path();
+  const auto originalTime = std::filesystem::last_write_time(sidecar);
+  const auto writeSidecar = [&](const std::string& bytes) {
+    std::ofstream stream(sidecar, std::ios::binary | std::ios::trunc);
+    stream << bytes;
+    stream.close();
+    std::filesystem::last_write_time(sidecar, originalTime);
+  };
+  CatalogParseScope counts;
+  BOOST_REQUIRE_EQUAL(store->listManifests().size(), 1U);
+  BOOST_CHECK_EQUAL(catalogParses.load(), 1U);
+  BOOST_CHECK_EQUAL(store->listManifests().front().policyEpoch, "epoch-a");
+  BOOST_CHECK_EQUAL(catalogParses.load(), 1U);
+  metadata.policyEpoch = "epoch-b";
+  const auto current = metadata.toJson();
+  BOOST_REQUIRE_EQUAL(current.size(), std::filesystem::file_size(sidecar));
+  writeSidecar(current);
+  BOOST_CHECK_EQUAL(store->listManifests().front().policyEpoch, "epoch-b");
+  BOOST_CHECK_EQUAL(catalogParses.load(), 2U);
+  BOOST_CHECK(std::filesystem::last_write_time(sidecar) == originalTime);
+
+  auto malformed = current;
+  const std::string consistency = "\"writeConsistency\":\"";
+  const auto consistencyAt = malformed.find(consistency);
+  BOOST_REQUIRE_NE(consistencyAt, std::string::npos);
+  malformed.replace(consistencyAt + consistency.size(), 3, "BAD");
+  writeSidecar(malformed);
+  BOOST_CHECK_THROW(store->listManifests(), std::invalid_argument);
+  writeSidecar(current);
+  BOOST_CHECK_EQUAL(store->listManifests().front().policyEpoch, "epoch-b");
+  const auto backup = directory / "sidecar-backup";
+  std::filesystem::rename(sidecar, backup);
+  std::filesystem::create_symlink(backup, sidecar);
+  BOOST_CHECK_THROW(store->listManifests(), std::exception);
+  std::filesystem::remove(sidecar);
+  BOOST_CHECK(store->listManifests().empty());
+  std::filesystem::rename(backup, sidecar);
+  const auto parsesBeforeRestore = catalogParses.load();
+  BOOST_REQUIRE_EQUAL(store->listManifests().size(), 1U);
+  BOOST_CHECK_EQUAL(catalogParses.load(), parsesBeforeRestore + 1);
+  store.reset();
+  store = makeFilesystemRepoStore(directory.string());
+  const auto parsesBeforeReopen = catalogParses.load();
+  BOOST_CHECK_EQUAL(store->listManifests().front().policyEpoch, "epoch-b");
+  BOOST_CHECK_GT(catalogParses.load(), parsesBeforeReopen);
+}
+
+BOOST_AUTO_TEST_CASE(CatalogParseCacheEvictsBeyondEntryBound)
+{
+  Fixture fixture;
+  const auto directory = fixture.root / "bounded-parse-cache";
+  auto store = makeFilesystemRepoStore(directory.string());
+  RepoObjectManifest metadata;
+  for (size_t i = 0; i < 4097; ++i) {
+    metadata.objectName = "/actual/producer/catalog/" + std::to_string(i);
+    std::ofstream output(directory / "manifests" / (std::to_string(i) + ".json"));
+    output << metadata.toJson();
+  }
+  CatalogParseScope counts;
+  BOOST_REQUIRE_EQUAL(store->listManifests().size(), 4097U);
+  BOOST_CHECK_EQUAL(catalogParses.load(), 4097U);
+  catalogParses = 0;
+  BOOST_REQUIRE_EQUAL(store->listManifests().size(), 4097U);
+  BOOST_CHECK_GT(catalogParses.load(), 0U);
 }
 
 BOOST_AUTO_TEST_CASE(AtomicPacketSetBackendPreservesWireAcrossReuseAndRestart)
