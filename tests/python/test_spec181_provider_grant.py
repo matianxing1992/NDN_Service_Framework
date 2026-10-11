@@ -355,7 +355,7 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         return GrantBindingV1(
             provider="/provider/p0",
             grant_name=canonical_grant_name(
-                authority="/authority/artifact-policy", provider_identity="/provider/p0",
+                publication_identity="/user/u0", provider_identity="/provider/p0",
                 request_id=self.request_id, attempt=1,
                 plan_core_digest="sha256:" + "cd" * 32,
                 model_manifest_digest=_MODEL_MANIFEST_DIGEST,
@@ -405,7 +405,7 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
         return provider
 
     def _ctx(self):
-        return types.SimpleNamespace(local_provider="/provider/p0")
+        return types.SimpleNamespace(local_provider="/provider/p0", requester_name="/user/u0")
 
     def _execution(self):
         from ndnsf_distributed_inference.artifact_deployment import (
@@ -501,8 +501,12 @@ class ProtectedAssemblyQualificationTest(unittest.TestCase):
     def test_missing_role_manifest_uses_the_sealed_name_not_grant_self_claims(self):
         grant = self._signed_grant()
         binding = self._binding(grant.grant_digest)
-        binding = replace(binding, grant_name=binding.grant_name.replace(
-            "/MODEL/" + "11" * 32, "/MODEL/" + "aa" * 32))
+        from ndnsf_distributed_inference.security.grant_provider import canonical_grant_name
+        binding = replace(binding, grant_name=canonical_grant_name(
+            publication_identity="/user/u0", provider_identity=binding.provider,
+            request_id=binding.request_id, attempt=binding.attempt,
+            plan_core_digest=binding.plan_core_digest, model_manifest_digest="sha256:" + "aa" * 32,
+            protection_epoch=binding.protection_epoch, grant_digest=binding.grant_digest))
         projection = types.SimpleNamespace(
             grant_binding=binding, request_id=self.request_id, attempt=1,
             plan_core_digest="sha256:" + "cd" * 32,
@@ -697,7 +701,7 @@ class RequesterGrantPipelineTest(unittest.TestCase):
         view = self._grant_view()
         binding = provider(view, deadline_ms=int(time.time() * 1000) + 60_000)
         self.assertTrue(binding.grant_name.startswith(
-            "/authority/artifact-policy/NDNSF-DI/KEY-GRANT/v1"))
+            "/8=user/8=u0/8=NDNSF/8=GRANT/8=kind%3DKEY-GRANT/"))
         self.assertEqual(len(self.published), 1)
         (data_name, wire), = self.published.items()
         self.assertEqual(data_name, binding.grant_name)

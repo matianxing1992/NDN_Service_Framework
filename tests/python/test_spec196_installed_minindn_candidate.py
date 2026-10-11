@@ -24,6 +24,28 @@ from native_probe_validation_links import render_anchored_probe_validation_schem
 
 
 class InstalledCandidateTest(unittest.TestCase):
+    def test_actual_runner_profile_serializes_candidate_paths(self):
+        tree = ast.parse((ROOT / "Experiments/NDNSF_DI_Yolo2x2_Minindn.py").read_text())
+        call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "build_yolo_native_candidate")
+        profile = next(item.value for item in call.keywords if item.arg == "profile")
+        expression = next(value for key, value in zip(profile.keys, profile.values)
+                          if isinstance(key, ast.Constant) and key.value == "arguments")
+        code = compile(ast.Expression(expression), "actual-yolo-profile", "eval")
+        for candidate_path in (Path("/tmp/spec201-candidate.json"), None):
+            with self.subTest(candidate_path=candidate_path):
+                args = SimpleNamespace(spec201_candidate=candidate_path,
+                    requester_publication_dir=Path("/tmp/spec201-publications"),
+                    spec201_candidate_sha256="a" * 64, input_size=32)
+                record = eval(code, {"args_cli": args})
+                encoded = json.loads(json.dumps(record))
+                self.assertEqual(encoded["spec201_candidate"],
+                    str(candidate_path.resolve()) if candidate_path is not None else None)
+                self.assertEqual(encoded["requester_publication_dir"], "/tmp/spec201-publications")
+                self.assertEqual(encoded["spec201_candidate_sha256"], "a" * 64)
+                self.assertEqual(encoded["input_size"], 32)
+
     def test_probe_schema_has_explicit_anchors_and_rooted_signature_rules(self):
         certificate = Path("/tmp/spec197-root.cert")
         schema = render_anchored_probe_validation_schema(
@@ -402,6 +424,138 @@ class NativeRequesterEvidenceTest(unittest.TestCase):
         self.assertEqual(report["status"], "PASS")
         for boundary in ("probe", "placement", "model"):
             self.assertEqual(report["boundaries"][boundary]["status"], "PASS")
+
+    def cached_ack_text(self) -> str:
+        text = "\n".join(line for line in self.user_text.splitlines()
+                         if "NDNSF_DI_NATIVE_PLACEMENT_PROBE_DISPATCH " not in line and
+                         "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE " not in line)
+        offers = [{"provider": provider, "boot_epoch": "boot-" + provider,
+                   "signer_identity": provider, "captured_at_ms": 1000,
+                   "expires_at_ms": 6000, "offer_digest": self.snapshot_digest,
+                   "ack_wire_digest": self.manifest_digest,
+                   "topology_digest": self.snapshot_digest}
+                  for provider in ("/provider/1", "/provider/2", "/provider/3")]
+        row = {"reported_by": "/provider/2", "src_provider": "/provider/1",
+               "dst_provider": "/provider/2", "sample_digest": self.goodput_digest,
+               "source_kind": "ACK_CACHE", "captured_at_ms": 990, "expires_at_ms": 5990,
+               "observer_peer": "/provider/2", "observer_boot_epoch": "boot-/provider/2",
+               "src_boot_epoch": "boot-/provider/1", "dst_boot_epoch": "boot-/provider/2",
+               "topology_digest": self.snapshot_digest,
+               "probe_complete": True, "probe_signature_valid": True,
+               "probe_source_timing_validated": True, "probe_segments_sent": 16,
+               "probe_rate_status": "MEASURED_GOODPUT", "probe_train_goodput_mbps": 14.5}
+        compact = lambda value: json.dumps(value, separators=(",", ":"))
+        text = re.sub(r"activeProbeGoodputRows=\S+", "activeProbeGoodputRows=" + compact([row]), text)
+        text = text.replace("activeProbeRttRows=[]", "activeProbeRttRows=[] checkedAtMs=1004 " +
+                            "providerOfferBindings=" + compact(offers) + " providerRoster=" +
+                            compact([offer["provider"] for offer in offers]) + " rttPairs=[] " +
+                            "goodputEdges=" + compact([{"src_provider": "/provider/1",
+                                                        "dst_provider": "/provider/2"}]))
+        return text
+
+    def test_accepts_fresh_ack_cached_sample_without_claiming_targeted_call(self) -> None:
+        report = self.collect(self.cached_ack_text())
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["probeDispatches"], [])
+        self.assertEqual(report["probeResponses"], [])
+        self.assertEqual(report["requestedGoodputEdges"], [])
+        self.assertEqual(report["sampleSources"], ["ACK_CACHE"])
+        self.assertEqual(report["targetedProbeCosts"], [])
+        self.assertEqual(len(report["cachedAckProbeCosts"]), 1)
+        self.assertEqual(len(report["qualifiedProbeCosts"]), 1)
+        self.assertEqual(report["cachedAckGoodputEdges"],
+                         [("/provider/2", "/provider/1", "/provider/2")])
+
+    def cached_service_text(self) -> str:
+        text = self.cached_ack_text()
+        match = re.search(r"activeProbeGoodputRows=(\S+)", text)
+        rows = json.loads(match.group(1))
+        rows[0]["source_kind"] = "TARGETED_RESPONSE"
+        for field in ("observer_peer", "observer_boot_epoch", "topology_digest"):
+            rows[0].pop(field)
+        text = text.replace(match.group(0), "activeProbeGoodputRows=" +
+                            json.dumps(rows, separators=(",", ":")))
+        dispatch = next(line for line in self.user_text.splitlines()
+                        if "NDNSF_DI_NATIVE_PLACEMENT_PROBE_DISPATCH " in line)
+        return text + "\n" + dispatch.replace("PLACEMENT_PROBE_DISPATCH", "PLACEMENT_CACHE_DISPATCH") + (
+            "\nNDNSF_DI_NATIVE_PLACEMENT_CACHE_RESPONSE requestId=native-request-1 "
+            "observer=/provider/2 status=accepted payloadBytes=512"
+            "\nNDNSF_DI_NATIVE_PLACEMENT_CACHE_RESULT requestId=native-request-1 "
+            "observer=/provider/2 status=hit")
+
+    def test_cache_service_hit_is_used_without_new_measurement_claim(self) -> None:
+        report = self.collect(self.cached_service_text())
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["probeDispatches"], [])
+        self.assertEqual(report["probeResponses"], [])
+        self.assertEqual(report["requestedGoodputEdges"], [])
+        self.assertEqual(report["cachedAckGoodputEdges"], [])
+        self.assertEqual(report["cachedServiceGoodputEdges"],
+                         [("/provider/2", "/provider/1", "/provider/2")])
+        self.assertEqual(len(report["cacheQueryDispatches"]), 1)
+        self.assertEqual(len(report["cachedServiceProbeCosts"]), 1)
+        self.assertEqual(report["targetedProbeCosts"], [])
+        self.assertEqual(report["cachedAckProbeCosts"], [])
+
+    def test_cache_service_rejects_missing_duplicate_or_inconsistent_exchange(self) -> None:
+        text = self.cached_service_text()
+        query = next(line for line in text.splitlines() if "CACHE_DISPATCH " in line)
+        result = next(line for line in text.splitlines() if "CACHE_RESULT " in line)
+        for changed in (text.replace(result, ""), text + "\n" + result,
+                        text.replace("status=hit", "status=miss"),
+                        text.replace("CACHE_RESPONSE", "UNRELATED_RESPONSE"),
+                        text + "\n" + query.replace("CACHE_DISPATCH", "PROBE_DISPATCH")):
+            with self.subTest(text=changed[-150:]):
+                self.assertEqual(self.collect(changed)["boundaries"]["probe"]["status"], "FAIL")
+
+    def test_cache_service_rejects_boot_expiry_quality_and_unconsumed_edge(self) -> None:
+        text = self.cached_service_text()
+        for old, new in (('"src_boot_epoch":"boot-/provider/1"', '"src_boot_epoch":"foreign"'),
+                         ('"expires_at_ms":5990', '"expires_at_ms":1004'),
+                         ('"probe_rate_status":"MEASURED_GOODPUT"', '"probe_rate_status":"UNKNOWN"'),
+                         ('"probe_source_timing_validated":true', '"probe_source_timing_validated":false'),
+                         ('goodputEdges=[{"src_provider":"/provider/1","dst_provider":"/provider/2"}] invocation=',
+                          'goodputEdges=[{"src_provider":"/provider/3","dst_provider":"/provider/2"}] invocation=')):
+            with self.subTest(field=old):
+                changed = text.replace(old, new)
+                self.assertNotEqual(changed, text)
+                self.assertEqual(self.collect(changed)["boundaries"]["probe"]["status"], "FAIL")
+
+    def test_cache_miss_preserves_measured_cost_and_requires_matching_fallback(self) -> None:
+        query = next(line for line in self.user_text.splitlines() if "PROBE_DISPATCH " in line)
+        cache = query.replace("PLACEMENT_PROBE_DISPATCH", "PLACEMENT_CACHE_DISPATCH")
+        text = self.user_text + "\n" + cache + (
+            "\nNDNSF_DI_NATIVE_PLACEMENT_CACHE_RESPONSE requestId=native-request-1 "
+            "observer=/provider/2 status=accepted payloadBytes=512"
+            "\nNDNSF_DI_NATIVE_PLACEMENT_CACHE_RESULT requestId=native-request-1 "
+            "observer=/provider/2 status=miss")
+        report = self.collect(text)
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(len(report["targetedProbeCosts"]), 1)
+        self.assertEqual(report["cachedServiceProbeCosts"], [])
+        changed = text.replace(cache, cache.replace("attempt=1", "attempt=2"))
+        self.assertEqual(self.collect(changed)["boundaries"]["probe"]["status"], "FAIL")
+
+    def test_rejects_cached_ack_boot_scope_expiry_topology_and_unknown_provenance(self) -> None:
+        original = self.cached_ack_text()
+        for old, new in (("\"src_boot_epoch\":\"boot-/provider/1\"", "\"src_boot_epoch\":\"old-boot\""),
+                         ("expires_at_ms\":5990", "expires_at_ms\":1004"),
+                         ("expires_at_ms\":5990", "expires_at_ms\":6000"),
+                         ('goodputEdges=[{"src_provider":"/provider/1"',
+                          'goodputEdges=[{"src_provider":"/provider/3"'),
+                         ('"topology_digest":"' + self.snapshot_digest + '"',
+                          '"topology_digest":"unknown"'),
+                         ('"probe_source_timing_validated":true', '"probe_source_timing_validated":false'),
+                         ("\"source_kind\":\"ACK_CACHE\"", "\"source_kind\":\"UNKNOWN\"")):
+            with self.subTest(new=new):
+                report = self.collect(original.replace(old, new))
+                self.assertEqual(report["boundaries"]["probe"]["status"], "FAIL")
+
+    def test_rejects_unproved_cache_in_legacy_targeted_log(self) -> None:
+        text = "\n".join(line for line in self.user_text.splitlines()
+                         if "NDNSF_DI_NATIVE_PLACEMENT_PROBE_DISPATCH " not in line and
+                         "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE " not in line)
+        self.assertEqual(self.collect(text)["boundaries"]["probe"]["status"], "FAIL")
 
     def test_model_failure_retains_successful_probe_and_placement(self) -> None:
         report = self.collect(self.user_text.replace(

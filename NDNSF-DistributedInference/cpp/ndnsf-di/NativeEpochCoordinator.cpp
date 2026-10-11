@@ -2,6 +2,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -759,14 +760,17 @@ lastLogits(const std::map<std::string, TensorBundle>& outputs)
   // the activation bundle.  Do not select the first encoded scope by map
   // order: the state scope sorts before ordinary response scopes and does not
   // contain logits.  The logits tensor is the stable content contract here.
-  std::optional<NamedTensor> logits;
+  std::vector<NamedTensor> tensors;
+  const NamedTensor* logits = nullptr;
   for (const auto& item : outputs) {
     if (!isEncodedTensorBundle(item.second.payload)) {
       continue;
     }
-    const auto tensors = decodeTensorBundle(item.second.payload);
+    tensors = decodeTensorBundle(item.second.payload);
     try {
-      logits = findTensor(tensors, "logits");
+      // Retain the decoded owner while reading only the final row. Copying
+      // this member would duplicate every prefill row just for sampling.
+      logits = &findTensor(tensors, "logits");
       break;
     }
     catch (const std::out_of_range&) {
@@ -1390,8 +1394,12 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         }
         continue;
       }
+      const auto samplingTiming = detail::nativePhaseStarted();
       const auto token = sampleToken(roleResult.outputsByScope, config,
                                      generated, epoch);
+      detail::logNativeWorkPhase(config.requestId, "epoch_sample_token",
+                                samplingTiming, config.role,
+                                config.attemptEpoch);
       const auto candidateTokenIds = [&] {
         auto value = generated;
         value.push_back(token);

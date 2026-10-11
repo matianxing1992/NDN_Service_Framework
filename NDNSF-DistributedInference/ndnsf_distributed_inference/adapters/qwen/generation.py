@@ -1,6 +1,7 @@
 """Deployment-safe Qwen sampling and incremental text contracts.
 
-This module deliberately depends only on the standard library.  Model logits
+Sampling/local generation depends only on the standard library. Network naming
+uses the existing SDK endpoint codec only when publication is configured. Model logits
 come from the ONNX Runtime adapter; tokenization is injected through
 ``StandaloneQwenTokenizer`` so the deployed package never imports PyTorch or
 Transformers.
@@ -13,7 +14,6 @@ import hashlib
 import math
 import json
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from urllib.parse import quote
 
 
 class GenerationContractError(ValueError):
@@ -190,63 +190,80 @@ class IncrementalDetokenizer:
         return delta
 
 
-INTERNAL_ACTIVATION_PREFIX = "/NDNSF/DI/ACTIVATION"
-INTERNAL_TOKEN_FEEDBACK_PREFIX = "/NDNSF/DI/TOKEN-FEEDBACK"
+# Relative family markers, never complete Producer names.
+INTERNAL_ACTIVATION_PREFIX = "/NDNSF-DI/tensor"
+INTERNAL_TOKEN_FEEDBACK_PREFIX = "/NDNSF-DI/tensor"
 EXTERNAL_TOKEN_EVENT_TYPE = "GenerationTokenEventV1"
 
 
-def _name_component(value: str) -> str:
-    encoded = quote(str(value).strip("/"), safe="-._~")
-    if not encoded or "/" in encoded:
-        raise GenerationContractError("invalid internal name component")
-    return encoded
-
-
-def _role_component(role: str) -> str:
-    return _name_component(str(role).rsplit("/", 1)[-1])
+def _endpoint_data_name(*, endpoint, generation_contract, producer: str,
+                        requester: str, service: str, request_id: str,
+                        attempt_epoch: int, plan_digest: str, generation_id: str,
+                        producer_role: str, consumer_role: str, operation: str,
+                        inference_epoch: int) -> str:
+    # These DTOs come from an already admitted signed projection. This codec
+    # checks its local consistency; cryptographic admission remains native.
+    from ...sdk.placement import (TensorEndpoint, TensorEndpointSource,
+                                 GenerationExecutionContractV1)
+    from ...naming import _name
+    if not isinstance(endpoint, TensorEndpoint) or not isinstance(
+            generation_contract, GenerationExecutionContractV1):
+        raise GenerationContractError("publication requires the signed tensor endpoint and generation contract")
+    try:
+        producer_name, requester_name = _name(producer), _name(requester)
+        if (not producer_name or not requester_name or not _name(service)
+                or endpoint.source_kind is not TensorEndpointSource.ROLE
+                or _name(endpoint.producer_namespace) != producer_name
+                or _name(endpoint.requester) != requester_name
+                or _name(endpoint.request_id) != _name(request_id)
+                or endpoint.attempt != attempt_epoch
+                or endpoint.plan_digest != plan_digest
+                or endpoint.producer_role != producer_role
+                or consumer_role not in endpoint.consumer_roles
+                or (operation == "TOKEN_FEEDBACK" and endpoint.operation != "TOKEN_FEEDBACK")
+                or (operation == "ACTIVATION" and endpoint.operation in {"TOKEN_FEEDBACK", "APPLICATION_INPUT"})
+                or generation_contract.generation_id != generation_id
+                or not generation_id
+                or endpoint.naming_operation_stride != generation_contract.streaming_operation_stride
+                or endpoint.naming_operation_stride <= 0
+                or type(inference_epoch) is not int
+                or not 0 <= inference_epoch < generation_contract.max_generated_tokens
+                or endpoint.round // endpoint.naming_operation_stride != inference_epoch):
+            raise GenerationContractError("tensor publication differs from its signed execution binding")
+        return endpoint.segment_name(0)
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc, GenerationContractError):
+            raise
+        raise GenerationContractError("invalid tensor publication naming input") from exc
 
 
 def activation_data_name(*, producer: str, requester: str, service: str,
-                        request_id: str, attempt_epoch: int,
-                        plan_digest: str, generation_id: str,
-                        from_role: str, to_role: str,
-                        inference_epoch: int) -> str:
-    """Build the exact name frozen by generation-state-machine-v1."""
-    if int(attempt_epoch) not in (1, 2) or int(inference_epoch) < 0:
-        raise GenerationContractError("internal activation epoch is invalid")
-    _digest_or_error(plan_digest, "plan")
-    return "/".join((
-        str(producer).rstrip("/"), INTERNAL_ACTIVATION_PREFIX.lstrip("/"),
-        _name_component(requester), *_service_components(service),
-        _name_component(request_id), str(int(attempt_epoch)), plan_digest[7:],
-        _name_component(generation_id), _role_component(from_role),
-        _role_component(to_role), str(int(inference_epoch)),
-    ))
+                         request_id: str, attempt_epoch: int,
+                         plan_digest: str, generation_id: str,
+                         from_role: str, to_role: str,
+                         inference_epoch: int, endpoint=None,
+                         generation_contract=None) -> str:
+    """First C04 segment from the existing signed endpoint, not a new identity."""
+    return _endpoint_data_name(endpoint=endpoint, generation_contract=generation_contract,
+        producer=producer, requester=requester, service=service, request_id=request_id,
+        attempt_epoch=attempt_epoch, plan_digest=plan_digest, generation_id=generation_id,
+        producer_role=from_role, consumer_role=to_role, operation="ACTIVATION",
+        inference_epoch=inference_epoch)
 
 
 def token_feedback_data_name(*, producer: str, requester: str, service: str,
                              request_id: str, attempt_epoch: int,
                              plan_digest: str, generation_id: str,
                              final_role: str, first_role: str,
-                             token_epoch: int) -> str:
-    if int(attempt_epoch) not in (1, 2) or int(token_epoch) < 1:
+                             token_epoch: int, endpoint=None,
+                             generation_contract=None) -> str:
+    if type(token_epoch) is not int or token_epoch < 1:
         raise GenerationContractError("internal token-feedback epoch is invalid")
-    _digest_or_error(plan_digest, "plan")
-    return "/".join((
-        str(producer).rstrip("/"), INTERNAL_TOKEN_FEEDBACK_PREFIX.lstrip("/"),
-        _name_component(requester), *_service_components(service),
-        _name_component(request_id), str(int(attempt_epoch)), plan_digest[7:],
-        _name_component(generation_id), _role_component(final_role),
-        _role_component(first_role), str(int(token_epoch)),
-    ))
-
-
-def _service_components(service: str) -> tuple[str, ...]:
-    components = tuple(_name_component(value) for value in str(service).split("/")
-                       if value)
-    if not components:
-        raise GenerationContractError("service name is empty")
-    return components
+    return _endpoint_data_name(endpoint=endpoint, generation_contract=generation_contract,
+        producer=producer, requester=requester, service=service, request_id=request_id,
+        attempt_epoch=attempt_epoch, plan_digest=plan_digest, generation_id=generation_id,
+        producer_role=final_role, consumer_role=first_role, operation="TOKEN_FEEDBACK",
+        inference_epoch=token_epoch - 1)
 
 
 def _digest_or_error(value: str, label: str) -> None:
@@ -287,7 +304,9 @@ class OnePlanGenerationLoop:
                  publish_event: Callable[[bytes], Any] | None = None,
                  finish: Callable[[bytes, str], Any] | None = None,
                  cancelled: Callable[[], bool] | None = None,
-                 committed_prefix_token_ids: Sequence[int] = ()) -> None:
+                 committed_prefix_token_ids: Sequence[int] = (),
+                 tensor_endpoints: Sequence[Any] = (),
+                 generation_contract=None) -> None:
         if not request_id or not requester or not roles or first_role not in roles \
                 or final_role not in roles:
             raise GenerationContractError("one-plan generation identity is incomplete")
@@ -335,6 +354,34 @@ class OnePlanGenerationLoop:
                 and set(self.provider_by_role) != set(self.roles)):
             raise GenerationContractError(
                 "activation Provider map must cover every generation role")
+        self.generation_contract = generation_contract
+        self.tensor_endpoints = {}
+        if publish_activation is not None or publish_feedback is not None:
+            if set(self.provider_by_role) != set(self.roles):
+                raise GenerationContractError("publication requires every actual Provider identity")
+            from ...sdk.placement import TensorEndpoint, GenerationExecutionContractV1
+            if (not isinstance(generation_contract, GenerationExecutionContractV1)
+                    or generation_contract.generation_id != self.generation_id
+                    or self.max_generated_tokens > generation_contract.max_generated_tokens):
+                raise GenerationContractError("publication requires the current signed generation contract")
+            for endpoint in tensor_endpoints:
+                if not isinstance(endpoint, TensorEndpoint) or not endpoint.naming_operation_stride:
+                    raise GenerationContractError("publication requires a signed generation tensor endpoint")
+                epoch = endpoint.round // endpoint.naming_operation_stride
+                for consumer in endpoint.consumer_roles:
+                    channel = "TOKEN_FEEDBACK" if endpoint.operation == "TOKEN_FEEDBACK" else "ACTIVATION"
+                    key = (channel, endpoint.producer_role, consumer, epoch)
+                    previous = self.tensor_endpoints.get(key)
+                    if previous is not None and previous.unsigned_dict() != endpoint.unsigned_dict():
+                        raise GenerationContractError("ambiguous signed tensor publication endpoints")
+                    self.tensor_endpoints[key] = endpoint
+            # Admission precedes model/token state and every publication.
+            for epoch in range(self.max_generated_tokens):
+                if publish_activation is not None:
+                    for source, target in zip(self.roles, self.roles[1:]):
+                        self._publication_name("ACTIVATION", source, target, epoch)
+                if publish_feedback is not None:
+                    self._publication_name("TOKEN_FEEDBACK", self.final_role, self.first_role, epoch)
         self.publish_activation = publish_activation
         self.publish_feedback = publish_feedback
         self.publish_event = publish_event
@@ -342,6 +389,16 @@ class OnePlanGenerationLoop:
         self.cancelled = cancelled or (lambda: False)
         self.detokenizer = IncrementalDetokenizer(decode_text,
                                                    stop_strings=stop_strings)
+
+    def _publication_name(self, operation: str, source: str, target: str, epoch: int) -> str:
+        return _endpoint_data_name(
+            endpoint=self.tensor_endpoints.get((operation, source, target, epoch)),
+            generation_contract=self.generation_contract,
+            producer=self.provider_by_role[source], requester=self.requester,
+            service=self.service, request_id=self.request_id,
+            attempt_epoch=self.attempt_epoch, plan_digest=self.plan_digest,
+            generation_id=self.generation_id, producer_role=source,
+            consumer_role=target, operation=operation, inference_epoch=epoch)
 
     def run(self, prompt: Any) -> StreamedGenerationResult:
         def require_admitted(result: Any, operation: str) -> None:
@@ -380,15 +437,8 @@ class OnePlanGenerationLoop:
                     if payload is None:
                         raise GenerationContractError(
                             "missing activation for selected role boundary")
-                    activation_name = activation_data_name(
-                        producer=self.provider_by_role.get(from_role, from_role),
-                        requester=self.requester,
-                        service=self.service, request_id=self.request_id,
-                        attempt_epoch=self.attempt_epoch,
-                        plan_digest=self.plan_digest,
-                        generation_id=self.generation_id,
-                        from_role=from_role, to_role=to_role,
-                        inference_epoch=token_epoch - 1)
+                    activation_name = self._publication_name(
+                        "ACTIVATION", from_role, to_role, token_epoch - 1)
                     require_admitted(
                         self.publish_activation(
                             activation_name, from_role, to_role, payload),
@@ -429,12 +479,8 @@ class OnePlanGenerationLoop:
             if not replaying_prefix:
                 events.append(event)
             if self.publish_feedback is not None:
-                feedback_name = token_feedback_data_name(
-                    producer=self.final_role, requester=self.requester,
-                    service=self.service, request_id=self.request_id,
-                    attempt_epoch=self.attempt_epoch, plan_digest=self.plan_digest,
-                    generation_id=self.generation_id, final_role=self.final_role,
-                    first_role=self.first_role, token_epoch=token_epoch)
+                feedback_name = self._publication_name(
+                    "TOKEN_FEEDBACK", self.final_role, self.first_role, token_epoch - 1)
                 require_admitted(
                     self.publish_feedback(feedback_name, self.first_role, {
                         "tokenId": token, "tokenEpoch": token_epoch,

@@ -1369,7 +1369,7 @@ makePreparedServedProviderPreparation()
     if (!protectedRuntime ||
         protectedRuntime->state() != ProtectedRuntimeState::GrantVerified)
       throw std::runtime_error("Spec185 served Provider did not verify grant");
-    const auto& assembly = projection.assembly;
+    const auto& assembly = projection.assemblyContract();
     NativeModelRunnerSpec spec;
     spec.role = assembly.selectedRole;
     spec.metadata["provider"] = projection.provider;
@@ -3444,8 +3444,8 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
         receipt.graphSemanticDigest = model.semanticsDigest;
         receipt.adapterDigest = model.adapter.descriptorDigest();
         receipt.roleName = context.role();
-        receipt.roleSplitDigest = projection.selectedRole.recipeDigest;
-        receipt.layoutDigest = projection.selectedRole.artifactProfileDigest;
+        receipt.roleSplitDigest = projection.selectedRoleContract().recipeDigest;
+        receipt.layoutDigest = projection.selectedRoleContract().artifactProfileDigest;
         receipt.planRoleMapDigest = binding.planRoleMapDigest;
         receipt.providerIdentity = context.localProvider().toUri();
         receipt.providerBootId = providerName + "-boot";

@@ -1,4 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 
 #include <ndn-cxx/name.hpp>
 
@@ -10,84 +13,84 @@
 
 namespace ndnsf::di {
 namespace {
+ndn_service_framework::NamingDigestField
+stringField(std::uint16_t tag, std::uint8_t kind, const std::string& value)
+{
+  return {tag, kind, {value.begin(), value.end()}};
+}
+
+ndn_service_framework::NamingDigestField
+digestField(std::uint16_t tag, const std::string& lowerHex)
+{
+  const auto component = ndn_service_framework::makeNamingDigestComponent(lowerHex);
+  return {tag, 4, {component.value_begin(), component.value_end()}};
+}
+} // namespace
 
 std::string
-opaqueNameComponent(const std::string& value)
+computeTensorExecutionObjectDigest(const NativeTensorEndpointV3& endpoint)
 {
-  static constexpr char HEX[] = "0123456789abcdef";
-  std::string result;
-  result.reserve(value.size() * 2);
-  for (const auto byte : value) {
-    const auto unsignedByte = static_cast<unsigned char>(byte);
-    result.push_back(HEX[unsignedByte >> 4]);
-    result.push_back(HEX[unsignedByte & 0x0f]);
-  }
-  return result;
+  detail::validateTensorEndpointForNaming(endpoint);
+  return ndn_service_framework::computeNamingDigest("ndnsf-naming/tensor-object", {
+    stringField(1, 2, endpoint.tensorDigest), stringField(2, 2, endpoint.layoutDigest),
+    stringField(3, 2, endpoint.targetLayoutDigest), stringField(4, 2, endpoint.manifestDigest),
+    stringField(5, 2, endpoint.securityProfile),
+    stringField(6, 5, nativeCanonicalJson(NativeJson(endpoint.bundleTensorNames)))});
 }
-
-void
-appendLabelledOpaque(ndn::Name& name,
-                     const char* label,
-                     const std::string& value)
-{
-  if (value.empty()) {
-    throw std::invalid_argument(
-      std::string("empty tensor endpoint component: ") + label);
-  }
-  name.append(label).append(opaqueNameComponent(value));
-}
-
-} // namespace
 
 std::string
 tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint)
 {
-  if (endpoint.producerNamespace.empty() ||
-      endpoint.producerNamespace.front() != '/' || endpoint.requester.empty() ||
-      endpoint.requestId.empty() || endpoint.attempt == 0 ||
-      endpoint.planDigest.empty() || endpoint.groupId.empty() ||
-      endpoint.groupEpoch.empty() || endpoint.operation.empty() ||
-      endpoint.consumerRole.empty() || endpoint.tensorId.empty() ||
-      endpoint.tensorDigest.empty() || endpoint.segmentCount == 0) {
-    throw std::invalid_argument("incomplete V3 tensor endpoint name binding");
-  }
-  const auto sourceRole = endpoint.producerRole.empty()
-    ? std::string("INPUT") : endpoint.producerRole;
-  ndn::Name name(endpoint.producerNamespace);
-  name.append("NDNSF-DI").append("TENSOR").append("v1");
-  appendLabelledOpaque(name, "REQUESTER", endpoint.requester);
-  appendLabelledOpaque(name, "REQ", endpoint.requestId);
-  name.append("ATTEMPT").appendNumber(endpoint.attempt);
-  appendLabelledOpaque(name, "PLAN", endpoint.planDigest);
-  appendLabelledOpaque(name, "GROUP", endpoint.groupId);
-  appendLabelledOpaque(name, "EPOCH", endpoint.groupEpoch);
-  appendLabelledOpaque(name, "OP", endpoint.operation);
-  name.append("ROUND").appendNumber(endpoint.round);
-  appendLabelledOpaque(name, "SOURCE-ROLE", sourceRole);
-  name.append("RANK").appendNumber(endpoint.producerRank);
-  appendLabelledOpaque(name, "TENSOR", endpoint.tensorId);
-  name.append(opaqueNameComponent(endpoint.tensorDigest));
-  name.append("MICROBATCH").appendNumber(endpoint.microbatch);
-  return name.toUri();
+  const auto objectDigest = computeTensorExecutionObjectDigest(endpoint);
+  const auto key = ndn_service_framework::computeNamingDigest("ndnsf-naming/tensor-key", {
+    digestField(1, endpoint.endpointDigest.substr(7)), digestField(2, objectDigest)});
+  const bool input = endpoint.sourceKind == "APPLICATION_INPUT";
+  const auto stride = endpoint.namingOperationStride;
+  const auto round = input || stride == 0 ? 0 : endpoint.round / stride;
+  const auto index = input ? 0 : stride == 0 ? endpoint.round : endpoint.round % stride;
+  auto name = ndn_service_framework::makeProducerDataPrefix(
+    ndn::Name(endpoint.producerNamespace), "NDNSF-DI", "tensor");
+  name.append("REQUEST").append(ndn_service_framework::makeNamingLabelComponent(
+    ndn::Name(endpoint.requestId).toUri(ndn::name::UriFormat::CANONICAL)));
+  name.append("ATTEMPT").append(ndn_service_framework::makeNamingDecimalComponent(endpoint.attempt));
+  name.append("ROUND").append(ndn_service_framework::makeNamingDecimalComponent(round));
+  name.append("POSITION").append(ndn_service_framework::makeNamingLabelComponent(
+    input ? "model-input" : endpoint.producerRole));
+  name.append("OP").append(ndn::name::Component(ndn::tlv::GenericNameComponent,
+    endpoint.operation.begin(), endpoint.operation.end()));
+  name.append("INDEX").append(ndn_service_framework::makeNamingDecimalComponent(index));
+  name.append("RANK").append(ndn_service_framework::makeNamingDecimalComponent(endpoint.producerRank));
+  name.append("BATCH").append(ndn_service_framework::makeNamingDecimalComponent(endpoint.microbatch));
+  name.append(ndn_service_framework::makeNamingLabelComponent(endpoint.tensorId));
+  name.append(ndn_service_framework::makeNamingDigestComponent(key));
+  ndn_service_framework::checkNamingNameSize(name);
+  return name.toUri(ndn::name::UriFormat::CANONICAL);
 }
 
 std::string
 tensorObjectManifestName(const NativeTensorEndpointV3& endpoint)
 {
-  return ndn::Name(tensorObjectNamePrefix(endpoint)).append("MANIFEST").toUri();
+  auto name = ndn::Name(tensorObjectNamePrefix(endpoint)).append("MANIFEST");
+  ndn_service_framework::checkNamingNameSize(name);
+  return name.toUri(ndn::name::UriFormat::CANONICAL);
+}
+
+ndn::Name
+makeTensorSegmentDataName(const ndn::Name& objectPrefix, std::uint64_t segmentNo)
+{
+  auto name = ndn::Name(objectPrefix).append("DATA").appendSegment(segmentNo);
+  ndn_service_framework::checkNamingNameSize(name);
+  return name;
 }
 
 std::string
 tensorObjectSegmentName(const NativeTensorEndpointV3& endpoint,
                         std::size_t segmentNo)
 {
-  if (segmentNo >= endpoint.segmentCount) {
+  if (segmentNo >= endpoint.segmentCount)
     throw std::out_of_range("tensor segment is outside the declared endpoint");
-  }
-  return ndn::Name(tensorObjectNamePrefix(endpoint))
-    .append("SEG")
-    .appendSegment(segmentNo)
-    .toUri();
+  return makeTensorSegmentDataName(ndn::Name(tensorObjectNamePrefix(endpoint)), segmentNo)
+    .toUri(ndn::name::UriFormat::CANONICAL);
 }
 
 DiReservationAuthority::DiReservationAuthority(

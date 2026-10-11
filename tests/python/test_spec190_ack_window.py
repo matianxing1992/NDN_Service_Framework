@@ -101,3 +101,76 @@ def test_qwen_stage_plan_marks_resident_session_only_when_requested(tmp_path: Pa
     resident = json.loads(resident_manifest.read_text())
     assert "residentSession" not in cold["services"][0]["artifacts"][0]["metadata"]
     assert resident["services"][0]["artifacts"][0]["metadata"]["residentSession"] == "true"
+
+    dependency = cold["services"][0]["dependencies"][0]
+    hidden_states = f"{module.STATE_PREFIX}_s0_hidden_states_out"
+    assert dependency["tensors"] == [hidden_states, "attention_mask", "position_ids"]
+    stage0_metadata = cold["services"][0]["artifacts"][0]["metadata"]
+    stage1_metadata = cold["services"][0]["artifacts"][1]["metadata"]
+    assert stage0_metadata["passthroughTensors"] == "attention_mask,position_ids"
+    for name in (hidden_states, "attention_mask", "position_ids"):
+        assert stage1_metadata[f"inputScope.{name}"] == "pipeline-stage-0-to-1"
+
+
+def test_qwen_stage_plan_uses_raw_shared_tensors_and_excludes_kv_state(tmp_path: Path):
+    module = load_module()
+    raw_boundary = [
+        "/model/Expand_output_0",
+        "/model/layers.0/self_attn/Unsqueeze_6_output_0",
+        "/model/layers.0/self_attn/Unsqueeze_7_output_0",
+        "/model/layers.13/Add_1_output_0",
+    ]
+    stage0_cache_inputs = [
+        f"past_{kind}.{layer}"
+        for layer in range(14) for kind in ("key", "value")]
+    stage0_cache_outputs = [
+        f"present_{kind}.{layer}"
+        for layer in range(14) for kind in ("key", "value")]
+    stage1_cache_inputs = [
+        f"past_{kind}.{layer}"
+        for layer in range(14, 28) for kind in ("key", "value")]
+    stage1_cache_outputs = [
+        f"present_{kind}.{layer}"
+        for layer in range(14, 28) for kind in ("key", "value")]
+    stages = [
+        {
+            "role": "/LLM/Pipeline/Stage/0",
+            "path": "/tmp/stage-0.onnx",
+            "sha256": "sha256:" + "1" * 64,
+            "layerRange": {"start": 0, "endExclusive": 14},
+            "inputNames": ["input_ids", *stage0_cache_inputs],
+            # A repeated local KV name is deliberately injected into the
+            # neighboring manifests to verify that it never becomes an edge.
+            "outputNames": raw_boundary + stage0_cache_outputs + ["past_key.0"],
+            "cacheInputs": stage0_cache_inputs,
+            "cacheOutputs": stage0_cache_outputs,
+        },
+        {
+            "role": "/LLM/Pipeline/Stage/1",
+            "path": "/tmp/stage-1.onnx",
+            "sha256": "sha256:" + "2" * 64,
+            "layerRange": {"start": 14, "endExclusive": 28},
+            "inputNames": raw_boundary + stage1_cache_inputs + ["past_key.0"],
+            "outputNames": ["logits", *stage1_cache_outputs],
+            "cacheInputs": stage1_cache_inputs,
+            "cacheOutputs": stage1_cache_outputs,
+        },
+    ]
+    model = {
+        "model": "Qwen/Qwen3-0.6B",
+        "modelRevision": "test-revision",
+        "dtype": "float32",
+        "quantization": "int8",
+        "eosTokenIds": [151645],
+    }
+
+    _, manifest_path = module.stage_plan_and_manifest(
+        tmp_path, model, stages, 2, "sha256:" + "3" * 64)
+    manifest = json.loads(manifest_path.read_text())
+    service = manifest["services"][0]
+    assert service["dependencies"][0]["tensors"] == raw_boundary
+    assert not any(name.startswith(("past_key_values.", "past_", "present."))
+                   for name in service["dependencies"][0]["tensors"])
+    stage1_metadata = service["artifacts"][1]["metadata"]
+    for name in raw_boundary:
+        assert stage1_metadata[f"inputScope.{name}"] == "pipeline-stage-0-to-1"

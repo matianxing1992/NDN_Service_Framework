@@ -1,15 +1,27 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 
 #include <ndn-cxx/util/logger.hpp>
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <charconv>
+#include <cerrno>
 #include <cstdlib>
+#include <ctime>
+#include <exception>
+#include <string_view>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
 #include <unordered_map>
+#include <unistd.h>
+#ifdef __linux__
+#include <fcntl.h>
+#include <sys/syscall.h>
+#endif
 
 namespace ndnsf::di {
 
@@ -23,6 +35,22 @@ std::string singleLine(std::string record)
     if (ch == '\n' || ch == '\r') ch = ' ';
   return record;
 }
+
+void writeRuntimeEvidence(const std::string& record, bool measureMutex)
+{
+  const auto before = measureMutex ? std::chrono::steady_clock::now() :
+                                   std::chrono::steady_clock::time_point{};
+  std::lock_guard<std::mutex> lock(runtimeTimingOutputMutex());
+  if (!measureMutex) {
+    NDN_LOG_WARN(singleLine(record));
+    return;
+  }
+  const auto waitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now() - before).count();
+  auto line = singleLine(record);
+  if (waitNs >= 0) line += " runtime_output_mutex_wait_ns=" + std::to_string(waitNs);
+  NDN_LOG_WARN(line);
+}
 } // namespace
 
 void
@@ -30,8 +58,7 @@ logRuntimeEvidence(const std::string& record)
 {
   // WARN is intentional: qualification runs normally use *=WARN, so required
   // evidence remains available while verbose component logs stay filtered.
-  std::lock_guard<std::mutex> lock(runtimeTimingOutputMutex());
-  NDN_LOG_WARN(singleLine(record));
+  writeRuntimeEvidence(record, false);
 }
 
 void
@@ -40,6 +67,49 @@ logRuntimeTrace(const std::string& record)
   std::lock_guard<std::mutex> lock(runtimeTimingOutputMutex());
   NDN_LOG_TRACE(singleLine(record));
 }
+
+namespace detail {
+FixedAssignmentWork& fixedAssignmentWork() noexcept
+{
+  static thread_local FixedAssignmentWork work;
+  return work;
+}
+
+ScopedFixedAssignmentWork::ScopedFixedAssignmentWork(const std::string& requestId, const char* stage) noexcept
+  : m_enabled(false), m_before(fixedAssignmentWork()), m_stage(stage),
+    m_exceptions(std::uncaught_exceptions())
+{
+  const auto* raw = std::getenv("NDNSF_PHASE_TIMING");
+  const std::string_view flag = raw ? raw : "";
+  m_enabled = flag == "1" || flag == "true" || flag == "TRUE" || flag == "on";
+  if (m_enabled) {
+    try { m_requestId = requestId; }
+    catch (...) { m_enabled = false; }
+  }
+}
+
+ScopedFixedAssignmentWork::~ScopedFixedAssignmentWork() noexcept
+{
+  if (!m_enabled) return;
+  try {
+    const auto after = fixedAssignmentWork();
+    logRuntimeEvidence("NDNSF_DI_FIXED_ASSIGNMENT_WORK requestId=" + m_requestId +
+      " stage=" + m_stage +
+      " completed=" + (std::uncaught_exceptions() == m_exceptions ? "1" : "0") +
+      " placementBuilds=" + std::to_string(after.placementBuilds - m_before.placementBuilds) +
+      " roleBuilds=" + std::to_string(after.roleBuilds - m_before.roleBuilds) +
+      " roleEncodes=" + std::to_string(after.roleEncodes - m_before.roleEncodes) +
+      " sourceEncodes=" + std::to_string(after.sourceEncodes - m_before.sourceEncodes) +
+      " sourceParses=" + std::to_string(after.sourceParses - m_before.sourceParses) +
+      " snapshotFixedEncodes=" +
+        std::to_string(after.snapshotFixedEncodes - m_before.snapshotFixedEncodes));
+  }
+  catch (...) {
+    // Diagnostic allocation/output failure must not change request execution.
+    // A missing record cannot be used as evidence of zero work.
+  }
+}
+} // namespace detail
 
 void
 logRuntimeInfo(const std::string& record)
@@ -87,6 +157,115 @@ parseUnsigned(const std::string& text, std::uint64_t& value)
   catch (...) {
     return false;
   }
+}
+
+// Preserve unavailable clocks and check conversion overflow before emitting
+// diagnostic snapshots. Process CPU includes concurrent/background threads.
+std::optional<std::uint64_t>
+clockCpuTimeUs(clockid_t clock) noexcept
+{
+  timespec value{};
+  if (clock_gettime(clock, &value) == 0 &&
+      value.tv_sec >= 0 && value.tv_nsec >= 0 && value.tv_nsec < 1000000000L) {
+    const auto seconds = static_cast<std::uint64_t>(value.tv_sec);
+    const auto micros = static_cast<std::uint64_t>(value.tv_nsec) / 1000;
+    if (seconds <= (std::numeric_limits<std::uint64_t>::max() - micros) / 1000000)
+      return seconds * 1000000 + micros;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::uint64_t>
+processCpuTimeUs() noexcept
+{
+#ifdef CLOCK_PROCESS_CPUTIME_ID
+  return clockCpuTimeUs(CLOCK_PROCESS_CPUTIME_ID);
+#else
+  return std::nullopt;
+#endif
+}
+
+std::optional<std::uint64_t>
+threadCpuTimeUs() noexcept
+{
+#ifdef CLOCK_THREAD_CPUTIME_ID
+  return clockCpuTimeUs(CLOCK_THREAD_CPUTIME_ID);
+#else
+  return std::nullopt;
+#endif
+}
+
+struct SchedulerSample
+{
+  std::uint64_t runqueueNs;
+  std::uint64_t beginSteadyNs;
+  std::uint64_t endSteadyNs;
+  std::uint64_t beginCpuNs;
+  std::uint64_t endCpuNs;
+};
+
+std::optional<SchedulerSample>
+threadSchedulerSample() noexcept
+{
+#if defined(__linux__) && defined(CLOCK_THREAD_CPUTIME_ID)
+  const auto readProc = [] (const char* path, char* buffer, std::size_t capacity) {
+    const int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return ssize_t{-1};
+    ssize_t count = -1;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      count = read(fd, buffer, capacity);
+      if (count >= 0 || errno != EINTR) break;
+    }
+    close(fd);
+    return count;
+  };
+  char enabled[4];
+  // Disabled counters can retain old values. Never interpret those as zero wait.
+  if (readProc("/proc/sys/kernel/sched_schedstats", enabled, sizeof(enabled)) != 2 ||
+      enabled[0] != '1' || enabled[1] != '\n') return std::nullopt;
+  const auto cpuNs = [] () -> std::optional<std::uint64_t> {
+    timespec value{};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) != 0 ||
+        value.tv_sec < 0 || value.tv_nsec < 0 || value.tv_nsec >= 1000000000L)
+      return std::nullopt;
+    const auto seconds = static_cast<std::uint64_t>(value.tv_sec);
+    const auto nanos = static_cast<std::uint64_t>(value.tv_nsec);
+    if (seconds > (std::numeric_limits<std::uint64_t>::max() - nanos) / 1000000000)
+      return std::nullopt;
+    return seconds * 1000000000 + nanos;
+  };
+  const auto beginSteady = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+  const auto beginCpu = cpuNs();
+  char buffer[128];
+  const auto count = readProc("/proc/thread-self/schedstat", buffer, sizeof(buffer));
+  const auto endCpu = cpuNs();
+  const auto endSteady = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (!beginCpu || !endCpu || *endCpu < *beginCpu ||
+      beginSteady < 0 || endSteady < beginSteady ||
+      count <= 0 || static_cast<std::size_t>(count) >= sizeof(buffer))
+    return std::nullopt;
+  const auto whitespace = [] (char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+  };
+  const char* cursor = buffer;
+  const char* end = buffer + count;
+  std::uint64_t values[3]{};
+  for (auto& value : values) {
+    while (cursor != end && whitespace(*cursor)) ++cursor;
+    const auto parsed = std::from_chars(cursor, end, value);
+    if (parsed.ec != std::errc{} || parsed.ptr == cursor ||
+        (parsed.ptr != end && !whitespace(*parsed.ptr))) return std::nullopt;
+    cursor = parsed.ptr;
+  }
+  while (cursor != end && whitespace(*cursor)) ++cursor;
+  if (cursor != end) return std::nullopt;
+  return SchedulerSample{values[1], static_cast<std::uint64_t>(beginSteady),
+    static_cast<std::uint64_t>(endSteady), *beginCpu, *endCpu};
+#else
+  return std::nullopt;
+#endif
 }
 
 } // namespace
@@ -381,6 +560,11 @@ logRuntimePhase(const std::string& role,
     std::chrono::steady_clock::now().time_since_epoch()).count();
   const auto wallUs = std::chrono::duration_cast<std::chrono::microseconds>(
     std::chrono::system_clock::now().time_since_epoch()).count();
+  const auto processCpuUs = processCpuTimeUs();
+  const auto threadCpuUs = threadCpuTimeUs();
+  const bool plannerBoundary = role == "di-cli" &&
+    (phase == "planBegin" || phase == "planEnd");
+  const auto scheduler = plannerBoundary ? threadSchedulerSample() : std::nullopt;
   std::ostringstream record;
   std::string executionRole = role;
   std::string canonicalAttempt = attempt.empty() ? "request" : attempt;
@@ -421,11 +605,37 @@ logRuntimePhase(const std::string& role,
         field.first == "providerBootId" || field.first == "providerName" ||
         field.first == "sessionId" || field.first == "conversationId" ||
         field.first == "inferenceEpoch" || field.first == "contextEpoch" ||
+        field.first == "process_id" || field.first == "process_cpu_us" ||
+        field.first == "thread_id" || field.first == "thread_cpu_us" ||
+        field.first == "thread_runqueue_ns" ||
+        field.first == "sched_sample_begin_steady_ns" ||
+        field.first == "sched_sample_end_steady_ns" ||
+        field.first == "sched_sample_begin_thread_cpu_ns" ||
+        field.first == "sched_sample_end_thread_cpu_ns" ||
+        field.first == "runtime_output_mutex_wait_ns" ||
         field.second.find_first_of("\r\n \t") != std::string::npos)
       continue;
     record << " " << field.first << "=" << field.second;
   }
-  logRuntimeEvidence(record.str());
+  record << " process_id=" << getpid();
+  if (processCpuUs) record << " process_cpu_us=" << *processCpuUs;
+#if defined(__linux__) && defined(SYS_gettid)
+  const auto threadId = syscall(SYS_gettid);
+  if (threadId > 0) {
+    record << " thread_id=" << threadId;
+    if (threadCpuUs) record << " thread_cpu_us=" << *threadCpuUs;
+  }
+#else
+  (void)threadCpuUs;
+#endif
+  if (scheduler) {
+    record << " thread_runqueue_ns=" << scheduler->runqueueNs
+           << " sched_sample_begin_steady_ns=" << scheduler->beginSteadyNs
+           << " sched_sample_end_steady_ns=" << scheduler->endSteadyNs
+           << " sched_sample_begin_thread_cpu_ns=" << scheduler->beginCpuNs
+           << " sched_sample_end_thread_cpu_ns=" << scheduler->endCpuNs;
+  }
+  writeRuntimeEvidence(record.str(), plannerBoundary);
 }
 
 } // namespace ndnsf::di

@@ -126,7 +126,7 @@ def trust_schema(certificate):
             ("sync", "interest", "^<example><probe-calibration><group><>*$",
              "^<example><probe-calibration>[^<KEY>]*<KEY><>{1,3}$"),
             ("peer probes", "interest",
-             "^<example><probe-calibration><provider><>*<NDNSF>[<PEER-PROBE><PEER-GOODPUT><PEER-PROBE-READY>]<>*$",
+             "^<example><probe-calibration><provider><>*<NDNSF><RPC>[<PROBE-RTT><PROBE-GOODPUT><PROBE-READY>]<>*$",
              "^<example><probe-calibration><provider>[^<KEY>]*<KEY><>{1,3}$")]:
         rules.append('rule { id "%s" for %s filter { type name regex "%s" } '
                      'checker { type customized sig-type rsa-sha256 '
@@ -250,8 +250,8 @@ def run(parser, args):
                 write_json(output / (node_name + "-probe-face.json"),
                            {"face_id": int(face), "remote": remote, "interface_mtu": interface_mtu,
                             "face_mtu": face_mtu, "readback": state})
-            for suffix in ("PEER-PROBE", "PEER-GOODPUT", "PEER-PROBE-READY"):
-                prefix = IDENTITIES[peer] + "/NDNSF/" + suffix
+            for suffix in ("PROBE-RTT", "PROBE-GOODPUT", "PROBE-READY"):
+                prefix = IDENTITIES[peer] + "/NDNSF/RPC/" + suffix
                 command(node, ["nfdc", "route", "add", "prefix", prefix,
                                "nexthop", str(face), "cost", "0", "capture"])
                 probe_routes.append({"node": node_name, "prefix": prefix, "face": str(face)})

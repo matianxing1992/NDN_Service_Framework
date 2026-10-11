@@ -71,20 +71,35 @@ stagePhaseForEdge(const DependencyEdge& edge)
 
 void
 populateLineageObservation(StageTransferObservation& observation,
-                           const TensorBundle& bundle)
+                           const GenerationEpochLineageV1& lineage)
 {
-  observation.lineagePresent = false;
-  observation.lineageIdentity.clear();
-  observation.positionDigest.clear();
-  if (const auto lineage = extractGenerationEpochLineage(bundle)) {
-    observation.lineagePresent = true;
-    observation.positionDigest = lineage->positionDigest;
-    observation.lineageIdentity = lineage->requestId + "|" +
-      lineage->generationId + "|" + std::to_string(lineage->streamEpoch) +
-      "|" + std::to_string(lineage->inferenceEpoch) + "|" +
-      lineage->transitionKind + "|" + lineage->positionDigest + "|" +
-      lineage->producerRole + "|" + lineage->consumerRole + "|" +
-      std::to_string(lineage->operationIndex);
+  observation.lineagePresent = true;
+  observation.positionDigest = lineage.positionDigest;
+  observation.lineageIdentity = lineage.requestId + "|" +
+    lineage.generationId + "|" + std::to_string(lineage.streamEpoch) +
+    "|" + std::to_string(lineage.inferenceEpoch) + "|" +
+    lineage.transitionKind + "|" + lineage.positionDigest + "|" +
+    lineage.producerRole + "|" + lineage.consumerRole + "|" +
+    std::to_string(lineage.operationIndex);
+}
+
+void
+populatePayloadAccounting(StageTransferObservation& observation,
+                          const TensorBundle& bundle)
+{
+  observation.tensorNames.clear();
+  if (isEncodedTensorBundle(bundle.payload)) {
+    // Count bytes and names from the same validated parse, avoiding another
+    // allocation and copy of every activation just for accounting.
+    const auto tensors = decodeTensorBundle(bundle.payload);
+    observation.tensorBytes = tensorPayloadBytes(tensors);
+    for (const auto& tensor : tensors) {
+      if (tensor.name != generationEpochLineageTensorName())
+        observation.tensorNames.push_back(tensor.name);
+    }
+  }
+  else {
+    observation.tensorBytes = bundle.payload.size();
   }
 }
 
@@ -103,19 +118,12 @@ makeStageTransferObservation(const DependencyEdge& edge,
     edge.plannedDataName + "|" + direction + "|" + edge.operationKind +
     "|" + std::to_string(edge.round) + "|" +
     std::to_string(edge.microbatch);
-  populateLineageObservation(*observation, bundle);
+  if (const auto lineage = extractGenerationEpochLineage(bundle))
+    populateLineageObservation(*observation, *lineage);
   if (!observation->lineageIdentity.empty()) {
     observation->identity += "|" + observation->lineageIdentity;
   }
-  observation->tensorBytes = tensorPayloadBytes(bundle);
-  observation->tensorNames.clear();
-  if (isEncodedTensorBundle(bundle.payload)) {
-    for (const auto& tensor : decodeTensorBundle(bundle.payload)) {
-      if (tensor.name != generationEpochLineageTensorName()) {
-        observation->tensorNames.push_back(tensor.name);
-      }
-    }
-  }
+  populatePayloadAccounting(*observation, bundle);
   observation->encodedPayloadBytes = bundle.payload.size();
   // This is the observable bundle handoff copy, not a claim about allocator
   // internals. Unknown transport fields remain unset until Core reports them.
@@ -146,21 +154,13 @@ completeStageTransferObservationImpl(const DependencyEdge& edge,
     // payload after validating it.  In that path the runtime-only observation
     // is the remaining source of the authenticated position; do not erase it
     // merely because the payload has been normalized for the runner.
-    if (extractGenerationEpochLineage(bundle)) {
-      populateLineageObservation(observation, bundle);
+    if (const auto lineage = extractGenerationEpochLineage(bundle)) {
+      populateLineageObservation(observation, *lineage);
     }
     if (!observation.lineageIdentity.empty()) {
       observation.identity += "|" + observation.lineageIdentity;
     }
-    observation.tensorNames.clear();
-    if (isEncodedTensorBundle(bundle.payload)) {
-      for (const auto& tensor : decodeTensorBundle(bundle.payload)) {
-        if (tensor.name != generationEpochLineageTensorName()) {
-          observation.tensorNames.push_back(tensor.name);
-        }
-      }
-    }
-    observation.tensorBytes = tensorPayloadBytes(bundle);
+    populatePayloadAccounting(observation, bundle);
     observation.encodedPayloadBytes = bundle.payload.size();
     if (!observation.localCopyBytes) {
       observation.localCopyBytes = bundle.payload.size();

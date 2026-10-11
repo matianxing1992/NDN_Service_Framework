@@ -26,12 +26,10 @@ def _publication_manifest_digest(*, data_name: str, object_id: str,
                                  plaintext_size: int, content_digest: str,
                                  authorization_scope: str,
                                  protection_epoch: str) -> str:
-    """Return the digest emitted by the native encrypted publisher.
+    """Return the historical text-manifest digest for explicit legacy reads.
 
-    This is deliberately a small canonical manifest, not a second repository
-    protocol.  The native publisher is the authority for these values; the DI
-    binding recomputes the same digest before it lets a request carry the
-    resulting reference.
+    Current publishers return the actual signed descriptor payload digest.
+    Do not use this legacy transcript for a canonical publication.
     """
     canonical = (
         "version=1\n"
@@ -122,16 +120,75 @@ class LargeDataReference:
         return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def publication_manifest_name(publication: Any) -> str:
+    """Validate a trusted Core result and return its exact manifest name.
+
+    This checks reference consistency; the receiver still validates the
+    signed descriptor and payload. It never guesses a name or reads legacy.
+    """
+    from ndn.encoding import Component
+    import re
+    from .naming import (canonical_name_uri, check_naming_name_size,
+                         make_naming_digest_component, parse_producer_data_name,
+                         infer_semantic_data_producer)
+    if not bool(getattr(publication, "success", False)):
+        raise ValueError("native publication failed")
+    manifest_name = str(getattr(publication, "manifest_name", ""))
+    data_prefix = str(getattr(publication, "data_prefix", ""))
+    data_name = str(getattr(publication, "encrypted_data_name", ""))
+    content_digest = str(getattr(publication, "content_digest", ""))
+    manifest_digest = str(getattr(publication, "manifest_digest", ""))
+    if not manifest_name or not data_prefix:
+        raise ValueError("native publication lacks canonical manifest/data prefix")
+    _require_digest(content_digest, "content_digest")
+    _require_digest(manifest_digest, "manifest_digest")
+    producer = infer_semantic_data_producer(data_prefix)
+    if producer is None:
+        raise ValueError("native publication lacks semantic DATA grammar")
+    data = parse_producer_data_name(data_prefix, producer)
+    root = parse_producer_data_name(manifest_name, producer)
+
+    def label(value):
+        return bytes(Component.from_str(value))
+
+    if (data is None or data.suffix[-4] != make_naming_digest_component(content_digest[7:])
+            or canonical_name_uri(data_name) != canonical_name_uri(data_prefix)):
+        raise ValueError("native publication DATA prefix binding mismatch")
+    if root is None or not root.suffix:
+        raise ValueError("native publication manifest Producer mismatch")
+    suffix = root.suffix
+    valid = ((root.name_space == data.name_space and root.category == data.category and suffix ==
+              data.suffix[:-1] + [label("MANIFEST"),
+                                make_naming_digest_component(manifest_digest[7:])])
+             or (root.name_space == "NDNSF-DI" and data.name_space == "NDNSF-DI"
+                 and root.category == "model" and data.category == "model" and len(suffix) == 4
+                 and suffix[:2] == data.suffix[:2] and suffix[2] == label("MANIFEST"))
+             or (root.name_space == "NDNSF-DI" and data.name_space == "NDNSF-DI"
+                 and root.category == "material" and data.category == "material" and len(suffix) == 3
+                 and suffix[0] == data.suffix[0] and suffix[1] == label("MANIFEST"))
+             or (root.name_space == "NDNSF-DI" and root.category == "receipt"
+                 and data.name_space == "NDNSF-DI" and data.category == "material" and len(suffix) == 3
+                 and suffix[1] == data.suffix[0]
+                 and Component.get_type(suffix[0]) == 8
+                 and re.fullmatch(rb"[A-Za-z-]+", bytes(Component.get_value(suffix[0]))) is not None))
+    if not valid or suffix[-1] != make_naming_digest_component(manifest_digest[7:]):
+        raise ValueError("native publication manifest digest/grammar mismatch")
+    check_naming_name_size(data_prefix)
+    check_naming_name_size(manifest_name)
+    return manifest_name
+
+
 def bind_published_large_data_reference(
         publication: Any, *, service_name: str, payload: bytes,
-        object_type: str = "") -> LargeDataReference:
+        object_type: str = "", allow_legacy: bool = False) -> LargeDataReference:
     """Bind one native publication result to the DI reference contract.
 
     The caller cannot fill in security metadata after publication.  Every
     security-bearing field is taken from the native result and checked against
     the exact bytes that were handed to the publisher.  Older bindings that
     return only a Data name/object ID fail closed instead of manufacturing an
-    epoch or manifest digest in Python.
+    epoch or manifest digest in Python. Legacy metadata requires an explicit
+    allow_legacy=True compatibility call and is never a canonical writer.
     """
     if not bool(getattr(publication, "success", False)):
         reason = str(getattr(publication, "error", "") or
@@ -168,21 +225,25 @@ def bind_published_large_data_reference(
             f"expected={expected_digest} actual={content_digest or '<empty>'}")
     if encrypted is not True:
         raise ValueError("native publication is not encrypted")
-    if authorization_scope != expected_scope:
+    from .naming import canonical_name_uri
+    if canonical_name_uri(authorization_scope) != canonical_name_uri(expected_scope):
         raise ValueError("native publication authorization scope is not bound")
     if (not protection_epoch or protection_epoch == "plaintext-v1"):
         raise ValueError("native publication protection epoch is missing")
     _require_digest(manifest_digest, "manifest_digest")
-    expected_manifest = _publication_manifest_digest(
-        data_name=data_name,
-        object_id=object_id,
-        plaintext_size=plaintext_size,
-        content_digest=content_digest,
-        authorization_scope=authorization_scope,
-        protection_epoch=protection_epoch,
-    )
-    if manifest_digest != expected_manifest:
-        raise ValueError("native publication manifest digest mismatch")
+    manifest_name = str(getattr(publication, "manifest_name", ""))
+    data_prefix = str(getattr(publication, "data_prefix", ""))
+    if manifest_name or data_prefix:
+        data_name = publication_manifest_name(publication)
+    elif allow_legacy:
+        expected_manifest = _publication_manifest_digest(
+            data_name=data_name, object_id=object_id, plaintext_size=plaintext_size,
+            content_digest=content_digest, authorization_scope=authorization_scope,
+            protection_epoch=protection_epoch)
+        if manifest_digest != expected_manifest:
+            raise ValueError("native publication manifest digest mismatch")
+    else:
+        raise ValueError("native publication lacks canonical manifest/data prefix")
     return LargeDataReference(
         data_name=data_name,
         manifest_digest=manifest_digest,

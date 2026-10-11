@@ -1,3 +1,4 @@
+#include <ndn-cxx/name.hpp>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
@@ -106,7 +107,7 @@ NativeGrantBinding NativeGrantClient::acquire(
     view.planCoreDigest, request.modelManifestDigest, view.protectionEpoch,
     grant.grantDigest);
   const auto publishedName = m_publish(expectedName, grant.wireJson);
-  if (publishedName != expectedName) {
+  if (ndn::Name(publishedName) != ndn::Name(expectedName)) {
     throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: publication name mismatch");
   }
   return {view.provider, view.role, publishedName, grant.grantDigest,

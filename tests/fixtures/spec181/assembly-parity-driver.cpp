@@ -181,6 +181,7 @@ int main(int argc, char** argv)
       binding.fencingToken = "fixture-fence";
       binding.expiresAtMs = now + 10000;
       NativeProtectedGrantConfig config;
+      config.publicationIdentity = "/spec181/requester";
       config.authorityIdentity = "/spec181/authority";
       const auto authority = decodeHex(grant->get<std::string>("authorityPublicKeyHex"));
       config.authorityPublicKeyRaw.assign(authority.begin(), authority.end());

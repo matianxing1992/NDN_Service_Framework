@@ -227,6 +227,13 @@ class DeploymentActivationRecord:
     def digest(self) -> str:
         return _digest(self.canonical_dict())
 
+    def naming_digest(self) -> str:
+        """Name commitment omits its own locator; signature transcript is unchanged."""
+        value = self.canonical_dict()
+        value.pop("record_name", None)
+        return _digest(value)
+
+
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "DeploymentActivationRecord":
         return cls(**dict(payload))

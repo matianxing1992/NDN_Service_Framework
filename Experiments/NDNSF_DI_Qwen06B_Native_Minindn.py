@@ -43,6 +43,7 @@ from cryptography.hazmat.backends import default_backend
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "Experiments"))
 from native_resource_guard import run_guarded, validate_limits
+from native_install_candidate import validate_spec201_candidate
 ROLE_PREFIX = "/LLM/Pipeline/Stage/"
 SERVICE = "/AI/LLM/Pipeline/QwenNative"
 GROUP = "/example/ndnsf-qwen06b/group"
@@ -1065,15 +1066,32 @@ def env_for(home: Path, node: str, *,
     # host environment leak.
     for key in ("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE",
                 "NDNSF_COLLAB_LARGE_FETCH_TIMING",
+                "NDNSF_COLLAB_AUTH_TRACE",
                 "NDNSF_SELECTION_STATUS_TRACE",
                 "SPEC175_TRACE",
                 "NDNSF_PHASE_TIMING",
+                "NDNSF_CONTROL_TIMING",
+                "NDNSF_HYBRID_CRYPTO_TIMING",
                 "NDNSF_TIMELINE_TRACE",
                 "NDNSF_TIMELINE_TRACE_SAMPLE_RATE",
                 "NDNSF_STREAM_PACKET_TIMELINE_TRACE"):
         value = os.environ.get(key, "")
         if value:
             env[key] = value
+    # This controls the request/Selection object carrier, independently of
+    # collaboration tensor windows and observation-only diagnostics above.
+    request_fetch_window = os.environ.get("NDNSF_REQUEST_LARGE_FETCH_INIT_CWND") or "16"
+    if request_fetch_window:
+        window = int(request_fetch_window)
+        if not 1 <= window <= 2147483647:
+            raise ValueError(
+                "NDNSF_REQUEST_LARGE_FETCH_INIT_CWND must fit a positive Core int")
+        env["NDNSF_REQUEST_LARGE_FETCH_INIT_CWND"] = str(window)
+    # Qwen's measured control-packet budgets are operational settings. Core
+    # validates explicit overrides; its global defaults are unchanged.
+    for key, default in (("NDNSF_SVS_MAX_APP_PARAMS_BYTES", "6144"),
+                         ("NDNSF_SVS_MAX_PIGGYDATA_BYTES", "5120")):
+        env[key] = os.environ.get(key) or default
     # The launcher consumes NDNSF_PHASE_TIMING records for the per-stage
     # evidence table.  Keep timing collection enabled for every normal run;
     # an explicit host value still permits a diagnostic caller to disable it.
@@ -1741,6 +1759,9 @@ def main(argv=None, *, _supervised=False) -> int:
     parser.add_argument("--user-node", default="neu")
     parser.add_argument("--build", type=Path, default=ROOT / "build-spec184-b5-candidate-r4")
     parser.add_argument("--build-receipt-sha256", default=None)
+    parser.add_argument("--spec201-candidate", type=Path,
+                        help="frozen shared YOLO/Qwen naming qualification bundle")
+    parser.add_argument("--spec201-candidate-sha256", default="")
     parser.add_argument("--controller-binary", type=Path, default=ROOT / "build-spec184-b5-candidate/examples/App_ServiceController")
     parser.add_argument("--controller-binary-sha256", default=None)
     parser.add_argument("--authority-binary", type=Path, default=None,
@@ -1776,6 +1797,8 @@ def main(argv=None, *, _supervised=False) -> int:
                         help="request the bounded CPU ONNX resident-session cache for this candidate")
     parser.add_argument("--encrypted-repository-path", type=Path, default=None,
                         help="optional empty run-scoped ciphertext Repo directory on a separate filesystem")
+    parser.add_argument("--request-options-transport",
+                        choices=("INLINE", "SELECTION_GENERATION_V1"), default="INLINE")
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--ack-timeout-ms", type=int,
                         default=DEFAULT_QWEN_ACK_TIMEOUT_MS,
@@ -1803,6 +1826,11 @@ def main(argv=None, *, _supervised=False) -> int:
         "--direct-start", action="store_true",
         help="start MiniNDN in this process; the caller owns host resource supervision")
     args = parser.parse_args(argv)
+    if args.spec201_candidate is None:
+        raise RuntimeError("SPEC201_CANDIDATE_REQUIRED")
+    naming_candidate = validate_spec201_candidate(
+        args.spec201_candidate, args.spec201_candidate_sha256, [],
+        selected_profile=("qwen", vars(args)))
     # The launcher owns transient Repo staging and MiniNDN processes.  SIGTERM
     # must follow the same cleanup path as Ctrl-C; the default Python action
     # would exit before the finally block removes only this run's staging.
@@ -1829,6 +1857,13 @@ def main(argv=None, *, _supervised=False) -> int:
         CONTROLLER = APP_ROOT + "/controller"
         AUTHORITY = APP_ROOT + "/authority"
         USER = APP_ROOT + "/user"
+    credentials = naming_candidate["credentialBundles"]["qwen"]
+    expected_identities = {CONTROLLER, AUTHORITY, USER,
+                           *[f"{APP_ROOT}/provider-{index}" for index, _ in enumerate(
+                               [node for node in args.stage_nodes.split(",") if node.strip()])]}
+    if (credentials["applicationRoot"] != APP_ROOT or
+            set(credentials["identities"]) != expected_identities):
+        raise RuntimeError("SPEC201_QWEN_CREDENTIAL_IDENTITIES_MISMATCH")
     limits = validate_limits(json.loads(args.resource_limits_json))
     if not _supervised and args.direct_start:
         # LocalExperiment already owns the single host resource supervisor.
@@ -2066,6 +2101,11 @@ def main(argv=None, *, _supervised=False) -> int:
             raise SystemExit("MODEL_CANONICAL_INITIALIZER_SIZE_INVALID")
     if args.run_root is None:
         raise SystemExit("RUN_ROOT_REQUIRED_INTERNAL")
+    validate_spec201_candidate(args.spec201_candidate, args.spec201_candidate_sha256,
+                              [Path(path) for path, _expected, _label in binary_checks],
+                              [stage_manifest_path, args.topology, tokenizer,
+                               canonical_source_input, mapping_input] +
+                              ([canonical_initializer_input] if canonical_initializer_input else []))
     run_root = args.run_root.expanduser().resolve()
     run_root.mkdir(parents=True, exist_ok=True)
     run_root.chmod(0o700)
@@ -2277,23 +2317,18 @@ def main(argv=None, *, _supervised=False) -> int:
         (home / ".ndn/client.conf").write_text(f"transport=unix:///run/nfd/{node}.sock\n")
     identities = [(args.controller_node, CONTROLLER), (args.controller_node, AUTHORITY),
                   (args.user_node, USER), *zip(stage_nodes, provider_names)]
-    bootstrap_home = run_root / "homes/bootstrap"
-    (bootstrap_home / ".ndn").mkdir(parents=True, exist_ok=True)
-    (bootstrap_home / "pib").mkdir(parents=True, exist_ok=True)
-    (bootstrap_home / "tpm").mkdir(parents=True, exist_ok=True)
-    (bootstrap_home / ".ndn/client.conf").write_text("transport=unix:///run/nfd/bootstrap.sock\n")
-    certs = {}
-    for _, identity in identities:
-        cert = run_root / "certs" / (identity.strip("/").replace("/", "_") + ".cert")
-        cert.parent.mkdir(parents=True, exist_ok=True)
-        prefix = env_command(env_for(bootstrap_home, "bootstrap"), "ndnsec")
-        subprocess.run(prefix + f" key-gen -t r {shlex.quote(identity)}", shell=True, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        subprocess.run(prefix + f" cert-dump -i {shlex.quote(identity)} > {shlex.quote(str(cert))}",
-                       shell=True, check=True)
-        certs[identity] = cert
+    credentials = naming_candidate["credentialBundles"]["qwen"]
+    if credentials["applicationRoot"] != APP_ROOT:
+        raise RuntimeError("SPEC201_QWEN_CREDENTIAL_NAMESPACE_MISMATCH")
+    if set(credentials["identities"]) != {identity for _, identity in identities}:
+        raise RuntimeError("SPEC201_QWEN_CREDENTIAL_IDENTITIES_MISMATCH")
+    bootstrap_home = Path(credentials["bootstrapHome"])
+    certs = {identity: Path(path) for identity, path in credentials["certs"].items()}
     from native_probe_validation_links import render_anchored_probe_validation_schema
-    anchored_schema = render_anchored_probe_validation_schema(APP_ROOT, certs.values())
+    anchored_schema = render_anchored_probe_validation_schema(
+        APP_ROOT, [certs[identity] for identity in sorted(certs)])
+    if anchored_schema != Path(credentials["schema"]).read_text():
+        raise RuntimeError("SPEC201_QWEN_CREDENTIAL_SCHEMA_MISMATCH")
     (run_root / "trust-schema.conf").write_text(anchored_schema)
     for node, home in homes.items():
         shutil.copytree(bootstrap_home / "pib", home / "pib", dirs_exist_ok=True)
@@ -2344,8 +2379,8 @@ def main(argv=None, *, _supervised=False) -> int:
                               "keyLocatorPrefix": prefix,
                               "signerKeyId": offer_id,
                               "certificateName": prefix + "/ID-CERT"})
-    candidate_digest = digest_text(f"{MODEL_FAMILY}-offer-policy")
-    offer_policy = {"schema": "spec180-provider-offer-trust-v1", "candidateId": f"{MODEL_FAMILY}-local",
+    candidate_digest = "sha256:" + naming_candidate["candidateId"]
+    offer_policy = {"schema": "spec180-provider-offer-trust-v1", "candidateId": naming_candidate["candidateId"],
                     "candidateDigest": candidate_digest, "trustSchema": APP_ROOT + "/trust",
                     "entries": offer_entries}
     authority_cfg = {
@@ -2468,6 +2503,8 @@ def main(argv=None, *, _supervised=False) -> int:
                      "adapter_composition_digest": adapter_digest,
                      "task_descriptor_digest": digest_text(f"{MODEL_FAMILY}-task"),
                      "generation_mode": "TOKEN_STREAMING", "tokenizer_digest": tokenizer_digest,
+                     **({"options_transport": args.request_options_transport}
+                        if args.request_options_transport != "INLINE" else {}),
                      "input_layout_digest": digest_text(f"{MODEL_FAMILY}-input-layout"),
                      "security_policy_digest": digest_text(f"{MODEL_FAMILY}-security"),
                      # Assembly and authenticated material fetch happen after
@@ -2566,6 +2603,11 @@ def main(argv=None, *, _supervised=False) -> int:
     if initializer_path is not None:
         require_file_digest(initializer_path, args.canonical_initializer_sha256,
                            "MODEL_CANONICAL_INITIALIZER")
+    validate_spec201_candidate(args.spec201_candidate, args.spec201_candidate_sha256,
+                              [Path(path) for path, _expected, _label in binary_checks],
+                              [stage_manifest_path, args.topology, tokenizer,
+                               canonical_source_input, mapping_input] +
+                              ([canonical_initializer_input] if canonical_initializer_input else []))
     # MiniNDN and process orchestration starts here.
     from minindn.apps.app_manager import AppManager
     from minindn.apps.nfd import Nfd
@@ -2608,9 +2650,11 @@ def main(argv=None, *, _supervised=False) -> int:
             configure_probe_validation_links(ndn, run_root / "probe-validation-links",
                 args.probe_validation_bandwidth_mbps, dict(zip(stage_nodes, provider_names)))
         time.sleep(max(0.0, args.routing_wait_s))
-        for node in ndn.net.hosts:
-            Nfdc.setStrategy(node, APP_ROOT, Nfdc.STRATEGY_MULTICAST)
-            Nfdc.setStrategy(node, GROUP, Nfdc.STRATEGY_MULTICAST)
+        from native_prefix_roles import configure_prefix_roles
+        configure_prefix_roles(ndn, actors=[CONTROLLER, AUTHORITY, USER, *provider_names],
+            groups=[GROUP], data_roots=[APP_ROOT],
+            expected_roles=naming_candidate["prefixRolePlans"]["qwen"]["roles"],
+            receipt=run_root / "prefix-role-strategies.json")
         def start(node_name: str, label: str, command: str, env: dict[str, str]):
             log = run_root / f"{label}.log"
             handle = log.open("wb")
@@ -2672,6 +2716,8 @@ def main(argv=None, *, _supervised=False) -> int:
                        f"--conversation-retention-ms {min(3600000, runtime_budgets['retention_ms'])} "
                        f"--tokenizer-json {shlex.quote(str(tokenizer))} --selection-offer-key-file {shlex.quote(str(directory / 'offer-private.pem'))} "
                        "--offer-backend onnxruntime-cpu --offer-can-provision --offer-has-model" +
+                       (" --allow-selection-generation-options"
+                        if args.request_options_transport == "SELECTION_GENERATION_V1" else "") +
                        (f" --cache-compatibility-source-dir {shlex.quote(str(model_source_repository))}"
                         if args.cache_compatibility_mode else ""))
             proc, log = start(node, f"provider-{index}", command, env)

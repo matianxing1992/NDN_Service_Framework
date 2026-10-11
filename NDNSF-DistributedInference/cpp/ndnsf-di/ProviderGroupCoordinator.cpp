@@ -26,6 +26,24 @@ constexpr std::size_t NONCE_BYTES = 12;
 constexpr std::size_t DIGEST_BYTES = 32;
 constexpr std::size_t MAX_STRING_BYTES = 1U << 20;
 
+std::string
+explicitMemberDataName(const GroupCapabilityV1& capability,
+                       const std::string& producerRank, const std::string& value)
+{
+  const auto member = std::find_if(capability.orderedMembers.begin(),
+    capability.orderedMembers.end(), [&](const auto& item) {
+      return std::to_string(item.rank) == producerRank;
+    });
+  if (member == capability.orderedMembers.end() || value.empty())
+    throw std::invalid_argument("explicit member tensor Data name is required");
+  const ndn::Name producer(member->provider);
+  const ndn::Name name(value);
+  if (producer.empty() || name.size() <= producer.size() ||
+      !producer.isPrefixOf(name) || name.wireEncode().size() > 1024)
+    throw std::invalid_argument("tensor Data name is outside its complete Producer");
+  return name.toUri(ndn::name::UriFormat::CANONICAL);
+}
+
 const char* const COMPACT_SEGMENT_BUNDLE_MARKER =
   "NDNSF_DATA_V1_SEGMENT_BUNDLE_COMPACT";
 
@@ -494,6 +512,39 @@ ProviderGroupCoordinator::~ProviderGroupCoordinator()
   clearEpochKey();
 }
 
+ProviderGroupCoordinator::RuntimeKeySnapshot::RuntimeKeySnapshot(
+  const ProviderGroupBytes& bytes, std::uint64_t value)
+  : key(bytes), generation(value)
+{
+}
+
+ProviderGroupCoordinator::RuntimeKeySnapshot::~RuntimeKeySnapshot()
+{
+  cleanse(key);
+}
+
+ProviderGroupCoordinator::RuntimeKeySnapshot
+ProviderGroupCoordinator::captureRuntimeKey() const
+{
+  std::lock_guard<std::mutex> lock(m_stateMutex);
+  if (!m_hasCapability || terminal())
+    throw std::runtime_error("NDNSF_DATA_V1 group is terminal");
+  return RuntimeKeySnapshot(m_epochKey, m_keyGeneration);
+}
+
+bool
+ProviderGroupCoordinator::runtimeKeyActiveLocked(const RuntimeKeySnapshot& snapshot) const
+{
+  return !terminal() && snapshot.generation == m_keyGeneration;
+}
+
+bool
+ProviderGroupCoordinator::runtimeKeyActive(const RuntimeKeySnapshot& snapshot) const
+{
+  std::lock_guard<std::mutex> lock(m_stateMutex);
+  return runtimeKeyActiveLocked(snapshot);
+}
+
 GroupCapabilityV1
 ProviderGroupCoordinator::createCapability(
   std::string requestId,
@@ -657,8 +708,14 @@ ProviderGroupCoordinator::epochKeyForProvider(const std::string& provider) const
                    [&provider] (const auto& member) { return member.provider == provider; })) {
     throw std::invalid_argument("provider is not a group member");
   }
-  if (!m_epochKey.empty()) {
-    return m_epochKey;
+  const auto snapshot = captureRuntimeKey();
+  if (!snapshot.key.empty()) {
+    auto key = snapshot.key;
+    if (!runtimeKeyActive(snapshot)) {
+      cleanse(key);
+      throw std::runtime_error("NDNSF_DATA_V1 group key changed during access");
+    }
+    return key;
   }
   if (!m_options.unwrapEpochKey) {
     throw std::runtime_error("no Provider epoch-key unwrap callback configured");
@@ -671,6 +728,10 @@ ProviderGroupCoordinator::epochKeyForProvider(const std::string& provider) const
   if (key.size() != KEY_BYTES) {
     cleanse(key);
     throw std::runtime_error("Provider epoch-key unwrap returned the wrong size");
+  }
+  if (!runtimeKeyActive(snapshot)) {
+    cleanse(key);
+    throw std::runtime_error("NDNSF_DATA_V1 group key changed during unwrap");
   }
   return key;
 }
@@ -882,9 +943,7 @@ ProviderGroupCoordinator::makeManifest(
     throw std::invalid_argument("manifest byte bound exceeded");
   }
   const auto manifestBytes = manifest.canonicalBytes(false);
-  manifest.producerSignature = m_options.signManifest
-    ? m_options.signManifest(manifestBytes)
-    : hmac(m_epochKey, manifestBytes);
+  manifest.producerSignature = signTensorObjectManifest(manifestBytes);
   if (manifest.producerSignature.empty()) {
     throw std::runtime_error("manifest signer returned an empty signature");
   }
@@ -903,16 +962,24 @@ ProviderGroupCoordinator::sealOperation(
   std::uint64_t createdAtMs,
   const std::vector<std::string>& exactDataNames)
 {
-  if (!exactDataNames.empty() &&
-      exactDataNames.size() != plaintextSegments.size()) {
+  if (exactDataNames.empty() || exactDataNames.size() != plaintextSegments.size()) {
     throw std::invalid_argument(
       "exact NDNSF_DATA_V1 name count does not match segment count");
   }
   findOperation(operation.operationIndex);
+  std::vector<std::string> names;
+  names.reserve(exactDataNames.size());
+  std::set<ndn::Name> uniqueNames;
+  for (const auto& name : exactDataNames) {
+    names.push_back(explicitMemberDataName(m_capability, producerRank, name));
+    if (!uniqueNames.insert(ndn::Name(names.back())).second)
+      throw std::invalid_argument("member tensor Data names repeat a segment");
+  }
+  const auto snapshot = captureRuntimeKey();
   auto manifest = makeManifest(operation, producerRank, sourceLayoutDigest,
                                targetLayoutDigest, tensorDigest,
                                plaintextSegments, createdAtMs);
-  const auto operationKey = deriveOperationKey(m_epochKey, m_capability, manifest);
+  const auto operationKey = deriveOperationKey(snapshot.key, m_capability, manifest);
   SealedCollectiveOperationV1 result;
   result.manifest = manifest;
   result.segments.reserve(plaintextSegments.size());
@@ -934,16 +1001,13 @@ ProviderGroupCoordinator::sealOperation(
     descriptor.segmentSize = manifest.segmentSize;
     descriptor.noProgressMs = manifest.noProgressMs;
     descriptor.hardDeadlineMs = manifest.hardDeadlineMs;
-    const auto name = exactDataNames.empty()
-      ? makeDataName(m_capability, manifest, index)
-      : exactDataNames[index];
-    if (name.empty()) {
-      throw std::invalid_argument("exact NDNSF_DATA_V1 name is empty");
-    }
+    const auto& name = names[index];
     const auto nonce = deriveNonce(m_capability, manifest, name, index);
     result.segments.push_back(NdnsfCollectiveControl::sealWithNonce(
       descriptor, name, operationKey, nonce, plaintextSegments[index]));
   }
+  if (!runtimeKeyActive(snapshot))
+    throw std::runtime_error("NDNSF_DATA_V1 group key changed during sealing");
   return result;
 }
 
@@ -955,9 +1019,13 @@ ProviderGroupCoordinator::signTensorObjectManifest(
     throw std::logic_error(
       "cannot sign a tensor manifest for an inactive group");
   }
-  return m_options.signManifest
+  const auto snapshot = captureRuntimeKey();
+  auto signature = m_options.signManifest
     ? m_options.signManifest(signingBytes)
-    : hmac(m_epochKey, signingBytes);
+    : hmac(snapshot.key, signingBytes);
+  if (!runtimeKeyActive(snapshot))
+    throw std::runtime_error("NDNSF_DATA_V1 group key changed during signing");
+  return signature;
 }
 
 bool
@@ -969,12 +1037,15 @@ ProviderGroupCoordinator::verifyTensorObjectManifest(
       signature.empty()) {
     return false;
   }
-  if (m_options.verifyManifest) {
-    return m_options.verifyManifest(signingBytes, signature);
-  }
-  const auto expected = hmac(m_epochKey, signingBytes);
-  return expected.size() == signature.size() &&
-         CRYPTO_memcmp(expected.data(), signature.data(), expected.size()) == 0;
+  const auto snapshot = captureRuntimeKey();
+  const auto verified = m_options.verifyManifest
+    ? m_options.verifyManifest(signingBytes, signature)
+    : [&] {
+        const auto expected = hmac(snapshot.key, signingBytes);
+        return expected.size() == signature.size() &&
+               CRYPTO_memcmp(expected.data(), signature.data(), expected.size()) == 0;
+      }();
+  return verified && runtimeKeyActive(snapshot);
 }
 
 ProviderGroupBytes
@@ -1270,14 +1341,7 @@ ProviderGroupCoordinator::validateManifestAgainstCapability(
   // digest; the segment AEAD/HMAC still binds this operation manifest digest.
   if (!manifest.externalSegmentDigests) {
     const auto manifestBytes = manifest.canonicalBytes(false);
-    const auto verified = m_options.verifyManifest
-      ? m_options.verifyManifest(manifestBytes, manifest.producerSignature)
-      : [&] {
-          const auto expected = hmac(m_epochKey, manifestBytes);
-          return expected.size() == manifest.producerSignature.size() &&
-                 CRYPTO_memcmp(expected.data(), manifest.producerSignature.data(),
-                               expected.size()) == 0;
-        }();
+    const auto verified = verifyTensorObjectManifest(manifestBytes, manifest.producerSignature);
     if (!verified) {
       throw std::runtime_error("manifest authenticator verification failed");
     }
@@ -1290,10 +1354,10 @@ ProviderGroupCoordinator::openSegment(
   const NdnsfDataV1Segment& segment,
   const std::string& expectedDataName)
 {
+  const auto expectedName = explicitMemberDataName(
+    m_capability, manifest.producerRank, expectedDataName);
+  const auto snapshot = captureRuntimeKey();
   validateManifestAgainstCapability(manifest);
-  const auto expectedName = expectedDataName.empty()
-    ? makeDataName(m_capability, manifest, segment.descriptor.segmentNo)
-    : expectedDataName;
   if (segment.descriptor.manifestDigest != manifestDigestForTransport(manifest) ||
       segment.descriptor.segmentCount != manifest.segmentCount ||
       segment.descriptor.totalBytes != manifest.totalBytes ||
@@ -1311,11 +1375,15 @@ ProviderGroupCoordinator::openSegment(
   if (segment.nonce != expectedNonce) {
     throw std::runtime_error("NDNSF_DATA_V1 nonce derivation mismatch");
   }
-  const auto operationKey = deriveOperationKey(m_epochKey, m_capability, manifest);
+  const auto operationKey = deriveOperationKey(snapshot.key, m_capability, manifest);
   auto plaintext = NdnsfCollectiveControl::open(segment, operationKey, expectedName);
   if (!manifest.externalSegmentDigests &&
       hex(plaintext) != manifest.orderedSegmentDigests[segment.descriptor.segmentNo]) {
     throw std::runtime_error("NDNSF_DATA_V1 plaintext digest mismatch");
+  }
+  if (!runtimeKeyActive(snapshot)) {
+    cleanse(plaintext);
+    throw std::runtime_error("NDNSF_DATA_V1 group key changed during decryption");
   }
   return plaintext;
 }
@@ -1324,6 +1392,7 @@ DataSegmentReplayWindow&
 ProviderGroupCoordinator::replayWindow(
   const CollectiveOperationManifestV1& manifest)
 {
+  // Called only while acceptSegment owns m_stateMutex; the reference stays local.
   const auto key = manifestDigestForTransport(manifest);
   auto found = m_replayWindows.find(key);
   if (found != m_replayWindows.end()) {
@@ -1345,28 +1414,47 @@ ProviderGroupCoordinator::acceptSegment(
   const NdnsfDataV1Segment& segment,
   const std::string& expectedDataName)
 {
-  if (m_groupStartedAtMs == 0) {
-    m_groupStartedAtMs = manifest.createdAtMs;
+  return acceptAndOpenSegment(manifest, segment, expectedDataName).first;
+}
+
+std::pair<DataSegmentReplayWindow::Result, ProviderGroupBytes>
+ProviderGroupCoordinator::acceptAndOpenSegment(
+  const CollectiveOperationManifestV1& manifest,
+  const NdnsfDataV1Segment& segment,
+  const std::string& expectedDataName)
+{
+  // Reject absent/foreign references before changing operation/replay state.
+  explicitMemberDataName(m_capability, manifest.producerRank, expectedDataName);
+  const auto snapshot = captureRuntimeKey();
+  {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    if (!runtimeKeyActiveLocked(snapshot))
+      throw std::runtime_error("NDNSF_DATA_V1 group is terminal");
+    if (m_groupStartedAtMs == 0)
+      m_groupStartedAtMs = manifest.createdAtMs;
   }
-  const auto plaintext = openSegment(manifest, segment, expectedDataName);
-  (void)plaintext;
-  const auto operationKey = deriveOperationKey(m_epochKey, m_capability, manifest);
-  const auto result = replayWindow(manifest).accept(
-    segment, operationKey, segment.dataName);
+  auto plaintext = openSegment(manifest, segment, expectedDataName);
+  std::lock_guard<std::mutex> lock(m_stateMutex);
+  if (!runtimeKeyActiveLocked(snapshot)) {
+    cleanse(plaintext);
+    throw std::runtime_error("NDNSF_DATA_V1 group key changed before acceptance");
+  }
+  const auto result = replayWindow(manifest).acceptAuthenticated(segment, plaintext.size());
   if (result == DataSegmentReplayWindow::Result::Accepted) {
     m_lastProgressMs = std::max(m_lastProgressMs, manifest.createdAtMs);
   }
-  return result;
+  return {result, std::move(plaintext)};
 }
 
 bool
 ProviderGroupCoordinator::beginOperation(std::uint64_t nowMs)
 {
+  std::lock_guard<std::mutex> lock(m_stateMutex);
   if (!m_hasCapability || terminal()) {
     return false;
   }
-  if (deadlineExpired(nowMs)) {
-    fail("NDNSF_DATA_V1_HARD_DEADLINE");
+  if (deadlineExpiredLocked(nowMs)) {
+    terminateLocked("NDNSF_DATA_V1_HARD_DEADLINE", false);
     return false;
   }
   // A capability can span multiple dependency operations.  Reset only the
@@ -1379,18 +1467,19 @@ ProviderGroupCoordinator::beginOperation(std::uint64_t nowMs)
 bool
 ProviderGroupCoordinator::recordProgress(std::uint64_t nowMs)
 {
+  std::lock_guard<std::mutex> lock(m_stateMutex);
   if (!m_hasCapability || terminal()) {
     return false;
   }
-  if (deadlineExpired(nowMs)) {
-    fail("NDNSF_DATA_V1_HARD_DEADLINE");
+  if (deadlineExpiredLocked(nowMs)) {
+    terminateLocked("NDNSF_DATA_V1_HARD_DEADLINE", false);
     return false;
   }
   if (m_lastProgressMs != 0 && nowMs >= m_lastProgressMs &&
       nowMs - m_lastProgressMs > m_capability.noProgressMs) {
     // The progress deadline is intentionally not an extension of the hard
     // deadline; it terminates the complete epoch.
-    fail("NDNSF_DATA_V1_NO_PROGRESS");
+    terminateLocked("NDNSF_DATA_V1_NO_PROGRESS", false);
     return false;
   }
   m_lastProgressMs = nowMs;
@@ -1400,6 +1489,13 @@ ProviderGroupCoordinator::recordProgress(std::uint64_t nowMs)
 bool
 ProviderGroupCoordinator::deadlineExpired(std::uint64_t nowMs) const
 {
+  std::lock_guard<std::mutex> lock(m_stateMutex);
+  return deadlineExpiredLocked(nowMs);
+}
+
+bool
+ProviderGroupCoordinator::deadlineExpiredLocked(std::uint64_t nowMs) const
+{
   return m_groupStartedAtMs != 0 && nowMs >= m_groupStartedAtMs &&
          nowMs - m_groupStartedAtMs >= m_capability.hardDeadlineMs;
 }
@@ -1407,52 +1503,69 @@ ProviderGroupCoordinator::deadlineExpired(std::uint64_t nowMs) const
 void
 ProviderGroupCoordinator::cancel(std::string reason)
 {
-  if (terminal()) {
-    return;
-  }
-  m_cancelled = true;
-  m_terminalReason = std::move(reason);
-  clearEpochKey();
+  std::lock_guard<std::mutex> lock(m_stateMutex);
+  terminateLocked(std::move(reason), true);
 }
 
 void
 ProviderGroupCoordinator::fail(std::string reason)
 {
+  std::lock_guard<std::mutex> lock(m_stateMutex);
+  terminateLocked(std::move(reason), false);
+}
+
+void
+ProviderGroupCoordinator::terminateLocked(std::string reason, bool cancelled)
+{
   if (terminal()) {
     return;
   }
-  m_failed = true;
   m_terminalReason = std::move(reason);
-  clearEpochKey();
+  clearEpochKeyLocked();
+  if (cancelled)
+    m_cancelled.store(true, std::memory_order_release);
+  else
+    m_failed.store(true, std::memory_order_release);
 }
 
 bool
 ProviderGroupCoordinator::terminal() const noexcept
 {
-  return m_cancelled || m_failed;
+  return m_cancelled.load(std::memory_order_acquire) ||
+         m_failed.load(std::memory_order_acquire);
 }
 
 bool
 ProviderGroupCoordinator::cancelled() const noexcept
 {
-  return m_cancelled;
+  return m_cancelled.load(std::memory_order_acquire);
 }
 
 bool
 ProviderGroupCoordinator::failed() const noexcept
 {
-  return m_failed;
+  return m_failed.load(std::memory_order_acquire);
 }
 
 const std::string&
 ProviderGroupCoordinator::terminalReason() const noexcept
 {
-  return m_terminalReason;
+  // Terminal flags publish the immutable reason. Lifecycle reset is exclusive.
+  static const std::string empty;
+  return terminal() ? m_terminalReason : empty;
 }
 
 void
 ProviderGroupCoordinator::clearEpochKey() noexcept
 {
+  std::lock_guard<std::mutex> lock(m_stateMutex);
+  clearEpochKeyLocked();
+}
+
+void
+ProviderGroupCoordinator::clearEpochKeyLocked() noexcept
+{
+  ++m_keyGeneration;
   cleanse(m_epochKey);
   m_replayWindows.clear();
 }
@@ -1462,32 +1575,12 @@ ProviderGroupCoordinator::makeDataName(const GroupCapabilityV1& capability,
                                        const CollectiveOperationManifestV1& manifest,
                                        std::uint64_t segmentNo)
 {
-  std::string producer;
-  for (const auto& member : capability.orderedMembers) {
-    if (std::to_string(member.rank) == manifest.producerRank ||
-        member.provider == manifest.producerRank) {
-      // Exact dependency Data is producer-owned and is served by the
-      // Provider's registered NDNSF-DI prefix.  endpointPrefix remains the
-      // SVSPubSub transport locator; it must not become the Data namespace.
-      producer = member.provider;
-      break;
-    }
-  }
-  if (producer.empty()) {
-    producer = "/NDNSF-DI/producer/" + manifest.producerRank;
-  }
-  ndn::Name name(producer.empty() ? "/NDNSF-DI/producer" : producer);
-  name.append("NDNSF-DI").append("COLLECTIVE").append("v1").append("REQ");
-  name.append(ndn::Name(manifest.requestId));
-  name.append("ATTEMPT").append(ndn::Name(manifest.attemptId));
-  name.append("PLAN").append(ndn::Name(manifest.planDigest));
-  name.append("GROUP").append(ndn::Name(manifest.groupId));
-  name.append("EPOCH").append(std::to_string(manifest.epoch));
-  name.append("OP").append(std::to_string(manifest.operationIndex));
-  name.append("RANK").append(ndn::Name(manifest.producerRank));
-  name.append("TENSOR").append(ndn::Name(manifest.tensorDigest));
-  name.append("SEG").append(std::to_string(segmentNo));
-  return name.toUri();
+  // A capability/embedded manifest has no sealed tensor endpoint or naming
+  // stride. Keep the public symbol, but never fabricate a publication name.
+  (void)capability;
+  (void)manifest;
+  (void)segmentNo;
+  throw std::invalid_argument("C04 tensor endpoint exact Data name is required");
 }
 
 ProviderGroupBytes

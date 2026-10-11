@@ -196,6 +196,20 @@ def _export_onnx(model_path: Path, graph_path: Path, *, input_size: int,
     )
     loaded = onnx.load(str(temporary))
     onnx.checker.check_model(loaded)
+    # The fixed-input export needs intermediate tensor sizes for placement.
+    # Standard ONNX inference leaves YOLO Reshape dimensions symbolic.
+    from onnxruntime.tools.symbolic_shape_infer import SymbolicShapeInference
+    inferred = SymbolicShapeInference.infer_shapes(loaded, auto_merge=True)
+    if (inferred is None or
+            [node.SerializeToString() for node in loaded.graph.node] !=
+            [node.SerializeToString() for node in inferred.graph.node] or
+            [value.SerializeToString() for value in loaded.graph.initializer] !=
+            [value.SerializeToString() for value in inferred.graph.initializer] or
+            [value.SerializeToString() for value in loaded.graph.input] !=
+            [value.SerializeToString() for value in inferred.graph.input]):
+        raise ExportError("shape inference changed the fixed YOLO computation")
+    onnx.checker.check_model(inferred)
+    loaded = inferred
     # Always externalize initializers so the package has an explicit weight
     # object even when this small checkpoint would fit in one graph file.
     onnx.save_model(

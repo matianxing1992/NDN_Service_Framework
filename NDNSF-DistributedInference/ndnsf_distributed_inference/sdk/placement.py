@@ -36,10 +36,19 @@ def _plain(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(key): _plain(item) for key, item in value.items()}
     if is_dataclass(value):
-        return {
+        result = {
             item.name: _plain(getattr(value, item.name))
             for item in fields(value)
         }
+        if isinstance(value, TensorEndpoint):
+            # Match the native endpoint's optional wire fields at every
+            # nesting level, including dataflow and Selection payloads.
+            if not value.prefetch_bundle_bytes and not value.prefetch_segment_bytes:
+                result.pop("prefetch_bundle_bytes", None)
+                result.pop("prefetch_segment_bytes", None)
+            if not value.inline_first_segment:
+                result.pop("inline_first_segment", None)
+        return result
     if isinstance(value, (tuple, list)):
         return [_plain(item) for item in value]
     return value
@@ -960,6 +969,11 @@ class TensorEndpoint:
     consumer_roles: Tuple[str, ...] = ()
     target_layout_digest: str = ""
     endpoint_digest: str = ""
+    naming_operation_stride: int = 0
+    bundle_tensor_names: Tuple[str, ...] = ()
+    prefetch_bundle_bytes: int = 0
+    prefetch_segment_bytes: int = 0
+    inline_first_segment: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_kind", TensorEndpointSource(self.source_kind))
@@ -999,6 +1013,33 @@ class TensorEndpoint:
                 and self.producer_role):
             raise ValueError(
                 "application-input endpoint cannot claim a producer role")
+        from ..naming import _name
+        for value in (self.attempt, self.round, self.producer_rank,
+                      self.microbatch, self.segment_count,
+                      self.naming_operation_stride, self.prefetch_bundle_bytes,
+                      self.prefetch_segment_bytes):
+            if type(value) is not int or not 0 <= value <= (1 << 64) - 1:
+                raise ValueError("tensor endpoint requires UInt64 coordinates")
+        if self.naming_operation_stride > (1 << 20):
+            raise ValueError("tensor naming stride exceeds generation contract")
+        if ((self.prefetch_bundle_bytes == 0) != (self.prefetch_segment_bytes == 0)
+                or type(self.inline_first_segment) is not bool):
+            raise ValueError("invalid tensor prefetch geometry")
+        names = tuple(self.bundle_tensor_names)
+        if (any(not isinstance(name, str) or not name for name in names)
+                or len(set(names)) != len(names)
+                or self.prefetch_segment_bytes > 8800
+                or (self.prefetch_bundle_bytes and
+                    (self.source_kind is not TensorEndpointSource.ROLE or
+                     1 + (self.prefetch_bundle_bytes - 1) // self.prefetch_segment_bytes > self.segment_count))
+                or (self.inline_first_segment and self.source_kind is not TensorEndpointSource.ROLE)):
+            raise ValueError("invalid tensor bundle or prefetch contract")
+        object.__setattr__(self, "bundle_tensor_names", names)
+        if (self.source_kind is TensorEndpointSource.APPLICATION_INPUT and
+                (self.naming_operation_stride != 0 or self.round != 0
+                 or self.producer_rank != 0 or self.operation != "APPLICATION_INPUT"
+                 or _name(self.producer_namespace) != _name(self.requester))):
+            raise ValueError("application input must belong to its authenticated User")
         computed = canonical_digest(self.unsigned_dict())
         if self.endpoint_digest:
             _require_digest(self.endpoint_digest, "endpoint_digest")
@@ -1013,52 +1054,75 @@ class TensorEndpoint:
         # The exact object is shared by every authorized consumer. The local
         # projection's singular consumer_role must not fork its identity.
         value.pop("consumer_role", None)
+        if not self.prefetch_bundle_bytes and not self.prefetch_segment_bytes:
+            value.pop("prefetch_bundle_bytes", None)
+            value.pop("prefetch_segment_bytes", None)
+        if not self.inline_first_segment:
+            value.pop("inline_first_segment", None)
         return value
 
     @property
+    def execution_object_digest(self) -> str:
+        from ..naming import compute_naming_digest
+        return compute_naming_digest("ndnsf-naming/tensor-object", [
+            (1, 2, self.tensor_digest.encode("utf-8")),
+            (2, 2, self.layout_digest.encode("utf-8")),
+            (3, 2, self.target_layout_digest.encode("utf-8")),
+            (4, 2, self.manifest_digest.encode("utf-8")),
+            (5, 2, self.security_profile.encode("utf-8")),
+            (6, 5, canonical_bytes(self.bundle_tensor_names)),
+        ])
+
+    @property
     def name_template(self) -> str:
-        return f"{self.name_prefix}/SEG/<segment>"
+        return f"{self.name_prefix}/8=DATA/<segment>"
 
     @property
     def name_prefix(self) -> str:
-        """Return the exact V3 tensor-object prefix shared with native code."""
-
-        prefix = self.producer_namespace.rstrip("/")
-        labelled = (
-            ("REQUESTER", self.requester),
-            ("REQ", self.request_id),
-            ("PLAN", self.plan_digest),
-            ("GROUP", self.group_id),
-            ("EPOCH", self.group_epoch),
-            ("OP", self.operation),
-            ("SOURCE-ROLE", self.producer_role or "INPUT"),
-            ("TENSOR", self.tensor_id),
+        """C04 exact object; complete signed endpoint binds every shortened label."""
+        from ndn.encoding import Component
+        from ..naming import (
+            canonical_name_uri, compute_naming_digest,
+            make_producer_data_prefix, make_naming_label_component,
+            make_naming_decimal_component, make_naming_digest_component,
+            check_naming_name_size,
         )
-        encoded = {label: _ndn_component(value) for label, value in labelled}
-        return (
-            f"{prefix}/NDNSF-DI/TENSOR/v1"
-            f"/REQUESTER/{encoded['REQUESTER']}"
-            f"/REQ/{encoded['REQ']}"
-            f"/ATTEMPT/{self.attempt}"
-            f"/PLAN/{encoded['PLAN']}"
-            f"/GROUP/{encoded['GROUP']}"
-            f"/EPOCH/{encoded['EPOCH']}"
-            f"/OP/{encoded['OP']}"
-            f"/ROUND/{self.round}"
-            f"/SOURCE-ROLE/{encoded['SOURCE-ROLE']}"
-            f"/RANK/{self.producer_rank}"
-            f"/TENSOR/{encoded['TENSOR']}/{_ndn_component(self.tensor_digest)}"
-            f"/MICROBATCH/{self.microbatch}"
-        )
+        key = compute_naming_digest("ndnsf-naming/tensor-key", [
+            (1, 4, bytes.fromhex(self.endpoint_digest[7:])),
+            (2, 4, bytes.fromhex(self.execution_object_digest)),
+        ])
+        is_input = self.source_kind is TensorEndpointSource.APPLICATION_INPUT
+        stride = self.naming_operation_stride
+        round_no = 0 if is_input or not stride else self.round // stride
+        index = 0 if is_input else self.round if not stride else self.round % stride
+        raw = lambda value: bytes(Component.from_bytes(value.encode("utf-8")))
+        name = make_producer_data_prefix(self.producer_namespace, "tensor", name_space="NDNSF-DI")
+        name += [raw("REQUEST"), make_naming_label_component(canonical_name_uri(self.request_id)),
+                 raw("ATTEMPT"), make_naming_decimal_component(self.attempt),
+                 raw("ROUND"), make_naming_decimal_component(round_no),
+                 raw("POSITION"), make_naming_label_component("model-input" if is_input else self.producer_role),
+                 raw("OP"), raw(self.operation), raw("INDEX"), make_naming_decimal_component(index),
+                 raw("RANK"), make_naming_decimal_component(self.producer_rank),
+                 raw("BATCH"), make_naming_decimal_component(self.microbatch),
+                 make_naming_label_component(self.tensor_id), make_naming_digest_component(key)]
+        check_naming_name_size(name)
+        return canonical_name_uri(name)
 
     @property
     def manifest_name(self) -> str:
-        return f"{self.name_prefix}/MANIFEST"
+        from ..naming import check_naming_name_size
+        result = f"{self.name_prefix}/8=MANIFEST"
+        check_naming_name_size(result)
+        return result
 
     def segment_name(self, segment: int) -> str:
-        if segment < 0 or segment >= self.segment_count:
+        if type(segment) is not int or segment < 0 or segment >= self.segment_count:
             raise ValueError("tensor segment is outside the declared range")
-        return f"{self.name_prefix}/SEG/seg={segment}"
+        from ndn.encoding import Component
+        from ..naming import _name, canonical_name_uri, check_naming_name_size
+        result = _name(self.name_prefix) + [Component.from_bytes(b"DATA"), Component.from_segment(segment)]
+        check_naming_name_size(result)
+        return canonical_name_uri(result)
 
 
 @dataclass(frozen=True)

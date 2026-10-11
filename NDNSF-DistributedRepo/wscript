@@ -36,6 +36,9 @@ def _install_py_repoclient(bld):
 
 
 def build(bld):
+    bld.install_files('${INCLUDEDIR}/ndnsf-distributed-repo',
+                      bld.path.ant_glob('include/ndnsf-distributed-repo/*.hpp',
+                          excl=['include/ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp']))
     repo_sources = [
         'src/ArtifactManifest.cpp',
         'src/ArtifactTransfer.cpp',
@@ -45,6 +48,7 @@ def build(bld):
         'src/RepoClient.cpp',
         'src/RepoCore.cpp',
         'src/RepoNode.cpp',
+        'src/RepoPacketServer.cpp',
         'src/RepoProtocol.cpp',
         'src/RepoStoreBackend.cpp',
         'src/RepoTypes.cpp',
@@ -53,15 +57,40 @@ def build(bld):
     bld.stlib(name='ndnsf-distributed-repo',
               target='ndnsf-distributed-repo',
               source=repo_sources,
+              cxxflags=['-fPIC'],
               includes=['include', '..'],
               use='ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
               install_path=None)
+
+    if 'spec201-repo-python-binding' in (bld.targets or '').split(','):
+        import sysconfig
+        import pybind11
+        binding_env = bld.env.derive()
+        binding_env.cxxshlib_PATTERN = '%s' + sysconfig.get_config_var('EXT_SUFFIX')
+        bld.shlib(name='spec201-repo-python-binding',
+                  target='../spec201-repo-python/_py_repoclient',
+                  env=binding_env,
+                  source=['pythonWrapper/src/py_repoclient/_py_repoclient.cpp'],
+                  includes=['include', '..', '../ndn-service-framework',
+                            sysconfig.get_path('include'), pybind11.get_include()],
+                  use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                  cxxflags=['-fPIC', '-O0', '-g0'],
+                  rpath=[bld.bldnode.abspath()], install_path=None)
+
+    bld.program(name='NDNSF_RepoPacketServer',
+                target='NDNSF_RepoPacketServer',
+                source=['src/RepoPacketServerMain.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                rpath=[bld.bldnode.abspath()],
+                install_path='${BINDIR}')
 
     bld.program(name='DistributedRepoSmoke',
                 target='DistributedRepoSmoke',
                 source=['examples/DistributedRepoSmoke.cpp'],
                 includes=['include', '..'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                rpath=[bld.bldnode.abspath()],
                 install_path=None)
 
     bld.program(name='DistributedRepoTieredCacheTest',
@@ -76,6 +105,7 @@ def build(bld):
                 source=['examples/DistributedRepoExactPacketTest.cpp'],
                 includes=['include', '..'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                rpath=[bld.bldnode.abspath()],
                 install_path=None)
 
     bld.program(name='DistributedRepoHaTest',

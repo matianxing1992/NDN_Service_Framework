@@ -3,7 +3,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "ndn-service-framework/NDNSFMessages.hpp"
 #include "ndn-service-framework/NetworkProbeRate.hpp"
+#include "ndn-service-framework/PeerProbeNaming.hpp"
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/encoding/block-helpers.hpp>
 #include <array>
 #include <numeric>
 #include <utility>
@@ -21,6 +23,18 @@ NativeJson request()
     {"intent_nonce", std::string(32, 'b')}, {"deadline_ms", 2000},
     {"goodput_edges", NativeJson::array({{{"src_provider", "/example/probe/source"},
       {"dst_provider", "/example/probe/observer"}}})}};
+}
+
+std::string probeDataName(bool goodput)
+{
+  PeerProbeCall call{goodput ? "PROBE-GOODPUT" : "PROBE-RTT",
+    ndn::Name("/example/probe/observer"), ndn::Name("/example/probe/source"),
+    "sha256:" + std::string(64, 'a'), "1", 0,
+    goodput ? NETWORK_PROBE_WARMED_SEGMENTS : 0,
+    goodput ? NETWORK_PROBE_WARMED_PAYLOAD_BYTES : 0, !goodput, goodput};
+  ndn::Interest interest(makePeerProbeRpcName(call));
+  interest.setApplicationParameters(ndn::makeStringBlock(128, "calibration fixture"));
+  return interest.getName().toUri(ndn::name::UriFormat::CANONICAL);
 }
 
 NativeJson response()
@@ -48,7 +62,7 @@ NativeJson response()
   timing.probeDataWireBytes.fill(4400);
   NativeJson row{{"observer", "/example/probe/observer"}, {"target", "/example/probe/source"},
     {"kind", "active_probe_goodput"}, {"observed_at_ms", 1000}, {"expires_at_ms", 2000},
-    {"peer_boot_epoch", "source-boot"}, {"data_name", "/example/probe/source/NDNSF/PEER-GOODPUT/reply"},
+    {"peer_boot_epoch", "source-boot"}, {"data_name", probeDataName(true)},
     {"target_signature_validated", true}, {"train_complete", true}, {"sent_segments", NETWORK_PROBE_WARMED_SEGMENTS},
     {"received_segments", NETWORK_PROBE_WARMED_SEGMENTS}, {"payload_bytes", 69000}, {"probe_profile_validated", true},
     {"profile_digest", NETWORK_PROBE_TRAIN_PROFILE_DIGEST},
@@ -58,7 +72,7 @@ NativeJson response()
   NativeJson rtt{{"observer", "/example/probe/observer"}, {"target", "/example/probe/source"},
     {"kind", "active_probe_rtt"}, {"value", 20.0}, {"observed_at_ms", 1000},
     {"expires_at_ms", 2000}, {"peer_boot_epoch", "source-boot"},
-    {"data_name", "/example/probe/source/NDNSF/PEER-PROBE/reply"},
+    {"data_name", probeDataName(false)},
     {"target_signature_validated", true}};
   value["observations"] = NativeJson::array({row, rtt});
   return value;
@@ -168,9 +182,20 @@ BOOST_AUTO_TEST_CASE(ProductionEncodedContentIsDistinctFromDedicatedPayload)
       for (std::size_t gap = 0; gap < NETWORK_PROBE_WARMED_SEGMENTS - 2; ++gap)
         encoded.setField("sourceSendGap" + std::to_string(gap) + "Ns", "500000000");
     }
-    ndn::Data data(ndn::Name(source + "/NDNSF/PEER-GOODPUT/1791002497438/"
-      "18446744073709551615/seg=" + std::to_string(index) +
-      "/params-sha256=" + std::string(64, 'a') + "/reply"));
+    const PeerProbeCall call{"PROBE-GOODPUT", ndn::Name(observer), ndn::Name(source),
+      "sha256:" + std::string(64, 'a'), "18446744073709551615", index,
+      NETWORK_PROBE_WARMED_SEGMENTS, NETWORK_PROBE_WARMED_PAYLOAD_BYTES, false, true};
+    PeerNetworkGoodputProbe request;
+    request.setField("observerProvider", observer);
+    request.setField("targetProvider", source);
+    request.setField("requestScopeDigest", call.requestScopeDigest);
+    request.setField("runNonce", call.runNonce);
+    request.setField("segment", std::to_string(index));
+    request.setField("segmentCount", std::to_string(call.segmentCount));
+    request.setField("contentBytes", std::to_string(call.contentBytes));
+    ndn::Interest interest(makePeerProbeRpcName(call));
+    interest.setApplicationParameters(request.WireEncode());
+    ndn::Data data(interest.getName());
     data.setFreshnessPeriod(ndn::time::milliseconds::zero());
     data.setContent(encoded.WireEncode());
     keys.sign(data, ndn::security::signingByIdentity(ndn::Name(source)));
@@ -301,6 +326,15 @@ BOOST_AUTO_TEST_CASE(TransportSignerEvidenceMustMatchProvider)
   BOOST_CHECK(!hasAuthenticatedSigner(reply, "/example/probe/source"));
   reply.setAuthenticatedTransportEvidence("/reply", "/example/probe/source/KEY/k/controller/v=1", "sha256:test");
   BOOST_CHECK(hasAuthenticatedSigner(reply, "/example/probe/source"));
+  const ndn::Name source("/example/probe/source");
+  const ndn::Name certificate("/example/probe/source/KEY/k/controller/v=1");
+  for (const auto signerFormat : {ndn::name::UriFormat::CANONICAL,
+                                  ndn::name::UriFormat::ALTERNATE}) {
+    reply.setAuthenticatedTransportEvidence("/reply", certificate.toUri(signerFormat), "sha256:test");
+    for (const auto providerFormat : {ndn::name::UriFormat::CANONICAL,
+                                      ndn::name::UriFormat::ALTERNATE})
+      BOOST_CHECK(hasAuthenticatedSigner(reply, source.toUri(providerFormat)));
+  }
   BOOST_CHECK(!hasAuthenticatedSigner(reply, "/example/probe/observer"));
   reply.setAuthenticatedTransportEvidence("", "/example/probe/source/KEY/k/controller/v=1", "sha256:test");
   BOOST_CHECK(!hasAuthenticatedSigner(reply, "/example/probe/source"));

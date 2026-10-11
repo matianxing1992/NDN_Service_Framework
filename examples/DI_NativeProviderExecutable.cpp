@@ -1,3 +1,4 @@
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
@@ -102,7 +103,7 @@ logProviderPreparationProgress(const NativeSelectionProjectionV3& projection,
            << (phase == nullptr ? "unknown" : phase)
            << " requestId=" << projection.requestId
            << " provider=" << projection.provider
-           << " role=" << projection.assembly.selectedRole
+           << " role=" << projection.assemblyContract().selectedRole
            << " detail=" << (detail == nullptr ? "" : detail);
     logRuntimeEvidence(record.str());
   }
@@ -140,14 +141,14 @@ protectedResidentIdentityFor(const NativeSelectionProjectionV3& projection,
   identity.provider = projection.provider;
   identity.providerBootId = providerBootId;
   identity.role = projection.executionRole.roleId;
-  identity.modelManifestDigest = projection.assembly.modelManifestDigest;
-  identity.graphDigest = projection.assembly.graphDigest;
-  identity.initializerDigest = projection.assembly.canonicalInitializerDigest;
-  identity.artifactDigest = projection.assembly.artifactDigest;
-  identity.recipeDigest = projection.assembly.recipeDigest;
-  identity.backend = projection.assembly.backend;
-  identity.backendAbi = projection.assembly.backendAbi;
-  identity.protectionEpoch = projection.selectedRole.protectionEpoch;
+  identity.modelManifestDigest = projection.assemblyContract().modelManifestDigest;
+  identity.graphDigest = projection.assemblyContract().graphDigest;
+  identity.initializerDigest = projection.assemblyContract().canonicalInitializerDigest;
+  identity.artifactDigest = projection.assemblyContract().artifactDigest;
+  identity.recipeDigest = projection.assemblyContract().recipeDigest;
+  identity.backend = projection.assemblyContract().backend;
+  identity.backendAbi = projection.assemblyContract().backendAbi;
+  identity.protectionEpoch = projection.selectedRoleContract().protectionEpoch;
   identity.planCoreDigest = projection.planCoreDigest;
   identity.planDigest = projection.planDigest;
   identity.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
@@ -161,7 +162,7 @@ ProviderArtifactKey
 providerExecutableArtifactKey(const NativeSelectionProjectionV3& projection,
                               const std::string& providerIdentity)
 {
-  const auto& role = projection.assembly;
+  const auto& role = projection.assemblyContract();
   return ProviderArtifactKey{
     role.modelManifestDigest,
     projection.canonicalArtifactName,
@@ -275,6 +276,7 @@ struct Options
   // request-scoped canonical assembly after Selection.
   bool allowPreassembledDiagnostic = false;
   bool enableAdmissionLease = false;
+  bool allowSelectionGenerationOptions = false;
   bool requireExecutionLease = false;
   std::string executionPolicy;
   int admissionLeaseTtlMs = 60000;
@@ -979,6 +981,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--allow-preassembled-diagnostic") {
       options.allowPreassembledDiagnostic = true;
     }
+    else if (arg == "--allow-selection-generation-options") {
+      options.allowSelectionGenerationOptions = true;
+    }
     else if (arg == "--enable-admission-lease") {
       options.enableAdmissionLease = true;
     }
@@ -1386,7 +1391,7 @@ printUsage(const char* program)
     << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
     << "[--permission-wait-ms <ms>] "
     << "[--tracer-deterministic-runner] [--enable-admission-lease] "
-    << "[--allow-preassembled-diagnostic] "
+    << "[--allow-preassembled-diagnostic] [--allow-selection-generation-options] "
     << "[--require-execution-lease] "
     << "[--execution-policy DATA_DRIVEN_V2|LEGACY_READY_SET_V1] "
     << "[--admission-lease-ttl-ms <ms>] "
@@ -1524,7 +1529,8 @@ main(int argc, char** argv)
     // Keep the ORT session cache owner-local but shared by every runner made
     // by this Provider, so resident sessions can be reused across turns.
     auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
-    auto runnerReuseCache = std::make_shared<NativeProviderRunnerReuseCache>(8);
+    auto runnerReuseCache = std::make_shared<NativeProviderRunnerReuseCache>(
+      8, NativeProviderRunnerReuseCache::OutputBinding::RoleContract);
     auto protectedResidentAuthority = makeProtectedResidentAuthority(
       sessionCache, runnerReuseCache);
     runnerReuseCache->setAuthority(protectedResidentAuthority);
@@ -1637,6 +1643,7 @@ main(int argc, char** argv)
       providerBootId = provider->getProviderBootEpoch();
       specs = withExecutionEvidenceContext(
         std::move(specs), options, providerBootId, providerStartedAtMs);
+      const auto tensorSegmentBytes = NativeProviderHandlerConfig{}.maxSegmentSize;
       if (nativeOfferConfig) {
         nativeOfferConfig->bootEpoch = providerBootId;
       }
@@ -1716,6 +1723,7 @@ main(int argc, char** argv)
          providerName = ndn::Name(options.providerName),
          nativeOfferConfig,
          enableAdmissionLease = options.enableAdmissionLease,
+         allowSelectionGenerationOptions = options.allowSelectionGenerationOptions,
          admissionLeaseTtlMs = options.admissionLeaseTtlMs](
           const ndn_service_framework::RequestMessage& request) {
           const auto provider = weakProvider.lock();
@@ -1725,26 +1733,41 @@ main(int argc, char** argv)
             unavailable.message = "Provider is shutting down";
             return unavailable;
           }
-          auto decision = provisioningState->makeAckDecision(rolesText,
-                                                             providerName,
-                                                             serviceName);
+          try {
+            const auto payload = request.getPayload();
+            (void)detail::requiresSelectionGenerationOptions(
+              std::string(payload.begin(), payload.end()), allowSelectionGenerationOptions);
+          }
+          catch (const std::exception&) {
+            ndn_service_framework::ServiceProvider::AckDecision rejected;
+            rejected.status = false;
+            rejected.message = "DI_REQUEST_OPTIONS_TRANSPORT_INVALID";
+            return rejected;
+          }
           bool issuedV3Offer = false;
-          if (decision.status && nativeOfferConfig) {
-            const auto requestPayload = request.getPayload();
-            const auto nowMs = static_cast<std::uint64_t>(
-              std::max<long long>(0, epochMs()));
-            const auto offer = issueNativeProviderOfferV3(
-              std::vector<std::uint8_t>(requestPayload.begin(), requestPayload.end()),
-              *nativeOfferConfig,
-              nowMs);
-            if (offer) {
+          NativeProviderReadinessState::AcceptedPayloadFactory acceptedPayload;
+          if (nativeOfferConfig) {
+            acceptedPayload = [&request, &nativeOfferConfig, &issuedV3Offer](
+                const ndn_service_framework::ServiceProvider::AckDecision& admitted)
+                -> std::optional<ndn_service_framework::ServiceProvider::AckDecision> {
+              const auto requestPayload = request.getPayload();
+              const auto nowMs = static_cast<std::uint64_t>(
+                std::max<long long>(0, epochMs()));
+              const auto offer = issueNativeProviderOfferV3(
+                std::vector<std::uint8_t>(requestPayload.begin(), requestPayload.end()),
+                *nativeOfferConfig, nowMs);
+              if (!offer) return std::nullopt;
               issuedV3Offer = true;
+              auto decision = admitted;
               decision.status = offer->status;
               decision.message = offer->message;
               decision.payload = textBuffer(offer->payload);
               decision.pendingStateTtlMs = offer->pendingStateTtlMs;
-            }
+              return decision;
+            };
           }
+          auto decision = provisioningState->makeAckDecision(
+            rolesText, providerName, serviceName, acceptedPayload);
           // Update NDNSD meta with live capacity from this ACK decision
           if (decision.status) {
             auto payloadText = bufferText(decision.payload);
@@ -1841,7 +1864,44 @@ main(int argc, char** argv)
               candidateArtifacts, processEpoch, capturedAtMs, expiresAtMs,
               artifactCache.get(), runnerCache.get(), sessionCache.get(),
               plaintextCache.get(), persistentIndex.get());
-          });
+          },
+          [weakProvider = std::weak_ptr<ndn_service_framework::ServiceProvider>(provider),
+           localProvider = options.providerName, providerBootId](
+              const NativeJson& envelope, const NativeProviderTelemetrySnapshot& telemetry,
+              std::uint64_t nowMs, std::uint64_t offerExpiresAtMs) {
+            std::vector<NativeJson> rows;
+            const auto owner = weakProvider.lock();
+            if (!owner || !telemetry.resources.isMeasured() ||
+                telemetry.resources.topologyDigest.empty() ||
+                !envelope.contains("candidate_providers") ||
+                !envelope.at("candidate_providers").is_array() ||
+                envelope.at("candidate_providers").size() > 16) return rows;
+            std::vector<ndn::Name> peers;
+            for (const auto& candidate : envelope.at("candidate_providers")) {
+              if (!candidate.is_string()) return rows;
+              peers.emplace_back(candidate.get<std::string>());
+            }
+            for (const auto& item : owner->getCachedPeerProbeSamples(peers)) {
+              const auto& sample = item.first;
+              const auto src = sample.kind == ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeRtt
+                ? sample.providerName.toUri() : sample.peerName.toUri();
+              const auto dst = sample.kind == ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeRtt
+                ? sample.peerName.toUri() : sample.providerName.toUri();
+              const auto field = sample.kind == ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeRtt
+                ? "rtt_pairs" : "goodput_edges";
+              bool allowed = false;
+              if (envelope.contains(field) && envelope.at(field).is_array())
+                for (const auto& pair : envelope.at(field))
+                  if (pair.is_object() && pair.value("src_provider", std::string{}) == src &&
+                      pair.value("dst_provider", std::string{}) == dst) allowed = true;
+              if (!allowed) continue;
+              auto converted = makeNativeProviderLinkObservationsV4(
+                {sample}, localProvider, providerBootId, telemetry.resources.topologyDigest,
+                nowMs, std::min(offerExpiresAtMs, item.second));
+              for (auto& row : converted) rows.push_back(std::move(row));
+            }
+            return rows;
+          }, tensorSegmentBytes);
       }
       else {
         nativeService.asyncAckHandler =
@@ -1977,6 +2037,7 @@ main(int argc, char** argv)
       };
       auto installTask =
         [options,
+         tensorSegmentBytes,
          plan,
          specs,
          allowedRoles,
@@ -2055,6 +2116,8 @@ main(int argc, char** argv)
             }
 
             NativeProviderHandlerConfig config;
+            config.maxSegmentSize = tensorSegmentBytes;
+            config.allowSelectionGenerationOptions = options.allowSelectionGenerationOptions;
             config.plan = plan;
             config.assignment = defaultAssignment(plan, options.providerName, allowedRoles);
             config.runnerFactory = factory;
@@ -2153,7 +2216,7 @@ main(int argc, char** argv)
                 const NativeSelectionProjectionV3& projection,
                 const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
                 NativeModelRunnerSpec spec;
-                if (projection.assembly.mergeKind == "NATIVE_POSTPROCESS") {
+                if (projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS") {
                   spec = nativeYoloMergeRunnerSpecFromProjection(projection);
                 }
                 else {
@@ -2169,13 +2232,11 @@ main(int argc, char** argv)
                   assemblyOptions.protectedPlaintextCache = protectedPlaintextCache;
                   assemblyOptions.workerLocation = assemblyWorkerLocation;
                   assemblyOptions.reportProgress = makeNativeAssemblyProgressReporter(
-                    ctx, projection, projection.assembly.backend.empty()
-                      ? std::string("native") : projection.assembly.backend,
+                    ctx, projection, projection.assemblyContract().backend.empty()
+                      ? std::string("native") : projection.assemblyContract().backend,
                     1, 0, projection.assemblyProgressSequence);
                   if (protectedRuntime) {
-                    const auto& payload = ctx.assignment().assignmentPayload;
-                    assemblyOptions.roleAssemblySpecDigest = nativeAssemblyDigestFromCanonicalProjection(
-                      std::string(reinterpret_cast<const char*>(payload.data()), payload.size()));
+                    assemblyOptions.roleAssemblySpecDigest = nativeAssemblyDigestFromValidatedProjection(projection);
                   }
                   assemblyOptions.signManifest =
               [&keyChain, providerCert](const std::string& manifestBytes) {
@@ -2259,12 +2320,12 @@ main(int argc, char** argv)
                       artifact->formatVersion = "ndnsf-di-native-assembled-artifact-v1";
                       artifact->canonicalMetadataJson =
                         std::string("{\"schema\":\"ndnsf-di-provider-artifact-v1\",") +
-                        "\"modelManifestDigest\":\"" + projection.assembly.modelManifestDigest +
-                        "\",\"artifactProfileDigest\":\"" + projection.assembly.artifactProfileDigest +
-                        "\",\"graphDigest\":\"" + projection.assembly.graphDigest +
-                        "\",\"role\":\"" + projection.assembly.selectedRole +
-                        "\",\"recipeDigest\":\"" + projection.assembly.recipeDigest +
-                        "\",\"backendAbi\":\"" + projection.assembly.backendAbi + "\"}";
+                        "\"modelManifestDigest\":\"" + projection.assemblyContract().modelManifestDigest +
+                        "\",\"artifactProfileDigest\":\"" + projection.assemblyContract().artifactProfileDigest +
+                        "\",\"graphDigest\":\"" + projection.assemblyContract().graphDigest +
+                        "\",\"role\":\"" + projection.assemblyContract().selectedRole +
+                        "\",\"recipeDigest\":\"" + projection.assemblyContract().recipeDigest +
+                        "\",\"backendAbi\":\"" + projection.assemblyContract().backendAbi + "\"}";
                       artifact->ciphertextBytes = static_cast<std::uint64_t>(artifactBytes);
                       auto runnerSpec = std::make_shared<const NativeModelRunnerSpec>(
                         std::move(built));
@@ -2364,7 +2425,7 @@ main(int argc, char** argv)
                   record << "NDNSF_DI_PROTECTED_RESIDENT_ADMISSION_CHECK role="
                          << spec.role
                          << " kind=" << spec.kind
-                         << " mergeKind=" << projection.assembly.mergeKind
+                         << " mergeKind=" << projection.assemblyContract().mergeKind
                          << " resident="
                          << (boundResident != spec.metadata.end() &&
                              (boundResident->second == "true" ||
@@ -2376,7 +2437,7 @@ main(int argc, char** argv)
                   logRuntimeEvidence(record.str());
                 }
                 if (protectedRuntime && protectedResidentAuthority &&
-                    projection.assembly.mergeKind != "NATIVE_POSTPROCESS" &&
+                    projection.assemblyContract().mergeKind != "NATIVE_POSTPROCESS" &&
                     spec.kind == "onnx" &&
                     spec.metadata.count("residentSession") != 0 &&
                     spec.metadata.at("residentSession") == "true") {
@@ -2390,23 +2451,24 @@ main(int argc, char** argv)
                     std::make_shared<ProtectedResidentAuthority::Use>(
                       std::move(use));
                 }
-                auto residencyDeviceSet = projection.assembly.deviceSet;
+                auto residencyDeviceSet = projection.assemblyContract().deviceSet;
                 std::sort(residencyDeviceSet.begin(), residencyDeviceSet.end());
-                const auto residencyRole = projection.assembly.role.empty()
-                  ? projection.assembly.selectedRole : projection.assembly.role;
+                const auto residencyRole = projection.assemblyContract().role.empty()
+                  ? projection.assemblyContract().selectedRole : projection.assemblyContract().role;
                 NativeProviderResidencyIdentityV4 residencyIdentity{
-                  projection.assembly.artifactDigest,
-                  projection.assembly.modelManifestDigest,
-                  projection.assembly.graphDigest,
+                  projection.assemblyContract().artifactDigest,
+                  projection.assemblyContract().modelManifestDigest,
+                  projection.assemblyContract().graphDigest,
                   residencyRole,
-                  projection.assembly.rank,
-                  projection.assembly.backend,
-                  projection.assembly.protectionEpoch,
+                  projection.assemblyContract().rank,
+                  projection.assemblyContract().backend,
+                  projection.assemblyContract().protectionEpoch,
                   std::move(residencyDeviceSet)};
                 spec.residencyIdentity = residencyIdentity.isValid()
                   ? std::optional<NativeProviderResidencyIdentityV4>(
                       std::move(residencyIdentity))
                   : std::nullopt;
+                NativeProviderRunnerReuseCache::prepareRoleContractOutputs(spec);
                 logProviderPreparationProgress(projection, "FACTORY_DONE", "runner-spec");
                 return spec;
               };

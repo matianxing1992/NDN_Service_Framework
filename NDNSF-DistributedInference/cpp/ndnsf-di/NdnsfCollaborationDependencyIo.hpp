@@ -7,7 +7,6 @@
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <atomic>
-#include <condition_variable>
 #include <future>
 #include <map>
 #include <memory>
@@ -61,9 +60,16 @@ private:
   int m_freshnessMs = 60000;
   std::shared_ptr<ProviderGroupCoordinator> m_groupCoordinator;
   std::shared_ptr<ProtectedRuntime> m_protectedRuntime;
-  std::mutex m_localDataV1Mutex;
-  std::condition_variable m_localDataV1Cv;
-  std::map<std::string, std::vector<ndn::Buffer>> m_localDataV1Segments;
+  // Invocation-owned immutable originals. A live entry is never evicted or
+  // re-encrypted; changed plaintext or protection bindings fail explicitly.
+  struct CachedTensorPublication {
+    std::string fingerprint;
+    std::vector<std::shared_ptr<const ndn::Data>> originals;
+    std::size_t wireBytes = 0;
+  };
+  std::mutex m_tensorPublicationMutex;
+  std::map<ndn::Name, CachedTensorPublication> m_tensorPublications;
+  std::size_t m_tensorPublicationBytes = 0;
   std::shared_ptr<std::atomic<bool>> m_pendingPrefetchCancelled =
     std::make_shared<std::atomic<bool>>(false);
 };

@@ -99,9 +99,14 @@ struct DependencyEdge
   // concrete count only after the signed manifest is verified; maxSegments is
   // the plan-time allocation/fetch bound.
   bool declaredByV3 = false;
+  // Advisory early transport sizing, separate from expected byte/count checks.
+  std::uint64_t prefetchBundleBytes = 0;
+  std::uint64_t prefetchSegmentBytes = 0;
+  bool inlineFirstSegment = false;
   std::string manifestDataName;
   std::size_t maxSegments = 0;
   std::string endpointDigest;
+  std::string executionObjectDigest;
   std::string planDigest;
   std::string manifestContractDigest;
   std::string tensorDigest;
@@ -109,6 +114,7 @@ struct DependencyEdge
   std::string securityProfile;
   std::string operationKind;
   std::uint64_t round = 0;
+  std::uint64_t namingOperationStride = 0;
   std::uint64_t microbatch = 0;
   std::uint64_t noProgressDeadlineMs = 0;
   std::uint64_t hardDeadlineMs = 0;

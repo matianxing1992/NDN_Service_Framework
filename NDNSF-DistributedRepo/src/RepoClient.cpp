@@ -2,6 +2,9 @@
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
+#include <ndn-cxx/security/certificate.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
 
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
@@ -149,7 +152,7 @@ RepoClient::putDataPacket(RepoNode& node, const std::vector<uint8_t>& wire)
   ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
   block.parse();
   const ndn::Data data(block);
-  return node.putDataPacket(data.getName().toUri(), wire);
+  return node.putDataPacket(data.getName().toUri(ndn::name::UriFormat::CANONICAL), wire);
 }
 
 std::vector<uint8_t>
@@ -172,8 +175,9 @@ RepoClient::getDataPackets(const RepoNode& node,
       "repo-packet-index-invalid: packet count does not match segmentCount: " +
       manifest.objectName);
   }
-  const std::set<std::string> uniqueNames(manifest.packetNames.begin(),
-                                          manifest.packetNames.end());
+  std::set<ndn::Name> uniqueNames;
+  for (const auto& name : manifest.packetNames)
+    uniqueNames.emplace(name);
   if (uniqueNames.size() != manifest.packetNames.size()) {
     throw std::invalid_argument(
       "repo-packet-index-invalid: manifest contains duplicate packet names: " +
@@ -187,8 +191,8 @@ RepoClient::getDataPackets(const RepoNode& node,
     ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
     block.parse();
     const ndn::Data data(block);
-    const auto actualName = data.getName().toUri();
-    if (actualName != expectedName) {
+    const auto actualName = data.getName().toUri(ndn::name::UriFormat::CANONICAL);
+    if (data.getName() != ndn::Name(expectedName)) {
       throw std::runtime_error(
         "repo-data-name-mismatch: manifest=" + expectedName +
         " wire=" + actualName);
@@ -215,26 +219,60 @@ RepoClient::insertPayload(RepoNode& node,
                           StoreOptions options,
                           size_t maxSegmentPayload)
 {
-  ndn::Segmenter segmenter(keyChain, signingInfo);
-  auto dataPackets = segmenter.segment(
-    ndn::span<const uint8_t>(payload.data(), payload.size()),
-    ndn::Name(objectName),
-    std::max<size_t>(1, maxSegmentPayload),
-    ndn::time::hours(1));
+  using SigningInfo = ndn::security::SigningInfo;
+  ndn::Name producer;
+  switch (signingInfo.getSignerType()) {
+    case SigningInfo::SIGNER_TYPE_NULL: producer = keyChain.getPib().getDefaultIdentity().getName(); break;
+    case SigningInfo::SIGNER_TYPE_ID: producer = signingInfo.getSignerName(); break;
+    case SigningInfo::SIGNER_TYPE_KEY:
+      producer = ndn::security::extractIdentityFromKeyName(signingInfo.getSignerName()); break;
+    case SigningInfo::SIGNER_TYPE_CERT:
+      producer = ndn::security::extractIdentityFromCertName(signingInfo.getSignerName()); break;
+    default: throw std::invalid_argument("repo-publisher-identity-unresolved");
+  }
+  const ndn::Name prefix(objectName);
+  if (!ndn_service_framework::parseProducerDataName(prefix, producer))
+    throw std::invalid_argument("repo-publisher-prefix-mismatch");
+  const auto identity = keyChain.getPib().getIdentity(producer);
+  auto key = identity.getDefaultKey();
+  if (signingInfo.getSignerType() == SigningInfo::SIGNER_TYPE_KEY)
+    key = identity.getKey(signingInfo.getSignerName());
+  else if (signingInfo.getSignerType() == SigningInfo::SIGNER_TYPE_CERT)
+    key = identity.getKey(ndn::security::extractKeyNameFromCertName(signingInfo.getSignerName()));
+  const size_t segmentBytes = std::max<size_t>(1, maxSegmentPayload);
+  const size_t segmentCount = payload.empty() ? 1 : 1 + (payload.size() - 1) / segmentBytes;
 
   std::vector<std::vector<uint8_t>> wirePackets;
-  wirePackets.reserve(dataPackets.size());
+  wirePackets.reserve(segmentCount);
   std::vector<uint8_t> concatenated;
-  for (const auto& data : dataPackets) {
-    const auto wire = data->wireEncode();
+  for (size_t i = 0; i < segmentCount; ++i) {
+    const auto offset = i * segmentBytes;
+    const auto length = std::min(segmentBytes, payload.size() - offset);
+    ndn::Data data(ndn::Name(prefix).appendSegment(i));
+    data.setContent(length ? ndn::span<const uint8_t>(payload.data() + offset, length)
+                           : ndn::span<const uint8_t>());
+    data.setFreshnessPeriod(ndn::time::hours(1));
+    data.setFinalBlock(ndn::name::Component::fromSegment(segmentCount - 1));
+    if (node.hasDataPacket(data.getName().toUri())) {
+      const auto existing = node.getDataPacket(data.getName().toUri());
+      const ndn::Data saved(ndn::Block(ndn::span<const uint8_t>(existing.data(), existing.size())));
+      if (saved.getContent() != data.getContent() || saved.getMetaInfo().wireEncode() != data.getMetaInfo().wireEncode() ||
+          !ndn::security::verifySignature(saved, key.getPublicKey()))
+        throw std::runtime_error("repo-data-wire-conflict");
+      wirePackets.push_back(existing);
+      concatenated.insert(concatenated.end(), existing.begin(), existing.end());
+      continue;
+    }
+    keyChain.sign(data, signingInfo);
+    const auto& wire = data.wireEncode();
     std::vector<uint8_t> wireBytes(wire.begin(), wire.end());
     concatenated.insert(concatenated.end(), wireBytes.begin(), wireBytes.end());
     wirePackets.push_back(std::move(wireBytes));
   }
 
   RepoDataReference reference;
-  reference.objectName = objectName;
-  reference.dataPrefix = objectName;
+  reference.objectName = ndn::Name(prefix).appendSegment(0).toUri(ndn::name::UriFormat::CANONICAL);
+  reference.dataPrefix = prefix.toUri(ndn::name::UriFormat::CANONICAL);
   reference.firstSegment = 0;
   reference.hasFinalSegment = !wirePackets.empty();
   reference.finalSegment = wirePackets.empty() ? 0 : wirePackets.size() - 1;

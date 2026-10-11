@@ -466,7 +466,8 @@ PredictiveStreamSubscriber::start()
 void
 PredictiveStreamSubscriber::fetchFrontier(uint64_t generation)
 {
-  ndn::Interest interest(m_descriptor.frontierName);
+  auto interest = makePredictiveFrontierInterest(m_descriptor.definition.mappingRoot());
+  const auto expectedName = interest.getName();
   interest.setCanBePrefix(false);
   interest.setMustBeFresh(true);
   interest.setInterestLifetime(
@@ -474,7 +475,7 @@ PredictiveStreamSubscriber::fetchFrontier(uint64_t generation)
   const auto weak = weak_from_this();
   auto handle = m_face.expressInterest(
     interest,
-    [weak, generation] (const ndn::Interest&, const ndn::Data& data) {
+    [weak, generation, expectedName] (const ndn::Interest&, const ndn::Data& data) {
       const auto self = weak.lock();
       if (!self) {
         return;
@@ -488,7 +489,7 @@ PredictiveStreamSubscriber::fetchFrontier(uint64_t generation)
       }
       self->m_validator->validateData(
         data,
-        [weak, generation] (const ndn::Data& validated) {
+        [weak, generation, expectedName] (const ndn::Data& validated) {
           const auto subscriber = weak.lock();
           if (!subscriber) {
             return;
@@ -499,7 +500,7 @@ PredictiveStreamSubscriber::fetchFrontier(uint64_t generation)
             auto content = validated.getContent();
             content.parse();
             valid =
-              validated.getName() == subscriber->m_descriptor.frontierName &&
+              validated.getName() == expectedName &&
               validated.wireEncode().size() <=
                 subscriber->m_descriptor.definition.signedWireCap &&
               subscriber->hasExpectedProviderSignature(validated) &&
@@ -1065,7 +1066,8 @@ PredictiveStreamSubscriber::fetchRecoveryFrontier(
     ++m_recoveryFrontierInterests;
   }
 
-  ndn::Interest interest(m_descriptor.frontierName);
+  auto interest = makePredictiveFrontierInterest(m_descriptor.definition.mappingRoot());
+  const auto expectedName = interest.getName();
   interest.setCanBePrefix(false);
   interest.setMustBeFresh(true);
   interest.setInterestLifetime(
@@ -1073,7 +1075,7 @@ PredictiveStreamSubscriber::fetchRecoveryFrontier(
   const auto weak = weak_from_this();
   auto handle = m_face.expressInterest(
     interest,
-    [weak, generation] (
+    [weak, generation, expectedName] (
       const ndn::Interest&, const ndn::Data& data) {
       const auto self = weak.lock();
       if (!self) {
@@ -1081,7 +1083,7 @@ PredictiveStreamSubscriber::fetchRecoveryFrontier(
       }
       self->m_validator->validateData(
         data,
-        [weak, generation] (const ndn::Data& validated) {
+        [weak, generation, expectedName] (const ndn::Data& validated) {
           const auto subscriber = weak.lock();
           if (!subscriber) {
             return;
@@ -1094,7 +1096,7 @@ PredictiveStreamSubscriber::fetchRecoveryFrontier(
             valid =
               validated.wireEncode().size() <=
                 subscriber->m_descriptor.definition.signedWireCap &&
-              validated.getName() == subscriber->m_descriptor.frontierName &&
+              validated.getName() == expectedName &&
               subscriber->hasExpectedProviderSignature(validated) &&
               content.elements().size() == 1 &&
               frontier.wireDecode(content.elements().front()) &&

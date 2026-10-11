@@ -107,6 +107,12 @@ def test_tiny_v3_publisher_binds_root_to_encrypted_fetch_reference():
     identities = dict(published.artifact_data_names_by_role)
     fetches = dict(published.artifact_fetch_data_names_by_role)
     assert len(service_user.calls) == 2  # source, then ACTIVE root
+    for call, label in zip(service_user.calls, ("role-0.onnx", "model-manifest.json")):
+        assert call[2]["content_name"] == {
+            "kind": "model-file", "label": label,
+            "model_name": model.model_name,
+            "model_identity": model.content_digest[7:],
+        }
     assert set(identities) == set(fetches) == set(digests)
     assert set(identities.values()) == {next(iter(identities.values()))}
     assert set(fetches.values()) == {next(iter(fetches.values()))}

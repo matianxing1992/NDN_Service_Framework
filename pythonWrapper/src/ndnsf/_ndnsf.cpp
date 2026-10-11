@@ -5,6 +5,7 @@
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/Stream.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
@@ -37,6 +38,9 @@
 
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
+#include "ndn-service-framework/ProducerDataNaming.hpp"
+#include "ndn-service-framework/PublishedContentName.hpp"
+#include "ndn-service-framework/ImmutableFilePublication.hpp"
 #include <pybind11/stl.h>
 
 #include <algorithm>
@@ -622,6 +626,8 @@ struct PyLargeDataPublishResult
   std::string protectionEpoch;
   bool encrypted = true;
   std::string error;
+  std::string manifestName;
+  std::string dataPrefix;
 };
 
 struct PySignedAppDataResult
@@ -883,42 +889,31 @@ public:
     , m_freshnessMs(freshnessMs)
     , m_digestSigning(digestSigning)
   {
-    if (m_maxSegmentSize == 0) {
-      throw std::invalid_argument("file segmented producer max segment size must be positive");
+    if (m_maxSegmentSize == 0 || m_maxSegmentSize > 8000) {
+      throw std::invalid_argument("file segmented producer segment size must be in [1,8000]");
     }
-    std::ifstream stream(m_filePath, std::ios::binary | std::ios::ate);
-    if (!stream) {
-      throw std::runtime_error("cannot open file segmented producer payload: " + m_filePath);
+    m_signingIdentity = ndn::Name(signingIdentity);
+    if (m_digestSigning || m_signingIdentity.empty() ||
+        !m_signingIdentity.isPrefixOf(m_baseName)) {
+      throw std::invalid_argument("file publication requires its explicit Producer identity signature");
     }
-    const auto end = stream.tellg();
-    if (end < 0) {
-      throw std::runtime_error("cannot determine file segmented producer payload size");
-    }
-    m_fileSize = static_cast<uint64_t>(end);
-    // The producer serves one NDN segment per Interest.  Re-opening the
-    // payload for every Interest turns a large artifact into millions of
-    // open/seek/close cycles and defeats the bounded streaming design.  Keep
-    // one descriptor for the producer thread and seek it for each segment.
-    m_fileStream.open(m_filePath, std::ios::binary);
-    if (!m_fileStream) {
-      throw std::runtime_error("cannot open file segmented producer stream: " + m_filePath);
-    }
-    m_segmentCount = std::max<uint64_t>(
-      1, (m_fileSize + m_maxSegmentSize - 1) / m_maxSegmentSize);
-
-    m_signingIdentity = signingIdentity.empty() ?
-      ndn::Name("/ndnsf/python/file-segmented-producer") : ndn::Name(signingIdentity);
-    getOrCreateIdentity(m_keyChain, m_signingIdentity);
     getOrCreateIdentity(m_keyChain, nfdCommandIdentity());
-    const auto certificate = m_keyChain.getPib()
-      .getIdentity(m_signingIdentity)
-      .getDefaultKey()
-      .getDefaultCertificate();
-    const auto publicKey = certificate.getPublicKey();
-    m_publicKeyDer.assign(publicKey.begin(), publicKey.end());
-    m_versionedName = m_baseName;
-    m_versionedName.appendVersion(static_cast<uint64_t>(
-      ndn::time::toUnixTimestamp(ndn::time::system_clock::now()).count()));
+    const char* cacheOverride = std::getenv("NDNSF_FILE_PUBLICATION_CACHE");
+    const char* cacheHome = std::getenv("XDG_CACHE_HOME");
+    const char* userHome = std::getenv("HOME");
+    std::filesystem::path cache;
+    if (cacheOverride && *cacheOverride) cache = cacheOverride;
+    else if (cacheHome && *cacheHome) cache = std::filesystem::path(cacheHome) / "ndnsf/file-publications";
+    else if (userHome && *userHome) cache = std::filesystem::path(userHome) / ".cache/ndnsf/file-publications";
+    else throw std::runtime_error("file publication requires a stable disk cache directory");
+    m_publication = std::make_unique<nsf::ImmutableFilePublication>(
+      m_baseName, m_filePath, m_keyChain, m_signingIdentity,
+      m_maxSegmentSize, m_freshnessMs, cache);
+    m_versionedName = m_publication->versionedName();
+    m_fileSize = m_publication->fileSize();
+    m_segmentCount = m_publication->segmentCount();
+    m_signingNanoseconds.store(m_publication->signingNanoseconds());
+    m_publicKeyDer = m_publication->publicKeyDer();
   }
 
   ~NativeFileSegmentedObjectProducer()
@@ -1036,6 +1031,13 @@ public:
   std::string versionedName() const { return m_versionedName.toUri(); }
   uint64_t segmentCount() const { return m_segmentCount; }
   uint64_t fileSize() const { return m_fileSize; }
+  py::bytes packetWire(uint64_t segment)
+  {
+    std::lock_guard<std::mutex> lock(m_packetMutex);
+    const auto data = m_publication->packet(segment);
+    const auto& wire = data.wireEncode();
+    return py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size());
+  }
   uint64_t dataCount() const { return m_dataCount.load(); }
   uint64_t wireBytes() const { return m_wireBytes.load(); }
   double signingMs() const
@@ -1066,42 +1068,12 @@ private:
       return;
     }
 
-    const uint64_t offset = segmentNo * m_maxSegmentSize;
-    const size_t length = static_cast<size_t>(
-      std::min<uint64_t>(m_maxSegmentSize, m_fileSize - std::min(offset, m_fileSize)));
-    std::vector<uint8_t> content(length);
-    if (length > 0) {
-      m_fileStream.clear();
-      m_fileStream.seekg(static_cast<std::streamoff>(offset));
-      m_fileStream.read(reinterpret_cast<char*>(content.data()),
-                        static_cast<std::streamsize>(length));
-      if (static_cast<size_t>(m_fileStream.gcount()) != length) {
-        throw std::runtime_error("short read from file segmented producer payload");
-      }
-    }
-
-    ndn::Name dataName = m_versionedName;
-    dataName.appendSegment(segmentNo);
-    ndn::Data data(dataName);
-    data.setFreshnessPeriod(ndn::time::milliseconds(m_freshnessMs));
-    data.setFinalBlock(ndn::name::Component::fromSegment(m_segmentCount - 1));
-    data.setContent(content);
-    const auto signingStarted = std::chrono::steady_clock::now();
-    if (m_digestSigning) {
-      m_keyChain.sign(
-        data,
-        ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_SHA256));
-    }
-    else {
-      m_keyChain.sign(
-        data,
-        ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
-                                   m_signingIdentity));
-    }
-    const auto signingElapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::steady_clock::now() - signingStarted).count();
+    const auto data = [this, segmentNo] {
+      std::lock_guard<std::mutex> lock(m_packetMutex);
+      return m_publication->packet(segmentNo);
+    }();
+    if (!interest.matchesData(data)) return;
     const auto wire = data.wireEncode();
-    m_signingNanoseconds.fetch_add(static_cast<uint64_t>(signingElapsed));
     m_wireBytes.fetch_add(wire.size());
     m_dataCount.fetch_add(1);
     m_face.put(data);
@@ -1112,7 +1084,8 @@ private:
   ndn::KeyChain m_keyChain;
   ndn::Name m_baseName;
   std::string m_filePath;
-  std::ifstream m_fileStream;
+  std::unique_ptr<nsf::ImmutableFilePublication> m_publication;
+  std::mutex m_packetMutex;
   ndn::Name m_versionedName;
   ndn::Name m_signingIdentity;
   size_t m_maxSegmentSize;
@@ -1985,7 +1958,7 @@ fetchExactDataPacket(const std::string& dataName,
     ndn::time::milliseconds(interestLifetimeMs),
     deadline,
     hintNames);
-  if (packet.name != dataName) {
+  if (ndn::Name(packet.name) != ndn::Name(dataName)) {
     throw std::runtime_error("exact Data fetch name mismatch: requested=" + dataName +
                              " received=" + packet.name);
   }
@@ -4281,6 +4254,11 @@ public:
     stop();
   }
 
+  std::string requesterIdentity() const
+  {
+    return m_userIdentity.toUri(ndn::name::UriFormat::CANONICAL);
+  }
+
   std::shared_ptr<ndnsf::di::NativeInferenceClient>
   nativeInferenceClient(std::shared_ptr<const ndnsf::di::NativeAdapterRegistry> adapters)
   {
@@ -4684,8 +4662,49 @@ public:
   publishEncryptedLargeData(const std::string& serviceName,
                             const py::bytes& payload,
                             const std::string& objectLabel,
-                            int freshnessMs)
+                            int freshnessMs,
+                            const std::string& manifestSuffix,
+                            const py::object& contentNameFields)
   {
+    nsf::LargeDataPublishOptions options;
+    options.manifestSuffix = ndn::Name(manifestSuffix);
+    nsf::ProtectedBlobManifest::validateSuffix(options.manifestSuffix);
+    if (!contentNameFields.is_none()) {
+      if (!py::isinstance<py::dict>(contentNameFields))
+        throw std::invalid_argument("content_name must be a dict");
+      const auto fields = contentNameFields.cast<py::dict>();
+      for (const auto& item : fields) {
+        const auto key = py::cast<std::string>(item.first);
+        if (key != "kind" && key != "label" && key != "model_name" && key != "model_identity" &&
+            key != "artifact_kind" && key != "coordinate" && key != "profile_identity" && key != "input_kind")
+          throw std::invalid_argument("unknown content_name field: " + key);
+      }
+      if (!fields.contains("kind")) throw std::invalid_argument("content_name requires kind");
+      const auto get = [&](const char* key) {
+        return fields.contains(key) ? py::cast<std::string>(fields[key]) : std::string{};
+      };
+      nsf::PublishedContentName identity;
+      const auto kind = get("kind");
+      if (kind == "blob") identity.kind = nsf::ContentDataKind::Blob;
+      else if (kind == "model-file") identity.kind = nsf::ContentDataKind::ModelFile;
+      else if (kind == "weights") identity.kind = nsf::ContentDataKind::Weights;
+      else if (kind == "initializer") identity.kind = nsf::ContentDataKind::Initializer;
+      else if (kind == "tokenizer") identity.kind = nsf::ContentDataKind::Tokenizer;
+      else if (kind == "artifact-file") identity.kind = nsf::ContentDataKind::ArtifactFile;
+      else if (kind == "material") identity.kind = nsf::ContentDataKind::Material;
+      else if (kind == "input") identity.kind = nsf::ContentDataKind::Input;
+      else if (kind == "assignment") identity.kind = nsf::ContentDataKind::Assignment;
+      else throw std::invalid_argument("unknown content_name kind");
+      identity.label = get("label");
+      identity.modelName = get("model_name");
+      identity.modelIdentity = get("model_identity");
+      identity.artifactKind = get("artifact_kind");
+      identity.coordinate = get("coordinate");
+      identity.profileIdentity = get("profile_identity");
+      identity.inputKind = get("input_kind");
+      identity.encode();
+      options.contentName = std::move(identity);
+    }
     auto data = toBuffer(payload);
     std::vector<uint8_t> plaintext(data.begin(), data.end());
     struct PublishState
@@ -4697,14 +4716,14 @@ public:
     };
     auto state = std::make_shared<PublishState>();
     auto submit = [this, serviceName, plaintext = std::move(plaintext),
-                   objectLabel, freshnessMs, state] {
+                   objectLabel, freshnessMs, options, state] {
       auto ctx = m_user->prepareServiceRequest(serviceName);
       try {
         state->result = m_user->publishEncryptedLargeData(
           ctx,
           plaintext,
           objectLabel,
-          ndn::time::milliseconds(freshnessMs));
+          ndn::time::milliseconds(freshnessMs), false, options);
       }
       catch (const std::exception& e) {
         state->result.success = false;
@@ -4737,6 +4756,10 @@ public:
     PyLargeDataPublishResult output;
     output.success = state->result.success;
     output.encryptedDataName = state->result.encryptedDataName.toUri();
+    output.manifestName = state->result.manifestName.empty() ? std::string{} :
+      state->result.manifestName.toUri(ndn::name::UriFormat::CANONICAL);
+    output.dataPrefix = state->result.dataPrefix.empty() ? std::string{} :
+      state->result.dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
     output.objectId = state->result.objectId;
     output.plaintextSize = state->result.plaintextSize;
     output.contentDigest = state->result.contentDigest;
@@ -6242,6 +6265,14 @@ PYBIND11_MODULE(_ndnsf, m)
   bindDeploymentControlMessage<nsf::StageInputEvidence>(m, "NativeStageInputEvidence");
   bindDeploymentControlMessage<nsf::StageAbort>(m, "NativeStageAbort");
   bindDeploymentControlMessage<nsf::SelectionDecisionTombstone>(m, "NativeSelectionDecisionTombstone");
+  m.def("make_deployment_record_name", [] (const std::string& producer,
+      const std::string& application, const std::string& deploymentId,
+      const std::string& kind, const std::string& revision, uint64_t epoch,
+      const std::string& digest) {
+    return nsf::makeDeploymentRecordName(ndn::Name(producer), ndn::Name(application),
+        deploymentId, kind, revision, epoch, digest).toUri(ndn::name::UriFormat::CANONICAL);
+  }, py::arg("producer"), py::arg("application"), py::arg("deployment_id"),
+     py::arg("kind"), py::arg("revision"), py::arg("epoch"), py::arg("digest"));
   m.def("make_opaque_control_handle", &nsf::makeOpaqueControlHandle,
         py::arg("bytes") = 24);
   m.def("is_valid_opaque_control_handle", &nsf::isValidOpaqueControlHandle,
@@ -6379,6 +6410,11 @@ PYBIND11_MODULE(_ndnsf, m)
     [] (const std::string& provider, const std::string& streamId) {
       return nsf::makeStreamNameMapRoot(ndn::Name(provider), streamId).toUri();
     }, py::arg("provider"), py::arg("stream_id"));
+
+  m.def("make_stream_name_map_root",
+    [] (const std::string& provider, const std::string& streamId, uint64_t sessionEpoch) {
+      return nsf::makeStreamNameMapRoot(ndn::Name(provider), streamId, sessionEpoch).toUri();
+    }, py::arg("provider"), py::arg("stream_id"), py::arg("session_epoch"));
 
   m.def("make_stream_name_map_block_name",
     [] (const std::string& mappingRoot, uint64_t mappingVersion,
@@ -7500,6 +7536,8 @@ PYBIND11_MODULE(_ndnsf, m)
     .def(py::init<>())
     .def_readwrite("success", &PyLargeDataPublishResult::success)
     .def_readwrite("encrypted_data_name", &PyLargeDataPublishResult::encryptedDataName)
+    .def_readwrite("manifest_name", &PyLargeDataPublishResult::manifestName)
+    .def_readwrite("data_prefix", &PyLargeDataPublishResult::dataPrefix)
     .def_readwrite("object_id", &PyLargeDataPublishResult::objectId)
     .def_readwrite("plaintext_size", &PyLargeDataPublishResult::plaintextSize)
     .def_readwrite("content_digest", &PyLargeDataPublishResult::contentDigest)
@@ -7569,9 +7607,11 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("signing_identity") = "",
          py::arg("max_segment_size") = 6000,
          py::arg("freshness_ms") = 60000,
-         py::arg("digest_signing") = true)
+         py::arg("digest_signing") = false)
     .def("start", &NativeFileSegmentedObjectProducer::start)
     .def("stop", &NativeFileSegmentedObjectProducer::stop)
+    .def("packet_wire", &NativeFileSegmentedObjectProducer::packetWire,
+         py::arg("segment"))
     .def_property_readonly("base_name", &NativeFileSegmentedObjectProducer::baseName)
     .def_property_readonly("versioned_name", &NativeFileSegmentedObjectProducer::versionedName)
     .def_property_readonly("segment_count", &NativeFileSegmentedObjectProducer::segmentCount)
@@ -7635,6 +7675,24 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_property_readonly("thread_count", &NativeRepoDataPlaneProducer::threadCount)
     .def_property_readonly("error", &NativeRepoDataPlaneProducer::error);
 
+  m.def("make_content_data_prefix", [] (const std::string& producer,
+         const std::string& kind, const std::string& label,
+         const std::string& contentDigest, const std::string& representationSpec) {
+    nsf::PublishedContentName identity;
+    if (kind == "blob") identity.kind = nsf::ContentDataKind::Blob;
+    else if (kind == "material") identity.kind = nsf::ContentDataKind::Material;
+    else throw std::invalid_argument("public content prefix requires blob or material kind");
+    if (representationSpec.empty())
+      throw std::invalid_argument("public content representation is empty");
+    identity.label = label;
+    const auto representation = nsf::computeNamingDigest("ndnsf-naming/representation",
+      {{1, 5, std::vector<uint8_t>(representationSpec.begin(), representationSpec.end())}});
+    return identity.contentPrefix(ndn::Name(producer), contentDigest)
+      .append("REPRESENTATION").append(nsf::makeNamingDigestComponent(representation))
+      .append("DATA").toUri(ndn::name::UriFormat::CANONICAL);
+  }, py::arg("producer"), py::arg("kind"), py::arg("label"),
+     py::arg("content_digest"), py::arg("representation_spec"));
+
   m.def("make_segmented_data_packets",
         &makeSegmentedDataPackets,
         py::arg("base_name"),
@@ -7667,6 +7725,61 @@ PYBIND11_MODULE(_ndnsf, m)
   m.def("decode_data_packet",
         &decodeDataPacket,
         py::arg("wire"));
+
+  m.def("inspect_original_data_packet", [] (const std::string& bytes) {
+    const ndn::Block block(ndn::span<const uint8_t>(
+      reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()));
+    if (block.size() != bytes.size())
+      throw std::invalid_argument("Data packet has trailing wire bytes");
+    const ndn::Data data(block);
+    py::dict result;
+    result["content_bytes"] = data.getContent().value_size();
+    const auto final = data.getFinalBlock();
+    result["has_final_block"] = bool(final);
+    if (final && final->isSegment()) result["final_segment"] = final->toSegment();
+    else result["final_segment"] = py::none();
+    result["protected_manifest"] = py::none();
+    const auto producer = nsf::ProtectedBlobManifest::inferProducer(data.getName());
+    if (producer) {
+      const auto& content = data.getContent();
+      const std::vector<uint8_t> payload(content.value(), content.value() + content.value_size());
+      const auto manifest = nsf::ProtectedBlobManifest::decode(payload, *producer, data.getName());
+      size_t common = 0;
+      while (common < data.getName().size() && common < manifest.dataPrefix.size() &&
+             data.getName()[common] == manifest.dataPrefix[common]) ++common;
+      const auto prefix = data.getName().getPrefix(common);
+      if (!manifest.producer.isPrefixOf(prefix))
+        throw std::invalid_argument("Protected packet set has no Producer-owned serving prefix");
+      py::dict description;
+      description["manifest_name"] = data.getName().toUri(ndn::name::UriFormat::CANONICAL);
+      description["data_prefix"] = manifest.dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
+      description["producer"] = manifest.producer.toUri(ndn::name::UriFormat::CANONICAL);
+      description["serving_prefix"] = prefix.toUri(ndn::name::UriFormat::CANONICAL);
+      description["segment_count"] = manifest.segmentCount;
+      description["segment_bytes"] = manifest.segmentBytes;
+      description["envelope_bytes"] = manifest.envelopeBytes;
+      result["protected_manifest"] = description;
+    }
+    return result;
+  }, py::arg("wire"));
+
+  m.def("inspect_data_name", [] (const std::string& uri) {
+    const ndn::Name name(uri);
+    if (name.empty()) throw std::invalid_argument("Data name cannot be root");
+    const bool segmented = name[-1].isSegment();
+    const auto& wire = name.wireEncode();
+    py::dict result;
+    result["canonical_name"] = name.toUri(ndn::name::UriFormat::CANONICAL);
+    result["alternate_name"] = name.toUri(ndn::name::UriFormat::ALTERNATE);
+    result["name_wire"] = py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size());
+    result["segment_prefix"] = (segmented ? name.getPrefix(-1) : name)
+      .toUri(ndn::name::UriFormat::CANONICAL);
+    result["protected_data"] = segmented &&
+      bool(nsf::ProtectedBlobManifest::inferDataProducer(name.getPrefix(-1)));
+    if (segmented) result["segment"] = name[-1].toSegment();
+    else result["segment"] = py::none();
+    return result;
+  }, py::arg("name"));
 
   m.def("fetch_segmented_data_packets",
         &fetchSegmentedDataPackets,
@@ -7726,6 +7839,11 @@ PYBIND11_MODULE(_ndnsf, m)
   // Provider calls this with the fetched grant Data content bytes; the
   // verifier is byte-compatible with the Python implementation and locked
   // by the T003 parity vectors.
+  m.def("canonical_native_grant_name", &ndnsf::di::canonicalNativeGrantName,
+        py::arg("publication_identity"), py::arg("provider_identity"),
+        py::arg("request_id"), py::arg("attempt"), py::arg("plan_core_digest"),
+        py::arg("model_manifest_digest"), py::arg("protection_epoch"), py::arg("grant_digest"));
+
   m.def("verify_and_unwrap_native_grant",
         [] (const std::string& wireJson,
             const std::string& authorityPublicKeyRawHex,
@@ -7989,6 +8107,7 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("stop", &NativeServiceProvider::stop);
 
   py::class_<NativeServiceUser>(m, "NativeServiceUser")
+    .def_property_readonly("requester_identity", &NativeServiceUser::requesterIdentity)
     .def(py::init<const std::string&,
                   const std::string&,
                   const std::string&,
@@ -8098,7 +8217,9 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("service"),
          py::arg("payload"),
          py::arg("object_label") = "",
-         py::arg("freshness_ms") = 60000)
+         py::arg("freshness_ms") = 60000,
+         py::arg("manifest_suffix") = "",
+         py::arg("content_name") = py::none())
     .def("publish_signed_app_data", &NativeServiceUser::publishSignedAppData,
          py::arg("data_name"), py::arg("payload"),
          py::arg("freshness_ms") = 60000)

@@ -1,14 +1,17 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include <openssl/evp.h>
 #include <ndn-cxx/name.hpp>
+#include <boost/property_tree/json_parser.hpp>
 #include <algorithm>
 #include <cctype>
 #include <limits>
 #include <set>
+#include <sstream>
 
 namespace ndnsf::di {
 namespace {
@@ -227,7 +230,8 @@ buildNativePlacementProbeAllowlistV4(
   return result;
 }
 
-NativeEncodedRequest encodeNativeRequestEnvelope(
+namespace {
+NativeEncodedRequest encodeNativeRequestEnvelopeImpl(
   const NativeModelDescriptor& model, const NativeApplicationInput& input,
   const NativeRequestContract& contract, const std::string& requestId,
   std::uint64_t attempt, std::uint64_t deadlineMs,
@@ -235,8 +239,10 @@ NativeEncodedRequest encodeNativeRequestEnvelope(
   const std::vector<std::string>& candidateProviders,
   const std::optional<NativeCandidateArtifactInventoryV4>& candidateArtifactInventory,
   const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist,
-  std::string requesterIdentity)
+  std::string requesterIdentity, bool selectionGenerationOptions)
 {
+  if (selectionGenerationOptions && contract.generationMode != "TOKEN_STREAMING")
+    throw std::invalid_argument("Selection generation options require TOKEN_STREAMING");
   model.validate();
   if (model.artifactReference) {
     // The descriptor graphDigest is the adapter/planning graph identity.  A
@@ -291,10 +297,11 @@ NativeEncodedRequest encodeNativeRequestEnvelope(
   result.modelIntentDigest = model.intentDigest();
   result.logicalInputDigest = transport == "INLINE"
     ? nativePlanningDigest(input.payload.data(), input.payload.size()) : hash(reference);
+  const auto optionsDigest = nativePlanningDigest(input.options.data(), input.options.size());
   result.inputManifestDigest = hash({{"input_schema_digest", input.inputSchemaDigest},
     {"options_schema_digest", input.optionsSchemaDigest}, {"input_transport", transport},
     {"input_digest", result.logicalInputDigest}, {"input_reference", reference},
-    {"options_digest", nativePlanningDigest(input.options.data(), input.options.size()).substr(7)}});
+    {"options_digest", optionsDigest.substr(7)}});
   result.invocationId = "invocation:" + hash({{"request_id", requestId},
     {"model", result.modelIntentDigest}}).substr(7, 32);
   NativeJson envelope = {
@@ -305,7 +312,7 @@ NativeEncodedRequest encodeNativeRequestEnvelope(
     {"service", contract.serviceName}, {"model_name", model.modelName},
     {"model_identity_hash", result.modelIntentDigest}, {"task_kind", input.taskName},
     {"input_manifest_digest", result.inputManifestDigest}, {"input_payload_b64", base64(input.payload)},
-    {"options_payload_b64", base64(input.options)}, {"plan_deadline_ms", deadlineMs},
+    {"options_payload_b64", selectionGenerationOptions ? std::string{} : base64(input.options)}, {"plan_deadline_ms", deadlineMs},
     {"security_domain", "requester-default"}, {"input_transport", transport}, {"input_reference", reference},
     {"model", {{"name", model.modelName}, {"identity_hash", result.modelIntentDigest},
       {"content_digest", model.contentDigest}, {"semantics_digest", model.semanticsDigest}, {"source_revision", revision}}},
@@ -314,6 +321,10 @@ NativeEncodedRequest encodeNativeRequestEnvelope(
       {"adapter_composition_digest", contract.adapterCompositionDigest},
       {"task_descriptor_digest", contract.taskDescriptorDigest},
       {"generation_mode", contract.generationMode}, {"placement_profile", "DI_PLACEMENT_V3"}}}};
+  if (selectionGenerationOptions) {
+    envelope["options_transport"] = "SELECTION_GENERATION_V1";
+    envelope["options_digest"] = optionsDigest;
+  }
   if (!recovery && candidateArtifactInventory && probeAllowlist &&
       !candidateProviders.empty() &&
       candidateProviders.size() <= 16) {
@@ -454,5 +465,79 @@ NativeEncodedRequest encodeNativeRequestEnvelope(
   result.requestContractDigest = nativePlanningDigest(wire);
   return result;
 }
+
+} // namespace
+
+NativeEncodedRequest encodeNativeRequestEnvelope(
+  const NativeModelDescriptor& model, const NativeApplicationInput& input,
+  const NativeRequestContract& contract, const std::string& requestId,
+  std::uint64_t attempt, std::uint64_t deadlineMs,
+  const std::optional<NativeGenerationRecovery>& recovery,
+  const std::vector<std::string>& candidateProviders,
+  const std::optional<NativeCandidateArtifactInventoryV4>& candidateArtifactInventory,
+  const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist,
+  std::string requesterIdentity)
+{
+  return encodeNativeRequestEnvelopeImpl(model, input, contract, requestId, attempt,
+    deadlineMs, recovery, candidateProviders, candidateArtifactInventory,
+    probeAllowlist, std::move(requesterIdentity), false);
+}
+
+namespace detail {
+NativeEncodedRequest encodeNativeRequestEnvelopeForRuntime(
+  const NativeModelDescriptor& model, const NativeApplicationInput& input,
+  const NativeRequestContract& contract, const std::string& requestId,
+  std::uint64_t attempt, std::uint64_t deadlineMs,
+  const std::optional<NativeGenerationRecovery>& recovery,
+  const std::vector<std::string>& candidateProviders,
+  const std::optional<NativeCandidateArtifactInventoryV4>& candidateArtifactInventory,
+  const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist,
+  std::string requesterIdentity, const std::string& optionsTransport)
+{
+  if (optionsTransport != "INLINE" && optionsTransport != "SELECTION_GENERATION_V1")
+    throw std::invalid_argument("unsupported native request options transport");
+  return encodeNativeRequestEnvelopeImpl(model, input, contract, requestId, attempt,
+    deadlineMs, recovery, candidateProviders, candidateArtifactInventory,
+    probeAllowlist, std::move(requesterIdentity), optionsTransport != "INLINE");
+}
+
+bool requiresSelectionGenerationOptions(const std::string& requestWire,
+                                        bool allowSelectionGenerationOptions)
+{
+  // Decode keys before checking the mode: escaped JSON keys must not bypass
+  // deployment permission or the Selection-only contract.
+  NativeJson root;
+  try { root = nativeParseJson(requestWire); }
+  catch (const std::exception&) {
+    // Classification only: Boost preserves duplicate keys and decodes escapes.
+    // Never downgrade a malformed native envelope to the legacy receiver path,
+    // including when any duplicate schema value identifies the native schema.
+    boost::property_tree::ptree legacy;
+    try {
+      std::istringstream input(requestWire);
+      boost::property_tree::read_json(input, legacy);
+    }
+    catch (const boost::property_tree::json_parser::json_parser_error&) { return false; }
+    for (const auto& item : legacy) {
+      if (item.first == "schema" && item.second.data() == "ndnsf-di-request-envelope-v2")
+        throw std::invalid_argument("native request envelope failed strict JSON validation");
+    }
+    return false;
+  }
+  if (!root.is_object() || root.value("schema", NativeJson{}) !=
+      "ndnsf-di-request-envelope-v2")
+    return false;
+  const auto mode = root.value("options_transport", std::string("INLINE"));
+  if (mode == "INLINE" && !root.contains("options_digest")) return false;
+  if (mode != "SELECTION_GENERATION_V1" || !allowSelectionGenerationOptions ||
+      root.value("options_payload_b64", NativeJson{}) != "" ||
+      !root.contains("options_digest") || !root.at("options_digest").is_string() ||
+      !digest(root.at("options_digest").get<std::string>()) ||
+      !root.contains("task") || !root.at("task").is_object() ||
+      root.at("task").value("generation_mode", NativeJson{}) != "TOKEN_STREAMING")
+    throw std::invalid_argument("invalid or disabled native request options transport");
+  return true;
+}
+} // namespace detail
 
 } // namespace ndnsf::di

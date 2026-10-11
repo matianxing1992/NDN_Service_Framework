@@ -34,6 +34,21 @@ std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::
   const NativeGroupKeyAdmission& keys, NativeProjectionContext context, std::uint64_t maxBytes)
 {
   sealed.validate();
+  return buildFromValidatedSealed(sealed, candidate, keys, std::move(context), maxBytes);
+}
+
+std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::build(
+  const NativeOwnedSealedPlan& sealed, const NativeSplitCandidate& candidate,
+  const NativeGroupKeyAdmission& keys, NativeProjectionContext context, std::uint64_t maxBytes)
+{
+  return buildFromValidatedSealed(sealed.value(), candidate, keys, std::move(context), maxBytes);
+}
+
+std::map<std::string, NativeRoleProjectionInputs>
+NativeGroupProjectionBuilder::buildFromValidatedSealed(
+  const NativeSealedPlan& sealed, const NativeSplitCandidate& candidate,
+  const NativeGroupKeyAdmission& keys, NativeProjectionContext context, std::uint64_t maxBytes)
+{
   const auto& core = sealed.core;
   if (!context.dependencies.empty() || !context.groupCapabilitiesByRole.empty() ||
       !maxBytes || maxBytes > (64ULL << 20) || !context.maxSegments || context.maxSegments > (1U << 20) ||
@@ -47,6 +62,8 @@ std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::
   std::vector<NativeAdmittedOfferV3> offers;
   std::set<std::string> admittedProviders;
   for (const auto& assignment : core.assignment.providerByRole) {
+    if (ndn::Name(keys.endpoint(assignment.second)) != ndn::Name(assignment.second))
+      throw std::invalid_argument("advertised tensor endpoint differs from the actual Producer");
     if (admittedProviders.insert(assignment.second).second)
       offers.push_back(keys.offer(assignment.second));
   }
@@ -82,19 +99,28 @@ std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::
   }
   for (std::size_t i = 0; i < core.executionPlan.dependencies.size(); ++i) {
     const auto& dependency = core.executionPlan.dependencies[i];
-    // Feedback closes the epoch loop. It is authorized below, but must not
-    // become a one-epoch readiness endpoint (which would create a cycle).
-    if (dependency.operationKind == "TOKEN_FEEDBACK") continue;
+    // Self feedback stays inside LocalDependencyIo. Cross-role feedback owns
+    // signed tensor endpoints, while readiness excludes the epoch loop.
+    const bool feedback = dependency.operationKind == "TOKEN_FEEDBACK";
+    if (feedback && dependency.producers.size() == 1 &&
+        dependency.producers == dependency.consumers) {
+      if (!core.generationContract.enabled || core.executionPlan.roles.size() != 1)
+        throw std::invalid_argument("self feedback requires the authenticated single-role local plan");
+      continue;
+    }
     auto& binding = context.dependencies[i];
     binding.groupId = groupByProvider.at(core.assignment.providerByRole.at(dependency.producers.at(0)));
-    binding.groupEpoch = "1"; binding.operationIndex = i;
+    binding.groupEpoch = "1";
+    binding.operationIndex = feedback ? dependency.collectiveOperationIndex : i;
     for (const auto& role : dependency.producers) {
       const auto& provider = core.assignment.providerByRole.at(role);
       binding.producerNamespaces.emplace(provider, keys.endpoint(provider));
     }
   }
-  auto projections = NativePlanProjectionBuilder::build(sealed, candidate, offers, context);
+  auto projections = NativePlanProjectionBuilder::buildFromValidatedSealed(sealed, candidate, offers, context);
   for (const auto& role : projections) for (const auto& endpoint : role.second.dataflow.mayPublish) {
+    // Feedback's existing signed operation index is installed below.
+    if (endpoint.operation == "TOKEN_FEEDBACK") continue;
     auto& group = groups.at(endpoint.groupId);
     auto& operation = group.operations[transferKey(endpoint)];
     operation.kind = endpoint.operation; operation.source = endpoint.layoutDigest; operation.target = endpoint.targetLayoutDigest;
@@ -181,7 +207,20 @@ std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::
     const auto remap = [&](NativeTensorEndpointV3& endpoint) {
       if (endpoint.sourceKind != "ROLE") return;
       const auto& group = groups.at(endpoint.groupId);
-      const auto& operation = group.operations.at(transferKey(endpoint));
+      std::string operationKey = transferKey(endpoint);
+      if (endpoint.operation == "TOKEN_FEEDBACK") {
+        const auto dependency = std::find_if(core.executionPlan.dependencies.begin(),
+          core.executionPlan.dependencies.end(), [&](const auto& item) {
+            return item.operationKind == "TOKEN_FEEDBACK" &&
+              item.producers == std::vector<std::string>{endpoint.producerRole} &&
+              item.consumers == endpoint.consumerRoles &&
+              item.tensors == std::vector<std::string>{endpoint.tensorId};
+          });
+        if (dependency == core.executionPlan.dependencies.end())
+          throw std::invalid_argument("feedback endpoint has no signed dependency");
+        operationKey = "feedback:" + dependency->keyScope;
+      }
+      const auto& operation = group.operations.at(operationKey);
       endpoint.producerRank = group.rank.at(core.assignment.providerByRole.at(endpoint.producerRole));
       endpoint.round = operation.index;
     };
@@ -203,11 +242,17 @@ std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::
             endpoints.push_back(endpoint);
             continue;
           }
-          if (endpoint.round >= stride)
-            throw std::invalid_argument("generation endpoint exceeds operation stride");
+          if (stride == 0 || endpoint.namingOperationStride != stride ||
+              endpoint.round >= stride ||
+              epochs - 1 > (std::numeric_limits<std::uint64_t>::max() - endpoint.round) / stride)
+            throw std::invalid_argument("generation endpoint exceeds signed operation stride");
           for (std::uint64_t epoch = 0; epoch < epochs; ++epoch) {
             auto derived = endpoint;
             derived.round += epoch * stride;
+            if (epoch != 0) {
+              derived.prefetchBundleBytes = 0;
+              derived.prefetchSegmentBytes = 0;
+            }
             endpoints.push_back(std::move(derived));
           }
         }

@@ -45,6 +45,8 @@ struct NativeProtectedGrantConfig
   std::string modelManifestDigest;
   std::function<std::string(const std::string&)> fetchGrant;
   std::function<bool()> shouldCancel;
+  // Authenticated Core assignment requester, the actual outer grant Data publisher.
+  std::string publicationIdentity;
 };
 
 /** Non-secret, stable identity of the protected key used for one artifact. */

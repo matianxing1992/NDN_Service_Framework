@@ -5,6 +5,7 @@ from dataclasses import replace
 import hashlib
 from types import SimpleNamespace
 import unittest
+from spec201_publication_fixture import publication_result
 
 from ndnsf_distributed_inference.adapters import build_object_detection_adapter
 from ndnsf_distributed_inference.adapters.qwen import (
@@ -107,11 +108,7 @@ class _V3ServiceUser:
     def publish_encrypted_large_data(self, service, payload, *, object_label,
                                      freshness_ms):
         self.publish_calls.append((service, object_label, bytes(payload)))
-        return SimpleNamespace(
-            success=True,
-            encrypted_data_name=f"/encrypted/{object_label}",
-            error="",
-        )
+        return publication_result(payload, service, label=object_label)
 
 
 def _model_intent_from_wire(payload: bytes) -> str:
@@ -450,7 +447,9 @@ class DefaultApplicationPathTest(unittest.TestCase):
         self.assertEqual(handle.decision.artifact_preparation.value, "PRE_SPLIT")
         self.assertTrue(all(
             value.startswith("/repo/exact/")
-            for value in user.collaboration.commits[0]["artifact_data_names"].values()))
+            for value in handle.sealed_plan.artifact_data_names.values()))
+        self.assertEqual(user.collaboration.commits[0]["artifact_data_names"],
+                         dict(handle.sealed_plan.artifact_fetch_data_names))
 
         bad_snapshots = tuple(
             replace(snapshot, backend="unsupported-backend")
@@ -485,7 +484,7 @@ class DefaultApplicationPathTest(unittest.TestCase):
             ack_timeout_ms=100,
             group_epoch_key_wrapper=lambda _public_key, _epoch_key: b"wrapped",
         )
-        coordinator.generate(GenerationRequest(
+        handle = coordinator.generate(GenerationRequest(
             model=model, task=task, input=app_input, timeout_ms=5000,
             request_id="spec170-v3-canonical-ensure",
         ))
@@ -493,7 +492,9 @@ class DefaultApplicationPathTest(unittest.TestCase):
         commit = user.collaboration.commits[0]
         self.assertTrue(all(
             value.startswith("/canonical/")
-            for value in commit["artifact_data_names"].values()))
+            for value in handle.sealed_plan.artifact_data_names.values()))
+        self.assertEqual(commit["artifact_data_names"],
+                         dict(handle.sealed_plan.artifact_fetch_data_names))
 
     def test_v3_seals_exact_provider_assembly_recipe_after_ack_placement(self):
         adapter = build_object_detection_adapter()

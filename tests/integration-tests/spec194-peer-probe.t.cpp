@@ -8,6 +8,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "ndn-service-framework/NetworkProbeRate.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
+#include "ndn-service-framework/utils.hpp"
+#include "ndn-service-framework/PeerProbeNaming.hpp"
 #include <ndn-cxx/encoding/block-helpers.hpp>
 
 #include <boost/asio/executor_work_guard.hpp>
@@ -31,8 +33,60 @@
 
 namespace ndn_service_framework {
 
+struct NetworkTelemetryStoreTestAccess
+{
+  static void ageCaptures(NetworkTelemetryStore& store, uint64_t ageMs)
+  {
+    std::lock_guard<std::mutex> lock(store.m_mutex);
+    const auto now = NetworkTelemetryStore::nowMs();
+    for (auto& entry : store.m_snapshots)
+      entry.second.lastUpdatedMs = now - ageMs;
+  }
+
+  static void setTtl(NetworkTelemetryStore& store, std::chrono::milliseconds ttl)
+  {
+    std::lock_guard<std::mutex> lock(store.m_mutex);
+    store.m_ttl = ttl;
+  }
+};
+
 struct ServiceProviderTestAccess
 {
+  static void ageProbeCaptures(ServiceProvider& provider, uint64_t ageMs)
+  {
+    NetworkTelemetryStoreTestAccess::ageCaptures(provider.m_networkTelemetry, ageMs);
+  }
+
+  static bool activeProbeScopeOpen(ServiceProvider& provider, const std::string& scope)
+  {
+    return provider.m_networkTelemetry.isActiveProbeCollectionOpen(scope);
+  }
+
+  static void setTelemetryTtl(ServiceProvider& provider, std::chrono::milliseconds ttl)
+  {
+    NetworkTelemetryStoreTestAccess::setTtl(provider.m_networkTelemetry, ttl);
+  }
+
+  static void seedReusableProbeSamples(ServiceProvider& provider, const ndn::Name& peer,
+                                      const std::string& peerBoot, bool goodputSignature = true)
+  {
+    // Seed the already-validated Core boundary, not an independent rate oracle.
+    // Actual signature ingestion is exercised by the production-wire fixtures.
+    NetworkProbePacketTimes rtts{}; rtts.fill(20.0);
+    NetworkProbeArrivalGaps gaps{}; gaps.fill(4.0);
+    NetworkProbeSourceGaps sends{}; sends.fill(0.5);
+    NetworkProbeWireSizes wire{}; wire.fill(10000);
+    const auto payload = NETWORK_PROBE_WARMED_SEGMENTS * NETWORK_PROBE_WARMED_PAYLOAD_BYTES;
+    const auto suffix = std::string(230, 'a');
+    provider.m_networkTelemetry.updateActiveProbe(provider.getName(), peer,
+      "cache-control", peerBoot, ndn::Name(peer).append("cached-rtt").append(suffix), 20.0);
+    provider.m_networkTelemetry.updateActiveProbeGoodput(provider.getName(), peer,
+      "cache-control", peerBoot, ndn::Name(peer).append("cached-goodput").append(suffix),
+      payload, payload + 10000, NETWORK_PROBE_WARMED_SEGMENTS, 1.0, 30.0,
+      NETWORK_PROBE_TRAIN_PROFILE_DIGEST, goodputSignature, rtts, gaps, gaps,
+      wire, sends, true);
+  }
+
   static void observeGoodputStages(ServiceProvider& provider,
       std::function<void(const char*, size_t, size_t)> observer)
   {
@@ -43,12 +97,32 @@ struct ServiceProviderTestAccess
     // The general fixture's trust-any schema bypasses signature checks. This
     // signature oracle instead uses the real validator with the source anchor.
     receiver.nac_validator.load(
-      "rule { id probe-signatures for data checker { type hierarchical "
-      "sig-type rsa-sha256 } }", "spec197-probe-signature-oracle");
+      "rule { id probe-signatures for data checker { type customized "
+      "sig-type rsa-sha256 key-locator { type name name " +
+      source.getName().toUri(ndn::name::UriFormat::CANONICAL) +
+      " relation equal } } }", "spec197-probe-signature-oracle");
     auto& keys = source.m_testSigningKeyChain ? *source.m_testSigningKeyChain : source.m_keyChain;
     auto certificate = keys.getPib().getIdentity(source.getName())
       .getDefaultKey().getDefaultCertificate();
     receiver.nac_validator.loadAnchor("spec197-probe-source", std::move(certificate));
+  }
+  static void anchorProbeInterestValidation(ServiceProvider& target, ServiceProvider& observer)
+  {
+    target.nac_validator.load(
+      "rule { id probe-request-signatures for interest checker { type customized "
+      "sig-type rsa-sha256 key-locator { type name name " +
+      observer.getName().toUri(ndn::name::UriFormat::CANONICAL) +
+      " relation equal } } }", "spec201-probe-request-oracle");
+    auto& keys = observer.m_testSigningKeyChain ? *observer.m_testSigningKeyChain : observer.m_keyChain;
+    auto certificate = keys.getPib().getIdentity(observer.getName())
+      .getDefaultKey().getDefaultCertificate();
+    target.nac_validator.loadAnchor("spec201-probe-observer", std::move(certificate));
+  }
+  static void receiveSignedProbe(ServiceProvider& target, ServiceProvider& observer,
+                                 ndn::Interest& interest)
+  {
+    observer.signPeerProbeInterest(interest);
+    BOOST_REQUIRE(target.handlePeerNetworkProbeInterest(interest));
   }
   static std::optional<ControllerVersion> controllerVersion(
       const ServiceProvider& provider, const ndn::Name& service)
@@ -116,10 +190,20 @@ struct ServiceProviderTestAccess
                                  const std::string& scope, const std::string& nonce,
                                  size_t segment)
   {
-    ndn::Name name = provider.getName();
-    name.append("NDNSF").append("PEER-GOODPUT").append("test")
-      .append(nonce).appendSegment(segment);
-    provider.queuePeerGoodputTrain(ndn::Interest(name), observer, scope, nonce, segment);
+    const PeerProbeCall call{"PROBE-GOODPUT", observer, provider.getName(), scope,
+      nonce, segment, NETWORK_PROBE_WARMED_SEGMENTS, NETWORK_PROBE_WARMED_PAYLOAD_BYTES,
+      false, true};
+    PeerNetworkGoodputProbe probe;
+    probe.setField("observerProvider", observer.toUri());
+    probe.setField("targetProvider", provider.getName().toUri());
+    probe.setField("requestScopeDigest", scope);
+    probe.setField("runNonce", nonce);
+    probe.setField("segment", std::to_string(segment));
+    probe.setField("segmentCount", std::to_string(call.segmentCount));
+    probe.setField("contentBytes", std::to_string(call.contentBytes));
+    ndn::Interest interest(makePeerProbeRpcName(call));
+    interest.setApplicationParameters(probe.WireEncode());
+    provider.queuePeerGoodputTrain(interest, observer, scope, nonce, segment);
   }
 
   static size_t pendingSourceTrains(const ServiceProvider& provider)
@@ -225,14 +309,93 @@ makePlacementScopeAuthorizationRequest(const PlacementProbeCall& call,
   return request;
 }
 
+PeerProbeCall probeCallFromParameters(const ndn::Interest& interest)
+{
+  auto parameters = interest.getApplicationParameters();
+  parameters.parse();
+  BOOST_REQUIRE_EQUAL(parameters.elements().size(), 1U);
+  DeploymentControlMessage probe(parameters.elements().front().type());
+  BOOST_REQUIRE(probe.WireDecode(parameters.elements().front()));
+  const bool goodput = probe.hasField("segment");
+  const bool ready = probe.hasField("requireRtt");
+  return PeerProbeCall{goodput ? "PROBE-GOODPUT" : ready ? "PROBE-READY" : "PROBE-RTT",
+    ndn::Name(probe.getField("observerProvider")), ndn::Name(probe.getField("targetProvider")),
+    probe.getField("requestScopeDigest"), probe.getField(goodput ? "runNonce" : "nonce"),
+    goodput ? std::stoull(probe.getField("segment")) : 0,
+    goodput ? std::stoull(probe.getField("segmentCount")) : 0,
+    goodput ? std::stoull(probe.getField("contentBytes")) : 0,
+    ready ? probe.getField("requireRtt") == "1" : !goodput,
+    ready ? probe.getField("requireGoodput") == "1" : goodput};
+}
+
+bool isProbeOperationName(const ndn::Name& name, const std::string& operation)
+{
+  return name.size() > 6 && name[-6] == ndn::name::Component("NDNSF") &&
+    name[-5] == ndn::name::Component("RPC") && name[-4] == ndn::name::Component(operation) &&
+    name[-3].type() == ndn::tlv::GenericNameComponent && name[-3].value_size() == 32 &&
+    name[-2].type() == ndn::tlv::GenericNameComponent && name[-1].isParametersSha256Digest();
+}
+
 bool isActiveProbeMeasurementInterest(const ndn::Interest& interest)
 {
-  const auto uri = interest.getName().toUri();
-  return uri.find("/PEER-GOODPUT/") != std::string::npos ||
-         uri.find("/PEER-PROBE/") != std::string::npos;
+  return isProbeOperationName(interest.getName(), "PROBE-GOODPUT") ||
+    isProbeOperationName(interest.getName(), "PROBE-RTT");
 }
 
 BOOST_AUTO_TEST_SUITE(Spec194PeerProbe)
+
+BOOST_AUTO_TEST_CASE(SignedReadinessUsesSemanticNamesAndExactProducerReply)
+{
+  BootstrapProfile profile;
+  profile.providerCount = 2;
+  NdnsfIntegrationEnvironment env(profile);
+  env.bootstrap();
+  BOOST_REQUIRE_MESSAGE(env.status() == EnvironmentStatus::Ready, env.failureReason());
+  env.pumpUntilReady();
+  auto& target = env.provider(0);
+  auto& observer = env.provider(1);
+  const std::string scope = "sha256:" + std::string(64, 'c');
+  BOOST_REQUIRE(ServiceProviderTestAccess::authorizeActiveProbeRequest(target, scope,
+    {target.getName(), observer.getName()}, {{observer.getName(), target.getName()}}, {},
+    std::chrono::steady_clock::now() + std::chrono::seconds(5)));
+  ServiceProviderTestAccess::anchorProbeInterestValidation(target, observer);
+  std::vector<ndn::Data> replies;
+  auto prefix = target.getName();
+  prefix.append("NDNSF").append("RPC").append("PROBE-READY");
+  auto connection = env.providerFace(0).onSendData.connect([&](const ndn::Data& data) {
+    if (prefix.isPrefixOf(data.getName())) replies.push_back(data);
+  });
+  for (unsigned mutation = 0; mutation < 3; ++mutation) {
+    PeerProbeCall call{"PROBE-READY", observer.getName(), target.getName(), scope,
+      std::to_string(77 + mutation), 0, 0, 0, true, false};
+    PeerNetworkProbe parameters;
+    // Deliberately use different URI displays; these are the same full Names.
+    parameters.setField("observerProvider", call.observer.toUri(ndn::name::UriFormat::CANONICAL));
+    parameters.setField("targetProvider", call.target.toUri(ndn::name::UriFormat::ALTERNATE));
+    if (mutation == 1)
+      parameters.setField("observerProvider", ndn::Name("/foreign/observer").toUri());
+    if (mutation == 2)
+      parameters.setField("targetProvider", ndn::Name("/foreign/target").toUri());
+    parameters.setField("requestScopeDigest", scope);
+    parameters.setField("nonce", call.runNonce);
+    parameters.setField("requireRtt", "1");
+    parameters.setField("requireGoodput", "0");
+    ndn::Interest interest(makePeerProbeRpcName(call));
+    interest.setCanBePrefix(true);
+    interest.setMustBeFresh(true);
+    interest.setInterestLifetime(ndn::time::milliseconds(250));
+    interest.setApplicationParameters(parameters.WireEncode());
+    ServiceProviderTestAccess::receiveSignedProbe(target, observer, interest);
+    env.pumpUntilReady();
+    BOOST_CHECK(interest.isParametersDigestValid());
+    BOOST_REQUIRE_EQUAL(replies.size(), 1U);
+    if (mutation == 0) {
+      BOOST_CHECK(replies.front().getName() == interest.getName());
+      BOOST_CHECK(ndn::security::extractIdentityFromCertName(
+        replies.front().getSignatureInfo().getKeyLocator().getName()) == target.getName());
+    }
+  }
+}
 
 BOOST_AUTO_TEST_CASE(SignedAckPreviewMeasuresBothDataLayersAgainstNdnLimit)
 {
@@ -386,8 +549,16 @@ BOOST_AUTO_TEST_CASE(ProductionAckPublisherSelectsFittingBaseAndPublishesSignedO
   env.enableProviderProductionIngressForTest();
 
   auto& provider = env.provider(0);
-  const ndn::Name requester("/spec194/user");
-  const ndn::Name service("/spec194/service");
+  const auto requester = env.user().getName();
+  const auto service = env.profile().serviceName;
+  auto serviceRegistration = provider.addScopedTargetedService(service,
+    [](const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+       const RequestMessage&, ServiceProvider::AsyncTargetedCompletion complete) {
+      ResponseMessage response;
+      response.setStatus(true);
+      if (complete) complete(std::move(response));
+    });
+  BOOST_REQUIRE(!serviceRegistration.closed());
   const ndn::Name requestId("/spec194/request/published-ack-fallback");
   const auto ackName = makeRequestAckNameV2(
     provider.getName(), requester, service, requestId);
@@ -628,8 +799,7 @@ BOOST_AUTO_TEST_CASE(TargetedPlacementMeasurementUsesOnlyRequestedProviderEdge)
   std::size_t readinessInterestCount = 0;
   auto interestConnection = env.providerFace(0).onSendInterest.connect(
     [&] (const ndn::Interest& interest) {
-      if (interest.getName().toUri().find("/NDNSF/PEER-PROBE-READY/") !=
-          std::string::npos) {
+      if (isProbeOperationName(interest.getName(), "PROBE-READY")) {
         ++readinessInterestCount;
       }
       if (isActiveProbeMeasurementInterest(interest)) {
@@ -816,6 +986,94 @@ BOOST_AUTO_TEST_CASE(TargetedPlacementMeasurementUsesOnlyRequestedProviderEdge)
   BOOST_CHECK_EQUAL(probeTargets[1].toUri(), target.toUri());
   BOOST_CHECK_EQUAL(readinessInterestCount, 0);
 
+  // A new authenticated request may read this historical sample without
+  // installing another peer scope or producing another dedicated Interest.
+  ServiceProviderTestAccess::setTelemetryTtl(observerProvider,
+                                            std::chrono::milliseconds(1000));
+  const auto historical = observerProvider.getCachedPeerProbeSamples({target});
+  BOOST_REQUIRE_EQUAL(historical.size(), 1);
+  auto cacheCall = makePlacementProbeCall(requester, observer, target, service,
+                                         roster, false, "cache-only-read");
+  const auto cacheBody = [&] (const std::string& boot) {
+    const auto bytes = cacheCall.request.getPayload();
+    auto body = ndnsf::di::nativeParseJson(std::string(
+      reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    body["action"] = "cache";
+    body["peer_boot_epochs"] = {{target.toUri(), boot}};
+    auto request = cacheCall.request;
+    const auto wire = ndnsf::di::nativeCanonicalJson(body);
+    ndn::Buffer payload(wire.begin(), wire.end());
+    request.setPayload(payload, payload.size());
+    return request;
+  };
+  auto cacheRequest = cacheBody(targetProvider.getProviderBootEpoch());
+  std::optional<ResponseMessage> cacheResponse;
+  bool cacheTimedOut = false;
+  BOOST_CHECK(!ServiceProviderTestAccess::activeProbeScopeOpen(
+    observerProvider, cacheCall.scopeDigest));
+  BOOST_REQUIRE(!env.user().RequestServiceTargeted(
+    observer, probeService, cacheRequest, 1000,
+    [&] (const ndn::Name&) { cacheTimedOut = true; },
+    [&] (const ResponseMessage& reply) { cacheResponse = reply; }).empty());
+  env.pumpUntil([&] { return cacheResponse || cacheTimedOut; });
+  BOOST_REQUIRE(cacheResponse);
+  BOOST_REQUIRE_MESSAGE(cacheResponse->getStatus(), cacheResponse->getErrorInfo());
+  const auto readReply = [] (const ResponseMessage& reply) {
+    const auto bytes = reply.getPayload();
+    return ndnsf::di::nativeParseJson(std::string(
+      reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+  };
+  const auto cached = readReply(*cacheResponse);
+  BOOST_CHECK(cached.at("cache_complete").get<bool>());
+  BOOST_REQUIRE_EQUAL(cached.at("observations").size(), 1);
+  const auto& cachedRow = cached.at("observations").at(0);
+  BOOST_CHECK_EQUAL(cachedRow.at("observed_at_ms").get<std::uint64_t>(),
+                    historical.front().first.lastUpdatedMs);
+  BOOST_CHECK_EQUAL(cachedRow.at("expires_at_ms").get<std::uint64_t>(),
+                    historical.front().second);
+  BOOST_CHECK_EQUAL(cachedRow.at("data_name").get<std::string>(),
+                    historical.front().first.dataName.toUri());
+  BOOST_CHECK_EQUAL(cached.at("scope_digest").get<std::string>(), cacheCall.scopeDigest);
+  BOOST_CHECK_EQUAL(probeTargets.size(), 2);
+  BOOST_CHECK_EQUAL(readinessInterestCount, 0);
+  BOOST_CHECK_EQUAL(targetTargetedHandlerCallCount.load(), 2);
+  BOOST_CHECK(!ServiceProviderTestAccess::activeProbeScopeOpen(
+    observerProvider, cacheCall.scopeDigest));
+
+  // Direct handler controls exercise cache misses without touching peer state.
+  auto cacheHandler = ndnsf::di::makeNativePlacementMeasurementTargetedHandler(
+    observerProvider);
+  const auto checkCacheMiss = [&] (const RequestMessage& query) {
+    std::optional<ResponseMessage> reply;
+    cacheHandler(requester, observer, probeService, ndn::Name("/cache-read-control"),
+      query, [&] (ResponseMessage value) { reply = std::move(value); });
+    BOOST_REQUIRE(reply);
+    BOOST_REQUIRE_MESSAGE(reply->getStatus(), reply->getErrorInfo());
+    const auto value = readReply(*reply);
+    BOOST_CHECK(!value.at("cache_complete").get<bool>());
+    BOOST_CHECK(value.at("observations").empty());
+    BOOST_CHECK_EQUAL(value.at("omitted_rtt_count").get<std::size_t>(), 1);
+    BOOST_CHECK(!ServiceProviderTestAccess::activeProbeScopeOpen(
+      observerProvider, cacheCall.scopeDigest));
+    BOOST_CHECK_EQUAL(probeTargets.size(), 2);
+  };
+  checkCacheMiss(cacheBody("different-current-boot"));
+  {
+    const auto bytes = cacheRequest.getPayload();
+    auto body = ndnsf::di::nativeParseJson(std::string(
+      reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    body.erase("peer_boot_epochs");
+    auto missingHint = cacheRequest;
+    const auto wire = ndnsf::di::nativeCanonicalJson(body);
+    ndn::Buffer payload(wire.begin(), wire.end());
+    missingHint.setPayload(payload, payload.size());
+    checkCacheMiss(missingHint);
+  }
+  ServiceProviderTestAccess::setTelemetryTtl(observerProvider,
+                                            std::chrono::milliseconds(1));
+  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  checkCacheMiss(cacheRequest);
+
   probeRegistration.close();
   probeRegistration.close(); // idempotent close
   std::optional<ResponseMessage> closedResponse;
@@ -827,7 +1085,7 @@ BOOST_AUTO_TEST_CASE(TargetedPlacementMeasurementUsesOnlyRequestedProviderEdge)
   BOOST_REQUIRE(!closedRequest.empty());
   env.pumpUntil([&] { return closedTimedOut || closedResponse.has_value(); });
   BOOST_CHECK(closedTimedOut || (closedResponse && !closedResponse->getStatus()));
-  BOOST_CHECK_EQUAL(targetedHandlerCallCount.load(), 2);
+  BOOST_CHECK_EQUAL(targetedHandlerCallCount.load(), 3);
   BOOST_CHECK_EQUAL(probeTargets.size(), 2);
 
   // Closing the probe registration leaves the model's ACK path registered.
@@ -872,14 +1130,186 @@ BOOST_AUTO_TEST_CASE(TargetedPlacementMeasurementUsesOnlyRequestedProviderEdge)
     [&withdrawalInterests] (const ndn::Interest&) { ++withdrawalInterests; });
   bool deniedCallback = false;
   const auto denied = env.user().RequestServiceTargeted(
-    observer, probeService, cachedTokenCall.request, 3000,
+    observer, probeService, cacheRequest, 3000,
     [&] (const ndn::Name&) { deniedCallback = true; },
     [&] (const ResponseMessage&) { deniedCallback = true; });
   BOOST_CHECK(denied.empty());
   BOOST_CHECK(!deniedCallback);
   BOOST_CHECK_EQUAL(withdrawalInterests, 0);
-  BOOST_CHECK_EQUAL(targetedHandlerCallCount.load(), 2);
+  BOOST_CHECK_EQUAL(targetedHandlerCallCount.load(), 3);
   BOOST_CHECK_EQUAL(probeTargets.size(), 2);
+}
+
+BOOST_AUTO_TEST_CASE(CachedGoodputReadRetainsQualityAndReportsBudgetMiss)
+{
+  using namespace ndnsf::di;
+  BootstrapProfile profile;
+  NdnsfIntegrationEnvironment env(profile);
+  env.bootstrap();
+  BOOST_REQUIRE_MESSAGE(env.status() == EnvironmentStatus::Ready, env.failureReason());
+  env.pumpUntilReady();
+  auto& owner = env.provider(0);
+  const auto observer = owner.getName();
+  const auto requester = env.user().getName();
+  const ndn::Name service(env.profile().serviceName), probeService(NETWORK_PROBE_SERVICE);
+  auto handler = ndnsf::di::makeNativePlacementMeasurementTargetedHandler(owner);
+  std::size_t peerInterests = 0;
+  auto connection = env.providerFace(0).onSendInterest.connect(
+    [&] (const ndn::Interest& interest) {
+      if (isActiveProbeMeasurementInterest(interest) ||
+          isProbeOperationName(interest.getName(), "PROBE-READY"))
+        ++peerInterests;
+    });
+  NativeJson lastRequest;
+  const auto query = [&] (std::vector<ndn::Name> peers) {
+    std::sort(peers.begin(), peers.end());
+    auto roster = peers;
+    roster.push_back(observer);
+    auto call = makePlacementProbeCall(requester, observer, peers.front(), service,
+                                       roster, false, "cache-goodput-control", 5000);
+    const auto bytes = call.request.getPayload();
+    auto body = ndnsf::di::nativeParseJson(std::string(
+      reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    body["action"] = "cache";
+    // NDN component ordering differs from the protocol's URI ordering when
+    // the synthetic peers and real observer use different prefixes.
+    std::vector<std::string> rosterUris;
+    for (const auto& name : roster) rosterUris.push_back(name.toUri());
+    std::sort(rosterUris.begin(), rosterUris.end());
+    body["provider_roster"] = rosterUris;
+    body["roster_digest"] = ndnsf::di::nativePlanningDigest(
+      ndnsf::di::nativeCanonicalJson(NativeJson(rosterUris)));
+    body["rtt_pairs"] = NativeJson::array();
+    body["goodput_edges"] = NativeJson::array();
+    body["peer_boot_epochs"] = NativeJson::object();
+    for (const auto& peer : peers) {
+      body["rtt_pairs"].push_back({{"src_provider", observer.toUri()},
+                                    {"dst_provider", peer.toUri()}});
+      body["goodput_edges"].push_back({{"src_provider", peer.toUri()},
+                                        {"dst_provider", observer.toUri()}});
+      body["peer_boot_epochs"][peer.toUri()] = "cache-control-boot";
+    }
+    body["measurement_kinds"] = NativeJson::array({"active_probe_goodput", "active_probe_rtt"});
+    auto scope = body;
+    for (const auto* field : {"action", "measurement_kinds", "scope_digest", "peer_boot_epochs"})
+      scope.erase(field);
+    scope["schema"] = "ndnsf-di-placement-probe-scope-v1";
+    call.scopeDigest = ndnsf::di::nativePlanningDigest(ndnsf::di::nativeCanonicalJson(scope));
+    body["scope_digest"] = call.scopeDigest;
+    lastRequest = body;
+    const auto wire = ndnsf::di::nativeCanonicalJson(body);
+    BOOST_REQUIRE_LE(wire.size(), 4096);
+    ndn::Buffer payload(wire.begin(), wire.end());
+    call.request.setPayload(payload, payload.size());
+    std::optional<ResponseMessage> response;
+    handler(requester, observer, probeService, ndn::Name("/cache-goodput-control"),
+      call.request, [&] (ResponseMessage value) { response = std::move(value); });
+    BOOST_REQUIRE(response);
+    BOOST_REQUIRE_MESSAGE(response->getStatus(), response->getErrorInfo());
+    const auto reply = response->getPayload();
+    BOOST_CHECK_LE(reply.size(), ndnsf::di::NATIVE_PLACEMENT_PROBE_RESPONSE_MAX_BYTES);
+    BOOST_CHECK(!ServiceProviderTestAccess::activeProbeScopeOpen(owner, call.scopeDigest));
+    BOOST_CHECK_EQUAL(peerInterests, 0);
+    return ndnsf::di::nativeParseJson(std::string(
+      reinterpret_cast<const char*>(reply.data()), reply.size()));
+  };
+  const ndn::Name first("/cache/source/0");
+  ServiceProviderTestAccess::seedReusableProbeSamples(owner, first, "cache-control-boot");
+  ServiceProviderTestAccess::ageProbeCaptures(owner, 3000);
+  const auto complete = query({first});
+  BOOST_CHECK(complete.at("cache_complete").get<bool>());
+  BOOST_REQUIRE_EQUAL(complete.at("observations").size(), 2);
+  for (const auto& row : complete.at("observations")) {
+    if (row.at("kind") == "active_probe_goodput")
+      BOOST_CHECK_EQUAL(row.at("probe_rate_status").get<std::string>(), "MEASURED_GOODPUT");
+  }
+  NativeOfferBindingContext binding;
+  binding.requestId = lastRequest.at("request_id").get<std::string>();
+  binding.attempt = lastRequest.at("attempt").get<std::uint64_t>();
+  binding.requesterIdentity = requester.toUri();
+  binding.serviceName = service.toUri();
+  binding.deadlineMs = lastRequest.at("deadline_ms").get<std::uint64_t>();
+  binding.candidateProviders = lastRequest.at("provider_roster").get<std::vector<std::string>>();
+  binding.allowedRttPairs = lastRequest.at("rtt_pairs").get<std::vector<NativeJson>>();
+  binding.allowedGoodputEdges = lastRequest.at("goodput_edges").get<std::vector<NativeJson>>();
+  binding.placementObservationSnapshot = {
+    {"expires_at_ms", binding.deadlineMs},
+    {"eligible_link_observations", NativeJson::array({NativeJson{{"source_kind", "ACK_CACHE"}}})},
+    {"provider_offers", NativeJson::array({
+      NativeJson{{"provider", observer.toUri()}, {"boot_epoch", owner.getProviderBootEpoch()},
+                 {"expires_at_ms", binding.deadlineMs}},
+      NativeJson{{"provider", first.toUri()}, {"boot_epoch", "cache-control-boot"},
+                 {"expires_at_ms", binding.deadlineMs}}})}};
+  binding.placementObservationSnapshotDigest = nativePlanningDigest(
+    nativeCanonicalJson(binding.placementObservationSnapshot));
+  NativePlacementProbeObserverV1 requested;
+  requested.observerProvider = observer.toUri();
+  requested.rttPairs.push_back({observer.toUri(), first.toUri()});
+  requested.goodputEdges.push_back({first.toUri(), observer.toUri()});
+  const auto nonce = lastRequest.at("intent_nonce").get<std::string>();
+  const auto nowMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto accepted = [&](const NativeJson& reply) {
+    return isCompleteNativePlacementProbeCacheResponseV1(binding, requested, nonce, reply, nowMs);
+  };
+  BOOST_CHECK(accepted(complete));
+  auto threeSecondsOld = complete;
+  for (auto& row : threeSecondsOld["observations"]) {
+    row["observed_at_ms"] = nowMs - 3000;
+    row["expires_at_ms"] = nowMs + 2000;
+  }
+  BOOST_CHECK(accepted(threeSecondsOld));
+  const auto rejectMutation = [&](std::function<void(NativeJson&)> mutate) {
+    auto changed = complete;
+    mutate(changed);
+    BOOST_CHECK(!accepted(changed));
+  };
+  rejectMutation([](NativeJson& v) { v.erase("cache_complete"); });
+  rejectMutation([](NativeJson& v) { v["cache_complete"] = false; });
+  rejectMutation([](NativeJson& v) { v["omitted_goodput_count"] = std::uint64_t{1}; });
+  rejectMutation([](NativeJson& v) { v["observations"].erase(v["observations"].begin()); });
+  rejectMutation([](NativeJson& v) { v["observations"].push_back(v["observations"].front()); });
+  rejectMutation([](NativeJson& v) { v["observer_boot_epoch"] = "foreign-boot"; });
+  rejectMutation([](NativeJson& v) { v["intent_nonce"] = "foreign-nonce-000000000000"; });
+  rejectMutation([](NativeJson& v) { v["observations"][0]["peer_boot_epoch"] = "foreign-boot"; });
+  rejectMutation([&](NativeJson& v) {
+    v["observations"][0]["observed_at_ms"] = nowMs - 4000;
+    v["observations"][0]["expires_at_ms"] = nowMs + 1000;
+  });
+  rejectMutation([&](NativeJson& v) { v["observations"][0]["observed_at_ms"] = nowMs + 1; });
+  rejectMutation([&](NativeJson& v) { v["observations"][0]["expires_at_ms"] = nowMs; });
+  rejectMutation([](NativeJson& v) {
+    for (auto& row : v["observations"])
+      if (row["kind"] == "active_probe_goodput") row["probe_profile_validated"] = false;
+  });
+  rejectMutation([](NativeJson& v) {
+    for (auto& row : v["observations"])
+      if (row["kind"] == "active_probe_goodput") row["probe_rate_status"] = "UNKNOWN";
+  });
+  auto expiredBinding = binding;
+  expiredBinding.placementObservationSnapshot["expires_at_ms"] = nowMs;
+  BOOST_CHECK(!isCompleteNativePlacementProbeCacheResponseV1(
+    expiredBinding, requested, nonce, complete, nowMs));
+  expiredBinding = binding;
+  expiredBinding.placementObservationSnapshot["provider_offers"][0]["expires_at_ms"] = nowMs;
+  BOOST_CHECK(!isCompleteNativePlacementProbeCacheResponseV1(
+    expiredBinding, requested, nonce, complete, nowMs));
+  ServiceProviderTestAccess::seedReusableProbeSamples(owner, first, "cache-control-boot", false);
+  const auto badQuality = query({first});
+  BOOST_CHECK(!badQuality.at("cache_complete").get<bool>());
+  BOOST_CHECK_EQUAL(badQuality.at("omitted_goodput_count").get<std::size_t>(), 1);
+  std::vector<ndn::Name> peers;
+  for (std::size_t i = 0; i < 8; ++i) {
+    ndn::Name peer("/cache/source/" + std::to_string(i));
+    ServiceProviderTestAccess::seedReusableProbeSamples(owner, peer, "cache-control-boot");
+    peers.push_back(std::move(peer));
+  }
+  BOOST_REQUIRE_EQUAL(owner.getCachedPeerProbeSamples(peers).size(), 16);
+  const auto bounded = query(peers);
+  BOOST_CHECK(!bounded.at("cache_complete").get<bool>());
+  BOOST_CHECK_LT(bounded.at("observations").size(), 16);
+  BOOST_CHECK_GT(bounded.at("omitted_rtt_count").get<std::size_t>() +
+                   bounded.at("omitted_goodput_count").get<std::size_t>(), 0);
 }
 
 BOOST_AUTO_TEST_CASE(Spec197TwoSourceWarmedResponseSurvivesEncryptedSegmentationAndMerge)
@@ -999,7 +1429,7 @@ BOOST_AUTO_TEST_CASE(Spec197TwoSourceWarmedResponseSurvivesEncryptedSegmentation
   }
   size_t encryptedSegments = 0;
   auto segmentConnection = env.providerFace(0).onSendData.connect([&] (const ndn::Data& data) {
-    if (data.getName().toUri().find("/NDNSF/LARGE-RESPONSE/") != std::string::npos &&
+    if (data.getName().toUri(ndn::name::UriFormat::ALTERNATE).find("/NDNSF/LARGE-RESPONSE/") != std::string::npos &&
         !data.getName().empty() && data.getName()[-1].isSegment()) ++encryptedSegments;
   });
   std::optional<ResponseMessage> response;
@@ -1112,6 +1542,75 @@ BOOST_AUTO_TEST_CASE(Spec197InferencePermissionDoesNotAuthorizeProbe)
   BOOST_CHECK_EQUAL(interests, 0);
 }
 
+BOOST_AUTO_TEST_CASE(PlacementScopeUsesFullNamesAndRejectsDisplayAliasDuplicates)
+{
+  BootstrapProfile profile;
+  profile.providerCount = 2;
+  NdnsfIntegrationEnvironment env(profile);
+  env.bootstrap();
+  BOOST_REQUIRE_MESSAGE(env.status() == EnvironmentStatus::Ready, env.failureReason());
+  env.pumpUntilReady();
+  auto& owner = env.provider(0);
+  const auto requester = env.user().getName();
+  const auto peer = env.provider(1).getName();
+  auto handler = ndnsf::di::makeNativePlacementMeasurementTargetedHandler(owner);
+  size_t probes = 0;
+  auto connection = env.providerFace(0).onSendInterest.connect([&](const ndn::Interest& interest) {
+    if (isActiveProbeMeasurementInterest(interest) ||
+        isProbeOperationName(interest.getName(), "PROBE-READY")) ++probes;
+  });
+  for (unsigned mutation = 0; mutation < 3; ++mutation) {
+    auto call = makePlacementProbeCall(requester, owner.getName(), peer,
+      env.profile().serviceName, {owner.getName(), peer}, false,
+      "display-alias-" + std::to_string(mutation), 5000);
+    const auto payload = call.request.getPayload();
+    auto body = ndnsf::di::nativeParseJson(std::string(
+      reinterpret_cast<const char*>(payload.data()), payload.size()));
+    body["action"] = "cache";
+    body["requester_identity"] = requester.toUri(ndn::name::UriFormat::CANONICAL);
+    body["observer_provider"] = owner.getName().toUri(ndn::name::UriFormat::ALTERNATE);
+    if (mutation == 1) {
+      auto roster = body["provider_roster"].get<std::vector<std::string>>();
+      roster.push_back(owner.getName().toUri() == owner.getName().toUri(ndn::name::UriFormat::CANONICAL)
+        ? owner.getName().toUri(ndn::name::UriFormat::ALTERNATE)
+        : owner.getName().toUri(ndn::name::UriFormat::CANONICAL));
+      std::sort(roster.begin(), roster.end());
+      body["provider_roster"] = roster;
+      body["roster_digest"] = ndnsf::di::nativePlanningDigest(ndnsf::di::nativeCanonicalJson(body["provider_roster"]));
+    }
+    if (mutation == 2) {
+      auto edges = body["rtt_pairs"].get<std::vector<NativeJson>>();
+      const auto other = owner.getName().toUri() == owner.getName().toUri(ndn::name::UriFormat::CANONICAL)
+        ? ndn::name::UriFormat::ALTERNATE : ndn::name::UriFormat::CANONICAL;
+      edges.push_back({{"src_provider", owner.getName().toUri(other)},
+                       {"dst_provider", peer.toUri(other)}});
+      std::sort(edges.begin(), edges.end(), [](const auto& a, const auto& b) {
+        return std::make_pair(a.at("src_provider").template get<std::string>(),
+                              a.at("dst_provider").template get<std::string>()) <
+               std::make_pair(b.at("src_provider").template get<std::string>(),
+                              b.at("dst_provider").template get<std::string>());
+      });
+      body["rtt_pairs"] = edges;
+    }
+    // Keep a valid original raw scope commitment, so the negative cases
+    // exercise duplicate full Name admission rather than a bad digest.
+    auto scope = body;
+    scope.erase("action"); scope.erase("measurement_kinds"); scope.erase("scope_digest");
+    scope["schema"] = "ndnsf-di-placement-probe-scope-v1";
+    body["scope_digest"] = ndnsf::di::nativePlanningDigest(ndnsf::di::nativeCanonicalJson(scope));
+    const auto wire = ndnsf::di::nativeCanonicalJson(body);
+    ndn::Buffer bytes(wire.begin(), wire.end());
+    call.request.setPayload(bytes, bytes.size());
+    std::optional<ResponseMessage> reply;
+    handler(requester, owner.getName(), ndn::Name(NETWORK_PROBE_SERVICE),
+      ndn::Name("/spec201/scope-request"), call.request,
+      [&](ResponseMessage response) { reply = std::move(response); });
+    BOOST_REQUIRE(reply);
+    BOOST_CHECK_EQUAL(reply->getStatus(), mutation == 0);
+    BOOST_CHECK_EQUAL(probes, 0U);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(TargetedPlacementMeasurementRejectsUnrequestedDirection)
 {
   BootstrapProfile profile;
@@ -1200,8 +1699,7 @@ BOOST_AUTO_TEST_CASE(AuthorizedProbesUseTimestampedPrefixNamesAndTargetSigner)
     [&] (const ndn::Interest& interest) {
       const auto sentAtMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
-      if (interest.getName().toUri().find("/PEER-PROBE-READY/") !=
-          std::string::npos) {
+      if (isProbeOperationName(interest.getName(), "PROBE-READY")) {
         readinessInterests.push_back(interest);
       }
       else if (isActiveProbeMeasurementInterest(interest)) {
@@ -1213,8 +1711,7 @@ BOOST_AUTO_TEST_CASE(AuthorizedProbesUseTimestampedPrefixNamesAndTargetSigner)
   std::vector<ndn::Data> readinessReplies;
   auto dataConnection = env.providerFace(0).onSendData.connect(
     [&] (const ndn::Data& data) {
-      if (data.getName().toUri().find("/PEER-PROBE-READY/") !=
-          std::string::npos) {
+      if (isProbeOperationName(data.getName(), "PROBE-READY")) {
         readinessReplies.push_back(data);
       }
       else {
@@ -1238,7 +1735,7 @@ BOOST_AUTO_TEST_CASE(AuthorizedProbesUseTimestampedPrefixNamesAndTargetSigner)
   BOOST_REQUIRE_EQUAL(targetReplies.size(), NETWORK_PROBE_WARMED_SEGMENTS + 1);
 
   ndn::Name readinessPrefix = target;
-  readinessPrefix.append("NDNSF").append("PEER-PROBE-READY");
+  readinessPrefix.append("NDNSF").append("RPC").append("PROBE-READY");
   std::set<ndn::Name> expectedReadinessReplyNames;
   for (const auto& interest : readinessInterests) {
     BOOST_CHECK(interest.getCanBePrefix());
@@ -1247,18 +1744,11 @@ BOOST_AUTO_TEST_CASE(AuthorizedProbesUseTimestampedPrefixNamesAndTargetSigner)
     BOOST_CHECK(interest.isParametersDigestValid());
     BOOST_CHECK_EQUAL(interest.getName().size(), readinessPrefix.size() + 3);
     if (interest.getName().size() == readinessPrefix.size() + 3) {
-      const auto timestampText = interest.getName()[readinessPrefix.size()].toUri();
-      int64_t timestampMs = 0;
-      const auto parsedTimestamp = std::from_chars(
-        timestampText.data(), timestampText.data() + timestampText.size(), timestampMs);
-      BOOST_REQUIRE(parsedTimestamp.ec == std::errc());
-      BOOST_REQUIRE(parsedTimestamp.ptr == timestampText.data() + timestampText.size());
-      BOOST_CHECK_LE(std::llabs(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count() - timestampMs),
-        1000);
-      auto expectedName = interest.getName();
-      expectedName.append("reply");
-      expectedReadinessReplyNames.insert(std::move(expectedName));
+      const auto call = probeCallFromParameters(interest);
+      BOOST_CHECK(call.target == target);
+      BOOST_CHECK(call.operation == "PROBE-READY");
+      BOOST_CHECK(matchesPeerProbeRpcName(interest, call));
+      expectedReadinessReplyNames.insert(interest.getName());
     }
   }
   BOOST_CHECK_EQUAL(expectedReadinessReplyNames.size(), readinessInterests.size());
@@ -1282,25 +1772,12 @@ BOOST_AUTO_TEST_CASE(AuthorizedProbesUseTimestampedPrefixNamesAndTargetSigner)
     BOOST_CHECK(interest.isParametersDigestValid());
     BOOST_CHECK(distinctInterestNames.insert(interest.getName()).second);
 
-    const bool isGoodput =
-      interest.getName().toUri().find("PEER-GOODPUT") != std::string::npos;
-    ndn::Name probePrefix = target;
-    probePrefix.append("NDNSF").append(isGoodput ? "PEER-GOODPUT" : "PEER-PROBE");
-    BOOST_REQUIRE_GT(interest.getName().size(), probePrefix.size());
-    const auto timestampText = interest.getName()[probePrefix.size()].toUri();
-    int64_t timestampMs = 0;
-    const auto parsedTimestamp = std::from_chars(
-      timestampText.data(), timestampText.data() + timestampText.size(), timestampMs);
-    BOOST_REQUIRE(parsedTimestamp.ec == std::errc());
-    BOOST_REQUIRE(parsedTimestamp.ptr == timestampText.data() + timestampText.size());
-    BOOST_REQUIRE_GE(timestampMs, 0);
-    BOOST_CHECK_LE(std::llabs(sent.sentAtMs - timestampMs), 1000);
-
-    const auto expectedInterestSize = probePrefix.size() + (isGoodput ? 4 : 3);
-    BOOST_CHECK_EQUAL(interest.getName().size(), expectedInterestSize);
-    auto expectedReplyName = interest.getName();
-    expectedReplyName.append("reply");
-    expectedReplyNames.insert(std::move(expectedReplyName));
+    const auto call = probeCallFromParameters(interest);
+    BOOST_CHECK(call.target == target);
+    BOOST_CHECK(call.operation == "PROBE-GOODPUT" || call.operation == "PROBE-RTT");
+    BOOST_CHECK(matchesPeerProbeRpcName(interest, call));
+    BOOST_CHECK_EQUAL(interest.getName().size(), target.size() + 6);
+    expectedReplyNames.insert(interest.getName());
   }
 
   std::set<NetworkTelemetrySampleKind> observedKinds;
@@ -1444,7 +1921,7 @@ BOOST_AUTO_TEST_CASE(AuthorizedProviderPairCollectsBothDirectionsWithinSharedDea
     BOOST_CHECK(rtt->targetSignatureValidated);
     BOOST_CHECK(rtt->probeSignatureValid);
     BOOST_CHECK(!rtt->dataName.empty());
-    BOOST_CHECK(rtt->dataName.toUri().find("/NDNSF/PEER-PROBE/") != std::string::npos);
+    BOOST_CHECK(isProbeOperationName(rtt->dataName, "PROBE-RTT"));
     const auto goodput = std::find_if(
       collection.observations.begin(), collection.observations.end(),
       [] (const NetworkTelemetrySnapshot& observation) {
@@ -1467,7 +1944,7 @@ BOOST_AUTO_TEST_CASE(AuthorizedProviderPairCollectsBothDirectionsWithinSharedDea
         goodput->providerName == observer && goodput->peerName == peer &&
         goodput->probeComplete && sourceTimingValid &&
         goodput->targetSignatureValidated && !goodput->dataName.empty() &&
-        goodput->dataName.toUri().find("/NDNSF/PEER-GOODPUT/") != std::string::npos &&
+        isProbeOperationName(goodput->dataName, "PROBE-GOODPUT") &&
         goodput->probeSegmentsSent == NETWORK_PROBE_WARMED_SEGMENTS && goodput->receivedSegments == NETWORK_PROBE_WARMED_SEGMENTS,
       "observer=" << observer << " peer=" << peer
       << " provider=" << goodput->providerName
@@ -1514,10 +1991,9 @@ BOOST_AUTO_TEST_CASE(CancelledProbeCollectionStopsAfterFirstGoodputInterest)
   std::vector<ndn::Interest> transmittedInterests;
   auto interestConnection = env.providerFace(1).onSendInterest.connect(
     [&] (const ndn::Interest& interest) {
-      const auto uri = interest.getName().toUri();
       if (isActiveProbeMeasurementInterest(interest)) {
         transmittedInterests.push_back(interest);
-        if (uri.find("/PEER-GOODPUT/") != std::string::npos) {
+        if (isProbeOperationName(interest.getName(), "PROBE-GOODPUT")) {
           cancelled->store(true, std::memory_order_relaxed);
         }
       }
@@ -1536,11 +2012,11 @@ BOOST_AUTO_TEST_CASE(CancelledProbeCollectionStopsAfterFirstGoodputInterest)
   BOOST_CHECK(cancelled->load(std::memory_order_relaxed));
   BOOST_CHECK_EQUAL(std::count_if(transmittedInterests.begin(),
     transmittedInterests.end(), [] (const ndn::Interest& interest) {
-      return interest.getName().toUri().find("/PEER-GOODPUT/") != std::string::npos;
+      return isProbeOperationName(interest.getName(), "PROBE-GOODPUT");
     }), 1);
   BOOST_CHECK_EQUAL(std::count_if(transmittedInterests.begin(),
     transmittedInterests.end(), [] (const ndn::Interest& interest) {
-      return interest.getName().toUri().find("/PEER-PROBE/") != std::string::npos;
+      return isProbeOperationName(interest.getName(), "PROBE-RTT");
     }), 1);
   BOOST_CHECK(result->observations.empty());
   BOOST_CHECK(!observerProvider.authorizeCandidatePeerObservationScope(
@@ -1562,7 +2038,7 @@ BOOST_AUTO_TEST_CASE(Spec197SourcePendingTrainQuotaExpiryAndCancellation)
   const std::vector<NetworkTelemetryDataEdge> edges{{source.getName(), observer}};
   size_t responses = 0;
   auto connection = env.providerFace(0).onSendData.connect([&] (const ndn::Data& data) {
-    if (data.getName().toUri().find("/PEER-GOODPUT/") != std::string::npos)
+    if (isProbeOperationName(data.getName(), "PROBE-GOODPUT"))
       ++responses;
   });
   auto registration = std::make_shared<std::atomic<bool>>(false);
@@ -1617,7 +2093,7 @@ BOOST_AUTO_TEST_CASE(Spec197SourcePartialTrainExpiresWithoutDuplicateRenewal)
     source, "source-clock", candidates, edges, registration));
   size_t responses = 0;
   auto connection = env.providerFace(0).onSendData.connect([&] (const ndn::Data& data) {
-    if (data.getName().toUri().find("/PEER-GOODPUT/") != std::string::npos)
+    if (isProbeOperationName(data.getName(), "PROBE-GOODPUT"))
       ++responses;
   });
   const auto beforeAdmission = std::chrono::steady_clock::now();
@@ -1659,7 +2135,7 @@ BOOST_AUTO_TEST_CASE(Spec197RegistrationCloseCancelsPendingSourceTrain)
   const std::string scope = "sha256:" + std::string(64, 'e');
   size_t responses = 0;
   auto connection = env.providerFace(0).onSendData.connect([&] (const ndn::Data& data) {
-    if (data.getName().toUri().find("/PEER-GOODPUT/") != std::string::npos)
+    if (isProbeOperationName(data.getName(), "PROBE-GOODPUT"))
       ++responses;
   });
   auto registration = source.addScopedTargetedService(
@@ -1775,7 +2251,7 @@ BOOST_AUTO_TEST_CASE(Spec197CollectorRejectsMalformedSignedTrainReports)
   std::optional<ndn::Data> heldFirst;
   auto dataLink = sourceFace.onSendData.connect([&] (const ndn::Data& original) {
     auto packet = original;
-    if (original.getName().toUri().find("/PEER-GOODPUT/") != std::string::npos) {
+    if (isProbeOperationName(original.getName(), "PROBE-GOODPUT")) {
       auto content = original.getContent();
       content.parse();
       BOOST_REQUIRE_EQUAL(content.elements().size(), 1U);

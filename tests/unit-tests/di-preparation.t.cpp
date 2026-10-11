@@ -2,17 +2,21 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 
 #include <boost/test/unit_test.hpp>
 
 #include <atomic>
+#include <cfenv>
 #include <condition_variable>
 #include <exception>
 #include <fstream>
 #include <future>
 #include <iterator>
+#include <locale>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -227,7 +231,7 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
   const auto canonicalGraphDigest = digest("reference-canonical-graph");
   const auto profileDigest = digest("reference-profile");
   const auto assemblerDigest = digest("reference-assembler");
-  const auto catalog = NativeJson{
+  auto catalog = NativeJson{
     {"schema", "ndnsf-di-native-request-catalog-v1"},
     {"model", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"data_name", "/qwen/reference/source"}, {"digest", sourceDigest},
@@ -253,7 +257,7 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
     encodedNodes.push_back({{"id", nodes.at(i)}, {"opType", nodes.at(i)}, {"ordinal", i}});
     canonicalNodeIndices[nodes.at(i).get<std::string>()] = i;
   }
-  const auto preparedMetadata = nativeCanonicalJson(NativeJson{
+  auto preparedMetadata = nativeCanonicalJson(NativeJson{
     {"schema", "ndnsf-di-prepared-metadata-v1"},
     {"descriptor", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"name", "/qwen/reference/source"}, {"digest", sourceDigest}, {"bytes", 777},
@@ -264,6 +268,39 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
                       {"canonicalNodeIndices", canonicalNodeIndices},
                       {"canonicalIdentity", {{"graphDigest", canonicalGraphDigest},
                                               {"initializerDigest", ""}}}}}});
+
+  // Every prepared hit now restores the request catalog and prepares its
+  // source-bound roles, including the fresh-owner/fork checks below.
+  auto profileMetadata = nativeParseJson(preparedMetadata);
+  NativeJson tensors = NativeJson::object();
+  for (const auto& name : {"input", "hidden-0", "hidden-1", "output"})
+    tensors[name] = NativeJson{{"name", name}, {"dtype", "float32"}, {"shape", {1, 1}}};
+  NativeJson graphMetadata{
+    {"initializers", NativeJson::array()}, {"tensors", tensors},
+    {"tensorConsumers", {{"input", {0}}, {"hidden-0", {1}}, {"hidden-1", {2}}}},
+    {"tensorProducers", {{"hidden-0", 0}, {"hidden-1", 1}, {"output", 2}}}};
+  auto output = tensors.at("output");
+  output["estimatedBytes"] = 4;
+  NativeJson modelOutputs = NativeJson::array({output});
+  for (const auto& family : {"attention_kv", "recurrent_state", "convolution_state"}) {
+    const auto inputName = std::string(family) + "_in";
+    const auto outputName = std::string(family) + "_out";
+    for (const auto& name : {inputName, outputName})
+      graphMetadata["tensors"][name] = NativeJson{
+        {"name", name}, {"dtype", "float32"}, {"shape", {1, 1, 1}}, {"sizeBytes", 4}};
+    graphMetadata["tensorConsumers"][inputName] = NativeJson::array({1});
+    graphMetadata["tensorProducers"][outputName] = 1;
+    auto stateOutput = graphMetadata["tensors"].at(outputName);
+    stateOutput["estimatedBytes"] = 4;
+    modelOutputs.push_back(std::move(stateOutput));
+    catalog["state_inputs"][role][inputName] = NativeJson::array({inputName});
+    catalog["state_outputs"][role][outputName] = NativeJson::array({outputName});
+  }
+  profileMetadata["sourceGraph"]["graphMetadataJson"] = nativeCanonicalJson(graphMetadata);
+  profileMetadata["sourceGraph"]["modelOutputs"] = std::move(modelOutputs);
+  profileMetadata["sourceGraph"]["canonicalIdentity"]["initializerDigest"] =
+    digest("reference-no-initializer");
+  preparedMetadata = nativeCanonicalJson(profileMetadata);
 
   NativePreparedCanonicalPublication publication;
   publication.sourceDataName = "/qwen/reference/source";
@@ -429,11 +466,134 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
 
   const auto restoreControl = NativeAssemblyControl{
     std::chrono::steady_clock::now() + std::chrono::seconds(5), [] {}, 1U << 20, 1U << 20};
+  auto profiledCatalog = catalog;
+  const auto transferProfile = NativeJson{{"schema", "ndnsf-di-request-transfer-profile-v1"},
+    {"source_digest", catalog.at("source").at("digest")},
+    {"input_digest", nativePlanningDigest("initial-input")}, {"initial_context", true},
+    {"dependencies", NativeJson::array()}};
+  profiledCatalog["request_transfer_profiles"] = NativeJson::array({transferProfile});
+  NativeCanonicalSource profileReference;
+  profileReference.preparedMetadataJson = preparedMetadata;
+  profileReference.materialManifest = materialManifest;
+  const auto fixedSnapshotColdBefore = ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes;
+  const auto restoredProfile = NativeRequestCatalog::load(
+    nativeCanonicalJson(profiledCatalog), profileReference, restoreControl);
+  BOOST_CHECK_GT(ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes,
+    fixedSnapshotColdBefore);
+  BOOST_REQUIRE(restoredProfile.planningCache);
+  BOOST_REQUIRE(!restoredProfile.planningCache->candidates.empty());
+  const auto* cachedRoles = restoredProfile.planningCache->preparedRoleJson(0);
+  BOOST_REQUIRE(cachedRoles);
+  const auto& preparedRoles = restoredProfile.planningCache->candidates[0].roles;
+  BOOST_REQUIRE_EQUAL(cachedRoles->size(), preparedRoles.size());
+  NativeJson expectedRoles = NativeJson::array();
+  for (const auto& role : preparedRoles) expectedRoles.push_back(nativeAssemblyJson(role));
+  BOOST_CHECK(*cachedRoles == expectedRoles);
+  const auto workBeforeLookup = ndnsf::di::detail::fixedAssignmentWork();
+  BOOST_CHECK_EQUAL(restoredProfile.planningCache->preparedRoleJson(0), cachedRoles);
+  BOOST_CHECK(!restoredProfile.planningCache->preparedRoleJson(
+    restoredProfile.planningCache->candidates.size()));
+  BOOST_CHECK_EQUAL(ndnsf::di::detail::fixedAssignmentWork().roleEncodes, workBeforeLookup.roleEncodes);
+  const auto modelOwner = restoredProfile.preparation->modelRefFor(restoredProfile.model.descriptor);
+  BOOST_REQUIRE(modelOwner);
+  const auto templateOwner = restoredProfile.planningCache->validatedTemplate(
+    *modelOwner, restoredProfile.cooperativeSplitter.get());
+  BOOST_REQUIRE(templateOwner);
+  const auto& preparedCandidate = restoredProfile.planningCache->candidates[0].candidate;
+  NativeJson snapshot{
+    {"request_id", "/snapshot/request/1"},
+    {"prepared_role_graph", NativeJson::array({NativeJson{
+      {"candidate_digest", preparedCandidate.candidateDigest},
+      {"graph_digest", preparedCandidate.graphDigest},
+      {"node_roles", preparedCandidate.nodeRoles},
+      {"stage_order", preparedCandidate.executionPlan.roles},
+      {"roles", *cachedRoles},
+      {"dependencies", NativeJson::array({NativeJson{{"estimated_bytes", 12}}})}}})}};
+  const auto checkSnapshot = [&](const NativeJson& value, bool reuse) {
+    const auto legacy = nativeCanonicalJson(value);
+    const auto before = ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes;
+    const auto actual = nativePlacementObservationCanonicalJson(value, templateOwner.get());
+    BOOST_CHECK_EQUAL(actual, legacy);
+    if (reuse)
+      BOOST_CHECK_EQUAL(ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes, before);
+    else
+      BOOST_CHECK_GT(ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes, before);
+  };
+  checkSnapshot(snapshot, true);
+  auto nextSnapshot = snapshot;
+  nextSnapshot["request_id"] = "/snapshot/request/2";
+  nextSnapshot["prepared_role_graph"][0]["dependencies"][0]["estimated_bytes"] = 999;
+  nextSnapshot["new_current_field"] = NativeJson{{"sample", 0.125}};
+  checkSnapshot(nextSnapshot, true);
+  BOOST_CHECK_NE(nativePlacementObservationCanonicalJson(snapshot, templateOwner.get()),
+    nativePlacementObservationCanonicalJson(nextSnapshot, templateOwner.get()));
+  BOOST_CHECK_EQUAL(restoredProfile.planningCache->validatedTemplate(
+    *modelOwner, restoredProfile.cooperativeSplitter.get()).get(), templateOwner.get());
+  const auto noProofBefore = ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes;
+  BOOST_CHECK_EQUAL(nativePlacementObservationCanonicalJson(snapshot), nativeCanonicalJson(snapshot));
+  BOOST_CHECK_GT(ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes, noProofBefore);
+  for (const auto* field : {"candidate_digest", "graph_digest", "node_roles", "stage_order", "roles"}) {
+    auto changed = snapshot;
+    changed["prepared_role_graph"][0][field] = nullptr;
+    checkSnapshot(changed, false);
+  }
+  for (const auto& value : {NativeJson(-0.0), NativeJson(0), NativeJson(0.125)}) {
+    auto changed = snapshot;
+    changed["prepared_role_graph"][0]["roles"][0]["postprocess_confidence_threshold"] = value;
+    checkSnapshot(changed, false);
+  }
+  auto unknownRoleField = snapshot;
+  unknownRoleField["prepared_role_graph"][0]["roles"][0]["unknown"] = true;
+  checkSnapshot(unknownRoleField, false);
+  struct RestoreSnapshotEnvironment {
+    int rounding = std::fegetround();
+    std::locale locale;
+    ~RestoreSnapshotEnvironment() { std::fesetround(rounding); std::locale::global(locale); }
+  } restoreSnapshotEnvironment;
+  for (const auto mode : {FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO}) {
+    BOOST_REQUIRE_EQUAL(std::fesetround(mode), 0);
+    checkSnapshot(snapshot, false);
+  }
+  BOOST_REQUIRE_EQUAL(std::fesetround(FE_TONEAREST), 0);
+  struct SnapshotDecimalComma : std::numpunct<char> {
+    char do_decimal_point() const override { return ','; }
+  };
+  std::locale::global(std::locale(std::locale::classic(), new SnapshotDecimalComma));
+  checkSnapshot(snapshot, false);
+  std::locale::global(std::locale::classic());
+  checkSnapshot(snapshot, true);
+  // A distinct locale with the same numeric format disables cold hints
+  // without invoking the legacy catalog's directional-float exception.
+  std::locale::global(std::locale(std::locale::classic(), new std::numpunct<char>));
+  BOOST_REQUIRE(std::locale() != std::locale::classic());
+  const auto unqualifiedColdBefore = ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes;
+  const auto nonClassicCatalog = NativeRequestCatalog::load(
+    nativeCanonicalJson(profiledCatalog), profileReference, restoreControl);
+  BOOST_CHECK_EQUAL(ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes,
+    unqualifiedColdBefore);
+  const auto nonClassicModel = nonClassicCatalog.preparation->modelRefFor(
+    nonClassicCatalog.model.descriptor);
+  BOOST_REQUIRE(nonClassicModel);
+  const auto nonClassicTemplate = nonClassicCatalog.planningCache->validatedTemplate(
+    *nonClassicModel, nonClassicCatalog.cooperativeSplitter.get());
+  BOOST_REQUIRE(nonClassicTemplate);
+  std::locale::global(std::locale::classic());
+  const auto reverseModeBefore = ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes;
+  BOOST_CHECK_EQUAL(nativePlacementObservationCanonicalJson(snapshot, nonClassicTemplate.get()),
+    nativeCanonicalJson(snapshot));
+  BOOST_CHECK_GT(ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes, reverseModeBefore);
+  NativePreparedPlanningCache mutableCopy(*restoredProfile.planningCache);
+  BOOST_CHECK(!mutableCopy.preparedRoleJson(0));
+  mutableCopy.candidates[0].roles[0].backend = "changed-backend";
+  BOOST_CHECK(!mutableCopy.preparedRoleJson(0));
+  BOOST_CHECK(restoredProfile.planningCache->requestTransferProfiles ==
+    NativeJson::array({transferProfile}));
   auto yoloCatalog = catalog;
   yoloCatalog["splitter"] = NativeJson{
     {"kind", "YOLO"}, {"components", NativeJson::array()}};
   NativeCanonicalSource yoloReference;
   yoloReference.preparedMetadataJson = preparedMetadata;
+  yoloReference.materialManifest = materialManifest;
   BOOST_CHECK_EXCEPTION(
     NativeRequestCatalog::load(nativeCanonicalJson(yoloCatalog), yoloReference, restoreControl),
     std::invalid_argument, [] (const std::invalid_argument& error) {
@@ -769,7 +929,8 @@ BOOST_AUTO_TEST_CASE(PreparedPackageOwnsPublicationLeaseUntilCacheEviction)
     },
     [&publicationCalls, weakPublicationLease]
       (const PreparedServiceRequest&, const std::vector<std::uint8_t>& bytes,
-       const std::string& label, const NativeRequestControl& control) {
+       const std::string& label, const ndn_service_framework::PublishedContentName&,
+       const NativeRequestControl& control) {
       control.requireActive();
       publicationCalls.fetch_add(1, std::memory_order_relaxed);
       ndn_service_framework::LargeDataPublishResult result;

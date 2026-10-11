@@ -3050,6 +3050,11 @@ class AutomaticPlanningCoordinator:
         resolves the immutable canonical layer identities.
         """
 
+        from ..naming import _name, canonical_name_uri
+        owner = getattr(self.service_user, "requester_identity", None)
+        if not isinstance(owner, (str, bytes, bytearray, memoryview, list, tuple)) or not _name(owner):
+            raise ValueError("native User requester identity is unavailable")
+        requester_identity = canonical_name_uri(owner)
         request_started = time.perf_counter()
         timings: dict[str, float] = {}
         if timeout_ms <= self.ack_timeout_ms:
@@ -3608,42 +3613,11 @@ class AutomaticPlanningCoordinator:
         roles: list[CollaborationRole] = []
         for spec in proposal.roles:
             role = proposal_role_key(spec)
-            artifact_name = (
-                canonical_published.artifact_data_names_by_role.get(
-                    role,
-                    canonical_published.artifact_data_names_by_role.get(
-                        spec.role, ""))
-                if canonical_published is not None
-                else self._v3_artifact_name(model, graph, spec, adapter))
-            if not artifact_name:
-                raise ValueError(
-                    f"published split omitted rank artifact {role}")
-            artifact_names[role] = artifact_name
-            fetch_name = (
-                canonical_published.artifact_fetch_data_names_by_role.get(
-                    role,
-                    canonical_published.artifact_fetch_data_names_by_role.get(
-                        spec.role, artifact_name),
-                )
-                if canonical_published is not None else artifact_name)
-            if not fetch_name:
-                raise ValueError(
-                    f"published split omitted rank fetch reference {role}")
-            # A Provider whose accepted V3 offer declared preparation from
-            # local material (or exact residency) prepares the role without
-            # any external fetch.  Its sealed-plan fetch reference stays
-            # empty while the canonical artifact identity remains bound in
-            # ``artifact_names`` and the V3 projection digest.  A Provider
-            # that advertises provisioning (can_provision=True) still needs
-            # a real external fetch reference.
             selected_provider = str(proposal.provider_by_role.get(role, ""))
-            selected_offer = provider_offers.get(selected_provider)
-            if selected_offer is not None and not bool(
-                    selected_offer.can_provision) and (
-                    bool(selected_offer.preparation_accepted)
-                    or (selected_offer.execution_disposition
-                        is ExecutionDisposition.ACCEPT_IF_EXACT_REUSE)):
-                fetch_name = ""
+            artifact_name, fetch_name = self._v3_artifact_references(
+                canonical_published, role,
+                provider_offers.get(selected_provider))
+            artifact_names[role] = artifact_name
             artifact_fetch_names[role] = fetch_name
             roles.append(CollaborationRole(
                 role=role, service=self.service_name, artifact=artifact_name,
@@ -3699,10 +3673,8 @@ class AutomaticPlanningCoordinator:
                     input.transport_mode, "value", input.transport_mode)),
             })
             input_endpoint = TensorEndpoint(
-                producer_namespace=self.service_name,
-                requester=(collaboration.request_id
-                           if collaboration.request_id.startswith("/")
-                           else "/" + collaboration.request_id),
+                producer_namespace=requester_identity,
+                requester=requester_identity,
                 request_id=collaboration.request_id,
                 attempt=core.attempt,
                 plan_digest=plan_digest,
@@ -3814,9 +3786,7 @@ class AutomaticPlanningCoordinator:
                         })
                         endpoint = TensorEndpoint(
                             producer_namespace=producer_namespace,
-                            requester=(collaboration.request_id
-                                       if collaboration.request_id.startswith("/")
-                                       else "/" + collaboration.request_id),
+                            requester=requester_identity,
                             request_id=collaboration.request_id,
                             attempt=core.attempt,
                             plan_digest=plan_digest,
@@ -3824,6 +3794,8 @@ class AutomaticPlanningCoordinator:
                             group_epoch=group_epoch,
                             operation=operation,
                             round=round_id,
+                            naming_operation_stride=(generation_contract.streaming_operation_stride
+                                if generation_contract is not None else 0),
                             source_kind=TensorEndpointSource.ROLE,
                             producer_role=producer,
                             producer_rank=producer_spec.rank,
@@ -4372,22 +4344,24 @@ class AutomaticPlanningCoordinator:
         return tuple(certified)
 
     @staticmethod
-    def _v3_artifact_name(
-        model: ModelRef, graph: Any, spec: RoleAssemblySpec,
-        adapter: ModelFamilyAdapter,
-    ) -> str:
-        """Build the stable Repo identity carried in generic Role.artifact."""
-
-        from .canonical_artifacts import canonical_layer_name
-
-        return canonical_layer_name(
-            publisher="/ndnsf-di", model_name=model.model_name,
-            model_digest=model.content_digest, profile=adapter.descriptor.name,
-            graph_digest=str(graph.graph_digest), role_kind=spec.role_kind,
-            layer_begin=spec.layer_begin, layer_end=spec.layer_end,
-            rank=spec.rank, recipe_digest=spec.recipe_digest,
-            object_digest=spec.artifact_digest,
-        )
+    def _v3_artifact_references(published, role: str, offer) -> tuple[str, str]:
+        """Use published references; local preparation creates no Data locator."""
+        local = offer is not None and not bool(offer.can_provision) and (
+            bool(offer.preparation_accepted)
+            or offer.execution_disposition is ExecutionDisposition.ACCEPT_IF_EXACT_REUSE)
+        if published is None:
+            if local:
+                return "", ""
+            raise ValueError(f"role {role} requires an actual published artifact reference")
+        artifact = published.artifact_data_names_by_role.get(role, "")
+        if not artifact:
+            raise ValueError(f"published split omitted rank artifact {role}")
+        fetch = published.artifact_fetch_data_names_by_role.get(role, artifact)
+        if local:
+            return artifact, ""
+        if not fetch:
+            raise ValueError(f"published split omitted rank fetch reference {role}")
+        return artifact, fetch
 
     def request_application(
         self,
@@ -4479,6 +4453,7 @@ class AutomaticPlanningCoordinator:
         after ACK/placement and before Selection commit so the committed plan
         is self-contained and providers never have to guess or share keys.
         """
+        from ..repo_reference import publication_manifest_name
         data_names: dict[str, str] = {}
         for scope in key_scopes:
             remaining_ms = int(deadline_ms - int(time.time() * 1000))
@@ -4493,7 +4468,7 @@ class AutomaticPlanningCoordinator:
             if not result.success:
                 raise RuntimeError(
                     f"scope key publish failed for {scope}: {result.error}")
-            data_name = str(result.encrypted_data_name)
+            data_name = publication_manifest_name(result)
             if not data_name.startswith("/"):
                 raise ValueError(
                     f"scope key publication returned a non-absolute Data name: {scope}")

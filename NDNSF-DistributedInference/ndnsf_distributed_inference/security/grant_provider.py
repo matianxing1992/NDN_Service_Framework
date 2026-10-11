@@ -8,26 +8,14 @@ slice or a fetched signed Data over NDN) verifies it, wraps the content key
 to the Provider certificate, and returns a signed ``KeyGrantV1`` whose
 non-secret name/digest reference enters the final plan.
 
-The canonical grant Data name is the Spec170 ``artifact-assembly-v1``
-grammar. Name components carry bare hex digests (no ``sha256:`` prefix):
-
-    /<authority>/NDNSF-DI/KEY-GRANT/v1
-      /PROVIDER/<sha256(provider-identity)>
-      /REQ/<request-id>/ATTEMPT/<attempt>/PLAN-CORE/<plan-core-digest>
-      /MODEL/<model-manifest-digest>/EPOCH/<protection-epoch>
-      /GRANT/<grant-digest>
-
-The configured authority endpoint can be hosted under the requester's
-existing publication identity. That route is separate from the registry's
-logical policy authority ID carried and authenticated in the grant payload.
+Grant Data is named by the shared native C08 codec under its actual
+publication actor. The logical policy authority remains authenticated in
+the signed grant payload; it does not determine the Data producer prefix.
 """
 
 from __future__ import annotations
 
-import hashlib
-import re
 import time
-import urllib.parse
 from typing import Callable
 
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -35,51 +23,15 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from ..core.protected_artifacts import GrantRequestV1, KeyGrantV1
 from ..sdk.placement import GrantBindingV1, ProviderGrantViewV1
 
-_NAME_SAFE = re.compile(r"^[A-Za-z0-9._~-]+$")
-_AUTHORITY_NAME_SAFE = re.compile(r"^/[A-Za-z0-9._~/:-]+$")
-
-
-def _bare_hex_digest(value: str) -> str:
-    if not value.startswith("sha256:"):
-        raise ValueError("digest is not canonical")
-    raw = value[len("sha256:"):]
-    if len(raw) != 64:
-        raise ValueError("digest length is invalid")
-    return raw
-
-
-def canonical_grant_name(*, authority: str, provider_identity: str,
+def canonical_grant_name(*, publication_identity: str, provider_identity: str,
                          request_id: str, attempt: int, plan_core_digest: str,
                          model_manifest_digest: str, protection_epoch: str,
                          grant_digest: str) -> str:
-    """Spec170 KEY-GRANT/v1 Data name for one grant.
-
-    Request identifiers in live NDNSF flows are slash-delimited NDN names
-    (e.g. /spec180-y-b-<nonce>); NDN name components cannot contain ``/``,
-    so request/epoch strings are percent-encoded component-safely.  The
-    Provider fetches the grant by the exact binding name, so both sides
-    stay consistent without an extra channel.
-    """
-    if (not _AUTHORITY_NAME_SAFE.fullmatch(authority)
-            or not authority.startswith("/")):
-        raise ValueError("authority identity is not name-safe")
-    if not request_id or attempt <= 0:
-        raise ValueError("request identity is not name-safe")
-    if not protection_epoch:
-        raise ValueError("protection epoch is not name-safe")
-    request_id = urllib.parse.quote(request_id, safe="")
-    protection_epoch = urllib.parse.quote(protection_epoch, safe="")
-    provider_hex = hashlib.sha256(
-        provider_identity.encode("utf-8")).hexdigest()
-    return (
-        f"{authority}/NDNSF-DI/KEY-GRANT/v1"
-        f"/PROVIDER/{provider_hex}"
-        f"/REQ/{request_id}/ATTEMPT/{attempt}"
-        f"/PLAN-CORE/{_bare_hex_digest(plan_core_digest)}"
-        f"/MODEL/{_bare_hex_digest(model_manifest_digest)}"
-        f"/EPOCH/{protection_epoch}"
-        f"/GRANT/{_bare_hex_digest(grant_digest)}"
-    )
+    """Use the native producer-owned C08 grammar without duplicating its codec."""
+    from ndnsf import _ndnsf
+    return str(_ndnsf.canonical_native_grant_name(
+        publication_identity, provider_identity, request_id, attempt,
+        plan_core_digest, model_manifest_digest, protection_epoch, grant_digest))
 
 
 class AuthorityBackedGrantProvider:
@@ -110,7 +62,7 @@ class AuthorityBackedGrantProvider:
         self.requester_private_key = requester_private_key
         self.authority_public_key = authority_public_key
         self.authority_identity = authority_identity
-        self.publication_identity = publication_identity or authority_identity
+        self.publication_identity = publication_identity or requester_identity
         self.authority_issue = authority_issue
         self.content_key_owner = content_key_owner
         self._clock = clock or (lambda: int(time.time() * 1000))
@@ -149,7 +101,7 @@ class AuthorityBackedGrantProvider:
                 or grant.protection_epoch != grant_view.protection_epoch):
             raise ValueError("authority grant does not cover the sealed view")
         grant_name = canonical_grant_name(
-            authority=self.publication_identity,
+            publication_identity=self.publication_identity,
             provider_identity=grant_view.provider,
             request_id=grant_view.request_id,
             attempt=grant_view.attempt,

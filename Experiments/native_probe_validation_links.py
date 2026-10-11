@@ -19,16 +19,25 @@ def render_anchored_probe_validation_schema(application_root, certificates):
     anchors = list(dict.fromkeys(str(Path(path).resolve()) for path in certificates))
     if not anchors:
         raise ValueError("probe validation requires certificate anchors")
-    key_pattern = "^" + "".join("<" + re.escape(item) + ">" for item in components)
-    key_pattern += "[^<KEY>]*<KEY><>{1,3}$"
+    key_pattern = "^" + "".join("<" + re.escape(item) + "|8=" + re.escape(item) + ">" for item in components)
+    key_pattern += "[^<KEY|8=KEY>]*<KEY|8=KEY><>{1,3}$"
     checkers = "\n".join(
         'checker { type customized sig-type %s '
         'key-locator { type name regex %s } }' % (kind, json.dumps(key_pattern))
         for kind in ("rsa-sha256", "ecdsa-sha256"))
-    # Service/model Data names can lie outside the signer's namespace. The
-    # existing production identity and grant checks bind each accepted signer.
-    rules = ['rule { id "anchored experiment %s" for %s %s }' %
-             (kind, kind, checkers) for kind in ("data", "interest")]
+    # Data stays beneath its actual original Producer. Cross-actor RPC
+    # Interests target the responder and retain explicit caller admission.
+    # Installed RegexComponentMatcher uses the default URI display. Reproduce
+    # hierarchical identity-prefix admission with both Generic KEY displays.
+    relation = ('key-locator { type name hyper-relation { '
+        'k-regex %s k-expand %s h-relation is-prefix-of p-regex %s p-expand %s } }' %
+        (json.dumps("^(<>*)<KEY|8=KEY><>{1,3}$"), json.dumps("\\1"),
+         json.dumps("^(<>*)$"), json.dumps("\\1")))
+    data_checkers = "\n".join(
+        'checker { type customized sig-type %s %s }' % (kind, relation)
+        for kind in ("rsa-sha256", "ecdsa-sha256"))
+    rules = ['rule { id "anchored experiment data" for data %s }' % data_checkers,
+             'rule { id "anchored experiment interest" for interest %s }' % checkers]
     rules.extend('trust-anchor { type file file-name %s }' % json.dumps(path)
                  for path in anchors)
     return "\n".join(rules) + "\n"
@@ -99,18 +108,30 @@ def configure_probe_validation_links(ndn, output, bandwidth_mbps, providers):
                       "requested_cburst_bytes": mtu,
                       "classes": classes, "qdiscs": json.loads(qdiscs)}
             remote_uri = "udp4://" + remote_ip + ":6363"
-            face_reply = command(node, [nfdc, "face", "create", "remote", remote_uri])
+            # Keep UDP datagrams within the interface MTU so packet trains
+            # use NDNLP fragmentation rather than IPv4 fragmentation.
+            face_mtu = mtu - 28
+            if face_mtu < 64:
+                raise RuntimeError("probe validation interface MTU is too small")
+            face_reply = command(node, [nfdc, "face", "create", "remote", remote_uri,
+                                        "mtu", str(face_mtu)])
             match = re.search(r"\bid=(\d+)\b", face_reply)
             if match is None:
                 raise RuntimeError("probe validation face creation failed")
             face = match.group(1)
             face_state = command(node, [nfdc, "face", "list", "remote", remote_uri,
                                        "local", "udp4://" + ip + ":6363"])
-            if "remote=" + remote_uri not in face_state or "local=udp4://" + ip + ":6363" not in face_state:
-                raise RuntimeError("probe validation face endpoint readback mismatch")
-            record.update(face_id=int(face), face=face_state)
-            for suffix in ("PEER-PROBE", "PEER-GOODPUT", "PEER-PROBE-READY"):
-                prefix = providers[peer.node.name] + "/NDNSF/" + suffix
+            entries = [line for line in face_state.splitlines() if "faceid=" in line]
+            if (len(entries) != 1 or
+                    not re.search(r"\bfaceid=" + face + r"(?:\s|$)", entries[0]) or
+                    not re.search(r"\bremote=" + re.escape(remote_uri) + r"(?:\s|$)", entries[0]) or
+                    not re.search(r"\blocal=" + re.escape("udp4://" + ip + ":6363") +
+                                  r"(?:\s|$)", entries[0]) or
+                    not re.search(r"\bmtu=" + str(face_mtu) + r"(?:\s|$)", entries[0])):
+                raise RuntimeError("probe validation face endpoint/MTU readback mismatch")
+            record.update(face_id=int(face), face=face_state, face_mtu=face_mtu)
+            for suffix in ("PROBE-RTT", "PROBE-GOODPUT", "PROBE-READY"):
+                prefix = providers[peer.node.name] + "/NDNSF/RPC/" + suffix
                 command(node, [nfdc, "route", "add", "prefix", prefix,
                                "nexthop", face, "cost", "0", "capture"])
                 # RIB acceptance precedes the asynchronous FIB update.

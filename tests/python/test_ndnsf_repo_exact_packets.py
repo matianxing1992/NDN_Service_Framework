@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ndnsf import DataPacket, make_segmented_data_packets
+from ndnsf import DataPacket, inspect_data_name, make_segmented_data_packets
 from py_repoclient.orchestration import (
     LocalDistributedRepo,
     NetworkDistributedRepoClient,
@@ -81,7 +81,7 @@ class ExactPacketRepositoryTest(unittest.TestCase):
             self.assertFalse(any("/ndn-data/" in name for name in stored_names))
             self.assertFalse(any(name.startswith(manifest.object_name + "/seg/")
                                  for name in stored_names))
-            repo._db.close()
+            repo._persistence.close()
 
             restarted = make_repo(database)
             loaded_manifest, loaded_packets = restarted._load_persisted_packets(
@@ -100,7 +100,7 @@ class ExactPacketRepositoryTest(unittest.TestCase):
                 [packet.name for packet in prefix_packets],
                 [packet.name for packet in self.packets],
             )
-            restarted._db.close()
+            restarted._persistence.close()
 
     def test_name_mismatch_and_immutable_conflict_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -127,7 +127,7 @@ class ExactPacketRepositoryTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "immutable NDN Data name conflict"):
                 repo._persist_packets(manifest, conflicting)
-            repo._db.close()
+            repo._persistence.close()
 
     def test_shared_packet_references_are_reclaimed_after_last_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -146,13 +146,15 @@ class ExactPacketRepositoryTest(unittest.TestCase):
             self.assertTrue(repo._delete_object(manifest_b.object_name))
             with self.assertRaises(KeyError):
                 repo._load_persisted_packet(packet[0].name)
-            repo._db.close()
+            repo._persistence.close()
 
     def test_packet_serving_prefix_is_original_versioned_name(self) -> None:
         prefix = _packet_set_versioned_data_name(self.packets)
-        self.assertTrue(prefix.startswith("/data/models/qwen/v="))
-        self.assertTrue(all(packet.name.startswith(prefix + "/seg=")
-                            for packet in self.packets))
+        self.assertTrue(prefix.startswith(inspect_data_name("/data/models/qwen")["canonical_name"] + "/54="))
+        for packet in self.packets:
+            info = inspect_data_name(packet.name)
+            self.assertEqual(info["segment_prefix"], prefix)
+            self.assertEqual(info["segment"], packet.segment)
 
     def test_exact_packet_read_uses_shared_bounded_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -169,7 +171,7 @@ class ExactPacketRepositoryTest(unittest.TestCase):
             self.assertEqual(cold["backingReads"], 1)
             self.assertEqual(hot["backingReads"], 1)
             self.assertEqual(hot["hits"], 1)
-            repo._db.close()
+            repo._persistence.close()
 
     def test_manifest_overwrite_cannot_serve_orphan_from_hot_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -190,7 +192,7 @@ class ExactPacketRepositoryTest(unittest.TestCase):
                 repo._load_persisted_packet(second[0].name).wire,
                 second[0].wire,
             )
-            repo._db.close()
+            repo._persistence.close()
 
     def test_packet_consumer_preserves_manifest_order_and_wire_identity(self) -> None:
         client = NetworkDistributedRepoClient.__new__(NetworkDistributedRepoClient)

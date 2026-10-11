@@ -307,6 +307,13 @@ struct NativeSplitCandidate
   /** Complete maintained SplitCandidate schema; excludes its derived candidateDigest. */
   std::string canonicalJson() const;
   std::string computedDigest() const;
+
+private:
+  friend class NativeRequestPreparation;
+  // reuseCheckedGraph is allowed only immediately after full validation of
+  // this same graph, without callbacks or input mutation. Model identity and
+  // every candidate contract/digest check still run.
+  void validateImpl(const NativeGraphSnapshot& graph, bool reuseCheckedGraph) const;
 };
 
 struct NativePlacementProposal

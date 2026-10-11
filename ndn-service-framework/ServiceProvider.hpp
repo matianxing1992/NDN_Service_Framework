@@ -4,6 +4,7 @@
 #include "common.hpp"
 
 #include "utils.hpp"
+#include "ProducerDataNaming.hpp"
 
 #include "ServiceAuthorizationTable.hpp"
 #include "NDNSFMessages.hpp"
@@ -21,6 +22,7 @@
 #include "RuntimeStatusStore.hpp"
 
 #include <functional>
+#include <future>
 #include <exception>
 #include <algorithm>
 #include <atomic>
@@ -39,6 +41,9 @@
 #include <vector>
 
 
+
+namespace ndnsf::di { class NdnsfCollaborationDependencyIo; }
+namespace ndn_service_framework::test { struct TensorOriginalOracle; }
 
 namespace ndn_service_framework{
 
@@ -108,7 +113,34 @@ namespace ndn_service_framework{
 
     class ServiceProvider
     {
+        friend struct test::InvocationNamesOracle;
+        friend struct test::TensorOriginalOracle;
         public:
+            enum class ExactDataFetchPhase { Published, AwaitPublication };
+            struct ExactDataBatchResult
+            {
+                std::vector<ndn::Buffer> contents;
+                CollaborationTransferMetrics metrics;
+            };
+            /** Move-only ownership of asynchronous exact reads. Destruction
+             * cancels unfinished reads. Keep Provider/Face and callback
+             * dependencies alive through get/cancel and Face draining. */
+            class ExactDataFetchOperation
+            {
+              public:
+                ExactDataFetchOperation(ExactDataFetchOperation&&) noexcept = default;
+                ExactDataFetchOperation& operator=(ExactDataFetchOperation&&) noexcept;
+                ~ExactDataFetchOperation();
+                std::future_status wait_for(std::chrono::milliseconds duration) const;
+                std::optional<ExactDataBatchResult> get();
+                void cancel();
+              private:
+                friend class ServiceProvider;
+                struct Impl;
+                explicit ExactDataFetchOperation(std::shared_ptr<Impl> impl)
+                  : m_impl(std::move(impl)) {}
+                std::shared_ptr<Impl> m_impl;
+            };
             using ServiceKey = ndn::Name;
 
             struct AckDecision
@@ -434,6 +466,11 @@ namespace ndn_service_framework{
                 std::map<CollaborationRole, ndn::Name> roleProviders;
                 ndn::Buffer artifactPayload;
                 std::string selectionDigest;
+                // Runtime-only dispatch authority; never decoded from the
+                // opaque assignment or serialized to the network.
+                std::chrono::steady_clock::time_point workDeadline =
+                    std::chrono::steady_clock::time_point::min();
+                std::function<bool()> workCurrent;
             };
 
             struct CollaborationData
@@ -468,6 +505,12 @@ namespace ndn_service_framework{
                 std::optional<ndn::Buffer> fetchEncryptedLargeData(
                     const ndn::Name& dataName,
                     const ndn::Name& serviceName = ndn::Name());
+                /** Fetch under this dispatch's original authority and deadline.
+                 * Call from a worker, not the Face event loop. Missing runtime
+                 * authority fails closed; no service override is accepted. */
+                std::optional<ndn::Buffer> fetchEncryptedLargeDataCurrent(
+                    const ndn::Name& dataName,
+                    std::chrono::steady_clock::time_point deadline);
                 void fail(const std::string& reason);
 
                 void publish(KeyScope keyScope,
@@ -605,6 +648,55 @@ namespace ndn_service_framework{
                     std::function<bool()> shouldCancel,
                     CollaborationTransferMetrics* metrics,
                     std::function<void(std::exception_ptr)> onFirstReadStarted);
+                /** Retain a producer-readiness Interest until the remaining
+                 * fetch deadline, renewing it at the normal recovery cadence.
+                 * Published preserves the existing exact-pull behavior. */
+                std::optional<ndn::Buffer> fetchSignedExactData(
+                    KeyScope keyScope,
+                    const ndn::Name& dataName,
+                    const ndn::Name& expectedProducer,
+                    int timeoutMs,
+                    std::function<bool()> shouldCancel,
+                    CollaborationTransferMetrics* metrics,
+                    std::function<void(std::exception_ptr)> onFirstReadStarted,
+                    ExactDataFetchPhase phase);
+                /** Fetch exact names concurrently on the Face owner without
+                 * one worker per packet. Results retain input order. Any
+                 * failure aborts the batch; the first-read callback covers
+                 * dispatch of all original Interests. */
+                std::optional<std::vector<ndn::Buffer>> fetchSignedExactDataBatch(
+                    KeyScope keyScope,
+                    const std::vector<ndn::Name>& dataNames,
+                    const ndn::Name& expectedProducer,
+                    int timeoutMs,
+                    std::function<bool()> shouldCancel,
+                    CollaborationTransferMetrics* metrics,
+                    std::function<void(std::exception_ptr)> onFirstReadStarted,
+                    ExactDataFetchPhase phase);
+                /** As above, notifying progress on the Face owner after each
+                 * exact producer/signature validation. Returning false or
+                 * throwing aborts the batch. Call off the Face owner thread. */
+                std::optional<std::vector<ndn::Buffer>> fetchSignedExactDataBatch(
+                    KeyScope keyScope,
+                    const std::vector<ndn::Name>& dataNames,
+                    const ndn::Name& expectedProducer,
+                    int timeoutMs,
+                    std::function<bool()> shouldCancel,
+                    CollaborationTransferMetrics* metrics,
+                    std::function<void(std::exception_ptr)> onFirstReadStarted,
+                    ExactDataFetchPhase phase,
+                    std::function<bool()> onValidatedData);
+                /** Queue a batch and return immediately; handlers own network
+                 * progress. No packet or readiness waiting thread is started. */
+                ExactDataFetchOperation startSignedExactDataBatch(
+                    KeyScope keyScope,
+                    const std::vector<ndn::Name>& dataNames,
+                    const ndn::Name& expectedProducer,
+                    int timeoutMs,
+                    std::function<bool()> shouldCancel,
+                    std::function<void(std::exception_ptr)> onFirstReadStarted,
+                    ExactDataFetchPhase phase,
+                    std::function<bool()> onValidatedData = {});
                 void subscribe(KeyScope keyScope,
                                Topic topicPrefix,
                                std::function<void(const CollaborationData&)> onData);
@@ -654,6 +746,16 @@ namespace ndn_service_framework{
                 std::chrono::milliseconds streamRemainingDeadline() const;
 
             private:
+                friend class ndnsf::di::NdnsfCollaborationDependencyIo;
+                // Retain the complete signed batch before any serving side effect.
+                bool publishOwnedExactData(KeyScope keyScope,
+                    const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+                    int freshnessMs, CollaborationTransferMetrics* metrics,
+                    std::vector<std::shared_ptr<const ndn::Data>>& originals,
+                    std::size_t maxWireBytes);
+                bool replayOwnedExactData(KeyScope keyScope,
+                    const std::vector<std::shared_ptr<const ndn::Data>>& originals,
+                    CollaborationTransferMetrics* metrics);
                 std::shared_ptr<StreamEventPublisher> streamPublisher() const;
                 ServiceProvider& m_provider;
                 ndn::Name m_requesterName;
@@ -1220,6 +1322,10 @@ namespace ndn_service_framework{
             LargeDataFetchResult fetchAndDecryptLargeData(
                 const ndn::Name& encryptedDataName,
                 const std::string& serviceName);
+            LargeDataFetchResult fetchAndDecryptLargeData(
+                const ndn::Name& encryptedDataName,
+                const std::string& serviceName,
+                DataNameReadMode readMode);
 
             LargeDataFetchResult resolveLargeDataReferencePayload(
                 ndn::Buffer payload,
@@ -1348,7 +1454,8 @@ namespace ndn_service_framework{
             void insertDataIntoIMS(const ndn::Data& data);
             void insertDataIntoIMS(const ndn::Data& data,
                                    const ndn::time::milliseconds& freshness);
-            void satisfyPendingImsInterestsLocked(const ndn::Data& insertedData);
+            void satisfyPendingImsInterestsLocked(const ndn::Data& insertedData,
+                                                     bool ownedStreamEvent = false);
             void satisfyPendingImsInterestsLocked();
             void pruneExpiredPendingImsInterestsLocked();
 
@@ -1362,24 +1469,24 @@ namespace ndn_service_framework{
             struct PeerProbeReadinessState
             {
                 explicit PeerProbeReadinessState(
-                    std::function<void(bool)> callback)
+                    std::function<void(bool, std::string)> callback)
                   : callback(std::move(callback))
                 {
                 }
 
-                void complete(bool ready)
+                void complete(bool ready, std::string confirmedBootEpoch = {})
                 {
                     bool expected = false;
                     if (!completed.compare_exchange_strong(expected, true))
                         return;
                     auto callbackCopy = std::move(callback);
                     if (callbackCopy)
-                        callbackCopy(ready);
+                        callbackCopy(ready, ready ? std::move(confirmedBootEpoch) : std::string{});
                 }
 
                 std::atomic<bool> completed{false};
                 std::atomic<bool> validationFailureLogged{false};
-                std::function<void(bool)> callback;
+                std::function<void(bool, std::string)> callback;
             };
             void waitForPeerProbeScopeAuthorization(
                 const ndn::Name& targetProvider,
@@ -1388,7 +1495,7 @@ namespace ndn_service_framework{
                 bool requireGoodput,
                 std::chrono::steady_clock::time_point deadline,
                 std::shared_ptr<std::atomic<bool>> cancelled,
-                std::function<void(bool)> callback);
+                std::function<void(bool, std::string)> callback);
             void pollPeerProbeScopeAuthorization(
                 const ndn::Name& targetProvider,
                 const std::string& requestScopeDigest,
@@ -1422,6 +1529,14 @@ namespace ndn_service_framework{
                 return std::to_string(m_processStartedAtUs);
             }
 
+            /** Read historical dedicated-probe facts without probing peers or
+             * changing their timestamps. Consumers check current peer boots. */
+            std::vector<std::pair<NetworkTelemetrySnapshot, uint64_t>>
+            getCachedPeerProbeSamples(const std::vector<ndn::Name>& allowedPeers) const
+            {
+                return m_networkTelemetry.getCachedActiveProbeSamples(identity, allowedPeers);
+            }
+
             /** Probe only caller-authorized request candidates. Provider names
              * must come from an authenticated request; results are scoped by
              * its opaque digest and bounded by deadline. */
@@ -1443,6 +1558,20 @@ namespace ndn_service_framework{
                  * has already targeted every peer to authorize this scope.
                  * Each peer still validates every signed probe Interest. */
                 bool skipRemoteAuthorizationReadiness = false);
+
+            /** Eligibility hints from the requester's current authenticated
+             * targeted authorization ACKs. These do not replace scope checks
+             * or the requester's final boot/age validation of measured facts. */
+            void collectCandidatePeerObservations(
+                const std::vector<ndn::Name>& authorizedCandidateProviders,
+                const std::vector<NetworkTelemetryDataEdge>& authorizedRttPairs,
+                const std::vector<NetworkTelemetryDataEdge>& authorizedGoodputEdges,
+                const std::string& requestScopeDigest,
+                std::chrono::steady_clock::time_point deadline,
+                std::shared_ptr<std::atomic<bool>> cancelled,
+                PeerProbeCollectionCallback callback,
+                bool skipRemoteAuthorizationReadiness,
+                const std::map<ndn::Name, std::string>& peerBootEpochHints);
 
             void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::nacabe::SPtrVector<ndn::Data>& ckData);
 
@@ -1491,6 +1620,9 @@ namespace ndn_service_framework{
                 const std::vector<ndn::Buffer>& plaintextCandidates);
             bool decryptHybridMessage(const ndn::Name& messageName,
                                       const ndn::Block& envelopeBlock,
+                                      const ndn::Name& expectedActor,
+                                      const ndn::Name& expectedService,
+                                      const ndn::Name& expectedRequestId,
                                       std::function<void(const ndn::Buffer&)> onSuccess,
                                       std::function<void(const std::string&)> onError);
 
@@ -1719,6 +1851,12 @@ namespace ndn_service_framework{
                 ndn::Name requesterIdentity;
                 ndn::Name serviceName;
                 std::string userToken;
+                // Ineligible until the protected mint/replenishment path
+                // explicitly binds authority, expiry and scoped registration.
+                bool protectedCarrierAllowed = false;
+                uint64_t expiresAtMs = 0;
+                ControllerVersion controllerVersion{};
+                std::weak_ptr<RegistrationState> registrationState{};
             };
 
             static ResponseMessage makeErrorResponse(const std::string& errorInfo);
@@ -1743,6 +1881,10 @@ namespace ndn_service_framework{
                 const ndn::Name& encryptedDataName, const std::string& serviceName,
                 std::chrono::steady_clock::time_point deadline,
                 std::function<bool()> current = {});
+            LargeDataFetchResult fetchAndDecryptLargeDataUntil(
+                const ndn::Name& encryptedDataName, const std::string& serviceName,
+                std::chrono::steady_clock::time_point deadline,
+                std::function<bool()> current, DataNameReadMode readMode);
 
             void cleanupPendingRequestState(const ndn::Name& pendingKey,
                                             bool preserveReplayTombstone = false);
@@ -1795,6 +1937,9 @@ namespace ndn_service_framework{
 
             std::shared_ptr<StreamInvocationLifecycle>
             getStreamLifecycle(const ndn::Name& pendingKey) const;
+            /** Resolve C05 only through an existing immutable stream owner. */
+            std::optional<ParsedInvocationEventName>
+            parseOwnedStreamEventName(const ndn::Name& name) const;
             void updateSelectionExecutionStatus(
                 const std::string& selectionDigest,
                 SelectionExecutionState state,
@@ -1857,11 +2002,13 @@ namespace ndn_service_framework{
                 const ndn::Name& requestId,
                 RequestMessage requestMessage,
                 std::string selectionDigest = {},
-                bool consumeProviderToken = true);
+                bool consumeProviderToken = true,
+                std::shared_ptr<RegistrationState> acceptedRegistration = nullptr);
             bool consumeTargetedProviderToken(const ndn::Name& requesterIdentity,
                                               const ndn::Name& serviceName,
                                               const RequestMessage& requestMessage,
-                                              std::string& error) const;
+                                              std::string& error,
+                                              std::shared_ptr<RegistrationState> acceptedRegistration = nullptr) const;
             void attachTargetedTokenBatch(const ndn::Name& requesterIdentity,
                                           const ndn::Name& serviceName,
                                           const RequestMessage& requestMessage,
@@ -1929,7 +2076,9 @@ namespace ndn_service_framework{
                 RequestMessage requestMessage,
                 const ServiceSelectionMessage& selectionMessage,
                 const ndn::Buffer& assignmentPayload,
-                const std::string& selectionDigest);
+                const std::string& selectionDigest,
+                bool targetedTokenConsumed = false,
+                std::shared_ptr<RegistrationState> acceptedRegistration = nullptr);
             void publishExecutionFailureOnEventLoop(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
@@ -2026,6 +2175,15 @@ namespace ndn_service_framework{
                 const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
                 int freshnessMs,
                 CollaborationTransferMetrics* metrics);
+            bool publishCollaborationOwnedExactData(
+                const ndn::Name& requestId, const std::string& keyScope,
+                const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+                int freshnessMs, CollaborationTransferMetrics* metrics,
+                std::vector<std::shared_ptr<const ndn::Data>>* originals,
+                std::size_t maxWireBytes);
+            bool replayCollaborationOwnedExactData(
+                const std::vector<std::shared_ptr<const ndn::Data>>& originals,
+                CollaborationTransferMetrics* metrics);
             std::optional<ndn::Buffer> fetchCollaborationSignedExactData(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
@@ -2050,6 +2208,47 @@ namespace ndn_service_framework{
                 std::function<bool()> shouldCancel,
                 CollaborationTransferMetrics* metrics,
                 std::function<void(std::exception_ptr)> onFirstReadStarted);
+            std::optional<ndn::Buffer> fetchCollaborationSignedExactData(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const ndn::Name& dataName,
+                const ndn::Name& expectedProducer,
+                int timeoutMs,
+                std::function<bool()> shouldCancel,
+                CollaborationTransferMetrics* metrics,
+                std::function<void(std::exception_ptr)> onFirstReadStarted,
+                ExactDataFetchPhase phase);
+            std::optional<std::vector<ndn::Buffer>> fetchCollaborationSignedExactDataBatch(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const std::vector<ndn::Name>& dataNames,
+                const ndn::Name& expectedProducer,
+                int timeoutMs,
+                std::function<bool()> shouldCancel,
+                CollaborationTransferMetrics* metrics,
+                std::function<void(std::exception_ptr)> onFirstReadStarted,
+                ExactDataFetchPhase phase);
+            std::optional<std::vector<ndn::Buffer>> fetchCollaborationSignedExactDataBatch(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const std::vector<ndn::Name>& dataNames,
+                const ndn::Name& expectedProducer,
+                int timeoutMs,
+                std::function<bool()> shouldCancel,
+                CollaborationTransferMetrics* metrics,
+                std::function<void(std::exception_ptr)> onFirstReadStarted,
+                ExactDataFetchPhase phase,
+                std::function<bool()> onValidatedData);
+            ExactDataFetchOperation startCollaborationSignedExactDataBatch(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const std::vector<ndn::Name>& dataNames,
+                const ndn::Name& expectedProducer,
+                int timeoutMs,
+                std::function<bool()> shouldCancel,
+                std::function<void(std::exception_ptr)> onFirstReadStarted,
+                ExactDataFetchPhase phase,
+                std::function<bool()> onValidatedData);
             void publishCollaborationFinalResponse(
                 const ndn::Name& requesterName,
                 const ndn::Name& serviceName,
@@ -2118,9 +2317,28 @@ namespace ndn_service_framework{
             mutable std::mutex m_collaborationPublicationInterceptorMutex;
             CollaborationPublicationInterceptorForTest m_collaborationPublicationInterceptorForTest;
             std::shared_ptr<MessageValidator> validator;
+            // Face-owned diagnostic for explicit ambiguous request rejection.
+            uint64_t m_ambiguousRequestContextRejections = 0;
             std::vector<std::string> m_serviceNames;
 
             //ndn::security::Validator nac_validator;
+            ndn::Name currentControllerIdentityForControl() const;
+            std::optional<ndn::Interest> prepareControllerControlQuery(
+                const ndn::Name& producer, const std::string& operation,
+                const ndn::Block& parameters, int attempt);
+            // Face-owned prepared control calls; expiry follows their existing message owner.
+            std::map<ndn::Name, ndn::Interest> m_preparedControlInterests;
+            // Face-owned original acknowledgements live through the signed call expiry.
+            struct OriginalControlAck {
+                std::shared_ptr<const ndn::Data> packet;
+                ndn::Interest request;
+                uint64_t expiresAtUs;
+            };
+            std::map<ndn::Name, OriginalControlAck> m_originalControlAcks;
+            size_t m_originalControlAckBytes = 0;
+            bool admitOriginalControlAck(const ndn::Name& name, uint64_t expiresAtUs);
+            bool serveOriginalControlAck(const ndn::Interest& request);
+            void publishOriginalControlAck(const ndn::Interest& request, const ndn::Data& packet, uint64_t expiresAtUs);
             ndn::ValidatorConfig nac_validator{m_face};
             ndn::security::Certificate identityCert;
             ndn::security::Certificate signingCert;

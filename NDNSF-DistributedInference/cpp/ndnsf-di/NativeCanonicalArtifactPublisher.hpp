@@ -12,6 +12,10 @@
 
 namespace ndnsf::di {
 
+/** Model publication identity excludes advisory per-request transfer geometry.
+ * All source, recipe, split and publication contract fields remain bound. */
+std::string nativeCanonicalPublicationIdentity(const NativeJson& catalog);
+
 struct NativeCanonicalPublicationOptions
 {
   std::string artifactRoot;
@@ -176,7 +180,8 @@ private:
     std::function<ndn_service_framework::PreparedServiceRequest()> begin;
     std::function<ndn_service_framework::LargeDataPublishResult(
       const ndn_service_framework::PreparedServiceRequest&, const std::vector<std::uint8_t>&,
-      const std::string&, const NativeRequestControl&)> publish;
+      const std::string&, const ndn_service_framework::PublishedContentName&,
+      const NativeRequestControl&)> publish;
     // Best-effort transaction rollback for names published by one prepare.
     // The Core implementation may retain an orphan until its bounded expiry,
     // but it must never expose a committed root after rollback.
@@ -191,75 +196,13 @@ private:
     // publishers leave this empty and retain the historical publish call.
     std::function<ndn_service_framework::LargeDataPublishResult(
       const ndn_service_framework::PreparedServiceRequest&, const std::vector<std::uint8_t>&,
-      const std::string&, const std::string&, const NativeRequestControl&)> durablePublish;
+      const std::string&, const std::string&, const ndn_service_framework::PublishedContentName&,
+      const NativeRequestControl&)> durablePublish;
   };
   NativeCanonicalArtifactPublisher(Transport transport, std::string serviceName,
     NativeCanonicalPublicationOptions options, SourcePort source);
 
-  struct CacheState
-  {
-    struct SharedControl
-    {
-      std::atomic<bool> cancelled{false};
-      // Set while the cache entry and shared promise are handed off under the
-      // cache mutex. A late owner cancellation then observes a committed,
-      // reusable publication instead of orphaning a valid receipt.
-      std::atomic<bool> committed{false};
-      std::atomic<std::size_t> participants{1};
-    };
-    struct InFlight
-    {
-      std::shared_future<NativeArtifactBinding> future;
-      std::shared_ptr<SharedControl> control;
-    };
-    struct PreparedInFlight
-    {
-      std::shared_future<NativePreparedCanonicalPublication> future;
-      std::shared_ptr<SharedControl> control;
-    };
-    struct PreparedEntry
-    {
-      NativePreparedCanonicalPublication receipt;
-      std::vector<std::weak_ptr<void>> leases;
-
-      explicit PreparedEntry(const NativePreparedCanonicalPublication& value)
-        : receipt(value)
-      {
-        for (const auto& lease : receipt.servingLeases)
-          leases.emplace_back(lease);
-        receipt.servingLeases.clear();
-      }
-
-      // A lookup acquires all pins before exposing the receipt. The publisher
-      // is an index, not another cache budget or publication lifetime owner.
-      std::optional<NativePreparedCanonicalPublication> acquire() const
-      {
-        auto result = receipt;
-        for (const auto& weak : leases) {
-          auto lease = weak.lock();
-          if (!lease)
-            return std::nullopt;
-          result.servingLeases.push_back(std::move(lease));
-        }
-        return result;
-      }
-      bool expired() const
-      {
-        for (const auto& lease : leases)
-          if (lease.expired()) return true;
-        return false;
-      }
-    };
-    mutable std::mutex mutex;
-    std::map<std::string, NativeArtifactBinding> completed;
-    std::map<std::string, InFlight> inFlight;
-    std::map<std::string, PreparedEntry> prepared;
-    std::map<std::string, PreparedInFlight> preparedInFlight;
-    std::atomic<std::size_t> sourceVerifications{0};
-    std::atomic<std::size_t> publicationCalls{0};
-    std::atomic<std::size_t> cacheHits{0};
-    std::atomic<std::size_t> sharedWaiters{0};
-  };
+  struct CacheState;
 
   std::string cacheKey(const NativeInspectedModel& model,
                        const NativeSplitCandidate& candidate,

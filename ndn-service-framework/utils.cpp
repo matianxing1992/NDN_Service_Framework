@@ -1,4 +1,5 @@
 #include "utils.hpp"
+#include "ProducerDataNaming.hpp"
 
 #include <ndn-cxx/security/transform.hpp>
 #include <ndn-cxx/util/sha256.hpp>
@@ -15,6 +16,185 @@ namespace ndn_service_framework
     NDN_LOG_INIT(ndn_service_framework.utils);
 
 
+    ndn::Name makeDeploymentRecordName(const ndn::Name& producer,
+        const ndn::Name& application, const std::string& deploymentId,
+        const std::string& kind, const std::string& revisionDigest,
+        uint64_t epoch, const std::string& payloadDigest)
+    {
+        if (application.empty() || deploymentId.empty() ||
+            (kind != "DEFINITION" && kind != "ACTIVATION" && kind != "REVOCATION"))
+            throw std::invalid_argument("incomplete deployment record identity");
+        const auto digest = [](const std::string& value) {
+            if (value.size() != 71 || value.compare(0, 7, "sha256:") != 0)
+                throw std::invalid_argument("deployment requires complete canonical SHA-256");
+            return makeNamingDigestComponent(value.substr(7));
+        };
+        const auto& appWire = application.wireEncode();
+        const auto deploymentKey = computeNamingDigest("ndnsf-naming/deployment", {
+            {1, 1, {appWire.data(), appWire.data() + appWire.size()}},
+            {2, 2, {deploymentId.begin(), deploymentId.end()}}});
+        auto name = makeProducerDataPrefix(producer, "DEPLOYMENT");
+        name.append(makeNamingLabelComponent(application.toUri(ndn::name::UriFormat::CANONICAL)))
+            .append(makeNamingDigestComponent(deploymentKey));
+        if (kind == "DEFINITION") {
+            if (!revisionDigest.empty() || epoch != 0)
+                throw std::invalid_argument("definition has unrelated revision or epoch");
+            name.append("DEFINITION");
+        }
+        else {
+            name.append("REVISION").append(digest(revisionDigest)).append(kind);
+            if (kind == "REVOCATION") {
+                if (epoch == 0) throw std::invalid_argument("revocation epoch must be positive");
+                name.append("EPOCH").append(makeNamingDecimalComponent(epoch));
+            }
+            else if (epoch != 0) throw std::invalid_argument("activation has unrelated epoch suffix");
+        }
+        name.append(digest(payloadDigest));
+        checkNamingNameSize(name);
+        return name;
+    }
+
+    ndn::Block
+    encodeControlQueryParameters(const ControlQueryParameters& query)
+    {
+        if ((query.generation == 0) != (query.epoch == 0))
+            throw std::invalid_argument("incomplete control query version");
+        ndn::Name carrier;
+        carrier.append("CONTROL-QUERY").append(makeReversibleNameComponent(query.subject))
+          .append(makeReversibleNameComponent(query.service))
+          .append(makeNamingDecimalComponent(query.generation))
+          .append(makeNamingDecimalComponent(query.epoch));
+        return carrier.wireEncode();
+    }
+
+    std::optional<ControlQueryParameters>
+    decodeControlQueryParameters(const ndn::Block& parameters)
+    {
+        try {
+            auto block = parameters;
+            if (block.type() == ndn::tlv::ApplicationParameters) {
+                block.parse();
+                if (block.elements().size() != 1) return std::nullopt;
+                block = block.elements().front();
+            }
+            if (block.type() != ndn::tlv::Name) return std::nullopt;
+            const ndn::Name carrier(block);
+            if (carrier.size() != 5 || carrier[0] != ndn::name::Component("CONTROL-QUERY"))
+                return std::nullopt;
+            const auto subject = parseReversibleNameComponent(carrier[1]);
+            const auto service = parseReversibleNameComponent(carrier[2]);
+            if (!subject || !service) return std::nullopt;
+            const auto decimal = [](const ndn::name::Component& c) {
+                if (c.type() != 8) throw std::invalid_argument("invalid control version component");
+                const std::string text(reinterpret_cast<const char*>(c.value()), c.value_size());
+                if (text.empty() || (text.size() > 1 && text.front() == '0') ||
+                    !std::all_of(text.begin(), text.end(), [](char ch) { return ch >= '0' && ch <= '9'; }))
+                    throw std::invalid_argument("invalid control version decimal");
+                const auto result = std::stoull(text);
+                if (std::to_string(result) != text) throw std::invalid_argument("invalid control version range");
+                return result;
+            };
+            ControlQueryParameters query{*subject, *service, decimal(carrier[3]), decimal(carrier[4])};
+            if (!(encodeControlQueryParameters(query) == block)) return std::nullopt;
+            return query;
+        }
+        catch (const std::exception&) { return std::nullopt; }
+    }
+
+    ndn::Name
+    makeControlRpcName(const ndn::Name& producer, const std::string& operation,
+                       const ndn::Block& parameters, const std::string& nonce)
+    {
+        static const std::set<std::string> operations{
+            "PROVIDER-READY", "EXECUTION-ACTIVATE", "SELECTION-STATUS", "USER-PERMISSIONS",
+            "PROVIDER-PERMISSIONS", "POLICY-MANIFEST", "POLICY-STATUS", "SERVICEACCESS",
+            "SERVICEPROVISION", "CERTBOOTSTRAP", "AA-READY", "FRONTIER"};
+        if (!operations.count(operation) || nonce.empty() || nonce.size() > 128 ||
+            !parameters.isValid())
+            throw std::invalid_argument("invalid control RPC context");
+        ndn::Interest normalized(producer);
+        normalized.setApplicationParameters(parameters);
+        const auto app = normalized.getApplicationParameters();
+        if (app.size() > 65536) throw std::invalid_argument("control RPC parameters exceed limit");
+        const auto digest = computeNamingDigest("ndnsf-naming/control-call",
+          {{1, 2, std::vector<uint8_t>(operation.begin(), operation.end())},
+           {2, 4, std::vector<uint8_t>(app.data(), app.data() + app.size())}});
+        auto name = makeProducerRpcName(producer, operation, digest, nonce);
+        checkNamingNameSize(name);
+        return name;
+    }
+
+    std::optional<ControlRpcName>
+    parseControlRpcName(const ndn::Interest& interest, const ndn::Name& producer,
+                        const std::string& operation)
+    {
+        try {
+            const auto& final = interest.getName();
+            const auto parsed = parseProducerDataName(final, producer);
+            if (!parsed || parsed->category != "RPC" || parsed->suffix.size() != 4 ||
+                parsed->suffix[0] != ndn::name::Component(operation) ||
+                parsed->suffix[1].type() != 8 || parsed->suffix[1].value_size() != 32 ||
+                parsed->suffix[2].type() != 8 || !parsed->suffix[3].isParametersSha256Digest() ||
+                !interest.hasApplicationParameters() || !interest.isParametersDigestValid()) return std::nullopt;
+            const auto nonce = std::string(reinterpret_cast<const char*>(parsed->suffix[2].value()),
+                                            parsed->suffix[2].value_size());
+            const auto logical = makeControlRpcName(producer, operation,
+              interest.getApplicationParameters(), nonce);
+            if (final.getPrefix(-1) != logical) return std::nullopt;
+            std::ostringstream hex;
+            hex << std::hex << std::setfill('0');
+            for (auto byte : ndn::span<const uint8_t>(parsed->suffix[1].value(), 32))
+                hex << std::setw(2) << unsigned(byte);
+            return ControlRpcName{producer, operation, hex.str(), nonce};
+        }
+        catch (const std::exception&) { return std::nullopt; }
+    }
+
+    std::optional<PolicyStatusName>
+    parsePolicyStatusName(const ndn::Name& controller, const ndn::Interest& interest)
+    {
+        if (!parseControlRpcName(interest, controller, "POLICY-STATUS")) return std::nullopt;
+        const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
+        if (!query || !query->subject.empty() || query->service.empty()) return std::nullopt;
+        PolicyStatusName parsed{query->service, std::nullopt};
+        if (query->generation != 0) {
+            const ControllerVersion version{query->generation, query->epoch};
+            if (!version.isValid()) return std::nullopt;
+            parsed.version = version;
+        }
+        return parsed;
+    }
+
+    std::string
+    makeControlQueryNonce()
+    {
+        const auto millis = ndn::time::duration_cast<ndn::time::milliseconds>(
+          ndn::time::system_clock::now().time_since_epoch()).count();
+        return std::to_string(millis) + "-" + makeOpaqueControlHandle(16);
+    }
+
+std::optional<uint64_t> controlNonceExpiry(const ndn::Name& controller,
+                                          const ndn::Interest& interest)
+{
+  const auto parsed = parseProducerDataName(interest.getName(), controller);
+  if (!parsed || parsed->category != "RPC" || parsed->suffix.size() != 4 || parsed->suffix[2].type() != 8)
+    return std::nullopt;
+  const auto& component = parsed->suffix[2];
+  const std::string nonce(reinterpret_cast<const char*>(component.value()), component.value_size());
+  const auto separator = nonce.find('-');
+  if (separator == std::string::npos || !isValidOpaqueControlHandle(nonce.substr(separator + 1)))
+    return std::nullopt;
+  try {
+    const auto text = nonce.substr(0, separator);
+    const auto minted = std::stoull(text);
+    const auto now = static_cast<uint64_t>(ndn::time::duration_cast<ndn::time::milliseconds>(
+      ndn::time::system_clock::now().time_since_epoch()).count());
+    if (std::to_string(minted) != text || minted > now + 30000 ||
+        (minted <= now && now - minted >= 300000)) return std::nullopt;
+    return minted + 300000;
+  }
+  catch (const std::exception&) { return std::nullopt; }
+}
     namespace
     {
         constexpr const char* POLICY_STATUS_MARKER = "version";
@@ -112,25 +292,14 @@ namespace ndn_service_framework
         void
         appendNameUriComponent(ndn::Name& dst, const ndn::Name& value)
         {
-            dst.append(ndn::name::Component(value.toUri()));
+            dst.append(ndn::name::Component(value.toUri(ndn::name::UriFormat::CANONICAL)));
         }
 
         void
         appendCollaborationRequestId(ndn::Name& dst, const ndn::Name& requestId)
         {
-            // Keep the legacy representation byte-for-byte compatible.
-            // Structured native request identities are encoded as one URI
-            // component so the following keyScope remains unambiguous.
-            const bool structured = requestId.size() >= 4 &&
-                requestId.get(0).toUri() == "NDNSF" &&
-                requestId.get(1).toUri() == "DI" &&
-                requestId.get(2).toUri() == "REQUEST";
-            if (!structured) {
-                dst.append(requestId);
-            }
-            else {
-                appendNameUriComponent(dst, requestId);
-            }
+            if (requestId.size() <= 1) dst.append(requestId);
+            else appendNameUriComponent(dst, requestId);
         }
 
         std::optional<ndn::Name>
@@ -143,11 +312,20 @@ namespace ndn_service_framework
             const auto& component = name.get(index);
             std::string uri(reinterpret_cast<const char*>(component.value()),
                             component.value_size());
-            if (uri.empty() || uri.front() != '/') {
+            if (component.type() != ndn::tlv::GenericNameComponent ||
+                uri.empty() || uri.front() != '/') {
                 return std::nullopt;
             }
-
-            return ndn::Name(uri);
+            try {
+                const ndn::Name parsed(uri);
+                if (parsed.empty() || parsed.toUri(ndn::name::UriFormat::CANONICAL) != uri) {
+                    return std::nullopt;
+                }
+                return parsed;
+            }
+            catch (const std::exception&) {
+                return std::nullopt;
+            }
         }
 
         std::optional<size_t>
@@ -194,8 +372,8 @@ namespace ndn_service_framework
         findNdnsfMessageMarker(const ndn::Name& name, const std::string& messageType)
         {
             for (size_t i = 0; i + 1 < name.size(); ++i) {
-                if (name.get(i).toUri() == "NDNSF" &&
-                    name.get(i + 1).toUri() == messageType) {
+                if (name.get(i) == ndn::name::Component("NDNSF") &&
+                    name.get(i + 1) == ndn::name::Component(messageType)) {
                     return i;
                 }
             }
@@ -214,9 +392,9 @@ namespace ndn_service_framework
                 return std::nullopt;
             }
             for (size_t i = name.size() - 3; i >= begin; --i) {
-                if (name.get(i).toUri() == "NDNSF" &&
-                    name.get(i + 1).toUri() == "DI" &&
-                    name.get(i + 2).toUri() == "REQUEST" &&
+                if (name.get(i) == ndn::name::Component("NDNSF") &&
+                    name.get(i + 1) == ndn::name::Component("DI") &&
+                    name.get(i + 2) == ndn::name::Component("REQUEST") &&
                     i + 3 < name.size()) {
                     return i;
                 }
@@ -288,6 +466,18 @@ namespace ndn_service_framework
             const auto encrypted = output.buf();
             return ndn::Buffer(encrypted->begin(), encrypted->end());
         }
+    }
+
+    std::optional<ndn::Name> parseSvsProducerActor(const ndn::Name& node,
+                                                   const std::string& role)
+    {
+        if (node.size() < 3 || node[-2] != ndn::name::Component(role) ||
+            node[-1].type() != ndn::tlv::GenericNameComponent) return std::nullopt;
+        const auto& session = node[-1];
+        if (session.value_size() == 0 || session.value_size() > 20) return std::nullopt;
+        for (size_t i = 0; i < session.value_size(); ++i)
+            if (session.value()[i] < '0' || session.value()[i] > '9') return std::nullopt;
+        return node.getPrefix(-2);
     }
 
     ndn::Name makeRequestNameV2(const ndn::Name& requesterName,
@@ -600,6 +790,84 @@ namespace ndn_service_framework
                                               attempt};
     }
 
+    // Context fixes the actor and service boundaries. All remaining components
+    // belong to the request identity; reserved words inside either Name are data.
+    namespace {
+    std::optional<size_t> contextualRequestStart(const ndn::Name& name,
+                                                const ndn::Name& actor,
+                                                const ndn::Name& service,
+                                                const char* category,
+                                                bool recipient)
+    {
+        if (actor.empty() || service.empty() || !actor.isPrefixOf(name)) return std::nullopt;
+        const size_t marker = actor.size();
+        const size_t serviceStart = marker + 2 + (recipient ? 1 : 0);
+        const size_t requestStart = serviceStart + service.size();
+        if (name.size() <= requestStart ||
+            name[marker] != ndn::name::Component("NDNSF") ||
+            name[marker + 1] != ndn::name::Component(category) ||
+            name.getSubName(serviceStart, service.size()) != service) return std::nullopt;
+        return requestStart;
+    }
+    }
+
+    std::optional<RequestNameV2> parseRequestNameV2(
+        const ndn::Name& name, const ndn::Name& actor, const ndn::Name& service)
+    {
+        const auto start = contextualRequestStart(name, actor, service, "REQUEST", false);
+        if (!start) return std::nullopt;
+        return RequestNameV2{actor, service, name.getSubName(*start)};
+    }
+
+    std::optional<ResponseNameV2> parseResponseNameV2(
+        const ndn::Name& name, const ndn::Name& actor, const ndn::Name& service)
+    {
+        const auto start = contextualRequestStart(name, actor, service, "RESPONSE", true);
+        if (!start) return std::nullopt;
+        const auto recipient = parseNameUriComponent(name, actor.size() + 2);
+        if (!recipient) return std::nullopt;
+        return ResponseNameV2{actor, *recipient, service, name.getSubName(*start)};
+    }
+
+    std::optional<RequestAckNameV2> parseRequestAckNameV2(
+        const ndn::Name& name, const ndn::Name& actor, const ndn::Name& service)
+    {
+        const auto start = contextualRequestStart(name, actor, service, "ACK", true);
+        if (!start) return std::nullopt;
+        const auto recipient = parseNameUriComponent(name, actor.size() + 2);
+        if (!recipient) return std::nullopt;
+        return RequestAckNameV2{actor, *recipient, service, name.getSubName(*start)};
+    }
+
+    std::optional<ServiceSelectionNameV2> parseServiceSelectionNameV2(
+        const ndn::Name& name, const ndn::Name& actor, const ndn::Name& service)
+    {
+        const auto start = contextualRequestStart(name, actor, service, "SELECTION", true);
+        if (!start) return std::nullopt;
+        const auto recipient = parseNameUriComponent(name, actor.size() + 2);
+        if (!recipient) return std::nullopt;
+        return ServiceSelectionNameV2{actor, *recipient, service, name.getSubName(*start)};
+    }
+
+    std::optional<ServiceSelectionDecisionNameV2> parseServiceSelectionDecisionNameV2(
+        const ndn::Name& name, const ndn::Name& actor, const ndn::Name& service)
+    {
+        if (name.empty()) return std::nullopt;
+        const auto& component = name[-1];
+        if (component.type() != ndn::tlv::GenericNameComponent) return std::nullopt;
+        const std::string text(reinterpret_cast<const char*>(component.value()), component.value_size());
+        if (text.empty() || text.front() == '0' ||
+            !std::all_of(text.begin(), text.end(), [](char c) { return c >= '0' && c <= '9'; }))
+            return std::nullopt;
+        uint64_t attempt;
+        try { attempt = std::stoull(text); }
+        catch (const std::exception&) { return std::nullopt; }
+        const auto parsed = parseServiceSelectionNameV2(name.getPrefix(-1), actor, service);
+        if (!parsed) return std::nullopt;
+        return ServiceSelectionDecisionNameV2{actor, parsed->providerName, service,
+                                               parsed->requestId, attempt};
+    }
+
     ndn::Name makeCompactServiceSelectionNameV2(const ndn::Name& requesterName,
                                                 const ndn::Name& serviceName,
                                                 const ndn::Name& requestId)
@@ -677,6 +945,39 @@ namespace ndn_service_framework
         digest << serviceName.toUri();
         digest << providerToken;
         return digest.toString();
+    }
+
+    ndn::Block
+    encodeSelectionStatusQueryParameters(const ndn::Name& service, const std::string& digest)
+    {
+        if (service.empty() || digest.empty()) throw std::invalid_argument("empty selection status scope");
+        ndn::Name carrier;
+        carrier.append("SELECTION-STATUS-QUERY").append(makeReversibleNameComponent(service))
+            .append(ndn::name::Component(ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(digest.data()), digest.size())));
+        checkNamingNameSize(carrier);
+        return carrier.wireEncode();
+    }
+
+    std::optional<SelectionStatusQueryName>
+    parseSelectionStatusQueryName(const ndn::Interest& interest, const ndn::Name& producer)
+    {
+        if (!parseControlRpcName(interest, producer, "SELECTION-STATUS")) return std::nullopt;
+        try {
+            auto block = interest.getApplicationParameters();
+            block.parse();
+            if (block.elements().size() != 1 || block.elements().front().type() != ndn::tlv::Name)
+                return std::nullopt;
+            block = block.elements().front();
+            const ndn::Name carrier(block);
+            if (carrier.size() != 3 || carrier[0] != ndn::name::Component("SELECTION-STATUS-QUERY") ||
+                carrier[2].type() != 8) return std::nullopt;
+            const auto service = parseReversibleNameComponent(carrier[1]);
+            if (!service || service->empty()) return std::nullopt;
+            const std::string digest(reinterpret_cast<const char*>(carrier[2].value()), carrier[2].value_size());
+            if (!(encodeSelectionStatusQueryParameters(*service, digest) == block)) return std::nullopt;
+            return SelectionStatusQueryName{producer, *service, digest};
+        }
+        catch (const std::exception&) { return std::nullopt; }
     }
 
     ndn::Name
@@ -806,6 +1107,37 @@ namespace ndn_service_framework
         return parseOpaqueControlName<SecureSelectionStatusName>(name, "SELECTION-STATUS");
     }
 
+    namespace {
+    template<typename Parsed>
+    std::optional<Parsed>
+    parseContextualControlName(const ndn::Name& name, const ndn::Name& actor,
+                               const char* operation)
+    {
+        const auto parsed = parseProducerDataName(name, actor);
+        if (!parsed || parsed->category != "RPC" || parsed->suffix.size() != 4 ||
+            parsed->suffix[0] != ndn::name::Component(operation) ||
+            parsed->suffix[1].type() != 8 || parsed->suffix[1].value_size() != 32 ||
+            parsed->suffix[2].type() != 8 || !parsed->suffix[3].isParametersSha256Digest())
+            return std::nullopt;
+        const auto& component = parsed->suffix[2];
+        const std::string handle(reinterpret_cast<const char*>(component.value()), component.value_size());
+        if (!isValidOpaqueControlHandle(handle)) return std::nullopt;
+        return Parsed{actor, DeploymentControlMessage::VERSION, handle};
+    }
+    }
+
+    std::optional<ProviderReadyName>
+    parseProviderReadyName(const ndn::Name& name, const ndn::Name& requester)
+    {
+        return parseContextualControlName<ProviderReadyName>(name, requester, "PROVIDER-READY");
+    }
+
+    std::optional<ExecutionActivateName>
+    parseExecutionActivateName(const ndn::Name& name, const ndn::Name& provider)
+    {
+        return parseContextualControlName<ExecutionActivateName>(name, provider, "EXECUTION-ACTIVATE");
+    }
+
     ndn::Name makeProviderReadyName(const ndn::Name& requesterName,
                                      uint64_t version,
                                      const std::string& controlHandle)
@@ -837,14 +1169,14 @@ namespace ndn_service_framework
                                         const ndn::Name& topic,
                                         uint64_t sequence)
     {
-        ndn::Name name(producerName);
-        name.append(ndn::Name("/NDNSF/COLLAB"));
+        ndn::Name name = makeProducerDataPrefix(producerName, "COLLAB");
         appendCountedName(name, requesterName);
         appendCollaborationRequestId(name, requestId);
         name.append(keyScope);
         name.append(std::to_string(topic.size()));
         name.append(topic);
         name.append(std::to_string(sequence));
+        checkNamingNameSize(name);
         return name;
     }
 
@@ -941,6 +1273,53 @@ namespace ndn_service_framework
             topic,
             sequence
         };
+    }
+
+    std::optional<CollaborationDataName>
+    parseCollaborationDataName(const ndn::Name& name, const ndn::Name& producer)
+    {
+        try {
+            checkNamingNameSize(name);
+            const auto root = makeProducerDataPrefix(producer, "COLLAB");
+            if (!root.isPrefixOf(name)) return std::nullopt;
+            size_t index = root.size();
+            const auto number = [&]() -> uint64_t {
+                if (index >= name.size()) throw std::invalid_argument("missing COLLAB number");
+                const auto& c = name[index++];
+                if (c.type() != ndn::tlv::GenericNameComponent)
+                    throw std::invalid_argument("invalid COLLAB number type");
+                const std::string text(reinterpret_cast<const char*>(c.value()), c.value_size());
+                const auto value = std::stoull(text);
+                if (c != makeNamingDecimalComponent(value))
+                    throw std::invalid_argument("noncanonical COLLAB number");
+                return value;
+            };
+            const auto counted = [&]() {
+                const auto count = number();
+                if (count > name.size() - index) throw std::invalid_argument("COLLAB count overflow");
+                auto value = name.getSubName(index, static_cast<size_t>(count));
+                index += static_cast<size_t>(count);
+                return value;
+            };
+            const auto requester = counted();
+            if (requester.empty() || index >= name.size()) return std::nullopt;
+            ndn::Name request;
+            if (const auto decoded = parseNameUriComponent(name, index);
+                decoded && decoded->size() > 1) request = *decoded;
+            else request.append(name[index]);
+            ++index;
+            if (index >= name.size() || name[index].type() != ndn::tlv::GenericNameComponent)
+                return std::nullopt;
+            const auto& scopeComponent = name[index++];
+            const std::string scope(reinterpret_cast<const char*>(scopeComponent.value()), scopeComponent.value_size());
+            const auto topic = counted();
+            const auto sequence = number();
+            if (index != name.size() ||
+                makeCollaborationDataName(producer, requester, request, scope, topic, sequence) != name)
+                return std::nullopt;
+            return CollaborationDataName{producer, requester, request, scope, topic, sequence};
+        }
+        catch (const std::exception&) { return std::nullopt; }
     }
 
     ndn::Buffer
@@ -1044,12 +1423,22 @@ namespace ndn_service_framework
         return buf.buf();
     }
 
-    std::string NameToRegexString(ndn::Name& name){
+    std::string NameToRegexString(ndn::Name& name)
+    {
+        return NameToRegexString(static_cast<const ndn::Name&>(name));
+    }
+
+    std::string NameToRegexString(const ndn::Name& name){
         std::string tmp = "";
         for(int i= 0;i<(int)name.size();i++)
        
         {
-            tmp = tmp + "<" + name[i].toUri().substr(0, name[i].toUri().length()) + ">";
+            std::string component;
+            for (const char c : name[i].toUri()) {
+                if (std::string("\\.^$|()[]{}*+?").find(c) != std::string::npos) component += '\\';
+                component += c;
+            }
+            tmp += "<" + component + ">";
         }
         NDN_LOG_INFO(tmp);
         return tmp;

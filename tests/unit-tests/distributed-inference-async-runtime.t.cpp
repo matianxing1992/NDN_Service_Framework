@@ -1476,6 +1476,67 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPreservesFinalResponseBundle)
   BOOST_CHECK(io->publishedByScope.empty());
 }
 
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerBindsSharedGenericRunnerToCurrentOutputEdges)
+{
+  class GenericRunner final : public NativeModelRunner
+  {
+  public:
+    std::map<std::string, TensorBundle> run(const RoleExecutionContext& ctx) final
+    {
+      {
+        std::unique_lock<std::mutex> lock(mutex);
+        ++arrivals;
+        entered.notify_all();
+        if (!entered.wait_for(lock, std::chrono::seconds(2), [this] { return arrivals >= 2; }))
+          throw std::logic_error("shared runner calls did not overlap");
+      }
+      NamedTensor tensor;
+      tensor.name = "hidden";
+      tensor.elementType = TensorElementType::UInt8;
+      tensor.payload.assign(ctx.requestId.begin(), ctx.requestId.end());
+      tensor.shape = {static_cast<std::int64_t>(tensor.payload.size())};
+      return {{"onnx-output-bundle", makeEncodedTensorBundle("onnx-output-bundle", {tensor})}};
+    }
+
+  private:
+    std::mutex mutex;
+    std::condition_variable entered;
+    unsigned arrivals = 0;
+  };
+  const auto makeRole = [] (const std::string& requestId, const std::string& scope) {
+    RoleSpec role{"/Source", {},
+      {DependencyEdge{scope, "/Source", "/Next", "/run/" + requestId + "/output", 1}}};
+    role.requestId = requestId;
+    role.outputs.front().bundleTensorNames = {"hidden"};
+    return role;
+  };
+  ProviderRoleWorker worker(2);
+  auto io = std::make_shared<ImmediateDependencyIo>();
+  auto runner = std::make_shared<GenericRunner>();
+  auto first = worker.executeAsync("session-a", makeRole("request-a", "group-a"), io, runner);
+  auto second = worker.executeAsync("session-b", makeRole("request-b", "group-b"), io, runner);
+  first.get();
+  second.get();
+  {
+    std::lock_guard<std::mutex> lock(io->mutex);
+    BOOST_REQUIRE_EQUAL(io->publishedByScope.size(), 2U);
+    for (const auto& binding : std::map<std::string, std::string>{
+           {"group-a", "request-a"}, {"group-b", "request-b"}}) {
+      const auto tensors = decodeTensorBundle(io->publishedByScope.at(binding.first).payload);
+      BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+      BOOST_CHECK_EQUAL(tensors.front().name, "hidden");
+      BOOST_CHECK_EQUAL(std::string(tensors.front().payload.begin(), tensors.front().payload.end()),
+                        binding.second);
+    }
+  }
+  auto wrongRole = makeRole("request-c", "group-c");
+  wrongRole.outputs.front().bundleTensorNames = {"missing"};
+  BOOST_CHECK_THROW(worker.executeAsync("session-c", wrongRole, io, runner).get(),
+                    std::logic_error);
+  std::lock_guard<std::mutex> lock(io->mutex);
+  BOOST_CHECK_EQUAL(io->publishedByScope.size(), 2U);
+}
+
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerSnapshotReportsActiveAndQueuedWork)
 {
   RoleSpec role{
@@ -7730,7 +7791,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
 
 NativeEpochCoordinatorResult runSamplingEpochs(
   std::vector<std::vector<float>> logits,
-  const std::function<void(NativeEpochCoordinatorConfig&)>& configure)
+  const std::function<void(NativeEpochCoordinatorConfig&)>& configure,
+  std::size_t rowsPerEpoch)
 {
   NativeProviderRuntime runtime(1);
   const auto identity = exactStateIdentity();
@@ -7743,11 +7805,14 @@ NativeEpochCoordinatorResult runSamplingEpochs(
     {"state.generationId", identity.generationId}, {"state.schemaDigest", identity.stateSchemaDigest}};
   const auto count = logits.size();
   auto samplingRunner = makeNativeModelRunner(
-    [logits = std::move(logits)](const RoleExecutionContext& context) {
+    [logits = std::move(logits), rowsPerEpoch](const RoleExecutionContext& context) {
       const auto& values = logits.at(context.inferenceEpoch);
+      if (rowsPerEpoch == 0 || values.size() % rowsPerEpoch != 0)
+        throw std::invalid_argument("sampling fixture rows do not divide its payload");
       NamedTensor tensor;
       tensor.name = "logits"; tensor.elementType = TensorElementType::Float32;
-      tensor.shape = {1, static_cast<std::int64_t>(values.size())};
+      tensor.shape = {static_cast<std::int64_t>(rowsPerEpoch),
+                      static_cast<std::int64_t>(values.size() / rowsPerEpoch)};
       tensor.payload.resize(values.size() * sizeof(float));
       if (!tensor.payload.empty()) std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
       return std::map<std::string, TensorBundle>{{"onnx-output-bundle",

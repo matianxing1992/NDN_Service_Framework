@@ -270,6 +270,31 @@ extractJsonStringArray(const std::string& json, const std::string& key)
   return values;
 }
 
+std::vector<uint64_t>
+extractJsonUIntArray(const std::string& json, const std::string& key)
+{
+  const auto marker = "\"" + key + "\":[";
+  const auto start = json.find(marker);
+  if (start == std::string::npos) return {};
+  const auto end = json.find(']', start + marker.size());
+  if (end == std::string::npos) throw std::invalid_argument("repo-invalid-index-array");
+  std::vector<uint64_t> values;
+  size_t pos = start + marker.size();
+  while (pos < end) {
+    uint64_t value = 0;
+    const auto parsed = std::from_chars(json.data() + pos, json.data() + end, value);
+    if (parsed.ec != std::errc() || parsed.ptr == json.data() + pos ||
+        (json[pos] == '0' && parsed.ptr - (json.data() + pos) > 1))
+      throw std::invalid_argument("repo-invalid-index-integer");
+    values.push_back(value);
+    pos = static_cast<size_t>(parsed.ptr - json.data());
+    if (pos == end) break;
+    if (json[pos++] != ',' || pos == end)
+      throw std::invalid_argument("repo-invalid-index-separator");
+  }
+  return values;
+}
+
 } // namespace
 
 ndn::Name
@@ -579,6 +604,9 @@ parseManifestJson(const std::string& manifestJson)
     manifest.confirmedReplicaNodes = manifest.replicaNodes;
   }
   manifest.packetNames = extractJsonStringArray(manifestJson, "packetNames");
+  manifest.packetOffsets = extractJsonUIntArray(manifestJson, "packetOffsets");
+  manifest.envelopeBytes = extractJsonUInt(manifestJson, "envelopeBytes", 0);
+  manifest.dataPrefix = extractJsonString(manifestJson, "dataPrefix");
   return manifest;
 }
 

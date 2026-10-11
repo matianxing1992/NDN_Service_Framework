@@ -78,6 +78,11 @@ struct RepoObjectManifest
   std::string operationId;
   std::string lifecycleState = "COMMITTED";
 
+  // Private physical packet-set index; original Data wire remains unchanged.
+  std::vector<uint64_t> packetOffsets;
+  uint64_t envelopeBytes = 0;
+  std::string dataPrefix;
+
   std::string toJson() const;
 };
 

@@ -232,7 +232,16 @@ sameManifestIdentity(const RepoObjectManifest& lhs,
          lhs.policyEpoch == rhs.policyEpoch &&
          lhs.replicaNodes == rhs.replicaNodes &&
          lhsConfirmed == rhsConfirmed &&
-         lhs.packetNames == rhs.packetNames;
+         lhs.packetNames == rhs.packetNames &&
+         lhs.packetOffsets == rhs.packetOffsets &&
+         lhs.envelopeBytes == rhs.envelopeBytes && lhs.dataPrefix == rhs.dataPrefix &&
+         lhs.publicationIdentity == rhs.publicationIdentity &&
+         lhs.protectionEpoch == rhs.protectionEpoch &&
+         lhs.keyReferenceId == rhs.keyReferenceId &&
+         lhs.keyReferenceVersion == rhs.keyReferenceVersion &&
+         lhs.ciphertextManifestDigest == rhs.ciphertextManifestDigest &&
+         lhs.servingLocator == rhs.servingLocator &&
+         lhs.contentDigest == rhs.contentDigest && lhs.plaintextSize == rhs.plaintextSize;
 }
 
 void
@@ -992,6 +1001,7 @@ bool
 FilesystemRepoStoreBackend::isMetadataOnly(
   const RepoObjectManifest& manifest) noexcept
 {
+  if (manifest.objectType == "original-packet-set") return false;
   return manifest.objectType == "ndn-segmented-data" ||
          manifest.segmentCount > 1 || manifest.packetNames.size() > 1;
 }

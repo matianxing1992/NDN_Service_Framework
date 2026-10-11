@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 import tempfile
@@ -15,22 +14,21 @@ from ndnsf_distributed_inference import (
 )
 from ndnsf_distributed_inference.retry import RetryPolicy, retry_call
 from py_repoclient import RepoDataPlaneProducer
-
-
-@dataclass
-class PublishResult:
-    success: bool
-    encrypted_data_name: str = ""
-    error: str = ""
+from spec201_publication_fixture import publication_result
 
 
 class FakeUser:
     def __init__(self) -> None:
         self.payloads: list[bytes] = []
+        self.publications = []
 
     def publish_encrypted_large_data(self, _service, payload, **_kwargs):
         self.payloads.append(bytes(payload))
-        return PublishResult(True, f"/data/{len(self.payloads)}")
+        result = publication_result(payload, _service, producer="/data",
+                                    label=_kwargs["object_label"],
+                                    content_name=_kwargs.get("content_name"))
+        self.publications.append(result)
+        return result
 
 
 class FakeAssignment:
@@ -113,11 +111,15 @@ class CoreBoundaryImportsTest(unittest.TestCase):
             "/Inference/NativeTracer",
             role="/Stage/0",
             backend="onnxruntime",
-            artifacts={"model": (b"model-bytes", "model.onnx", "model")},
+            artifacts={"model": {
+                "payload": b"model-bytes", "filename": "model.onnx", "kind": "model",
+                "content_name": {"kind": "model-file", "label": "canonical-source",
+                                 "model_name": "test-model", "model_identity": "a" * 64},
+            }},
         )
         self.assertTrue(result.success)
         spec = ExecutionArtifactSpec.from_bytes(user.payloads[-1])
-        context = FakeContext(spec.to_bytes(), {"/data/1": b"model-bytes"})
+        context = FakeContext(spec.to_bytes(), {user.publications[0].manifest_name: b"model-bytes"})
         with tempfile.TemporaryDirectory() as tmp:
             execution = prepare_execution(context, temp_root=tmp)
             self.assertEqual(execution.path("model").read_bytes(), b"model-bytes")

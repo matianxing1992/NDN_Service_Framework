@@ -146,7 +146,8 @@ struct AsyncTransport
       [] { return false; },
       [] { return PreparedServiceRequest{ndn::Name("/service"), ndn::Name("/publication-request")}; },
       [this](const PreparedServiceRequest&, const std::vector<std::uint8_t>& bytes,
-             const std::string& label, const NativeRequestControl&) {
+             const std::string& label, const ndn_service_framework::PublishedContentName&,
+             const NativeRequestControl&) {
         if (block.load(std::memory_order_acquire)) {
           entered.store(true, std::memory_order_release);
           gate.wait();

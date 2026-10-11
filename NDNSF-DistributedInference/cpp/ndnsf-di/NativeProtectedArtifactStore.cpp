@@ -1,4 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include <ndn-cxx/util/sha256.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <openssl/evp.h>
@@ -405,6 +407,11 @@ std::string nativeAssemblyDigestFromCanonicalProjection(const std::string& wire)
     else if (c == '}' || c == ']') { if (depth) --depth; }
   }
   throw rejected("protected Selection lacks canonical assembly bytes");
+}
+
+std::string nativeAssemblyDigestFromValidatedProjection(const NativeSelectionProjectionV3& projection)
+{
+  return nativePlanningDigest(nativeCanonicalJson(nativeAssemblyJson(projection.assemblyContract())));
 }
 
 std::vector<std::uint8_t> sealNativeAssembledEntry(

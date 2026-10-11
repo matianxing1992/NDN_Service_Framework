@@ -97,6 +97,35 @@ makeGroupOperation()
 
 } // namespace
 
+
+// These explicit names exercise the embedded crypto codec only. No Data is
+// published here; the C04 publication oracle uses real native endpoints.
+SealedCollectiveOperationV1
+sealCryptoFixture(ProviderGroupCoordinator& owner, const GroupOperationV1& operation,
+                  const std::string& rank, const std::string& sourceLayout,
+                  const std::string& targetLayout, const std::string& tensor,
+                  const std::vector<ProviderGroupBytes>& plaintext, std::uint64_t now,
+                  std::vector<std::string> names = {})
+{
+  if (names.empty()) {
+    const auto& members = owner.capability().orderedMembers;
+    const auto member = std::find_if(members.begin(), members.end(),
+      [&](const auto& value) { return std::to_string(value.rank) == rank; });
+    if (member == members.end()) throw std::invalid_argument("fixture rank has no Producer");
+    for (std::size_t index = 0; index < plaintext.size(); ++index) {
+      ndn::Name name(member->provider);
+      name.append("NDNSF-DI").append("crypto-fixture");
+      name.append(owner.capability().capabilityDigest).append(std::to_string(now));
+      name.append(ndn::name::Component(ndn::tlv::GenericNameComponent,
+                                      tensor.begin(), tensor.end()));
+      name.appendSegment(index);
+      names.push_back(name.toUri(ndn::name::UriFormat::CANONICAL));
+    }
+  }
+  return owner.sealOperation(operation, rank, sourceLayout, targetLayout, tensor,
+                             plaintext, now, names);
+}
+
 BOOST_AUTO_TEST_SUITE(DistributedInferenceCrossProviderGroup)
 
 BOOST_AUTO_TEST_CASE(SegmentRoundTripAuthenticatesAndDecrypts)
@@ -205,7 +234,7 @@ BOOST_AUTO_TEST_CASE(CoordinatorSealsAndVerifiesBoundedOperation)
   // same key in the receiver to model successful Provider certificate unwrap.
   consumer.installCapability(capability, std::vector<uint8_t>(32, 0x5a), true);
 
-  const auto sealed = producer.sealOperation(
+  const auto sealed = sealCryptoFixture(producer,
     makeGroupOperation(), "0", "src-layout", "dst-layout", "tensor-digest",
     {{'a', 'b', 'c'}, {'d', 'e'}}, 1000);
   BOOST_REQUIRE_EQUAL(sealed.segments.size(), 2);
@@ -213,17 +242,50 @@ BOOST_AUTO_TEST_CASE(CoordinatorSealsAndVerifiesBoundedOperation)
   BOOST_CHECK(!sealed.manifest.producerSignature.empty());
   BOOST_CHECK_EQUAL(sealed.segments[0].nonce.size(), 12);
   BOOST_CHECK(sealed.segments[0].nonce != sealed.segments[1].nonce);
-  BOOST_CHECK_EQUAL(sealed.segments[0].dataName,
-                    ProviderGroupCoordinator::makeDataName(
-                      capability, sealed.manifest, 0));
+  const auto expectedName = ndn::Name("/provider/P0/NDNSF-DI/crypto-fixture")
+    .append(capability.capabilityDigest).append("1000").append("tensor-digest").appendSegment(0);
+  BOOST_CHECK(ndn::Name(sealed.segments[0].dataName) == expectedName);
 
-  BOOST_CHECK(consumer.acceptSegment(sealed.manifest, sealed.segments[1]) ==
+  BOOST_CHECK(consumer.acceptSegment(sealed.manifest, sealed.segments[1], sealed.segments[1].dataName) ==
               DataSegmentReplayWindow::Result::Accepted);
-  BOOST_CHECK(consumer.acceptSegment(sealed.manifest, sealed.segments[0]) ==
+  BOOST_CHECK(consumer.acceptSegment(sealed.manifest, sealed.segments[0], sealed.segments[0].dataName) ==
               DataSegmentReplayWindow::Result::Accepted);
-  BOOST_CHECK(consumer.acceptSegment(sealed.manifest, sealed.segments[0]) ==
+  BOOST_CHECK(consumer.acceptSegment(sealed.manifest, sealed.segments[0], sealed.segments[0].dataName) ==
               DataSegmentReplayWindow::Result::Duplicate);
   BOOST_CHECK(sealed.segments[0].dataName.find("//") == std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(ExplicitMemberReferencesRejectMissingForeignAndRankAliasesBeforeAdmission)
+{
+  ProviderGroupCoordinator producer(makeCoordinatorOptions());
+  const auto operation = makeGroupOperation();
+  const auto capability = producer.createCapability(
+    "/request/exact-owner", "attempt-1", "sha256:plan", "group-1", 9,
+    {{"/provider/P0", 0, "offer-0", "/provider/P0/transport"},
+     {"/provider/P1", 1, "offer-1", "/provider/P1/transport"}},
+    {operation}, 32, 100, 500);
+  const std::vector<ProviderGroupBytes> plaintext{{'x'}};
+  const std::vector<std::string> names{"/provider/P0/crypto-fixture/seg=0"};
+  BOOST_CHECK_THROW(producer.sealOperation(operation, "0", "src", "dst", "tensor", plaintext, 100),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(producer.sealOperation(operation, "0", "src", "dst", "tensor", plaintext, 100,
+                    {"/foreign/crypto-fixture/seg=0"}), std::invalid_argument);
+  BOOST_CHECK_THROW(producer.sealOperation(operation, "/provider/P0", "src", "dst", "tensor", plaintext, 100,
+                    names), std::invalid_argument);
+  BOOST_CHECK_THROW(ProviderGroupCoordinator::makeDataName(capability, CollectiveOperationManifestV1{}, 0),
+                    std::invalid_argument);
+  const auto sealed = producer.sealOperation(operation, "0", "src", "dst", "tensor", plaintext, 100, names);
+  ProviderGroupCoordinator consumer(makeCoordinatorOptions());
+  consumer.installCapability(capability, std::vector<std::uint8_t>(32, 0x5a), true);
+  BOOST_CHECK_THROW(consumer.openSegment(sealed.manifest, sealed.segments.front()), std::invalid_argument);
+  BOOST_CHECK_THROW(consumer.acceptSegment(sealed.manifest, sealed.segments.front()), std::invalid_argument);
+  BOOST_CHECK_THROW(consumer.acceptAndOpenSegment(sealed.manifest, sealed.segments.front(),
+                    "/foreign/crypto-fixture/seg=0"), std::invalid_argument);
+  BOOST_CHECK(!consumer.terminal());
+  BOOST_CHECK(consumer.acceptSegment(sealed.manifest, sealed.segments.front(), names.front()) ==
+              DataSegmentReplayWindow::Result::Accepted);
+  BOOST_CHECK(consumer.acceptSegment(sealed.manifest, sealed.segments.front(), names.front()) ==
+              DataSegmentReplayWindow::Result::Duplicate);
 }
 
 BOOST_AUTO_TEST_CASE(CapabilityProjectionDisclosesOnlyLocalWrappedKey)
@@ -269,10 +331,10 @@ BOOST_AUTO_TEST_CASE(OperationKeyAndNonceBindExactTensorAndDataName)
     {{"/provider/P0", 0, "offer-0", "/provider/P0/NDNSF-DI"},
      {"/provider/P1", 1, "offer-1", "/provider/P1/NDNSF-DI"}},
     {makeGroupOperation()}, 32, 100, 500);
-  const auto first = producer.sealOperation(
+  const auto first = sealCryptoFixture(producer,
     makeGroupOperation(), "0", "src", "dst", "tensor-a",
     {{'a', 'b'}}, 1000, {"/provider/P0/tensor-a/seg=0"});
-  const auto second = producer.sealOperation(
+  const auto second = sealCryptoFixture(producer,
     makeGroupOperation(), "0", "src", "dst", "tensor-b",
     {{'c', 'd'}}, 1001, {"/provider/P0/tensor-b/seg=0"});
   const auto epochKey = std::vector<std::uint8_t>(32, 0x5a);
@@ -304,7 +366,7 @@ BOOST_AUTO_TEST_CASE(UndeclaredProducerRankNeverProducesTensorData)
     {makeGroupOperation()}, 32, 100, 500);
 
   BOOST_CHECK_THROW(
-    producer.sealOperation(
+    sealCryptoFixture(producer,
       makeGroupOperation(), "1", "src", "dst", "tensor-a",
       {{'a', 'b'}}, 1000),
     std::invalid_argument);
@@ -323,12 +385,12 @@ BOOST_AUTO_TEST_CASE(CoordinatorBindsPlanDeclaredExactNamesAndManifestAuthentica
     "/provider/P0/NDNSF-DI/TENSOR/v1/object/SEG/seg=0",
     "/provider/P0/NDNSF-DI/TENSOR/v1/object/SEG/seg=1",
   };
-  const auto sealed = producer.sealOperation(
+  const auto sealed = sealCryptoFixture(producer,
     makeGroupOperation(), "0", "src-layout", "dst-layout", "tensor-digest",
     {{'a', 'b', 'c'}, {'d', 'e'}}, 1000, names);
   BOOST_REQUIRE_EQUAL(sealed.segments.size(), names.size());
-  BOOST_CHECK_EQUAL(sealed.segments[0].dataName, names[0]);
-  BOOST_CHECK_EQUAL(sealed.segments[1].dataName, names[1]);
+  BOOST_CHECK(ndn::Name(sealed.segments[0].dataName) == ndn::Name(names[0]));
+  BOOST_CHECK(ndn::Name(sealed.segments[1].dataName) == ndn::Name(names[1]));
 
   const std::vector<std::uint8_t> manifestBytes{'m', 'a', 'n', 'i', 'f', 'e', 's', 't'};
   const auto signature = producer.signTensorObjectManifest(manifestBytes);
@@ -421,7 +483,7 @@ BOOST_AUTO_TEST_CASE(CoordinatorUsesRsaWrappedEpochKeyAndWireBundle)
   BOOST_CHECK_THROW(consumer.epochKeyForProvider("/provider/P0"),
                     std::runtime_error);
 
-  const auto sealed = producer.sealOperation(
+  const auto sealed = sealCryptoFixture(producer,
     makeGroupOperation(), "0", "src", "dst", "tensor",
     {{'a', 'b', 'c'}, {'d', 'e'}}, 1000);
   const auto wire = ProviderGroupCoordinator::encodeOperation(sealed);
@@ -490,15 +552,15 @@ BOOST_AUTO_TEST_CASE(CoordinatorUsesRsaWrappedEpochKeyAndWireBundle)
       external.manifest, externalSegment, externalSegment.dataName) ==
       DataSegmentReplayWindow::Result::Accepted);
   }
-  BOOST_CHECK(consumer.acceptSegment(decoded.manifest, decoded.segments[1]) ==
+  BOOST_CHECK(consumer.acceptSegment(decoded.manifest, decoded.segments[1], decoded.segments[1].dataName) ==
               DataSegmentReplayWindow::Result::Accepted);
-  BOOST_CHECK(consumer.acceptSegment(decoded.manifest, decoded.segments[0]) ==
+  BOOST_CHECK(consumer.acceptSegment(decoded.manifest, decoded.segments[0], decoded.segments[0].dataName) ==
               DataSegmentReplayWindow::Result::Accepted);
 
   auto tampered = decoded;
   tampered.segments.front().ciphertext.front() ^= 0x01;
   BOOST_CHECK_THROW(consumer.openSegment(tampered.manifest,
-                                         tampered.segments.front()),
+                                         tampered.segments.front(), tampered.segments.front().dataName),
                     std::exception);
 
   // Production default: RSA delivers the request-scoped epoch key to each
@@ -518,11 +580,11 @@ BOOST_AUTO_TEST_CASE(CoordinatorUsesRsaWrappedEpochKeyAndWireBundle)
   ProviderGroupCoordinator hmacConsumer(hmacOptions);
   hmacConsumer.installCapability(
     hmacCapability.projectForProvider("/provider/P1"), {}, true);
-  const auto hmacSealed = hmacProducer.sealOperation(
+  const auto hmacSealed = sealCryptoFixture(hmacProducer,
     makeGroupOperation(), "0", "src", "dst", "tensor",
     {{'h', 'm'}, {'a', 'c'}}, 1000);
   BOOST_CHECK(hmacConsumer.acceptSegment(
-                hmacSealed.manifest, hmacSealed.segments.front()) ==
+                hmacSealed.manifest, hmacSealed.segments.front(), hmacSealed.segments.front().dataName) ==
               DataSegmentReplayWindow::Result::Accepted);
   auto badCapability = hmacCapability.projectForProvider("/provider/P1");
   badCapability.sealerSignature.front() ^= 0x01;
@@ -541,7 +603,7 @@ BOOST_AUTO_TEST_CASE(CoordinatorRejectsManifestMutationAndTerminalReuse)
     "request", "attempt", "plan", "group", 1,
     {{"/provider/P0", 0, "offer", "/p0"}},
     {operation}, 32, 10, 20);
-  const auto sealed = producer.sealOperation(
+  const auto sealed = sealCryptoFixture(producer,
     operation, "0", "src", "dst", "tensor", {{'x', 'y'}}, 100);
   auto consumerOptions = makeCoordinatorOptions();
   ProviderGroupCoordinator consumer(consumerOptions);
@@ -549,7 +611,7 @@ BOOST_AUTO_TEST_CASE(CoordinatorRejectsManifestMutationAndTerminalReuse)
 
   auto altered = sealed.manifest;
   altered.operationKind = "REDUCE_SCATTER";
-  BOOST_CHECK_THROW(consumer.openSegment(altered, sealed.segments.front()),
+  BOOST_CHECK_THROW(consumer.openSegment(altered, sealed.segments.front(), sealed.segments.front().dataName),
                     std::runtime_error);
 
   consumer.cancel("test-cancel");
@@ -557,7 +619,7 @@ BOOST_AUTO_TEST_CASE(CoordinatorRejectsManifestMutationAndTerminalReuse)
   BOOST_CHECK(consumer.terminal());
   BOOST_CHECK_THROW(consumer.epochKeyForProvider("/provider/P0"),
                     std::runtime_error);
-  BOOST_CHECK_THROW(consumer.openSegment(sealed.manifest, sealed.segments.front()),
+  BOOST_CHECK_THROW(consumer.openSegment(sealed.manifest, sealed.segments.front(), sealed.segments.front().dataName),
                     std::runtime_error);
 
   ProviderGroupCoordinator failedConsumer(consumerOptions);
@@ -580,12 +642,12 @@ BOOST_AUTO_TEST_CASE(CoordinatorEnforcesProgressAndHardDeadline)
       "request", "attempt", "plan", "group", 1,
       {{"/provider/P0", 0, "offer", "/p0"}},
       {operation}, 32, noProgressMs, hardDeadlineMs);
-    const auto sealed = producer.sealOperation(
+    const auto sealed = sealCryptoFixture(producer,
       operation, "0", "src", "dst", "tensor", {{'x', 'y'}}, 100);
 
     consumer.installCapability(capability, std::vector<std::uint8_t>(32, 0x5a), true);
     BOOST_REQUIRE(consumer.acceptSegment(
-                    sealed.manifest, sealed.segments.front()) ==
+                    sealed.manifest, sealed.segments.front(), sealed.segments.front().dataName) ==
                   DataSegmentReplayWindow::Result::Accepted);
     return sealed;
   };
@@ -614,13 +676,13 @@ BOOST_AUTO_TEST_CASE(CoordinatorScopesNoProgressToEachOperation)
     "request", "attempt", "plan", "group", 1,
     {{"/provider/P0", 0, "offer", "/p0"}},
     {operation}, 32, 10, 1000);
-  const auto sealed = producer.sealOperation(
+  const auto sealed = sealCryptoFixture(producer,
     operation, "0", "src", "dst", "tensor", {{'x', 'y'}}, 100);
 
   ProviderGroupCoordinator consumer(makeCoordinatorOptions());
   consumer.installCapability(capability, std::vector<uint8_t>(32, 0x5a), true);
   BOOST_REQUIRE(consumer.acceptSegment(
-                  sealed.manifest, sealed.segments.front()) ==
+                  sealed.manifest, sealed.segments.front(), sealed.segments.front().dataName) ==
                 DataSegmentReplayWindow::Result::Accepted);
 
   // A long runner-preparation/idle interval starts a new transport operation
@@ -680,7 +742,7 @@ BOOST_AUTO_TEST_CASE(FixedFiftySeedDataV1FaultMatrix)
       {'p', 'l', 'a', 'i', 'n', 't', 'e', 'x', 't', '-', '0', '0'},
       {'p', 'l', 'a', 'i', 'n', 't', 'e', 'x', 't', '-', '1', '1'},
       {'p', 'l', 'a', 'i', 'n', 't', 'e', 'x', 't', '-', '2', '2'}};
-    const auto sealed = producer.sealOperation(
+    const auto sealed = sealCryptoFixture(producer,
       operation, "0", "src", "dst", "tensor-fault-matrix-" +
       std::to_string(seed),
       plaintextSegments, 100);
@@ -712,11 +774,11 @@ BOOST_AUTO_TEST_CASE(FixedFiftySeedDataV1FaultMatrix)
       auto candidate = sealed.segments[index];
       if ((seed % 5U) == 0 && index == order.front()) {
         candidate.ciphertext.front() ^= 0x01;
-        BOOST_CHECK_THROW(consumer.acceptSegment(sealed.manifest, candidate),
+        BOOST_CHECK_THROW(consumer.acceptSegment(sealed.manifest, candidate, candidate.dataName),
                           std::exception);
         candidate = sealed.segments[index];
       }
-      BOOST_CHECK(consumer.acceptSegment(sealed.manifest, candidate) ==
+      BOOST_CHECK(consumer.acceptSegment(sealed.manifest, candidate, candidate.dataName) ==
                   DataSegmentReplayWindow::Result::Accepted);
       ++accepted;
     }
@@ -731,7 +793,7 @@ BOOST_AUTO_TEST_CASE(FixedFiftySeedDataV1FaultMatrix)
     else {
       BOOST_CHECK_EQUAL(accepted, 3U);
       BOOST_CHECK(consumer.acceptSegment(
-                    sealed.manifest, sealed.segments[order.front()]) ==
+                    sealed.manifest, sealed.segments[order.front()], sealed.segments[order.front()].dataName) ==
                   DataSegmentReplayWindow::Result::Duplicate);
       BOOST_CHECK(!consumer.terminal());
     }

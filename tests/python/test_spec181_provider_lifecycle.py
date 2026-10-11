@@ -49,7 +49,7 @@ def protected_handler(tmp_path, monkeypatch, request):
         recipient_public_key=recipient_key.public_key(), content_key=b"k" * 32,
         key_id="key", expires_at_ms=now + 60000, now_ms=now)
     grant_name = canonical_grant_name(
-        authority="/authority", provider_identity="/provider/a", request_id="request-2",
+        publication_identity="/user", provider_identity="/provider/a", request_id="request-2",
         attempt=2, plan_core_digest=digest, model_manifest_digest=digest,
         protection_epoch="epoch-1", grant_digest=grant.grant_digest)
     binding = GrantBindingV1(
@@ -140,7 +140,7 @@ def protected_handler(tmp_path, monkeypatch, request):
         assignment=SimpleNamespace(
             role="stage0", service="/Test", assigned_artifact="/artifact/model",
             assignment_payload=projection.to_bytes()),
-        local_provider="/provider/a", session_id="request-2", is_streamed=False,
+        local_provider="/provider/a", requester_name="/user", session_id="request-2", is_streamed=False,
         fail=Mock(), report_operation_status=Mock())
     return runtime, wrapped, ctx, state, source
 

@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ndn_service_framework {
@@ -189,6 +190,15 @@ public:
                         const ndn::Name& sourceProvider,
                         const std::string& requestScopeDigest) const;
 
+  /** Reuse a measured fact, never an old request's authorization. The caller
+   * must confirm the peer epoch with fresh signed readiness and authorize the
+   * current edge. Returns an owning copy with its original time and Data name. */
+  std::optional<NetworkTelemetrySnapshot>
+  getReusableActiveProbe(const ndn::Name& observerProvider,
+                        const ndn::Name& targetProvider,
+                        NetworkTelemetrySampleKind kind,
+                        const std::string& confirmedPeerBootEpoch) const;
+
   /** Record a roster only after its request has been authenticated. A scope
    * cannot be rebound to a different roster or have its original expiry
    * extended by replay. */
@@ -255,7 +265,16 @@ public:
 
   size_t size() const;
 
+  /** Passive copies of recent validated dedicated-probe samples. Historical
+   * peer boot IDs are preserved; the consumer checks its current peer roster.
+   * The second value is the original validity bound, never a refreshed TTL.
+   */
+  std::vector<std::pair<NetworkTelemetrySnapshot, uint64_t>> getCachedActiveProbeSamples(
+    const ndn::Name& observerProvider, const std::vector<ndn::Name>& allowedPeers) const;
+
 private:
+  friend struct NetworkTelemetryStoreTestAccess;
+  bool isReusableActiveProbeSample(const NetworkTelemetrySnapshot& sample, uint64_t now) const;
   NetworkTelemetrySnapshot makeSnapshot(const NetworkTelemetryKey& key,
                                         const NetworkTelemetrySample& sample) const;
   void refreshDerivedFields(NetworkTelemetrySnapshot& snapshot) const;

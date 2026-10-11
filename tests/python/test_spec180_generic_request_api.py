@@ -425,22 +425,28 @@ def test_legacy_add_role_wrapper_has_no_v3_projection_dependency(monkeypatch):
 
 
 def _published_result(payload: bytes):
-    data_name = "/app/NDNSF/DI/REQUEST/input-1"
+    from ndn.encoding import Component
+    from ndnsf_distributed_inference.naming import (
+        canonical_name_uri, make_naming_digest_component, make_semantic_content_prefix)
     object_id = "input"
     content_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
     scope = "/SERVICE/ObjectDetection/YOLO26n"
     epoch = "epoch-1"
-    manifest_digest = _publication_manifest_digest(
-        data_name=data_name,
-        object_id=object_id,
-        plaintext_size=len(payload),
-        content_digest=content_digest,
-        authorization_scope=scope,
-        protection_epoch=epoch,
-    )
+    # Mock metadata only; actual Core result parity is exercised by Spec201's
+    # C++ oracle fixture, including its real descriptor payload digest.
+    manifest_digest = "sha256:" + hashlib.sha256(b"fixture-manifest").hexdigest()
+    base = make_semantic_content_prefix("/app", {
+        "kind": "input", "label": "image", "input_kind": "application"}, content_digest[7:]) + [
+        bytes(Component.from_str("PROTECTED")),
+        make_naming_digest_component("1" * 64)]
+    data_name = canonical_name_uri(base + [bytes(Component.from_str("DATA"))])
+    manifest_name = canonical_name_uri(base + [bytes(Component.from_str("MANIFEST")),
+        make_naming_digest_component(manifest_digest[7:])])
     return SimpleNamespace(
         success=True,
         encrypted_data_name=data_name,
+        data_prefix=data_name,
+        manifest_name=manifest_name,
         object_id=object_id,
         plaintext_size=len(payload),
         content_digest=content_digest,
@@ -461,7 +467,7 @@ def test_native_publication_result_binds_complete_di_reference():
         payload=payload,
         object_type="application/x-ndnsf-di-input+npz",
     )
-    assert reference.data_name == publication.encrypted_data_name
+    assert reference.data_name == publication.manifest_name
     assert reference.manifest_digest == publication.manifest_digest
     assert reference.authorization_scope == publication.authorization_scope
     assert reference.protection_epoch == publication.protection_epoch
@@ -496,6 +502,8 @@ def test_canonical_app_client_publishes_and_records_only_reference_metadata():
             assert service == "/ObjectDetection/YOLO26n"
             assert bytes(payload) == b"encoded-yolo-input"
             assert kwargs["object_label"] == "image"
+            assert kwargs["content_name"] == {
+                "kind": "input", "label": "image", "input_kind": "application"}
             return _published_result(bytes(payload))
 
     class FakeNetwork:
@@ -510,7 +518,7 @@ def test_canonical_app_client_publishes_and_records_only_reference_metadata():
         object_label="image",
         object_type="application/x-ndnsf-di-input+npz",
     )
-    assert reference["dataName"] == "/app/NDNSF/DI/REQUEST/input-1"
+    assert reference["dataName"] == _published_result(payload).manifest_name
     assert events[0]["payload"]["eventType"] == "INPUT_REFERENCE_PUBLISHED"
     assert "encoded-yolo-input" not in json.dumps(events[0])
     assert events[0]["payload"]["referenceDigest"] == (

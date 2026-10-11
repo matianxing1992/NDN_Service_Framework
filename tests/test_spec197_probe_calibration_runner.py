@@ -148,7 +148,8 @@ class CalibrationRunnerInfrastructure(unittest.TestCase):
         self.assertIn('trust-anchor { type file file-name "/tmp/test-controller.cert" }', schema)
         peer = next(line for line in schema.splitlines() if 'id "peer probes"' in line)
         self.assertIn("for interest", peer)
-        self.assertIn("[<PEER-PROBE><PEER-GOODPUT><PEER-PROBE-READY>]", peer)
+        self.assertIn("<NDNSF><RPC>", peer)
+        self.assertIn("[<PROBE-RTT><PROBE-GOODPUT><PROBE-READY>]", peer)
         self.assertIn("<provider>[^<KEY>]*<KEY>", peer)
 
     def test_node_launch_does_not_detach_twice(self):
@@ -163,7 +164,7 @@ class CalibrationRunnerInfrastructure(unittest.TestCase):
             self.assertEqual(ast.dump(launcher.elts[2]), ast.dump(ast.parse("str(node.pid)", mode="eval").body))
 
     def test_fib_matches_actual_nfd_text_and_exact_prefix(self):
-        prefix = "/example/probe-calibration/provider/source/NDNSF/PEER-GOODPUT"
+        prefix = "/example/probe-calibration/provider/source/NDNSF/RPC/PROBE-GOODPUT"
         namespace["verify_probe_fib"]("FIB:\n  " + prefix +
                                       " nexthops={faceid=123 (cost=0)}\n", prefix, "123")
         for text in ("FIB:\n", "  " + prefix + "-OTHER nexthops={faceid=123 (cost=0)}",

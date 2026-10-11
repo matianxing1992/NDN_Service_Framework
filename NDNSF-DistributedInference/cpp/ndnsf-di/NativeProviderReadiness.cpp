@@ -659,6 +659,15 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
                                               const ndn::Name& providerName,
                                               const ndn::Name& serviceName) const
 {
+  return makeAckDecision(rolesText, providerName, serviceName, {});
+}
+
+ndn_service_framework::ServiceProvider::AckDecision
+NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
+                                              const ndn::Name& providerName,
+                                              const ndn::Name& serviceName,
+                                              const AcceptedPayloadFactory& acceptedPayload) const
+{
   bool ready = false;
   std::string status;
   std::string message;
@@ -712,6 +721,13 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
   decision.message = !ready ? negativeAckReason :
                      (!admission.accepted ? admission.reason :
                       "native DI provider ready: " + message);
+  if (decision.status && acceptedPayload) {
+    // Preserve the semantic checks performed by the discarded legacy evidence
+    // formatter. The owning snapshot is also used if the factory declines.
+    if (executionEvidence) executionEvidence->validate();
+    for (const auto& item : executionEvidenceByRole) item.second.validate();
+    if (auto replacement = acceptedPayload(decision)) return std::move(*replacement);
+  }
   const auto capabilityReason = decision.status ? std::string() :
                                 (!admission.accepted ? admission.reason : negativeAckReason);
   const auto capabilityJson = makeProviderCapabilityHintJson(capacity,

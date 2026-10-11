@@ -20,7 +20,8 @@ namespace ndn_service_framework::test {
 namespace {
 
 ndn::svs::SecurityOptions
-makeSecurityOptions(ndn::KeyChain& keyChain, const ndn::security::Certificate& cert)
+makeSecurityOptions(ndn::KeyChain& keyChain, const ndn::security::Certificate& cert,
+                    const BootstrapProfile& profile, ndn::Face& face)
 {
   ndn::svs::SecurityOptions options(keyChain);
   options.interestSigner = std::make_shared<ndn::svs::BaseSigner>();
@@ -30,6 +31,14 @@ makeSecurityOptions(ndn::KeyChain& keyChain, const ndn::security::Certificate& c
   options.pubSigner->signingInfo = ndn::security::signingByCertificate(cert);
   options.validator = std::make_shared<ndn::svs::BaseValidator>();
   options.encapsulatedDataValidator = std::make_shared<ndn::svs::BaseValidator>();
+  if (profile.validateSvsPackets) {
+    options.interestSigner = std::make_shared<CommandInterestSigner>(keyChain);
+    options.interestSigner->signingInfo = ndn::security::signingByCertificate(cert);
+    options.interestSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
+    const auto validator = std::make_shared<MessageValidator>(profile.trustSchemaPath, profile.syncPrefix, &face);
+    options.validator = validator;
+    options.encapsulatedDataValidator = validator;
+  }
   return options;
 }
 
@@ -162,9 +171,9 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   const auto providerCert = makeIdentity(*m_keyChain, m_profile.providerIdentity);
   const auto aaCert = makeIdentity(*m_keyChain, m_profile.attributeAuthority);
   m_userSecurityOptions = std::make_unique<ndn::svs::SecurityOptions>(
-      makeSecurityOptions(*m_keyChain, userCert));
+      makeSecurityOptions(*m_keyChain, userCert, m_profile, *m_userFace));
   m_providerSecurityOptions = std::make_unique<ndn::svs::SecurityOptions>(
-      makeSecurityOptions(*m_keyChain, providerCert));
+      makeSecurityOptions(*m_keyChain, providerCert, m_profile, *m_providerFace));
 
   // Production ServiceUser appends a numeric process session to its SVS
   // producer node.  Keep that shape in the in-process fixture so the real
@@ -190,13 +199,15 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   // ACK/RESPONSE under /PERMISSION/<service>.  Public-parameter traffic alone
   // is not sufficient: without these policies the Authority receives DKEY
   // Interests but has no private key to issue for either identity.
-  const auto serviceUri = m_profile.serviceName.toUri();
+  // Fixture authority DSL uses the explicit readable attribute profile;
+  // actual Controller projection migration remains the Spec201 T009 gate.
+  const auto serviceUri = m_profile.serviceName.toUri(ndn::name::UriFormat::ALTERNATE);
   std::string userAbePolicy = "/PERMISSION" + serviceUri;
   for (const auto& service : m_profile.userAdditionalServices)
-    userAbePolicy += " OR /PERMISSION" + service.toUri();
+    userAbePolicy += " OR /PERMISSION" + service.toUri(ndn::name::UriFormat::ALTERNATE);
   std::string providerAbePolicy = "/SERVICE" + serviceUri;
   for (const auto& service : m_profile.providerAdditionalServices)
-    providerAbePolicy += " OR /SERVICE" + service.toUri();
+    providerAbePolicy += " OR /SERVICE" + service.toUri(ndn::name::UriFormat::ALTERNATE);
   m_attributeAuthority->addNewPolicy(
       userCert, userAbePolicy);
   m_attributeAuthority->addNewPolicy(
@@ -273,8 +284,12 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
     const auto certificate = makeIdentity(*m_keyChain, identity);
     m_extraProviderSecurityOptions.push_back(
         std::make_unique<ndn::svs::SecurityOptions>(
-            makeSecurityOptions(*m_keyChain, certificate)));
-    auto node = indexedName(m_profile.providerNode, index);
+            makeSecurityOptions(*m_keyChain, certificate, m_profile, *face)));
+    // Preserve malformed explicit profiles, while deriving extra valid nodes
+    // from the complete indexed Producer before appending role/session.
+    const auto canonicalNode = ndn::Name(m_profile.providerIdentity).append("provider");
+    auto node = m_profile.providerNode == canonicalNode ?
+        ndn::Name(identity).append("provider") : indexedName(m_profile.providerNode, index);
     node.append("0");
     m_extraProviderPubSubs.push_back(std::make_unique<ndn::svs::SVSPubSub>(
         m_profile.syncPrefix, node, *face,
@@ -852,8 +867,8 @@ NdnsfIntegrationEnvironment::forwardInterest(ndn::DummyClientFace& destination,
   }
   if (faultsEnabled && userToProvider &&
       faults.dropStreamInterestCursor != 0) {
-    const auto parsed = parseInvocationEventName(interest.getName());
-    if (parsed && parsed->cursor == faults.dropStreamInterestCursor) {
+    const auto parsed = inspectEventCursorForTest(interest.getName(), *this);
+    if (parsed && *parsed == faults.dropStreamInterestCursor) {
       std::lock_guard<std::mutex> lock(m_bridgeMutex);
       if (m_bridgeStats.droppedStreamInterests < faults.dropStreamInterestCount) {
         ++m_bridgeStats.droppedPackets;
@@ -939,10 +954,10 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
     faultsEnabled = m_status == EnvironmentStatus::RequestActive;
   }
   const auto streamEvent = !userToProvider && faultsEnabled
-    ? parseInvocationEventName(data.getName())
-    : std::optional<ParsedInvocationEventName>{};
+    ? inspectEventCursorForTest(data.getName(), *this)
+    : std::optional<uint64_t>{};
   if (streamEvent && faults.tamperStreamDataCursor != 0 &&
-      streamEvent->cursor == faults.tamperStreamDataCursor) {
+      *streamEvent == faults.tamperStreamDataCursor) {
     bool tamper = false;
     {
       std::lock_guard<std::mutex> lock(m_bridgeMutex);
@@ -965,7 +980,7 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
     }
   }
   if (streamEvent && faults.dropStreamDataCursor != 0 &&
-      streamEvent->cursor == faults.dropStreamDataCursor) {
+      *streamEvent == faults.dropStreamDataCursor) {
     std::lock_guard<std::mutex> lock(m_bridgeMutex);
     if (m_bridgeStats.droppedStreamDataPackets < faults.dropStreamDataCount) {
       ++m_bridgeStats.droppedPackets;
@@ -978,7 +993,7 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
   if (streamEvent && faults.reorderStreamDataCursor != 0) {
     const auto heldCursor = faults.reorderStreamDataCursor;
     std::optional<ndn::Data> pending;
-    if (streamEvent->cursor == heldCursor) {
+    if (*streamEvent == heldCursor) {
       std::lock_guard<std::mutex> lock(m_bridgeMutex);
       if (!m_pendingStreamProviderData) {
         m_pendingStreamProviderData = data;
@@ -987,7 +1002,7 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
         return;
       }
     }
-    if (streamEvent->cursor == heldCursor + 1) {
+    if (*streamEvent == heldCursor + 1) {
       {
         std::lock_guard<std::mutex> lock(m_bridgeMutex);
         if (m_pendingStreamProviderData) {
@@ -1006,7 +1021,7 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
     }
   }
   if (streamEvent && faults.duplicateStreamDataCursor != 0 &&
-      streamEvent->cursor == faults.duplicateStreamDataCursor) {
+      *streamEvent == faults.duplicateStreamDataCursor) {
     bool duplicate = false;
     {
       std::lock_guard<std::mutex> lock(m_bridgeMutex);

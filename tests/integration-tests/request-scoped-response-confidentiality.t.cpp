@@ -205,11 +205,11 @@ BOOST_AUTO_TEST_CASE(LargeResponseUsesConfiguredTrustAndRequestBoundAead)
 
   // Validation must use the configured trust schema, not only a local
   // certificate shortcut. trust-any.conf is intentionally a test anchor.
-  MessageValidator validator("examples/trust-any.conf", std::nullopt, &consumerFace);
+  auto validator = std::make_shared<MessageValidator>("examples/trust-any.conf", std::nullopt, &consumerFace);
   size_t validated = 0;
   size_t validationFailures = 0;
   for (const auto& data : segments) {
-    validator.validateWithConfiguredTrustSchema(
+    validator->validateWithConfiguredTrustSchema(
         data,
         [&] (const ndn::Data&) { ++validated; },
         [&] (const ndn::Data&, const ndn::security::ValidationError&) {

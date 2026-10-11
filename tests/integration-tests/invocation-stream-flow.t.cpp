@@ -341,6 +341,8 @@ BOOST_AUTO_TEST_CASE(NativeTinyOnnxAdapterRunsIncrementalStream)
   BOOST_REQUIRE_MESSAGE(!fixture.empty(),
                         "Spec175 one-role ONNX fixture is unavailable");
   auto spec = makeStreamStatefulSpec(fixture / "role-0.onnx");
+  spec.metadata["providerIdentity"] = "/test/provider/spec175-native-adapter";
+  spec.metadata["providerBootId"] = "spec175-native-adapter-boot";
   spec.metadata["streamingGeneration"] = "true";
   spec.metadata["maxGeneratedTokens"] = "8";
   spec.metadata["eosTokenIds"] = "2";
@@ -897,9 +899,9 @@ BOOST_AUTO_TEST_CASE(NormalStreamReordersOneEventAndDrainsInOrder)
   size_t reordered = 0;
   environment.provider().setStreamPublicationInterceptorForTest(
       [&] (const ndn::Data& data) {
-        const auto parsed = parseInvocationEventName(data.getName());
+        const auto parsed = inspectEventCursorForTest(data.getName(), environment);
         if (reinjecting || !parsed) return true;
-        if (parsed->cursor == 3 && !delayed) {
+        if (*parsed == 3 && !delayed) {
           delayed = data;
           return false;
         }
@@ -976,8 +978,8 @@ BOOST_AUTO_TEST_CASE(NormalStreamSuppressesDuplicateEventData)
   size_t duplicated = 0;
   environment.provider().setStreamPublicationInterceptorForTest(
       [&] (const ndn::Data& data) {
-        const auto parsed = parseInvocationEventName(data.getName());
-        if (reinjecting || !parsed || parsed->cursor != 4) return true;
+        const auto parsed = inspectEventCursorForTest(data.getName(), environment);
+        if (reinjecting || !parsed || *parsed != 4) return true;
         reinjecting = true;
         environment.providerPubSub().publishPacket(data);
         environment.providerPubSub().publishPacket(data);
@@ -1046,8 +1048,8 @@ BOOST_AUTO_TEST_CASE(NormalStreamRejectsTamperedEventBeforeDelivery)
   // exact Data can race the intentionally invalid publication.
   environment.provider().setStreamRetentionInterceptorForTest(
       [&] (const ndn::Data& data) {
-        const auto parsed = parseInvocationEventName(data.getName());
-        if (reinjecting || tampered || !parsed || parsed->cursor != 1) return true;
+        const auto parsed = inspectEventCursorForTest(data.getName(), environment);
+        if (reinjecting || tampered || !parsed || *parsed != 1) return true;
         tampered = true;
         auto bad = data;
         const auto content = bad.getContent();

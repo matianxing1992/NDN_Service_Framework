@@ -10,6 +10,7 @@ SPEC181_GRANT_INTEGRATION_ROOT for every attempt.
 """
 from dataclasses import asdict, replace
 import faulthandler
+import base64
 import hashlib
 import inspect
 import json
@@ -103,27 +104,45 @@ def issue(root, publish):
         content_key_owner=lambda model, epoch: content_key, publisher=publish,
         publication_identity=REQUESTER, authority_key_id="fixture-authority-1")
     binding = factory(view, deadline)
-    metadata = dict(binding=asdict(binding), role=role, deadlineMs=deadline,
+    metadata = dict(binding=asdict(binding), requesterIdentity=REQUESTER, role=role, deadlineMs=deadline,
         planDigest="sha256:" + "a" * 64, contentKeyDigest=digest(content_key))
     write(root / "metadata.json", metadata)
     return metadata
 
 
 def controller(root):
+    faulthandler.dump_traceback_later(10)
     from ndnsf import ServiceController
+    certificate = subprocess.run(["ndnsec", "key-gen", "-t", "r", "/spec181/controller"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=15).stdout
+    (root / "controller.cert").write_bytes(certificate)
+    sys.path.insert(0, str(ROOT / "Experiments"))
+    from native_probe_validation_links import render_anchored_probe_validation_schema
+    # The original Controller explicitly issues this configured requester's certificate.
+    subject = "^<spec181|8=spec181><requester|8=requester><KEY|8=KEY><>{3}$"
+    issuer = "^<spec181|8=spec181><controller|8=controller><KEY|8=KEY><>{1,3}$"
+    checkers = "\n".join(
+        'checker { type customized sig-type %s key-locator { type name regex %s } }' %
+        (kind, json.dumps(issuer)) for kind in ("rsa-sha256", "ecdsa-sha256"))
+    delegated = ('rule { id "original requester certificate" for data '
+                 'filter { type name regex %s } %s }' % (json.dumps(subject), checkers))
+    (root / "anchored.conf").write_text(delegated + "\n" +
+        render_anchored_probe_validation_schema("/spec181", [root / "controller.cert"]))
     policy = root / "controller.policies"
     policy.write_text("name /spec181/controller/NDNSF/ControllerPolicy/v1\n"
         "provider-policies {}\nuser-policies { user-policy {\n"
         "for /spec181/requester\nallow { /SPEC181/GRANT }\n} }\n")
     owner = ServiceController(controller_prefix="/spec181/controller",
         policy_file=str(policy), bootstrap_token_file=str(root / "bootstrap.tokens"),
-        trust_schema=str(ROOT / "examples/trust-any.conf"))
+        trust_schema=str(root / "anchored.conf"))
     owner.start()
     try:
         certificate = subprocess.run(["ndnsec", "cert-dump", "-i", "/spec181/controller"],
             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
-        (root / "controller.cert").write_bytes(certificate)
+        if base64.b64decode(certificate) != base64.b64decode((root / "controller.cert").read_bytes()):
+            raise RuntimeError("Controller replaced the pinned bootstrap certificate")
         (root / "controller-ready").touch()
+        faulthandler.cancel_dump_traceback_later()
         sys.stdin.readline()
     finally:
         owner.stop()
@@ -131,14 +150,19 @@ def controller(root):
 
 def publisher(root):
     from ndnsf import ServiceUser
+    from ndn.encoding import Name
     faulthandler.dump_traceback_later(10)
     token = next(line.split()[1] for line in (root / "bootstrap.tokens").read_text().splitlines()
-        if line.startswith(REQUESTER + " "))
+        if line.strip() and not line.lstrip().startswith("#")
+        and Name.from_str(line.split()[0]) == Name.from_str(REQUESTER))
     owner = ServiceUser(group="/spec181/group", controller="/spec181/controller",
-        user=REQUESTER, trust_schema=str(ROOT / "examples/trust-any.conf"),
+        user=REQUESTER, trust_schema=str(root / "anchored.conf"),
         bootstrap_token=token, permission_wait_ms=50, handler_threads=1, ack_threads=1)
     owner.start()
     try:
+        certificate = subprocess.run(["ndnsec", "cert-dump", "-i", REQUESTER],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=15).stdout
+        (root / "requester.cert").write_bytes(certificate)
         def publish(name, wire):
             result = owner.publish_signed_app_data(name, wire, freshness_ms=60000)
             if not result.success or result.error:
@@ -170,7 +194,8 @@ def python_provider(root):
         grant_fetch_timeout_ms=5000)
     role = RoleAssemblySpec(**metadata["role"])
     binding = GrantBindingV1(**metadata["binding"])
-    context = SimpleNamespace(local_provider=PROVIDER, assignment=SimpleNamespace(role=role.role))
+    context = SimpleNamespace(local_provider=PROVIDER, requester_name=REQUESTER,
+                              assignment=SimpleNamespace(role=role.role))
     projection = SimpleNamespace(grant_binding=binding, request_id=binding.request_id,
         attempt=binding.attempt, plan_core_digest=binding.plan_core_digest,
         security_policy_snapshot_digest=binding.security_policy_snapshot_digest,
@@ -239,6 +264,28 @@ def python_provider(root):
     return 0 if result["status"] == "VERIFIED" else 2
 
 
+def verify_original_publisher_packet(root):
+    from ndn.encoding import Name, parse_data
+    from ndnsf import fetch_exact_data_packet, verify_data_packet_signature
+    metadata = read(root / "metadata.json")
+    packet = fetch_exact_data_packet(metadata["binding"]["grant_name"], timeout_ms=5000)
+    name, _, _, signatures = parse_data(packet.wire)
+    controller_wire = base64.b64decode((root / "controller.cert").read_bytes())
+    requester_wire = base64.b64decode((root / "requester.cert").read_bytes())
+    controller_name, _, controller_key, _ = parse_data(controller_wire)
+    requester_name, _, requester_key, requester_signatures = parse_data(requester_wire)
+    assert Name.is_prefix(Name.from_str(REQUESTER), name)
+    assert name == Name.from_str(metadata["binding"]["grant_name"])
+    assert Name.is_prefix(Name.from_str(REQUESTER), requester_name)
+    assert requester_signatures.signature_info.key_locator.name in (controller_name, controller_name[:-2])
+    assert verify_data_packet_signature(requester_wire, bytes(controller_key))
+    assert signatures.signature_info.key_locator.name in (requester_name, requester_name[:-2])
+    assert verify_data_packet_signature(packet.wire, bytes(requester_key))
+    write(root / "packet-oracle.json", dict(producer=REQUESTER, name=Name.to_str(name),
+        original_wire_sha256=digest(packet.wire), signer_certificate=Name.to_str(requester_name),
+        controller_certificate_sha256=digest(controller_wire), signature_verified=True))
+
+
 def namespace_case(root, backend, algorithm, variant):
     subprocess.run(["mount", "-t", "tmpfs", "-o", "mode=0755", "tmpfs", "/run"], check=True)
     Path("/run/nfd").mkdir()
@@ -258,8 +305,12 @@ def namespace_case(root, backend, algorithm, variant):
         home = root / (name + "-home")
         home.mkdir()
         child_env = dict(env, HOME=str(home),
+            NDN_CLIENT_PIB="pib-sqlite3:" + str(home / "pib"),
+            NDN_CLIENT_TPM="tpm-file:" + str(home / "tpm"),
             NDN_LOG="*=WARN:ndn_service_framework.ServiceUser=DEBUG:nac-abe.Consumer=DEBUG")
         child_env.pop("NDNSF_CONTROLLER_CERT_FILE", None)
+        if name == "controller":
+            child_env["NDNSF_CONTROLLER_GENERATION_STATE"] = str(home / "generation.state")
         if name == "requester":
             child_env["NDNSF_CONTROLLER_CERT_FILE"] = str(root / "controller.cert")
         log = (root / (name + ".log")).open("w")
@@ -295,6 +346,7 @@ def namespace_case(root, backend, algorithm, variant):
             command = [sys.executable, str(SCRIPT), "--python-provider", str(root)]
         consumer = launch("provider", command)
         code = consumer.wait(timeout=20)
+        verify_original_publisher_packet(root)
         if backend == "native":
             records = [line.split("SPEC181_NATIVE_GRANT_RESULT ", 1)[1] for line in
                 (root / "provider.log").read_text().splitlines() if line.startswith("SPEC181_NATIVE_GRANT_RESULT ")]
@@ -331,7 +383,8 @@ def test_real_requester_provider_grant(backend, algorithm, variant):
     root = base / (backend + "-" + algorithm + "-" + variant)
     root.mkdir(parents=True, exist_ok=False)
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "NDNSF-DistributedInference"),
+    env["PYTHONPATH"] = os.pathsep.join([env.get("SPEC201_PYTHON_PACKAGE_ROOT", str(ROOT / "pythonWrapper")),
+        str(ROOT / "NDNSF-DistributedInference"),
         str(ROOT / "pythonWrapper"), str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"),
         site.getusersitepackages(), env.get("PYTHONPATH", "")])
     with (root / "run.log").open("w") as log:

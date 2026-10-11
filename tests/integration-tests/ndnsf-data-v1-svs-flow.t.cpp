@@ -1,6 +1,9 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <ndn-cxx/security/key-chain.hpp>
@@ -71,6 +74,51 @@ makeOperation(const std::string& consumerRank)
   operation.maxBytes = 32;
   operation.maxSegments = 2;
   return operation;
+}
+
+NativeTensorEndpointV3
+makePublishedEndpoint(const ndn::Name& producer, const GroupCapabilityV1& capability,
+                      const GroupOperationV1& operation, const std::string& role,
+                      std::uint64_t rank, const std::string& tensor)
+{
+  // These are explicitly declared fixture roles and the actual publisher;
+  // the production endpoint commitment and C04 builder own all Name encoding.
+  NativeTensorEndpointV3 endpoint;
+  endpoint.requester = "/test/user";
+  endpoint.producerNamespace = producer.toUri(ndn::name::UriFormat::CANONICAL);
+  endpoint.requestId = capability.requestId;
+  endpoint.attempt = 1;
+  endpoint.planDigest = nativePlanningDigest(capability.planDigest);
+  endpoint.groupId = capability.groupId;
+  endpoint.groupEpoch = std::to_string(capability.epoch);
+  endpoint.operation = operation.kind;
+  endpoint.round = operation.operationIndex;
+  endpoint.sourceKind = "ROLE";
+  endpoint.producerRole = role;
+  endpoint.producerRank = rank;
+  endpoint.consumerRole = "receiver";
+  endpoint.consumerRoles = {"receiver"};
+  endpoint.tensorId = tensor;
+  endpoint.tensorDigest = nativePlanningDigest(tensor);
+  endpoint.layoutDigest = endpoint.targetLayoutDigest = nativePlanningDigest("fixture-layout");
+  endpoint.segmentCount = operation.maxSegments;
+  endpoint.manifestDigest = nativePlanningDigest("fixture-manifest");
+  endpoint.securityProfile = "NDNSF_DATA_V1";
+  endpoint.noProgressDeadlineMs = capability.noProgressMs;
+  endpoint.hardDeadlineMs = capability.hardDeadlineMs;
+  auto identity = nativeEndpointJson(endpoint);
+  identity.erase("endpoint_digest"); identity.erase("consumer_role");
+  endpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+  return endpoint;
+}
+
+std::vector<std::string>
+segmentNames(const NativeTensorEndpointV3& endpoint)
+{
+  std::vector<std::string> names;
+  for (std::uint64_t segment = 0; segment != 2; ++segment)
+    names.push_back(tensorObjectSegmentName(endpoint, segment));
+  return names;
 }
 
 ndn::svs::SecurityOptions
@@ -164,9 +212,9 @@ BOOST_AUTO_TEST_CASE(IndependentSegmentsUseSvsMappingRepairAndReplayFence)
           try {
             const ndn::Data inner(data.getContent().blockFromValue());
             if (observedInnerNames != nullptr) {
-              observedInnerNames->push_back(inner.getName().toUri());
+              observedInnerNames->push_back(inner.getName().toUri(ndn::name::UriFormat::CANONICAL));
             }
-            if (inner.getName().toUri() == *dropInnerName) {
+            if (inner.getName().toUri(ndn::name::UriFormat::CANONICAL) == *dropInnerName) {
               *dropped = true;
               return;
             }
@@ -207,10 +255,12 @@ BOOST_AUTO_TEST_CASE(IndependentSegmentsUseSvsMappingRepairAndReplayFence)
   ProviderGroupCoordinator receiver(makeOptions());
   receiver.installCapability(capability, epochKey, true);
 
-  const auto sealedP0 = p0.sealOperation(
-    operation, "0", "src-0", "dst", "tensor-0", {{'a', 'b'}, {'c', 'd'}}, 100);
-  const auto sealedP1 = p1.sealOperation(
-    operation, "1", "src-1", "dst", "tensor-1", {{'e', 'f'}, {'g', 'h'}}, 100);
+  const auto endpointP0 = makePublishedEndpoint(p0Node, capability, operation, "shard-left", 0, "tensor-0");
+  const auto endpointP1 = makePublishedEndpoint(p1Node, capability, operation, "shard-right", 1, "tensor-1");
+  const auto sealedP0 = p0.sealOperation(operation, "0", endpointP0.layoutDigest,
+    endpointP0.targetLayoutDigest, endpointP0.tensorDigest, {{'a', 'b'}, {'c', 'd'}}, 100, segmentNames(endpointP0));
+  const auto sealedP1 = p1.sealOperation(operation, "1", endpointP1.layoutDigest,
+    endpointP1.targetLayoutDigest, endpointP1.tensorDigest, {{'e', 'f'}, {'g', 'h'}}, 100, segmentNames(endpointP1));
   dropInnerName = sealedP1.segments[1].dataName;
 
   size_t accepted = 0;
@@ -220,8 +270,8 @@ BOOST_AUTO_TEST_CASE(IndependentSegmentsUseSvsMappingRepairAndReplayFence)
     try {
       const Bytes wire(publication.data.begin(), publication.data.end());
       const auto decoded = ProviderGroupCoordinator::decodeSegment(wire);
-      const auto result = receiver.acceptSegment(decoded.manifest,
-                                                 decoded.segments.front());
+      const auto result = receiver.acceptSegment(decoded.manifest, decoded.segments.front(),
+        publication.name.toUri(ndn::name::UriFormat::CANONICAL));
       if (result == DataSegmentReplayWindow::Result::Accepted) {
         ++accepted;
       }
@@ -300,20 +350,14 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
   svsOptions.publicationFetchMaxInterestLifetime = ndn::time::milliseconds(200);
 
   const ndn::Name syncPrefix("/ndnsf/data-v1-provider-context/sync");
-  const ndn::Name producerNode("/ndnsf/data-v1-provider-context/producer");
-  const ndn::Name receiverNode("/ndnsf/data-v1-provider-context/receiver");
+  const ndn::Name producerNode("/test/provider/data-v1-producer");
+  const ndn::Name receiverNode("/test/provider/data-v1-receiver");
   auto producerPub = std::make_shared<ndn::svs::SVSPubSub>(
       syncPrefix, producerNode, producerFace, [] (const auto&) {},
       svsOptions, securityOptions);
-  bool receiverObservedProducerState = false;
   auto receiverPub = std::make_shared<ndn::svs::SVSPubSub>(
       syncPrefix, receiverNode, receiverFace,
-      [&] (const std::vector<ndn::svs::MissingDataInfo>& updates) {
-        receiverObservedProducerState = std::any_of(
-          updates.begin(), updates.end(), [&] (const auto& update) {
-            return update.nodeId == producerNode && update.high >= 2;
-          });
-      },
+      [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
       svsOptions, securityOptions);
 
   auto producerCert = keyChain.createIdentity(
@@ -335,6 +379,8 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
                              authorityCert, "examples/trust-any.conf");
   producer.attachLocalMockPubSubForTest(producerPub);
   receiver.attachLocalMockPubSubForTest(receiverPub);
+  producer.useSigningKeyChainForTest(keyChain);
+  receiver.useSigningKeyChainForTest(keyChain);
 
   auto producerInterestConnection = producerFace.onSendInterest.connect(
       [&] (const ndn::Interest& interest) { receiverFace.receive(interest); });
@@ -357,9 +403,13 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
       producerNode.toUri());
   ProviderGroupCoordinator receiverCoordinator(makeOptions());
   receiverCoordinator.installCapability(capability, epochKey, true);
-  const auto sealed = producerCoordinator.sealOperation(
-      operation, "0", "src-layout", "dst-layout", "tensor-provider-context",
-      {{'a', 'b'}, {'c', 'd'}}, 100);
+  const auto endpoint = makePublishedEndpoint(producerNode, capability, operation,
+    "worker", 0, "tensor-provider-context");
+  const auto names = segmentNames(endpoint);
+  std::vector<ndn::Name> exactNames;
+  for (const auto& name : names) exactNames.emplace_back(name);
+  const auto sealed = producerCoordinator.sealOperation(operation, "0", endpoint.layoutDigest,
+    endpoint.targetLayoutDigest, endpoint.tensorDigest, {{'a', 'b'}, {'c', 'd'}}, 100, names);
 
   // The receiver subscribes to a shared SVS producer stream.  Publish an
   // older request with the same operation/rank/tensor tuple first; the
@@ -374,9 +424,11 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
        {receiverNode.toUri(), 1, "offer-receiver", receiverNode.toUri()}},
       {operation}, 64, 1000, 5000);
   BOOST_REQUIRE_EQUAL(staleCapability.requestId, "/request/provider-context-old");
-  const auto staleSealed = staleCoordinator.sealOperation(
-      operation, "0", "src-layout", "dst-layout", "tensor-provider-context",
-      {{'x', 'y'}, {'z', 'w'}}, 100);
+  const auto staleEndpoint = makePublishedEndpoint(producerNode, staleCapability, operation,
+    "worker", 0, "tensor-provider-context");
+  const auto staleSealed = staleCoordinator.sealOperation(operation, "0", staleEndpoint.layoutDigest,
+    staleEndpoint.targetLayoutDigest, staleEndpoint.tensorDigest,
+    {{'x', 'y'}, {'z', 'w'}}, 100, segmentNames(staleEndpoint));
 
   FrameworkProvider::CollaborationAssignment assignment;
   assignment.role = "worker";
@@ -397,15 +449,11 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
   const std::vector<std::pair<ndn::Name, ndn::Buffer>> publications = {
       makePublication(0), makePublication(1)};
 
-  // The installed SVS API does not provide historical catch-up when a
-  // producer was published before subscribeToProducer().  Start the
-  // production fetch first and pump once so its live subscription is
-  // installed before the publication stream begins.
+  // Start production exact Interests before publication. The stale object
+  // has a different committed request Name and cannot fill these exact slots.
   auto fetched = std::async(std::launch::async, [&] {
-    return receiverContext.fetchDataV1Segments(
-        "/scope/provider-context", producerNode, operation.operationIndex,
-        "0", "tensor-provider-context", sealed.segments.size(),
-        operation.maxSegments, 3000);
+    return receiverContext.fetchSignedExactDataBatch("/scope/provider-context", exactNames,
+      producerNode, 3000, {}, nullptr, {}, FrameworkProvider::ExactDataFetchPhase::Published);
   });
   pump({&producerFace, &receiverFace}, [] { return false; }, 20);
 
@@ -418,7 +466,7 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
   // calling it on this test's Face thread before pumping the io_context would
   // wait on work that the same blocked thread must dispatch.
   auto publication = std::async(std::launch::async, [&] {
-    return producerContext.publishDataV1Segments(
+    return producerContext.publishSignedExactData(
       "/scope/provider-context", publications, 60000);
   });
   pump({&producerFace, &receiverFace}, [&] {
@@ -426,12 +474,6 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
            std::future_status::ready;
   });
   BOOST_REQUIRE(publication.get());
-
-  // Both publications are now synchronized on a live producer subscription;
-  // the downstream Provider can subsequently fetch the exact segments.
-  pump({&producerFace, &receiverFace},
-       [&] { return receiverObservedProducerState; });
-  BOOST_REQUIRE(receiverObservedProducerState);
 
   pump({&producerFace, &receiverFace}, [&] {
     return fetched.wait_for(std::chrono::milliseconds(0)) ==
@@ -442,30 +484,24 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
   BOOST_REQUIRE_EQUAL(wires->size(), sealed.segments.size());
 
   std::vector<std::uint8_t> payload;
-  for (const auto& wire : *wires) {
+  for (std::size_t index = 0; index < wires->size(); ++index) {
+    const auto& wire = wires->at(index);
     const auto decoded = ProviderGroupCoordinator::decodeSegment(
         Bytes(wire.begin(), wire.end()));
     BOOST_REQUIRE_EQUAL(decoded.segments.size(), 1U);
     BOOST_CHECK_EQUAL(decoded.manifest.requestId, "/request/provider-context");
     const auto result = receiverCoordinator.acceptSegment(
-        decoded.manifest, decoded.segments.front());
+        decoded.manifest, decoded.segments.front(), names.at(index));
     BOOST_REQUIRE(result == DataSegmentReplayWindow::Result::Accepted);
     const auto plaintext = receiverCoordinator.openSegment(
-        decoded.manifest, decoded.segments.front());
+        decoded.manifest, decoded.segments.front(), names.at(index));
     payload.insert(payload.end(), plaintext.begin(), plaintext.end());
   }
-  // A second fetch for the same request/producer must consume the retained
-  // request-scoped inbox.  The readiness observer is intentionally supplied
-  // here: it must not fire again because no second SVS subscription is
-  // installed for the same request/producer pair.
-  std::atomic<bool> reinstalled{false};
+  // Fetch the same exact immutable originals again; no request-specific
+  // renamed packet or second signing operation is introduced.
   auto reused = std::async(std::launch::async, [&] {
-    return receiverContext.fetchDataV1Segments(
-        "/scope/provider-context", producerNode, operation.operationIndex,
-        "0", "tensor-provider-context", sealed.segments.size(),
-        operation.maxSegments, 3000, {},
-        ndn_service_framework::DataV1SegmentNameFilter{
-          {}, [&reinstalled] { reinstalled.store(true); }});
+    return receiverContext.fetchSignedExactDataBatch("/scope/provider-context", exactNames,
+      producerNode, 3000, {}, nullptr, {}, FrameworkProvider::ExactDataFetchPhase::Published);
   });
   pump({&producerFace, &receiverFace}, [&] {
     return reused.wait_for(std::chrono::milliseconds(0)) ==
@@ -474,7 +510,6 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
   const auto reusedWires = reused.get();
   BOOST_REQUIRE(reusedWires);
   BOOST_REQUIRE_EQUAL(reusedWires->size(), wires->size());
-  BOOST_CHECK(!reinstalled.load());
   BOOST_CHECK_EQUAL_COLLECTIONS(
       reusedWires->front().begin(), reusedWires->front().end(),
       wires->front().begin(), wires->front().end());

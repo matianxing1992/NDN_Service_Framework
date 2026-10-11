@@ -86,8 +86,8 @@ def load_reference(package: Path, repository: Path, input_size: int) -> YoloRefe
     manifest_bytes = (package / "manifest.json").read_bytes()
     manifest = json.loads(manifest_bytes)
     fixture, oracle = manifest["fixture"], manifest["oracle"]
-    shape = [1, 3, 640, 640]
-    if (input_size != 640 or fixture["path"] != FIXTURE_PATH
+    shape = [1, 3, input_size, input_size]
+    if (fixture["path"] != FIXTURE_PATH
             or fixture["revision"] != "spec180-fixed-fixture-v1"
             or oracle["fixtureRevision"] != fixture["revision"]
             or oracle["fixtureSha256"] != fixture["sha256"]

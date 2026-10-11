@@ -2,6 +2,8 @@
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 
@@ -19,7 +21,7 @@ main()
 {
   using namespace ndnsf_distributed_repo;
 
-  ndn::KeyChain keyChain;
+  ndn::KeyChain keyChain("pib-memory:", "tpm-memory:");
   ndn::Name signerIdentity("/example/repo/user/smoke");
   signerIdentity.appendNumber(static_cast<uint64_t>(getpid()));
   const auto signingIdentity = keyChain.createIdentity(signerIdentity);
@@ -28,6 +30,10 @@ main()
   const auto nodeSqlitePath = tempPrefix.string() + "-node.sqlite3";
   const auto embeddedCoreSqlitePath = tempPrefix.string() + "-core.sqlite3";
   const auto embeddedNodeSqlitePath = tempPrefix.string() + "-embedded.sqlite3";
+  char packetDirectory[] = "/tmp/ndnsf-repo-smoke-packets-XXXXXX";
+  if (!::mkdtemp(packetDirectory)) throw std::runtime_error("cannot create packet fixture");
+  const std::filesystem::path packetRoot(packetDirectory);
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code e; std::filesystem::remove_all(path, e); } } packetCleanup{packetRoot};
   for (const auto& path : {nodeSqlitePath, embeddedCoreSqlitePath,
                            embeddedNodeSqlitePath}) {
     std::filesystem::remove(path);
@@ -67,7 +73,8 @@ main()
   RepoNode node(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
                 {"/repo/A", 1024 * 1024, 0, 0.10, 0.99, "rack-a",
                  {"model", "intermediate"}},
-                makeTieredRepoStore(nodeSqlitePath, 4096));
+                makeTieredRepoStore(makeFilesystemRepoStore((packetRoot / "store").string(),
+                  1U << 20, 1U << 20), 4096));
   StorageCapability persistentModeProbe;
   persistentModeProbe.repoNode = "/repo/A";
   persistentModeProbe.repoMode = "persistent";
@@ -159,16 +166,21 @@ main()
 
   StoreOptions insertPayloadOptions;
   insertPayloadOptions.objectType = "signed-payload-data";
+  using namespace ndn_service_framework;
+  const std::string representation = "{\"encoding\":\"raw\",\"segmentBytes\":8}";
+  auto insertPrefix = makeProducerDataPrefix(signerIdentity, "BLOB");
+  insertPrefix.append(makeNamingDigestComponent(sha256Hex(largePayload))).append("REPRESENTATION")
+    .append(makeNamingDigestComponent(computeNamingDigest("ndnsf-naming/representation",
+      {{1, 5, std::vector<uint8_t>(representation.begin(), representation.end())}}))).append("DATA");
   const auto insertPayloadStatus = RepoClient::insertPayload(
     node,
-    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/app-owned/payload-api",
+    insertPrefix.toUri(ndn::name::UriFormat::CANONICAL),
     largePayload,
     keyChain,
     ndn::security::SigningInfo(signingIdentity),
     insertPayloadOptions,
     8);
-  const auto insertPayloadManifest = node.getManifest(
-    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/app-owned/payload-api");
+  const auto insertPayloadManifest = node.getManifest(insertPayloadStatus.objectName);
   if (insertPayloadStatus.state != "DONE" ||
       insertPayloadStatus.completedSegments <= 1 ||
       insertPayloadManifest.segmentCount != insertPayloadStatus.completedSegments ||
@@ -192,19 +204,11 @@ main()
     return 1;
   }
 
-  const std::string fetchedDataPrefix =
-    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/UPLOAD/DATA/model";
+  const std::string fetchedDataPrefix = insertPrefix.toUri(ndn::name::UriFormat::CANONICAL);
   ndn::Segmenter segmenter(keyChain, ndn::security::SigningInfo(signingIdentity));
-  const auto fetchedData = segmenter.segment(
-    ndn::span<const uint8_t>(largePayload.data(), largePayload.size()),
-    ndn::Name(fetchedDataPrefix),
-    8,
-    ndn::time::hours(1));
   std::vector<std::vector<uint8_t>> fakeWirePackets;
-  for (const auto& data : fetchedData) {
-    const auto wire = data->wireEncode();
-    fakeWirePackets.emplace_back(wire.begin(), wire.end());
-  }
+  for (const auto& name : insertPayloadManifest.packetNames)
+    fakeWirePackets.push_back(node.getDataPacket(name));
   std::vector<uint8_t> fakeConcatenated;
   for (const auto& packet : fakeWirePackets) {
     fakeConcatenated.insert(fakeConcatenated.end(), packet.begin(), packet.end());
@@ -217,7 +221,7 @@ main()
   });
   RepoDataReference reference;
   reference.objectName =
-    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/app-owned/model";
+    insertPayloadStatus.objectName;
   reference.dataPrefix =
     fetchedDataPrefix;
   reference.hasFinalSegment = true;
@@ -323,6 +327,7 @@ main()
       {"/repo/persistent", 1024 * 1024, 0, 0.0, 1.0, "local", {"persistent"}},
       makeTieredRepoStore(sqlitePath.string(), 4096));
     if (restartedCore.get(persistentObjectName) != payload ||
+        restartedCore.get(persistentObjectName) != payload ||
         restartedCore.getManifest(persistentObjectName).objectType !=
           "persistent-object" ||
         restartedCore.cacheStatus().misses != 1 ||

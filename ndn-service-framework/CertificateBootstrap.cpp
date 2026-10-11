@@ -1,16 +1,19 @@
 #include "CertificateBootstrap.hpp"
 
 #include "NDNSFMessages.hpp"
+#include "utils.hpp"
 
 #include <ndn-cxx/encoding/buffer-stream.hpp>
 #include <ndn-cxx/encoding/block-helpers.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/security/transform.hpp>
 #include <ndn-cxx/util/io.hpp>
 #include <ndn-cxx/util/logger.hpp>
 #include <ndn-cxx/util/random.hpp>
 
 #include <cstdlib>
+#include <algorithm>
 #include <stdexcept>
 
 namespace ndn_service_framework {
@@ -104,6 +107,35 @@ getLocalControllerCertificateForBootstrap(ndn::security::KeyChain& keyChain,
                              "the local KeyChain has no usable Controller certificate for " +
                              controllerPrefix.toUri() + ": " + e.what());
   }
+}
+
+bool
+verifyControllerSignature(const ndn::Data& packet, const ndn::Name& controller,
+                          const ndn::security::Certificate& pinned,
+                          ndn::security::KeyChain& keyChain)
+{
+  try {
+    const auto& info = packet.getSignatureInfo();
+    if (!info.hasKeyLocator() || info.getKeyLocator().getType() != ndn::tlv::Name) return false;
+    const auto& locator = info.getKeyLocator().getName();
+    const auto signerKey = ndn::security::isValidKeyName(locator) ? locator :
+        ndn::security::extractKeyNameFromCertName(locator);
+    const auto verify = [&](const ndn::security::Certificate& certificate) {
+      return certificate.getIdentity() == controller && certificate.isValid() &&
+             certificate.getKeyName() == signerKey && ndn::security::verifySignature(packet, certificate);
+    };
+    // The configured encryption credential may also be the signing key.
+    if (verify(pinned)) return true;
+    // Split signing/encryption credentials must already be provisioned under
+    // this exact Controller identity; do not trust a fetched sibling actor.
+    for (const auto& key : keyChain.getPib().getIdentity(controller).getKeys()) {
+      for (const auto& certificate : key.getCertificates()) {
+        if (verify(certificate)) return true;
+      }
+    }
+  }
+  catch (const std::exception&) { }
+  return false;
 }
 
 } // namespace
@@ -372,7 +404,10 @@ isCertificateSignedByIdentity(const ndn::security::Certificate& certificate,
     if (!keyLocator || keyLocator->getType() != ndn::tlv::Name) {
       return false;
     }
-    return signerIdentity.isPrefixOf(keyLocator->getName());
+    const auto& name = keyLocator->getName();
+    return (ndn::security::isValidKeyName(name) ?
+      ndn::security::extractIdentityFromKeyName(name) :
+      ndn::security::extractIdentityFromCertName(name)) == signerIdentity;
   }
   catch (const std::exception&) {
     return false;
@@ -430,11 +465,13 @@ requestControllerSignedCertificate(ndn::Face& face,
   auto controllerCert = getLocalControllerCertificateForBootstrap(keyChain, controllerPrefix);
   auto encryptedRequest = encryptCertificateBootstrapRequestForCertificate(request, controllerCert);
 
-  ndn::Interest interest(makeCertificateBootstrapName(controllerPrefix, bootstrapIdentity));
+  const auto parameters = encryptedRequest.wireEncode();
+  ndn::Interest interest(makeControlRpcName(controllerPrefix, "CERTBOOTSTRAP", parameters,
+                                           makeControlQueryNonce()));
   interest.setMustBeFresh(true);
   interest.setCanBePrefix(false);
   interest.setInterestLifetime(timeout);
-  interest.setApplicationParameters(encryptedRequest.wireEncode());
+  interest.setApplicationParameters(parameters);
   // Signed Interest V0.2 appends SignatureInfo/SignatureValue as name
   // components.  With ApplicationParameters that leaves the digest component
   // in the middle of the name, so NFD cannot match the registered bootstrap
@@ -452,8 +489,12 @@ requestControllerSignedCertificate(ndn::Face& face,
 
   face.expressInterest(
     interest,
-    [&] (const ndn::Interest&, const ndn::Data& data) {
+    [&] (const ndn::Interest& query, const ndn::Data& data) {
       try {
+        if (data.getName() != query.getName() ||
+            !verifyControllerSignature(data, controllerPrefix, controllerCert, keyChain)) {
+          throw std::runtime_error("certificate bootstrap reply is not signed by a provisioned Controller key");
+        }
         CertificateBootstrapResponse response;
         if (!response.wireDecode(data.getContent())) {
           failure = "malformed certificate bootstrap response";
@@ -462,7 +503,17 @@ requestControllerSignedCertificate(ndn::Face& face,
           failure = response.message.empty() ? "certificate bootstrap refused" : response.message;
         }
         else {
-          issuedCertificate = response.issuedCertificate;
+          const auto& certificate = response.issuedCertificate;
+          const auto issuedKey = certificate.getPublicKey();
+          const auto expectedKey = key.getPublicKey();
+          if (!certificate.isValid() || certificate.getIdentity() != certificateIdentity ||
+              certificate.getKeyName() != key.getName() ||
+              !std::equal(issuedKey.begin(), issuedKey.end(), expectedKey.begin(), expectedKey.end()) ||
+              !isCertificateSignedByIdentity(certificate, controllerPrefix) ||
+              !verifyControllerSignature(certificate, controllerPrefix, controllerCert, keyChain)) {
+            throw std::runtime_error("issued certificate does not bind the requested key to the provisioned Controller");
+          }
+          issuedCertificate = certificate;
           keyChain.setDefaultCertificate(key, issuedCertificate);
           ok = true;
           NDN_LOG_INFO("NDNSF_CERT_BOOTSTRAP_INSTALLED identity=" << certificateIdentity.toUri()
@@ -520,7 +571,9 @@ ensureControllerSignedCertificate(ndn::Face& face,
   auto pibIdentity = keyChain.getPib().getIdentity(certificateIdentity);
   auto key = pibIdentity.getDefaultKey();
   auto localCertificate = key.getDefaultCertificate();
-  if (isCertificateSignedByIdentity(localCertificate, controllerPrefix)) {
+  if (isCertificateSignedByIdentity(localCertificate, controllerPrefix) && localCertificate.isValid() &&
+      verifyControllerSignature(localCertificate, controllerPrefix,
+        getLocalControllerCertificateForBootstrap(keyChain, controllerPrefix), keyChain)) {
     NDN_LOG_INFO("NDNSF_CERT_BOOTSTRAP_REUSED identity=" << certificateIdentity.toUri()
                  << " cert=" << localCertificate.getName().toUri());
     return localCertificate;

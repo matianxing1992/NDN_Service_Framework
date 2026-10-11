@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
+#include <ndn-cxx/name.hpp>
 
 #include <boost/property_tree/json_parser.hpp>
 #include <algorithm>
@@ -84,6 +85,7 @@ struct BoundGrantFixture
     binding.providerBootId = "boot-1";
     binding.fencingToken = "fence-1";
     binding.expiresAtMs = grant.get<std::uint64_t>("expiresAtMs") + 1000;
+    config.publicationIdentity = "/requester";
     config.authorityIdentity = grant.get<std::string>("policyAuthority");
     config.modelManifestDigest = vectors.get<std::string>("modelManifestDigest");
     config.authorityPublicKeyRaw = unhex(vectors.get<std::string>("authorityPublicKeyRaw"));
@@ -453,6 +455,26 @@ BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeRealGrantBoundsDataflowAndDrains, BoundG
     }
   }
   BOOST_CHECK_EQUAL(fetchCount, 8);
+}
+
+BOOST_FIXTURE_TEST_CASE(SignedOpaqueRequestGrantDecryptsWithProducerUriAlias, BoundGrantFixture)
+{
+  const auto alias = ndn::Name(binding.provider).toUri(ndn::name::UriFormat::CANONICAL);
+  const auto verify = [&] (const std::string& provider, const std::string& request) {
+    return verifyAndUnwrapNativeGrant(wire, config.authorityPublicKeyRaw, config.recipientKey,
+      provider, request, binding.attempt, binding.planCoreDigest, config.modelManifestDigest,
+      binding.protectionEpoch, now, config.authorityIdentity, binding.grantDigest);
+  };
+  BOOST_REQUIRE(!binding.requestId.empty() && binding.requestId.front() != '/');
+  const auto accepted = verify(alias, binding.requestId);
+  BOOST_REQUIRE_MESSAGE(accepted.verified, accepted.reason);
+  BOOST_CHECK_EQUAL(std::string(accepted.contentKey.begin(), accepted.contentKey.end()), expectedKey);
+  for (const auto& wrong : {binding.requestId + "-changed", "/" + binding.requestId}) {
+    const auto rejected = verify(alias, wrong);
+    BOOST_CHECK(!rejected.verified);
+    BOOST_CHECK(rejected.contentKey.empty());
+    BOOST_CHECK(rejected.reason.find("DI_PROTECTED_RUNTIME_BINDING_MISMATCH") != std::string::npos);
+  }
 }
 
 BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeRealGrantOwnsKeyAndDrains, BoundGrantFixture)

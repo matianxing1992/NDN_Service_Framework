@@ -1,8 +1,13 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePlacementObservationExpired.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 
 #include <algorithm>
 #include <tuple>
@@ -44,9 +49,9 @@ std::string calculateProbeScopeDigest(const NativeOfferBindingContext& context)
 std::string canonicalCore(const NativePlacementPlanCore& core)
 {
   auto roles = NativeJson::array();
-  for (const auto& role : core.executionPlan.roles) {
-    const auto assembly = core.assemblyByRole.find(role);
-    if (assembly == core.assemblyByRole.end()) throw std::invalid_argument("missing sealed assembly role");
+  if (!core.fixedCoreOwner) for (const auto& role : core.executionPlan.roles) {
+    const auto assembly = core.roleContracts().find(role);
+    if (assembly == core.roleContracts().end()) throw std::invalid_argument("missing sealed assembly role");
     roles.push_back(nativeAssemblyJson(assembly->second));
   }
   const auto strategy = nativePlanningDigest(nativeCanonicalJson(NativeJson{
@@ -65,6 +70,21 @@ std::string canonicalCore(const NativePlacementPlanCore& core)
   }
   if (core.placementDecisionV4)
     value["placement_decision_v4"] = *core.placementDecisionV4;
+  if (core.fixedCoreOwner) {
+    // Keep the original canonical root bytes, without reconstructing the
+    // immutable role array. Object iteration uses the same sorted key order.
+    std::string result = "{";
+    bool first = true;
+    for (auto item = value.begin(); item != value.end(); ++item) {
+      if (!first) result += ',';
+      first = false;
+      result += nativeCanonicalJson(NativeJson(item.key()));
+      result += ':';
+      result += item.key() == "roles" ? core.fixedCoreOwner->canonicalRoles() : nativeCanonicalJson(item.value());
+    }
+    result += '}';
+    return result;
+  }
   return nativeCanonicalJson(value);
 }
 
@@ -121,71 +141,171 @@ std::string canonicalSealed(const NativeSealedPlan& sealed)
 
 } // namespace
 
-void NativePlacementPlanCore::validate() const
+namespace {
+// The owned sealCore constructors may use this only immediately after setting
+// their digest. Public callers must also verify the digest against the content.
+void validateCoreFields(const NativePlacementPlanCore& core, bool validateAssemblies = true,
+                        bool validateArtifacts = true)
 {
-  artifacts.validate();
-  if (artifacts.requestId != requestId || artifacts.attempt != attempt ||
-      !isDigest(sourceContentDigest) || artifacts.modelDigest != sourceContentDigest ||
-      artifacts.graphDigest != graphDigest ||
-      !isDigest(artifacts.canonicalGraphDigest) ||
-      artifacts.artifactDigestByRole != artifactDigestByRole ||
-      requesterIdentity.empty() || requesterIdentity.front() != '/' ||
-      protectionEpoch.empty() || expiresAtMs == 0) {
+  if (core.fixedCoreOwner && (!core.assemblyByRole.empty() || !core.fixedCoreOwner->matches(core)))
+    throw std::invalid_argument("fixed core owner differs from its value bindings");
+  if (validateArtifacts) core.artifacts.validate();
+  if (core.artifacts.requestId != core.requestId || core.artifacts.attempt != core.attempt ||
+      !isDigest(core.sourceContentDigest) || core.artifacts.modelDigest != core.sourceContentDigest ||
+      core.artifacts.graphDigest != core.graphDigest ||
+      !isDigest(core.artifacts.canonicalGraphDigest) ||
+      core.artifacts.artifactDigestByRole != core.artifactDigestByRole ||
+      core.requesterIdentity.empty() || core.requesterIdentity.front() != '/' ||
+      core.protectionEpoch.empty() || core.expiresAtMs == 0) {
     throw std::invalid_argument("native sealed artifact/request binding is incomplete");
   }
-  if (requestId.empty() || attempt == 0 || !isDigest(modelDigest) ||
-      !isDigest(graphDigest) || !isDigest(ackClosedDigest) ||
-      !isDigest(candidateDigest) || executionPlan.roles.empty() ||
-      (!placementObservationSnapshotDigest.empty() &&
-       !isDigest(placementObservationSnapshotDigest)) ||
-      !isDigest(coreDigest)) {
+  if (core.requestId.empty() || core.attempt == 0 || !isDigest(core.modelDigest) ||
+      !isDigest(core.graphDigest) || !isDigest(core.ackClosedDigest) ||
+      !isDigest(core.candidateDigest) || core.executionPlan.roles.empty() ||
+      (!core.placementObservationSnapshotDigest.empty() &&
+       !isDigest(core.placementObservationSnapshotDigest)) ||
+      !isDigest(core.coreDigest)) {
     throw std::invalid_argument("native placement plan core identity is incomplete");
   }
-  strategy.validate();
-  if (placementDecisionV4)
-    validatePlacementDecisionV4(*placementDecisionV4,
-                                placementObservationSnapshotDigest);
-  std::set<std::string> roles(executionPlan.roles.begin(), executionPlan.roles.end());
-  if (roles.size() != executionPlan.roles.size() ||
-      assignment.providerByRole.size() != roles.size() ||
-      artifactDigestByRole.size() != roles.size() ||
-      assemblyByRole.size() != roles.size() ||
-      offerDigestByProvider.empty()) {
+  core.strategy.validate();
+  if (core.placementDecisionV4)
+    validatePlacementDecisionV4(*core.placementDecisionV4,
+                                core.placementObservationSnapshotDigest);
+  std::set<std::string> roles(core.executionPlan.roles.begin(), core.executionPlan.roles.end());
+  if (roles.size() != core.executionPlan.roles.size() ||
+      core.assignment.providerByRole.size() != roles.size() ||
+      core.artifactDigestByRole.size() != roles.size() ||
+      core.roleContracts().size() != roles.size() ||
+      core.offerDigestByProvider.empty()) {
     throw std::invalid_argument("native placement plan core role cover is incomplete");
   }
   for (const auto& role : roles) {
-    const auto provider = assignment.providerByRole.find(role);
-    const auto artifact = artifactDigestByRole.find(role);
-    if (provider == assignment.providerByRole.end() || provider->second.empty() ||
-        artifact == artifactDigestByRole.end() || !isDigest(artifact->second)) {
+    const auto provider = core.assignment.providerByRole.find(role);
+    const auto artifact = core.artifactDigestByRole.find(role);
+    if (provider == core.assignment.providerByRole.end() || provider->second.empty() ||
+        artifact == core.artifactDigestByRole.end() || !isDigest(artifact->second)) {
       throw std::invalid_argument("native placement plan core role binding is invalid");
     }
-    const auto offer = offerDigestByProvider.find(provider->second);
-    if (offer == offerDigestByProvider.end() || !isDigest(offer->second)) {
+    const auto offer = core.offerDigestByProvider.find(provider->second);
+    if (offer == core.offerDigestByProvider.end() || !isDigest(offer->second)) {
       throw std::invalid_argument("native placement plan core offer binding is invalid");
     }
-    const auto assembly = assemblyByRole.find(role);
-    if (assembly == assemblyByRole.end() || assembly->second.selectedRole != role ||
+    const auto assembly = core.roleContracts().find(role);
+    if (assembly == core.roleContracts().end() || assembly->second.selectedRole != role ||
         assembly->second.artifactDigest != artifact->second ||
-        assembly->second.graphDigest != artifacts.canonicalGraphDigest ||
-        assembly->second.modelManifestDigest != artifacts.manifestDigest ||
-        assembly->second.protectionEpoch != protectionEpoch) {
+        assembly->second.graphDigest != core.artifacts.canonicalGraphDigest ||
+        assembly->second.modelManifestDigest != core.artifacts.manifestDigest ||
+        assembly->second.protectionEpoch != core.protectionEpoch) {
       throw std::invalid_argument("native sealed assembly differs from authenticated artifact context");
     }
     if (assembly->second.role != role &&
         assembly->second.role + "#" + std::to_string(assembly->second.rank) != role) {
       throw std::invalid_argument("native assembly logical role/rank differs from assignment");
     }
-    validateNativeAssembly(assembly->second);
+    if (validateAssemblies && !core.fixedCoreOwner) validateNativeAssembly(assembly->second);
   }
+}
+} // namespace
+
+NativeFixedPlacementCoreV1::NativeFixedPlacementCoreV1(const NativePlacementPlanCore& core)
+  : m_roles(core.roleContracts()), m_execution(core.executionPlan),
+    m_providers(core.assignment.providerByRole), m_model(core.modelDigest),
+    m_source(core.sourceContentDigest), m_graph(core.graphDigest), m_candidate(core.candidateDigest)
+{
+  ++detail::fixedAssignmentWork().placementBuilds;
+  for (auto& dependency : m_execution.dependencies) {
+    if (dependency.operationKind == "TOKEN_FEEDBACK") dependency.keyScope = "fixed-token-feedback";
+    dependency.expectedSegments = dependency.expectedBytes = 0;
+  }
+  const auto& generation = core.generationContract;
+  m_generation.enabled = generation.enabled;
+  m_generation.mode = generation.mode;
+  m_generation.tokenInputName = generation.tokenInputName;
+  m_generation.stateInputNames = generation.stateInputNames;
+  m_generation.stateOutputNames = generation.stateOutputNames;
+  m_generation.stateSuccessorMap = generation.stateSuccessorMap;
+  m_generation.positionInputPolicy = generation.positionInputPolicy;
+  m_generation.attentionMaskInputName = generation.attentionMaskInputName;
+  m_generation.positionIdsInputName = generation.positionIdsInputName;
+  m_generation.cachePositionInputName = generation.cachePositionInputName;
+  m_generation.eosTokenIds = generation.eosTokenIds;
+  m_generation.tokenizerDigest = generation.tokenizerDigest;
+  m_generation.streamingOperationStride = generation.streamingOperationStride;
+  m_canonicalRoles = "[";
+  for (const auto& name : m_execution.roles) {
+    const auto wire = nativeCanonicalJson(nativeAssemblyJson(m_roles.at(name)));
+    if (m_canonicalRoles.size() > 1) m_canonicalRoles += ',';
+    m_canonicalRoles += wire;
+    m_roleDigests.emplace(name, nativePlanningDigest(wire));
+    const auto& role = m_roles.at(name);
+    if (role.mergeKind != "NATIVE_POSTPROCESS" &&
+        nativePlanningDigest(canonicalNativeOnnxRecipeJson(role)) != role.recipeDigest)
+      m_canonicalRecipes = false;
+  }
+  m_canonicalRoles += ']';
+}
+
+bool NativeFixedPlacementCoreV1::matches(const NativePlacementPlanCore& core) const
+{
+  const auto& execution = core.executionPlan;
+  if (m_model != core.modelDigest || m_source != core.sourceContentDigest || m_graph != core.graphDigest ||
+      m_candidate != core.candidateDigest || m_providers != core.assignment.providerByRole ||
+      std::tie(m_execution.version, m_execution.serviceName, m_execution.modelName, m_execution.modelFamily,
+        m_execution.modelFormat, m_execution.plannerKind, m_execution.executionPolicy, m_execution.streamingOperationStride,
+        m_execution.roles) !=
+      std::tie(execution.version, execution.serviceName, execution.modelName, execution.modelFamily,
+        execution.modelFormat, execution.plannerKind, execution.executionPolicy, execution.streamingOperationStride,
+        execution.roles) ||
+      !nativeFixedGenerationInterfacesEqualV1(m_generation, core.generationContract) ||
+      m_execution.dependencies.size() != execution.dependencies.size() || m_roles.size() != core.roleContracts().size())
+    return false;
+  for (std::size_t index = 0; index < execution.dependencies.size(); ++index)
+    if (!nativeFixedDependencyContractsEqualV1(m_execution.dependencies[index], execution.dependencies[index])) return false;
+  if (&core.roleContracts() == &m_roles) return true;
+  for (const auto& [name, role] : m_roles) {
+    const auto found = core.roleContracts().find(name);
+    if (found == core.roleContracts().end() || role.materializedRole != found->second.materializedRole ||
+        !nativeSelectionRoleContractsEqualV3(role, found->second)) return false;
+  }
+  return true;
+}
+
+NativePlacementPlanCore NativePlanSealer::shareFixedCore(NativePlacementPlanCore core,
+  std::shared_ptr<const NativeFixedPlacementCoreV1> previous)
+{
+  if (core.fixedCoreOwner) { core.validate(); return core; }
+  if (previous && previous->matches(core)) {
+    core.fixedCoreOwner = std::move(previous);
+    core.assemblyByRole.clear();
+    core.validate();
+    return core;
+  }
+  core.validate();
+  // Copy the public values into independent storage; moving them could retain
+  // caller-owned mutable node aliases, even inside a const outer allocation.
+  core.fixedCoreOwner = std::shared_ptr<const NativeFixedPlacementCoreV1>(new const NativeFixedPlacementCoreV1(core));
+  core.assemblyByRole.clear();
+  return core;
+}
+
+void NativePlacementPlanCore::validate() const
+{
+  validateCoreFields(*this);
   if (nativePlanningDigest(canonicalCore(*this)) != coreDigest) {
     throw std::invalid_argument("native plan core was modified after sealing");
   }
 }
 
-void NativeSealedPlan::validate() const
+namespace {
+// Call only after validating this sealed value's unchanged Core. Keep every
+// security check here shared with the fully checked public validation entry.
+void validateSecurityForValidatedCore(const NativeSealedPlan& sealed)
 {
-  core.validate();
+  const auto& core = sealed.core;
+  const auto& security = sealed.security;
+  const auto& grants = sealed.grants;
+  const auto& planDigest = sealed.planDigest;
+  const auto& grantLeaseScope = sealed.grantLeaseScope;
   if (!isDigest(security.policyDigest) || !isDigest(planDigest)) {
     throw std::invalid_argument("native sealed plan security identity is invalid");
   }
@@ -206,7 +326,7 @@ void NativeSealedPlan::validate() const
   }
   if ((!security.requireProtectedArtifacts && !grants.empty()) ||
       security.requireProtectedArtifacts == (core.protectionEpoch == "plaintext-v1") ||
-      nativePlanningDigest(canonicalSealed(*this)) != planDigest) {
+      nativePlanningDigest(canonicalSealed(sealed)) != planDigest) {
     throw std::invalid_argument("native sealed plan security binding was modified");
   }
   if (grantLeaseScope) {
@@ -222,13 +342,44 @@ void NativeSealedPlan::validate() const
     }
   }
 }
+} // namespace
+
+void NativeSealedPlan::validate() const
+{
+  core.validate();
+  validateSecurityForValidatedCore(*this);
+}
+
+NativeOwnedSealedPlan::NativeOwnedSealedPlan(std::shared_ptr<const NativeSealedPlan> value)
+  : m_value(std::move(value))
+{}
+
+const NativeSealedPlan& NativeOwnedSealedPlan::value() const
+{
+  if (!m_value) throw std::logic_error("owned sealed plan is empty");
+  return *m_value;
+}
+
+NativeSealedPlan NativeOwnedSealedPlan::snapshot() const
+{
+  auto result = value();
+  if (result.core.fixedCoreOwner) {
+    result.core.assemblyByRole = result.core.roleContracts();
+    result.core.fixedCoreOwner.reset();
+  }
+  return result;
+}
+
+NativeSealedPlan NativeOwnedSealedPlan::invocationContext() const
+{
+  return value();
+}
 
 namespace {
-NativeProviderGrantView grantViewForIdentity(const NativePlacementPlanCore& core,
+NativeProviderGrantView grantViewForValidatedIdentity(const NativePlacementPlanCore& core,
   const std::string& providerName, const std::string& offerDigest,
   const NativeSecurityPolicySnapshot& security, const std::string& roleName)
 {
-  core.validate();
   if (!isDigest(security.policyDigest)) {
     throw std::invalid_argument("security policy digest is invalid");
   }
@@ -253,6 +404,25 @@ NativeProviderGrantView grantViewForIdentity(const NativePlacementPlanCore& core
           core.modelDigest, core.graphDigest, core.artifactDigestByRole.at(role->first),
           core.requesterIdentity, core.requestId, core.attempt, core.artifacts.manifestDigest,
           core.protectionEpoch, core.expiresAtMs};
+}
+
+NativeProviderGrantView grantViewForIdentity(const NativePlacementPlanCore& core,
+  const std::string& providerName, const std::string& offerDigest,
+  const NativeSecurityPolicySnapshot& security, const std::string& roleName)
+{
+  core.validate();
+  return grantViewForValidatedIdentity(core, providerName, offerDigest, security, roleName);
+}
+
+void validateGrantOfferBinding(const NativePlacementPlanCore& core,
+  const NativeAdmittedOfferV3& provider)
+{
+  const auto& offer = provider.observation();
+  if (offer.requestId != core.requestId || offer.attempt != core.attempt ||
+      offer.modelDigest != core.modelDigest || offer.service != core.executionPlan.serviceName ||
+      (offer.graphDigest != core.graphDigest && offer.graphDigest != "sha256:" + std::string(64, '0')) ||
+      offer.expiresAtMs < core.expiresAtMs || !offer.status)
+    throw std::invalid_argument("grant offer is not bound to this request");
 }
 
 } // namespace
@@ -319,14 +489,14 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   core.assemblyByRole = inputs.assemblyByRole;
   core.requestContractDigest = inputs.requestContractDigest;
   core.generationContract = inputs.generationContract;
-  for (const auto& item : core.assemblyByRole) {
+  for (const auto& item : core.roleContracts()) {
     if (item.second.adapterId != snapshot.model.adapterId ||
         item.second.adapterVersion != snapshot.model.adapterVersion) {
       throw std::invalid_argument("native assembly adapter differs from inspected model");
     }
   }
   core.coreDigest = nativePlanningDigest(canonicalCore(core));
-  core.validate();
+  validateCoreFields(core);
   return core;
 }
 
@@ -363,7 +533,8 @@ void NativePlanSealer::validateObservationSnapshotBinding(
   if (!snapshot.is_object() || !isDigest(context.placementObservationSnapshotDigest) ||
       inputs.placementObservationSnapshotDigest !=
         context.placementObservationSnapshotDigest ||
-      nativePlanningDigest(nativeCanonicalJson(snapshot)) !=
+      nativePlanningDigest(nativePlacementObservationCanonicalJson(
+        snapshot, context.preparedPlanningTemplate.get())) !=
         context.placementObservationSnapshotDigest ||
       !matches("schema", "ndnsf-placement-observation-snapshot-v4") ||
       !matches("request_id", context.requestId) ||
@@ -404,7 +575,6 @@ void NativePlanSealer::validateObservationSnapshotBinding(
       snapshot.at("captured_at_ms").get<std::uint64_t>() > nowMs ||
       !snapshot.contains("expires_at_ms") ||
       !snapshot.at("expires_at_ms").is_number_unsigned() ||
-      snapshot.at("expires_at_ms").get<std::uint64_t>() <= nowMs ||
       snapshot.at("expires_at_ms").get<std::uint64_t>() > context.deadlineMs ||
       inputs.expiresAtMs <= snapshot.at("captured_at_ms").get<std::uint64_t>() ||
       inputs.expiresAtMs > context.deadlineMs || inputs.expiresAtMs <= nowMs)
@@ -422,6 +592,10 @@ void NativePlanSealer::validateObservationSnapshotBinding(
         offer.value("signer_key_locator", std::string{}).empty())
       throw std::invalid_argument("placement observation provider roster binding is invalid");
   }
+  // Structural, scope and roster errors retain their original rejection.
+  // Only an otherwise valid expired snapshot permits observation-free replanning.
+  if (snapshot.at("expires_at_ms").get<std::uint64_t>() <= nowMs)
+    throw detail::NativePlacementObservationExpired();
 }
 
 
@@ -431,34 +605,26 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   const std::vector<NativeAdmittedOfferV3>& offers, const std::string& expectedAckClosedDigest,
   const NativePlanSealingInputs& inputs)
 {
-  std::vector<NativeSelectionRoleV3> prepared;
-  for (const auto& item : inputs.assemblyByRole) prepared.push_back(item.second);
+  auto phaseStarted = detail::nativePhaseStarted();
+  if (inputs.borrowedPreparedRoles && !inputs.assemblyByRole.empty())
+    throw std::invalid_argument("sealing inputs mix borrowed and value roles");
+  std::vector<NativeSelectionRoleV3> preparedStorage;
+  if (!inputs.borrowedPreparedRoles)
+    for (const auto& item : inputs.assemblyByRole) preparedStorage.push_back(item.second);
+  const auto& prepared = inputs.borrowedPreparedRoles ? *inputs.borrowedPreparedRoles : preparedStorage;
   NativeRequestPreparation::validateRoles(model, candidate, prepared);
+  detail::logNativeWorkPhase(proposal.context.requestId, "seal_prepared_validation", phaseStarted);
   const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
     std::chrono::system_clock::now().time_since_epoch()).count();
   if (now < 0) throw std::invalid_argument("invalid sealing clock");
-  validateNativeRolePlacement(proposal, prepared, offers, static_cast<std::uint64_t>(now));
-  auto published = proposal;
-  published.roles = NativeRequestPreparation::bindPublishedRoles(model, candidate, proposal.roles, inputs.artifacts);
-  // A refreshed recipe invalidates an old exact-reuse proof. Recheck the same
-  // placement against current admitted capabilities before sealing the new root.
-  validateNativeRolePlacement(published, published.roles, offers, static_cast<std::uint64_t>(now));
+  phaseStarted = detail::nativePhaseStarted();
+  if (inputs.previousFixedCore)
+    validateNativeRolePlacementWithFixedCore(proposal, prepared, *inputs.previousFixedCore, offers,
+      static_cast<std::uint64_t>(now));
+  else validateNativeRolePlacement(proposal, prepared, offers, static_cast<std::uint64_t>(now));
+  detail::logNativeWorkPhase(proposal.context.requestId, "seal_original_placement_validation", phaseStarted);
+  phaseStarted = detail::nativePhaseStarted();
   const auto& context = proposal.context;
-  std::vector<std::string> selectedOrder;
-  for (const auto& role : proposal.roles) selectedOrder.push_back(role.selectedRole);
-  if (executionPlan.roles != selectedOrder)
-    throw std::invalid_argument("execution role order differs from the V3 proposal");
-  validateObservationSnapshotBinding(context, inputs, proposal.ackClosedDigest,
-    static_cast<std::uint64_t>(now));
-  if (proposal.ackClosedDigest != expectedAckClosedDigest || !isDigest(expectedAckClosedDigest) ||
-      context.requestId != inputs.artifacts.requestId || context.attempt != inputs.artifacts.attempt ||
-      context.modelDigest != model.descriptor.intentDigest() || context.graphDigest != model.graph.graphDigest ||
-      inputs.artifacts.modelDigest != model.descriptor.contentDigest ||
-      (inputs.placementObservationSnapshotDigest.empty() &&
-       inputs.expiresAtMs != context.deadlineMs) || executionPlan.serviceName != context.serviceName ||
-      executionPlan.modelName != model.descriptor.modelName ||
-      inputs.artifacts.canonicalGraphDigest != model.canonicalGraphDigest || !isDigest(candidate.candidateDigest))
-    throw std::invalid_argument("V3 sealing inputs differ from the request or inspected model");
   NativePlacementPlanCore core;
   core.requestId = context.requestId; core.attempt = context.attempt;
   core.modelDigest = context.modelDigest; core.graphDigest = context.graphDigest;
@@ -473,12 +639,62 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   core.generationContract = inputs.generationContract;
   core.placementObservationSnapshotDigest = inputs.placementObservationSnapshotDigest;
   core.placementDecisionV4 = proposal.placementDecisionV4;
-  for (const auto& role : published.roles) {
+  const auto& previous = inputs.previousFixedCore;
+  bool reusePublished = previous && NativeRequestPreparation::canReusePublishedRolesForCheckedCandidate(
+    model, candidate, proposal.roles, inputs.artifacts, *previous);
+  if (reusePublished) {
+    core.fixedCoreOwner = previous;
+    if (!previous->matches(core)) {
+      core.fixedCoreOwner.reset();
+      reusePublished = false;
+    }
+  }
+  std::optional<NativeRolePlacementProposalV3> published;
+  if (!reusePublished) {
+    published.emplace(proposal);
+    published->roles = NativeRequestPreparation::bindPublishedRolesForCheckedCandidate(
+      model, candidate, proposal.roles, inputs.artifacts);
+  }
+  detail::logNativeWorkPhase(context.requestId, "seal_publication_rebind", phaseStarted);
+  phaseStarted = detail::nativePhaseStarted();
+  if (reusePublished)
+    validateNativePublishedRolePlacement(proposal, *previous, offers, static_cast<std::uint64_t>(now));
+  else validateNativeRolePlacement(*published, published->roles, offers, static_cast<std::uint64_t>(now));
+  detail::logNativeWorkPhase(context.requestId, "seal_published_placement_validation", phaseStarted);
+  phaseStarted = detail::nativePhaseStarted();
+  std::vector<std::string> selectedOrder;
+  for (const auto& role : proposal.roles) selectedOrder.push_back(role.selectedRole);
+  if (executionPlan.roles != selectedOrder)
+    throw std::invalid_argument("execution role order differs from the V3 proposal");
+  if (proposal.ackClosedDigest != expectedAckClosedDigest || !isDigest(expectedAckClosedDigest) ||
+      context.requestId != inputs.artifacts.requestId || context.attempt != inputs.artifacts.attempt ||
+      context.modelDigest != model.descriptor.intentDigest() || context.graphDigest != model.graph.graphDigest ||
+      inputs.artifacts.modelDigest != model.descriptor.contentDigest ||
+      (inputs.placementObservationSnapshotDigest.empty() &&
+       inputs.expiresAtMs != context.deadlineMs) || executionPlan.serviceName != context.serviceName ||
+      executionPlan.modelName != model.descriptor.modelName ||
+      inputs.artifacts.canonicalGraphDigest != model.canonicalGraphDigest || !isDigest(candidate.candidateDigest))
+    throw std::invalid_argument("V3 sealing inputs differ from the request or inspected model");
+  if (!reusePublished) for (const auto& role : published->roles) {
     if (!core.assemblyByRole.emplace(role.selectedRole, role).second)
       throw std::invalid_argument("duplicate selected V3 execution role");
   }
+  core.reusedFixedCore = reusePublished;
   core.coreDigest = nativePlanningDigest(canonicalCore(core));
-  core.validate();
+  // Publication binding validated these artifacts and placement validated
+  // every published assembly above. Only value copies followed, with no
+  // extension callback. Retain every independent Core binding check.
+  validateCoreFields(core, false, false);
+  detail::logNativeWorkPhase(context.requestId, "seal_core_construct_digest", phaseStarted);
+  phaseStarted = detail::nativePhaseStarted();
+  // Check freshness at the completed sealing boundary, after local validation
+  // and digest work, rather than with the earlier placement timestamp.
+  const auto sealedAt = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  if (sealedAt < 0) throw std::invalid_argument("invalid sealing clock");
+  validateObservationSnapshotBinding(context, inputs, proposal.ackClosedDigest,
+    static_cast<std::uint64_t>(sealedAt));
+  detail::logNativeWorkPhase(context.requestId, "seal_observation_binding", phaseStarted);
   return core;
 }
 
@@ -495,13 +711,18 @@ NativeProviderGrantView NativePlanSealer::grantView(const NativePlacementPlanCor
   const NativeAdmittedOfferV3& provider, const NativeSecurityPolicySnapshot& security,
   const std::string& roleName)
 {
+  validateGrantOfferBinding(core, provider);
   const auto& offer = provider.observation();
-  if (offer.requestId != core.requestId || offer.attempt != core.attempt ||
-      offer.modelDigest != core.modelDigest || offer.service != core.executionPlan.serviceName ||
-      (offer.graphDigest != core.graphDigest && offer.graphDigest != "sha256:" + std::string(64, '0')) ||
-      offer.expiresAtMs < core.expiresAtMs || !offer.status)
-    throw std::invalid_argument("grant offer is not bound to this request");
   return grantViewForIdentity(core, offer.provider, offer.offerDigest, security, roleName);
+}
+
+NativeProviderGrantView NativePlanSealer::grantViewFromValidatedCore(
+  const NativePlacementPlanCore& core, const NativeAdmittedOfferV3& provider,
+  const NativeSecurityPolicySnapshot& security, const std::string& roleName)
+{
+  validateGrantOfferBinding(core, provider);
+  const auto& offer = provider.observation();
+  return grantViewForValidatedIdentity(core, offer.provider, offer.offerDigest, security, roleName);
 }
 
 NativeSealedPlan NativePlanSealer::finalizeSecurity(
@@ -516,15 +737,31 @@ NativeSealedPlan NativePlanSealer::finalizeSecurity(
   }
   NativeSealedPlan sealed{core, grants, security, {}, std::move(grantLeaseScope)};
   sealed.planDigest = nativePlanningDigest(canonicalSealed(sealed));
-  sealed.validate();
+  validateSecurityForValidatedCore(sealed);
   return sealed;
 }
 
-NativeSelectionProjectionV3 NativePlanSealer::project(
-  const NativeSealedPlan& sealed, const std::string& provider,
-  const NativeRoleProjectionInputs& inputs)
+NativeOwnedSealedPlan NativePlanSealer::finalizeSecurityOwned(
+  const NativePlacementPlanCore& core,
+  const std::vector<NativeGrantBinding>& grants,
+  const NativeSecurityPolicySnapshot& security,
+  std::optional<NativeGrantLeaseScope> grantLeaseScope)
 {
-  sealed.validate();
+  // Copy even a caller-moved lease scope before freezing: moving its map could
+  // retain the caller's mutable node aliases. The other inputs are value-copied
+  // by the checked constructor, and its local result has no external aliases.
+  return NativeOwnedSealedPlan(std::make_shared<const NativeSealedPlan>(
+    finalizeSecurity(core, grants, security, grantLeaseScope)));
+}
+
+namespace {
+// Only the checked public entry points below may call this helper, after
+// validating their sealed input. Role/provider and serializer checks remain.
+NativeSelectionProjectionV3 makeProjection(
+  const NativeSealedPlan& sealed, const std::string& provider,
+  const NativeRoleProjectionInputs& inputs,
+  const NativeFixedRoleAssignmentV1* fixedAssignment = nullptr)
+{
   const auto requestedRole = inputs.executionRole.roleId;
   if (requestedRole.empty()) {
     throw std::invalid_argument("projection execution role is missing");
@@ -542,6 +779,7 @@ NativeSelectionProjectionV3 NativePlanSealer::project(
     });
   NativeSelectionProjectionV3 projection;
   projection.provider = provider;
+  projection.fixedProviderByRole = sealed.core.assignment.providerByRole;
   projection.requestId = sealed.core.requestId;
   projection.attempt = sealed.core.attempt;
   projection.planCoreDigest = sealed.core.coreDigest;
@@ -549,8 +787,21 @@ NativeSelectionProjectionV3 NativePlanSealer::project(
   projection.ackClosedDigest = sealed.core.ackClosedDigest;
   projection.offerDigest = sealed.core.offerDigestByProvider.at(provider);
   projection.securityPolicySnapshotDigest = sealed.security.policyDigest;
-  projection.selectedRole = sealed.core.assemblyByRole.at(assignment->first);
-  projection.assembly = projection.selectedRole;
+  const auto& roleContract = sealed.core.roleContracts().at(assignment->first);
+  if (fixedAssignment) {
+    if (fixedAssignment->provider() != provider ||
+        !nativeSelectionRoleContractsEqualV3(roleContract, *fixedAssignment->roleOwner()))
+      throw std::invalid_argument("cached role differs from checked sealed core");
+    projection.fixedRoleOwner = fixedAssignment->roleOwner();
+  }
+  else if (sealed.core.fixedCoreOwner) {
+    projection.fixedRoleOwner = std::shared_ptr<const NativeSelectionRoleV3>(sealed.core.fixedCoreOwner, &roleContract);
+  }
+  else {
+    projection.selectedRole = roleContract;
+    projection.assembly = projection.selectedRole;
+  }
+  projection.compactAssembly = true;
   projection.executionRole = inputs.executionRole;
   projection.dataflow = inputs.dataflow;
   projection.deviceBinding = inputs.deviceBinding;
@@ -567,8 +818,67 @@ NativeSelectionProjectionV3 NativePlanSealer::project(
   }
   projection.plan = sealed.core.executionPlan;
   projection.grantLeaseScope = sealed.grantLeaseScope;
+  return projection;
+}
+} // namespace
+
+NativeSelectionProjectionV3 NativePlanSealer::projectInvocation(
+  const NativeOwnedSealedPlan& sealed, const std::string& provider,
+  const NativeRoleProjectionInputs& inputs, const NativeFixedRoleAssignmentV1* fixedAssignment)
+{
+  return makeProjection(sealed.value(), provider, inputs, fixedAssignment);
+}
+
+NativeSelectionProjectionV3 NativePlanSealer::project(
+  const NativeSealedPlan& sealed, const std::string& provider,
+  const NativeRoleProjectionInputs& inputs)
+{
+  sealed.validate();
+  auto projection = makeProjection(sealed, provider, inputs);
   nativeSelectionProjectionV3ToJson(projection);
   return projection;
+}
+
+std::vector<std::uint8_t> NativePlanSealer::projectAndEncode(
+  const NativeSealedPlan& sealed, const std::string& provider,
+  const NativeRoleProjectionInputs& inputs)
+{
+  sealed.validate();
+  return encode(makeProjection(sealed, provider, inputs));
+}
+
+std::map<std::string, std::vector<std::uint8_t>> NativePlanSealer::projectAndEncodeAll(
+  const NativeSealedPlan& sealed,
+  const std::map<std::string, NativeRoleProjectionInputs>& inputsByRole)
+{
+  sealed.validate();
+  return projectAndEncodeAllFromValidatedSealed(sealed, inputsByRole);
+}
+
+std::map<std::string, std::vector<std::uint8_t>> NativePlanSealer::projectAndEncodeAll(
+  const NativeOwnedSealedPlan& sealed,
+  const std::map<std::string, NativeRoleProjectionInputs>& inputsByRole)
+{
+  return projectAndEncodeAllFromValidatedSealed(sealed.value(), inputsByRole);
+}
+
+std::map<std::string, std::vector<std::uint8_t>>
+NativePlanSealer::projectAndEncodeAllFromValidatedSealed(
+  const NativeSealedPlan& sealed,
+  const std::map<std::string, NativeRoleProjectionInputs>& inputsByRole)
+{
+  const auto& assignments = sealed.core.assignment.providerByRole;
+  if (inputsByRole.size() != assignments.size())
+    throw std::invalid_argument("projection inputs differ from assigned role set");
+  std::map<std::string, std::vector<std::uint8_t>> result;
+  for (const auto& assignment : assignments) {
+    const auto found = inputsByRole.find(assignment.first);
+    if (found == inputsByRole.end() || found->second.executionRole.roleId != assignment.first)
+      throw std::invalid_argument("projection input key differs from assigned execution role");
+    result.emplace(assignment.first,
+      encode(makeProjection(sealed, assignment.second, found->second)));
+  }
+  return result;
 }
 
 std::vector<std::uint8_t> NativePlanSealer::encode(

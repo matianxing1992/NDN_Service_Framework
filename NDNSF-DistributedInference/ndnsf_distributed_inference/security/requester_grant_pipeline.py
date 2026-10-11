@@ -11,7 +11,7 @@ already exist separately:
   ``grant_binding_provider`` seam (signed GrantRequestV1 in, GrantBindingV1
   out) and verifies the authority's answer;
 - the requester's ``publish_signed_app_data`` path publishes the grant
-  Data under the canonical Spec170 KEY-GRANT/v1 name, which the Provider
+  Data under the requester's producer-owned C08 grant name, which the Provider
   later fetches with an exact-name fetch.
 
 The authority private key loads from the Spec180 operator config registry
@@ -58,7 +58,7 @@ def build_in_process_grant_provider(
     public key (the authority wraps each content key to the selected
     Provider).  ``publisher`` is the requester's signed-APP-Data
     publication path (``ServiceUser.publish_signed_app_data``); the grant
-    Data lands under the canonical KEY-GRANT/v1 name the Provider fetches.
+    Data lands under the producer-owned C08 name the Provider fetches.
     """
     if not allowed_model_manifests:
         raise ValueError("grant policy requires explicit model manifests")
@@ -106,7 +106,7 @@ def build_in_process_grant_provider(
             now_ms=issue_ms,
         )
         data_name = canonical_grant_name(
-            authority=publication_identity or authority_identity,
+            publication_identity=publication_identity or requester_identity,
             provider_identity=grant.provider_identity,
             request_id=grant.request_id,
             attempt=grant.attempt,

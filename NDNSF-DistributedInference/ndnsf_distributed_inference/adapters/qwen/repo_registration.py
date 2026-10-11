@@ -16,6 +16,7 @@ from typing import Any
 from py_repoclient import ArtifactRepositoryApi
 
 from ...app_sdk.canonical_artifacts import canonical_layer_name
+from ...naming import make_producer_data_prefix
 
 
 def publish_qwen_stage_manifest(
@@ -59,15 +60,21 @@ def publish_qwen_stage_manifest(
             raise TimeoutError("Qwen Repo publication deadline expired")
         return remaining
 
+    use_canonical_namespace = bool(
+        canonical_model_name and canonical_graph_digest and canonical_profile)
+    if use_canonical_namespace:
+        actual = make_producer_data_prefix(publisher_identity, "MODEL")
+        if (canonical_publisher
+                and make_producer_data_prefix(canonical_publisher, "MODEL") != actual):
+            raise ValueError("canonical publisher does not match the actual Producer")
+        # The publishing ServiceUser owns the bytes. Neither a global default
+        # nor a caller-selected alias can replace its complete namespace.
+        canonical_publisher = str(publisher_identity)
     repo = ArtifactRepositoryApi(
         backend,
         publisher_identity=str(publisher_identity),
         default_timeout_ms=max(1000, remaining_ms()),
     )
-    use_canonical_namespace = bool(
-        canonical_model_name and canonical_graph_digest and canonical_profile)
-    if use_canonical_namespace and not canonical_publisher:
-        canonical_publisher = "/ndnsf-di"
     artifacts = []
     for stage in stages:
         role = str(stage["role"])

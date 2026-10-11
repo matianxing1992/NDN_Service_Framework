@@ -3,6 +3,8 @@
 
 #define BOOST_BIND_NO_PLACEHOLDERS
 
+#include "ProducerSignerPolicy.hpp"
+
 #include <iostream>
 #include <functional>
 #include <memory>
@@ -10,6 +12,7 @@
 #include <stdexcept>
 #include <atomic>
 #include <condition_variable>
+#include <chrono>
 #include <deque>
 #include <vector>
 #include <ndn-cxx/face.hpp>
@@ -61,6 +64,7 @@
 
 
 namespace ndn_service_framework{
+    namespace test { struct InvocationNamesOracle; }
 
     ndn::KeyType
     getCertificateKeyType(const ndn::security::Certificate& cert);
@@ -462,6 +466,7 @@ namespace ndn_service_framework{
                          ndn::Face* callbackFace = nullptr)
             : m_validator(makeCertificateFetcher(m_face, callbackFace),
                          makeCommandInterestOptions(), makeSignedInterestOptions()),
+              m_producerSigners(trustSchemaPath + ".producer-signers"),
               m_callbackIo(callbackFace == nullptr
                              ? nullptr
                              : &callbackFace->getIoContext()),
@@ -504,6 +509,14 @@ namespace ndn_service_framework{
         getConfiguredValidatorForSegmentFetcher() noexcept
         {
             return m_validator;
+        }
+
+        /** Namespace permission check after configured cryptographic validation.
+         * This does not authorize service execution or key access. */
+        bool
+        isProducerSignerAuthorized(const ndn::Data& data, const ndn::Name& producer) const
+        {
+            return m_producerSigners.allowsValidatedSigner(data, producer);
         }
 
         /**
@@ -592,6 +605,23 @@ namespace ndn_service_framework{
           ndn::security::DataValidationSuccessCallback successCb,
           ndn::security::DataValidationFailureCallback failureCb)
         {
+            // This callback runs on the Face executor after cryptographic
+            // success, including the asynchronous local-certificate path.
+            // A versioned invocation assembly keeps one signer identity.
+            const auto owner = weak_from_this().lock();
+            // A stack instance may use the synchronous local-certificate path.
+            // Every escaping callback below requires the retained shared owner.
+            const auto admittedSuccess = std::move(successCb);
+            successCb = [owner, this, admittedSuccess, failureCb](const ndn::Data& validated) {
+                if (!acceptValidatedInvocationSegmentSigner(validated)) {
+                    ++m_failureCount;
+                    if (failureCb) failureCb(validated, ndn::security::ValidationError(
+                        ndn::security::ValidationError::POLICY_ERROR,
+                        "invocation segment signer conflict or binding capacity exhausted"));
+                    return;
+                }
+                if (admittedSuccess) admittedSuccess(validated);
+            };
             const auto sigType = data.getSignatureType();
             if ((sigType != ndn::tlv::SignatureSha256WithRsa &&
                  sigType != ndn::tlv::SignatureSha256WithEcdsa) ||
@@ -616,29 +646,6 @@ namespace ndn_service_framework{
                                   << data.getName()
                                   << " sigType=" << sigType
                                   << " keyLocator=" << klName);
-                    const auto dataName = data.getName();
-                    bool isControllerBootstrapData = false;
-                    for (size_t i = 0; i + 1 < dataName.size(); ++i) {
-                        if (dataName[i].toUri() == "NDNSF" &&
-                            (dataName[i + 1].toUri() == "POLICY-MANIFEST" ||
-                             dataName[i + 1].toUri() == "PERMISSIONS")) {
-                            isControllerBootstrapData = true;
-                            break;
-                        }
-                    }
-                    if (isControllerBootstrapData) {
-                        const auto signerIdentity =
-                            ndn::security::extractIdentityFromCertName(klName);
-                        if (signerIdentity.isPrefixOf(dataName)) {
-                            NDN_LOG_DEBUG("MessageValidator controller bootstrap "
-                                          "Data accepted by hierarchical "
-                                          "name/key-locator relation name="
-                                          << dataName
-                                          << " signer=" << signerIdentity);
-                            successCb(data);
-                            return;
-                        }
-                    }
                     if (dispatchLocalCertificateValidation(
                           data, klName, successCb, failureCb)) {
                         return;
@@ -656,11 +663,18 @@ namespace ndn_service_framework{
             // certificate fetches.  Own the callbacks for that asynchronous
             // lifetime; retaining references to validateData() parameters
             // makes them dangle as soon as this function returns.
+            if (!owner) {
+                ++m_failureCount;
+                if (failureCb) failureCb(data, ndn::security::ValidationError(
+                    ndn::security::ValidationError::IMPLEMENTATION_ERROR,
+                    "network Data validation requires a shared MessageValidator owner"));
+                return;
+            }
             auto ownedSuccessCb = successCb;
             auto ownedFailureCb = failureCb;
             m_validator.validate(
                 data,
-                [success = std::move(ownedSuccessCb)](const ndn::Data& validatedData)
+                [owner, success = std::move(ownedSuccessCb)](const ndn::Data& validatedData)
                 {
                     NDN_LOG_DEBUG(
                       "MessageValidator Data validated through configured validator "
@@ -669,14 +683,14 @@ namespace ndn_service_framework{
                         success(validatedData);
                     }
                 },
-                [this, failure = std::move(ownedFailureCb)](
+                [owner, failure = std::move(ownedFailureCb)](
                     const ndn::Data& failedData,
                     const ndn::security::ValidationError& error)
                 {
                     NDN_LOG_ERROR("MessageValidator Data validation failed name="
                                   << failedData.getName()
                                   << " reason=" << error);
-                    ++m_failureCount;
+                    ++owner->m_failureCount;
                     if (failure) {
                         failure(failedData, error);
                     }
@@ -725,20 +739,28 @@ namespace ndn_service_framework{
           ndn::security::DataValidationSuccessCallback successCb,
           ndn::security::DataValidationFailureCallback failureCb)
         {
+            const auto owner = weak_from_this().lock();
+            if (!owner) {
+                ++m_failureCount;
+                if (failureCb) failureCb(data, ndn::security::ValidationError(
+                    ndn::security::ValidationError::IMPLEMENTATION_ERROR,
+                    "configured Data validation requires a shared MessageValidator owner"));
+                return;
+            }
             auto ownedSuccessCb = std::move(successCb);
             auto ownedFailureCb = std::move(failureCb);
             m_validator.validate(
               data,
-              [success = std::move(ownedSuccessCb)](
+              [owner, success = std::move(ownedSuccessCb)](
                 const ndn::Data& validatedData) {
                   if (success) {
                       success(validatedData);
                   }
               },
-              [this, failure = std::move(ownedFailureCb)](
+              [owner, failure = std::move(ownedFailureCb)](
                 const ndn::Data& failedData,
                 const ndn::security::ValidationError& error) {
-                  ++m_failureCount;
+                  ++owner->m_failureCount;
                   if (failure) {
                       failure(failedData, error);
                   }
@@ -805,6 +827,11 @@ namespace ndn_service_framework{
             }
         }
 
+        static bool
+        verifyLocalDataSignature(
+          const ndn::Data& data,
+          const std::optional<ndn::security::Certificate>& cert);
+
         bool
         dispatchLocalCertificateValidation(
           const ndn::Data& data,
@@ -821,13 +848,14 @@ namespace ndn_service_framework{
                 return false;
             }
 
-            auto self = shared_from_this();
+            auto self = weak_from_this().lock();
+            if (!self) return false;
             boost::asio::post(
               *m_validationPool,
               [self, data, cert = std::move(*cert), successCb, failureCb] {
                 bool verified = false;
                 try {
-                    verified = ndn::security::verifySignature(
+                    verified = verifyLocalDataSignature(
                       data,
                       std::optional<ndn::security::Certificate>{cert});
                 }
@@ -875,7 +903,7 @@ namespace ndn_service_framework{
                                                data.getName() == *m_svsStateVectorDataName;
 
             try {
-                if (!ndn::security::verifySignature(
+                if (!verifyLocalDataSignature(
                         data,
                         cert)) {
                     NDN_LOG_ERROR("MessageValidator Data validation failed name="
@@ -931,10 +959,52 @@ namespace ndn_service_framework{
         }
 
     private:
+        friend struct test::InvocationNamesOracle;
+        bool acceptValidatedInvocationSegmentSigner(const ndn::Data& data)
+        {
+            const auto& name = data.getName();
+            if (data.getContentType() == ndn::tlv::Data || !data.getFinalBlock() ||
+                !data.getFinalBlock()->isSegment() || name.size() < 2 ||
+                !name[-1].isSegment() || !name[-2].isVersion()) return true;
+            const auto base = name.getPrefix(-1);
+            const auto now = std::chrono::steady_clock::now();
+            for (auto it = m_invocationSegmentSigners.begin(); it != m_invocationSegmentSigners.end();) {
+                if (now - it->second.second >= std::chrono::minutes(5)) it = m_invocationSegmentSigners.erase(it);
+                else ++it;
+            }
+            ndn::Name signer;
+            try {
+                const auto& key = data.getSignatureInfo().getKeyLocator().getName();
+                signer = ndn::security::isValidKeyName(key) ?
+                    ndn::security::extractIdentityFromKeyName(key) :
+                    ndn::security::extractIdentityFromCertName(key);
+            }
+            catch (const std::exception&) { return false; }
+            const auto existing = m_invocationSegmentSigners.find(base);
+            if (existing != m_invocationSegmentSigners.end()) {
+                if (existing->second.first != signer) return false;
+                existing->second.second = now;
+                return true;
+            }
+            try {
+                if (!m_producerSigners.findValidatedInvocationProducer(data)) return true;
+            }
+            catch (const std::exception&) { return false; }
+            if (m_invocationSegmentSigners.size() >= 4096) return false;
+            m_invocationSegmentSigners.emplace(base, std::make_pair(signer, now));
+            return true;
+        }
+
+    private:
         NDN_LOG_MEMBER_DECL();
         ndn::KeyChain m_keyChain;
         ndn::Face m_face;
         ndn::ValidatorConfig m_validator;
+        ProducerSignerPolicy m_producerSigners;
+        // Face-thread owned; idle expiry bounds retention, admission never
+        // evicts active original-packet signer evidence.
+        std::map<ndn::Name, std::pair<ndn::Name, std::chrono::steady_clock::time_point>>
+            m_invocationSegmentSigners;
         std::optional<ndn::Name> m_svsStateVectorDataName;
         mutable std::mutex m_localCertificateCacheMutex;
         std::map<ndn::Name, ndn::security::Certificate> m_localCertificateCache;

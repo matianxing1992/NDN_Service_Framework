@@ -48,7 +48,7 @@ void requireControlActive(const NativeRequestControl& control)
 std::optional<NativeJson>
 placementIdentity(const NativeSelectionProjectionV3& projection)
 {
-  const auto& role = projection.assembly;
+  const auto& role = projection.assemblyContract();
   const auto roleName = role.role.empty() ? role.selectedRole : role.role;
   if (role.artifactDigest.empty() || role.modelManifestDigest.empty() ||
       role.graphDigest.empty() || roleName.empty() || role.backend.empty() ||
@@ -361,7 +361,7 @@ void publish(const std::shared_ptr<ProviderArtifactCache::Shared>& shared,
   entry.key = key;
   entry.artifact = result.artifact;
   if (const auto identity = placementIdentity(projection)) {
-    auto deviceSet = projection.assembly.deviceSet;
+    auto deviceSet = projection.assemblyContract().deviceSet;
     std::sort(deviceSet.begin(), deviceSet.end());
     if (std::none_of(deviceSet.begin(), deviceSet.end(),
                      [] (const std::string& device) { return device.empty(); }) &&
@@ -455,15 +455,15 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
 {
   if (!build || projection.provider.empty() || projection.requestId.empty())
     throw std::invalid_argument("provider artifact cache requires authenticated projection and builder");
-  if (key.role != projection.assembly.selectedRole ||
+  if (key.role != projection.assemblyContract().selectedRole ||
       key.canonicalRootName != projection.canonicalArtifactName ||
-      key.canonicalRootDigest != projection.assembly.modelManifestDigest ||
-      key.recipeDigest != projection.assembly.recipeDigest ||
-      key.backendAbi != projection.assembly.backendAbi ||
-      key.precision != projection.assembly.precision ||
-      key.quantization != projection.assembly.quantization ||
+      key.canonicalRootDigest != projection.assemblyContract().modelManifestDigest ||
+      key.recipeDigest != projection.assemblyContract().recipeDigest ||
+      key.backendAbi != projection.assemblyContract().backendAbi ||
+      key.precision != projection.assemblyContract().precision ||
+      key.quantization != projection.assemblyContract().quantization ||
       key.securityDomain != projection.securityPolicySnapshotDigest ||
-      key.protectionEpoch != projection.assembly.protectionEpoch)
+      key.protectionEpoch != projection.assemblyContract().protectionEpoch)
     throw cacheError("DI_PROVIDER_ARTIFACT_KEY_MISMATCH",
                      "cache identity is not bound to the authenticated Selection projection");
   if (projection.hasGrantBinding) {
@@ -487,16 +487,16 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
     throw std::invalid_argument("provider artifact cache key is empty");
   requireControlActive(control);
   constexpr std::uint64_t AssemblyMetadataBudget = 65536;
-  if (projection.assembly.maxSourceBytes == 0 ||
-      projection.assembly.maxAssembledBytes == 0 ||
-      projection.assembly.maxAssembledBytes >
+  if (projection.assemblyContract().maxSourceBytes == 0 ||
+      projection.assemblyContract().maxAssembledBytes == 0 ||
+      projection.assemblyContract().maxAssembledBytes >
         std::numeric_limits<std::uint64_t>::max() - AssemblyMetadataBudget ||
-      projection.assembly.maxSourceBytes >
+      projection.assemblyContract().maxSourceBytes >
         std::numeric_limits<std::uint64_t>::max() - AssemblyMetadataBudget -
-          projection.assembly.maxAssembledBytes)
+          projection.assemblyContract().maxAssembledBytes)
     throw cacheError("CACHE_BUDGET_EXCEEDED", "assembly budget is empty");
-  const auto reservation = projection.assembly.maxSourceBytes +
-    projection.assembly.maxAssembledBytes + AssemblyMetadataBudget;
+  const auto reservation = projection.assemblyContract().maxSourceBytes +
+    projection.assemblyContract().maxAssembledBytes + AssemblyMetadataBudget;
   const auto shared = m_shared;
   std::shared_ptr<Shared::Job> job;
   bool creator = false;
@@ -507,12 +507,12 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
     if (const auto found = shared->entries.find(cacheKey);
         found != shared->entries.end() && !found->second.invalidated) {
       constexpr std::uint64_t CiphertextFramingBudget = 65536;
-      const auto overhead = projection.assembly.protectionEpoch == "plaintext-v1"
+      const auto overhead = projection.assemblyContract().protectionEpoch == "plaintext-v1"
         ? 0 : CiphertextFramingBudget;
-      if (projection.assembly.maxAssembledBytes >
+      if (projection.assemblyContract().maxAssembledBytes >
             std::numeric_limits<std::uint64_t>::max() - overhead ||
           found->second.artifact->ciphertextBytes >
-            projection.assembly.maxAssembledBytes + overhead)
+            projection.assemblyContract().maxAssembledBytes + overhead)
         throw cacheError("CACHE_BUDGET_EXCEEDED",
                          "cached artifact exceeds this request's assembled limit");
       ++shared->templateHits;

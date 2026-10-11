@@ -2,6 +2,7 @@
 
 #include "HybridMessageCrypto.hpp"
 #include "NDNSFMessages.hpp"
+#include "ProducerDataNaming.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -1408,28 +1409,68 @@ isMatchingStreamCompletion(
   }
 }
 
+namespace {
+ndn::Name
+makeEventNameWithDigest(const StreamBinding& binding, const StreamDigest& digest,
+                        uint64_t cursor)
+{
+  if (cursor == 0) throw std::invalid_argument("stream event cursor must be positive");
+  auto name = makeProducerDataPrefix(binding.producer, "NDNSF", "event");
+  name.append("REQUEST").append(makeNamingLabelComponent(
+      binding.requestId.toUri(ndn::name::UriFormat::CANONICAL)))
+      .append("ATTEMPT").append(makeNamingDecimalComponent(binding.attemptEpoch))
+      .append("SERVICE").append(makeNamingLabelComponent(
+          binding.serviceName.toUri(ndn::name::UriFormat::CANONICAL)))
+      .append(makeNamingDigestComponent(toLowerHex(
+          ndn::span<const uint8_t>(digest.data(), digest.size()))))
+      .append(ndn::name::Component::fromNumber(cursor, ndn::tlv::SequenceNumNameComponent));
+  checkNamingNameSize(name);
+  return name;
+}
+
+std::optional<ParsedInvocationEventName>
+parseEventNameWithDigest(const ndn::Name& name, const StreamBinding& binding,
+                         const StreamDigest& digest)
+{
+  try {
+    if (name.empty() || name[-1].type() != ndn::tlv::SequenceNumNameComponent) return std::nullopt;
+    const auto cursor = name[-1].toSequenceNumber();
+    if (cursor == 0 || name != makeEventNameWithDigest(binding, digest, cursor)) return std::nullopt;
+    ParsedInvocationEventName parsed;
+    parsed.producer = binding.producer;
+    parsed.requester = binding.requester;
+    parsed.serviceName = binding.serviceName;
+    parsed.requestId = binding.requestId;
+    parsed.attemptEpoch = binding.attemptEpoch;
+    parsed.planDigest = binding.planDigest;
+    parsed.generationId = binding.generationId;
+    parsed.streamEpoch = binding.streamEpoch;
+    parsed.cursor = cursor;
+    return parsed;
+  }
+  catch (const std::exception&) { return std::nullopt; }
+}
+} // namespace
+
 ndn::Name
 makeInvocationEventName(const StreamBinding& binding, uint64_t cursor)
 {
   binding.validate();
-  if (cursor == 0) {
-    throw std::invalid_argument("stream event cursor must be positive");
-  }
-  ndn::Name name(binding.producer);
-  name.append("NDNSF").append("EVENT");
-  appendRequesterComponent(name, binding.requester);
-  name.append(binding.serviceName);
-  appendRequestIdComponent(name, binding.requestId);
-  name.appendNumber(binding.attemptEpoch);
-  name.append(toLowerHex(ndn::span<const uint8_t>(
-    binding.planDigest.data(), binding.planDigest.size())));
-  name.append(toLowerHex(ndn::span<const uint8_t>(
-    binding.generationId.data(), binding.generationId.size())));
-  name.appendNumber(binding.streamEpoch);
-  name.appendNumber(cursor);
-  return name;
+  return makeEventNameWithDigest(binding, computeStreamBindingDigest(binding), cursor);
 }
 
+std::optional<ParsedInvocationEventName>
+parseInvocationEventName(const ndn::Name& name, const StreamBinding& expectedBinding)
+{
+  try {
+    expectedBinding.validate();
+    return parseEventNameWithDigest(name, expectedBinding, computeStreamBindingDigest(expectedBinding));
+  }
+  catch (const std::exception&) { return std::nullopt; }
+}
+
+// Explicit compatibility read for the old expanded EVENT grammar. New
+// compact names require their authenticated binding owner above.
 std::optional<ParsedInvocationEventName>
 parseInvocationEventName(const ndn::Name& name)
 {
@@ -1519,6 +1560,13 @@ StreamEventPublisher::StreamEventPublisher(
         binding_.eventKeyCommitment) {
     throw std::invalid_argument("stream event key does not match commitment");
   }
+  bindingDigest_ = computeStreamBindingDigest(binding_);
+}
+
+std::optional<ParsedInvocationEventName>
+StreamEventPublisher::parseEventName(const ndn::Name& name) const
+{
+  return parseEventNameWithDigest(name, binding_, bindingDigest_);
 }
 
 void
@@ -1537,12 +1585,12 @@ StreamEventPublisher::encodeAndSign(const InvocationEventMessage& event,
                                     uint64_t cursor) const
 {
   event.validate();
-  const auto dataName = makeInvocationEventName(binding_, cursor);
+  const auto dataName = makeEventNameWithDigest(binding_, bindingDigest_, cursor);
   const auto plaintextBlock = event.wireEncode();
   if (plaintextBlock.size() > options_.maxEventWireBytes) {
     return std::nullopt;
   }
-  const auto bindingDigest = computeStreamBindingDigest(binding_);
+  const auto& bindingDigest = bindingDigest_;
   StreamDigest eventKeyDigest{};
   std::copy(eventKey_.begin(), eventKey_.end(), eventKeyDigest.begin());
   const auto nonce = deriveInvocationEventNonce(
@@ -1674,7 +1722,7 @@ StreamEventPublisher::publish(const ndn::Buffer& payload,
       return std::nullopt;
     }
     InvocationEventMessage event;
-    event.bindingDigest = computeStreamBindingDigest(binding_);
+    event.bindingDigest = bindingDigest_;
     event.cursor = nextCursor_;
     event.publishedAtUs = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1726,7 +1774,7 @@ StreamEventPublisher::finish(const ndn::Buffer& finalResult,
       return std::nullopt;
     }
     InvocationEventMessage event;
-    event.bindingDigest = computeStreamBindingDigest(binding_);
+    event.bindingDigest = bindingDigest_;
     event.cursor = nextCursor_;
     event.publishedAtUs = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1748,7 +1796,7 @@ StreamEventPublisher::finish(const ndn::Buffer& finalResult,
     if (!endEvent) {
       return std::nullopt;
     }
-    completion.bindingDigest = computeStreamBindingDigest(binding_);
+    completion.bindingDigest = bindingDigest_;
     completion.endEventName = endEvent->name;
     completion.finalCursor = end.finalCursor;
     completion.finishReason = reason;
@@ -1875,6 +1923,13 @@ StreamEventConsumer::StreamEventConsumer(
         binding_.eventKeyCommitment) {
     throw std::invalid_argument("stream event key does not match commitment");
   }
+  bindingDigest_ = computeStreamBindingDigest(binding_);
+}
+
+std::optional<ParsedInvocationEventName>
+StreamEventConsumer::parseEventName(const ndn::Name& name) const
+{
+  return parseEventNameWithDigest(name, binding_, bindingDigest_);
 }
 
 StreamEventConsumer::~StreamEventConsumer()
@@ -1915,7 +1970,7 @@ StreamEventConsumer::prefetchWindow()
     for (uint64_t cursor = firstCursor; cursor < firstCursor + count;
          ++cursor) {
       initialInterestCursors_.insert(cursor);
-      names.push_back(makeInvocationEventName(binding_, cursor));
+      names.push_back(makeEventNameWithDigest(binding_, bindingDigest_, cursor));
     }
   }
   // Do not hold the consumer mutex while handing names to the transport.  In
@@ -1967,8 +2022,8 @@ StreamEventConsumer::decodeAndValidate(const ndn::Data& data,
     message = "stream event signer does not match selected Provider";
     return false;
   }
-  const auto parsed = parseInvocationEventName(data.getName());
-  if (!parsed || data.getName() != makeInvocationEventName(binding_, parsed->cursor)) {
+  const auto parsed = parseEventName(data.getName());
+  if (!parsed || data.getName() != makeEventNameWithDigest(binding_, bindingDigest_, parsed->cursor)) {
     code = StreamedInvocationErrorCode::InvalidName;
     message = "stream event name is not canonical";
     return false;
@@ -1996,7 +2051,7 @@ StreamEventConsumer::decodeAndValidate(const ndn::Data& data,
       message = "stream event envelope is invalid";
       return false;
     }
-    const auto bindingDigest = computeStreamBindingDigest(binding_);
+    const auto& bindingDigest = bindingDigest_;
     const auto associatedData = makeInvocationEventAssociatedData(
       data.getName(), bindingDigest, parsed->cursor);
     ndn::Buffer plaintext;
@@ -2080,7 +2135,7 @@ StreamEventConsumer::requestGapRetry()
       ++retryCount_;
       retryInFlightCursor_ = expectedCursor_;
       nextRetryAt_ = now + std::chrono::milliseconds(options_.interestLifetimeMs);
-      retryName = makeInvocationEventName(binding_, expectedCursor_);
+      retryName = makeEventNameWithDigest(binding_, bindingDigest_, expectedCursor_);
     }
   }
   if (exhausted) {
@@ -2200,7 +2255,7 @@ StreamEventConsumer::deliverReady()
         nextRetryAt_ = std::chrono::steady_clock::time_point{};
         if (event.terminal) {
           observedEnd_ = event;
-          observedEndName_ = makeInvocationEventName(binding_, event.cursor);
+          observedEndName_ = makeEventNameWithDigest(binding_, bindingDigest_, event.cursor);
           responseAfterEnd = std::move(pendingResponse_);
         }
       }
@@ -2487,8 +2542,8 @@ StreamEventConsumer::onRetryTimeout(
   std::chrono::steady_clock::time_point now)
 {
   (void)now;
-  const auto parsed = parseInvocationEventName(timedOutName);
-  if (!parsed || timedOutName != makeInvocationEventName(binding_, parsed->cursor)) {
+  const auto parsed = parseEventName(timedOutName);
+  if (!parsed || timedOutName != makeEventNameWithDigest(binding_, bindingDigest_, parsed->cursor)) {
     return;
   }
   bool due = false;

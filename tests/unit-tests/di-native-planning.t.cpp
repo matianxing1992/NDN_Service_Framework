@@ -403,6 +403,39 @@ BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsUncoveredGraphAndSortsPriority)
                     std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(YoloNamespacedTerminalRoleKeepsPostprocessingButAtomicDoesNot)
+{
+  const auto graphDigest = digest("yolo-namespaced-terminal");
+  const auto graphSnapshot = graph(graphDigest, {"backbone", "head"});
+  const auto descriptor = model("yolo26n", "YOLO26n", graphDigest);
+  const std::string postprocessing = R"({"identity":"YOLO26n-canonical-detection-rows"})";
+  const yolo::NativeYoloComponentSpec split{
+    "split-v1", 1, {"/BackboneNeck", "/Merge"},
+    {{"/BackboneNeck", {"backbone"}}, {"/Merge", {"head"}}},
+    "/BackboneNeck", "/Merge", "NATIVE_POSTPROCESS", digest("registered-split")};
+  const auto splitCandidate = yolo::NativeYoloComponentSplit({split}, postprocessing)
+    .enumerate(descriptor, graphSnapshot, {}).front();
+  BOOST_CHECK_EQUAL(splitCandidate.mergeKind, "NATIVE_POSTPROCESS");
+  BOOST_CHECK_EQUAL(splitCandidate.postprocessingJson, postprocessing);
+
+  const yolo::NativeYoloComponentSpec noMerge{
+    "split-no-merge-v1", 2, {"/BackboneNeck", "/Tail"},
+    {{"/BackboneNeck", {"backbone"}}, {"/Tail", {"head"}}},
+    "/BackboneNeck", "/Tail", "", digest("registered-no-merge")};
+  const auto noMergeCandidate = yolo::NativeYoloComponentSplit({noMerge}, postprocessing)
+    .enumerate(descriptor, graphSnapshot, {}).front();
+  BOOST_CHECK(noMergeCandidate.mergeKind.empty());
+  BOOST_CHECK_EQUAL(noMergeCandidate.postprocessingJson, "{}");
+
+  const yolo::NativeYoloComponentSpec atomic{
+    "atomic-v1", 3, {"FullModel"}, {}, "FullModel", "FullModel",
+    "NATIVE_POSTPROCESS", digest("registered-atomic")};
+  const auto atomicCandidate = yolo::NativeYoloComponentSplit({atomic}, postprocessing)
+    .enumerate(descriptor, graphSnapshot, {}).front();
+  BOOST_CHECK(atomicCandidate.mergeKind.empty());
+  BOOST_CHECK_EQUAL(atomicCandidate.postprocessingJson, "{}");
+}
+
 BOOST_AUTO_TEST_CASE(YoloUsesRealBranchTensorsAndKnownByteEstimates)
 {
   const auto identity = digest("branch-graph");
@@ -1316,6 +1349,20 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift
       {"candidate_digest", oracle.at("registered_digest")}, {"semantic_partition", oracle.at("partition")}
     }})}}}};
   const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control);
+  auto profiledConfiguration = configuration;
+  const auto transferProfile = NativeJson{{"schema", "ndnsf-di-request-transfer-profile-v1"},
+    {"source_digest", configuration.at("source").at("digest")},
+    {"input_digest", digest("initial-input")}, {"initial_context", true},
+    {"dependencies", NativeJson::array()}};
+  profiledConfiguration["request_transfer_profiles"] = NativeJson::array({transferProfile});
+  const auto profiledCatalog = NativeRequestCatalog::load(
+    nativeCanonicalJson(profiledConfiguration), source, control);
+  BOOST_REQUIRE(profiledCatalog.planningCache);
+  BOOST_CHECK(profiledCatalog.planningCache->requestTransferProfiles ==
+    NativeJson::array({transferProfile}));
+  profiledConfiguration["request_transfer_profiles"][0]["source_digest"] = digest("foreign-source");
+  BOOST_CHECK_THROW(NativeRequestCatalog::load(
+    nativeCanonicalJson(profiledConfiguration), source, control), std::invalid_argument);
   BOOST_REQUIRE(loaded.preparation);
   BOOST_REQUIRE(loaded.splitter);
   BOOST_CHECK(loaded.preparation->adapters()->frozen());

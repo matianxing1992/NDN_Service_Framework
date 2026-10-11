@@ -7,10 +7,31 @@
 #include <limits>
 #include <stdexcept>
 #include <utility>
+#include <fstream>
+#include <set>
+#include <map>
 
 namespace ndnsf_distributed_repo {
 
 namespace {
+
+void
+validatePacketIndex(const RepoObjectManifest& manifest)
+{
+  if (manifest.objectType != "original-packet-set" || manifest.packetNames.empty() ||
+      manifest.packetOffsets.size() != manifest.packetNames.size() + 1 ||
+      manifest.packetOffsets.front() != 0 || manifest.packetOffsets.back() != manifest.size ||
+      manifest.objectName != manifest.packetNames.front())
+    throw std::invalid_argument("repo-invalid-original-packet-index");
+  std::set<ndn::Name> names;
+  for (size_t i = 0; i < manifest.packetNames.size(); ++i) {
+    const ndn::Name name(manifest.packetNames[i]);
+    if (name.empty() || name.toUri(ndn::name::UriFormat::CANONICAL) != manifest.packetNames[i] ||
+        !names.insert(name).second || manifest.packetOffsets[i + 1] <= manifest.packetOffsets[i] ||
+        manifest.packetOffsets[i + 1] - manifest.packetOffsets[i] > ndn::MAX_NDN_PACKET_SIZE)
+      throw std::invalid_argument("repo-invalid-original-packet-index");
+  }
+}
 
 bool
 isAmbiguousCommitError(const std::exception& error)
@@ -76,7 +97,28 @@ RepoCore::get(const std::string& objectName) const
 bool
 RepoCore::has(const std::string& objectName) const
 {
-  return m_store->has(objectName);
+  return m_store->has(resolveObjectKey(objectName)) || hasDataPacket(objectName);
+}
+
+std::string
+RepoCore::resolveObjectKey(const std::string& objectName) const
+{
+  // Generic Repo objects retain their literal identifiers. Only exact Data
+  // packet records use Name identity; never reinterpret legacy envelopes.
+  if (m_store->has(objectName))
+    return objectName;
+  std::string canonical;
+  try {
+    canonical = ndn::Name(objectName).toUri(ndn::name::UriFormat::CANONICAL);
+  }
+  catch (const std::exception&) {
+    return objectName;
+  }
+  if (canonical != objectName && m_store->has(canonical) &&
+      (m_store->getManifest(canonical).objectType == "ndn-data-wire" ||
+       m_store->getManifest(canonical).objectType == "original-packet-set"))
+    return canonical;
+  return objectName;
 }
 
 RepoObjectManifest
@@ -107,6 +149,8 @@ void
 RepoCore::putRange(const RepoObjectManifest& manifest, RepoByteRange range,
                    const std::vector<uint8_t>& bytes)
 {
+  if (manifest.objectType == "original-packet-set" || manifest.objectType == "ndn-data-wire")
+    throw std::invalid_argument("repo-original-packets-require-atomic-packet-api");
   std::lock_guard<std::mutex> lock(m_mutex);
   putRangeLocked(manifest, range, bytes);
 }
@@ -115,6 +159,8 @@ void
 RepoCore::putRangeIfAbsent(const RepoObjectManifest& manifest, RepoByteRange range,
                           const std::vector<uint8_t>& bytes)
 {
+  if (manifest.objectType == "original-packet-set" || manifest.objectType == "ndn-data-wire")
+    throw std::invalid_argument("repo-original-packets-require-atomic-packet-api");
   std::lock_guard<std::mutex> lock(m_mutex);
   if (manifest.operationId.empty() || m_store->has(manifest.objectName))
     throw std::runtime_error("repo-publication-name-conflict");
@@ -125,6 +171,8 @@ void
 RepoCore::putRangeLocked(const RepoObjectManifest& manifest, RepoByteRange range,
                          const std::vector<uint8_t>& bytes)
 {
+  if (hasDataPacket(manifest.objectName))
+    throw std::runtime_error("repo-original-packet-is-immutable");
   if (range.lengthBytes != bytes.size() ||
       range.offsetBytes > manifest.size ||
       range.lengthBytes > manifest.size - range.offsetBytes) {
@@ -192,6 +240,8 @@ RepoCore::putRangeLocked(const RepoObjectManifest& manifest, RepoByteRange range
 RepoObjectManifest
 RepoCore::commitRanges(const RepoObjectManifest& manifest)
 {
+  if (manifest.objectType == "original-packet-set" || manifest.objectType == "ndn-data-wire")
+    throw std::invalid_argument("repo-original-packets-require-atomic-packet-api");
   std::lock_guard<std::mutex> lock(m_mutex);
   return commitRangesLocked(manifest);
 }
@@ -199,6 +249,8 @@ RepoCore::commitRanges(const RepoObjectManifest& manifest)
 RepoObjectManifest
 RepoCore::commitRangesIfOwned(const RepoObjectManifest& manifest)
 {
+  if (manifest.objectType == "original-packet-set" || manifest.objectType == "ndn-data-wire")
+    throw std::invalid_argument("repo-original-packets-require-atomic-packet-api");
   std::lock_guard<std::mutex> lock(m_mutex);
   const auto reservation = m_rangeReservations.find(manifest.objectName);
   if (m_store->has(manifest.objectName) || reservation == m_rangeReservations.end() ||
@@ -359,19 +411,37 @@ RepoCore::putDataPacket(const std::string& dataName,
   try {
     ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
     block.parse();
-    encodedName = ndn::Data(block).getName().toUri();
+    const ndn::Data data(block);
+    if (data.wireEncode().size() != wire.size())
+      throw std::invalid_argument("trailing bytes after Data packet");
+    encodedName = data.getName().toUri(ndn::name::UriFormat::CANONICAL);
   }
   catch (const std::exception& e) {
     throw std::invalid_argument(std::string("repo-invalid-data-wire: ") + e.what());
   }
-  if (encodedName != dataName) {
+  if (ndn::Name(encodedName) != ndn::Name(dataName)) {
     throw std::invalid_argument(
       "repo-data-name-mismatch: declared=" + dataName + " encoded=" + encodedName);
   }
 
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (m_store->has(dataName)) {
-    const auto stored = m_store->get(dataName);
+  if (hasDataPacket(encodedName)) {
+    if (getDataPacket(encodedName) != wire)
+      throw std::runtime_error("repo-data-wire-conflict: " + encodedName);
+    if (!m_store->has(encodedName) ||
+        m_store->getManifest(encodedName).objectType == "original-packet-set") {
+      RepoObjectManifest packet;
+      packet.objectName = encodedName;
+      packet.objectType = "ndn-data-wire";
+      packet.sha256 = sha256Hex(wire);
+      packet.size = wire.size();
+      packet.packetNames = {encodedName};
+      packet.generation = 1;
+      return packet;
+    }
+  }
+  if (m_store->has(encodedName)) {
+    const auto stored = m_store->get(encodedName);
     if (stored.manifest.objectType != "ndn-data-wire" || stored.payload != wire) {
       throw std::runtime_error(
         "repo-data-wire-conflict: immutable NDN Data name conflict: " + dataName);
@@ -390,12 +460,12 @@ RepoCore::putDataPacket(const std::string& dataName,
   }
 
   RepoObjectManifest manifest;
-  manifest.objectName = dataName;
+  manifest.objectName = encodedName;
   manifest.objectType = "ndn-data-wire";
   manifest.sha256 = sha256Hex(wire);
   manifest.size = wire.size();
   manifest.segmentCount = 1;
-  manifest.packetNames = {dataName};
+  manifest.packetNames = {encodedName};
   manifest.generation = 1;
   try {
     m_store->put(manifest, wire);
@@ -403,7 +473,7 @@ RepoCore::putDataPacket(const std::string& dataName,
   catch (const std::exception& e) {
     RepoObjectManifest durable;
     if (!isAmbiguousCommitError(e) ||
-        !recoverAmbiguousCommit(dataName, durable)) {
+        !recoverAmbiguousCommit(encodedName, durable)) {
       // The backend may have finalized a payload before a metadata/cleanup
       // failure was reported.  Refresh physical usage before rethrowing so a
       // residue cannot make the capacity view optimistic.
@@ -416,7 +486,7 @@ RepoCore::putDataPacket(const std::string& dataName,
   }
   auto durable = manifest;
   try {
-    durable = m_store->getManifest(dataName);
+    durable = m_store->getManifest(encodedName);
   }
   catch (...) {
     m_catalogReconciliationRequired = true;
@@ -429,20 +499,162 @@ RepoCore::putDataPacket(const std::string& dataName,
 std::vector<uint8_t>
 RepoCore::getDataPacket(const std::string& dataName) const
 {
-  const auto stored = m_store->get(dataName);
-  if (stored.manifest.objectType != "ndn-data-wire") {
+  const ndn::Name name(dataName);
+  const auto record = findPacketRecord(name);
+  if (!record) {
     throw std::runtime_error("repo object is not an exact NDN Data packet: " + dataName);
   }
-  return stored.payload;
+  const auto& manifest = record->first;
+  const auto index = record->second;
+  auto wire = manifest.objectType == "ndn-data-wire"
+    ? m_store->get(manifest.objectName).payload
+    : m_store->getRange(manifest.objectName,
+        {manifest.packetOffsets[index], manifest.packetOffsets[index + 1] - manifest.packetOffsets[index]});
+  const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+  if (data.getName() != name)
+    throw std::runtime_error("repo-original-packet-name-mismatch");
+  return wire;
 }
 
 bool
 RepoCore::hasDataPacket(const std::string& dataName) const
 {
-  if (!m_store->has(dataName)) {
-    return false;
+  ndn::Name name;
+  try { name = ndn::Name(dataName); }
+  catch (const std::exception&) { return false; }
+  return findPacketRecord(name).has_value();
+}
+
+std::optional<std::pair<RepoObjectManifest, size_t>>
+RepoCore::findPacketRecord(const ndn::Name& name) const
+{
+  const auto key = name.toUri(ndn::name::UriFormat::CANONICAL);
+  if (m_store->has(key)) {
+    const auto manifest = m_store->getManifest(key);
+    if (manifest.objectType == "ndn-data-wire") return std::make_pair(manifest, 0);
+    if (manifest.objectType != "original-packet-set") return std::nullopt;
   }
-  return m_store->get(dataName).manifest.objectType == "ndn-data-wire";
+  for (const auto& manifest : m_store->listManifests()) {
+    if (manifest.objectType != "original-packet-set") continue;
+    const auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(), key);
+    if (found != manifest.packetNames.end()) {
+      validatePacketIndex(manifest);
+      return std::make_pair(manifest, static_cast<size_t>(found - manifest.packetNames.begin()));
+    }
+  }
+  return std::nullopt;
+}
+
+RepoObjectManifest
+RepoCore::describeDataPacket(const std::string& name) const
+{
+  const auto record = findPacketRecord(ndn::Name(name));
+  if (!record) throw std::runtime_error("repo-original-packet-not-found");
+  if (record->first.objectType == "ndn-data-wire") return record->first;
+  const auto wire = getDataPacket(name);
+  auto result = record->first;
+  result.objectName = ndn::Name(name).toUri(ndn::name::UriFormat::CANONICAL);
+  result.objectType = "ndn-data-wire";
+  result.sha256 = sha256Hex(wire);
+  result.size = wire.size();
+  result.segmentCount = 1;
+  result.packetNames = {result.objectName};
+  result.packetOffsets.clear();
+  result.envelopeBytes = 0;
+  return result;
+}
+
+RepoObjectManifest
+RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
+                                  const std::filesystem::path& file,
+                                  const std::function<void()>& requireActive)
+{
+  validatePacketIndex(manifest);
+  if (manifest.operationId.empty() || !m_store->supportsRange() ||
+      std::filesystem::file_size(file) != manifest.size)
+    throw std::invalid_argument("repo-original-packet-transaction-invalid");
+  std::ifstream input(file, std::ios::binary);
+  if (!input) throw std::runtime_error("repo-original-packet-input-unreadable");
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (requireActive) requireActive();
+  std::optional<RepoObjectManifest> existing;
+  if (m_store->has(manifest.objectName)) {
+    const auto previous = m_store->getManifest(manifest.objectName);
+    auto normalized = manifest;
+    normalized.operationId = previous.operationId;
+    normalized.generation = previous.generation;
+    if (manifest.publicationIdentity.empty() && previous.objectType == "original-packet-set")
+      normalized.publicationIdentity = previous.publicationIdentity;
+    if (normalized.toJson() != previous.toJson())
+      throw std::runtime_error("repo-data-wire-conflict");
+    existing = previous;
+  }
+  // Admission and final publication share the lock with single packet writes.
+  // Misses must not enumerate and parse every stored manifest for every packet.
+  // Keep the index local to this transaction; out-of-process metadata changes
+  // are checked again before accepting reuse or publishing the new ranges.
+  const std::set<std::string> incomingNames(manifest.packetNames.begin(), manifest.packetNames.end());
+  std::set<std::string> indexedPacketNames;
+  std::map<std::string, std::string> catalogMetadata;
+  for (const auto& stored : m_store->listManifests()) {
+    catalogMetadata.emplace(stored.objectName, stored.toJson());
+    if (stored.objectType != "original-packet-set") continue;
+    for (const auto& name : stored.packetNames) {
+      if (incomingNames.count(name)) indexedPacketNames.insert(name);
+    }
+  }
+  const auto requireCurrentCatalog = [&] {
+    if (requireActive) requireActive();
+    const auto current = m_store->listManifests();
+    if (current.size() != catalogMetadata.size())
+      throw std::runtime_error("repo-original-packet-catalog-changed");
+    for (const auto& stored : current) {
+      const auto previous = catalogMetadata.find(stored.objectName);
+      if (previous == catalogMetadata.end() || previous->second != stored.toJson())
+        throw std::runtime_error("repo-original-packet-catalog-changed");
+    }
+  };
+  for (size_t i = 0; i < manifest.packetNames.size(); ++i) {
+    if (requireActive) requireActive();
+    const auto length = manifest.packetOffsets[i + 1] - manifest.packetOffsets[i];
+    std::vector<uint8_t> wire(length);
+    input.read(reinterpret_cast<char*>(wire.data()), wire.size());
+    if (!input) throw std::runtime_error("repo-original-packet-input-truncated");
+    const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+    if (data.getName() != ndn::Name(manifest.packetNames[i]) || data.wireEncode().size() != wire.size())
+      throw std::invalid_argument("repo-data-name-mismatch");
+    if (m_store->has(manifest.packetNames[i]) &&
+        m_store->getManifest(manifest.packetNames[i]).objectType != "ndn-data-wire" &&
+        (!existing || manifest.packetNames[i] != existing->objectName))
+      throw std::runtime_error("repo-original-packet-format-conflict");
+    if ((m_store->has(manifest.packetNames[i]) || indexedPacketNames.count(manifest.packetNames[i])) &&
+        getDataPacket(manifest.packetNames[i]) != wire)
+      throw std::runtime_error("repo-data-wire-conflict");
+  }
+  if (existing) {
+    requireCurrentCatalog();
+    return *existing;
+  }
+  input.clear();
+  input.seekg(0);
+  try {
+    constexpr uint64_t window = 1U << 20;
+    for (uint64_t offset = 0; offset < manifest.size;) {
+      if (requireActive) requireActive();
+      std::vector<uint8_t> bytes(std::min(window, manifest.size - offset));
+      input.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
+      if (!input) throw std::runtime_error("repo-original-packet-input-truncated");
+      putRangeLocked(manifest, {offset, bytes.size()}, bytes);
+      offset += bytes.size();
+    }
+    requireCurrentCatalog();
+    return commitRangesLocked(manifest);
+  }
+  catch (...) {
+    try { m_store->abortRanges(manifest.objectName); } catch (...) {}
+    clearRangeReservation(manifest.objectName);
+    throw;
+  }
 }
 
 std::vector<uint8_t>
@@ -452,7 +664,12 @@ RepoCore::handleStore(const std::vector<uint8_t>& request)
   std::vector<uint8_t> payload;
   decodeStoreRequest(request, manifest, payload);
 
+  if (manifest.objectType == "original-packet-set" || manifest.objectType == "ndn-data-wire")
+    throw std::invalid_argument("repo-original-packets-require-atomic-packet-api");
+
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (hasDataPacket(manifest.objectName))
+    throw std::runtime_error("repo-original-packet-is-immutable");
   if (m_rangeReservations.find(manifest.objectName) != m_rangeReservations.end()) {
     m_store->abortRanges(manifest.objectName);
     clearRangeReservation(manifest.objectName);
@@ -534,7 +751,11 @@ std::vector<uint8_t>
 RepoCore::handleStoreManifest(const std::vector<uint8_t>& request)
 {
   auto manifest = parseManifestJson(toString(request));
+  if (manifest.objectType == "original-packet-set" || manifest.objectType == "ndn-data-wire")
+    throw std::invalid_argument("repo-original-packets-require-atomic-packet-api");
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (hasDataPacket(manifest.objectName))
+    throw std::runtime_error("repo-original-packet-is-immutable");
   if (m_rangeReservations.find(manifest.objectName) != m_rangeReservations.end()) {
     m_store->abortRanges(manifest.objectName);
     clearRangeReservation(manifest.objectName);
@@ -584,7 +805,11 @@ RepoCore::handleStoreManifest(const std::vector<uint8_t>& request)
 std::vector<uint8_t>
 RepoCore::handleFetch(const std::vector<uint8_t>& request) const
 {
-  const auto objectName = toString(request);
+  const auto objectName = resolveObjectKey(toString(request));
+  // Legacy vector backends cannot store atomic packet sets. Keep their
+  // ordinary object read to one fetch rather than copying it for inspection.
+  if (!m_store->supportsManifestLookup()) return m_store->get(objectName).payload;
+  if (hasDataPacket(objectName)) return getDataPacket(objectName);
   return m_store->get(objectName).payload;
 }
 
@@ -600,7 +825,11 @@ RepoCore::handleFetchRange(const std::vector<uint8_t>& request) const
 std::vector<uint8_t>
 RepoCore::handleManifest(const std::vector<uint8_t>& request) const
 {
-  const auto objectName = toString(request);
+  const auto objectName = resolveObjectKey(toString(request));
+  if (!m_store->supportsManifestLookup()) return toBytes(m_store->getManifest(objectName).toJson());
+  if (m_store->has(objectName) && m_store->getManifest(objectName).objectType == "original-packet-set")
+    return toBytes(m_store->getManifest(objectName).toJson());
+  if (hasDataPacket(objectName)) return toBytes(describeDataPacket(objectName).toJson());
   return toBytes(m_store->getManifest(objectName).toJson());
 }
 
@@ -681,7 +910,10 @@ RepoCore::catalogDelta(uint64_t sinceEpoch) const
 RepoCatalogEntry
 RepoCore::catalogLookup(const std::string& objectName) const
 {
-  const auto manifest = m_store->getManifest(objectName);
+  const auto key = resolveObjectKey(objectName);
+  const auto manifest = m_store->has(key) ? m_store->getManifest(key)
+    : hasDataPacket(objectName) ? describeDataPacket(objectName)
+    : m_store->getManifest(resolveObjectKey(objectName));
   std::lock_guard<std::mutex> lock(m_mutex);
   return makeCatalogEntry(manifest, "AVAILABLE", m_catalogEpoch);
 }
@@ -715,8 +947,12 @@ RepoCore::handleCatalogLookup(const std::vector<uint8_t>& request) const
 std::vector<uint8_t>
 RepoCore::handleDelete(const std::vector<uint8_t>& request)
 {
-  const auto objectName = toString(request);
   std::lock_guard<std::mutex> lock(m_mutex);
+  const auto objectName = resolveObjectKey(toString(request));
+  if (const auto packet = hasDataPacket(objectName) ? findPacketRecord(ndn::Name(objectName)) : std::nullopt;
+      packet && packet->first.objectType == "original-packet-set" &&
+      ndn::Name(objectName) != ndn::Name(packet->first.objectName))
+    throw std::invalid_argument("repo-delete-original-packet-set-by-root");
   return deleteLocked(objectName);
 }
 

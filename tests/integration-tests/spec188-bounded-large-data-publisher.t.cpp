@@ -1,6 +1,8 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
+#include "ndn-service-framework/ProtectedBlobManifest.hpp"
 
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
@@ -83,7 +85,8 @@ BOOST_AUTO_TEST_CASE(FileBackedSegmentsAreExactAndWindowed)
   ndn::security::KeyChain keyChain("pib-memory:spec188-large-data",
                                    "tpm-memory:spec188-large-data");
   ndn::DummyClientFace face(keyChain);
-  const auto userCert = makeRsaIdentity(keyChain, ndn::Name("/spec188/user"));
+  const ndn::Name producer("/spec188/user/NDNSF/BLOB/owner");
+  const auto userCert = makeRsaIdentity(keyChain, producer);
   const auto authorityCert = makeRsaIdentity(keyChain, ndn::Name("/spec188/authority"));
   const auto expectedPath = dataDirectory;
   {
@@ -101,11 +104,37 @@ BOOST_AUTO_TEST_CASE(FileBackedSegmentsAreExactAndWindowed)
     const auto before = face.sentData.size();
     const auto published = user.publishEncryptedLargeData(
       context, plaintext, "bounded-file-object", ndn::time::milliseconds(1));
+    if (published.success) {
+      const auto parsed = ndn_service_framework::parseProducerDataName(
+        published.encryptedDataName, producer);
+      BOOST_REQUIRE(parsed);
+      BOOST_CHECK_EQUAL(parsed->category, "BLOB");
+      BOOST_REQUIRE_EQUAL(parsed->suffix.size(), 4);
+      BOOST_CHECK(parsed->suffix[0] == ndn_service_framework::makeNamingDigestComponent(
+        published.contentDigest.substr(7)));
+      BOOST_CHECK(parsed->suffix[1] == ndn::name::Component("PROTECTED"));
+      BOOST_CHECK_EQUAL(parsed->suffix[2].type(), 8);
+      BOOST_CHECK_EQUAL(parsed->suffix[2].value_size(), 32);
+      BOOST_CHECK(parsed->suffix[3] == ndn::name::Component("DATA"));
+    }
 
     BOOST_REQUIRE_MESSAGE(published.success,
                           "file-backed large-data publication failed: " +
                           published.errorMessage);
     BOOST_CHECK_EQUAL(face.sentData.size(), before);
+    BOOST_REQUIRE(!published.manifestName.empty());
+    BOOST_CHECK(published.dataPrefix == published.encryptedDataName);
+    face.receive(ndn::Interest(published.manifestName));
+    face.processEvents(ndn::time::milliseconds(1));
+    const auto root = face.sentData.back();
+    BOOST_CHECK(root.getName() == published.manifestName);
+    BOOST_CHECK(ndn::security::verifySignature(root, userCert));
+    const auto& rootContent = root.getContent();
+    const auto descriptor = ndn_service_framework::ProtectedBlobManifest::decode(
+      std::vector<std::uint8_t>(rootContent.value(), rootContent.value() + rootContent.value_size()),
+      producer, published.manifestName);
+    BOOST_CHECK(descriptor.dataPrefix == published.dataPrefix);
+    BOOST_CHECK_EQUAL(descriptor.plaintextBytes, plaintext.size());
     const auto metricsBefore = user.getLargeDataServingMetricsForTest();
     BOOST_CHECK_EQUAL(metricsBefore.publicationCount, 1U);
 
@@ -190,8 +219,8 @@ BOOST_AUTO_TEST_CASE(FileBackedSegmentsAreExactAndWindowed)
     HybridMessageEnvelope envelope;
     BOOST_REQUIRE(envelope.WireDecode(ndn::Block(assembled)));
     BOOST_CHECK_EQUAL(envelope.getMessageType(), "REQUEST-LARGE");
-    const std::string adText = published.encryptedDataName.toUri() +
-                               "|REQUEST-LARGE|" + serviceName.toUri();
+    const std::string adText = published.encryptedDataName.toUri(ndn::name::UriFormat::CANONICAL) +
+                               "|REQUEST-LARGE|" + serviceName.toUri(ndn::name::UriFormat::CANONICAL);
     const ndn::Buffer associatedData(reinterpret_cast<const uint8_t*>(adText.data()),
                                      adText.size());
     ndn::Buffer decrypted;
@@ -202,12 +231,40 @@ BOOST_AUTO_TEST_CASE(FileBackedSegmentsAreExactAndWindowed)
     BOOST_CHECK_EQUAL(metricsAfterAssembly.segmentReadCount, uniqueSegments.size());
     BOOST_CHECK_EQUAL(metricsAfterAssembly.retransmissionHitCount, 2U);
 
+    // Segment zero has left the two-packet window. Its original signed wire
+    // must survive eviction, including the original MetaInfo and signature.
+    const auto originalWire = uniqueSegments.at(0)->wireEncode();
+    const std::vector<std::uint8_t> originalBytes(originalWire.begin(), originalWire.end());
+    face.receive(ndn::Interest(firstSegment));
+    face.processEvents(ndn::time::milliseconds(1));
+    const auto& repeatedWire = face.sentData.back().wireEncode();
+    BOOST_CHECK_EQUAL_COLLECTIONS(originalBytes.begin(), originalBytes.end(),
+                                  repeatedWire.begin(), repeatedWire.end());
+
     const auto fileCount = std::distance(
       std::filesystem::directory_iterator(dataDirectory),
       std::filesystem::directory_iterator());
-    BOOST_CHECK_EQUAL(fileCount, 1);
+    BOOST_CHECK_EQUAL(fileCount, 0); // packet files are private and unlinked
+    // Retain the first immutable packet owner while admitting the next request.
+    // Filesystem.available already accounts for the first file's allocation;
+    // only a concurrent unfinished writer should consume an extra forecast.
+    const auto available = std::filesystem::space(dataDirectory).available;
+    const auto envelopeBudget = static_cast<std::uintmax_t>(plaintext.size()) + 64ULL * 1024ULL;
+    const auto reservation = envelopeBudget +
+      (1 + (envelopeBudget - 1) / 7000) * (ndn::MAX_NDN_PACKET_SIZE + 2 * sizeof(std::uint64_t));
+    constexpr std::uintmax_t margin = 32ULL * 1024ULL;
+    BOOST_REQUIRE_GT(available, reservation + margin);
+    const auto minimumFree = std::to_string(available - reservation - margin);
+    ScopedEnvironmentValue minimum("NDNSF_REQUEST_LARGE_DATA_MIN_FREE_BYTES", minimumFree.c_str());
+    const auto next = user.publishEncryptedLargeData(
+      context, plaintext, "bounded-file-object-next", ndn::time::milliseconds(1));
+    BOOST_REQUIRE_MESSAGE(next.success,
+      "completed file reservation blocked the next publication: " + next.errorMessage);
+    BOOST_CHECK_EQUAL(user.getLargeDataServingMetricsForTest().publicationCount, 2U);
+    BOOST_CHECK_EQUAL(std::distance(std::filesystem::directory_iterator(dataDirectory),
+                                    std::filesystem::directory_iterator()), 0);
   }
-  // The ServiceUser owner removes its immutable wire file at scope exit.
+  // The ServiceUser owner closes its private packet files at scope exit.
   BOOST_CHECK_EQUAL(std::distance(std::filesystem::directory_iterator(expectedPath),
                                   std::filesystem::directory_iterator()), 0);
 }

@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
@@ -8,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -107,6 +109,115 @@ NativeJson publicationRoot(const NativeArtifactBinding& artifacts)
     throw std::invalid_argument("native publication root is not an active canonical model manifest");
   return root;
 }
+std::optional<NativeJson> validateArtifactBinding(const NativeArtifactBinding& artifacts)
+{
+  const auto& sourceByRole = artifacts.sourceByRole;
+  const auto& artifactDigestByRole = artifacts.artifactDigestByRole;
+  const auto& manifestDigest = artifacts.manifestDigest;
+  const auto& recipeDigest = artifacts.recipeDigest;
+  const auto& canonicalManifestJson = artifacts.canonicalManifestJson;
+  const auto& artifactNameByRole = artifacts.artifactNameByRole;
+  if (sourceByRole.empty() || sourceByRole.size() != artifactDigestByRole.size() ||
+      !digest(manifestDigest) || !digest(recipeDigest)) {
+    throw std::invalid_argument("native artifact binding is incomplete");
+  }
+  for (const auto& item : sourceByRole) {
+    if (item.first.empty() || item.second.empty() ||
+        !digest(artifactDigestByRole.at(item.first))) {
+      throw std::invalid_argument("native artifact binding role identity is invalid");
+    }
+    if (!ndnName(item.second)) {
+      throw std::invalid_argument("native artifact binding source is not an NDN name");
+    }
+  }
+  if (!canonicalManifestJson.empty()) {
+    auto root = publicationRoot(artifacts);
+    if (artifactNameByRole.size() != sourceByRole.size())
+      throw std::invalid_argument("native publication stable artifact cover is incomplete");
+    for (const auto& item : sourceByRole) {
+      const auto stable = artifactNameByRole.find(item.first);
+      if (stable == artifactNameByRole.end() || !ndnName(stable->second) ||
+          item.second != sourceByRole.begin()->second)
+        throw std::invalid_argument("native publication has invalid stable names or multiple root fetch names");
+    }
+    return root;
+  }
+  return std::nullopt;
+}
+void validatePublishedRoleBinding(
+  const NativeInspectedModel& model, const std::vector<NativeSelectionRoleV3>& roles,
+  const NativeArtifactBinding& artifacts, const std::optional<NativeJson>& validatedRoot)
+{
+  if (!validatedRoot) {
+    if (artifacts.manifestDigest != model.modelManifestDigest)
+      throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
+    return;
+  }
+  // Reuse the owned root from the complete validation above; no callback or
+  // mutation occurs between validation and this binding.
+  const auto& root = *validatedRoot;
+  const auto& metadata = root.at("metadata");
+  const bool materialBacked = metadata.value("materialBacked", false) ||
+    metadata.contains("materialManifestDataName");
+  const auto sourceName = metadata.value("canonicalSourceDataName", NativeJson{});
+  const auto sourceBytes = metadata.value("canonicalSourceBytes", NativeJson{});
+  if (root.value("modelIdentityDigest", NativeJson{}) != model.descriptor.contentDigest ||
+      (root.contains("modelSemanticIdentityDigest") &&
+       root.at("modelSemanticIdentityDigest") != model.descriptor.modelDigest()) ||
+      root.value("modelName", NativeJson{}) != model.descriptor.modelName ||
+      metadata.value("canonicalSourceDigest", NativeJson{}) != model.canonicalSourceDigest ||
+      (!materialBacked && (!sourceName.is_string() || !ndnName(sourceName.get<std::string>()))) ||
+      (materialBacked && sourceName.is_string() && !ndnName(sourceName.get<std::string>())) ||
+      !model.canonicalSourceBytes ||
+      !sourceBytes.is_number_unsigned() || sourceBytes != NativeJson(model.canonicalSourceBytes))
+    throw std::invalid_argument("native published root differs from inspected model source");
+  if (metadata.contains("packageManifestDigest") &&
+      metadata.at("packageManifestDigest") != model.modelManifestDigest)
+    throw std::invalid_argument("native published root differs from inspected package manifest");
+  const bool hasInitializer = metadata.contains("canonicalInitializerDataName") ||
+    metadata.contains("canonicalInitializerObjectDigest") || metadata.contains("canonicalInitializerBytes");
+  if (hasInitializer || model.canonicalInitializerBytes || !model.canonicalInitializerObjectDigest.empty()) {
+    const auto name = metadata.value("canonicalInitializerDataName", NativeJson{});
+    const auto size = metadata.value("canonicalInitializerBytes", NativeJson{});
+    if (!model.canonicalInitializerBytes || !digest(model.canonicalInitializerObjectDigest) ||
+        (!materialBacked && (!name.is_string() || !ndnName(name.get<std::string>()))) ||
+        (materialBacked && !name.is_null() &&
+          (!name.is_string() || !ndnName(name.get<std::string>()))) ||
+        metadata.value("canonicalInitializerObjectDigest", NativeJson{}) != model.canonicalInitializerObjectDigest ||
+        !size.is_number_unsigned() || size != NativeJson(model.canonicalInitializerBytes))
+      throw std::invalid_argument("native published root differs from inspected initializer object");
+  }
+  if (artifacts.sourceByRole.size() != roles.size())
+    throw std::invalid_argument("native published root has a foreign role cover");
+  for (const auto& role : roles) {
+    const auto artifact = artifacts.artifactDigestByRole.find(role.selectedRole);
+    if (root.value("artifactProfileDigest", NativeJson{}) != role.artifactProfileDigest ||
+        artifact == artifacts.artifactDigestByRole.end() || artifact->second != role.artifactDigest ||
+        (role.mergeKind != "NATIVE_POSTPROCESS" &&
+          (model.canonicalSourceBytes > role.maxSourceBytes || model.canonicalInitializerBytes > role.maxSourceBytes)))
+      throw std::invalid_argument("native published root differs from the selected role contract");
+  }
+}
+
+std::vector<NativeSelectionRoleV3> bindPublishedRoleCertificates(
+  const NativeInspectedModel& model, const std::vector<NativeSelectionRoleV3>& roles,
+  const NativeArtifactBinding& artifacts)
+{
+  const auto validatedRoot = validateArtifactBinding(artifacts);
+  validatePublishedRoleBinding(model, roles, artifacts, validatedRoot);
+  auto certified = roles;
+  if (validatedRoot) {
+    for (auto& role : certified) {
+      // Only the business-root certificate changes; all publication checks
+      // above precede the same final certificate construction as before.
+      role.modelManifestDigest = artifacts.manifestDigest;
+      if (role.mergeKind != "NATIVE_POSTPROCESS")
+        role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
+    }
+  }
+  return certified;
+}
+
 } // namespace
 
 void NativePreparedInput::validate() const
@@ -148,30 +259,7 @@ void NativeInspectedModel::validate() const
 
 void NativeArtifactBinding::validate() const
 {
-  if (sourceByRole.empty() || sourceByRole.size() != artifactDigestByRole.size() ||
-      !digest(manifestDigest) || !digest(recipeDigest)) {
-    throw std::invalid_argument("native artifact binding is incomplete");
-  }
-  for (const auto& item : sourceByRole) {
-    if (item.first.empty() || item.second.empty() ||
-        !digest(artifactDigestByRole.at(item.first))) {
-      throw std::invalid_argument("native artifact binding role identity is invalid");
-    }
-    if (!ndnName(item.second)) {
-      throw std::invalid_argument("native artifact binding source is not an NDN name");
-    }
-  }
-  if (!canonicalManifestJson.empty()) {
-    publicationRoot(*this);
-    if (artifactNameByRole.size() != sourceByRole.size())
-      throw std::invalid_argument("native publication stable artifact cover is incomplete");
-    for (const auto& item : sourceByRole) {
-      const auto stable = artifactNameByRole.find(item.first);
-      if (stable == artifactNameByRole.end() || !ndnName(stable->second) ||
-          item.second != sourceByRole.begin()->second)
-        throw std::invalid_argument("native publication has invalid stable names or multiple root fetch names");
-    }
-  }
+  (void)validateArtifactBinding(*this);
 }
 
 void NativeRequestControl::requireActive() const
@@ -189,6 +277,15 @@ NativeRequestPreparation::NativeRequestPreparation(
     m_artifacts(std::move(artifacts)), m_roles(std::move(roles))
 {
   if (!m_adapters) throw std::invalid_argument("native preparation requires adapter registry");
+}
+
+NativeRequestPreparation::NativeRequestPreparation(
+  std::shared_ptr<const NativeAdapterRegistry> adapters, OwnedInspectPort inspect,
+  ArtifactPort artifacts, RolePort roles, OwnedInspectionTag)
+  : NativeRequestPreparation(std::move(adapters), InspectPort{},
+                             std::move(artifacts), std::move(roles))
+{
+  m_ownedInspect = std::move(inspect);
 }
 
 NativePreparedInput NativeRequestPreparation::prepareInput(
@@ -230,6 +327,18 @@ NativePreparedInput NativeRequestPreparation::prepareInput(
 NativeInspectedModel NativeRequestPreparation::inspectModel(
   const NativePreparedInput& input) const
 {
+  return *inspectModelSharedImpl(input, false);
+}
+
+std::shared_ptr<const NativeInspectedModel> NativeRequestPreparation::inspectModelShared(
+  const NativePreparedInput& input) const
+{
+  return inspectModelSharedImpl(input, true);
+}
+
+std::shared_ptr<const NativeInspectedModel> NativeRequestPreparation::inspectModelSharedImpl(
+  const NativePreparedInput& input, bool reuseOwned) const
+{
   input.validate();
   auto adapter = m_adapters->find(input.adapterId);
   if (!adapter) throw std::invalid_argument("native model adapter is unavailable");
@@ -240,11 +349,16 @@ NativeInspectedModel NativeRequestPreparation::inspectModel(
   }
   if (!sameModel(descriptor, input.expectedModel))
     throw std::runtime_error("DI_NATIVE_MODEL_INSPECTION_BINDING_MISMATCH");
-  if (!m_inspect) throw std::runtime_error("DI_NATIVE_MODEL_GRAPH_PORT_NOT_CONFIGURED");
-  auto result = m_inspect(input, descriptor);
+  if (!m_inspect && !m_ownedInspect)
+    throw std::runtime_error("DI_NATIVE_MODEL_GRAPH_PORT_NOT_CONFIGURED");
+  auto result = m_ownedInspect ? m_ownedInspect(input, descriptor)
+    : std::make_shared<const NativeInspectedModel>(m_inspect(input, descriptor));
   input.validate(); // A late inspection cannot extend the request deadline.
-  result.validate();
-  if (!sameModel(result.descriptor, input.expectedModel))
+  if (!result) throw std::runtime_error("DI_NATIVE_MODEL_GRAPH_PORT_NOT_CONFIGURED");
+  // Only the private catalog port can supply a constructor-validated const
+  // owner. Public value inspection and custom ports keep the full check.
+  if (!reuseOwned || !m_ownedInspect) result->validate();
+  if (!sameModel(result->descriptor, input.expectedModel))
     throw std::runtime_error("DI_NATIVE_MODEL_INSPECTION_BINDING_MISMATCH");
   return result;
 }
@@ -273,9 +387,30 @@ void NativeRequestPreparation::validateRoles(const NativeInspectedModel& model,
   const NativeSplitCandidate& candidate, const std::vector<NativeSelectionRoleV3>& roles)
 {
   model.validate();
-  candidate.validate(model.graph);
+  validateRolesForValidatedModel(model, candidate, roles);
+}
+
+bool NativeRequestPreparation::ownsInspectedModel(const NativeInspectedModel& model) const
+{
+  const auto* owner = m_ownedInspect.target<OwnedInspection>();
+  return owner && owner->owns && owner->owns(model);
+}
+
+void NativeRequestPreparation::validateRolesForValidatedModel(const NativeInspectedModel& model,
+  const NativeSplitCandidate& candidate, const std::vector<NativeSelectionRoleV3>& roles)
+{
+  // The caller checked this graph in the current section, or proved identity
+  // with the catalog's immutable owner. Candidate and role checks always run.
+  candidate.validateImpl(model.graph, true);
   if (!sameModel(candidate.model, model.descriptor))
     throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
+  validateRoleBindingsForCheckedCandidate(model, candidate, roles);
+}
+
+void NativeRequestPreparation::validateRoleBindingsForCheckedCandidate(
+  const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+  const std::vector<NativeSelectionRoleV3>& roles)
+{
   std::set<std::pair<std::string, std::uint64_t>> expected;
   for (const auto& role : candidate.executionPlan.roles) {
     const auto degree = candidate.tensorDegreesByRole.find(role);
@@ -335,7 +470,10 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   const NativeRequestControl& control) const
 {
   const auto validationStarted = std::chrono::steady_clock::now();
-  model.validate();
+  const bool ownedModel = ownsInspectedModel(model);
+  if (!ownedModel) model.validate();
+  logPreparationPhase(control.requestId,
+    ownedModel ? "ensure_model_owner_hit" : "ensure_model_validation", validationStarted);
   control.requireActive();
   // Publication must be driven by the placement of this very request/attempt
   // over the inspected model; a stale or foreign proposal must never reach
@@ -358,7 +496,9 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
     throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
   }
   proposal.strategy.validate();
-  validateRoles(model, candidate, roles);
+  // The same graph was checked at entry or belongs to the immutable catalog
+  // owner. Retain every current candidate and role binding check.
+  validateRolesForValidatedModel(model, candidate, roles);
   logPreparationPhase(control.requestId, "ensure_binding_validation", validationStarted);
   for (const auto& role : roles) {
     validateNativeAssembly(role);
@@ -388,7 +528,7 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   logPreparationPhase(control.requestId, "ensure_artifact_port", portStarted);
   control.requireActive();
   const auto certificateStarted = std::chrono::steady_clock::now();
-  result.validate();
+  const auto validatedRoot = validateArtifactBinding(result);
   // The binding must cover exactly the roles the placed plan requires: a
   // missing role leaves a provider unassemblable, an extra role would smuggle
   // provider-side assembly into requester preparation.
@@ -407,7 +547,12 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   result.modelDigest = model.descriptor.contentDigest;
   result.graphDigest = model.graph.graphDigest;
   result.canonicalGraphDigest = model.canonicalGraphDigest;
-  bindPublishedRoles(model, candidate, roles, result);
+  // The publication callback may have changed aliased planning inputs. Keep
+  // this full post-callback validation, then check the owned binding/root
+  // without constructing certificates that this caller would discard.
+  if (ownedModel) validateRolesForValidatedModel(model, candidate, roles);
+  else validateRoles(model, candidate, roles);
+  validatePublishedRoleBinding(model, roles, result, validatedRoot);
   logPreparationPhase(control.requestId, "ensure_binding_certificate", certificateStarted);
   return result;
 }
@@ -417,59 +562,35 @@ std::vector<NativeSelectionRoleV3> NativeRequestPreparation::bindPublishedRoles(
   const std::vector<NativeSelectionRoleV3>& roles, const NativeArtifactBinding& artifacts)
 {
   validateRoles(model, candidate, roles);
-  artifacts.validate();
-  if (artifacts.canonicalManifestJson.empty()) {
-    if (artifacts.manifestDigest != model.modelManifestDigest)
-      throw std::runtime_error("DI_NATIVE_ARTIFACT_BINDING_MISMATCH");
-    return roles;
+  return bindPublishedRoleCertificates(model, roles, artifacts);
+}
+
+std::vector<NativeSelectionRoleV3>
+NativeRequestPreparation::bindPublishedRolesForCheckedCandidate(
+  const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+  const std::vector<NativeSelectionRoleV3>& roles, const NativeArtifactBinding& artifacts)
+{
+  validateRoleBindingsForCheckedCandidate(model, candidate, roles);
+  return bindPublishedRoleCertificates(model, roles, artifacts);
+}
+
+bool NativeRequestPreparation::canReusePublishedRolesForCheckedCandidate(
+  const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+  const std::vector<NativeSelectionRoleV3>& roles, const NativeArtifactBinding& artifacts,
+  const NativeFixedPlacementCoreV1& fixed)
+{
+  validateRoleBindingsForCheckedCandidate(model, candidate, roles);
+  const auto root = validateArtifactBinding(artifacts);
+  validatePublishedRoleBinding(model, roles, artifacts, root);
+  if (roles.size() != fixed.roles().size() || (root && !fixed.canonicalRecipes())) return false;
+  for (const auto& role : roles) {
+    const auto found = fixed.roles().find(role.selectedRole);
+    if (found == fixed.roles().end() || role.materializedRole != found->second.materializedRole ||
+        found->second.modelManifestDigest != artifacts.manifestDigest ||
+        !nativeSelectionRoleContractsEqualExceptCertificatesV3(role, found->second,
+          root.has_value(), root.has_value() && role.mergeKind != "NATIVE_POSTPROCESS")) return false;
   }
-  const auto root = publicationRoot(artifacts);
-  const auto& metadata = root.at("metadata");
-  const bool materialBacked = metadata.value("materialBacked", false) ||
-    metadata.contains("materialManifestDataName");
-  const auto sourceName = metadata.value("canonicalSourceDataName", NativeJson{});
-  const auto sourceBytes = metadata.value("canonicalSourceBytes", NativeJson{});
-  if (root.value("modelIdentityDigest", NativeJson{}) != model.descriptor.contentDigest ||
-      root.value("modelName", NativeJson{}) != model.descriptor.modelName ||
-      metadata.value("canonicalSourceDigest", NativeJson{}) != model.canonicalSourceDigest ||
-      (!materialBacked && (!sourceName.is_string() || !ndnName(sourceName.get<std::string>()))) ||
-      (materialBacked && sourceName.is_string() && !ndnName(sourceName.get<std::string>())) ||
-      !model.canonicalSourceBytes ||
-      !sourceBytes.is_number_unsigned() || sourceBytes != NativeJson(model.canonicalSourceBytes))
-    throw std::invalid_argument("native published root differs from inspected model source");
-  if (metadata.contains("packageManifestDigest") &&
-      metadata.at("packageManifestDigest") != model.modelManifestDigest)
-    throw std::invalid_argument("native published root differs from inspected package manifest");
-  const bool hasInitializer = metadata.contains("canonicalInitializerDataName") ||
-    metadata.contains("canonicalInitializerObjectDigest") || metadata.contains("canonicalInitializerBytes");
-  if (hasInitializer || model.canonicalInitializerBytes || !model.canonicalInitializerObjectDigest.empty()) {
-    const auto name = metadata.value("canonicalInitializerDataName", NativeJson{});
-    const auto size = metadata.value("canonicalInitializerBytes", NativeJson{});
-    if (!model.canonicalInitializerBytes || !digest(model.canonicalInitializerObjectDigest) ||
-        (!materialBacked && (!name.is_string() || !ndnName(name.get<std::string>()))) ||
-        (materialBacked && !name.is_null() &&
-          (!name.is_string() || !ndnName(name.get<std::string>()))) ||
-        metadata.value("canonicalInitializerObjectDigest", NativeJson{}) != model.canonicalInitializerObjectDigest ||
-        !size.is_number_unsigned() || size != NativeJson(model.canonicalInitializerBytes))
-      throw std::invalid_argument("native published root differs from inspected initializer object");
-  }
-  auto certified = roles;
-  if (artifacts.sourceByRole.size() != roles.size())
-    throw std::invalid_argument("native published root has a foreign role cover");
-  for (auto& role : certified) {
-    const auto artifact = artifacts.artifactDigestByRole.find(role.selectedRole);
-    if (root.value("artifactProfileDigest", NativeJson{}) != role.artifactProfileDigest ||
-        artifact == artifacts.artifactDigestByRole.end() || artifact->second != role.artifactDigest ||
-        (role.mergeKind != "NATIVE_POSTPROCESS" &&
-          (model.canonicalSourceBytes > role.maxSourceBytes || model.canonicalInitializerBytes > role.maxSourceBytes)))
-      throw std::invalid_argument("native published root differs from the selected role contract");
-    // Only the business-root certificate changes; do not rerun strategy or alter
-    // any assignment, device, artifact, graph, or resource requirement here.
-    role.modelManifestDigest = artifacts.manifestDigest;
-    if (role.mergeKind != "NATIVE_POSTPROCESS")
-      role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
-  }
-  return certified;
+  return true;
 }
 
 } // namespace ndnsf::di

@@ -750,6 +750,37 @@ public:
     return m_targetedProviderTokens.find(tokenHash) !=
            m_targetedProviderTokens.end();
   }
+
+  void seedProtectedTargetedTokenForTest(const ndn::Name& requester,
+      const ndn::Name& service, const std::string& token, const std::string& userToken,
+      uint64_t expiresAtMs, const ControllerVersion& version)
+  {
+    std::shared_ptr<RegistrationState> registration;
+    {
+      std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+      registration = m_services.at(service).registrationState;
+    }
+    TargetedProviderTokenState state{requester, service, userToken};
+    state.protectedCarrierAllowed = true;
+    state.expiresAtMs = expiresAtMs;
+    state.controllerVersion = version;
+    state.registrationState = registration;
+    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+    m_targetedProviderTokens[makeProviderTokenHashForTest(requester, service, token)] = std::move(state);
+  }
+
+  bool consumeProtectedTargetedTokenForTest(const ndn::Name& requester,
+      const ndn::Name& service, const RequestMessage& request, bool bindRegistration = true)
+  {
+    std::shared_ptr<RegistrationState> registration;
+    if (bindRegistration) {
+      std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+      const auto entry = m_services.find(service);
+      if (entry != m_services.end()) registration = entry->second.registrationState;
+    }
+    std::string error;
+    return consumeTargetedProviderToken(requester, service, request, error, registration);
+  }
 };
 
 RequestAckMessage

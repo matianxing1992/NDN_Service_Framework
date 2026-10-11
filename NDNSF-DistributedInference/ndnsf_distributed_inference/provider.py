@@ -1451,6 +1451,7 @@ class DistributedInferenceProvider:
         from ndnsf import fetch_exact_data_packet
         from .core import ProtectedGrantRejected, grant_from_wire, verify_and_unwrap_grant
         from .security.grant_provider import canonical_grant_name
+        from .naming import canonical_name_uri
         if (self._grant_authority_public_key is None
                 or self._grant_recipient_private_key is None
                 or not self._grant_authority_identity):
@@ -1461,20 +1462,22 @@ class DistributedInferenceProvider:
         registered_key = False
         try:
             self._require_protected_request_active(ctx, v3_projection)
-            # The name is authenticated by Selection, independently of the
-            # returned payload. This also supplies Merge's model commitment.
-            components = binding.grant_name.split("/MODEL/")
-            if len(components) != 2:
-                raise ValueError("grant name has no unique model manifest")
-            manifest_hex = components[1].split("/EPOCH/")[0]
-            if (len(manifest_hex) != 64
-                    or any(c not in "0123456789abcdef" for c in manifest_hex)):
-                raise ValueError("grant name model manifest is not canonical")
-            expected_manifest = "sha256:" + manifest_hex
-            role_manifest = v3_role_spec.model_manifest_digest
-            if role_manifest and role_manifest != expected_manifest:
-                raise ValueError("grant name model manifest differs from the sealed role")
-            if (binding.provider != ctx.local_provider
+            # Selection authenticates the C08 scope commitment. A sealed role can
+            # supply the expected manifest before fetching; Merge's candidate is
+            # checked against that same commitment before key unwrap.
+            expected_manifest = v3_role_spec.model_manifest_digest or None
+            def expected_grant_name(manifest):
+                return canonical_grant_name(
+                    publication_identity=ctx.requester_name,
+                    provider_identity=ctx.local_provider,
+                    request_id=v3_projection.request_id, attempt=v3_projection.attempt,
+                    plan_core_digest=v3_projection.plan_core_digest,
+                    model_manifest_digest=manifest,
+                    protection_epoch=v3_role_spec.protection_epoch,
+                    grant_digest=binding.grant_digest)
+            if expected_manifest and canonical_name_uri(binding.grant_name) != expected_grant_name(expected_manifest):
+                raise ValueError("grant canonical name binding mismatch: model manifest differs from sealed role")
+            if (canonical_name_uri(binding.provider) != canonical_name_uri(ctx.local_provider)
                     or binding.request_id != v3_projection.request_id
                     or binding.attempt != v3_projection.attempt
                     or binding.plan_core_digest != v3_projection.plan_core_digest
@@ -1496,18 +1499,12 @@ class DistributedInferenceProvider:
                 raise ValueError("grant policy authority differs from configured issuer")
             if grant.grant_digest != binding.grant_digest:
                 raise ValueError("grant digest does not match the sealed Selection reference")
+            if expected_manifest is None:
+                expected_manifest = grant.model_manifest_digest
             if grant.model_manifest_digest != expected_manifest:
                 raise ValueError("grant model manifest binding mismatch")
-            expected_name = canonical_grant_name(
-                authority=binding.grant_name.split("/NDNSF-DI/KEY-GRANT/v1/")[0],
-                provider_identity=ctx.local_provider,
-                request_id=v3_projection.request_id, attempt=v3_projection.attempt,
-                plan_core_digest=v3_projection.plan_core_digest,
-                model_manifest_digest=expected_manifest,
-                protection_epoch=v3_role_spec.protection_epoch,
-                grant_digest=binding.grant_digest)
-            if binding.grant_name != expected_name:
-                raise ValueError("grant canonical name binding mismatch")
+            if canonical_name_uri(binding.grant_name) != expected_grant_name(expected_manifest):
+                raise ValueError("grant canonical name binding mismatch: model manifest commitment differs")
             content_key = verify_and_unwrap_grant(
                 grant, authority_public_key=self._grant_authority_public_key,
                 recipient_private_key=self._grant_recipient_private_key,

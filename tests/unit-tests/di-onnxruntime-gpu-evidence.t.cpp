@@ -1,15 +1,21 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <boost/test/unit_test.hpp>
+#include <ndn-cxx/util/logging.hpp>
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <iostream>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -17,6 +23,28 @@
 namespace ndnsf::di::tests {
 
 namespace {
+
+struct ScopedRunnerTimingCapture
+{
+  std::ostringstream output;
+  std::optional<std::string> previous;
+
+  ScopedRunnerTimingCapture()
+  {
+    if (const auto value = std::getenv("NDNSF_PHASE_TIMING")) previous = value;
+    if (::setenv("NDNSF_PHASE_TIMING", "1", 1) != 0)
+      throw std::runtime_error("cannot enable runner timing");
+    ndn::util::Logging::setLevel("ndnsf.di.RuntimeEvidence=WARN");
+    ndn::util::Logging::setDestination(output, true);
+  }
+
+  ~ScopedRunnerTimingCapture()
+  {
+    ndn::util::Logging::setDestination(std::clog, true);
+    if (previous) ::setenv("NDNSF_PHASE_TIMING", previous->c_str(), 1);
+    else ::unsetenv("NDNSF_PHASE_TIMING");
+  }
+};
 
 std::filesystem::path
 findSpec175Fixture()
@@ -337,6 +365,7 @@ BOOST_AUTO_TEST_CASE(StatefulTinyOnnxRunsTwoRolesWithPersistentState)
 
 BOOST_AUTO_TEST_CASE(StatefulTinyOnnxCpuStreamingRetainsResidentState)
 {
+  ScopedRunnerTimingCapture timing;
   const auto fixture = findSpec175Fixture();
   BOOST_REQUIRE_MESSAGE(!fixture.empty(),
                         "Spec175 tiny two-role ONNX fixture is unavailable");
@@ -348,6 +377,9 @@ BOOST_AUTO_TEST_CASE(StatefulTinyOnnxCpuStreamingRetainsResidentState)
   OnnxRuntimeModelRunner runner(std::move(spec));
 
   RoleExecutionContext context;
+  context.requestId = "/Spec190/Request/cpu-resident-state";
+  context.attemptEpoch = 1;
+  context.providerBootId = "spec190-cpu-resident-boot";
   context.sessionId = "spec190-cpu-resident-state";
   context.role = "/LLM/Pipeline/Stage/0";
   context.streamingStateExecution = true;
@@ -368,6 +400,35 @@ BOOST_AUTO_TEST_CASE(StatefulTinyOnnxCpuStreamingRetainsResidentState)
     const auto handle = runner.stateHandleSnapshot(context.sessionId);
     BOOST_REQUIRE(handle);
     BOOST_CHECK(handle->token.rfind("ndnsf-resident-state-v1:", 0) == 0);
+  }
+
+  // Parse actual runner output, not synthetic timing input. Check each epoch
+  // independently before the continuation creates another epoch-zero pair.
+  ndn::util::Logging::flush();
+  std::vector<RuntimePhaseObservation> engineEvents;
+  std::istringstream records(timing.output.str());
+  std::string line;
+  while (std::getline(records, line)) {
+    const auto event = parseRuntimePhaseObservation(line);
+    if (event && event->requestId == context.requestId &&
+        (event->phase == "ortRunBegin" || event->phase == "ortRunEnd"))
+      engineEvents.push_back(*event);
+  }
+  BOOST_REQUIRE_EQUAL(engineEvents.size(), 6U);
+  for (std::size_t epoch = 0; epoch < 3; ++epoch) {
+    const auto& begin = engineEvents[epoch * 2];
+    const auto& end = engineEvents[epoch * 2 + 1];
+    BOOST_CHECK_EQUAL(begin.phase, "ortRunBegin");
+    BOOST_CHECK_EQUAL(end.phase, "ortRunEnd");
+    for (const auto* event : {&begin, &end}) {
+      BOOST_CHECK_EQUAL(event->role, "di-provider");
+      BOOST_CHECK_EQUAL(event->executionRole, context.role);
+      BOOST_CHECK_EQUAL(event->sessionId, context.sessionId);
+      BOOST_CHECK_EQUAL(event->providerBootId, context.providerBootId);
+      BOOST_CHECK_EQUAL(event->attempt, "1");
+      BOOST_CHECK_EQUAL(event->inferenceEpoch, std::to_string(epoch));
+    }
+    BOOST_CHECK_GE(end.steadyUs, begin.steadyUs);
   }
 
   const auto metrics = runner.runtimeMetricsSnapshot();
@@ -417,6 +478,44 @@ BOOST_AUTO_TEST_CASE(StatefulTinyOnnxRunsWithCoordinatorMetadataAndMissingState)
   const auto outputs = decodeOutput(stage0.run(context));
   BOOST_REQUIRE(!outputs.empty());
   BOOST_REQUIRE_NO_THROW(findTensor(outputs, "hidden_in"));
+}
+
+BOOST_AUTO_TEST_CASE(EncodedInputSelectionPreservesCallerAndRejectsInvalidPayload)
+{
+  const auto fixture = findSpec175Fixture();
+  BOOST_REQUIRE_MESSAGE(!fixture.empty(),
+                        "Spec175 tiny two-role ONNX fixture is unavailable");
+  OnnxRuntimeModelRunner stage0(makeCoordinatorMetadataSpec(
+    fixture / "role-0.onnx", "/LLM/Pipeline/Stage/0"));
+  RoleExecutionContext context;
+  context.sessionId = "spec199-owned-input";
+  context.role = "/LLM/Pipeline/Stage/0";
+  context.inputsByScope.emplace("request-input", makeInputIds(3));
+  const auto expected = encodeTensorBundle(decodeOutput(stage0.run(context)));
+  auto tensors = decodeTensorBundle(context.inputsByScope.at("request-input").payload);
+  tensors.insert(tensors.begin(), NamedTensor{
+    "unused", TensorElementType::Float32, {1}, std::vector<std::uint8_t>(4, 0)});
+  context.inputsByScope.at("request-input") =
+    makeEncodedTensorBundle("request-input", tensors);
+  const auto original = context.inputsByScope.at("request-input").payload;
+  const auto actual = encodeTensorBundle(decodeOutput(stage0.run(context)));
+  BOOST_CHECK_EQUAL_COLLECTIONS(actual.begin(), actual.end(),
+                                expected.begin(), expected.end());
+  const auto& retained = context.inputsByScope.at("request-input").payload;
+  BOOST_CHECK_EQUAL_COLLECTIONS(retained.begin(), retained.end(),
+                                original.begin(), original.end());
+
+  context.inputsByScope.at("request-input").payload.push_back(0);
+  BOOST_CHECK_THROW(stage0.run(context), std::invalid_argument);
+  tensors.back().name = "missing_input_ids";
+  context.inputsByScope.at("request-input") =
+    makeEncodedTensorBundle("request-input", tensors);
+  BOOST_CHECK_THROW(stage0.run(context), std::out_of_range);
+  tensors.back() = NamedTensor{
+    "input_ids", TensorElementType::Float32, {1}, std::vector<std::uint8_t>(4, 0)};
+  context.inputsByScope.at("request-input") =
+    makeEncodedTensorBundle("request-input", tensors);
+  BOOST_CHECK_THROW(stage0.run(context), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(AuthenticatedLineageCannotEnterStandaloneStreamedLoop)

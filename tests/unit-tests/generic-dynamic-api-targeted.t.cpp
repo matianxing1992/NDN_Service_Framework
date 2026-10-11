@@ -1,5 +1,6 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
+#include "ndn-service-framework/detail/ProtectedTargetedRequest.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -1464,11 +1465,88 @@ BOOST_AUTO_TEST_CASE(TargetedTokenFailuresNeverInvokeRegisteredHandler)
   BOOST_CHECK(!invoke("/mismatched-user", "wrong-user-token", "provider-token").getStatus());
   BOOST_CHECK_EQUAL(handlerCalls, 0);
 
+  // The synchronous compatibility entry must not bypass protected input
+  // handling merely because a valid legacy token pair is present. Rejection
+  // must leave that pair available for the ordinary invocation below.
+  for (unsigned variant = 0; variant < 3; ++variant) {
+    auto protectedRequest = makeRequestMessageWithUserToken("payload", "expected-user-token");
+    protectedRequest.setRequestMode(tlv::TargetedRequest);
+    protectedRequest.setTargetProvider(providerName);
+    protectedRequest.setProviderToken("provider-token");
+    RequestCapabilities caps;
+    if (variant != 1) caps.setField("RequestScopedConfidentialityV1", "required");
+    if (variant != 0) caps.setField(detail::TARGETED_KEY_ENVELOPE_FIELD, "00");
+    protectedRequest.setRequestCapabilities(caps);
+    const auto rejected = provider.handleDecryptedRequestByName(
+      makeRequestNameV2(requesterName, serviceName,
+        ndn::Name("/protected-compat-reject").appendNumber(variant)), protectedRequest);
+    BOOST_CHECK(!rejected.getStatus());
+    BOOST_CHECK_EQUAL(handlerCalls, 0);
+    BOOST_CHECK(provider.hasTargetedProviderTokenForTest(requesterName, serviceName, "provider-token"));
+  }
+
   const auto accepted = invoke("/accepted", "expected-user-token", "provider-token");
   BOOST_CHECK(accepted.getStatus());
   BOOST_CHECK_EQUAL(handlerCalls, 1);
   BOOST_CHECK(!invoke("/consumed-replay", "expected-user-token", "provider-token").getStatus());
   BOOST_CHECK_EQUAL(handlerCalls, 1);
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedTargetedTokenConsumptionChecksLifetimeAndRegistration)
+{
+  ndn::security::KeyChain keyChain("pib-memory:protected-token", "tpm-memory:protected-token");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName("/provider/protected"), requester("/user/protected"), service("/probe");
+  auto certificate = makeRsaIdentity(keyChain, providerName);
+  auto aa = makeRsaIdentity(keyChain, ndn::Name("/aa/protected"));
+  LocalServiceProvider provider(face, ndn::Name("/group/protected"), certificate, aa,
+                                "examples/trust-any.conf");
+  auto handler = [] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+                    const ndn::Name&, const RequestMessage&, ServiceProvider::AsyncTargetedCompletion) {};
+  auto registration = provider.addScopedTargetedService(service, handler);
+  const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count());
+  const ControllerVersion version{123456, 1};
+  RequestMessage request;
+  request.setRequestMode(tlv::TargetedRequest);
+  request.setTargetProvider(providerName);
+  request.setUserToken("user-token");
+  request.setControllerVersion(version);
+  RequestCapabilities caps;
+  caps.setField("RequestScopedConfidentialityV1", "required");
+  caps.setField(detail::TARGETED_KEY_ENVELOPE_FIELD, "00");
+  request.setRequestCapabilities(caps);
+  auto seed = [&] (const std::string& token, uint64_t expiry) {
+    provider.seedProtectedTargetedTokenForTest(requester, service, token, "user-token", expiry, version);
+    request.setProviderToken(token);
+  };
+  auto consume = [&] { return provider.consumeProtectedTargetedTokenForTest(requester, service, request); };
+  // Isolate the production consume primitive. The eligible ledger is seeded;
+  // real mint/crypto/dispatch are covered by the production-ingress fixture.
+  seed("expired", now - 1);
+  BOOST_CHECK(!consume());
+  BOOST_CHECK(provider.hasTargetedProviderTokenForTest(requester, service, "expired"));
+  seed("live", now + 60000);
+  request.setControllerVersion(ControllerVersion{123456, 2});
+  BOOST_CHECK(!consume());
+  request.setControllerVersion(version);
+  request.setUserToken("wrong-user-token");
+  BOOST_CHECK(!consume());
+  request.setUserToken("user-token");
+  BOOST_CHECK(!provider.consumeProtectedTargetedTokenForTest(requester, service, request, false));
+  provider.setUseTokens(false);
+  BOOST_CHECK(!consume());
+  provider.setUseTokens(true);
+  BOOST_CHECK(consume());
+  BOOST_CHECK(!consume());
+  provider.addTargetedProviderTokenForTest(requester, service, "legacy", "user-token");
+  request.setProviderToken("legacy");
+  BOOST_CHECK(!consume());
+  BOOST_CHECK(provider.hasTargetedProviderTokenForTest(requester, service, "legacy"));
+  seed("old-registration", now + 60000);
+  registration.close();
+  auto successor = provider.addScopedTargetedService(service, handler);
+  BOOST_CHECK(!consume());
 }
 
 BOOST_AUTO_TEST_CASE(TargetedDeadlineStartsBeforePublicationReturns)

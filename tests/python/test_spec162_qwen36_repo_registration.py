@@ -274,19 +274,18 @@ class Qwen36RepoRegistrationTest(unittest.TestCase):
                     canonical_model_name="Qwen/Qwen3-0.6B",
                     canonical_graph_digest="sha256:" + "e" * 64,
                     canonical_profile="qwen3-0.6b",
-                    canonical_publisher="/ndnsf-di",
+                    canonical_publisher="/8=example/8=user",
                 )
 
         self.assertEqual(len(calls), 3)
-        self.assertTrue(all(
-            "/ndnsf-di/NDNSF-DI/MODEL/v1/NAME/Qwen/Qwen3-0.6B/" in call[1]["name"]
-            for call in calls))
-        self.assertTrue(all(
-            "/PROFILE/" in call[1]["name"]
-            and "/MANIFEST/" in call[1]["name"]
-            and "/LAYER/PIPELINE_RANGE/layers-" in call[1]["name"]
-            and "/OBJECT/sha256:" in call[1]["name"]
-            for call in calls))
+        from ndn.encoding import Component
+        from ndnsf_distributed_inference.naming import parse_producer_data_name
+        for index, call in enumerate(calls):
+            content = parse_producer_data_name(call[1]["name"], "/example/user")
+            self.assertEqual(content.category, "BLOB")
+            self.assertEqual(len(content.suffix), 1)
+            self.assertEqual(bytes(Component.get_value(content.suffix[0])),
+                             bytes.fromhex(stages[index]["sha256"]))
         self.assertTrue(all(item["canonicalName"] for item in result["artifacts"]))
         self.assertEqual(
             [item["objectName"] for item in result["artifacts"]],

@@ -183,6 +183,55 @@ class ArtifactSpec:
     cache_name: str = ""
     large_data_reference: dict = field(default_factory=dict)
     repo_manifest: dict = field(default_factory=dict)
+    content_name: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self):
+        from .naming import validate_semantic_content_fields
+        object.__setattr__(self, "payload", bytes(self.payload))
+        fields = validate_semantic_content_fields(dict(self.content_name)) if self.content_name else {}
+        object.__setattr__(self, "content_name", MappingProxyType(fields))
+
+    @classmethod
+    def from_canonical_catalog(cls, catalog, *, name: str, payload: bytes, filename: str,
+                               kind: str = "model", layer_manifest_digest: str = ""):
+        """Bind local bytes to a verified ACTIVE model/source or layer object."""
+        from .app_sdk.canonical_artifacts import (
+            CanonicalLayerCatalog, _model_naming_identity, _artifact_coordinate,
+            canonical_source_reference, canonical_initializer_reference)
+        if not isinstance(catalog, CanonicalLayerCatalog):
+            raise TypeError("artifact naming requires a canonical catalog")
+        root = catalog.active_manifest
+        payload = bytes(payload)
+        digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+        fields = {"model_name": root.model_name,
+                  "model_identity": _model_naming_identity(root.model_name, root.model_identity.digest)[7:]}
+        if layer_manifest_digest:
+            if kind != "model" or layer_manifest_digest not in root.layer_manifest_digests:
+                raise ValueError("artifact layer is not part of the ACTIVE root")
+            layer = next((item for item in catalog.root()
+                          if item.layer_manifest_digest == layer_manifest_digest), None)
+            if layer is None:
+                raise ValueError("ACTIVE root layer is missing from the catalog")
+            if layer.object_digest != digest:
+                raise ValueError("artifact payload does not match the verified layer")
+            artifact_kind, coordinate = _artifact_coordinate(
+                layer.role_kind, layer.layer_begin, layer.layer_end, layer.rank)
+            fields.update(kind="artifact-file", label="model.onnx", artifact_kind=artifact_kind,
+                          coordinate=coordinate, profile_identity=layer.profile_digest[7:])
+        else:
+            if kind == "model":
+                _, expected, size = canonical_source_reference(root.metadata, require=True)
+                fields["kind"] = "model-file"
+                fields["label"] = "canonical-source"
+            elif kind == "initializer":
+                _, expected, size = canonical_initializer_reference(root.metadata, require=True)
+                fields["kind"] = "initializer"
+                fields["label"] = "initializers"
+            else:
+                raise ValueError("no verified source reference for this artifact kind")
+            if digest != expected or len(payload) != size:
+                raise ValueError("artifact payload does not match the verified source")
+        return cls(name=name, payload=payload, filename=filename, kind=kind, content_name=fields)
 
     def to_ndnsf_artifact(self) -> dict:
         repo_manifest = dict(self.repo_manifest or {})
@@ -198,6 +247,8 @@ class ArtifactSpec:
             "large_data_reference": large_data_reference,
             "largeDataReference": large_data_reference,
         }
+        if self.content_name:
+            artifact["content_name"] = dict(self.content_name)
         if not large_data_reference and repo_manifest:
             large_data_reference = large_data_reference_from_repo_manifest(
                 repo_manifest,

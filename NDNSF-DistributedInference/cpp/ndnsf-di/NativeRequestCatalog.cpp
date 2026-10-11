@@ -3,9 +3,15 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 
 #include <algorithm>
+#include <cfenv>
 #include <cstring>
+#include <limits>
+#include <locale>
+#include <set>
 
 namespace ndnsf::di {
 namespace {
@@ -122,6 +128,184 @@ NativeOnnxGraphInspection sourceGraphFromPreparedMetadata(const NativeJson& meta
 
 } // namespace
 
+NativePreparedPlanningTemplate::NativePreparedPlanningTemplate(
+  std::shared_ptr<const NativeInspectedModel> model,
+  std::shared_ptr<const CooperativeModelSplitStrategy> splitter,
+  std::vector<NativePreparedPlanningCandidate> candidates)
+  : m_model(std::move(model)), m_splitter(std::move(splitter)),
+    m_candidates(std::move(candidates)), m_retainedBytes(sizeof(*this))
+{
+  if (!m_model || !m_splitter || m_candidates.empty())
+    throw std::invalid_argument("prepared planning template is incomplete");
+  const auto charge = [this](std::size_t bytes) {
+    // Include both the compatibility copy and owned static facts, plus
+    // conservative parser/container overhead, in the existing package budget.
+    if (bytes > (std::numeric_limits<std::size_t>::max() - m_retainedBytes) / 8)
+      throw std::runtime_error("DI_NATIVE_PREPARATION_SIZE_OVERFLOW");
+    m_retainedBytes += bytes * 8;
+  };
+  m_execution.reserve(m_candidates.size());
+  m_roleJson.reserve(m_candidates.size());
+  m_snapshotFixedCanonical.reserve(m_candidates.size());
+  for (const auto& prepared : m_candidates) {
+    NativeRequestPreparation::validateRoles(*m_model, prepared.candidate, prepared.roles);
+    charge(prepared.candidate.canonicalJson().size());
+    auto execution = prepared.candidate.executionPlan;
+    execution.roles.clear();
+    std::set<std::string> selected;
+    std::map<std::string, std::vector<std::string>> selectedByStage;
+    NativeJson roleValues = NativeJson::array();
+    for (const auto& role : prepared.roles) {
+      if (role.selectedRole.empty() || !selected.insert(role.selectedRole).second)
+        throw std::invalid_argument("prepared planning template role cover is invalid");
+      auto roleValue = nativeAssemblyJson(role);
+      const auto roleBytes = nativeCanonicalJson(roleValue).size();
+      charge(roleBytes);
+      charge(roleBytes); // retained JSON fields in addition to typed roles
+      roleValues.push_back(std::move(roleValue));
+      execution.roles.push_back(role.selectedRole);
+      selectedByStage[role.role].push_back(role.selectedRole);
+    }
+    m_roleJson.push_back(std::move(roleValues));
+    std::map<std::string, std::string> fixedCanonical;
+    if (std::fegetround() == FE_TONEAREST && std::locale() == std::locale::classic()) {
+      const NativeJson fixedFields{
+        {"candidate_digest", prepared.candidate.candidateDigest},
+        {"graph_digest", prepared.candidate.graphDigest},
+        {"node_roles", prepared.candidate.nodeRoles},
+        {"roles", m_roleJson.back()},
+        {"stage_order", prepared.candidate.executionPlan.roles}};
+      for (auto field = fixedFields.begin(); field != fixedFields.end(); ++field) {
+        ++detail::fixedAssignmentWork().snapshotFixedEncodes;
+        auto bytes = nativeCanonicalJson(field.value());
+        charge(bytes.size());
+        fixedCanonical.emplace(field.key(), std::move(bytes));
+      }
+    }
+    m_snapshotFixedCanonical.push_back(std::move(fixedCanonical));
+    const auto expand = [&selectedByStage](const std::vector<std::string>& stages) {
+      std::vector<std::string> result;
+      for (const auto& stage : stages) {
+        const auto& roles = selectedByStage.at(stage);
+        result.insert(result.end(), roles.begin(), roles.end());
+      }
+      return result;
+    };
+    for (auto& dependency : execution.dependencies) {
+      dependency.producers = expand(dependency.producers);
+      dependency.consumers = expand(dependency.consumers);
+    }
+    m_execution.push_back(std::move(execution));
+  }
+}
+
+const NativeJson* NativePreparedPlanningCache::preparedRoleJson(std::size_t index) const
+{
+  if (!m_template || index >= candidates.size() || index >= m_template->candidates().size())
+    return nullptr;
+  const auto& current = candidates[index].roles;
+  const auto& prepared = m_template->candidates()[index].roles;
+  if (current.size() != prepared.size() ||
+      !std::equal(current.begin(), current.end(), prepared.begin(),
+        [](const auto& left, const auto& right) {
+          return nativeSelectionRoleContractsEqualV3(left, right);
+        }))
+    return nullptr;
+  return &m_template->roleJson(index);
+}
+
+std::string nativePlacementObservationCanonicalJson(const NativeJson& snapshot,
+  const NativePreparedPlanningTemplate* prepared)
+{
+  if (!snapshot.is_object()) return nativeCanonicalJson(snapshot);
+  const bool canReuse = prepared && std::fegetround() == FE_TONEAREST &&
+    std::locale() == std::locale::classic();
+  const auto fixedField = [](const std::string& key) {
+    return key == "candidate_digest" || key == "graph_digest" ||
+      key == "node_roles" || key == "roles" || key == "stage_order";
+  };
+  // Match the actual request-owned JSON after every callback. The owner is
+  // an optimization hint; it never certifies mutable snapshot contents.
+  const auto matches = [&](const NativeJson& graph, std::size_t index) {
+    if (!canReuse || index >= prepared->m_candidates.size() ||
+        prepared->m_snapshotFixedCanonical[index].empty()) return false;
+    const auto& expected = prepared->m_candidates[index];
+    const auto stringMatches = [&](const char* field, const std::string& text) {
+      const auto found = graph.find(field);
+      return found != graph.end() && found->is_string() &&
+        found->get_ref<const NativeJson::string_t&>() == text;
+    };
+    if (!stringMatches("candidate_digest", expected.candidate.candidateDigest) ||
+        !stringMatches("graph_digest", expected.candidate.graphDigest)) return false;
+    const auto nodes = graph.find("node_roles");
+    if (nodes == graph.end() || !nodes->is_object() ||
+        nodes->size() != expected.candidate.nodeRoles.size()) return false;
+    for (const auto& entry : expected.candidate.nodeRoles) {
+      const auto found = nodes->find(entry.first);
+      if (found == nodes->end() || !found->is_string() ||
+          found->get_ref<const NativeJson::string_t&>() != entry.second) return false;
+    }
+    const auto stages = graph.find("stage_order");
+    const auto& expectedStages = expected.candidate.executionPlan.roles;
+    if (stages == graph.end() || !stages->is_array() ||
+        stages->size() != expectedStages.size()) return false;
+    for (std::size_t i = 0; i < expectedStages.size(); ++i) {
+      if (!(*stages)[i].is_string() ||
+          (*stages)[i].get_ref<const NativeJson::string_t&>() != expectedStages[i]) return false;
+    }
+    const auto roles = graph.find("roles");
+    if (roles == graph.end() || !roles->is_array() ||
+        roles->size() != expected.roles.size()) return false;
+    for (std::size_t i = 0; i < expected.roles.size(); ++i) {
+      if (!nativeAssemblyJsonMatches(expected.roles[i], (*roles)[i])) return false;
+    }
+    return true;
+  };
+  std::string output;
+  const auto appendKey = [&](const std::string& key) {
+    canonical_json_detail::append(output, NativeJson(key));
+    output += ':';
+  };
+  output += '{';
+  bool firstRoot = true;
+  for (auto root = snapshot.begin(); root != snapshot.end(); ++root) {
+    if (!firstRoot) output += ',';
+    firstRoot = false;
+    appendKey(root.key());
+    if (root.key() != "prepared_role_graph" || !root.value().is_array()) {
+      canonical_json_detail::append(output, root.value());
+      continue;
+    }
+    output += '[';
+    for (std::size_t index = 0; index < root.value().size(); ++index) {
+      if (index) output += ',';
+      const auto& graph = root.value()[index];
+      if (!graph.is_object()) {
+        canonical_json_detail::append(output, graph);
+        continue;
+      }
+      const auto* cached = matches(graph, index)
+        ? &prepared->m_snapshotFixedCanonical[index] : nullptr;
+      output += '{';
+      bool firstGraph = true;
+      for (auto field = graph.begin(); field != graph.end(); ++field) {
+        if (!firstGraph) output += ',';
+        firstGraph = false;
+        appendKey(field.key());
+        if (cached && fixedField(field.key())) output += cached->at(field.key());
+        else {
+          if (fixedField(field.key())) ++detail::fixedAssignmentWork().snapshotFixedEncodes;
+          canonical_json_detail::append(output, field.value());
+        }
+      }
+      output += '}';
+    }
+    output += ']';
+  }
+  output += '}';
+  return output;
+}
+
 NativeRequestCatalog NativeRequestCatalog::load(const std::string& configurationJson,
   NativeCanonicalSource source, const NativeAssemblyControl& control)
 {
@@ -192,10 +376,9 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   entry.publication.layerManifestDigests = publication.value("layer_manifest_digests", std::vector<std::string>{});
   entry.publication.maxPublicationBytes = publication.value(
     "max_publication_bytes", std::uint64_t{0});
-  // The complete operator-pinned catalog is available before source loading.
-  // Use it as the durable publication identity so initializer/profile/split
-  // changes cannot collide under a source-only Repo path.
-  entry.publication.publicationIdentityDigest = nativePlanningDigest(nativeCanonicalJson(root));
+  // Bind model/source/recipe/split changes while keeping advisory transfer
+  // geometry from forcing an identical model publication and assembly again.
+  entry.publication.publicationIdentityDigest = nativeCanonicalPublicationIdentity(root);
   entry.nodes = root.value("node_mapping", NativeCanonicalRolePreparer::NodeMap{});
   entry.maxPayloadBytes = root.at("max_payload_bytes").get<std::size_t>();
   const auto format = root.at("input_format").get<std::string>();
@@ -338,9 +521,13 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
         profile.at("dependencies").size() > 64)
       throw std::invalid_argument("request transfer profile differs from pinned source");
   }
-  result.planningCache = std::make_shared<const NativePreparedPlanningCache>(
-    NativePreparedPlanningCache{result.cooperativeSplitter->identity(), std::move(preparedCandidates),
-      std::move(transferProfiles)});
+  auto ownedTemplate = std::shared_ptr<const NativePreparedPlanningTemplate>(
+    new const NativePreparedPlanningTemplate(
+      result.preparation->modelRefFor(result.model.descriptor), result.cooperativeSplitter,
+      preparedCandidates));
+  result.planningCache = std::shared_ptr<const NativePreparedPlanningCache>(
+    new const NativePreparedPlanningCache(result.cooperativeSplitter->identity(),
+      std::move(preparedCandidates), std::move(transferProfiles), std::move(ownedTemplate)));
   control.requireActive();
   return result;
 }

@@ -471,6 +471,8 @@ class LargeDataPublishResult:
     protection_epoch: str = ""
     encrypted: bool = True
     error: str = ""
+    manifest_name: str = ""
+    data_prefix: str = ""
 
 
 @dataclass(frozen=True)
@@ -574,7 +576,7 @@ class SegmentedObjectProducer:
 
 
 class FileSegmentedObjectProducer:
-    """Serve a file as on-demand signed segments with bounded producer memory."""
+    """Serve disk-owned original signed segments with bounded producer memory."""
 
     def __init__(
         self,
@@ -584,7 +586,7 @@ class FileSegmentedObjectProducer:
         signing_identity: str = "",
         max_segment_size: int = 6000,
         freshness_ms: int = 60000,
-        digest_signing: bool = True,
+        digest_signing: bool = False,
     ) -> None:
         self._native = _ndnsf.FileSegmentedObjectProducer(
             base_name,
@@ -601,6 +603,10 @@ class FileSegmentedObjectProducer:
 
     def stop(self) -> None:
         self._native.stop()
+
+    def packet(self, segment: int) -> DataPacket:
+        """Export one verified original packet without starting or re-signing it."""
+        return decode_data_packet(bytes(self._native.packet_wire(int(segment))))
 
     @property
     def base_name(self) -> str:
@@ -743,6 +749,26 @@ def decode_data_packet(wire: bytes) -> DataPacket:
         bytes(packet.wire),
         bytes(packet.content),
     )
+
+
+def inspect_data_name(name: str) -> dict:
+    """Inspect typed Name components through the shared native NDN parser."""
+    return dict(_ndnsf.inspect_data_name(str(name)))
+
+
+def inspect_original_data_packet(wire: bytes) -> dict:
+    """Inspect original wire geometry without verifying or rewriting signatures."""
+    try:
+        return dict(_ndnsf.inspect_original_data_packet(bytes(wire)))
+    except RuntimeError as exc:
+        raise ValueError(f"Invalid original Data geometry: {exc}") from exc
+
+
+def make_content_data_prefix(producer: str, kind: str, label: str,
+                             content_digest: str, representation_spec: str) -> str:
+    """Use Core's semantic/representation codec; the owner supplies canonical JSON."""
+    return str(_ndnsf.make_content_data_prefix(
+        producer, kind, label, content_digest, representation_spec))
 
 
 def make_segmented_data_packets(
@@ -1478,6 +1504,8 @@ def _from_native_large_data_result(result) -> LargeDataPublishResult:
             getattr(result, "protection_epoch", "") or ""),
         encrypted=bool(getattr(result, "encrypted", True)),
         error=str(result.error),
+        manifest_name=str(getattr(result, "manifest_name", "") or ""),
+        data_prefix=str(getattr(result, "data_prefix", "") or ""),
     )
 
 
@@ -2395,6 +2423,11 @@ class ServiceUser:
             bootstrap_token=bootstrap_token,
         )
 
+    @property
+    def requester_identity(self) -> str:
+        """Complete immutable identity held by the native User owner."""
+        return self._native.requester_identity
+
     @staticmethod
     def load_native_request_catalog(
         configuration_json: str,
@@ -3065,12 +3098,16 @@ class ServiceUser:
         *,
         object_label: str = "",
         freshness_ms: int = 60000,
+        manifest_suffix: str = "",
+        content_name: Optional[Mapping[str, str]] = None,
     ) -> LargeDataPublishResult:
         result = self._native.publish_encrypted_large_data(
             service,
             bytes(payload),
             object_label,
             freshness_ms,
+            manifest_suffix,
+            **({"content_name": dict(content_name)} if content_name is not None else {}),
         )
         return _from_native_large_data_result(result)
 

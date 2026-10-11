@@ -1659,7 +1659,7 @@ public:
     m_streamDescriptor.dataPrefix = m_streamDescriptor.providerIdentity;
     m_streamDescriptor.dataPrefix.append("video").append("front").append(m_streamId);
     m_streamDescriptor.mappingRoot = ndn_service_framework::makeStreamNameMapRoot(
-      m_streamDescriptor.providerIdentity, m_streamId);
+      m_streamDescriptor.providerIdentity, m_streamId, m_streamDescriptor.sessionEpoch);
     // Thirty-two semantic names remain safely below one signed NDN Data packet
     // for this namespace while halving Mapping fetch/validation work versus
     // the former 16-entry block at the original 12+1 video load.

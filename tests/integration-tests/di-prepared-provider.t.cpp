@@ -7,6 +7,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
@@ -19,6 +21,7 @@
 #include "ndnsf-integration-fixture.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/NDNSFMessages.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 
 #include <boost/test/unit_test.hpp>
 
@@ -217,6 +220,7 @@ struct ProviderRequestProbeState
   bool responseSeen = false;
   bool terminal = false;
   std::string failure;
+  std::string providerFailure;
 };
 
 std::string
@@ -363,7 +367,8 @@ providerProjection(const ndn::Name& provider,
   projection.deadlineMs = static_cast<std::uint64_t>(
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count()) + 60'000;
-  projection.groupCapabilityV1 = "spec185-provider-capability";
+  // This single-role fixture has no inter-Provider dependency or group.
+  projection.groupCapabilityV1.clear();
   projection.plan.version = 3;
   projection.plan.executionPolicy = "DATA_DRIVEN_V2";
   projection.plan.roles = {"/Backbone"};
@@ -622,7 +627,7 @@ BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
 // ingress with a direct assembler-only fixture.
 BOOST_AUTO_TEST_SUITE(Spec188ProviderReferenceAssembly)
 
-BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse)
+static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool restartHandler = false)
 {
   // This C++ ingress fixture uses the production Provider::serve path.  The
   // only test seam injects an already-bootstrapped Core owner and a
@@ -642,7 +647,9 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
   const auto providerName = environment.provider().getName();
   const auto requesterName = environment.user().getName();
   auto requestId = ndn::Name("/spec185-provider-positive");
-  const auto planDigest = std::string("sha256:") + std::string(64, 'a');
+  const NativeJson fixtureModel{{"schema", "spec201-fixed-source-oracle-model"},
+                               {"modelName", "provider-fixed-source-oracle"}};
+  const auto planDigest = nativePlanningDigest(nativeCanonicalJson(fixtureModel));
   const auto artifactDigest = std::string("sha256:") + std::string(64, 'b');
   const auto bootId = environment.provider().getProviderBootEpoch();
   const auto protectionEpoch = std::string("spec185-provider-protected-v1");
@@ -680,6 +687,12 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
     providerName, requestId, planDigest, artifactDigest, protectionEpoch,
     issuedGrant.grantName, issuedGrant.grantDigest);
 
+  auto grantWires = std::make_shared<std::map<std::string, std::string>>();
+  auto grantWiresMutex = std::make_shared<std::mutex>();
+  grantWires->emplace(issuedGrant.grantName, issuedGrant.wireJson);
+  auto verifiedRoleOwners = std::make_shared<std::vector<std::shared_ptr<const NativeSelectionRoleV3>>>();
+  auto verifiedRoleOwnersMutex = std::make_shared<std::mutex>();
+
   auto runs = std::make_shared<std::atomic<unsigned>>(0);
   auto preparationFactory =
     [planDigest, artifactDigest, bootId] (
@@ -695,7 +708,14 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
       spec.kind = "onnx-model";
       spec.backend = "onnxruntime";
       spec.path = "/spec185/provider/model.onnx";
-      const auto& assembly = projection.assembly;
+      const auto& assembly = projection.assemblyContract();
+      // Production preparation must accept the referenced Selection too;
+      // reconstruct only the test oracle for the unchanged legacy digest.
+      auto legacyProjection = projection;
+      legacyProjection.compactAssembly = false;
+      BOOST_CHECK_EQUAL(nativeAssemblyDigestFromValidatedProjection(projection),
+        nativeAssemblyDigestFromCanonicalProjection(
+          nativeSelectionProjectionV3ToJson(legacyProjection)));
       // Keep the deterministic runner factory's seam metadata alongside the
       // production validator identity fields.  The seam reads these values
       // with at(), so omission would turn a valid assembly into an exception.
@@ -724,15 +744,17 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
     };
   const auto providerIdentity = environment.keyChain().getPib().getIdentity(providerName);
   const auto providerCertificate = providerIdentity.getDefaultKey().getDefaultCertificate();
-  auto facade = Provider::fromServiceProviderForTest(
+  const auto makeFacade = [&] {
+    return Provider::fromServiceProviderForTest(
     environment.providerFace(), environment.provider(), environment.keyChain(),
     providerCertificate, providerCertificate,
       makeConfig(providerName.toUri(), serviceName.toUri()),
-    makeProviderOracleRunnerFactory(runs), std::move(preparationFactory),
-    [issuedGrant, authorityPublic = publicKeyBytes(authorityPrivate),
+    makeProviderOracleRunnerFactory(runs), preparationFactory,
+    [grantWires, grantWiresMutex, verifiedRoleOwners, verifiedRoleOwnersMutex,
+     authorityPublic = publicKeyBytes(authorityPrivate),
      recipientSeed = std::string(32, 'c'), protectionEpoch, bootId,
      verificationTimeMs = nowMs] (
-      ndn_service_framework::ServiceProvider::CollaborationContext&,
+      ndn_service_framework::ServiceProvider::CollaborationContext& context,
       const NativeSelectionProjectionV3& projection,
       const std::shared_ptr<ProviderGroupCoordinator>&) {
       ProtectedRuntimeBindingV1 binding;
@@ -751,18 +773,26 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
         projection, bootId, {});
       binding.expiresAtMs = projection.deadlineMs;
       NativeProtectedGrantConfig grantConfig;
+      grantConfig.publicationIdentity = context.requesterName().toUri(ndn::name::UriFormat::CANONICAL);
       grantConfig.authorityIdentity = "/spec185/authority";
       grantConfig.authorityPublicKeyRaw = authorityPublic;
       grantConfig.recipientKey = {
         NativeRecipientKey::Kind::Ed25519Seed, recipientSeed};
-      grantConfig.modelManifestDigest = projection.selectedRole.modelManifestDigest;
-      grantConfig.fetchGrant = [wire = issuedGrant.wireJson] (const std::string&) {
-        return wire;
+      grantConfig.modelManifestDigest = projection.selectedRoleContract().modelManifestDigest;
+      grantConfig.fetchGrant = [grantWires, grantWiresMutex] (const std::string& name) {
+        std::lock_guard<std::mutex> lock(*grantWiresMutex);
+        return grantWires->at(name);
       };
       auto runtime = std::make_shared<ProtectedRuntime>(binding, std::move(grantConfig));
       runtime->verifyGrant(binding, verificationTimeMs);
+      {
+        std::lock_guard<std::mutex> lock(*verifiedRoleOwnersMutex);
+        verifiedRoleOwners->push_back(projection.fixedRoleOwner);
+      }
       return runtime;
     });
+  };
+  auto facade = makeFacade();
   environment.enableProductionIngressForTest();
   auto registration = facade.serve({serviceName.toUri(), {"/Backbone"}});
   environment.provider().markHybridResponseKeyWrappedForTest(serviceName);
@@ -779,6 +809,59 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
   environment.provider().cacheHybridReceiveKeyForTest(
     selectionKey.keyId, selectionKey.epochId, selectionKey.key);
 
+  NativeFixedRoleAssignmentCache userFixedRoles;
+  std::atomic<unsigned> fixedSourceInterests{0};
+  std::atomic<unsigned> roleSourceInterests{0};
+  unsigned fixedSourcePublications = 0;
+  const auto fixedSourcePrefix = ndn::Name(requesterName).append("NDNSF-DI").append("assignment");
+  const ndn::signal::ScopedConnection sourceInterestObserver = environment.providerFace().onSendInterest.connect(
+    [&fixedSourceInterests, &roleSourceInterests, &fixedSourcePrefix] (const ndn::Interest& interest) {
+      if (std::find(interest.getName().begin(), interest.getName().end(),
+                    ndn::name::Component("ROLE")) != interest.getName().end())
+        roleSourceInterests.fetch_add(1, std::memory_order_relaxed);
+      if (fixedSourcePrefix.isPrefixOf(interest.getName()))
+        fixedSourceInterests.fetch_add(1, std::memory_order_relaxed);
+    });
+  const auto referenceAssignment = [&] (const std::string& fullWire) {
+    if (!useFixedReferences) return fullWire;
+    std::istringstream input(fullWire);
+    auto projection = nativeSelectionProjectionV3FromJson(input, "/Backbone");
+    // Selection wire omits the local execution-plan model label. Bind the
+    // declared fixture model through the same manifest identity as its grant.
+    BOOST_REQUIRE_EQUAL(projection.selectedRoleContract().modelManifestDigest, planDigest);
+    projection.plan.modelName = fixtureModel.at("modelName").get<std::string>();
+    auto fixed = userFixedRoles.findMatching(requesterName.toUri(), serviceName.toUri(), projection);
+    if (!fixed) fixed = userFixedRoles.remember(requesterName.toUri(), serviceName.toUri(),
+      nativeFixedRoleAssignmentV1FromProjection(projection));
+    auto source = userFixedRoles.source(requesterName.toUri(), serviceName.toUri(), *fixed);
+    if (!source) {
+      PreparedServiceRequest publicationContext;
+      publicationContext.serviceName = serviceName;
+      publicationContext.requestId = ndn::Name(projection.requestId);
+      const auto sourceWire = nativeFixedRoleAssignmentV1ToJson(*fixed);
+      const auto key = environment.user().prepareHybridSendKeyForTest(serviceName, "REQUEST-LARGE");
+      environment.provider().cacheHybridReceiveKeyForTest(key.keyId, key.epochId, key.key);
+      LargeDataPublishOptions publicationOptions;
+      publicationOptions.contentName = nativeFixedRoleSourceContentName(projection, *fixed);
+      const auto publication = environment.user().publishEncryptedLargeData(publicationContext,
+        std::vector<std::uint8_t>(sourceWire.begin(), sourceWire.end()), "spec200-fixed-role",
+        ndn::DEFAULT_FRESHNESS_PERIOD, true, publicationOptions);
+      BOOST_REQUIRE(publication.success);
+      const auto expectedLogical = ndn::Name(fixedSourcePrefix).append("model")
+        .append(ndn_service_framework::makeNamingLabelComponent(projection.plan.modelName))
+        .append("ROLE").append(ndn_service_framework::makeNamingLabelComponent(fixed->roleOwner()->selectedRole))
+        .append(ndn_service_framework::makeNamingDigestComponent(nativePlanningDigest(sourceWire).substr(7)));
+      BOOST_CHECK(publication.encryptedDataName.getPrefix(expectedLogical.size()) == expectedLogical);
+      BOOST_REQUIRE(publication.servingLease);
+      ++fixedSourcePublications;
+      source = userFixedRoles.rememberSource(requesterName.toUri(), serviceName.toUri(), *fixed,
+        NativeFixedRoleSourceV1{publication.encryptedDataName.toUri(), nativePlanningDigest(sourceWire),
+          sourceWire.size(), publication.servingLease});
+    }
+    return nativeSelectionInvocationV1ToJson(projection, *fixed, source.get());
+  };
+  assignmentProjection = referenceAssignment(assignmentProjection);
+
   auto probe = std::make_shared<ProviderRequestProbeState>();
   std::mutex probeRegistryMutex;
   std::map<std::string, std::shared_ptr<ProviderRequestProbeState>> probeRegistry;
@@ -793,6 +876,21 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
     return found == probeRegistry.end() ?
       std::shared_ptr<ProviderRequestProbeState>() : found->second;
   };
+  // User timeout callbacks may omit the Provider's rejection reason. Observe
+  // the real status query and read the matching authoritative Core snapshot.
+  const ndn::signal::ScopedConnection statusObserver = environment.userFace().onSendInterest.connect(
+    [&, lookupProbe] (const ndn::Interest& interest) {
+      const auto query = parseSelectionStatusQueryName(interest, providerName);
+      if (!query || query->providerName != providerName || query->serviceName != serviceName)
+        return;
+      const auto status = environment.provider().getSelectionExecutionStatus(query->selectionDigest);
+      if (!status || status->state != SelectionExecutionState::Failed)
+        return;
+      if (const auto state = lookupProbe(status->requestId)) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->providerFailure = status->message;
+      }
+    });
   const auto probeDone = [] (const std::shared_ptr<ProviderRequestProbeState>& state) {
     std::lock_guard<std::mutex> lock(state->mutex);
     return state->terminal;
@@ -812,6 +910,12 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
   const auto probeResponseSeen = [] (const std::shared_ptr<ProviderRequestProbeState>& state) {
     std::lock_guard<std::mutex> lock(state->mutex);
     return state->responseSeen;
+  };
+  const auto pumpProbeTerminal = [&] (const std::shared_ptr<ProviderRequestProbeState>& state) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+    while (!probeDone(state) && std::chrono::steady_clock::now() < deadline)
+      environment.pumpUntil([&] { return probeDone(state); });
+    BOOST_REQUIRE_MESSAGE(probeDone(state), "provider request did not reach a terminal callback");
   };
   registerProbe(requestId, probe);
   environment.user().setRequestPublisher(
@@ -908,21 +1012,14 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
       probe->terminal = true;
     }, ndn_service_framework::tlv::FirstResponding, requestIdForCall);
 
-  environment.pumpUntil([&] {
-    if (!probeDone(probe) || !probeResponseSeen(probe))
-      return false;
-    const auto providerCounters = facade.counters();
-    return runs->load(std::memory_order_relaxed) == 1U &&
-           providerCounters.assemblies == 1U &&
-           providerCounters.runnersCreated == 1U;
-  });
+  pumpProbeTerminal(probe);
   BOOST_CHECK(probeRequestPublished(probe));
   BOOST_CHECK(probeSelectionSeen(probe));
   const auto positiveFailure = probeFailure(probe);
   BOOST_CHECK_MESSAGE(positiveFailure.empty(), positiveFailure);
   BOOST_CHECK(probeResponseSeen(probe));
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
-  const auto counters = facade.counters();
+  auto counters = facade.counters();
   BOOST_CHECK_EQUAL(counters.sourceFetches, 0U);
   BOOST_CHECK_EQUAL(counters.assemblies, 1U);
   BOOST_CHECK_EQUAL(counters.runnersCreated, 1U);
@@ -930,7 +1027,29 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
   // The same production ingress is exercised with three authenticated
   // Selection substitutions.  Each must fail before preparation/runner
   // creation, leaving the positive counters unchanged.
-  for (const auto mutation : {0, 1, 2}) {
+  const auto mutations = useFixedReferences
+    ? (restartHandler ? std::vector<int>{-1, -2, -3, 0, 1, 4, 2, 3, 5, 6, 7, 8, 9, 10}
+                      : std::vector<int>{-1, 0, 1, 4, 2, 3, 5, 6, 7, 8, 9, 10})
+    : std::vector<int>{0, 1, 2};
+  unsigned expectedRuns = 1;
+  unsigned warmSourceInterests = fixedSourceInterests.load(std::memory_order_relaxed);
+  if (useFixedReferences) {
+    BOOST_CHECK_EQUAL(fixedSourcePublications, 1U);
+    BOOST_CHECK_GT(warmSourceInterests, 0U);
+  }
+  for (const auto mutation : mutations) {
+    if (mutation == -2) {
+      // Retire the production registration and drain its in-flight work.
+      // Keep User's source/cache owner and the bootstrapped Core transport;
+      // the fresh facade must recover its missing fixed token through I/O.
+      registration.close();
+      BOOST_REQUIRE(registration.closed());
+      facade.stop();
+      BOOST_REQUIRE(facade.drain(std::chrono::milliseconds(2000)));
+      facade = makeFacade();
+      registration = facade.serve({serviceName.toUri(), {"/Backbone"}});
+      BOOST_CHECK_EQUAL(facade.counters().runnersCreated, 0U);
+    }
     // Keep the request ID in one NDN name component.  RequestService uses
     // the final component boundary when deriving the service name; an
     // appended component would be interpreted as a service suffix.
@@ -938,13 +1057,66 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
     const auto requestIdForCall = requestId;
     const auto projectionProvider = mutation == 0
       ? ndn::Name("/spec185/other-provider") : providerName;
-    const auto projectionEpoch = mutation == 1
+    const auto projectionEpoch = (mutation == 1 || mutation == 4)
       ? std::string("spec185-other-epoch") : protectionEpoch;
     const auto projectionGrantDigest = mutation == 2
       ? std::string("sha256:") + std::string(64, 'e') : issuedGrant.grantDigest;
     assignmentProjection = providerProjection(
       projectionProvider, requestId, planDigest, artifactDigest,
       projectionEpoch, issuedGrant.grantName, projectionGrantDigest);
+    if (mutation < 0) {
+      auto warmGrantRequest = grantRequest;
+      warmGrantRequest.requestId = requestId.toUri();
+      const auto warmGrant = NativeArtifactGrantIssuer(issuerConfig).issue(
+        warmGrantRequest.sign(*requesterPrivate), nowMs, nowMs + 60'000);
+      {
+        std::lock_guard<std::mutex> lock(*grantWiresMutex);
+        grantWires->emplace(warmGrant.grantName, warmGrant.wireJson);
+      }
+      assignmentProjection = providerProjection(providerName, requestId, planDigest, artifactDigest,
+        protectionEpoch, warmGrant.grantName, warmGrant.grantDigest);
+    }
+    assignmentProjection = referenceAssignment(assignmentProjection);
+    if (mutation == 3) {
+      auto expired = nativeParseJson(assignmentProjection);
+      expired["deadline_ms"] = nowMs - 1;
+      expired["fixed_role_ref"] = "sha256:" + std::string(64, 'f');
+      // Force a missing reference so the zero-I/O assertion covers fallback.
+      assignmentProjection = nativeCanonicalJson(expired);
+    }
+    if (mutation == 5) {
+      auto mixed = nativeParseJson(assignmentProjection);
+      mixed["execution_role"]["backend"] = "CPU";
+      mixed["fixed_role_ref"] = "sha256:" + std::string(64, 'f');
+      assignmentProjection = nativeCanonicalJson(mixed);
+    }
+    if (mutation == 6) {
+      auto mixed = nativeParseJson(assignmentProjection);
+      mixed["dataflow"]["role"] = "/Backbone";
+      mixed["fixed_role_ref"] = "sha256:" + std::string(64, 'f');
+      assignmentProjection = nativeCanonicalJson(mixed);
+    }
+    if (mutation >= 7) {
+      auto mixed = nativeParseJson(assignmentProjection);
+      mixed["fixed_role_ref"] = "sha256:" + std::string(64, 'f');
+      auto& source = mixed["fixed_role_source"];
+      const ndn::Name original(source.at("data_name").get<std::string>());
+      const auto offset = requesterName.size();
+      if (mutation == 7)
+        source["data_name"] = ndn::Name("/foreign/user").append(original.getSubName(offset)).toUri();
+      if (mutation == 8)
+        source["data_name"] = original.getPrefix(offset + 1).append("input")
+          .append(original.getSubName(offset + 2)).toUri();
+      if (mutation == 9)
+        source["data_name"] = original.getPrefix(offset + 5)
+          .append(ndn_service_framework::makeNamingLabelComponent("wrong-role"))
+          .append(original.getSubName(offset + 6)).toUri();
+      if (mutation == 10)
+        source["plaintext_digest"] = "sha256:" + std::string(64, 'f');
+      assignmentProjection = nativeCanonicalJson(mixed);
+    }
+    const auto sourceInterestsBefore = fixedSourceInterests.load(std::memory_order_relaxed);
+    const auto roleSourceInterestsBefore = roleSourceInterests.load(std::memory_order_relaxed);
     const auto assignmentProjectionForCall = assignmentProjection;
     probe = std::make_shared<ProviderRequestProbeState>();
     registerProbe(requestIdForCall, probe);
@@ -984,7 +1156,7 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
           }
           return candidates;
         }),
-      500,
+      useFixedReferences ? 4000 : 500,
       [probe] (const ndn::Name&) {
         std::lock_guard<std::mutex> lock(probe->mutex);
         if (probe->failure.empty()) probe->failure = "request timed out";
@@ -997,15 +1169,91 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
         probe->responseSeen = response.getStatus();
         probe->terminal = true;
       }, ndn_service_framework::tlv::FirstResponding, requestIdForCall);
-    environment.pumpUntil([&] { return probeDone(probe); });
+    pumpProbeTerminal(probe);
     BOOST_CHECK(probeRequestPublished(probe));
     BOOST_CHECK(probeSelectionSeen(probe));
     const auto rejectionFailure = probeFailure(probe);
+    if (mutation < 0) {
+      BOOST_CHECK_MESSAGE(rejectionFailure.empty(), rejectionFailure);
+      BOOST_CHECK(probeResponseSeen(probe));
+      BOOST_CHECK_EQUAL(fixedSourcePublications, 1U);
+      if (mutation == -2) {
+        BOOST_CHECK_GT(fixedSourceInterests.load(std::memory_order_relaxed), warmSourceInterests);
+        warmSourceInterests = fixedSourceInterests.load(std::memory_order_relaxed);
+      }
+      else {
+        BOOST_CHECK_EQUAL(fixedSourceInterests.load(std::memory_order_relaxed), warmSourceInterests);
+      }
+      {
+        std::lock_guard<std::mutex> lock(*verifiedRoleOwnersMutex);
+        const auto expectedOwners = mutation == -1 ? 2U : mutation == -2 ? 3U : 4U;
+        BOOST_REQUIRE_EQUAL(verifiedRoleOwners->size(), expectedOwners);
+        BOOST_REQUIRE(verifiedRoleOwners->at(0));
+        if (mutation == -2) {
+          BOOST_REQUIRE(verifiedRoleOwners->at(2));
+          BOOST_CHECK_NE(verifiedRoleOwners->at(0).get(), verifiedRoleOwners->at(2).get());
+          BOOST_CHECK(nativeSelectionRoleContractsEqualV3(
+            *verifiedRoleOwners->at(0), *verifiedRoleOwners->at(2)));
+        }
+        else if (mutation == -3) {
+          BOOST_CHECK_EQUAL(verifiedRoleOwners->at(2).get(), verifiedRoleOwners->at(3).get());
+        }
+        else {
+          BOOST_CHECK_EQUAL(verifiedRoleOwners->at(0).get(), verifiedRoleOwners->at(1).get());
+        }
+      }
+      ++expectedRuns;
+      BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), expectedRuns);
+      counters = facade.counters();
+      BOOST_CHECK_EQUAL(counters.assemblies, 1U);
+      BOOST_CHECK_EQUAL(counters.runnersCreated, 1U);
+      continue;
+    }
     BOOST_CHECK_MESSAGE(!rejectionFailure.empty(), rejectionFailure);
+    if (useFixedReferences && (mutation == 1 || mutation == 4 || mutation == 3 || mutation == 5 || mutation == 6 || mutation >= 7)) {
+      // The timeout callback can precede Face's queued status Interest.
+      // Pump the existing bounded loop until the independent oracle arrives.
+      environment.pumpUntil([&] {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        return !probe->providerFailure.empty();
+      });
+    }
+    std::string providerFailure;
+    {
+      std::lock_guard<std::mutex> lock(probe->mutex);
+      providerFailure = probe->providerFailure;
+    }
+    if (mutation == 3) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("fixed invocation has expired before source lookup") != std::string::npos,
+                          "Provider: " + providerFailure + "; User: " + rejectionFailure);
+      BOOST_CHECK_EQUAL(fixedSourceInterests.load(std::memory_order_relaxed), sourceInterestsBefore);
+    }
+    if (mutation == 5) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("fixed invocation ingress identity is invalid") != std::string::npos,
+                          "Provider: " + providerFailure + "; User: " + rejectionFailure);
+      BOOST_CHECK_EQUAL(fixedSourceInterests.load(std::memory_order_relaxed), sourceInterestsBefore);
+    }
+    if (mutation == 6) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("invocation bindings contain a fixed or unknown field") != std::string::npos,
+                          "Provider: " + providerFailure + "; User: " + rejectionFailure);
+      BOOST_CHECK_EQUAL(fixedSourceInterests.load(std::memory_order_relaxed), sourceInterestsBefore);
+    }
+    if (mutation >= 7) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("fixed source Producer, role or plaintext name commitment mismatch") != std::string::npos,
+                          "Provider: " + providerFailure + "; User: " + rejectionFailure);
+      BOOST_CHECK_EQUAL(roleSourceInterests.load(std::memory_order_relaxed), roleSourceInterestsBefore);
+    }
+    if (useFixedReferences && (mutation == 1 || mutation == 4)) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("DI_PROTECTED_GRANT_REJECTED") != std::string::npos,
+                          providerFailure);
+      // The second rejection has the same fixed digest. It must fetch again:
+      // failed authorization must never install the temporary recovered token.
+      BOOST_CHECK_GT(fixedSourceInterests.load(std::memory_order_relaxed), sourceInterestsBefore);
+    }
     const auto rejectedCounters = facade.counters();
     BOOST_CHECK_EQUAL(rejectedCounters.assemblies, counters.assemblies);
     BOOST_CHECK_EQUAL(rejectedCounters.runnersCreated, counters.runnersCreated);
-    BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
+    BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), expectedRuns);
   }
 
   registration.close();
@@ -1015,6 +1263,21 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
   // the caller's integration environment.
   facade.stop();
   BOOST_REQUIRE(facade.drain(std::chrono::milliseconds(2000)));
+}
+
+BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse)
+{
+  runAuthenticatedProviderAssignmentCase(false);
+}
+
+BOOST_AUTO_TEST_CASE(FixedRoleSourceMissThenWarmHitUsesSameProviderObject)
+{
+  runAuthenticatedProviderAssignmentCase(true);
+}
+
+BOOST_AUTO_TEST_CASE(FixedRoleSourceRecoversAfterHandlerRestartWithCurrentGrant)
+{
+  runAuthenticatedProviderAssignmentCase(true, true);
 }
 
 BOOST_AUTO_TEST_CASE(ProductionAssemblerFetchesCanonicalSourceAfterSelection)
@@ -1591,6 +1854,7 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthoriza
     binding.expiresAtMs = childProjection.deadlineMs;
 
     NativeProtectedGrantConfig grantConfig;
+    grantConfig.publicationIdentity = readText(root / "requester-identity");
     grantConfig.authorityIdentity = readText(root / "authority-identity");
     grantConfig.authorityPublicKeyRaw = readText(root / "authority-public-key");
     const auto recipientSeed = readBytes(root / "recipient-seed");
@@ -1598,7 +1862,7 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthoriza
       NativeRecipientKey::Kind::Ed25519Seed,
       std::string(recipientSeed.begin(), recipientSeed.end())};
     grantConfig.modelManifestDigest =
-      childProjection.selectedRole.modelManifestDigest;
+      childProjection.selectedRoleContract().modelManifestDigest;
     const auto grantWire = readText(root / "grant.wire.json");
     grantConfig.fetchGrant = [grantWire] (const std::string&) {
       return grantWire;
@@ -1725,6 +1989,7 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthoriza
     binding.fencingToken = nativeProtectedFencingToken(projection, providerBootId, {});
     binding.expiresAtMs = projection.deadlineMs;
     NativeProtectedGrantConfig grantConfig;
+    grantConfig.publicationIdentity = issuerConfig.requesterIdentity;
     grantConfig.authorityIdentity = issuerConfig.authorityIdentity;
     grantConfig.authorityPublicKeyRaw = publicKeyBytes(authorityPrivate);
     grantConfig.recipientKey = {NativeRecipientKey::Kind::Ed25519Seed, recipientSeed};
@@ -1840,6 +2105,7 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthoriza
   writeText(execRoot / "role-assembly-spec-digest", roleAssemblySpecDigest);
   writeText(execRoot / "source-name", sourceName.toUri());
   writeText(execRoot / "source-digest", sourceDigest);
+  writeText(execRoot / "requester-identity", issuerConfig.requesterIdentity);
   writeText(execRoot / "authority-identity", issuerConfig.authorityIdentity);
   writeText(execRoot / "authority-public-key", publicKeyBytes(authorityPrivate));
   writeText(execRoot / "recipient-seed", recipientSeed);
@@ -2091,7 +2357,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
   auto protectedRuntimeFactory =
     [grantWires, authorityPublic = publicKeyBytes(authorityPrivate),
      recipientSeed = std::string(32, 'r'), protectionEpoch, providerBootId] (
-      ndn_service_framework::ServiceProvider::CollaborationContext&,
+      ndn_service_framework::ServiceProvider::CollaborationContext& context,
       const NativeSelectionProjectionV3& projection,
       const std::shared_ptr<ProviderGroupCoordinator>&) {
       const auto grant = grantWires->find(projection.grantDigest);
@@ -2112,10 +2378,11 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
       binding.fencingToken = nativeProtectedFencingToken(projection, providerBootId, {});
       binding.expiresAtMs = projection.deadlineMs;
       NativeProtectedGrantConfig grantConfig;
+      grantConfig.publicationIdentity = context.requesterName().toUri(ndn::name::UriFormat::CANONICAL);
       grantConfig.authorityIdentity = "/spec185/cache-authority";
       grantConfig.authorityPublicKeyRaw = authorityPublic;
       grantConfig.recipientKey = {NativeRecipientKey::Kind::Ed25519Seed, recipientSeed};
-      grantConfig.modelManifestDigest = projection.selectedRole.modelManifestDigest;
+      grantConfig.modelManifestDigest = projection.selectedRoleContract().modelManifestDigest;
       grantConfig.fetchGrant = [wire = grant->second] (const std::string&) { return wire; };
       auto runtime = std::make_shared<ProtectedRuntime>(binding, std::move(grantConfig));
       runtime->verifyGrant(binding, static_cast<std::uint64_t>(
@@ -2138,6 +2405,11 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
   environment.user().cacheHybridReceiveKeyForTest(responseKey.keyId, responseKey.epochId, responseKey.key);
   const auto selectionKey = environment.user().prepareHybridSendKeyForTest(serviceName, "SELECTION");
   environment.provider().cacheHybridReceiveKeyForTest(selectionKey.keyId, selectionKey.epochId, selectionKey.key);
+  // The assignment envelope can be externalized independently of the model
+  // source published by publishLarge, which owns a different crypto instance.
+  const auto assignmentKey = environment.user().prepareHybridSendKeyForTest(serviceName, "REQUEST-LARGE");
+  environment.provider().cacheHybridReceiveKeyForTest(
+    assignmentKey.keyId, assignmentKey.epochId, assignmentKey.key);
 
   struct Probe
   {
@@ -2147,9 +2419,22 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
     bool response = false;
     bool terminal = false;
     std::string failure;
+    std::string providerFailure;
   };
   std::mutex probeMutex;
   std::map<std::string, std::shared_ptr<Probe>> probes;
+  const ndn::signal::ScopedConnection statusObserver = environment.userFace().onSendInterest.connect(
+    [&] (const ndn::Interest& interest) {
+      const auto query = parseSelectionStatusQueryName(interest, providerName);
+      if (!query || query->providerName != providerName || query->serviceName != serviceName) return;
+      const auto status = environment.provider().getSelectionExecutionStatus(query->selectionDigest);
+      if (!status || status->state != SelectionExecutionState::Failed) return;
+      std::lock_guard<std::mutex> registryLock(probeMutex);
+      const auto found = probes.find(status->requestId.toUri());
+      if (found == probes.end()) return;
+      std::lock_guard<std::mutex> stateLock(found->second->mutex);
+      found->second->providerFailure = status->message;
+    });
   environment.user().setRequestPublisher(
     [&] (const ndn::Name& requestId,
          const ndn::Name& requestName,
@@ -2204,7 +2489,8 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
     projection.ackClosedDigest = rootDigest;
     projection.offerDigest = rootDigest;
     projection.securityPolicySnapshotDigest = rootDigest;
-    projection.groupCapabilityV1 = "spec185-provider-cache-capability";
+    // This single-role assignment has no cross-Provider endpoints.
+    projection.groupCapabilityV1.clear();
     projection.hasGrantBinding = true;
     projection.grantName = grant.grantName;
     projection.grantDigest = grant.grantDigest;
@@ -2238,6 +2524,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
                                unsigned expectedRunners) {
     auto projection = makeProjection(requestId, issued.grant);
     const auto projectionText = nativeSelectionProjectionV3ToJson(projection);
+    BOOST_TEST_MESSAGE("protected-cache assignment bytes=" << projectionText.size());
     auto rootDataName = ndn::Name(requesterName);
     rootDataName.append("NDNSF").append("LARGE-DATA").append(serviceName)
       .append(requestId).append("root").appendVersion();
@@ -2292,9 +2579,18 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
         probe->response = response.getStatus();
         probe->terminal = true;
       }, ndn_service_framework::tlv::FirstResponding, requestId);
+    const auto isTerminal = [&] {
+      std::lock_guard<std::mutex> lock(probe->mutex);
+      return probe->terminal;
+    };
+    // Each pump is bounded to about one second; allow the actual four-second
+    // request budget to expire before removing this request's diagnostic state.
+    for (unsigned poll = 0; poll < 5 && !isTerminal(); ++poll)
+      environment.pumpUntil(isTerminal);
+    BOOST_REQUIRE_MESSAGE(isTerminal(), "provider cache request did not reach a terminal state");
     environment.pumpUntil([&] {
       std::lock_guard<std::mutex> lock(probe->mutex);
-      if (!probe->terminal || !probe->response) return false;
+      if (!probe->response) return !probe->providerFailure.empty() || !probe->failure.empty();
       const auto counters = facade.counters();
       return counters.assemblies == expectedAssemblies &&
              counters.sourceFetches == expectedSourceFetches &&
@@ -2305,7 +2601,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
       std::lock_guard<std::mutex> lock(probe->mutex);
       BOOST_CHECK(probe->published);
       BOOST_CHECK(probe->selected);
-      BOOST_CHECK(probe->response);
+      BOOST_CHECK_MESSAGE(probe->response, "Provider rejection: " << probe->providerFailure);
       BOOST_CHECK_MESSAGE(probe->failure.empty(), probe->failure);
     }
     {

@@ -29,6 +29,7 @@ from native_install_candidate import (  # noqa: E402
     file_identity,
     resolve_installed_python_package,
     sha256_file,
+    validate_spec201_candidate,
     write_candidate,
 )
 from native_yolo_requester import (  # noqa: E402
@@ -46,6 +47,8 @@ from minindn.util import getPopen  # noqa: E402
 
 TOPO = REPO / "Experiments/Topology/AI_Lab.conf"
 OUT = REPO / "results/yolo_2x2_minindn_quick"
+DEFAULT_ARTIFACT_CACHE_ROOT = Path("/var/tmp/ndnsf-di-yolo-artifacts")
+ARTIFACT_CACHE_ROOT = DEFAULT_ARTIFACT_CACHE_ROOT
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_2x2"
 CONFIG = OUT / "yolo_policy.yaml"
 GEN_POLICY = str(OUT / "generated-policy")
@@ -67,6 +70,26 @@ class Args(SimpleNamespace):
 
 def log(message: str) -> None:
     info(message + "\n")
+
+
+def provider_cache_namespace(provider_id: str) -> str:
+    return "provider-" + hashlib.sha256(provider_id.encode("utf-8")).hexdigest()
+
+
+def resolve_artifact_cache_root(cache_root: Path, output_root: Path) -> Path:
+    resolved_cache_root = cache_root.expanduser().resolve()
+    resolved_output_root = output_root.expanduser().resolve()
+    if (resolved_cache_root == resolved_output_root or
+            resolved_cache_root in resolved_output_root.parents or
+            resolved_output_root in resolved_cache_root.parents):
+        raise SystemExit("ARTIFACT_CACHE_ROOT_MUST_BE_SEPARATE_FROM_RUN_OUTPUT")
+    resolved_cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    cache_stat = resolved_cache_root.stat()
+    if (not resolved_cache_root.is_dir() or cache_stat.st_uid != os.geteuid() or
+            cache_stat.st_mode & 0o077 or (cache_stat.st_mode & 0o700) != 0o700):
+        raise SystemExit(
+            "ARTIFACT_CACHE_ROOT_MUST_BE_A_PRIVATE_DIRECTORY_OWNED_BY_THIS_RUN_USER")
+    return resolved_cache_root
 
 
 def with_runtime_evidence_filter(environment: dict[str, str]) -> dict[str, str]:
@@ -122,6 +145,7 @@ def native_provider_cmd(argv: list[str],
                         ack_threads: int,
                         provider_binary: Path,
                         manifest_path: Path,
+                        artifact_cache_root: Path,
                         offer_private_key: Path | None = None,
                         trust_schema: Path | None = None) -> str:
     exe = provider_binary
@@ -141,7 +165,9 @@ def native_provider_cmd(argv: list[str],
         "--workers", str(workers),
         "--handler-threads", str(handler_threads),
         "--ack-threads", str(ack_threads),
-        "--artifact-cache-dir", str(OUT / "native-artifact-cache" / provider_id),
+        "--artifact-cache-dir", str(
+            artifact_cache_root / "providers" /
+            provider_cache_namespace(provider_identity(provider_id))),
         "--repo-service", REPO_SERVICE,
         "--repo-fetch-timeout-ms", "60000",
         "--repo-permission-wait-ms", "3000",
@@ -208,8 +234,8 @@ def start(node, name, cmd, env, procs, *, signing_identity: str,
     f = path.open("wb")
     log(f"start {name} on {node.name} identity={signing_identity}: {cmd}")
     node_env = dict(env)
-    cache_root = artifact_cache_root or (output_dir / "artifact-cache")
-    node_env["NDNSF_ARTIFACT_CACHE_DIR"] = str(cache_root / node.name)
+    cache_root = ARTIFACT_CACHE_ROOT if artifact_cache_root is None else artifact_cache_root
+    node_env["NDNSF_ARTIFACT_CACHE_DIR"] = str(cache_root / "ndn" / node.name)
     p = getPopen(node, cmd, envDict=node_env, shell=True, stdout=f, stderr=subprocess.STDOUT)
     procs.append((p, f, path))
     return p, path
@@ -5617,11 +5643,10 @@ def initialize_di_keychains(ndn,
                             user_identity: str = USER_IDENTITY,
                             provider_prefix: str = PROVIDER_PREFIX,
                             repo_identity: str = "",
-                            controller_node: str = AI_LAB_CONTROLLER_NODE) -> None:
+                            controller_node: str = AI_LAB_CONTROLLER_NODE,
+                            credential_bundle: dict | None = None) -> None:
     """Install root-signed keys that match the generated DI policy namespace."""
     log("Installing root-signed DI keychain material on MiniNDN nodes")
-    security_dir = output_dir / "security"
-    security_dir.mkdir(parents=True, exist_ok=True)
     identities = [
         controller_identity,
         provider_prefix + "/D",
@@ -5630,60 +5655,77 @@ def initialize_di_keychains(ndn,
         *provider_identities,
     ]
     identities = list(dict.fromkeys(identities))
+    if credential_bundle is not None:
+        if set(credential_bundle["identities"]) != set(identities):
+            raise RuntimeError("SPEC201_YOLO_CREDENTIAL_IDENTITIES_MISMATCH")
+        if credential_bundle["applicationRoot"] != app_root:
+            raise RuntimeError("SPEC201_YOLO_CREDENTIAL_NAMESPACE_MISMATCH")
+        if any(bool(keys.get("ec")) != dual_signing_certs
+               for keys in credential_bundle["keys"].values()):
+            raise RuntimeError("SPEC201_YOLO_CREDENTIAL_SIGNING_MODE_MISMATCH")
+    security_dir = output_dir / "security"
+    security_dir.mkdir(parents=True, exist_ok=True)
 
     for node in ndn.net.hosts:
         for identity in [app_root] + identities:
             perf.node_cmd(node, "ndnsec delete {} >/dev/null 2>&1 || true".format(
                 perf.shell_quote(identity)))
 
-    controller = ndn.net[controller_node]
-    root_cert_path = security_dir / "root.cert"
-    perf.node_cmd(controller, "ndnsec key-gen -t r {} > {}".format(
-        perf.shell_quote(app_root), perf.shell_quote(root_cert_path)))
-    perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
-        perf.shell_quote(root_cert_path)))
-    log("di_root_cert identity={} name={} file={}".format(
-        app_root, perf.certificate_name_from_file(root_cert_path), root_cert_path))
-
-    exported_keys = []
-    for index, identity in enumerate(identities):
-        rsa_cert_path = security_dir / f"di-identity-{index}-rsa.cert"
-        rsa_req_path = security_dir / f"di-identity-{index}-rsa.req"
-        rsa_key_path = security_dir / f"di-identity-{index}-rsa.ndnkey"
+    if credential_bundle is not None:
+        root_cert_path = Path(credential_bundle["rootCert"])
+        exported_keys = [(Path(credential_bundle["keys"][identity]["rsa"]),
+                          Path(credential_bundle["keys"][identity]["ec"])
+                          if credential_bundle["keys"][identity].get("ec") else None,
+                          "") for identity in identities]
+    else:
+        controller = ndn.net[controller_node]
+        root_cert_path = security_dir / "root.cert"
         perf.node_cmd(controller, "ndnsec key-gen -t r {} > {}".format(
-            perf.shell_quote(identity), perf.shell_quote(rsa_req_path)))
-        perf.node_cmd(controller, "ndnsec cert-gen -s {} -i ROOT {} > {}".format(
-            perf.shell_quote(app_root), perf.shell_quote(rsa_req_path),
-            perf.shell_quote(rsa_cert_path)))
+            perf.shell_quote(app_root), perf.shell_quote(root_cert_path)))
         perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
-            perf.shell_quote(rsa_cert_path)))
+            perf.shell_quote(root_cert_path)))
+        log("di_root_cert identity={} name={} file={}".format(
+            app_root, perf.certificate_name_from_file(root_cert_path), root_cert_path))
 
-        rsa_cert_name = perf.certificate_name_from_file(rsa_cert_path)
-        rsa_key_name = key_name_from_certificate_name(rsa_cert_name)
-        perf.node_cmd(controller, "ndnsec-export -P 123456 -o {} -k {}".format(
-            perf.shell_quote(rsa_key_path), perf.shell_quote(rsa_key_name)))
-        ec_key_path = None
-        if dual_signing_certs:
-            ec_cert_path = security_dir / f"di-identity-{index}-ec.cert"
-            ec_req_path = security_dir / f"di-identity-{index}-ec.req"
-            ec_key_path = security_dir / f"di-identity-{index}-ec.ndnkey"
-            perf.node_cmd(controller, "ndnsec key-gen -n -t e {} > {}".format(
-                perf.shell_quote(identity), perf.shell_quote(ec_req_path)))
+        exported_keys = []
+        for index, identity in enumerate(identities):
+            rsa_cert_path = security_dir / f"di-identity-{index}-rsa.cert"
+            rsa_req_path = security_dir / f"di-identity-{index}-rsa.req"
+            rsa_key_path = security_dir / f"di-identity-{index}-rsa.ndnkey"
+            perf.node_cmd(controller, "ndnsec key-gen -t r {} > {}".format(
+                perf.shell_quote(identity), perf.shell_quote(rsa_req_path)))
             perf.node_cmd(controller, "ndnsec cert-gen -s {} -i ROOT {} > {}".format(
-                perf.shell_quote(app_root), perf.shell_quote(ec_req_path),
-                perf.shell_quote(ec_cert_path)))
+                perf.shell_quote(app_root), perf.shell_quote(rsa_req_path),
+                perf.shell_quote(rsa_cert_path)))
             perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
-                perf.shell_quote(ec_cert_path)))
-            ec_cert_name = perf.certificate_name_from_file(ec_cert_path)
-            ec_key_name = key_name_from_certificate_name(ec_cert_name)
+                perf.shell_quote(rsa_cert_path)))
+
+            rsa_cert_name = perf.certificate_name_from_file(rsa_cert_path)
+            rsa_key_name = key_name_from_certificate_name(rsa_cert_name)
             perf.node_cmd(controller, "ndnsec-export -P 123456 -o {} -k {}".format(
-                perf.shell_quote(ec_key_path), perf.shell_quote(ec_key_name)))
-            log("di_identity_certs identity={} rsaCert={} ecSigningCert={}".format(
-                identity, rsa_cert_name, ec_cert_name))
-        else:
-            log("di_identity_certs identity={} rsaCert={} ecSigningCert=disabled".format(
-                identity, rsa_cert_name))
-        exported_keys.append((rsa_key_path, ec_key_path, rsa_key_name))
+                perf.shell_quote(rsa_key_path), perf.shell_quote(rsa_key_name)))
+            ec_key_path = None
+            if dual_signing_certs:
+                ec_cert_path = security_dir / f"di-identity-{index}-ec.cert"
+                ec_req_path = security_dir / f"di-identity-{index}-ec.req"
+                ec_key_path = security_dir / f"di-identity-{index}-ec.ndnkey"
+                perf.node_cmd(controller, "ndnsec key-gen -n -t e {} > {}".format(
+                    perf.shell_quote(identity), perf.shell_quote(ec_req_path)))
+                perf.node_cmd(controller, "ndnsec cert-gen -s {} -i ROOT {} > {}".format(
+                    perf.shell_quote(app_root), perf.shell_quote(ec_req_path),
+                    perf.shell_quote(ec_cert_path)))
+                perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+                    perf.shell_quote(ec_cert_path)))
+                ec_cert_name = perf.certificate_name_from_file(ec_cert_path)
+                ec_key_name = key_name_from_certificate_name(ec_cert_name)
+                perf.node_cmd(controller, "ndnsec-export -P 123456 -o {} -k {}".format(
+                    perf.shell_quote(ec_key_path), perf.shell_quote(ec_key_name)))
+                log("di_identity_certs identity={} rsaCert={} ecSigningCert={}".format(
+                    identity, rsa_cert_name, ec_cert_name))
+            else:
+                log("di_identity_certs identity={} rsaCert={} ecSigningCert=disabled".format(
+                    identity, rsa_cert_name))
+            exported_keys.append((rsa_key_path, ec_key_path, rsa_key_name))
 
     for node in ndn.net.hosts:
         perf.node_cmd(node, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
@@ -5716,12 +5758,17 @@ def main() -> None:
                         help="Square YOLO input size passed to split_model.py and user.py")
     parser.add_argument("--results-dir", default="",
                         help="Override the default results/yolo_<layout>_minindn_quick output directory")
+    parser.add_argument(
+        "--artifact-cache-root", default=str(DEFAULT_ARTIFACT_CACHE_ROOT),
+        help="persistent owner-only cache root, separate from this run's results")
     parser.add_argument("--cold-requests", type=int, default=1,
                         help=("Sequential requests in the cold user process. "
                               "Use 0 for canonical warm benchmarks so preflight "
                               "and measured requests stay in the same user process."))
     parser.add_argument("--warm-requests", type=int, default=1,
                         help="Sequential requests in the warm user process")
+    parser.add_argument("--native-provider-restart-after", type=int, default=0,
+                        help="experiment-only: restart compute Providers after this many native requests")
     parser.add_argument("--warm-duration-s", type=float, default=0.0,
                         help="Run the warm user for this many seconds instead of a fixed request count")
     parser.add_argument("--warm-interval-ms", type=int, default=0,
@@ -5757,6 +5804,11 @@ def main() -> None:
                         help="installed protected-artifact grant authority executable")
     parser.add_argument("--native-python-package", default="",
                         help="installed ndnsf Python package directory; defaults to this interpreter's site-packages/ndnsf")
+    parser.add_argument("--native-library-path", default="",
+                        help="native candidate shared-library directory; defaults to /usr/local/lib")
+    parser.add_argument("--spec201-candidate", type=Path,
+                        help="frozen shared YOLO/Qwen naming qualification bundle")
+    parser.add_argument("--spec201-candidate-sha256", default="")
     parser.add_argument("--user-async-workers", type=int, default=1,
                         help="Async worker count passed to the DI user process")
     parser.add_argument("--parallel-output-shards", action="store_true",
@@ -5854,6 +5906,10 @@ def main() -> None:
     timeout_ms = max(1, args_cli.timeout_ms)
     provider_handler_workers = max(1, args_cli.provider_handler_workers)
     user_async_workers = max(1, args_cli.user_async_workers)
+    restart_after = args_cli.native_provider_restart_after
+    if restart_after and (not args_cli.native_requester or restart_after < 2 or
+                          cold_requests + warm_requests < restart_after + 2):
+        raise SystemExit("native Provider restart requires two native requests before and after the gate")
     if args_cli.native_requester:
         native_issues = []
         if not args_cli.native_providers:
@@ -5861,14 +5917,15 @@ def main() -> None:
         if layout != "2x2" or not args_cli.parallel_detect_scale_shards:
             native_issues.append(
                 "--native-requester requires --layout 2x2 --parallel-detect-scale-shards")
-        if (cold_requests != 1 or warm_requests != 0 or warm_duration_s != 0 or
+        if (cold_requests != 1 or warm_duration_s != 0 or warm_interval_ms != 0 or
                 preflight_requests != 0 or user_async_workers != 1):
             native_issues.append(
-                "--native-requester requires one cold request and no warm/preflight requests")
+                "--native-requester requires one cold request and count-based warm requests "
+                "without duration, interval, preflight or async modes")
         if (signing_ab_phases or args_cli.warm_rtt_monitor_interval_s > 0 or
                 args_cli.disable_native_runtime_timing or args_cli.disable_exact_segment_fetch):
             native_issues.append(
-                "--native-requester requires the single-request runtime-evidence path")
+                "--native-requester requires the native runtime-evidence path")
         if ack_timeout_ms >= timeout_ms:
             native_issues.append("native requester ACK timeout must be less than request timeout")
         if native_issues:
@@ -5883,7 +5940,7 @@ def main() -> None:
         safe_layout += "_parallel_detect_replicated_backbone"
     if args_cli.auto_parallel_detect_plan:
         safe_layout += "_auto_parallel_detect"
-    global OUT, CONFIG, GEN_POLICY, REPO_MANIFEST
+    global OUT, CONFIG, GEN_POLICY, REPO_MANIFEST, ARTIFACT_CACHE_ROOT
     OUT = Path(args_cli.results_dir).expanduser() if args_cli.results_dir else (
         REPO / f"results/yolo_{safe_layout}_minindn_quick")
     if not OUT.is_absolute():
@@ -5891,9 +5948,46 @@ def main() -> None:
     CONFIG = OUT / "yolo_policy.yaml"
     GEN_POLICY = str(OUT / "generated-policy")
     REPO_MANIFEST = OUT / "repo-manifests.json"
+    ARTIFACT_CACHE_ROOT = resolve_artifact_cache_root(
+        Path(args_cli.artifact_cache_root), OUT)
 
+    naming_candidate = None
+    if args_cli.native_providers:
+        native_library_path = str(Path(args_cli.native_library_path).expanduser().resolve(strict=True)) \
+            if args_cli.native_library_path else "/usr/local/lib"
+        if not Path(native_library_path).is_dir() or ":" in native_library_path:
+            raise SystemExit("--native-library-path requires one shared-library directory")
+        os.environ["LD_LIBRARY_PATH"] = native_library_path
+        if args_cli.spec201_candidate is None:
+            raise RuntimeError("SPEC201_CANDIDATE_REQUIRED")
+        naming_candidate = validate_spec201_candidate(
+            args_cli.spec201_candidate, args_cli.spec201_candidate_sha256,
+            [Path(args_cli.native_provider_binary),
+             Path(args_cli.native_assembly_worker_binary)] +
+            ([Path(args_cli.native_requester_binary), Path(args_cli.native_authority_binary)]
+             if args_cli.native_requester else []),
+            selected_profile=("yolo", vars(args_cli)))
+        credentials = naming_candidate["credentialBundles"]["yolo"]
+        required_identities = {CONTROLLER_IDENTITY, USER_IDENTITY,
+                               PROVIDER_PREFIX, PROVIDER_PREFIX + "/D"}
+        if args_cli.native_requester:
+            required_identities.add(APP_ROOT + "/authority")
+        if (credentials["applicationRoot"] != APP_ROOT or
+                not required_identities.issubset(set(credentials["identities"])) or
+                any(not identity.startswith(PROVIDER_PREFIX + "/")
+                    for identity in set(credentials["identities"]) - required_identities) or
+                any(bool(keys.get("ec")) == args_cli.single_rsa_certs
+                    for keys in credentials["keys"].values())):
+            raise RuntimeError("SPEC201_YOLO_CREDENTIAL_IDENTITIES_MISMATCH")
+        model_path = Path(args_cli.model).expanduser()
+        if not model_path.is_absolute():
+            model_path = REPO / model_path
+        validate_spec201_candidate(args_cli.spec201_candidate,
+                                  args_cli.spec201_candidate_sha256, [],
+                                  [TOPO, PY_DIR / "yolo_policy.yaml", model_path])
     setLogLevel("info")
     OUT.mkdir(parents=True, exist_ok=True)
+    log(f"artifact cache root={ARTIFACT_CACHE_ROOT}")
     for stats_path in OUT.glob("*-stats.json"):
         try:
             stats_path.unlink()
@@ -5906,6 +6000,17 @@ def main() -> None:
             stats_path.unlink()
         except FileNotFoundError:
             pass
+    native_library_path = "/usr/local/lib"
+    if args_cli.native_library_path:
+        if not args_cli.native_providers:
+            raise SystemExit("--native-library-path requires --native-providers")
+        native_library_directory = Path(args_cli.native_library_path).expanduser().resolve(strict=True)
+        if not native_library_directory.is_dir() or ":" in str(native_library_directory):
+            raise SystemExit("--native-library-path requires one shared-library directory")
+        native_library_path = str(native_library_directory)
+    if args_cli.native_providers:
+        # Candidate checks and node processes must resolve the same libraries.
+        os.environ["LD_LIBRARY_PATH"] = native_library_path
     installed_package = (resolve_installed_python_package(args_cli.native_python_package)
                          if args_cli.native_providers else None)
     py_path_parts = [
@@ -5972,7 +6077,9 @@ def main() -> None:
         if args_cli.native_requester:
             if len(native_provider_names) != 4:
                 raise RuntimeError("SPEC196_NATIVE_YOLO_EXPECTED_FOUR_COMPUTE_PROVIDERS")
-            native_authority_identity = f"{APP_ROOT}/authority/{native_run_id}"
+            # Actor identity is stable; run-specific files and request/grant
+            # bindings retain native_run_id in their existing owned bundle.
+            native_authority_identity = f"{APP_ROOT}/authority"
             add_native_grant_service(
                 CONFIG, requester=USER_IDENTITY, authority=native_authority_identity)
             checkpoint = Path(args_cli.model).expanduser()
@@ -5996,7 +6103,10 @@ def main() -> None:
             )
             from native_probe_validation_links import render_anchored_probe_validation_schema
             anchored_schema = render_anchored_probe_validation_schema(
-                APP_ROOT, [OUT / "security/root.cert"])
+                APP_ROOT, [Path(naming_candidate["credentialBundles"]["yolo"]["rootCert"])])
+            if anchored_schema != Path(
+                    naming_candidate["credentialBundles"]["yolo"]["schema"]).read_text():
+                raise RuntimeError("SPEC201_YOLO_CREDENTIAL_SCHEMA_MISMATCH")
             for schema_path in (
                     Path(native_assets["requester_config"]).parent / "trust-schema.conf",
                     Path(native_assets["authority_binary_config"]).parent / "trust-schema.conf"):
@@ -6017,7 +6127,9 @@ def main() -> None:
                 Path(args_cli.native_assembly_worker_binary),
                 REPO / "build/DI_NativeOnnxAssemblyWorker"),
         }
-        runtime_inputs = [REPO / "Experiments/native_probe_validation_links.py"]
+        runtime_inputs = [REPO / "Experiments/native_probe_validation_links.py",
+                          Path(__file__), PY_DIR / "user.py",
+                          REPO / "Experiments/native_yolo_requester.py"]
         if native_assets is not None:
             candidate_components["authority"] = (
                 Path(args_cli.native_authority_binary),
@@ -6042,6 +6154,7 @@ def main() -> None:
             requester_identity=USER_IDENTITY,
             provider_nodes=AI_LAB_PROVIDER_NODES,
             runtime_inputs=runtime_inputs,
+            naming_candidate_id=naming_candidate["candidateId"],
             profile={
                 "id": "yolo-2x2-minindn-native",
                 "runner": file_identity(Path(__file__)),
@@ -6053,6 +6166,9 @@ def main() -> None:
                 "modelSource": model_source,
                 "arguments": {
                     **vars(args_cli),
+                    "spec201_candidate": (
+                        str(args_cli.spec201_candidate.expanduser().resolve())
+                        if args_cli.spec201_candidate is not None else None),
                     "requester_publication_dir": (
                         str(args_cli.requester_publication_dir.expanduser().resolve())
                         if args_cli.requester_publication_dir is not None else None),
@@ -6068,6 +6184,11 @@ def main() -> None:
             f"run_id={native_run_id} "
             f"candidate_digest={native_candidate['candidateDigest']} "
             f"candidate={candidate_path}")
+    if naming_candidate is not None:
+        validate_spec201_candidate(args_cli.spec201_candidate,
+                                  args_cli.spec201_candidate_sha256,
+                                  [Path(row["installed"]["path"])
+                                   for row in native_candidate["components"].values()])
     Minindn.cleanUp()
     Minindn.verifyDependencies()
     ndn = Minindn(topoFile=str(TOPO))
@@ -6152,15 +6273,15 @@ def main() -> None:
                 args_cli.probe_validation_bandwidth_mbps,
                 {node: provider_identity(argv[argv.index("--provider-id") + 1])
                  for node, _, argv in providers})
-        for node in ndn.net.hosts:
-            # Keep SVS group traffic multicast, but let provider/controller/user
-            # object prefixes use best-route. Native DI activation Data is named
-            # under the producer provider prefix, so treating the whole example
-            # namespace as multicast makes deterministic activation fetches pay
-            # unnecessary NFD forwarding overhead.
-            Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example", Nfdc.STRATEGY_BEST_ROUTE)
-            Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example/group", Nfdc.STRATEGY_MULTICAST)
-            Nfdc.setStrategy(node, "/NDNSF/DistributedRepo/Object", Nfdc.STRATEGY_MULTICAST)
+        from native_prefix_roles import configure_prefix_roles
+        configure_prefix_roles(ndn,
+            actors=[CONTROLLER_IDENTITY, USER_IDENTITY, *[prefix for _, prefix in origins],
+                    *([native_authority_identity] if native_authority_identity else [])],
+            groups=[APP_ROOT + "/group"],
+            data_roots=[APP_ROOT, "/NDNSF/DistributedRepo/Object"],
+            expected_roles=(naming_candidate["prefixRolePlans"]["yolo"]["roles"]
+                            if naming_candidate is not None else None),
+            receipt=OUT / "prefix-role-strategies.json")
 
         trace_nodes = [
             item.strip()
@@ -6175,10 +6296,21 @@ def main() -> None:
                                 OUT,
                                 provider_identities,
                                 dual_signing_certs=not args_cli.single_rsa_certs,
-                                repo_identity=native_authority_identity)
+                                repo_identity=native_authority_identity,
+                                credential_bundle=(naming_candidate["credentialBundles"]["yolo"]
+                                                   if naming_candidate is not None else None))
         subprocess.run(["rm", "-rf", str(OUT / "artifact-cache")], check=False)
         session = int(time.time()) + os.getpid()
         env = perf.app_env(OUT, session, args)
+        if args_cli.native_providers or args_cli.native_requester:
+            # Explicit packet budgets must also reach the normal verbose
+            # native profile; the shared perf helper sets them in quiet mode.
+            for key in ("NDNSF_SVS_MAX_APP_PARAMS_BYTES", "NDNSF_SVS_MAX_PIGGYDATA_BYTES"):
+                value = os.environ.get(key, "")
+                if value:
+                    env[key] = value
+        if args_cli.native_providers:
+            env["LD_LIBRARY_PATH"] = native_library_path
         runtime_state_dir = OUT / "runtime-state" / (
             native_candidate["runId"] if native_candidate is not None else uuid.uuid4().hex)
         runtime_state_dir.mkdir(parents=True, exist_ok=True)
@@ -6239,6 +6371,11 @@ def main() -> None:
         )
         if needs_native_runtime_timing:
             env["NDNSF_DI_RUNTIME_TIMING"] = "1"
+        if args_cli.native_requester:
+            env["NDNSF_PHASE_TIMING"] = os.environ.get("NDNSF_PHASE_TIMING", "1")
+            if "NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE" in os.environ:
+                env["NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE"] = os.environ[
+                    "NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE"]
         if args_cli.dependency_timing:
             env["NDNSF_COLLAB_LARGE_FETCH_TIMING"] = "1"
             env["NDNSF_PENDING_IMS_TIMING"] = "1"
@@ -6261,6 +6398,10 @@ def main() -> None:
                 "ndn_service_framework.ServiceController=INFO")
         if args_cli.control_trace:
             env["NDNSF_TIMELINE_TRACE"] = "1"
+        # Apply private diagnostics after the normal application log policy
+        # and NFD startup, without changing forwarder or protocol options.
+        if args_cli.native_requester and os.environ.get("NDNSF_NDN_LOG"):
+            env["NDN_LOG"] = os.environ["NDNSF_NDN_LOG"]
         python_path_parts = [
             str(REPO / "NDNSF-DistributedInference"),
             str(REPO / "pythonWrapper"),
@@ -6319,6 +6460,8 @@ def main() -> None:
             # global NDN_LOG also reaches NFD and breaks MiniNDN startup.
             authority_env["NDN_LOG"] = (
                 "ndn_service_framework.*=INFO:nacabe.*=INFO")
+            if needs_native_runtime_timing:
+                authority_env["NDN_LOG"] += ":ndnsf.di.*=WARN"
             authority_proc, authority_log = start(
                 ndn.net[AI_LAB_CONTROLLER_NODE], "native-authority",
                 f"{perf.shell_quote(native_candidate['components']['authority']['installed']['path'])} "
@@ -6409,6 +6552,7 @@ def main() -> None:
                         provider_binary=Path(
                             native_candidate["components"]["provider"]["installed"]["path"]),
                         manifest_path=serving_manifest_path,
+                        artifact_cache_root=ARTIFACT_CACHE_ROOT,
                         offer_private_key=(Path(provider_material["offer_private_key"])
                                            if provider_material is not None else None),
                         trust_schema=(Path(native_assets["requester_config"]).parent / "trust-schema.conf"
@@ -6426,19 +6570,27 @@ def main() -> None:
                     ready = "Installed provider permission"
                     ready_timeout = 30
                 log_name = f"{name}{phase_suffix}"
-                _, lp = start(ndn.net[node_name], log_name, cmd,
+                process, lp = start(ndn.net[node_name], log_name, cmd,
                               native_provider_env if args_cli.native_providers else provider_env,
-                              provider_procs,
+                              procs,
                               signing_identity=provider_identity(
                                   argv[argv.index("--provider-id") + 1]))
-                if not wait_log(lp, ready, ready_timeout):
+                # Register cleanup before readiness can fail mid-group.
+                provider_procs.append(procs[-1])
+                readiness_deadline = time.monotonic() + ready_timeout
+                if not wait_log(lp, ready, ready_timeout, proc=process):
                     raise RuntimeError(
                         f"{log_name} did not become ready; expected {ready}; see {lp}")
+                if phase_suffix == "-restarted" and not wait_log(
+                        lp, "NDNSF_DI_PROVIDER_BOOT_READY",
+                        max(0, readiness_deadline - time.monotonic()), proc=process):
+                    raise RuntimeError(f"{log_name} did not complete fresh Core bootstrap; see {lp}")
                 time.sleep(0.5)
             return provider_procs
 
         provider_procs = start_compute_providers("", env)
-        procs.extend(provider_procs)
+        provider_log_paths = [entry[2] for entry in provider_procs]
+        restart_evidence = None
         write_dependency_edge_rtt_summary(
             ndn,
             providers,
@@ -6558,6 +6710,7 @@ def main() -> None:
 
         time.sleep(2)
         envelope_key_file = ensure_request_envelope_key(OUT)
+        native_request_count = cold_requests + warm_requests if native_assets is not None else cold_requests
         user_common = common + [
             "--repo-manifest-file",
             str(REPO_MANIFEST),
@@ -6568,7 +6721,7 @@ def main() -> None:
             "--ack-timeout-ms", str(ack_timeout_ms),
             "--timeout-ms", str(timeout_ms),
             "--async-requests", str(user_async_workers),
-            "--sequential-requests", str(cold_requests),
+            "--sequential-requests", str(native_request_count),
         ]
         if args_cli.native_providers:
             user_common.append("--native-tensor-input")
@@ -6578,6 +6731,15 @@ def main() -> None:
                 "--canonical-package", str(native_assets["package_dir"]),
                 "--catalogue-registry", str(native_assets["catalogue_registry"]),
             ])
+        restart_gate = None
+        if restart_after:
+            restart_gate = OUT / "native-restart-gate" / native_candidate["runId"]
+            restart_gate.mkdir(parents=True, exist_ok=False)
+            user_common.extend([
+                "--native-restart-gate", str(restart_gate),
+                "--native-restart-after", str(restart_after),
+                "--native-restart-ticket", native_candidate["runId"],
+            ])
         phase_logs: list[tuple[str, Path]] = []
         user_log: Path | None = None
         cold_text = ""
@@ -6586,12 +6748,59 @@ def main() -> None:
         native_evidence_path = None
         def record_native_evidence(text, returncode):
             evidence = collect_native_yolo_evidence(
-                text, "\n".join((OUT / f"{name}.log").read_text(errors="replace")
-                                for _, name, _ in providers
-                                if (OUT / f"{name}.log").is_file()),
+                text, "\n".join(path.read_text(errors="replace")
+                                for path in provider_log_paths if path.is_file()),
                 native_assets["roles"],
                 expected_manifest_digest=native_assets["manifest_digest"],
-                expected_score_mode="network-only")
+                expected_score_mode="network-only",
+                expected_request_count=native_request_count)
+            evidence["sameRequesterProcess"] = True
+            if restart_evidence is not None:
+                # The native actor still performs authorization and execution;
+                # these log checks prove only the real process/cache boundary.
+                requests = dict((int(index), request) for request, index in re.findall(
+                    r"YOLO_NATIVE_REQUEST_RESULT status=true request=(\S+).*?index=(\d+)", text))
+                recovered = requests.get(restart_after)
+                rewarmed = requests.get(restart_after + 1)
+                failures = []
+                previous_roles = None
+                for index in range(1, native_request_count):
+                    request = requests.get(index)
+                    if not request:
+                        failures.append(f"missing successful native request index={index}")
+                        continue
+                    rows = re.findall(
+                        r"NDNSF_DI_FIXED_ASSIGNMENT_WORK requestId=" + re.escape(request) +
+                        r" stage=user-plan completed=1 ([^\n]+)", text)
+                    if not rows or any(re.search(r"sourceEncodes=0(?:\s|$)", row) is None for row in rows):
+                        failures.append(f"fixed source encoded again or counter missing index={index}")
+                    roles = re.findall(
+                        r"NDNSF_DI_FIXED_ROLE_USER requestId=" + re.escape(request) +
+                        r" role=(\S+) cacheHit=(\d) digest=(\S+)", text)
+                    current_roles = {(role, digest) for role, hit, digest in roles}
+                    if not roles or any(hit != "1" for _, hit, _ in roles):
+                        failures.append(f"User did not retain fixed owners index={index}")
+                    if previous_roles is not None and current_roles != previous_roles:
+                        failures.append(f"User fixed assignment changed index={index}")
+                    previous_roles = current_roles
+                for before, after in zip(restart_evidence["before"], restart_evidence["after"]):
+                    old_text = Path(before["log"]).read_text(errors="replace")
+                    new_text = Path(after["log"]).read_text(errors="replace")
+                    if not recovered or not re.search(
+                            r"NDNSF_DI_FIXED_ROLE_SOURCE_FETCH requestId=" + re.escape(recovered) + r"\s", new_text):
+                        failures.append("missing post-restart fixed source fetch: " + after["log"])
+                    if not rewarmed or not re.search(
+                            r"NDNSF_DI_FIXED_ROLE_CACHE_HIT requestId=" + re.escape(rewarmed) + r"\s", new_text):
+                        failures.append("missing post-restart warm cache hit: " + after["log"])
+                    old_digests = set(re.findall(r"NDNSF_DI_FIXED_ROLE_CACHE_HIT .*?digest=(\S+)", old_text))
+                    new_digests = set(re.findall(r"NDNSF_DI_FIXED_ROLE_CACHE_HIT .*?digest=(\S+)", new_text))
+                    if not old_digests or old_digests != new_digests:
+                        failures.append("fixed digest changed or missing: " + after["log"])
+                evidence["providerRestart"] = {**restart_evidence,
+                    "status": "FAIL" if failures else "PASS", "failures": failures,
+                    "recoveredRequest": recovered, "rewarmedRequest": rewarmed}
+                if failures:
+                    evidence["status"] = "FAIL"
             evidence["boundaries"]["model"]["processReturncode"] = returncode
             if returncode != 0:
                 evidence["boundaries"]["model"].update(
@@ -6624,7 +6833,42 @@ def main() -> None:
                 signing_identity=USER_IDENTITY,
             )
             try:
-                user_proc.wait(timeout=user_wait_timeout(cold_requests, timeout_ms))
+                if restart_gate is not None:
+                    if not wait_log(user_log, "YOLO_NATIVE_RESTART_GATE_READY", 120, proc=user_proc):
+                        raise RuntimeError("native User did not reach Provider restart boundary")
+                    marker = json.loads((restart_gate / "ready.json").read_text())
+                    expected = {"ticket": native_candidate["runId"],
+                                "pid": user_proc.pid, "completed": restart_after}
+                    if marker != expected:
+                        raise RuntimeError("native User restart marker differs from live process")
+                    def process_record(entry):
+                        process, _, path = entry
+                        boots = re.findall(
+                            r"NDNSF_DI_PROVIDER_BOOT_READY provider=(\S+) providerBootId=(\S+)",
+                            path.read_text(errors="replace"))
+                        if len(boots) != 1:
+                            raise RuntimeError("missing unique Core boot record: " + str(path))
+                        return {"pid": process.pid, "provider": boots[0][0],
+                                "bootId": boots[0][1], "log": str(path)}
+                    before = [process_record(entry) for entry in provider_procs]
+                    old_entries = list(provider_procs)
+                    remove_provider_procs(old_entries)
+                    # Existing teardown can issue kill; join before restarting.
+                    for process, _, _ in old_entries:
+                        process.wait(timeout=10)
+                    provider_procs = start_compute_providers("-restarted", env)
+                    provider_log_paths.extend(entry[2] for entry in provider_procs)
+                    after = [process_record(entry) for entry in provider_procs]
+                    for old, new in zip(before, after):
+                        if (old["provider"] != new["provider"] or
+                                old["bootId"] == new["bootId"] or old["pid"] == new["pid"]):
+                            raise RuntimeError("Provider restart did not establish a new process/Core boot")
+                    restart_evidence = {"userPid": user_proc.pid, "completedBeforeRestart": restart_after,
+                                        "before": before, "after": after}
+                    temporary = restart_gate / "release.tmp"
+                    temporary.write_text(json.dumps(marker), encoding="utf-8")
+                    temporary.replace(restart_gate / "release.json")
+                user_proc.wait(timeout=user_wait_timeout(native_request_count, timeout_ms))
             except subprocess.TimeoutExpired:
                 if native_assets is not None:
                     native_evidence, native_evidence_path = record_native_evidence(
@@ -6633,10 +6877,11 @@ def main() -> None:
                 raise
             cold_nfd_end = snapshot_nfd_data_counters(ndn)
             cold_traffic_end = snapshot_traffic(ndn)
-            write_traffic_delta(layout, "cold", cold_traffic_start, cold_traffic_end,
-                                cold_requests)
-            write_nfd_data_delta(layout, "cold", cold_nfd_start, cold_nfd_end,
-                                 cold_requests)
+            traffic_phase = "native-series" if native_assets is not None else "cold"
+            write_traffic_delta(layout, traffic_phase, cold_traffic_start, cold_traffic_end,
+                                native_request_count)
+            write_nfd_data_delta(layout, traffic_phase, cold_nfd_start, cold_nfd_end,
+                                 native_request_count)
             cold_text = user_log.read_text(errors="replace")
             print_user_workload_output(cold_text, args_cli.quiet_perf_logs)
             if native_assets is not None:
@@ -6653,11 +6898,12 @@ def main() -> None:
                     f"YOLO {layout} cold provisioning failed or returned too few results "
                     f"count={len(cold_latencies)} expected={cold_requests} "
                     f"rc={user_proc.returncode}; log={user_log}")
-            phase_logs.append(("cold", user_log))
+            phase_logs.append(("native-series" if native_assets is not None else "cold", user_log))
         warm_log = None
         warm_latencies: list[float] = []
         measured_warm_count = 0
-        skip_warm_phase = warm_requests <= 0 and warm_duration_s <= 0 and not signing_ab_phases
+        skip_warm_phase = (native_assets is not None or
+                           (warm_requests <= 0 and warm_duration_s <= 0 and not signing_ab_phases))
         if signing_ab_phases:
             remove_provider_procs(provider_procs)
             provider_procs = []
@@ -6666,7 +6912,6 @@ def main() -> None:
                 phase_env = signing_phase_env(mode)
                 provider_procs = start_compute_providers(
                     f"-{phase}", phase_env)
-                procs.extend(provider_procs)
                 log_path, latencies, measured_count = run_warm_phase(
                     phase,
                     phase_env,
@@ -6680,7 +6925,6 @@ def main() -> None:
             # Keep providers alive after the comparison for consistent teardown
             # and for any late summary hooks that inspect provider logs.
             provider_procs = start_compute_providers("", env)
-            procs.extend(provider_procs)
         elif not skip_warm_phase:
             warm_log, warm_latencies, measured_warm_count = run_warm_phase(
                 "warm",

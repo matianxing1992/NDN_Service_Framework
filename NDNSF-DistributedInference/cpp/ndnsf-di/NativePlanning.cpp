@@ -8,6 +8,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 
 namespace ndnsf::di {
@@ -281,26 +282,27 @@ void NativeGraphSnapshot::validate(const NativeModelDescriptor& model) const
       topologicalOrder.size() != nodes.size()) {
     throw std::invalid_argument("graph snapshot identity or topological order is invalid");
   }
-  std::set<std::string> nodeIds;
+  // This request-local index checks uniqueness and later resolves edges;
+  // avoid building a second ordered container for the same node identities.
+  // These local keys borrow the const snapshot; no views escape validation.
+  std::map<std::string_view, std::size_t> position;
   for (std::size_t i = 0; i < nodes.size(); ++i) {
-    if (nodes[i].id.empty() || nodes[i].opType.empty() || !nodeIds.insert(nodes[i].id).second ||
+    if (nodes[i].id.empty() || nodes[i].opType.empty() || !position.emplace(nodes[i].id, i).second ||
         nodes[i].ordinal != i || topologicalOrder[i] != nodes[i].id) {
       throw std::invalid_argument("graph node order or identity is invalid");
     }
   }
-  std::set<std::string> cuts(legalCutEdges.begin(), legalCutEdges.end());
+  std::set<std::string_view> cuts(legalCutEdges.begin(), legalCutEdges.end());
   if (cuts.size() != legalCutEdges.size()) throw std::invalid_argument("duplicate graph cut edge");
   for (const auto& tensor : modelInputs) tensor.validate();
   for (const auto& tensor : modelOutputs) tensor.validate();
-  std::map<std::string, std::size_t> position;
-  for (std::size_t i = 0; i < nodes.size(); ++i) position.emplace(nodes[i].id, i);
-  std::set<std::string> edgeIds;
+  std::set<std::string_view> edgeIds;
   for (const auto& edge : edges) {
     if (edge.id.empty() || !edgeIds.insert(edge.id).second || edge.tensor.name != edge.id ||
         !position.count(edge.producer) || edge.consumers.empty())
       throw std::invalid_argument("invalid graph tensor edge identity or producer");
     edge.tensor.validate();
-    std::set<std::string> consumers;
+    std::set<std::string_view> consumers;
     for (const auto& consumer : edge.consumers) {
       if (!position.count(consumer) || !consumers.insert(consumer).second ||
           position.at(consumer) <= position.at(edge.producer))
@@ -472,9 +474,22 @@ std::string NativeSplitCandidate::computedDigest() const
 
 void NativeSplitCandidate::validate(const NativeGraphSnapshot& graph) const
 {
+  validateImpl(graph, false);
+}
+
+void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
+                                      bool reuseCheckedGraph) const
+{
   splitter.validate();
   model.validate();
-  graph.validate(model);
+  if (!reuseCheckedGraph) {
+    graph.validate(model);
+  }
+  else if (graph.graphDigest != model.graphDigest) {
+    // The caller checked graph structure with its inspected descriptor. Keep
+    // the candidate model's independent binding to that exact graph.
+    throw std::invalid_argument("graph snapshot identity or topological order is invalid");
+  }
   if ((source != "PRE_SPLIT" && source != "GENERATED") || selectionPriority < 0 ||
       (mergeKind != "" && mergeKind != "NATIVE_POSTPROCESS" && mergeKind != "ONNX_MERGE_GRAPH"))
     throw std::invalid_argument("invalid split candidate source, priority or merge kind");

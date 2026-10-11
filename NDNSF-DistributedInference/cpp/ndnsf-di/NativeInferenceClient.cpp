@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -60,6 +61,17 @@ hasAuthenticatedResponseSigner(
   catch (const std::exception&) {
     return false;
   }
+}
+
+std::string
+targetedBatchCountEvidence(const ndn_service_framework::ResponseMessage& response)
+{
+  const auto& tokens = response.getTokens();
+  const auto found = tokens.find("targeted.count");
+  if (found == tokens.end() || found->second.empty() || found->second.size() > 3 ||
+      found->second.find_first_not_of("0123456789") != std::string::npos)
+    return "unavailable";
+  return found->second;
 }
 
 void
@@ -302,7 +314,9 @@ struct NativeInferenceHandle::Operation
   std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
   std::shared_ptr<NativeIoCleanupState> ioCleanupState;
   NativeRequestOptions coreOptions;
-  std::optional<NativeInspectedModel> inspected;
+  // Own one immutable inspection snapshot across ACK and targeted-probe
+  // planning continuations; none of them needs another graph copy.
+  std::shared_ptr<const NativeInspectedModel> inspected;
   std::optional<NativePlannedRequest> planned;
   std::shared_ptr<NativeConversationCoordinator> conversations;
   std::optional<NativeConversationTurn> conversationTurn;
@@ -826,6 +840,7 @@ void enqueueOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& o
 void dispatchPlacementProbeIntent(
   const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   const NativePlacementProbeIntentV1& intent,
+  std::shared_ptr<const NativeOfferBindingContext> cacheContext,
   std::function<void(NativePlacementProbeRoundV1)> onComplete)
 {
   struct FanIn
@@ -871,9 +886,43 @@ void dispatchPlacementProbeIntent(
   }
 
   try {
-    user->postToIo([operation, user, runtime, encoded, intent, fanIn,
+    user->postToIo([operation, user, runtime, encoded, intent, fanIn, cacheContext,
                     sourceAttempt, service, requester, requestId, deadlineMs,
                     roster, rosterDigest] {
+      NativeJson currentBoots = NativeJson::object();
+      try {
+        const auto now = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+        if (cacheContext && cacheContext->requestId == requestId &&
+            cacheContext->attempt == sourceAttempt &&
+            cacheContext->requesterIdentity == requester &&
+            cacheContext->serviceName == service &&
+            cacheContext->deadlineMs == deadlineMs && deadlineMs > now &&
+            cacheContext->candidateProviders == roster &&
+            !cacheContext->placementObservationSnapshotDigest.empty() &&
+            cacheContext->placementObservationSnapshot.at("expires_at_ms")
+              .get<std::uint64_t>() > now) {
+          for (const auto& offer : cacheContext->placementObservationSnapshot.at("provider_offers")) {
+            if (offer.at("expires_at_ms").get<std::uint64_t>() <= now)
+              throw std::invalid_argument("probe cache ACK binding expired");
+            currentBoots[offer.at("provider").get<std::string>()] = offer.at("boot_epoch");
+          }
+        }
+      }
+      catch (const std::exception&) { currentBoots.clear(); }
+      const auto targetedTokens = [currentBoots](const std::string& provider) {
+        std::map<std::string, std::string> tokens{{"targeted.batch_hint", "1"}};
+        const auto found = currentBoots.find(provider);
+        if (found != currentBoots.end() && found->is_string()) {
+          const auto boot = found->get<std::string>();
+          // Production V4 epochs are numeric; Core bootstrap adds identity.
+          if (!boot.empty() && std::all_of(boot.begin(), boot.end(),
+                [](unsigned char c) { return c >= '0' && c <= '9'; }))
+            tokens["targeted.expected_provider_boot"] = provider + ":" + boot;
+        }
+        return tokens;
+      };
       for (const auto& requested : intent.observers) {
         const auto observer = requested.observerProvider;
         const auto nonce = fanIn->round.intentNonceByObserver.at(observer);
@@ -972,17 +1021,30 @@ void dispatchPlacementProbeIntent(
             continue;
           }
 
-          auto sendMeasurement =
+          auto sendProbe =
             [operation, user, service, observer, requestId, sourceAttempt,
-             scopeDigest, nonce, probeRequest, completeOne]() mutable {
+             scopeDigest, nonce, probeRequest, targetedTokens]
+            (NativeJson peerBootEpochHints, bool cacheOnly,
+             std::function<void(std::optional<NativeJson>)> completion) mutable {
+              auto completeOne =
+                [completion = std::move(completion),
+                 once = std::make_shared<std::atomic<bool>>(false)]
+                (std::optional<NativeJson> response) mutable {
+                  if (!once->exchange(true)) completion(std::move(response));
+                };
+              const std::string recordPrefix = cacheOnly
+                ? "NDNSF_DI_NATIVE_PLACEMENT_CACHE" : "NDNSF_DI_NATIVE_PLACEMENT_PROBE";
+              try {
+              bool operationIsStale;
               {
                 std::lock_guard<std::mutex> lock(operation->mutex);
-                if (operation->cancelled->load() ||
+                operationIsStale = operation->cancelled->load() ||
                     operation->phase == DiRequestPhase::Terminal ||
-                    operation->attempt != sourceAttempt) {
-                  completeOne(std::nullopt);
-                  return;
-                }
+                    operation->attempt != sourceAttempt;
+              }
+              if (operationIsStale) {
+                completeOne(std::nullopt);
+                return;
               }
               const auto remaining = std::chrono::duration_cast<
                 std::chrono::milliseconds>(operation->deadline -
@@ -992,8 +1054,16 @@ void dispatchPlacementProbeIntent(
                 return;
               }
               auto measure = probeRequest;
-              measure["action"] = "measure";
-              const auto measureWire = nativeCanonicalJson(measure);
+              measure["action"] = cacheOnly ? "cache" : "measure";
+              // Cache reads use the admitted discovery ACK boots; measurements
+              // use fresh authorization ACK boots. Neither hint grants a scope.
+              if (!peerBootEpochHints.empty())
+                measure["peer_boot_epochs"] = std::move(peerBootEpochHints);
+              auto measureWire = nativeCanonicalJson(measure);
+              if (!cacheOnly && measureWire.size() > 4096 && measure.contains("peer_boot_epochs")) {
+                measure.erase("peer_boot_epochs");
+                measureWire = nativeCanonicalJson(measure);
+              }
               if (measureWire.empty() || measureWire.size() > 4096) {
                 completeOne(std::nullopt);
                 return;
@@ -1004,11 +1074,13 @@ void dispatchPlacementProbeIntent(
               ndn_service_framework::RequestMessage request;
               request.setTargetProvider(ndn::Name(observer));
               request.setPayload(payload, payload.size());
-              request.setTokens({{"targeted.refill", "1"}});
+              // Cold calls bootstrap; protected warm calls consume and replace
+              // one pair without an independent refill round.
+              request.setTokens(targetedTokens(observer));
               const auto timeoutMs = static_cast<int>(std::max<std::int64_t>(1,
                 std::min<std::int64_t>(remaining, 5000)));
               std::ostringstream dispatchRecord;
-              dispatchRecord << "NDNSF_DI_NATIVE_PLACEMENT_PROBE_DISPATCH"
+              dispatchRecord << recordPrefix << "_DISPATCH"
                              << " requestId=" << requestId
                              << " attempt=" << sourceAttempt
                              << " observer=" << observer
@@ -1024,24 +1096,24 @@ void dispatchPlacementProbeIntent(
                 ndn::Name(observer),
                 ndn::Name(ndn_service_framework::NETWORK_PROBE_SERVICE),
                 std::move(request), timeoutMs,
-                [completeOne, requestId, observer](const ndn::Name&) mutable {
+                [completeOne, requestId, observer, recordPrefix](const ndn::Name&) mutable {
                   logRuntimeEvidence(
-                    "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE requestId=" +
+                    recordPrefix + "_RESPONSE requestId=" +
                     requestId + " observer=" + observer + " status=timeout");
                   completeOne(std::nullopt);
                 },
                 [completeOne, requestId, observer, sourceAttempt, scopeDigest,
-                 nonce](const ndn_service_framework::ResponseMessage& response) mutable {
+                 nonce, recordPrefix](const ndn_service_framework::ResponseMessage& response) mutable {
                   if (!response.getStatus()) {
                     logRuntimeEvidence(
-                      "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE requestId=" +
+                      recordPrefix + "_RESPONSE requestId=" +
                       requestId + " observer=" + observer + " status=rejected");
                     completeOne(std::nullopt);
                     return;
                   }
                   if (!hasAuthenticatedResponseSigner(response, observer)) {
                     logRuntimeEvidence(
-                      "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE requestId=" +
+                      recordPrefix + "_RESPONSE requestId=" +
                       requestId + " observer=" + observer +
                       " status=authenticated_signer_mismatch");
                     completeOne(std::nullopt);
@@ -1050,7 +1122,7 @@ void dispatchPlacementProbeIntent(
                   const auto bytes = response.getPayload();
                   if (bytes.empty() || bytes.size() > NATIVE_PLACEMENT_PROBE_RESPONSE_MAX_BYTES) {
                     logRuntimeEvidence(
-                      "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE requestId=" +
+                      recordPrefix + "_RESPONSE requestId=" +
                       requestId + " observer=" + observer +
                       " status=invalid_payload payloadBytes=" +
                       std::to_string(bytes.size()));
@@ -1072,15 +1144,16 @@ void dispatchPlacementProbeIntent(
                         "placement probe response binding mismatch");
                     }
                     logRuntimeEvidence(
-                      "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE requestId=" +
+                      recordPrefix + "_RESPONSE requestId=" +
                       requestId + " observer=" + observer +
                       " status=accepted payloadBytes=" +
-                      std::to_string(bytes.size()));
+                      std::to_string(bytes.size()) + " targetedTokenPairs=" +
+                      targetedBatchCountEvidence(response));
                     completeOne(std::move(parsed));
                   }
                   catch (const std::exception&) {
                     logRuntimeEvidence(
-                      "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE requestId=" +
+                      recordPrefix + "_RESPONSE requestId=" +
                       requestId + " observer=" + observer +
                       " status=invalid_response_binding payloadBytes=" +
                       std::to_string(bytes.size()));
@@ -1089,47 +1162,62 @@ void dispatchPlacementProbeIntent(
                 });
               if (requestName.empty()) {
                 logRuntimeEvidence(
-                  "NDNSF_DI_NATIVE_PLACEMENT_PROBE_REQUEST requestId=" +
+                  recordPrefix + "_REQUEST requestId=" +
                   requestId + " observer=" + observer + " status=not_started");
                 completeOne(std::nullopt);
               }
               else {
                 logRuntimeEvidence(
-                  "NDNSF_DI_NATIVE_PLACEMENT_PROBE_REQUEST requestId=" +
-                  requestId + " observer=" + observer + " status=started");
+                  recordPrefix + "_REQUEST requestId=" +
+                  requestId + " observer=" + observer + " status=started coreRequestId=" +
+                  requestName.toUri());
               }
+              }
+              catch (const std::exception&) { completeOne(std::nullopt); }
             };
 
+          auto sendMeasurement = [sendProbe, completeOne]
+            (NativeJson hints = NativeJson::object()) mutable {
+              sendProbe(std::move(hints), false, completeOne);
+            };
+          auto authorizeAndMeasure =
+            [operation, user, observer, requestId, sourceAttempt, scopeDigest,
+             probeRequest, authorizationTargets, sendMeasurement, completeOne, targetedTokens]() mutable {
           if (authorizationTargets.empty()) {
             sendMeasurement();
-            continue;
+            return;
           }
-
           struct GrantFanIn
           {
             std::mutex mutex;
             std::size_t remaining = 0;
             bool failed = false;
             bool measurementStarted = false;
+            NativeJson peerBootEpochHints = NativeJson::object();
           };
           auto grants = std::make_shared<GrantFanIn>();
           grants->remaining = authorizationTargets.size();
           auto settleGrant =
             [grants, user, requestId, observer, scopeDigest, completeOne,
-             sendMeasurement](const std::string& target, bool accepted) mutable {
+             sendMeasurement](const std::string& target, bool accepted,
+                              std::string peerBootEpoch = {}) mutable {
               bool startMeasurement = false;
               bool reportFailure = false;
+              NativeJson peerBootEpochHints;
               {
                 std::lock_guard<std::mutex> lock(grants->mutex);
                 if (!accepted && !grants->failed) {
                   grants->failed = true;
                   reportFailure = true;
                 }
+                if (accepted && !peerBootEpoch.empty())
+                  grants->peerBootEpochHints[target] = std::move(peerBootEpoch);
                 if (grants->remaining > 0) --grants->remaining;
                 if (grants->remaining == 0 && !grants->failed &&
                     !grants->measurementStarted) {
                   grants->measurementStarted = true;
                   startMeasurement = true;
+                  peerBootEpochHints = grants->peerBootEpochHints;
                 }
               }
               logRuntimeEvidence(
@@ -1139,7 +1227,10 @@ void dispatchPlacementProbeIntent(
                 (accepted ? " status=accepted" : " status=rejected"));
               if (reportFailure) completeOne(std::nullopt);
               if (startMeasurement) {
-                user->postToIo([sendMeasurement]() mutable { sendMeasurement(); });
+                user->postToIo([sendMeasurement,
+                               peerBootEpochHints = std::move(peerBootEpochHints)]() mutable {
+                  sendMeasurement(std::move(peerBootEpochHints));
+                });
               }
             };
           for (const auto& target : authorizationTargets) {
@@ -1174,7 +1265,7 @@ void dispatchPlacementProbeIntent(
             ndn_service_framework::RequestMessage grantRequest;
             grantRequest.setTargetProvider(ndn::Name(target));
             grantRequest.setPayload(grantPayload, grantPayload.size());
-            grantRequest.setTokens({{"targeted.refill", "1"}});
+            grantRequest.setTokens(targetedTokens(target));
             const auto timeoutMs = static_cast<int>(std::max<std::int64_t>(1,
               std::min<std::int64_t>(grantRemaining, 5000)));
             const auto grantOnce = std::make_shared<std::atomic<bool>>(false);
@@ -1183,6 +1274,7 @@ void dispatchPlacementProbeIntent(
               (std::optional<ndn_service_framework::ResponseMessage> response) mutable {
                 if (grantOnce->exchange(true)) return;
                 bool accepted = false;
+                std::string peerBootEpoch;
                 std::string diagnosis = "transport=timeout";
                 if (response) {
                   diagnosis = response->getStatus()
@@ -1197,6 +1289,7 @@ void dispatchPlacementProbeIntent(
                   const auto bytes = response->getPayload();
                   diagnosis += " payloadBytes=" + std::to_string(bytes.size());
                   diagnosis += " signerMatches=" + std::to_string(signerMatches);
+                  diagnosis += " targetedTokenPairs=" + targetedBatchCountEvidence(*response);
                   if (signerMatches && !bytes.empty() && bytes.size() <= 512) {
                     try {
                       const std::string text(
@@ -1213,6 +1306,11 @@ void dispatchPlacementProbeIntent(
                         parsed.at("scope_digest").get<std::string>() == scopeDigest;
                       const bool statusMatches =
                         parsed.at("status").get<std::string>() == "authorized";
+                      if (parsed.contains("boot_epoch")) {
+                        peerBootEpoch = parsed.at("boot_epoch").get<std::string>();
+                        if (peerBootEpoch.empty() || peerBootEpoch.size() > 128)
+                          throw std::invalid_argument("invalid targeted probe ACK boot epoch");
+                      }
                       accepted = schemaMatches && providerMatches &&
                         observerMatches && scopeMatches && statusMatches;
                       diagnosis += " schemaMatches=" +
@@ -1234,7 +1332,7 @@ void dispatchPlacementProbeIntent(
                   "NDNSF_DI_NATIVE_PLACEMENT_PROBE_GRANT_ACK requestId=" +
                   requestId + " observer=" + observer + " target=" + target +
                   " " + diagnosis);
-                settleGrant(target, accepted);
+                settleGrant(target, accepted, std::move(peerBootEpoch));
               };
             logRuntimeEvidence(
               "NDNSF_DI_NATIVE_PLACEMENT_PROBE_GRANT_DISPATCH requestId=" +
@@ -1250,7 +1348,52 @@ void dispatchPlacementProbeIntent(
                 finishGrant(response);
               });
             if (grantName.empty()) finishGrant(std::nullopt);
+            else logRuntimeEvidence(
+              "NDNSF_DI_NATIVE_PLACEMENT_PROBE_GRANT_REQUEST requestId=" + requestId +
+              " observer=" + observer + " target=" + target +
+              " status=started coreRequestId=" + grantName.toUri());
           }
+          };
+
+          auto fallback = [authorizeAndMeasure, completeOne,
+                           once = std::make_shared<std::atomic<bool>>(false)]() mutable {
+            if (once->exchange(true)) return;
+            try { authorizeAndMeasure(); }
+            catch (const std::exception&) { completeOne(std::nullopt); }
+          };
+          NativeJson cachedBoots = NativeJson::object();
+          for (const auto& target : authorizationTargets) {
+            const auto boot = currentBoots.find(target);
+            if (boot != currentBoots.end()) cachedBoots[target] = *boot;
+          }
+          if (cachedBoots.size() != authorizationTargets.size() || !cacheContext) {
+            fallback();
+            continue;
+          }
+          sendProbe(std::move(cachedBoots), true,
+            [operation, sourceAttempt, cacheContext, requested, nonce, requestId,
+             observer, completeOne, fallback](std::optional<NativeJson> response) mutable {
+              bool stale;
+              {
+                std::lock_guard<std::mutex> lock(operation->mutex);
+                stale = operation->cancelled->load() ||
+                  operation->phase == DiRequestPhase::Terminal ||
+                  operation->attempt != sourceAttempt;
+              }
+              if (stale || std::chrono::steady_clock::now() >= operation->deadline) {
+                completeOne(std::nullopt);
+                return;
+              }
+              const auto now = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::system_clock::now().time_since_epoch()).count());
+              const bool hit = response && isCompleteNativePlacementProbeCacheResponseV1(
+                *cacheContext, requested, nonce, *response, now);
+              logRuntimeEvidence("NDNSF_DI_NATIVE_PLACEMENT_CACHE_RESULT requestId=" +
+                requestId + " observer=" + observer + (hit ? " status=hit" : " status=miss"));
+              if (hit) completeOne(std::move(response));
+              else fallback();
+            });
         }
         catch (const std::exception&) {
           completeOne(std::nullopt);
@@ -1534,6 +1677,21 @@ void waitConversationCommitAcks(
       "conversation Provider commit acknowledgement roles are incomplete", operation->requestId, turn.attempt);
 }
 
+void logConversationCheckpointPhase(const std::string& requestId,
+  const NativeConversationTurn& turn, const char* phase) noexcept
+{
+  try {
+    logRuntimePhase("di-cli", phase, requestId, std::to_string(turn.attempt),
+      {{"executionRole", "requester-completion"},
+       {"conversationId", turn.parent.conversationId},
+       {"inferenceEpoch", std::to_string(turn.attempt)},
+       {"contextEpoch", std::to_string(turn.successorContextEpoch)}});
+  }
+  catch (...) {
+    // Observation failure must not fail or roll back a conversation commit.
+  }
+}
+
 void commitConversationTurn(
   const std::shared_ptr<NativeInferenceHandle::Operation>& operation)
 {
@@ -1584,7 +1742,9 @@ void commitConversationTurn(
     // The request envelope already authenticated options bytes; missing JSON
     // metadata simply uses the model's pinned semantic digest.
   }
+  logConversationCheckpointPhase(operation->requestId, turn, "conversationReceiptsBegin");
   const auto receipts = collectConversationReceipts(operation, turn, planned);
+  logConversationCheckpointPhase(operation->requestId, turn, "conversationReceiptsEnd");
   const auto committedCheckpointDigest = std::make_shared<std::string>();
   NativeCompletedAttempt completed;
   completed.requestId = turn.executionRequestId;
@@ -1604,8 +1764,12 @@ void commitConversationTurn(
     *committedCheckpointDigest = checkpointDigest;
     const auto expiresAt = std::min_element(receipts.begin(), receipts.end(),
       [](const auto& left, const auto& right) { return left.expiresAtMs < right.expiresAtMs; })->expiresAtMs;
+    logConversationCheckpointPhase(operation->requestId, turn, "conversationCommitPublishBegin");
     publishConversationControls(operation, turn, receipts, "COMMIT", checkpointDigest, expiresAt);
+    logConversationCheckpointPhase(operation->requestId, turn, "conversationCommitPublishEnd");
+    logConversationCheckpointPhase(operation->requestId, turn, "conversationCommitAcksBegin");
     waitConversationCommitAcks(operation, turn, receipts, planned, checkpointDigest);
+    logConversationCheckpointPhase(operation->requestId, turn, "conversationCommitAcksEnd");
   };
   completed.rollbackProviderState = [operation, turn, receipts, committedCheckpointDigest] {
     try {
@@ -1638,7 +1802,16 @@ void commitConversationTurn(
       if (committedCheckpointDigest->empty()) return;
       const auto expiresAt = std::min_element(receipts.begin(), receipts.end(),
         [](const auto& left, const auto& right) { return left.expiresAtMs < right.expiresAtMs; })->expiresAtMs;
+      const std::vector<std::pair<std::string, std::string>> timingFields = {
+        {"executionRole", "requester-completion"},
+        {"conversationId", turn.parent.conversationId},
+        {"inferenceEpoch", std::to_string(turn.attempt)},
+        {"contextEpoch", std::to_string(turn.successorContextEpoch)}};
+      logRuntimePhase("di-cli", "conversationFinalizePublishBegin", operation->requestId,
+        std::to_string(turn.attempt), timingFields);
       publishConversationControls(operation, turn, receipts, "FINALIZE", *committedCheckpointDigest, expiresAt);
+      logRuntimePhase("di-cli", "conversationFinalizePublishEnd", operation->requestId,
+        std::to_string(turn.attempt), timingFields);
     }
     catch (const NativeDiError& error) {
       logRuntimeError(
@@ -1662,8 +1835,12 @@ void commitConversationTurn(
         " code=unknown_exception");
     }
   };
+  logConversationCheckpointPhase(operation->requestId, turn, "conversationPrepareCheckpointBegin");
   const auto checkpoint = operation->conversations->prepareCheckpoint(turn, completed);
+  logConversationCheckpointPhase(operation->requestId, turn, "conversationPrepareCheckpointEnd");
+  logConversationCheckpointPhase(operation->requestId, turn, "conversationCommitTurnBegin");
   const auto record = operation->conversations->commitTurn(turn, checkpoint);
+  logConversationCheckpointPhase(operation->requestId, turn, "conversationCommitTurnEnd");
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
     operation->conversationCheckpointWire = record.checkpoint.wire;
@@ -1716,10 +1893,11 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
   const auto probeAllowlist = candidateProbeAllowlistFor(
     operation->runtime.get(), operation->strategies.splitterIdentity,
     operation->options.providerNames);
-  auto encoded = encodeNativeRequestEnvelope(operation->model, input, *operation->requestContract,
+  auto encoded = detail::encodeNativeRequestEnvelopeForRuntime(operation->model, input, *operation->requestContract,
     recovery.recoveryRequestId, 2, operation->wireDeadlineMs, recovery,
     providers, inventory, probeAllowlist,
-    operation->runtime ? operation->runtime->requesterIdentity : std::string{});
+    operation->runtime ? operation->runtime->requesterIdentity : std::string{},
+    operation->runtime ? operation->runtime->optionsTransport : std::string("INLINE"));
   if (oldConversationTurn && conversations) {
     try {
       replacementConversationTurn = conversations->replaceAttempt(
@@ -1861,16 +2039,17 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         };
       }
       const auto ackClosed = [operation, sourceAttempt, coreRequestId](const ndn_service_framework::CollaborationAckClosure& closure) {
+        const auto decodeCache = std::make_shared<NativeOfferDecodeCache>();
         auto resume = std::make_shared<std::function<void(
           std::shared_ptr<NativePlacementProbeRoundV1>)>>();
         const std::weak_ptr<std::function<void(
           std::shared_ptr<NativePlacementProbeRoundV1>)>> weakResume = resume;
-        *resume = [operation, sourceAttempt, coreRequestId, closure, weakResume](
+        *resume = [operation, sourceAttempt, coreRequestId, closure, weakResume, decodeCache](
             std::shared_ptr<NativePlacementProbeRoundV1> probeRound) {
           const auto continuation = weakResume.lock();
           if (!continuation) return;
           enqueueOperation(operation, [operation, sourceAttempt, coreRequestId,
-                                       closure, probeRound, continuation] {
+                                       closure, probeRound, continuation, decodeCache] {
           std::shared_ptr<const NativeRequestRuntime> runtime;
           NativeRequestOptions coreOptions;
           std::shared_ptr<const NativeInspectedModel> inspected;
@@ -1898,7 +2077,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             }
             runtime = operation->runtime;
             coreOptions = operation->coreOptions;
-            if (operation->inspected) inspected = std::make_shared<NativeInspectedModel>(*operation->inspected);
+            inspected = operation->inspected;
             strategies = operation->strategies;
             legacySplitter = operation->legacySplitter;
             legacyPlacement = operation->legacyPlacement;
@@ -1953,11 +2132,11 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             ? planNativeRequestCooperative(*runtime, coreOptions, *inspected, encoded,
                 *cooperativeSplitter, *cooperativePlacement, *preparation, *admission,
                 closure, control, operation->wireDeadlineMs, operation->cancelled,
-                conversationTurn ? &*conversationTurn : nullptr, probeRound.get())
+                conversationTurn ? &*conversationTurn : nullptr, probeRound.get(), decodeCache.get())
             : planNativeRequest(*runtime, coreOptions, *inspected, encoded,
                 *legacySplitter, *legacyPlacement, *preparation, *admission,
                 closure, control, operation->wireDeadlineMs, operation->cancelled,
-                conversationTurn ? &*conversationTurn : nullptr, probeRound.get());
+                conversationTurn ? &*conversationTurn : nullptr, probeRound.get(), decodeCache.get());
           logRuntimePhase("di-cli", "planEnd", operation->requestId,
                           std::to_string(sourceAttempt), planPhaseFields);
           if (planned.placementProbeIntent) {
@@ -1966,6 +2145,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
                 "targeted-probe", "placement requested a second probe round",
                 operation->requestId, sourceAttempt);
             dispatchPlacementProbeIntent(operation, *planned.placementProbeIntent,
+              std::move(planned.placementProbeCacheContext),
               [continuation](NativePlacementProbeRoundV1 round) {
                 (*continuation)(std::make_shared<NativePlacementProbeRoundV1>(
                   std::move(round)));
@@ -2081,8 +2261,13 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             if (operation->phase != DiRequestPhase::Committed || !operation->planned)
               throw std::runtime_error("response preceded plan commit");
           }
-          if (!message.getStatus()) throw NativeDiError("NATIVE_PROVIDER_FAILED", "provider", "response",
-            "selected Provider returned a failure", operation->requestId, operation->attempt);
+          if (!message.getStatus()) {
+            const auto& detail = message.getErrorInfo();
+            throw NativeDiError("NATIVE_PROVIDER_FAILED", "provider", "response",
+              detail.empty() ? "selected Provider returned a failure" :
+                "selected Provider returned a failure: " + detail,
+              operation->requestId, operation->attempt);
+          }
           if (message.getDataName().empty() || message.getSignerCertificate().empty() ||
               message.getWireDigest().empty() || !ndn::Name(operation->planned->terminalProvider).isPrefixOf(
                 ndn::Name(message.getDataName())))
@@ -2195,7 +2380,11 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         }, "stream-event");
       };
       const auto streamComplete = [operation, sourceAttempt](const ndn::Buffer& bytes) {
+        logRuntimePhase("di-cli", "finalResponseReceived", operation->requestId,
+          std::to_string(sourceAttempt), {{"executionRole", "requester-completion"}});
         enqueueOperation(operation, [operation, sourceAttempt, payload = std::vector<std::uint8_t>(bytes.begin(), bytes.end())] {
+          logRuntimePhase("di-cli", "finalResponseProcessingBegin", operation->requestId,
+            std::to_string(sourceAttempt), {{"executionRole", "requester-completion"}});
           if (operation->options.generation && !operation->validateGenerationFinal(sourceAttempt, payload)) return;
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
@@ -2209,6 +2398,8 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           if (std::chrono::steady_clock::now() >= operation->deadline)
             throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "stream-final",
               "request expired during stream result decoding", operation->requestId, sourceAttempt);
+          logRuntimePhase("di-cli", "finalResponseProcessingEnd", operation->requestId,
+            std::to_string(sourceAttempt), {{"executionRole", "requester-completion"}});
           bool needsConversationCommit = false;
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
@@ -2341,7 +2532,7 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
     input.taskName = operation->preparedInput->taskName;
     NativeEncodedRequest encoded;
     try {
-      encoded = encodeNativeRequestEnvelope(operation->model, input,
+      encoded = detail::encodeNativeRequestEnvelopeForRuntime(operation->model, input,
         *operation->requestContract, operation->coreRequestId, operation->attempt,
         operation->wireDeadlineMs, operation->recovery,
         candidateProviderUris(operation->options.providerNames),
@@ -2350,7 +2541,8 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
         candidateProbeAllowlistFor(operation->runtime.get(),
                                    operation->strategies.splitterIdentity,
                                    operation->options.providerNames),
-        operation->runtime ? operation->runtime->requesterIdentity : std::string{});
+        operation->runtime ? operation->runtime->requesterIdentity : std::string{},
+    operation->runtime ? operation->runtime->optionsTransport : std::string("INLINE"));
     }
     catch (const std::exception& error) {
       std::string detail = "native request contract encoding failed";
@@ -2435,7 +2627,7 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
     }
   }
   if (operation->runtime && operation->preparedInput && operation->encodedRequest) {
-    auto inspected = operation->preparation->inspectModel(*operation->preparedInput);
+    auto inspected = operation->preparation->inspectModelShared(*operation->preparedInput);
     {
       std::lock_guard<std::mutex> lock(operation->mutex);
       if (operation->cancelled->load()) return;
@@ -2772,7 +2964,38 @@ NativeInferenceClient::NativeInferenceClient(
       runtime.protectionEpoch != runtime.grants->protectionEpoch())
     throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "constructor",
       "native requester requires protected runtime policy and grant owner");
-  m_runtime = std::make_shared<const NativeRequestRuntime>(runtime);
+  auto configured = runtime;
+  // Source serving ownership belongs to this Client/User lifetime, not to a
+  // shared operator configuration reused by another ServiceUser instance.
+  configured.fixedRoleAssignments = std::make_shared<NativeFixedRoleAssignmentCache>();
+  configured.fixedRoleSourcePublisher = [user = m_user, service = runtime.contract.serviceName](
+    const NativeSelectionProjectionV3& projection, const NativeFixedRoleAssignmentV1& fixed,
+    const NativeRequestControl& control) {
+    control.requireActive();
+    const auto wire = nativeFixedRoleAssignmentV1ToJson(fixed);
+    if (wire.size() > (4U << 20))
+      throw std::invalid_argument("fixed role recovery source exceeds wire limit");
+    ndn_service_framework::PreparedServiceRequest context;
+    context.serviceName = ndn::Name(service);
+    context.requestId = ndn::Name(projection.requestId);
+    ndn_service_framework::LargeDataPublishOptions publication;
+    publication.retention = user->supportsDurableEncryptedLargeData()
+      ? ndn_service_framework::EncryptedLargeDataRetention::Durable
+      : ndn_service_framework::EncryptedLargeDataRetention::Transient;
+    publication.publicationIdentity = nativePlanningDigest(wire);
+    publication.contentName = nativeFixedRoleSourceContentName(projection, fixed);
+    const auto published = user->publishEncryptedLargeDataFromWorker(
+      context, std::vector<std::uint8_t>(wire.begin(), wire.end()),
+      "di-fixed-role-" + fixed.digest().substr(7), ndn::DEFAULT_FRESHNESS_PERIOD,
+      publication,
+      [control] { control.requireActive(); });
+    control.requireActive();
+    if (!published.success || !published.servingLease)
+      throw std::runtime_error("fixed role source publication failed: " + published.errorMessage);
+    return NativeFixedRoleSourceV1{published.encryptedDataName.toUri(),
+      nativePlanningDigest(wire), wire.size(), published.servingLease};
+  };
+  m_runtime = std::make_shared<const NativeRequestRuntime>(std::move(configured));
   m_conversations = std::move(conversations);
 }
 

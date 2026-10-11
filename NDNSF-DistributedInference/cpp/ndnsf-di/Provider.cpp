@@ -99,7 +99,7 @@ logProviderPreparationProgress(const NativeSelectionProjectionV3& projection,
     std::ostringstream record;
     record << "NDNSF_DI_PROVIDER_PREPARATION phase=" << (phase ? phase : "unknown")
            << " requestId=" << projection.requestId << " provider=" << projection.provider
-           << " role=" << projection.assembly.selectedRole << " detail=" << (detail ? detail : "");
+           << " role=" << projection.assemblyContract().selectedRole << " detail=" << (detail ? detail : "");
     logRuntimeEvidence(record.str());
   }
   catch (...) { /* Progress reporting must not terminate model preparation. */ }
@@ -461,7 +461,7 @@ providerRunnerReuseKey(const NativeSelectionProjectionV3& projection,
       }
     }
   };
-  const auto& role = projection.assembly;
+  const auto& role = projection.assemblyContract();
   canonical << "ndnsf-di-live-runner-v2";
   frame(projection.provider.empty() ? providerIdentity : projection.provider);
   frame(providerBootId);
@@ -549,20 +549,20 @@ providerProtectedResidentIdentity(
   const std::string& providerBootId,
   const std::shared_ptr<ProtectedRuntime>& protectedRuntime)
 {
-  if (!protectedRuntime || projection.assembly.mergeKind == "NATIVE_POSTPROCESS")
+  if (!protectedRuntime || projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS")
     return std::nullopt;
   ProtectedResidentIdentityV1 identity;
   identity.provider = projection.provider.empty() ? providerIdentity : projection.provider;
   identity.providerBootId = providerBootId;
-  identity.role = projection.assembly.selectedRole;
-  identity.modelManifestDigest = projection.assembly.modelManifestDigest;
-  identity.graphDigest = projection.assembly.graphDigest;
-  identity.initializerDigest = projection.assembly.canonicalInitializerDigest;
-  identity.artifactDigest = projection.assembly.artifactDigest;
-  identity.recipeDigest = projection.assembly.recipeDigest;
-  identity.backend = projection.assembly.backend;
-  identity.backendAbi = projection.assembly.backendAbi;
-  identity.protectionEpoch = projection.selectedRole.protectionEpoch;
+  identity.role = projection.assemblyContract().selectedRole;
+  identity.modelManifestDigest = projection.assemblyContract().modelManifestDigest;
+  identity.graphDigest = projection.assemblyContract().graphDigest;
+  identity.initializerDigest = projection.assemblyContract().canonicalInitializerDigest;
+  identity.artifactDigest = projection.assemblyContract().artifactDigest;
+  identity.recipeDigest = projection.assemblyContract().recipeDigest;
+  identity.backend = projection.assemblyContract().backend;
+  identity.backendAbi = projection.assemblyContract().backendAbi;
+  identity.protectionEpoch = projection.selectedRoleContract().protectionEpoch;
   identity.planCoreDigest = projection.planCoreDigest;
   identity.planDigest = projection.planDigest;
   identity.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
@@ -758,7 +758,7 @@ public:
       std::string("NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_PUBLISHED") +
       " requestId=" + projection.requestId +
       " provider=" + (projection.provider.empty() ? providerIdentity : projection.provider) +
-      " role=" + projection.assembly.selectedRole + " keyDigest=" + keyDigest +
+      " role=" + projection.assemblyContract().selectedRole + " keyDigest=" + keyDigest +
       " detail=live-runner");
   }
 
@@ -830,7 +830,7 @@ providerArtifactKey(const NativeSelectionProjectionV3& projection,
                     const std::string& canonicalSourceName,
                     const std::string& canonicalSourceDigest)
 {
-  const auto& role = projection.assembly;
+  const auto& role = projection.assemblyContract();
   return ProviderArtifactKey{
     canonicalSourceDigest,
     canonicalSourceName,
@@ -868,7 +868,7 @@ providerCachedModelPath(const std::string& cacheDir,
 {
   if (assembledDigest.rfind("sha256:", 0) != 0 || assembledDigest.size() != 71)
     throw std::runtime_error("DI_PROVIDER_ARTIFACT_DIGEST_INVALID");
-  auto role = projection.assembly.selectedRole;
+  auto role = projection.assemblyContract().selectedRole;
   for (auto& ch : role) {
     if (!(std::isalnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_'))
       ch = '_';
@@ -908,7 +908,7 @@ providerCanonicalSourceIdentity(
   if (!rootPayload || rootPayload->empty())
     throw std::runtime_error("DI_PROVIDER_ARTIFACT_ROOT_IDENTITY_UNAVAILABLE");
   if (sha256TensorBytes(std::vector<std::uint8_t>(rootPayload->begin(), rootPayload->end())) !=
-      projection.assembly.modelManifestDigest)
+      projection.assemblyContract().modelManifestDigest)
     throw std::runtime_error("DI_PROVIDER_ARTIFACT_ROOT_IDENTITY_MISMATCH");
   boost::property_tree::ptree root;
   try {
@@ -2122,7 +2122,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
     [runnerReuseCache, providerIdentity, providerBootId] (
       const NativeSelectionProjectionV3& projection,
       const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
-      if (!runnerReuseCache || projection.assembly.mergeKind == "NATIVE_POSTPROCESS")
+      if (!runnerReuseCache || projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS")
         return std::shared_ptr<NativeModelRunner>{};
       return runnerReuseCache->lookup(
         projection, providerIdentity, providerBootId, protectedRuntime);
@@ -2132,7 +2132,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
       const NativeSelectionProjectionV3& projection,
       const std::shared_ptr<ProtectedRuntime>& protectedRuntime,
       const std::shared_ptr<NativeModelRunner>& runner) {
-      if (!runnerReuseCache || projection.assembly.mergeKind == "NATIVE_POSTPROCESS")
+      if (!runnerReuseCache || projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS")
         return;
       try {
         runnerReuseCache->publish(
@@ -2154,11 +2154,11 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
       const NativeSelectionProjectionV3& projection,
       const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
       if (!expectedManifestDigest.empty() &&
-          projection.assembly.modelManifestDigest != expectedManifestDigest) {
+          projection.assemblyContract().modelManifestDigest != expectedManifestDigest) {
         throw std::runtime_error("DI_PROVIDER_MANIFEST_BINDING_MISMATCH");
       }
       NativeModelRunnerSpec spec;
-      if (projection.assembly.mergeKind == "NATIVE_POSTPROCESS") {
+      if (projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS") {
         spec = nativeYoloMergeRunnerSpecFromProjection(projection);
       }
       else {
@@ -2172,13 +2172,11 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
         options.protectedRuntime = protectedRuntime;
         options.protectedPlaintextCache = protectedPlaintextCache;
         options.reportProgress = makeNativeAssemblyProgressReporter(
-          ctx, projection, projection.assembly.backend.empty()
-            ? std::string("native") : projection.assembly.backend,
+          ctx, projection, projection.assemblyContract().backend.empty()
+            ? std::string("native") : projection.assemblyContract().backend,
           1, 0, projection.assemblyProgressSequence);
         if (protectedRuntime) {
-          const auto& payload = ctx.assignment().assignmentPayload;
-          options.roleAssemblySpecDigest = nativeAssemblyDigestFromCanonicalProjection(
-            std::string(reinterpret_cast<const char*>(payload.data()), payload.size()));
+          options.roleAssemblySpecDigest = nativeAssemblyDigestFromValidatedProjection(projection);
         }
         options.signManifest = [keyChain, providerCert](const std::string& bytes) {
           return keyChain == nullptr ? std::string{} :
@@ -2281,13 +2279,13 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
               artifact->canonicalMetadataJson =
                 std::string("{\"schema\":\"ndnsf-di-provider-artifact-v1\","
                             "\"modelManifestDigest\":\"") +
-                projection.assembly.modelManifestDigest +
+                projection.assemblyContract().modelManifestDigest +
                 "\",\"artifactProfileDigest\":\"" +
-                projection.assembly.artifactProfileDigest +
-                "\",\"graphDigest\":\"" + projection.assembly.graphDigest +
-                "\",\"role\":\"" + projection.assembly.selectedRole +
-                "\",\"recipeDigest\":\"" + projection.assembly.recipeDigest +
-                "\",\"backendAbi\":\"" + projection.assembly.backendAbi + "\"}";
+                projection.assemblyContract().artifactProfileDigest +
+                "\",\"graphDigest\":\"" + projection.assemblyContract().graphDigest +
+                "\",\"role\":\"" + projection.assemblyContract().selectedRole +
+                "\",\"recipeDigest\":\"" + projection.assemblyContract().recipeDigest +
+                "\",\"backendAbi\":\"" + projection.assemblyContract().backendAbi + "\"}";
               if (protectedCiphertext) {
                 const auto encryptedPath = built.metadata.find("encryptedArtifactPath");
                 if (encryptedPath == built.metadata.end() || encryptedPath->second.empty())
@@ -2297,7 +2295,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 std::error_code sizeError;
                 const auto ciphertextBytes = std::filesystem::file_size(ciphertextPath, sizeError);
                 if (sizeError || ciphertextBytes == 0 ||
-                    ciphertextBytes > projection.assembly.maxAssembledBytes + 65536)
+                    ciphertextBytes > projection.assemblyContract().maxAssembledBytes + 65536)
                   throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
                 // Keep only the content-addressed path in the immutable runner
                 // template.  The cache lease reads it when a request needs a
@@ -2372,12 +2370,12 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 if (digest != spec.metadata.end()) {
                   NativeProtectedPlaintextCacheKey cacheKey;
                   cacheKey.encryptedArtifactDigest = digest->second;
-                  cacheKey.modelManifestDigest = projection.assembly.modelManifestDigest;
-                  cacheKey.graphDigest = projection.assembly.graphDigest;
-                  cacheKey.initializerDigest = projection.assembly.canonicalInitializerDigest;
-                  cacheKey.role = projection.assembly.selectedRole;
-                  cacheKey.recipeDigest = projection.assembly.recipeDigest;
-                  cacheKey.backendAbi = projection.assembly.backendAbi;
+                  cacheKey.modelManifestDigest = projection.assemblyContract().modelManifestDigest;
+                  cacheKey.graphDigest = projection.assemblyContract().graphDigest;
+                  cacheKey.initializerDigest = projection.assemblyContract().canonicalInitializerDigest;
+                  cacheKey.role = projection.assemblyContract().selectedRole;
+                  cacheKey.recipeDigest = projection.assemblyContract().recipeDigest;
+                  cacheKey.backendAbi = projection.assemblyContract().backendAbi;
                   cacheKey.roleAssemblySpecDigest = options.roleAssemblySpecDigest;
                   if (const auto keyReference = protectedRuntime->keyReference())
                     cacheKey.keyReferenceDigest = keyReference->digest();
@@ -2417,7 +2415,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
           spec.lifetime = std::move(lifetime);
         }
       }
-      if (projection.assembly.mergeKind == "NATIVE_POSTPROCESS")
+      if (projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS")
         metrics->assemblies.fetch_add(1, std::memory_order_relaxed);
       const auto resident = residentSessionByRole.find(spec.role);
       if (resident != residentSessionByRole.end() && resident->second)
@@ -2428,14 +2426,14 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
       logRuntimeEvidence(
         std::string("NDNSF_DI_PROTECTED_RESIDENT_ADMISSION_CHECK role=") + spec.role +
         " kind=" + spec.kind +
-        " mergeKind=" + projection.assembly.mergeKind +
+        " mergeKind=" + projection.assemblyContract().mergeKind +
         " resident=" +
         ((spec.metadata.count("residentSession") != 0 &&
           spec.metadata.at("residentSession") == "true") ? "true" : "false") +
         " protectedRuntime=" + (protectedRuntime ? "true" : "false") +
         " authority=" + (protectedResidentAuthority ? "true" : "false"));
       if (protectedRuntime && protectedResidentAuthority &&
-          projection.assembly.mergeKind != "NATIVE_POSTPROCESS" &&
+          projection.assemblyContract().mergeKind != "NATIVE_POSTPROCESS" &&
           spec.kind == "onnx" &&
           spec.metadata.count("residentSession") != 0 &&
           spec.metadata.at("residentSession") == "true") {
@@ -2443,14 +2441,14 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
         identity.provider = providerIdentity;
         identity.providerBootId = providerBootId;
         identity.role = spec.role;
-        identity.modelManifestDigest = projection.assembly.modelManifestDigest;
-        identity.graphDigest = projection.assembly.graphDigest;
-        identity.initializerDigest = projection.assembly.canonicalInitializerDigest;
-        identity.artifactDigest = projection.assembly.artifactDigest;
-        identity.recipeDigest = projection.assembly.recipeDigest;
-        identity.backend = projection.assembly.backend;
-        identity.backendAbi = projection.assembly.backendAbi;
-        identity.protectionEpoch = projection.selectedRole.protectionEpoch;
+        identity.modelManifestDigest = projection.assemblyContract().modelManifestDigest;
+        identity.graphDigest = projection.assemblyContract().graphDigest;
+        identity.initializerDigest = projection.assemblyContract().canonicalInitializerDigest;
+        identity.artifactDigest = projection.assemblyContract().artifactDigest;
+        identity.recipeDigest = projection.assemblyContract().recipeDigest;
+        identity.backend = projection.assemblyContract().backend;
+        identity.backendAbi = projection.assemblyContract().backendAbi;
+        identity.protectionEpoch = projection.selectedRoleContract().protectionEpoch;
         identity.planCoreDigest = projection.planCoreDigest;
         identity.planDigest = projection.planDigest;
         identity.securityPolicySnapshotDigest =

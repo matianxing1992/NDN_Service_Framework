@@ -4,12 +4,15 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollectiveControl.hpp"
 
 #include <chrono>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ndnsf::di {
@@ -144,6 +147,8 @@ struct SealedCollectiveOperationV1
 class ProviderGroupCoordinator
 {
 public:
+  // Install/create and destruction require exclusive ownership. Capability
+  // and options stay immutable while runtime operations share this instance.
   explicit ProviderGroupCoordinator(ProviderGroupCoordinatorOptions options = {});
   ~ProviderGroupCoordinator();
 
@@ -187,6 +192,8 @@ public:
                std::uint64_t createdAtMs) const;
 
   SealedCollectiveOperationV1
+  // exactDataNames must come from the sealed tensor endpoint. The default
+  // retains source compatibility and fails explicitly when context is absent.
   sealOperation(const GroupOperationV1& operation,
                 const std::string& producerRank,
                 const std::string& sourceLayoutDigest,
@@ -242,6 +249,14 @@ public:
                 const NdnsfDataV1Segment& segment,
                 const std::string& expectedDataName = {});
 
+  /** Authenticate and decrypt once, commit bounded replay/progress state,
+   * then return owning plaintext. Identical duplicates remain readable.
+   * No plaintext is returned if the runtime key changes before acceptance. */
+  std::pair<DataSegmentReplayWindow::Result, ProviderGroupBytes>
+  acceptAndOpenSegment(const CollectiveOperationManifestV1& manifest,
+                       const NdnsfDataV1Segment& segment,
+                       const std::string& expectedDataName = {});
+
   /**
    * Start a new transport operation without extending the group hard
    * deadline.  The no-progress clock is scoped to the operation; runner
@@ -255,10 +270,14 @@ public:
   bool terminal() const noexcept;
   bool cancelled() const noexcept;
   bool failed() const noexcept;
+  // Empty before terminal; the published reason is immutable until exclusive
+  // lifecycle reset/destruction, which also bounds returned reference lifetime.
   const std::string& terminalReason() const noexcept;
   void clearEpochKey() noexcept;
 
   static std::string
+  // Compatibility symbol: capability/manifest alone cannot derive C04;
+  // always rejects. Callers use their endpoint's exact tensor Names.
   makeDataName(const GroupCapabilityV1& capability,
                const CollectiveOperationManifestV1& manifest,
                std::uint64_t segmentNo);
@@ -275,6 +294,21 @@ public:
               std::uint64_t segmentNo);
 
 private:
+  struct RuntimeKeySnapshot
+  {
+    RuntimeKeySnapshot(const ProviderGroupBytes& bytes, std::uint64_t value);
+    ~RuntimeKeySnapshot();
+    RuntimeKeySnapshot(const RuntimeKeySnapshot&) = delete;
+    RuntimeKeySnapshot& operator=(const RuntimeKeySnapshot&) = delete;
+    ProviderGroupBytes key;
+    std::uint64_t generation;
+  };
+  RuntimeKeySnapshot captureRuntimeKey() const;
+  bool runtimeKeyActive(const RuntimeKeySnapshot& snapshot) const;
+  bool runtimeKeyActiveLocked(const RuntimeKeySnapshot& snapshot) const;
+  bool deadlineExpiredLocked(std::uint64_t nowMs) const;
+  void terminateLocked(std::string reason, bool cancelled);
+  void clearEpochKeyLocked() noexcept;
   const GroupOperationV1& findOperation(std::uint64_t operationIndex) const;
   void validateManifestAgainstCapability(
     const CollectiveOperationManifestV1& manifest) const;
@@ -286,12 +320,14 @@ private:
   GroupCapabilityV1 m_capability;
   ProviderGroupBytes m_epochKey;
   bool m_hasCapability = false;
-  bool m_cancelled = false;
-  bool m_failed = false;
+  std::atomic<bool> m_cancelled{false};
+  std::atomic<bool> m_failed{false};
   std::string m_terminalReason;
   std::uint64_t m_groupStartedAtMs = 0;
   std::uint64_t m_lastProgressMs = 0;
   std::map<std::string, std::unique_ptr<DataSegmentReplayWindow>> m_replayWindows;
+  mutable std::mutex m_stateMutex;
+  std::uint64_t m_keyGeneration = 0;
 };
 
 } // namespace ndnsf::di

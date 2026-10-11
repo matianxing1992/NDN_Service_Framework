@@ -6,6 +6,8 @@
 
 #include <memory>
 #include <mutex>
+#include <filesystem>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -64,6 +66,15 @@ public:
 
   bool hasDataPacket(const std::string& dataName) const;
 
+  bool supportsOriginalPacketTransactions() const noexcept
+  {
+    return m_store->supportsRange() && m_store->supportsManifestLookup();
+  }
+
+  RepoObjectManifest commitOriginalPacketFile(
+    const RepoObjectManifest& manifest, const std::filesystem::path& file,
+    const std::function<void()>& requireActive = {});
+
   std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request);
 
   std::vector<uint8_t> handleStoreRange(const std::vector<uint8_t>& request);
@@ -115,6 +126,10 @@ public:
   }
 
 private:
+  RepoObjectManifest describeDataPacket(const std::string& name) const;
+  std::optional<std::pair<RepoObjectManifest, size_t>> findPacketRecord(
+    const ndn::Name& name) const;
+  std::string resolveObjectKey(const std::string& objectName) const;
   std::vector<uint8_t> deleteLocked(const std::string& objectName);
   void putRangeLocked(const RepoObjectManifest&, RepoByteRange, const std::vector<uint8_t>&);
   RepoObjectManifest commitRangesLocked(const RepoObjectManifest&);

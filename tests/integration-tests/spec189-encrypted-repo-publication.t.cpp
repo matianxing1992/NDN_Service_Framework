@@ -1,4 +1,6 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "ndn-service-framework/ProtectedBlobManifest.hpp"
+#include <ndn-cxx/util/sha256.hpp>
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
@@ -283,7 +285,8 @@ BOOST_AUTO_TEST_CASE(ProtectedSegmentsSurviveTtlAndReleaseWithLease)
     ciphertext.insert(ciphertext.end(), item.second.begin(), item.second.end());
   HybridMessageEnvelope envelope;
   BOOST_REQUIRE(envelope.WireDecode(ndn::Block(ciphertext)));
-  const auto associated = publication.encryptedDataName.toUri() + "|REQUEST-LARGE|" + service.toUri();
+  const auto associated = publication.encryptedDataName.toUri(ndn::name::UriFormat::CANONICAL) +
+    "|REQUEST-LARGE|" + service.toUri(ndn::name::UriFormat::CANONICAL);
   ndn::Buffer decoded;
   BOOST_REQUIRE(hybridAesGcmDecrypt(key.key, envelope,
     ndn::Buffer(reinterpret_cast<const std::uint8_t*>(associated.data()), associated.size()), decoded));
@@ -645,8 +648,28 @@ BOOST_AUTO_TEST_CASE(ProviderDecryptsDurableEnvelopeThroughProductionFetch)
   // model Controller/AA DKEY bootstrap; the production fetch/decrypt path is
   // still exercised after the encrypted envelope is retrieved.
   provider.cacheHybridReceiveKeyForTest(sendKey.keyId, sendKey.epochId, sendKey.key);
+  BOOST_REQUIRE(!publication.manifestName.empty());
+  face.receive(ndn::Interest(publication.manifestName));
+  face.processEvents(ndn::time::milliseconds(1));
+  const auto rootPacket = face.sentData.back();
+  const auto& rootBytes = rootPacket.getContent();
+  const auto rootDescriptor = ProtectedBlobManifest::decode(
+    std::vector<std::uint8_t>(rootBytes.value(), rootBytes.value() + rootBytes.value_size()),
+    userCertificate.getIdentity(), publication.manifestName);
+  const auto referenceText = sendKey.keyId + "|" + sendKey.epochId + "|" +
+    service.toUri() + "|" + rootDescriptor.authorizationScope;
+  ndn::util::Sha256 referenceHash;
+  referenceHash.update(ndn::span<const std::uint8_t>(
+    reinterpret_cast<const std::uint8_t*>(referenceText.data()), referenceText.size()));
+  auto referenceHex = referenceHash.toString();
+  std::transform(referenceHex.begin(), referenceHex.end(), referenceHex.begin(),
+    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  BOOST_CHECK_EQUAL(rootDescriptor.keyReferenceId, "sha256:" + referenceHex);
+  BOOST_TEST_MESSAGE("ROOT_KEYREF_SCOPE " + rootDescriptor.authorizationScope +
+    " service=" + service.toUri() + " claimed=" + rootDescriptor.keyReferenceId +
+    " computed=sha256:" + referenceHex);
   auto pending = std::async(std::launch::async, [&] {
-    return provider.fetchAndDecryptLargeData(publication.encryptedDataName,
+    return provider.fetchAndDecryptLargeData(publication.manifestName,
                                              service.toUri());
   });
   while (pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
@@ -676,6 +699,65 @@ BOOST_AUTO_TEST_CASE(DurableLargeDataProducerPrefixPreservesIdentity)
   BOOST_CHECK_EQUAL(extract(transientName).toUri(), user.toUri());
   BOOST_CHECK_EQUAL(extract(durableName).toUri(), user.toUri());
   BOOST_CHECK(extract(ndn::Name("/spec190/prefix-user/NDNSF/OTHER/object")).empty());
+  const ndn::Name fullProducer("/spec190/NDNSF/BLOB/actor/NDNSF/nested");
+  const std::vector<std::uint8_t> digest(32, 0x2a);
+  const auto component = ndn::name::Component(ndn::span<const std::uint8_t>(digest.data(), digest.size()));
+  const auto canonical = ndn::Name(fullProducer).append("NDNSF").append("BLOB")
+    .append(component).append("PROTECTED").append(component).append("DATA");
+  BOOST_CHECK(extract(canonical) == fullProducer);
+  BOOST_CHECK(extract(ndn::Name(canonical).appendSegment(0)).empty());
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRejectsAuthenticatedBlobWithFalsePlaintextIdentity)
+{
+  ScopedEnvironmentValue fetchTimeout("NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS", "2000");
+  ndn::security::KeyChain keys("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keys);
+  const auto producer = makeRsaIdentity(keys, ndn::Name("/spec201/NDNSF/BLOB/producer"));
+  const auto receiver = makeRsaIdentity(keys, ndn::Name("/spec201/digest-receiver"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/digest-authority"));
+  LocalServiceProvider provider(face, ndn::Name("/spec201"), receiver, authority,
+                                "examples/trust-any.conf");
+  provider.useSigningKeyChainForTest(keys);
+  const ndn::Buffer key(32, 0x11);
+  provider.cacheHybridReceiveKeyForTest("spec201-key", "1", key);
+  const ndn::Name service("/spec201/digest-service");
+  const ndn::Buffer wrongDigest(32, 0);
+  const auto component = ndn::name::Component(ndn::span<const std::uint8_t>(wrongDigest.data(), wrongDigest.size()));
+  const auto prefix = ndn::Name(producer.getIdentity()).append("NDNSF").append("BLOB")
+    .append(component).append("PROTECTED").append(component).append("DATA");
+  const auto aadText = prefix.toUri(ndn::name::UriFormat::CANONICAL) +
+    "|REQUEST-LARGE|" + service.toUri(ndn::name::UriFormat::CANONICAL);
+  const ndn::Buffer input{1, 2, 3};
+  const auto encrypted = hybridAesGcmEncrypt(key,
+    ndn::span<const std::uint8_t>(input.data(), input.size()),
+    ndn::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(aadText.data()), aadText.size()));
+  HybridMessageEnvelope envelope;
+  envelope.setKeyId("spec201-key");
+  envelope.setEpochId("1");
+  envelope.setMessageType("REQUEST-LARGE");
+  envelope.setNonce(encrypted.nonce);
+  envelope.setCipherText(encrypted.ciphertext);
+  envelope.setAuthTag(encrypted.tag);
+  ndn::Data packet(ndn::Name(prefix).appendSegment(0));
+  packet.setFreshnessPeriod(ndn::time::milliseconds(1000));
+  packet.setFinalBlock(ndn::name::Component::fromSegment(0));
+  packet.setContent(envelope.WireEncode());
+  keys.sign(packet, ndn::security::signingByIdentity(producer.getIdentity()));
+  ndn::signal::ScopedConnection connection = face.onSendInterest.connect([&](const ndn::Interest& interest) {
+    if (interest.getName() == prefix || interest.getName() == packet.getName())
+      face.receive(packet);
+  });
+  auto pending = std::async(std::launch::async, [&] {
+    return provider.fetchAndDecryptLargeData(prefix, service.toUri());
+  });
+  while (pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+    face.processEvents(ndn::time::milliseconds(1));
+  const auto result = pending.get();
+  BOOST_CHECK(!result.success);
+  BOOST_CHECK(result.plaintext.empty());
+  BOOST_CHECK_EQUAL(result.errorMessage, "large-data hybrid decrypt failure for " +
+    service.toUri() + ": protected BLOB plaintext digest mismatch");
 }
 
 BOOST_AUTO_TEST_CASE(ProtectedStatusAdvanceRetiresOnlyOlderServiceOwner)

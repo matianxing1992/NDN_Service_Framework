@@ -209,6 +209,25 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
   BOOST_CHECK(fixture.repo->has(committed.preparedMetadataDataName));
   BOOST_CHECK_EQUAL(provider->stats().publicationCalls, 1U);
 
+  // Transfer estimates affect request scheduling, not immutable model bytes.
+  auto hinted = catalog;
+  hinted["request_transfer_profiles"] = NativeJson::array({
+    {{"schema", "ndnsf-di-request-transfer-profile-v1"},
+     {"source_digest", model.canonicalSourceDigest},
+     {"input_digest", digest("different-request")},
+     {"shape_template", {{"past_sequence_symbol", "past_sequence_length"}}}}});
+  BOOST_CHECK_EQUAL(nativeCanonicalPublicationIdentity(hinted),
+                    options.publicationIdentityDigest);
+  BOOST_CHECK_NE(nativePlanningDigest(nativeCanonicalJson(hinted)),
+                 options.publicationIdentityDigest);
+  const auto hintHit = provider->lookupPrepared({
+    "qwen", "/service", nativeCanonicalJson(hinted), 1U << 20,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10)});
+  BOOST_REQUIRE(hintHit);
+  BOOST_CHECK_EQUAL(hintHit->rootDataName, committed.rootDataName);
+  BOOST_CHECK_EQUAL(hintHit->sourceDataName, committed.sourceDataName);
+  BOOST_CHECK_EQUAL(provider->stats().publicationCalls, 1U);
+
   auto changed = catalog;
   changed["recipe"]["artifact_profile_digest"] = digest("different-profile");
   BOOST_CHECK(!provider->lookupPrepared({

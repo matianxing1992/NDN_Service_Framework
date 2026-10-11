@@ -6,7 +6,9 @@
 #include <future>
 #include <atomic>
 #include <chrono>
+#include <ctime>
 #include <cstring>
+#include <iostream>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -126,6 +128,87 @@ fixtureLineage(const std::string& requestId)
 }
 
 } // namespace
+
+BOOST_AUTO_TEST_CASE(TransferAccountingChecksEncodedRawAndMalformedPayloads)
+{
+  DependencyEdge edge("accounting", "/Stage/0", "/Stage/1",
+                      "/stage-transfer/accounting", 1, 0, {"hidden"});
+  edge.requestId = "/request/accounting";
+  edge.attemptEpoch = 4;
+  edge.operationKind = "ACTIVATION";
+  auto bundle = runnerBundle("accounting");
+  const auto expectedBytes = tensorPayloadBytes(bundle);
+  completeStageTransferObservation(edge, bundle, "receive");
+  BOOST_REQUIRE(bundle.transferObservation);
+  BOOST_CHECK_EQUAL(bundle.transferObservation->tensorBytes, expectedBytes);
+  BOOST_CHECK_EQUAL(bundle.transferObservation->tensorNames.size(), 4U);
+  BOOST_CHECK(!bundle.transferObservation->lineagePresent);
+  const auto identity = bundle.transferObservation->identity;
+  completeStageTransferObservation(edge, bundle, "receive");
+  BOOST_CHECK_EQUAL(bundle.transferObservation->identity, identity);
+  BOOST_CHECK_EQUAL(bundle.transferObservation->tensorBytes, expectedBytes);
+
+  TensorBundle raw;
+  raw.name = "raw";
+  raw.payload = {1, 2, 3, 4};
+  completeStageTransferObservation(edge, raw, "receive");
+  BOOST_CHECK_EQUAL(raw.transferObservation->tensorBytes, raw.payload.size());
+  BOOST_CHECK(raw.transferObservation->tensorNames.empty());
+
+  auto malformed = bundle;
+  malformed.transferObservation.reset();
+  malformed.payload.pop_back();
+  BOOST_CHECK_THROW(completeStageTransferObservation(edge, malformed, "receive"),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(TransferObservationActivationCpuSample)
+{
+  constexpr std::size_t payloadBytes = 1024 * 1024;
+  constexpr std::size_t iterations = 64;
+  NamedTensor tensor;
+  tensor.name = "hidden";
+  tensor.elementType = TensorElementType::UInt8;
+  tensor.shape = {static_cast<std::int64_t>(payloadBytes)};
+  tensor.payload.assign(payloadBytes, 7);
+  auto bundle = attachGenerationEpochLineage(
+    makeEncodedTensorBundle("activation", {std::move(tensor)}),
+    fixtureLineage("/request/accounting-cpu"));
+  DependencyEdge edge("activation", "/Stage/0", "/Stage/1",
+                      "/stage-transfer/activation", 1, 0, {"hidden"});
+  edge.requestId = "/request/accounting-cpu";
+  edge.attemptEpoch = 4;
+  edge.operationKind = "ACTIVATION";
+  const auto threadCpuNs = [] {
+    timespec sample{};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &sample) != 0)
+      throw std::runtime_error("thread CPU clock unavailable");
+    return static_cast<std::int64_t>(sample.tv_sec) * 1000000000 + sample.tv_nsec;
+  };
+  for (const bool fresh : {true, false}) {
+    completeStageTransferObservation(edge, bundle, "receive");
+    const auto cpuBegin = threadCpuNs();
+    const auto wallBegin = std::chrono::steady_clock::now();
+    for (std::size_t index = 0; index < iterations; ++index) {
+      if (fresh) bundle.transferObservation.reset();
+      completeStageTransferObservation(edge, bundle, "receive");
+      BOOST_REQUIRE(bundle.transferObservation);
+      BOOST_CHECK_EQUAL(bundle.transferObservation->tensorBytes, payloadBytes);
+      BOOST_REQUIRE_EQUAL(bundle.transferObservation->tensorNames.size(), 1U);
+      BOOST_CHECK_EQUAL(bundle.transferObservation->tensorNames.front(), "hidden");
+      BOOST_CHECK(bundle.transferObservation->lineagePresent);
+      BOOST_CHECK_EQUAL(bundle.transferObservation->positionDigest,
+                        fixtureLineage(edge.requestId).positionDigest);
+    }
+    const auto wallMs = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - wallBegin).count();
+    const auto cpuMs = static_cast<double>(threadCpuNs() - cpuBegin) / 1000000;
+    std::cout << "SPEC199_TRANSFER_OBSERVATION_CPU_SAMPLE mode="
+              << (fresh ? "fresh" : "existing") << " iterations=" << iterations
+              << " payload_bytes=" << payloadBytes << " thread_cpu_ms=" << cpuMs
+              << " wall_ms=" << wallMs << '\n';
+  }
+}
 
 BOOST_AUTO_TEST_CASE(StageTransferBudgetUsesActualSelectedTensorAndTransportBytes)
 {

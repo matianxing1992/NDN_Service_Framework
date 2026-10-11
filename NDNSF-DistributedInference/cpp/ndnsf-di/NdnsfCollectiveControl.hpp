@@ -114,6 +114,11 @@ public:
   std::size_t acceptedBytes() const noexcept;
 
 private:
+  friend class ProviderGroupCoordinator;
+  // Only an authenticating owner may bypass the public open-and-accept path.
+  Result acceptAuthenticated(const NdnsfDataV1Segment& segment,
+                             std::size_t plaintextBytes);
+
   std::size_t m_maxSegments;
   std::size_t m_maxBytes;
   bool m_bound = false;

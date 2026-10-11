@@ -239,9 +239,18 @@ ndn::Block DeploymentControlMessage::WireEncode() const
 bool DeploymentControlMessage::WireDecode(const ndn::Block& block)
 {
     try {
-        if (block.type() != messageType_ || block.size() > MAX_WIRE_SIZE) return false;
-        block.parse();
-        const auto& elements = block.elements();
+        const ndn::Block* payload = &block;
+        if (block.type() == ndn::tlv::Content || block.type() == ndn::tlv::ApplicationParameters) {
+            // Standard NDN carriers contain exactly one bounded business TLV.
+            // Do not accept sibling/trailing values or nested carrier blocks.
+            if (block.value_size() > MAX_WIRE_SIZE) return false;
+            block.parse();
+            if (block.elements().size() != 1) return false;
+            payload = &block.elements().front();
+        }
+        if (payload->type() != messageType_ || payload->size() > MAX_WIRE_SIZE) return false;
+        payload->parse();
+        const auto& elements = payload->elements();
         if (elements.empty() || elements.front().type() != tlv::VersionType ||
             elements.size() - 1 > MAX_FIELDS) return false;
         DeploymentControlMessage decoded(messageType_);
@@ -265,8 +274,8 @@ bool DeploymentControlMessage::WireDecode(const ndn::Block& block)
             previousName = name;
         }
         const auto canonical = decoded.WireEncode();
-        if (canonical.size() != block.size() ||
-            !std::equal(canonical.begin(), canonical.end(), block.begin())) return false;
+        if (canonical.size() != payload->size() ||
+            !std::equal(canonical.begin(), canonical.end(), payload->begin())) return false;
         version_ = decoded.version_;
         fields_ = std::move(decoded.fields_);
         wire_ = canonical;

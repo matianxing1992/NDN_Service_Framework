@@ -533,6 +533,13 @@ FrozenConfig freezeConfig(const std::filesystem::path& path,
   if (generationMode != "TOKEN_DIAGNOSTIC" && generationMode != "TOKEN_STREAMING")
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "request",
                   "request generation_mode is unsupported");
+  if (request.contains("options_transport")) {
+    const auto mode = requiredString(request, "options_transport");
+    if ((mode != "INLINE" && mode != "SELECTION_GENERATION_V1") ||
+        (mode != "INLINE" && generationMode != "TOKEN_STREAMING"))
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "request",
+                    "request options_transport is unsupported for this generation mode");
+  }
   if (request.contains("tokenizer_digest")) {
     const auto tokenizerDigest = requiredString(request, "tokenizer_digest");
     if (!isDigest(tokenizerDigest))
@@ -919,7 +926,7 @@ NativeJson requestRuntimeConfiguration(const FrozenConfig& frozen,
 {
   const auto root = nativeParseJson(package.registration->configurationJson);
   const auto& request = root.at("request");
-  return NativeJson{
+  auto result = NativeJson{
     {"schema", "ndnsf-di-native-request-runtime-v1"},
     {"contract", {
       {"service_name", request.at("service")},
@@ -950,6 +957,9 @@ NativeJson requestRuntimeConfiguration(const FrozenConfig& frozen,
     {"no_progress_ms", request.value("no_progress_ms", 5000)},
     {"max_segments", request.value("max_segments", 4096)},
   };
+  if (request.value("options_transport", std::string("INLINE")) != "INLINE")
+    result["options_transport"] = request.at("options_transport");
+  return result;
 }
 
 /** Materialize the Runtime-owned Core user before prepare-time publication.

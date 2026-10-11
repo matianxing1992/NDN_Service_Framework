@@ -20,6 +20,35 @@
 
 namespace ndn_service_framework
 {
+    struct ControlQueryParameters {
+        ndn::Name subject;
+        ndn::Name service;
+        uint64_t generation = 0;
+        uint64_t epoch = 0;
+    };
+    ndn::Block encodeControlQueryParameters(const ControlQueryParameters& query);
+    std::optional<ControlQueryParameters> decodeControlQueryParameters(const ndn::Block& parameters);
+    struct ControlRpcName {
+        ndn::Name producer;
+        std::string operation;
+        std::string callIdentityDigest;
+        std::string queryNonce;
+    };
+    /** Complete query parameters remain in the Interest; reply echoes its final Name. */
+    ndn::Name makeControlRpcName(const ndn::Name& producer, const std::string& operation,
+                                const ndn::Block& parameters, const std::string& queryNonce);
+    std::optional<ControlRpcName> parseControlRpcName(
+        const ndn::Interest& interest, const ndn::Name& expectedProducer,
+        const std::string& expectedOperation);
+    std::string makeControlQueryNonce();
+    std::optional<uint64_t> controlNonceExpiry(const ndn::Name& producer, const ndn::Interest& interest);
+    /** Record commitment excludes its own Name; revision is the full signed plan digest. */
+    ndn::Name makeDeploymentRecordName(const ndn::Name& producer,
+        const ndn::Name& application, const std::string& deploymentId,
+        const std::string& kind, const std::string& revisionDigest,
+        uint64_t epoch, const std::string& payloadDigest);
+
+
     /** Canonical Controller policy-status name.  A bare service suffix is
      * retained as a bootstrap prefix; Controller replies use the versioned
      * form so a (service, generation, epoch) pair is directly addressable. */
@@ -35,6 +64,9 @@ namespace ndn_service_framework
     std::optional<PolicyStatusName>
     parsePolicyStatusName(const ndn::Name& controllerPrefix,
                           const ndn::Name& name);
+
+    std::optional<PolicyStatusName> parsePolicyStatusName(
+        const ndn::Name& controllerPrefix, const ndn::Interest& interest);
 
     struct RequestNameV2
     {
@@ -136,26 +168,24 @@ namespace ndn_service_framework
         std::string digest;
     };
 
-    // V2 wire names use one unified serviceName endpoint path.
-    // NAC-ABE attributes follow message direction: REQUEST/SELECTION use
-    // /SERVICE/<serviceName>; RESPONSE/ACK use /PERMISSION/<serviceName>.
-    // Request:
-    //   /<requester>/NDNSF/REQUEST/<serviceName...>/<requestId>
-    // Response:
-    //   /<provider>/NDNSF/RESPONSE/<requester-uri-component>/<serviceName...>/<requestId>
-    // ACK:
-    //   /<provider>/NDNSF/ACK/<requester-uri-component>/<serviceName...>/<requestId>
-    // Selection:
-    //   /<requester>/NDNSF/SELECTION/<serviceName...>/<requestId>
-    // Selected providers are carried in the SelectionMessage payload entries.
-    // The provider-specific selection-name helpers remain parseable for old
-    // data, but new V2 publishing uses the unified selection name above.
+    // C03 invocation names preserve the complete actor and service Names.
+    // REQUEST: <requester>/NDNSF/REQUEST/<service...>/<requestId...>
+    // ACK/RESPONSE: <provider>/NDNSF/<category>/<requester URI>/<service...>/<requestId...>
+    // SELECTION: <requester>/NDNSF/SELECTION/<provider URI>/<service...>/<requestId...>
+    // Embedded actor URIs use explicit CANONICAL rendering. Contextual readers
+    // fix actor/service boundaries before accepting an invocation. Compact
+    // helpers below decode historical records and are not publication paths.
+    std::optional<ndn::Name> parseSvsProducerActor(const ndn::Name& node,
+                                                   const std::string& role);
     ndn::Name makeRequestNameV2(const ndn::Name& requesterName,
                                 const ndn::Name& serviceName,
                                 const ndn::Name& requestId);
     ndn::Name makeRequestNameWithoutPrefixV2(const ndn::Name& serviceName,
                                              const ndn::Name& requestId);
     std::optional<RequestNameV2> parseRequestNameV2(const ndn::Name& requestName);
+    std::optional<RequestNameV2> parseRequestNameV2(
+        const ndn::Name& name, const ndn::Name& expectedRequester,
+        const ndn::Name& expectedService);
 
     ndn::Name makeResponseNameV2(const ndn::Name& providerName,
                                  const ndn::Name& requesterName,
@@ -169,6 +199,9 @@ namespace ndn_service_framework
     // unsegmented V2 name.
     ndn::Name stripTrailingResponseSegments(const ndn::Name& responseName);
     std::optional<ResponseNameV2> parseResponseNameV2(const ndn::Name& responseName);
+    std::optional<ResponseNameV2> parseResponseNameV2(
+        const ndn::Name& name, const ndn::Name& expectedProvider,
+        const ndn::Name& expectedService);
 
     ndn::Name makeRequestAckNameV2(const ndn::Name& providerName,
                                    const ndn::Name& requesterName,
@@ -178,6 +211,9 @@ namespace ndn_service_framework
                                                 const ndn::Name& serviceName,
                                                 const ndn::Name& requestId);
     std::optional<RequestAckNameV2> parseRequestAckNameV2(const ndn::Name& requestAckName);
+    std::optional<RequestAckNameV2> parseRequestAckNameV2(
+        const ndn::Name& name, const ndn::Name& expectedProvider,
+        const ndn::Name& expectedService);
 
     ndn::Name makeServiceSelectionNameV2(const ndn::Name& requesterName,
                                             const ndn::Name& providerName,
@@ -188,6 +224,9 @@ namespace ndn_service_framework
                                                          const ndn::Name& requestId);
     std::optional<ServiceSelectionNameV2>
     parseServiceSelectionNameV2(const ndn::Name& serviceSelectionName);
+    std::optional<ServiceSelectionNameV2> parseServiceSelectionNameV2(
+        const ndn::Name& name, const ndn::Name& expectedRequester,
+        const ndn::Name& expectedService);
     ndn::Name makeServiceSelectionDecisionNameV2(const ndn::Name& requesterName,
                                                  const ndn::Name& providerName,
                                                  const ndn::Name& serviceName,
@@ -200,6 +239,9 @@ namespace ndn_service_framework
                                                  uint64_t attempt);
     std::optional<ServiceSelectionDecisionNameV2>
     parseServiceSelectionDecisionNameV2(const ndn::Name& name);
+    std::optional<ServiceSelectionDecisionNameV2> parseServiceSelectionDecisionNameV2(
+        const ndn::Name& name, const ndn::Name& expectedRequester,
+        const ndn::Name& expectedService);
     ndn::Name makeCompactServiceSelectionNameV2(const ndn::Name& requesterName,
                                                 const ndn::Name& serviceName,
                                                 const ndn::Name& requestId);
@@ -212,6 +254,10 @@ namespace ndn_service_framework
                                                        const ndn::Name& serviceName,
                                                        const std::string& providerToken);
 
+    ndn::Block encodeSelectionStatusQueryParameters(const ndn::Name& service, const std::string& selectionDigest);
+    std::optional<SelectionStatusQueryName>
+    parseSelectionStatusQueryName(const ndn::Interest& interest, const ndn::Name& expectedProvider);
+    // Explicit legacy Name-only grammar; current callers use the contextual Interest overload.
     ndn::Name makeSelectionStatusQueryName(const ndn::Name& providerName,
                                            const ndn::Name& serviceName,
                                            const std::string& selectionDigest);
@@ -237,10 +283,14 @@ namespace ndn_service_framework
                                     uint64_t version,
                                     const std::string& controlHandle);
     std::optional<ProviderReadyName> parseProviderReadyName(const ndn::Name& name);
+    std::optional<ProviderReadyName> parseProviderReadyName(const ndn::Name& name,
+                                                         const ndn::Name& expectedRequester);
     ndn::Name makeExecutionActivateName(const ndn::Name& providerName,
                                         uint64_t version,
                                         const std::string& controlHandle);
     std::optional<ExecutionActivateName> parseExecutionActivateName(const ndn::Name& name);
+    std::optional<ExecutionActivateName> parseExecutionActivateName(const ndn::Name& name,
+                                                                 const ndn::Name& expectedProvider);
 
     ndn::Name makeCollaborationDataName(const ndn::Name& producerName,
                                         const ndn::Name& requesterName,
@@ -250,6 +300,10 @@ namespace ndn_service_framework
                                         uint64_t sequence);
     std::optional<CollaborationDataName>
     parseCollaborationDataName(const ndn::Name& collaborationDataName);
+    /** Strict current reader; Producer comes from the validated SVS actor. */
+    std::optional<CollaborationDataName>
+    parseCollaborationDataName(const ndn::Name& collaborationDataName,
+                               const ndn::Name& expectedProducer);
 
     ndn::Buffer encodeLargeDataReferencePayload(const LargeDataReference& reference);
     std::optional<LargeDataReference> parseLargeDataReferencePayload(const ndn::Buffer& payload);
@@ -275,6 +329,7 @@ namespace ndn_service_framework
     std::shared_ptr<ndn::Buffer> CombineSegmentsIntoBuffer(ndn::nacabe::SPtrVector<ndn::Data> segments);
 
     std::string NameToRegexString(ndn::Name& name);
+    std::string NameToRegexString(const ndn::Name& name);
 
     std::string RandomString(const int len);
 

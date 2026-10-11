@@ -17,7 +17,9 @@ namespace ndnsf::di {
  * Provider-process cache for a fully constructed model runner.
  *
  * The cache key contains the immutable model/role/backend/IO/KV contract and
- * the runner-bound output scopes and bundle tensor names. The caller still
+ * bundle tensor names. ScopeBound additionally includes runner-bound output
+ * scopes; RoleContract requires generic outputs routed by the current worker.
+ * The caller still
  * performs current authorization, Selection, placement and generation checks
  * before lookup. Protected entries hold only a residency lease; request
  * runtimes and content keys are never retained by the cache.
@@ -25,7 +27,14 @@ namespace ndnsf::di {
 class NativeProviderRunnerReuseCache final
 {
 public:
+  enum class OutputBinding { ScopeBound, RoleContract };
+
   explicit NativeProviderRunnerReuseCache(std::size_t maxEntries = 8);
+  // RoleContract requires runners with generic tensor outputs. The current
+  // authenticated role worker owns transport scopes; model/IO/lease checks stay.
+  NativeProviderRunnerReuseCache(std::size_t maxEntries, OutputBinding outputBinding);
+
+  static void prepareRoleContractOutputs(NativeModelRunnerSpec& spec);
 
   std::shared_ptr<NativeModelRunner>
   lookup(const NativeSelectionProjectionV3& projection,

@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
@@ -15,10 +16,12 @@
 
 #include <fstream>
 #include <atomic>
+#include <cfenv>
 #include <future>
 #include <thread>
 #include <algorithm>
 #include <filesystem>
+#include <unistd.h>
 #include <limits>
 #include <random>
 #include <utility>
@@ -130,9 +133,11 @@ struct Input
 
 struct TransportFixture
 {
+  ndn::Name requestService{ "/service" };
   std::vector<std::vector<std::uint8_t>> payloads;
   std::vector<std::string> requests;
   std::vector<std::string> labels;
+  std::vector<ndn_service_framework::PublishedContentName> contentNames;
   std::size_t beginCalls = 0;
   std::size_t abortCalls = 0;
   std::size_t abortedPublications = 0;
@@ -142,12 +147,14 @@ struct TransportFixture
     return {[](auto job) { job(); }, [] { return false; },
       [this] {
         ++beginCalls;
-        return PreparedServiceRequest{ndn::Name("/service"), ndn::Name("/publication-request")};
+        return PreparedServiceRequest{requestService, ndn::Name("/publication-request")};
       },
       [this](const PreparedServiceRequest& request, const std::vector<std::uint8_t>& bytes,
-             const std::string& label, const NativeRequestControl&) {
+             const std::string& label, const ndn_service_framework::PublishedContentName& contentName,
+             const NativeRequestControl&) {
         payloads.push_back(bytes); requests.push_back(request.requestId.toUri());
         labels.push_back(label);
+        contentNames.push_back(contentName);
         LargeDataPublishResult result;
         result.success = true; result.encrypted = true; result.objectId = label;
         result.encryptedDataName = ndn::Name("/encrypted").append(label).appendVersion(1);
@@ -166,6 +173,86 @@ struct TransportFixture
 }
 
 BOOST_AUTO_TEST_SUITE(Spec182CanonicalPublisher)
+BOOST_AUTO_TEST_CASE(PublicationCarriesValidatedModelSemantics)
+{
+  Input input(true); TransportFixture io;
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    io.transport(), input.options, input.resolver());
+  const auto prepared = publisher.prepare(input.model, input.control);
+  BOOST_CHECK(!prepared.rootDataName.empty());
+  BOOST_REQUIRE_EQUAL(io.contentNames.size(), io.labels.size());
+  BOOST_CHECK(!io.contentNames.empty());
+  for (size_t i = 0; i < io.labels.size(); ++i) {
+    const auto& identity = io.contentNames[i];
+    if (io.labels[i] == "di-canonical-source" || io.labels[i] == "di-canonical-root")
+      BOOST_CHECK(identity.kind == ndn_service_framework::ContentDataKind::ModelFile);
+    else if (io.labels[i] == "di-canonical-initializer")
+      BOOST_CHECK(identity.kind == ndn_service_framework::ContentDataKind::Initializer);
+    else BOOST_FAIL("unexpected publication payload role");
+    BOOST_CHECK_EQUAL(identity.modelName, input.model.descriptor.modelName);
+    BOOST_CHECK_EQUAL(identity.modelIdentity, input.model.descriptor.modelDigest().substr(7));
+    const auto name = identity.contentPrefix(ndn::Name("/actual/producer"), std::string(64, 'a'));
+    BOOST_CHECK(name[2] == ndn::name::Component("NDNSF-DI"));
+    BOOST_CHECK(name[3] == ndn::name::Component("model"));
+  }
+}
+BOOST_AUTO_TEST_CASE(LongModelLabelsRetainCompleteSemanticIdentity)
+{
+  Input left, right;
+  left.model.descriptor.modelName = std::string(64, 'm') + "-left";
+  right.model.descriptor.modelName = std::string(64, 'm') + "-right";
+  BOOST_REQUIRE_EQUAL(left.model.descriptor.contentDigest, right.model.descriptor.contentDigest);
+  TransportFixture leftIo, rightIo;
+  auto leftPublisher = NativeCanonicalPublisherTestAccess::create(
+    leftIo.transport(), left.options, left.resolver());
+  auto rightPublisher = NativeCanonicalPublisherTestAccess::create(
+    rightIo.transport(), right.options, right.resolver());
+  leftPublisher.prepare(left.model, left.control);
+  rightPublisher.prepare(right.model, right.control);
+  BOOST_REQUIRE(!leftIo.contentNames.empty());
+  BOOST_REQUIRE(!rightIo.contentNames.empty());
+  const auto& a = leftIo.contentNames.front();
+  const auto& b = rightIo.contentNames.front();
+  BOOST_CHECK(a.modelIdentity != b.modelIdentity);
+  BOOST_CHECK(a.objectIdentity() != b.objectIdentity());
+  BOOST_CHECK(a.contentPrefix(ndn::Name("/producer"), std::string(64, 'a')) !=
+              b.contentPrefix(ndn::Name("/producer"), std::string(64, 'a')));
+}
+
+BOOST_AUTO_TEST_CASE(RequestServiceUsesNameIdentityAndRejectsDifferentService)
+{
+  Input input;
+  TransportFixture io;
+  io.requestService = ndn::Name("/8=service");
+  BOOST_REQUIRE(io.requestService == ndn::Name("/service"));
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    io.transport(), input.options, input.resolver());
+  BOOST_CHECK_NO_THROW(publisher.prepare(input.model, input.control));
+  BOOST_CHECK(!io.payloads.empty());
+  TransportFixture foreign;
+  foreign.requestService = ndn::Name("/different-service");
+  auto rejected = NativeCanonicalPublisherTestAccess::create(
+    foreign.transport(), input.options, input.resolver());
+  BOOST_CHECK_THROW(rejected.prepare(input.model, input.control), std::runtime_error);
+  BOOST_CHECK_EQUAL(foreign.beginCalls, 1U);
+  BOOST_CHECK(foreign.payloads.empty());
+}
+
+BOOST_AUTO_TEST_CASE(PublishedReferencesPreferImmutableManifestNames)
+{
+  Input input; TransportFixture io;
+  io.mutate = [](LargeDataPublishResult& result) {
+    result.manifestName = ndn::Name("/producer/NDNSF/RECEIPT")
+      .append(ndn::name::Component(std::string(32, 'h')));
+  };
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    io.transport(), input.options, input.resolver());
+  const auto prepared = publisher.prepare(input.model, input.control);
+  const auto expected = ndn::Name("/producer/NDNSF/RECEIPT")
+    .append(ndn::name::Component(std::string(32, 'h'))).toUri(ndn::name::UriFormat::CANONICAL);
+  BOOST_CHECK_EQUAL(prepared.rootDataName, expected);
+  BOOST_CHECK_EQUAL(prepared.sourceDataName, expected);
+}
 BOOST_AUTO_TEST_CASE(PreparedReceiptIndexDoesNotRetainServingLeases)
 {
   Input input; TransportFixture io;
@@ -254,7 +341,11 @@ BOOST_AUTO_TEST_CASE(CatalogComposesOwnedInputInspectionRolesAndPublication)
     const auto prepared = preparation->prepareInput(entry.model.descriptor, "inference",
       nativePlanningDigest("input"), nativePlanningDigest("options"), payload, {}, input.control.deadline);
     BOOST_CHECK(prepared.payload == payload);
-    const auto inspected = preparation->inspectModel(prepared);
+    const auto inspectedOwner = preparation->inspectModelShared(prepared);
+    BOOST_REQUIRE(inspectedOwner);
+    const auto& inspected = *inspectedOwner;
+    BOOST_CHECK_EQUAL(preparation->inspectModel(prepared).canonicalSourceDigest,
+                      inspected.canonicalSourceDigest);
     BOOST_CHECK_EQUAL(inspected.canonicalSourceDigest, entry.model.canonicalSourceDigest);
     const auto secondInput = preparation->prepareInput(alternate.model.descriptor, "inference",
       nativePlanningDigest("input"), nativePlanningDigest("options"), payload, {}, input.control.deadline);
@@ -264,6 +355,16 @@ BOOST_AUTO_TEST_CASE(CatalogComposesOwnedInputInspectionRolesAndPublication)
     BOOST_REQUIRE_EQUAL(roles.size(), 1);
     auto proposal = input.proposal(); proposal.roles = roles;
     proposal.roles.front().backend = original.backend;
+    auto invalidCopy = inspected;
+    invalidCopy.graph.nodes.clear();
+    BOOST_CHECK_THROW(preparation->ensureArtifacts(
+                        invalidCopy, input.candidate, proposal, input.control),
+                      std::invalid_argument);
+    auto foreignCandidate = input.candidate;
+    foreignCandidate.graphDigest = nativePlanningDigest("foreign-graph");
+    BOOST_CHECK_THROW(preparation->ensureArtifacts(
+                        inspected, foreignCandidate, proposal, input.control),
+                      std::invalid_argument);
     const auto published = preparation->ensureArtifacts(inspected, input.candidate, proposal, input.control);
     const auto rebound = NativeRequestPreparation::bindPublishedRoles(inspected, input.candidate, proposal.roles, published);
     BOOST_CHECK_EQUAL(assembleNativeCertifiedOnnxModel(entry.source, rebound.front(), control).modelDigest, original.artifactDigest);
@@ -346,7 +447,7 @@ BOOST_AUTO_TEST_CASE(GeneratedMultiLayerModelSplitsAndAssemblesWithCleanup)
   // and the same certified assembly chain used by the worker without
   // downloading a Qwen-sized artifact in a unit test.
   const auto root = std::filesystem::temp_directory_path() /
-                    "spec189-generated-multilayer-fc";
+                    ("spec189-generated-multilayer-fc-" + std::to_string(::getpid()));
   std::error_code cleanupError;
   std::filesystem::remove_all(root, cleanupError);
   struct Cleanup
@@ -517,6 +618,53 @@ BOOST_AUTO_TEST_CASE(GeneratedMultiLayerModelSplitsAndAssemblesWithCleanup)
 
   cleanup.clear();
   BOOST_CHECK(!std::filesystem::exists(root));
+}
+
+BOOST_AUTO_TEST_CASE(CompletedPublicationLookupReusesFrozenRoleInputsWithoutJson)
+{
+  Input input; TransportFixture io;
+  auto publisher = NativeCanonicalPublisherTestAccess::create(io.transport(), input.options, input.resolver());
+  const auto coldBefore = ndnsf::di::detail::fixedAssignmentWork();
+  const auto cold = publisher(input.model, input.candidate, input.roles, input.control);
+  BOOST_CHECK_GT(ndnsf::di::detail::fixedAssignmentWork().roleEncodes, coldBefore.roleEncodes);
+  const auto publications = io.payloads.size();
+  const auto warmBefore = ndnsf::di::detail::fixedAssignmentWork();
+  const auto warm = publisher(input.model, input.candidate, input.roles, input.control);
+  BOOST_CHECK_EQUAL(warm.manifestDigest, cold.manifestDigest);
+  BOOST_CHECK_EQUAL(io.payloads.size(), publications);
+  BOOST_CHECK_EQUAL(ndnsf::di::detail::fixedAssignmentWork().roleEncodes, warmBefore.roleEncodes);
+  BOOST_CHECK_EQUAL(publisher.stats().cacheHits, 1U);
+
+  auto changed = input.candidate;
+  ++changed.selectionPriority;
+  changed.candidateDigest = changed.computedDigest();
+  const auto missBefore = ndnsf::di::detail::fixedAssignmentWork();
+  (void)publisher(input.model, changed, input.roles, input.control);
+  BOOST_CHECK_GT(io.payloads.size(), publications);
+  BOOST_CHECK_GT(ndnsf::di::detail::fixedAssignmentWork().roleEncodes, missBefore.roleEncodes);
+
+  auto invalidRoles = input.roles;
+  invalidRoles[0].artifactDigest = nativePlanningDigest("different-role-artifact");
+  const auto callsBeforeReject = publisher.stats().publicationCalls;
+  BOOST_CHECK_THROW(publisher(input.model, changed, invalidRoles, input.control), std::exception);
+  BOOST_CHECK_EQUAL(publisher.stats().publicationCalls, callsBeforeReject);
+
+  auto cancelled = input.control;
+  unsigned cancellationChecks = 0;
+  cancelled.cancelled = [&] { return ++cancellationChecks > 1; };
+  BOOST_CHECK_THROW(publisher(input.model, changed, input.roles, cancelled), std::exception);
+  BOOST_CHECK_GE(cancellationChecks, 2U);
+
+  struct RestoreRounding {
+    int previous = std::fegetround();
+    ~RestoreRounding() { std::fesetround(previous); }
+  } restoreRounding;
+  for (const auto mode : {FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO}) {
+    BOOST_REQUIRE_EQUAL(std::fesetround(mode), 0);
+    const auto before = ndnsf::di::detail::fixedAssignmentWork();
+    (void)publisher(input.model, changed, input.roles, input.control);
+    BOOST_CHECK_GT(ndnsf::di::detail::fixedAssignmentWork().roleEncodes, before.roleEncodes);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(PublishesOwnedInlineAndExternalSourcesThroughPreparation)
@@ -1172,8 +1320,9 @@ BOOST_AUTO_TEST_CASE(CancellationAfterSourceSuppressesInitializerAndRoot)
   auto transport = io.transport();
   auto publish = transport.publish;
   transport.publish = [&](const PreparedServiceRequest& request, const std::vector<std::uint8_t>& bytes,
-                          const std::string& label, const NativeRequestControl& control) {
-    auto result = publish(request, bytes, label, control);
+                          const std::string& label, const ndn_service_framework::PublishedContentName& contentName,
+                          const NativeRequestControl& control) {
+    auto result = publish(request, bytes, label, contentName, control);
     if (label == "di-canonical-source") {
       cancelled.store(true, std::memory_order_release);
       const auto until = Clock::now() + std::chrono::seconds(2);
@@ -1249,5 +1398,29 @@ BOOST_AUTO_TEST_CASE(UsesRealCoreIoAndEncryptedPublicationWithLocalMockKey)
   const auto receipt = prepared.get();
   BOOST_CHECK(!receipt.servingLeases.empty());
   BOOST_CHECK(!receipt.rootDataName.empty());
+  Input materialInput;
+  NativeAssemblyControl materialControl{materialInput.control.deadline,
+    [&] { materialInput.control.requireActive(); }, 1U << 20, 1U << 20};
+  const auto sourceIdentity = canonicalOnnxSourceIdentity(*materialInput.source, materialControl);
+  materialInput.model.canonicalGraphDigest = sourceIdentity.graphDigest;
+  materialInput.source->materialManifest = deriveNativeCanonicalMaterialManifest(
+    *materialInput.source, materialControl);
+  NativeCanonicalArtifactPublisher materialPublisher(
+    user, "/service", materialInput.options, materialInput.resolver());
+  auto materialPending = std::async(std::launch::async, [&] {
+    return materialPublisher.prepare(materialInput.model, materialInput.control);
+  });
+  while (materialPending.wait_for(std::chrono::milliseconds(1)) != std::future_status::ready) {
+    face.getIoContext().restart(); face.getIoContext().poll();
+  }
+  const auto materialReceipt = materialPending.get();
+  BOOST_REQUIRE(!materialReceipt.materialReceiptDataName.empty());
+  const ndn::Name receiptName(materialReceipt.materialReceiptDataName);
+  const auto expectedReceipt = ndn::Name("/publisher-test/user").append("NDNSF-DI")
+    .append("receipt").append("assembly")
+    .append(ndn::name::Component("name=assembly-receipt-" + materialInput.model.descriptor.modelName));
+  BOOST_CHECK(receiptName.getPrefix(-1) == expectedReceipt);
+  BOOST_CHECK_EQUAL(receiptName.get(-1).type(), 8U);
+  BOOST_CHECK_EQUAL(receiptName.get(-1).value_size(), 32U);
 }
 BOOST_AUTO_TEST_SUITE_END()

@@ -1234,6 +1234,8 @@ class APPClient:
             bytes(payload),
             object_label=object_label,
             freshness_ms=int(freshness_ms),
+            content_name={"kind": "input", "label": object_label,
+                          "input_kind": "application"},
         )
         from ..repo_reference import bind_published_large_data_reference
         reference = bind_published_large_data_reference(
@@ -1603,6 +1605,7 @@ class APPClient:
         dynamic_provisioning=None,
         runtime=None,
         artifact_references=None,
+        local_artifacts=None,
         role_app_requirements=None,
         request_id: str = "",
     ) -> InferenceResult:
@@ -1617,6 +1620,7 @@ class APPClient:
             dynamic_provisioning=dynamic_provisioning,
             runtime=runtime,
             artifact_references=artifact_references,
+            local_artifacts=local_artifacts,
             role_app_requirements=role_app_requirements,
             request_id=request_id,
         ).result(timeout=max(1.0, (timeout_ms + 1_000) / 1000.0))
@@ -1633,6 +1637,7 @@ class APPClient:
         dynamic_provisioning=None,
         runtime=None,
         artifact_references=None,
+        local_artifacts=None,
         role_app_requirements=None,
         on_result=None,
         on_error=None,
@@ -1646,6 +1651,7 @@ class APPClient:
             "dynamic_provisioning": dynamic_provisioning,
             "runtime": runtime,
             "artifact_references": artifact_references,
+            "local_artifacts": dict(local_artifacts) if local_artifacts is not None else None,
             "role_app_requirements": role_app_requirements,
             "deployment_revision": deployment_revision,
         }

@@ -19,6 +19,7 @@
 #include "PolicyRefreshCoordinator.hpp"
 #include "RuntimeStatusStore.hpp"
 #include "EncryptedLargeDataRangeStore.hpp"
+#include "PublishedContentName.hpp"
 
 #include <functional>
 #include <atomic>
@@ -31,6 +32,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <set>
+#include <ndn-cxx/security/interest-signer.hpp>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -231,6 +233,10 @@ namespace ndn_service_framework{
         EncryptedLargeDataRetention retention = EncryptedLargeDataRetention::Transient;
         // Stable, non-secret identity supplied by the native preparation owner.
         std::string publicationIdentity;
+        // Producer-relative semantic manifest prefix, including its namespace.
+        // Empty derives the manifest from the content/representation prefix.
+        ndn::Name manifestSuffix;
+        std::optional<PublishedContentName> contentName;
     };
 
     struct LargeDataPublishResult
@@ -259,6 +265,9 @@ namespace ndn_service_framework{
         // payload bytes are exposed. Timed publications leave this empty.
         std::shared_ptr<void> servingLease;
         bool fileBacked = false;
+        // Immutable producer-owned descriptor and segmented envelope prefix.
+        ndn::Name manifestName;
+        ndn::Name dataPrefix;
     };
 
     /** Bounded file-backed serving counters exposed only for native selectors.
@@ -284,6 +293,7 @@ namespace ndn_service_framework{
 
     class ServiceUser
     {
+        friend struct test::InvocationNamesOracle;
         public:
             /** Queue work on this user's existing Face I/O context.
              * Never invokes inline or starts an event loop. The application
@@ -1371,7 +1381,8 @@ namespace ndn_service_framework{
 
             void PublishServiceSelectionMessageV2(const ndn::Name& providerName,
                                                      const ndn::Name& serviceName,
-                                                     const ndn::Name& requestId);
+                                                     const ndn::Name& requestId,
+                                                     std::function<void(bool)> onPublished = {});
 
             void OnResponseDecryptionErrorCallback(const ndn::Name& providerName,
                                                    const ndn::Name& serviceName,
@@ -1396,14 +1407,23 @@ namespace ndn_service_framework{
 
             void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::nacabe::SPtrVector<ndn::Data>& ckData);
 
-            void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWithoutPrefix, AbstractMessage& message);
+            std::string selectionRetryContext(const ndn::Name& requestId, const ndn::Name& provider) const;
+            std::optional<RequestAckNameV2> parsePendingAckName(const ndn::Name& name) const;
+            std::optional<ResponseNameV2> parsePendingResponseName(const ndn::Name& name) const;
+            void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWithoutPrefix, AbstractMessage& message,
+                                std::function<void(bool, const std::string&)> onPublished = {});
             void publishHybridMessage(const ndn::Name& messageName,
                                       const ndn::Name& messageNameWithoutPrefix,
-                                      AbstractMessage& message);
+                                      AbstractMessage& message,
+                                      std::function<void(bool, const std::string&)> onPublished = {});
             void publishHybridEncodedMessage(const ndn::Name& messageName,
-                                             ndn::Buffer plaintext);
+                                             ndn::Buffer plaintext,
+                                             std::function<void(bool, const std::string&)> onPublished = {});
             bool decryptHybridMessage(const ndn::Name& messageName,
                                       const ndn::Block& envelopeBlock,
+                                      const ndn::Name& expectedActor,
+                                      const ndn::Name& expectedService,
+                                      const ndn::Name& expectedRequestId,
                                       std::function<void(const ndn::Buffer&)> onSuccess,
                                       std::function<void(const std::string&)> onError);
 
@@ -1440,6 +1460,7 @@ namespace ndn_service_framework{
             struct PendingCall;
 
             void PublishCompactServiceSelectionMessageV2(const std::vector<StoredAck>& selectedAcks);
+            void publishSelectionFanout(std::vector<StoredAck> selectedAcks, size_t index);
             bool usesR1ReservationSelection(const PendingCall& pendingCall) const;
             void PublishR1SelectionDecision(const StoredAck& ack, bool selected);
             void closeR1ReservationDecisions(PendingCall& pendingCall);
@@ -1490,6 +1511,7 @@ namespace ndn_service_framework{
                 TimeoutHandler timeoutHandler;
                 ResponseHandler responseHandler;
                 bool hasResponse = false;
+                std::vector<ndn::Name> selectionRequiredProviders;
                 bool admissionPublished = false;
                 bool admissionReleased = false;
                 bool ackTimeoutScheduled = false;
@@ -1570,6 +1592,10 @@ namespace ndn_service_framework{
                 bool trackSelectionStatus = false;
                 SelectionStatusOptions selectionStatusOptions;
                 SelectionStatusTimeoutHandler statusTimeoutHandler;
+                std::map<std::string, std::string> selectionPreparationContextsByProvider;
+                std::map<std::string, ServiceSelectionMessage> preparedSelectionsByProvider;
+                std::map<std::string, std::vector<ndn::Data>> selectionOriginalPacketsByProvider;
+                std::map<std::string, ndn::Name> selectionOuterNamesByProvider;
                 std::map<std::string, std::string> selectionDigestsByProvider;
                 std::map<std::string, SelectionExecutionStatus> selectionStatusesByProvider;
                 std::map<std::string, R1DecisionDelivery> r1DecisionDeliveries;
@@ -1587,6 +1613,8 @@ namespace ndn_service_framework{
             {
                 std::string providerToken;
                 std::string userToken;
+                uint64_t protectedExpiresAtMs = 0;
+                uint64_t registrationGeneration = 0;
             };
 
             struct TargetedTokenPoolControl
@@ -1606,6 +1634,11 @@ namespace ndn_service_framework{
                 std::string recipientCertName;
                 std::string recipientCertDigest;
                 std::string recipientPublicKey;
+                bool protectedCarrierAllowed = false;
+                bool inlineSignedInputAllowed = false;
+                uint64_t expiresAtMs = 0;
+                uint64_t registrationGeneration = 0;
+                ControllerVersion controllerVersion{};
             };
 
             /**
@@ -1672,6 +1705,15 @@ namespace ndn_service_framework{
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 ndn::Buffer& plaintext) const;
+            /** Internal recipient preparation after Controller and authenticated
+             * offer admission; retains per-request keys and plaintext lifetime. */
+            void prepareRequestScopedRecipient(
+                ServiceSelectionMessage& selectionMessage,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                const ndn::Name& providerName,
+                PendingCall& pendingCall,
+                const SelectionInputKeyOffer& offer);
             /**
              * Apply the current service-scoped ControllerVersion to a request
              * before any raw-payload overload publishes it.  The typed and
@@ -1785,6 +1827,10 @@ namespace ndn_service_framework{
             bool popTargetedTokenPair(const ndn::Name& providerName,
                                       const ndn::Name& serviceName,
                                       TargetedTokenPair& pair);
+            bool popProtectedTargetedTokenPair(const ndn::Name& providerName,
+                const ndn::Name& serviceName, const ControllerVersion& version,
+                TargetedTokenPair& pair, TargetedStreamOffer& offer,
+                const std::string& expectedProviderBoot = {});
             void storeTargetedTokenPairs(const ndn::Name& providerName,
                                          const ndn::Name& serviceName,
                                          const ndn_service_framework::ResponseMessage& responseMessage);
@@ -1877,6 +1923,25 @@ namespace ndn_service_framework{
             std::vector<std::string> m_serviceNames;
 
             //ndn::security::Validator nac_validator;
+            ndn::Name currentControllerIdentityForControl() const;
+            std::optional<ndn::Interest> prepareControllerControlQuery(
+                const ndn::Name& producer, const std::string& operation,
+                const ndn::Block& parameters, int attempt);
+            // Face-owned prepared control calls; expiry follows their existing message owner.
+            std::map<ndn::Name, ndn::Interest> m_preparedControlInterests;
+            std::unique_ptr<ndn::security::InterestSigner> m_controlInterestSigner;
+            ndn::KeyChain* m_controlInterestSigningKeyChain = nullptr;
+            // Face-owned original acknowledgements live through the signed call expiry.
+            struct OriginalControlAck {
+                std::shared_ptr<const ndn::Data> packet;
+                ndn::Interest request;
+                uint64_t expiresAtUs;
+            };
+            std::map<ndn::Name, OriginalControlAck> m_originalControlAcks;
+            size_t m_originalControlAckBytes = 0;
+            bool admitOriginalControlAck(const ndn::Name& name, uint64_t expiresAtUs);
+            bool serveOriginalControlAck(const ndn::Interest& request);
+            void publishOriginalControlAck(const ndn::Interest& request, const ndn::Data& packet, uint64_t expiresAtUs);
             ndn::ValidatorConfig nac_validator{m_face};
             ndn::security::Certificate identityCert;
             ndn::security::Certificate signingCert;

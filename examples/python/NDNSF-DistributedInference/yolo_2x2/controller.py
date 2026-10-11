@@ -13,7 +13,14 @@ import threading
 import time
 from pathlib import Path
 
-from ndnsf import ServiceUser
+from ndnsf import (FileSegmentedObjectProducer, SegmentedObjectProducer,
+                   ServiceUser, make_content_data_prefix)
+from ndn.encoding import Component, Name
+from ndnsf_distributed_inference.app_sdk.canonical_artifacts import canonical_model_object_name
+from ndnsf_distributed_inference.naming import (
+    NamingDigestField, canonical_name_uri, compute_naming_digest,
+    make_naming_digest_component,
+)
 from ndnsf_distributed_inference.app_sdk.controller import APPController
 from ndnsf_distributed_inference.app_sdk import (
     APPDeployment,
@@ -275,6 +282,71 @@ def _publish_spec180_runtime(config: str, generated_policy_dir: str,
     return user
 
 
+def _store_original_repo_file(repo, *, path: Path, publisher: str,
+                             object_name: str, object_type: str,
+                             model_name: str = "", model_digest: str = "", label: str,
+                             replication_factor: int, policy_epoch: str):
+    """Publish immutable file packets once and submit their original wire."""
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    profile = json.dumps({"encoding": "raw", "segmentBytes": 4000,
+                          "freshnessMs": 60000}, sort_keys=True, separators=(",", ":"))
+    if model_name:
+        content = canonical_model_object_name(
+            publisher=publisher, model_name=model_name, model_digest=model_digest,
+            object_kind="model-file", object_label=label, object_digest="sha256:" + digest)
+        representation = compute_naming_digest("ndnsf-naming/representation", [
+            NamingDigestField(1, 5, profile.encode("utf-8")),
+        ])
+        data_name = canonical_name_uri(Name.from_str(content) + [
+            Component.from_str("REPRESENTATION"), make_naming_digest_component(representation),
+            Component.from_str("DATA"),
+        ])
+    else:
+        data_name = make_content_data_prefix(publisher, "blob", label, digest, profile)
+    producer = FileSegmentedObjectProducer(
+        data_name, str(path), signing_identity=publisher,
+        max_segment_size=4000, freshness_ms=60000)
+    packets = [producer.packet(i) for i in range(producer.segment_count)]
+    packet_index = json.dumps({
+        "objectName": object_name, "dataName": data_name,
+        "packets": [{"name": packet.name, "segment": packet.segment,
+                     "wireSha256": hashlib.sha256(packet.wire).hexdigest()}
+                    for packet in packets],
+    }, sort_keys=True).encode("utf-8")
+    index_digest = hashlib.sha256(packet_index).hexdigest()
+    index_profile = json.dumps({"encoding": "json", "segmentBytes": 6000,
+                                "freshnessMs": 60000},
+                               sort_keys=True, separators=(",", ":"))
+    index_name = make_content_data_prefix(
+        publisher, "blob", "original-packet-index", index_digest, index_profile)
+    index_producer = SegmentedObjectProducer(
+        index_name, packet_index, signing_identity=publisher,
+        max_segment_size=6000, freshness_ms=60000)
+    try:
+        producer.start()
+        index_producer.start()
+        manifest = repo.store_signed_packets(
+            object_name=object_name, packets=packets, object_type=object_type,
+            object_size=producer.file_size, object_sha256=digest,
+            replication_factor=replication_factor, policy_epoch=policy_epoch,
+            data_name=data_name, packet_manifest_name=index_producer.versioned_name,
+            packet_manifest_sha256=index_digest)
+    finally:
+        try:
+            index_producer.stop()
+        finally:
+            producer.stop()
+    wire_digest = hashlib.sha256()
+    for packet in packets:
+        wire_digest.update(packet.wire)
+    print("YOLO_ORIGINAL_REPO_PACKETS", json.dumps({
+        "object": object_name, "dataPrefix": data_name, "packets": len(packets),
+        "versionedName": producer.versioned_name,
+        "wireSha256": wire_digest.hexdigest(),
+    }, sort_keys=True), flush=True)
+    return manifest
+
+
 def _deploy_artifacts_to_repo(config: str, generated_policy_dir: str,
                               manifest_path: str, replication_factor: int) -> None:
     print("YOLO_2X2_CONTROLLER_REPO_DEPLOY_BEGIN", manifest_path, flush=True)
@@ -305,33 +377,50 @@ def _deploy_artifacts_to_repo(config: str, generated_policy_dir: str,
     print("YOLO_2X2_CONTROLLER_REPO_READY", flush=True)
     service = deployment.service_policy(yolo_inference_service(deployment))
     artifacts = {artifact.role: artifact for artifact in service.artifacts}
+    # The split model identity binds the actual complete role/file set; an
+    # individual shard's payload digest is only its own content identity.
+    model_digest = "sha256:" + compute_naming_digest("ndnsf-naming/yolo-split-model", [
+        NamingDigestField(1, 2, service.model_name.encode("utf-8")),
+        NamingDigestField(2, 5, json.dumps({
+            role: hashlib.sha256(Path(artifact.path).read_bytes()).hexdigest()
+            for role, artifact in artifacts.items()
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")),
+    ])
     runner_payload = build_runner_script()
     runner_hash = hashlib.sha256(runner_payload).hexdigest()[:16]
+    runner_path = Path(manifest_path).with_name("repo-runner.py")
+    runner_path.parent.mkdir(parents=True, exist_ok=True)
+    if not runner_path.exists() or runner_path.read_bytes() != runner_payload:
+        runner_path.write_bytes(runner_payload)
     manifests = {"roles": {}}
     layout = str(service.metadata.get("layout", "2x2"))
+    runner_manifest = None
     for role in service.roles:
         artifact = artifacts[role]
-        model_payload = Path(artifact.path).read_bytes()
         model_object = repo.publisher_object_name(
             "NDNSF-DI/ARTIFACT/AI/YOLO/" + layout + role + "/model"
         )
         runner_object = repo.publisher_object_name(
             "NDNSF-DI/RUNTIME/AI/YOLO/" + layout + "/runner/" + runner_hash
         )
-        model_manifest = repo.store_object(
+        model_manifest = _store_original_repo_file(repo,
+            path=Path(artifact.path), publisher=deployment.controller,
             object_name=model_object,
-            payload=model_payload,
             object_type=artifact.kind or "model",
+            model_name=service.model_name, model_digest=model_digest,
+            label=role + "/model.onnx",
             replication_factor=replication_factor,
             policy_epoch="/Policy/yolo-" + layout + "/v1",
         )
-        runner_manifest = repo.store_object(
-            object_name=runner_object,
-            payload=runner_payload,
-            object_type="runtime-script",
-            replication_factor=replication_factor,
-            policy_epoch="/Policy/yolo-" + layout + "/v1",
-        )
+        if runner_manifest is None:
+            runner_manifest = _store_original_repo_file(repo,
+                path=runner_path, publisher=deployment.controller,
+                object_name=runner_object,
+                object_type="runtime-script",
+                label="yolo-" + layout + "-runner.py",
+                replication_factor=replication_factor,
+                policy_epoch="/Policy/yolo-" + layout + "/v1",
+            )
         manifests["roles"][role] = {
             "model": repo_artifact_reference(
                 model_manifest,

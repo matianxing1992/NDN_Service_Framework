@@ -1,23 +1,80 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "ndn-service-framework/NetworkProbeRate.hpp"
+#include "ndn-service-framework/NetworkProbeCachePolicy.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePlacementObservationExpired.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeTensorTransportDeclaration.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <ctime>
 #include <future>
 #include <initializer_list>
 #include <limits>
 #include <set>
 #include <sstream>
+#include <openssl/evp.h>
 
 namespace ndnsf::di {
+// Only this translation unit can construct the process-local scope snapshot.
+// The public lease remains a value, so also compare it with the original scope.
+class NativeGrantLeaseFixedContext final
+{
+public:
+  NativeGrantLeaseFixedContext(const NativePlacementPlanCore& core, NativeGrantLeaseScope scope)
+    : m_scope(std::move(scope)), m_model(core.modelDigest), m_graph(core.graphDigest),
+      m_manifest(core.artifacts.manifestDigest), m_artifacts(core.artifactDigestByRole),
+      m_fixedCore(core.fixedCoreOwner),
+      m_roles(core.fixedCoreOwner ? std::map<std::string, NativeSelectionRoleV3>{} : core.roleContracts()) {}
+
+  bool matches(const NativePlacementPlanCore& core, const NativeConversationTurn& turn,
+               const NativeSecurityPolicySnapshot& security, const NativeGrantLeaseScope& scope) const
+  {
+    const auto& roles = m_fixedCore ? m_fixedCore->roles() : m_roles;
+    if (m_scope.conversationId != turn.parent.conversationId ||
+        m_scope.expiresAtMs != turn.parent.retentionDeadlineMs ||
+        m_scope.requesterIdentity != core.requesterIdentity ||
+        m_scope.serviceName != core.executionPlan.serviceName ||
+        m_scope.securityPolicySnapshotDigest != security.policyDigest ||
+        m_scope.protectionEpoch != core.protectionEpoch ||
+        m_scope.providerByRole != core.assignment.providerByRole ||
+        m_model != core.modelDigest || m_graph != core.graphDigest ||
+        m_manifest != core.artifacts.manifestDigest || m_artifacts != core.artifactDigestByRole ||
+        roles.size() != core.roleContracts().size() ||
+        scope.conversationId != m_scope.conversationId || scope.requesterIdentity != m_scope.requesterIdentity ||
+        scope.serviceName != m_scope.serviceName || scope.requestId != m_scope.requestId ||
+        scope.attempt != m_scope.attempt || scope.planCoreDigest != m_scope.planCoreDigest ||
+        scope.scopeDigest != m_scope.scopeDigest || scope.expiresAtMs != m_scope.expiresAtMs ||
+        scope.securityPolicySnapshotDigest != m_scope.securityPolicySnapshotDigest ||
+        scope.protectionEpoch != m_scope.protectionEpoch || scope.providerByRole != m_scope.providerByRole)
+      return false;
+    for (const auto& [name, role] : roles) {
+      const auto current = core.roleContracts().find(name);
+      if (current == core.roleContracts().end() || !nativeSelectionRoleContractsEqualV3(role, current->second))
+        return false;
+    }
+    return true;
+  }
+
+  const NativeGrantLeaseScope& scope() const { return m_scope; }
+
+private:
+  NativeGrantLeaseScope m_scope;
+  std::string m_model, m_graph, m_manifest;
+  std::map<std::string, std::string> m_artifacts;
+  std::shared_ptr<const NativeFixedPlacementCoreV1> m_fixedCore;
+  std::map<std::string, NativeSelectionRoleV3> m_roles;
+};
+
 namespace {
 constexpr std::uint64_t MAX_REQUESTER_SAMPLE_AGE_MS = 5000;
 
@@ -451,6 +508,7 @@ void mergeTargetedPlacementProbeRound(
           }
           row["source_digest"] = nativePlanningDigest(nativeCanonicalJson(observation));
           acceptedRows.push_back({{"reported_by", requested.observerProvider},
+                                  {"source_kind", "TARGETED_RESPONSE"},
                                   {"row", std::move(row)}});
         }
         else if (kind == "active_probe_rtt") {
@@ -487,6 +545,7 @@ void mergeTargetedPlacementProbeRound(
           row["source_digest"] = nativePlanningDigest(
             nativeCanonicalJson(row));
           acceptedRows.push_back({{"reported_by", requested.observerProvider},
+                                  {"source_kind", "TARGETED_RESPONSE"},
                                   {"row", std::move(row)}});
         }
         else {
@@ -525,7 +584,8 @@ void mergeTargetedPlacementProbeRound(
         return rows;
       }()}}));
   snapshot.value["expires_at_ms"] = snapshot.expiresAtMs;
-  snapshot.digest = nativePlanningDigest(nativeCanonicalJson(snapshot.value));
+  snapshot.digest = nativePlanningDigest(nativePlacementObservationCanonicalJson(
+    snapshot.value, context.preparedPlanningTemplate.get()));
 }
 
 NativeJson snapshotAckTelemetry(
@@ -661,11 +721,13 @@ void requireObject(const NativeJson& value, const char* field)
 
 void requireExactKeys(const NativeJson& value,
                       std::initializer_list<const char*> required,
-                      const char* field)
+                      const char* field,
+                      std::initializer_list<const char*> optional = {})
 {
   requireObject(value, field);
   std::set<std::string> expected;
   for (const auto* key : required) expected.emplace(key);
+  for (const auto* key : optional) expected.emplace(key);
   for (const auto& item : value.items()) {
     if (!expected.count(item.key()))
       throw std::invalid_argument(std::string(field) + " contains an unknown field");
@@ -704,19 +766,51 @@ std::uint64_t epochMs()
   return static_cast<std::uint64_t>(value);
 }
 
+// This measures only the current planning thread. In particular, grant worker
+// CPU is excluded; wall minus CPU must not be labelled as network duration.
+std::int64_t threadCpuTimeNs() noexcept
+{
+#ifdef CLOCK_THREAD_CPUTIME_ID
+  const auto* enabled = std::getenv("NDNSF_DI_RUNTIME_TIMING");
+  if (enabled == nullptr || *enabled == '\0' || *enabled == '0')
+    return -1;
+  timespec value{};
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) != 0 ||
+      value.tv_sec < 0 || value.tv_nsec < 0 || value.tv_nsec >= 1000000000L ||
+      value.tv_sec > (std::numeric_limits<std::int64_t>::max() - value.tv_nsec) / 1000000000LL)
+    return -1;
+  return static_cast<std::int64_t>(value.tv_sec) * 1000000000LL + value.tv_nsec;
+#else
+  return -1;
+#endif
+}
+
+struct PlanPhaseTiming {
+  std::chrono::steady_clock::time_point wall;
+  std::int64_t threadCpuNs;
+};
+
+PlanPhaseTiming planPhaseStarted() noexcept
+{
+  return {std::chrono::steady_clock::now(), threadCpuTimeNs()};
+}
+
 void
 logPlanPhase(const std::string& requestId, const char* phase,
-             std::chrono::steady_clock::time_point started) noexcept
+             PlanPhaseTiming started) noexcept
 {
   const auto* enabled = std::getenv("NDNSF_DI_RUNTIME_TIMING");
   if (enabled == nullptr || *enabled == '\0' || *enabled == '0')
     return;
   try {
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-      std::chrono::steady_clock::now() - started).count();
+      std::chrono::steady_clock::now() - started.wall).count();
+    const auto cpuEnded = threadCpuTimeNs();
     std::ostringstream record;
     record << "NDNSF_DI_NATIVE_PLAN_PHASE requestId=" << requestId
            << " phase=" << phase << " duration_us=" << elapsed;
+    if (started.threadCpuNs >= 0 && cpuEnded >= started.threadCpuNs)
+      record << " thread_cpu_us=" << (cpuEnded - started.threadCpuNs) / 1000;
     logRuntimeEvidence(record.str());
   }
   catch (...) {
@@ -746,12 +840,26 @@ logPlacementObservationSnapshot(const std::string& requestId,
       const auto expiresAtMs = snapshot.value("expires_at_ms", std::uint64_t{0});
       std::size_t offerCount = 0;
       auto providerOfferProviders = NativeJson::array();
+      auto providerOfferBindings = NativeJson::array();
       if (snapshot.contains("provider_offers") && snapshot["provider_offers"].is_array()) {
         offerCount = snapshot["provider_offers"].size();
         for (const auto& offer : snapshot["provider_offers"]) {
           if (offer.is_object() && offer.contains("provider") &&
-              offer["provider"].is_string())
+              offer["provider"].is_string()) {
             providerOfferProviders.push_back(offer["provider"]);
+            const auto& values = offer.at("values");
+            const auto& resources = values.at("resources");
+            providerOfferBindings.push_back(NativeJson{
+              {"provider", offer.at("provider")},
+              {"boot_epoch", offer.at("boot_epoch")},
+              {"captured_at_ms", offer.at("captured_at_ms")},
+              {"expires_at_ms", offer.at("expires_at_ms")},
+              {"offer_digest", offer.at("offer_digest")},
+              {"ack_wire_digest", offer.at("ack_wire_digest")},
+              {"signer_identity", offer.at("signer_identity")},
+              {"topology_digest", resources.is_object()
+                ? resources.value("topology_digest", NativeJson(nullptr)) : NativeJson(nullptr)}});
+          }
         }
       }
       auto activeProbeRttRows = NativeJson::array();
@@ -765,17 +873,26 @@ logPlacementObservationSnapshot(const std::string& requestId,
               !observation["row"].is_object())
             continue;
           const auto kind = observation["row"].value("kind", std::string{});
+          const auto& row = observation["row"];
+          const auto provenance = [&] (NativeJson summary) {
+            summary["source_kind"] = observation.value("source_kind", std::string{});
+            for (const auto* key : {"captured_at_ms", "expires_at_ms", "observer_peer",
+                 "observer_boot_epoch", "src_boot_epoch", "dst_boot_epoch", "topology_digest"})
+              // Targeted rows have authenticated response bindings rather
+              // than all ACK resource fields. Preserve missing facts as null.
+              summary[key] = row.value(key, NativeJson(nullptr));
+            return summary;
+          };
           if (kind == "ACTIVE_PROBE_RTT") {
             ++rttCount;
-            activeProbeRttRows.push_back(NativeJson{
+            activeProbeRttRows.push_back(provenance(NativeJson{
               {"reported_by", observation.value("reported_by", std::string{})},
               {"src_provider", observation["row"].value("src_peer", std::string{})},
-              {"dst_provider", observation["row"].value("dst_peer", std::string{})}});
+              {"dst_provider", observation["row"].value("dst_peer", std::string{})}}));
           }
           else if (kind == "ACTIVE_PROBE_GOODPUT") {
             ++goodputCount;
-            const auto& row = observation["row"];
-            activeProbeGoodputRows.push_back(NativeJson{
+            activeProbeGoodputRows.push_back(provenance(NativeJson{
               {"reported_by", observation.value("reported_by", std::string{})},
               {"src_provider", row.value("src_peer", std::string{})},
               {"dst_provider", row.value("dst_peer", std::string{})},
@@ -795,7 +912,7 @@ logPlacementObservationSnapshot(const std::string& requestId,
               {"probe_data_arrival_gaps_ms", row.value(
                 "probe_data_arrival_gaps_ms", NativeJson::array())},
               {"probe_data_wire_bytes", row.value(
-                "probe_data_wire_bytes", NativeJson::array())}});
+                "probe_data_wire_bytes", NativeJson::array())}}));
           }
         }
       }
@@ -807,6 +924,7 @@ logPlacementObservationSnapshot(const std::string& requestId,
           ? value.dump() : std::string("truncated");
       };
       record << " capturedAtMs=" << capturedAtMs
+             << " checkedAtMs=" << checkedAtMs
              << " ageMs=" << (capturedAtMs <= checkedAtMs ? checkedAtMs - capturedAtMs : 0)
              << " expiresAtMs=" << expiresAtMs
              << " expiresInMs=" << (expiresAtMs > checkedAtMs ? expiresAtMs - checkedAtMs : 0)
@@ -815,6 +933,7 @@ logPlacementObservationSnapshot(const std::string& requestId,
              << boundedJsonSummary(snapshot.value("provider_roster", NativeJson::array()), 32)
              << " providerOfferProviders="
              << boundedJsonSummary(providerOfferProviders, 32)
+             << " providerOfferBindings=" << boundedJsonSummary(providerOfferBindings, 32)
              << " rttPairs="
              << boundedJsonSummary(snapshot.value("rtt_pairs", NativeJson::array()), 16)
              << " goodputEdges="
@@ -878,7 +997,7 @@ NativeGrantLeaseScope makeGrantLeaseScope(
   scope.providerByRole = core.assignment.providerByRole;
   NativeJson roles = NativeJson::array();
   for (const auto& [role, provider] : core.assignment.providerByRole) {
-    const auto& assembly = core.assemblyByRole.at(role);
+    const auto& assembly = core.roleContracts().at(role);
     roles.push_back(NativeJson{{"role", role}, {"provider", provider},
       {"assembly", nativeAssemblyJson(assembly)},
       {"artifact_digest", core.artifactDigestByRole.at(role)}});
@@ -889,7 +1008,7 @@ NativeGrantLeaseScope makeGrantLeaseScope(
     {"graph_digest", core.graphDigest}, {"manifest_digest", core.artifacts.manifestDigest},
     {"policy_digest", scope.securityPolicySnapshotDigest},
     {"protection_epoch", scope.protectionEpoch}, {"provider_by_role", scope.providerByRole},
-    {"roles", roles}}));
+    {"roles", std::move(roles)}}));
   // The lease request itself is a stable cryptographic context, independent
   // of the current turn's ACK closure, input digest, attempt or plan digest.
   scope.planCoreDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
@@ -1045,7 +1164,8 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
   const auto root = nativeParseJson(configurationJson);
   requireExactKeys(root,
     {"schema", "contract", "requester_identity", "protection_epoch", "input_layout_digest",
-     "security", "budget", "state_mapping", "no_progress_ms", "max_segments"}, "runtime");
+     "security", "budget", "state_mapping", "no_progress_ms", "max_segments"}, "runtime",
+    {"options_transport"});
   if (!root.at("schema").is_string() ||
       root.at("schema").get<std::string>() != "ndnsf-di-native-request-runtime-v1")
     throw std::invalid_argument("unsupported native request runtime schema");
@@ -1064,6 +1184,12 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
   runtime.contract.taskDescriptorDigest = readString(contract.at("task_descriptor_digest"), "runtime.contract.task_descriptor_digest");
   runtime.contract.generationMode = readString(contract.at("generation_mode"), "runtime.contract.generation_mode");
   runtime.contract.tokenizerDigest = readString(contract.at("tokenizer_digest"), "runtime.contract.tokenizer_digest");
+  if (root.contains("options_transport"))
+    runtime.optionsTransport = readString(root.at("options_transport"), "runtime.options_transport");
+  if ((runtime.optionsTransport != "INLINE" &&
+       runtime.optionsTransport != "SELECTION_GENERATION_V1") ||
+      (runtime.optionsTransport != "INLINE" && runtime.contract.generationMode != "TOKEN_STREAMING"))
+    throw std::invalid_argument("unsupported native runtime options transport");
   if (runtime.contract.serviceName.empty() || runtime.contract.serviceName.front() != '/' ||
       runtime.contract.taskName.empty() || runtime.contract.adapterName.empty() ||
       runtime.contract.generationMode.empty())
@@ -1163,8 +1289,13 @@ NativePlannedRequest planNativeRequestImpl(
   const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
   std::shared_ptr<const std::atomic<bool>> cancelled,
   const NativeConversationTurn* conversationTurn,
-  const NativePlacementProbeRoundV1* placementProbeRound)
+  const NativePlacementProbeRoundV1* placementProbeRound,
+  const CooperativeModelSplitStrategy* preparedSplitter,
+  bool observationFallback = false,
+  NativeOfferDecodeCache* decodeCache = nullptr)
 {
+  const detail::ScopedFixedAssignmentWork fixedWork(control.requestId, "user-plan");
+  const auto contextCopyTiming = planPhaseStarted();
   control.requireActive();
   runtime.budget.validate();
   ports.splitterIdentity.validate();
@@ -1193,46 +1324,105 @@ NativePlannedRequest planNativeRequestImpl(
   context.requesterIdentity = encoded.requesterIdentity;
   context.allowedRttPairs = encoded.allowedRttPairs;
   context.allowedGoodputEdges = encoded.allowedGoodputEdges;
-  context.placementProbeRoundCompleted = placementProbeRound != nullptr;
+  context.placementProbeRoundCompleted = placementProbeRound != nullptr || observationFallback;
+  if (observationFallback)
+    context.placementObservationFallbackReason = "SNAPSHOT_STALE";
   if (conversationTurn && conversationTurn->attempt == 1 &&
       conversationTurn->parent.parentContextEpoch > 0)
     context.preferredProvidersByRole = conversationTurn->providersByRole;
+  const bool reusePinnedConversationPlacement = [&] {
+    if (!conversationTurn || conversationTurn->attempt != 1 || encoded.recovery ||
+        conversationTurn->parent.parentContextEpoch == 0 ||
+        conversationTurn->providersByRole.empty() || !conversationTurn->grantLease)
+      return false;
+    const auto& parent = conversationTurn->parent;
+    const auto& scope = conversationTurn->grantLease->scope;
+    return parent.serviceName == runtime.contract.serviceName &&
+      parent.requestContractDigest == encoded.requestContractDigest &&
+      conversationTurn->executionRequestId == context.requestId &&
+      conversationRoleMapDigest(conversationTurn->providersByRole) == parent.planRoleMapDigest &&
+      scope.providerByRole == conversationTurn->providersByRole &&
+      scope.conversationId == parent.conversationId &&
+      scope.requesterIdentity == runtime.requesterIdentity &&
+      scope.serviceName == runtime.contract.serviceName &&
+      scope.securityPolicySnapshotDigest == runtime.security.policyDigest &&
+      scope.protectionEpoch == runtime.protectionEpoch &&
+      scope.expiresAtMs > context.deadlineMs;
+  }();
+  logPlanPhase(control.requestId, "request_context_copy", contextCopyTiming);
   std::vector<NativeAdmittedOfferV3> offers;
-  auto phaseStarted = std::chrono::steady_clock::now();
+  std::map<std::string, std::uint64_t> authenticatedTransportByProvider;
+  auto phaseStarted = planPhaseStarted();
   for (const auto& ack : closure.candidates) {
     if (!ack.ack.getStatus() ||
         (encoded.recovery && ack.providerName.toUri() == encoded.recovery->failedProvider))
       continue;
     offers.push_back(admission.verify(ack, context, epochMs()));
+    if (reusePinnedConversationPlacement && ack.ack.hasProviderCapabilityOffer()) {
+      const auto& fields = ack.ack.getProviderCapabilityOffer();
+      if (fields.hasField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD)) {
+        const auto bytes = detail::nativeTensorTransportSegmentBytesV1(
+          fields.getField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD), ndn::MAX_NDN_PACKET_SIZE);
+        if (bytes != 0)
+          authenticatedTransportByProvider.emplace(
+            offers.back().observation().provider, bytes);
+      }
+    }
   }
   // V4 is a whole-request profile. A missing, duplicate, stale, or invalid
   // Provider offer drops the complete observation set and leaves the request
   // on its existing V3 admission path.
   std::string snapshotUnavailableReason;
+  if (runtime.planningCache &&
+      sameStrategyIdentity(runtime.planningCache->splitter, ports.splitterIdentity))
+    context.preparedPlanningTemplate =
+      runtime.planningCache->validatedTemplate(model, preparedSplitter);
   std::optional<NativePlacementObservationSnapshotV4> placementSnapshot;
   NativeJson requestTransferProfile;
   if (runtime.planningCache && options.generation && options.generation->enabled &&
-      (!conversationTurn || conversationTurn->parent.parentContextEpoch == 0)) {
+      !encoded.recovery) {
     for (const auto& profile : runtime.planningCache->requestTransferProfiles) {
-      if (profile.value("input_digest", std::string{}) == encoded.logicalInputDigest &&
+      if ((!conversationTurn || conversationTurn->parent.parentContextEpoch == 0) &&
+          profile.value("input_digest", std::string{}) == encoded.logicalInputDigest &&
           profile.value("source_digest", std::string{}) == model.canonicalSourceDigest) {
         requestTransferProfile = profile;
         requestTransferProfile["request_contract_digest"] = encoded.requestContractDigest;
         break;
       }
     }
+    if (requestTransferProfile.is_null()) {
+      for (const auto& profile : runtime.planningCache->requestTransferProfiles) {
+        if (auto bound = bindNativeRequestTransferProfileV1(
+              profile, model.canonicalSourceDigest, encoded, conversationTurn)) {
+          requestTransferProfile = std::move(*bound);
+          requestTransferProfile["request_contract_digest"] = encoded.requestContractDigest;
+          break;
+        }
+      }
+    }
   }
-  if (!encoded.recovery && runtime.planningCache &&
+  if (!reusePinnedConversationPlacement && !observationFallback && !encoded.recovery && runtime.planningCache &&
       sameStrategyIdentity(runtime.planningCache->splitter, ports.splitterIdentity)) {
+    const auto decodeReusesBefore = decodeCache ? decodeCache->decodeReuseCount() : 0;
     placementSnapshot = trySelectNativePlacementObservationSnapshotV4(
       context, closure, admission, *runtime.planningCache,
       runtime.budget.maxCandidates, epochMs(), &model.graph,
       &snapshotUnavailableReason,
-      requestTransferProfile.is_null() ? nullptr : &requestTransferProfile);
+      requestTransferProfile.is_null() ? nullptr : &requestTransferProfile, decodeCache);
+    if (decodeCache)
+      logRuntimeEvidence("NDNSF_DI_NATIVE_V4_DECODE_REUSE requestId=" + control.requestId +
+        " reused=" + std::to_string(decodeCache->decodeReuseCount() - decodeReusesBefore));
     if (placementSnapshot) {
-      context.placementObservationSnapshot = placementSnapshot->value;
+      // Keep the JSON request-owned until freshness and probe merging finish.
+      // These checks consume context's scope fields, not its snapshot payload.
       context.placementObservationSnapshotDigest = placementSnapshot->digest;
     }
+  }
+  else if (reusePinnedConversationPlacement) {
+    snapshotUnavailableReason = "PINNED_CONVERSATION_PLAN_REUSED";
+  }
+  else if (observationFallback) {
+    snapshotUnavailableReason = "SNAPSHOT_STALE";
   }
   else if (encoded.recovery) {
     snapshotUnavailableReason = "RECOVERY_REQUEST";
@@ -1245,6 +1435,7 @@ NativePlannedRequest planNativeRequestImpl(
   }
   logPlanPhase(control.requestId, "admission_verify", phaseStarted);
   if (offers.empty()) throw std::runtime_error("DI_NATIVE_NO_ADMITTED_PROVIDER");
+  const auto observationMergeTiming = planPhaseStarted();
   const auto policyStart = std::chrono::steady_clock::now();
   const auto budgetDeadline = policyStart +
     std::chrono::milliseconds(runtime.budget.maxPolicyMs);
@@ -1253,7 +1444,7 @@ NativePlannedRequest planNativeRequestImpl(
   const auto snapshotCheckedAtMs = epochMs();
   if (!context.placementObservationSnapshotDigest.empty()) {
     const auto nowMs = snapshotCheckedAtMs;
-    const auto snapshotExpiry = context.placementObservationSnapshot.value(
+    const auto snapshotExpiry = placementSnapshot->value.value(
       "expires_at_ms", std::uint64_t{0});
     if (snapshotExpiry > context.deadlineMs)
       throw std::runtime_error("DI_NATIVE_OBSERVATION_SNAPSHOT_EXPIRED");
@@ -1263,18 +1454,12 @@ NativePlannedRequest planNativeRequestImpl(
       context.placementObservationFallbackReason = "SNAPSHOT_STALE";
       snapshotUnavailableReason = "SNAPSHOT_STALE";
     }
-    else {
-      const auto snapshotDeadline = std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(snapshotExpiry - nowMs);
-      strategyDeadline = std::min(strategyDeadline, snapshotDeadline);
-    }
   }
-  if (placementProbeRound) {
+  if (placementProbeRound && !observationFallback) {
     validatePlacementProbeIntent(placementProbeRound->intent, context);
-      if (placementSnapshot && !context.placementObservationSnapshotDigest.empty()) {
-      *placementSnapshot = mergeNativePlacementProbeRoundV1(
+    if (placementSnapshot && !context.placementObservationSnapshotDigest.empty()) {
+      mergeTargetedPlacementProbeRound(
         *placementSnapshot, *placementProbeRound, context, snapshotCheckedAtMs);
-      context.placementObservationSnapshot = placementSnapshot->value;
       context.placementObservationSnapshotDigest = placementSnapshot->digest;
       if (placementSnapshot->expiresAtMs <= snapshotCheckedAtMs) {
         context.placementObservationSnapshot = nullptr;
@@ -1282,26 +1467,36 @@ NativePlannedRequest planNativeRequestImpl(
         context.placementObservationFallbackReason = "TARGETED_PROBE_SNAPSHOT_STALE";
         snapshotUnavailableReason = "TARGETED_PROBE_SNAPSHOT_STALE";
       }
-      else {
-        const auto targetedDeadline = std::chrono::steady_clock::now() +
-          std::chrono::milliseconds(placementSnapshot->expiresAtMs - snapshotCheckedAtMs);
-        strategyDeadline = std::min(strategyDeadline, targetedDeadline);
-      }
     }
   }
+  if (placementSnapshot && !context.placementObservationSnapshotDigest.empty())
+    context.placementObservationSnapshot = std::move(placementSnapshot->value);
+  // Policy/cancellation and observation freshness are distinct bounds. Check
+  // the original epoch expiry at each decision/publication boundary; never
+  // turn an old sample into a shorter deadline for the whole request.
+  const auto requireFreshObservation = [&] {
+    if (!context.placementObservationSnapshotDigest.empty() &&
+        context.placementObservationSnapshot.at("expires_at_ms").get<std::uint64_t>() <= epochMs())
+      throw detail::NativePlacementObservationExpired();
+  };
   const ExtensionControl extensionControl{strategyDeadline, control.cancelled};
   extensionControl.requireActive();
+  logPlanPhase(control.requestId, "observation_merge_control", observationMergeTiming);
   bool usingPreparedPlanningCache = false;
+  std::shared_ptr<const NativePreparedPlanningTemplate> preparedTemplate;
   std::vector<NativeSplitCandidate> candidates;
-  phaseStarted = std::chrono::steady_clock::now();
+  phaseStarted = planPhaseStarted();
   if (runtime.planningCache &&
       sameStrategyIdentity(runtime.planningCache->splitter, ports.splitterIdentity)) {
     usingPreparedPlanningCache = true;
-    const auto& prepared = runtime.planningCache->candidates;
-    const auto count = std::min(prepared.size(), runtime.budget.maxCandidates);
-    candidates.reserve(count);
-    for (std::size_t i = 0; i < count; ++i)
-      candidates.push_back(prepared[i].candidate);
+    preparedTemplate = runtime.planningCache->validatedTemplate(model, preparedSplitter);
+    if (!preparedTemplate) {
+      const auto& prepared = runtime.planningCache->candidates;
+      const auto count = std::min(prepared.size(), runtime.budget.maxCandidates);
+      candidates.reserve(count);
+      for (std::size_t i = 0; i < count; ++i)
+        candidates.push_back(prepared[i].candidate);
+    }
   }
   else {
     candidates = ports.enumerate(model.descriptor, model.graph, runtime.budget,
@@ -1313,17 +1508,36 @@ NativePlannedRequest planNativeRequestImpl(
   const auto policyLimit = std::chrono::milliseconds(runtime.budget.maxPolicyMs);
   if (policyUsed > policyLimit)
     throw std::runtime_error("DI_NATIVE_POLICY_BUDGET_EXCEEDED");
-  if (candidates.empty() || candidates.size() > runtime.budget.maxCandidates)
+  const auto candidateCount = preparedTemplate
+    ? std::min(preparedTemplate->candidates().size(), runtime.budget.maxCandidates)
+    : candidates.size();
+  if (candidateCount == 0 || candidateCount > runtime.budget.maxCandidates)
     throw std::runtime_error("DI_NATIVE_CANDIDATE_BUDGET_REJECTED");
+  if (preparedTemplate)
+    logRuntimeEvidence("NDNSF_DI_NATIVE_PLANNING_TEMPLATE requestId=" + control.requestId +
+      " reused=1 candidates=" + std::to_string(candidateCount));
 
   // The splitter supplies its deterministic candidate preference order. No
   // artifact publication happens until one complete placement is validated.
-  for (auto candidate : candidates) {
+  try {
+  for (std::size_t candidateIndex = 0; candidateIndex < candidateCount; ++candidateIndex) {
+    const auto candidateCopyTiming = planPhaseStarted();
+    // Keep one request-local candidate before handing it to publication
+    // callbacks. Their mutable aliases must never poison the static template.
+    std::optional<NativeSplitCandidate> candidateCopy;
+    candidateCopy.emplace(preparedTemplate
+      ? preparedTemplate->candidates()[candidateIndex].candidate : candidates[candidateIndex]);
+    const auto& candidate = *candidateCopy;
     control.requireActive();
     if (!sameStrategyIdentity(candidate.splitter, ports.splitterIdentity))
       throw std::invalid_argument("native splitter returned a foreign strategy identity");
     std::vector<NativeSelectionRoleV3> roles;
-    if (usingPreparedPlanningCache) {
+    if (preparedTemplate) {
+      // The factory owns exactly this model/splitter/candidate/role contract.
+      // Keep a local role copy before invoking the external placement port.
+      roles = preparedTemplate->candidates()[candidateIndex].roles;
+    }
+    else if (usingPreparedPlanningCache) {
       const auto found = std::find_if(runtime.planningCache->candidates.begin(),
         runtime.planningCache->candidates.end(), [&](const auto& prepared) {
           return prepared.candidate.candidateDigest == candidate.candidateDigest;
@@ -1335,16 +1549,31 @@ NativePlannedRequest planNativeRequestImpl(
       NativeRequestPreparation::validateRoles(model, candidate, roles);
     }
     else {
-      expandStateContractsFromCatalog(candidate, runtime.stateMapping, model.descriptor);
+      expandStateContractsFromCatalog(*candidateCopy, runtime.stateMapping, model.descriptor);
       if (runtime.catalog)
-        candidate = runtime.catalog->bindStateContracts(model, candidate, runtime.stateMapping, control);
+        *candidateCopy = runtime.catalog->bindStateContracts(model, candidate, runtime.stateMapping, control);
       roles = preparation.prepareRoles(model, candidate, control);
     }
+    logPlanPhase(control.requestId, "candidate_role_copy", candidateCopyTiming);
     NativeRolePlacementProposalV3 proposal;
+    auto expectedPlacementIdentity = ports.placementIdentity;
     const auto placementStart = std::chrono::steady_clock::now();
+    const PlanPhaseTiming placementTiming{placementStart, threadCpuTimeNs()};
     try {
-      proposal = ports.proposeRoles(context, closure.digest, roles, offers, epochMs(),
-                                    extensionControl);
+      if (reusePinnedConversationPlacement) {
+        // The Conversation owner already pinned this assignment. Current ACK
+        // admission and feasibility remain authoritative for this new turn.
+        const NativeFixedProviderPlacement pinnedPlacement(conversationTurn->providersByRole);
+        expectedPlacementIdentity = pinnedPlacement.identity();
+        proposal = pinnedPlacement.proposeRoles(
+          context, closure.digest, roles, offers, epochMs(), extensionControl);
+        logRuntimeEvidence("NDNSF_DI_NATIVE_WARM_PLAN_REUSE requestId=" + control.requestId +
+          " status=REUSED_PINNED_CONVERSATION_PLACEMENT");
+      }
+      else {
+        proposal = ports.proposeRoles(context, closure.digest, roles, offers, epochMs(),
+                                      extensionControl);
+      }
     }
     catch (const NativeNoFeasiblePlacement&) {
       policyUsed += std::chrono::steady_clock::now() - placementStart;
@@ -1361,52 +1590,69 @@ NativePlannedRequest planNativeRequestImpl(
           proposal.placementDecisionV4->value("status", std::string{}) ==
             "BASELINE_FALLBACK"))
       throw std::runtime_error("DI_NATIVE_POLICY_BUDGET_EXCEEDED");
-    if (!sameStrategyIdentity(proposal.strategy, ports.placementIdentity))
+    if (!sameStrategyIdentity(proposal.strategy, expectedPlacementIdentity))
       throw std::invalid_argument("native placement returned a foreign strategy identity");
     if (!sameOfferBindingContext(proposal.context, context))
       throw std::invalid_argument("native placement modified the admitted request snapshot");
+    // A legacy strategy need not carry the optional encoding hint. Reattach
+    // our pin only after its actual current context has passed equality.
+    proposal.context.preparedPlanningTemplate = context.preparedPlanningTemplate;
     if (policyBudgetFallback) control.requireActive();
     else extensionControl.requireActive();
-    validateNativeRolePlacement(proposal, roles, offers, epochMs());
-    logPlanPhase(control.requestId, "placement_and_role_validation", placementStart);
+    // Pin one immutable cache candidate through the current publication and
+    // sealing checks; replacement of the shared cache cannot change it.
+    const auto previousFixedCore = runtime.fixedRoleAssignments
+      ? runtime.fixedRoleAssignments->placementCore(runtime.requesterIdentity, runtime.contract.serviceName)
+      : std::shared_ptr<const NativeFixedPlacementCoreV1>{};
+    if (previousFixedCore)
+      validateNativeRolePlacementWithFixedCore(proposal, roles, *previousFixedCore, offers, epochMs());
+    else validateNativeRolePlacement(proposal, roles, offers, epochMs());
+    requireFreshObservation();
+    logPlanPhase(control.requestId, "placement_and_role_validation", placementTiming);
+    const auto executionPrepareTiming = planPhaseStarted();
     if (proposal.placementProbeIntent) {
       if (placementProbeRound || context.placementProbeRoundCompleted)
         throw std::invalid_argument("placement strategy requested a second probe round");
       validatePlacementProbeIntent(*proposal.placementProbeIntent, context);
       NativePlannedRequest deferred;
       deferred.placementProbeIntent = proposal.placementProbeIntent;
+      if (!context.placementObservationSnapshotDigest.empty())
+        deferred.placementProbeCacheContext =
+          std::make_shared<const NativeOfferBindingContext>(std::move(context));
+      logPlanPhase(control.requestId, "execution_prepare", executionPrepareTiming);
       return deferred; // No artifacts, grants, or plan publication before targeted facts arrive.
     }
-    logPlacementObservationSnapshot(control.requestId,
-      context.placementObservationSnapshot,
-      context.placementObservationSnapshotDigest, snapshotCheckedAtMs,
-      snapshotUnavailableReason);
-    if (proposal.placementDecisionV4) {
-      logRuntimeEvidence(
-        "NDNSF_DI_NATIVE_PLACEMENT_DECISION requestId=" + control.requestId +
-        " strategy=" + proposal.strategy.name +
-        " decisionJson=" + nativeCanonicalJson(*proposal.placementDecisionV4));
-    }
-    NativeExecutionPlan execution = candidate.executionPlan;
+    const auto matchesPreparedExecution = [&] {
+      if (!preparedTemplate) return false;
+      const auto& expected = preparedTemplate->execution(candidateIndex).roles;
+      if (expected.size() != proposal.roles.size()) return false;
+      for (std::size_t i = 0; i < expected.size(); ++i)
+        if (expected[i] != proposal.roles[i].selectedRole) return false;
+      return true;
+    }();
+    NativeExecutionPlan execution = matchesPreparedExecution
+      ? preparedTemplate->execution(candidateIndex) : candidate.executionPlan;
     execution.serviceName = runtime.contract.serviceName;
     execution.modelName = model.descriptor.modelName;
-    execution.roles.clear();
-    std::map<std::string, std::vector<std::string>> selectedByStage;
-    for (const auto& role : proposal.roles) {
-      execution.roles.push_back(role.selectedRole);
-      selectedByStage[role.role].push_back(role.selectedRole);
-    }
-    const auto expand = [&](const std::vector<std::string>& stages) {
-      std::vector<std::string> result;
-      for (const auto& stage : stages) {
-        const auto& selected = selectedByStage.at(stage);
-        result.insert(result.end(), selected.begin(), selected.end());
+    if (!matchesPreparedExecution) {
+      execution.roles.clear();
+      std::map<std::string, std::vector<std::string>> selectedByStage;
+      for (const auto& role : proposal.roles) {
+        execution.roles.push_back(role.selectedRole);
+        selectedByStage[role.role].push_back(role.selectedRole);
       }
-      return result;
-    };
-    for (auto& dependency : execution.dependencies) {
-      dependency.producers = expand(dependency.producers);
-      dependency.consumers = expand(dependency.consumers);
+      const auto expand = [&](const std::vector<std::string>& stages) {
+        std::vector<std::string> result;
+        for (const auto& stage : stages) {
+          const auto& selected = selectedByStage.at(stage);
+          result.insert(result.end(), selected.begin(), selected.end());
+        }
+        return result;
+      };
+      for (auto& dependency : execution.dependencies) {
+        dependency.producers = expand(dependency.producers);
+        dependency.consumers = expand(dependency.consumers);
+      }
     }
     if (options.generation) {
       if (!options.stream || !options.generation->enabled ||
@@ -1496,10 +1742,13 @@ NativePlannedRequest planNativeRequestImpl(
     }
     if (policyBudgetFallback) control.requireActive();
     else extensionControl.requireActive();
+    requireFreshObservation();
     NativePlanSealingInputs sealing;
-    phaseStarted = std::chrono::steady_clock::now();
+    logPlanPhase(control.requestId, "execution_prepare", executionPrepareTiming);
+    phaseStarted = planPhaseStarted();
     sealing.artifacts = preparation.ensureArtifacts(model, candidate, proposal, control);
     logPlanPhase(control.requestId, "artifact_binding", phaseStarted);
+    const auto sealingInputTiming = planPhaseStarted();
     sealing.requesterIdentity = runtime.requesterIdentity;
     sealing.protectionEpoch = runtime.protectionEpoch;
     // Observation expiry bounds the placement decision. Once that decision is
@@ -1513,27 +1762,59 @@ NativePlannedRequest planNativeRequestImpl(
       sealing.generationContract = *options.generation;
       sealing.generationContract.streamingOperationStride = execution.streamingOperationStride;
     }
-    // Keep the proposal's prepared role metadata for the sealer's preflight
-    // placement check.  NativePlanSealer performs the authenticated
-    // publication rebinding immediately after that check and stores only the
-    // certified role identities in the final Core.
-    for (const auto& role : roles)
-      sealing.assemblyByRole.emplace(role.selectedRole, role);
+    // The sealer consumes this isolated vector synchronously; it never stores
+    // the borrowed pointer in the returned core or its immutable cache.
+    sealing.borrowedPreparedRoles = &roles;
+    sealing.previousFixedCore = previousFixedCore;
     if (policyBudgetFallback) control.requireActive();
     else extensionControl.requireActive();
-    phaseStarted = std::chrono::steady_clock::now();
+    requireFreshObservation();
+    logPlanPhase(control.requestId, "sealing_input_prepare", sealingInputTiming);
+    phaseStarted = planPhaseStarted();
     auto core = NativePlanSealer::sealCore(model, candidate, proposal, execution, offers, closure.digest, sealing);
+    if (runtime.fixedRoleAssignments) {
+      const auto& previous = sealing.previousFixedCore;
+      core = NativePlanSealer::shareFixedCore(std::move(core), previous);
+      runtime.fixedRoleAssignments->rememberPlacementCore(runtime.requesterIdentity, runtime.contract.serviceName,
+        core.fixedCoreOwner);
+      logRuntimeEvidence("NDNSF_DI_FIXED_CORE_OWNER requestId=" + control.requestId +
+        " reused=" + (previous == core.fixedCoreOwner ? "1" : "0") +
+        " sealed_from_cache=" + (core.reusedFixedCore ? "1" : "0"));
+    }
+    requireFreshObservation();
     logPlanPhase(control.requestId, "plan_seal_core", phaseStarted);
+    const auto evidenceRenderTiming = planPhaseStarted();
+    // Only an accepted sealed decision is final evidence. Discarded attempts
+    // must not be mistaken for the baseline pass's committed placement.
+    logPlacementObservationSnapshot(control.requestId,
+      context.placementObservationSnapshot,
+      context.placementObservationSnapshotDigest, epochMs(),
+      snapshotUnavailableReason);
+    if (proposal.placementDecisionV4) {
+      logRuntimeEvidence(
+        "NDNSF_DI_NATIVE_PLACEMENT_DECISION requestId=" + control.requestId +
+        " strategy=" + proposal.strategy.name +
+        " decisionJson=" + nativeCanonicalJson(*proposal.placementDecisionV4));
+    }
+    logPlanPhase(control.requestId, "placement_evidence_render", evidenceRenderTiming);
     std::optional<NativeGrantLeaseScope> grantLeaseScope;
     std::optional<NativeGrantLease> grantLease;
     bool reusedGrantLease = false;
     if (conversationTurn) {
-      auto wanted = makeGrantLeaseScope(core, *conversationTurn, runtime.security);
+      const auto previous = conversationTurn->grantLease ? &*conversationTurn->grantLease : nullptr;
+      const bool scopeReused = previous && previous->fixedContext && previous->fixedContext->matches(
+        core, *conversationTurn, runtime.security, previous->scope);
+      auto wanted = scopeReused ? previous->fixedContext->scope()
+        : makeGrantLeaseScope(core, *conversationTurn, runtime.security);
+      logRuntimeEvidence("NDNSF_DI_GRANT_SCOPE requestId=" + control.requestId +
+        " reused=" + (scopeReused ? "1" : "0"));
       if (wanted.expiresAtMs <= sealing.expiresAtMs)
         throw std::runtime_error("DI_NATIVE_CONVERSATION_RETENTION_SHORTER_THAN_REQUEST");
       if (conversationTurn->grantLease && grantLeaseCovers(
             *conversationTurn->grantLease, wanted, core.expiresAtMs, core)) {
         grantLease = *conversationTurn->grantLease;
+        if (!scopeReused)
+          grantLease->fixedContext = std::make_shared<const NativeGrantLeaseFixedContext>(core, wanted);
         grantLeaseScope = grantLease->scope;
         reusedGrantLease = true;
       }
@@ -1541,12 +1822,14 @@ NativePlannedRequest planNativeRequestImpl(
         grantLeaseScope = std::move(wanted);
         grantLease.emplace();
         grantLease->scope = *grantLeaseScope;
+        grantLease->fixedContext = scopeReused ? previous->fixedContext
+          : std::make_shared<const NativeGrantLeaseFixedContext>(core, *grantLeaseScope);
       }
     }
     std::vector<NativeGrantBinding> grants;
     NativeGrantControl grantControl{std::chrono::system_clock::time_point(
       std::chrono::milliseconds(core.expiresAtMs)), cancelled};
-    phaseStarted = std::chrono::steady_clock::now();
+    phaseStarted = planPhaseStarted();
     if (reusedGrantLease) {
       grants = grantLease->grants;
       logPlanPhase(control.requestId, "grant_lease_hit", phaseStarted);
@@ -1599,55 +1882,140 @@ NativePlannedRequest planNativeRequestImpl(
                  reusedGrantLease ? "grant_lease_reuse" : "grant_acquire",
                  phaseStarted);
     NativePlannedRequest result;
-    result.sealed = NativePlanSealer::finalizeSecurity(core, grants, runtime.security,
-                                                       grantLeaseScope);
-    result.grantLease = grantLease;
+    phaseStarted = planPhaseStarted();
+    const auto ownedSealed = NativePlanSealer::finalizeSecurityOwned(
+      core, grants, runtime.security, grantLeaseScope);
+    // Only current values are copied; fixed roles stay pinned in their owner.
+    // This public context does not carry the owned sealed-plan proof.
+    result.sealed = ownedSealed.invocationContext();
+    logPlanPhase(control.requestId, "security_finalize", phaseStarted);
     NativeProjectionContext projection{epochMs(), runtime.noProgressMs, runtime.maxSegments};
     projection.logicalInputDigest = encoded.logicalInputDigest;
     projection.inputLayoutDigest = runtime.inputLayoutDigest;
+    projection.inlineFirstSegment = true;
+    if (grantLease) projection.layoutOwner = &grantLease->projectionLayout;
+    projection.tensorSegmentBytesByProvider = std::move(authenticatedTransportByProvider);
+    if (context.placementObservationSnapshot.is_object() &&
+        context.placementObservationSnapshot.contains("provider_offers")) {
+      for (const auto& offer : context.placementObservationSnapshot.at("provider_offers")) {
+        if (offer.contains("tensor_segment_payload_bytes") &&
+            offer.at("tensor_segment_payload_bytes").is_number_unsigned()) {
+          const auto bytes = offer.at("tensor_segment_payload_bytes").get<std::uint64_t>();
+          if (bytes != 0 && bytes <= ndn::MAX_NDN_PACKET_SIZE)
+            projection.tensorSegmentBytesByProvider.emplace(
+              offer.at("provider").get<std::string>(), bytes);
+        }
+      }
+    }
+    if (!requestTransferProfile.is_null()) {
+      for (std::size_t index = 0; index < execution.dependencies.size(); ++index) {
+        const auto& dependency = execution.dependencies[index];
+        const auto bytes = estimateNativeRequestTransferEncodedBytesV1(
+          requestTransferProfile, model.canonicalSourceDigest,
+          encoded.logicalInputDigest, dependency, proposal.roles);
+        if (!bytes) continue;
+        for (const auto& row : requestTransferProfile.at("dependencies")) {
+          if (row.at("producer_role") != dependency.producers.front() ||
+              row.at("consumer_role") != dependency.consumers.front()) continue;
+          std::vector<std::string> names;
+          for (const auto& tensor : row.at("tensors"))
+            names.push_back(tensor.at("name").get<std::string>());
+          std::sort(names.begin(), names.end());
+          projection.tensorPrefetchByDependency.emplace(index,
+            NativeTensorPrefetchEstimate{*bytes, std::move(names)});
+        }
+      }
+    }
     std::map<std::string, NativeRoleProjectionInputs> projections;
-    phaseStarted = std::chrono::steady_clock::now();
+    phaseStarted = planPhaseStarted();
     if (execution.dependencies.empty())
-      projections = NativePlanProjectionBuilder::build(result.sealed, candidate, offers, projection);
+      projections = NativePlanProjectionBuilder::build(ownedSealed, candidate, offers, projection);
     else {
       std::vector<ndn_service_framework::AckSelectionCandidate> selectedAcks;
       for (const auto& ack : closure.candidates)
         if (core.offerDigestByProvider.count(ack.providerName.toUri())) selectedAcks.push_back(ack);
       NativeGroupKeyAdmission keys(admission, selectedAcks, context, epochMs());
-      projections = NativeGroupProjectionBuilder::build(result.sealed, candidate, keys, projection);
+      projections = NativeGroupProjectionBuilder::build(ownedSealed, candidate, keys, projection);
     }
     logPlanPhase(control.requestId, "projection_build", phaseStarted);
+    result.grantLease = grantLease;
     if (conversationTurn) {
+      phaseStarted = planPhaseStarted();
       bindConversationProjections(projections, result.sealed, *conversationTurn,
         encoded.requestContractDigest, runtime.contract.serviceName,
         core.assignment.providerByRole);
+      logPlanPhase(control.requestId, "conversation_projection_binding", phaseStarted);
     }
+    phaseStarted = planPhaseStarted();
     auto& plan = result.corePlan;
     plan.ackCollectionTimeMs = static_cast<int>(options.ackTimeoutMs);
     plan.timeoutMs = static_cast<int>(options.timeoutMs);
     std::vector<ndn_service_framework::SelectedParticipant> selected;
+    std::map<std::string, std::vector<std::uint8_t>> roleWires;
+    if (!runtime.fixedRoleSourcePublisher) {
+      roleWires = NativePlanSealer::projectAndEncodeAll(ownedSealed, projections);
+    }
+    else {
+      if (!runtime.fixedRoleAssignments)
+        throw std::invalid_argument("fixed role publisher requires its runtime cache");
+      for (const auto& role : execution.roles) {
+        control.requireActive();
+        const auto& provider = core.assignment.providerByRole.at(role);
+        auto fixed = runtime.fixedRoleAssignments->findMatching(
+          runtime.requesterIdentity, runtime.contract.serviceName, provider, core.roleContracts().at(role));
+        auto invocation = NativePlanSealer::projectInvocation(
+          ownedSealed, provider, projections.at(role), fixed.get());
+        if (fixed && !fixed->matchesExecutionTemplate(invocation)) fixed.reset();
+        const bool hit = bool(fixed);
+        if (!fixed) {
+          fixed = runtime.fixedRoleAssignments->remember(runtime.requesterIdentity,
+            runtime.contract.serviceName, nativeFixedRoleAssignmentV1FromProjection(invocation));
+          invocation.fixedRoleOwner = fixed->roleOwner();
+          invocation.fixedExecutionTemplateOwner = fixed->executionTemplate();
+          invocation.selectedRole = {};
+          invocation.assembly = {};
+        }
+        auto source = runtime.fixedRoleAssignments->source(
+          runtime.requesterIdentity, runtime.contract.serviceName, *fixed);
+        if (!source) {
+          auto published = runtime.fixedRoleSourcePublisher(invocation, *fixed, control);
+          control.requireActive();
+          source = runtime.fixedRoleAssignments->rememberSource(runtime.requesterIdentity,
+            runtime.contract.serviceName, *fixed, std::move(published));
+        }
+        const auto wire = nativeSelectionInvocationV1ToJson(invocation, *fixed, source.get());
+        if (wire.size() > (4U << 20))
+          throw std::invalid_argument("invocation exceeds external assignment wire limit");
+        roleWires.emplace(role, std::vector<std::uint8_t>(wire.begin(), wire.end()));
+        result.fixedRoleSources.push_back(source);
+        result.fixedAssignments.push_back(fixed);
+        logRuntimeEvidence("NDNSF_DI_FIXED_ROLE_USER requestId=" + control.requestId +
+          " role=" + role + " cacheHit=" + (hit ? "1" : "0") + " digest=" + fixed->digest());
+      }
+    }
     for (const auto& role : execution.roles) {
       const auto& provider = core.assignment.providerByRole.at(role);
       const auto ack = std::find_if(closure.candidates.begin(), closure.candidates.end(), [&](const auto& value) {
         return value.providerName.toUri() == provider;
       });
       if (ack == closure.candidates.end()) throw std::invalid_argument("selected provider is outside ACK closure");
-      const auto wire = NativePlanSealer::encode(NativePlanSealer::project(result.sealed, provider, projections.at(role)));
       ndn_service_framework::CollaborationRoleSpec spec;
       spec.role = role; spec.service = ndn::Name(runtime.contract.serviceName);
       spec.requiredArtifact = ndn::Name(core.artifacts.artifactNameByRole.at(role));
-      spec.assignmentPayload = ndn::Buffer(wire.begin(), wire.end());
+      spec.assignmentPayload.swap(roleWires.at(role));
       spec.terminalResponseOwner = projections.at(role).dataflow.terminalResponseOwner;
       if (spec.terminalResponseOwner) result.terminalProvider = provider;
-      plan.roles.push_back(spec);
       ndn_service_framework::SelectedParticipant participant;
       participant.role = role; participant.service = spec.service; participant.provider = ndn::Name(provider);
       participant.assignedArtifact = spec.requiredArtifact; participant.assignmentPayload = spec.assignmentPayload;
       participant.ack = *ack;
       participant.artifactDataName = core.artifacts.artifactPrefetchRequired
         ? ndn::Name(core.artifacts.sourceByRole.at(role)) : ndn::Name();
+      plan.roles.push_back(std::move(spec));
       selected.push_back(std::move(participant));
     }
+    logPlanPhase(control.requestId, "selection_roles_build", phaseStarted);
+    phaseStarted = planPhaseStarted();
     std::map<std::string, std::set<std::string>> scopes;
     for (const auto& edge : execution.dependencies) {
       plan.dependencies.push_back({edge.producers, edge.consumers, edge.keyScope, ndn::Name(edge.topicPrefix), true});
@@ -1661,21 +2029,191 @@ NativePlannedRequest planNativeRequestImpl(
     }
     plan.participantSelector = std::make_shared<const FrozenSelection>(std::move(selected));
     control.requireActive();
+    logPlanPhase(control.requestId, "core_plan_finalize", phaseStarted);
     return result;
   }
   throw std::runtime_error("DI_NATIVE_NO_FEASIBLE_CANDIDATE");
+  }
+  catch (const detail::NativePlacementObservationExpired&) {
+    // One full, independently validated baseline pass. Publication can already
+    // have happened, but no grants or final plan have been issued before seal.
+    // Carry the original absolute policy deadline into the fallback pass.
+    control.requireActive();
+    if (observationFallback) throw;
+    extensionControl.requireActive();
+    auto fallbackControl = control;
+    fallbackControl.deadline = strategyDeadline;
+    logRuntimeEvidence("NDNSF_DI_NATIVE_PLACEMENT_OBSERVATION_FALLBACK requestId=" +
+      control.requestId + " reason=SNAPSHOT_STALE");
+    return planNativeRequestImpl(runtime, options, model, encoded, ports, preparation,
+      admission, closure, fallbackControl, wireDeadlineMs, cancelled,
+      conversationTurn, nullptr, preparedSplitter, true, decodeCache);
+  }
 }
 
 } // namespace
 
-std::optional<std::uint64_t> estimateNativeRequestTransferBytesV1(
+std::optional<NativeJson> bindNativeRequestTransferProfileV1(
   const NativeJson& profile, const std::string& sourceDigest,
-  const std::string& inputDigest, const NativeDependencySpec& dependency,
-  const std::vector<NativeSelectionRoleV3>& roles)
+  const NativeEncodedRequest& request)
+{
+  return bindNativeRequestTransferProfileV1(profile, sourceDigest, request, nullptr);
+}
+
+std::optional<NativeJson> bindNativeRequestTransferProfileV1(
+  const NativeJson& profile, const std::string& sourceDigest,
+  const NativeEncodedRequest& request, const NativeConversationTurn* turn)
 {
   try {
-    if (profile.value("schema", std::string{}) != "ndnsf-di-request-transfer-profile-v1" ||
-        !profile.value("initial_context", false) || !isDigestValue(sourceDigest) ||
+    if (request.recovery || !isDigestValue(sourceDigest) ||
+        !isDigestValue(request.logicalInputDigest) ||
+        profile.value("schema", std::string{}) != "ndnsf-di-request-transfer-profile-v1" ||
+        profile.at("source_digest") != sourceDigest ||
+        !profile.value("initial_context", false) || !profile.contains("shape_template") ||
+        request.wire.size() > (32ULL << 20)) return std::nullopt;
+    const auto& shapeTemplate = profile.at("shape_template");
+    const auto& bindings = shapeTemplate.at("bindings");
+    const auto& constants = shapeTemplate.at("constants");
+    const auto& dependencies = shapeTemplate.at("dependencies");
+    if (!bindings.is_array() || bindings.size() > 32 ||
+        !constants.is_object() || constants.size() > 32 ||
+        !dependencies.is_array() || dependencies.empty() || dependencies.size() > 64)
+      return std::nullopt;
+    const auto envelope = NativeJson::parse(request.wire.begin(), request.wire.end());
+    std::uint64_t pastTokens = 0;
+    const bool continued = turn && turn->parent.parentContextEpoch > 0;
+    if (continued) {
+      if (turn->aborted || turn->ticket.empty() || turn->attempt != 1 ||
+          turn->parent.mode != "APPEND_DELTA" ||
+          turn->parent.requestContractDigest != request.requestContractDigest ||
+          !isDigestValue(request.requestContractDigest) ||
+          !isDigestValue(turn->parent.parentCheckpointDigest) ||
+          turn->parent.parentCheckpointWire.size() > (4ULL << 20)) return std::nullopt;
+      const auto checkpoint = NativeJson::parse(turn->parent.parentCheckpointWire);
+      if (checkpoint.at("conversationId") != turn->parent.conversationId ||
+          checkpoint.at("contextEpoch") != turn->parent.parentContextEpoch ||
+          checkpoint.at("checkpointDigest") != turn->parent.parentCheckpointDigest ||
+          checkpoint.at("planRoleMapDigest") != turn->parent.planRoleMapDigest ||
+          !checkpoint.at("prefixTokenCount").is_number_integer()) return std::nullopt;
+      const auto count = checkpoint.at("prefixTokenCount").get<std::int64_t>();
+      if (count <= 0 || count > 1024 * 1024) return std::nullopt;
+      pastTokens = static_cast<std::uint64_t>(count);
+      if (envelope.at("request_id") != turn->requestId ||
+          nativePlanningDigest(request.wire.data(), request.wire.size()) != request.requestContractDigest)
+        return std::nullopt;
+    }
+    if (envelope.value("schema", std::string{}) != "ndnsf-di-request-envelope-v2" ||
+        envelope.value("input_transport", std::string{}) != "INLINE") return std::nullopt;
+    const auto base64 = envelope.at("input_payload_b64").get<std::string>();
+    if (base64.empty() || base64.size() % 4 || base64.size() > 4 * (((16ULL << 20) + 2) / 3))
+      return std::nullopt;
+    std::vector<std::uint8_t> payload(3 * (base64.size() / 4));
+    const auto decoded = EVP_DecodeBlock(payload.data(),
+      reinterpret_cast<const unsigned char*>(base64.data()), static_cast<int>(base64.size()));
+    const auto padding = (base64.back() == '=') + (base64[base64.size() - 2] == '=');
+    if (decoded < padding) return std::nullopt;
+    payload.resize(static_cast<std::size_t>(decoded - padding));
+    if (payload.size() > (16ULL << 20) ||
+        nativePlanningDigest(payload.data(), payload.size()) != request.logicalInputDigest)
+      return std::nullopt;
+    const auto tensors = decodeTensorBundle(payload);
+    std::map<std::string, std::int64_t> values;
+    for (auto it = constants.begin(); it != constants.end(); ++it) {
+      if (it.key().empty() || it.key().size() > 128 || !it.value().is_number_integer())
+        return std::nullopt;
+      const auto value = it.value().get<std::int64_t>();
+      if (value < 0) return std::nullopt;
+      values.emplace(it.key(), value);
+    }
+    if (continued) {
+      const auto symbol = shapeTemplate.at("past_sequence_symbol").get<std::string>();
+      const auto value = values.find(symbol);
+      if (symbol.empty() || value == values.end() || value->second != 0) return std::nullopt;
+      value->second = static_cast<std::int64_t>(pastTokens);
+    }
+    for (const auto& binding : bindings) {
+      const auto symbol = binding.at("symbol").get<std::string>();
+      const auto name = binding.at("tensor").get<std::string>();
+      if (symbol.empty() || symbol.size() > 128 || !binding.at("axis").is_number_integer())
+        return std::nullopt;
+      const auto signedAxis = binding.at("axis").get<std::int64_t>();
+      if (signedAxis < 0) return std::nullopt;
+      const auto axis = static_cast<std::size_t>(signedAxis);
+      const auto tensor = std::find_if(tensors.begin(), tensors.end(),
+        [&](const auto& candidate) { return candidate.name == name; });
+      if (tensor == tensors.end() || axis >= tensor->shape.size() || tensor->shape[axis] <= 0 ||
+          !values.emplace(symbol, tensor->shape[axis]).second) return std::nullopt;
+    }
+    std::size_t expressionNodes = 0;
+    std::function<std::int64_t(const NativeJson&, unsigned)> resolve;
+    resolve = [&](const NativeJson& expression, unsigned depth) -> std::int64_t {
+      if (depth > 16 || ++expressionNodes > 4096)
+        throw std::invalid_argument("shape expression budget exceeded");
+      if (expression.is_number_integer()) {
+        const auto value = expression.get<std::int64_t>();
+        if (value < 0) throw std::invalid_argument("negative shape expression");
+        return value;
+      }
+      if (expression.is_string()) return values.at(expression.get<std::string>());
+      if (!expression.is_object() || expression.size() != 1 ||
+          !expression.contains("add") || !expression.at("add").is_array() ||
+          expression.at("add").size() != 2)
+        throw std::invalid_argument("unsupported shape expression");
+      const auto left = resolve(expression.at("add")[0], depth + 1);
+      const auto right = resolve(expression.at("add")[1], depth + 1);
+      if (right > std::numeric_limits<std::int64_t>::max() - left)
+        throw std::invalid_argument("shape expression overflow");
+      return left + right;
+    };
+    auto bound = profile;
+    bound.erase("shape_template");
+    bound["input_digest"] = request.logicalInputDigest;
+    bound["dependencies"] = dependencies;
+    if (continued) {
+      bound["schema"] = "ndnsf-di-request-transfer-profile-v2";
+      bound["initial_context"] = false;
+      bound["request_contract_digest"] = request.requestContractDigest;
+      bound["parent_context_epoch"] = turn->parent.parentContextEpoch;
+      bound["parent_checkpoint_digest"] = turn->parent.parentCheckpointDigest;
+      bound["past_sequence_length"] = pastTokens;
+    }
+    for (auto& dependency : bound["dependencies"]) {
+      auto& members = dependency.at("tensors");
+      if (!members.is_array() || members.empty() || members.size() > 128) return std::nullopt;
+      for (auto& member : members) {
+        auto& shape = member.at("shape");
+        if (!shape.is_array() || shape.size() > 16) return std::nullopt;
+        for (auto& dimension : shape) {
+          const auto size = resolve(dimension, 0);
+          if (size <= 0) return std::nullopt;
+          dimension = size;
+        }
+      }
+    }
+    return bound;
+  }
+  catch (const std::exception&) { return std::nullopt; }
+}
+
+static std::optional<std::uint64_t> estimateRequestTransferBytes(
+  const NativeJson& profile, const std::string& sourceDigest,
+  const std::string& inputDigest, const NativeDependencySpec& dependency,
+  const std::vector<NativeSelectionRoleV3>& roles, bool includeFraming)
+{
+  try {
+    const auto schema = profile.value("schema", std::string{});
+    const bool initial = schema == "ndnsf-di-request-transfer-profile-v1" &&
+      profile.value("initial_context", false);
+    const bool continued = schema == "ndnsf-di-request-transfer-profile-v2" &&
+      !profile.value("initial_context", true) &&
+      isDigestValue(profile.value("request_contract_digest", std::string{})) &&
+      isDigestValue(profile.value("parent_checkpoint_digest", std::string{})) &&
+      profile.at("parent_context_epoch").is_number_integer() &&
+      profile.at("parent_context_epoch").get<std::int64_t>() > 0 &&
+      profile.at("past_sequence_length").is_number_integer() &&
+      profile.at("past_sequence_length").get<std::int64_t>() > 0 &&
+      profile.at("past_sequence_length").get<std::int64_t>() <= 1024 * 1024;
+    if ((!initial && !continued) || !isDigestValue(sourceDigest) ||
         !isDigestValue(inputDigest) || profile.at("source_digest") != sourceDigest ||
         profile.at("input_digest") != inputDigest || dependency.producers.size() != 1 ||
         dependency.consumers.size() != 1 || dependency.tensors.size() != 1 ||
@@ -1721,6 +2259,8 @@ std::optional<std::uint64_t> estimateNativeRequestTransferBytesV1(
       {"float32", 4}, {"float16", 2}, {"int64", 8}, {"bool", 1}, {"uint8", 1}};
     std::set<std::string> seen;
     std::uint64_t total = 0;
+    std::vector<TensorBundleEncodingMember> members;
+    if (includeFraming) members.reserve(shared.size());
     for (const auto& tensor : selected->at("tensors")) {
       const auto name = tensor.at("name").get<std::string>();
       const auto found = shared.find(name);
@@ -1742,10 +2282,28 @@ std::optional<std::uint64_t> estimateNativeRequestTransferBytesV1(
       }
       if (bytes > std::numeric_limits<std::uint64_t>::max() - total) return std::nullopt;
       total += bytes;
+      if (includeFraming)
+        members.push_back({name.size(), found->second.shape.size(), bytes});
     }
-    return total;
+    return includeFraming ? tensorBundleEncodedSize(members) : total;
   }
   catch (const std::exception&) { return std::nullopt; }
+}
+
+std::optional<std::uint64_t> estimateNativeRequestTransferBytesV1(
+  const NativeJson& profile, const std::string& sourceDigest,
+  const std::string& inputDigest, const NativeDependencySpec& dependency,
+  const std::vector<NativeSelectionRoleV3>& roles)
+{
+  return estimateRequestTransferBytes(profile, sourceDigest, inputDigest, dependency, roles, false);
+}
+
+std::optional<std::uint64_t> estimateNativeRequestTransferEncodedBytesV1(
+  const NativeJson& profile, const std::string& sourceDigest,
+  const std::string& inputDigest, const NativeDependencySpec& dependency,
+  const std::vector<NativeSelectionRoleV3>& roles)
+{
+  return estimateRequestTransferBytes(profile, sourceDigest, inputDigest, dependency, roles, true);
 }
 
 NativePlacementObservationSnapshotV4
@@ -1758,6 +2316,70 @@ mergeNativePlacementProbeRoundV1(
   auto result = original;
   mergeTargetedPlacementProbeRound(result, round, context, nowMs);
   return result;
+}
+
+bool isCompleteNativePlacementProbeCacheResponseV1(
+  const NativeOfferBindingContext& context,
+  const NativePlacementProbeObserverV1& observer,
+  const std::string& nonce, const NativeJson& response,
+  const std::uint64_t nowMs)
+{
+  try {
+    const auto& ack = context.placementObservationSnapshot;
+    if (context.placementObservationSnapshotDigest.empty() ||
+        context.deadlineMs <= nowMs ||
+        ack.at("expires_at_ms").get<std::uint64_t>() <= nowMs ||
+        !response.at("cache_complete").get<bool>() ||
+        response.at("omitted_rtt_count").get<std::uint64_t>() != 0 ||
+        response.at("omitted_goodput_count").get<std::uint64_t>() != 0)
+      return false;
+    for (const auto& offer : ack.at("provider_offers"))
+      if (offer.at("expires_at_ms").get<std::uint64_t>() <= nowMs)
+        return false;
+    for (const auto& row : response.at("observations")) {
+      const auto observed = row.at("observed_at_ms").get<std::uint64_t>();
+      if (observed > nowMs || nowMs - observed >=
+            ndn_service_framework::NETWORK_PROBE_CACHE_MAX_AGE_MS)
+        return false;
+    }
+
+    NativePlacementProbeRoundV1 round;
+    round.intent.observers.push_back(observer);
+    round.intentNonceByObserver.emplace(observer.observerProvider, nonce);
+    round.responseByObserver.emplace(observer.observerProvider, response);
+    NativePlacementObservationSnapshotV4 snapshot;
+    // Count only rows admitted from this reply, never previously cached ACK rows.
+    snapshot.value = {{"provider_offers", ack.at("provider_offers")},
+                      {"eligible_link_observations", NativeJson::array()}};
+    snapshot.expiresAtMs = ack.at("expires_at_ms").get<std::uint64_t>();
+    const auto merged = mergeNativePlacementProbeRoundV1(snapshot, round, context, nowMs);
+    if (merged.expiresAtMs <= nowMs) return false;
+    std::set<std::pair<std::string, std::string>> rtt, goodput;
+    for (const auto& item : merged.value.at("eligible_link_observations")) {
+      if (item.at("source_kind") != "TARGETED_RESPONSE" ||
+          item.at("reported_by") != observer.observerProvider)
+        return false;
+      const auto& row = item.at("row");
+      const auto edge = std::make_pair(row.at("src_peer").get<std::string>(),
+                                      row.at("dst_peer").get<std::string>());
+      if (row.at("kind") == "ACTIVE_PROBE_RTT") {
+        if (!rtt.insert(edge).second) return false;
+      }
+      else if (row.at("kind") == "ACTIVE_PROBE_GOODPUT") {
+        if (row.value("probe_rate_status", std::string{}) != "MEASURED_GOODPUT" ||
+            !goodput.insert(edge).second)
+          return false;
+      }
+      else return false;
+    }
+    std::set<std::pair<std::string, std::string>> expectedRtt, expectedGoodput;
+    for (const auto& edge : observer.rttPairs)
+      expectedRtt.emplace(edge.sourceProvider, edge.destinationProvider);
+    for (const auto& edge : observer.goodputEdges)
+      expectedGoodput.emplace(edge.sourceProvider, edge.destinationProvider);
+    return rtt == expectedRtt && goodput == expectedGoodput;
+  }
+  catch (const std::exception&) { return false; }
 }
 
 NativePlacementObservationSnapshotV4
@@ -1795,18 +2417,19 @@ buildNativePlacementObservationSnapshotV4(
 
   const auto preparedInventory = buildNativeCandidateArtifactInventoryV4(
     planningCache, maxCandidates);
-  if (!preparedInventory || preparedInventory->digest !=
-        context.candidateArtifactSetDigest ||
-      nativeCanonicalJson(NativeJson(preparedInventory->identities)) !=
-        nativeCanonicalJson(NativeJson(context.candidateArtifacts)))
+  if (!preparedInventory || preparedInventory->digest != context.candidateArtifactSetDigest)
     throw std::invalid_argument("V4 prepared graph differs from the advertised inventory");
 
-  NativeJson candidateArtifacts = NativeJson::array();
-  for (const auto& identity : context.candidateArtifacts)
-    candidateArtifacts.push_back(identity);
+  const auto preparedArtifactWire = nativeCanonicalJson(NativeJson(preparedInventory->identities));
+  const NativeJson candidateArtifacts(context.candidateArtifacts);
+  // Both checks bind the same immutable invocation-local inventory. Preserve
+  // exact canonical equality and digest verification without rendering twice.
+  const auto candidateArtifactWire = nativeCanonicalJson(candidateArtifacts);
+  if (preparedArtifactWire != candidateArtifactWire)
+    throw std::invalid_argument("V4 prepared graph differs from the advertised inventory");
   if (candidateArtifacts.empty() ||
       candidateArtifacts.size() > MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS ||
-      nativePlanningDigest(nativeCanonicalJson(candidateArtifacts)) !=
+      nativePlanningDigest(candidateArtifactWire) !=
         context.candidateArtifactSetDigest ||
       nativePlanningDigest(nativeCanonicalJson(NativeJson(context.candidateProviders))) !=
         context.candidateSetDigest)
@@ -1882,6 +2505,9 @@ buildNativePlacementObservationSnapshotV4(
       {"signer_key_locator", admitted.signerKeyLocator()},
       {"ack_wire_digest", admitted.ackWireDigest()},
       {"values", offer.values}});
+    if (admitted.tensorSegmentBytes() != 0)
+      providerOfferValues.back()["tensor_segment_payload_bytes"] =
+        admitted.tensorSegmentBytes();
   }
 
   std::vector<NativeJson> orderedSamples = requesterProviderSamples;
@@ -1943,7 +2569,7 @@ buildNativePlacementObservationSnapshotV4(
             MAX_PROVIDER_OBSERVATION_AGE_MS)
         throw std::invalid_argument("V4 link sample time is invalid");
       eligibleLinkObservations.push_back(NativeJson{
-        {"reported_by", offer.provider}, {"row", row}});
+        {"reported_by", offer.provider}, {"source_kind", "ACK_CACHE"}, {"row", row}});
       expiresAtMs = std::min(expiresAtMs,
         row.at("expires_at_ms").get<std::uint64_t>());
       expiresAtMs = std::min(expiresAtMs,
@@ -1961,19 +2587,20 @@ buildNativePlacementObservationSnapshotV4(
         !isDigestValue(candidate.graphDigest))
       throw std::invalid_argument("V4 prepared candidate graph identity is invalid");
     NativeJson roles = NativeJson::array();
-    for (const auto& role : prepared.roles)
+    if (const auto* cached = planningCache.preparedRoleJson(i)) roles = *cached;
+    else for (const auto& role : prepared.roles)
       roles.push_back(nativeAssemblyJson(role));
     NativeJson dependencyEdges = NativeJson::array();
     for (const auto& dependency : candidate.executionPlan.dependencies) {
       auto byteEstimate = dependencyByteEstimate(dependency, modelGraph);
       if (byteEstimate.first.is_null() && requestTransferProfile) {
-        const auto bytes = estimateNativeRequestTransferBytesV1(
+        const auto bytes = estimateNativeRequestTransferEncodedBytesV1(
           *requestTransferProfile,
           requestTransferProfile->value("source_digest", std::string{}),
           requestTransferProfile->value("input_digest", std::string{}),
           dependency, prepared.roles);
         if (bytes)
-          byteEstimate = {NativeJson(*bytes), "request-bound-bundle-payload"};
+          byteEstimate = {NativeJson(*bytes), "request-bound-encoded-tensor-bundle"};
       }
       for (const auto& producer : dependency.producers) {
         for (const auto& consumer : dependency.consumers) {
@@ -2031,7 +2658,8 @@ buildNativePlacementObservationSnapshotV4(
       throw std::invalid_argument("request transfer profile lacks request binding");
     result.value["request_transfer_profile"] = *requestTransferProfile;
   }
-  result.digest = nativePlanningDigest(nativeCanonicalJson(result.value));
+  result.digest = nativePlanningDigest(nativePlacementObservationCanonicalJson(
+    result.value, context.preparedPlanningTemplate.get()));
   return result;
 }
 
@@ -2046,6 +2674,21 @@ trySelectNativePlacementObservationSnapshotV4(
   const NativeGraphSnapshot* modelGraph,
   std::string* unavailableReason,
   const NativeJson* requestTransferProfile)
+{
+  return trySelectNativePlacementObservationSnapshotV4(context, closure, admission,
+    planningCache, maxCandidates, nowMs, modelGraph, unavailableReason,
+    requestTransferProfile, nullptr);
+}
+
+std::optional<NativePlacementObservationSnapshotV4>
+trySelectNativePlacementObservationSnapshotV4(
+  const NativeOfferBindingContext& context,
+  const ndn_service_framework::CollaborationAckClosure& closure,
+  const NativeOfferAdmission& admission,
+  const NativePreparedPlanningCache& planningCache,
+  const std::size_t maxCandidates, const std::uint64_t nowMs,
+  const NativeGraphSnapshot* modelGraph, std::string* unavailableReason,
+  const NativeJson* requestTransferProfile, NativeOfferDecodeCache* decodeCache)
 {
   if (unavailableReason)
     unavailableReason->clear();
@@ -2117,14 +2760,11 @@ trySelectNativePlacementObservationSnapshotV4(
 
   std::vector<NativeAdmittedOfferV4> verifiedOffers;
   try {
-    verifiedOffers.reserve(closure.candidates.size());
-    for (const auto& ack : closure.candidates) {
-      if (!ack.ack.hasProviderCapabilityOffer() ||
-          !ack.ack.getProviderCapabilityOffer().hasField(
-            NATIVE_PROVIDER_OFFER_V4_FIELD))
-        return reject("PROVIDER_V4_OFFER_MISSING");
-      verifiedOffers.push_back(admission.verifyV4(ack, context, nowMs));
-    }
+    std::string offerUnavailableReason;
+    auto admitted = admission.tryVerifyV4Batch(
+      closure.candidates, context, nowMs, &offerUnavailableReason, decodeCache);
+    if (!admitted) return reject(offerUnavailableReason.c_str());
+    verifiedOffers = std::move(*admitted);
   }
   catch (const std::exception&) {
     return reject("PROVIDER_V4_OFFER_REJECTED");
@@ -2179,6 +2819,23 @@ NativePlannedRequest planNativeRequest(
   const NativeConversationTurn* conversationTurn,
   const NativePlacementProbeRoundV1* placementProbeRound)
 {
+  return planNativeRequest(runtime, options, model, encoded, splitter, placement,
+    preparation, admission, closure, control, wireDeadlineMs, std::move(cancelled),
+    conversationTurn, placementProbeRound, nullptr);
+}
+
+NativePlannedRequest planNativeRequest(
+  const NativeRequestRuntime& runtime, const NativeRequestOptions& options,
+  const NativeInspectedModel& model, const NativeEncodedRequest& encoded,
+  const NativeModelSplitStrategy& splitter, const NativePlacementStrategy& placement,
+  const NativeRequestPreparation& preparation, const NativeOfferAdmission& admission,
+  const ndn_service_framework::CollaborationAckClosure& closure,
+  const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
+  std::shared_ptr<const std::atomic<bool>> cancelled,
+  const NativeConversationTurn* conversationTurn,
+  const NativePlacementProbeRoundV1* placementProbeRound,
+  NativeOfferDecodeCache* decodeCache)
+{
   NativeStrategyPorts ports;
   ports.splitterIdentity = splitter.identity();
   ports.placementIdentity = placement.identity();
@@ -2205,7 +2862,13 @@ NativePlannedRequest planNativeRequest(
   return planNativeRequestImpl(runtime, options, model, encoded, ports, preparation,
                                admission, closure, control, wireDeadlineMs,
                                std::move(cancelled), conversationTurn,
-                               placementProbeRound);
+                               // Catalog splitters implement both interfaces. Reuse
+                               // their exact owned template through the legacy SDK
+                               // entry too; a foreign/custom object still fails the
+                               // template's model and splitter pointer checks.
+                               placementProbeRound,
+                               dynamic_cast<const CooperativeModelSplitStrategy*>(&splitter),
+                               false, decodeCache);
 }
 
 NativePlannedRequest planNativeRequestCooperative(
@@ -2219,6 +2882,24 @@ NativePlannedRequest planNativeRequestCooperative(
   std::shared_ptr<const std::atomic<bool>> cancelled,
   const NativeConversationTurn* conversationTurn,
   const NativePlacementProbeRoundV1* placementProbeRound)
+{
+  return planNativeRequestCooperative(runtime, options, model, encoded, splitter,
+    placement, preparation, admission, closure, control, wireDeadlineMs,
+    std::move(cancelled), conversationTurn, placementProbeRound, nullptr);
+}
+
+NativePlannedRequest planNativeRequestCooperative(
+  const NativeRequestRuntime& runtime, const NativeRequestOptions& options,
+  const NativeInspectedModel& model, const NativeEncodedRequest& encoded,
+  const CooperativeModelSplitStrategy& splitter,
+  const CooperativePlacementStrategy& placement,
+  const NativeRequestPreparation& preparation, const NativeOfferAdmission& admission,
+  const ndn_service_framework::CollaborationAckClosure& closure,
+  const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
+  std::shared_ptr<const std::atomic<bool>> cancelled,
+  const NativeConversationTurn* conversationTurn,
+  const NativePlacementProbeRoundV1* placementProbeRound,
+  NativeOfferDecodeCache* decodeCache)
 {
   NativeStrategyPorts ports;
   ports.splitterIdentity = splitter.identity();
@@ -2241,6 +2922,6 @@ NativePlannedRequest planNativeRequestCooperative(
   return planNativeRequestImpl(runtime, options, model, encoded, ports, preparation,
                                admission, closure, control, wireDeadlineMs,
                                std::move(cancelled), conversationTurn,
-                               placementProbeRound);
+                               placementProbeRound, &splitter, false, decodeCache);
 }
 } // namespace ndnsf::di

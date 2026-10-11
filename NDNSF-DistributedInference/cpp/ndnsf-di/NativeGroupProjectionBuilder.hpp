@@ -16,5 +16,15 @@ public:
     const NativeSealedPlan& sealed, const NativeSplitCandidate& candidate,
     const NativeGroupKeyAdmission& keys, NativeProjectionContext context,
     std::uint64_t maxBytes = 64ULL << 20);
+  static std::map<std::string, NativeRoleProjectionInputs> build(
+    const NativeOwnedSealedPlan& sealed, const NativeSplitCandidate& candidate,
+    const NativeGroupKeyAdmission& keys, NativeProjectionContext context,
+    std::uint64_t maxBytes = 64ULL << 20);
+
+private:
+  static std::map<std::string, NativeRoleProjectionInputs> buildFromValidatedSealed(
+    const NativeSealedPlan& sealed, const NativeSplitCandidate& candidate,
+    const NativeGroupKeyAdmission& keys, NativeProjectionContext context,
+    std::uint64_t maxBytes);
 };
 } // namespace ndnsf::di

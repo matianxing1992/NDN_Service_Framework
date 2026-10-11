@@ -4,8 +4,13 @@
 #include "ndn-service-framework/NDNSFMessages.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
 #include "ndn-service-framework/utils.hpp"
+#include "ndn-service-framework/detail/ProtectedTargetedRequest.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
+#include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/validator-config.hpp>
+#include <ndn-cxx/util/io.hpp>
+#include <ndn-svs/store.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -13,11 +18,41 @@
 #include <cstdint>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
 namespace ndn_service_framework::integration_test {
 namespace {
+
+struct ProviderValidationFixture : ServiceProvider
+{
+  static void useProductionValidation(test::NdnsfIntegrationEnvironment& environment)
+  {
+    // Bind the production validation entry to the driven Face. The default
+    // test trust-anchor "any" deliberately skips signature verification;
+    // anchor this negative oracle at the fixture's actual User certificate.
+    const auto member = &ProviderValidationFixture::validator;
+    environment.provider().*member = std::make_shared<MessageValidator>(
+      environment.profile().trustSchemaPath, environment.profile().groupPrefix,
+      &environment.providerFace());
+    const auto certificate = environment.keyChain().getPib()
+      .getIdentity(environment.user().getName()).getDefaultKey().getDefaultCertificate();
+    std::ostringstream encoded;
+    ndn::io::save(certificate, encoded);
+    auto base64 = encoded.str();
+    base64.erase(std::remove(base64.begin(), base64.end(), '\n'), base64.end());
+    const auto config = std::string(
+      "rule\n{\n id inline-user-input\n for data\n checker\n {\n"
+      "  type hierarchical\n  sig-type rsa-sha256\n }\n}\n"
+      "trust-anchor\n{\n type base64\n base64-string \"") + base64 + "\"\n}\n";
+    // The existing getter returns MessageValidator's concrete ValidatorConfig
+    // member as Validator&, whose base class is deliberately non-polymorphic.
+    auto& validator = static_cast<ndn::ValidatorConfig&>(
+      (environment.provider().*member)->getConfiguredValidatorForSegmentFetcher());
+    validator.load(config, "inline-user-input-fixture");
+  }
+};
 
 uint64_t
 nowMilliseconds()
@@ -47,6 +82,48 @@ publish(ndn::svs::SVSPubSub& pubSub, const ndn::Name& name,
   pubSub.publish(name, ndn::span<const uint8_t>(wire.data(), wire.size()));
 }
 
+std::size_t
+checkStoredRequestPackets(test::NdnsfIntegrationEnvironment& environment,
+                          const ndn::Name& requestId)
+{
+  auto& sync = environment.userPubSub().getSVSync();
+  auto node = environment.profile().userNode;
+  node.append("0");
+  std::size_t matched = 0;
+  for (uint64_t sequence = 1; sequence <= sync.getCore().getSeqNo(node); ++sequence) {
+    const auto base = sync.getDataName(node, sequence);
+    auto packet = sync.getDataStore().find(ndn::Interest(base));
+    bool segmented = false;
+    if (!packet) {
+      auto first = base;
+      first.appendVersion(0).appendSegment(0);
+      packet = sync.getDataStore().find(ndn::Interest(first));
+      segmented = true;
+    }
+    if (!packet) continue;
+    ndn::Data inner(packet->getContent().blockFromValue());
+    auto applicationName = inner.getName();
+    if (segmented) applicationName = applicationName.getPrefix(-2);
+    const auto parsed = parseRequestNameV2(applicationName);
+    if (!parsed || parsed->requestId != requestId) continue;
+    if (segmented) BOOST_REQUIRE(packet->getFinalBlock().has_value());
+    const auto count = segmented ? packet->getFinalBlock()->toSegment() + 1 : 1;
+    BOOST_REQUIRE_LE(count, 64U);
+    for (uint64_t segment = 0; segment < count; ++segment) {
+      if (segmented) {
+        auto name = base;
+        name.appendVersion(0).appendSegment(segment);
+        packet = sync.getDataStore().find(ndn::Interest(name));
+      }
+      BOOST_REQUIRE(packet != nullptr);
+      BOOST_CHECK_LE(packet->wireEncode().size(), 8192U);
+      ++matched;
+    }
+  }
+  BOOST_REQUIRE_GT(matched, 0U);
+  return matched;
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(RequestScopedSelection)
@@ -69,13 +146,18 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
     providers.push_back(environment.provider(index).getName());
   }
 
-  const auto status = makeCurrentStatus(serviceName, 1);
+  auto status = makeCurrentStatus(serviceName, 1);
+  status.setAbePublicParametersName(environment.attributeAuthorityPublicParametersName());
+  status.setAbePublicParametersDigest(environment.attributeAuthorityPublicParametersDigest());
   BOOST_REQUIRE(environment.user().installControllerStatus(status));
   for (size_t index = 0; index < environment.providerCount(); ++index) {
     BOOST_REQUIRE(environment.provider(index).installControllerStatus(status));
     environment.provider(index).setUseTokens(false);
   }
   environment.user().setUseTokens(false);
+  // Status installation re-arms the authority parameter cache. The ordinary
+  // request pump does not drive the authority face; finish that setup first.
+  environment.pumpUntilWithAttributeAuthority([] { return false; });
   std::vector<std::atomic<size_t>> requestExecutions(environment.providerCount());
   std::vector<std::atomic<bool>> requestObserved(environment.providerCount());
   std::atomic<bool> responseReceived{false};
@@ -294,8 +376,13 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
                 publication.name, responseBlock));
             return;
           }
-          responseReceived = environment.user().handleDecryptedResponseByName(
-              publication.name, responseBlock) || responseReceived;
+          // The final decrypted-response check accepts inline plaintext/AEAD,
+          // but does not resolve a large-response reference. Use the same
+          // decode/resolve/finish entry point as production OnResponse; only
+          // the application callback may declare exact payload delivery.
+          environment.user().dispatchDecryptedResponseByName(
+              publication.name, parsedResponse->requestId,
+              ndn::Buffer(publication.data.begin(), publication.data.end()));
         },
         true);
   }
@@ -529,6 +616,454 @@ BOOST_AUTO_TEST_CASE(ModifiedInlineResponseCiphertextIsRejectedBeforeDelivery)
 BOOST_AUTO_TEST_CASE(RevokedUserCannotReceiveResponseAfterProviderExecution)
 {
   runRequestScopedResponseCase(false, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedTargetedExpectedBootRefreshesWithoutWeakeningCarrier)
+{
+  test::BootstrapProfile profile;
+  profile.providerCount = 1;
+  test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  const auto service = environment.profile().serviceName;
+  const auto providerName = environment.provider().getName();
+  auto status = makeCurrentStatus(service, 1);
+  status.setAbePublicParametersName(environment.attributeAuthorityPublicParametersName());
+  status.setAbePublicParametersDigest(environment.attributeAuthorityPublicParametersDigest());
+  BOOST_REQUIRE(environment.user().installControllerStatus(status));
+  BOOST_REQUIRE(environment.provider().installControllerStatus(status));
+  environment.user().setUseTokens(true);
+  environment.provider().setUseTokens(true);
+  environment.provider().setHandlerThreads(0);
+  ndn::Buffer input{'b', 'o', 'o', 't'}, output{'o', 'k'};
+  std::vector<uint64_t> modes;
+  auto registration = environment.provider().addScopedTargetedService(service,
+    [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+         const RequestMessage& request, ServiceProvider::AsyncTargetedCompletion complete) {
+      modes.push_back(request.getRequestMode());
+      BOOST_CHECK(request.getPayload() == input);
+      BOOST_CHECK_EQUAL(request.getTokens().count("targeted.expected_provider_boot"), 0U);
+      ResponseMessage response;
+      response.setStatus(true);
+      response.setPayload(output, output.size());
+      complete(response);
+    });
+  environment.enableProductionIngressForTest();
+  std::string currentBoot;
+  for (unsigned round = 0; round < 5; ++round) {
+    RequestCapabilities caps;
+    caps.setField("RequestScopedConfidentialityV1", "required");
+    RequestMessage request;
+    request.setRequestCapabilities(caps);
+    request.setPayload(input, input.size());
+    // Cold, matching boot, mismatched boot, matching boot after refresh,
+    // and absent hint: only the mismatch must restart bootstrap.
+    if (round == 2)
+      request.setTokens({{"targeted.expected_provider_boot", providerName.toUri() + ":changed"}});
+    else if (round == 1 || round == 3)
+      request.setTokens({{"targeted.expected_provider_boot", currentBoot}});
+    bool terminal = false, timedOut = false;
+    ResponseMessage received;
+    const auto id = environment.user().RequestServiceTargeted(providerName, service, request, 5000,
+      [&] (const ndn::Name&) { timedOut = true; terminal = true; },
+      [&] (const ResponseMessage& response) { received = response; terminal = true; });
+    BOOST_REQUIRE(!id.empty());
+    environment.pumpUntil([&] { return terminal; });
+    BOOST_REQUIRE(terminal);
+    BOOST_REQUIRE(!timedOut);
+    BOOST_REQUIRE(received.getStatus());
+    BOOST_CHECK(received.getPayload() == output);
+    BOOST_REQUIRE_EQUAL(modes.size(), round + 1);
+    BOOST_CHECK_EQUAL(modes.back(), round == 0 || round == 2
+      ? tlv::TargetedBootstrapRequest : tlv::TargetedRequest);
+    BOOST_REQUIRE(received.getTokens().count("targeted.providerBootEpoch"));
+    currentBoot = received.getTokens().at("targeted.providerBootEpoch");
+    BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0U);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedTargetedWarmCallsReplenishAndFenceClosedRegistration)
+{
+  test::BootstrapProfile profile;
+  profile.providerCount = 1;
+  test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  const auto service = environment.profile().serviceName;
+  const auto providerName = environment.provider().getName();
+  std::size_t inputInterests = 0;
+  auto inputInterestObserver = environment.providerFace().onSendInterest.connect(
+    [&] (const ndn::Interest& interest) {
+      if (interest.getName().toUri().find("REQUEST-INPUT") != std::string::npos)
+        ++inputInterests;
+    });
+  auto status = makeCurrentStatus(service, 1);
+  status.setAbePublicParametersName(environment.attributeAuthorityPublicParametersName());
+  status.setAbePublicParametersDigest(environment.attributeAuthorityPublicParametersDigest());
+  BOOST_REQUIRE(environment.user().installControllerStatus(status));
+  BOOST_REQUIRE(environment.provider().installControllerStatus(status));
+  environment.user().setUseTokens(true);
+  environment.provider().setUseTokens(true);
+  environment.provider().setHandlerThreads(0);
+
+  using Completion = ServiceProvider::AsyncTargetedCompletion;
+  std::optional<Completion> deferred;
+  std::vector<uint64_t> modes;
+  std::set<ndn::Name> executedIds;
+  std::optional<RequestMessage> lastExecutedRequest;
+  ndn::Name lastExecutedId;
+  bool deferResponse = false;
+  ndn::Buffer input{'w', 'a', 'r', 'm'};
+  ndn::Buffer output{'o', 'k'};
+  auto registration = environment.provider().addScopedTargetedService(service,
+    [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+         const ndn::Name& id, const RequestMessage& request, Completion completion) {
+      modes.push_back(request.getRequestMode());
+      BOOST_CHECK(executedIds.insert(id).second);
+      BOOST_CHECK(request.getPayload() == input);
+      lastExecutedRequest = request;
+      lastExecutedId = id;
+      if (deferResponse) {
+        deferred = std::move(completion);
+        return;
+      }
+      ResponseMessage response;
+      response.setStatus(true);
+      response.setPayload(output, output.size());
+      completion(response);
+    });
+  environment.enableProductionIngressForTest();
+
+  auto submit = [&] (bool& terminal, bool& timedOut, ResponseMessage& received) {
+    RequestCapabilities caps;
+    caps.setField("RequestScopedConfidentialityV1", "required");
+    RequestMessage request;
+    request.setRequestCapabilities(caps);
+    request.setPayload(input, input.size());
+    return environment.user().RequestServiceTargeted(providerName, service, request, 5000,
+      [&] (const ndn::Name&) { timedOut = true; terminal = true; },
+      [&] (const ResponseMessage& response) { received = response; terminal = true; });
+  };
+  for (unsigned round = 0; round < 3; ++round) {
+    const auto inputInterestsBefore = inputInterests;
+    bool terminal = false, timedOut = false;
+    ResponseMessage received;
+    const auto id = submit(terminal, timedOut, received);
+    BOOST_REQUIRE(!id.empty());
+    environment.pumpUntil([&] { return terminal; });
+    BOOST_REQUIRE(terminal);
+    BOOST_REQUIRE(!timedOut);
+    BOOST_REQUIRE(received.getStatus());
+    BOOST_CHECK(received.getPayload() == output);
+    BOOST_CHECK_EQUAL(checkStoredRequestPackets(environment, id), 1U);
+    BOOST_REQUIRE_EQUAL(modes.size(), round + 1);
+    BOOST_CHECK_EQUAL(modes.back(), round == 0 ? tlv::TargetedBootstrapRequest : tlv::TargetedRequest);
+    if (round == 0) BOOST_CHECK_GT(inputInterests, inputInterestsBefore);
+    else BOOST_CHECK_EQUAL(inputInterests, inputInterestsBefore);
+    const auto& tokens = received.getTokens();
+    BOOST_REQUIRE(tokens.count("targeted.count") != 0);
+    BOOST_CHECK_EQUAL(tokens.at("targeted.count"), "1");
+    BOOST_REQUIRE(tokens.count("targeted.scopedKeyV1") != 0);
+    BOOST_CHECK_EQUAL(tokens.at("targeted.scopedKeyV1"), "1");
+    BOOST_REQUIRE(tokens.count("targeted.inlineSignedInputV1") != 0);
+    BOOST_CHECK_EQUAL(tokens.at("targeted.inlineSignedInputV1"), "1");
+    BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0U);
+  }
+
+  // Restore the original sanitized wire payload from the handler's decoded
+  // request. Replay both its ID and its spent token under a fresh targeted ID;
+  // neither may trigger a second input fetch or handler execution.
+  BOOST_REQUIRE(lastExecutedRequest.has_value());
+  auto replayRequest = *lastExecutedRequest;
+  ndn::Buffer emptyPayload;
+  replayRequest.setPayload(emptyPayload, 0);
+  const auto replayBlock = replayRequest.WireEncode();
+  const ndn::Buffer replayWire(replayBlock.data(), replayBlock.size());
+  for (const auto& replayId : {lastExecutedId,
+       detail::makeTargetedRequestId(providerName, ndn::Name("/spent-protected-token"))}) {
+    environment.provider().OnRequestDecryptionSuccessCallbackV2(
+      environment.user().getName(), service, replayId, replayWire);
+    BOOST_CHECK_EQUAL(modes.size(), 3U);
+  }
+
+  bool terminal = false, timedOut = false;
+  ResponseMessage received;
+  input.assign(8192, 'l'); // Negotiated mode retains segmented external fallback.
+  const auto fallbackInputInterestsBefore = inputInterests;
+  deferResponse = true;
+  const auto id = submit(terminal, timedOut, received);
+  BOOST_REQUIRE(!id.empty());
+  environment.pumpUntil([&] { return deferred.has_value() || terminal; });
+  BOOST_REQUIRE(deferred.has_value());
+  BOOST_CHECK_GT(inputInterests, fallbackInputInterestsBefore);
+  BOOST_REQUIRE_EQUAL(modes.size(), 4U);
+  BOOST_CHECK_EQUAL(modes.back(), tlv::TargetedRequest);
+  registration.close();
+  ResponseMessage lateSuccess;
+  lateSuccess.setStatus(true);
+  lateSuccess.setPayload(output, output.size());
+  (*deferred)(lateSuccess);
+  (*deferred)(lateSuccess);
+  environment.pumpUntil([&] { return terminal; });
+  BOOST_REQUIRE(terminal);
+  BOOST_CHECK(!timedOut);
+  BOOST_CHECK(!received.getStatus());
+  BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0U);
+  BOOST_CHECK_EQUAL(modes.size(), 4U);
+  deferred.reset();
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedTargetedInlineLegacyOfferAndRequestBudgetFallback)
+{
+  for (bool legacyOffer : {true, false}) {
+    test::BootstrapProfile profile;
+    profile.providerCount = 1;
+    test::NdnsfIntegrationEnvironment environment(profile);
+    environment.bootstrap();
+    const auto service = environment.profile().serviceName;
+    const auto provider = environment.provider().getName();
+    auto status = makeCurrentStatus(service, 1);
+    status.setAbePublicParametersName(environment.attributeAuthorityPublicParametersName());
+    status.setAbePublicParametersDigest(environment.attributeAuthorityPublicParametersDigest());
+    BOOST_REQUIRE(environment.user().installControllerStatus(status));
+    BOOST_REQUIRE(environment.provider().installControllerStatus(status));
+    environment.user().setUseTokens(true);
+    environment.provider().setUseTokens(true);
+    environment.provider().setHandlerThreads(0);
+    std::size_t executions = 0, inputInterests = 0;
+    std::optional<ndn::Data> publishedInput;
+    auto inputObserver = environment.providerFace().onSendInterest.connect(
+      [&] (const ndn::Interest& interest) {
+        if (interest.getName().toUri().find("REQUEST-INPUT") != std::string::npos) {
+          ++inputInterests;
+          // DummyFace does not cache unsolicited Data. Replay only the
+          // original exact packet when the production fetch expresses it.
+          if (publishedInput && interest.getName() == publishedInput->getName())
+            environment.providerFace().receive(*publishedInput);
+        }
+      });
+    auto wireObserver = environment.userFace().onSendData.connect(
+      [&] (const ndn::Data& data) {
+        // Observe actual signed packets transferred by the SVS fixture,
+        // rather than treating the inner Request size as a wire budget.
+        BOOST_CHECK_LE(data.wireEncode().size(), 8192U);
+        if (data.getName().toUri().find("REQUEST-INPUT") != std::string::npos)
+          publishedInput = data;
+      });
+    auto registration = environment.provider().addScopedTargetedService(service,
+      [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+           const RequestMessage& request, ServiceProvider::AsyncTargetedCompletion complete) {
+        ++executions;
+        BOOST_CHECK(request.getPayload() == ndn::Buffer({'s', 'm', 'a', 'l', 'l'}));
+        ResponseMessage response;
+        response.setStatus(true);
+        ndn::Buffer result{'o', 'k'};
+        response.setPayload(result, result.size());
+        complete(response);
+      });
+    // Existing explicit decrypted publication cut points allow a real minted
+    // response to model an older peer before the User caches its offer.
+    environment.providerPubSub().subscribeToProducer(profile.userNode,
+      [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+        ndn::Buffer wire(publication.data.begin(), publication.data.end());
+        if (const auto parsed = parseRequestNameV2(publication.name))
+          environment.provider().OnRequestDecryptionSuccessCallbackV2(
+            parsed->requesterName, parsed->serviceName, parsed->requestId, wire);
+        else if (const auto parsed = parseServiceSelectionNameV2(publication.name))
+          environment.provider().OnServiceSelectionMessageDecryptionSuccessCallbackV2(
+            parsed->requesterName, parsed->providerName, parsed->serviceName,
+            parsed->requestId, wire);
+      }, true);
+    environment.provider().setLocalPublicationHandler(
+      [&] (const ndn::Name& name, const ndn::Buffer& wire) {
+        publish(environment.providerPubSub(), name, wire);
+      });
+    environment.userPubSub().subscribeToProducer(profile.providerNode,
+      [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+        if (parseRequestAckNameV2(publication.name)) {
+          environment.user().handleRequestAckByName(publication.name, ndn::Block(publication.data));
+        }
+        else if (const auto parsed = parseResponseNameV2(publication.name)) {
+          ResponseMessage response;
+          BOOST_REQUIRE(response.WireDecode(ndn::Block(publication.data)));
+          if (legacyOffer) {
+            auto tokens = response.getTokens();
+            BOOST_REQUIRE(tokens.erase("targeted.inlineSignedInputV1") == 1);
+            response.setTokens(tokens);
+          }
+          const auto block = response.WireEncode();
+          environment.user().dispatchDecryptedResponseByName(publication.name,
+            parsed->requestId, ndn::Buffer(block.begin(), block.end()));
+        }
+      }, true);
+    environment.provider().installLocalMockDataIngressForTest();
+    environment.user().setLocalPublicationHandler(
+      [&] (const ndn::Name& name, const ndn::Buffer& wire) {
+        publish(environment.userPubSub(), name, wire);
+      });
+    std::optional<RequestMessage> lastPublished;
+    environment.user().setRequestPublisher(
+      [&] (const ndn::Name&, const ndn::Name& name, const std::vector<ndn::Name>&,
+           const ndn::Name&, const RequestMessage& request, size_t) {
+        lastPublished = request;
+        const auto block = request.WireEncode();
+        publish(environment.userPubSub(), name, ndn::Buffer(block.begin(), block.end()));
+      });
+    environment.pumpUntilWithAttributeAuthority([] { return false; });
+    for (unsigned round = 0; round < 2; ++round) {
+      bool terminal = false, timedOut = false;
+      ResponseMessage received;
+      RequestMessage request;
+      RequestCapabilities caps;
+      caps.setField("RequestScopedConfidentialityV1", "required");
+      if (!legacyOffer && round == 1) {
+        // The input remains a tiny single signed Data; only the complete
+        // Request exceeds its budget and must drop the optional payload.
+        caps.setField("largeContextA", std::string(4096, 'a'));
+        caps.setField("largeContextB", std::string(4096, 'b'));
+      }
+      request.setRequestCapabilities(caps);
+      ndn::Buffer input{'s', 'm', 'a', 'l', 'l'};
+      request.setPayload(input, input.size());
+      const auto before = inputInterests;
+      const auto id = environment.user().RequestServiceTargeted(provider, service, request, 5000,
+        [&] (const ndn::Name&) { terminal = true; timedOut = true; },
+        [&] (const ResponseMessage& response) { terminal = true; received = response; });
+      BOOST_REQUIRE(!id.empty());
+      environment.pumpUntilWithAttributeAuthority([&] { return terminal; });
+      BOOST_REQUIRE(terminal && !timedOut && received.getStatus());
+      BOOST_REQUIRE(lastPublished.has_value());
+      const auto packets = checkStoredRequestPackets(environment, id);
+      if (!legacyOffer && round == 1) BOOST_CHECK_GT(packets, 1U);
+      BOOST_CHECK_GT(inputInterests, before);
+      if (round == 1) {
+        BOOST_CHECK_EQUAL(lastPublished->getRequestMode(), tlv::TargetedRequest);
+        BOOST_CHECK(detail::hasProtectedTargetedCarrier(*lastPublished));
+        BOOST_CHECK_EQUAL(detail::hasOptionalInlineTargetedInput(*lastPublished), !legacyOffer);
+        BOOST_CHECK(lastPublished->getPayload().empty());
+        if (!legacyOffer)
+          BOOST_CHECK_GT(lastPublished->WireEncode().size(), detail::TARGETED_INLINE_REQUEST_MAX_BYTES);
+      }
+    }
+    BOOST_CHECK_EQUAL(executions, 2U);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedTargetedInlineRejectsUntrustedSignedInput)
+{
+  for (unsigned variant = 0; variant < 7; ++variant) {
+    BOOST_TEST_CONTEXT("inline negative variant " << variant) {
+    test::BootstrapProfile profile;
+    profile.providerCount = 1;
+    test::NdnsfIntegrationEnvironment environment(profile);
+    environment.bootstrap();
+    const auto service = environment.profile().serviceName;
+    const auto provider = environment.provider().getName();
+    const auto requester = environment.user().getName();
+    auto status = makeCurrentStatus(service, 1);
+    status.setAbePublicParametersName(environment.attributeAuthorityPublicParametersName());
+    status.setAbePublicParametersDigest(environment.attributeAuthorityPublicParametersDigest());
+    BOOST_REQUIRE(environment.user().installControllerStatus(status));
+    BOOST_REQUIRE(environment.provider().installControllerStatus(status));
+    environment.user().setUseTokens(true);
+    environment.provider().setUseTokens(true);
+    environment.provider().setHandlerThreads(0);
+    ProviderValidationFixture::useProductionValidation(environment);
+    std::size_t executions = 0, inputInterests = 0;
+    auto inputObserver = environment.providerFace().onSendInterest.connect(
+      [&] (const ndn::Interest& interest) {
+        if (interest.getName().toUri().find("REQUEST-INPUT") != std::string::npos)
+          ++inputInterests;
+      });
+    auto registration = environment.provider().addScopedTargetedService(service,
+      [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+           const RequestMessage&, ServiceProvider::AsyncTargetedCompletion complete) {
+        ++executions;
+        ResponseMessage response;
+        response.setStatus(true);
+        ndn::Buffer result{'o', 'k'};
+        response.setPayload(result, result.size());
+        complete(response);
+      });
+    environment.enableProductionIngressForTest();
+    bool terminal = false, timedOut = false;
+    ResponseMessage received;
+    const auto submit = [&] {
+      terminal = false;
+      timedOut = false;
+      RequestMessage request;
+      RequestCapabilities caps;
+      caps.setField("RequestScopedConfidentialityV1", "required");
+      request.setRequestCapabilities(caps);
+      ndn::Buffer input{'t', 'e', 's', 't'};
+      request.setPayload(input, input.size());
+      return environment.user().RequestServiceTargeted(provider, service, request, 5000,
+        [&] (const ndn::Name&) { terminal = true; timedOut = true; },
+        [&] (const ResponseMessage& response) { terminal = true; received = response; });
+    };
+    BOOST_REQUIRE(!submit().empty());
+    environment.pumpUntil([&] { return terminal; });
+    BOOST_REQUIRE(terminal && !timedOut && received.getStatus());
+    BOOST_REQUIRE_EQUAL(executions, 1U);
+    std::optional<RequestMessage> captured;
+    ndn::Name capturedId;
+    environment.user().setRequestPublisher(
+      [&] (const ndn::Name& id, const ndn::Name&, const std::vector<ndn::Name>&,
+           const ndn::Name&, const RequestMessage& request, size_t) {
+        capturedId = id;
+        captured = request; // Hold the fresh unused token at the ingress cut point.
+      });
+    BOOST_REQUIRE(!submit().empty());
+    environment.pumpUntil([&] { return captured.has_value(); });
+    BOOST_REQUIRE(captured.has_value());
+    BOOST_REQUIRE(detail::hasOptionalInlineTargetedInput(*captured));
+    auto payload = captured->getPayload();
+    BOOST_REQUIRE(!payload.empty());
+    if (variant == 0) payload.push_back(0); // More than one complete packet.
+    else if (variant == 1) payload.assign(detail::TARGETED_INLINE_INPUT_MAX_BYTES + 1, 0);
+    else if (variant < 6) {
+      ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(payload.data(), payload.size()))};
+      if (variant == 2) packet.setName(ndn::Name("/other/input"));
+      if (variant == 4) {
+        AeadEnvelope envelope;
+        BOOST_REQUIRE(envelope.wireDecode(packet.getContent().blockFromValue()));
+        BOOST_REQUIRE(!envelope.ciphertext.empty());
+        envelope.ciphertext.front() ^= 1;
+        packet.setContent(envelope.wireEncode());
+      }
+      environment.keyChain().sign(packet, ndn::security::signingByIdentity(
+        variant == 3 ? provider : requester));
+      const auto& wire = packet.wireEncode();
+      payload.assign(wire.begin(), wire.end());
+      if (variant == 5) payload.back() ^= 1; // Signature fails before AEAD admission.
+    }
+    captured->setPayload(payload, payload.size());
+    if (variant == 6) {
+      // Change an authenticated Request field after wrapping the input key.
+      // A valid User-signed packet cannot repair a different Request AAD.
+      auto capabilities = captured->getRequestCapabilities();
+      capabilities.setField("callerContext", "changed-after-key-wrap");
+      captured->setRequestCapabilities(capabilities);
+    }
+    const auto before = inputInterests;
+    const auto wire = captured->WireEncode();
+    environment.provider().OnRequestDecryptionSuccessCallbackV2(
+      requester, service, capturedId, ndn::Buffer(wire.begin(), wire.end()));
+    for (unsigned pump = 0; pump < 3 && !terminal; ++pump)
+      environment.pumpUntil([&] { return terminal; });
+    BOOST_REQUIRE(terminal);
+    if (variant == 6) {
+      // The changed key AAD prevents recovery of the response key as well.
+      // User rejects the unauthenticated error; its original deadline ends
+      // the pending call. No plaintext or successful execution is admitted.
+      BOOST_CHECK(timedOut);
+    }
+    else {
+      BOOST_REQUIRE(!timedOut);
+      BOOST_CHECK(!received.getStatus());
+    }
+    BOOST_CHECK_EQUAL(executions, 1U);
+    BOOST_CHECK_EQUAL(inputInterests, before); // Invalid inline data must not fetch a substitute.
+    }
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

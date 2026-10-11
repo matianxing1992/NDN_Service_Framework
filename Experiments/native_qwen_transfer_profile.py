@@ -26,6 +26,21 @@ def _dimension(expression, bindings):
     return value
 
 
+def _shape_expression(expression):
+    """Retain a bounded arithmetic tree for the native current-input binder."""
+    if type(expression) is int:
+        return expression
+    def convert(node):
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return {"add": [convert(node.left), convert(node.right)]}
+        raise ValueError("unsupported source shape expression")
+    return convert(ast.parse(expression, mode="eval").body)
+
+
 def initial_transfer_profile(source: Path, source_digest: str, node_mapping: dict,
                              stages: list[dict], ranges: list, input_payload: bytes,
                              token_count: int) -> dict:
@@ -95,11 +110,13 @@ def initial_transfer_profile(source: Path, source_digest: str, node_mapping: dic
                    onnx.TensorProto.BOOL: "bool",
                    onnx.TensorProto.UINT8: "uint8"}
     dependencies = []
+    template_dependencies = []
     for index in range(len(stages) - 1):
         shared = (boundaries[index][0] | boundaries[index][1]) & boundaries[index + 1][0]
         if not shared:
             raise ValueError("empty transfer bundle")
         tensors = []
+        template_tensors = []
         for name in sorted(shared):
             tensor = ports[name].type.tensor_type
             if not tensor.HasField("shape") or tensor.elem_type not in dtype_names:
@@ -108,10 +125,31 @@ def initial_transfer_profile(source: Path, source_digest: str, node_mapping: dic
                                 dim.dim_param, bindings) for dim in tensor.shape.dim]
             tensors.append({"name": name, "dtype": dtype_names[tensor.elem_type],
                             "shape": shape})
+            expressions = [dim.dim_value if dim.HasField("dim_value") else
+                           dim.dim_param for dim in tensor.shape.dim]
+            template_tensors.append({"name": name, "dtype": dtype_names[tensor.elem_type],
+                                     "shape": [_shape_expression(x) for x in expressions]})
         dependencies.append({"producer_role": stages[index]["role"],
                              "consumer_role": stages[index + 1]["role"],
                              "tensors": tensors})
+        template_dependencies.append({"producer_role": stages[index]["role"],
+                                      "consumer_role": stages[index + 1]["role"],
+                                      "tensors": template_tensors})
+    token_input = next((value for value in model.graph.input if value.name == "input_ids"), None)
+    if token_input is None:
+        raise ValueError("source token input is missing")
+    input_bindings = []
+    for axis, dim in enumerate(token_input.type.tensor_type.shape.dim):
+        if dim.dim_param:
+            if not dim.dim_param.isidentifier():
+                raise ValueError("unsupported source input dimension")
+            input_bindings.append({"symbol": dim.dim_param, "tensor": token_input.name,
+                                   "axis": axis})
     return {"schema": "ndnsf-di-request-transfer-profile-v1",
             "source_digest": source_digest,
             "input_digest": "sha256:" + hashlib.sha256(input_payload).hexdigest(),
-            "initial_context": True, "dependencies": dependencies}
+            "initial_context": True, "dependencies": dependencies,
+            "shape_template": {"bindings": input_bindings,
+                               "past_sequence_symbol": "past_sequence_length",
+                               "constants": {"past_sequence_length": 0},
+                               "dependencies": template_dependencies}}

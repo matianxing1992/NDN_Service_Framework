@@ -30,6 +30,7 @@ from ndnsf import (
     AckCandidate,
     AckDecision,
     DataPacket,
+    inspect_data_name,
     DataProductReference,
     GenericProviderRuntimeHint,
     ProviderCapabilityHint,
@@ -43,6 +44,7 @@ from ndnsf import (
     StoredDataProducer,
     decode_provider_capability_ack,
     decode_data_packet,
+    inspect_original_data_packet,
     encode_ack_metadata,
     encode_provider_capability_ack,
     fetch_exact_data_packet,
@@ -587,30 +589,43 @@ def _coordinate_repo_object(method):
     return wrapped
 
 
-def _packet_manifest_versioned_data_name(packet_manifest: dict) -> str:
-    packets = list(packet_manifest.get("packets", []))
-    if not packets:
-        raise ValueError("packet manifest contains no packets")
-    first_name = str(packets[0].get("name", ""))
-    if not first_name:
-        raise ValueError("packet manifest first packet has no Data name")
-    if "/seg=" not in first_name:
-        return first_name
-    return first_name.rsplit("/seg=", 1)[0]
-
-
 def _packet_set_versioned_data_name(packets: Iterable[DataPacket]) -> str:
     packet_list = list(packets)
     if not packet_list:
         raise ValueError("packet set contains no Data packets")
-    parents = {
-        packet.name.rsplit("/seg=", 1)[0]
-        if "/seg=" in packet.name else packet.name
-        for packet in packet_list
-    }
-    if len(parents) != 1:
+    names = [inspect_data_name(packet.name) for packet in packet_list]
+    parents = {info["segment_prefix"] for info in names}
+    roots = [(packet, info) for packet, info in zip(packet_list, names) if info["segment"] is None]
+    if len(parents) == 1 and not roots:
+        if any(info["protected_data"] for info in names):
+            raise ValueError("protected packet set is missing its manifest root")
+        return next(iter(parents))
+    if len(roots) != 1:
         raise ValueError("packet set mixes Data prefixes or versions")
-    return next(iter(parents))
+    root, root_name = roots[0]
+    root_info = inspect_original_data_packet(root.wire)
+    description = root_info["protected_manifest"]
+    if description is None and len(parents) == 1:
+        return next(iter(parents))
+    if (description is None or root_info["has_final_block"] or
+            description["manifest_name"] != root_name["canonical_name"]):
+        raise ValueError("packet set mixes Data prefixes or has an invalid protected root")
+    count = int(description["segment_count"])
+    segments = [(packet, info) for packet, info in zip(packet_list, names) if info["segment"] is not None]
+    numbers = {info["segment"] for _, info in segments}
+    if len(segments) != count or len(numbers) != count:
+        raise ValueError("protected packet set has missing or duplicate segments")
+    for packet, info in segments:
+        number = int(info["segment"])
+        geometry = inspect_original_data_packet(packet.wire)
+        expected_bytes = min(int(description["segment_bytes"]),
+                             int(description["envelope_bytes"]) - number * int(description["segment_bytes"]))
+        if (info["segment_prefix"] != description["data_prefix"] or not 0 <= number < count or
+                geometry["final_segment"] != count - 1 or geometry["content_bytes"] != expected_bytes):
+            raise ValueError("protected packet set has invalid Data name or segment geometry")
+        if inspect_data_name(decode_data_packet(packet.wire).name)["name_wire"] != info["name_wire"]:
+            raise ValueError("protected packet set has mismatched segment wire/name")
+    return str(description["serving_prefix"])
 
 
 REPO_OBJECT_CLASS_DEFAULTS: dict[str, dict[str, object]] = {
@@ -1411,7 +1426,7 @@ class _BoundedRepoHotCache:
         return entry.manifest, list(entry.value)
 
     def get_packet(self, data_name: str) -> Optional[DataPacket]:
-        entry = self._get(("packet", data_name))
+        entry = self._get(("packet", inspect_data_name(data_name)["canonical_name"]))
         if entry is None:
             return None
         packet = entry.value
@@ -1480,7 +1495,7 @@ class _BoundedRepoHotCache:
 
     def put_packet(self, packet: DataPacket) -> None:
         self._put(
-            ("packet", packet.name),
+            ("packet", inspect_data_name(packet.name)["canonical_name"]),
             _RepoHotCacheEntry(
                 manifest=RepoObjectManifest(
                     object_name=packet.name,
@@ -1496,7 +1511,7 @@ class _BoundedRepoHotCache:
 
     def invalidate_packet(self, data_name: str) -> None:
         with self._lock:
-            old = self._entries.pop(("packet", data_name), None)
+            old = self._entries.pop(("packet", inspect_data_name(data_name)["canonical_name"]), None)
             if old is not None:
                 self._used_bytes -= old.charge_bytes
                 self._invalidations += 1
@@ -1988,6 +2003,7 @@ class RepoNodeApp:
                 """, (str(object_name), int(segment_no), int(segment_no), str(data_name)))
             if legacy_rows:
                 self._db.execute("DELETE FROM data_segments")
+            self._index_original_packet_names()
             path_row = self._db.execute("PRAGMA database_list").fetchone()
             self._db_path = str(path_row[2]) if path_row and path_row[2] else ""
             used_row = self._db.execute(
@@ -2002,6 +2018,38 @@ class RepoNodeApp:
             else:
                 self._used_bytes = int(used_row[0])
             self._db.commit()
+
+    def _index_original_packet_names(self) -> None:
+        """Derive URI-independent lookup metadata without rewriting packets."""
+        assert self._db is not None
+        self._db.execute("SAVEPOINT original_packet_name_index")
+        try:
+            columns = {str(row[1]) for row in self._db.execute("PRAGMA table_info(data_packets)")}
+            if "canonical_name" not in columns:
+                self._db.execute("ALTER TABLE data_packets ADD COLUMN canonical_name TEXT")
+            for stored_name, wire, expected_hash in self._db.execute(
+                    "SELECT data_name, wire, wire_sha256 FROM data_packets WHERE canonical_name IS NULL"):
+                wire = bytes(wire)
+                packet = decode_data_packet(wire)
+                info = inspect_data_name(packet.name)
+                if (hashlib.sha256(wire).hexdigest() != str(expected_hash) or
+                        info["name_wire"] != inspect_data_name(str(stored_name))["name_wire"]):
+                    raise ValueError(f"repo-data-name-index-invalid: {stored_name}")
+                self._db.execute("UPDATE data_packets SET canonical_name=? WHERE data_name=?",
+                                 (info["canonical_name"], str(stored_name)))
+            self._db.execute("CREATE INDEX IF NOT EXISTS idx_data_packets_canonical_name ON data_packets(canonical_name)")
+            conflicts = self._db.execute("""
+                SELECT canonical_name FROM data_packets
+                GROUP BY canonical_name HAVING COUNT(DISTINCT wire) > 1
+                LIMIT 1
+            """).fetchone()
+            if conflicts is not None:
+                raise ValueError(f"repo-data-wire-conflict: {conflicts[0]}")
+            self._db.execute("RELEASE original_packet_name_index")
+        except Exception:
+            self._db.execute("ROLLBACK TO original_packet_name_index")
+            self._db.execute("RELEASE original_packet_name_index")
+            raise
 
     def _object_lock(self, object_name: str) -> threading.RLock:
         digest = hashlib.sha256(str(object_name).encode()).digest()
@@ -2024,13 +2072,7 @@ class RepoNodeApp:
 
     def _calculate_used_bytes_locked(self) -> int:
         assert self._db is not None
-        row = self._db.execute("""
-            SELECT
-              (SELECT COALESCE(SUM(payload_size), 0) FROM objects) +
-              (SELECT COALESCE(SUM(wire_size), 0) FROM data_packets) +
-              (SELECT COALESCE(SUM(wire_size), 0) FROM serving_packets)
-        """).fetchone()
-        return int(row[0] if row else 0)
+        return self._persistence.capacity_status().committed_bytes
 
     def _refresh_used_bytes_locked(self) -> int:
         self._used_bytes = self._calculate_used_bytes_locked()
@@ -2281,8 +2323,9 @@ class RepoNodeApp:
                 SELECT o.manifest_json
                 FROM object_packet_refs AS r
                 JOIN objects AS o ON o.object_name=r.object_name
-                WHERE r.data_name=?
-            """, (data_name,)).fetchall()
+                JOIN data_packets AS p ON p.data_name=r.data_name
+                WHERE p.canonical_name=?
+            """, (inspect_data_name(data_name)["canonical_name"],)).fetchall()
         for row in rows:
             manifest = RepoObjectManifest.from_dict(json.loads(str(row[0])))
             if self._catalog_state_for_manifest(manifest) == "AVAILABLE":
@@ -2707,15 +2750,17 @@ class RepoNodeApp:
         if not packets:
             raise ValueError(f"repo packet set is empty: {manifest.object_name}")
         validated: list[DataPacket] = []
-        seen_names: set[str] = set()
-        seen_segments: set[int] = set()
-        versioned_parent = ""
+        seen_names: set[bytes] = set()
+        seen_segments: set[tuple[str, int]] = set()
         for declared in packets:
             try:
                 decoded = decode_data_packet(declared.wire)
             except Exception as exc:
                 raise ValueError(f"repo-invalid-data-wire: {exc}") from exc
-            if decoded.name != declared.name:
+            if bytes(decoded.wire) != bytes(declared.wire):
+                raise ValueError("repo-invalid-data-wire: original packet framing changed during decode")
+            info = inspect_data_name(decoded.name)
+            if info["name_wire"] != inspect_data_name(declared.name)["name_wire"]:
                 raise ValueError(
                     "repo-data-name-mismatch: repo Data name/wire mismatch: "
                     f"declared={declared.name} encoded={decoded.name}")
@@ -2723,19 +2768,17 @@ class RepoNodeApp:
                 raise ValueError(
                     "repo-packet-set-invalid: repo Data segment/wire mismatch: "
                     f"declared={declared.segment} encoded={decoded.segment}")
-            if decoded.name in seen_names or decoded.segment in seen_segments:
+            segment_key = (info["segment_prefix"], decoded.segment)
+            if info["name_wire"] in seen_names or (info["segment"] is not None and segment_key in seen_segments):
                 raise ValueError(
                     f"repo-packet-set-invalid: duplicate packet: {decoded.name}")
-            parent = decoded.name.rsplit("/", 1)[0] if "/" in decoded.name else decoded.name
-            if versioned_parent and parent != versioned_parent:
-                raise ValueError(
-                    "repo-packet-set-invalid: packet set mixes Data versions or prefixes: "
-                    f"{versioned_parent} vs {parent}")
-            versioned_parent = parent
-            seen_names.add(decoded.name)
-            seen_segments.add(decoded.segment)
+            seen_names.add(info["name_wire"])
+            if info["segment"] is not None:
+                seen_segments.add(segment_key)
             validated.append(decoded)
-        packets = sorted(validated, key=lambda packet: packet.segment)
+        _packet_set_versioned_data_name(validated)
+        packets = sorted(validated, key=lambda packet: (
+            inspect_data_name(packet.name)["segment"] is not None, packet.segment))
         manifest = replace(
             manifest,
             segment_count=len(packets),
@@ -2761,10 +2804,11 @@ class RepoNodeApp:
                     ).fetchall()
                 }
                 existing_packets: dict[str, tuple[bytes, int]] = {}
+                resolved_packets: list[DataPacket] = []
                 for packet in packets:
                     row = self._db.execute(
-                        "SELECT wire, wire_size FROM data_packets WHERE data_name=?",
-                        (packet.name,),
+                        "SELECT wire, wire_size, data_name FROM data_packets WHERE canonical_name=? ORDER BY data_name LIMIT 1",
+                        (inspect_data_name(packet.name)["canonical_name"],),
                     ).fetchone()
                     if row is not None:
                         stored_wire = bytes(row[0])
@@ -2772,7 +2816,11 @@ class RepoNodeApp:
                             raise ValueError(
                                 "repo-data-wire-conflict: immutable NDN Data name "
                                 f"conflict: {packet.name}")
+                        packet = replace(packet, name=str(row[2]))
                         existing_packets[packet.name] = (stored_wire, int(row[1]))
+                    resolved_packets.append(packet)
+                packets = resolved_packets
+                manifest = replace(manifest, packet_names=tuple(packet.name for packet in packets))
                 additional_bytes = sum(
                     len(packet.wire) for packet in packets
                     if packet.name not in existing_packets
@@ -2832,8 +2880,8 @@ class RepoNodeApp:
                 self._db.executemany(
                     """
                     INSERT INTO data_packets
-                      (data_name, wire, wire_sha256, wire_size, updated_at, hit_count)
-                    VALUES (?, ?, ?, ?, ?, 0)
+                      (data_name, wire, wire_sha256, wire_size, updated_at, hit_count, canonical_name)
+                    VALUES (?, ?, ?, ?, ?, 0, ?)
                     ON CONFLICT(data_name) DO NOTHING
                     """,
                     [
@@ -2843,6 +2891,7 @@ class RepoNodeApp:
                             hashlib.sha256(packet.wire).hexdigest(),
                             len(packet.wire),
                             time.time(),
+                            inspect_data_name(packet.name)["canonical_name"],
                         )
                         for packet in packets
                     ],
@@ -3001,6 +3050,8 @@ class RepoNodeApp:
 
     @_coordinate_repo_object
     def _load_persisted_packet(self, data_name: str) -> DataPacket:
+        name_info = inspect_data_name(data_name)
+        data_name = name_info["canonical_name"]
         cached = self._hot_cache.get_packet(data_name)
         self._cache_bytes = self._hot_cache.used_bytes
         if cached is not None:
@@ -3009,7 +3060,7 @@ class RepoNodeApp:
         self._hot_cache.record_backing_read()
         with self._object_lock(data_name):
             row = self._reader_db().execute(
-                "SELECT wire, wire_sha256 FROM data_packets WHERE data_name=?",
+                "SELECT wire, wire_sha256 FROM data_packets WHERE canonical_name=? ORDER BY data_name LIMIT 1",
                 (data_name,),
             ).fetchone()
             if row is None:
@@ -3018,7 +3069,7 @@ class RepoNodeApp:
             if hashlib.sha256(wire).hexdigest() != str(row[1]):
                 raise ValueError(f"persisted repo Data wire hash mismatch: {data_name}")
         packet = decode_data_packet(wire)
-        if packet.name != data_name:
+        if inspect_data_name(packet.name)["name_wire"] != name_info["name_wire"]:
             raise ValueError(
                 f"persisted repo Data name/wire mismatch: key={data_name} "
                 f"encoded={packet.name}")
@@ -3030,10 +3081,19 @@ class RepoNodeApp:
     def _load_persisted_packet_prefix(self, data_name: str) -> list[DataPacket]:
         """Load the complete stored packet set for one exact versioned name."""
 
-        versioned_prefix = (
-            data_name.rsplit("/seg=", 1)[0]
-            if "/seg=" in data_name else data_name
-        )
+        requested = inspect_data_name(data_name)
+        protected = requested["protected_data"]
+        if requested["segment"] is None:
+            root_packet = self._load_persisted_packet(data_name)
+            protected = inspect_original_data_packet(root_packet.wire)["protected_manifest"] is not None
+        if protected:
+            owner = self._require_finalized_packet_owner(data_name)
+            _, packets = self._load_persisted_packets(owner.object_name)
+            _packet_set_versioned_data_name(packets)
+            if not any(inspect_data_name(packet.name)["name_wire"] == requested["name_wire"] for packet in packets):
+                raise KeyError(data_name)
+            return packets
+        versioned_prefix = requested["segment_prefix"]
         escaped = (versioned_prefix.replace("\\", "\\\\")
                    .replace("%", "\\%")
                    .replace("_", "\\_"))
@@ -3041,19 +3101,25 @@ class RepoNodeApp:
         with self._object_lock(versioned_prefix):
             rows = self._reader_db().execute(
                 """
-                SELECT data_name, wire FROM data_packets
-                WHERE data_name LIKE ? ESCAPE '\\'
+                SELECT canonical_name, wire, wire_sha256 FROM data_packets
+                WHERE canonical_name=? OR canonical_name LIKE ? ESCAPE '\\'
                 """,
-                (escaped + "/%",),
+                (versioned_prefix, escaped + "/%"),
             ).fetchall()
-        packets = [decode_data_packet(bytes(wire)) for _, wire in rows]
-        packets = [
-            packet for packet in packets
-            if packet.name == versioned_prefix or
-            packet.name.startswith(versioned_prefix + "/")
-        ]
+        packets = []
+        seen_names = set()
+        for indexed_name, wire, expected_hash in rows:
+            wire = bytes(wire)
+            packet = decode_data_packet(wire)
+            info = inspect_data_name(packet.name)
+            if (info["canonical_name"] != indexed_name or
+                    hashlib.sha256(wire).hexdigest() != str(expected_hash)):
+                raise ValueError(f"repo-data-name-index-invalid: {indexed_name}")
+            if info["segment_prefix"] == versioned_prefix and info["name_wire"] not in seen_names:
+                seen_names.add(info["name_wire"])
+                packets.append(packet)
         packets.sort(key=lambda packet: packet.segment)
-        if not packets or not any(packet.name == data_name for packet in packets):
+        if not packets or requested["name_wire"] not in seen_names:
             raise KeyError(data_name)
         return packets
 
@@ -3158,9 +3224,10 @@ class RepoNodeApp:
     def _sqlite_has_packet(self, data_name: str) -> bool:
         if self._db is None:
             return False
+        data_name = inspect_data_name(data_name)["canonical_name"]
         with self._object_lock(data_name):
             row = self._reader_db().execute(
-                "SELECT 1 FROM data_packets WHERE data_name=?",
+                "SELECT 1 FROM data_packets WHERE canonical_name=?",
                 (data_name,),
             ).fetchone()
         return row is not None
@@ -4359,35 +4426,46 @@ class RepoNodeApp:
 
     def _lookup_data_plane_wire(self, interest_name: str,
                                 can_be_prefix: bool) -> Optional[bytes]:
+        info = inspect_data_name(interest_name)
+        canonical_name = info["canonical_name"]
         cached = self._hot_cache.get_packet(interest_name)
         if cached is not None:
             return cached.wire
         assert self._db is not None
         with self._db_lock:
             row = self._db.execute(
-                "SELECT data_name, wire FROM data_packets WHERE data_name=?",
-                (interest_name,),
+                "SELECT data_name, wire, wire_sha256 FROM data_packets WHERE canonical_name=? ORDER BY data_name LIMIT 1",
+                (canonical_name,),
             ).fetchone()
             if row is None:
                 row = self._db.execute(
-                    "SELECT data_name, wire FROM serving_packets WHERE data_name=?",
-                    (interest_name,),
+                    "SELECT data_name, wire, NULL FROM serving_packets WHERE data_name IN (?, ?)",
+                    (canonical_name, info["alternate_name"]),
                 ).fetchone()
             if row is None and can_be_prefix:
-                like_prefix = interest_name.rstrip("/") + "/%"
+                def like_prefix(name):
+                    return (name.rstrip("/").replace("\\", "\\\\")
+                            .replace("%", "\\%").replace("_", "\\_") + "/%")
                 row = self._db.execute("""
-                    SELECT data_name, wire FROM data_packets
-                    WHERE data_name LIKE ? ORDER BY data_name LIMIT 1
-                """, (like_prefix,)).fetchone()
+                    SELECT data_name, wire, wire_sha256 FROM data_packets
+                    WHERE canonical_name LIKE ? ESCAPE '\\' ORDER BY canonical_name LIMIT 1
+                """, (like_prefix(canonical_name),)).fetchone()
                 if row is None:
                     row = self._db.execute("""
-                        SELECT data_name, wire FROM serving_packets
-                        WHERE data_name LIKE ? ORDER BY data_name LIMIT 1
-                    """, (like_prefix,)).fetchone()
+                        SELECT data_name, wire, NULL FROM serving_packets
+                        WHERE data_name LIKE ? ESCAPE '\\' OR data_name LIKE ? ESCAPE '\\'
+                        ORDER BY data_name LIMIT 1
+                    """, (like_prefix(canonical_name), like_prefix(info["alternate_name"]))).fetchone()
+        if row is None:
+            row = self._persistence.lookup_original_packet(canonical_name, can_be_prefix)
         if row is None:
             return None
         packet = decode_data_packet(bytes(row[1]))
-        if packet.name != str(row[0]):
+        packet_info = inspect_data_name(packet.name)
+        if (packet_info["name_wire"] != inspect_data_name(str(row[0]))["name_wire"] or
+                (row[2] is not None and hashlib.sha256(packet.wire).hexdigest() != str(row[2])) or
+                (packet_info["canonical_name"] != canonical_name and
+                 (not can_be_prefix or not packet_info["canonical_name"].startswith(canonical_name + "/")))):
             raise ValueError(
                 f"{REPO_REASON_INTEGRITY_FAILURE}: stored serving wire/name mismatch")
         self._hot_cache.put_packet(packet)
@@ -4433,8 +4511,9 @@ class RepoNodeApp:
                     SELECT r.object_name, o.manifest_json
                     FROM object_packet_refs AS r
                     JOIN objects AS o ON o.object_name=r.object_name
-                    WHERE r.data_name=? LIMIT 1
-                """, (packets[0].name,)).fetchone()
+                    JOIN data_packets AS p ON p.data_name=r.data_name
+                    WHERE p.canonical_name=? LIMIT 1
+                """, (inspect_data_name(packets[0].name)["canonical_name"],)).fetchone()
             if row is not None:
                 object_name = str(row[0])
                 generation = RepoObjectManifest.from_dict(
@@ -4483,12 +4562,16 @@ class RepoNodeApp:
         declared_name = str(packet_obj["name"])
         declared_segment = int(packet_obj["segment"])
         try:
-            packet = decode_data_packet(
-                base64.b64decode(str(packet_obj["wireB64"])))
+            wire = base64.b64decode(str(packet_obj["wireB64"]), validate=True)
+            packet = decode_data_packet(wire)
         except Exception as exc:
             raise ValueError(f"repo-invalid-data-wire: {operation}: {exc}") from exc
         expected_name = str(packet_obj.get("segmentName", declared_name))
-        if packet.name != declared_name or packet.name != expected_name:
+        if packet.wire != wire:
+            raise ValueError(f"repo-invalid-data-wire: {operation} original packet framing changed during decode")
+        encoded_name = inspect_data_name(packet.name)["name_wire"]
+        if (encoded_name != inspect_data_name(declared_name)["name_wire"]
+                or encoded_name != inspect_data_name(expected_name)["name_wire"]):
             raise ValueError(
                 f"repo-data-name-mismatch: {operation} Data name/wire mismatch: "
                 f"declared={declared_name} metadata={expected_name} "
@@ -4559,11 +4642,19 @@ class RepoNodeApp:
         has_manifest = False
         has_object = False
         try:
-            request = (
-                self._validate_versioned_request(service_name, payload)
-                if service_name is not None
-                else decode_repo_request(payload)
-            )
+            # RequestScopedConfidentialityV1 deliberately leaves the request
+            # body empty until a Provider is selected.  Return only generic
+            # Repo capability for discovery; the client selects a provider
+            # from that bounded ACK, then the service handler validates the
+            # confidential operation payload after Selection.
+            if not payload and service_name is not None:
+                request = {"operation": "CAPABILITY"}
+            else:
+                request = (
+                    self._validate_versioned_request(service_name, payload)
+                    if service_name is not None
+                    else decode_repo_request(payload)
+                )
             operation = canonical_repo_operation(request["operation"])
             object_name = str(request.get("objectName", ""))
             data_name = str(request.get("dataName", ""))
@@ -4578,16 +4669,16 @@ class RepoNodeApp:
                 manifest_obj = request.get("manifest", {})
                 replica_nodes = set(manifest_obj.get("replicaNodes", []))
                 if replica_nodes and self.repo_node not in replica_nodes:
-                    return AckDecision(False, "repo-not-selected")
+                    return AckDecision(status=False, message="repo-not-selected")
             if operation == "MANIFEST" and not has_manifest:
-                return AckDecision(False, "repo-manifest-miss")
+                return AckDecision(status=False, message="repo-manifest-miss")
             if operation in {"FETCH", "FETCH_PREPARE"} and not has_object:
-                return AckDecision(False, "repo-object-miss")
+                return AckDecision(status=False, message="repo-object-miss")
             if operation == "FETCH_PACKET_PREPARE" and not (
                     data_name and self._sqlite_has_packet(data_name)):
-                return AckDecision(False, "repo-packet-miss")
+                return AckDecision(status=False, message="repo-packet-miss")
         except Exception:
-            return AckDecision(False, "repo-bad-request")
+            return AckDecision(status=False, message="repo-bad-request")
         capability = self._capability()
         cache_status = self._cache_status()
         runtime = self._runtime_snapshot()
@@ -4911,8 +5002,8 @@ class RepoNodeApp:
                     segment_count=len(packets),
                     packet_names=tuple(packet.name for packet in packets),
                 )
-                receipt = self._persist_packets(stored_manifest, packets, intent=intent)
                 serve_name = _packet_set_versioned_data_name(packets)
+                receipt = self._persist_packets(stored_manifest, packets, intent=intent)
                 if self._catalog_state_for_manifest(stored_manifest) == "AVAILABLE":
                     self._serve_packets(packets)
                 return ServiceResponse(True, json.dumps({
@@ -5014,39 +5105,37 @@ class RepoNodeApp:
                             f"metadata={expected_manifest_hash} actual={actual_manifest_hash}"
                         )
                 packet_manifest = json.loads(packet_manifest_bytes.decode())
-                expected_packets = {
-                    str(packet["name"]): str(packet["wireSha256"])
-                    for packet in packet_manifest.get("packets", [])
-                }
-                expected_packets_by_segment = {
-                    int(packet["segment"]): str(packet["wireSha256"])
-                    for packet in packet_manifest.get("packets", [])
-                }
-                source_name = str(request["sourceName"])
-                fetch_name = _packet_manifest_versioned_data_name(packet_manifest)
-                packets = fetch_segmented_data_packets(
-                    fetch_name or source_name,
-                    timeout_ms=_pull_fetch_timeout_ms(manifest.segment_count),
-                    interest_lifetime_ms=_large_data_interest_lifetime_ms(),
-                )
+                entries = list(packet_manifest.get("packets", []))
+                names = [inspect_data_name(str(entry["name"])) for entry in entries]
+                expected_packets = {info["name_wire"]: str(entry["wireSha256"])
+                                    for entry, info in zip(entries, names)}
+                if not entries or len(expected_packets) != len(entries):
+                    raise ValueError("STORE_PACKET_PULL empty or duplicate packet names")
+                roots = [entry for entry, info in zip(entries, names) if info["segment"] is None]
+                parents = {info["segment_prefix"] for info in names if info["segment"] is not None}
+                packets = []
+                if roots:
+                    if len(roots) != 1:
+                        raise ValueError("STORE_PACKET_PULL mixes original roots")
+                    packets.append(fetch_exact_data_packet(
+                        str(roots[0]["name"]), timeout_ms=_pull_fetch_timeout_ms(1),
+                        interest_lifetime_ms=_large_data_interest_lifetime_ms()))
+                if parents:
+                    if len(parents) != 1:
+                        raise ValueError("STORE_PACKET_PULL mixes Data prefixes")
+                    packets.extend(fetch_segmented_data_packets(
+                        next(iter(parents)),
+                        timeout_ms=_pull_fetch_timeout_ms(manifest.segment_count),
+                        interest_lifetime_ms=_large_data_interest_lifetime_ms()))
                 if len(packets) != manifest.segment_count:
                     raise ValueError(
                         f"STORE_PACKET_PULL segment count mismatch for {manifest.object_name}: "
                         f"expected={manifest.segment_count} actual={len(packets)}"
                     )
                 for packet in packets:
-                    expected_hash = expected_packets.get(packet.name)
+                    expected_hash = expected_packets.get(inspect_data_name(packet.name)["name_wire"])
                     if expected_hash is None:
-                        # The app publishes the packet manifest before the producer
-                        # installs its final versioned Data name. NDN segmented
-                        # retrieval may therefore return /prefix/v=.../seg=N while
-                        # the manifest records /prefix/seg=N. The wire hash and
-                        # segment number are the integrity boundary here.
-                        expected_hash = expected_packets_by_segment.get(packet.segment)
-                        if expected_hash is None:
-                            raise ValueError(
-                                f"STORE_PACKET_PULL unexpected segment name: {packet.name}"
-                            )
+                        raise ValueError(f"STORE_PACKET_PULL unexpected original Data name: {packet.name}")
                     actual_hash = hashlib.sha256(packet.wire).hexdigest()
                     if actual_hash != expected_hash:
                         raise ValueError(
@@ -5058,8 +5147,8 @@ class RepoNodeApp:
                     segment_count=len(packets),
                     packet_names=tuple(packet.name for packet in packets),
                 )
-                receipt = self._persist_packets(manifest, packets, intent=intent)
                 serve_name = _packet_set_versioned_data_name(packets)
+                receipt = self._persist_packets(manifest, packets, intent=intent)
                 if self._catalog_state_for_manifest(manifest) == "AVAILABLE":
                     self._serve_packets(packets)
                 with self._catalog_lock:
@@ -5125,7 +5214,7 @@ class RepoNodeApp:
                 data_name = str(request["dataName"])
                 self._require_finalized_packet_owner(data_name)
                 packet = self._load_persisted_packet(data_name)
-                if packet.name != data_name:
+                if inspect_data_name(packet.name)["name_wire"] != inspect_data_name(data_name)["name_wire"]:
                     raise ValueError(
                         f"repo exact packet mismatch: requested={data_name} "
                         f"stored={packet.name}")
@@ -5853,7 +5942,9 @@ class NetworkDistributedRepoClient:
         name = str(object_name).strip()
         if not name:
             raise ValueError("repo object name must not be empty")
-        if not name.startswith(self.publisher_namespace + "/"):
+        canonical_name = inspect_data_name(name)["canonical_name"]
+        canonical_namespace = inspect_data_name(self.publisher_namespace)["canonical_name"]
+        if not canonical_name.startswith(canonical_namespace + "/"):
             raise ValueError(
                 "repo object data names must be under the publisher namespace: "
                 f"{self.publisher_namespace}/..."
@@ -5862,24 +5953,12 @@ class NetworkDistributedRepoClient:
 
     @staticmethod
     def _packet_data_name(packets: list[DataPacket]) -> str:
-        if not packets:
-            raise ValueError("signed packet list is empty")
-        first_name = packets[0].name
-        if "/seg=" not in first_name:
-            return first_name
-        data_name = first_name.rsplit("/seg=", 1)[0]
-        if "/v=" in data_name:
-            return data_name.rsplit("/v=", 1)[0]
-        return data_name
+        # A version component belongs to the original Producer identity.
+        return _packet_set_versioned_data_name(packets)
 
     @staticmethod
     def _packet_versioned_data_name(packets: list[DataPacket]) -> str:
-        if not packets:
-            raise ValueError("signed packet list is empty")
-        first_name = packets[0].name
-        if "/seg=" not in first_name:
-            return first_name
-        return first_name.rsplit("/seg=", 1)[0]
+        return _packet_set_versioned_data_name(packets)
 
     def _packet_manifest_name(self, repo_node: str, object_name: str) -> str:
         repo_hash = hashlib.sha256(repo_node.encode()).hexdigest()[:16]
@@ -6080,7 +6159,7 @@ class NetworkDistributedRepoClient:
             timeout_ms=attempt_timeout_ms,
         )
         prepared = json.loads(response.payload.decode())
-        if str(prepared.get("dataName", "")) != data_name:
+        if inspect_data_name(str(prepared.get("dataName", "")))["name_wire"] != inspect_data_name(data_name)["name_wire"]:
             raise ValueError(
                 "repo exact packet preparation name mismatch: "
                 f"requested={data_name} prepared={prepared.get('dataName', '')}")
@@ -6129,7 +6208,7 @@ class NetworkDistributedRepoClient:
                 "repo packet index count mismatch: "
                 f"object={manifest.object_name} names={len(packet_names)} "
                 f"segments={manifest.segment_count}")
-        if len(set(packet_names)) != len(packet_names):
+        if len({inspect_data_name(name)["name_wire"] for name in packet_names}) != len(packet_names):
             raise ValueError(
                 f"repo packet index contains duplicate names: {manifest.object_name}")
 
@@ -6155,13 +6234,18 @@ class NetworkDistributedRepoClient:
                         raise TimeoutError("repo total read deadline exceeded")
                     packet = self.fetch_packet(candidate, expected_name)
                     decoded = decode_data_packet(packet.wire)
-                    if packet.name != expected_name or decoded.name != expected_name:
+                    if decoded.wire != packet.wire:
+                        raise ValueError("repo original packet framing changed during decode")
+                    expected_wire_name = inspect_data_name(expected_name)["name_wire"]
+                    if (inspect_data_name(packet.name)["name_wire"] != expected_wire_name or
+                            inspect_data_name(decoded.name)["name_wire"] != expected_wire_name):
                         raise ValueError(
                             "repo exact packet name mismatch: "
                             f"expected={expected_name} packet={packet.name} "
                             f"wire={decoded.name}")
                     packets.append(DataPacket(
                         decoded.name, decoded.segment, bytes(decoded.wire)))
+                _packet_set_versioned_data_name(packets)
                 self._record_replica_result(
                     candidate, success=True,
                     latency_ms=(time.monotonic() - started) * 1000.0)
@@ -7065,6 +7149,8 @@ class NetworkDistributedRepoClient:
         policy_epoch: str,
         data_name: str = "",
         metadata: Optional[dict] = None,
+        packet_manifest_name: str = "",
+        packet_manifest_sha256: str = "",
     ) -> RepoObjectManifest:
         """Store app-produced signed NDN Data packets without re-signing them.
 
@@ -7076,12 +7162,15 @@ class NetworkDistributedRepoClient:
 
         if not packets:
             raise ValueError("store_signed_packets requires at least one packet")
+        if bool(packet_manifest_name) != bool(packet_manifest_sha256):
+            raise ValueError("original packet pull requires index name and SHA256")
         object_name = self._require_publisher_object_name(object_name)
         data_name = data_name or self._packet_data_name(packets)
-        normalized_data_prefix = data_name.rstrip("/")
+        normalized_data_prefix = inspect_data_name(data_name)["canonical_name"]
         for packet in packets:
-            if (packet.name != normalized_data_prefix and
-                    not packet.name.startswith(normalized_data_prefix + "/")):
+            canonical_packet_name = inspect_data_name(packet.name)["canonical_name"]
+            if (canonical_packet_name != normalized_data_prefix and
+                    not canonical_packet_name.startswith(normalized_data_prefix + "/")):
                 raise ValueError(
                     "signed Data packet name is outside the declared original "
                     f"Data prefix: prefix={data_name} packet={packet.name}"
@@ -7143,7 +7232,8 @@ class NetworkDistributedRepoClient:
                 policy_epoch=policy_epoch,
                 metadata=dict(metadata or {}),
             )
-            for batch_index, batch in enumerate(self._packet_batches(packets)):
+            batches = ([None] if packet_manifest_name else self._packet_batches(packets))
+            for batch_index, batch in enumerate(batches):
                 batch_operation_id = f"{operation_id}:batch:{batch_index}"
                 batch_manifest = replace(
                     target_manifest,
@@ -7165,12 +7255,18 @@ class NetworkDistributedRepoClient:
                 response = self._request_specific_repo(
                     repo_node=repo_node,
                     payload=encode_repo_request(
-                        "STORE_PACKET_BATCH",
+                        "STORE_PACKET_PULL" if packet_manifest_name else "STORE_PACKET_BATCH",
                         manifest=batch_manifest.to_dict(),
                         writeIntent=batch_intent.to_dict(),
-                        packets=[self._packet_to_request(packet) for packet in batch],
+                        **({"sourceName": data_name,
+                            "packetManifestName": packet_manifest_name,
+                            "packetManifestSha256": packet_manifest_sha256}
+                           if packet_manifest_name else
+                           {"packets": [self._packet_to_request(packet) for packet in batch]}),
                     ),
-                    timeout_ms=max(self.timeout_ms, 60000),
+                    timeout_ms=max(self.timeout_ms,
+                                   _pull_fetch_timeout_ms(len(packets)) + 30000
+                                   if packet_manifest_name else 60000),
                     # Reuse the existing ServiceUser across packet batches.
                     # Each request has its own request ID; rebuilding the SVS
                     # runtime per packet adds seconds of bootstrap latency.

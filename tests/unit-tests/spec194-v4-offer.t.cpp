@@ -6,6 +6,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
@@ -15,6 +17,7 @@
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include <limits>
+#include <locale>
 
 #include <boost/test/unit_test.hpp>
 #include <openssl/bio.h>
@@ -25,6 +28,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cfenv>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -32,6 +36,12 @@
 #include <thread>
 #include <type_traits>
 #include <boost/asio/post.hpp>
+#if defined(__linux__)
+#include <locale.h>
+#endif
+#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__)) && defined(__SSE__)
+#include <xmmintrin.h>
+#endif
 
 namespace ndn_service_framework {
 
@@ -103,6 +113,8 @@ struct TestKey
 
 struct Fixture
 {
+  explicit Fixture(std::vector<std::string> providers = {"/provider/a", "/provider/b"})
+    : roster(std::move(providers)) {}
   TestKey signer;
   const std::vector<std::string> roster{"/provider/a", "/provider/b"};
   const std::string requestId = "/request/spec194/1";
@@ -114,10 +126,10 @@ struct Fixture
   const std::string candidateSetDigest = nativePlanningDigest(
     nativeCanonicalJson(NativeJson(roster)));
 
-  NativeOfferAdmission makeAdmission() const
+  NativeOfferAdmission makeAdmission(const std::string& extraProvider = {}) const
   {
     const auto candidateDigest = nativePlanningDigest("spec194-v4-candidate");
-    const NativeJson policy = {
+    NativeJson policy = {
       {"schema", "spec180-provider-offer-trust-v1"},
       {"candidateId", "spec194-v4"},
       {"candidateDigest", candidateDigest},
@@ -133,6 +145,11 @@ struct Fixture
         {"keyLocatorPrefix", "/provider/b/KEY"},
         {"signerKeyId", signer.keyId},
         {"certificateName", "/provider/b/KEY/spec194/ISSUER/v=1"}}})}};
+    if (!extraProvider.empty())
+      policy["entries"].push_back(NativeJson{
+        {"provider", extraProvider}, {"service", service},
+        {"keyLocatorPrefix", extraProvider + "/KEY"}, {"signerKeyId", signer.keyId},
+        {"certificateName", extraProvider + "/KEY/spec194/ISSUER/v=1"}});
     return NativeOfferAdmission(nativeCanonicalJson(policy),
       {{signer.keyId, signer.publicPem}}, candidateDigest);
   }
@@ -368,6 +385,274 @@ struct Fixture
 
 BOOST_AUTO_TEST_SUITE(Spec194V4Offer)
 
+BOOST_AUTO_TEST_CASE(UnsignedDigestReusesOnlyCanonicalRootSignatureBytes)
+{
+  Fixture f;
+  const auto check = [&](const std::string& wire) {
+    const auto decoded = decodeNativeProviderOfferV4(wire);
+    auto unsignedValue = decoded.values;
+    BOOST_CHECK_EQUAL(decoded.signature, unsignedValue.at("signature").get<std::string>());
+    unsignedValue.erase("signature");
+    BOOST_CHECK_EQUAL(decoded.offerDigest,
+      nativePlanningDigest(nativeCanonicalJson(unsignedValue)));
+    BOOST_CHECK_EQUAL(nativeCanonicalJson(decoded.values), wire);
+  };
+  struct RestoreRounding {
+    int mode = std::fegetround();
+    ~RestoreRounding() { std::fesetround(mode); }
+  } restore;
+  for (const int mode : {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO}) {
+    BOOST_REQUIRE_EQUAL(std::fesetround(mode), 0);
+    auto config = f.offerConfig();
+    // Quotes, brackets and apparent members remain inside a string token.
+    config.bootEpoch = "boot-{[\\\"signature\\\":\\\"nested\\\"]}-\n\"signature\":true";
+    const auto issued = issueNativeProviderOfferV4(
+      f.requestPayload(), config, f.telemetry(), 1000);
+    BOOST_REQUIRE(issued);
+    check(issued->capabilityFieldValue);
+    for (const auto& wire : issued->fallbackCapabilityFieldValues) check(wire);
+    auto value = nativeParseJson(issued->capabilityFieldValue);
+    for (const auto& signature : {std::string("sig\\\"},{\"signature\":\"shadow\""),
+                                   std::string("escape\\\n\t\"\r")}) {
+      value["signature"] = signature;
+      check(nativeCanonicalJson(value));
+    }
+  }
+  BOOST_REQUIRE_EQUAL(std::fesetround(FE_TONEAREST), 0);
+  struct CommaDecimal : std::numpunct<char> {
+    char do_decimal_point() const override { return ','; }
+  };
+  struct RestoreLocale {
+    std::locale prior;
+    ~RestoreLocale() { std::locale::global(prior); }
+  } restoreLocale;
+  std::locale::global(std::locale(std::locale::classic(), new CommaDecimal));
+  for (std::uint64_t i = 1; i <= 128; ++i) {
+    auto row = f.dataFetchRow();
+    row["first_byte_ms"] = i / 17.0;
+    row["elapsed_ms"] = 30.0 + i / 11.0;
+    row["goodput_mbps"] = 8000.0 * 8.0 / row.at("elapsed_ms").get<double>() / 1000.0;
+    row.erase("source_digest");
+    row["source_digest"] = nativePlanningDigest(nativeCanonicalJson(row));
+    const auto issued = issueNativeProviderOfferV4(
+      f.requestPayload(), f.offerConfig(), f.telemetry(), 1000, {row});
+    BOOST_REQUIRE(issued);
+    check(issued->capabilityFieldValue);
+    for (const auto& wire : issued->fallbackCapabilityFieldValues) check(wire);
+  }
+  const auto plain = issueNativeProviderOfferV4(
+    f.requestPayload(), f.offerConfig(), f.telemetry(), 1000);
+  BOOST_REQUIRE(plain);
+  auto whitespace = plain->capabilityFieldValue;
+  whitespace.insert(1, " ");
+  BOOST_CHECK_EXCEPTION(decodeNativeProviderOfferV4(whitespace), std::invalid_argument,
+    [](const std::invalid_argument& error) {
+      return std::string(error.what()) == "V4 Provider offer is not canonical JSON";
+    });
+  auto duplicate = plain->capabilityFieldValue;
+  duplicate.insert(1, "\"signature\":\"duplicate\",");
+  // Duplicate keys are rejected by the parser before canonical validation.
+  BOOST_CHECK_THROW(decodeNativeProviderOfferV4(duplicate), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(RequestOwnedDecodeReuseNeverReusesAdmissionAuthority)
+{
+  Fixture f;
+  const auto issued = issueNativeProviderOfferV4(
+    f.requestPayload(), f.offerConfig(), f.telemetry(), 1000, {f.dataFetchRow()});
+  BOOST_REQUIRE(issued);
+  const auto ack = f.ackFor(issued->capabilityFieldValue);
+  const auto admission = f.makeAdmission();
+  const auto context = f.binding();
+  NativeOfferDecodeCache cache;
+  const auto check = [&](const AckSelectionCandidate& candidate,
+                         const NativeOfferBindingContext& binding, std::uint64_t now) {
+    std::string freshReason, cachedReason;
+    const auto fresh = admission.tryVerifyV4Batch({candidate}, binding, now, &freshReason);
+    const auto cached = admission.tryVerifyV4Batch({candidate}, binding, now, &cachedReason, &cache);
+    BOOST_CHECK_EQUAL(freshReason, cachedReason);
+    BOOST_CHECK_EQUAL(bool(fresh), bool(cached));
+    if (fresh && cached) {
+      BOOST_CHECK_EQUAL(nativeCanonicalJson(fresh->front().observation().values),
+                        nativeCanonicalJson(cached->front().observation().values));
+      BOOST_CHECK_EQUAL(fresh->front().observation().offerDigest,
+                        cached->front().observation().offerDigest);
+      BOOST_CHECK_EQUAL(fresh->front().ackWireDigest(), cached->front().ackWireDigest());
+    }
+  };
+  check(ack, context, 1200);
+  BOOST_CHECK_EQUAL(cache.decodeReuseCount(), 0);
+  check(ack, context, 1201);
+#if defined(__linux__) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__)) && defined(__SSE__)
+  BOOST_REQUIRE_GT(cache.decodeReuseCount(), 0);
+#else
+  BOOST_CHECK_EQUAL(cache.decodeReuseCount(), 0);
+#endif
+  const auto candidateDigest = nativePlanningDigest("spec194-v4-candidate");
+  const NativeJson changedPolicy = {
+    {"schema", "spec180-provider-offer-trust-v1"}, {"candidateId", "spec194-v4"},
+    {"candidateDigest", candidateDigest}, {"trustSchema", "/trust/spec194/v1"},
+    {"entries", NativeJson::array({NativeJson{
+      {"provider", "/provider/a"}, {"service", f.service},
+      {"keyLocatorPrefix", "/provider/a/KEY/replaced"}, {"signerKeyId", f.signer.keyId},
+      {"certificateName", "/provider/a/KEY/replaced/ISSUER/v=1"}}})}};
+  const NativeOfferAdmission changedAdmission(nativeCanonicalJson(changedPolicy),
+    {{f.signer.keyId, f.signer.publicPem}}, candidateDigest);
+  BOOST_CHECK(!changedAdmission.tryVerifyV4Batch({ack}, context, 1200, nullptr, &cache));
+  check(ack, context, 10000);
+  for (int i = 0; i < 7; ++i) {
+    auto changed = context;
+    switch (i) {
+      case 0: changed.attempt = 2; break;
+      case 1: changed.requesterIdentity = "invalid"; break;
+      case 2: changed.requestId += "-new"; break;
+      case 3: changed.modelDigest = "sha256:" + std::string(64, '0'); break;
+      case 4: changed.allowedGoodputEdges.clear(); break;
+      case 5: changed.candidateProviders.clear(); break;
+      case 6: changed.deadlineMs = 1200; break;
+    }
+    check(ack, changed, 1200);
+  }
+  for (int i = 0; i < 5; ++i) {
+    auto changed = ack;
+    switch (i) {
+      case 0: changed.authenticationEvidence.trustSchemaValidated = false; break;
+      case 1: changed.authenticationEvidence.signerIdentity = "/provider/b"; break;
+      case 2: changed.authenticationEvidence.signerKeyLocator = "/foreign/KEY/key"; break;
+      case 3: changed.ack.setStatus(false); break;
+      case 4: changed.authenticationEvidence.wireDigest = "bad"; break;
+    }
+    check(changed, context, 1200);
+  }
+  auto changedWire = nativeParseJson(issued->capabilityFieldValue);
+  changedWire["signature"] = std::string(128, '0');
+  check(f.ackFor(nativeCanonicalJson(changedWire)), context, 1200);
+  auto invalid = issued->capabilityFieldValue;
+  invalid.insert(1, " ");
+  const auto beforeInvalid = cache.decodeReuseCount();
+  check(f.ackFor(invalid), context, 1200);
+  check(f.ackFor(invalid), context, 1200);
+  BOOST_CHECK_EQUAL(cache.decodeReuseCount(), beforeInvalid);
+
+  // Owned admitted values cannot mutate immutable cached JSON.
+  auto output = admission.tryVerifyV4Batch({ack}, context, 1200, nullptr, &cache);
+  BOOST_REQUIRE(output);
+  const_cast<NativeObservedProviderOfferV4&>(output->front().observation())
+    .values["boot_epoch"] = "changed-owned-output";
+  check(ack, context, 1200);
+  struct RestoreEnvironment {
+    int round = std::fegetround();
+    std::locale locale;
+    ~RestoreEnvironment() { std::fesetround(round); std::locale::global(locale); }
+  } restore;
+  for (const int mode : {FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO}) {
+    BOOST_REQUIRE_EQUAL(std::fesetround(mode), 0);
+    const auto before = cache.decodeReuseCount();
+    check(ack, context, 1200);
+    BOOST_CHECK_EQUAL(cache.decodeReuseCount(), before);
+  }
+  BOOST_REQUIRE_EQUAL(std::fesetround(FE_TONEAREST), 0);
+  struct CommaDecimal : std::numpunct<char> {
+    char do_decimal_point() const override { return ','; }
+  };
+  std::locale::global(std::locale(std::locale::classic(), new CommaDecimal));
+  const auto beforeLocale = cache.decodeReuseCount();
+  check(ack, context, 1200);
+  BOOST_CHECK_EQUAL(cache.decodeReuseCount(), beforeLocale);
+  std::locale::global(std::locale::classic());
+#if defined(__linux__)
+  struct RestoreThreadLocale {
+    locale_t owned = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+    locale_t previous = static_cast<locale_t>(0);
+    ~RestoreThreadLocale() {
+      if (previous) uselocale(previous);
+      if (owned) freelocale(owned);
+    }
+  } threadLocale;
+  BOOST_REQUIRE(threadLocale.owned);
+  threadLocale.previous = uselocale(threadLocale.owned);
+  BOOST_REQUIRE(threadLocale.previous);
+  const auto beforeThreadLocale = cache.decodeReuseCount();
+  check(ack, context, 1200);
+  BOOST_CHECK_EQUAL(cache.decodeReuseCount(), beforeThreadLocale);
+  uselocale(threadLocale.previous);
+#endif
+  // Each nondefault control state must use the fresh decoder, not cached data.
+#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__)) && defined(__SSE__)
+  struct RestoreControls {
+    unsigned int mxcsr = _mm_getcsr();
+    unsigned short x87 = 0;
+    RestoreControls() { asm volatile("fnstcw %0" : "=m"(x87)); }
+    ~RestoreControls() {
+      _mm_setcsr(mxcsr);
+      asm volatile("fldcw %0" : : "m"(x87));
+    }
+  } controls;
+  for (const auto bit : {0x8000u, 0x0040u}) {
+    _mm_setcsr(controls.mxcsr | bit);
+    const auto before = cache.decodeReuseCount();
+    check(ack, context, 1200);
+    BOOST_CHECK_EQUAL(cache.decodeReuseCount(), before);
+    _mm_setcsr(controls.mxcsr);
+  }
+  const unsigned short reducedPrecision = 0x027f;
+  asm volatile("fldcw %0" : : "m"(reducedPrecision));
+  const auto beforePrecision = cache.decodeReuseCount();
+  check(ack, context, 1200);
+  BOOST_CHECK_EQUAL(cache.decodeReuseCount(), beforePrecision);
+  asm volatile("fldcw %0" : : "m"(controls.x87));
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(RequestOwnedDecodeCapacityAndConcurrentReaders)
+{
+  Fixture f;
+  const auto admission = f.makeAdmission();
+  const auto context = f.binding();
+  auto cache = std::make_shared<NativeOfferDecodeCache>();
+  std::weak_ptr<NativeOfferDecodeCache> lifetime = cache;
+  std::vector<AckSelectionCandidate> acks;
+  for (int i = 0; i < 18; ++i) {
+    auto config = f.offerConfig();
+    config.bootEpoch += "-" + std::to_string(i);
+    const auto issued = issueNativeProviderOfferV4(
+      f.requestPayload(), config, f.telemetry(), 1000);
+    BOOST_REQUIRE(issued);
+    acks.push_back(f.ackFor(issued->capabilityFieldValue));
+    BOOST_REQUIRE(admission.tryVerifyV4Batch({acks.back()}, context, 1200, nullptr, cache.get()));
+  }
+  const auto beforeFull = cache->decodeReuseCount();
+  BOOST_REQUIRE(admission.tryVerifyV4Batch({acks.back()}, context, 1200, nullptr, cache.get()));
+  BOOST_CHECK_EQUAL(cache->decodeReuseCount(), beforeFull);
+  std::atomic<bool> okay{true};
+  std::vector<std::thread> readers;
+  for (int t = 0; t < 4; ++t) {
+    readers.emplace_back([&, owner = cache] {
+      try {
+        for (int i = 0; i < 8; ++i) {
+          const auto result = admission.tryVerifyV4Batch({acks.front()}, context, 1200,
+                                                       nullptr, owner.get());
+          if (!result || result->front().observation().bootEpoch != "boot-provider-a-1-0")
+            okay.store(false);
+        }
+      }
+      catch (...) { okay.store(false); }
+    });
+  }
+  for (auto& reader : readers) reader.join();
+  BOOST_CHECK(okay.load());
+#if defined(__linux__) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__)) && defined(__SSE__)
+  BOOST_CHECK_EQUAL(cache->decodeReuseCount() - beforeFull, 32);
+#else
+  BOOST_CHECK_EQUAL(cache->decodeReuseCount(), 0);
+#endif
+  NativeOfferDecodeCache otherRequest;
+  BOOST_REQUIRE(admission.tryVerifyV4Batch({acks.front()}, context, 1200, nullptr, &otherRequest));
+  BOOST_CHECK_EQUAL(otherRequest.decodeReuseCount(), 0);
+  cache.reset();
+  BOOST_CHECK(lifetime.expired());
+}
+
 BOOST_AUTO_TEST_CASE(ProbePairScopeDeterministicallyTruncatesAndKeepsUnknownPairsOmitted)
 {
   Fixture f;
@@ -431,6 +716,121 @@ BOOST_AUTO_TEST_CASE(CoreRttSampleBecomesFreshDirectedV4LinkRow)
   const auto offer = issueNativeProviderOfferV4(
     f.requestPayload(), f.offerConfig(), telemetry, 3000, rows);
   BOOST_CHECK(offer.has_value());
+}
+
+BOOST_AUTO_TEST_CASE(CachedDedicatedTrainAckKeepsLifetimeAndSignedBudgetFallbacks)
+{
+  using namespace ndn_service_framework;
+  Fixture f;
+  NetworkTelemetrySnapshot sample;
+  sample.providerName = ndn::Name(f.roster[0]);
+  sample.peerName = ndn::Name(f.roster[1]);
+  sample.peerBootEpoch = "boot-provider-b-1";
+  sample.kind = NetworkTelemetrySampleKind::ActiveProbeGoodput;
+  sample.sampleCount = 1;
+  sample.lastUpdatedMs = 2990;
+  sample.probeComplete = sample.probeSignatureValid = true;
+  sample.targetSignatureValidated = sample.probeSourceTimingValidated = true;
+  sample.probeSegmentsSent = sample.receivedSegments = NETWORK_PROBE_WARMED_SEGMENTS;
+  sample.probeProfileDigest = NETWORK_PROBE_TRAIN_PROFILE_DIGEST;
+  sample.payloadBytes = NETWORK_PROBE_WARMED_SEGMENTS * NETWORK_PROBE_WARMED_PAYLOAD_BYTES;
+  sample.wireBytes = sample.payloadBytes + 10000;
+  sample.encodedBytes = sample.payloadBytes;
+  sample.firstByteMs = 1.0;
+  sample.elapsedMs = 30.0;
+  sample.goodputMbps = sample.payloadBytes * 8.0 / 30000.0;
+  sample.probeRttMs.fill(20.0);
+  sample.probeInterestGapsMs.fill(4.0);
+  sample.probeDataArrivalGapsMs.fill(4.0);
+  sample.probeDataWireBytes.fill(5000);
+  sample.probeSourceSendGapsMs.fill(0.5);
+  const auto topology = nativePlanningDigest("cached-train-topology");
+  const auto telemetry = f.measuredTelemetry(f.roster[0], "boot-provider-a-1", topology);
+  auto rows = makeNativeProviderLinkObservationsV4(
+    {sample}, f.roster[0], "boot-provider-a-1", topology, 3000, 5000);
+  BOOST_REQUIRE_EQUAL(rows.size(), 1U);
+  BOOST_CHECK_EQUAL(rows[0].at("captured_at_ms").get<std::uint64_t>(), 2990U);
+  BOOST_CHECK_EQUAL(rows[0].at("expires_at_ms").get<std::uint64_t>(), 5000U);
+  const auto issued = issueNativeProviderOfferV4(
+    f.requestPayload(), f.offerConfig(), telemetry, 3000, rows);
+  BOOST_REQUIRE(issued);
+  const auto check = [&](const std::string& wire) {
+    BOOST_CHECK_LE(wire.size(), 4096U);
+    const auto decoded = decodeNativeProviderOfferV4(wire);
+    for (const auto& row : decoded.values.at("link_observations")) {
+      BOOST_CHECK_EQUAL(row.at("captured_at_ms").get<std::uint64_t>(), 2990U);
+      BOOST_CHECK_EQUAL(row.at("expires_at_ms").get<std::uint64_t>(), 5000U);
+    }
+    BOOST_CHECK_NO_THROW(f.makeAdmission().verifyV4(f.ackFor(wire), f.binding(), 3100));
+  };
+  BOOST_TEST_MESSAGE("Cached dedicated train primary links=" <<
+    decodeNativeProviderOfferV4(issued->capabilityFieldValue).values.at("link_observations").size()
+    << " bytes=" << issued->capabilityFieldValue.size()
+    << " fallbacks=" << issued->fallbackCapabilityFieldValues.size());
+  check(issued->capabilityFieldValue);
+  for (const auto& wire : issued->fallbackCapabilityFieldValues) check(wire);
+  rows[0]["expires_at_ms"] = std::uint64_t{3000};
+  BOOST_CHECK_THROW(issueNativeProviderOfferV4(
+    f.requestPayload(), f.offerConfig(), telemetry, 3000, rows), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(Spec200OptionalObservationPreservesBaseExecutionLifetime)
+{
+  using namespace ndn_service_framework;
+  Fixture f;
+  const auto nowMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto bytes = f.requestPayload();
+  auto envelope = nativeParseJson(std::string(bytes.begin(), bytes.end()));
+  envelope["plan_deadline_ms"] = nowMs + 90000;
+  envelope["probe_scope_digest"] = f.probeScopeDigest(
+    envelope.at("candidate_artifact_set_digest").get<std::string>(),
+    nowMs + 90000, f.requesterIdentity);
+  const auto text = nativeCanonicalJson(envelope);
+  RequestMessage request;
+  ndn::Buffer payload(reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
+  request.setPayload(payload, payload.size());
+  RequestCapabilities capabilities;
+  capabilities.setField("DI_PLACEMENT_V4", "optional");
+  request.setRequestCapabilities(capabilities);
+  auto telemetry = f.measuredTelemetry(
+    f.roster[0], "boot-provider-a-1", nativePlanningDigest("ttl-test-topology"));
+  telemetry.sampledAtMs = static_cast<std::int64_t>(nowMs);
+  telemetry.resources.measuredAtMs = static_cast<std::int64_t>(nowMs);
+  ServiceProvider::AckRequestContext context;
+  context.requesterIdentity = ndn::Name(f.requesterIdentity);
+  context.serviceName = ndn::Name(f.service);
+  context.requestId = ndn::Name(f.requestId);
+  context.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  context.registrationGeneration = 1;
+  context.cancelled = std::make_shared<std::atomic<bool>>(false);
+  for (const std::uint64_t baseTtl : {90000ULL, 0ULL}) {
+    const auto handler = makeNativeProviderObservationAckHandlerV4(
+      [baseTtl] (const RequestMessage&) {
+        ServiceProvider::AckDecision decision;
+        decision.status = true;
+        decision.message = "base admission";
+        decision.pendingStateTtlMs = baseTtl;
+        decision.providerCapabilityFields["BASE_CAPABILITY"] = "unchanged";
+        return decision;
+      }, f.offerConfig(), [telemetry] { return telemetry; });
+    std::optional<ServiceProvider::AckDecision> result;
+    handler(context, request, [&] (ServiceProvider::AckDecision decision) {
+      result = std::move(decision);
+    });
+    BOOST_REQUIRE(result);
+    BOOST_CHECK(result->status);
+    BOOST_CHECK_EQUAL(result->message, "base admission");
+    BOOST_CHECK_EQUAL(result->pendingStateTtlMs, baseTtl);
+    BOOST_CHECK_EQUAL(result->providerCapabilityFields.at("BASE_CAPABILITY"), "unchanged");
+    BOOST_REQUIRE(result->providerCapabilityFields.count(NATIVE_PROVIDER_OFFER_V4_FIELD));
+    const auto offer = decodeNativeProviderOfferV4(
+      result->providerCapabilityFields.at(NATIVE_PROVIDER_OFFER_V4_FIELD));
+    BOOST_CHECK_EQUAL(offer.expiresAtMs - offer.capturedAtMs, 5000U);
+    BOOST_REQUIRE(!result->providerCapabilityFieldFallbacks.empty());
+    BOOST_CHECK(result->providerCapabilityFieldFallbacks.back().empty());
+  }
 }
 
 BOOST_AUTO_TEST_CASE(Spec194ProductionAsyncAckIssuesLocalOfferWithoutPeerProbes)
@@ -499,6 +899,13 @@ BOOST_AUTO_TEST_CASE(Spec194ProductionAsyncAckIssuesLocalOfferWithoutPeerProbes)
   } cleanupResidencyRoot{residencyRoot};
   NativeProtectedPlaintextCache plaintextCache(residencyRoot / "plaintext", 2);
   NativePersistentRecipeResidencyIndex persistentIndex(residencyRoot / "persistent");
+  NetworkTelemetryStore cachedTelemetry;
+  cachedTelemetry.updateActiveProbe(providerName, peerProviderName, "historical-scope",
+    "boot-provider-b-1", ndn::Name("/provider/b/probe/historical"), 12.0);
+  const auto originalSamples = cachedTelemetry.getCachedActiveProbeSamples(
+    providerName, {peerProviderName});
+  BOOST_REQUIRE_EQUAL(originalSamples.size(), 1U);
+  std::size_t cachedLinkCalls = 0;
   const auto handler = makeNativeProviderObservationAckHandlerV4(
     [] (const RequestMessage&) {
       ServiceProvider::AckDecision decision;
@@ -520,7 +927,21 @@ BOOST_AUTO_TEST_CASE(Spec194ProductionAsyncAckIssuesLocalOfferWithoutPeerProbes)
         candidateArtifacts, processEpoch, capturedAtMs, expiresAtMs,
         &residencyCache, &runnerCache, &sessionCache, &plaintextCache,
         &persistentIndex);
-    });
+    },
+    [&] (const NativeJson& envelope, const NativeProviderTelemetrySnapshot& current,
+         std::uint64_t checkedAtMs, std::uint64_t offerExpiry) {
+      ++cachedLinkCalls;
+      BOOST_CHECK_EQUAL(envelope.at("request_id").get<std::string>(), f.requestId);
+      std::vector<NativeJson> rows;
+      for (const auto& item : cachedTelemetry.getCachedActiveProbeSamples(
+             providerName, {peerProviderName})) {
+        auto formatted = makeNativeProviderLinkObservationsV4(
+          {item.first}, f.roster[0], "boot-provider-a-1",
+          current.resources.topologyDigest, checkedAtMs, std::min(item.second, offerExpiry));
+        rows.insert(rows.end(), formatted.begin(), formatted.end());
+      }
+      return rows;
+    }, 4000);
 
   std::size_t probeInterestsSent = 0;
   std::size_t readinessInterestsSent = 0;
@@ -571,6 +992,12 @@ BOOST_AUTO_TEST_CASE(Spec194ProductionAsyncAckIssuesLocalOfferWithoutPeerProbes)
   BOOST_REQUIRE(observedAck);
   BOOST_CHECK(observedAck->getStatus());
   BOOST_REQUIRE(observedAck->hasProviderCapabilityOffer());
+  BOOST_REQUIRE(observedAck->getProviderCapabilityOffer().hasField(
+    NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD));
+  const auto transport = nativeParseJson(observedAck->getProviderCapabilityOffer().getField(
+    NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD));
+  BOOST_CHECK_EQUAL(transport.at("boot_epoch").get<std::string>(), "boot-provider-a-1");
+  BOOST_CHECK_EQUAL(transport.at("segment_payload_bytes").get<std::uint64_t>(), 4000U);
   BOOST_CHECK(observedAck->getProviderCapabilityOffer().hasField(
     NATIVE_PROVIDER_OFFER_V4_FIELD));
   const auto issued = decodeNativeProviderOfferV4(
@@ -580,13 +1007,22 @@ BOOST_AUTO_TEST_CASE(Spec194ProductionAsyncAckIssuesLocalOfferWithoutPeerProbes)
   BOOST_CHECK(issued.values.at("residency").is_array());
   BOOST_CHECK(issued.values.at("residency").empty());
   BOOST_CHECK_EQUAL(telemetrySnapshotCalls, 1U);
+  BOOST_CHECK_EQUAL(cachedLinkCalls, 1U);
   BOOST_CHECK_EQUAL(probeInterestsSent, 0U);
   BOOST_CHECK_EQUAL(readinessInterestsSent, 0U);
   BOOST_CHECK_EQUAL(
     issued.values.at("resources").at("topology_digest").get<std::string>(),
     expectedTopologyDigest);
   const auto& issuedLinks = issued.values.at("link_observations");
-  BOOST_CHECK(issuedLinks.empty());
+  BOOST_REQUIRE_EQUAL(issuedLinks.size(), 1U);
+  BOOST_CHECK_EQUAL(issuedLinks[0].at("captured_at_ms").get<std::uint64_t>(),
+                    originalSamples.front().first.lastUpdatedMs);
+  BOOST_CHECK_EQUAL(issuedLinks[0].at("expires_at_ms").get<std::uint64_t>(),
+                    originalSamples.front().second);
+  BOOST_CHECK_EQUAL(issuedLinks[0].at("dst_boot_epoch").get<std::string>(), "boot-provider-b-1");
+  BOOST_CHECK_EQUAL(issuedLinks[0].at("topology_digest").get<std::string>(), expectedTopologyDigest);
+  BOOST_CHECK_LE(observedAck->getProviderCapabilityOffer().getField(
+                   NATIVE_PROVIDER_OFFER_V4_FIELD).size(), 4096U);
   BOOST_CHECK(provider->hasPendingRequestForTokenTest(
     ndn::Name("/spec194/user"), serviceName, ndn::Name(f.requestId)));
 }
@@ -636,6 +1072,7 @@ BOOST_AUTO_TEST_CASE(Spec194ProductionAsyncAckDoesNotProbeAfterWireDeadline)
     f.roster[0], "boot-provider-a-1", nativePlanningDigest("expired-probe-topology"));
   telemetry.sampledAtMs = static_cast<std::int64_t>(nowMs);
   telemetry.resources.measuredAtMs = static_cast<std::int64_t>(nowMs);
+  std::size_t expiredCachedLinkCalls = 0;
   const auto handler = makeNativeProviderObservationAckHandlerV4(
     [] (const RequestMessage&) {
       ServiceProvider::AckDecision decision;
@@ -646,6 +1083,10 @@ BOOST_AUTO_TEST_CASE(Spec194ProductionAsyncAckDoesNotProbeAfterWireDeadline)
     [telemetry] {
       std::this_thread::sleep_for(std::chrono::milliseconds(80));
       return telemetry;
+    }, {},
+    [&] (const NativeJson&, const NativeProviderTelemetrySnapshot&, std::uint64_t, std::uint64_t) {
+      ++expiredCachedLinkCalls;
+      return std::vector<NativeJson>{};
     });
 
   std::optional<RequestAckMessage> observedAck;
@@ -674,6 +1115,7 @@ BOOST_AUTO_TEST_CASE(Spec194ProductionAsyncAckDoesNotProbeAfterWireDeadline)
   face.getIoContext().run_for(std::chrono::milliseconds(300));
   BOOST_REQUIRE(observedAck);
   BOOST_CHECK(observedAck->getStatus());
+  BOOST_CHECK_EQUAL(expiredCachedLinkCalls, 0U);
   BOOST_CHECK(!observedAck->hasProviderCapabilityOffer() ||
     !observedAck->getProviderCapabilityOffer().hasField(
       NATIVE_PROVIDER_OFFER_V4_FIELD));
@@ -798,6 +1240,211 @@ BOOST_AUTO_TEST_CASE(IssuesAndIndependentlyAdmitsSignedRequestBoundOffer)
   auto ack = f.ackFor(issued->capabilityFieldValue);
   const auto admitted = f.makeAdmission().verifyV4(ack, f.binding(), 1200);
   BOOST_CHECK_EQUAL(admitted.observation().offerDigest, decoded.offerDigest);
+}
+
+BOOST_AUTO_TEST_CASE(TensorTransportDeclarationUsesCurrentAuthenticatedAckAndBoot)
+{
+  Fixture f;
+  const auto issued = issueNativeProviderOfferV4(
+    f.requestPayload(), f.offerConfig(), f.telemetry(), 1000);
+  BOOST_REQUIRE(issued);
+  const auto admission = f.makeAdmission();
+  const auto context = f.binding();
+  const auto baseAck = f.ackFor(issued->capabilityFieldValue);
+  BOOST_CHECK_EQUAL(admission.verifyV4(baseAck, context, 1200).tensorSegmentBytes(), 0U);
+  const auto valid = NativeJson{{"schema", "ndnsf-di-tensor-transport-v1"},
+    {"boot_epoch", "boot-provider-a-1"}, {"segment_payload_bytes", std::uint64_t{4000}}};
+  const auto withTransport = [&](const std::string& wire) {
+    auto ack = baseAck;
+    auto fields = ack.ack.getProviderCapabilityOffer();
+    fields.setField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD, wire);
+    ack.ack.setProviderCapabilityOffer(fields);
+    return ack;
+  };
+  const auto ack = withTransport(nativeCanonicalJson(valid));
+  const auto accepted = admission.verifyV4(ack, context, 1200);
+  BOOST_CHECK_EQUAL(accepted.tensorSegmentBytes(), 4000U);
+  BOOST_CHECK_EQUAL(accepted.observation().offerDigest,
+                    decodeNativeProviderOfferV4(issued->capabilityFieldValue).offerDigest);
+  BOOST_CHECK(!accepted.observation().values.contains("tensor_segment_payload_bytes"));
+  std::vector<NativeJson> invalid;
+  for (const auto& bytes : {NativeJson(0), NativeJson(-1), NativeJson(4000.0),
+       NativeJson("4000"), NativeJson(nullptr), NativeJson(true),
+       NativeJson(std::uint64_t{ndn::MAX_NDN_PACKET_SIZE} + 1),
+       NativeJson(std::numeric_limits<std::uint64_t>::max())}) {
+    auto value = valid;
+    value["segment_payload_bytes"] = bytes;
+    invalid.push_back(std::move(value));
+  }
+  for (const auto& field : {"schema", "boot_epoch", "segment_payload_bytes"}) {
+    auto value = valid;
+    value.erase(field);
+    invalid.push_back(std::move(value));
+  }
+  auto staleBoot = valid;
+  staleBoot["boot_epoch"] = "boot-provider-a-0";
+  invalid.push_back(staleBoot);
+  auto foreignBoot = valid;
+  foreignBoot["boot_epoch"] = "boot-provider-b-1";
+  invalid.push_back(foreignBoot);
+  auto futureSchema = valid;
+  futureSchema["schema"] = "ndnsf-di-tensor-transport-v2";
+  invalid.push_back(futureSchema);
+  auto unknownField = valid;
+  unknownField["extra"] = 1;
+  invalid.push_back(unknownField);
+  for (const auto& value : invalid)
+    BOOST_CHECK_EQUAL(admission.verifyV4(withTransport(nativeCanonicalJson(value)),
+                                        context, 1200).tensorSegmentBytes(), 0U);
+  for (const auto& wire : {std::string("{"), std::string(257, ' '),
+       std::string("{\"schema\":\"ndnsf-di-tensor-transport-v1\",\"boot_epoch\":\"boot-provider-a-1\","
+                   "\"segment_payload_bytes\":4000,\"segment_payload_bytes\":7000}")})
+    BOOST_CHECK_EQUAL(admission.verifyV4(withTransport(wire), context, 1200)
+                      .tensorSegmentBytes(), 0U);
+  auto unauthenticated = ack;
+  unauthenticated.authenticationEvidence.trustSchemaValidated = false;
+  BOOST_CHECK_THROW(admission.verifyV4(unauthenticated, context, 1200), std::runtime_error);
+  auto wrongRequest = context;
+  wrongRequest.requestId = "/request/other";
+  BOOST_CHECK_THROW(admission.verifyV4(ack, wrongRequest, 1200), std::runtime_error);
+  NativeOfferDecodeCache cache;
+  const auto cached = admission.tryVerifyV4Batch({ack}, context, 1200, nullptr, &cache);
+  BOOST_REQUIRE(cached);
+  BOOST_CHECK_EQUAL(cached->front().tensorSegmentBytes(), 4000U);
+  auto changed = valid;
+  changed["segment_payload_bytes"] = std::uint64_t{6000};
+  const auto reused = admission.tryVerifyV4Batch(
+    {withTransport(nativeCanonicalJson(changed))}, context, 1200, nullptr, &cache);
+  BOOST_REQUIRE(reused);
+  BOOST_CHECK_EQUAL(reused->front().tensorSegmentBytes(), 6000U);
+  const auto absent = admission.tryVerifyV4Batch({baseAck}, context, 1200, nullptr, &cache);
+  BOOST_REQUIRE(absent);
+  BOOST_CHECK_EQUAL(absent->front().tensorSegmentBytes(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(V4BatchReusesOnlyImmutableContextAndPreservesSequentialRejections)
+{
+  Fixture f;
+  const auto issuedA = issueNativeProviderOfferV4(
+    f.requestPayload(), f.offerConfig("/provider/a"), f.telemetry(), 1000);
+  const auto issuedB = issueNativeProviderOfferV4(
+    f.requestPayload(), f.offerConfig("/provider/b"), f.telemetry(), 1000);
+  BOOST_REQUIRE(issuedA);
+  BOOST_REQUIRE(issuedB);
+  const auto a = f.ackFor(issuedA->capabilityFieldValue, "/provider/a");
+  const auto b = f.ackFor(issuedB->capabilityFieldValue, "/provider/b");
+  const auto admission = f.makeAdmission();
+  const auto check = [&](const std::vector<AckSelectionCandidate>& acks,
+                         const NativeOfferBindingContext& context, std::uint64_t now) {
+    std::vector<std::string> expected;
+    std::string expectedReason;
+    try {
+      for (const auto& ack : acks) {
+        if (!ack.ack.hasProviderCapabilityOffer() ||
+            !ack.ack.getProviderCapabilityOffer().hasField(NATIVE_PROVIDER_OFFER_V4_FIELD)) {
+          expectedReason = "PROVIDER_V4_OFFER_MISSING";
+          break;
+        }
+        expected.push_back(admission.verifyV4(ack, context, now).observation().offerDigest);
+      }
+    }
+    catch (const std::exception&) { expectedReason = "PROVIDER_V4_OFFER_REJECTED"; }
+    std::string reason = "must-be-cleared";
+    const auto batch = admission.tryVerifyV4Batch(acks, context, now, &reason);
+    BOOST_CHECK_EQUAL(reason, expectedReason);
+    BOOST_CHECK_EQUAL(bool(batch), expectedReason.empty());
+    if (batch) {
+      BOOST_REQUIRE_EQUAL(batch->size(), expected.size());
+      for (std::size_t i = 0; i < batch->size(); ++i)
+        BOOST_CHECK_EQUAL((*batch)[i].observation().offerDigest, expected[i]);
+    }
+  };
+  const auto context = f.binding();
+  check({a, b}, context, 1200);
+  check({b, a}, context, 1200);
+  std::string reason;
+  BOOST_REQUIRE(admission.tryVerifyV4Batch({a, b}, context, 1200, &reason));
+  check({a, b}, context, 10000); // A prior successful batch cannot cache lifetime.
+  auto missing = b;
+  missing.ack.clearProviderCapabilityOffer();
+  auto forged = b;
+  forged.authenticationEvidence.trustSchemaValidated = false;
+  check({a, forged}, context, 1200); // Exercise failure after common proof exists.
+  check({forged, missing}, context, 1200);
+  check({missing, forged}, context, 1200);
+  check({a, missing}, context, 1200);
+  auto badSignatureValues = nativeParseJson(issuedB->capabilityFieldValue);
+  auto& badSignature = badSignatureValues["signature"].get_ref<std::string&>();
+  badSignature[0] = badSignature[0] == 'A' ? 'B' : 'A';
+  const auto badSignatureAck = f.ackFor(nativeCanonicalJson(badSignatureValues), "/provider/b");
+  BOOST_CHECK_EQUAL(decodeNativeProviderOfferV4(nativeCanonicalJson(badSignatureValues)).offerDigest,
+                    decodeNativeProviderOfferV4(issuedB->capabilityFieldValue).offerDigest);
+  check({a, badSignatureAck}, context, 1200);
+  auto statusMismatch = b;
+  statusMismatch.ack.setStatus(false);
+  check({a, statusMismatch}, context, 1200);
+  auto reservation = b;
+  reservation.ack.setReservationLease(ndn_service_framework::ReservationLease{});
+  check({a, reservation}, context, 1200);
+  for (bool futureCapture : {false, true}) {
+    auto timed = nativeParseJson(issuedB->capabilityFieldValue);
+    timed["captured_at_ms"] = futureCapture ? 1300 : 1001;
+    timed["expires_at_ms"] = futureCapture ? 5000 : 1100;
+    timed.erase("signature");
+    timed["signature"] = f.signer.sign(nativePlanningDigest(nativeCanonicalJson(timed)));
+    check({a, f.ackFor(nativeCanonicalJson(timed), "/provider/b")}, context, 1200);
+  }
+  // C is genuinely authorized by the immutable policy and has a valid signed
+  // offer. Rebind only its candidate/scope digests to the original A/B context
+  // and resign: its rejection must retain per-offer roster membership after A.
+  Fixture extended({"/provider/a", "/provider/b", "/provider/c"});
+  const auto extendedAdmission = extended.makeAdmission("/provider/c");
+  auto configC = extended.offerConfig("/provider/c");
+  configC.bootEpoch = "boot-provider-c-1";
+  const auto issuedC = issueNativeProviderOfferV4(
+    extended.requestPayload(), configC, extended.telemetry(), 1000);
+  BOOST_REQUIRE(issuedC);
+  BOOST_CHECK_NO_THROW(extendedAdmission.verifyV4(
+    extended.ackFor(issuedC->capabilityFieldValue, "/provider/c"), extended.binding(), 1200));
+  auto foreignValues = nativeParseJson(issuedC->capabilityFieldValue);
+  foreignValues["candidate_set_digest"] = context.candidateSetDigest;
+  foreignValues["probe_scope_digest"] = context.probeScopeDigest;
+  foreignValues.erase("signature");
+  foreignValues["signature"] = extended.signer.sign(nativePlanningDigest(nativeCanonicalJson(foreignValues)));
+  const auto foreignAck = extended.ackFor(nativeCanonicalJson(foreignValues), "/provider/c");
+  BOOST_CHECK_NO_THROW(extendedAdmission.verifyV4(a, context, 1200));
+  BOOST_CHECK_THROW(extendedAdmission.verifyV4(foreignAck, context, 1200), std::runtime_error);
+  BOOST_CHECK(!extendedAdmission.tryVerifyV4Batch({a, foreignAck}, context, 1200, &reason));
+  BOOST_CHECK_EQUAL(reason, "PROVIDER_V4_OFFER_REJECTED");
+  for (int mutation = 0; mutation < 6; ++mutation) {
+    auto bad = b;
+    switch (mutation) {
+      case 0: bad.providerName = ndn::Name("/provider/a"); break;
+      case 1: bad.serviceName = ndn::Name("/other/service"); break;
+      case 2: bad.requestId = ndn::Name("/other/request"); break;
+      case 3: bad.authenticationEvidence.signerIdentity = "/provider/a"; break;
+      case 4: bad.authenticationEvidence.signerKeyLocator = "/other/KEY/1"; break;
+      case 5: bad = f.ackFor("invalid-json", "/provider/b"); break;
+    }
+    check({a, bad}, context, 1200);
+  }
+  for (int mutation = 0; mutation < 8; ++mutation) {
+    auto changed = context;
+    switch (mutation) {
+      case 0: changed.candidateProviders.pop_back(); break;
+      case 1: changed.candidateProviders[0] = "/other/provider"; break;
+      case 2: changed.candidateArtifacts[0]["rank"] = 0.0; break;
+      case 3: changed.candidateArtifacts[0]["backend"] = "changed"; break;
+      case 4: changed.probeScopeDigest = nativePlanningDigest("changed"); break;
+      case 5: changed.allowedRttPairs.clear(); break;
+      case 6: changed.deadlineMs = 1199; break;
+      case 7: changed.attempt = 2; break;
+    }
+    check({a, b}, changed, 1200);
+    check({a, b}, context, 1200); // No state leaks between batch invocations.
+  }
+  BOOST_CHECK(!admission.tryVerifyV4Batch({}, context, 1200, &reason));
+  BOOST_CHECK_EQUAL(reason, "PROVIDER_V4_OFFER_REJECTED");
 }
 
 BOOST_AUTO_TEST_CASE(DistinguishesUnknownKnownEmptyAndObservedResidency)
@@ -1011,6 +1658,49 @@ BOOST_AUTO_TEST_CASE(RunnerReuseRequiresMatchingOutputBinding)
   const auto changedOutput = makeProjection(
     "/NDNSF/DI/REQUEST/runner-cache-3", "sha256:" + std::string(64, '3'), "group-b");
   BOOST_CHECK(!cache.lookup(changedOutput, "/provider/a", "boot-a", {}));
+
+  NativeProviderRunnerReuseCache genericCache(
+    2, NativeProviderRunnerReuseCache::OutputBinding::RoleContract);
+  genericCache.publish(first, "/provider/a", "boot-a", {}, runner);
+  BOOST_CHECK(genericCache.lookup(changedOutput, "/provider/a", "boot-a", {}) == runner);
+  auto differentContract = changedOutput;
+  differentContract.dataflow.mayPublish.front().bundleTensorNames = {"other"};
+  BOOST_CHECK(!genericCache.lookup(differentContract, "/provider/a", "boot-a", {}));
+  differentContract = changedOutput;
+  differentContract.assembly.backend = "onnxruntime-cuda";
+  BOOST_CHECK(!genericCache.lookup(differentContract, "/provider/a", "boot-a", {}));
+  differentContract = changedOutput;
+  differentContract.assembly.recipeDigest = "sha256:" + std::string(64, '9');
+  BOOST_CHECK(!genericCache.lookup(differentContract, "/provider/a", "boot-a", {}));
+  differentContract = changedOutput;
+  differentContract.canonicalArtifactName = "/model/other";
+  BOOST_CHECK(!genericCache.lookup(differentContract, "/provider/a", "boot-a", {}));
+  BOOST_CHECK(!genericCache.lookup(changedOutput, "/provider/a", "boot-b", {}));
+}
+
+BOOST_AUTO_TEST_CASE(RoleContractRunnerOutputsKeepModelAndStateMetadata)
+{
+  NativeModelRunnerSpec spec;
+  spec.kind = "onnx";
+  spec.metadata = {{"outputScope", "old-group"}, {"outputScope.hidden", "old-edge"},
+    {"output_scope.0", "old-edge"}, {"outputBundleScope", "old-bundle"},
+    {"output_bundle_scope", "old-bundle"}, {"passthroughTensors", "images"},
+    {"outputAlias.hidden", "activation"}, {"kvOutputScope", "state"},
+    {"forceOutputBundle", "true"}, {"protectedIdentity", "protected-model"}};
+  const auto retained = std::map<std::string, std::string>{
+    {"passthroughTensors", "images"}, {"outputAlias.hidden", "activation"},
+    {"kvOutputScope", "state"}, {"forceOutputBundle", "true"},
+    {"protectedIdentity", "protected-model"}};
+  NativeProviderRunnerReuseCache::prepareRoleContractOutputs(spec);
+  BOOST_CHECK(spec.metadata == retained);
+  spec.metadata["is_final"] = "true";
+  NativeProviderRunnerReuseCache::prepareRoleContractOutputs(spec);
+  BOOST_CHECK_EQUAL(spec.metadata.at("outputScope"), "final-response");
+  spec.kind = "native-yolo-merge";
+  spec.metadata["outputScope"] = "merge-output";
+  const auto original = spec.metadata;
+  NativeProviderRunnerReuseCache::prepareRoleContractOutputs(spec);
+  BOOST_CHECK(spec.metadata == original);
 }
 
 BOOST_AUTO_TEST_CASE(OnnxSessionResidencyQueryRequiresExactIdentityAndIsReadOnly)
@@ -1317,8 +2007,14 @@ BOOST_AUTO_TEST_CASE(FreezesWholeRosterSnapshotWithBootTopologyAndLifetimeBindin
   BOOST_REQUIRE(issuedB);
   auto admission = f.makeAdmission();
   std::vector<NativeAdmittedOfferV4> admitted;
+  auto ackA = f.ackFor(issuedA->capabilityFieldValue, "/provider/a");
+  auto capabilitiesA = ackA.ack.getProviderCapabilityOffer();
+  capabilitiesA.setField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD,
+    nativeCanonicalJson(NativeJson{{"schema", "ndnsf-di-tensor-transport-v1"},
+      {"boot_epoch", "boot-provider-a-1"}, {"segment_payload_bytes", std::uint64_t{6000}}}));
+  ackA.ack.setProviderCapabilityOffer(capabilitiesA);
   admitted.push_back(admission.verifyV4(
-    f.ackFor(issuedA->capabilityFieldValue, "/provider/a"), binding, 3100));
+    ackA, binding, 3100));
   admitted.push_back(admission.verifyV4(
     f.ackFor(issuedB->capabilityFieldValue, "/provider/b"), binding, 3100));
   const auto sampleA = NativeJson{
@@ -1330,11 +2026,33 @@ BOOST_AUTO_TEST_CASE(FreezesWholeRosterSnapshotWithBootTopologyAndLifetimeBindin
   const auto snapshot = buildNativePlacementObservationSnapshotV4(
     binding, nativePlanningDigest("closed-ack-roster"), admitted,
     {sampleB, sampleA}, cache, 1, 3200);
+  BOOST_CHECK_EQUAL(snapshot.value.at("provider_offers")[0]
+    .at("tensor_segment_payload_bytes").get<std::uint64_t>(), 6000U);
+  BOOST_CHECK(!snapshot.value.at("provider_offers")[1]
+    .contains("tensor_segment_payload_bytes"));
+  // Reusing canonical inventory bytes must still reject changed input even
+  // when the advertised digest and prepared-cache digest remain identical.
+  auto changedInventory = binding;
+  BOOST_REQUIRE(!changedInventory.candidateArtifacts.empty());
+  changedInventory.candidateArtifacts.front()["unexpected_identity_field"] = "changed";
+  BOOST_CHECK_EXCEPTION(buildNativePlacementObservationSnapshotV4(
+    changedInventory, nativePlanningDigest("closed-ack-roster"), admitted,
+    {sampleB, sampleA}, cache, 1, 3200), std::invalid_argument,
+    [] (const std::invalid_argument& error) {
+      return std::string(error.what()) == "V4 prepared graph differs from the advertised inventory";
+    });
+  auto emptyInventory = binding;
+  emptyInventory.candidateArtifacts.clear();
+  BOOST_CHECK_THROW(buildNativePlacementObservationSnapshotV4(
+    emptyInventory, nativePlanningDigest("closed-ack-roster"), admitted,
+    {sampleB, sampleA}, cache, 1, 3200), std::invalid_argument);
   BOOST_CHECK_EQUAL(snapshot.value.at("plan_deadline_ms").get<std::uint64_t>(), 10000U);
   BOOST_CHECK_EQUAL(snapshot.capturedAtMs, 3200U);
   BOOST_CHECK_EQUAL(snapshot.expiresAtMs, 7990U);
   BOOST_CHECK_EQUAL(snapshot.value.at("expires_at_ms").get<std::uint64_t>(), 7990U);
   BOOST_REQUIRE_EQUAL(snapshot.value.at("eligible_link_observations").size(), 1U);
+  BOOST_CHECK_EQUAL(snapshot.value.at("eligible_link_observations")[0]
+    .at("source_kind").get<std::string>(), "ACK_CACHE");
   BOOST_REQUIRE_EQUAL(snapshot.value.at("prepared_role_graph").size(), 1U);
   BOOST_REQUIRE_EQUAL(snapshot.value.at("prepared_role_graph")[0]
     .at("roles").size(), 2U);
@@ -1361,9 +2079,12 @@ BOOST_AUTO_TEST_CASE(FreezesWholeRosterSnapshotWithBootTopologyAndLifetimeBindin
     binding, nativePlanningDigest("closed-ack-roster"), admitted,
     {sampleB, sampleA}, requestCache, 1, 3200, nullptr, &requestProfile);
   const auto& requestEdge = requestSnapshot.value.at("prepared_role_graph")[0].at("dependencies")[0];
-  BOOST_CHECK_EQUAL(requestEdge.at("estimated_bytes").get<std::uint64_t>(), 192U);
+  BOOST_CHECK_EQUAL(requestEdge.at("estimated_bytes").get<std::uint64_t>(), 261U);
+  BOOST_CHECK_EQUAL(requestEdge.at("estimated_bytes").get<std::uint64_t>(),
+    encodeTensorBundle({NamedTensor{"actual-hidden", TensorElementType::Float32,
+      {1, 3, 16}, std::vector<std::uint8_t>(192)}}).size());
   BOOST_CHECK_EQUAL(requestEdge.at("estimated_bytes_source").get<std::string>(),
-    "request-bound-bundle-payload");
+    "request-bound-encoded-tensor-bundle");
   BOOST_CHECK(requestSnapshot.value.at("request_transfer_profile") == requestProfile);
   BOOST_CHECK(requestSnapshot.digest != snapshot.digest);
   BOOST_CHECK_EQUAL(snapshot.digest,
@@ -1460,6 +2181,172 @@ BOOST_AUTO_TEST_CASE(FreezesWholeRosterSnapshotWithBootTopologyAndLifetimeBindin
     {staleSample, sampleB}, cache, 1, 3200), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(TensorBundleEncodingSizeMatchesWireAndPreservesLimits)
+{
+  const std::vector<NamedTensor> tensors{
+    {"hidden", TensorElementType::Float32, {1, 4}, std::vector<std::uint8_t>(16)},
+    {"mask", TensorElementType::Bool, {1, 8}, std::vector<std::uint8_t>(8)},
+    {"positions", TensorElementType::Int64, {2}, std::vector<std::uint8_t>(16)},
+    {"零", TensorElementType::Float16, {0}, {}},
+    {"scalar", TensorElementType::UInt8, {}, {0xab}}};
+  std::vector<TensorBundleEncodingMember> members;
+  for (const auto& tensor : tensors)
+    members.push_back({tensor.name.size(), tensor.shape.size(), tensor.payload.size()});
+  const auto wire = encodeTensorBundle(tensors);
+  BOOST_CHECK_EQUAL(tensorBundleEncodedSize(members), wire.size());
+  const auto decoded = decodeTensorBundle(wire);
+  BOOST_REQUIRE_EQUAL(decoded.size(), tensors.size());
+  for (std::size_t i = 0; i < tensors.size(); ++i) {
+    BOOST_CHECK_EQUAL(decoded[i].name, tensors[i].name);
+    BOOST_CHECK(decoded[i].shape == tensors[i].shape);
+    BOOST_CHECK(decoded[i].elementType == tensors[i].elementType);
+    BOOST_CHECK(decoded[i].payload == tensors[i].payload);
+  }
+  const std::vector<std::uint8_t> golden{
+    'N','D','I','T','B','0','0','1', 1,0,0,0, 1,0,0,0, 'x',
+    5,0,0,0, 0,0,0,0, 1,0,0,0,0,0,0,0, 0xab};
+  BOOST_CHECK(encodeTensorBundle({NamedTensor{"x", TensorElementType::UInt8, {}, {0xab}}}) == golden);
+  BOOST_CHECK_EQUAL(tensorBundleEncodedSize({}), encodeTensorBundle({}).size());
+  BOOST_CHECK_THROW(tensorBundleEncodedSize({{0, 0, 1}}), std::invalid_argument);
+  BOOST_CHECK_THROW(tensorBundleEncodedSize({{1025, 0, 1}}), std::invalid_argument);
+  BOOST_CHECK_THROW(tensorBundleEncodedSize({{1, 17, 1}}), std::invalid_argument);
+  BOOST_CHECK_THROW(tensorBundleEncodedSize({{1, 0, (512ULL << 20) + 1}}), std::invalid_argument);
+  BOOST_CHECK_THROW(tensorBundleEncodedSize(std::vector<TensorBundleEncodingMember>(257, {1, 0, 1})),
+                    std::invalid_argument);
+  BOOST_CHECK_EQUAL(tensorBundleEncodedSize({{1024, 16, 512ULL << 20}}),
+                    (512ULL << 20) + 12 + 20 + 1024 + 16 * 8);
+  auto invalid = tensors;
+  invalid.back().payload.clear();
+  BOOST_CHECK_THROW(encodeTensorBundle(invalid), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(SourceShapeTemplateBindsDifferentCurrentInput)
+{
+  const auto source = nativePlanningDigest("source-shape-template");
+  NativeJson profile{{"schema", "ndnsf-di-request-transfer-profile-v1"},
+    {"source_digest", source}, {"input_digest", nativePlanningDigest("old-input")},
+    {"initial_context", true}, {"dependencies", NativeJson::array()},
+    {"shape_template", {
+      {"bindings", NativeJson::array({
+        NativeJson{{"symbol", "batch"}, {"tensor", "tokens"}, {"axis", 0}},
+        NativeJson{{"symbol", "seq"}, {"tensor", "tokens"}, {"axis", 1}}})},
+      {"constants", {{"past", 0}}},
+      {"dependencies", NativeJson::array({NativeJson{{"producer_role", "encoder"},
+        {"consumer_role", "decoder"}, {"tensors", NativeJson::array({
+          NativeJson{{"name", "hidden"}, {"dtype", "float32"},
+            {"shape", NativeJson::array({"batch", NativeJson{{"add", {"past", "seq"}}}, 4})}}})}}})}}}};
+  NativeEncodedRequest request;
+  const auto payload = encodeTensorBundle({NamedTensor{
+    "tokens", TensorElementType::Int64, {1, 5}, std::vector<std::uint8_t>(40)}});
+  request.logicalInputDigest = nativePlanningDigest(payload.data(), payload.size());
+  std::string base64(4 * ((payload.size() + 2) / 3) + 1, '\0');
+  const auto size = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(base64.data()),
+                                  payload.data(), payload.size());
+  BOOST_REQUIRE_GE(size, 0);
+  base64.resize(size);
+  const auto envelope = NativeJson{{"schema", "ndnsf-di-request-envelope-v2"},
+    {"input_transport", "INLINE"}, {"input_payload_b64", base64}}.dump();
+  request.wire.assign(envelope.begin(), envelope.end());
+  const auto bound = bindNativeRequestTransferProfileV1(profile, source, request);
+  BOOST_REQUIRE(bound);
+  BOOST_CHECK((*bound)["input_digest"] == request.logicalInputDigest);
+  BOOST_CHECK(!bound->contains("shape_template"));
+  BOOST_CHECK((*bound)["dependencies"][0]["tensors"][0]["shape"] == NativeJson({1, 5, 4}));
+  NativeSelectionRoleV3 producer, consumer;
+  producer.selectedRole = "encoder"; consumer.selectedRole = "decoder";
+  producer.expectedOutputs = {{"hidden", "float32", {"batch", "seq", 4}}};
+  consumer.expectedInputs = producer.expectedOutputs;
+  NativeDependencySpec dependency;
+  dependency.producers = {"encoder"}; dependency.consumers = {"decoder"};
+  dependency.tensors = {"logical-hidden"}; dependency.operationKind = "ACTIVATION";
+  const auto bytes = estimateNativeRequestTransferEncodedBytesV1(
+    *bound, source, request.logicalInputDigest, dependency, {producer, consumer});
+  BOOST_REQUIRE(bytes);
+  BOOST_CHECK_EQUAL(*bytes, encodeTensorBundle({NamedTensor{
+    "hidden", TensorElementType::Float32, {1, 5, 4}, std::vector<std::uint8_t>(80)}}).size());
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(profile, nativePlanningDigest("foreign"), request));
+  auto wrongRequest = request; wrongRequest.logicalInputDigest = nativePlanningDigest("wrong-input");
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(profile, source, wrongRequest));
+  auto changed = profile; changed["initial_context"] = false;
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(changed, source, request));
+  changed = profile; changed["shape_template"]["bindings"][1]["axis"] = -1;
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(changed, source, request));
+  changed = profile; changed["shape_template"]["bindings"][1]["tensor"] = "missing";
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(changed, source, request));
+  changed = profile; changed["shape_template"]["constants"]["batch"] = 1;
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(changed, source, request));
+  changed = profile;
+  changed["shape_template"]["dependencies"][0]["tensors"][0]["shape"][1] =
+    NativeJson{{"multiply", {"seq", 2}}};
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(changed, source, request));
+  changed = profile; changed["shape_template"]["constants"]["past"] =
+    std::numeric_limits<std::int64_t>::max();
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(changed, source, request));
+  changed = profile;
+  NativeJson expression = "seq";
+  for (unsigned depth = 0; depth < 18; ++depth) expression = NativeJson{{"add", {0, expression}}};
+  changed["shape_template"]["dependencies"][0]["tensors"][0]["shape"][1] = expression;
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(changed, source, request));
+
+  auto contextProfile = profile;
+  contextProfile["shape_template"]["past_sequence_symbol"] = "past";
+  auto contextRequest = request;
+  auto contextEnvelope = NativeJson::parse(envelope);
+  contextEnvelope["request_id"] = "/request/current-append";
+  const auto contextWire = nativeCanonicalJson(contextEnvelope);
+  contextRequest.wire.assign(contextWire.begin(), contextWire.end());
+  contextRequest.requestContractDigest = nativePlanningDigest(contextWire);
+  // The conversation owner's authentication boundary is exercised by its
+  // separate production fixtures. Here the already-issued turn is supplied
+  // to the geometry binder and its identity/freshness bindings are tested.
+  NativeConversationTurn turn;
+  turn.ticket = "issued-owner-ticket";
+  turn.requestId = "/request/current-append";
+  turn.parent.mode = "APPEND_DELTA";
+  turn.parent.conversationId = "conversation";
+  turn.parent.parentContextEpoch = 1;
+  turn.parent.parentCheckpointDigest = nativePlanningDigest("parent-checkpoint");
+  turn.parent.planRoleMapDigest = nativePlanningDigest("role-map");
+  turn.parent.requestContractDigest = contextRequest.requestContractDigest;
+  turn.parent.parentCheckpointWire = nativeCanonicalJson(NativeJson{
+    {"conversationId", turn.parent.conversationId}, {"contextEpoch", 1},
+    {"checkpointDigest", turn.parent.parentCheckpointDigest},
+    {"planRoleMapDigest", turn.parent.planRoleMapDigest}, {"prefixTokenCount", 15}});
+  const auto continued = bindNativeRequestTransferProfileV1(
+    contextProfile, source, contextRequest, &turn);
+  BOOST_REQUIRE(continued);
+  BOOST_CHECK((*continued)["schema"] == "ndnsf-di-request-transfer-profile-v2");
+  BOOST_CHECK((*continued)["initial_context"] == false);
+  BOOST_CHECK((*continued)["dependencies"][0]["tensors"][0]["shape"] == NativeJson({1, 20, 4}));
+  const auto contextBytes = estimateNativeRequestTransferEncodedBytesV1(
+    *continued, source, contextRequest.logicalInputDigest, dependency, {producer, consumer});
+  BOOST_REQUIRE(contextBytes);
+  BOOST_CHECK_EQUAL(*contextBytes, encodeTensorBundle({NamedTensor{
+    "hidden", TensorElementType::Float32, {1, 20, 4}, std::vector<std::uint8_t>(320)}}).size());
+  auto staleTurn = turn; staleTurn.parent.parentContextEpoch = 2;
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(contextProfile, source, contextRequest, &staleTurn));
+  staleTurn = turn; staleTurn.parent.parentCheckpointDigest = nativePlanningDigest("wrong-parent");
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(contextProfile, source, contextRequest, &staleTurn));
+  staleTurn = turn; staleTurn.parent.requestContractDigest = nativePlanningDigest("old-request");
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(contextProfile, source, contextRequest, &staleTurn));
+  staleTurn = turn; staleTurn.requestId = "/wrong-request";
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(contextProfile, source, contextRequest, &staleTurn));
+  staleTurn = turn; staleTurn.aborted = true;
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(contextProfile, source, contextRequest, &staleTurn));
+  staleTurn = turn; staleTurn.ticket.clear();
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(contextProfile, source, contextRequest, &staleTurn));
+  staleTurn = turn; staleTurn.attempt = 2;
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(contextProfile, source, contextRequest, &staleTurn));
+  auto recoveryRequest = contextRequest; recoveryRequest.recovery = NativeGenerationRecovery{};
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(contextProfile, source, recoveryRequest, &turn));
+  auto unboundProfile = contextProfile;
+  unboundProfile["shape_template"].erase("past_sequence_symbol");
+  BOOST_CHECK(!bindNativeRequestTransferProfileV1(unboundProfile, source, contextRequest, &turn));
+  auto unboundContext = *continued; unboundContext.erase("request_contract_digest");
+  BOOST_CHECK(!estimateNativeRequestTransferEncodedBytesV1(
+    unboundContext, source, contextRequest.logicalInputDigest, dependency, {producer, consumer}));
+}
+
 BOOST_AUTO_TEST_CASE(RequestTransferProfileRequiresCompleteSourceBoundBundle)
 {
   const auto source = nativePlanningDigest("pinned-source");
@@ -1490,6 +2377,27 @@ BOOST_AUTO_TEST_CASE(RequestTransferProfileRequiresCompleteSourceBoundBundle)
   };
   const auto bytes = estimate(profile, source, input);
   BOOST_REQUIRE(bytes); BOOST_CHECK_EQUAL(*bytes, 15396U);
+  const auto encodedBytes = estimateNativeRequestTransferEncodedBytesV1(
+    profile, source, input, dependency, {producer, consumer});
+  BOOST_REQUIRE(encodedBytes);
+  std::vector<NamedTensor> tensors;
+  for (const auto& row : profile.at("dependencies")[0].at("tensors")) {
+    NamedTensor tensor;
+    tensor.name = row.at("name").get<std::string>();
+    tensor.shape = row.at("shape").get<std::vector<std::int64_t>>();
+    std::size_t payload = sizeof(float);
+    for (const auto dimension : tensor.shape) payload *= static_cast<std::size_t>(dimension);
+    tensor.payload.resize(payload);
+    tensors.push_back(std::move(tensor));
+  }
+  BOOST_CHECK_EQUAL(*encodedBytes, encodeTensorBundle(tensors).size());
+  BOOST_CHECK_EQUAL(*encodedBytes, 15638U);
+  BOOST_CHECK(!estimateNativeRequestTransferEncodedBytesV1(
+    profile, nativePlanningDigest("foreign-source"), input, dependency, {producer, consumer}));
+  auto warmProfile = profile;
+  warmProfile["initial_context"] = false;
+  BOOST_CHECK(!estimateNativeRequestTransferEncodedBytesV1(
+    warmProfile, source, input, dependency, {producer, consumer}));
   BOOST_CHECK(!estimate(profile, nativePlanningDigest("other-source"), input));
   BOOST_CHECK(!estimate(profile, source, nativePlanningDigest("other-input")));
   auto changed = profile;
@@ -1650,6 +2558,10 @@ BOOST_AUTO_TEST_CASE(Spec196MergesOnlyFreshTargetedGoodputBoundToIntentAndProvid
   const auto merged = mergeNativePlacementProbeRoundV1(original, round, binding, 3300);
   BOOST_REQUIRE_EQUAL(merged.value.at("eligible_link_observations").size(), 1U);
   const auto& entry = merged.value.at("eligible_link_observations").front();
+  BOOST_CHECK_EQUAL(entry.at("source_kind").get<std::string>(), "TARGETED_RESPONSE");
+  // Targeted goodput rows intentionally omit optional ACK-only evidence.
+  BOOST_CHECK(!entry.at("row").contains("observer_peer"));
+  BOOST_CHECK(!entry.at("row").contains("topology_digest"));
   BOOST_CHECK_EQUAL(entry.at("reported_by").get<std::string>(), "/provider/b");
   BOOST_CHECK_EQUAL(entry.at("row").at("src_peer").get<std::string>(), "/provider/a");
   BOOST_CHECK_EQUAL(entry.at("row").at("dst_peer").get<std::string>(), "/provider/b");

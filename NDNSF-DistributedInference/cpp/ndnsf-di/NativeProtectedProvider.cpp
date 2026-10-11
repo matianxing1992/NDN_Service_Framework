@@ -169,15 +169,13 @@ void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config)
       const NativeSelectionProjectionV3& projection,
       const std::shared_ptr<ProviderGroupCoordinator>& group) {
     auto keys = loadNativeProtectedGrantConfig(ctx.localProvider().toUri(), modelFamily,
-                                              projection.selectedRole.protectionEpoch);
-    keys.modelManifestDigest = projection.selectedRole.modelManifestDigest;
-    if (keys.modelManifestDigest.empty()) {
-      const auto offset = projection.grantName.find("/MODEL/");
-      if (offset == std::string::npos) throw reject("sealed grant lacks model commitment");
-      keys.modelManifestDigest = "sha256:" + projection.grantName.substr(offset + 7, 64);
-    }
+                                              projection.selectedRoleContract().protectionEpoch);
+    keys.modelManifestDigest = projection.selectedRoleContract().modelManifestDigest;
+    keys.publicationIdentity = ctx.requesterName().toUri(ndn::name::UriFormat::CANONICAL);
+    if (keys.modelManifestDigest.empty())
+      throw reject("sealed current grant lacks model commitment");
     const auto fields = parseNativeProviderAssignmentFields(
-      ctx.assignment().assignmentPayload, projection.executionRole.roleId);
+      ctx.assignment().assignmentPayload, projection.executionRole.roleId, &projection);
     ProtectedRuntimeBindingV1 binding;
     binding.provider = projection.provider;
     binding.role = projection.executionRole.roleId;
@@ -192,7 +190,7 @@ void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config)
       binding.grantExpiresAtMs = projection.grantLeaseScope->expiresAtMs;
     }
     binding.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
-    binding.protectionEpoch = projection.selectedRole.protectionEpoch;
+    binding.protectionEpoch = projection.selectedRoleContract().protectionEpoch;
     binding.grantName = projection.grantName;
     binding.grantDigest = projection.grantDigest;
     binding.providerBootId = boot;

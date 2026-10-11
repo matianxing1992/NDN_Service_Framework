@@ -6,5 +6,6 @@ namespace ndnsf::di::test {
 // its private sampler; this helper supplies tensors and transport only.
 NativeEpochCoordinatorResult runSamplingEpochs(
   std::vector<std::vector<float>> logits,
-  const std::function<void(NativeEpochCoordinatorConfig&)>& configure);
+  const std::function<void(NativeEpochCoordinatorConfig&)>& configure,
+  std::size_t rowsPerEpoch = 1);
 }

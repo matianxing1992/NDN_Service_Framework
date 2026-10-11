@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeObservedOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRunnerReuseCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
@@ -30,6 +31,40 @@ namespace {
 
 constexpr std::size_t MAX_V4_OFFER_BYTES = 4096;
 constexpr std::size_t MAX_V4_LINK_ROWS = 16;
+
+// Called only after exact canonical equality and the V4 root contract have
+// been checked. Remove the root member, preserving every other signed byte.
+std::string canonicalOfferWithoutSignature(const std::string& wire,
+                                           const std::string& signature)
+{
+  const auto member = std::string("\"signature\":") + nativeCanonicalJson(NativeJson(signature));
+  std::size_t depth = 0;
+  bool quoted = false, escaped = false;
+  for (std::size_t i = 0; i < wire.size(); ++i) {
+    const char c = wire[i];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (c == '\\') escaped = true;
+      else if (c == '"') quoted = false;
+      continue;
+    }
+    if (c == '"') {
+      if (depth == 1 && wire.compare(i, member.size(), member) == 0) {
+        const auto end = i + member.size();
+        // Required keys sort on both sides of signature in canonical V4.
+        if (i == 0 || wire[i - 1] != ',' || end >= wire.size() || wire[end] != ',')
+          throw std::invalid_argument("V4 signature member boundary is invalid");
+        auto body = wire.substr(0, i);
+        body.append(wire, end + 1, std::string::npos);
+        return body;
+      }
+      quoted = true;
+    }
+    else if (c == '{' || c == '[') ++depth;
+    else if (c == '}' || c == ']') --depth;
+  }
+  throw std::invalid_argument("V4 root signature member is missing");
+}
 constexpr std::uint64_t MAX_TELEMETRY_AGE_MS = 5000;
 
 bool
@@ -884,21 +919,69 @@ makeNativeProviderObservationAckHandlerV4(
   std::function<NativeProviderTelemetrySnapshot()> telemetrySnapshot,
   NativeProviderResidencyQueryV4 residencyQuery)
 {
+  return makeNativeProviderObservationAckHandlerV4(
+    std::move(baseAckHandler), std::move(config), std::move(telemetrySnapshot),
+    std::move(residencyQuery), {});
+}
+
+ndn_service_framework::ServiceProvider::AsyncAckStrategyHandler
+makeNativeProviderObservationAckHandlerV4(
+  ndn_service_framework::ServiceProvider::AckStrategyHandler baseAckHandler,
+  NativeProviderOfferV4Config config,
+  std::function<NativeProviderTelemetrySnapshot()> telemetrySnapshot,
+  NativeProviderResidencyQueryV4 residencyQuery,
+  NativeProviderCachedLinkQueryV4 cachedLinks)
+{
+  return makeNativeProviderObservationAckHandlerV4(
+    std::move(baseAckHandler), std::move(config), std::move(telemetrySnapshot),
+    std::move(residencyQuery), std::move(cachedLinks), 0);
+}
+
+ndn_service_framework::ServiceProvider::AsyncAckStrategyHandler
+makeNativeProviderObservationAckHandlerV4(
+  ndn_service_framework::ServiceProvider::AckStrategyHandler baseAckHandler,
+  NativeProviderOfferV4Config config,
+  std::function<NativeProviderTelemetrySnapshot()> telemetrySnapshot,
+  NativeProviderResidencyQueryV4 residencyQuery,
+  NativeProviderCachedLinkQueryV4 cachedLinks,
+  std::size_t tensorSegmentBytes)
+{
   using ServiceProvider = ndn_service_framework::ServiceProvider;
+  // Boot and publication chunk configuration are immutable for this handler.
+  // Render their optional declaration once; request admission stays per ACK.
+  std::map<std::string, std::string> transportFields;
+  if (tensorSegmentBytes != 0 && tensorSegmentBytes <= ndn::MAX_NDN_PACKET_SIZE) {
+    try {
+      const auto transport = nativeCanonicalJson(NativeJson{
+        {"schema", "ndnsf-di-tensor-transport-v1"},
+        {"boot_epoch", config.bootEpoch},
+        {"segment_payload_bytes", tensorSegmentBytes}});
+      if (transport.size() <= 256)
+        transportFields.emplace(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD, transport);
+    }
+    catch (const std::exception&) {
+      // Invalid optional metadata must preserve the original ACK path.
+    }
+  }
   return [baseAckHandler = std::move(baseAckHandler),
           config = std::move(config),
           telemetrySnapshot = std::move(telemetrySnapshot),
-          residencyQuery = std::move(residencyQuery)](
+          residencyQuery = std::move(residencyQuery), cachedLinks = std::move(cachedLinks),
+          transportFields = std::move(transportFields)](
       const ServiceProvider::AckRequestContext& context,
       const ndn_service_framework::RequestMessage& request,
       ServiceProvider::AsyncAckCompletion complete) mutable {
+    const auto ackStarted = detail::nativePhaseStarted();
+    auto phaseStarted = detail::nativePhaseStarted();
     auto decision = baseAckHandler ? baseAckHandler(request)
                                    : ServiceProvider::AckDecision{};
+    detail::logNativeWorkPhase(context.requestId, "ack_base_decision", phaseStarted);
     if (!complete)
       return;
     if (!decision.status || !request.hasRequestCapabilities() ||
         !request.getRequestCapabilities().hasField("DI_PLACEMENT_V4") ||
         request.getRequestCapabilities().getField("DI_PLACEMENT_V4") != "optional") {
+      detail::logNativeWorkPhase(context.requestId, "ack_prepare_total", ackStarted);
       complete(std::move(decision));
       return;
     }
@@ -909,13 +992,16 @@ makeNativeProviderObservationAckHandlerV4(
           context.requesterIdentity.empty() ||
           context.registrationGeneration == 0 ||
           context.serviceName.toUri() != config.service) {
+        detail::logNativeWorkPhase(context.requestId, "ack_prepare_total", ackStarted);
         complete(std::move(decision));
         return;
       }
+      phaseStarted = detail::nativePhaseStarted();
       const auto wirePayload = request.getPayload();
       const std::vector<std::uint8_t> payload(wirePayload.begin(), wirePayload.end());
       const auto envelope = nativeParseJson(
         std::string(payload.begin(), payload.end()));
+      detail::logNativeWorkPhase(context.requestId, "ack_envelope_decode", phaseStarted);
       if (!envelope.is_object() ||
           envelope.value("service", std::string{}) != context.serviceName.toUri() ||
           envelope.value("request_id", std::string{}) != context.requestId.toUri() ||
@@ -929,6 +1015,7 @@ makeNativeProviderObservationAckHandlerV4(
           envelope.at("candidate_artifacts").empty() ||
           envelope.at("candidate_artifacts").size() >
             MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS) {
+        detail::logNativeWorkPhase(context.requestId, "ack_prepare_total", ackStarted);
         complete(std::move(decision));
         return;
       }
@@ -937,6 +1024,7 @@ makeNativeProviderObservationAckHandlerV4(
       candidateArtifacts.reserve(envelope.at("candidate_artifacts").size());
       for (const auto& item : envelope.at("candidate_artifacts")) {
         if (!item.is_object()) {
+          detail::logNativeWorkPhase(context.requestId, "ack_prepare_total", ackStarted);
           complete(std::move(decision));
           return;
         }
@@ -944,20 +1032,30 @@ makeNativeProviderObservationAckHandlerV4(
       }
       if (context.isCancelled() ||
           std::chrono::steady_clock::now() >= context.deadline) {
+        detail::logNativeWorkPhase(context.requestId, "ack_prepare_total", ackStarted);
         complete(std::move(decision));
         return;
       }
+      phaseStarted = detail::nativePhaseStarted();
       const auto telemetry = telemetrySnapshot();
+      detail::logNativeWorkPhase(context.requestId, "ack_telemetry_snapshot", phaseStarted);
       const auto epoch = std::chrono::system_clock::now().time_since_epoch();
       const auto nowMs = static_cast<std::uint64_t>(
         std::max<std::int64_t>(0,
           std::chrono::duration_cast<std::chrono::milliseconds>(epoch).count()));
+      if (context.isCancelled() || std::chrono::steady_clock::now() >= context.deadline ||
+          envelope.at("plan_deadline_ms").get<std::uint64_t>() <= nowMs) {
+        detail::logNativeWorkPhase(context.requestId, "ack_prepare_total", ackStarted);
+        complete(std::move(decision));
+        return;
+      }
       const auto offerExpiry = std::min(
         envelope.at("plan_deadline_ms").get<std::uint64_t>(),
         nowMs > std::numeric_limits<std::uint64_t>::max() - config.offerTtlMs
           ? std::numeric_limits<std::uint64_t>::max()
           : nowMs + config.offerTtlMs);
       NativeProviderResidencySnapshotV4 residency;
+      phaseStarted = detail::nativePhaseStarted();
       if (residencyQuery) {
         try {
           residency = residencyQuery(candidateArtifacts, config.bootEpoch,
@@ -967,36 +1065,47 @@ makeNativeProviderObservationAckHandlerV4(
           residency = {};
         }
       }
+      detail::logNativeWorkPhase(context.requestId, "ack_residency_query", phaseStarted);
+      std::vector<NativeJson> linkRows;
+      phaseStarted = detail::nativePhaseStarted();
+      if (cachedLinks) {
+        try { linkRows = cachedLinks(envelope, telemetry, nowMs, offerExpiry); }
+        catch (const std::exception&) { linkRows.clear(); }
+      }
+      detail::logNativeWorkPhase(context.requestId, "ack_cached_links", phaseStarted);
       if (context.isCancelled() ||
           std::chrono::steady_clock::now() >= context.deadline) {
+        detail::logNativeWorkPhase(context.requestId, "ack_prepare_total", ackStarted);
         complete(std::move(decision));
         return;
       }
+      phaseStarted = detail::nativePhaseStarted();
       const auto v4 = issueNativeProviderOfferV4(
-        payload, config, telemetry, nowMs, {}, residency);
+        payload, config, telemetry, nowMs, linkRows, residency);
+      detail::logNativeWorkPhase(context.requestId, "ack_offer_issue", phaseStarted);
       if (v4) {
         decision.providerCapabilityFields[NATIVE_PROVIDER_OFFER_V4_FIELD] =
           v4->capabilityFieldValue;
+        decision.providerCapabilityFields.insert(transportFields.begin(), transportFields.end());
         for (const auto& fallback : v4->fallbackCapabilityFieldValues) {
-          decision.providerCapabilityFieldFallbacks.push_back({
-            {NATIVE_PROVIDER_OFFER_V4_FIELD, fallback}});
+          auto fields = transportFields;
+          fields.emplace(NATIVE_PROVIDER_OFFER_V4_FIELD, fallback);
+          decision.providerCapabilityFieldFallbacks.push_back(std::move(fields));
         }
         decision.providerCapabilityFieldFallbacks.emplace_back();
-        if (v4->pendingStateTtlMs != 0) {
-          decision.pendingStateTtlMs = decision.pendingStateTtlMs == 0
-            ? v4->pendingStateTtlMs
-            : std::min(decision.pendingStateTtlMs, v4->pendingStateTtlMs);
-        }
+        // Optional observation freshness must not shorten base admission:
+        // the base capability remains executable after the V4 view expires.
       }
       NDN_LOG_TRACE("NDNSF_DI_PROVIDER_OFFER_V4"
                     << " provider=" << config.provider
                     << " requestId=" << context.requestId.toUri()
                     << " status=" << (v4 ? "ready" : "unavailable")
-                    << " linkRows=0");
+                    << " linkRowsRequested=" << linkRows.size());
     }
     catch (const std::exception&) {
       // Optional local observations never change the base admission decision.
     }
+    detail::logNativeWorkPhase(context.requestId, "ack_prepare_total", ackStarted);
     complete(std::move(decision));
   };
 }
@@ -1224,6 +1333,7 @@ issueNativeProviderOfferV4(const std::vector<std::uint8_t>& requestPayload,
     validateCapacityValue(offer.at("capacity"));
 
   std::vector<std::string> wires;
+  std::size_t primaryLinkRowCount = 0;
   bool linkRowsTruncated = observationsTruncated;
   std::string activeResidencyState = residencyState;
   while (true) {
@@ -1239,8 +1349,10 @@ issueNativeProviderOfferV4(const std::vector<std::uint8_t>& requestPayload,
       throw std::runtime_error("native V4 Provider offer signer returned no signature");
     candidate["signature"] = signature;
     const auto wire = nativeCanonicalJson(candidate);
-    if (wire.size() <= MAX_V4_OFFER_BYTES)
+    if (wire.size() <= MAX_V4_OFFER_BYTES) {
+      if (wires.empty()) primaryLinkRowCount = rows.size();
       wires.push_back(wire);
+    }
     if (!rows.empty()) {
       rows.pop_back();
       linkRowsTruncated = true;
@@ -1263,6 +1375,11 @@ issueNativeProviderOfferV4(const std::vector<std::uint8_t>& requestPayload,
     result.fallbackCapabilityFieldValues.assign(
       std::make_move_iterator(wires.begin() + 1), std::make_move_iterator(wires.end()));
   result.pendingStateTtlMs = expiresAtMs - nowMs;
+  NDN_LOG_TRACE("NDNSF_DI_PROVIDER_OFFER_V4_BUDGET provider=" << config.provider
+                << " requestId=" << requestId
+                << " linkRowsRequested=" << linkObservations.size()
+                << " linkRows=" << primaryLinkRowCount
+                << " bytes=" << result.capabilityFieldValue.size());
   return result;
 }
 
@@ -1400,9 +1517,7 @@ decodeNativeProviderOfferV4(const std::string& wire)
     previous = &row;
   }
 
-  value.erase("signature");
-  result.offerDigest = nativePlanningDigest(nativeCanonicalJson(value));
-  value["signature"] = result.signature;
+  result.offerDigest = nativePlanningDigest(canonicalOfferWithoutSignature(wire, result.signature));
   result.values = std::move(value);
   return result;
 }

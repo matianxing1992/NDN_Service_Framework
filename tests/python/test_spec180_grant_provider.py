@@ -6,6 +6,9 @@ from pathlib import Path
 import sys
 import time
 import unittest
+import hashlib
+import struct
+from ndn.encoding import Component, Name
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
@@ -81,13 +84,13 @@ class GrantProviderSeamTest(unittest.TestCase):
         self.assertEqual(
             binding.protection_epoch, "spec180-yolo-protected-v1")
         self.assertTrue(binding.grant_name.startswith(
-            "/authority/artifact-policy/NDNSF-DI/KEY-GRANT/v1/PROVIDER/"))
-        self.assertTrue(binding.grant_name.endswith(
-            "/GRANT/" + binding.grant_digest[len("sha256:"):]))
+            "/8=user/8=u0/8=NDNSF/8=GRANT/8=kind%3DKEY-GRANT/"))
+        self.assertEqual(bytes(Component.get_value(Name.from_str(binding.grant_name)[-1])),
+                         bytes.fromhex(binding.grant_digest[len("sha256:"):]))
 
     def test_grant_name_matches_the_contract_grammar(self):
         name = canonical_grant_name(
-            authority="/authority/artifact-policy",
+            publication_identity="/user/u0",
             provider_identity="/provider/p0",
             request_id="req-1", attempt=2,
             plan_core_digest=_digest("a"),
@@ -95,14 +98,28 @@ class GrantProviderSeamTest(unittest.TestCase):
             protection_epoch="spec180-yolo-protected-v1",
             grant_digest=_digest("d"),
         )
-        expected_prefix = (
-            "/authority/artifact-policy/NDNSF-DI/KEY-GRANT/v1"
-            "/PROVIDER/")
-        self.assertTrue(name.startswith(expected_prefix))
-        self.assertIn("/REQ/req-1/ATTEMPT/2/PLAN-CORE/" + "a" * 64, name)
-        self.assertIn("/MODEL/" + "c" * 64
-                      + "/EPOCH/spec180-yolo-protected-v1", name)
-        self.assertIn("/GRANT/" + "d" * 64, name)
+        # Independent transcript oracle: full Name wire, raw digest and BE integer fields.
+        def digest(domain, fields):
+            domain = domain.encode("ascii")
+            wire = struct.pack("!H", len(domain)) + domain + struct.pack("!HH", 2, len(fields))
+            for tag, kind, value in fields:
+                wire += struct.pack("!HBQ", tag, kind, len(value)) + value
+            return hashlib.sha256(wire).digest()
+        producer = Name.from_str("/user/u0")
+        request = Name.from_str("req-1")
+        recipient = digest("ndnsf-naming/opaque/recipient", [(1, 4, bytes(Name.encode(Name.from_str("/provider/p0"))))])
+        scope = digest("ndnsf-naming/grant-scope", [
+            (1, 1, bytes(Name.encode(producer))), (2, 1, bytes(Name.encode(request))),
+            (3, 3, struct.pack("!Q", 2)), (4, 4, bytes.fromhex("a" * 64)),
+            (5, 4, bytes.fromhex("c" * 64))])
+        epoch = digest("ndnsf-naming/opaque/protection-epoch", [(1, 4, b"spec180-yolo-protected-v1")])
+        expected = producer + Name.from_str("/NDNSF/GRANT")
+        expected += [Component.from_bytes(b"kind=KEY-GRANT")] + Name.from_str("/RECIPIENT")
+        expected += [Component.from_bytes(recipient)] + Name.from_str("/SCOPE/MODEL")
+        expected += [Component.from_bytes(scope)] + Name.from_str("/EPOCH")
+        expected += [Component.from_bytes(epoch)] + Name.from_str("/OBJECT")
+        expected += [Component.from_bytes(bytes.fromhex("d" * 64))]
+        self.assertEqual(bytes(Name.encode(Name.from_str(name))), bytes(Name.encode(expected)))
         self.assertNotIn("sha256:", name)
 
     def test_plaintext_view_is_rejected_by_the_seam(self):

@@ -13,6 +13,35 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+bool samePlacementIdentity(const NativeProviderResidencyIdentityV4& left,
+                           const NativeProviderResidencyIdentityV4& right)
+{
+  return left.candidateArtifact() == right.candidateArtifact() &&
+    left.deviceSet == right.deviceSet;
+}
+
+void appendPlacementIdentities(
+  std::vector<NativeProviderResidencyIdentityV4>& target,
+  bool& complete,
+  std::vector<NativeProviderResidencyIdentityV4> additions)
+{
+  for (auto& identity : additions) {
+    if (!identity.isValid()) {
+      complete = false;
+      continue;
+    }
+    if (std::any_of(target.begin(), target.end(), [&identity] (const auto& existing) {
+          return samePlacementIdentity(existing, identity);
+        }))
+      continue;
+    if (target.size() >= MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS) {
+      complete = false;
+      continue;
+    }
+    target.push_back(std::move(identity));
+  }
+}
+
 std::runtime_error cacheError(const char* code, const std::string& message)
 {
   return std::runtime_error(std::string(code) + ": " + message);
@@ -36,6 +65,8 @@ struct OnnxRuntimeSessionCache::Shared
     std::size_t activeLeases = 0;
     bool retiring = false;
     Clock::time_point lastRelease = Clock::now();
+    std::vector<NativeProviderResidencyIdentityV4> residencyIdentities;
+    bool residencyIdentitiesComplete = true;
   };
 
   struct Job
@@ -145,7 +176,8 @@ OnnxRuntimeSessionCache::Lease
 OnnxRuntimeSessionCache::acquire(const std::string& identity,
                                  Loader loader,
                                  Clock::time_point deadline,
-                                 std::function<bool()> cancelled)
+                                 std::function<bool()> cancelled,
+                                 std::vector<NativeProviderResidencyIdentityV4> residencyIdentities)
 {
   if (identity.empty() || !loader) {
     throw std::invalid_argument(
@@ -171,6 +203,9 @@ OnnxRuntimeSessionCache::acquire(const std::string& identity,
         }
       }
       else {
+        appendPlacementIdentities(found->second.residencyIdentities,
+                                  found->second.residencyIdentitiesComplete,
+                                  std::move(residencyIdentities));
         ++found->second.activeLeases;
         ++shared->activeLeases;
         ++shared->hits;
@@ -249,6 +284,9 @@ OnnxRuntimeSessionCache::acquire(const std::string& identity,
       throw cacheError("DI_ONNX_SESSION_CACHE_LOAD_CANCELLED",
                        "completed load was not published");
     }
+    appendPlacementIdentities(found->second.residencyIdentities,
+                              found->second.residencyIdentitiesComplete,
+                              std::move(residencyIdentities));
     ++found->second.activeLeases;
     ++shared->activeLeases;
     ++shared->hits;
@@ -281,6 +319,9 @@ OnnxRuntimeSessionCache::acquire(const std::string& identity,
       Shared::Entry entry;
       entry.value = value;
       entry.activeLeases = creatorCancelled ? 0 : 1;
+      appendPlacementIdentities(entry.residencyIdentities,
+                                entry.residencyIdentitiesComplete,
+                                std::move(residencyIdentities));
       shared->entries.emplace(identity, std::move(entry));
       if (!creatorCancelled) {
         ++shared->activeLeases;
@@ -325,6 +366,60 @@ OnnxRuntimeSessionCache::acquire(const std::string& identity,
     }
     throw;
   }
+}
+
+NativeProviderResidencyOwnerResultV4
+OnnxRuntimeSessionCache::queryPlacementResidencyV4(
+  const std::vector<NativeJson>& candidateArtifacts,
+  const std::string& processEpoch,
+  const std::uint64_t capturedAtMs,
+  const std::uint64_t expiresAtMs) const
+{
+  NativeProviderResidencyOwnerResultV4 result{
+    NativeProviderResidencyOwnerV4::OnnxRuntimeSessionCache, false, {}};
+  if (candidateArtifacts.size() > MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS ||
+      processEpoch.empty() || expiresAtMs <= capturedAtMs)
+    return result;
+  for (const auto& candidate : candidateArtifacts) {
+    if (!candidate.is_object() || candidate.size() != 7)
+      return result;
+  }
+
+  const auto shared = m_shared;
+  std::lock_guard<std::mutex> lock(shared->mutex);
+  if (shared->closed)
+    return result;
+  result.complete = true;
+  const auto now = Clock::now();
+  for (const auto& item : shared->entries) {
+    const auto& entry = item.second;
+    if (entry.retiring ||
+        (entry.activeLeases == 0 && now - entry.lastRelease >= shared->config.idleTtl))
+      continue;
+    if (!entry.residencyIdentitiesComplete || entry.residencyIdentities.empty()) {
+      result.complete = false;
+      result.rows.clear();
+      return result;
+    }
+    for (const auto& residencyIdentity : entry.residencyIdentities) {
+      const bool matches = std::any_of(candidateArtifacts.begin(), candidateArtifacts.end(),
+        [&residencyIdentity] (const NativeJson& candidate) {
+          return residencyIdentity.matchesCandidateArtifact(candidate);
+        });
+      if (!matches)
+        continue;
+      auto row = residencyIdentity.makeRow(
+        "EXACT_LOADED", processEpoch + ":" + item.first, capturedAtMs, expiresAtMs,
+        std::uint64_t{0}, 0.0, 0.0, processEpoch + ":" + item.first);
+      if (std::find(result.rows.begin(), result.rows.end(), row) == result.rows.end())
+        result.rows.push_back(std::move(row));
+    }
+  }
+  std::sort(result.rows.begin(), result.rows.end(), [] (const NativeJson& left,
+                                                        const NativeJson& right) {
+    return nativeCanonicalJson(left) < nativeCanonicalJson(right);
+  });
+  return result;
 }
 
 bool

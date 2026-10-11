@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp"
 #include "ndn-service-framework/NetworkTelemetry.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -22,6 +23,9 @@ class NativePersistentRecipeResidencyIndex;
 
 inline constexpr char NATIVE_PROVIDER_OFFER_V4_FIELD[] =
   "ndnsf.di.placement.v4";
+/** Optional transport declaration covered by the enclosing Core ACK signature. */
+inline constexpr char NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD[] =
+  "ndnsf.di.tensor-transport.v1";
 
 /** Shared packet-train metadata for ACK and targeted response producers. */
 NativeJson nativeProbeTrainRateMetadataV4(
@@ -35,6 +39,7 @@ struct NativeProviderOfferV4Config
   std::string signerKeyId;
   std::function<std::string(const std::string&)> signDigest;
   std::uint64_t telemetryMaxAgeMs = 5000;
+  // Observation freshness only; does not limit the base ACK execution lifetime.
   std::uint64_t offerTtlMs = 5000;
 };
 
@@ -78,6 +83,31 @@ makeNativeProviderObservationAckHandlerV4(
   NativeProviderOfferV4Config config,
   std::function<NativeProviderTelemetrySnapshot()> telemetrySnapshot,
   NativeProviderResidencyQueryV4 residencyQuery = {});
+
+/** Local-only historical telemetry lookup; no active probe or expiry refresh. */
+using NativeProviderCachedLinkQueryV4 = std::function<std::vector<NativeJson>(
+  const NativeJson& request, const NativeProviderTelemetrySnapshot& telemetry,
+  std::uint64_t nowMs, std::uint64_t offerExpiresAtMs)>;
+
+/** The original four-argument ABI remains available without cached links. */
+ndn_service_framework::ServiceProvider::AsyncAckStrategyHandler
+makeNativeProviderObservationAckHandlerV4(
+  ndn_service_framework::ServiceProvider::AckStrategyHandler baseAckHandler,
+  NativeProviderOfferV4Config config,
+  std::function<NativeProviderTelemetrySnapshot()> telemetrySnapshot,
+  NativeProviderResidencyQueryV4 residencyQuery,
+  NativeProviderCachedLinkQueryV4 cachedLinks);
+
+/** Actual producer payload chunk size; zero keeps the historical ACK behavior.
+ * This declaration is a prefetch hint, never manifest or content authority. */
+ndn_service_framework::ServiceProvider::AsyncAckStrategyHandler
+makeNativeProviderObservationAckHandlerV4(
+  ndn_service_framework::ServiceProvider::AckStrategyHandler baseAckHandler,
+  NativeProviderOfferV4Config config,
+  std::function<NativeProviderTelemetrySnapshot()> telemetrySnapshot,
+  NativeProviderResidencyQueryV4 residencyQuery,
+  NativeProviderCachedLinkQueryV4 cachedLinks,
+  std::size_t tensorSegmentBytes);
 
 /** Convert fresh Core-owned directed samples into canonical signed V4 link
  * rows bound to the Provider's measured resource topology digest.

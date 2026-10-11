@@ -4,7 +4,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
+#include <cstring>
+#include <ctime>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -12,6 +15,32 @@
 namespace ndn_service_framework {
 
 namespace {
+
+bool
+signatureTimingEnabled() noexcept
+{
+  const char* raw = std::getenv("NDNSF_PHASE_TIMING");
+  return raw != nullptr && *raw != '\0' &&
+         std::strcmp(raw, "0") != 0 && std::strcmp(raw, "false") != 0 &&
+         std::strcmp(raw, "FALSE") != 0 && std::strcmp(raw, "no") != 0 &&
+         std::strcmp(raw, "NO") != 0;
+}
+
+std::optional<uint64_t>
+signatureThreadCpuUs() noexcept
+{
+  timespec value{};
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) != 0 ||
+      value.tv_sec < 0 || value.tv_nsec < 0 || value.tv_nsec >= 1000000000) {
+    return std::nullopt;
+  }
+  const auto seconds = static_cast<uint64_t>(value.tv_sec);
+  const auto micros = static_cast<uint64_t>(value.tv_nsec) / 1000;
+  if (seconds > (std::numeric_limits<uint64_t>::max() - micros) / 1000000) {
+    return std::nullopt;
+  }
+  return seconds * 1000000 + micros;
+}
 
 size_t
 readSizeEnvironment(const char* name, size_t current)
@@ -73,6 +102,46 @@ readPositiveMillisecondsEnvironment(const char* name,
 NDN_LOG_MEMBER_INIT(SerializedWorkerQueue, ndn_service_framework.SerializedWorkerQueue);
 NDN_LOG_MEMBER_INIT(BoundedWorkerPool, ndn_service_framework.BoundedWorkerPool);
 NDN_LOG_MEMBER_INIT(MessageValidator, ndn_service_framework.MessageValidator);
+
+bool
+MessageValidator::verifyLocalDataSignature(
+  const ndn::Data& data,
+  const std::optional<ndn::security::Certificate>& cert)
+{
+  if (!signatureTimingEnabled()) {
+    return ndn::security::verifySignature(data, cert);
+  }
+  const auto wallBegin = std::chrono::steady_clock::now();
+  const auto cpuBegin = signatureThreadCpuUs();
+  const auto report = [&] (const char* result) noexcept {
+    try {
+      const auto cpuEnd = signatureThreadCpuUs();
+      const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - wallBegin).count();
+      std::string cpu = "unknown";
+      if (cpuBegin && cpuEnd && *cpuEnd >= *cpuBegin) {
+        cpu = std::to_string(*cpuEnd - *cpuBegin);
+      }
+      NDN_LOG_WARN("NDNSF_SIGNATURE_VERIFY data_name=" << data.getName()
+                   << " certificate_name=" << (cert ? cert->getName() : ndn::Name())
+                   << " result=" << result << " duration_us=" << duration
+                   << " thread_cpu_us=" << cpu);
+    }
+    catch (...) {
+      // Optional diagnostics must not change signature validation behavior.
+    }
+  };
+  bool verified;
+  try {
+    verified = ndn::security::verifySignature(data, cert);
+  }
+  catch (...) {
+    report("exception");
+    throw;
+  }
+  report(verified ? "valid" : "invalid");
+  return verified;
+}
 
 ndn::KeyType
 getCertificateKeyType(const ndn::security::Certificate& cert)

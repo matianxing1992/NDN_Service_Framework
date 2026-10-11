@@ -133,7 +133,7 @@ makeVerifiedMapData(const StreamNameMapBlock& block,
 {
   VerifiedStreamNameMapData input;
   input.dataName = makeStreamNameMapBlockName(
-    makeStreamNameMapRoot(ndn::Name("/uav/7"), block.streamId),
+    makeStreamNameMapRoot(ndn::Name("/uav/7"), block.streamId, block.sessionEpoch),
     block.mappingVersion, block.blockNumber);
   input.verifiedProvider = provider;
   input.contentType = ndn::tlv::ContentType_Manifest;
@@ -154,7 +154,8 @@ makeResolverConfig(const ndn::Name& payloadPrefix)
   config.mappingVersion = 23;
   config.blockCapacity = 4;
   config.expectedProvider = ndn::Name("/uav/7");
-  config.mappingRoot = makeStreamNameMapRoot(config.expectedProvider, config.streamId);
+  config.mappingRoot = makeStreamNameMapRoot(config.expectedProvider, config.streamId,
+                                            config.sessionEpoch);
   config.payloadPrefix = payloadPrefix;
   config.signedWireCap = ndn::MAX_NDN_PACKET_SIZE;
   config.maxVerifiedBlocks = 8;
@@ -895,9 +896,9 @@ BOOST_AUTO_TEST_CASE(StreamNameMapWireContractIsCanonical)
   const auto wire = block.wireEncode();
   const auto content = block.canonicalContent();
   const auto fixture = readStreamFixture("map-wire-v1.json");
-  BOOST_CHECK_EQUAL(mapRoot.toUri(),
+  BOOST_CHECK_EQUAL(mapRoot.toUri(ndn::name::UriFormat::ALTERNATE),
                     fixture.get<std::string>("typedName.mappingRootUri"));
-  BOOST_CHECK_EQUAL(dataName.toUri(),
+  BOOST_CHECK_EQUAL(dataName.toUri(ndn::name::UriFormat::ALTERNATE),
                     fixture.get<std::string>("typedName.dataNameUri"));
   BOOST_CHECK_EQUAL(toHex(dataName.wireEncode()),
                     fixture.get<std::string>("typedName.dataNameWireHex"));
@@ -1086,6 +1087,8 @@ BOOST_AUTO_TEST_CASE(StreamNameResolverMatchesSharedGoldenTrace)
   newBlock.mappingVersion = nextVersion;
   auto newConfig = makeResolverConfig(newPrefix);
   newConfig.sessionEpoch = newBlock.sessionEpoch;
+  newConfig.mappingRoot = makeStreamNameMapRoot(newConfig.expectedProvider,
+                                               newConfig.streamId, newConfig.sessionEpoch);
   newConfig.mappingVersion = nextVersion;
   resolver.reset(newConfig, makeCheckpoint(newBlock));
   const auto stale = resolver.admitVerifiedBlock(makeVerifiedMapData(block0));
@@ -1627,6 +1630,8 @@ BOOST_AUTO_TEST_CASE(StreamNameResolverResetRejectsOldVersionedCache)
   newBlock.mappingVersion = 24;
   auto newConfig = makeResolverConfig(newPrefix);
   newConfig.sessionEpoch = 18;
+  newConfig.mappingRoot = makeStreamNameMapRoot(newConfig.expectedProvider,
+                                               newConfig.streamId, newConfig.sessionEpoch);
   newConfig.mappingVersion = 24;
   resolver.reset(newConfig, makeCheckpoint(newBlock));
 
@@ -1660,7 +1665,7 @@ BOOST_AUTO_TEST_CASE(StreamNameResolverRejectsNamespaceCheckpointAndRetentionCol
     resolver.reset(reusedSession, makeCheckpoint(block0)),
     std::invalid_argument,
     [] (const std::invalid_argument& error) {
-      return std::string(error.what()).find("reused-session-namespace") !=
+      return std::string(error.what()).find("wrong-mapping-root") !=
              std::string::npos;
     });
 
@@ -2096,7 +2101,7 @@ BOOST_AUTO_TEST_CASE(LiveStreamAdaptiveSkippedSourceCanRecoverExactlyOnceFromRep
   std::optional<ndn::Data> heldRepair;
   auto forwardConsumerInterest = consumerFace.onSendInterest.connect(
     [&] (const ndn::Interest& interest) {
-      if (interest.getName().toUri().find(sourceNeedle) != std::string::npos) {
+      if (interest.getName().toUri(ndn::name::UriFormat::ALTERNATE).find(sourceNeedle) != std::string::npos) {
         if (sourceNacks++ == 0) providerFace.receive(interest);
         ndn::lp::Nack nack(interest);
         nack.setReason(ndn::lp::NackReason::CONGESTION);
@@ -2108,7 +2113,7 @@ BOOST_AUTO_TEST_CASE(LiveStreamAdaptiveSkippedSourceCanRecoverExactlyOnceFromRep
     });
   auto forwardProviderData = providerFace.onSendData.connect(
     [&] (const ndn::Data& data) {
-      const auto uri = data.getName().toUri();
+      const auto uri = data.getName().toUri(ndn::name::UriFormat::ALTERNATE);
       if (uri.find(sourceNeedle) != std::string::npos) heldSource = data;
       else if (uri.find(repairNeedle) != std::string::npos) heldRepair = data;
       else consumerFace.receive(data);
@@ -2240,7 +2245,7 @@ BOOST_AUTO_TEST_CASE(LiveStreamReorderedRepairDoesNotPreemptInFlightSignedSource
     [&] (const ndn::Interest& interest) { providerFace.receive(interest); });
   auto forwardProviderData = providerFace.onSendData.connect(
     [&] (const ndn::Data& data) {
-      if (data.getName().toUri().find("/source/") != std::string::npos) {
+      if (data.getName().toUri(ndn::name::UriFormat::ALTERNATE).find("/source/") != std::string::npos) {
         heldSource = data;
       }
       else {
@@ -2347,7 +2352,7 @@ BOOST_AUTO_TEST_CASE(LiveStreamAuthenticatedRepairRecoversAfterSourceTimeout)
   size_t sourceInterests = 0;
   auto forwardConsumerInterest = consumerFace.onSendInterest.connect(
     [&] (const ndn::Interest& interest) {
-      if (interest.getName().toUri().find("/source/") != std::string::npos) {
+      if (interest.getName().toUri(ndn::name::UriFormat::ALTERNATE).find("/source/") != std::string::npos) {
         ++sourceInterests;
         heldSourceInterest = interest;
       }
@@ -2462,7 +2467,7 @@ BOOST_AUTO_TEST_CASE(LiveStreamGf256AdaptiveRepairIsNotDeliveredAsApplicationPay
     [&] (const ndn::Interest& interest) { providerFace.receive(interest); });
   auto forwardProviderData = providerFace.onSendData.connect(
     [&] (const ndn::Data& data) {
-      if (data.getName().toUri().find("/repair/") != std::string::npos) {
+      if (data.getName().toUri(ndn::name::UriFormat::ALTERNATE).find("/repair/") != std::string::npos) {
         ++droppedRepairData;
         return;
       }
@@ -2575,7 +2580,7 @@ BOOST_AUTO_TEST_CASE(LiveStreamAdaptiveSchedulingPrioritizesSourcesAcrossGroups)
   std::vector<ndn::Data> heldMappings;
   auto forwardConsumerInterest = consumerFace.onSendInterest.connect(
     [&] (const ndn::Interest& interest) {
-      const auto uri = interest.getName().toUri();
+      const auto uri = interest.getName().toUri(ndn::name::UriFormat::ALTERNATE);
       if (uri.find("/source/") != std::string::npos) {
         payloadInterestKinds.emplace_back("source");
         payloadInterestNames.push_back(uri);
@@ -2588,7 +2593,7 @@ BOOST_AUTO_TEST_CASE(LiveStreamAdaptiveSchedulingPrioritizesSourcesAcrossGroups)
     });
   auto forwardProviderData = providerFace.onSendData.connect(
     [&] (const ndn::Data& data) {
-      const auto uri = data.getName().toUri();
+      const auto uri = data.getName().toUri(ndn::name::UriFormat::ALTERNATE);
       if (uri.find("/source/") != std::string::npos ||
           uri.find("/repair/") != std::string::npos) {
         consumerFace.receive(data);
@@ -3014,25 +3019,24 @@ BOOST_AUTO_TEST_CASE(LiveStreamAdaptiveConsumerPrefetchesNextUnpublishedMappingB
     pump(1);
   }
   BOOST_REQUIRE_EQUAL(delivered.load(), 2);
-  // Allow the one injected Mapping Nack to be retried. The unrelated
-  // speculative block retains enough lifetime to remain pending while this
-  // exact block is retried.
-  // The congestion Nack above is injected synchronously. A few pump rounds
-  // are enough to process its retry while keeping the observation comfortably
-  // before the 100--166 ms Mapping lifetimes under test. A longer pump window
-  // samples the publisher PIT at its expiry boundary under a busy full-suite
-  // process and makes this assertion depend on host scheduling rather than
-  // prefetch behavior.
-  pump(3);
-  // pump() handles the Provider before the Consumer. Drain any Provider
-  // callback queued by the final Consumer slice without advancing the clock,
-  // so the publisher and consumer status snapshots describe the same traffic.
-  providerIo.poll();
-  providerIo.restart();
+  // Nack handling immediately reschedules the exact Mapping request, but
+  // both Faces queue their callbacks. Drain both directions to quiescence
+  // before observing the publisher PIT. A single Provider poll can stop at
+  // the previous processEvents() stop callback while the Consumer still has
+  // the retry queued. Do not add a timed wait to the 100--166 ms lifetimes.
+  for (size_t iteration = 0; iteration < 16; ++iteration) {
+    providerIo.restart();
+    consumerIo.restart();
+    const auto handled = providerIo.poll() + consumerIo.poll();
+    if (handled == 0) break;
+  }
   // Keep the complete bounded Mapping lookahead window pending. Fetching only
   // block 1 serializes Mapping -> payload once network delay is non-zero and
   // eventually lets a live consumer fall behind Provider retention.
-  BOOST_CHECK_GE(publisher->status().pendingInterests, 2);
+  BOOST_TEST_CONTEXT("mappingInterests=" << consumer->status().mappingInterests
+                     << " nacks=" << consumer->status().nacks) {
+    BOOST_CHECK_GE(publisher->status().pendingInterests, 2);
+  }
   BOOST_CHECK_GE(consumer->status().mappingInterests, 3);
   const auto nextBlockName = makeStreamNameMapBlockName(
     definition.mappingRoot(), definition.mappingVersion, 1);

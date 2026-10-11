@@ -67,7 +67,7 @@ logAssemblyProgressLine(const NativeSelectionProjectionV3& projection,
     std::ostringstream record;
     record << "NDNSF_DI_ASSEMBLY_PROGRESS phase=" << (phase ? phase : "unknown")
            << " progress=" << std::fixed << std::setprecision(3) << progress
-           << " requestId=" << projection.requestId << " role=" << projection.assembly.selectedRole
+           << " requestId=" << projection.requestId << " role=" << projection.assemblyContract().selectedRole
            << " bytes=" << bytes << " detail=" << (detail ? detail : "");
     logRuntimeEvidence(record.str());
   }
@@ -83,14 +83,14 @@ logAssemblyFailureLine(const NativeSelectionProjectionV3& projection) noexcept
   catch (const std::exception& error) {
     try {
       logRuntimeEvidence("NDNSF_DI_ASSEMBLY_FAILURE requestId=" + projection.requestId +
-        " role=" + projection.assembly.selectedRole + " error=" + error.what());
+        " role=" + projection.assemblyContract().selectedRole + " error=" + error.what());
     }
     catch (...) { /* Never replace the original preparation exception. */ }
   }
   catch (...) {
     try {
       logRuntimeEvidence("NDNSF_DI_ASSEMBLY_FAILURE requestId=" + projection.requestId +
-        " role=" + projection.assembly.selectedRole + " error=non-standard-exception");
+        " role=" + projection.assemblyContract().selectedRole + " error=non-standard-exception");
     }
     catch (...) { /* Preserve noexcept diagnostics. */ }
   }
@@ -595,13 +595,13 @@ protectedAssembledCacheKey(const NativeSelectionProjectionV3& projection,
                            const std::string& roleAssemblySpecDigest,
                            const std::string& keyReferenceDigest)
 {
-  if (!isSha256Digest(projection.assembly.recipeDigest) ||
+  if (!isSha256Digest(projection.assemblyContract().recipeDigest) ||
       !isSha256Digest(roleAssemblySpecDigest) ||
       !isSha256Digest(keyReferenceDigest)) {
     throw std::runtime_error("DI_PROTECTED_ASSEMBLED_CACHE_IDENTITY_INVALID");
   }
   const auto canonical = std::string("ndnsf-di-protected-assembled-cache-v1|") +
-    projection.assembly.recipeDigest + "|" + roleAssemblySpecDigest + "|" +
+    projection.assemblyContract().recipeDigest + "|" + roleAssemblySpecDigest + "|" +
     keyReferenceDigest;
   const auto bytes = std::vector<std::uint8_t>(canonical.begin(), canonical.end());
   return sha256Hex(bytes).substr(7);
@@ -638,8 +638,8 @@ bindNativeRunnerOutputScopes(const NativeSelectionProjectionV3& projection,
   for (const auto& edge : roleSpec.outputs) {
     for (const auto& name : edge.bundleTensorNames) {
       const bool isInput = std::any_of(
-        projection.assembly.expectedInputs.begin(),
-        projection.assembly.expectedInputs.end(),
+        projection.assemblyContract().expectedInputs.begin(),
+        projection.assemblyContract().expectedInputs.end(),
         [&name] (const auto& tensor) { return tensor.name == name; });
       const bool isState = std::find(
         projection.generationContract.stateInputNames.begin(),
@@ -676,17 +676,17 @@ bindNativeRunnerOutputScopes(const NativeSelectionProjectionV3& projection,
 NativeProviderResidencyIdentityV4
 placementResidencyIdentity(const NativeSelectionProjectionV3& projection)
 {
-  auto deviceSet = projection.assembly.deviceSet;
+  auto deviceSet = projection.assemblyContract().deviceSet;
   std::sort(deviceSet.begin(), deviceSet.end());
   return NativeProviderResidencyIdentityV4{
-    projection.assembly.artifactDigest,
-    projection.assembly.modelManifestDigest,
-    projection.assembly.graphDigest,
-    projection.assembly.role.empty() ? projection.assembly.selectedRole
-                                     : projection.assembly.role,
-    projection.assembly.rank,
-    projection.assembly.backend,
-    projection.assembly.protectionEpoch,
+    projection.assemblyContract().artifactDigest,
+    projection.assemblyContract().modelManifestDigest,
+    projection.assemblyContract().graphDigest,
+    projection.assemblyContract().role.empty() ? projection.assemblyContract().selectedRole
+                                     : projection.assemblyContract().role,
+    projection.assemblyContract().rank,
+    projection.assemblyContract().backend,
+    projection.assemblyContract().protectionEpoch,
     std::move(deviceSet)};
 }
 
@@ -1444,7 +1444,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
 {
   if (options.cacheDir.empty() || options.providerIdentity.empty())
     return std::nullopt;
-  const bool protectedRole = projection.assembly.protectionEpoch != "plaintext-v1";
+  const bool protectedRole = projection.assemblyContract().protectionEpoch != "plaintext-v1";
   std::string keyReferenceDigest;
   if (protectedRole) {
     if (!options.protectedRuntime ||
@@ -1469,14 +1469,14 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   // manifest below; it cannot be the lookup key.
   static_cast<void>(canonicalSourceName);
   static_cast<void>(canonicalSourceDigest);
-  if (!isSha256Digest(projection.assembly.recipeDigest))
+  if (!isSha256Digest(projection.assemblyContract().recipeDigest))
     return std::nullopt;
 
   const auto cacheRoot = std::filesystem::path(options.cacheDir);
   const auto roleRoot = cacheRoot / (protectedRole ? "protected" : "assembled") / safeRole(
-    projection.assembly.selectedRole);
+    projection.assemblyContract().selectedRole);
   const auto stablePlaintextDirectory = cacheRoot / "assembled" / safeRole(
-    projection.assembly.selectedRole) / projection.assembly.recipeDigest.substr(7);
+    projection.assemblyContract().selectedRole) / projection.assemblyContract().recipeDigest.substr(7);
   bool persistentPlaintextArtifact = false;
   std::filesystem::path directory;
   if (protectedRole && std::filesystem::is_directory(stablePlaintextDirectory)) {
@@ -1492,7 +1492,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
       (protectedRole
          ? protectedAssembledCacheKey(projection, options.roleAssemblySpecDigest,
                                       keyReferenceDigest)
-         : projection.assembly.recipeDigest.substr(7));
+         : projection.assemblyContract().recipeDigest.substr(7));
   }
   std::error_code error;
   if (!std::filesystem::is_directory(directory, error) || error)
@@ -1521,38 +1521,38 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
       requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, ciphertextDigestPath);
     const auto manifest = readJson(manifestPath);
     const auto assembledDigest = firstString(manifest, {"assembledModelDigest"});
-    if (firstString(manifest, {"recipeDigest"}) != projection.assembly.recipeDigest ||
-        firstString(manifest, {"modelManifestDigest"}) != projection.assembly.modelManifestDigest ||
-        firstString(manifest, {"artifactProfileDigest"}) != projection.assembly.artifactProfileDigest ||
-        firstString(manifest, {"graphDigest"}) != projection.assembly.graphDigest ||
+    if (firstString(manifest, {"recipeDigest"}) != projection.assemblyContract().recipeDigest ||
+        firstString(manifest, {"modelManifestDigest"}) != projection.assemblyContract().modelManifestDigest ||
+        firstString(manifest, {"artifactProfileDigest"}) != projection.assemblyContract().artifactProfileDigest ||
+        firstString(manifest, {"graphDigest"}) != projection.assemblyContract().graphDigest ||
         firstString(manifest, {"canonicalInitializerDigest"}) !=
-          projection.assembly.canonicalInitializerDigest ||
-        firstString(manifest, {"role"}) != projection.assembly.selectedRole ||
-        firstString(manifest, {"roleKind"}) != projection.assembly.roleKind ||
+          projection.assemblyContract().canonicalInitializerDigest ||
+        firstString(manifest, {"role"}) != projection.assemblyContract().selectedRole ||
+        firstString(manifest, {"roleKind"}) != projection.assemblyContract().roleKind ||
         firstString(manifest, {"adapterDescriptorDigest"}) !=
-          projection.assembly.adapterDescriptorDigest ||
+          projection.assemblyContract().adapterDescriptorDigest ||
         firstString(manifest, {"assemblerDescriptorDigest"}) !=
-          projection.assembly.assemblerDescriptorDigest ||
-        firstString(manifest, {"backendAbi"}) != projection.assembly.backendAbi ||
-        firstString(manifest, {"precision"}) != projection.assembly.precision ||
-        firstString(manifest, {"quantization"}) != projection.assembly.quantization ||
-        firstString(manifest, {"layout"}) != projection.assembly.layout ||
-        firstString(manifest, {"padding"}) != projection.assembly.padding ||
+          projection.assemblyContract().assemblerDescriptorDigest ||
+        firstString(manifest, {"backendAbi"}) != projection.assemblyContract().backendAbi ||
+        firstString(manifest, {"precision"}) != projection.assemblyContract().precision ||
+        firstString(manifest, {"quantization"}) != projection.assemblyContract().quantization ||
+        firstString(manifest, {"layout"}) != projection.assemblyContract().layout ||
+        firstString(manifest, {"padding"}) != projection.assemblyContract().padding ||
         (protectedRole && !persistentPlaintextArtifact &&
          firstString(manifest, {"keyReferenceDigest"}) !=
            keyReferenceDigest) ||
         !isSha256Digest(assembledDigest) ||
         ((!protectedRole || persistentPlaintextArtifact) && options.verifyCachedArtifactDigest &&
-          sha256File(modelPath, projection.assembly.maxAssembledBytes) != assembledDigest)) {
+          sha256File(modelPath, projection.assemblyContract().maxAssembledBytes) != assembledDigest)) {
       discardCorruptEntry(directory);
       return std::nullopt;
     }
     requireActiveAssembly(options, projection.deadlineMs);
 
     NativeModelRunnerSpec spec;
-    spec.role = projection.assembly.selectedRole;
+    spec.role = projection.assemblyContract().selectedRole;
     spec.kind = "onnx";
-    spec.backend = projection.assembly.backend;
+    spec.backend = projection.assemblyContract().backend;
     // Encrypted protected hits expose only a durable ciphertext descriptor;
     // the provider authenticates it against the current runtime and stages a
     // request-scoped plaintext file. Stable plaintext hits are already
@@ -1560,23 +1560,23 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     spec.path = protectedRole && !persistentPlaintextArtifact
       ? std::string{} : modelPath.string();
     spec.metadata = {
-        {"artifactDigest", projection.assembly.artifactDigest},
-        {"fragmentDigest", projection.assembly.artifactDigest},
-        {"recipeDigest", projection.assembly.recipeDigest},
-        {"modelManifestDigest", projection.assembly.modelManifestDigest},
-        {"artifactProfileDigest", projection.assembly.artifactProfileDigest},
-        {"graphDigest", projection.assembly.graphDigest},
-        {"canonicalInitializerDigest", projection.assembly.canonicalInitializerDigest},
-        {"adapterDescriptorDigest", projection.assembly.adapterDescriptorDigest},
-        {"assemblerDescriptorDigest", projection.assembly.assemblerDescriptorDigest},
-        {"backendAbi", projection.assembly.backendAbi},
-        {"precision", projection.assembly.precision},
-        {"quantization", projection.assembly.quantization},
-        {"layout", projection.assembly.layout},
-        {"padding", projection.assembly.padding},
-        {"maxSourceBytes", std::to_string(projection.assembly.maxSourceBytes)},
-      {"maxAssembledBytes", std::to_string(projection.assembly.maxAssembledBytes)},
-      {"maxNodes", std::to_string(projection.assembly.maxNodes)},
+        {"artifactDigest", projection.assemblyContract().artifactDigest},
+        {"fragmentDigest", projection.assemblyContract().artifactDigest},
+        {"recipeDigest", projection.assemblyContract().recipeDigest},
+        {"modelManifestDigest", projection.assemblyContract().modelManifestDigest},
+        {"artifactProfileDigest", projection.assemblyContract().artifactProfileDigest},
+        {"graphDigest", projection.assemblyContract().graphDigest},
+        {"canonicalInitializerDigest", projection.assemblyContract().canonicalInitializerDigest},
+        {"adapterDescriptorDigest", projection.assemblyContract().adapterDescriptorDigest},
+        {"assemblerDescriptorDigest", projection.assemblyContract().assemblerDescriptorDigest},
+        {"backendAbi", projection.assemblyContract().backendAbi},
+        {"precision", projection.assemblyContract().precision},
+        {"quantization", projection.assemblyContract().quantization},
+        {"layout", projection.assemblyContract().layout},
+        {"padding", projection.assemblyContract().padding},
+        {"maxSourceBytes", std::to_string(projection.assemblyContract().maxSourceBytes)},
+      {"maxAssembledBytes", std::to_string(projection.assemblyContract().maxAssembledBytes)},
+      {"maxNodes", std::to_string(projection.assemblyContract().maxNodes)},
       {"assembledModelDigest", assembledDigest},
       {"assembledFrom", protectedRole
         ? (persistentPlaintextArtifact
@@ -1612,7 +1612,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
           // authenticated decrypt path still checks this digest; compute it once
           // here so legacy entries retain the old fail-closed behavior.
           encryptedArtifactDigest = sha256File(
-            modelPath, projection.assembly.maxAssembledBytes + 65536);
+            modelPath, projection.assemblyContract().maxAssembledBytes + 65536);
           persistLegacyDigest = true;
         }
         if (persistLegacyDigest) {
@@ -1679,7 +1679,7 @@ reuseNativeProtectedCanonicalOnnxCacheDescriptor(
   if (keyDigest == spec.metadata.end() || encryptedPath == spec.metadata.end() ||
       encryptedDigest == spec.metadata.end() || manifestDigest == spec.metadata.end() ||
       keyDigest->second != keyReference->digest() ||
-      manifestDigest->second != projection.assembly.modelManifestDigest ||
+      manifestDigest->second != projection.assemblyContract().modelManifestDigest ||
       !isSha256Digest(encryptedDigest->second) || encryptedPath->second.empty())
     return false;
   try {
@@ -1688,7 +1688,7 @@ reuseNativeProtectedCanonicalOnnxCacheDescriptor(
     requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, path);
     std::error_code error;
     const auto bytes = std::filesystem::file_size(path, error);
-    if (error || bytes == 0 || bytes > projection.assembly.maxAssembledBytes + 65536 ||
+    if (error || bytes == 0 || bytes > projection.assemblyContract().maxAssembledBytes + 65536 ||
         !std::filesystem::is_regular_file(path, error) || error)
       return false;
     spec.metadata["encryptedArtifactPath"] = path.string();
@@ -1728,7 +1728,7 @@ materializeNativeCanonicalOnnxCacheHit(
       "cache-hit-" + staging.filename().string());
     const auto profile = std::string("\"ndnsf-di-provider-workdir-scratch-v1\"");
     const NativeAssembledEntryContext context{
-      projection.assembly.modelManifestDigest,
+      projection.assemblyContract().modelManifestDigest,
       options.roleAssemblySpecDigest,
       sha256Hex(std::vector<std::uint8_t>(profile.begin(), profile.end())),
       "MODEL_PROTO",
@@ -1738,7 +1738,7 @@ materializeNativeCanonicalOnnxCacheHit(
     options.protectedRuntime->withContentKey(nowMs(), [&] (const auto& key) {
       actualDigest = openNativeAssembledEntryToFile(
         key, ciphertextPath, staging / "model.onnx", context,
-        projection.assembly.maxAssembledBytes,
+        projection.assemblyContract().maxAssembledBytes,
         expectedDigest == spec.metadata.end() ? std::string{} : expectedDigest->second);
     });
     if (expectedDigest != spec.metadata.end() && actualDigest != expectedDigest->second)
@@ -1784,24 +1784,24 @@ materializeNativeCanonicalOnnxCacheHit(
   std::error_code error;
   const auto ciphertextBytes = std::filesystem::file_size(ciphertextPath, error);
   if (error || ciphertextBytes == 0 ||
-      ciphertextBytes > projection.assembly.maxAssembledBytes + 65536 ||
+      ciphertextBytes > projection.assemblyContract().maxAssembledBytes + 65536 ||
       !std::filesystem::is_regular_file(ciphertextPath, error) || error)
     throw std::runtime_error("DI_NATIVE_ASSEMBLY_CIPHERTEXT_UNAVAILABLE");
 
   NativeProtectedPlaintextCacheKey cacheKey;
   cacheKey.encryptedArtifactDigest = expectedDigest->second;
-  cacheKey.modelManifestDigest = projection.assembly.modelManifestDigest;
-  cacheKey.graphDigest = projection.assembly.graphDigest;
-  cacheKey.initializerDigest = projection.assembly.canonicalInitializerDigest;
-  cacheKey.role = projection.assembly.selectedRole;
-  cacheKey.recipeDigest = projection.assembly.recipeDigest;
-  cacheKey.backendAbi = projection.assembly.backendAbi;
+  cacheKey.modelManifestDigest = projection.assemblyContract().modelManifestDigest;
+  cacheKey.graphDigest = projection.assemblyContract().graphDigest;
+  cacheKey.initializerDigest = projection.assemblyContract().canonicalInitializerDigest;
+  cacheKey.role = projection.assemblyContract().selectedRole;
+  cacheKey.recipeDigest = projection.assemblyContract().recipeDigest;
+  cacheKey.backendAbi = projection.assemblyContract().backendAbi;
   cacheKey.roleAssemblySpecDigest = options.roleAssemblySpecDigest;
   cacheKey.keyReferenceDigest = keyReference->digest();
 
   const auto profile = std::string("\"ndnsf-di-provider-workdir-scratch-v1\"");
   const NativeAssembledEntryContext context{
-    projection.assembly.modelManifestDigest,
+    projection.assemblyContract().modelManifestDigest,
     options.roleAssemblySpecDigest,
     sha256Hex(std::vector<std::uint8_t>(profile.begin(), profile.end())),
     "MODEL_PROTO", keyReference->digest()};
@@ -1810,9 +1810,9 @@ materializeNativeCanonicalOnnxCacheHit(
   if (residencyIdentity.isValid())
     residencyIdentityOption = std::move(residencyIdentity);
   auto lease = options.protectedPlaintextCache->acquire(
-    cacheKey, control, projection.assembly.maxAssembledBytes,
+    cacheKey, control, projection.assemblyContract().maxAssembledBytes,
     [&options, &control, ciphertextPath, context,
-     maxPlaintextBytes = projection.assembly.maxAssembledBytes,
+     maxPlaintextBytes = projection.assemblyContract().maxAssembledBytes,
      expected = expectedDigest->second]
     (const std::filesystem::path& plaintextPath) {
       control.requireActive();
@@ -1868,8 +1868,8 @@ makeNativeAssemblyProgressReporter(
   std::shared_ptr<std::atomic<std::uint64_t>> sequenceState)
 {
   const auto operationId = ctx.assignment().selectionDigest + ":" +
-    projection.assembly.selectedRole + ":assembly-progress";
-  const auto role = projection.assembly.selectedRole;
+    projection.assemblyContract().selectedRole + ":assembly-progress";
+  const auto role = projection.assemblyContract().selectedRole;
   const auto requestId = projection.requestId;
   const auto attempt = projection.attempt;
   const auto planDigest = projection.planDigest;
@@ -1915,8 +1915,8 @@ prepareNativeCanonicalOnnxRole(
   const NativeCanonicalOnnxAssemblerOptions& options)
 {
   if (options.assemblyTimeoutMs == 0 || options.assemblyTimeoutMs > 3600000 ||
-      projection.assembly.maxSourceBytes == 0 || projection.assembly.maxAssembledBytes == 0 ||
-      projection.assembly.maxAssembledBytes > std::numeric_limits<std::uint64_t>::max() - MaxAssemblyMetadataBytes)
+      projection.assemblyContract().maxSourceBytes == 0 || projection.assemblyContract().maxAssembledBytes == 0 ||
+      projection.assemblyContract().maxAssembledBytes > std::numeric_limits<std::uint64_t>::max() - MaxAssemblyMetadataBytes)
     throw std::runtime_error("DI_NATIVE_ASSEMBLY_LIMITS_INVALID");
   requireActiveAssembly(options, projection.deadlineMs);
   if (options.providerIdentity.empty() || !options.signManifest) {
@@ -1928,7 +1928,7 @@ prepareNativeCanonicalOnnxRole(
   // The recipe-addressed cache is immutable and each miss writes through the
   // existing atomic staging path.  Do not serialize independent Provider
   // assemblies with a machine-wide process lock.
-  const bool protectedRole = projection.assembly.protectionEpoch != "plaintext-v1";
+  const bool protectedRole = projection.assemblyContract().protectionEpoch != "plaintext-v1";
   if (protectedRole) {
     if (!options.protectedRuntime || options.roleAssemblySpecDigest.empty()) {
       throw std::runtime_error("DI_PROTECTED_GRANT_UNAVAILABLE: assembly runtime is missing");
@@ -1958,7 +1958,7 @@ prepareNativeCanonicalOnnxRole(
            << " requestId=" << projection.requestId
            << " attemptEpoch=" << projection.attempt
            << " provider=" << projection.provider
-           << " role=" << projection.selectedRole.selectedRole
+           << " role=" << projection.selectedRoleContract().selectedRole
            << " planDigest=" << projection.planDigest
            << " kind=" << kind
            << " name=" << name.toUri()
@@ -1986,7 +1986,7 @@ prepareNativeCanonicalOnnxRole(
            << " requestId=" << projection.requestId
            << " attemptEpoch=" << projection.attempt
            << " provider=" << projection.provider
-           << " role=" << projection.selectedRole.selectedRole
+           << " role=" << projection.selectedRoleContract().selectedRole
            << " planDigest=" << projection.planDigest
            << " kind=" << kind
            << " name=" << name.toUri()
@@ -2041,7 +2041,7 @@ prepareNativeCanonicalOnnxRole(
     if (identity.get<std::string>("schema", "") !=
           "ndnsf-di-model-source-cache-v1" ||
         identity.get<std::string>("modelName", "").empty() ||
-        identity.get<std::string>("graphDigest", "") != projection.assembly.graphDigest) {
+        identity.get<std::string>("graphDigest", "") != projection.assemblyContract().graphDigest) {
       throw std::runtime_error("DI_CACHE_COMPATIBILITY_IDENTITY_MISMATCH");
     }
     // The cache marker's modelManifestDigest is the preparation-stage
@@ -2061,7 +2061,7 @@ prepareNativeCanonicalOnnxRole(
       const auto path = cacheRootDir / "payloads" / "sha256" /
         hex.substr(0, 2) / hex;
       if (!std::filesystem::is_regular_file(path, cacheError) || cacheError ||
-          sha256File(path, projection.assembly.maxSourceBytes) != digest)
+          sha256File(path, projection.assemblyContract().maxSourceBytes) != digest)
         throw std::runtime_error("DI_CACHE_COMPATIBILITY_OBJECT_INVALID");
       return path;
     };
@@ -2070,8 +2070,8 @@ prepareNativeCanonicalOnnxRole(
     cacheSourceName = "/cache-compatible/" + cacheRootDir.filename().string() + "/source";
     cacheRoot.put("schema", "ndnsf-di-canonical-model-manifest-v1");
     cacheRoot.put("state", "ACTIVE");
-    cacheRoot.put("artifactProfileDigest", projection.assembly.artifactProfileDigest);
-    cacheRoot.put("modelIdentityDigest", projection.assembly.modelManifestDigest);
+    cacheRoot.put("artifactProfileDigest", projection.assemblyContract().artifactProfileDigest);
+    cacheRoot.put("modelIdentityDigest", projection.assemblyContract().modelManifestDigest);
     cacheRoot.put("modelName", projection.plan.modelName);
     boost::property_tree::ptree metadata;
     metadata.put("canonicalSourceDataName", cacheSourceName);
@@ -2091,32 +2091,32 @@ prepareNativeCanonicalOnnxRole(
   }
   else {
     logMaterialFetch("root", rootName, "begin", nullptr,
-                     projection.assembly.modelManifestDigest);
+                     projection.assemblyContract().modelManifestDigest);
     try {
       rootPayload = fetchers.getArtifact(rootName);
     }
     catch (...) {
       logMaterialFetch("root", rootName, "error", nullptr,
-                       projection.assembly.modelManifestDigest);
+                       projection.assemblyContract().modelManifestDigest);
       throw;
     }
     logMaterialFetch("root", rootName,
                      rootPayload && !rootPayload->empty() ? "returned" : "empty",
-                     &rootPayload, projection.assembly.modelManifestDigest);
+                     &rootPayload, projection.assemblyContract().modelManifestDigest);
     if (!rootPayload || rootPayload->empty() || rootPayload->size() >
-        projection.assembly.maxSourceBytes ||
+        projection.assemblyContract().maxSourceBytes ||
         rootPayload->size() > MaxAssemblyMetadataBytes ||
-        rootPayload->size() > projection.assembly.maxAssembledBytes) {
+        rootPayload->size() > projection.assemblyContract().maxAssembledBytes) {
       throw std::runtime_error("DI_CANONICAL_ROOT_UNAVAILABLE");
     }
     if (sha256Hex(std::vector<std::uint8_t>(rootPayload->begin(), rootPayload->end())) !=
-        projection.assembly.modelManifestDigest) {
+        projection.assemblyContract().modelManifestDigest) {
       throw std::runtime_error("DI_CANONICAL_ROOT_DIGEST_MISMATCH");
     }
     validateBoundedMaterialJson(*rootPayload, "DI_CANONICAL_ROOT_SCHEMA_MISMATCH");
     rootPayloadBytes = rootPayload->size();
     logMaterialFetch("root", rootName, "verified", &rootPayload,
-                     projection.assembly.modelManifestDigest);
+                     projection.assemblyContract().modelManifestDigest);
     reportProgress("ROOT_VERIFIED", 0.05);
   }
   reportProgress("ROOT_VERIFIED", 0.05);
@@ -2182,7 +2182,7 @@ prepareNativeCanonicalOnnxRole(
         writeFileAtomic(rootFile,
                         std::vector<std::uint8_t>(rootPayload->begin(), rootPayload->end()));
       });
-      root = readJson(rootFile, projection.assembly.maxSourceBytes);
+      root = readJson(rootFile, projection.assemblyContract().maxSourceBytes);
       rootPayload.reset();
       if (root.get<std::string>("schema", "") !=
             "ndnsf-di-canonical-model-manifest-v1" ||
@@ -2191,7 +2191,7 @@ prepareNativeCanonicalOnnxRole(
       }
     }
     const auto rootProfile = root.get<std::string>("artifactProfileDigest", "");
-    if (rootProfile != projection.assembly.artifactProfileDigest) {
+    if (rootProfile != projection.assemblyContract().artifactProfileDigest) {
       throw std::runtime_error("DI_CANONICAL_ROOT_PROFILE_MISMATCH");
     }
     const auto metadata = root.get_child_optional("metadata");
@@ -2218,8 +2218,8 @@ prepareNativeCanonicalOnnxRole(
     assemblyControl.deadline = std::chrono::steady_clock::now() +
       std::chrono::milliseconds(std::min<std::uint64_t>(
         options.assemblyTimeoutMs, remainingRequestMs));
-    assemblyControl.maxSourceBytes = projection.assembly.maxSourceBytes;
-    assemblyControl.maxAssembledBytes = projection.assembly.maxAssembledBytes;
+    assemblyControl.maxSourceBytes = projection.assemblyContract().maxSourceBytes;
+    assemblyControl.maxAssembledBytes = projection.assemblyContract().maxAssembledBytes;
     assemblyControl.requireActive = [&] {
       requireActiveAssembly(options, projection.deadlineMs);
     };
@@ -2263,7 +2263,7 @@ prepareNativeCanonicalOnnxRole(
          "initializerDataName", "initializer_data_name"});
       effectiveFetchers.fetchEncryptedLargeData =
         [cacheSourcePath, cacheInitializerPath, localSourceName,
-         localInitializerName, maxBytes = projection.assembly.maxSourceBytes]
+         localInitializerName, maxBytes = projection.assemblyContract().maxSourceBytes]
         (const ndn::Name& name, const ndn::Name&) -> std::optional<ndn::Buffer> {
           const auto uri = name.toUri();
           if (uri == localSourceName)
@@ -2296,7 +2296,7 @@ prepareNativeCanonicalOnnxRole(
                        fetched && !fetched->empty() ? "returned" : "empty",
                        &fetched, digest);
       if (!fetched || fetched->empty() || fetched->size() != expectedBytes ||
-          fetched->size() > projection.assembly.maxSourceBytes)
+          fetched->size() > projection.assemblyContract().maxSourceBytes)
         throw std::runtime_error(std::string("DI_CANONICAL_") + kind + "_UNAVAILABLE");
       if (sha256Hex(*fetched) != digest)
         throw std::runtime_error(std::string("DI_CANONICAL_") + kind + "_DIGEST_MISMATCH");
@@ -2322,8 +2322,8 @@ prepareNativeCanonicalOnnxRole(
                                      !materialReceiptDigest.empty() ||
                                      materialReceiptBytes != 0)))
         throw std::runtime_error("DI_CANONICAL_MATERIAL_METADATA_MISSING");
-      if (materialManifestBytes > projection.assembly.maxSourceBytes ||
-          materialManifestBytes > projection.assembly.maxAssembledBytes)
+      if (materialManifestBytes > projection.assemblyContract().maxSourceBytes ||
+          materialManifestBytes > projection.assemblyContract().maxAssembledBytes)
         throw std::runtime_error("DI_CANONICAL_MATERIAL_MANIFEST_UNAVAILABLE");
       const auto checkedMultiply = [] (const std::uint64_t value,
                                        const std::uint64_t multiplier) {
@@ -2340,7 +2340,7 @@ prepareNativeCanonicalOnnxRole(
         throw std::runtime_error("DI_CANONICAL_MATERIAL_METADATA_UNAVAILABLE");
       const auto parseReservation = manifestParseReservation + receiptParseReservation;
       if (parseReservation < materialManifestBytes ||
-          parseReservation > projection.assembly.maxAssembledBytes)
+          parseReservation > projection.assemblyContract().maxAssembledBytes)
         throw std::runtime_error("DI_CANONICAL_MATERIAL_METADATA_UNAVAILABLE");
       auto manifestBytes = fetchPlainObject(
         materialManifestName, materialManifestDigest,
@@ -2350,8 +2350,8 @@ prepareNativeCanonicalOnnxRole(
       auto materialManifest = parseNativeCanonicalMaterialManifest(manifestBytes);
       if (materialManifest->manifestDigest != materialIdentityDigest ||
           materialManifest->sourceDigest != sourceDigest ||
-          materialManifest->graphDigest != projection.assembly.graphDigest ||
-          materialManifest->initializerDigest != projection.assembly.canonicalInitializerDigest)
+          materialManifest->graphDigest != projection.assemblyContract().graphDigest ||
+          materialManifest->initializerDigest != projection.assemblyContract().canonicalInitializerDigest)
         throw std::runtime_error("DI_CANONICAL_MATERIAL_IDENTITY_MISMATCH");
       // The parsed manifest is the authenticated owner from this point on;
       // release the transport copy before retaining selected payloads.
@@ -2368,9 +2368,9 @@ prepareNativeCanonicalOnnxRole(
                                       "DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
       }
       else {
-        if (materialReceiptBytes > projection.assembly.maxSourceBytes ||
-            materialMetadataBytes > projection.assembly.maxAssembledBytes ||
-            materialReceiptBytes > projection.assembly.maxAssembledBytes - materialMetadataBytes)
+        if (materialReceiptBytes > projection.assemblyContract().maxSourceBytes ||
+            materialMetadataBytes > projection.assemblyContract().maxAssembledBytes ||
+            materialReceiptBytes > projection.assemblyContract().maxAssembledBytes - materialMetadataBytes)
           throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_UNAVAILABLE");
         auto receiptBytes = fetchPlainObject(
           materialReceiptName, materialReceiptDigest, materialReceiptBytes,
@@ -2388,7 +2388,7 @@ prepareNativeCanonicalOnnxRole(
         if (materialReceipt.get<std::string>("schema", "") !=
               "ndnsf-di-canonical-material-receipt-v1" ||
             materialReceipt.get<std::string>("sourceDigest", "") != sourceDigest ||
-            materialReceipt.get<std::string>("graphDigest", "") != projection.assembly.graphDigest ||
+            materialReceipt.get<std::string>("graphDigest", "") != projection.assemblyContract().graphDigest ||
             materialReceipt.get<std::string>("materialIdentityDigest", "") != materialIdentityDigest ||
             materialReceipt.get<std::string>("materialManifestDigest", "") != materialManifestDigest ||
             !materialReceipt.get_child_optional("materialObjects"))
@@ -2448,7 +2448,7 @@ prepareNativeCanonicalOnnxRole(
 
       std::set<std::string> selectedIds{materialManifest->templatePayloadId};
       std::set<std::string> selectedDependencies;
-      for (const auto nodeIndex : projection.assembly.nodeIndices) {
+      for (const auto nodeIndex : projection.assemblyContract().nodeIndices) {
         const auto logicalName = "node/" + std::to_string(nodeIndex);
         const auto found = std::find_if(materialManifest->references.begin(),
           materialManifest->references.end(), [&] (const auto& reference) {
@@ -2519,9 +2519,9 @@ prepareNativeCanonicalOnnxRole(
         if (!object->second.bundleDigest.empty()) {
           if (countedBundles.find(object->second.dataName) == countedBundles.end()) {
             if (object->second.bundleBytes > NativeCanonicalMaterialBundleMaxBytes ||
-                selectedMaterialBytes > projection.assembly.maxAssembledBytes ||
+                selectedMaterialBytes > projection.assemblyContract().maxAssembledBytes ||
                 object->second.bundleBytes >
-                  projection.assembly.maxAssembledBytes - selectedMaterialBytes)
+                  projection.assemblyContract().maxAssembledBytes - selectedMaterialBytes)
               throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
             selectedMaterialBytes += object->second.bundleBytes;
             countedBundles.insert(object->second.dataName);
@@ -2550,9 +2550,9 @@ prepareNativeCanonicalOnnxRole(
                                 object->second.digest);
         }
         else {
-          if (selectedMaterialBytes > projection.assembly.maxAssembledBytes ||
+          if (selectedMaterialBytes > projection.assemblyContract().maxAssembledBytes ||
               object->second.bytes >
-                projection.assembly.maxAssembledBytes - selectedMaterialBytes)
+                projection.assemblyContract().maxAssembledBytes - selectedMaterialBytes)
             throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
           selectedMaterialBytes += object->second.bytes;
           bytes = fetchPlainObject(object->second.dataName, object->second.digest,
@@ -2573,14 +2573,14 @@ prepareNativeCanonicalOnnxRole(
       selectedObjects.clear();
       canonicalSource.materialManifest = std::move(materialManifest);
       canonicalSource.materializedRole = true;
-      canonicalSource.materializedNodeIndices = projection.assembly.nodeIndices;
+      canonicalSource.materializedNodeIndices = projection.assemblyContract().nodeIndices;
       canonicalSource.materializedSourceDigest = sourceDigest;
-      canonicalSource.materializedGraphDigest = projection.assembly.graphDigest;
+      canonicalSource.materializedGraphDigest = projection.assemblyContract().graphDigest;
       canonicalSource.materializedInitializerDigest =
-        projection.assembly.canonicalInitializerDigest;
+        projection.assemblyContract().canonicalInitializerDigest;
       canonicalSource.modelBytes = materializeNativeCanonicalModel(
-        canonicalSource, projection.assembly.nodeIndices,
-        projection.assembly.expectedInputs, projection.assembly.expectedOutputs,
+        canonicalSource, projection.assemblyContract().nodeIndices,
+        projection.assemblyContract().expectedInputs, projection.assemblyContract().expectedOutputs,
         assemblyControl);
       // materializeNativeCanonicalModel has consumed the selected payloads
       // and copied the required initializer ranges into the role model.  Do
@@ -2626,7 +2626,7 @@ prepareNativeCanonicalOnnxRole(
                      source && !source->empty() ? "returned" : "empty", &source,
                      sourceDigest);
     if (!source || source->empty() || source->size() != expectedSourceBytes ||
-        source->size() > projection.assembly.maxSourceBytes) {
+        source->size() > projection.assemblyContract().maxSourceBytes) {
       if (source && source->size() != expectedSourceBytes) {
         throw std::runtime_error("DI_CANONICAL_SOURCE_SIZE_MISMATCH");
       }
@@ -2692,7 +2692,7 @@ prepareNativeCanonicalOnnxRole(
                        &initializer, initializerDigest);
       if (!initializer || initializer->empty() ||
           initializer->size() != expectedInitializerBytes ||
-          initializer->size() > projection.assembly.maxSourceBytes) {
+          initializer->size() > projection.assemblyContract().maxSourceBytes) {
         if (initializer && initializer->size() != expectedInitializerBytes) {
           throw std::runtime_error("DI_CANONICAL_INITIALIZER_SIZE_MISMATCH");
         }
@@ -2730,13 +2730,13 @@ prepareNativeCanonicalOnnxRole(
       logAssemblyProgressLine(projection, "WORKER_START", 0.55,
                               workerModelBytes,
                               "assembly-worker");
-      auto workerRecipe = projection.assembly;
+      auto workerRecipe = projection.assemblyContract();
       if (canonicalSource.materializedRole) {
-        if (canonicalSource.materializedNodeIndices != projection.assembly.nodeIndices ||
+        if (canonicalSource.materializedNodeIndices != projection.assemblyContract().nodeIndices ||
             canonicalSource.materializedSourceDigest != sourceDigest ||
-            canonicalSource.materializedGraphDigest != projection.assembly.graphDigest ||
+            canonicalSource.materializedGraphDigest != projection.assemblyContract().graphDigest ||
             canonicalSource.materializedInitializerDigest !=
-              projection.assembly.canonicalInitializerDigest)
+              projection.assemblyContract().canonicalInitializerDigest)
           throw std::runtime_error("DI_CANONICAL_MATERIAL_PROVENANCE_MISMATCH");
         const auto roleIdentity = canonicalOnnxSourceIdentity(canonicalSource, assemblyControl);
         workerRecipe.graphDigest = roleIdentity.graphDigest;
@@ -2821,33 +2821,33 @@ prepareNativeCanonicalOnnxRole(
              << jsonEscape(modelName) << ",\"modelDigest\":"
              << jsonEscape(modelDigest) << ",\"assembledModelDigest\":"
              << jsonEscape(assembled.modelDigest) << ",\"modelManifestDigest\":"
-             << jsonEscape(projection.assembly.modelManifestDigest)
+             << jsonEscape(projection.assemblyContract().modelManifestDigest)
              << ",\"artifactProfileDigest\":" << jsonEscape(rootProfile)
-             << ",\"graphDigest\":" << jsonEscape(projection.assembly.graphDigest)
-             << ",\"role\":" << jsonEscape(projection.assembly.selectedRole)
-             << ",\"roleKind\":" << jsonEscape(projection.assembly.roleKind)
+             << ",\"graphDigest\":" << jsonEscape(projection.assemblyContract().graphDigest)
+             << ",\"role\":" << jsonEscape(projection.assemblyContract().selectedRole)
+             << ",\"roleKind\":" << jsonEscape(projection.assemblyContract().roleKind)
              << ",\"artifactDigest\":"
-             << jsonEscape(projection.assembly.artifactDigest)
+             << jsonEscape(projection.assemblyContract().artifactDigest)
              << ",\"canonicalSourceDataName\":" << jsonEscape(sourceName)
              << ",\"canonicalSourceDigest\":" << jsonEscape(sourceDigest)
              << ",\"canonicalInitializerDigest\":"
-             << jsonEscape(projection.assembly.canonicalInitializerDigest)
+             << jsonEscape(projection.assemblyContract().canonicalInitializerDigest)
              << ",\"keyReferenceDigest\":"
              << (protectedRole && !persistentPlaintextArtifact
                ? jsonEscape(protectedKeyReferenceDigest) : "\"\"")
-             << ",\"rank\":" << projection.assembly.rank
-             << ",\"layerBegin\":" << projection.assembly.layerBegin
-             << ",\"layerEnd\":" << projection.assembly.layerEnd
-             << ",\"recipeDigest\":" << jsonEscape(projection.assembly.recipeDigest)
+             << ",\"rank\":" << projection.assemblyContract().rank
+             << ",\"layerBegin\":" << projection.assemblyContract().layerBegin
+             << ",\"layerEnd\":" << projection.assemblyContract().layerEnd
+             << ",\"recipeDigest\":" << jsonEscape(projection.assemblyContract().recipeDigest)
              << ",\"adapterDescriptorDigest\":"
-             << jsonEscape(projection.assembly.adapterDescriptorDigest)
+             << jsonEscape(projection.assemblyContract().adapterDescriptorDigest)
              << ",\"assemblerDescriptorDigest\":"
-             << jsonEscape(projection.assembly.assemblerDescriptorDigest)
-             << ",\"backendAbi\":" << jsonEscape(projection.assembly.backendAbi)
-             << ",\"precision\":" << jsonEscape(projection.assembly.precision)
-             << ",\"quantization\":" << jsonEscape(projection.assembly.quantization)
-             << ",\"layout\":" << jsonEscape(projection.assembly.layout)
-             << ",\"padding\":" << jsonEscape(projection.assembly.padding)
+             << jsonEscape(projection.assemblyContract().assemblerDescriptorDigest)
+             << ",\"backendAbi\":" << jsonEscape(projection.assemblyContract().backendAbi)
+             << ",\"precision\":" << jsonEscape(projection.assemblyContract().precision)
+             << ",\"quantization\":" << jsonEscape(projection.assemblyContract().quantization)
+             << ",\"layout\":" << jsonEscape(projection.assemblyContract().layout)
+             << ",\"padding\":" << jsonEscape(projection.assemblyContract().padding)
              << ",\"nodeCount\":" << assembled.nodeCount
              << ",\"onnxChecker\":\"NATIVE_STRUCTURAL_CHECK\",\"onnxRuntimeLoad\":\"PENDING_NATIVE_PROVIDER\",\"signer\":"
              << jsonEscape(options.providerIdentity) << "}";
@@ -2882,12 +2882,12 @@ prepareNativeCanonicalOnnxRole(
                             persistentPlaintextArtifact ? "plaintext-cache" :
                                                          "protected-cache");
     std::unique_lock<std::mutex> finalizationLock(nativeAssemblyFinalizationMutex);
-    const auto persistentCacheKey = projection.assembly.recipeDigest;
+    const auto persistentCacheKey = projection.assemblyContract().recipeDigest;
     if (!isSha256Digest(persistentCacheKey))
       throw std::runtime_error("DI_NATIVE_ASSEMBLY_RECIPE_DIGEST_INVALID");
     finalDir = std::filesystem::path(options.cacheDir) /
       (persistentPlaintextArtifact || !protectedRole ? "assembled" : "protected") /
-      safeRole(projection.assembly.selectedRole) /
+      safeRole(projection.assemblyContract().selectedRole) /
       (persistentPlaintextArtifact || !protectedRole
          ? persistentCacheKey.substr(7)
          : protectedAssembledCacheKey(projection, options.roleAssemblySpecDigest,
@@ -2918,7 +2918,7 @@ prepareNativeCanonicalOnnxRole(
       // diagnostic cache.  The ordinary protected Repo path below retains
       // its encrypted-at-rest contract.
       if (std::filesystem::exists(finalModel)) {
-        if (sha256File(finalModel, projection.assembly.maxAssembledBytes) != digest) {
+        if (sha256File(finalModel, projection.assemblyContract().maxAssembledBytes) != digest) {
           std::error_code staleError;
           std::filesystem::remove_all(finalDir, staleError);
           if (staleError)
@@ -2945,7 +2945,7 @@ prepareNativeCanonicalOnnxRole(
       // plaintext handoff is streamed into the private staging directory.
       const std::string profile = "\"ndnsf-di-provider-workdir-scratch-v1\"";
       const NativeAssembledEntryContext context{
-        projection.assembly.modelManifestDigest, options.roleAssemblySpecDigest,
+        projection.assemblyContract().modelManifestDigest, options.roleAssemblySpecDigest,
         sha256Hex(std::vector<std::uint8_t>(profile.begin(), profile.end())),
         "MODEL_PROTO", protectedKeyReferenceDigest};
       const auto cipherPath = finalDir / "model.onnx.cipher";
@@ -2962,7 +2962,7 @@ prepareNativeCanonicalOnnxRole(
         finalModel = rootPath / "model.onnx";
         openNativeAssembledEntryToFile(
           key, cipherPath, finalModel, context,
-          projection.assembly.maxAssembledBytes, encryptedArtifactDigest);
+          projection.assemblyContract().maxAssembledBytes, encryptedArtifactDigest);
       });
       const auto ciphertextDigestPath = finalDir / "model.onnx.cipher.digest";
       const std::vector<std::uint8_t> ciphertextDigestBytes(
@@ -2976,7 +2976,7 @@ prepareNativeCanonicalOnnxRole(
         writeFileAtomic(ciphertextDigestPath, ciphertextDigestBytes);
     }
     else if (std::filesystem::exists(finalModel) &&
-             readFile(finalModel, projection.assembly.maxAssembledBytes) != modelBytes) {
+             readFile(finalModel, projection.assemblyContract().maxAssembledBytes) != modelBytes) {
       throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_CONFLICT");
     }
     if (!protectedRole && !std::filesystem::exists(finalModel)) {
@@ -3006,29 +3006,29 @@ prepareNativeCanonicalOnnxRole(
     }
 
     NativeModelRunnerSpec spec;
-    spec.role = projection.assembly.selectedRole;
+    spec.role = projection.assemblyContract().selectedRole;
     spec.kind = "onnx";
-    spec.backend = projection.assembly.backend;
+    spec.backend = projection.assemblyContract().backend;
     spec.path = finalModel.string();
     spec.metadata = {
-      {"artifactDigest", projection.assembly.artifactDigest},
-      {"fragmentDigest", projection.assembly.artifactDigest},
-      {"recipeDigest", projection.assembly.recipeDigest},
-      {"modelManifestDigest", projection.assembly.modelManifestDigest},
-      {"artifactProfileDigest", projection.assembly.artifactProfileDigest},
-      {"graphDigest", projection.assembly.graphDigest},
-      {"canonicalInitializerDigest", projection.assembly.canonicalInitializerDigest},
-      {"adapterDescriptorDigest", projection.assembly.adapterDescriptorDigest},
-      {"assemblerDescriptorDigest", projection.assembly.assemblerDescriptorDigest},
-      {"backendAbi", projection.assembly.backendAbi},
-      {"precision", projection.assembly.precision},
-      {"quantization", projection.assembly.quantization},
-      {"layout", projection.assembly.layout},
-      {"padding", projection.assembly.padding},
-      {"maxSourceBytes", std::to_string(projection.assembly.maxSourceBytes)},
+      {"artifactDigest", projection.assemblyContract().artifactDigest},
+      {"fragmentDigest", projection.assemblyContract().artifactDigest},
+      {"recipeDigest", projection.assemblyContract().recipeDigest},
+      {"modelManifestDigest", projection.assemblyContract().modelManifestDigest},
+      {"artifactProfileDigest", projection.assemblyContract().artifactProfileDigest},
+      {"graphDigest", projection.assemblyContract().graphDigest},
+      {"canonicalInitializerDigest", projection.assemblyContract().canonicalInitializerDigest},
+      {"adapterDescriptorDigest", projection.assemblyContract().adapterDescriptorDigest},
+      {"assemblerDescriptorDigest", projection.assemblyContract().assemblerDescriptorDigest},
+      {"backendAbi", projection.assemblyContract().backendAbi},
+      {"precision", projection.assemblyContract().precision},
+      {"quantization", projection.assemblyContract().quantization},
+      {"layout", projection.assemblyContract().layout},
+      {"padding", projection.assemblyContract().padding},
+      {"maxSourceBytes", std::to_string(projection.assemblyContract().maxSourceBytes)},
       {"maxAssembledBytes", std::to_string(
-          projection.assembly.maxAssembledBytes)},
-      {"maxNodes", std::to_string(projection.assembly.maxNodes)},
+          projection.assemblyContract().maxAssembledBytes)},
+      {"maxNodes", std::to_string(projection.assemblyContract().maxNodes)},
       {"assembledModelDigest", digest},
       {"assemblyManifestDigest", sha256Hex(manifestBytes)},
       {"assemblySignature", signature},

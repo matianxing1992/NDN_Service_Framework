@@ -69,6 +69,20 @@ def test_reference_comparison_is_redacted_and_canonical(reference):
     assert compare_reference(loaded, changed)["matched"] is False
 
 
+def test_reference_uses_package_bound_input_resolution(reference):
+    package, _ = reference
+    path = package / "manifest.json"
+    manifest = json.loads(path.read_text())
+    shape = [1, 3, 32, 32]
+    manifest["preprocessing"]["shape"] = shape
+    manifest["oracle"]["inputShape"] = shape
+    path.write_text(json.dumps(manifest))
+
+    loaded = load_reference(package, ROOT, 32)
+
+    assert loaded.input_tensor.shape == tuple(shape)
+
+
 @pytest.mark.parametrize("bad", ["nan", "inf", "class", "dtype", "shape"])
 def test_invalid_numerical_output_is_rejected(reference, bad):
     package, expected = reference

@@ -1,4 +1,7 @@
 #include "ServiceController.hpp"
+#include "HybridMessageCrypto.hpp"
+#include "ProducerDataNaming.hpp"
+#include "ProducerSignerPolicy.hpp"
 #include "CertificateBootstrap.hpp"
 #include "utils.hpp"
 
@@ -173,7 +176,7 @@ encryptWireBytesWithContentKeyForCertificate(const ndn::security::Certificate& c
   auto encryptedContentKey = recipientPublicKey.encrypt(bufferToSpan(contentKey));
 
   EncryptedPermissionResponse encryptedPayload;
-  encryptedPayload.setRecipientCertName(cert.getName().toUri());
+  encryptedPayload.setRecipientCertName(cert.getName().toUri(ndn::name::UriFormat::CANONICAL));
   encryptedPayload.setAlgorithm("RSA-WRAPPED-AES-CBC");
   encryptedPayload.setEncryptedAesKey(
     ndn::Buffer(encryptedContentKey->begin(), encryptedContentKey->end()));
@@ -264,16 +267,16 @@ ServiceController::initializeControllerGeneration()
     statePath = configured;
   }
   else {
-    const auto key = fnv1aPolicyHash(m_configFilePath + identity.toUri());
+    const auto key = fnv1aPolicyHash(m_configFilePath + identity.toUri(ndn::name::UriFormat::CANONICAL));
     statePath = fs::path("/tmp") /
                 ("ndnsf-controller-generation-" + std::to_string(key) + ".state");
   }
 
   try {
     m_generationStore = std::make_unique<ControllerGenerationStore>(statePath);
-    if (!m_generationStore->acquireWriter(identity.toUri())) {
+    if (!m_generationStore->acquireWriter(identity.toUri(ndn::name::UriFormat::CANONICAL))) {
       NDN_LOG_ERROR("Controller generation writer unavailable identity="
-                    << identity.toUri() << " state=" << statePath);
+                    << identity.toUri(ndn::name::UriFormat::CANONICAL) << " state=" << statePath);
       return false;
     }
     const auto now = nowMilliseconds();
@@ -594,6 +597,12 @@ ServiceController::grant(const ndn::Name& identity,
                           const ndn::Name& serviceName,
                           const ndn::Name& authorizationAttribute)
 {
+  const bool isUser = authorizationAttribute == ndn::Name("/PERMISSION").append(serviceName);
+  if (!isUser && authorizationAttribute != ndn::Name("/SERVICE").append(serviceName))
+    return false;
+  std::string abeAttribute;
+  try { abeAttribute = makeAbeServiceAttribute(serviceName, isUser ? "PERMISSION" : "SERVICE"); }
+  catch (const std::invalid_argument&) { return false; }
   RevocationTarget target;
   target.kind = RevocationKind::SERVICE_AUTHORIZATION;
   target.targetIdentity = identity;
@@ -620,12 +629,11 @@ ServiceController::grant(const ndn::Name& identity,
       reauthorizingIdentity = true;
   }
 
-  const auto serviceUri = serviceName.toUri();
-  const bool isUser = authorizationAttribute.getPrefix(1) == ndn::Name("/PERMISSION");
+  const auto serviceUri = serviceName.toUri(ndn::name::UriFormat::CANONICAL);
   const auto hasServiceGrant = [&] {
     if (isUser) {
       for (const auto& policy : m_userPolicies) {
-        if (policy.userName == identity.toUri() &&
+        if (policy.userName == identity.toUri(ndn::name::UriFormat::CANONICAL) &&
             std::find(policy.allowedServices.begin(), policy.allowedServices.end(), serviceUri) !=
                 policy.allowedServices.end())
           return true;
@@ -633,7 +641,7 @@ ServiceController::grant(const ndn::Name& identity,
     }
     else {
       for (const auto& policy : m_providerPolicies) {
-        if (policy.providerName == identity.toUri() &&
+        if (policy.providerName == identity.toUri(ndn::name::UriFormat::CANONICAL) &&
             std::find(policy.allowedServices.begin(), policy.allowedServices.end(), serviceUri) !=
                 policy.allowedServices.end())
           return true;
@@ -641,9 +649,9 @@ ServiceController::grant(const ndn::Name& identity,
     }
     return false;
   };
-  const auto existingAttributes = m_attributesMap.find(identity.toUri());
+  const auto existingAttributes = m_attributesMap.find(identity.toUri(ndn::name::UriFormat::CANONICAL));
   const bool hasAttribute = existingAttributes != m_attributesMap.end() &&
-                            existingAttributes->second.count(authorizationAttribute.toUri()) != 0;
+                            existingAttributes->second.count(abeAttribute) != 0;
   const bool hasMatchingWithdrawal = std::any_of(
       m_revocations.begin(), m_revocations.end(), [&target] (const RevocationTarget& existing) {
         return existing.kind == target.kind &&
@@ -671,7 +679,7 @@ ServiceController::grant(const ndn::Name& identity,
   const auto oldValidUntil = m_policyValidUntilMs;
   const auto restoreTargetPolicy = [&] {
     m_aa.removePolicy(identity);
-    const auto effective = effectiveAttributesFor(identity.toUri());
+    const auto effective = effectiveAttributesFor(identity.toUri(ndn::name::UriFormat::CANONICAL));
     if (!effective.empty()) {
       std::list<std::string> attributes(effective.begin(), effective.end());
       m_aa.replacePolicy(identity, boost::algorithm::join(attributes, " OR "));
@@ -680,7 +688,7 @@ ServiceController::grant(const ndn::Name& identity,
   bool foundIdentity = false;
   if (isUser) {
     for (auto& policy : m_userPolicies) {
-      if (policy.userName != identity.toUri())
+      if (policy.userName != identity.toUri(ndn::name::UriFormat::CANONICAL))
         continue;
       foundIdentity = true;
       if (std::find(policy.allowedServices.begin(), policy.allowedServices.end(), serviceUri) ==
@@ -689,11 +697,11 @@ ServiceController::grant(const ndn::Name& identity,
       }
     }
     if (!foundIdentity)
-      m_userPolicies.push_back(UserPolicy{identity.toUri(), {serviceUri}});
+      m_userPolicies.push_back(UserPolicy{identity.toUri(ndn::name::UriFormat::CANONICAL), {serviceUri}});
   }
   else {
     for (auto& policy : m_providerPolicies) {
-      if (policy.providerName != identity.toUri())
+      if (policy.providerName != identity.toUri(ndn::name::UriFormat::CANONICAL))
         continue;
       foundIdentity = true;
       if (std::find(policy.allowedServices.begin(), policy.allowedServices.end(), serviceUri) ==
@@ -702,10 +710,10 @@ ServiceController::grant(const ndn::Name& identity,
       }
     }
     if (!foundIdentity)
-      m_providerPolicies.push_back(ProviderPolicy{identity.toUri(), {serviceUri}});
+      m_providerPolicies.push_back(ProviderPolicy{identity.toUri(ndn::name::UriFormat::CANONICAL), {serviceUri}});
   }
 
-  m_attributesMap[identity.toUri()].insert(authorizationAttribute.toUri());
+  m_attributesMap[identity.toUri(ndn::name::UriFormat::CANONICAL)].insert(abeAttribute);
   m_revocations.erase(std::remove_if(m_revocations.begin(), m_revocations.end(),
                                      [&target](const RevocationTarget& existing) {
     return (existing.kind == target.kind &&
@@ -724,7 +732,7 @@ ServiceController::grant(const ndn::Name& identity,
     // so the AA can serve the identity's lazy DKEY fetch without a network
     // certificate lookup; fall back to the name-only policy when no local
     // certificate exists yet.
-    const auto effective = effectiveAttributesFor(identity.toUri());
+    const auto effective = effectiveAttributesFor(identity.toUri(ndn::name::UriFormat::CANONICAL));
     m_aa.removePolicy(identity);
     if (!effective.empty()) {
       std::list<std::string> attributes(effective.begin(), effective.end());
@@ -859,24 +867,34 @@ void ServiceController::start()
   // liveness challenge separate; never relabel those bytes with a nonce.
   const auto paramsName = currentAbePublicParametersName();
   const auto paramsWire = m_aa.getPublicParametersWire();
-  const auto challengeContent = paramsName.toUri() + "|" +
+  const auto challengeContent = paramsName.toUri(ndn::name::UriFormat::CANONICAL) + "|" +
     abePublicParametersDigest(paramsWire);
-  const auto probeName = ndn::Name(m_aaCert.getIdentity()).append("NDNSF")
-    .append("READINESS").appendNumber(ndn::random::generateSecureWord64())
-    .appendNumber(ndn::random::generateSecureWord64());
+  const auto challengeParameters = ndn::makeStringBlock(ndn::tlv::Content, challengeContent);
+  ndn::Interest preparedProbe(makeControlRpcName(m_aaCert.getIdentity(), "AA-READY",
+                                               challengeParameters, makeControlQueryNonce()));
+  preparedProbe.setApplicationParameters(challengeParameters);
+  const auto probeName = preparedProbe.getName();
+  checkNamingNameSize(probeName);
+  auto originalReply = std::make_shared<ndn::Data>(probeName);
+  originalReply->setContent(challengeContent);
+  originalReply->setFreshnessPeriod(ndn::time::milliseconds(0));
+  m_keyChain.sign(*originalReply, ndn::security::signingByCertificate(m_aaCert));
+  if (preparedProbe.wireEncode().size() > ndn::MAX_NDN_PACKET_SIZE ||
+      originalReply->wireEncode().size() > ndn::MAX_NDN_PACKET_SIZE)
+    throw std::length_error("ServiceController AA readiness packet exceeds wire budget");
   ndn::ScopedInterestFilterHandle observer = m_face.setInterestFilter(probeName,
-    [this, state, probeName, challengeContent](const ndn::InterestFilter&,
-                                             const ndn::Interest& interest) {
+    [this, state, probeName, originalReply](const ndn::InterestFilter&,
+                                          const ndn::Interest& interest) {
       // NFD decrements 1 to 0 on ingress and only forwards the result to local
       // faces. Thus both Faces must reach the same local forwarder. If a caller
       // supplied a different endpoint, fail closed instead of probing another NFD.
-      if (!state->finished && interest.getName() == probeName) {
+      if (!state->finished && interest.getName() == probeName &&
+          parseControlRpcName(interest, m_aaCert.getIdentity(), "AA-READY")) {
         state->receivedByAuthority = interest.getHopLimit() == 0;
-        ndn::Data reply(probeName);
-        reply.setContent(challengeContent);
-        reply.setFreshnessPeriod(ndn::time::milliseconds(0));
-        m_keyChain.sign(reply, ndn::security::signingByCertificate(m_aaCert));
-        m_face.put(reply);
+        try { m_face.put(*originalReply); }
+        catch (const std::exception& error) {
+          state->error = std::string("ServiceController AA readiness delivery failed: ") + error.what();
+        }
       }
     });
   ndn::ScopedPendingInterestHandle pending;
@@ -916,9 +934,9 @@ void ServiceController::start()
       state->inFlight = true;
       nextAttempt = now + std::chrono::milliseconds(100);
       const bool parameters = state->challengeReady;
-      ndn::Interest interest(parameters ? paramsName : probeName);
+      ndn::Interest interest = parameters ? ndn::Interest(paramsName) : preparedProbe;
       interest.setMustBeFresh(true);
-      interest.setCanBePrefix(!parameters);
+      interest.setCanBePrefix(false);
       interest.setHopLimit(1);
       interest.setInterestLifetime(ndn::time::milliseconds(250));
       pending = probeFace.expressInterest(
@@ -994,6 +1012,17 @@ void ServiceController::loadConfigFiles()
     PolicyParser parser;
     auto policies = parser.parsePolicyFile(m_configFilePath);
 
+    for (auto& policy : policies.first) {
+      policy.providerName = ndn::Name(policy.providerName).toUri(ndn::name::UriFormat::CANONICAL);
+      for (auto& service : policy.allowedServices)
+        service = ndn::Name(service).toUri(ndn::name::UriFormat::CANONICAL);
+    }
+    for (auto& policy : policies.second) {
+      policy.userName = ndn::Name(policy.userName).toUri(ndn::name::UriFormat::CANONICAL);
+      for (auto& service : policy.allowedServices)
+        service = ndn::Name(service).toUri(ndn::name::UriFormat::CANONICAL);
+    }
+
     m_providerPolicies.insert(m_providerPolicies.end(),
                               policies.first.begin(), policies.first.end());
     m_userPolicies.insert(m_userPolicies.end(),
@@ -1014,7 +1043,7 @@ void ServiceController::addAttributesForUsersAccordingToServicePolicy()
   // Provider policies -> SERVICE/<service-name> attributes
   for (const auto& policy : m_providerPolicies) {
     for (const auto& service : policy.allowedServices) {
-      addAttribute(policy.providerName, "/SERVICE" + service);
+      addAttribute(policy.providerName, makeAbeServiceAttribute(ndn::Name(service), "SERVICE"));
     }
   }
 
@@ -1022,7 +1051,8 @@ void ServiceController::addAttributesForUsersAccordingToServicePolicy()
   for (const auto& policy : m_userPolicies) {
     ndn::Name userName(policy.userName);
     for (const auto& service : policy.allowedServices) {
-      addAttribute(userName.toUri(), "/PERMISSION" + service);
+      addAttribute(userName.toUri(ndn::name::UriFormat::CANONICAL),
+                   makeAbeServiceAttribute(ndn::Name(service), "PERMISSION"));
     }
   }
 
@@ -1106,6 +1136,63 @@ bool ServiceController::extractEntityAfterPrefix(const ndn::Name& interestName,
   return true;
 }
 
+
+bool ServiceController::admitControlQuery(const ndn::Interest& interest, const std::string& operation)
+{
+  if (!parseControlRpcName(interest, m_controllerPrefix, operation) ||
+      !controlNonceExpiry(m_controllerPrefix, interest) ||
+      interest.wireEncode().size() > ndn::MAX_NDN_PACKET_SIZE ||
+      interest.getName().wireEncode().size() > 1024) return false;
+  const auto now = static_cast<uint64_t>(ndn::time::duration_cast<ndn::time::milliseconds>(
+    ndn::time::system_clock::now().time_since_epoch()).count());
+  for (auto it = m_originalControlReplies.begin(); it != m_originalControlReplies.end();) {
+    if (it->second.expiresAtMs > now) { ++it; continue; }
+    m_originalControlReplyBytes -= it->second.packet->wireEncode().size();
+    it = m_originalControlReplies.erase(it);
+  }
+  if (m_originalControlReplies.count(interest.getName())) return true;
+  return m_originalControlReplies.size() < 4096 &&
+    m_originalControlReplyBytes <= 64ULL * 1024 * 1024 - ndn::MAX_NDN_PACKET_SIZE;
+}
+
+bool ServiceController::serveOriginalControlReply(const ndn::Interest& interest)
+{
+  const auto found = m_originalControlReplies.find(interest.getName());
+  if (found == m_originalControlReplies.end()) return false;
+  try { m_face.put(*found->second.packet); }
+  catch (const std::exception& e) { NDN_LOG_WARN("Original control reply delivery failed: " << e.what()); }
+  return true;
+}
+
+void ServiceController::publishOriginalControlReply(const ndn::Interest& interest, const ndn::Data& data)
+{
+  const auto expiry = controlNonceExpiry(m_controllerPrefix, interest);
+  if (!expiry || data.getName() != interest.getName())
+    throw std::invalid_argument("control reply final Name or query nonce mismatch");
+  checkNamingNameSize(data.getName());
+  const auto wireBytes = data.wireEncode().size();
+  if (wireBytes > ndn::MAX_NDN_PACKET_SIZE ||
+      !ProducerSignerPolicy().allowsValidatedSigner(data, m_controllerPrefix))
+    throw std::invalid_argument("control reply signer or signed packet budget invalid");
+  const auto found = m_originalControlReplies.find(data.getName());
+  if (found != m_originalControlReplies.end()) {
+    if (!(found->second.packet->wireEncode() == data.wireEncode()))
+      throw std::invalid_argument("immutable control reply conflict");
+    try { m_face.put(*found->second.packet); }
+    catch (const std::exception& e) { NDN_LOG_WARN("Original control reply delivery failed: " << e.what()); }
+    return;
+  }
+  if (m_originalControlReplies.size() >= 4096 ||
+      wireBytes > 64ULL * 1024 * 1024 - m_originalControlReplyBytes)
+    throw std::runtime_error("original control reply capacity exhausted");
+  auto original = std::make_shared<const ndn::Data>(data);
+  m_originalControlReplies.emplace(data.getName(), OriginalControlReply{original, *expiry});
+  m_originalControlReplyBytes += wireBytes;
+  // Acceptance precedes optional delivery: a put failure retains the original.
+  try { m_face.put(*original); }
+  catch (const std::exception& e) { NDN_LOG_WARN("Accepted control reply delivery failed: " << e.what()); }
+}
+
 bool ServiceController::parseUserPermissionsInterestName(const ndn::Name& interestName,
                                                          ndn::Name& targetIdentity) const
 {
@@ -1143,25 +1230,25 @@ void ServiceController::registerInterestHandlers()
   }
 
   m_prefixServiceAccess = m_controllerPrefix;
-  m_prefixServiceAccess.append("NDNSF").append("SERVICEACCESS");
+  m_prefixServiceAccess.append("NDNSF").append("RPC").append("SERVICEACCESS");
 
   m_prefixServiceProvision = m_controllerPrefix;
-  m_prefixServiceProvision.append("NDNSF").append("SERVICEPROVISION");
+  m_prefixServiceProvision.append("NDNSF").append("RPC").append("SERVICEPROVISION");
 
   m_prefixUserPermissions = m_controllerPrefix;
-  m_prefixUserPermissions.append("NDNSF").append("PERMISSIONS").append("USER");
+  m_prefixUserPermissions.append("NDNSF").append("RPC").append("USER-PERMISSIONS");
 
   m_prefixProviderPermissions = m_controllerPrefix;
-  m_prefixProviderPermissions.append("NDNSF").append("PERMISSIONS").append("PROVIDER");
+  m_prefixProviderPermissions.append("NDNSF").append("RPC").append("PROVIDER-PERMISSIONS");
 
   m_prefixPolicyManifest = m_controllerPrefix;
-  m_prefixPolicyManifest.append("NDNSF").append("POLICY-MANIFEST");
+  m_prefixPolicyManifest.append("NDNSF").append("RPC").append("POLICY-MANIFEST");
 
   m_prefixPolicyStatus = m_controllerPrefix;
-  m_prefixPolicyStatus.append("NDNSF").append("POLICY-STATUS");
+  m_prefixPolicyStatus.append("NDNSF").append("RPC").append("POLICY-STATUS");
 
   m_prefixCertificateBootstrap = m_controllerPrefix;
-  m_prefixCertificateBootstrap.append("NDNSF").append("CERTBOOTSTRAP");
+  m_prefixCertificateBootstrap.append("NDNSF").append("RPC").append("CERTBOOTSTRAP");
 
   m_registrationState = std::make_shared<RegistrationState>();
   const auto onRegistered = [state = m_registrationState](const ndn::Name&) {
@@ -1169,7 +1256,7 @@ void ServiceController::registerInterestHandlers()
   };
   const auto onFailure = [state = m_registrationState](const ndn::Name& prefix,
                                                       const std::string& reason) {
-    state->error = prefix.toUri() + ": " + reason;
+    state->error = prefix.toUri(ndn::name::UriFormat::CANONICAL) + ": " + reason;
     NDN_LOG_ERROR("Failed to register prefix " << prefix << " reason=" << reason);
   };
 
@@ -1259,14 +1346,14 @@ PermissionResponse
 ServiceController::buildUserPermissionResponse(const ndn::Name& targetIdentity) const
 {
   PermissionResponse response;
-  response.setTargetIdentity(targetIdentity.toUri());
+  response.setTargetIdentity(targetIdentity.toUri(ndn::name::UriFormat::CANONICAL));
   response.setPermissionKind(tlv::UserPermission);
   response.setPolicyEpoch(m_policyEpoch);
   if (m_controllerVersion.isValid())
     response.setControllerVersion(m_controllerVersion);
 
   std::vector<std::string> allowedServices;
-  if (auto it = m_userAllowedServices.find(targetIdentity.toUri());
+  if (auto it = m_userAllowedServices.find(targetIdentity.toUri(ndn::name::UriFormat::CANONICAL));
       it != m_userAllowedServices.end()) {
     allowedServices = it->second;
   }
@@ -1303,14 +1390,14 @@ PermissionResponse
 ServiceController::buildProviderPermissionResponse(const ndn::Name& targetIdentity) const
 {
   PermissionResponse response;
-  response.setTargetIdentity(targetIdentity.toUri());
+  response.setTargetIdentity(targetIdentity.toUri(ndn::name::UriFormat::CANONICAL));
   response.setPermissionKind(tlv::ProviderPermission);
   response.setPolicyEpoch(m_policyEpoch);
   if (m_controllerVersion.isValid())
     response.setControllerVersion(m_controllerVersion);
 
   std::vector<std::string> allowedServices;
-  if (auto it = m_providerAllowedServices.find(targetIdentity.toUri());
+  if (auto it = m_providerAllowedServices.find(targetIdentity.toUri(ndn::name::UriFormat::CANONICAL));
       it != m_providerAllowedServices.end()) {
     allowedServices = it->second;
   }
@@ -1320,7 +1407,7 @@ ServiceController::buildProviderPermissionResponse(const ndn::Name& targetIdenti
                   makeAuthorizationAttribute("/SERVICE", service)))
       continue;
     PermissionEntry entry;
-    entry.setProviderName(targetIdentity.toUri());
+    entry.setProviderName(targetIdentity.toUri(ndn::name::UriFormat::CANONICAL));
     entry.setServiceName(service);
     // Deprecated wire-compatibility field. Provider permission presence is
     // still installed, but no invocation token is issued by the controller.
@@ -1349,7 +1436,7 @@ ServiceController::buildPolicyManifest() const
 ndn::security::Certificate
 ServiceController::getTargetIdentityCertificate(const ndn::Name& targetIdentity)
 {
-  if (auto issued = m_bootstrapIssuedCertificates.find(targetIdentity.toUri());
+  if (auto issued = m_bootstrapIssuedCertificates.find(targetIdentity.toUri(ndn::name::UriFormat::CANONICAL));
       issued != m_bootstrapIssuedCertificates.end()) {
     // Permission responses are encrypted with the identity's RSA key even
     // when the runtime uses a separate ECDSA signing certificate.  Bootstrap
@@ -1363,7 +1450,7 @@ ServiceController::getTargetIdentityCertificate(const ndn::Name& targetIdentity)
                 .getDefaultCertificate();
   if (!cert.isValid()) {
     throw std::runtime_error("Target identity certificate is not currently valid: " +
-                             cert.getName().toUri());
+                             cert.getName().toUri(ndn::name::UriFormat::CANONICAL));
   }
   // The default key may be ECDSA because it is preferred for Data signing;
   // NAC-ABE permission encryption still requires the RSA certificate.
@@ -1375,10 +1462,10 @@ ServiceController::generateBootstrapTokenFile(const std::string& path) const
 {
   std::map<std::string, std::string> entries;
   for (const auto& policy : m_providerPolicies) {
-    entries.emplace(ndn::Name(policy.providerName).toUri(), "provider");
+    entries.emplace(ndn::Name(policy.providerName).toUri(ndn::name::UriFormat::CANONICAL), "provider");
   }
   for (const auto& policy : m_userPolicies) {
-    entries.emplace(ndn::Name(policy.userName).toUri(), "user");
+    entries.emplace(ndn::Name(policy.userName).toUri(ndn::name::UriFormat::CANONICAL), "user");
   }
 
   if (entries.empty()) {
@@ -1454,7 +1541,7 @@ ServiceController::loadBootstrapTokenFile(const std::string& path)
       if (identityName.empty() || token.empty()) {
         throw std::runtime_error("empty identity or token");
       }
-      m_bootstrapTokens[identityName.toUri()] = BootstrapTokenEntry{token, role};
+      m_bootstrapTokens[identityName.toUri(ndn::name::UriFormat::CANONICAL)] = BootstrapTokenEntry{token, role};
     }
     catch (const std::exception& e) {
       throw std::runtime_error("Invalid bootstrap token file entry " + path +
@@ -1472,6 +1559,7 @@ ServiceController::sendCertificateBootstrapResponse(const ndn::Interest& interes
                                                     const std::string& message,
                                                     const ndn::security::Certificate* issuedCertificate)
 {
+  try {
   CertificateBootstrapResponse response;
   response.status = status;
   response.message = message;
@@ -1485,7 +1573,11 @@ ServiceController::sendCertificateBootstrapResponse(const ndn::Interest& interes
   data.setContent(response.wireEncode());
   m_keyChain.sign(data, ndn::security::SigningInfo(
     ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
-  m_face.put(data);
+  publishOriginalControlReply(interest, data);
+  }
+  catch (const std::exception& error) {
+    NDN_LOG_ERROR("Certificate bootstrap reply failed: " << error.what());
+  }
 }
 
 // ===================== Signer cert extraction =====================
@@ -1516,7 +1608,7 @@ ndn::Name ServiceController::getSignerCertNameFromInterest(const ndn::Interest& 
   const ndn::Name certName = kl.getName();
   if (!ndn::security::Certificate::isValidName(certName)) {
     throw std::runtime_error("Interest KeyLocator Name is not a certificate name: " +
-                             certName.toUri());
+                             certName.toUri(ndn::name::UriFormat::CANONICAL));
   }
 
   return certName;
@@ -1536,7 +1628,7 @@ ServiceController::getSignerCertificateFromInterest(const ndn::Interest& interes
       .getCertificate(certName);
   }
   catch (const std::exception&) {
-    throw std::runtime_error("Cannot find signer certificate in PIB: " + certName.toUri());
+    throw std::runtime_error("Cannot find signer certificate in PIB: " + certName.toUri(ndn::name::UriFormat::CANONICAL));
   }
 }
 
@@ -1565,10 +1657,10 @@ void ServiceController::onServiceAccessInterest(const ndn::InterestFilter&,
                                                const ndn::Interest& interest)
 {
   // <controller>/NDNSF/SERVICEACCESS/<user>
-  ndn::Name userName;
-  if (!extractEntityAfterPrefix(interest.getName(), m_prefixServiceAccess, userName)) {
-    return;
-  }
+  if (!admitControlQuery(interest, "SERVICEACCESS")) return;
+  const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
+  if (!query || query->subject.empty() || !query->service.empty() || query->generation != 0) return;
+  const ndn::Name userName = query->subject;
 
   // 先验证 Interest（必须！否则 KeyLocator 可被伪造导致加密给错误的人）
   m_validator.validate(
@@ -1596,7 +1688,9 @@ void ServiceController::onServiceAccessInterest(const ndn::InterestFilter&,
         return;
       }
 
-      const std::string userUri = userName.toUri();
+      try {
+      if (serveOriginalControlReply(validatedInterest)) return;
+      const std::string userUri = userName.toUri(ndn::name::UriFormat::CANONICAL);
 
       // 查权限（你现在按 name 里的 userUri 查）
       std::vector<std::string> services;
@@ -1606,7 +1700,6 @@ void ServiceController::onServiceAccessInterest(const ndn::InterestFilter&,
 
       // Data name = prefix + user + timestamp
       ndn::Name dataName = validatedInterest.getName();
-      dataName.appendTimestamp(ndn::time::system_clock::now());
 
       ndn::Data data(dataName);
 
@@ -1615,13 +1708,18 @@ void ServiceController::onServiceAccessInterest(const ndn::InterestFilter&,
 
       data.setContent(content);
       data.setFreshnessPeriod(ndn::time::seconds(2));
-      m_keyChain.sign(data);
-      m_face.put(data);
+      m_keyChain.sign(data, ndn::security::SigningInfo(
+        ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
+      publishOriginalControlReply(validatedInterest, data);
 
       NDN_LOG_INFO("[SERVICEACCESS] Reply to " << userUri
                 << " services=" << services.size()
                 << " data=" << data.getName()
                 << " encryptedFor=" << signerCert.getName());
+      }
+      catch (const std::exception& error) {
+        NDN_LOG_ERROR("Authorized control reply failed: " << error.what());
+      }
     },
     // failed
     [](const ndn::Interest& badInterest, const ndn::security::ValidationError& err) {
@@ -1634,10 +1732,10 @@ void ServiceController::onServiceProvisionInterest(const ndn::InterestFilter&,
                                                   const ndn::Interest& interest)
 {
   // <controller>/NDNSF/SERVICEPROVISION/<provider>
-  ndn::Name providerName;
-  if (!extractEntityAfterPrefix(interest.getName(), m_prefixServiceProvision, providerName)) {
-    return;
-  }
+  if (!admitControlQuery(interest, "SERVICEPROVISION")) return;
+  const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
+  if (!query || query->subject.empty() || !query->service.empty() || query->generation != 0) return;
+  const ndn::Name providerName = query->subject;
 
   m_validator.validate(
     interest,
@@ -1664,7 +1762,9 @@ void ServiceController::onServiceProvisionInterest(const ndn::InterestFilter&,
         return;
       }
 
-      const std::string providerUri = providerName.toUri();
+      try {
+      if (serveOriginalControlReply(validatedInterest)) return;
+      const std::string providerUri = providerName.toUri(ndn::name::UriFormat::CANONICAL);
 
       std::vector<std::string> services;
       if (auto it = m_providerAllowedServices.find(providerUri); it != m_providerAllowedServices.end()) {
@@ -1672,7 +1772,6 @@ void ServiceController::onServiceProvisionInterest(const ndn::InterestFilter&,
       }
 
       ndn::Name dataName = validatedInterest.getName();
-      dataName.appendTimestamp(ndn::time::system_clock::now());
 
       ndn::Data data(dataName);
 
@@ -1681,13 +1780,18 @@ void ServiceController::onServiceProvisionInterest(const ndn::InterestFilter&,
 
       data.setContent(content);
       data.setFreshnessPeriod(ndn::time::seconds(2));
-      m_keyChain.sign(data);
-      m_face.put(data);
+      m_keyChain.sign(data, ndn::security::SigningInfo(
+        ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
+      publishOriginalControlReply(validatedInterest, data);
 
       NDN_LOG_INFO("[SERVICEPROVISION] Reply to " << providerUri
                 << " services=" << services.size()
                 << " data=" << data.getName()
                 << " encryptedFor=" << signerCert.getName());
+      }
+      catch (const std::exception& error) {
+        NDN_LOG_ERROR("Authorized control reply failed: " << error.what());
+      }
     },
     // failed
     [](const ndn::Interest& badInterest, const ndn::security::ValidationError& err) {
@@ -1699,10 +1803,11 @@ void ServiceController::onServiceProvisionInterest(const ndn::InterestFilter&,
 void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
                                                   const ndn::Interest& interest)
 {
-  ndn::Name targetIdentity;
-  if (!parseUserPermissionsInterestName(interest.getName(), targetIdentity)) {
-    return;
-  }
+  if (!admitControlQuery(interest, "USER-PERMISSIONS")) return;
+  const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
+  if (!query || query->subject.empty() || !query->service.empty() || query->generation != 0) return;
+  const ndn::Name targetIdentity = query->subject;
+  if (serveOriginalControlReply(interest)) return;
 
   if (!m_generationReady) {
     NDN_LOG_ERROR("[PERMISSIONS/USER] Refusing protected issuance because "
@@ -1723,14 +1828,13 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
     encryptedResponse = encryptPermissionResponseForCertificate(response, targetCert);
 
     ndn::Name dataName = interest.getName();
-    dataName.appendTimestamp(ndn::time::system_clock::now());
 
     ndn::Data data(dataName);
     data.setContent(encryptedResponse.WireEncode());
     data.setFreshnessPeriod(ndn::time::milliseconds(0));
     m_keyChain.sign(data, ndn::security::SigningInfo(
       ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
-    m_face.put(data);
+    publishOriginalControlReply(interest, data);
 
     NDN_LOG_INFO("[PERMISSIONS/USER] Encrypted reply target="
               << targetIdentity
@@ -1739,7 +1843,7 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
   }
   catch (const std::exception& e) {
     NDN_LOG_ERROR("[PERMISSIONS/USER] Refusing to reply without encrypting for target="
-              << targetIdentity.toUri()
+              << targetIdentity.toUri(ndn::name::UriFormat::CANONICAL)
               << " error=" << e.what());
     return;
   }
@@ -1749,10 +1853,11 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
 void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&,
                                                       const ndn::Interest& interest)
 {
-  ndn::Name targetIdentity;
-  if (!parseProviderPermissionsInterestName(interest.getName(), targetIdentity)) {
-    return;
-  }
+  if (!admitControlQuery(interest, "PROVIDER-PERMISSIONS")) return;
+  const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
+  if (!query || query->subject.empty() || !query->service.empty() || query->generation != 0) return;
+  const ndn::Name targetIdentity = query->subject;
+  if (serveOriginalControlReply(interest)) return;
 
   if (!m_generationReady) {
     NDN_LOG_ERROR("[PERMISSIONS/PROVIDER] Refusing protected issuance because "
@@ -1773,14 +1878,13 @@ void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&
     encryptedResponse = encryptPermissionResponseForCertificate(response, targetCert);
 
     ndn::Name dataName = interest.getName();
-    dataName.appendTimestamp(ndn::time::system_clock::now());
 
     ndn::Data data(dataName);
     data.setContent(encryptedResponse.WireEncode());
     data.setFreshnessPeriod(ndn::time::milliseconds(0));
     m_keyChain.sign(data, ndn::security::SigningInfo(
       ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
-    m_face.put(data);
+    publishOriginalControlReply(interest, data);
 
     NDN_LOG_INFO("[PERMISSIONS/PROVIDER] Encrypted reply target="
               << targetIdentity
@@ -1789,7 +1893,7 @@ void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&
   }
   catch (const std::exception& e) {
     NDN_LOG_ERROR("[PERMISSIONS/PROVIDER] Refusing to reply without encrypting for target="
-              << targetIdentity.toUri()
+              << targetIdentity.toUri(ndn::name::UriFormat::CANONICAL)
               << " error=" << e.what());
     return;
   }
@@ -1799,53 +1903,55 @@ void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&
 void ServiceController::onPolicyManifestInterest(const ndn::InterestFilter&,
                                                  const ndn::Interest& interest)
 {
+  if (!admitControlQuery(interest, "POLICY-MANIFEST")) return;
+  const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
+  if (!query || !query->subject.empty() || !query->service.empty() || query->generation != 0) return;
+  if (serveOriginalControlReply(interest)) return;
+  try {
   PolicyManifest manifest = buildPolicyManifest();
   ndn::Data data(interest.getName());
   data.setContent(manifest.WireEncode());
   data.setFreshnessPeriod(ndn::time::milliseconds(0));
   m_keyChain.sign(data, ndn::security::SigningInfo(
     ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
-  m_face.put(data);
+  publishOriginalControlReply(interest, data);
 
   NDN_LOG_INFO("[POLICY-MANIFEST] Reply data=" << data.getName()
                << " payload=" << manifest.toString());
+  }
+  catch (const std::exception& error) {
+    NDN_LOG_ERROR("PolicyManifest reply failed: " << error.what());
+  }
 }
 
 void
 ServiceController::onPolicyStatusInterest(const ndn::InterestFilter&,
                                           const ndn::Interest& interest)
 {
-  if (!m_generationReady || !m_prefixPolicyStatus.isPrefixOf(interest.getName()) ||
-      interest.getName().size() <= m_prefixPolicyStatus.size()) {
-    NDN_LOG_WARN("NDNSF_POLICY_STATUS_REFUSED reason=controller-generation-unavailable");
-    return;
-  }
+  if (!m_generationReady || !admitControlQuery(interest, "POLICY-STATUS")) return;
+  const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
+  if (!query || !query->subject.empty() || query->service.empty()) return;
+  const auto serviceName = query->service;
+  const auto requestedVersion = query->generation == 0 ? std::optional<ControllerVersion>() :
+    std::optional<ControllerVersion>(ControllerVersion{query->generation, query->epoch});
 
-  const auto parsedName = parsePolicyStatusName(m_controllerPrefix, interest.getName());
-  if (!parsedName || parsedName->serviceName.empty()) {
-    NDN_LOG_WARN("NDNSF_POLICY_STATUS_REFUSED reason=missing-service");
-    return;
-  }
-
-  const auto serviceName = parsedName->serviceName;
   try {
     const auto status = getPolicyStatus(serviceName);
-    if (parsedName->version &&
-        status.getControllerVersion() != *parsedName->version) {
+    if (requestedVersion &&
+        status.getControllerVersion() != *requestedVersion) {
       NDN_LOG_WARN("NDNSF_POLICY_STATUS_REFUSED service=" << serviceName
                    << " reason=version-not-available requested="
-                   << parsedName->version->toString()
+                   << requestedVersion->toString()
                    << " current=" << status.getControllerVersion().toString());
       return;
     }
-    const auto dataName = makePolicyStatusName(
-        m_controllerPrefix, serviceName, status.getControllerVersion());
-    ndn::Data data(dataName);
+    if (serveOriginalControlReply(interest)) return;
+    ndn::Data data(interest.getName());
     data.setContent(status.wireEncode());
     data.setFreshnessPeriod(ndn::time::milliseconds(0));
     m_keyChain.sign(data, ndn::security::SigningInfo(
       ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
-    m_face.put(data);
+    publishOriginalControlReply(interest, data);
     NDN_LOG_INFO("NDNSF_POLICY_STATUS_PUBLISHED service=" << serviceName
                  << " generation=" << m_controllerVersion.controllerGenerationTimestamp
                  << " epoch=" << m_controllerVersion.controllerEpoch
@@ -1861,64 +1967,29 @@ void
 ServiceController::onCertificateBootstrapInterest(const ndn::InterestFilter&,
                                                   const ndn::Interest& interest)
 {
-  if (!m_prefixCertificateBootstrap.isPrefixOf(interest.getName()) ||
-      interest.getName().size() <= m_prefixCertificateBootstrap.size()) {
-    return;
-  }
-
-  const ndn::Name targetIdentity = stripCertificateBootstrapInterestSuffix(
-    interest.getName().getSubName(m_prefixCertificateBootstrap.size()));
-  const std::string targetUri = targetIdentity.toUri();
-
+  if (!admitControlQuery(interest, "CERTBOOTSTRAP")) return;
+  if (serveOriginalControlReply(interest)) return;
+  std::string targetUri;
   try {
-    const auto tokenIt = m_bootstrapTokens.find(targetUri);
-    if (tokenIt == m_bootstrapTokens.end()) {
-      const std::string message = "no bootstrap token configured for " + targetUri;
-      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
-                   << " reason=no-token");
-      sendCertificateBootstrapResponse(interest, false, message, nullptr);
-      return;
-    }
-
-    const auto& tokenEntry = tokenIt->second;
-
-    const auto& params = interest.getApplicationParameters();
-    if (!params.isValid()) {
-      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
-                   << " reason=missing-parameters");
-      sendCertificateBootstrapResponse(interest, false, "missing bootstrap request parameters", nullptr);
-      return;
-    }
-
-    CertificateBootstrapRequest request;
-    bool encryptedRequest = false;
+    const auto params = interest.getApplicationParameters();
     EncryptedCertificateBootstrapRequest encrypted;
-    if (encrypted.wireDecode(params)) {
-      try {
-        request = decryptCertificateBootstrapRequestWithKeyChain(encrypted, m_keyChain);
-        encryptedRequest = true;
-      }
-      catch (const std::exception& e) {
-        NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
-                     << " reason=decrypt-failed error=" << e.what());
-        sendCertificateBootstrapResponse(interest, false, "encrypted bootstrap request decrypt failed", nullptr);
-        return;
-      }
-    }
-    else {
-      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
-                   << " reason=unencrypted-or-malformed-request");
+    if (!params.isValid() || !encrypted.wireDecode(params)) {
       sendCertificateBootstrapResponse(interest, false, "encrypted bootstrap request required", nullptr);
       return;
     }
-
-    if (request.identity != targetIdentity) {
-      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
-                   << " reason=request-name-mismatch"
-                   << " requestIdentity=" << request.identity.toUri());
-      sendCertificateBootstrapResponse(interest, false, "bootstrap name mismatch", nullptr);
+    const auto request = decryptCertificateBootstrapRequestWithKeyChain(encrypted, m_keyChain);
+    const auto targetIdentity = request.identity;
+    if (targetIdentity.empty()) {
+      sendCertificateBootstrapResponse(interest, false, "empty bootstrap subject", nullptr); return;
+    }
+    targetUri = targetIdentity.toUri(ndn::name::UriFormat::CANONICAL);
+    const auto tokenIt = m_bootstrapTokens.find(targetUri);
+    if (tokenIt == m_bootstrapTokens.end()) {
+      sendCertificateBootstrapResponse(interest, false, "no bootstrap token configured for subject", nullptr);
       return;
     }
+    const auto& tokenEntry = tokenIt->second;
+    const bool encryptedRequest = true;
 
     if (request.token != tokenEntry.token) {
       NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
@@ -1961,7 +2032,7 @@ ServiceController::onCertificateBootstrapInterest(const ndn::InterestFilter&,
     m_bootstrapIssuedCertificates[targetUri] = issued;
 
     NDN_LOG_INFO("NDNSF_CERT_BOOTSTRAP_ISSUED identity=" << targetUri
-                 << " cert=" << issued.getName().toUri()
+                 << " cert=" << issued.getName().toUri(ndn::name::UriFormat::CANONICAL)
                  << " role=" << tokenEntry.role
                  << " encryptedRequest=" << (encryptedRequest ? "true" : "false")
                  << " requesterProof=true");

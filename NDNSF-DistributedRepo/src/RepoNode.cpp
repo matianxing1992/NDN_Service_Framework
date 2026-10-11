@@ -12,6 +12,11 @@
 #include <stdexcept>
 #include <sstream>
 #include <utility>
+#include <openssl/evp.h>
+#include <cstdio>
+#include <unistd.h>
+#include <iomanip>
+#include <limits>
 
 namespace ndnsf_distributed_repo {
 
@@ -485,24 +490,36 @@ RepoNode::insertWirePackets(const RepoDataReference& reference,
   rememberStatus(status);
 
   try {
-    std::vector<uint8_t> concatenated;
+    if (!m_core.supportsOriginalPacketTransactions() || wirePackets.empty())
+      throw std::runtime_error("repo-original-packet-transaction-unsupported-or-empty");
+    auto spool = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::tmpfile(), std::fclose);
+    auto digest = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+    if (!spool || !digest || EVP_DigestInit_ex(digest.get(), EVP_sha256(), nullptr) != 1)
+      throw std::runtime_error("repo-packet-spool-initialization-failed");
     uint64_t totalSize = 0;
+    uint64_t contentBytes = 0;
+    std::vector<uint64_t> packetOffsets{0};
     std::vector<std::string> packetNames;
     packetNames.reserve(wirePackets.size());
     const ndn::Name expectedPrefix(reference.dataPrefix);
     for (size_t i = 0; i < wirePackets.size(); ++i) {
+      if (wirePackets[i].empty() || wirePackets[i].size() > ndn::MAX_NDN_PACKET_SIZE ||
+          totalSize > std::numeric_limits<uint64_t>::max() - wirePackets[i].size())
+        throw std::invalid_argument("repo-packet-set-invalid: packet size");
       totalSize += wirePackets[i].size();
-      concatenated.insert(concatenated.end(), wirePackets[i].begin(), wirePackets[i].end());
       ndn::Block block(ndn::span<const uint8_t>(wirePackets[i].data(),
                                                 wirePackets[i].size()));
       block.parse();
       const ndn::Data data(block);
+      if (data.wireEncode().size() != wirePackets[i].size())
+        throw std::invalid_argument("repo-packet-set-invalid: trailing bytes");
+      contentBytes += data.getContent().value_size();
       if (!expectedPrefix.isPrefixOf(data.getName())) {
         throw std::runtime_error("repo-packet-set-invalid: Data name is outside "
                                  "declared dataPrefix: " +
                                  data.getName().toUri());
       }
-      const auto dataName = data.getName().toUri();
+      const auto dataName = data.getName().toUri(ndn::name::UriFormat::CANONICAL);
       if (std::find(packetNames.begin(), packetNames.end(), dataName) != packetNames.end()) {
         throw std::runtime_error(
           "repo-packet-set-invalid: duplicate NDN Data name: " + dataName);
@@ -513,7 +530,21 @@ RepoNode::insertWirePackets(const RepoDataReference& reference,
           "repo-data-wire-conflict: immutable NDN Data name conflict: " + dataName);
       }
       packetNames.push_back(dataName);
+      packetOffsets.push_back(totalSize);
+      if (std::fwrite(wirePackets[i].data(), 1, wirePackets[i].size(), spool.get()) != wirePackets[i].size() ||
+          EVP_DigestUpdate(digest.get(), wirePackets[i].data(), wirePackets[i].size()) != 1)
+        throw std::runtime_error("repo-packet-spool-write-failed");
     }
+
+    if (ndn::Name(reference.objectName) != ndn::Name(packetNames.front()))
+      throw std::invalid_argument("repo-original-set-root-name-mismatch");
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned hashSize = 0;
+    if (EVP_DigestFinal_ex(digest.get(), hash, &hashSize) != 1 || std::fflush(spool.get()) != 0)
+      throw std::runtime_error("repo-packet-spool-finalization-failed");
+    std::ostringstream hashText;
+    for (unsigned i = 0; i < hashSize; ++i)
+      hashText << std::hex << std::setw(2) << std::setfill('0') << unsigned(hash[i]);
 
     if (reference.expectedSize != 0 && totalSize != reference.expectedSize) {
       status.state = "FAILED";
@@ -522,27 +553,28 @@ RepoNode::insertWirePackets(const RepoDataReference& reference,
       return status;
     }
     if (!reference.expectedSha256.empty() &&
-        sha256Hex(concatenated) != reference.expectedSha256) {
+        hashText.str() != reference.expectedSha256) {
       status.state = "FAILED";
       status.message = "fetched wire packet sha256 mismatch";
       rememberStatus(status);
       return status;
     }
 
-    for (size_t i = 0; i < wirePackets.size(); ++i) {
-      m_core.putDataPacket(packetNames[i], wirePackets[i]);
-      status.completedSegments = i + 1;
-      rememberStatus(status);
-    }
-
     RepoObjectManifest manifest;
-    manifest.objectName = reference.objectName;
-    manifest.objectType = reference.objectType;
-    manifest.sha256 = sha256Hex(concatenated);
+    manifest.objectName = ndn::Name(reference.objectName).toUri(ndn::name::UriFormat::CANONICAL);
+    manifest.objectType = "original-packet-set";
+    manifest.sha256 = hashText.str();
     manifest.size = totalSize;
-    manifest.segmentCount = static_cast<uint32_t>(wirePackets.size());
+    if (packetNames.size() > std::numeric_limits<uint32_t>::max())
+      throw std::invalid_argument("repo-packet-count-overflow");
+    manifest.segmentCount = static_cast<uint32_t>(packetNames.size());
     manifest.packetNames = packetNames;
-    m_core.putManifest(manifest);
+    manifest.packetOffsets = std::move(packetOffsets);
+    manifest.envelopeBytes = contentBytes;
+    manifest.dataPrefix = expectedPrefix.toUri(ndn::name::UriFormat::CANONICAL);
+    manifest.operationId = status.operationId;
+    m_core.commitOriginalPacketFile(manifest,
+      "/proc/self/fd/" + std::to_string(::fileno(spool.get())));
 
     status.state = "DONE";
     status.message = "stored app-owned segmented Data wire packets";

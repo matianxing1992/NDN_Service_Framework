@@ -13,8 +13,11 @@ import sys
 from typing import Any
 
 from native_placement_evidence import (
+    _EvidenceSnapshot,
+    _collect_native_placement_evidence,
     _evidence_fields,
     collect_native_placement_evidence,
+    native_placement_request_ids,
     validate_native_probe_evidence,
     validate_native_placement_evidence,
 )
@@ -530,13 +533,19 @@ def prepare_native_yolo_assets(
     }
 
 
-def validate_native_yolo_model_evidence(user_text: str) -> dict[str, Any]:
+def validate_native_yolo_model_evidence(user_text: str, *,
+                                      request_id: str | None = None) -> dict[str, Any]:
+    return _validate_native_yolo_model_evidence(
+        _EvidenceSnapshot(user_text), request_id=request_id)
+
+
+def _validate_native_yolo_model_evidence(user_text: _EvidenceSnapshot, *,
+                                      request_id: str | None = None) -> dict[str, Any]:
     """Validate the model terminal result independently of probing and scoring."""
-    result_lines = [line for line in user_text.splitlines()
-                    if line.startswith("YOLO_NATIVE_REQUEST_RESULT ")]
-    if len(result_lines) != 1:
+    results = user_text.model_rows(request_id)
+    if len(results) != 1:
         raise RuntimeError("SPEC196_NATIVE_YOLO_RESULT_MARKER_COUNT")
-    result = _evidence_fields(result_lines[0])
+    result = results[0]
     try:
         payload_bytes = int(result.get("payload_bytes", "0"))
     except ValueError:
@@ -553,14 +562,65 @@ def validate_native_yolo_model_evidence(user_text: str) -> dict[str, Any]:
 def collect_native_yolo_evidence(user_text: str, provider_text: str,
                                  expected_roles: list[str], *,
                                  expected_manifest_digest: str,
-                                 expected_score_mode: str | None = None) -> dict[str, Any]:
+                                 expected_score_mode: str | None = None,
+                                 expected_request_count: int = 1,
+                                 request_id: str | None = None) -> dict[str, Any]:
+    return _collect_native_yolo_evidence(
+        _EvidenceSnapshot(user_text), _EvidenceSnapshot(provider_text), expected_roles,
+        expected_manifest_digest=expected_manifest_digest,
+        expected_score_mode=expected_score_mode,
+        expected_request_count=expected_request_count, request_id=request_id)
+
+
+def _collect_native_yolo_evidence(user_text: _EvidenceSnapshot, provider_text: _EvidenceSnapshot,
+                                 expected_roles: list[str], *,
+                                 expected_manifest_digest: str,
+                                 expected_score_mode: str | None = None,
+                                 expected_request_count: int = 1,
+                                 request_id: str | None = None) -> dict[str, Any]:
     """Keep probe, placement and model outcomes separate; require all for PASS."""
-    report = collect_native_placement_evidence(
+    if expected_request_count > 1:
+        results = user_text.model_rows()
+        request_ids = [row.get("request", "") for row in results]
+        try:
+            indices = [int(row["index"]) for row in results]
+            elapsed = [float(row["elapsed_ms"]) for row in results]
+            complete = (
+                len(results) == expected_request_count and
+                indices == list(range(expected_request_count)) and
+                all(request_ids) and len(set(request_ids)) == len(request_ids) and
+                request_ids == user_text.request_ids() and
+                all(math.isfinite(value) and value >= 0 for value in elapsed))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            complete = False
+        if not complete:
+            return {"status": "FAIL", "expectedRequestCount": expected_request_count,
+                    "observedRequestCount": len(results), "boundaries": {
+                        name: {"status": "FAIL", "reason": "SPEC199_NATIVE_YOLO_SERIES_INCOMPLETE"}
+                        for name in ("probe", "placement", "model")}}
+        reports = []
+        for index, identity in enumerate(request_ids):
+            report = _collect_native_yolo_evidence(
+                user_text, provider_text, expected_roles,
+                expected_manifest_digest=expected_manifest_digest,
+                expected_score_mode=expected_score_mode, request_id=identity)
+            report.update(index=index, phase="cold" if index == 0 else "warm",
+                          elapsedMs=elapsed[index])
+            reports.append(report)
+        boundaries = {
+            name: {"status": "PASS" if all(
+                row["boundaries"][name]["status"] == "PASS" for row in reports) else "FAIL"}
+            for name in ("probe", "placement", "model")}
+        return {"status": "PASS" if all(row["status"] == "PASS" for row in reports) else "FAIL",
+                "expectedRequestCount": expected_request_count,
+                "observedRequestCount": len(results), "requests": reports,
+                "boundaries": boundaries}
+    report = _collect_native_placement_evidence(
         user_text, provider_text, expected_roles,
         expected_manifest_digest=expected_manifest_digest,
-        expected_score_mode=expected_score_mode)
+        expected_score_mode=expected_score_mode, request_id=request_id)
     try:
-        model = validate_native_yolo_model_evidence(user_text)
+        model = _validate_native_yolo_model_evidence(user_text, request_id=request_id)
         report["modelResult"] = model
         report["boundaries"]["model"] = {"status": "PASS"}
         if report.get("requestId") and model["request"] != report["requestId"]:

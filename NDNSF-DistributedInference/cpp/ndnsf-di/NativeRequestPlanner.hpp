@@ -33,6 +33,8 @@ struct NativeStrategyPorts
 struct NativeRequestRuntime
 {
   NativeRequestContract contract;
+  // Explicit operator policy; compatibility deployments keep raw options.
+  std::string optionsTransport = "INLINE";
   std::string requesterIdentity;
   std::string protectionEpoch;
   std::string inputLayoutDigest;
@@ -44,6 +46,12 @@ struct NativeRequestRuntime
   NativeStateTensorMapping stateMapping;
   std::uint64_t noProgressMs = 5000;
   std::size_t maxSegments = 4096;
+  // Shared by this runtime's request operations; never an authorization lease.
+  std::shared_ptr<NativeFixedRoleAssignmentCache> fixedRoleAssignments =
+    std::make_shared<NativeFixedRoleAssignmentCache>();
+  std::function<NativeFixedRoleSourceV1(
+    const NativeSelectionProjectionV3&, const NativeFixedRoleAssignmentV1&,
+    const NativeRequestControl&)> fixedRoleSourcePublisher;
 };
 
 /** Parse an operator-owned runtime policy and bind it to an already checked
@@ -62,6 +70,13 @@ struct NativePlannedRequest
   std::optional<NativeGrantLease> grantLease;
   /** Set on the first pass to suspend planning before artifact publication. */
   std::optional<NativePlacementProbeIntentV1> placementProbeIntent;
+  /** Owned admission result for a cache read; never supplied by the strategy. */
+  std::shared_ptr<const NativeOfferBindingContext> placementProbeCacheContext;
+  // Keep source serving pins alive through this operation and replacements.
+  std::vector<std::shared_ptr<const NativeFixedRoleSourceV1>> fixedRoleSources;
+  // A committed request keeps its assignment for every token, even if a later
+  // request replaces the reusable cache entry.
+  std::vector<std::shared_ptr<const NativeFixedRoleAssignmentV1>> fixedAssignments;
 };
 
 /** The exact first-pass intent plus responses received before the attempt deadline. */
@@ -88,11 +103,41 @@ std::optional<std::uint64_t> estimateNativeRequestTransferBytesV1(
   const std::string& inputDigest, const NativeDependencySpec& dependency,
   const std::vector<NativeSelectionRoleV3>& roles);
 
+/** Resolve an operator-owned source shape template from this request's inline
+ * tensor input. Returns unknown on any missing binding or invalid geometry.
+ * The caller must restrict use to initial context; no payload authority changes. */
+std::optional<NativeJson> bindNativeRequestTransferProfileV1(
+  const NativeJson& profile, const std::string& sourceDigest,
+  const NativeEncodedRequest& request);
+
+/** Context-aware variant. turn must be issued by the conversation owner after
+ * authenticating its parent checkpoint; no new checkpoint authentication is
+ * delegated to an advisory geometry estimator. */
+std::optional<NativeJson> bindNativeRequestTransferProfileV1(
+  const NativeJson& profile, const std::string& sourceDigest,
+  const NativeEncodedRequest& request, const NativeConversationTurn* turn);
+
+/** Same source-bound estimate including the actual tensor-bundle framing.
+ * Does not predict a producer's chunk policy or unresolved dimensions. */
+std::optional<std::uint64_t> estimateNativeRequestTransferEncodedBytesV1(
+  const NativeJson& profile, const std::string& sourceDigest,
+  const std::string& inputDigest, const NativeDependencySpec& dependency,
+  const std::vector<NativeSelectionRoleV3>& roles);
+
 /** Merge one bounded targeted round without mutating the ACK-frozen source snapshot. */
 NativePlacementObservationSnapshotV4 mergeNativePlacementProbeRoundV1(
   const NativePlacementObservationSnapshotV4& snapshot,
   const NativePlacementProbeRoundV1& round,
   const NativeOfferBindingContext& context,
+  std::uint64_t nowMs);
+
+/** True only for a complete cache reply admitted by the normal targeted-row
+ * validator against current ACK boots. Original TTL/quality stay authoritative.
+ * The caller must first authenticate the response signer as this observer. */
+bool isCompleteNativePlacementProbeCacheResponseV1(
+  const NativeOfferBindingContext& context,
+  const NativePlacementProbeObserverV1& observer,
+  const std::string& nonce, const NativeJson& response,
   std::uint64_t nowMs);
 
 /** Freeze one exact, authenticated V4 roster and only those link rows whose
@@ -148,5 +193,41 @@ NativePlannedRequest planNativeRequestCooperative(
   std::shared_ptr<const std::atomic<bool>> cancelled,
   const NativeConversationTurn* conversationTurn = nullptr,
   const NativePlacementProbeRoundV1* placementProbeRound = nullptr);
+
+/** Request-owned data reuse overloads; original entry points retain fresh decode. */
+std::optional<NativePlacementObservationSnapshotV4>
+trySelectNativePlacementObservationSnapshotV4(
+  const NativeOfferBindingContext& context,
+  const ndn_service_framework::CollaborationAckClosure& closure,
+  const NativeOfferAdmission& admission,
+  const NativePreparedPlanningCache& planningCache,
+  std::size_t maxCandidates, std::uint64_t nowMs,
+  const NativeGraphSnapshot* modelGraph, std::string* unavailableReason,
+  const NativeJson* requestTransferProfile, NativeOfferDecodeCache* decodeCache);
+
+NativePlannedRequest planNativeRequest(
+  const NativeRequestRuntime& runtime, const NativeRequestOptions& options,
+  const NativeInspectedModel& model, const NativeEncodedRequest& encoded,
+  const NativeModelSplitStrategy& splitter, const NativePlacementStrategy& placement,
+  const NativeRequestPreparation& preparation, const NativeOfferAdmission& admission,
+  const ndn_service_framework::CollaborationAckClosure& closure,
+  const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
+  std::shared_ptr<const std::atomic<bool>> cancelled,
+  const NativeConversationTurn* conversationTurn,
+  const NativePlacementProbeRoundV1* placementProbeRound,
+  NativeOfferDecodeCache* decodeCache);
+
+NativePlannedRequest planNativeRequestCooperative(
+  const NativeRequestRuntime& runtime, const NativeRequestOptions& options,
+  const NativeInspectedModel& model, const NativeEncodedRequest& encoded,
+  const CooperativeModelSplitStrategy& splitter,
+  const CooperativePlacementStrategy& placement,
+  const NativeRequestPreparation& preparation, const NativeOfferAdmission& admission,
+  const ndn_service_framework::CollaborationAckClosure& closure,
+  const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
+  std::shared_ptr<const std::atomic<bool>> cancelled,
+  const NativeConversationTurn* conversationTurn,
+  const NativePlacementProbeRoundV1* placementProbeRound,
+  NativeOfferDecodeCache* decodeCache);
 
 } // namespace ndnsf::di

@@ -71,6 +71,14 @@ public:
     void cacheWrappedSendKey(const ndn::Name& serviceName,
                              const std::string& keyId,
                              const ndn::Buffer& wrappedKey);
+    /** Retain original signed wrapper/CK packets before any publication. */
+    void cacheWrappedSendPackets(const ndn::Name& service, const std::string& keyId, const ndn::Buffer& wrappedKey,
+      const std::vector<std::shared_ptr<ndn::Data>>& content,
+      const std::vector<std::shared_ptr<ndn::Data>>& contentKeys);
+    bool getWrappedSendPackets(const std::string& keyId,
+      std::vector<std::shared_ptr<ndn::Data>>& content,
+      std::vector<std::shared_ptr<ndn::Data>>& contentKeys) const;
+
     bool getWrappedSendKey(const std::string& keyId,
                            ndn::Buffer& wrappedKey) const;
     bool shouldAttachWrappedKey(const std::string& keyId) const;
@@ -108,6 +116,16 @@ private:
     std::map<std::string, ndn::Buffer> m_wrappedSendKeysById;
     std::map<std::string, ndn::Name> m_wrappedSendKeyServices;
     std::map<std::string, std::size_t> m_wrappedSendKeyReferences;
+    struct OriginalWrappedPackets {
+        ndn::Name service;
+        std::vector<std::shared_ptr<const ndn::Data>> content;
+        std::vector<std::shared_ptr<const ndn::Data>> contentKeys;
+        std::size_t wireBytes = 0;
+    };
+    std::map<std::string, OriginalWrappedPackets> m_wrappedSendPackets;
+    std::size_t m_wrappedPacketBytes = 0;
+    std::size_t m_wrappedPacketCount = 0;
+    void eraseWrappedPacketsLocked(const std::string& keyId);
     std::set<std::string> m_wrappedSendKeys;
 };
 
@@ -116,7 +134,7 @@ ndn::Name makeHybridMessageKeyName(const ndn::Name& serviceName,
                                    const std::string& accessAttribute,
                                    const std::string& epochId);
 
-/** Full producer-prefixed Data name used to recover the epoch wrapping. */
+/** Full producer-owned logical locator; final original objects append cipher digest and segment. */
 ndn::Name makeHybridMessageKeyDataName(const ndn::Name& serviceName,
                                        const ndn::Name& senderPrefix,
                                        const std::string& accessAttribute,
@@ -124,6 +142,28 @@ ndn::Name makeHybridMessageKeyDataName(const ndn::Name& serviceName,
 
 /** Return the 8-byte, hex-encoded key identifier carried by envelope v2. */
 std::string hybridCompactKeyId(const std::string& keyId);
+
+/** Prepare final original packets from an unpublished encrypted NAC wrapper.
+ * The logical key identifier stays private; published object names bind cipher bytes. */
+std::vector<std::shared_ptr<ndn::Data>> prepareHybridMessageKeyPackets(
+  const ndn::Name& service, const ndn::Name& sender, const std::string& attribute,
+  const std::string& epoch, ndn::span<const uint8_t> cipher,
+  ndn::KeyChain& keyChain, const ndn::security::SigningInfo& signingInfo,
+  ndn::time::milliseconds freshness, uint32_t contentType);
+/** One asynchronous wrapper retrieval; admit the complete signed object and
+ * cipher commitment before handing bytes to the existing NAC decryptor. */
+void fetchHybridMessageKeyWrapper(
+  ndn::Face& face, ndn::security::Validator& validator, const ndn::Name& expectedLocator,
+  std::function<bool(const ndn::Data&)> authorizeProducer,
+  std::function<void(const ndn::Name&, const ndn::Block&)> success,
+  std::function<void(const std::string&)> failure);
+
+/** Apply the wrapper admission above, then existing NAC decryption on the Face. */
+void consumeHybridMessageKeyWrapper(
+  ndn::Face& face, ndn::security::Validator& validator, ndn::nacabe::Consumer& consumer,
+  const ndn::Name& locator, std::function<bool(const ndn::Data&)> authorizeProducer,
+  std::function<void(const ndn::Buffer&)> success,
+  std::function<void(const std::string&)> failure);
 
 HybridAeadResult hybridAesGcmEncrypt(const ndn::Buffer& key,
                                      ndn::span<const uint8_t> plaintext,
@@ -141,8 +181,18 @@ bool hybridAesGcmDecrypt(const ndn::Buffer& key,
                          ndn::Buffer& plaintext);
 
 std::string hybridMessageTypeForName(const ndn::Name& name);
+std::string hybridMessageTypeForName(const ndn::Name& name,
+                                    const ndn::Name& expectedActor);
+/** OpenABE attribute spelling is independent of process URI display mode.
+ * Only installed DSL-safe service spellings are admitted. */
+std::string makeAbeServiceAttribute(const ndn::Name& service,
+                                    const std::string& kind);
+
 std::string hybridAccessAttributeForName(const ndn::Name& name,
                                          const ndn::Name& serviceName);
+std::string hybridAccessAttributeForName(const ndn::Name& name,
+                                         const ndn::Name& serviceName,
+                                         const ndn::Name& expectedActor);
 ndn::Buffer hybridAssociatedData(const ndn::Name& messageName,
                                  const std::string& messageType,
                                  const ndn::Name& requestId,

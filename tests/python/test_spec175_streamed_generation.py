@@ -29,6 +29,37 @@ PLAN = "sha256:" + "a" * 64
 FIXTURE = ROOT / "tests/fixtures/spec175/tiny-causal-lm-v1"
 
 
+def _publication_config(request_id, generation_id, roles, max_tokens, providers, requester="/user/1"):
+    """Existing admitted-projection DTOs for these local callback fixtures."""
+    from ndnsf_distributed_inference.sdk.placement import (
+        GenerationExecutionContractV1, TensorEndpoint, TensorEndpointSource)
+    stride = max(1, len(roles))
+    contract = GenerationExecutionContractV1(
+        mode="TOKEN_STREAMING", max_generated_tokens=max_tokens,
+        token_input_name="input_ids", state_input_names=("past",),
+        state_output_names=("present",), eos_token_ids=(2,),
+        sampling_digest=PLAN, tokenizer_digest=PLAN,
+        generation_id=generation_id, streaming_operation_stride=stride)
+    endpoints = []
+    boundaries = [(source, target, "REDISTRIBUTE", index)
+                  for index, (source, target) in enumerate(zip(roles, roles[1:]))]
+    boundaries.append((roles[-1], roles[0], "TOKEN_FEEDBACK", stride - 1))
+    for epoch in range(max_tokens):
+        for source, target, operation, index in boundaries:
+            endpoints.append(TensorEndpoint(
+                producer_namespace=providers[source], requester=requester,
+                request_id=request_id, attempt=1, plan_digest=PLAN,
+                group_id="signed-group", group_epoch="signed-epoch", operation=operation,
+                round=epoch * stride + index, source_kind=TensorEndpointSource.ROLE,
+                producer_role=source, producer_rank=roles.index(source), consumer_role=target,
+                tensor_id="hidden" if operation != "TOKEN_FEEDBACK" else "input_ids",
+                tensor_digest=PLAN, layout_digest=PLAN, microbatch=0, segment_count=4,
+                manifest_digest=PLAN, security_profile="PROTECTED",
+                no_progress_deadline_ms=4000, hard_deadline_ms=8000,
+                naming_operation_stride=stride))
+    return {"tensor_endpoints": tuple(endpoints), "generation_contract": contract}
+
+
 def _tiny_plan(partition: str):
     """Build one real persistent-ORT role plan for the CPU oracle."""
     manifest = json.loads((FIXTURE / "manifest.json").read_text(encoding="utf-8"))
@@ -124,7 +155,7 @@ def test_one_plan_loop_runs_real_cpu_onnx_partition_once_per_token(partition: st
         service="/LLM/Qwen",
         attempt_epoch=1,
         plan_digest=PLAN,
-        generation_id="generation-" + partition,
+        generation_id={"one-role": "11" * 16, "two-role": "12" * 16, "four-role": "13" * 16}[partition],
         roles=roles,
         first_role=roles[0],
         final_role=roles[-1],
@@ -137,6 +168,7 @@ def test_one_plan_loop_runs_real_cpu_onnx_partition_once_per_token(partition: st
         publish_activation=lambda name, _from, _to, _payload: activation_names.append(name),
         publish_event=events.append,
         finish=lambda payload, reason: terminals.append((payload, reason)),
+        **_publication_config("/request/spec175-cpu-" + partition, {"one-role": "11" * 16, "two-role": "12" * 16, "four-role": "13" * 16}[partition], roles, len(expected), providers, requester="/user/spec175"),
     )
     result = loop.run(prompt["inputIds"])
 
@@ -146,28 +178,32 @@ def test_one_plan_loop_runs_real_cpu_onnx_partition_once_per_token(partition: st
     assert len(events) == len(expected)
     assert len(terminals) == 1
     assert terminals[0][1] == "eos"
-    assert all("/provider/" in name for name in activation_names)
+    assert all("/8=provider/" in name for name in activation_names)
     assert len(activation_names) == max(0, len(expected) * (len(roles) - 1))
 
 
 def test_exact_internal_names_are_distinct_and_epoch_bound() -> None:
-    activation = activation_data_name(
-        producer="/provider/final", requester="/user/1",
-        service="/LLM/Qwen", request_id="req-1", attempt_epoch=1,
-        plan_digest=PLAN, generation_id="generation-1",
-        from_role="/LLM/Pipeline/Stage/0",
-        to_role="/LLM/Pipeline/Stage/1", inference_epoch=2)
-    feedback = token_feedback_data_name(
-        producer="/provider/final", requester="/user/1",
-        service="/LLM/Qwen", request_id="req-1", attempt_epoch=1,
-        plan_digest=PLAN, generation_id="generation-1",
-        final_role="/LLM/Pipeline/Stage/1",
-        first_role="/LLM/Pipeline/Stage/0", token_epoch=3)
-    assert "/NDNSF/DI/ACTIVATION/" in activation
-    assert "/NDNSF/DI/TOKEN-FEEDBACK/" in feedback
+    roles = ("/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1")
+    providers = {roles[0]: "/provider/first", roles[1]: "/provider/final"}
+    config = _publication_config("req-1", "01" * 16, roles, 3, providers)
+    activation_endpoint = config["tensor_endpoints"][4]
+    feedback_endpoint = config["tensor_endpoints"][5]
+    common = dict(requester="/user/1", service="/LLM/Qwen", request_id="req-1",
+                  attempt_epoch=1, plan_digest=PLAN, generation_id="01" * 16,
+                  generation_contract=config["generation_contract"])
+    activation = activation_data_name(producer=providers[roles[0]],
+        from_role=roles[0], to_role=roles[1], inference_epoch=2,
+        endpoint=activation_endpoint, **common)
+    feedback = token_feedback_data_name(producer=providers[roles[1]],
+        final_role=roles[1], first_role=roles[0], token_epoch=3,
+        endpoint=feedback_endpoint, **common)
+    assert activation == activation_endpoint.segment_name(0)
+    assert feedback == feedback_endpoint.segment_name(0)
+    assert "/8=REDISTRIBUTE/" in activation
+    assert "/8=TOKEN_FEEDBACK/" in feedback
     assert activation != feedback
-    assert activation.endswith("/2")
-    assert feedback.endswith("/3")
+    assert activation.endswith("/50=%00")
+    assert feedback.endswith("/50=%00")
 
 
 def test_stream_handle_timing_summary_uses_real_callbacks_without_payloads() -> None:
@@ -294,7 +330,7 @@ def test_one_plan_loop_emits_event_then_feedback_and_one_terminal() -> None:
 
     loop = OnePlanGenerationLoop(
         request_id="req-1", requester="/user/1", service="/LLM/Qwen",
-        attempt_epoch=1, plan_digest=PLAN, generation_id="generation-1",
+        attempt_epoch=1, plan_digest=PLAN, generation_id="01" * 16,
         roles=("/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1"),
         first_role="/LLM/Pipeline/Stage/0",
         final_role="/LLM/Pipeline/Stage/1", max_generated_tokens=3,
@@ -302,6 +338,8 @@ def test_one_plan_loop_emits_event_then_feedback_and_one_terminal() -> None:
         decode=decode, publish_event=events.append,
         publish_feedback=lambda name, role, value: feedback.append((name, role, value)),
         finish=lambda payload, reason: terminals.append((payload, reason)),
+        **_publication_config("req-1", "01" * 16, ("/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1"), 3, {role: "/provider/" + str(index) for index, role in enumerate(("/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1"))}, requester="/user/1"),
+        provider_by_role={role: "/provider/" + str(index) for index, role in enumerate(("/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1"))},
     )
     result = loop.run(b"prompt")
     assert calls == {"prefill": 1, "decode": 2}
@@ -384,7 +422,7 @@ def test_one_plan_loop_stops_when_event_admission_is_rejected() -> None:
     finished: list[tuple[bytes, str]] = []
     loop = OnePlanGenerationLoop(
         request_id="req-event-reject", requester="/user/1", service="/LLM/Qwen",
-        attempt_epoch=1, plan_digest=PLAN, generation_id="generation-reject",
+        attempt_epoch=1, plan_digest=PLAN, generation_id="04" * 16,
         roles=("/LLM/Pipeline/Stage/0",),
         first_role="/LLM/Pipeline/Stage/0",
         final_role="/LLM/Pipeline/Stage/0", max_generated_tokens=2,
@@ -394,6 +432,8 @@ def test_one_plan_loop_stops_when_event_admission_is_rejected() -> None:
         publish_event=lambda _wire: 0,
         publish_feedback=lambda name, role, value: feedback.append((name, role, value)),
         finish=lambda payload, reason: finished.append((payload, reason)),
+        **_publication_config("req-event-reject", "04" * 16, ("/LLM/Pipeline/Stage/0",), 2, {role: "/provider/" + str(index) for index, role in enumerate(("/LLM/Pipeline/Stage/0",))}, requester="/user/1"),
+        provider_by_role={role: "/provider/" + str(index) for index, role in enumerate(("/LLM/Pipeline/Stage/0",))},
     )
     with pytest.raises(ValueError, match="event publication was rejected"):
         loop.run(b"prompt")
@@ -423,7 +463,7 @@ def test_activation_names_use_selected_provider_identity() -> None:
     names: list[str] = []
     loop = OnePlanGenerationLoop(
         request_id="req-3", requester="/user/1", service="/LLM/Qwen",
-        attempt_epoch=1, plan_digest=PLAN, generation_id="generation-3",
+        attempt_epoch=1, plan_digest=PLAN, generation_id="03" * 16,
         roles=("/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1"),
         first_role="/LLM/Pipeline/Stage/0",
         final_role="/LLM/Pipeline/Stage/1", max_generated_tokens=1,
@@ -440,10 +480,20 @@ def test_activation_names_use_selected_provider_identity() -> None:
             "/LLM/Pipeline/Stage/1": "/provider/selected-1",
         },
         publish_activation=lambda name, _from, _to, _payload: names.append(name),
+        **_publication_config("req-3", "03" * 16, ("/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1"), 1, {
+            "/LLM/Pipeline/Stage/0": "/provider/selected-0",
+            "/LLM/Pipeline/Stage/1": "/provider/selected-1",
+        }, requester="/user/1"),
     )
     loop.run(b"prompt")
     assert names
-    assert names[0].startswith("/provider/selected-0/NDNSF/DI/ACTIVATION/")
+    assert names[0].startswith("/8=provider/8=selected-0/8=NDNSF-DI/8=tensor/")
+    assert "/8=OP/8=REDISTRIBUTE/" in names[0]
+    expected = _publication_config("req-3", "03" * 16,
+        ("/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1"), 1,
+        {"/LLM/Pipeline/Stage/0": "/provider/selected-0",
+         "/LLM/Pipeline/Stage/1": "/provider/selected-1"})["tensor_endpoints"][0]
+    assert names[0] == expected.segment_name(0)
 
 
 def test_one_plan_loop_rejects_missing_selected_role_activation() -> None:
@@ -462,6 +512,10 @@ def test_one_plan_loop_rejects_missing_selected_role_activation() -> None:
             "/LLM/Pipeline/Stage/1": "/provider/1",
         },
         publish_activation=lambda *_args: None,
+        **_publication_config("req-missing-activation", "03" * 16, ("/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1"), 1, {
+            "/LLM/Pipeline/Stage/0": "/provider/0",
+            "/LLM/Pipeline/Stage/1": "/provider/1",
+        }, requester="/user/1"),
     )
     with pytest.raises(ValueError, match="missing activation"):
         loop.run(b"prompt")
@@ -482,3 +536,43 @@ def test_one_plan_loop_rejects_incomplete_activation_provider_map() -> None:
             provider_by_role={"/LLM/Pipeline/Stage/0": "/provider/0"},
             publish_activation=lambda *_args: None,
         )
+
+
+def test_publication_helper_rejects_changed_or_missing_signed_endpoint_binding() -> None:
+    from dataclasses import replace
+    roles = ("/role/first", "/role/final")
+    providers = {roles[0]: "/provider/first", roles[1]: "/provider/final"}
+    config = _publication_config("/request/current", "05" * 16, roles, 2, providers)
+    endpoint = config["tensor_endpoints"][0]
+    args = dict(producer=providers[roles[0]], requester="/user/1", service="/LLM/Qwen",
+                request_id="/request/current", attempt_epoch=1, plan_digest=PLAN,
+                generation_id="05" * 16, from_role=roles[0], to_role=roles[1],
+                inference_epoch=0, endpoint=endpoint, generation_contract=config["generation_contract"])
+    assert activation_data_name(**args) == endpoint.segment_name(0)
+    for field, value in (("producer", "/foreign/provider"), ("requester", "/foreign/user"),
+                         ("request_id", "/request/foreign"), ("attempt_epoch", 2),
+                         ("generation_id", "foreign-generation"), ("from_role", roles[1]),
+                         ("inference_epoch", 1), ("endpoint", None)):
+        with pytest.raises(ValueError):
+            activation_data_name(**dict(args, **{field: value}))
+    changed = replace(endpoint, naming_operation_stride=3, endpoint_digest="")
+    with pytest.raises(ValueError, match="signed execution binding"):
+        activation_data_name(**dict(args, endpoint=changed))
+    with pytest.raises(ValueError, match="signed execution binding"):
+        activation_data_name(**dict(args, endpoint=config["tensor_endpoints"][1]))
+
+
+def test_publication_channel_rejects_two_distinct_signed_dependency_candidates() -> None:
+    from dataclasses import replace
+    roles = ("/role/first", "/role/final")
+    providers = {roles[0]: "/provider/first", roles[1]: "/provider/final"}
+    config = _publication_config("/request/current", "05" * 16, roles, 1, providers)
+    endpoint = config["tensor_endpoints"][0]
+    other = replace(endpoint, operation="GATHER", endpoint_digest="")
+    config["tensor_endpoints"] += (other,)
+    with pytest.raises(ValueError, match="ambiguous signed tensor publication endpoints"):
+        OnePlanGenerationLoop(request_id="/request/current", requester="/user/1", service="/LLM/Qwen",
+            attempt_epoch=1, plan_digest=PLAN, generation_id="05" * 16, roles=roles,
+            first_role=roles[0], final_role=roles[1], max_generated_tokens=1,
+            decode_text=lambda _ids: "", prefill=lambda *_args: {}, decode=lambda *_args: {},
+            provider_by_role=providers, publish_activation=lambda *_args: None, **config)

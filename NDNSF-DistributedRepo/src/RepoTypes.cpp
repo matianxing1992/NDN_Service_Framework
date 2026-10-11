@@ -976,7 +976,13 @@ RepoObjectManifest::toJson() const
     }
     os << jsonQuote(packetNames[i]);
   }
-  os << "]}";
+  os << "],\"packetOffsets\":[";
+  for (size_t i = 0; i < packetOffsets.size(); ++i) {
+    if (i != 0) os << ",";
+    os << packetOffsets[i];
+  }
+  os << "],\"envelopeBytes\":" << envelopeBytes
+     << ",\"dataPrefix\":" << jsonQuote(dataPrefix) << "}";
   return os.str();
 }
 

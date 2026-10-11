@@ -114,6 +114,8 @@ struct NativeProviderHandlerConfig
   using GenerationDecodersFactory = std::function<
     NativeGenerationTextDecoders(const std::string& tokenizerDigest)>;
 
+  // Only explicitly configured native deployments may omit raw options.
+  bool allowSelectionGenerationOptions = false;
   NativeExecutionPlan plan;
   NativeProviderAssignment assignment;
   std::shared_ptr<NativeModelRunnerFactory> runnerFactory;
@@ -323,7 +325,8 @@ nativeProviderShouldExecuteLocalPlan(
 
 std::map<std::string, std::string>
 parseNativeProviderAssignmentFields(const ndn::Buffer& payload,
-                                    const std::string& selectedRole = "");
+                                    const std::string& selectedRole = "",
+                                    const NativeSelectionProjectionV3* validatedProjection = nullptr);
 
 bool
 nativeRequestContractDigestMatches(const std::string& expectedDigest,
@@ -356,9 +359,10 @@ inline std::optional<std::string>
 validateNativeProviderAssignmentPayload(
   const std::vector<NativeModelRunnerSpec>& runnerSpecs,
   const std::string& role,
-  const ndn::Buffer& assignmentPayload)
+  const ndn::Buffer& assignmentPayload,
+  const NativeSelectionProjectionV3* validatedProjection = nullptr)
 {
-  const auto fields = parseNativeProviderAssignmentFields(assignmentPayload, role);
+  const auto fields = parseNativeProviderAssignmentFields(assignmentPayload, role, validatedProjection);
   const auto assignedRole = nativeProviderFieldValue(
     fields,
     {"role", "roleId", "diRole"});

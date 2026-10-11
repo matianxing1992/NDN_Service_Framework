@@ -199,6 +199,16 @@ private:
 
   std::string m_configFilePath;
 
+  struct OriginalControlReply {
+    std::shared_ptr<const ndn::Data> packet;
+    uint64_t expiresAtMs = 0;
+  };
+  // Face-owned immutable reply packets. Expired nonces cannot regenerate them.
+  std::map<ndn::Name, OriginalControlReply> m_originalControlReplies;
+  std::size_t m_originalControlReplyBytes = 0;
+  bool admitControlQuery(const ndn::Interest& interest, const std::string& operation);
+  bool serveOriginalControlReply(const ndn::Interest& interest);
+  void publishOriginalControlReply(const ndn::Interest& interest, const ndn::Data& data);
   ndn::Face& m_face;
   ndn::security::Certificate m_aaCert;
 

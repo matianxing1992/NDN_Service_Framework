@@ -1,7 +1,10 @@
 #include "NetworkTelemetry.hpp"
+#include "NetworkProbeCachePolicy.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <set>
 #include <tuple>
 
 namespace ndn_service_framework {
@@ -344,6 +347,128 @@ NetworkTelemetryStore::getActiveProbeGoodput(
   return get(NetworkTelemetryKey{observerProvider, ndn::Name(), sourceProvider,
                                  requestScopeDigest,
                                  NetworkTelemetrySampleKind::ActiveProbeGoodput});
+}
+
+std::optional<NetworkTelemetrySnapshot>
+NetworkTelemetryStore::getReusableActiveProbe(
+  const ndn::Name& observerProvider, const ndn::Name& targetProvider,
+  NetworkTelemetrySampleKind kind,
+  const std::string& confirmedPeerBootEpoch) const
+{
+  if (observerProvider.empty() || targetProvider.empty() ||
+      observerProvider == targetProvider || confirmedPeerBootEpoch.empty() ||
+      (kind != NetworkTelemetrySampleKind::ActiveProbeRtt &&
+       kind != NetworkTelemetrySampleKind::ActiveProbeGoodput))
+    return std::nullopt;
+
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const NetworkTelemetrySnapshot* newest = nullptr;
+  for (const auto& entry : m_snapshots) {
+    const auto& key = entry.first;
+    const auto& sample = entry.second;
+    if (key.providerName == observerProvider && key.peerName == targetProvider &&
+        key.serviceName.empty() && key.kind == kind && sample.kind == kind &&
+        sample.peerBootEpoch == confirmedPeerBootEpoch &&
+        (!newest || sample.lastUpdatedMs > newest->lastUpdatedMs))
+      newest = &sample;
+  }
+  if (!newest || !isReusableActiveProbeSample(*newest, nowMs()))
+    return std::nullopt;
+  auto result = *newest;
+  refreshDerivedFields(result);
+  return result;
+}
+
+bool
+NetworkTelemetryStore::isReusableActiveProbeSample(
+  const NetworkTelemetrySnapshot& sample, uint64_t now) const
+{
+  // Share the requester reuse policy without changing the original TTL.
+  if (sample.lastUpdatedMs == 0 || sample.lastUpdatedMs > now ||
+      now - sample.lastUpdatedMs >= NETWORK_PROBE_CACHE_MAX_AGE_MS ||
+      (m_ttl.count() > 0 && now - sample.lastUpdatedMs >
+         static_cast<uint64_t>(m_ttl.count())) ||
+      !sample.targetSignatureValidated || sample.dataName.empty() || sample.peerBootEpoch.empty())
+    return false;
+
+  if (sample.kind == NetworkTelemetrySampleKind::ActiveProbeRtt) {
+    if (!std::isfinite(sample.rttMs) || sample.rttMs <= 0)
+      return false;
+  }
+  else {
+    if (sample.kind != NetworkTelemetrySampleKind::ActiveProbeGoodput) return false;
+    const auto positive = [](double value) {
+      return std::isfinite(value) && value > 0;
+    };
+    if (!sample.probeComplete || !sample.probeSignatureValid ||
+        !sample.probeSourceTimingValidated ||
+        sample.probeProfileDigest != NETWORK_PROBE_TRAIN_PROFILE_DIGEST ||
+        sample.receivedSegments != NETWORK_PROBE_WARMED_SEGMENTS ||
+        sample.probeSegmentsSent != NETWORK_PROBE_WARMED_SEGMENTS ||
+        sample.payloadBytes == 0 || !positive(sample.elapsedMs) ||
+        !std::all_of(sample.probeRttMs.begin(), sample.probeRttMs.end(), positive) ||
+        !std::all_of(sample.probeInterestGapsMs.begin(), sample.probeInterestGapsMs.end(), positive) ||
+        !std::all_of(sample.probeDataArrivalGapsMs.begin(), sample.probeDataArrivalGapsMs.end(), positive) ||
+        !std::all_of(sample.probeDataWireBytes.begin(), sample.probeDataWireBytes.end(),
+                     [](size_t bytes) { return bytes > 0; }))
+      return false;
+    const auto estimate = estimateWarmedNetworkProbeTrainRate(
+      sample.probeDataArrivalGapsMs, sample.probeSourceSendGapsMs,
+      NETWORK_PROBE_WARMED_PAYLOAD_BYTES, sample.probeSourceTimingValidated);
+    if (estimate.status != NetworkProbeRateStatus::MeasuredGoodput)
+      return false;
+  }
+  return true;
+}
+
+std::vector<std::pair<NetworkTelemetrySnapshot, uint64_t>>
+NetworkTelemetryStore::getCachedActiveProbeSamples(
+  const ndn::Name& observerProvider, const std::vector<ndn::Name>& allowedPeers) const
+{
+  if (observerProvider.empty() || allowedPeers.empty() || allowedPeers.size() > 17) return {};
+  const std::set<ndn::Name> peers(allowedPeers.begin(), allowedPeers.end());
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto now = nowMs();
+  struct Selection {
+    const NetworkTelemetrySnapshot* sample = nullptr;
+    bool ambiguous = false;
+  };
+  std::map<std::pair<ndn::Name, NetworkTelemetrySampleKind>, Selection> newest;
+  for (const auto& entry : m_snapshots) {
+    const auto& key = entry.first;
+    const auto& sample = entry.second;
+    if (key.providerName != observerProvider || !key.serviceName.empty() ||
+        key.peerName.empty() || key.peerName == observerProvider || !peers.count(key.peerName) ||
+        sample.kind != key.kind || (key.kind != NetworkTelemetrySampleKind::ActiveProbeRtt &&
+                                   key.kind != NetworkTelemetrySampleKind::ActiveProbeGoodput)) continue;
+    auto& selected = newest[{key.peerName, key.kind}];
+    // Millisecond ties cannot prove which train was last. Fail closed if any
+    // latest train is invalid or the tied samples describe different boots.
+    if (!selected.sample || sample.lastUpdatedMs > selected.sample->lastUpdatedMs) {
+      selected.sample = &sample;
+      selected.ambiguous = !isReusableActiveProbeSample(sample, now);
+    }
+    else if (sample.lastUpdatedMs == selected.sample->lastUpdatedMs &&
+             (sample.peerBootEpoch != selected.sample->peerBootEpoch ||
+              !isReusableActiveProbeSample(sample, now))) {
+      selected.ambiguous = true;
+    }
+  }
+  const uint64_t lifetimeMs = m_ttl.count() > 0
+    ? std::min<uint64_t>(5000, static_cast<uint64_t>(m_ttl.count())) : 5000;
+  std::vector<std::pair<NetworkTelemetrySnapshot, uint64_t>> result;
+  result.reserve(newest.size());
+  for (const auto& entry : newest) {
+    const auto& sample = *entry.second.sample;
+    if (entry.second.ambiguous || !isReusableActiveProbeSample(sample, now)) continue;
+    const auto expiry = sample.lastUpdatedMs > std::numeric_limits<uint64_t>::max() - lifetimeMs
+      ? std::numeric_limits<uint64_t>::max() : sample.lastUpdatedMs + lifetimeMs;
+    if (expiry <= now) continue;
+    auto copy = sample;
+    refreshDerivedFields(copy);
+    result.emplace_back(std::move(copy), expiry);
+  }
+  return result;
 }
 
 bool

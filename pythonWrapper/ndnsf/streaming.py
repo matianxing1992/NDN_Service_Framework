@@ -1049,10 +1049,14 @@ class StreamNameMapBlock:
         return int(self._to_native().last_cursor())
 
 
-def make_stream_name_map_root(provider: str, stream_id: str) -> str:
+def make_stream_name_map_root(provider: str, stream_id: str,
+                              session_epoch: Optional[int] = None) -> str:
     """Return the Mapping base name before typed Version/Sequence components."""
 
-    return str(_native_make_stream_name_map_root(str(provider), str(stream_id)))
+    if session_epoch is None:  # Explicit legacy naming entry point.
+        return str(_native_make_stream_name_map_root(str(provider), str(stream_id)))
+    return str(_native_make_stream_name_map_root(
+        str(provider), str(stream_id), int(session_epoch)))
 
 
 def make_stream_name_map_block_name(mapping_root: str, mapping_version: int,

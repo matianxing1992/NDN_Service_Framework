@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -27,6 +28,25 @@ namespace {
 
 constexpr const char* GRANT_KDF_INFO = "NDNSF-DI/key-grant/v1";
 constexpr const char* GRANT_POLICY = "CANCEL_IMMEDIATELY";
+
+bool sameName(const std::string& first, const std::string& second)
+{
+  try {
+    if (first.empty() || second.empty() || first.front() != '/' || second.front() != '/') return false;
+    const ndn::Name a(first), b(second);
+    return !a.empty() && a == b;
+  }
+  catch (const std::exception&) { return false; }
+}
+
+
+// Signed v1 requests used opaque IDs; absolute IDs compare as complete Names.
+bool sameRequestId(const std::string& first, const std::string& second)
+{
+  if (first.empty() || second.empty()) return false;
+  if (first.front() == '/' && second.front() == '/') return sameName(first, second);
+  return first.front() != '/' && second.front() != '/' && first == second;
+}
 
 struct CleanseString
 {
@@ -494,14 +514,14 @@ void verifyNativeIssuedGrant(const NativeKeyGrant& value, const NativeSignedGran
   ParsedGrant grant;
   std::string error;
   if (value.wireJson.size() > 65536 || !parseGrant(value.wireJson, grant, error) ||
-      grant.policyAuthority != authority || grant.providerIdentity != request.providerIdentity ||
-      grant.requestId != request.requestId || grant.attempt != request.attempt ||
+      !sameName(grant.policyAuthority, authority) || !sameName(grant.providerIdentity, request.providerIdentity) ||
+      !sameRequestId(grant.requestId, request.requestId) || grant.attempt != request.attempt ||
       grant.planCoreDigest != request.planCoreDigest || grant.modelManifestDigest != request.modelManifestDigest ||
       grant.protectionEpoch != request.protectionEpoch || grant.issuedAtMs > nowMs ||
       grant.issuedAtMs < request.issuedAtMs || grant.expiresAtMs != expiresAtMs || nowMs >= expiresAtMs ||
       grant.allowedResidencyTiers != request.allowedResidencyTiers ||
       grant.grantDigest != grant.computedGrantDigest() || value.grantDigest != grant.grantDigest ||
-      value.recipient != request.providerIdentity || value.expiresAtMs != grant.expiresAtMs ||
+      !sameName(value.recipient, request.providerIdentity) || value.expiresAtMs != grant.expiresAtMs ||
       !verifyEd25519(grant.authoritySignature, grant.signingBytes(), authorityPublicKeyRaw))
     throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: issuer answer authentication failed");
   auto canonical = NativeJson::parse(grant.signingBytes());
@@ -631,37 +651,42 @@ canonicalNativeGrantName(
   const std::string& planCoreDigest, const std::string& modelManifestDigest,
   const std::string& protectionEpoch, const std::string& grantDigest)
 {
-  const auto safe = [] (unsigned char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-           (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
-  };
+  using namespace ndn_service_framework;
   if (publicationIdentity.empty() || publicationIdentity.front() != '/' ||
-      publicationIdentity.back() == '/' || publicationIdentity.find("//") != std::string::npos ||
-      !std::all_of(publicationIdentity.begin(), publicationIdentity.end(),
-        [&] (unsigned char c) { return safe(c) || c == '/' || c == ':'; }) ||
-      providerIdentity.empty() || requestId.empty() || protectionEpoch.empty() || attempt == 0) {
+      providerIdentity.empty() || providerIdentity.front() != '/' || requestId.empty() ||
+      protectionEpoch.empty() || attempt == 0)
     throw std::invalid_argument("grant publication or request identity is invalid");
-  }
-  const auto bare = [] (const std::string& digest) {
-    if (digest.size() != 71 || digest.substr(0, 7) != "sha256:" ||
-        !std::all_of(digest.begin() + 7, digest.end(), [] (unsigned char c) {
-          return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-        })) throw std::invalid_argument("grant name digest is not canonical");
-    return digest.substr(7);
+  const ndn::Name producer(publicationIdentity), recipient(providerIdentity), request(requestId);
+  if (producer.empty() || recipient.empty() || request.empty())
+    throw std::invalid_argument("grant requires complete non-root identities");
+  const auto nameBytes = [](const ndn::Name& name) {
+    const auto& wire = name.wireEncode();
+    return std::vector<std::uint8_t>(wire.data(), wire.data() + wire.size());
   };
-  const auto component = [&] (const std::string& value) {
-    const char* hex = "0123456789ABCDEF";
-    std::string out;
-    for (unsigned char c : value) {
-      if (safe(c)) out += static_cast<char>(c);
-      else { out += '%'; out += hex[c >> 4]; out += hex[c & 15]; }
-    }
-    return out;
+  const auto digestBytes = [](const std::string& digest) {
+    if (digest.size() != 71 || digest.compare(0, 7, "sha256:") != 0)
+      throw std::invalid_argument("grant name digest is not canonical");
+    const auto component = makeNamingDigestComponent(digest.substr(7));
+    return std::vector<std::uint8_t>(component.value(), component.value() + component.value_size());
   };
-  return publicationIdentity + "/NDNSF-DI/KEY-GRANT/v1/PROVIDER/" + sha256Hex(providerIdentity) +
-    "/REQ/" + component(requestId) + "/ATTEMPT/" + std::to_string(attempt) +
-    "/PLAN-CORE/" + bare(planCoreDigest) + "/MODEL/" + bare(modelManifestDigest) +
-    "/EPOCH/" + component(protectionEpoch) + "/GRANT/" + bare(grantDigest);
+  std::vector<std::uint8_t> attemptBytes(8);
+  for (std::size_t i = 0; i < 8; ++i)
+    attemptBytes[7 - i] = static_cast<std::uint8_t>(attempt >> (8 * i));
+  const auto recipientDigest = computeNamingDigest("ndnsf-naming/opaque/recipient",
+    {{1, 4, nameBytes(recipient)}});
+  const auto scopeDigest = computeNamingDigest("ndnsf-naming/grant-scope",
+    {{1, 1, nameBytes(producer)}, {2, 1, nameBytes(request)}, {3, 3, attemptBytes},
+     {4, 4, digestBytes(planCoreDigest)}, {5, 4, digestBytes(modelManifestDigest)}});
+  const auto epochDigest = computeNamingDigest("ndnsf-naming/opaque/protection-epoch",
+    {{1, 4, std::vector<std::uint8_t>(protectionEpoch.begin(), protectionEpoch.end())}});
+  (void)digestBytes(grantDigest);
+  auto name = makeProducerDataPrefix(producer, "GRANT");
+  name.append("kind=KEY-GRANT").append("RECIPIENT").append(makeNamingDigestComponent(recipientDigest))
+      .append("SCOPE").append("MODEL").append(makeNamingDigestComponent(scopeDigest))
+      .append("EPOCH").append(makeNamingDigestComponent(epochDigest))
+      .append("OBJECT").append(makeNamingDigestComponent(grantDigest.substr(7)));
+  checkNamingNameSize(name);
+  return name.toUri(ndn::name::UriFormat::CANONICAL);
 }
 
 NativeGrantVerificationResult
@@ -691,8 +716,8 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
   }
   // Binding comparisons first: preserve the existing binding-mismatch
   // semantics; every other verifier decision registers the rejected family.
-  if (grant.providerIdentity != providerIdentity ||
-      grant.requestId != requestId ||
+  if (!sameName(grant.providerIdentity, providerIdentity) ||
+      !sameRequestId(grant.requestId, requestId) ||
       grant.attempt != attempt ||
       grant.planCoreDigest != planCoreDigest ||
       grant.modelManifestDigest != modelManifestDigest ||
@@ -701,7 +726,7 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
                     "binding does not match the assignment";
     return result;
   }
-  if ((!expectedAuthority.empty() && grant.policyAuthority != expectedAuthority) ||
+  if ((!expectedAuthority.empty() && !sameName(grant.policyAuthority, expectedAuthority)) ||
       (!expectedGrantDigest.empty() && grant.grantDigest != expectedGrantDigest)) {
     result.reason = "DI_PROTECTED_GRANT_REJECTED: sealed grant reference or authority mismatch";
     return result;
@@ -723,8 +748,8 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
   }
 
   const std::string context = bindingContextJson(
-    providerIdentity, requestId, attempt, planCoreDigest,
-    modelManifestDigest, protectionEpoch);
+    grant.providerIdentity, grant.requestId, grant.attempt, grant.planCoreDigest,
+    grant.modelManifestDigest, grant.protectionEpoch);
   try {
     std::string shared;
     CleanseString cleanShared{shared};

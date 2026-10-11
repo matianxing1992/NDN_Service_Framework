@@ -1,6 +1,7 @@
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include <fstream>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
@@ -165,6 +166,74 @@ BOOST_AUTO_TEST_CASE(PlanSealerBindsSnapshotArtifactsAndGrantContext)
   BOOST_CHECK(!nativeParseJson(wire).contains("selected_role"));
 }
 
+BOOST_AUTO_TEST_CASE(FixedCoreOwnerPreservesCanonicalIdentityAndSnapshotBoundary)
+{
+  auto plan = oneRolePlan("fixed-core", digest("ack"));
+  auto original = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
+  const auto fixed = NativePlanSealer::shareFixedCore(original);
+  BOOST_REQUIRE(fixed.fixedCoreOwner);
+  BOOST_CHECK(fixed.assemblyByRole.empty());
+  BOOST_CHECK_EQUAL(fixed.coreDigest, original.coreDigest);
+  BOOST_CHECK_NO_THROW(fixed.validate());
+  BOOST_CHECK_EQUAL(fixed.fixedCoreOwner->roleDigest(plan.role),
+    nativePlanningDigest(nativeCanonicalJson(nativeAssemblyJson(original.assemblyByRole.at(plan.role)))));
+  auto repeated = NativePlanSealer::shareFixedCore(original, fixed.fixedCoreOwner);
+  BOOST_CHECK_EQUAL(repeated.fixedCoreOwner.get(), fixed.fixedCoreOwner.get());
+  BOOST_CHECK_EQUAL(&repeated.roleContracts(), &fixed.roleContracts());
+  original.assemblyByRole.at(plan.role).adapterVersion = "foreign";
+  BOOST_CHECK_NE(fixed.roleContracts().at(plan.role).adapterVersion, "foreign");
+  BOOST_CHECK_THROW(NativePlanSealer::shareFixedCore(original, fixed.fixedCoreOwner), std::invalid_argument);
+  plan.snapshot.requestId += "/next";
+  plan.proposal.requestId = plan.snapshot.requestId;
+  plan.inputs.artifacts.requestId = plan.snapshot.requestId;
+  const auto nextValue = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
+  const auto next = NativePlanSealer::shareFixedCore(nextValue, fixed.fixedCoreOwner);
+  BOOST_CHECK_EQUAL(next.fixedCoreOwner.get(), fixed.fixedCoreOwner.get());
+  BOOST_CHECK_EQUAL(next.coreDigest, nextValue.coreDigest);
+  BOOST_CHECK_NE(next.coreDigest, fixed.coreDigest);
+  // Canonical JSON distinguishes signed zero, even though numeric == does not.
+  auto signedZeroPlan = plan;
+  signedZeroPlan.inputs.assemblyByRole.at(plan.role).postprocessConfidenceThreshold = -0.0;
+  const auto signedZeroValue = NativePlanSealer::sealCore(signedZeroPlan.snapshot,
+    signedZeroPlan.proposal, signedZeroPlan.inputs);
+  BOOST_CHECK_NE(signedZeroValue.coreDigest, nextValue.coreDigest);
+  BOOST_CHECK(!fixed.fixedCoreOwner->matches(signedZeroValue));
+  const auto signedZeroOwner = NativePlanSealer::shareFixedCore(signedZeroValue, fixed.fixedCoreOwner);
+  BOOST_CHECK_NE(signedZeroOwner.fixedCoreOwner.get(), fixed.fixedCoreOwner.get());
+  BOOST_CHECK_EQUAL(signedZeroOwner.coreDigest, signedZeroValue.coreDigest);
+  BOOST_CHECK_NO_THROW(signedZeroOwner.validate());
+  const auto owned = NativePlanSealer::finalizeSecurityOwned(next,
+    {{"provider-a", plan.role, "/grant/1", digest("grant"), "provider-a"}}, {digest("policy"), true});
+  const auto invocation = owned.invocationContext();
+  BOOST_CHECK_EQUAL(invocation.core.fixedCoreOwner.get(), next.fixedCoreOwner.get());
+  BOOST_CHECK(invocation.core.assemblyByRole.empty());
+  auto mixed = invocation;
+  mixed.core.assemblyByRole = fixed.roleContracts();
+  BOOST_CHECK_THROW(mixed.validate(), std::invalid_argument);
+  auto snapshot = owned.snapshot();
+  BOOST_CHECK(!snapshot.core.fixedCoreOwner);
+  BOOST_REQUIRE_EQUAL(snapshot.core.assemblyByRole.size(), 1U);
+  BOOST_CHECK_NO_THROW(snapshot.validate());
+  snapshot.core.assemblyByRole.at(plan.role).expectedInputs.front().shape[0] = std::string("1");
+  BOOST_CHECK_THROW(snapshot.validate(), std::invalid_argument);
+  BOOST_CHECK_EQUAL(invocation.core.fixedCoreOwner.get(), fixed.fixedCoreOwner.get());
+  NativeFixedRoleAssignmentCache cache(1);
+  cache.rememberPlacementCore("/requester", "/service", fixed.fixedCoreOwner);
+  BOOST_CHECK_EQUAL(cache.placementCore("/requester", "/service").get(), fixed.fixedCoreOwner.get());
+  BOOST_CHECK(!cache.placementCore("/foreign", "/service"));
+  BOOST_CHECK(!cache.find("/requester", "/service", "", "", digest("foreign")));
+  BOOST_CHECK_THROW(cache.rememberPlacementCore("/requester", "/service", {}), std::invalid_argument);
+  const auto replacementPlan = oneRolePlan("replacement", digest("replacement-ack"));
+  const auto replacementValue = NativePlanSealer::sealCore(replacementPlan.snapshot, replacementPlan.proposal, replacementPlan.inputs);
+  BOOST_CHECK(!fixed.fixedCoreOwner->matches(replacementValue));
+  const auto replacement = NativePlanSealer::shareFixedCore(replacementValue, fixed.fixedCoreOwner);
+  BOOST_CHECK_NE(replacement.fixedCoreOwner.get(), fixed.fixedCoreOwner.get());
+  cache.rememberPlacementCore("/requester", "/service", replacement.fixedCoreOwner);
+  cache.clear();
+  BOOST_CHECK(!cache.placementCore("/requester", "/service"));
+  BOOST_CHECK_EQUAL(&next.roleContracts(), &fixed.roleContracts());
+}
+
 BOOST_AUTO_TEST_CASE(PlanSealerMatchesFrozenPythonCoreAndSecurityDigests)
 {
   auto plan = oneRolePlan("oracle", digest("oracle-ack"));
@@ -178,6 +247,12 @@ BOOST_AUTO_TEST_CASE(PlanSealerMatchesFrozenPythonCoreAndSecurityDigests)
   const auto oracle = NativeJson::parse(file);
   BOOST_CHECK_EQUAL(core.coreDigest, oracle.at("core_digest").get<std::string>());
   BOOST_CHECK_EQUAL(sealed.planDigest, oracle.at("plan_digest").get<std::string>());
+  const auto fixed = NativePlanSealer::shareFixedCore(core);
+  BOOST_CHECK_NO_THROW(fixed.validate());
+  BOOST_CHECK_EQUAL(fixed.coreDigest, oracle.at("core_digest").get<std::string>());
+  const auto fixedSealed = NativePlanSealer::finalizeSecurity(fixed,
+    {{"provider-a", plan.role, "/grant/1", digest("grant"), "provider-a"}}, {digest("policy"), true});
+  BOOST_CHECK_EQUAL(fixedSealed.planDigest, oracle.at("plan_digest").get<std::string>());
 }
 
 BOOST_AUTO_TEST_CASE(PlanSealerRejectsTamperedFrozenCoreAndSecurity)

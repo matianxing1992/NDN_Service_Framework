@@ -163,8 +163,9 @@ public:
   run(const RoleExecutionContext& ctx) final
   {
     std::map<std::string, NamedTensor> tensors;
-    if (ctx.inputEdgesByScope.size() != canonicalInputNames().size()) {
-      throw std::invalid_argument("YOLO Merge requires exactly six dependency inputs");
+    if (ctx.inputEdgesByScope.empty() ||
+        ctx.inputEdgesByScope.size() > canonicalInputNames().size()) {
+      throw std::invalid_argument("YOLO Merge dependency scope count is invalid");
     }
     for (const auto& item : ctx.inputEdgesByScope) {
       const auto input = ctx.inputsByScope.find(item.first);
@@ -173,16 +174,59 @@ public:
         throw std::invalid_argument("YOLO Merge dependency is not an encoded tensor bundle");
       }
       const auto decoded = decodeTensorBundle(input->second.payload);
-      if (decoded.size() != 1 || item.second.tensors.size() != 1 ||
-          decoded.front().name != item.second.tensors.front()) {
-        throw std::invalid_argument("YOLO Merge dependency tensor selection is ambiguous");
+      const auto& edgeTensorNames = item.second.bundleTensorNames.empty() ?
+        item.second.tensors : item.second.bundleTensorNames;
+      std::set<std::string> selectedNames(edgeTensorNames.begin(),
+                                          edgeTensorNames.end());
+      const std::set<std::string> endpointNames(item.second.tensors.begin(),
+                                                item.second.tensors.end());
+      if (selectedNames.empty()) {
+        throw std::invalid_argument(
+          "YOLO Merge dependency has no selected tensor names: " + item.first);
       }
-      if (!tensors.emplace(decoded.front().name, decoded.front()).second) {
-        throw std::invalid_argument("YOLO Merge dependency tensor is duplicated");
+      if (selectedNames.size() != edgeTensorNames.size()) {
+        throw std::invalid_argument(
+          "YOLO Merge dependency repeats selected tensor names: " + item.first);
+      }
+      if (endpointNames.empty() || endpointNames.size() != item.second.tensors.size() ||
+          !std::all_of(endpointNames.begin(), endpointNames.end(), [&] (const auto& name) {
+            return selectedNames.find(name) != selectedNames.end();
+          })) {
+        throw std::invalid_argument(
+          "YOLO Merge bundle omits or repeats an endpoint tensor: " + item.first);
+      }
+      if (decoded.size() != selectedNames.size()) {
+        throw std::invalid_argument(
+          "YOLO Merge dependency tensor count mismatch: " + item.first +
+          " selected=" + std::to_string(selectedNames.size()) +
+          " decoded=" + std::to_string(decoded.size()));
+      }
+      for (const auto& tensor : decoded) {
+        if (selectedNames.erase(tensor.name) != 1) {
+          throw std::invalid_argument(
+            "YOLO Merge dependency tensor name mismatch: " + item.first +
+            " decoded=" + tensor.name);
+        }
+        const auto existing = tensors.find(tensor.name);
+        if (existing == tensors.end()) {
+          tensors.emplace(tensor.name, tensor);
+        }
+        else if (existing->second.elementType != tensor.elementType ||
+                 existing->second.shape != tensor.shape ||
+                 existing->second.payload != tensor.payload) {
+          throw std::invalid_argument(
+            "YOLO Merge dependency has conflicting copies across scopes: " +
+            tensor.name);
+        }
+      }
+      if (!selectedNames.empty()) {
+        throw std::invalid_argument(
+          "YOLO Merge dependency selection contains tensors absent from bundle: " +
+          item.first);
       }
     }
     if (tensors.size() != canonicalInputNames().size()) {
-      throw std::invalid_argument("YOLO Merge dependency tensor set is incomplete");
+      throw std::invalid_argument("YOLO Merge dependency tensor set is incomplete or foreign");
     }
     for (const auto& name : canonicalInputNames()) {
       if (tensors.find(name) == tensors.end()) {
@@ -195,23 +239,34 @@ public:
       {canonicalInputNames()[1], canonicalInputNames()[4]},
       {canonicalInputNames()[2], canonicalInputNames()[5]},
     };
-    const std::array<std::size_t, 3> grids{80, 40, 20};
-    const std::array<float, 3> strides{8.0f, 16.0f, 32.0f};
-    std::vector<Detection> detections;
-    std::size_t ordinal = 0;
+    const std::array<std::int64_t, 3> strides{8, 16, 32};
+    std::array<std::size_t, 3> grids{};
+    std::int64_t inputExtent = 0;
     for (std::size_t scale = 0; scale < scaleNames.size(); ++scale) {
       const auto& boxes = tensors.at(scaleNames[scale].first);
       const auto& scores = tensors.at(scaleNames[scale].second);
       if (boxes.elementType != TensorElementType::Float32 ||
           scores.elementType != TensorElementType::Float32 ||
-          boxes.shape != std::vector<std::int64_t>{1, 4,
-            static_cast<std::int64_t>(grids[scale]),
-            static_cast<std::int64_t>(grids[scale])} ||
-          scores.shape != std::vector<std::int64_t>{1, 80,
-            static_cast<std::int64_t>(grids[scale]),
-            static_cast<std::int64_t>(grids[scale])}) {
+          boxes.shape.size() != 4 || scores.shape.size() != 4 ||
+          boxes.shape[0] != 1 || boxes.shape[1] != 4 ||
+          scores.shape[0] != 1 || scores.shape[1] != 80 ||
+          boxes.shape[2] <= 0 || boxes.shape[2] != boxes.shape[3] ||
+          scores.shape[2] != boxes.shape[2] || scores.shape[3] != boxes.shape[3] ||
+          boxes.shape[2] > std::numeric_limits<std::int64_t>::max() / strides[scale]) {
         throw std::invalid_argument("YOLO Merge dependency shape/dtype contract mismatch");
       }
+      const auto extent = boxes.shape[2] * strides[scale];
+      if (scale != 0 && extent != inputExtent) {
+        throw std::invalid_argument("YOLO Merge scales do not match one input resolution");
+      }
+      inputExtent = extent;
+      grids[scale] = static_cast<std::size_t>(boxes.shape[2]);
+    }
+    std::vector<Detection> detections;
+    std::size_t ordinal = 0;
+    for (std::size_t scale = 0; scale < scaleNames.size(); ++scale) {
+      const auto& boxes = tensors.at(scaleNames[scale].first);
+      const auto& scores = tensors.at(scaleNames[scale].second);
       for (std::size_t y = 0; y < grids[scale]; ++y) {
         for (std::size_t x = 0; x < grids[scale]; ++x) {
           const auto cell = y * grids[scale] + x;
@@ -234,12 +289,13 @@ public:
           const auto top = readFloat(boxes, grids[scale] * grids[scale] + cell);
           const auto right = readFloat(boxes, 2 * grids[scale] * grids[scale] + cell);
           const auto bottom = readFloat(boxes, 3 * grids[scale] * grids[scale] + cell);
-          const auto centerX = (static_cast<float>(x) + 0.5f) * strides[scale];
-          const auto centerY = (static_cast<float>(y) + 0.5f) * strides[scale];
-          const auto x1 = centerX - left * strides[scale];
-          const auto y1 = centerY - top * strides[scale];
-          const auto x2 = centerX + right * strides[scale];
-          const auto y2 = centerY + bottom * strides[scale];
+          const auto stride = static_cast<float>(strides[scale]);
+          const auto centerX = (static_cast<float>(x) + 0.5f) * stride;
+          const auto centerY = (static_cast<float>(y) + 0.5f) * stride;
+          const auto x1 = centerX - left * stride;
+          const auto y1 = centerY - top * stride;
+          const auto x2 = centerX + right * stride;
+          const auto y2 = centerY + bottom * stride;
           if (!std::isfinite(x1) || !std::isfinite(y1) ||
               !std::isfinite(x2) || !std::isfinite(y2)) {
             throw std::invalid_argument("YOLO Merge decoded box is non-finite");
@@ -273,7 +329,9 @@ public:
                                    static_cast<float>(detection.classId)});
     }
     std::vector<std::uint8_t> outputPayload(output.size() * sizeof(float));
-    std::memcpy(outputPayload.data(), output.data(), outputPayload.size());
+    if (!outputPayload.empty()) {
+      std::memcpy(outputPayload.data(), output.data(), outputPayload.size());
+    }
     auto tensor = makeFloat32Tensor(
       m_outputName, {1, static_cast<std::int64_t>(count), 6},
       outputPayload);
@@ -302,7 +360,7 @@ NativeModelRunnerSpec
 nativeYoloMergeRunnerSpecFromProjection(
   const NativeSelectionProjectionV3& projection)
 {
-  const auto& assembly = projection.assembly;
+  const auto& assembly = projection.assemblyContract();
   if (assembly.mergeKind != "NATIVE_POSTPROCESS" ||
       assembly.selectedRole.empty() || assembly.expectedOutputs.size() != 1) {
     throw std::invalid_argument("projection does not declare a native YOLO Merge");

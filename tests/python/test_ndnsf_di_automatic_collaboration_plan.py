@@ -10,6 +10,7 @@ import unittest
 
 import jsonschema
 import yaml
+from spec201_publication_fixture import publication_result
 
 from ndnsf.service import CollaborationRole, ServiceUser
 from ndnsf_distributed_inference.adapters import (
@@ -154,11 +155,7 @@ class _AutomaticServiceUser:
             "object_label": object_label,
             "freshness_ms": int(freshness_ms),
         })
-        return SimpleNamespace(
-            success=True,
-            encrypted_data_name=f"/encrypted/{object_label}",
-            error="",
-        )
+        return publication_result(payload, service, label=object_label)
 
 
 class _OrderedClosedCollaboration(_ClosedCollaboration):
@@ -524,8 +521,8 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
         self.assertIn("CommitCollaborationPlan", header)
         self.assertIn("RequestCollaboration", header)
         deferred_region = source[
-            source.index("BeginCollaboration"):
-            source.index("CommitCollaborationPlan") + 6000
+            source.index("ndn::Name ServiceUser::BeginCollaboration("):
+            source.index("bool ServiceUser::CommitCollaborationPlan(") + 6000
         ]
         for forbidden in ("Qwen", "logits", "KV cache", "model fragment"):
             self.assertNotIn(forbidden, deferred_region)
@@ -610,7 +607,7 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
             set(commit["key_scopes"]),
         )
         self.assertTrue(all(
-            name.startswith("/encrypted/inference-scope-key-")
+            name.startswith("/8=encrypted/8=NDNSF/8=BLOB/") and "/8=MANIFEST/" in name
             for name in commit["scope_key_data_names"].values()
         ))
         self.assertEqual(

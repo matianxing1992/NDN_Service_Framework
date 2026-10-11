@@ -1,11 +1,21 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
+
+#include <ndn-cxx/util/scope.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <chrono>
+#include <deque>
 #include <exception>
+#include <future>
+#include <functional>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -69,22 +79,6 @@ validateCanonicalYoloMergeInput(const DependencyEdge& edge,
   }
 }
 
-std::optional<ndn::Name>
-providerPrefixForRank(const GroupCapabilityV1& capability,
-                     const std::string& producerRank)
-{
-  for (const auto& member : capability.orderedMembers) {
-    if (member.provider.empty() || member.endpointPrefix.empty()) {
-      continue;
-    }
-    if (member.provider == producerRank ||
-        std::to_string(member.rank) == producerRank) {
-      return ndn::Name(member.endpointPrefix);
-    }
-  }
-  return std::nullopt;
-}
-
 const GroupMemberV1*
 memberForRank(const GroupCapabilityV1& capability,
               const std::string& producerRank)
@@ -92,20 +86,9 @@ memberForRank(const GroupCapabilityV1& capability,
   const auto member = std::find_if(
     capability.orderedMembers.begin(), capability.orderedMembers.end(),
     [&producerRank] (const auto& item) {
-      return item.provider == producerRank ||
-             std::to_string(item.rank) == producerRank;
+      return std::to_string(item.rank) == producerRank;
     });
   return member == capability.orderedMembers.end() ? nullptr : &*member;
-}
-
-std::string
-localDataV1Key(const std::string& sessionId,
-               std::uint64_t operationIndex,
-               const std::string& producerRank,
-               const std::string& tensorDigest)
-{
-  return sessionId + "|" + std::to_string(operationIndex) + "|" +
-         producerRank + "|" + tensorDigest;
 }
 
 void
@@ -196,11 +179,16 @@ producerRankForEdge(const GroupCapabilityV1& capability,
     const auto member = std::find_if(
       capability.orderedMembers.begin(), capability.orderedMembers.end(),
       [&edge] (const auto& item) {
-        return item.provider == edge.producerProvider;
+        const ndn::Name producer(edge.producerProvider);
+        return ndn::Name(item.provider) == producer;
       });
     if (member != capability.orderedMembers.end()) {
+      if (!edge.collectiveProducerRank.empty() &&
+          edge.collectiveProducerRank != std::to_string(member->rank))
+        throw std::runtime_error("tensor Producer rank conflicts with its complete namespace");
       return std::to_string(member->rank);
     }
+    throw std::runtime_error("tensor Producer is not present in the capability");
   }
   return edge.collectiveProducerRank;
 }
@@ -250,7 +238,52 @@ exactTensorSegmentName(const DependencyEdge& edge, std::size_t segment)
       segment >= edge.maxSegments) {
     throw std::invalid_argument("V3 tensor segment is outside mayPublish/mustFetch");
   }
-  return ndn::Name(edge.plannedDataName).append("SEG").appendSegment(segment);
+  return makeTensorSegmentDataName(ndn::Name(edge.plannedDataName), segment);
+}
+
+void
+validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member)
+{
+  using namespace ndn_service_framework;
+  if (!edge.declaredByV3 || edge.tensors.size() != 1 || edge.producerRole.empty() ||
+      edge.endpointDigest.size() != 71 || edge.endpointDigest.substr(0, 7) != "sha256:" ||
+      edge.namingOperationStride > (1U << 20) ||
+      edge.round != edge.collectiveOperationIndex || edge.plannedDataName.empty())
+    throw std::invalid_argument("C04 tensor reference is incomplete");
+  const ndn::Name base(edge.plannedDataName);
+  const auto parsed = parseProducerDataName(base, ndn::Name(member.provider));
+  if (!parsed || parsed->nameSpace != "NDNSF-DI" || parsed->category != "tensor" ||
+      parsed->suffix.size() != 18 ||
+      ndn::Name(edge.manifestDataName) != ndn::Name(base).append("MANIFEST"))
+    throw std::invalid_argument("C04 tensor reference category or Producer mismatch");
+  const auto endpoint = makeNamingDigestComponent(edge.endpointDigest.substr(7));
+  const auto object = makeNamingDigestComponent(edge.executionObjectDigest);
+  const auto key = computeNamingDigest("ndnsf-naming/tensor-key", {
+    NamingDigestField{1, 4, {endpoint.value_begin(), endpoint.value_end()}},
+    NamingDigestField{2, 4, {object.value_begin(), object.value_end()}}});
+  const auto stride = edge.namingOperationStride;
+  const auto round = stride == 0 ? 0 : edge.round / stride;
+  const auto index = stride == 0 ? edge.round : edge.round % stride;
+  const auto& suffix = parsed->suffix;
+  const char* markers[] = {"REQUEST", "ATTEMPT", "ROUND", "POSITION",
+                          "OP", "INDEX", "RANK", "BATCH"};
+  for (std::size_t i = 0; i < 8; ++i)
+    if (suffix.get(i * 2) != ndn::name::Component(markers[i]))
+      throw std::invalid_argument("C04 tensor reference field order mismatch");
+  if (suffix.get(1) != makeNamingLabelComponent(
+        ndn::Name(edge.requestId).toUri(ndn::name::UriFormat::CANONICAL)) ||
+      suffix.get(3) != makeNamingDecimalComponent(edge.attemptEpoch) ||
+      suffix.get(5) != makeNamingDecimalComponent(round) ||
+      suffix.get(7) != makeNamingLabelComponent(edge.producerRole) ||
+      suffix.get(9) != ndn::name::Component(ndn::tlv::GenericNameComponent,
+        edge.operationKind.begin(), edge.operationKind.end()) ||
+      suffix.get(11) != makeNamingDecimalComponent(index) ||
+      suffix.get(13) != makeNamingDecimalComponent(member.rank) ||
+      suffix.get(15) != makeNamingDecimalComponent(edge.microbatch) ||
+      suffix.get(16) != makeNamingLabelComponent(edge.tensors.front()) ||
+      suffix.get(17) != makeNamingDigestComponent(key))
+    throw std::invalid_argument("C04 tensor readable fields or commitment mismatch");
+  checkNamingNameSize(base);
 }
 
 std::uint64_t
@@ -293,6 +326,8 @@ logDependencyStageMarker(const char* status,
                           const DependencyEdge& edge,
                           const std::string& provider)
 {
+  const auto steadyUs = std::chrono::duration_cast<std::chrono::microseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
   std::ostringstream record;
   record << "NDNSF_DI_PROVIDER_STAGE"
          << " stage=DEPENDENCY_FETCH"
@@ -304,7 +339,14 @@ logDependencyStageMarker(const char* status,
          << " provider=" << provider
          << " role=" << edge.consumerRole
          << " planDigest=" << edge.planDigest
-         << " attemptEpoch=" << edge.attemptEpoch;
+         << " attemptEpoch=" << edge.attemptEpoch
+         << " steady_us=" << steadyUs
+         << " sessionId=" << sessionId
+         << " scope=" << edge.scope
+         << " plannedName=" << (edge.plannedDataName.empty() ? "none" : edge.plannedDataName)
+         << " operationIndex=" << edge.collectiveOperationIndex
+         << " round=" << edge.round
+         << " microbatch=" << edge.microbatch;
   logRuntimeEvidence(record.str());
 }
 
@@ -375,14 +417,11 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
     }
     logDependencyStageMarker("begin", sessionId, edge,
                              m_ctx.localProvider().toUri());
-    // TOKEN_FEEDBACK is not a V3 tensor endpoint.  The request-scoped
-    // ProviderGroupCoordinator capability seals its NDNSF_DATA_V1 operation
-    // (including producer/consumer ranks, epoch and operation index), while
-    // NativeGroupProjectionBuilder deliberately keeps it out of the
-    // mustFetch/mayPublish endpoint projection to avoid a readiness cycle.
-    // Requiring a ProtectedRuntime endpoint here would therefore authorize an
-    // empty digest and reject the otherwise authenticated feedback edge.
-    if (m_protectedRuntime && edge.operationKind != "TOKEN_FEEDBACK") {
+    if (edge.useNdnsfDataV1 && !edge.declaredByV3)
+      throw std::invalid_argument("C04 tensor endpoint is required for network dependency fetch");
+    // Cross-role feedback is a signed endpoint; same-role feedback is served
+    // exclusively by LocalDependencyIo and never reaches this network path.
+    if (m_protectedRuntime) {
       m_protectedRuntime->authorizeDataflow(
         ProtectedDataflowDirection::Fetch, edge.endpointDigest,
         edge.producerRole, edge.consumerRole, nowEpochMs());
@@ -396,31 +435,23 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
       const auto& capability = m_groupCoordinator->capability();
       const auto& operation = operationForEdge(
         capability, edge.collectiveOperationIndex);
+      if (operation.kind != edge.operationKind)
+        throw std::invalid_argument("tensor operation differs from the signed capability");
+      const auto producerRank = producerRankForEdge(capability, edge);
+      const auto* producerMember = memberForRank(capability, producerRank);
+      if (producerMember == nullptr)
+        throw std::invalid_argument("tensor Producer rank is not in the capability");
+      validateTensorReference(edge, *producerMember);
       if (!m_groupCoordinator->beginOperation(nowEpochMs())) {
         throw std::runtime_error(
           "NDNSF_DATA_V1 group cannot begin dependency operation");
       }
-      const auto producerRank = producerRankForEdge(capability, edge);
-      const auto producerPrefix = providerPrefixForRank(
-        capability, producerRank);
-      if (!producerPrefix) {
-        throw std::runtime_error(
-          "NDNSF_DATA_V1 producer rank is not present in the capability: " +
-          producerRank);
-      }
-      const auto tensorDigest = edge.collectiveTensorDigest.empty() ?
-        edge.scope : edge.collectiveTensorDigest;
-      auto expectedSegments = edge.expectedSegments;
-      std::optional<std::vector<ndn::Buffer>> encodedSegments;
-      const auto* producerMember = memberForRank(capability, producerRank);
       if (edge.declaredByV3) {
         if (producerMember == nullptr || edge.manifestDataName.empty() ||
             edge.maxSegments == 0 || edge.endpointDigest.empty() ||
             edge.manifestContractDigest.empty() ||
             edge.securityProfile != "NDNSF_DATA_V1" ||
-            edge.noProgressDeadlineMs == 0 || edge.hardDeadlineMs == 0 ||
-            !ndn::Name(producerMember->endpointPrefix)
-               .isPrefixOf(ndn::Name(edge.manifestDataName))) {
+            edge.noProgressDeadlineMs == 0 || edge.hardDeadlineMs == 0) {
           throw std::runtime_error(
             "V3 mustFetch endpoint is incomplete or targets the wrong producer");
         }
@@ -467,7 +498,10 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
                      coordinator->terminal();
             },
             &segmentMetrics,
-            reportFirstRead);
+            reportFirstRead,
+            initialProducerReadiness
+              ? ndn_service_framework::ServiceProvider::ExactDataFetchPhase::AwaitPublication
+              : ndn_service_framework::ServiceProvider::ExactDataFetchPhase::Published);
           if (!content) {
             if (cancelled->load(std::memory_order_acquire)) {
               throw std::runtime_error(
@@ -494,10 +528,178 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           return std::vector<std::uint8_t>(content->begin(), content->end());
         };
 
+        struct SegmentFetchResult
+        {
+          std::vector<std::uint8_t> wire;
+          CollaborationTransferMetrics metrics;
+          bool received = false;
+          std::exception_ptr failure;
+        };
+        const auto batchCancelled = std::make_shared<std::atomic<bool>>(false);
+        using SteadyClock = std::chrono::steady_clock;
+        const auto speculativeDeadline =
+          std::make_shared<std::atomic<SteadyClock::duration::rep>>(0);
+        auto speculativeExpired = [speculativeDeadline] {
+          const auto ticks = speculativeDeadline->load(std::memory_order_acquire);
+          return ticks != 0 && SteadyClock::now().time_since_epoch().count() >= ticks;
+        };
+        using ExactOperation = ndn_service_framework::ServiceProvider::ExactDataFetchOperation;
+        std::optional<ExactOperation> speculativeFirst;
+        std::optional<ExactOperation> speculativeWhole;
+        // Signal abort before futures drain on every exit, including an
+        // exception. Workers borrow this prefetch's context and deadline.
+        struct AbortOnExit
+        {
+          std::shared_ptr<std::atomic<bool>> cancelled;
+          ~AbortOnExit() { cancelled->store(true, std::memory_order_release); }
+        } abortOnExit{batchCancelled};
+        auto fetchSegment =
+          [this, &edge, hardDeadline, producerMember, cancelled,
+           batchCancelled, reportFirstRead,
+           speculativeDeadline, speculativeExpired,
+           coordinator = m_groupCoordinator](const ndn::Name& dataName,
+                                             bool producerReadiness = false) {
+            const auto remaining = remainingDeadlineMs(hardDeadline);
+            if (remaining == 0 || cancelled->load(std::memory_order_acquire) ||
+                batchCancelled->load(std::memory_order_acquire) || coordinator->terminal() ||
+                (producerReadiness && speculativeExpired())) {
+              throw std::runtime_error("NDNSF_DATA_V1 segment fetch aborted");
+            }
+            auto budget = std::min<std::uint64_t>(remaining,
+              producerReadiness ? static_cast<std::uint64_t>(m_fetchTimeoutMs) :
+                std::min<std::uint64_t>(edge.noProgressDeadlineMs,
+                  static_cast<std::uint64_t>(m_fetchTimeoutMs)));
+            if (producerReadiness) {
+              const auto ticks = speculativeDeadline->load(std::memory_order_acquire);
+              if (ticks != 0) {
+                budget = std::min(budget, remainingDeadlineMs(
+                  SteadyClock::time_point(SteadyClock::duration(ticks))));
+              }
+              if (budget == 0) {
+                throw std::runtime_error("NDNSF_DATA_V1 speculative window expired");
+              }
+            }
+            SegmentFetchResult result;
+            try {
+              const auto fetchTiming = detail::nativePhaseStarted();
+              auto content = m_ctx.fetchSignedExactData(
+                edge.transportScope.empty() ? edge.scope : edge.transportScope,
+                dataName, ndn::Name(producerMember->provider),
+                std::max(1, static_cast<int>(budget)),
+                [cancelled, batchCancelled, coordinator, hardDeadline,
+                 producerReadiness, speculativeExpired] {
+                  return cancelled->load(std::memory_order_acquire) ||
+                         batchCancelled->load(std::memory_order_acquire) ||
+                         coordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0 ||
+                         (producerReadiness && speculativeExpired());
+                }, &result.metrics,
+                producerReadiness ? std::function<void(std::exception_ptr)>{} :
+                  std::function<void(std::exception_ptr)>{reportFirstRead},
+                producerReadiness
+                  ? ndn_service_framework::ServiceProvider::ExactDataFetchPhase::AwaitPublication
+                  : ndn_service_framework::ServiceProvider::ExactDataFetchPhase::Published);
+              if (!content) {
+                throw std::runtime_error(
+                  "failed to fetch signed exact Data: " + dataName.toUri());
+              }
+              if (producerReadiness && content->size() > ndn::MAX_NDN_PACKET_SIZE) {
+                throw std::runtime_error("speculative first segment exceeds packet budget");
+              }
+              result.wire = std::move(*content);
+              result.received = true;
+              detail::logNativeWorkPhase(edge.requestId, "tensor_segment_fetch_wait",
+                                        fetchTiming, edge.consumerRole);
+            }
+            catch (...) {
+              if (!producerReadiness) throw;
+              // Early transport is optional. Preserve the failed attempt's
+              // metrics; the owner decides whether the original fetch still
+              // fits the fixed post-manifest window before any fallback.
+              result.failure = std::current_exception();
+            }
+            return result;
+          };
+        const auto prefetchCount = edge.prefetchBundleBytes != 0 && edge.prefetchSegmentBytes != 0
+          ? 1 + (edge.prefetchBundleBytes - 1) / edge.prefetchSegmentBytes : 0;
+        const bool speculativeWholeStarted = prefetchCount > (edge.inlineFirstSegment ? 1U : 0U) &&
+          edge.prefetchSegmentBytes <= ndn::MAX_NDN_PACKET_SIZE &&
+          prefetchCount <= edge.maxSegments && prefetchCount <= operation.maxSegments &&
+          edge.prefetchBundleBytes <= operation.maxBytes &&
+          capability.maxInflightBytes / ndn::MAX_NDN_PACKET_SIZE > prefetchCount;
+        bool speculativeWholeUsed = false;
+        bool speculativeWholeFallback = false;
+        if (speculativeWholeStarted) {
+          std::vector<ndn::Name> names;
+          names.reserve(prefetchCount);
+          for (std::size_t index = edge.inlineFirstSegment ? 1U : 0U; index < prefetchCount; ++index)
+            names.push_back(exactTensorSegmentName(edge, index));
+          speculativeWhole.emplace(m_ctx.startSignedExactDataBatch(
+            edge.transportScope.empty() ? edge.scope : edge.transportScope,
+            names, ndn::Name(producerMember->provider),
+            std::max(1, static_cast<int>(std::min<std::uint64_t>(
+              remainingDeadlineMs(hardDeadline), static_cast<std::uint64_t>(m_fetchTimeoutMs)))),
+            [cancelled, batchCancelled, coordinator = m_groupCoordinator,
+             hardDeadline, speculativeExpired] {
+              return cancelled->load(std::memory_order_acquire) ||
+                batchCancelled->load(std::memory_order_acquire) || coordinator->terminal() ||
+                remainingDeadlineMs(hardDeadline) == 0 || speculativeExpired();
+            }, {}, ndn_service_framework::ServiceProvider::ExactDataFetchPhase::AwaitPublication,
+            [cancelled, batchCancelled, coordinator = m_groupCoordinator,
+             hardDeadline, speculativeDeadline, noProgressMs = edge.noProgressDeadlineMs] {
+              if (cancelled->load(std::memory_order_acquire) ||
+                  batchCancelled->load(std::memory_order_acquire) ||
+                  remainingDeadlineMs(hardDeadline) == 0 || coordinator->terminal()) return false;
+              // Producer readiness ends only when the manifest is available.
+              // The transport progress window then advances on validated Data.
+              if (speculativeDeadline->load(std::memory_order_acquire) != 0) {
+                if (!coordinator->recordProgress(nowEpochMs())) return false;
+                speculativeDeadline->store(std::min(hardDeadline, SteadyClock::now() +
+                  std::chrono::milliseconds(noProgressMs)).time_since_epoch().count(),
+                  std::memory_order_release);
+              }
+              return true;
+            }));
+        }
+        const bool speculativeFirstStarted = !edge.inlineFirstSegment && !speculativeWholeStarted && capability.maxInflightBytes >=
+          2 * static_cast<std::uint64_t>(ndn::MAX_NDN_PACKET_SIZE);
+        bool speculativeFirstUsed = false;
+        bool speculativeFirstFallback = false;
+        if (speculativeFirstStarted) {
+          // Queue readiness on the same Face as the manifest. The operation
+          // retains handlers; no extra waiting worker is needed for overlap.
+          speculativeFirst.emplace(m_ctx.startSignedExactDataBatch(
+            edge.transportScope.empty() ? edge.scope : edge.transportScope,
+            {exactTensorSegmentName(edge, 0)}, ndn::Name(producerMember->provider),
+            std::max(1, static_cast<int>(std::min<std::uint64_t>(
+              remainingDeadlineMs(hardDeadline), static_cast<std::uint64_t>(m_fetchTimeoutMs)))),
+            [cancelled, batchCancelled, coordinator = m_groupCoordinator,
+             hardDeadline, speculativeExpired] {
+              return cancelled->load(std::memory_order_acquire) ||
+                batchCancelled->load(std::memory_order_acquire) || coordinator->terminal() ||
+                remainingDeadlineMs(hardDeadline) == 0 || speculativeExpired();
+            }, {}, ndn_service_framework::ServiceProvider::ExactDataFetchPhase::AwaitPublication));
+        }
+
         const auto expectedConsumers = edge.consumerRoles.empty()
           ? std::vector<std::string>{edge.consumerRole} : edge.consumerRoles;
-        const auto manifestWire = fetchExact(
+        const auto manifestFetchTiming = detail::nativePhaseStarted();
+        auto manifestWire = fetchExact(
           ndn::Name(edge.manifestDataName), true);
+        std::vector<std::uint8_t> inlineFirstWire;
+        if (edge.inlineFirstSegment) {
+          auto object = decodeTensorManifestWithFirstSegment(
+            manifestWire, ndn::MAX_NDN_PACKET_SIZE);
+          manifestWire = std::move(object.first);
+          inlineFirstWire = std::move(object.second);
+        }
+        const bool inlineFirstReceived = !inlineFirstWire.empty();
+        detail::logNativeWorkPhase(edge.requestId, "tensor_manifest_fetch_wait",
+                                  manifestFetchTiming, edge.consumerRole);
+        const auto manifestFetchedAt = std::chrono::steady_clock::now();
+        speculativeDeadline->store(std::min(hardDeadline,
+          manifestFetchedAt + std::chrono::milliseconds(edge.noProgressDeadlineMs))
+            .time_since_epoch().count(), std::memory_order_release);
+        const auto manifestDecodeTiming = detail::nativePhaseStarted();
         auto manifest = decodeTensorObjectManifest(manifestWire);
         std::size_t parsedProducerRank = 0;
         try {
@@ -514,7 +716,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           // restore the signed manifest before normal validation below.
           manifest.capabilityDigest = canonicalSha256(capability.capabilityDigest);
           manifest.epochKeyId = capability.epochKeyId;
-          manifest.requester = m_ctx.requesterName().toUri();
+          manifest.requester = m_ctx.requesterName().toUri(ndn::name::UriFormat::CANONICAL);
           manifest.requestId = edge.requestId;
           manifest.attemptId = std::to_string(edge.attemptEpoch);
           manifest.planDigest = edge.planDigest;
@@ -542,7 +744,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
         if (manifest.capabilityDigest !=
               canonicalSha256(capability.capabilityDigest) ||
             manifest.epochKeyId != capability.epochKeyId ||
-            manifest.requester != m_ctx.requesterName().toUri() ||
+            ndn::Name(manifest.requester) != m_ctx.requesterName() ||
             manifest.requestId != edge.requestId ||
             manifest.attemptId != std::to_string(edge.attemptEpoch) ||
             manifest.planDigest != edge.planDigest ||
@@ -577,15 +779,212 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
             "TensorObjectManifestV1 does not match mustFetch authority");
         }
 
+        detail::logNativeWorkPhase(edge.requestId, "tensor_manifest_decode_validate",
+                                  manifestDecodeTiming, edge.consumerRole);
+
         std::vector<std::pair<ndn::Name, std::vector<std::uint8_t>>>
           fetchedSegments;
         fetchedSegments.reserve(manifest.segmentCount);
         std::uint64_t fetchedBytes = 0;
         std::vector<std::string> ciphertextDigests;
         ciphertextDigests.reserve(manifest.segmentCount);
+        const auto segmentsStartedAt = std::chrono::steady_clock::now();
+        const auto segmentsCollectTiming = detail::nativePhaseStarted();
+        std::vector<ndn::Buffer> batchWires;
+        std::optional<ExactOperation> pendingBatch;
+        std::shared_ptr<std::atomic<SteadyClock::duration::rep>> batchProgressDeadline;
+        auto batchFetchTiming = detail::nativePhaseStarted();
+        std::size_t batchOffset = 0;
+        std::size_t maximumBatchSize = 0;
+        std::size_t batchCalls = 0;
+        if (speculativeWholeStarted) {
+          // Hints schedule exact names, not content acceptance. Generation
+          // lineage can change the encoded byte count without changing those
+          // names. Authenticate and validate every packet against the actual
+          // manifest below instead of discarding a useful same-count batch.
+          const bool matches = manifest.segmentCount == prefetchCount;
+          if (matches) {
+            while (speculativeWhole->wait_for(std::chrono::milliseconds(5)) !=
+                   std::future_status::ready) {
+              if (cancelled->load(std::memory_order_acquire) ||
+                  m_groupCoordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0 ||
+                  speculativeExpired())
+                throw std::runtime_error("NDNSF_DATA_V1 speculative batch fetch aborted");
+            }
+            auto result = speculativeWhole->get();
+            const auto expectedContents = manifest.segmentCount -
+              (edge.inlineFirstSegment ? 1U : 0U);
+            if (result && result->contents.size() == expectedContents) {
+              mergeTransferMetrics(transportMetrics, result->metrics);
+              batchWires = std::move(result->contents);
+              if (edge.inlineFirstSegment) {
+                // Plain-manifest fallback remains compatible with this opt-in.
+                auto first = inlineFirstReceived ? std::move(inlineFirstWire)
+                  : fetchExact(exactTensorSegmentName(edge, 0), false);
+                batchWires.insert(batchWires.begin(), ndn::Buffer(first.begin(), first.end()));
+              }
+              speculativeWholeUsed = true;
+              maximumBatchSize = batchWires.size();
+              batchCalls = 1;
+            }
+          }
+          if (!speculativeWholeUsed) {
+            speculativeWhole->cancel();
+            speculativeWholeFallback = true;
+          }
+          speculativeWhole.reset();
+        }
+        auto fetchBatch = [&](std::size_t firstIndex, bool reserveFirst) {
+          const auto remaining = remainingDeadlineMs(hardDeadline);
+          if (remaining == 0) {
+            throw std::runtime_error("NDNSF_DATA_V1 hard deadline expired");
+          }
+          const auto availableBytes = capability.maxInflightBytes - fetchedBytes;
+          const auto reservedBytes = reserveFirst
+            ? static_cast<std::uint64_t>(ndn::MAX_NDN_PACKET_SIZE) : 0;
+          const auto batchBytes = availableBytes > reservedBytes
+            ? availableBytes - reservedBytes : availableBytes;
+          const auto count = std::min<std::uint64_t>(
+            manifest.segmentCount - firstIndex,
+            std::max<std::uint64_t>(1, batchBytes / ndn::MAX_NDN_PACKET_SIZE));
+          std::vector<ndn::Name> names;
+          names.reserve(count);
+          for (std::size_t offset = 0; offset < count; ++offset) {
+            names.push_back(exactTensorSegmentName(edge, firstIndex + offset));
+          }
+          batchProgressDeadline = std::make_shared<std::atomic<SteadyClock::duration::rep>>(
+            std::min(hardDeadline, SteadyClock::now() +
+              std::chrono::milliseconds(edge.noProgressDeadlineMs))
+                .time_since_epoch().count());
+          const auto noProgressMs = edge.noProgressDeadlineMs;
+          const auto progressDeadline = batchProgressDeadline;
+          batchFetchTiming = detail::nativePhaseStarted();
+          pendingBatch.emplace(m_ctx.startSignedExactDataBatch(
+            edge.transportScope.empty() ? edge.scope : edge.transportScope,
+            names, ndn::Name(producerMember->provider),
+            std::max(1, static_cast<int>(std::min<std::uint64_t>(
+              remaining, static_cast<std::uint64_t>(m_fetchTimeoutMs)))),
+            [cancelled, batchCancelled, coordinator = m_groupCoordinator,
+             hardDeadline, progressDeadline] {
+              return cancelled->load(std::memory_order_acquire) ||
+                batchCancelled->load(std::memory_order_acquire) ||
+                coordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0 ||
+                SteadyClock::now().time_since_epoch().count() >=
+                  progressDeadline->load(std::memory_order_acquire);
+            }, reportFirstRead,
+            ndn_service_framework::ServiceProvider::ExactDataFetchPhase::Published,
+            [coordinator = m_groupCoordinator, progressDeadline, hardDeadline, noProgressMs] {
+              if (remainingDeadlineMs(hardDeadline) == 0 ||
+                  !coordinator->recordProgress(nowEpochMs())) return false;
+              progressDeadline->store(std::min(hardDeadline, SteadyClock::now() +
+                std::chrono::milliseconds(noProgressMs)).time_since_epoch().count(),
+                std::memory_order_release);
+              return true;
+            }));
+          batchWires.clear();
+          batchOffset = 0;
+          maximumBatchSize = std::max(maximumBatchSize, names.size());
+          ++batchCalls;
+        };
+        // Queue all available remaining names before waiting for segment0.
+        // Core owns the asynchronous handlers; this edge already has a worker.
+        const auto firstBatchIndex = (speculativeFirstStarted ||
+          (!speculativeWholeUsed && inlineFirstReceived)) ? 1U : 0U;
+        if (!speculativeWholeUsed && firstBatchIndex < manifest.segmentCount) {
+          fetchBatch(firstBatchIndex, speculativeFirstStarted || inlineFirstReceived);
+        }
         for (std::size_t index = 0; index < manifest.segmentCount; ++index) {
+          if (cancelled->load(std::memory_order_acquire) ||
+              m_groupCoordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0) {
+            throw std::runtime_error("NDNSF_DATA_V1 segment fetch aborted");
+          }
+          SegmentFetchResult fetched;
+          if (index == 0 && !speculativeWholeUsed && inlineFirstReceived) {
+            fetched.wire = std::move(inlineFirstWire);
+            fetched.received = true;
+          }
+          else if (index == 0 && speculativeFirstStarted) {
+            while (speculativeFirst->wait_for(std::chrono::milliseconds(5)) !=
+                     std::future_status::ready) {
+              if (cancelled->load(std::memory_order_acquire) ||
+                  m_groupCoordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0 ||
+                  speculativeExpired()) {
+                throw std::runtime_error("NDNSF_DATA_V1 segment fetch aborted");
+              }
+            }
+            auto firstResult = speculativeFirst->get();
+            if (firstResult) {
+              fetched.wire = std::move(firstResult->contents.front());
+              fetched.metrics = std::move(firstResult->metrics);
+              fetched.received = true;
+              if (fetched.wire.size() > ndn::MAX_NDN_PACKET_SIZE) {
+                throw std::runtime_error("speculative first segment exceeds packet budget");
+              }
+            }
+            else {
+              fetched.failure = std::make_exception_ptr(
+                std::runtime_error("failed speculative exact first segment"));
+            }
+            if (speculativeExpired()) {
+              throw std::runtime_error("NDNSF_DATA_V1 speculative window expired");
+            }
+            if (!fetched.received) {
+              mergeTransferMetrics(transportMetrics, fetched.metrics);
+              if (cancelled->load(std::memory_order_acquire) ||
+                  m_groupCoordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0 ||
+                  speculativeExpired()) {
+                if (fetched.failure) std::rethrow_exception(fetched.failure);
+                throw std::runtime_error("NDNSF_DATA_V1 speculative fetch aborted");
+              }
+              speculativeFirstFallback = true;
+              if (dependencyObjectTraceEnabled()) {
+                std::ostringstream miss;
+                miss << "NDNSF_DI_DEPENDENCY_FETCH_PHASE session=" << sessionId
+                     << " scope=" << edge.scope
+                     << " phase=speculative_first_miss fallback=bounded-normal-fetch";
+                logRuntimeEvidence(miss.str());
+              }
+              fetched = fetchSegment(exactTensorSegmentName(edge, 0), true);
+              if (!fetched.received) {
+                mergeTransferMetrics(transportMetrics, fetched.metrics);
+                if (fetched.failure) std::rethrow_exception(fetched.failure);
+                throw std::runtime_error("failed to fetch signed exact first segment");
+              }
+            }
+            else {
+              speculativeFirstUsed = true;
+            }
+          }
+          else {
+            if (batchOffset == batchWires.size()) {
+              if (!pendingBatch || !batchWires.empty()) fetchBatch(index, false);
+              while (pendingBatch->wait_for(std::chrono::milliseconds(5)) !=
+                       std::future_status::ready) {
+                if (cancelled->load(std::memory_order_acquire) ||
+                    m_groupCoordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0 ||
+                    SteadyClock::now().time_since_epoch().count() >=
+                      batchProgressDeadline->load(std::memory_order_acquire)) {
+                  throw std::runtime_error("NDNSF_DATA_V1 batch fetch aborted");
+                }
+              }
+              auto batchResult = pendingBatch->get();
+              if (!batchResult) throw std::runtime_error("failed signed exact Data batch");
+              mergeTransferMetrics(transportMetrics, batchResult->metrics);
+              batchWires = std::move(batchResult->contents);
+              batchOffset = 0;
+              detail::logNativeWorkPhase(edge.requestId, "tensor_segment_batch_fetch_wait",
+                                        batchFetchTiming, edge.consumerRole);
+            }
+            fetched.wire = std::move(batchWires[batchOffset++]);
+            fetched.received = true;
+          }
+          mergeTransferMetrics(transportMetrics, fetched.metrics);
+          if (!m_groupCoordinator->recordProgress(nowEpochMs())) {
+            throw std::runtime_error(
+              "NDNSF_DATA_V1 no-progress/hard deadline or cancellation");
+          }
           const auto dataName = exactTensorSegmentName(edge, index);
-          const auto wire = fetchExact(dataName, false);
+          auto wire = std::move(fetched.wire);
           if (wire.size() > capability.maxInflightBytes - fetchedBytes) {
             throw std::runtime_error("exact tensor ciphertext exceeds inflight bound");
           }
@@ -600,8 +999,37 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           else {
             ciphertextDigests.push_back(ciphertextDigest);
           }
-          fetchedSegments.emplace_back(dataName, wire);
+          fetchedSegments.emplace_back(dataName, std::move(wire));
         }
+        detail::logNativeWorkPhase(edge.requestId, "tensor_segments_collect",
+                                  segmentsCollectTiming, edge.consumerRole);
+        if (dependencyObjectTraceEnabled()) {
+          const auto segmentsFetchedAt = std::chrono::steady_clock::now();
+          std::ostringstream record;
+          record << "NDNSF_DI_DEPENDENCY_FETCH_PHASE"
+                 << " session=" << sessionId << " scope=" << edge.scope
+                 << " phase=exact_segments segment_count=" << manifest.segmentCount
+                 << " max_concurrent=" << maximumBatchSize
+                 << " batch_calls=" << batchCalls
+                 << " speculative_first_started=" << speculativeFirstStarted
+                 << " speculative_first_used=" << speculativeFirstUsed
+                 << " speculative_first_fallback=" << speculativeFirstFallback
+                 << " speculative_prefetch_count=" << prefetchCount
+                 << " speculative_prefetch_started=" << speculativeWholeStarted
+                 << " speculative_prefetch_used=" << speculativeWholeUsed
+                 << " speculative_prefetch_fallback=" << speculativeWholeFallback
+                 << " prefetch_bundle_bytes=" << edge.prefetchBundleBytes
+                 << " prefetch_segment_bytes=" << edge.prefetchSegmentBytes
+                 << " manifest_total_bytes=" << manifest.totalBytes
+                 << " inline_first_received=" << inlineFirstReceived
+                 << " manifest_segment_bytes=" << manifest.segmentSize
+                 << " manifest_fetch_us=" << std::chrono::duration_cast<
+                      std::chrono::microseconds>(manifestFetchedAt - started).count()
+                 << " segment_fetch_us=" << std::chrono::duration_cast<
+                      std::chrono::microseconds>(segmentsFetchedAt - segmentsStartedAt).count();
+          logRuntimeEvidence(record.str());
+        }
+        const auto manifestCommitmentTiming = detail::nativePhaseStarted();
         if (manifest.compactContextRequired) {
           std::vector<std::uint8_t> digestCommitmentInput;
           for (const auto& digest : ciphertextDigests) {
@@ -623,7 +1051,10 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
               "TensorObjectManifestV1 producer signature mismatch");
           }
         }
+        detail::logNativeWorkPhase(edge.requestId, "tensor_manifest_commitment_validate",
+                                  manifestCommitmentTiming, edge.consumerRole);
 
+        const auto segmentsDecodeTiming = detail::nativePhaseStarted();
         std::map<std::uint64_t, std::vector<std::uint8_t>> plaintextBySegment;
         for (std::size_t segmentIndex = 0;
              segmentIndex < fetchedSegments.size(); ++segmentIndex) {
@@ -635,7 +1066,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           // carry only the operation digest and crypto envelope; restore the
           // non-wire edge bindings before passing them to the coordinator.
           auto decoded = ProviderGroupCoordinator::decodeSegment(
-            wire, dataName.toUri());
+            wire, dataName.toUri(ndn::name::UriFormat::CANONICAL));
           if (decoded.segments.size() != 1) {
             throw std::runtime_error(
               "NDNSF_DATA_V1 segment inner manifest mismatch");
@@ -712,21 +1143,38 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
               "NDNSF_DATA_V1 segment inner manifest mismatch");
           }
           const auto& segment = decodedSegment;
-          const auto accepted = m_groupCoordinator->acceptSegment(
-            decoded.manifest, segment, dataName.toUri());
-          (void)accepted; // identical duplicates remain readable/idempotent
+          auto accepted = m_groupCoordinator->acceptAndOpenSegment(
+            decoded.manifest, segment, dataName.toUri(ndn::name::UriFormat::CANONICAL));
+          // Identical duplicates remain readable/idempotent in the exact path.
           plaintextBySegment.emplace(
             segment.descriptor.segmentNo,
-            m_groupCoordinator->openSegment(
-              decoded.manifest, segment, dataName.toUri()));
+            std::move(accepted.second));
         }
         if (plaintextBySegment.size() != manifest.segmentCount) {
           throw std::runtime_error(
             "NDNSF_DATA_V1 exact tensor object is incomplete");
         }
+        detail::logNativeWorkPhase(edge.requestId, "tensor_segments_decode_decrypt",
+                                  segmentsDecodeTiming, edge.consumerRole);
+        const auto reconstructTiming = detail::nativePhaseStarted();
         TensorBundle bundle;
         bundle.name = edge.tensors.size() == 1 ?
           edge.tensors.front() : edge.plannedDataName;
+        std::size_t plaintextBytes = 0;
+        for (const auto& item : plaintextBySegment) {
+          if (item.second.size() > bundle.payload.max_size() - plaintextBytes ||
+              item.second.size() > manifest.totalBytes - plaintextBytes) {
+            throw std::runtime_error(
+              "TensorObjectManifestV1 reconstructed content mismatch");
+          }
+          plaintextBytes += item.second.size();
+        }
+        if (plaintextBytes != manifest.totalBytes) {
+          throw std::runtime_error(
+            "TensorObjectManifestV1 reconstructed content mismatch");
+        }
+        // Reserve from accepted plaintext, not an unchecked manifest length.
+        bundle.payload.reserve(plaintextBytes);
         for (const auto& item : plaintextBySegment) {
           bundle.payload.insert(bundle.payload.end(),
                                 item.second.begin(), item.second.end());
@@ -740,180 +1188,15 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
         bundle.expectedBytes = manifest.totalBytes;
         attachTransferObservation(edge, bundle, "receive", transportMetrics);
         validateCanonicalYoloMergeInput(edge, bundle);
+        detail::logNativeWorkPhase(edge.requestId, "tensor_reconstruct_validate",
+                                  reconstructTiming, edge.consumerRole);
         logDependencyObject(sessionId, edge, "fetch-exact-ndn",
                             bundle.payload.size(), "ok");
         logDependencyStageMarker("complete", sessionId, edge,
                                  m_ctx.localProvider().toUri());
         return bundle;
       }
-      const bool localProducer = producerMember != nullptr &&
-        producerMember->provider == m_ctx.localProvider().toUri();
-      if (localProducer) {
-        const auto key = localDataV1Key(
-          sessionId, edge.collectiveOperationIndex, producerRank, tensorDigest);
-        std::unique_lock<std::mutex> lock(m_localDataV1Mutex);
-        const auto deadline = std::chrono::steady_clock::now() +
-          std::chrono::milliseconds(m_fetchTimeoutMs);
-        // Holding the same mutex used by publishOutput makes the key check and
-        // condition-variable waiter registration atomic with respect to a
-        // local publication.
-        reportFirstRead(nullptr);
-        while (m_localDataV1Segments.count(key) == 0 &&
-               !cancelled->load(std::memory_order_acquire)) {
-          const auto nextCheck = std::min(
-            deadline, std::chrono::steady_clock::now() +
-              std::chrono::milliseconds(10));
-          m_localDataV1Cv.wait_until(lock, nextCheck);
-          if (std::chrono::steady_clock::now() >= deadline &&
-              m_localDataV1Segments.count(key) == 0) {
-            break;
-          }
-        }
-        if (cancelled->load(std::memory_order_acquire)) {
-          throw std::runtime_error("local dependency prefetch was cancelled");
-        }
-        if (m_localDataV1Segments.count(key) != 0) {
-          encodedSegments = m_localDataV1Segments.at(key);
-        }
-      }
-      else {
-        if (producerMember == nullptr) {
-          throw std::runtime_error(
-            "NDNSF_DATA_V1 producer identity is not present in the capability");
-        }
-        CollectiveOperationManifestV1 nameBinding;
-        nameBinding.requestId = capability.requestId;
-        nameBinding.attemptId = capability.attemptId;
-        nameBinding.planDigest = capability.planDigest;
-        nameBinding.groupId = capability.groupId;
-        nameBinding.epoch = capability.epoch;
-        nameBinding.operationIndex = edge.collectiveOperationIndex;
-        nameBinding.producerRank = producerRank;
-        nameBinding.tensorDigest = tensorDigest;
-        const auto deadline = std::chrono::steady_clock::now() +
-          std::chrono::milliseconds(m_fetchTimeoutMs);
-        auto fetchExactSegment = [this, &edge, &capability, &nameBinding,
-                                  &deadline, producerMember,
-                                  &transportMetrics, cancelled,
-                                  reportFirstRead](std::size_t index) {
-          if (cancelled->load(std::memory_order_acquire)) {
-            throw std::runtime_error(
-              "NDNSF_DATA_V1 dependency segment fetch was cancelled");
-          }
-          if (m_groupCoordinator->terminal()) {
-            throw std::runtime_error(
-              "NDNSF_DATA_V1 group is terminal before exact segment fetch");
-          }
-          const auto remaining = remainingDeadlineMs(deadline);
-          if (remaining == 0) {
-            throw std::runtime_error(
-              "NDNSF_DATA_V1 exact segment fetch deadline expired");
-          }
-          const auto name = ndn::Name(ProviderGroupCoordinator::makeDataName(
-            capability, nameBinding, index));
-          CollaborationTransferMetrics segmentMetrics;
-          auto content = m_ctx.fetchSignedExactData(
-            edge.transportScope.empty() ? edge.scope : edge.transportScope,
-            name,
-            ndn::Name(producerMember->provider),
-            static_cast<int>(std::min<std::uint64_t>(
-              remaining, static_cast<std::uint64_t>(m_fetchTimeoutMs))),
-            [coordinator = m_groupCoordinator, cancelled] {
-              return cancelled->load(std::memory_order_acquire) ||
-                     coordinator->terminal();
-            },
-            &segmentMetrics,
-            reportFirstRead);
-          if (!content) {
-            if (cancelled->load(std::memory_order_acquire)) {
-              throw std::runtime_error(
-                "NDNSF_DATA_V1 dependency segment fetch was cancelled");
-            }
-            throw std::runtime_error(
-              "failed to fetch signed exact NDNSF_DATA_V1 segment: " +
-              name.toUri());
-          }
-          mergeTransferMetrics(transportMetrics, segmentMetrics);
-          return *content;
-        };
-
-        std::vector<ndn::Buffer> fetched;
-        std::size_t segmentCount = expectedSegments;
-        if (segmentCount == 0) {
-          fetched.push_back(fetchExactSegment(0));
-          const auto first = ProviderGroupCoordinator::decodeSegment(
-            std::vector<std::uint8_t>(fetched.front().begin(),
-                                      fetched.front().end()));
-          segmentCount = static_cast<std::size_t>(first.manifest.segmentCount);
-        }
-        if (segmentCount == 0 || segmentCount > operation.maxSegments) {
-          throw std::runtime_error(
-            "NDNSF_DATA_V1 exact segment count exceeds the capability");
-        }
-        fetched.reserve(segmentCount);
-        for (std::size_t index = fetched.size(); index < segmentCount; ++index) {
-          fetched.push_back(fetchExactSegment(index));
-        }
-        encodedSegments = std::move(fetched);
-      }
-      if (!encodedSegments) {
-        throw std::runtime_error(
-          "failed to fetch NDNSF_DATA_V1 segments for: " + edge.plannedDataName);
-      }
-      if (expectedSegments == 0) {
-        expectedSegments = encodedSegments->size();
-      }
-      std::map<std::uint64_t, std::vector<std::uint8_t>> plaintextBySegment;
-      std::uint64_t manifestSegmentCount = 0;
-      std::uint64_t manifestTotalBytes = 0;
-      for (const auto& encoded : *encodedSegments) {
-        const auto decoded = ProviderGroupCoordinator::decodeSegment(
-          std::vector<std::uint8_t>(encoded.begin(), encoded.end()));
-        if (decoded.segments.empty()) {
-          throw std::runtime_error("NDNSF_DATA_V1 SVS publication has no segment");
-        }
-        const auto& manifest = decoded.manifest;
-        const auto& segment = decoded.segments.front();
-        if (manifestSegmentCount == 0) {
-          manifestSegmentCount = manifest.segmentCount;
-          manifestTotalBytes = manifest.totalBytes;
-        }
-        else if (manifest.segmentCount != manifestSegmentCount ||
-                 manifest.totalBytes != manifestTotalBytes) {
-          throw std::runtime_error("NDNSF_DATA_V1 manifest bounds differ across segments");
-        }
-        const auto result = m_groupCoordinator->acceptSegment(
-          manifest, segment, segment.dataName);
-        if (result == DataSegmentReplayWindow::Result::Accepted) {
-          plaintextBySegment.emplace(
-            segment.descriptor.segmentNo,
-            m_groupCoordinator->openSegment(manifest, segment, segment.dataName));
-        }
-      }
-      if (plaintextBySegment.empty() ||
-          plaintextBySegment.size() != expectedSegments) {
-        throw std::runtime_error("NDNSF_DATA_V1 operation is incomplete");
-      }
-      TensorBundle bundle;
-      bundle.name = edge.tensors.size() == 1 ? edge.tensors.front() : edge.plannedDataName;
-      for (const auto& item : plaintextBySegment) {
-        bundle.payload.insert(bundle.payload.end(), item.second.begin(), item.second.end());
-      }
-      bundle.expectedSegments = static_cast<std::size_t>(manifestSegmentCount);
-      bundle.expectedBytes = static_cast<std::size_t>(manifestTotalBytes);
-      attachTransferObservation(edge, bundle, "receive", transportMetrics);
-      if (edge.expectedBytes != 0 && bundle.payload.size() != edge.expectedBytes) {
-        throw std::runtime_error("NDNSF_DATA_V1 dependency byte count mismatch");
-      }
-      if (!m_groupCoordinator->recordProgress(nowEpochMs())) {
-        throw std::runtime_error("NDNSF_DATA_V1 group deadline or cancellation");
-      }
-      validateCanonicalYoloMergeInput(edge, bundle);
-      logDependencyObject(sessionId, edge, "fetch-ndnsf-data-v1",
-                          bundle.payload.size(), "ok");
-      logDependencyStageMarker("complete", sessionId, edge,
-                               m_ctx.localProvider().toUri());
-      return bundle;
+      throw std::invalid_argument("C04 tensor endpoint is required for network dependency fetch");
     }
     if (const auto* trace = std::getenv("NDNSF_DI_RUNTIME_TIMING");
         trace != nullptr && *trace != '\0' && *trace != '0') {
@@ -949,6 +1232,13 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
     return bundle;
    }
    catch (...) {
+     try {
+       logDependencyStageMarker("failed", sessionId, edge,
+                                m_ctx.localProvider().toUri());
+     }
+     catch (...) {
+       // Preserve the original transport/validation exception.
+     }
      reportFirstRead(std::current_exception());
      throw;
    }
@@ -969,9 +1259,7 @@ void
 NdnsfCollaborationDependencyIo::cancelPendingPrefetches() noexcept
 {
   m_pendingPrefetchCancelled->store(true, std::memory_order_release);
-  // Local-segment waits recheck the atomic at 10ms intervals, so this wakeup
-  // does not need to contend for their data mutex.
-  m_localDataV1Cv.notify_all();
+  // Existing exact-fetch cancellation polling owns the Face handles.
 }
 
 void
@@ -979,10 +1267,9 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
                                               const DependencyEdge& edge,
                                               const TensorBundle& bundle)
 {
-  // See prefetchInput: TOKEN_FEEDBACK is authorized by the sealed group
-  // operation below, not by a V3 endpoint digest that does not exist for this
-  // internal generation-control edge.
-  if (m_protectedRuntime && edge.operationKind != "TOKEN_FEEDBACK") {
+  if (edge.useNdnsfDataV1 && !edge.declaredByV3)
+    throw std::invalid_argument("C04 tensor endpoint is required for network publication");
+  if (m_protectedRuntime) {
     m_protectedRuntime->authorizeDataflow(
       ProtectedDataflowDirection::Publish, edge.endpointDigest,
       edge.producerRole, edge.consumerRole, nowEpochMs());
@@ -995,11 +1282,20 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
     const auto& capability = m_groupCoordinator->capability();
     const auto& operation = operationForEdge(
       capability, edge.collectiveOperationIndex);
+    if (operation.kind != edge.operationKind)
+      throw std::invalid_argument("tensor operation differs from the signed capability");
+    const auto producerRank = producerRankForEdge(capability, edge);
+    const auto* producerMember = memberForRank(capability, producerRank);
+    if (producerMember == nullptr || ndn::Name(producerMember->provider) != m_ctx.localProvider())
+      throw std::invalid_argument("tensor Producer is not the local Provider");
+    validateTensorReference(edge, *producerMember);
     if (!m_groupCoordinator->beginOperation(nowEpochMs())) {
       throw std::runtime_error(
         "NDNSF_DATA_V1 group cannot begin publication operation");
     }
-    const auto producerRank = producerRankForEdge(capability, edge);
+    constexpr std::size_t MAX_ORIGINAL_BYTES = 64U * 1024U * 1024U;
+    if (edge.declaredByV3 && bundle.payload.size() > MAX_ORIGINAL_BYTES)
+      throw std::length_error("tensor publication exceeds original cache capacity");
     const auto chunkSize = std::max<std::size_t>(1, m_maxSegmentSize);
     std::vector<std::vector<std::uint8_t>> chunks;
     for (std::size_t offset = 0; offset < bundle.payload.size(); offset += chunkSize) {
@@ -1019,23 +1315,82 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         throw std::invalid_argument(
           "V3 mayPublish tensor endpoint is incomplete");
       }
-      const auto* producerMember = memberForRank(capability, producerRank);
       if (producerMember == nullptr ||
-          producerMember->provider != m_ctx.localProvider().toUri() ||
-          !ndn::Name(producerMember->endpointPrefix)
-             .isPrefixOf(ndn::Name(edge.manifestDataName))) {
+          ndn::Name(producerMember->provider) != m_ctx.localProvider()) {
         throw std::runtime_error(
           "V3 mayPublish endpoint is not owned by the local Provider");
       }
+      constexpr std::size_t MAX_ORIGINAL_OBJECTS = 8192;
+      if (bundle.payload.size() > MAX_ORIGINAL_BYTES)
+        throw std::length_error("tensor publication exceeds original cache capacity");
+      const auto fingerprint = nativeCanonicalJson(NativeJson{
+        {"endpoint", edge.endpointDigest}, {"object", edge.executionObjectDigest},
+        {"capability", capability.capabilityDigest}, {"epoch_key", capability.epochKeyId},
+        {"requester", m_ctx.requesterName().toUri(ndn::name::UriFormat::CANONICAL)},
+        {"manifest", ndn::Name(edge.manifestDataName).toUri(ndn::name::UriFormat::CANONICAL)},
+        {"scope", edge.transportScope.empty() ? edge.scope : edge.transportScope},
+        {"chunk_bytes", chunkSize}, {"freshness_ms", m_freshnessMs},
+        {"inline", edge.inlineFirstSegment}, {"operation_index", edge.collectiveOperationIndex},
+        {"source_layout", edge.collectiveSourceLayoutDigest},
+        {"target_layout", edge.collectiveTargetLayoutDigest},
+        {"tensor", edge.tensorDigest}, {"max_segments", edge.maxSegments},
+        {"request_id", edge.requestId}, {"attempt", edge.attemptEpoch},
+        {"plan", edge.planDigest}, {"manifest_contract", edge.manifestContractDigest},
+        {"security_profile", edge.securityProfile}, {"operation_kind", edge.operationKind},
+        {"round", edge.round}, {"naming_stride", edge.namingOperationStride},
+        {"microbatch", edge.microbatch}, {"producer_role", edge.producerRole},
+        {"producer_rank", producerRank},
+        {"consumer_roles", edge.consumerRoles.empty() ?
+          std::vector<std::string>{edge.consumerRole} : edge.consumerRoles}, {"tensors", edge.tensors},
+        {"bundle_tensor_names", edge.bundleTensorNames},
+        {"no_progress_ms", edge.noProgressDeadlineMs}, {"hard_deadline_ms", edge.hardDeadlineMs},
+        {"bundle_name", bundle.name}, {"payload_digest", sha256TensorBytes(bundle.payload)},
+        {"expected_bytes", bundle.expectedBytes}, {"expected_segments", bundle.expectedSegments}});
+      std::unique_lock<std::mutex> originalLock(m_tensorPublicationMutex);
+      const ndn::Name objectName(edge.plannedDataName);
+      auto cached = m_tensorPublications.find(objectName);
+      if (cached != m_tensorPublications.end()) {
+        if (cached->second.fingerprint != fingerprint)
+          throw std::invalid_argument("immutable tensor publication conflict");
+        if (!cached->second.originals.empty()) {
+          CollaborationTransferMetrics retryMetrics;
+          if (!m_ctx.replayOwnedExactData(edge.transportScope.empty() ? edge.scope : edge.transportScope,
+                                         cached->second.originals, &retryMetrics))
+            throw std::runtime_error("failed to replay signed tensor originals");
+          attachTransferObservation(edge, bundle, "send", retryMetrics);
+          if (!m_groupCoordinator->recordProgress(nowEpochMs()))
+            throw std::runtime_error("tensor retry group deadline or cancellation");
+          return;
+        }
+      }
+      else {
+        if (m_tensorPublications.size() >= MAX_ORIGINAL_OBJECTS)
+          throw std::length_error("tensor original cache entry capacity");
+        if (m_tensorPublicationBytes >= MAX_ORIGINAL_BYTES)
+          throw std::length_error("tensor original cache byte capacity");
+        cached = m_tensorPublications.emplace(objectName, CachedTensorPublication{fingerprint, {}, 0}).first;
+      }
+      auto& cachedPublication = cached->second;
+      const auto accountOriginals = [&] {
+        if (cachedPublication.wireBytes == 0 && !cachedPublication.originals.empty()) {
+          for (const auto& packet : cachedPublication.originals)
+            cachedPublication.wireBytes += packet->wireEncode().size();
+          m_tensorPublicationBytes += cachedPublication.wireBytes;
+        }
+      };
+      const auto reservation = ndn::make_scope_exit([&] {
+        if (cachedPublication.originals.empty()) m_tensorPublications.erase(cached);
+        else accountOriginals();
+      });
       std::vector<std::string> exactNames;
       exactNames.reserve(chunks.size());
       for (std::size_t index = 0; index < chunks.size(); ++index) {
-        exactNames.push_back(exactTensorSegmentName(edge, index).toUri());
+        exactNames.push_back(exactTensorSegmentName(edge, index).toUri(ndn::name::UriFormat::CANONICAL));
       }
       const auto createdAtMs = nowEpochMs();
       const auto sealed = m_groupCoordinator->sealOperation(
         operation,
-        producerRank.empty() ? "0" : producerRank,
+        producerRank,
         edge.collectiveSourceLayoutDigest,
         edge.collectiveTargetLayoutDigest,
         edge.tensorDigest,
@@ -1060,7 +1415,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       TensorObjectManifestV1 manifest;
       manifest.capabilityDigest = canonicalSha256(capability.capabilityDigest);
       manifest.epochKeyId = capability.epochKeyId;
-      manifest.requester = m_ctx.requesterName().toUri();
+      manifest.requester = m_ctx.requesterName().toUri(ndn::name::UriFormat::CANONICAL);
       manifest.requestId = edge.requestId;
       manifest.attemptId = std::to_string(edge.attemptEpoch);
       manifest.planDigest = edge.planDigest;
@@ -1110,12 +1465,39 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
                       encodedSegments[index].end()));
       }
       CollaborationTransferMetrics transportMetrics;
-      if (!m_ctx.publishSignedExactData(
+      bool published = false;
+      if (edge.inlineFirstSegment) {
+        try {
+          auto inlineWire = encodeTensorManifestWithFirstSegment(
+            manifestWire, encodedSegments.front(), ndn::MAX_NDN_PACKET_SIZE);
+          auto inlinePublications = publications;
+          inlinePublications.front().second = ndn::Buffer(
+            inlineWire.begin(), inlineWire.end());
+          inlinePublications.erase(inlinePublications.begin() + 1);
+          // Core signs and bounds the complete batch before inserting any Data.
+          // An oversized envelope therefore leaves no conflicting publication.
+          published = m_ctx.publishOwnedExactData(
             edge.transportScope.empty() ? edge.scope : edge.transportScope,
-            publications, m_freshnessMs, &transportMetrics)) {
-        throw std::runtime_error(
-          "failed to publish exact signed NDNSF_DATA_V1 tensor object");
+            inlinePublications, m_freshnessMs, &transportMetrics,
+            cachedPublication.originals, MAX_ORIGINAL_BYTES - m_tensorPublicationBytes);
+        }
+        catch (const std::invalid_argument&) {
+          accountOriginals();
+          if (!cachedPublication.originals.empty()) throw;
+          // Only a pre-publication framing failure permits plain fallback.
+        }
+        catch (...) { accountOriginals(); throw; }
       }
+      try {
+        if (!published && !m_ctx.publishOwnedExactData(
+              edge.transportScope.empty() ? edge.scope : edge.transportScope,
+              publications, m_freshnessMs, &transportMetrics,
+              cachedPublication.originals, MAX_ORIGINAL_BYTES - m_tensorPublicationBytes)) {
+          throw std::runtime_error("failed to publish exact signed NDNSF_DATA_V1 tensor object");
+        }
+      }
+      catch (...) { accountOriginals(); throw; }
+      accountOriginals();
       attachTransferObservation(edge, bundle, "send", transportMetrics);
       if (!m_groupCoordinator->recordProgress(nowEpochMs())) {
         throw std::runtime_error(
@@ -1125,51 +1507,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
                           bundle.payload.size(), "ok");
       return;
     }
-    const auto sealed = m_groupCoordinator->sealOperation(
-      operation,
-      producerRank.empty() ? "0" : producerRank,
-      edge.collectiveSourceLayoutDigest.empty() ? "layout/unknown" : edge.collectiveSourceLayoutDigest,
-      edge.collectiveTargetLayoutDigest.empty() ? "layout/unknown" : edge.collectiveTargetLayoutDigest,
-      edge.collectiveTensorDigest.empty() ? edge.scope : edge.collectiveTensorDigest,
-      chunks,
-      nowEpochMs());
-    std::vector<std::pair<ndn::Name, ndn::Buffer>> publications;
-    publications.reserve(sealed.segments.size());
-    for (const auto& segment : sealed.segments) {
-      const auto wire = ProviderGroupCoordinator::encodeSegment(
-        sealed.manifest, segment);
-      publications.emplace_back(
-        ndn::Name(segment.dataName),
-        ndn::Buffer(wire.begin(), wire.end()));
-    }
-    CollaborationTransferMetrics transportMetrics;
-    if (!m_ctx.publishSignedExactData(
-          edge.transportScope.empty() ? edge.scope : edge.transportScope,
-          publications, m_freshnessMs, &transportMetrics)) {
-      throw std::runtime_error(
-        "failed to publish signed exact NDNSF_DATA_V1 segments");
-    }
-    attachTransferObservation(edge, bundle, "send", transportMetrics);
-    const auto tensorDigest = edge.collectiveTensorDigest.empty() ?
-      edge.scope : edge.collectiveTensorDigest;
-    {
-      std::lock_guard<std::mutex> lock(m_localDataV1Mutex);
-      m_localDataV1Segments[localDataV1Key(
-        sessionId, edge.collectiveOperationIndex, producerRank, tensorDigest)] =
-          [&publications] {
-            std::vector<ndn::Buffer> segments;
-            segments.reserve(publications.size());
-            for (const auto& publication : publications) {
-              segments.push_back(publication.second);
-            }
-            return segments;
-          }();
-    }
-    m_localDataV1Cv.notify_all();
-    m_groupCoordinator->recordProgress(nowEpochMs());
-    logDependencyObject(sessionId, edge, "publish-ndnsf-data-v1",
-                        bundle.payload.size(), "ok");
-    return;
+    throw std::invalid_argument("C04 tensor endpoint is required for network publication");
   }
   const ndn::Buffer payload(bundle.payload.data(), bundle.payload.size());
   logDependencyObject(sessionId, edge, "publish", bundle.payload.size(), "ok");

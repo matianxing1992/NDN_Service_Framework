@@ -564,9 +564,10 @@ BOOST_AUTO_TEST_SUITE_END()
 namespace {
 using namespace ndnsf::di;
 std::vector<std::int64_t> sampled(std::vector<std::vector<float>> logits,
-  const std::function<void(NativeEpochCoordinatorConfig&)>& configure = [](auto&) {})
+  const std::function<void(NativeEpochCoordinatorConfig&)>& configure = [](auto&) {},
+  std::size_t rowsPerEpoch = 1)
 {
-  const auto result = test::runSamplingEpochs(std::move(logits), configure);
+  const auto result = test::runSamplingEpochs(std::move(logits), configure, rowsPerEpoch);
   if (!result.finalPayload) throw std::runtime_error("sampling epoch did not finish");
   return nativeParseJson(std::string(result.finalPayload->begin(), result.finalPayload->end()))
     .at("tokenIds").get<std::vector<std::int64_t>>();
@@ -574,6 +575,17 @@ std::vector<std::int64_t> sampled(std::vector<std::vector<float>> logits,
 }
 
 BOOST_AUTO_TEST_SUITE(Spec182Sampling)
+BOOST_AUTO_TEST_CASE(LargePrefillSamplesOnlyTheFinalRow)
+{
+  constexpr std::size_t vocabulary = 4096;
+  constexpr std::size_t rows = 128;
+  std::vector<float> logits(vocabulary * rows, -1.0f);
+  logits[0] = 1000.0f;
+  logits[(rows - 1) * vocabulary + 17] = 2.0f;
+  BOOST_CHECK(sampled({std::move(logits)}, [](auto& c) {
+    c.samplingTopK = 1;
+  }, rows) == std::vector<std::int64_t>{17});
+}
 BOOST_AUTO_TEST_CASE(Spec182SamplingTopPRetainedMass)
 {
   const auto tokens = sampled({{float(std::log(.6)), float(std::log(.3)), float(std::log(.1))}}, [](auto& c) {

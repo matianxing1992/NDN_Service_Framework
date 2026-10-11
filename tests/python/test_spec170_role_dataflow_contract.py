@@ -114,9 +114,9 @@ class Spec170RoleDataflowContractTest(unittest.TestCase):
         self.assertEqual(decoded, consumer)
         edge = consumer.must_fetch[0]
         self.assertTrue(edge.name_template.startswith(
-            "/provider/a/NDNSF-DI/TENSOR/v1/REQUESTER/"))
-        self.assertTrue(edge.manifest_name.endswith("/MANIFEST"))
-        self.assertTrue(edge.segment_name(0).endswith("/SEG/seg=0"))
+            "/8=provider/8=a/8=NDNSF-DI/8=tensor/8=REQUEST/"))
+        self.assertTrue(edge.manifest_name.endswith("/8=MANIFEST"))
+        self.assertTrue(edge.segment_name(0).endswith("/8=DATA/50=%00"))
         self.assertEqual(edge.segment_name(1), edge.segment_name(1))
         self.assertNotEqual(edge.segment_name(0), edge.segment_name(1))
         with self.assertRaisesRegex(ValueError, "segment"):

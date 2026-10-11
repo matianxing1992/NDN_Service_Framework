@@ -3,10 +3,13 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace ndnsf::di {
+class NativeStaticProjectionLayout;
+class NativeGrantLeaseFixedContext;
 
 /** The requester-side binding of one published, encrypted grant. */
 struct NativeGrantBinding
@@ -48,6 +51,10 @@ struct NativeGrantLease
 {
   NativeGrantLeaseScope scope;
   std::vector<NativeGrantBinding> grants;
+  // Process-local immutable geometry only; never serialized with grants.
+  std::shared_ptr<const NativeStaticProjectionLayout> projectionLayout;
+  // Cold scope identity snapshot; never grants authority or enters the wire.
+  std::shared_ptr<const NativeGrantLeaseFixedContext> fixedContext;
 };
 
 } // namespace ndnsf::di

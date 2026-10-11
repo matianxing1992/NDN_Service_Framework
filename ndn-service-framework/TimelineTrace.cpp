@@ -2,14 +2,51 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <ctime>
 #include <functional>
+#include <limits>
+#include <optional>
 #include <sstream>
+#include <thread>
+#include <unistd.h>
 
 namespace ndn_service_framework {
 
 NDN_LOG_INIT(ndn_service_framework.TimelineTrace);
 
 namespace {
+
+std::optional<std::uint64_t>
+processCpuTimeUs() noexcept
+{
+#ifdef CLOCK_PROCESS_CPUTIME_ID
+    timespec value{};
+    if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &value) == 0 &&
+        value.tv_sec >= 0 && value.tv_nsec >= 0 && value.tv_nsec < 1000000000L) {
+        const auto seconds = static_cast<std::uint64_t>(value.tv_sec);
+        const auto micros = static_cast<std::uint64_t>(value.tv_nsec) / 1000;
+        if (seconds <= (std::numeric_limits<std::uint64_t>::max() - micros) / 1000000)
+            return seconds * 1000000 + micros;
+    }
+#endif
+    return std::nullopt;
+}
+
+std::optional<std::uint64_t>
+threadCpuTimeUs() noexcept
+{
+#ifdef CLOCK_THREAD_CPUTIME_ID
+    timespec value{};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) == 0 &&
+        value.tv_sec >= 0 && value.tv_nsec >= 0 && value.tv_nsec < 1000000000L) {
+        const auto seconds = static_cast<std::uint64_t>(value.tv_sec);
+        const auto micros = static_cast<std::uint64_t>(value.tv_nsec) / 1000;
+        if (seconds <= (std::numeric_limits<std::uint64_t>::max() - micros) / 1000000)
+            return seconds * 1000000 + micros;
+    }
+#endif
+    return std::nullopt;
+}
 
 bool
 envFlagEnabled(const char* name)
@@ -90,6 +127,7 @@ logPhaseTiming(const std::string& role,
 {
     if (requestId.empty() || phase.empty()) return;
     if (!envFlagEnabled("NDNSF_PHASE_TIMING")) return;
+    const auto processCpuUs = processCpuTimeUs();
     const auto attempt = timelineField(
         fields, "attempt", timelineField(fields, "attemptEpoch", "request"));
     const auto canonicalAttempt = attempt.empty() || attempt == "0" ?
@@ -114,10 +152,13 @@ logPhaseTiming(const std::string& role,
             field.first == "attemptEpoch" || field.first == "providerBootId" ||
             field.first == "sessionId" || field.first == "conversationId" ||
             field.first == "inferenceEpoch" || field.first == "contextEpoch" ||
+            field.first == "process_id" || field.first == "process_cpu_us" ||
             field.second.find_first_of("\r\n \t") != std::string::npos)
             continue;
         os << " " << field.first << "=" << field.second;
     }
+    os << " process_id=" << getpid();
+    if (processCpuUs) os << " process_cpu_us=" << *processCpuUs;
     NDN_LOG_WARN(os.str());
 }
 
@@ -173,6 +214,14 @@ logTimelineTrace(const std::string& role,
        << " steady_us=" << timelineSteadyMicroseconds()
        << " timestamp_us=" << wallMicroseconds()
        << " requestId=" << requestId.toUri();
+    // Cumulative CPU snapshots permit same-thread interval attribution;
+    // asynchronous intervals can include other callbacks on that thread.
+    os << " process_id=" << getpid()
+       << " thread_id=" << std::this_thread::get_id();
+    if (const auto cpu = processCpuTimeUs())
+        os << " process_cpu_us=" << *cpu;
+    if (const auto cpu = threadCpuTimeUs())
+        os << " thread_cpu_us=" << *cpu;
     for (const auto& field : fields) {
         os << " " << field.first << "=" << field.second;
     }

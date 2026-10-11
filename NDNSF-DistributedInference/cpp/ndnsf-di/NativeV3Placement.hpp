@@ -124,4 +124,12 @@ private:
 void validateNativeRolePlacement(const NativeRolePlacementProposalV3& proposal,
   const std::vector<NativeSelectionRoleV3>& preparedRoles,
   const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs);
+/** Reuse structural validation only for exact immutable role interfaces.
+ * Current placement and admitted-offer checks still execute synchronously. */
+void validateNativeRolePlacementWithFixedCore(const NativeRolePlacementProposalV3& proposal,
+  const std::vector<NativeSelectionRoleV3>& preparedRoles, const NativeFixedPlacementCoreV1& fixed,
+  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs);
+/** Caller has bound the cached certificates to this invocation's publication. */
+void validateNativePublishedRolePlacement(const NativeRolePlacementProposalV3& proposal,
+  const NativeFixedPlacementCoreV1& fixed, const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs);
 } // namespace ndnsf::di

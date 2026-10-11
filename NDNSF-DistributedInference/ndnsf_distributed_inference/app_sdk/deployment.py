@@ -10,7 +10,7 @@ from threading import RLock
 import time
 import warnings
 from pathlib import Path
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
@@ -30,6 +30,18 @@ from .contracts import (
 )
 from .runtime_journal import RuntimeJournal, RuntimeJournalUnsafeRootError
 from .status import RevisionState
+
+
+def _same_name(left: str, right: str) -> bool:
+    from ndn.encoding import Name
+    return bytes(Name.encode(Name.normalize(left))) == bytes(Name.encode(Name.normalize(right)))
+
+
+def _deployment_record_name(producer, application, deployment_id, kind,
+                            revision="", epoch=0, digest=""):
+    from ndnsf import _ndnsf
+    return _ndnsf.make_deployment_record_name(
+        producer, application, deployment_id, kind, revision, epoch, digest)
 
 
 LEGACY_SELECTION_LOADS_CAPABILITY = "SELECTION_LOADS_V1"
@@ -557,15 +569,22 @@ class NetworkDeploymentCatalogTransport:
         self.timeout_ms = max(1, int(timeout_ms))
         self.freshness_ms = max(1, int(freshness_ms))
 
-    @staticmethod
-    def _record_signer(record_name: str) -> str:
-        marker = "/NDNSF/DI/"
-        if marker not in record_name:
-            raise ValueError("APP record name is outside /NDNSF/DI")
-        signer = record_name.split(marker, 1)[0]
-        if not signer.startswith("/"):
-            raise ValueError("APP record signer identity is invalid")
-        return signer
+    def _record_signer(self, record_name: str, expected_producer: str | None) -> str:
+        from ..naming import canonical_name_uri, parse_producer_data_name
+        if not expected_producer:
+            raise ValueError("current deployment fetch lacks explicit Producer context")
+        producer = canonical_name_uri(expected_producer)
+        parsed = parse_producer_data_name(record_name, producer)
+        if parsed is None or parsed.category != "DEPLOYMENT" or parsed.name_space != "NDNSF":
+            raise ValueError("deployment record is outside its expected Producer namespace")
+        return producer
+
+    def _publication_owner(self, owner: str) -> str:
+        from ..naming import canonical_name_uri
+        producer = canonical_name_uri(self._user.requester_identity)
+        if not _same_name(producer, owner):
+            raise PermissionError("native deployment Producer differs from lifecycle owner")
+        return producer
 
     @staticmethod
     def _encode(schema: str, record_name: str, digest: str,
@@ -582,7 +601,7 @@ class NetworkDeploymentCatalogTransport:
                 digest: str, field: str) -> dict:
         value = json.loads(bytes(payload).decode("utf-8"))
         if (not isinstance(value, dict) or value.get("schema") != schema or
-                value.get("recordName") != record_name or
+                not _same_name(value.get("recordName", ""), record_name) or
                 value.get("recordDigest") != digest or
                 not isinstance(value.get(field), dict)):
             raise ValueError("signed APP record envelope binding mismatch")
@@ -591,6 +610,11 @@ class NetworkDeploymentCatalogTransport:
     def publish_definition(self, record_name: str,
                            definition: DeploymentDefinition):
         digest = definition.digest()
+        producer = self._publication_owner(definition.deployment_owner)
+        if not _same_name(record_name, _deployment_record_name(
+                producer, definition.application_identity, definition.deployment_id,
+                "DEFINITION", digest=digest)):
+            raise ValueError("definition publication Name commitment mismatch")
         result = self._user.publish_signed_app_data(
             record_name,
             self._encode(self.DEFINITION_SCHEMA, record_name, digest,
@@ -598,13 +622,16 @@ class NetworkDeploymentCatalogTransport:
             freshness_ms=self.freshness_ms)
         if not result.success:
             raise RuntimeError(f"definition Data publication failed: {result.error}")
-        if result.data_name != record_name:
+        if not _same_name(result.data_name, record_name):
             raise ValueError("definition publisher changed the exact record name")
         return None
 
     def publish_activation(self, record_name: str,
                            activation: DeploymentActivationRecord):
         digest = activation.digest()
+        producer = self._publication_owner(activation.deployment_owner)
+        if not _same_name(record_name, self._activation_name(producer, activation)):
+            raise ValueError("activation publication Name commitment mismatch")
         result = self._user.publish_signed_app_data(
             record_name,
             self._encode(self.ACTIVATION_SCHEMA, record_name, digest,
@@ -612,40 +639,52 @@ class NetworkDeploymentCatalogTransport:
             freshness_ms=self.freshness_ms)
         if not result.success:
             raise RuntimeError(f"activation Data publication failed: {result.error}")
-        if result.data_name != record_name:
+        if not _same_name(result.data_name, record_name):
             raise ValueError("activation publisher changed the exact record name")
         return None
 
-    def fetch_definition(self, record_name: str, digest: str):
-        expected_signer = self._record_signer(record_name)
+    @staticmethod
+    def _activation_name(producer, activation):
+        return _deployment_record_name(producer, activation.application_identity,
+            activation.deployment_id, "REVOCATION" if activation.revoked else "ACTIVATION",
+            activation.revision_digest, activation.lifecycle_epoch if activation.revoked else 0,
+            activation.naming_digest())
+
+    def fetch_definition(self, record_name: str, digest: str, *, expected_producer=None):
+        expected_signer = self._record_signer(record_name, expected_producer)
         result = self._user.fetch_signed_app_data(
             record_name, expected_signer, timeout_ms=self.timeout_ms)
         if not result.success:
             raise LookupError(f"definition Data unavailable: {result.error}")
-        if result.data_name != record_name:
+        if not _same_name(result.data_name, record_name):
             raise ValueError("definition Data exact-name mismatch")
         definition = DeploymentDefinition.from_dict(self._decode(
             result.payload, schema=self.DEFINITION_SCHEMA,
             record_name=record_name, digest=digest, field="definition"))
         if (definition.digest() != digest or
-                definition.application_identity != expected_signer):
+                not _same_name(definition.deployment_owner, expected_signer) or
+                not _same_name(record_name, _deployment_record_name(expected_signer,
+                    definition.application_identity, definition.deployment_id,
+                    "DEFINITION", digest=digest))):
             raise ValueError("definition Data digest or Application binding mismatch")
         return _VerifiedDefinitionRecord(
             definition, expected_signer, result.signer_certificate)
 
-    def fetch_activation(self, record_name: str, digest: str):
-        expected_signer = self._record_signer(record_name)
+    def fetch_activation(self, record_name: str, digest: str, *, expected_producer=None):
+        expected_signer = self._record_signer(record_name, expected_producer)
         result = self._user.fetch_signed_app_data(
             record_name, expected_signer, timeout_ms=self.timeout_ms)
         if not result.success:
             raise LookupError(f"activation Data unavailable: {result.error}")
-        if result.data_name != record_name:
+        if not _same_name(result.data_name, record_name):
             raise ValueError("activation Data exact-name mismatch")
         activation = DeploymentActivationRecord.from_dict(self._decode(
             result.payload, schema=self.ACTIVATION_SCHEMA,
             record_name=record_name, digest=digest, field="activation"))
-        if activation.digest() != digest:
-            raise ValueError("activation record digest mismatch")
+        if (activation.digest() != digest or
+                not _same_name(activation.deployment_owner, expected_signer) or
+                not _same_name(record_name, self._activation_name(expected_signer, activation))):
+            raise ValueError("activation record digest or Producer commitment mismatch")
         return _VerifiedActivationRecord(
             activation, expected_signer, result.signer_certificate)
 
@@ -699,7 +738,14 @@ class DeploymentCatalog:
         # Keeping only ``_active_refs.pop`` would make the same definition
         # immediately invocable again as ON_DEMAND and bypass the fence.
         self._revoked_revisions: set[tuple[str, str]] = set()
-        self._trusted_application_keys = dict(trusted_application_keys or {})
+        from ..naming import canonical_name_uri
+        self._trusted_application_keys = {}
+        for (identity, key_id), key in (trusted_application_keys or {}).items():
+            canonical = (canonical_name_uri(identity), key_id)
+            previous = self._trusted_application_keys.get(canonical)
+            if previous is not None and previous != key:
+                raise ValueError("Application trust aliases conflict")
+            self._trusted_application_keys[canonical] = key
         self._lock = RLock()
         self._restore()
 
@@ -712,7 +758,8 @@ class DeploymentCatalog:
         raw = base64.b64decode(signer_public_key, validate=True)
         if "sha256:" + hashlib.sha256(raw).hexdigest() != signer_key_id:
             raise ValueError("Application definition key binding is invalid")
-        key = (application_identity, signer_key_id)
+        from ..naming import canonical_name_uri
+        key = (canonical_name_uri(application_identity), signer_key_id)
         previous = self._trusted_application_keys.get(key)
         if previous is not None and previous != signer_public_key:
             raise ValueError(
@@ -731,8 +778,9 @@ class DeploymentCatalog:
         from .application import ApplicationDefinitionSigner
 
         ApplicationDefinitionSigner.verify(definition)
+        from ..naming import canonical_name_uri
         expected = self._trusted_application_keys.get(
-            (definition.application_identity, definition.signer_key_id))
+            (canonical_name_uri(definition.application_identity), definition.signer_key_id))
         if expected != definition.signer_public_key:
             raise PermissionError("deployment definition signer is not authorized")
         return definition
@@ -740,17 +788,19 @@ class DeploymentCatalog:
     def _admit_fetched_definition(self, fetched) -> DeploymentDefinition:
         if isinstance(fetched, _VerifiedDefinitionRecord):
             definition = fetched.definition
-            if fetched.signer_identity != definition.application_identity:
-                raise PermissionError("definition Data signer is not its Application")
-            # The trust-schema-validated NDN Application identity authorizes
-            # the exact embedded definition key. A naked/self-signed object
-            # never reaches this branch.
-            self.authorize_application(
-                definition.application_identity,
-                definition.signer_key_id,
-                definition.signer_public_key)
+            if not _same_name(fetched.signer_identity, definition.deployment_owner):
+                raise PermissionError("definition Data signer is not its lifecycle owner")
+            # Outer Producer authentication never installs an Application key.
+            self._verify_definition(definition)
             return definition
         return fetched
+
+    @staticmethod
+    def _fetch_record(fetcher, record_name, digest, expected_producer):
+        owner = getattr(fetcher, "__self__", None)
+        if isinstance(owner, NetworkDeploymentCatalogTransport):
+            return fetcher(record_name, digest, expected_producer=expected_producer)
+        return fetcher(record_name, digest)
 
     def _restore(self) -> None:
         if self.journal is None:
@@ -758,7 +808,8 @@ class DeploymentCatalog:
         for record in self.journal.records():
             payload = record["payload"]
             if record["kind"] == "deployment-application-key":
-                key = (str(payload["applicationIdentity"]),
+                from ..naming import canonical_name_uri
+                key = (canonical_name_uri(str(payload["applicationIdentity"])),
                        str(payload["signerKeyId"]))
                 public_key = str(payload["signerPublicKey"])
                 raw = base64.b64decode(public_key, validate=True)
@@ -856,13 +907,13 @@ class DeploymentCatalog:
                 ), None)
             if predecessor is None:
                 raise ValueError("previous deployment revision is unavailable")
-            if (predecessor.deployment_owner != definition.deployment_owner or
-                    predecessor.service != definition.service):
+            if (not _same_name(predecessor.deployment_owner, definition.deployment_owner) or
+                    not _same_name(predecessor.service, definition.service)):
                 raise ValueError("deployment rollover changed immutable authority")
         digest = definition.digest()
-        record_name = (
-            definition.application_identity.rstrip("/") + "/NDNSF/DI/DEFINITION/" +
-            definition.deployment_id + "/" + digest)
+        record_name = _deployment_record_name(definition.deployment_owner,
+            definition.application_identity, definition.deployment_id,
+            "DEFINITION", digest=digest)
         ref = DeploymentDefinitionRef(
             application_identity=definition.application_identity,
             deployment_owner=definition.deployment_owner,
@@ -903,9 +954,9 @@ class DeploymentCatalog:
             coordinator_service=definition.coordinator_service,
             deployment_id=definition.deployment_id,
             service=definition.service,
-            record_name=(definition.application_identity.rstrip("/") +
-                         "/NDNSF/DI/DEFINITION/" + definition.deployment_id +
-                         "/" + digest),
+            record_name=_deployment_record_name(definition.deployment_owner,
+                definition.application_identity, definition.deployment_id,
+                "DEFINITION", digest=digest),
             definition_digest=digest,
             expires_at=definition.expires_at,
             signer_key_id=definition.signer_key_id,
@@ -947,10 +998,7 @@ class DeploymentCatalog:
         lifecycle_epoch = max(
             status.coordinator_epoch,
             (prior_active.lifecycle_epoch + 1) if prior_active is not None else 1)
-        record_name = (
-            definition.deployment_owner.rstrip("/") +
-            "/NDNSF/DI/DEPLOYMENT/" + definition.deployment_id + "/" +
-            revision + "/ACTIVATION")
+        record_name = ""
         activation = DeploymentActivationRecord(
             application_identity=definition.application_identity,
             deployment_owner=definition.deployment_owner,
@@ -969,6 +1017,9 @@ class DeploymentCatalog:
             supersedes=(prior_activation.digest()
                         if prior_activation is not None else ""),
         )
+        record_name = NetworkDeploymentCatalogTransport._activation_name(
+            definition.deployment_owner, activation)
+        activation = replace(activation, record_name=record_name)
         if self._activation_publisher is None:
             raise RuntimeError("deployment owner has no activation Data publisher")
         published = self._activation_publisher(record_name, activation)
@@ -1043,10 +1094,7 @@ class DeploymentCatalog:
         if current is None or current.revoked:
             raise RuntimeError("there is no ACTIVE record to revoke")
         now = datetime.now(timezone.utc)
-        record_name = (
-            definition.deployment_owner.rstrip("/") +
-            "/NDNSF/DI/DEPLOYMENT/" + definition.deployment_id + "/" +
-            revision + "/REVOCATION/" + str(current.lifecycle_epoch + 1))
+        record_name = ""
         revoked = DeploymentActivationRecord(
             application_identity=definition.application_identity,
             deployment_owner=definition.deployment_owner,
@@ -1066,6 +1114,9 @@ class DeploymentCatalog:
             supersedes=current.digest(),
             revoked=True,
         )
+        record_name = NetworkDeploymentCatalogTransport._activation_name(
+            definition.deployment_owner, revoked)
+        revoked = replace(revoked, record_name=record_name)
         if self._activation_publisher is None:
             raise RuntimeError("deployment owner has no activation Data publisher")
         self._activation_publisher(record_name, revoked)
@@ -1110,27 +1161,26 @@ class DeploymentCatalog:
                 definition = self._definitions.get(deployment.definition_digest)
             if definition is None and self._definition_fetcher is not None:
                 definition = self._admit_fetched_definition(
-                    self._definition_fetcher(deployment.definition_record_name,
-                                             deployment.definition_digest))
+                    self._fetch_record(self._definition_fetcher, deployment.definition_record_name,
+                        deployment.definition_digest, deployment.deployment_owner))
             if definition is None:
                 raise LookupError("ACTIVE definition is unavailable")
             self._verify_definition(definition)
             self._require_not_revoked(
                 deployment.deployment_id, deployment.revision)
-            canonical_definition_name = (
-                definition.application_identity.rstrip("/") +
-                "/NDNSF/DI/DEFINITION/" + definition.deployment_id + "/" +
-                definition.digest())
+            canonical_definition_name = _deployment_record_name(definition.deployment_owner,
+                definition.application_identity, definition.deployment_id,
+                "DEFINITION", digest=definition.digest())
             if (definition.digest() != deployment.definition_digest or
                     definition.deployment_id != deployment.deployment_id or
-                    definition.service != deployment.service or
-                    deployment.definition_record_name != canonical_definition_name or
+                    not _same_name(definition.service, deployment.service) or
+                    not _same_name(deployment.definition_record_name, canonical_definition_name) or
                     (deployment.application_identity and
-                     definition.application_identity != deployment.application_identity) or
+                     not _same_name(definition.application_identity, deployment.application_identity)) or
                     (deployment.deployment_owner and
-                     definition.deployment_owner != deployment.deployment_owner) or
+                     not _same_name(definition.deployment_owner, deployment.deployment_owner)) or
                     (deployment.coordinator_service and
-                     definition.coordinator_service != deployment.coordinator_service)):
+                     not _same_name(definition.coordinator_service, deployment.coordinator_service))):
                 raise ValueError("ACTIVE deployment reference binding mismatch")
             active = self._current_active_ref(
                 (deployment.deployment_id, deployment.revision))
@@ -1152,24 +1202,23 @@ class DeploymentCatalog:
                 definition = self._definitions.get(deployment.definition_digest)
             if definition is None and self._definition_fetcher is not None:
                 definition = self._admit_fetched_definition(
-                    self._definition_fetcher(
-                        deployment.record_name, deployment.definition_digest))
+                    self._fetch_record(self._definition_fetcher,
+                        deployment.record_name, deployment.definition_digest, deployment.deployment_owner))
             if definition is None:
                 raise LookupError("ON_DEMAND definition is unavailable")
             self._verify_definition(definition)
             revision = self._revision(definition)
             self._require_not_revoked(definition.deployment_id, revision)
-            canonical_record_name = (
-                definition.application_identity.rstrip("/") +
-                "/NDNSF/DI/DEFINITION/" + definition.deployment_id + "/" +
-                definition.digest())
+            canonical_record_name = _deployment_record_name(definition.deployment_owner,
+                definition.application_identity, definition.deployment_id,
+                "DEFINITION", digest=definition.digest())
             if (definition.digest() != deployment.definition_digest or
-                    definition.application_identity != deployment.application_identity or
-                    definition.deployment_owner != deployment.deployment_owner or
-                    definition.coordinator_service != deployment.coordinator_service or
+                    not _same_name(definition.application_identity, deployment.application_identity) or
+                    not _same_name(definition.deployment_owner, deployment.deployment_owner) or
+                    not _same_name(definition.coordinator_service, deployment.coordinator_service) or
                     definition.deployment_id != deployment.deployment_id or
-                    definition.service != deployment.service or
-                    deployment.record_name != canonical_record_name or
+                    not _same_name(definition.service, deployment.service) or
+                    not _same_name(deployment.record_name, canonical_record_name) or
                     deployment.expires_at != definition.expires_at or
                     definition.signer_key_id != deployment.signer_key_id):
                 raise ValueError("ON_DEMAND definition reference binding mismatch")
@@ -1389,8 +1438,8 @@ class DeploymentCatalog:
             signer_key_id=str(self._hint(hint, "signerKeyId", "signer_key_id")),
         )
         definition, revision = self.resolve_definition(ref)
-        if (definition.deployment_owner != ref.deployment_owner or
-                definition.coordinator_service != ref.coordinator_service):
+        if (not _same_name(definition.deployment_owner, ref.deployment_owner) or
+                not _same_name(definition.coordinator_service, ref.coordinator_service)):
             raise ValueError("NDNSD definition authority hint mismatch")
         digest = definition.digest()
         with self._lock:
@@ -1406,21 +1455,22 @@ class DeploymentCatalog:
         if (not activation_name or not activation_digest.startswith("sha256:") or
                 self._activation_fetcher is None):
             raise ValueError("incomplete ACTIVE deployment hint")
-        fetched = self._activation_fetcher(activation_name, activation_digest)
+        fetched = self._fetch_record(self._activation_fetcher, activation_name,
+            activation_digest, definition.deployment_owner)
         if not isinstance(fetched, _VerifiedActivationRecord):
             raise PermissionError("activation transport did not attest its signer")
         activation = fetched.activation
-        if fetched.signer_identity != definition.deployment_owner:
+        if not _same_name(fetched.signer_identity, definition.deployment_owner):
             raise PermissionError("activation Data signer is not deployment owner")
         expires = datetime.fromisoformat(activation.expires_at)
         if expires.tzinfo is None or expires <= datetime.now(timezone.utc):
             raise ValueError("activation record expired")
-        if (activation.record_name != activation_name or
+        if (not _same_name(activation.record_name, activation_name) or
                 activation.digest() != activation_digest or
-                activation.application_identity != definition.application_identity or
-                activation.deployment_owner != definition.deployment_owner or
+                not _same_name(activation.application_identity, definition.application_identity) or
+                not _same_name(activation.deployment_owner, definition.deployment_owner) or
                 activation.deployment_id != definition.deployment_id or
-                activation.service != definition.service or
+                not _same_name(activation.service, definition.service) or
                 activation.definition_digest != digest or
                 activation.revision != revision or
                 activation.revision_digest != revision or

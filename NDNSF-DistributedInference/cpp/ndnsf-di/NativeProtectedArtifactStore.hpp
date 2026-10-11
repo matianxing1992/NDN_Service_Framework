@@ -18,6 +18,11 @@ struct NativeAssembledEntryContext
 // Hash the exact assembly object in the canonical, authenticated Selection wire.
 std::string nativeAssemblyDigestFromCanonicalProjection(const std::string& wire);
 
+struct NativeSelectionProjectionV3;
+// Preparation-only: both full and referenced Selection use the same validated
+// assembly contract. Live-runner reuse bypasses this cold preparation step.
+std::string nativeAssemblyDigestFromValidatedProjection(const NativeSelectionProjectionV3& projection);
+
 std::vector<std::uint8_t> sealNativeAssembledEntry(
   const std::vector<std::uint8_t>& contentKey,
   const std::vector<std::uint8_t>& plaintext,

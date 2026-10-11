@@ -7,7 +7,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from setuptools import Extension, setup
+from setuptools import Extension, find_packages, setup
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -383,4 +383,6 @@ def build_extension() -> Extension:
     )
 
 
-setup(ext_modules=[build_extension()])
+setup(name="ndnsf", version="0.1.0",
+      packages=find_packages(include=("ndnsf", "ndnsf.*")),
+      ext_modules=[build_extension()])

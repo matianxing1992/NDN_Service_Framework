@@ -716,13 +716,26 @@ fromOnnxElementType(ONNXTensorElementDataType type)
 }
 
 NamedTensor
+takeOwnedInputTensor(std::vector<NamedTensor> tensors,
+                     const std::string& inputName)
+{
+  auto selected = std::find_if(tensors.begin(), tensors.end(),
+    [&inputName](const NamedTensor& tensor) { return tensor.name == inputName; });
+  if (selected == tensors.end()) {
+    throw std::out_of_range("tensor bundle has no tensor: " + inputName);
+  }
+  // The decoded vector owns its payloads; transfer the selected allocation
+  // instead of copying it before inputBuffers takes ownership for Ort::Value.
+  return std::move(*selected);
+}
+
+NamedTensor
 tensorForInput(const TensorBundle& bundle,
                const std::string& inputName,
                const std::vector<int64_t>& fallbackShape)
 {
   if (isEncodedTensorBundle(bundle.payload)) {
-    const auto tensors = decodeTensorBundle(bundle.payload);
-    return findTensor(tensors, inputName);
+    return takeOwnedInputTensor(decodeTensorBundle(bundle.payload), inputName);
   }
   return makeFloat32Tensor(inputName, fallbackShape, bundle.payload);
 }
@@ -852,9 +865,9 @@ passthroughTensorFor(const RoleExecutionContext& ctx, const std::string& name)
     if (!isEncodedTensorBundle(item.second.payload)) {
       continue;
     }
-    const auto tensors = decodeTensorBundle(item.second.payload);
+    auto tensors = decodeTensorBundle(item.second.payload);
     try {
-      return findTensor(tensors, name);
+      return takeOwnedInputTensor(std::move(tensors), name);
     }
     catch (const std::out_of_range&) {
     }
@@ -1195,9 +1208,13 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
     logOnnxSessionLoad(m_spec, selection, false, false, 1, 0, 0);
     return;
   }
+  std::vector<NativeProviderResidencyIdentityV4> residencyIdentities;
+  if (m_spec.residencyIdentity)
+    residencyIdentities.push_back(*m_spec.residencyIdentity);
   auto lease = sessionCache->acquire(identity, [spec = m_spec] {
     return loadSharedSession(spec);
-  });
+  }, std::chrono::steady_clock::time_point::max(), {},
+     std::move(residencyIdentities));
   const auto sharedValue = lease.value();
   auto sharedSession = std::static_pointer_cast<SharedSession>(sharedValue);
   if (!sharedSession) {
@@ -1675,9 +1692,11 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     logRuntimePhase("di-provider", "ortRunBegin", effectiveContext.requestId,
                     phaseAttempt, phaseFields);
     m_impl->session.Run(Ort::RunOptions{nullptr}, *ioBinding);
+    // The engine interval ends only when device outputs are ready. Leaving
+    // synchronization outside it misattributes inference wait to DI work.
+    ioBinding->SynchronizeOutputs();
     logRuntimePhase("di-provider", "ortRunEnd", effectiveContext.requestId,
                     phaseAttempt, phaseFields);
-    ioBinding->SynchronizeOutputs();
     outputs = ioBinding->GetOutputValues();
   }
   else {

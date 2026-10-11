@@ -823,6 +823,39 @@ class SqliteRepositoryPersistence:
             )
         """)
         connection.execute("""
+            CREATE TABLE IF NOT EXISTS artifact_original_wires (
+                data_name TEXT PRIMARY KEY,
+                wire BLOB NOT NULL,
+                wire_sha256 TEXT NOT NULL
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS artifact_original_packets (
+                operation_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                data_name TEXT NOT NULL,
+                segment_no INTEGER NOT NULL,
+                content_bytes INTEGER NOT NULL,
+                PRIMARY KEY (operation_id, data_name),
+                UNIQUE (operation_id, source_kind, segment_no)
+            )
+        """)
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_artifact_original_name
+            ON artifact_original_packets(data_name)
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS artifact_original_sources (
+                operation_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_name TEXT NOT NULL,
+                source_prefix TEXT NOT NULL,
+                segment_count INTEGER NOT NULL,
+                content_bytes INTEGER NOT NULL,
+                PRIMARY KEY (operation_id, source_kind)
+            )
+        """)
+        connection.execute("""
             CREATE TABLE IF NOT EXISTS artifact_capacity_reservations (
                 operation_id TEXT PRIMARY KEY,
                 artifact_digest TEXT NOT NULL,
@@ -2174,6 +2207,144 @@ class SqliteRepositoryPersistence:
                 connection.rollback()
                 raise
 
+    def store_original_packet(self, operation_id: str, source_kind: str,
+                              data_name: str, segment: int,
+                              content_bytes: int, wire: bytes) -> None:
+        """Persist one natively validated packet; ACTIVE is the serving fence."""
+        self._require_artifact_writes_enabled()
+        wire = bytes(wire)
+        if (not operation_id or source_kind not in {"root", "page", "payload"}
+                or not data_name or segment < 0 or content_bytes < 0
+                or not wire or len(wire) > 8800):
+            raise ValueError("repo-original-packet-invalid")
+        digest = hashlib.sha256(wire).hexdigest()
+        with self.lock:
+            connection = self._require_connection()
+            original = connection.execute("""
+                SELECT wire, wire_sha256 FROM artifact_original_wires WHERE data_name=?
+            """, (data_name,)).fetchone()
+            if original is not None and (bytes(original[0]) != wire or str(original[1]) != digest):
+                raise ValueError("repo-original-packet-name-conflict")
+            previous = connection.execute("""
+                SELECT source_kind, segment_no, content_bytes
+                FROM artifact_original_packets WHERE operation_id=? AND data_name=?
+            """, (operation_id, data_name)).fetchone()
+            if previous is not None:
+                if tuple(previous) != (source_kind, segment, content_bytes):
+                    raise ValueError("repo-original-packet-metadata-conflict")
+                return
+            if original is None and len(wire) > self.capacity_status().available_bytes:
+                raise LifecycleTransitionError("repo-capacity-insufficient: original packet wire")
+            try:
+                connection.execute("""
+                    INSERT OR IGNORE INTO artifact_original_wires VALUES (?, ?, ?)
+                """, (data_name, sqlite3.Binary(wire), digest))
+                connection.execute("""
+                    INSERT INTO artifact_original_packets
+                    VALUES (?, ?, ?, ?, ?)
+                """, (operation_id, source_kind, data_name, segment, content_bytes))
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
+    def record_original_source(self, operation_id: str, source_kind: str,
+                               source_name: str, source_prefix: str,
+                               segment_count: int, content_bytes: int) -> None:
+        self._require_artifact_writes_enabled()
+        if (source_kind not in {"root", "page", "payload"} or not source_name
+                or not source_prefix or segment_count <= 0 or content_bytes < 0):
+            raise ValueError("repo-original-source-invalid")
+        with self.lock:
+            connection = self._require_connection()
+            escaped_prefix = (source_prefix.replace("\\", "\\\\")
+                              .replace("%", "\\%").replace("_", "\\_") + "/%")
+            row = connection.execute("""
+                SELECT COUNT(*), MIN(segment_no), MAX(segment_no), SUM(content_bytes),
+                       SUM(CASE WHEN data_name LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END)
+                FROM artifact_original_packets
+                WHERE operation_id=? AND source_kind=?
+            """, (escaped_prefix, operation_id, source_kind)).fetchone()
+            if tuple(row) != (segment_count, 0, segment_count - 1, content_bytes, 0):
+                raise ValueError("repo-original-source-incomplete")
+            values = (source_name, source_prefix, segment_count, content_bytes)
+            previous = connection.execute("""
+                SELECT source_name, source_prefix, segment_count, content_bytes
+                FROM artifact_original_sources WHERE operation_id=? AND source_kind=?
+            """, (operation_id, source_kind)).fetchone()
+            if previous is not None and tuple(previous) != values:
+                raise ValueError("repo-original-source-conflict")
+            connection.execute("""
+                INSERT OR IGNORE INTO artifact_original_sources VALUES (?, ?, ?, ?, ?, ?)
+            """, (operation_id, source_kind, *values))
+            connection.commit()
+
+    def original_sources(self, operation_id: str) -> tuple[dict[str, Any], ...]:
+        with self.lock:
+            connection = self._require_connection()
+            if not self._table_exists(connection, "artifact_original_sources"):
+                return ()
+            rows = connection.execute("""
+                SELECT source_kind, source_name, source_prefix, segment_count, content_bytes
+                FROM artifact_original_sources WHERE operation_id=? ORDER BY source_kind
+            """, (operation_id,)).fetchall()
+        keys = ("kind", "source_name", "source_prefix", "segment_count", "content_bytes")
+        return tuple(dict(zip(keys, row)) for row in rows)
+
+    def lookup_original_packet(self, data_name: str, can_be_prefix: bool) -> tuple | None:
+        with self.lock:
+            connection = self._require_connection()
+            if not self._table_exists(connection, "artifact_original_wires"):
+                return None
+            row = connection.execute("""
+                SELECT p.data_name, w.wire, w.wire_sha256
+                FROM artifact_original_packets p JOIN artifact_original_wires w
+                ON w.data_name=p.data_name JOIN artifact_finalization_journal a
+                ON a.operation_id=p.operation_id
+                WHERE a.phase='ACTIVE' AND p.data_name=? LIMIT 1
+            """, (data_name,)).fetchone()
+            if row is None and can_be_prefix:
+                prefix = (data_name.rstrip("/").replace("\\", "\\\\")
+                          .replace("%", "\\%").replace("_", "\\_") + "/%")
+                row = connection.execute("""
+                    SELECT p.data_name, w.wire, w.wire_sha256
+                    FROM artifact_original_packets p JOIN artifact_original_wires w
+                    ON w.data_name=p.data_name JOIN artifact_finalization_journal a
+                    ON a.operation_id=p.operation_id
+                    WHERE a.phase='ACTIVE' AND p.data_name LIKE ? ESCAPE '\\'
+                    ORDER BY p.segment_no LIMIT 1
+                """, (prefix,)).fetchone()
+            return row
+
+    def discard_unactivated_original_packets(self, operation_id: str) -> None:
+        self._require_artifact_writes_enabled()
+        with self.lock:
+            connection = self._require_connection()
+            if connection.execute("SELECT 1 FROM artifact_finalization_journal WHERE operation_id=? AND phase='ACTIVE'",
+                                  (operation_id,)).fetchone() is not None:
+                return
+            try:
+                self._discard_original_packets_locked(connection, operation_id)
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
+    @staticmethod
+    def _discard_original_packets_locked(connection, operation_id: str) -> None:
+        """Remove one failed owner inside the caller's existing transaction."""
+        if connection.execute("SELECT 1 FROM artifact_finalization_journal WHERE operation_id=? AND phase='ACTIVE'",
+                              (operation_id,)).fetchone() is not None:
+            raise LifecycleTransitionError("repo-original-packets-active-owner")
+        connection.execute("""
+            DELETE FROM artifact_original_wires
+            WHERE data_name IN (SELECT data_name FROM artifact_original_packets WHERE operation_id=?)
+            AND NOT EXISTS (SELECT 1 FROM artifact_original_packets p
+                            WHERE p.data_name=artifact_original_wires.data_name AND p.operation_id<>?)
+        """, (operation_id, operation_id))
+        connection.execute("DELETE FROM artifact_original_sources WHERE operation_id=?", (operation_id,))
+        connection.execute("DELETE FROM artifact_original_packets WHERE operation_id=?", (operation_id,))
+
     def capacity_status(self) -> ArtifactCapacityStatus:
         with self.lock:
             connection = self._require_connection()
@@ -2188,6 +2359,20 @@ class SqliteRepositoryPersistence:
                     artifact["sizeBytes"]
                 )
             committed = sum(committed_by_identity.values())
+            if self._table_exists(connection, "artifact_original_wires"):
+                committed += int(connection.execute(
+                    "SELECT COALESCE(SUM(LENGTH(wire)), 0) FROM artifact_original_wires"
+                ).fetchone()[0])
+            for table, column in (("objects", "payload_size"), ("data_packets", "wire_size"),
+                                  ("serving_packets", "wire_size")):
+                if self._table_exists(connection, table):
+                    columns = self._table_columns(connection, table)
+                    payload_column = "payload" if table == "objects" else "wire"
+                    expression = (column if column in columns else
+                                  f"LENGTH({payload_column})" if payload_column in columns else "0")
+                    committed += int(connection.execute(
+                        f"SELECT COALESCE(SUM({expression}), 0) FROM {table}"
+                    ).fetchone()[0])
             reserved = int(connection.execute("""
                 SELECT COALESCE(SUM(reserved_bytes), 0)
                 FROM artifact_capacity_reservations
@@ -2645,6 +2830,7 @@ class SqliteRepositoryPersistence:
                         detail={"owner": "garbage-collector"},
                         error="",
                     )
+                self._discard_original_packets_locked(connection, operation_id)
                 connection.execute("""
                     UPDATE artifact_transfer_sessions
                     SET state='FAILED', preserves_progress=0,

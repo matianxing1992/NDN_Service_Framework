@@ -2,14 +2,39 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeTensorTransportDeclaration.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <algorithm>
+#include <cfenv>
+#include <clocale>
+#include <cstring>
 #include <memory>
 #include <set>
+#if defined(__linux__)
+#include <locale.h>
+#endif
+#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__)) && defined(__SSE__)
+#include <xmmintrin.h>
+#endif
 namespace ndnsf::di {
 namespace {
+bool reusableDecodeEnvironment()
+{
+#if defined(__linux__) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__)) && defined(__SSE__)
+  unsigned short control = 0;
+  asm volatile("fnstcw %0" : "=m"(control));
+  const auto* numericLocale = std::setlocale(LC_NUMERIC, nullptr);
+  return uselocale(static_cast<locale_t>(0)) == LC_GLOBAL_LOCALE &&
+    std::locale() == std::locale::classic() &&
+    std::fegetround() == FE_TONEAREST && control == 0x037f &&
+    (_mm_getcsr() & ~0x3fu) == 0x1f80 && numericLocale &&
+    (std::strcmp(numericLocale, "C") == 0 || std::strcmp(numericLocale, "POSIX") == 0);
+#else
+  return false;
+#endif
+}
 void require(bool okay, const char* message = "DI_NATIVE_OFFER_REJECTED")
 {
   if (!okay) throw std::runtime_error(message);
@@ -43,6 +68,8 @@ bool canonicalName(const std::string& value)
 bool validPairList(const std::vector<NativeJson>& pairs,
                    const std::vector<std::string>& roster)
 {
+  // verifyV4 has already validated the canonical, sorted, unique roster.
+  // Exact membership below also proves each endpoint is canonical.
   if (pairs.size() > 16) return false;
   std::pair<std::string, std::string> previous;
   bool havePrevious = false;
@@ -54,7 +81,7 @@ bool validPairList(const std::vector<NativeJson>& pairs,
     const auto source = pair.at("src_provider").get<std::string>();
     const auto destination = pair.at("dst_provider").get<std::string>();
     const std::pair<std::string, std::string> current{source, destination};
-    if (!canonicalName(source) || !canonicalName(destination) || source == destination ||
+    if (source == destination ||
         !std::binary_search(roster.begin(), roster.end(), source) ||
         !std::binary_search(roster.begin(), roster.end(), destination) ||
         (havePrevious && !(previous < current)))
@@ -239,9 +266,96 @@ NativeAdmittedOfferV3 NativeOfferAdmission::verify(
   return NativeAdmittedOfferV3(offer);
 }
 
+struct NativeOfferAdmission::V4ContextChecks
+{
+  bool rosterValidated = false;
+  bool artifactsValidated = false;
+  bool probeScopeValidated = false;
+  NativeJson candidateArtifacts;
+  std::string candidateArtifactSetDigest;
+};
+
+std::size_t NativeOfferDecodeCache::decodeReuseCount() const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return m_reuses;
+}
+
+std::shared_ptr<const NativeObservedProviderOfferV4>
+NativeOfferDecodeCache::decode(const std::string& wire)
+{
+  const bool reusable = reusableDecodeEnvironment();
+  if (reusable) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& entry : m_entries) {
+      if (entry.first == wire) {
+        ++m_reuses;
+        return entry.second;
+      }
+    }
+  }
+  auto decoded = std::make_shared<const NativeObservedProviderOfferV4>(
+    decodeNativeProviderOfferV4(wire));
+  if (reusable && reusableDecodeEnvironment()) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& entry : m_entries)
+      if (entry.first == wire) return entry.second;
+    if (m_entries.size() < 16) m_entries.emplace_back(wire, decoded);
+  }
+  return decoded;
+}
+
 NativeAdmittedOfferV4 NativeOfferAdmission::verifyV4(
   const ndn_service_framework::AckSelectionCandidate& ack,
   const NativeOfferBindingContext& context, std::uint64_t nowMs) const
+{
+  return verifyV4Impl(ack, context, nowMs, nullptr);
+}
+
+std::optional<std::vector<NativeAdmittedOfferV4>> NativeOfferAdmission::tryVerifyV4Batch(
+  const std::vector<ndn_service_framework::AckSelectionCandidate>& acks,
+  const NativeOfferBindingContext& context, std::uint64_t nowMs,
+  std::string* unavailableReason) const
+{
+  return tryVerifyV4Batch(acks, context, nowMs, unavailableReason, nullptr);
+}
+
+std::optional<std::vector<NativeAdmittedOfferV4>> NativeOfferAdmission::tryVerifyV4Batch(
+  const std::vector<ndn_service_framework::AckSelectionCandidate>& acks,
+  const NativeOfferBindingContext& context, std::uint64_t nowMs,
+  std::string* unavailableReason, NativeOfferDecodeCache* decodeCache) const
+{
+  if (unavailableReason) unavailableReason->clear();
+  const auto reject = [unavailableReason](const char* reason)
+      -> std::optional<std::vector<NativeAdmittedOfferV4>> {
+    if (unavailableReason) *unavailableReason = reason;
+    return std::nullopt;
+  };
+  try {
+    if (acks.empty()) return reject("PROVIDER_V4_OFFER_REJECTED");
+    // Owned immutable data: no proof survives this batch or aliases mutable
+    // caller context across independently authenticated Provider offers.
+    const NativeOfferBindingContext frozenContext = context;
+    V4ContextChecks checks;
+    std::vector<NativeAdmittedOfferV4> result;
+    result.reserve(acks.size());
+    for (const auto& ack : acks) {
+      if (!ack.ack.hasProviderCapabilityOffer() ||
+          !ack.ack.getProviderCapabilityOffer().hasField(NATIVE_PROVIDER_OFFER_V4_FIELD))
+        return reject("PROVIDER_V4_OFFER_MISSING");
+      result.push_back(verifyV4Impl(ack, frozenContext, nowMs, &checks, decodeCache));
+    }
+    return result;
+  }
+  catch (const std::exception&) {
+    return reject("PROVIDER_V4_OFFER_REJECTED");
+  }
+}
+
+NativeAdmittedOfferV4 NativeOfferAdmission::verifyV4Impl(
+  const ndn_service_framework::AckSelectionCandidate& ack,
+  const NativeOfferBindingContext& context, std::uint64_t nowMs,
+  V4ContextChecks* checks, NativeOfferDecodeCache* decodeCache) const
 {
   require(canonicalName(context.requesterIdentity));
   const auto& auth = ack.authenticationEvidence;
@@ -251,8 +365,12 @@ NativeAdmittedOfferV4 NativeOfferAdmission::verifyV4(
   require(ack.ack.hasProviderCapabilityOffer());
   const auto& capabilities = ack.ack.getProviderCapabilityOffer();
   require(capabilities.hasField(NATIVE_PROVIDER_OFFER_V4_FIELD));
-  const auto offer = decodeNativeProviderOfferV4(
-    capabilities.getField(NATIVE_PROVIDER_OFFER_V4_FIELD));
+  const auto& wire = capabilities.getField(NATIVE_PROVIDER_OFFER_V4_FIELD);
+  std::optional<NativeObservedProviderOfferV4> fresh;
+  std::shared_ptr<const NativeObservedProviderOfferV4> decoded;
+  if (decodeCache) decoded = decodeCache->decode(wire);
+  else fresh = decodeNativeProviderOfferV4(wire);
+  const auto& offer = decoded ? *decoded : *fresh;
   const auto entry = m_entries.find({offer.provider, offer.service});
   require(entry != m_entries.end());
   require(auth.signerIdentity == offer.provider &&
@@ -267,8 +385,9 @@ NativeAdmittedOfferV4 NativeOfferAdmission::verifyV4(
           digest(context.modelDigest) && context.modelDigest == offer.modelDigest &&
           digest(context.graphDigest) && context.graphDigest == offer.graphDigest);
   require(digest(context.candidateSetDigest) &&
-          context.candidateSetDigest == offer.candidateSetDigest &&
-          !context.candidateProviders.empty() && context.candidateProviders.size() <= 16 &&
+          context.candidateSetDigest == offer.candidateSetDigest);
+  if (!checks || !checks->rosterValidated) {
+    require(!context.candidateProviders.empty() && context.candidateProviders.size() <= 16 &&
           std::is_sorted(context.candidateProviders.begin(),
                          context.candidateProviders.end()) &&
           std::adjacent_find(context.candidateProviders.begin(),
@@ -280,28 +399,41 @@ NativeAdmittedOfferV4 NativeOfferAdmission::verifyV4(
                     offer.provider) != context.candidateProviders.end() &&
           nativePlanningDigest(nativeCanonicalJson(
             NativeJson(context.candidateProviders))) == context.candidateSetDigest);
-  require(context.candidateArtifacts.size() <=
-          MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS);
-  require(!context.candidateArtifacts.empty());
-  NativeJson candidateArtifacts = NativeJson::array();
-  std::string previousCandidate;
-  for (const auto& candidate : context.candidateArtifacts) {
-    const auto identity = candidateArtifactIdentityV4(candidate);
-    const auto canonical = nativeCanonicalJson(identity);
-    require(previousCandidate.empty() || previousCandidate < canonical);
-    previousCandidate = canonical;
-    candidateArtifacts.push_back(identity);
+    if (checks) checks->rosterValidated = true;
   }
-  const auto candidateArtifactSetDigest =
-    nativePlanningDigest(nativeCanonicalJson(candidateArtifacts));
+  // Membership is offer-specific even when the roster validation is reused.
+  require(std::binary_search(context.candidateProviders.begin(),
+                             context.candidateProviders.end(), offer.provider));
+  NativeJson localArtifacts;
+  std::string localArtifactSetDigest;
+  auto& candidateArtifacts = checks ? checks->candidateArtifacts : localArtifacts;
+  auto& candidateArtifactSetDigest = checks ? checks->candidateArtifactSetDigest : localArtifactSetDigest;
+  if (!checks || !checks->artifactsValidated) {
+    require(context.candidateArtifacts.size() <= MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS);
+    require(!context.candidateArtifacts.empty());
+    candidateArtifacts = NativeJson::array();
+    std::string previousCandidate;
+    for (const auto& candidate : context.candidateArtifacts) {
+      const auto identity = candidateArtifactIdentityV4(candidate);
+      const auto canonical = nativeCanonicalJson(identity);
+      require(previousCandidate.empty() || previousCandidate < canonical);
+      previousCandidate = canonical;
+      candidateArtifacts.push_back(identity);
+    }
+    candidateArtifactSetDigest = nativePlanningDigest(nativeCanonicalJson(candidateArtifacts));
+  }
   require(digest(context.candidateArtifactSetDigest) &&
           context.candidateArtifactSetDigest == candidateArtifactSetDigest &&
           candidateArtifactSetDigest == offer.candidateArtifactSetDigest);
+  if (checks) checks->artifactsValidated = true;
   require(digest(context.probeScopeDigest) &&
-          context.probeScopeDigest == offer.probeScopeDigest &&
-          context.probeScopeDigest == probeScopeDigest(context) &&
-          validPairList(context.allowedRttPairs, context.candidateProviders) &&
-          validPairList(context.allowedGoodputEdges, context.candidateProviders));
+          context.probeScopeDigest == offer.probeScopeDigest);
+  if (!checks || !checks->probeScopeValidated) {
+    require(context.probeScopeDigest == probeScopeDigest(context) &&
+            validPairList(context.allowedRttPairs, context.candidateProviders) &&
+            validPairList(context.allowedGoodputEdges, context.candidateProviders));
+    if (checks) checks->probeScopeValidated = true;
+  }
   for (const auto& row : offer.values.at("link_observations")) {
     require(std::binary_search(context.candidateProviders.begin(),
                                context.candidateProviders.end(),
@@ -337,9 +469,23 @@ NativeAdmittedOfferV4 NativeOfferAdmission::verifyV4(
           EVP_DigestVerifyInit(crypto.get(), nullptr, nullptr, nullptr, key.get()) == 1);
   const auto sig = signature(offer.signature);
   require(EVP_DigestVerify(crypto.get(), sig.data(), sig.size(),
-            reinterpret_cast<const unsigned char*>(offer.offerDigest.data()),
-            offer.offerDigest.size()) == 1);
-  return NativeAdmittedOfferV4(offer, auth.signerIdentity,
-                               auth.signerKeyLocator, auth.wireDigest);
+             reinterpret_cast<const unsigned char*>(offer.offerDigest.data()),
+             offer.offerDigest.size()) == 1);
+  // This optional field belongs to the enclosing, authenticated Core ACK,
+  // not the separately signed V4 values. Never cache it by V4 wire alone.
+  std::uint64_t tensorSegmentBytes = 0;
+  if (capabilities.hasField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD)) {
+    try {
+      const auto& transportWire = capabilities.getField(
+        NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD);
+      tensorSegmentBytes = detail::nativeTensorTransportSegmentBytesV1(
+        transportWire, ndn::MAX_NDN_PACKET_SIZE, offer.bootEpoch);
+    }
+    catch (const std::exception&) {
+      // Unsupported transport metadata cannot invalidate normal V4 admission.
+    }
+  }
+  return NativeAdmittedOfferV4(decoded ? offer : std::move(*fresh), auth.signerIdentity,
+                               auth.signerKeyLocator, auth.wireDigest, tensorSegmentBytes);
 }
 } // namespace ndnsf::di

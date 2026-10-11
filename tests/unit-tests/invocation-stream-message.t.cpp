@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <iomanip>
+#include <cstdlib>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -538,17 +540,19 @@ BOOST_AUTO_TEST_CASE(StreamCompletionAndEventNameBindOneInvocation)
   BOOST_CHECK_EQUAL(toHex(computeStreamBindingDigest(binding)),
     "aa8c0e2fc57574d2ad7e6b70c25ba8c6b5f563bf7b7c0f87620a02654f3e438d");
   const auto eventName = makeInvocationEventName(binding, 9);
-  const auto parsed = parseInvocationEventName(eventName);
+  BOOST_CHECK_EQUAL(toHex(eventName.wireEncode()),
+    "078c080870726f7669646572080566696e616c08054e444e534608056576656e7408075245515545535408146e616d653d2f383d726571756573742f383d69640807415454454d505408013108075345525649434508126e616d653d2f383d4c4c4d2f383d5177656e0820aa8c0e2fc57574d2ad7e6b70c25ba8c6b5f563bf7b7c0f87620a02654f3e438d3a0109");
+  const auto parsed = parseInvocationEventName(eventName, binding);
   BOOST_REQUIRE(parsed.has_value());
   BOOST_CHECK_EQUAL(parsed->producer, binding.producer);
   BOOST_CHECK_EQUAL(parsed->requester, binding.requester);
   BOOST_CHECK_EQUAL(parsed->serviceName, binding.serviceName);
-  BOOST_CHECK_EQUAL(parsed->requestId, ndn::Name("/id"));
+  BOOST_CHECK_EQUAL(parsed->requestId, binding.requestId);
   BOOST_CHECK_EQUAL(parsed->cursor, 9);
   BOOST_CHECK_EQUAL(parsed->streamEpoch, binding.streamEpoch);
   BOOST_CHECK(parsed->planDigest == binding.planDigest);
   BOOST_CHECK(parsed->generationId == binding.generationId);
-  BOOST_CHECK(!parseInvocationEventName(ndn::Name(eventName).append("extra")));
+  BOOST_CHECK(!parseInvocationEventName(ndn::Name(eventName).append("extra"), binding));
 
   StreamCompletion completion = validCompletion();
   const auto wire = completion.wireEncode();
@@ -560,16 +564,14 @@ BOOST_AUTO_TEST_CASE(StreamCompletionAndEventNameBindOneInvocation)
   BOOST_CHECK(!decoded.wireDecode(withDuplicateField(wire, 3)));
   BOOST_CHECK(!decoded.wireDecode(withSwappedFields(wire, 3, 4)));
   BOOST_CHECK_EQUAL(toHex(wire),
-    "fdf663fd0131a30101fdf67320aa8c0e2fc57574d2ad7e6b70c25ba8c6b5f563bf7b7"
-    "c0f87620a02654f3e438dfdf680af07ad080870726f7669646572080566696e"
-    "616c08054e444e534608054556454e5408102f7265717565737465722f616c6963"
-    "6508034c4c4d08045177656e080269640801010840333033313332333333343335"
-    "333633373338333933613362336333643365336634303431343234333434343534"
-    "363437343834393461346234633464346534660820313031313132313331343135"
-    "3136313731383139316131623163316431653166080107080109fdf67a0109fdf6"
-    "7b0104fdf67c0108fdf67e20404142434445464748494a4b4c4d4e4f5051525354"
-    "55565758595a5b5c5d5e5ffdf67f20606162636465666768696a6b6c6d6e6f70"
-    "7172737475767778797a7b7c7d7e7f");
+    "fdf663fd0110a30101fdf67320aa8c0e2fc57574d2ad7e6b70c25ba8c6b5f563bf7b7c0f"
+    "87620a02654f3e438dfdf6808e078c080870726f7669646572080566696e616c08054e44"
+    "4e534608056576656e7408075245515545535408146e616d653d2f383d72657175657374"
+    "2f383d69640807415454454d505408013108075345525649434508126e616d653d2f383d"
+    "4c4c4d2f383d5177656e0820aa8c0e2fc57574d2ad7e6b70c25ba8c6b5f563bf7b7c0f87"
+    "620a02654f3e438d3a0109fdf67a0109fdf67b0104fdf67c0108fdf67e20404142434445"
+    "464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5ffdf67f20606162636465"
+    "666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f");
 }
 
 BOOST_AUTO_TEST_CASE(StructuredRequestIdRemainsBoundInEventName)
@@ -577,11 +579,88 @@ BOOST_AUTO_TEST_CASE(StructuredRequestIdRemainsBoundInEventName)
   auto binding = validBinding();
   binding.requestId = ndn::Name("/NDNSF/DI/REQUEST/1");
   const auto eventName = makeInvocationEventName(binding, 1);
-  const auto parsed = parseInvocationEventName(eventName);
+  const auto parsed = parseInvocationEventName(eventName, binding);
   BOOST_REQUIRE(parsed.has_value());
   BOOST_CHECK_EQUAL(parsed->requestId, binding.requestId);
-  BOOST_CHECK_EQUAL(eventName.get(eventName.size() - 6).toUri(),
-                    ndn::name::Component(binding.requestId.toUri()).toUri());
+  BOOST_CHECK_EQUAL(eventName.get(eventName.size() - 7),
+                    ndn::name::Component("name=/8=NDNSF/8=DI/8=REQUEST/8=1"));
+}
+
+BOOST_AUTO_TEST_CASE(ContextualEventNamesKeepFullActorAndBinding)
+{
+  auto binding = validBinding();
+  binding.producer = ndn::Name("/org/NDNSF/event/provider/session");
+  binding.requestId = ndn::Name("/REQUEST/complete").append(ndn::name::Component::fromNumber(257, 54)).append(ndn::name::Component::fromNumber(0, 50));
+  binding.serviceName = ndn::Name("/SERVICE/NDNSF/event/Qwen");
+  const auto name = makeInvocationEventName(binding, 257);
+  const auto completeBinding = binding;
+  const auto digest = computeStreamBindingDigest(binding);
+  const std::array<uint8_t, 2> sequence{1, 1};
+  const std::array<uint8_t, 4> wrongSequence{0, 0, 1, 1};
+  ndn::Name independent = binding.producer;
+  independent.append("NDNSF").append("event").append("REQUEST")
+    .append("name=/8=REQUEST/8=complete/54=%01%01/50=%00")
+    .append("ATTEMPT").append("1").append("SERVICE")
+    .append("name=/8=SERVICE/8=NDNSF/8=event/8=Qwen")
+    .append(ndn::name::Component(ndn::tlv::GenericNameComponent,
+      ndn::span<const uint8_t>(digest.data(), digest.size())))
+    .append(ndn::name::Component(58, ndn::span<const uint8_t>(sequence.data(), sequence.size())));
+  BOOST_CHECK_EQUAL(name, independent);
+  BOOST_REQUIRE(parseInvocationEventName(independent, binding));
+  BOOST_CHECK(!parseInvocationEventName(name)); // one-argument API is legacy-only
+  auto wrong = name.getPrefix(-1);
+  wrong.append("257");
+  BOOST_CHECK(!parseInvocationEventName(wrong, binding));
+  wrong = name.getPrefix(-1);
+  wrong.append(ndn::name::Component(58, ndn::span<const uint8_t>(wrongSequence.data(), wrongSequence.size())));
+  BOOST_CHECK(!parseInvocationEventName(wrong, binding));
+  BOOST_CHECK_THROW(makeInvocationEventName(binding, 0), std::invalid_argument);
+  auto changed = binding;
+  changed.requestId = ndn::Name("/foreign/complete").append(ndn::name::Component::fromNumber(257, 54)).append(ndn::name::Component::fromNumber(0, 50));
+  BOOST_CHECK(!parseInvocationEventName(name, changed));
+  changed = binding; changed.serviceName = ndn::Name("/foreign/Qwen");
+  BOOST_CHECK(!parseInvocationEventName(name, changed));
+  changed = binding; changed.generationId[0] ^= 1;
+  BOOST_CHECK(!parseInvocationEventName(name, changed));
+  changed = binding; changed.eventKeyCommitment[0] ^= 1;
+  BOOST_CHECK(!parseInvocationEventName(name, changed));
+  changed = binding; changed.userToken.push_back(1);
+  BOOST_CHECK(!parseInvocationEventName(name, changed));
+  changed = binding; ++changed.policyEpoch;
+  BOOST_CHECK(!parseInvocationEventName(name, changed));
+  changed = binding; changed.attemptEpoch = 2;
+  BOOST_CHECK(!parseInvocationEventName(name, changed));
+  changed = binding; changed.producer = ndn::Name("/foreign/provider/session");
+  BOOST_CHECK(!parseInvocationEventName(name, changed));
+
+  // The labels may truncate; the full authenticated binding digest distinguishes
+  // requests whose readable labels are identical.
+  binding.requestId = ndn::Name("/" + std::string(80, 'x') + "/one");
+  changed = binding; changed.requestId = ndn::Name("/" + std::string(80, 'x') + "/two");
+  const auto longName = makeInvocationEventName(binding, 1);
+  BOOST_CHECK(longName != makeInvocationEventName(changed, 1));
+  BOOST_CHECK(!parseInvocationEventName(longName, changed));
+
+  if (const char* path = std::getenv("SPEC201_EVENT_RECORDS")) {
+    std::ofstream output(path);
+    BOOST_REQUIRE(output.good());
+    output << "[";
+    const std::vector<StreamBinding> bindings{validBinding(), completeBinding, binding, changed};
+    for (size_t index = 0; index < bindings.size(); ++index) {
+      const auto& item = bindings[index];
+      const uint64_t cursor = index == 0 ? 9 : 257;
+      if (index) output << ",";
+      output << "{\"producer\":\"" << item.producer.toUri(ndn::name::UriFormat::CANONICAL)
+        << "\",\"request\":\"" << item.requestId.toUri(ndn::name::UriFormat::CANONICAL)
+        << "\",\"service\":\"" << item.serviceName.toUri(ndn::name::UriFormat::CANONICAL)
+        << "\",\"attempt\":" << item.attemptEpoch
+        << ",\"digest\":\"" << toHex(computeStreamBindingDigest(item))
+        << "\",\"cursor\":" << cursor << ",\"wire\":\""
+        << toHex(makeInvocationEventName(item, cursor).wireEncode()) << "\"}";
+    }
+    output << "]\n";
+    BOOST_REQUIRE(output.good());
+  }
 }
 
 BOOST_AUTO_TEST_CASE(ResponseMessageCarriesOneFinalStreamCompletionBlock)

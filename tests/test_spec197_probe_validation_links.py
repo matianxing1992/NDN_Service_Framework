@@ -107,14 +107,14 @@ class ProbeValidationLinks(unittest.TestCase):
             out = b"face-created id=256\n"
         elif "face" in argv and "list" in argv:
             out = ("faceid=256 remote=" + argv[argv.index("remote") + 1] +
-                   " local=" + argv[argv.index("local") + 1]).encode()
+                   " local=" + argv[argv.index("local") + 1] + " mtu=1472").encode()
         elif "route" in argv:
             prefix = argv[argv.index("prefix") + 1]
             self.routes[pid].append(prefix + " nexthops={faceid=256 (cost=0)}")
             out = b""
         elif "fib" in argv:
             out = ("/model nexthops={faceid=7 (cost=10)}\n" +
-                   "/provider/b/NDNSF/PEER-PROBEX nexthops={faceid=7 (cost=10)}\n" +
+                   "/provider/b/NDNSF/RPC/PROBE-RTTX nexthops={faceid=7 (cost=10)}\n" +
                    "\n".join(self.routes[pid])).encode()
         else:
             out = b""
@@ -130,6 +130,7 @@ class ProbeValidationLinks(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0]["peer_node"], "b")
             self.assertEqual(rows[1]["peer_node"], "a")
+            self.assertTrue(all(row["face_mtu"] == 1472 for row in rows))
             self.assertEqual(json.loads((out / "links.json").read_text())["links"], rows)
             x.config.assert_not_called()
             y.config.assert_not_called()
@@ -140,7 +141,7 @@ class ProbeValidationLinks(unittest.TestCase):
             link.intf1.setIP.assert_called_once_with("10.252.1.1/30")
             link.intf2.setIP.assert_called_once_with("10.252.1.2/30")
             self.assertEqual(len(self.routes["11"]), 3)
-            self.assertTrue(any("PEER-PROBE-READY" in p for p in self.routes["11"]))
+            self.assertTrue(any("PROBE-READY" in p for p in self.routes["11"]))
             self.assertEqual(x.params["bw"], 1000)
             for call in run.call_args_list:
                 self.assertGreater(call.kwargs["timeout"], 0)
@@ -150,6 +151,36 @@ class ProbeValidationLinks(unittest.TestCase):
             changes = [c.args[0] for c in run.call_args_list if "replace" in c.args[0]]
             self.assertEqual(len(changes), 2)
             self.assertTrue(all("5:1" in c and c[-4:] == ["burst", "1500", "cburst", "1500"] for c in changes))
+            creates = [c.args[0] for c in run.call_args_list
+                       if "face" in c.args[0] and "create" in c.args[0]]
+            self.assertEqual(len(creates), 2)
+            self.assertTrue(all(c[-2:] == ["mtu", "1472"] for c in creates))
+
+    def test_face_readback_requires_one_matching_face_and_mtu(self):
+        mutations = {
+            "wrong_id": lambda s: s.replace(b"faceid=256", b"faceid=257"),
+            "wrong_mtu": lambda s: s.replace(b"mtu=1472", b"mtu=8800"),
+            "mtu_prefix": lambda s: s.replace(b"mtu=1472", b"mtu=14720"),
+            "multiple_faces": lambda s: s + b"\n" + s.replace(b"faceid=256", b"faceid=257"),
+            "split_fields": lambda s: s.replace(b" local=", b"\nlocal="),
+            "remote_port_prefix": lambda s: s.replace(b":6363 local=", b":63630 local="),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                ndn, _, _ = self.topology()
+                def bad(argv, **kwargs):
+                    result = self.execute(argv, **kwargs)
+                    if "face" in argv and "list" in argv:
+                        result.stdout = mutate(result.stdout)
+                    return result
+                with tempfile.TemporaryDirectory() as root, \
+                        patch.object(fixture.shutil, "which", side_effect=lambda n: "/usr/bin/" + n), \
+                        patch.object(fixture.subprocess, "run", side_effect=bad), \
+                        self.assertRaisesRegex(RuntimeError, "endpoint/MTU readback"):
+                    fixture.configure_probe_validation_links(
+                        ndn, Path(root) / "links", 4,
+                        {"a": "/provider/a", "b": "/provider/b"})
+                self.assertFalse(any(self.routes.values()))
 
     def test_invalid_bandwidth_does_not_touch_links(self):
         ndn, x, _ = self.topology()

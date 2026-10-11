@@ -858,6 +858,9 @@ public:
                        ndn::security::SigningInfo signingInfo,
                        PublishCallback publish);
 
+  /** Check a Name against this immutable binding; does not admit event state. */
+  std::optional<ParsedInvocationEventName> parseEventName(const ndn::Name& name) const;
+
   void start();
 
   std::optional<PublishedStreamEvent>
@@ -902,6 +905,9 @@ private:
 
 private:
   StreamBinding binding_;
+  // Derived once after constructor validation; binding_ stays immutable for
+  // this publisher's lifetime. Consumers still compute their own binding.
+  StreamDigest bindingDigest_{};
   StreamRequestOptions options_;
   ndn::Buffer eventKey_;
   std::shared_ptr<StreamInvocationLifecycle> lifecycle_;
@@ -958,6 +964,9 @@ public:
 
   ~StreamEventConsumer();
 
+  /** Check a Name against this immutable binding; does not admit event state. */
+  std::optional<ParsedInvocationEventName> parseEventName(const ndn::Name& name) const;
+
   void start();
   /**
    * Express the initial bounded exact-name window without consuming the
@@ -1013,6 +1022,7 @@ private:
 
 private:
   StreamBinding binding_;
+  StreamDigest bindingDigest_{};
   StreamRequestOptions options_;
   ndn::Buffer eventKey_;
   std::shared_ptr<StreamInvocationLifecycle> lifecycle_;
@@ -1087,6 +1097,9 @@ bool isMatchingStreamCompletion(
 ndn::Name makeInvocationEventName(const StreamBinding& binding, uint64_t cursor);
 std::optional<ParsedInvocationEventName>
 parseInvocationEventName(const ndn::Name& name);
+/** C05 parsing requires the complete authenticated owner, never label recovery. */
+std::optional<ParsedInvocationEventName>
+parseInvocationEventName(const ndn::Name& name, const StreamBinding& expectedBinding);
 
 } // namespace ndn_service_framework
 

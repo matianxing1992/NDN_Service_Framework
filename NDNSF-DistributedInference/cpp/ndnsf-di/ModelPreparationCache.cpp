@@ -580,6 +580,8 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   addSize(retained, spec.catalogConfigurationJson.size());
   addSize(retained, catalog.model.descriptor.canonicalJson().size());
   addGraphSize(retained, catalog.model.graph);
+  if (catalog.planningCache)
+    addSize(retained, catalog.planningCache->templateRetainedBytes());
   addSize(retained, catalog.model.canonicalSourceName.size());
   addSize(retained, catalog.model.canonicalSourceDigest.size());
   addSize(retained, catalog.model.modelManifestDigest.size());

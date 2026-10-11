@@ -1,5 +1,6 @@
 #include "ndn-service-framework/StreamFacade.hpp"
 #include "ndn-service-framework/Stream.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 
 #include <boost/test/unit_test.hpp>
 #include <ndn-cxx/data.hpp>
@@ -99,21 +100,42 @@ BOOST_AUTO_TEST_CASE(PredictiveDescriptorFrontierName)
   definition.sessionEpoch = 7;
   definition.mappingVersion = 7;
   const auto mappingRoot = definition.mappingRoot();
+  auto expectedRoot = ndn::Name("/provider/NDNSF/STREAM");
+  expectedRoot.append(ndn::name::Component("name=sensor"));
+  expectedRoot.append(nsf::makeNamingDigestComponent(
+    "74d2d6540bc4e6110006f89cfe4e3130eb12c4e62fb4f9ddcd4b44209af754a9"))
+    .append("EPOCH").append("7").append("MAP");
+  BOOST_CHECK_EQUAL(mappingRoot, expectedRoot);
+  BOOST_CHECK(mappingRoot != nsf::makeStreamNameMapRoot(definition.provider, "sensor", 8));
+  BOOST_CHECK_THROW(nsf::makeStreamNameMapRoot(definition.provider, "sensor", 0), std::invalid_argument);
+  BOOST_CHECK_THROW(nsf::makeStreamNameMapRoot(ndn::Name(), "sensor", 7), std::invalid_argument);
+  const auto opaqueRoot = nsf::makeStreamNameMapRoot(definition.provider, std::string("\xff", 1), 7);
+  BOOST_CHECK_EQUAL(opaqueRoot[definition.provider.size() + 2], ndn::name::Component("name=stream"));
+  BOOST_CHECK_EQUAL(nsf::makeStreamNameMapRoot(definition.provider, "sensor"),
+                    ndn::Name("/provider/NDNSF/STREAM-MAP/sensor"));
+  const auto query = nsf::makePredictiveFrontierInterest(mappingRoot);
+  const auto nextQuery = nsf::makePredictiveFrontierInterest(mappingRoot);
+  BOOST_CHECK(query.getName() != nextQuery.getName());
+  BOOST_CHECK(query.isParametersDigestValid());
+  BOOST_CHECK(query.getMustBeFresh());
+  BOOST_CHECK(!query.getCanBePrefix());
 
   auto frontierName = nsf::makePredictiveFrontierName(mappingRoot);
-  BOOST_CHECK_EQUAL(frontierName, ndn::Name(mappingRoot).append("frontier"));
+  BOOST_CHECK_EQUAL(frontierName.getPrefix(3), ndn::Name("/provider/NDNSF/RPC"));
+  BOOST_CHECK_EQUAL(frontierName[3], ndn::name::Component("FRONTIER"));
+  BOOST_CHECK_EQUAL(frontierName[4].value_size(), 32);
   BOOST_CHECK_EQUAL(
     nsf::makePredictiveDataName(definition, 9),
-    ndn::Name(mappingRoot).append("v").appendNumber(7).appendSequenceNumber(9));
+    ndn::Name(mappingRoot).append("DATA").appendVersion(7).appendSequenceNumber(9));
   BOOST_CHECK_EQUAL(
     nsf::makePredictiveGroupName(definition, 3),
-    ndn::Name(mappingRoot).append("v").appendNumber(7)
-                          .append("group").appendNumber(3));
+    ndn::Name(mappingRoot).append("GROUP").appendVersion(7)
+                          .append("3"));
   BOOST_CHECK_EQUAL(
     nsf::makePredictiveRepairName(definition, 3, 1),
-    ndn::Name(mappingRoot).append("v").appendNumber(7)
-                          .append("group").appendNumber(3)
-                          .append("repair").appendNumber(1));
+    ndn::Name(mappingRoot).append("GROUP").appendVersion(7)
+                          .append("3")
+                          .append("REPAIR").append("1"));
 }
 
 BOOST_AUTO_TEST_CASE(PredictiveDescriptorValidation)
@@ -254,8 +276,8 @@ BOOST_AUTO_TEST_CASE(PredictiveFrontierCanonicalRoundTrip)
   frontier.checkpoint.nextExpectedSampleId = 10;
   frontier.latestCommittedGroupId = 4;
   frontier.retainedGroupCommitNames = {
-    nsf::makePredictiveGroupName(definition, 3),
-    nsf::makePredictiveGroupName(definition, 4),
+    nsf::makePredictiveGroupManifestName(definition, 3),
+    nsf::makePredictiveGroupManifestName(definition, 4),
   };
   frontier.retainedGroupFirstCursors = {4, 7};
   frontier.retainedGroupLastCursors = {6, 9};

@@ -5,12 +5,16 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePlacementObservationExpired.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeTensorTransportDeclaration.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include <boost/test/unit_test.hpp>
+#include <boost/property_tree/exceptions.hpp>
 #include <algorithm>
 #include <array>
 #include <fstream>
@@ -31,6 +35,9 @@
 #include <future>
 #include <sstream>
 #include <set>
+#include <limits>
+#include <locale>
+#include <cfenv>
 
 namespace {
 using namespace ndnsf::di;
@@ -399,7 +406,7 @@ std::map<std::string, ndn::security::Certificate> groupCertificates(Input& input
     value.setField("recipientPublicKey", ndn_service_framework::selectionGatedHex(bytes));
     value.setField("recipientCertDigest", nativePlanningDigest(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size())));
     value.setField("providerBootEpoch", offer.provider + ":" + offer.bootEpoch);
-    value.setField("ndnsfDataV1EndpointPrefix", offer.provider + "/NDNSF-DI/data/");
+    value.setField("ndnsfDataV1EndpointPrefix", offer.provider);
     ack.ack.setSelectionInputKeyOffer(value);
   }
   return certificates;
@@ -451,6 +458,124 @@ private:
 }
 BOOST_AUTO_TEST_SUITE(Spec182V3Placement)
 
+BOOST_AUTO_TEST_CASE(AssemblyValidationRetainsEncodingAndLocaleChecks)
+{
+  const auto f = oracle();
+  const auto sample = std::find_if(f.at("seal_cases").begin(), f.at("seal_cases").end(),
+    [](const auto& value) { return value.at("name") == "cpu"; });
+  BOOST_REQUIRE(sample != f.at("seal_cases").end());
+  Input input(f, *sample);
+  const auto proposal = NativePreSplitFirstPlacement().proposeRoles(
+    input.context, input.ackDigest, input.roles, input.offers, 200);
+  BOOST_REQUIRE_EQUAL(proposal.roles.size(), 1U);
+  const auto role = proposal.roles.front();
+  BOOST_REQUIRE(std::locale() == std::locale::classic());
+  BOOST_CHECK_NO_THROW(validateNativeAssembly(role));
+  auto nodeOrder = role;
+  nodeOrder.nodeIndices = {0, 1};
+  BOOST_CHECK_NO_THROW(validateNativeAssembly(nodeOrder));
+  nodeOrder.nodeIndices = {1, 0};
+  BOOST_CHECK_THROW(validateNativeAssembly(nodeOrder), std::invalid_argument);
+  nodeOrder.nodeIndices = {0, 0};
+  BOOST_CHECK_THROW(validateNativeAssembly(nodeOrder), std::invalid_argument);
+  // This list follows the unchanged serializer, including fields whose
+  // semantic validation would otherwise mask a missed UTF-8 check.
+  const std::vector<std::string NativeSelectionRoleV3::*> encodedStrings{
+    &NativeSelectionRoleV3::role, &NativeSelectionRoleV3::backend,
+    &NativeSelectionRoleV3::artifactDigest, &NativeSelectionRoleV3::recipeDigest,
+    &NativeSelectionRoleV3::roleKind, &NativeSelectionRoleV3::adapterId,
+    &NativeSelectionRoleV3::adapterVersion, &NativeSelectionRoleV3::modelManifestDigest,
+    &NativeSelectionRoleV3::artifactProfileDigest, &NativeSelectionRoleV3::graphDigest,
+    &NativeSelectionRoleV3::canonicalInitializerDigest, &NativeSelectionRoleV3::adapterDescriptorDigest,
+    &NativeSelectionRoleV3::assemblerDescriptorDigest, &NativeSelectionRoleV3::backendAbi,
+    &NativeSelectionRoleV3::precision, &NativeSelectionRoleV3::quantization,
+    &NativeSelectionRoleV3::layout, &NativeSelectionRoleV3::padding,
+    &NativeSelectionRoleV3::protectionEpoch, &NativeSelectionRoleV3::mergeKind,
+    &NativeSelectionRoleV3::postprocessIdentity, &NativeSelectionRoleV3::postprocessOutputName,
+    &NativeSelectionRoleV3::postprocessSort};
+  const std::string invalidUtf8(1, static_cast<char>(0xff));
+  for (const auto field : encodedStrings) {
+    auto changed = role;
+    changed.*field = invalidUtf8;
+    BOOST_CHECK_THROW(nativeCanonicalJson(nativeAssemblyJson(changed)), NativeJson::type_error);
+    BOOST_CHECK_THROW(validateNativeAssembly(changed), NativeJson::type_error);
+  }
+  for (unsigned field = 0; field < 7; ++field) {
+    auto changed = role;
+    if (field == 0) changed.deviceSet = {invalidUtf8};
+    else {
+      auto& tensor = field <= 3 ? changed.expectedInputs.front() : changed.expectedOutputs.front();
+      if ((field - 1) % 3 == 0) tensor.dtype = invalidUtf8;
+      else if ((field - 1) % 3 == 1) tensor.name = invalidUtf8;
+      else tensor.shape = {invalidUtf8};
+    }
+    BOOST_CHECK_THROW(nativeCanonicalJson(nativeAssemblyJson(changed)), NativeJson::type_error);
+    BOOST_CHECK_THROW(validateNativeAssembly(changed), NativeJson::type_error);
+  }
+  auto unicode = role;
+  unicode.expectedInputs.front().name = u8"激活";
+  unicode.expectedInputs.front().shape = {u8"批次", std::numeric_limits<std::int64_t>::min(),
+    std::numeric_limits<std::int64_t>::max()};
+  BOOST_CHECK_NO_THROW(nativeCanonicalJson(nativeAssemblyJson(unicode)));
+  BOOST_CHECK_NO_THROW(validateNativeAssembly(unicode));
+  auto internalOnly = role;
+  internalOnly.selectedRole = invalidUtf8;
+  internalOnly.materializedRole = !internalOnly.materializedRole;
+  BOOST_CHECK_NO_THROW(validateNativeAssembly(internalOnly));
+  for (const auto confidence : {0.0, -0.0}) {
+    auto changed = role;
+    changed.postprocessConfidenceThreshold = confidence;
+    BOOST_CHECK_NO_THROW(validateNativeAssembly(changed));
+  }
+  for (const auto confidence : {std::numeric_limits<double>::infinity(),
+       -std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
+    auto changed = role;
+    changed.postprocessConfidenceThreshold = confidence;
+    BOOST_CHECK_THROW(nativeCanonicalJson(nativeAssemblyJson(changed)), std::invalid_argument);
+    BOOST_CHECK_THROW(validateNativeAssembly(changed), std::invalid_argument);
+  }
+  struct RestoreRounding {
+    int previous = std::fegetround();
+    ~RestoreRounding() { std::fesetround(previous); }
+  };
+  {
+    RestoreRounding restoreRounding;
+    auto merge = role;
+    merge.roleKind = "COMPONENT_SET";
+    merge.layerBegin = merge.layerEnd = 0;
+    merge.mergeKind = "NATIVE_POSTPROCESS";
+    merge.postprocessIdentity = "fixture-native-merge";
+    merge.postprocessOutputName = merge.expectedOutputs.front().name;
+    merge.postprocessConfidenceThreshold = 0.1;
+    merge.postprocessSort = "confidence-desc,class-asc,xyxy-asc";
+    for (const auto mode : {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO}) {
+      BOOST_REQUIRE_EQUAL(std::fesetround(mode), 0);
+      std::string oldEncodingFailure;
+      try { (void)nativeCanonicalJson(nativeAssemblyJson(merge)); }
+      catch (const std::invalid_argument& error) { oldEncodingFailure = error.what(); }
+      if (oldEncodingFailure.empty()) BOOST_CHECK_NO_THROW(validateNativeAssembly(merge));
+      else BOOST_CHECK_EXCEPTION(validateNativeAssembly(merge), std::invalid_argument,
+        [&] (const std::invalid_argument& error) { return oldEncodingFailure == error.what(); });
+    }
+  }
+  struct RejectUnsigned : std::num_get<char> {
+    iter_type do_get(iter_type first, iter_type, std::ios_base&, std::ios_base::iostate& state,
+                     unsigned long& value) const override {
+      state |= std::ios_base::failbit; value = 0; return first;
+    }
+    iter_type do_get(iter_type first, iter_type, std::ios_base&, std::ios_base::iostate& state,
+                     unsigned long long& value) const override {
+      state |= std::ios_base::failbit; value = 0; return first;
+    }
+  };
+  struct RestoreLocale {
+    std::locale previous = std::locale();
+    ~RestoreLocale() { std::locale::global(previous); }
+  } restoreLocale;
+  std::locale::global(std::locale(std::locale::classic(), new RejectUnsigned));
+  BOOST_CHECK_THROW(validateNativeAssembly(role), boost::property_tree::ptree_bad_data);
+}
+
 BOOST_AUTO_TEST_CASE(FixedProviderPlacementBindsEachPipelineRankToConfiguredProvider)
 {
   const auto f = oracle();
@@ -492,14 +617,14 @@ BOOST_AUTO_TEST_CASE(AdmittedGroupKeysReachCoreRsaCapabilityUnwrap)
     keyOffer.setField("recipientCertDigest", nativePlanningDigest(
       std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size())));
     keyOffer.setField("providerBootEpoch", offer.provider + ":" + offer.bootEpoch);
-    keyOffer.setField("ndnsfDataV1EndpointPrefix", offer.provider + "/NDNSF-DI/data/");
+    keyOffer.setField("ndnsfDataV1EndpointPrefix", offer.provider);
     ack.ack.setSelectionInputKeyOffer(keyOffer);
   }
   NativeGroupKeyAdmission keys(admission, input.acks, input.context, 200);
   std::vector<GroupMemberV1> members;
   for (const auto& pair : certificates) {
     members.push_back({pair.first, members.size(), keys.offer(pair.first).observation().offerDigest, keys.endpoint(pair.first)});
-    BOOST_CHECK_EQUAL(keys.endpoint(pair.first), pair.first + "/NDNSF-DI/data");
+    BOOST_CHECK_EQUAL(keys.endpoint(pair.first), pair.first);
   }
   BOOST_REQUIRE_GE(members.size(), 2);
   // The wrap closure outlives its admission object and owns the key snapshot.
@@ -586,7 +711,7 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
       dependency.keyScope = "activation"; dependency.tensors = {"hidden", "mask"};
       dependency.operationKind = "ACTIVATION";
       execution.dependencies = {dependency};
-      context.dependencies[0] = {"group", "epoch", {{proposal.providerByRole.at(execution.roles.front()), "/producer/tensors"}}, 7};
+      context.dependencies[0] = {"group", "epoch", {{proposal.providerByRole.at(execution.roles.front()), proposal.providerByRole.at(execution.roles.front())}}, 7};
     }
     const auto seal = [&](const NativeExecutionPlan& plan) {
       return projectionPlan(NativePlanSealer::sealCore(input.inspected, input.split, proposal,
@@ -601,6 +726,61 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
     BOOST_CHECK_THROW(NativePlanSealer::sealCore(input.inspected, input.split, proposal,
       execution, input.offers, input.ackDigest, foreignSource), std::invalid_argument);
     const auto built = NativePlanProjectionBuilder::build(sealed, input.split, input.offers, context);
+    std::shared_ptr<const NativeStaticProjectionLayout> layout;
+    auto cachedContext = context;
+    cachedContext.layoutOwner = &layout;
+    const auto initial = NativePlanProjectionBuilder::build(sealed, input.split, input.offers, cachedContext);
+    BOOST_REQUIRE(layout);
+    for (const auto& role : execution.roles)
+      BOOST_CHECK(nativeDataflowJson(initial.at(role).dataflow) == nativeDataflowJson(built.at(role).dataflow));
+    const auto retainedLayout = layout;
+    cachedContext.nowMs += 1;
+    cachedContext.noProgressMs = 777;
+    cachedContext.maxSegments = 2048;
+    cachedContext.inlineFirstSegment = true;
+    if (single) cachedContext.logicalInputDigest = nativePlanningDigest("new-input");
+    else {
+      cachedContext.dependencies.at(0).groupId = "new-group";
+      cachedContext.dependencies.at(0).groupEpoch = "new-epoch";
+      cachedContext.dependencies.at(0).operationIndex = 19;
+    }
+    const auto reused = NativePlanProjectionBuilder::build(sealed, input.split, input.offers, cachedContext);
+    BOOST_CHECK(layout == retainedLayout);
+    auto uncachedContext = cachedContext;
+    uncachedContext.layoutOwner = nullptr;
+    const auto reference = NativePlanProjectionBuilder::build(sealed, input.split, input.offers, uncachedContext);
+    for (const auto& role : execution.roles) {
+      BOOST_CHECK(nativeDataflowJson(reused.at(role).dataflow) == nativeDataflowJson(reference.at(role).dataflow));
+      BOOST_CHECK(nativeDeviceBindingJson(reused.at(role).deviceBinding) == nativeDeviceBindingJson(reference.at(role).deviceBinding));
+    }
+    auto expiredCacheContext = cachedContext;
+    expiredCacheContext.nowMs = sealed.core.expiresAtMs;
+    BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealed, input.split, input.offers, expiredCacheContext), std::invalid_argument);
+    BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealed, input.split, {}, cachedContext), std::invalid_argument);
+    if (!single) {
+      auto renamedTransport = execution;
+      renamedTransport.dependencies.front().topicPrefix = "/new-request/activation";
+      renamedTransport.dependencies.front().objectNameTemplate = "new-request-object";
+      renamedTransport.dependencies.front().expectedSegments = 13;
+      renamedTransport.dependencies.front().expectedBytes = 100000;
+      const auto renamed = NativePlanProjectionBuilder::build(seal(renamedTransport), input.split, input.offers, cachedContext);
+      BOOST_CHECK(layout == retainedLayout);
+      BOOST_CHECK_EQUAL(renamed.at(execution.roles.front()).dataflow.mayPublish.front().producerNamespace, proposal.providerByRole.at(execution.roles.front()));
+      auto invalidBinding = cachedContext;
+      invalidBinding.dependencies.at(0).producerNamespaces.begin()->second.clear();
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealed, input.split, input.offers, invalidBinding), std::invalid_argument);
+      invalidBinding = cachedContext;
+      invalidBinding.dependencies.at(0).producerNamespaces.begin()->second += "/transport";
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealed, input.split, input.offers, invalidBinding), std::invalid_argument);
+      invalidBinding = cachedContext;
+      invalidBinding.dependencies.erase(0);
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealed, input.split, input.offers, invalidBinding), std::invalid_argument);
+      auto changedGeometry = execution;
+      changedGeometry.dependencies.front().tensors = {"changed-tensor"};
+      const auto changed = NativePlanProjectionBuilder::build(seal(changedGeometry), input.split, input.offers, cachedContext);
+      BOOST_CHECK(layout != retainedLayout);
+      BOOST_CHECK_EQUAL(changed.at(execution.roles.front()).dataflow.mayPublish.front().tensorId, "changed-tensor");
+    }
     recordProjectionOracle(built);
     BOOST_REQUIRE_EQUAL(built.size(), execution.roles.size());
     const auto& first = built.at(execution.roles.front()).dataflow;
@@ -627,7 +807,101 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
         NativeOfferAdmission admission(f.at("policy").dump(),
           {{f.at("key_id").get<std::string>(), f.at("public_pem").get<std::string>()}}, f.at("candidate"));
         NativeGroupKeyAdmission keys(admission, input.acks, input.context, now);
+        // A locator descendant may be advertised, but cannot replace the
+        // sealed assignment's complete Producer when allocating tensor Names.
+        auto descendantAcks = input.acks;
+        auto descendantOffer = descendantAcks.front().ack.getSelectionInputKeyOffer();
+        descendantOffer.setField("ndnsfDataV1EndpointPrefix",
+          descendantOffer.getFields().at("recipient") + "/transport");
+        descendantAcks.front().ack.setSelectionInputKeyOffer(descendantOffer);
+        NativeGroupKeyAdmission descendantKeys(admission, descendantAcks, input.context, now);
+        BOOST_CHECK_EXCEPTION(NativeGroupProjectionBuilder::build(sealed, input.split,
+          descendantKeys, NativeProjectionContext{now, 1000, 4096}), std::invalid_argument,
+          [](const std::invalid_argument& error) {
+            return std::string(error.what()) ==
+              "advertised tensor endpoint differs from the actual Producer";
+          });
         const auto original = proposal.providerByRole;
+        const auto preparedRole = [&](auto& prepared, const std::string& selectedRole) -> NativeSelectionRoleV3& {
+          const auto selected = std::find_if(proposal.roles.begin(), proposal.roles.end(),
+            [&](const auto& role) { return role.selectedRole == selectedRole; });
+          if (selected == proposal.roles.end())
+            throw std::runtime_error("prefetch fixture placement role is missing");
+          const auto found = std::find_if(prepared.assemblyByRole.begin(), prepared.assemblyByRole.end(),
+            [&](const auto& entry) {
+              return entry.second.role == selected->role && entry.second.rank == selected->rank;
+            });
+          if (found == prepared.assemblyByRole.end())
+            throw std::runtime_error("prefetch fixture selected role is missing");
+          return found->second;
+        };
+        const auto withPrefetchContracts = [&](auto& prepared, auto& placement) {
+          auto& source = preparedRole(prepared, execution.roles.front());
+          auto& target = preparedRole(prepared, execution.roles.back());
+          source.expectedOutputs = {{"hidden", "float32", {1, 8}}, {"mask", "uint8", {1}}};
+          source.expectedInputs = {{"source-input", "float32", {1, 8}}};
+          target.expectedInputs = source.expectedOutputs;
+          for (auto& role : placement.roles) {
+            const auto& metadata = preparedRole(prepared, role.selectedRole);
+            role.expectedInputs = metadata.expectedInputs;
+            role.expectedOutputs = metadata.expectedOutputs;
+          }
+        };
+        NamedTensor hidden;
+        hidden.name = "hidden"; hidden.elementType = TensorElementType::Float32;
+        hidden.shape = {1, 8}; hidden.payload.resize(32);
+        NamedTensor mask;
+        mask.name = "mask"; mask.elementType = TensorElementType::UInt8;
+        mask.shape = {1}; mask.payload = {1};
+        const auto actualBundleBytes = encodeTensorBundle({hidden, mask}).size();
+        NativeProjectionContext prefetchContext{now, 1000, 4096};
+        const auto sourceProvider = original.at(execution.roles.front());
+        const auto targetProvider = original.at(execution.roles.back());
+        prefetchContext.tensorSegmentBytesByProvider[sourceProvider] = 7000;
+        prefetchContext.tensorSegmentBytesByProvider[targetProvider] = 4000;
+        auto prefetchSealing = sealing;
+        auto prefetchProposal = proposal;
+        withPrefetchContracts(prefetchSealing, prefetchProposal);
+        const auto prefetchSealed = projectionPlan(NativePlanSealer::sealCore(
+          input.inspected, input.split, prefetchProposal, execution, input.offers,
+          input.ackDigest, prefetchSealing));
+        const auto prefetchGroups = NativeGroupProjectionBuilder::build(
+          prefetchSealed, input.split, keys, prefetchContext, 2U << 20);
+        for (const auto& endpoint : prefetchGroups.at(execution.roles.front()).dataflow.mayPublish) {
+          BOOST_CHECK_EQUAL(endpoint.prefetchBundleBytes, actualBundleBytes);
+          BOOST_CHECK_EQUAL(endpoint.prefetchSegmentBytes, 7000U);
+        }
+        auto legacyContext = prefetchContext;
+        legacyContext.tensorSegmentBytesByProvider.erase(targetProvider);
+        const auto legacyGroups = NativeGroupProjectionBuilder::build(
+          prefetchSealed, input.split, keys, legacyContext, 2U << 20);
+        for (const auto& endpoint : legacyGroups.at(execution.roles.front()).dataflow.mayPublish)
+          BOOST_CHECK_EQUAL(endpoint.prefetchBundleBytes, 0U);
+        // A dynamic contract requires an exact current-input estimate with
+        // the same complete member set; unrelated hints remain unknown.
+        auto dynamicSealing = prefetchSealing;
+        auto dynamicProposal = prefetchProposal;
+        preparedRole(dynamicSealing, execution.roles.front()).expectedOutputs[0].shape[1] = "seq";
+        preparedRole(dynamicSealing, execution.roles.back()).expectedInputs[0].shape[1] = "seq";
+        for (auto& role : dynamicProposal.roles) {
+          const auto& metadata = preparedRole(dynamicSealing, role.selectedRole);
+          role.expectedInputs = metadata.expectedInputs;
+          role.expectedOutputs = metadata.expectedOutputs;
+        }
+        const auto dynamicSealed = projectionPlan(NativePlanSealer::sealCore(
+          input.inspected, input.split, dynamicProposal, execution, input.offers,
+          input.ackDigest, dynamicSealing));
+        auto dynamicContext = prefetchContext;
+        dynamicContext.tensorPrefetchByDependency[0] = {actualBundleBytes, {"hidden", "mask"}};
+        const auto dynamicGroups = NativeGroupProjectionBuilder::build(
+          dynamicSealed, input.split, keys, dynamicContext, 2U << 20);
+        BOOST_CHECK_EQUAL(dynamicGroups.at(execution.roles.front()).dataflow.mayPublish.front()
+          .prefetchBundleBytes, actualBundleBytes);
+        dynamicContext.tensorPrefetchByDependency[0].tensorNames = {"foreign"};
+        const auto foreignGroups = NativeGroupProjectionBuilder::build(
+          dynamicSealed, input.split, keys, dynamicContext, 2U << 20);
+        BOOST_CHECK_EQUAL(foreignGroups.at(execution.roles.front()).dataflow.mayPublish.front()
+          .prefetchBundleBytes, 0U);
         {
           // A small deployment may place both stages in one Provider.  The
           // group contract must remain role-scoped even though its member
@@ -692,8 +966,10 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
           const auto op = std::find_if(operations.begin(), operations.end(), [&](const auto& value) { return value.operationIndex == endpoint.round; });
           BOOST_REQUIRE(op != operations.end());
           const auto transfer = producer->sealOperation(*op, std::to_string(endpoint.producerRank),
-            endpoint.layoutDigest, endpoint.targetLayoutDigest, endpoint.tensorDigest, {{1, 2, 3}}, now);
-          BOOST_CHECK(consumer->openSegment(transfer.manifest, transfer.segments.front()) == ProviderGroupBytes({1, 2, 3}));
+            endpoint.layoutDigest, endpoint.targetLayoutDigest, endpoint.tensorDigest, {{1, 2, 3}}, now,
+            {tensorObjectSegmentName(endpoint, 0)});
+          BOOST_CHECK(consumer->openSegment(transfer.manifest, transfer.segments.front(),
+            tensorObjectSegmentName(endpoint, 0)) == ProviderGroupBytes({1, 2, 3}));
         }
         {
           // Exercise trusted construction and the complete wire boundary, not
@@ -740,6 +1016,23 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
             // projection must fail this regression rather than relax the gate.
             auto largeSealing = generationSealing;
             largeSealing.generationContract.maxGeneratedTokens = 1024;
+            const auto oversizedPlan = projectionPlan(NativePlanSealer::sealCore(
+              input.inspected, input.split, proposal, generationPlan, input.offers,
+              input.ackDigest, largeSealing));
+            const auto oversizedGroups = NativeGroupProjectionBuilder::build(
+              oversizedPlan, input.split, keys, requestContext, 4096);
+            for (const auto& role : execution.roles) {
+              const auto projected = NativePlanSealer::project(oversizedPlan,
+                proposal.providerByRole.at(role), oversizedGroups.at(role));
+              BOOST_CHECK_EXCEPTION(NativePlanSealer::encode(projected), std::invalid_argument,
+                [](const std::invalid_argument& error) {
+                  return std::string(error.what()) ==
+                    "V3 Selection exceeds external assignment wire limit";
+                });
+            }
+            // Keep a complete, independently declared bounded large request;
+            // the 1024-token projection above is never truncated or stripped.
+            largeSealing.generationContract.maxGeneratedTokens = 512;
             const auto largePlan = projectionPlan(NativePlanSealer::sealCore(
               input.inspected, input.split, proposal, generationPlan, input.offers,
               input.ackDigest, largeSealing));
@@ -749,19 +1042,30 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
               const auto projected = NativePlanSealer::project(largePlan,
                 proposal.providerByRole.at(role), largeGroups.at(role));
               const auto wire = NativePlanSealer::encode(projected);
-              BOOST_TEST_MESSAGE("1024-token Selection role=" << role << " bytes=" << wire.size());
+              BOOST_TEST_MESSAGE("512-token Selection role=" << role << " bytes=" << wire.size());
               BOOST_REQUIRE_LE(wire.size(), 4U << 20);
               std::istringstream stream(std::string(wire.begin(), wire.end()));
               const auto decoded = nativeSelectionProjectionV3FromJson(stream, role);
-              BOOST_CHECK_EQUAL(decoded.generationContract.maxGeneratedTokens, 1024);
+              BOOST_CHECK_EQUAL(decoded.generationContract.maxGeneratedTokens, 512);
               const auto& endpoints = role == execution.roles.front() ?
                 decoded.dataflow.mayPublish : decoded.dataflow.mustFetch;
-              BOOST_REQUIRE_EQUAL(endpoints.size(), 2U * 1025U);
-              for (const std::uint64_t epoch : {0U, 64U, 1024U}) {
+              BOOST_REQUIRE_EQUAL(endpoints.size(), 2U * 513U);
+              const auto& feedbackEndpoints = role == execution.roles.front() ?
+                decoded.dataflow.mustFetch : decoded.dataflow.mayPublish;
+              BOOST_CHECK_EQUAL(std::count_if(feedbackEndpoints.begin(), feedbackEndpoints.end(),
+                [](const auto& endpoint) { return endpoint.operation == "TOKEN_FEEDBACK"; }), 513U);
+              for (const std::uint64_t epoch : {0U, 64U, 512U}) {
                 const auto local = roleSpecFromSelectionProjectionV3(decoded, decoded.provider, epoch);
                 BOOST_CHECK_EQUAL((role == execution.roles.front() ? local.outputs : local.inputs).size(), 2);
+                const auto& localFeedback = role == execution.roles.front() ? local.inputs : local.outputs;
+                const auto feedback = std::find_if(localFeedback.begin(), localFeedback.end(),
+                  [](const auto& edge) { return edge.operationKind == "TOKEN_FEEDBACK"; });
+                BOOST_REQUIRE(feedback != localFeedback.end());
+                BOOST_CHECK_EQUAL(feedback->round, 2 + 3 * epoch);
+                BOOST_CHECK_EQUAL(feedback->collectiveOperationIndex, 2 + 3 * epoch);
+                BOOST_CHECK_EQUAL(feedback->namingOperationStride, 3);
               }
-              BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(decoded, decoded.provider, 1025),
+              BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(decoded, decoded.provider, 513),
                                 std::invalid_argument);
             }
           }
@@ -770,6 +1074,98 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
             input.ackDigest, generationSealing));
           const auto generationGroups = NativeGroupProjectionBuilder::build(
             generationSealed, input.split, keys, requestContext, 4096);
+          auto multiRoleSelfPlan = generationPlan;
+          multiRoleSelfPlan.dependencies.back().consumers =
+            multiRoleSelfPlan.dependencies.back().producers;
+          const auto multiRoleSelf = projectionPlan(NativePlanSealer::sealCore(
+            input.inspected, input.split, proposal, multiRoleSelfPlan, input.offers,
+            input.ackDigest, generationSealing));
+          BOOST_CHECK_EXCEPTION(NativeGroupProjectionBuilder::build(multiRoleSelf,
+            input.split, keys, requestContext, 4096), std::invalid_argument,
+            [](const std::invalid_argument& error) {
+              return std::string(error.what()) ==
+                "self feedback requires the authenticated single-role local plan";
+            });
+
+          // Preserve the old warm/rebound layout oracle on actual signed
+          // generation feedback instead of the unsigned cycle fixture below.
+          std::shared_ptr<const NativeStaticProjectionLayout> feedbackLayout;
+          auto warmGenerationContext = requestContext;
+          warmGenerationContext.layoutOwner = &feedbackLayout;
+          const auto cachedGeneration = NativeGroupProjectionBuilder::build(
+            generationSealed, input.split, keys, warmGenerationContext, 4096);
+          BOOST_REQUIRE(feedbackLayout);
+          const auto retainedFeedbackLayout = feedbackLayout;
+          generationPlan.dependencies.back().keyScope = "generation-feedback-rebound";
+          const auto reboundGenerationSealed = projectionPlan(NativePlanSealer::sealCore(
+            input.inspected, input.split, proposal, generationPlan, input.offers,
+            input.ackDigest, generationSealing));
+          const auto reboundGeneration = NativeGroupProjectionBuilder::build(
+            reboundGenerationSealed, input.split, keys, warmGenerationContext, 4096);
+          const auto freshGeneration = NativeGroupProjectionBuilder::build(
+            reboundGenerationSealed, input.split, keys, requestContext, 4096);
+          BOOST_CHECK(feedbackLayout == retainedFeedbackLayout);
+          for (const auto& role : execution.roles) {
+            BOOST_CHECK_EQUAL(reboundGeneration.at(role).dataflow.mayPublish.size(),
+                              cachedGeneration.at(role).dataflow.mayPublish.size());
+            BOOST_CHECK(nativeDataflowJson(reboundGeneration.at(role).dataflow) ==
+                        nativeDataflowJson(freshGeneration.at(role).dataflow));
+          }
+          generationPlan.dependencies.back().keyScope = feedback.keyScope;
+          auto hintedGenerationSealing = generationSealing;
+          auto hintedGenerationProposal = proposal;
+          withPrefetchContracts(hintedGenerationSealing, hintedGenerationProposal);
+          const auto hintedGenerationSealed = projectionPlan(NativePlanSealer::sealCore(
+            input.inspected, input.split, hintedGenerationProposal, generationPlan, input.offers,
+            input.ackDigest, hintedGenerationSealing));
+          auto hintedGenerationContext = requestContext;
+          hintedGenerationContext.tensorSegmentBytesByProvider[
+            proposal.providerByRole.at(execution.roles.front())] = 7000;
+          hintedGenerationContext.tensorSegmentBytesByProvider[
+            proposal.providerByRole.at(execution.roles.back())] = 4000;
+          const auto hintedGenerationGroups = NativeGroupProjectionBuilder::build(
+            hintedGenerationSealed, input.split, keys, hintedGenerationContext, 2U << 20);
+          for (const auto& role : execution.roles) {
+            const auto hintedProjection = NativePlanSealer::project(hintedGenerationSealed,
+              proposal.providerByRole.at(role), hintedGenerationGroups.at(role));
+            const auto wire = NativePlanSealer::encode(hintedProjection);
+            std::istringstream stream(std::string(wire.begin(), wire.end()));
+            const auto decoded = nativeSelectionProjectionV3FromJson(stream, role);
+            const auto& endpoints = role == execution.roles.front() ?
+              decoded.dataflow.mayPublish : decoded.dataflow.mustFetch;
+            const auto wireValue = nativeParseJson(std::string(wire.begin(), wire.end()));
+            for (const auto& invalid : {NativeJson("7000"), NativeJson(-1),
+                 NativeJson(7000.0), NativeJson(nullptr), NativeJson(true), NativeJson(0),
+                 NativeJson(std::uint64_t{ndn::MAX_NDN_PACKET_SIZE} + 1)}) {
+              auto changed = wireValue;
+              auto& endpoint = changed["dataflow"][role == execution.roles.front() ?
+                "may_publish" : "must_fetch"][0];
+              endpoint["prefetch_segment_bytes"] = invalid;
+              std::istringstream invalidStream(nativeCanonicalJson(changed));
+              BOOST_CHECK_THROW(nativeSelectionProjectionV3FromJson(invalidStream, role),
+                                std::exception);
+            }
+            for (const auto* field : {"prefetch_bundle_bytes", "prefetch_segment_bytes"}) {
+              auto changed = wireValue;
+              changed["dataflow"][role == execution.roles.front() ?
+                "may_publish" : "must_fetch"][0].erase(field);
+              std::istringstream invalidStream(nativeCanonicalJson(changed));
+              BOOST_CHECK_THROW(nativeSelectionProjectionV3FromJson(invalidStream, role),
+                                std::exception);
+            }
+            for (const auto& endpoint : endpoints) {
+              BOOST_CHECK_EQUAL(endpoint.prefetchBundleBytes,
+                endpoint.round < 3 ? actualBundleBytes : 0U);
+              BOOST_CHECK_EQUAL(endpoint.prefetchSegmentBytes,
+                endpoint.round < 3 ? 7000U : 0U);
+            }
+            const auto local = roleSpecFromSelectionProjectionV3(decoded, decoded.provider, 0);
+            for (const auto& edge : role == execution.roles.front() ? local.outputs : local.inputs) {
+              BOOST_CHECK_EQUAL(edge.prefetchBundleBytes, actualBundleBytes);
+              BOOST_CHECK_EQUAL(edge.expectedBytes, 0U);
+              BOOST_CHECK_EQUAL(edge.expectedSegments, 0U);
+            }
+          }
           std::vector<NativeSelectionProjectionV3> parsed;
           for (const auto& role : execution.roles) {
             const auto projection = NativePlanSealer::project(generationSealed,
@@ -782,6 +1178,53 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
           }
           BOOST_REQUIRE_EQUAL(parsed.size(), 2);
           validateNativeSelectionProjectionSetV3(parsed);
+          // Feedback remains subject to exact ownership and signed generation
+          // admission even though it does not enter the initial-readiness DAG.
+          auto missingFeedbackOwner = parsed;
+          missingFeedbackOwner[1].dataflow.mayPublish.erase(
+            missingFeedbackOwner[1].dataflow.mayPublish.begin());
+          BOOST_CHECK_EXCEPTION(validateNativeSelectionProjectionSetV3(missingFeedbackOwner),
+            std::invalid_argument, [](const std::invalid_argument& error) {
+              return std::string(error.what()) == "V3 mustFetch has no exact single mayPublish owner";
+            });
+          auto changedFeedbackOwner = parsed;
+          changedFeedbackOwner[0].dataflow.mustFetch.front().producerRole = "foreign-role";
+          BOOST_CHECK_EXCEPTION(validateNativeSelectionProjectionSetV3(changedFeedbackOwner),
+            std::invalid_argument, [](const std::invalid_argument& error) {
+              return std::string(error.what()) == "V3 mustFetch has no exact single mayPublish owner";
+            });
+          auto unsignedFeedback = parsed;
+          unsignedFeedback[0].generationContract.enabled = false;
+          BOOST_CHECK_EXCEPTION(validateNativeSelectionProjectionSetV3(unsignedFeedback),
+            std::invalid_argument, [](const std::invalid_argument& error) {
+              return std::string(error.what()) == "V3 feedback endpoint differs from its signed generation";
+            });
+          auto changedGeneration = parsed;
+          ++changedGeneration[1].generationContract.maxGeneratedTokens;
+          BOOST_CHECK_EXCEPTION(validateNativeSelectionProjectionSetV3(changedGeneration),
+            std::invalid_argument, [](const std::invalid_argument& error) {
+              return std::string(error.what()) == "V3 feedback endpoint differs from its signed generation";
+            });
+          auto changedStride = parsed;
+          for (auto& value : changedStride)
+            for (auto* endpoints : {&value.dataflow.mayPublish, &value.dataflow.mustFetch})
+              for (auto& endpoint : *endpoints)
+                if (endpoint.operation == "TOKEN_FEEDBACK") ++endpoint.namingOperationStride;
+          BOOST_CHECK_EXCEPTION(validateNativeSelectionProjectionSetV3(changedStride),
+            std::invalid_argument, [](const std::invalid_argument& error) {
+              return std::string(error.what()) == "V3 feedback endpoint differs from its signed generation";
+            });
+          auto ordinaryCycle = parsed;
+          for (auto& value : ordinaryCycle) {
+            for (auto* endpoints : {&value.dataflow.mayPublish, &value.dataflow.mustFetch})
+              for (auto& endpoint : *endpoints)
+                if (endpoint.operation == "TOKEN_FEEDBACK") endpoint.operation = "PIPELINE_TRANSFER";
+          }
+          BOOST_CHECK_EXCEPTION(validateNativeSelectionProjectionSetV3(ordinaryCycle),
+            std::invalid_argument, [](const std::invalid_argument& error) {
+              return std::string(error.what()) == "V3 role dataflow contains a cycle";
+            });
+
           BOOST_REQUIRE_EQUAL(parsed[0].dataflow.mayPublish.size(), 4);
           BOOST_REQUIRE_EQUAL(parsed[1].dataflow.mustFetch.size(), 4);
           BOOST_REQUIRE_EQUAL(parsed[1].dataflow.waitFor.size(), 1);
@@ -829,10 +1272,55 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
             BOOST_REQUIRE_EQUAL(op->producerRanks.size(), 1);
             BOOST_CHECK_EQUAL(op->producerRanks.front(), std::to_string(endpoint.producerRank));
             const auto transfer = generationProducer->sealOperation(*op, std::to_string(endpoint.producerRank),
-              endpoint.layoutDigest, endpoint.targetLayoutDigest, endpoint.tensorDigest, {{1, 2, 3}}, now);
-            BOOST_CHECK(generationConsumer->openSegment(transfer.manifest, transfer.segments.front()) ==
+              endpoint.layoutDigest, endpoint.targetLayoutDigest, endpoint.tensorDigest, {{1, 2, 3}}, now,
+              {tensorObjectSegmentName(endpoint, 0)});
+            BOOST_CHECK(generationConsumer->openSegment(transfer.manifest, transfer.segments.front(),
+              tensorObjectSegmentName(endpoint, 0)) ==
               ProviderGroupBytes({1, 2, 3}));
           }
+          BOOST_REQUIRE_EQUAL(parsed[1].dataflow.mayPublish.size(), 2);
+          BOOST_REQUIRE_EQUAL(parsed[0].dataflow.mustFetch.size(), 2);
+          BOOST_CHECK(parsed[0].dataflow.waitFor.empty());
+          for (std::size_t epoch = 0; epoch != 2; ++epoch) {
+            const auto& output = parsed[1].dataflow.mayPublish[epoch];
+            const auto& inputEndpoint = parsed[0].dataflow.mustFetch[epoch];
+            BOOST_CHECK_EQUAL(output.operation, "TOKEN_FEEDBACK");
+            BOOST_CHECK_EQUAL(output.round, 2 + 3 * epoch);
+            BOOST_CHECK_EQUAL(output.namingOperationStride, 3);
+            BOOST_CHECK_EQUAL(output.producerRole, execution.roles.back());
+            BOOST_CHECK_EQUAL(output.endpointDigest, inputEndpoint.endpointDigest);
+            BOOST_CHECK(ndn::Name(tensorObjectManifestName(output)) ==
+                        ndn::Name(tensorObjectManifestName(inputEndpoint)));
+            const auto& operations = generationConsumer->capability().permittedOperations;
+            const auto op = std::find_if(operations.begin(), operations.end(),
+              [&](const auto& value) { return value.operationIndex == output.round; });
+            BOOST_REQUIRE(op != operations.end());
+            const auto transfer = generationConsumer->sealOperation(*op,
+              std::to_string(output.producerRank), output.layoutDigest,
+              output.targetLayoutDigest, output.tensorDigest, {{1, 2, 3}}, now,
+              {tensorObjectSegmentName(output, 0)});
+            BOOST_CHECK(generationProducer->openSegment(transfer.manifest,
+              transfer.segments.front(), tensorObjectSegmentName(inputEndpoint, 0)) ==
+              ProviderGroupBytes({1, 2, 3}));
+            const auto localSender = roleSpecFromSelectionProjectionV3(parsed[1], parsed[1].provider, epoch);
+            const auto localReceiver = roleSpecFromSelectionProjectionV3(parsed[0], parsed[0].provider, epoch);
+            BOOST_REQUIRE_EQUAL(localSender.outputs.size(), 1);
+            BOOST_REQUIRE_EQUAL(localReceiver.inputs.size(), 1);
+            BOOST_CHECK_EQUAL(localSender.outputs.front().plannedDataName,
+                              localReceiver.inputs.front().plannedDataName);
+            BOOST_CHECK_EQUAL(localSender.outputs.front().collectiveOperationIndex, 2 + 3 * epoch);
+          }
+          auto feedbackReadiness = NativeJson::parse(nativeSelectionProjectionV3ToJson(parsed[0]));
+          feedbackReadiness["dataflow"]["wait_for"] = NativeJson::array({
+            NativeJson{{"mode", "ALL"}, {"endpoint_digests", NativeJson::array({
+              parsed[0].dataflow.mustFetch.front().endpointDigest})}}});
+          std::istringstream feedbackReadinessStream(nativeCanonicalJson(feedbackReadiness));
+          BOOST_CHECK_EXCEPTION(nativeSelectionProjectionV3FromJson(feedbackReadinessStream,
+            parsed[0].executionRole.roleId), std::invalid_argument,
+            [](const std::invalid_argument& error) {
+              return std::string(error.what()) ==
+                "TOKEN_FEEDBACK cannot be an initial readiness dependency";
+            });
           const auto prefill = roleSpecFromSelectionProjectionV3(parsed[0], parsed[0].provider, 0);
           BOOST_REQUIRE_EQUAL(prefill.outputs.size(), 2);
           for (std::uint64_t epoch = 0; epoch != 2; ++epoch) {
@@ -895,7 +1383,7 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
       for (std::size_t i = 0; i < 2; ++i) {
         BOOST_CHECK_EQUAL(first.mayPublish[i].endpointDigest, last.mustFetch[i].endpointDigest);
         BOOST_CHECK_EQUAL(first.mayPublish[i].tensorId, execution.dependencies.front().tensors[i]);
-        BOOST_CHECK_EQUAL(first.mayPublish[i].producerNamespace, "/producer/tensors");
+        BOOST_CHECK_EQUAL(first.mayPublish[i].producerNamespace, proposal.providerByRole.at(execution.roles.front()));
         BOOST_CHECK_EQUAL(first.mayPublish[i].round, 7);
         BOOST_CHECK_EQUAL(first.mayPublish[i].segmentCount, 4096);
         BOOST_CHECK_EQUAL(last.waitFor.front().endpointDigests[i], last.mustFetch[i].endpointDigest);
@@ -905,12 +1393,15 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
       auto cycle = execution; auto back = execution.dependencies.front();
       std::swap(back.producers, back.consumers); cycle.dependencies.push_back(back);
       auto cycleContext = context;
-      cycleContext.dependencies[1] = {"back", "epoch", {{proposal.providerByRole.at(execution.roles.back()), "/tail/tensors"}}, 8};
+      cycleContext.dependencies[1] = {"back", "epoch", {{proposal.providerByRole.at(execution.roles.back()), proposal.providerByRole.at(execution.roles.back())}}, 8};
       BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(seal(cycle), input.split, input.offers, cycleContext), std::invalid_argument);
       auto feedback = cycle; feedback.dependencies.back().operationKind = "TOKEN_FEEDBACK";
-      const auto withFeedback = NativePlanProjectionBuilder::build(seal(feedback), input.split, input.offers, context);
-      recordProjectionOracle(withFeedback);
-      BOOST_CHECK_EQUAL(withFeedback.at(execution.roles.back()).dataflow.mustFetch.size(), 2);
+      // This historical cycle has no signed generation contract or feedback
+      // tensor commitments. It is intentionally rejected, not a warm oracle.
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(seal(feedback), input.split,
+        input.offers, context), std::invalid_argument);
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(seal(feedback), input.split,
+        input.offers, cachedContext), std::invalid_argument);
       auto redistributed = execution;
       redistributed.dependencies.front().redistributions = {RedistributionSpec{{0}, {1}, "hidden", "GATHER", "epoch",
         nativePlanningDigest("tensor"), nativePlanningDigest("source-layout"), nativePlanningDigest("target-layout"), 0, 16, true}};
@@ -925,6 +1416,34 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
       BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(seal(redistributed), input.split, input.offers, context), std::invalid_argument);
     }
   }
+}
+
+BOOST_AUTO_TEST_CASE(CurrentAckTransportHintHasBoundedIndependentParsing)
+{
+  auto value = NativeJson{{"schema", "ndnsf-di-tensor-transport-v1"},
+    {"boot_epoch", "current-boot"}, {"segment_payload_bytes", std::uint64_t{7000}}};
+  const auto parse = [&](const NativeJson& v, const std::string& boot = std::string{}) {
+    return detail::nativeTensorTransportSegmentBytesV1(
+      nativeCanonicalJson(v), ndn::MAX_NDN_PACKET_SIZE, boot);
+  };
+  BOOST_CHECK_EQUAL(parse(value), 7000U);
+  BOOST_CHECK_EQUAL(parse(value, "current-boot"), 7000U);
+  BOOST_CHECK_EQUAL(parse(value, "different-boot"), 0U);
+  for (const auto& invalid : {NativeJson(0), NativeJson(-1), NativeJson(7000.0),
+       NativeJson("7000"), NativeJson(true), NativeJson(nullptr),
+       NativeJson(std::uint64_t{ndn::MAX_NDN_PACKET_SIZE} + 1)}) {
+    auto malformed = value; malformed["segment_payload_bytes"] = invalid;
+    BOOST_CHECK_EQUAL(parse(malformed), 0U);
+  }
+  for (const auto* field : {"schema", "boot_epoch", "segment_payload_bytes"}) {
+    auto missing = value; missing.erase(field);
+    BOOST_CHECK_EQUAL(parse(missing), 0U);
+  }
+  value["boot_epoch"] = ""; BOOST_CHECK_EQUAL(parse(value), 0U);
+  value["boot_epoch"] = "current-boot";
+  value["extra"] = 1; BOOST_CHECK_EQUAL(parse(value), 0U);
+  BOOST_CHECK_EQUAL(detail::nativeTensorTransportSegmentBytesV1("not-json", 8800), 0U);
+  BOOST_CHECK_EQUAL(detail::nativeTensorTransportSegmentBytesV1(std::string(257, 'x'), 8800), 0U);
 }
 
 BOOST_AUTO_TEST_CASE(InjectedV3PolicyUsesAdmittedOffersAndIndependentValidation)
@@ -961,6 +1480,7 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
     NativeSplitCandidate value;
   } splitter(input.split);
   unsigned publications = 0, grantPublications = 0;
+  std::function<void()> publicationHook;
   NativeArtifactBinding binding;
   binding.manifestDigest = input.inspected.modelManifestDigest;
   binding.recipeDigest = input.roles.front().recipeDigest;
@@ -972,7 +1492,11 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   auto registry = std::make_shared<NativeAdapterRegistry>();
   registry->freeze();
   NativeRequestPreparation preparation(registry, {},
-    [&](const auto&, const auto&, const auto&, const auto&) { ++publications; return binding; },
+    [&](const auto&, const auto&, const auto&, const auto&) {
+      ++publications;
+      if (publicationHook) publicationHook();
+      return binding;
+    },
     [&](const auto&, const auto&, const auto&) { return input.roles; });
   NativeOfferAdmission admission(f.at("policy").dump(), {{f.at("key_id"), f.at("public_pem")}}, f.at("candidate"));
   const auto key = [](char c) {
@@ -1018,6 +1542,10 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   BOOST_CHECK(planned.corePlan.roles.front().terminalResponseOwner);
   BOOST_CHECK_EQUAL(planned.sealed.core.modelDigest, encoded.modelIntentDigest);
   BOOST_CHECK(planned.sealed.core.modelDigest != planned.sealed.core.sourceContentDigest);
+  BOOST_REQUIRE(planned.sealed.core.fixedCoreOwner);
+  BOOST_CHECK(planned.sealed.core.assemblyByRole.empty());
+  BOOST_CHECK_EQUAL(runtime.fixedRoleAssignments->placementCore(runtime.requesterIdentity, runtime.contract.serviceName).get(),
+                    planned.sealed.core.fixedCoreOwner.get());
   const auto selected = planned.corePlan.participantSelector->select(closure.candidates, planned.corePlan.roles);
   BOOST_REQUIRE_EQUAL(selected.size(), 1U);
   BOOST_CHECK_EQUAL(selected.front().provider.toUri(), planned.terminalProvider);
@@ -1038,14 +1566,74 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
     NativePreSplitFirstPlacement(), preparation, admission, closure, control,
     input.context.deadlineMs, cancelled, &leaseTurn);
   BOOST_REQUIRE(leaseFirst.grantLease.has_value());
-  const auto grantPublicationsAfterFirstLease = grantPublications;
+  BOOST_REQUIRE(leaseFirst.grantLease->fixedContext);
+  BOOST_REQUIRE(leaseFirst.grantLease->projectionLayout);
+  auto grantPublicationsAfterFirstLease = grantPublications;
   leaseTurn.grantLease = leaseFirst.grantLease;
   const auto leaseSecond = planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
     NativePreSplitFirstPlacement(), preparation, admission, closure, control,
     input.context.deadlineMs, cancelled, &leaseTurn);
   BOOST_REQUIRE(leaseSecond.grantLease.has_value());
+  BOOST_CHECK(leaseSecond.sealed.core.reusedFixedCore);
+  BOOST_CHECK_EQUAL(leaseSecond.sealed.core.fixedCoreOwner.get(), leaseFirst.sealed.core.fixedCoreOwner.get());
+  BOOST_CHECK_EQUAL(&leaseSecond.sealed.core.roleContracts(), &leaseFirst.sealed.core.roleContracts());
+  BOOST_CHECK(leaseSecond.grantLease->fixedContext == leaseFirst.grantLease->fixedContext);
+  BOOST_CHECK_EQUAL(leaseSecond.grantLease->scope.scopeDigest, leaseFirst.grantLease->scope.scopeDigest);
+  BOOST_CHECK(leaseSecond.grantLease->projectionLayout == leaseFirst.grantLease->projectionLayout);
   BOOST_CHECK_EQUAL(grantPublications, grantPublicationsAfterFirstLease);
   BOOST_CHECK_EQUAL(leaseSecond.sealed.grants.size(), leaseFirst.sealed.grants.size());
+
+  // An extension can replace the shared cache during publication. This
+  // request keeps the immutable owner pinned by its preflight validation.
+  unsigned cacheClearsDuringPublication = 0;
+  publicationHook = [&] {
+    ++cacheClearsDuringPublication;
+    runtime.fixedRoleAssignments->clear();
+    BOOST_CHECK(!runtime.fixedRoleAssignments->placementCore(
+      runtime.requesterIdentity, runtime.contract.serviceName));
+  };
+  const auto cacheClearedDuringPublication = planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    NativePreSplitFirstPlacement(), preparation, admission, closure, control,
+    input.context.deadlineMs, cancelled, &leaseTurn);
+  publicationHook = {};
+  BOOST_REQUIRE_EQUAL(cacheClearsDuringPublication, 1U);
+  BOOST_CHECK(cacheClearedDuringPublication.sealed.core.reusedFixedCore);
+  BOOST_CHECK_EQUAL(cacheClearedDuringPublication.sealed.core.fixedCoreOwner.get(),
+                    leaseSecond.sealed.core.fixedCoreOwner.get());
+  BOOST_CHECK_EQUAL(grantPublications, grantPublicationsAfterFirstLease);
+
+  auto missingScopeOwner = leaseTurn;
+  missingScopeOwner.grantLease->fixedContext.reset();
+  const auto upgradedLease = planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    NativePreSplitFirstPlacement(), preparation, admission, closure, control,
+    input.context.deadlineMs, cancelled, &missingScopeOwner);
+  BOOST_REQUIRE(upgradedLease.grantLease);
+  BOOST_REQUIRE(upgradedLease.grantLease->fixedContext);
+  BOOST_CHECK(upgradedLease.grantLease->fixedContext != leaseFirst.grantLease->fixedContext);
+  BOOST_CHECK_EQUAL(upgradedLease.grantLease->scope.scopeDigest, leaseFirst.grantLease->scope.scopeDigest);
+  BOOST_CHECK_EQUAL(grantPublications, grantPublicationsAfterFirstLease);
+
+  auto changedPublicScope = leaseTurn;
+  changedPublicScope.grantLease->scope.scopeDigest = "sha256:" + std::string(64, 'e');
+  const auto repairedLease = planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    NativePreSplitFirstPlacement(), preparation, admission, closure, control,
+    input.context.deadlineMs, cancelled, &changedPublicScope);
+  BOOST_REQUIRE(repairedLease.grantLease);
+  BOOST_REQUIRE(repairedLease.grantLease->fixedContext);
+  BOOST_CHECK(repairedLease.grantLease->fixedContext != leaseFirst.grantLease->fixedContext);
+  BOOST_CHECK_EQUAL(repairedLease.grantLease->scope.scopeDigest, leaseFirst.grantLease->scope.scopeDigest);
+  BOOST_CHECK_EQUAL(grantPublications, grantPublicationsAfterFirstLease + 1);
+
+  auto changedConversation = leaseTurn;
+  changedConversation.parent.conversationId = "conversation-grant-lease-new-scope";
+  const auto independentLease = planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    NativePreSplitFirstPlacement(), preparation, admission, closure, control,
+    input.context.deadlineMs, cancelled, &changedConversation);
+  BOOST_REQUIRE(independentLease.grantLease);
+  BOOST_CHECK(independentLease.grantLease->fixedContext != leaseFirst.grantLease->fixedContext);
+  BOOST_CHECK_NE(independentLease.grantLease->scope.scopeDigest, leaseFirst.grantLease->scope.scopeDigest);
+  BOOST_CHECK_EQUAL(grantPublications, grantPublicationsAfterFirstLease + 2);
+  grantPublicationsAfterFirstLease = grantPublications;
 
   // Exercise real planner forwarding before publication. The probe deliberately
   // stops at the strategy boundary; it is not a successful inference fixture.
@@ -1062,6 +1650,61 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
       throw PreferenceObserved{};
     }
   } probe;
+  // A complete owner-side continuation reuses the sealed assignment. The
+  // controlled parent receipt map exercises projection binding; runtime
+  // receipt authentication is covered by the Conversation integration path.
+  auto pinned = leaseTurn;
+  pinned.parent.parentContextEpoch = 1;
+  pinned.successorContextEpoch = 2;
+  pinned.providersByRole = leaseFirst.sealed.core.assignment.providerByRole;
+  pinned.parent.expectedRoles = leaseFirst.sealed.core.executionPlan.roles;
+  NativeJson roleMap = NativeJson::array();
+  NativeJson receipts = NativeJson::object();
+  for (const auto& [role, provider] : pinned.providersByRole) {
+    roleMap.push_back(NativeJson::array({role, provider}));
+    receipts[role] = input.inspected.modelManifestDigest;
+  }
+  pinned.parent.planRoleMapDigest = nativePlanningDigest(nativeCanonicalJson(roleMap));
+  pinned.parent.parentCheckpointDigest = input.inspected.modelManifestDigest;
+  pinned.parent.parentCheckpointWire = nativeCanonicalJson(
+    NativeJson{{"roleReceiptDigests", receipts}});
+  probe.expected = pinned.providersByRole;
+  for (auto& ack : closure.candidates) {
+    auto fields = ack.ack.hasProviderCapabilityOffer()
+      ? ack.ack.getProviderCapabilityOffer() : ndn_service_framework::ProviderCapabilityOffer{};
+    BOOST_REQUIRE(!fields.hasField(NATIVE_PROVIDER_OFFER_V4_FIELD));
+    fields.setField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD, nativeCanonicalJson(NativeJson{
+      {"schema", "ndnsf-di-tensor-transport-v1"}, {"boot_epoch", "current-provider-boot"},
+      {"segment_payload_bytes", std::uint64_t{7000}}}));
+    ack.ack.setProviderCapabilityOffer(fields);
+  }
+  const auto reused = planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    probe, preparation, admission, closure, control, input.context.deadlineMs, cancelled, &pinned);
+  BOOST_CHECK(reused.sealed.core.assignment.providerByRole == pinned.providersByRole);
+  BOOST_REQUIRE(reused.grantLease.has_value());
+  BOOST_CHECK(reused.grantLease->fixedContext == pinned.grantLease->fixedContext);
+  BOOST_CHECK(reused.grantLease->projectionLayout == pinned.grantLease->projectionLayout);
+  BOOST_CHECK(!reused.placementProbeIntent);
+  BOOST_CHECK_EQUAL(grantPublications, grantPublicationsAfterFirstLease);
+  const auto successfulPublications = publications;
+  const auto successfulGrantPublications = grantPublications;
+  const auto leaseExpiry = pinned.grantLease->scope.expiresAtMs;
+  pinned.grantLease->scope.expiresAtMs = input.context.deadlineMs;
+  BOOST_CHECK_THROW(planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    probe, preparation, admission, closure, control, input.context.deadlineMs, cancelled,
+    &pinned), PreferenceObserved);
+  pinned.grantLease->scope.expiresAtMs = leaseExpiry;
+  const auto roleMapDigest = pinned.parent.planRoleMapDigest;
+  pinned.parent.planRoleMapDigest = input.inspected.modelManifestDigest;
+  BOOST_CHECK_THROW(planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    probe, preparation, admission, closure, control, input.context.deadlineMs, cancelled,
+    &pinned), PreferenceObserved);
+  pinned.parent.planRoleMapDigest = roleMapDigest;
+  pinned.attempt = 2;
+  probe.expected.clear();
+  BOOST_CHECK_THROW(planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    probe, preparation, admission, closure, control, input.context.deadlineMs, cancelled,
+    &pinned), PreferenceObserved);
   NativeConversationTurn continuation;
   continuation.parent.parentContextEpoch = 1;
   continuation.providersByRole = {{input.roles.front().role, "/provider/b"}};
@@ -1082,8 +1725,8 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   cancelled->store(true);
   BOOST_CHECK_THROW(planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
     NativePreSplitFirstPlacement(), preparation, admission, closure, control, input.context.deadlineMs, cancelled), std::runtime_error);
-  BOOST_CHECK_EQUAL(publications, 3U);
-  BOOST_CHECK_EQUAL(grantPublications, 2U);
+  BOOST_CHECK_EQUAL(publications, successfulPublications);
+  BOOST_CHECK_EQUAL(grantPublications, successfulGrantPublications);
 }
 
 BOOST_AUTO_TEST_CASE(RequestPlannerAcquiresIndependentRoleGrantsConcurrently)
@@ -1230,7 +1873,9 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
                              bool timeoutTargetedMeasurement = false,
                              bool cancelAfterTargetedMeasurement = false,
                              bool spoofMeasurementSigner = false,
-                             bool verifyLateBootstrapRelease = false)
+                             bool verifyLateBootstrapRelease = false,
+                             bool timeoutCacheQuery = false,
+                             bool cancelDuringCacheQuery = false)
 {
   using namespace ndn_service_framework;
   class User final : public test::LocalServiceUser {
@@ -1591,7 +2236,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
       value.setField("recipientCertDigest", nativePlanningDigest(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size())));
       const auto offer = decodeNativeProviderOfferV3(sample->at("offers").front().get<std::string>());
       value.setField("providerBootEpoch", provider + ":" + offer.bootEpoch);
-      value.setField("ndnsfDataV1EndpointPrefix", provider + "/NDNSF-DI/data");
+      value.setField("ndnsfDataV1EndpointPrefix", provider);
     }
   }
   auto registry = std::make_shared<NativeAdapterRegistry>();
@@ -1875,10 +2520,18 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
               {"status", "authorized"}};
           }
           else {
-            BOOST_REQUIRE_EQUAL(action, "measure");
-            if (deferMeasurement)
+            BOOST_REQUIRE(action == "measure" || action == "cache");
+            if (action == "cache" && cancelDuringCacheQuery) continue;
+            if (action == "cache" && timeoutCacheQuery) {
+              user->timeoutCallback(targetedId)(targetedId);
+              ResponseMessage lateUnavailable;
+              lateUnavailable.setStatus(false);
+              user->deliver(targetedId, target, lateUnavailable);
               continue;
-            if (timeoutTargetedMeasurement) {
+            }
+            if (action == "measure" && deferMeasurement)
+              continue;
+            if (action == "measure" && timeoutTargetedMeasurement) {
               const auto timeout = user->timeoutCallback(targetedId);
               timeout(targetedId);
               ResponseMessage lateUnavailable;
@@ -1947,6 +2600,15 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
                 {"data_name", source + "/NDNSF-DI/probe/goodput/" +
                   std::to_string(completedAtMs)}});
             }
+            if (action == "cache") {
+              BOOST_CHECK_EQUAL(request.at("peer_boot_epochs").at(
+                probePlacement->rttTarget()).get<std::string>(),
+                user->providerBootEpochs.at(probePlacement->rttTarget()));
+              payload["cache_complete"] = false;
+              payload["observations"] = NativeJson::array();
+              payload["omitted_rtt_count"] = request.at("rtt_pairs").size();
+              payload["omitted_goodput_count"] = request.at("goodput_edges").size();
+            }
           }
           const auto responseWire = nativeCanonicalJson(payload);
           ndn::Buffer responsePayload(responseWire.begin(), responseWire.end());
@@ -1969,12 +2631,13 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
           user->deliver(targetedId, target, response);
         }
       };
-      if (cancelAfterTargetedMeasurement) {
+      if (cancelAfterTargetedMeasurement || cancelDuringCacheQuery) {
         const auto findMeasurement = [&] ()
           -> std::optional<std::pair<ndn::Name, ndn::Name>> {
           for (const auto& pending : user->pendingTargetedCalls()) {
             const auto request = nativeParseJson(user->requestWire(pending.first));
-            if (request.value("action", std::string{}) == "measure")
+            if (request.value("action", std::string{}) ==
+                  (cancelDuringCacheQuery ? "cache" : "measure"))
               return pending;
           }
           return std::nullopt;
@@ -2001,6 +2664,10 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
         BOOST_CHECK(handle.status() == NativeRequestStatus::Cancelled);
         BOOST_CHECK(!user->committed(id));
         BOOST_CHECK_EQUAL(probePlacement->callCount(), 1U);
+        if (cancelDuringCacheQuery) {
+          BOOST_REQUIRE_EQUAL(targetedActions.size(), 1U);
+          BOOST_CHECK_EQUAL(targetedActions.front().first, "cache");
+        }
         return;
       }
       BOOST_REQUIRE(pumpUntil([&] {
@@ -2017,17 +2684,20 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
           values.push_back({{"action", action.first}, {"target", action.second}});
         return nativeCanonicalJson(values);
       }();
-      BOOST_CHECK_MESSAGE(targetedActions.size() == (spoofTargetedSigner ? 1U : 2U),
+      BOOST_CHECK_MESSAGE(targetedActions.size() == (spoofTargetedSigner ? 2U : 3U),
                           "targeted calls=" + actionSummary);
-      if (!spoofTargetedSigner && targetedActions.size() == 2) {
-        BOOST_CHECK_EQUAL(targetedActions[0].first, "authorize");
-        BOOST_CHECK_EQUAL(targetedActions[0].second, probePlacement->rttTarget());
-        BOOST_CHECK_EQUAL(targetedActions[1].first, "measure");
-        BOOST_CHECK_EQUAL(targetedActions[1].second, probePlacement->observer());
+      BOOST_REQUIRE(!targetedActions.empty());
+      BOOST_CHECK_EQUAL(targetedActions[0].first, "cache");
+      BOOST_CHECK_EQUAL(targetedActions[0].second, probePlacement->observer());
+      if (!spoofTargetedSigner && targetedActions.size() == 3) {
+        BOOST_CHECK_EQUAL(targetedActions[1].first, "authorize");
+        BOOST_CHECK_EQUAL(targetedActions[1].second, probePlacement->rttTarget());
+        BOOST_CHECK_EQUAL(targetedActions[2].first, "measure");
+        BOOST_CHECK_EQUAL(targetedActions[2].second, probePlacement->observer());
       }
-      else if (spoofTargetedSigner && targetedActions.size() == 1) {
-        BOOST_CHECK_EQUAL(targetedActions[0].first, "authorize");
-        BOOST_CHECK_EQUAL(targetedActions[0].second, probePlacement->rttTarget());
+      else if (spoofTargetedSigner && targetedActions.size() == 2) {
+        BOOST_CHECK_EQUAL(targetedActions[1].first, "authorize");
+        BOOST_CHECK_EQUAL(targetedActions[1].second, probePlacement->rttTarget());
       }
       BOOST_CHECK_EQUAL(probePlacement->callCount(), 2U);
       BOOST_CHECK(probePlacement->sawTargetedRound());
@@ -2380,6 +3050,16 @@ BOOST_AUTO_TEST_CASE(Spec196PublicClientFallsBackOnWrongMeasurementSigner)
   runPublicClientScenario(16, false, false, false, true);
 }
 
+BOOST_AUTO_TEST_CASE(Spec199PublicClientCacheTimeoutAndLateReplyFallBackOnce)
+{
+  runPublicClientScenario(16, false, false, false, false, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec199PublicClientCancelledCacheDoesNotAuthorizePeers)
+{
+  runPublicClientScenario(16, false, false, false, false, false, false, true);
+}
+
 BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
 {
   const auto f = oracle();
@@ -2446,6 +3126,60 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
       inputs.artifacts = preparation.ensureArtifacts(input.inspected, input.split, proposal, control);
       BOOST_CHECK_EQUAL(inputs.artifacts.requestId, control.requestId);
       BOOST_CHECK_EQUAL(inputs.artifacts.attempt, control.attempt);
+      auto badGraph = input.inspected;
+      badGraph.graph.nodes.clear();
+      BOOST_CHECK_THROW(preparation.ensureArtifacts(badGraph, input.split, proposal, control),
+                        std::invalid_argument);
+      auto duplicateNodeModel = input.inspected;
+      auto duplicateNode = duplicateNodeModel.graph.nodes.front();
+      duplicateNode.ordinal = duplicateNodeModel.graph.nodes.size();
+      duplicateNodeModel.graph.nodes.push_back(duplicateNode);
+      duplicateNodeModel.graph.topologicalOrder.push_back(duplicateNode.id);
+      BOOST_CHECK_THROW(preparation.ensureArtifacts(
+                          duplicateNodeModel, input.split, proposal, control),
+                        std::invalid_argument);
+      if (!input.inspected.graph.edges.empty()) {
+        auto duplicateEdgeModel = input.inspected;
+        const auto edge = duplicateEdgeModel.graph.edges.front();
+        duplicateEdgeModel.graph.edges.push_back(edge);
+        BOOST_CHECK_THROW(preparation.ensureArtifacts(
+                            duplicateEdgeModel, input.split, proposal, control),
+                          std::invalid_argument);
+        auto duplicateConsumerModel = input.inspected;
+        const auto consumer = duplicateConsumerModel.graph.edges.front().consumers.front();
+        duplicateConsumerModel.graph.edges.front().consumers.push_back(consumer);
+        BOOST_CHECK_THROW(preparation.ensureArtifacts(
+                            duplicateConsumerModel, input.split, proposal, control),
+                          std::invalid_argument);
+      }
+      if (!input.inspected.graph.legalCutEdges.empty()) {
+        auto duplicateCutModel = input.inspected;
+        const auto cut = duplicateCutModel.graph.legalCutEdges.front();
+        duplicateCutModel.graph.legalCutEdges.push_back(cut);
+        BOOST_CHECK_THROW(preparation.ensureArtifacts(
+                            duplicateCutModel, input.split, proposal, control),
+                          std::invalid_argument);
+      }
+      auto badCandidate = input.split;
+      badCandidate.graphDigest = nativePlanningDigest("foreign-graph");
+      BOOST_CHECK_THROW(preparation.ensureArtifacts(input.inspected, badCandidate, proposal, control),
+                        std::invalid_argument);
+      BOOST_CHECK_EQUAL(publications, 1);
+
+      // A port is an extension boundary: model checks must run again after it.
+      auto portMutatedModel = input.inspected;
+      unsigned mutatingPublications = 0;
+      NativeRequestPreparation mutatingPreparation(std::make_shared<NativeAdapterRegistry>(), {},
+        [&](const NativeInspectedModel&, const NativeSplitCandidate&,
+            const std::vector<NativeSelectionRoleV3>&, const NativeRequestControl&) {
+          ++mutatingPublications;
+          portMutatedModel.graph.nodes.clear();
+          return published;
+        }, {});
+      BOOST_CHECK_THROW(mutatingPreparation.ensureArtifacts(
+                          portMutatedModel, input.split, proposal, control),
+                        std::invalid_argument);
+      BOOST_CHECK_EQUAL(mutatingPublications, 1U);
       auto foreign = proposal;
       foreign.roles[0].artifactDigest = nativePlanningDigest("foreign-artifact");
       BOOST_CHECK_THROW(preparation.ensureArtifacts(input.inspected, input.split, foreign, control),
@@ -2464,10 +3198,119 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
         // The previously loaded recipe is not the newly published certificate;
         // ACCEPT_IF_EXACT_REUSE alone cannot authorize its preparation.
         BOOST_CHECK_THROW(seal(proposal), std::invalid_argument);
+        auto legacyInputs = inputs;
+        legacyInputs.artifacts.canonicalManifestJson.clear();
+        legacyInputs.artifacts.manifestDigest = input.inspected.modelManifestDigest;
+        const auto legacyCore = NativePlanSealer::shareFixedCore(NativePlanSealer::sealCore(
+          input.inspected, input.split, proposal, execution, input.offers, input.ackDigest, legacyInputs));
+        auto warmInputs = inputs;
+        warmInputs.assemblyByRole.clear();
+        warmInputs.borrowedPreparedRoles = &input.roles;
+        warmInputs.previousFixedCore = legacyCore.fixedCoreOwner;
+        // Original loaded-device admission succeeds above. Its old cache
+        // cannot authorize the different newly published recipe below.
+        BOOST_CHECK_THROW(NativePlanSealer::sealCore(input.inspected, input.split,
+          proposal, execution, input.offers, input.ackDigest, warmInputs), std::invalid_argument);
         continue;
       }
       const auto core = seal(proposal);
       BOOST_CHECK_EQUAL(core.coreDigest, sample.at("core_digest").get<std::string>());
+      const auto cachedCore = NativePlanSealer::shareFixedCore(core);
+      BOOST_REQUIRE(cachedCore.fixedCoreOwner);
+      auto warmInputs = inputs;
+      warmInputs.assemblyByRole.clear();
+      warmInputs.borrowedPreparedRoles = &input.roles;
+      warmInputs.previousFixedCore = cachedCore.fixedCoreOwner;
+      const auto warmCore = NativePlanSealer::sealCore(input.inspected, input.split,
+        proposal, execution, input.offers, input.ackDigest, warmInputs);
+      BOOST_CHECK(warmCore.reusedFixedCore);
+      BOOST_CHECK(warmCore.assemblyByRole.empty());
+      BOOST_CHECK_EQUAL(warmCore.fixedCoreOwner.get(), cachedCore.fixedCoreOwner.get());
+      // The oracle is frozen independently of the warm serializer/cache path.
+      BOOST_CHECK_EQUAL(warmCore.coreDigest, sample.at("core_digest").get<std::string>());
+      BOOST_CHECK_EQUAL(warmCore.coreDigest, core.coreDigest);
+      warmCore.validate();
+      auto mixedInputs = warmInputs;
+      mixedInputs.assemblyByRole = inputs.assemblyByRole;
+      BOOST_CHECK_THROW(NativePlanSealer::sealCore(input.inspected, input.split,
+        proposal, execution, input.offers, input.ackDigest, mixedInputs), std::invalid_argument);
+      BOOST_CHECK_THROW(NativePlanSealer::sealCore(input.inspected, input.split,
+        proposal, execution, {}, input.ackDigest, warmInputs), std::invalid_argument);
+      if (sample.contains("root_json")) {
+        BOOST_CHECK(cachedCore.fixedCoreOwner->canonicalRecipes());
+        auto legacyInputs = inputs;
+        legacyInputs.artifacts.canonicalManifestJson.clear();
+        legacyInputs.artifacts.manifestDigest = input.inspected.modelManifestDigest;
+        const auto legacyCore = NativePlanSealer::shareFixedCore(NativePlanSealer::sealCore(
+          input.inspected, input.split, proposal, execution, input.offers, input.ackDigest, legacyInputs));
+        BOOST_REQUIRE(legacyCore.fixedCoreOwner);
+        BOOST_CHECK(!legacyCore.fixedCoreOwner->canonicalRecipes());
+        auto fallbackInputs = warmInputs;
+        fallbackInputs.previousFixedCore = legacyCore.fixedCoreOwner;
+        const auto fallbackCore = NativePlanSealer::sealCore(input.inspected, input.split,
+          proposal, execution, input.offers, input.ackDigest, fallbackInputs);
+        BOOST_CHECK(!fallbackCore.reusedFixedCore);
+        BOOST_CHECK(!fallbackCore.fixedCoreOwner);
+        BOOST_CHECK_EQUAL(fallbackCore.coreDigest, sample.at("core_digest").get<std::string>());
+        fallbackCore.validate();
+
+        auto materializedRoles = input.roles;
+        auto materializedProposal = proposal;
+        for (auto& role : materializedRoles) role.materializedRole = !role.materializedRole;
+        for (auto& role : materializedProposal.roles) role.materializedRole = !role.materializedRole;
+        auto materializedInputs = warmInputs;
+        materializedInputs.borrowedPreparedRoles = &materializedRoles;
+        const auto changedCore = NativePlanSealer::sealCore(input.inspected, input.split,
+          materializedProposal, execution, input.offers, input.ackDigest, materializedInputs);
+        BOOST_CHECK(!changedCore.reusedFixedCore);
+        materializedInputs.previousFixedCore.reset();
+        const auto changedColdCore = NativePlanSealer::sealCore(input.inspected, input.split,
+          materializedProposal, execution, input.offers, input.ackDigest, materializedInputs);
+        BOOST_CHECK_EQUAL(changedCore.coreDigest, changedColdCore.coreDigest);
+        changedCore.validate();
+      }
+      if (sample.at("name") == "published_cpu") {
+        auto mergeInput = input;
+        auto& role = mergeInput.roles.front();
+        role.roleKind = "COMPONENT_SET";
+        role.layerBegin = role.layerEnd = 0;
+        role.mergeKind = "NATIVE_POSTPROCESS";
+        role.postprocessIdentity = "fixture-native-merge";
+        role.postprocessOutputName = role.expectedOutputs.front().name;
+        role.postprocessConfidenceThreshold = 0.25;
+        role.postprocessSort = "confidence-desc,class-asc,xyxy-asc";
+        mergeInput.split.inputIngressRole = mergeInput.split.resultEgressRole = role.role;
+        mergeInput.split.mergeKind = role.mergeKind;
+        mergeInput.split.postprocessingJson = nativeCanonicalJson(NativeJson{
+          {"identity", role.postprocessIdentity}, {"outputName", role.postprocessOutputName},
+          {"confidenceThreshold", role.postprocessConfidenceThreshold}, {"sort", role.postprocessSort}});
+        mergeInput.split.candidateDigest = mergeInput.split.computedDigest();
+        const auto mergeProposal = NativePreSplitFirstPlacement(identity).proposeRoles(
+          mergeInput.context, mergeInput.ackDigest, mergeInput.roles, mergeInput.offers, now);
+        auto mergeInputs = inputs;
+        mergeInputs.assemblyByRole.clear();
+        mergeInputs.borrowedPreparedRoles = &mergeInput.roles;
+        const auto mergeCold = NativePlanSealer::sealCore(mergeInput.inspected, mergeInput.split,
+          mergeProposal, execution, mergeInput.offers, mergeInput.ackDigest, mergeInputs);
+        const auto mergeCached = NativePlanSealer::shareFixedCore(mergeCold);
+        BOOST_CHECK(mergeCached.fixedCoreOwner->canonicalRecipes());
+        mergeInputs.previousFixedCore = mergeCached.fixedCoreOwner;
+        const auto mergeWarm = NativePlanSealer::sealCore(mergeInput.inspected, mergeInput.split,
+          mergeProposal, execution, mergeInput.offers, mergeInput.ackDigest, mergeInputs);
+        BOOST_CHECK(mergeWarm.reusedFixedCore);
+        BOOST_CHECK_EQUAL(mergeWarm.coreDigest, mergeCold.coreDigest);
+        BOOST_CHECK_EQUAL(mergeWarm.fixedCoreOwner.get(), mergeCached.fixedCoreOwner.get());
+        auto changedProposal = mergeProposal;
+        const auto changedRecipe = nativePlanningDigest("changed-native-merge-recipe");
+        changedProposal.roles.front().recipeDigest = changedRecipe;
+        mergeInput.roles.front().recipeDigest = changedRecipe;
+        const auto mergeChanged = NativePlanSealer::sealCore(mergeInput.inspected, mergeInput.split,
+          changedProposal, execution, mergeInput.offers, mergeInput.ackDigest, mergeInputs);
+        BOOST_CHECK(!mergeChanged.reusedFixedCore);
+        BOOST_CHECK_EQUAL(mergeChanged.roleContracts().begin()->second.recipeDigest, changedRecipe);
+        BOOST_CHECK_NE(mergeChanged.coreDigest, mergeCold.coreDigest);
+        mergeChanged.validate();
+      }
       if (sample.at("name") == "cpu") {
         auto snapshotProposal = proposal;
         auto snapshotInputs = inputs;
@@ -2593,7 +3436,7 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
           expiredSnapshotProposal.context.placementObservationSnapshotDigest;
         BOOST_CHECK_THROW(NativePlanSealer::sealCore(input.inspected, input.split,
           expiredSnapshotProposal, execution, input.offers, input.ackDigest,
-          expiredSnapshotInputs), std::invalid_argument);
+          expiredSnapshotInputs), detail::NativePlacementObservationExpired);
 
         const auto key = [](char value) {
           const std::string seed(32, value);

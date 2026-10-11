@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 
 #include <ndn-cxx/encoding/buffer.hpp>
+#include <ndn-cxx/name.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -151,12 +152,20 @@ struct NativeTensorEndpointV3
   std::uint64_t noProgressDeadlineMs = 0;
   std::uint64_t hardDeadlineMs = 0;
   std::string endpointDigest;
+  // Optional signed prefetch hints; actual manifest/content remain authority.
+  std::uint64_t prefetchBundleBytes = 0;
+  std::uint64_t prefetchSegmentBytes = 0;
+  // Signed endpoint opt-in: dynamic manifest and segment0 share one Data.
+  bool inlineFirstSegment = false;
+  // Fixed, signed generation projection: zero for application input and
+  // non-generation roles; otherwise the generation contract's operation stride.
+  std::uint64_t namingOperationStride = 0;
 };
 
 /**
  * Return the immutable base name shared by the manifest and every segment of
- * one V3 tensor object. Opaque values are encoded as single reversible
- * components so embedded '/' characters cannot change the grammar.
+ * one V3 tensor object. Readable labels occupy one bounded Generic component;
+ * their complete identity remains in the signed endpoint and tensor key.
  */
 std::string
 tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint);
@@ -169,6 +178,14 @@ tensorObjectManifestName(const NativeTensorEndpointV3& endpoint);
 std::string
 tensorObjectSegmentName(const NativeTensorEndpointV3& endpoint,
                         std::size_t segmentNo);
+
+/** Complete object contract identity, independent of unknown runtime bytes. */
+std::string
+computeTensorExecutionObjectDigest(const NativeTensorEndpointV3& endpoint);
+
+/** The same typed segment suffix used by endpoint and validated runtime edge. */
+ndn::Name
+makeTensorSegmentDataName(const ndn::Name& objectPrefix, std::uint64_t segmentNo);
 
 struct NativeReadinessPredicateV3
 {

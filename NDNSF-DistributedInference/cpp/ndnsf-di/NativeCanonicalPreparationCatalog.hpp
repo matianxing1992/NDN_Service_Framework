@@ -31,6 +31,9 @@ public:
   NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry> entries,
     const NativeAssemblyControl& control);
   std::shared_ptr<const NativeAdapterRegistry> adapters() const;
+  /** Independent immutable model owner, retained without the catalog sources. */
+  std::shared_ptr<const NativeInspectedModel> modelRefFor(
+    const NativeModelDescriptor& model) const;
   /** Return an owning view of the verified source without copying its
    * multi-gigabyte canonical buffers.  The view keeps the immutable source
    * alive while a publisher or identity check is using it, even if the

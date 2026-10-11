@@ -22,6 +22,10 @@ from ndnsf import (
     ServiceOperationStatus,
     fetch_adaptive_segmented_data_packets,
     fetch_segmented_object,
+    decode_data_packet,
+    inspect_data_name,
+    inspect_original_data_packet,
+    make_content_data_prefix,
 )
 
 from ._py_repoclient import (
@@ -175,7 +179,7 @@ class _PreparedArtifactSource:
         ) * self.packet_payload_bytes
         if (
             self.packet_payload_bytes <= 0
-            or self.packet_payload_bytes > 8800
+            or self.packet_payload_bytes > 8000
             or requested_chunk_bytes <= 0
             or self.chunk_bytes <= 0
             or self.chunk_bytes > 64 * 1024 * 1024
@@ -187,13 +191,17 @@ class _PreparedArtifactSource:
         self.root_dir = Path(self._temporary.name)
         identity = descriptor.reference.publisher_identity.rstrip("/")
         suffix = hashlib.sha256(self.operation_id.encode()).hexdigest()[:32]
-        self.source_prefix = f"{identity}/NDNSF-ARTIFACT-SOURCE/{suffix}"
-        self.root_name = f"{self.source_prefix}/root"
-        self.page_name = f"{self.source_prefix}/page/0"
-        self.payload_name = f"{self.source_prefix}/payload"
         self.key_locator = f"{identity}/KEY/NDNSF-ARTIFACT/{suffix}"
         self._producers: list[FileSegmentedObjectProducer] = []
         self._prepare_manifest()
+
+    def _content_prefix(self, kind: str, purpose: str, digest: str) -> str:
+        profile = json.dumps({"encoding": "raw", "segmentBytes": self.packet_payload_bytes,
+                              "freshnessMs": max(60_000, int(self.descriptor.timeout_ms))},
+                             sort_keys=True, separators=(",", ":"))
+        return make_content_data_prefix(self.descriptor.reference.publisher_identity,
+                                        kind, purpose + ":" + self.descriptor.reference.logical_name,
+                                        digest, profile)
 
     def _prepare_manifest(self) -> None:
         reference = self.descriptor.reference
@@ -201,6 +209,7 @@ class _PreparedArtifactSource:
         size = int(reference.size_bytes)
         chunks = []
         children = []
+        whole_digest = hashlib.sha256()
         with self.path.open("rb", buffering=0) as source:
             offset = 0
             index = 0
@@ -215,6 +224,7 @@ class _PreparedArtifactSource:
                             "repo-artifact-source-truncated-during-manifest"
                         )
                     digest.update(block)
+                    whole_digest.update(block)
                     remaining -= len(block)
                 chunk = {
                     "index": index,
@@ -239,6 +249,10 @@ class _PreparedArtifactSource:
                 })
                 offset += length
                 index += 1
+            if source.read(1):
+                raise ValueError("repo-artifact-source-size-mismatch")
+        if whole_digest.hexdigest() != reference.content_digest:
+            raise ValueError("repo-artifact-source-content-digest-mismatch")
         page_value = {
             "pageVersion": "artifact-manifest-page-v2",
             "depth": 0,
@@ -299,6 +313,11 @@ class _PreparedArtifactSource:
         self.page_path = self.root_dir / "page.wire"
         self.root_path.write_bytes(encode_signed_artifact_root(signed, limits))
         self.page_path.write_bytes(encode_artifact_manifest_page(page, limits))
+        self.payload_name = self._content_prefix("blob", "artifact-payload", reference.content_digest)
+        self.root_name = self._content_prefix("material", "artifact-root",
+                                               hashlib.sha256(self.root_path.read_bytes()).hexdigest())
+        self.page_name = self._content_prefix("material", "artifact-page",
+                                               hashlib.sha256(self.page_path.read_bytes()).hexdigest())
         self.public_key_pem = public_key.read_text(encoding="utf-8")
         private_key.unlink()
         canonical.unlink()
@@ -317,7 +336,7 @@ class _PreparedArtifactSource:
                 signing_identity=self.descriptor.reference.publisher_identity,
                 max_segment_size=self.packet_payload_bytes,
                 freshness_ms=max(60_000, int(self.descriptor.timeout_ms)),
-                digest_signing=True,
+                digest_signing=False,
             ).start())
         # Give NFD prefix registration one bounded scheduling interval.
         time.sleep(0.2)
@@ -387,8 +406,8 @@ class _NetworkPublishDriver:
             chunk_bytes=self.backend.chunk_bytes,
         )
         started = time.monotonic()
-        source.start()
         try:
+            source.start()
             pending = self.backend.control.begin(
                 self.descriptor.reference,
                 requested_replicas=self.descriptor.requested_replicas,
@@ -1014,13 +1033,99 @@ def _transition(persistence, assignment, generation, before, after, suffix):
     )
 
 
+def _capture_original_source(repo_app, assignment, source_kind: str,
+                             source_name: str, maximum_bytes: int,
+                             expected_bytes: int | None = None,
+                             persist_content=None) -> bytes:
+    """Bounded native fetch; retain each original Data before acknowledging it."""
+    declared = inspect_data_name(source_name)["canonical_name"]
+    producer = inspect_data_name(assignment.artifact.publisher_identity)["canonical_name"]
+    if not declared.startswith(producer.rstrip("/") + "/") or maximum_bytes <= 0:
+        raise ValueError("repo-original-source-producer-binding-mismatch")
+    buffer = bytearray() if persist_content is None else None
+    source_prefix = None
+    final_segment = None
+    received = 0
+
+    def retain(packet) -> None:
+        nonlocal source_prefix, final_segment, received
+        decoded = decode_data_packet(bytes(packet.wire))
+        info = inspect_data_name(decoded.name)
+        declared_info = inspect_data_name(packet.name)
+        geometry = inspect_original_data_packet(decoded.wire)
+        if (decoded.wire != bytes(packet.wire) or decoded.content != bytes(packet.content)
+                or decoded.segment != int(packet.segment)
+                or info["name_wire"] != declared_info["name_wire"]
+                or info["segment"] is None
+                or not info["canonical_name"].startswith(declared + "/")):
+            raise ValueError("repo-original-packet-source-binding-mismatch")
+        last = geometry["final_segment"]
+        if last is None or last >= max(1, (maximum_bytes + assignment.packet_payload_bytes - 1)
+                                        // assignment.packet_payload_bytes):
+            raise ValueError("repo-original-packet-final-block-invalid")
+        if source_prefix is None:
+            source_prefix, final_segment = info["segment_prefix"], int(last)
+        if source_prefix != info["segment_prefix"] or final_segment != int(last):
+            raise ValueError("repo-original-packet-mixed-source")
+        offset = decoded.segment * assignment.packet_payload_bytes
+        if (decoded.segment > final_segment or offset + len(decoded.content) > maximum_bytes
+                or (decoded.segment < final_segment and len(decoded.content) != assignment.packet_payload_bytes)):
+            raise ValueError("repo-original-packet-size-invalid")
+        repo_app._persistence.store_original_packet(
+            assignment.operation_id, source_kind, info["canonical_name"],
+            decoded.segment, len(decoded.content), decoded.wire)
+        if buffer is not None:
+            end = offset + len(decoded.content)
+            if end > len(buffer):
+                buffer.extend(b"\0" * (end - len(buffer)))
+            buffer[offset:end] = decoded.content
+        else:
+            persist_content(decoded)
+        received += len(decoded.content)
+
+    metrics = fetch_adaptive_segmented_data_packets(
+        source_name, retain,
+        timeout_ms=max(60_000, maximum_bytes // (256 * 1024) * 1000),
+        interest_lifetime_ms=10_000, initial_window=8, maximum_window=128,
+        maximum_retries=5, persistence_backlog_limit=32)
+    if (source_prefix is None or final_segment is None
+            or int(metrics.delivered_segments) != final_segment + 1
+            or int(metrics.total_segments) != final_segment + 1
+            or (expected_bytes is not None and received != expected_bytes)):
+        raise ValueError("repo-original-source-incomplete")
+    repo_app._persistence.record_original_source(
+        assignment.operation_id, source_kind, declared, source_prefix,
+        final_segment + 1, received)
+    return bytes(buffer) if buffer is not None else b""
+
+
+def _activate_original_sources(repo_app, operation_id: str, generation: int) -> str:
+    sources = repo_app._persistence.original_sources(operation_id)
+    if {source["kind"] for source in sources} != {"root", "page", "payload"}:
+        raise RuntimeError("repo artifact has no complete original packet set; legacy republish refused")
+    for source in sources:
+        for prefix in {source["source_name"], source["source_prefix"]}:
+            repo_app._activate_serving_prefix(prefix, operation_id, generation)
+    return next(source["source_prefix"] for source in sources if source["kind"] == "payload")
+
+
 def _execute_repo_store_assignment(repo_app, context) -> dict[str, Any]:
     assignment = decode_store_assignment(
         context.assignment.assignment_payload
     )
+    try:
+        return _execute_repo_store_assignment_impl(repo_app, context, assignment)
+    except BaseException:
+        if repo_app._persistence.artifact_writes_enabled:
+            repo_app._persistence.discard_unactivated_original_packets(assignment.operation_id)
+        raise
+
+
+def _execute_repo_store_assignment_impl(repo_app, context, assignment) -> dict[str, Any]:
     if (
         not assignment.source_payload_name
-        or assignment.repo_node != repo_app.provider_name
+        or inspect_data_name(assignment.repo_node)["name_wire"] !=
+           inspect_data_name(repo_app.provider_name)["name_wire"]
     ):
         raise ValueError("repo-store-assignment-provider-binding-mismatch")
     persistence = repo_app._persistence
@@ -1037,14 +1142,27 @@ def _execute_repo_store_assignment(repo_app, context) -> dict[str, Any]:
         stored = persistence.authenticated_receipt(assignment.operation_id)
         if stored is None:
             raise RuntimeError("active repo artifact is missing its receipt")
+        committed = stored.get("receipt", {}).get("artifact", {})
+        expected = _artifact_dict(assignment.artifact)
+        if set(committed) != set(expected):
+            raise ValueError("repo-active-operation-artifact-conflict")
+        for field, value in expected.items():
+            same = (inspect_data_name(committed[field])["name_wire"] ==
+                    inspect_data_name(value)["name_wire"]) if field in {
+                        "publisherIdentity", "rootManifestName"} else committed[field] == value
+            if not same:
+                raise ValueError("repo-active-operation-artifact-conflict")
+        payload = next((source for source in persistence.original_sources(assignment.operation_id)
+                        if source["kind"] == "payload"), None)
+        if (payload is None or inspect_data_name(payload["source_name"])["name_wire"] !=
+                inspect_data_name(assignment.source_payload_name)["name_wire"]):
+            raise ValueError("repo-active-operation-source-conflict")
         return {
             "schema": RECEIPT_SCHEMA,
             **stored,
-            "dataName": (
-                f"{repo_app.provider_name.rstrip('/')}/NDNSF-ARTIFACT/"
-                f"sha256/{assignment.artifact.content_digest}"
-            ),
+            "dataName": _activate_original_sources(repo_app, assignment.operation_id, generation),
         }
+    persistence.discard_unactivated_original_packets(assignment.operation_id)
     if state == "ABSENT":
         _transition(
             persistence, assignment, generation,
@@ -1066,18 +1184,12 @@ def _execute_repo_store_assignment(repo_app, context) -> dict[str, Any]:
     limits.max_cryptographic_operations = (
         limits.max_manifest_pages + limits.max_manifest_chunks + 8
     )
-    root_wire = fetch_segmented_object(
-        assignment.source_root_name,
-        timeout_ms=30_000,
-        interest_lifetime_ms=10_000,
-        init_cwnd=4.0,
-    )
-    page_wire = fetch_segmented_object(
-        assignment.source_page_name,
-        timeout_ms=30_000,
-        interest_lifetime_ms=10_000,
-        init_cwnd=4.0,
-    )
+    root_wire = _capture_original_source(repo_app, assignment, "root",
+                                         assignment.source_root_name, int(limits.max_root_encoded_bytes))
+    page_wire = _capture_original_source(repo_app, assignment, "page",
+                                         assignment.source_page_name,
+                                         assignment.manifest_page_encoded_bytes,
+                                         assignment.manifest_page_encoded_bytes)
     if len(page_wire) != assignment.manifest_page_encoded_bytes:
         raise RuntimeError("repo artifact manifest page size mismatch")
     signed_root = decode_signed_artifact_root(root_wire, limits)
@@ -1133,8 +1245,9 @@ def _execute_repo_store_assignment(repo_app, context) -> dict[str, Any]:
 
     store = repo_app._artifact_payload_store
     store.begin(identity)
-    if not store.is_committed(identity):
-        def persist(packet) -> None:
+    needs_payload = not store.is_committed(identity)
+    def persist(packet) -> None:
+        if needs_payload:
             offset = int(packet.segment) * assignment.packet_payload_bytes
             if offset >= identity.size_bytes:
                 raise RuntimeError("repo artifact segment exceeds declared size")
@@ -1145,18 +1258,9 @@ def _execute_repo_store_assignment(repo_app, context) -> dict[str, Any]:
                 raise RuntimeError("repo artifact final segment exceeds size")
             store.write_range(identity, offset, packet.content)
 
-        fetch_adaptive_segmented_data_packets(
-            assignment.source_payload_name,
-            persist,
-            timeout_ms=max(60_000, int(
-                assignment.artifact.size_bytes // (256 * 1024)
-            ) * 1000),
-            interest_lifetime_ms=10_000,
-            initial_window=8,
-            maximum_window=128,
-            maximum_retries=5,
-            persistence_backlog_limit=32,
-        )
+    _capture_original_source(repo_app, assignment, "payload", assignment.source_payload_name,
+                             identity.size_bytes, identity.size_bytes, persist)
+    if needs_payload:
         for chunk in chunks:
             payload = store.read_range(
                 identity,
@@ -1216,55 +1320,16 @@ def _execute_repo_store_assignment(repo_app, context) -> dict[str, Any]:
     persistence.commit_finalized_artifact(assignment.operation_id)
     persistence.activate_finalized_artifact(assignment.operation_id)
 
-    data_name = (
-        f"{repo_app.provider_name.rstrip('/')}/NDNSF-ARTIFACT/"
-        f"sha256/{assignment.artifact.content_digest}"
-    )
-    with repo_app._artifact_file_producer_lock:
-        if assignment.artifact.content_digest not in repo_app._artifact_file_producers:
-            repo_app._artifact_file_producers[
-                assignment.artifact.content_digest
-            ] = FileSegmentedObjectProducer(
-                data_name,
-                str(store.committed_path(identity)),
-                signing_identity=repo_app.provider_name,
-                max_segment_size=assignment.packet_payload_bytes,
-                freshness_ms=60_000,
-                digest_signing=True,
-            ).start()
+    data_name = _activate_original_sources(repo_app, assignment.operation_id, generation)
     value = envelope.to_dict()
     value["dataName"] = data_name
     return value
 
 
 def _rehydrate_committed_artifact_producers(repo_app) -> None:
-    """Re-publish durable active artifacts after a RepoNode restart."""
-    limits = ArtifactLimits()
+    """Restore original prefixes; never manufacture replacement Data."""
     for row in repo_app._persistence.active_artifacts():
-        artifact = artifact_reference_from_dict(row["artifact"], limits)
-        identity = ArtifactStorageIdentity(
-            content_digest=artifact.content_digest,
-            size_bytes=int(artifact.size_bytes),
-            generation=int(row["generation"]),
-            digest_algorithm=artifact.digest_algorithm,
-        )
-        path = repo_app._artifact_payload_store.committed_path(identity)
-        if not path.is_file():
-            continue
-        data_name = (
-            f"{repo_app.provider_name.rstrip('/')}/NDNSF-ARTIFACT/"
-            f"sha256/{artifact.content_digest}"
-        )
-        repo_app._artifact_file_producers[artifact.content_digest] = (
-            FileSegmentedObjectProducer(
-                data_name,
-                str(path),
-                signing_identity=repo_app.provider_name,
-                max_segment_size=_DEFAULT_PACKET_PAYLOAD_BYTES,
-                freshness_ms=60_000,
-                digest_signing=True,
-            ).start()
-        )
+        _activate_original_sources(repo_app, row["operationId"], int(row["generation"]))
 
 
 def install_artifact_collaboration_service(
@@ -1311,9 +1376,7 @@ def install_artifact_collaboration_service(
                 return AckDecision(
                     status=False, message="repo-store-queue-full"
                 )
-            available = max(
-                0, int(repo_app.capacity_bytes) - int(repo_app._used_bytes)
-            )
+            available = repo_app._persistence.capacity_status().available_bytes
             decision = AckDecision(
                 status=True,
                 message="repo-store-offer",

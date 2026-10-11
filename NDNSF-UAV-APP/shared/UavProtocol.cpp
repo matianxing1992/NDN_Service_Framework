@@ -1114,7 +1114,9 @@ parseCanonicalName(const Fields& fields, const std::string& key)
   const auto& value = requiredDescriptorField(fields, key);
   try {
     ndn::Name name(value);
-    if (name.empty() || name.toUri() != value) {
+    if (name.empty() ||
+        (name.toUri(ndn::name::UriFormat::CANONICAL) != value &&
+         name.toUri(ndn::name::UriFormat::ALTERNATE) != value)) {
       throw std::invalid_argument("non-canonical UAV stream descriptor name: " + key);
     }
     return name;
@@ -1149,7 +1151,8 @@ validateVideoStreamSessionContext(const VideoStreamDescriptor& descriptor)
     throw std::invalid_argument("invalid UAV stream descriptor identity context");
   }
   if (descriptor.mappingRoot !=
-      makeStreamNameMapRoot(descriptor.providerIdentity, descriptor.streamId)) {
+      makeStreamNameMapRoot(descriptor.providerIdentity, descriptor.streamId,
+                            descriptor.sessionEpoch)) {
     throw std::invalid_argument("invalid UAV stream Mapping root");
   }
   if (!descriptor.providerIdentity.isPrefixOf(descriptor.dataPrefix) ||
@@ -1161,9 +1164,9 @@ validateVideoStreamSessionContext(const VideoStreamDescriptor& descriptor)
   const auto& camera = descriptor.dataPrefix.get(videoIndex + 1);
   const auto& stream = descriptor.dataPrefix.get(videoIndex + 2);
   const auto& version = descriptor.dataPrefix.get(videoIndex + 3);
-  if (!video.isGeneric() || video.toUri() != "video" ||
+  if (video != ndn::name::Component("video") ||
       !camera.isGeneric() || camera.value_size() == 0 ||
-      !stream.isGeneric() || stream.toUri() != descriptor.streamId ||
+      stream != ndn::name::Component(descriptor.streamId) ||
       !version.isVersion() || version.toVersion() != descriptor.mappingVersion) {
     throw std::invalid_argument("invalid UAV stream semantic payload prefix");
   }
@@ -1434,7 +1437,7 @@ encodeVideoStreamDescriptor(const VideoStreamDescriptor& descriptor)
 {
   validateVideoStreamDescriptor(descriptor);
   Fields fields = descriptor.extensions;
-  fields["data_prefix"] = descriptor.dataPrefix.toUri();
+  fields["data_prefix"] = descriptor.dataPrefix.toUri(ndn::name::UriFormat::ALTERNATE);
   fields["key_epoch"] = std::to_string(descriptor.keyEpoch);
   fields["latest_join_cursor"] = std::to_string(descriptor.frontiers.latestJoin);
   fields["latest_produced_cursor"] = std::to_string(descriptor.frontiers.latestProduced);
@@ -1444,7 +1447,7 @@ encodeVideoStreamDescriptor(const VideoStreamDescriptor& descriptor)
   fields["mapping_block_capacity"] = std::to_string(descriptor.mappingBlockCapacity);
   fields["mapping_committed_through_cursor"] =
     std::to_string(descriptor.frontiers.mappingCommittedThrough);
-  fields["mapping_root"] = descriptor.mappingRoot.toUri();
+  fields["mapping_root"] = descriptor.mappingRoot.toUri(ndn::name::UriFormat::ALTERNATE);
   fields["mapping_version"] = std::to_string(descriptor.mappingVersion);
   fields["max_name_reservations"] = std::to_string(descriptor.maxNameReservations);
   fields["next_reserved_cursor"] = std::to_string(descriptor.frontiers.nextReserved);

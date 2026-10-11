@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ndn-cxx/name.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -7,6 +8,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ndn_service_framework {
@@ -35,6 +37,12 @@ struct EncryptedLargeDataCommitOptions
   // is the same immutable publication before it reuses ciphertext.
   std::string contentDigest;
   std::uint64_t plaintextSize = 0;
+  // Distinguish immutable signed packet storage from the historical envelope
+  // byte-range format. The backend must never infer this from a Name label.
+  std::string packetStorageFormat = "encrypted-envelope-bytes";
+  std::string manifestName;
+  std::string dataPrefix;
+  std::uint64_t packetWireBytes = 0;
 };
 
 struct EncryptedLargeDataLookupResult
@@ -49,6 +57,11 @@ struct EncryptedLargeDataLookupResult
   std::string contentDigest;
   std::uint64_t plaintextSize = 0;
   std::shared_ptr<const class EncryptedLargeDataRangeSource> source;
+  // Appended after the historical aggregate fields for source compatibility.
+  std::string packetStorageFormat = "encrypted-envelope-bytes";
+  std::string manifestName;
+  std::string dataPrefix;
+  std::uint64_t packetWireBytes = 0;
 };
 
 /** Immutable encrypted envelope. The last owner releases its storage lease.
@@ -64,6 +77,12 @@ public:
   virtual void release() const noexcept {}
   virtual std::vector<std::uint8_t> read(std::uint64_t offset,
                                        std::uint64_t length) const = 0;
+  /** Return the complete original signed packet, never reconstructed content.
+   * Range-only sources cannot satisfy this contract. */
+  virtual std::vector<std::uint8_t> readOriginalDataPacket(const ndn::Name&) const
+  {
+    throw std::runtime_error("ORIGINAL_DATA_PACKET_UNSUPPORTED");
+  }
 };
 
 /** Synchronous, bounded publication of an already encrypted envelope.
@@ -89,6 +108,8 @@ public:
     std::uint64_t size, const EncryptedLargeDataCommitOptions& options,
     const std::function<void()>& requireActive = {})
   {
+    if (options.packetStorageFormat != "encrypted-envelope-bytes")
+      throw std::runtime_error("ORIGINAL_PACKET_STORAGE_REQUIRES_PACKET_COMMIT");
     if (options.retention != EncryptedLargeDataRetention::Transient)
       throw std::runtime_error("DURABLE_RETENTION_UNSUPPORTED");
     return commitFile(encryptedName, file, size, requireActive);
@@ -108,6 +129,20 @@ public:
 
   /** Whether this adapter has an owner that can survive the request lease. */
   virtual bool supportsDurableRetention() const noexcept { return false; }
+
+  virtual bool supportsOriginalDataPackets() const noexcept { return false; }
+
+  /** Consume one bounded already-signed packet at a time. Success commits the
+   * complete manifest-referenced packet set; failure preserves older objects.
+   * The callback owns encoding/signing and must keep its input owner alive. */
+  virtual std::shared_ptr<const EncryptedLargeDataRangeSource> commitOriginalDataPackets(
+    const ndn::Name&, const EncryptedLargeDataCommitOptions&,
+    const std::function<std::optional<std::pair<ndn::Name,
+                           std::vector<std::uint8_t>>>()>&,
+    const std::function<void()>& = {})
+  {
+    throw std::runtime_error("ORIGINAL_DATA_PACKET_UNSUPPORTED");
+  }
 };
 
 } // namespace ndn_service_framework

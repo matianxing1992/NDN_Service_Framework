@@ -119,7 +119,7 @@ public:
     const auto& recipe = catalog.at("recipe");
     const auto& publication = catalog.at("publication");
     const auto artifactRoot = publication.at("artifact_root").get<std::string>();
-    const auto identity = ndnsf::di::nativePlanningDigest(request.catalogConfigurationJson);
+    const auto identity = ndnsf::di::nativeCanonicalPublicationIdentity(catalog);
     const auto root = artifactRoot + "/prepared/" + identity.substr(7);
     const auto rootName = root + "/manifest";
     // Publish commits the root and its dependency objects under the same Repo

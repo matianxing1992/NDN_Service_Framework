@@ -3,10 +3,12 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ndnsf::di {
@@ -27,6 +29,18 @@ struct NamedTensor
   std::vector<std::int64_t> shape;
   std::vector<std::uint8_t> payload;
 };
+
+/** Layout bytes known without allocating tensor data; not content authority. */
+struct TensorBundleEncodingMember
+{
+  std::size_t nameBytes = 0;
+  std::size_t rank = 0;
+  std::uint64_t payloadBytes = 0;
+};
+
+/** Exact NDITB001 encoded size, including all framing, with codec limits. */
+std::uint64_t
+tensorBundleEncodedSize(const std::vector<TensorBundleEncodingMember>& members);
 
 /**
  * Signed root manifest for one immutable request-scoped tensor object.
@@ -88,6 +102,17 @@ encodeTensorObjectManifestContextCompact(const TensorObjectManifestV1& manifest)
 
 TensorObjectManifestV1
 decodeTensorObjectManifest(const std::vector<std::uint8_t>& wire);
+
+// Framing only: callers still verify the restored manifest and inner segment.
+std::vector<std::uint8_t>
+encodeTensorManifestWithFirstSegment(const std::vector<std::uint8_t>& manifest,
+                                    const std::vector<std::uint8_t>& segment,
+                                    std::size_t maxWireBytes);
+
+// A legacy plain manifest returns an empty second member.
+std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>>
+decodeTensorManifestWithFirstSegment(const std::vector<std::uint8_t>& wire,
+                                    std::size_t maxWireBytes);
 
 std::string
 sha256TensorBytes(const std::vector<std::uint8_t>& bytes);

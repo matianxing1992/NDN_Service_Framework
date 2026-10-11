@@ -1,6 +1,8 @@
 #ifndef NDNSF_DISTRIBUTED_INFERENCE_ONNX_RUNTIME_SESSION_CACHE_HPP
 #define NDNSF_DISTRIBUTED_INFERENCE_ONNX_RUNTIME_SESSION_CACHE_HPP
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderResidencyV4.hpp"
+
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -8,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace ndnsf::di {
 
@@ -77,7 +80,14 @@ public:
                 Loader loader,
                 std::chrono::steady_clock::time_point deadline =
                   std::chrono::steady_clock::time_point::max(),
-                std::function<bool()> cancelled = {});
+                std::function<bool()> cancelled = {},
+                std::vector<NativeProviderResidencyIdentityV4> residencyIdentities = {});
+
+  NativeProviderResidencyOwnerResultV4 queryPlacementResidencyV4(
+    const std::vector<NativeJson>& candidateArtifacts,
+    const std::string& processEpoch,
+    std::uint64_t capturedAtMs,
+    std::uint64_t expiresAtMs) const;
 
   bool evict(const std::string& identity) noexcept;
   void evictIdle() noexcept;

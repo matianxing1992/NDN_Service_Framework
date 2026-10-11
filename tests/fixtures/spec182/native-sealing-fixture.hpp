@@ -45,11 +45,11 @@ inline void assemblies(NativePlanSealingInputs& inputs)
 
 inline NativeRoleProjectionInputs projection(const NativeSealedPlan& sealed, const std::string& provider)
 {
-  auto role = sealed.core.assemblyByRole.begin()->first;
+  auto role = sealed.core.roleContracts().begin()->first;
   for (const auto& assignment : sealed.core.assignment.providerByRole) {
     if (assignment.second == provider) role = assignment.first;
   }
-  const auto& assembly = sealed.core.assemblyByRole.at(role);
+  const auto& assembly = sealed.core.roleContracts().at(role);
   NativeRoleProjectionInputs inputs;
   inputs.executionRole = {role, assembly.role, assembly.rank, assembly.layerBegin,
     assembly.layerEnd, assembly.backend, assembly.adapterId, assembly.adapterVersion};

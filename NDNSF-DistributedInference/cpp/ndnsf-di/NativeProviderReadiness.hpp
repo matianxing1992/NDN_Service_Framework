@@ -91,6 +91,18 @@ public:
                   const ndn::Name& providerName = ndn::Name(),
                   const ndn::Name& serviceName = ndn::Name()) const;
 
+  using AcceptedPayloadFactory = std::function<std::optional<
+    ndn_service_framework::ServiceProvider::AckDecision>(
+      const ndn_service_framework::ServiceProvider::AckDecision&)>;
+
+  // Invoked synchronously outside the readiness lock after admission and
+  // evidence validation. Only nullopt falls back to the full legacy hint;
+  // a returned rejection and factory exceptions retain their original meaning.
+  ndn_service_framework::ServiceProvider::AckDecision
+  makeAckDecision(const std::string& rolesText, const ndn::Name& providerName,
+                  const ndn::Name& serviceName,
+                  const AcceptedPayloadFactory& acceptedPayload) const;
+
 private:
   void set(Status status, std::string message);
   std::string statusTextLocked() const;

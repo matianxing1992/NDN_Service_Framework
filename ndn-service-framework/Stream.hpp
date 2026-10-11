@@ -266,6 +266,10 @@ struct StreamNameMapBlock
 /** Base name before the typed mapping Version and SequenceNum components. */
 ndn::Name makeStreamNameMapRoot(const ndn::Name& provider,
                                 const std::string& streamId);
+/** Producer-owned map root bound to the existing nonzero stream epoch. */
+ndn::Name makeStreamNameMapRoot(const ndn::Name& provider,
+                              const std::string& streamId,
+                              uint64_t sessionEpoch);
 
 /** Exact Mapping Data name: root / Version(mappingVersion) / SequenceNum(block). */
 ndn::Name makeStreamNameMapBlockName(const ndn::Name& mappingRoot,
@@ -728,6 +732,9 @@ struct PredictiveStreamCheckpoint
 ndn::Name
 makePredictiveFrontierName(const ndn::Name& mappingRoot);
 
+ndn::Interest
+makePredictiveFrontierInterest(const ndn::Name& mappingRoot);
+
 ndn::Name
 makePredictiveDataName(const ndn::Name& mappingRoot,
                        uint64_t mappingVersion,
@@ -740,6 +747,10 @@ makePredictiveDataName(const LiveStreamDefinition& definition,
 ndn::Name
 makePredictiveGroupName(const LiveStreamDefinition& definition,
                         uint64_t groupId);
+
+ndn::Name
+makePredictiveGroupManifestName(const LiveStreamDefinition& definition,
+                               uint64_t groupId);
 
 ndn::Name
 makePredictiveRepairName(const LiveStreamDefinition& definition,
@@ -1125,7 +1136,8 @@ private:
   bool verifyPredictiveSourceSignature(const ndn::Data& data) const;
   std::shared_ptr<ndn::Data>
   makePredictiveControlPacket(const ndn::Name& name,
-                              const ndn::Block& content) const;
+                              const ndn::Block& content,
+                              bool zeroFreshness = false) const;
 
 private:
   LiveStreamDefinition m_definition;
@@ -1153,6 +1165,8 @@ private:
   uint64_t m_predictiveNextExpectedCursor = 0;
   std::optional<uint64_t> m_predictiveLatestProducedCursor;
   PredictiveStreamFrontier m_predictiveFrontier;
+  std::deque<ndn::Name> m_frontierSnapshots;
+  std::map<ndn::Name, std::pair<uint64_t, std::shared_ptr<ndn::Data>>> m_frontierReplies;
   std::map<uint64_t, PredictiveStreamGroupCommit> m_predictiveGroups;
   std::deque<uint64_t> m_predictiveGroupRetentionOrder;
   uint64_t m_predictiveDuplicates = 0;

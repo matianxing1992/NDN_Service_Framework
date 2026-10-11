@@ -1,7 +1,9 @@
 #include "Stream.hpp"
+#include "ProducerDataNaming.hpp"
 #include "TimelineTrace.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
+#include "utils.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -514,7 +516,7 @@ LiveStreamDefinition::validate() const
 ndn::Name
 LiveStreamDefinition::mappingRoot() const
 {
-  return makeStreamNameMapRoot(provider, streamId);
+  return makeStreamNameMapRoot(provider, streamId, sessionEpoch);
 }
 
 size_t
@@ -1438,6 +1440,23 @@ makeStreamNameMapRoot(const ndn::Name& provider, const std::string& streamId)
 }
 
 ndn::Name
+makeStreamNameMapRoot(const ndn::Name& provider, const std::string& streamId,
+                      uint64_t sessionEpoch)
+{
+  if (streamId.empty() || streamId.size() > 256 || sessionEpoch == 0)
+    throw std::invalid_argument("mapping root requires bounded stream id and nonzero epoch");
+  auto root = makeProducerDataPrefix(provider, "STREAM");
+  ndn::name::Component label;
+  try { label = makeNamingLabelComponent(streamId); }
+  catch (const std::invalid_argument&) { label = makeNamingLabelComponent("stream"); }
+  root.append(label).append(makeNamingDigestComponent(computeNamingDigest(
+    "ndnsf-naming/opaque/stream-id", {{1, 4, {streamId.begin(), streamId.end()}}})))
+    .append("EPOCH").append(makeNamingDecimalComponent(sessionEpoch)).append("MAP");
+  checkNamingNameSize(root);
+  return root;
+}
+
+ndn::Name
 makeStreamNameMapBlockName(const ndn::Name& mappingRoot,
                            uint64_t mappingVersion,
                            uint64_t blockNumber)
@@ -1448,6 +1467,7 @@ makeStreamNameMapBlockName(const ndn::Name& mappingRoot,
   ndn::Name name(mappingRoot);
   name.appendVersion(mappingVersion);
   name.appendSequenceNumber(blockNumber);
+  checkNamingNameSize(name);
   return name;
 }
 
@@ -1564,7 +1584,7 @@ StreamNameResolverState::validateConfiguration(
     return "missing-name-context";
   }
   if (config.mappingRoot != makeStreamNameMapRoot(config.expectedProvider,
-                                                   config.streamId)) {
+                                                   config.streamId, config.sessionEpoch)) {
     return "wrong-mapping-root";
   }
   if (!config.expectedProvider.isPrefixOf(config.payloadPrefix) ||
@@ -3755,9 +3775,42 @@ PredictiveStreamCheckpoint::validate() const
 ndn::Name
 makePredictiveFrontierName(const ndn::Name& mappingRoot)
 {
-  ndn::Name name(mappingRoot);
-  name.append("frontier");
-  return name;
+  if (mappingRoot.size() <= 7 || mappingRoot[-7] != ndn::name::Component("NDNSF") ||
+      mappingRoot[-6] != ndn::name::Component("STREAM") ||
+      mappingRoot[-3] != ndn::name::Component("EPOCH") ||
+      mappingRoot[-1] != ndn::name::Component("MAP"))
+    throw std::invalid_argument("frontier requires a canonical producer-owned mapping root");
+  ndn::Block parameters(ndn::tlv::ApplicationParameters);
+  parameters.push_back(mappingRoot.wireEncode());
+  parameters.encode();
+  return makeControlRpcName(mappingRoot.getPrefix(-7), "FRONTIER", parameters, "query").getPrefix(-1);
+}
+
+ndn::Interest
+makePredictiveFrontierInterest(const ndn::Name& mappingRoot)
+{
+  auto name = makePredictiveFrontierName(mappingRoot);
+  name.append(makeControlQueryNonce());
+  ndn::Interest interest(name);
+  ndn::Block parameters(ndn::tlv::ApplicationParameters);
+  parameters.push_back(mappingRoot.wireEncode());
+  parameters.encode();
+  interest.setApplicationParameters(parameters);
+  interest.setCanBePrefix(false).setMustBeFresh(true);
+  checkNamingNameSize(interest.getName());
+  return interest;
+}
+
+namespace {
+ndn::Name makeFrontierSnapshotName(const ndn::Name& mappingRoot, const ndn::Block& frontier)
+{
+  auto wire = frontier;
+  wire.encode();
+  auto name = mappingRoot.getPrefix(-1);
+  return name.append("FRONTIER").append("SNAPSHOT").append(makeNamingDigestComponent(
+    computeNamingDigest("ndnsf-naming/opaque/frontier", {
+      {1, 4, {wire.data(), wire.data() + wire.size()}}})));
+}
 }
 
 ndn::Name
@@ -3766,8 +3819,9 @@ makePredictiveDataName(const ndn::Name& mappingRoot,
                        uint64_t sequence)
 {
   ndn::Name name(mappingRoot);
-  name.append("v").appendNumber(mappingVersion);
+  name.append("DATA").appendVersion(mappingVersion);
   name.appendSequenceNumber(sequence);
+  checkNamingNameSize(name);
   return name;
 }
 
@@ -3784,8 +3838,18 @@ makePredictiveGroupName(const LiveStreamDefinition& definition,
                         uint64_t groupId)
 {
   ndn::Name name(definition.mappingRoot());
-  name.append("v").appendNumber(definition.mappingVersion)
-      .append("group").appendNumber(groupId);
+  name.append("GROUP").appendVersion(definition.mappingVersion)
+      .append(makeNamingDecimalComponent(groupId));
+  checkNamingNameSize(name);
+  return name;
+}
+
+ndn::Name
+makePredictiveGroupManifestName(const LiveStreamDefinition& definition,
+                                uint64_t groupId)
+{
+  auto name = makePredictiveGroupName(definition, groupId).append("MANIFEST");
+  checkNamingNameSize(name);
   return name;
 }
 
@@ -3794,7 +3858,8 @@ makePredictiveRepairName(const LiveStreamDefinition& definition,
                          uint64_t groupId, uint64_t repairIndex)
 {
   ndn::Name name(makePredictiveGroupName(definition, groupId));
-  name.append("repair").appendNumber(repairIndex);
+  name.append("REPAIR").append(makeNamingDecimalComponent(repairIndex));
+  checkNamingNameSize(name);
   return name;
 }
 
@@ -3830,9 +3895,9 @@ PredictiveStreamGroupCommit::validate(
   const auto root = definition.mappingRoot();
   const auto& firstName = sourceNames.front();
   if (!root.isPrefixOf(firstName) || firstName.size() != root.size() + 3 ||
-      firstName[root.size()].toUri() != "v" ||
-      !firstName[root.size() + 1].isNumber() ||
-      firstName[root.size() + 1].toNumber() != definition.mappingVersion ||
+      firstName[root.size()] != ndn::name::Component("DATA") ||
+      !firstName[root.size() + 1].isVersion() ||
+      firstName[root.size() + 1].toVersion() != definition.mappingVersion ||
       !firstName[root.size() + 2].isSequenceNumber()) {
     return "invalid predictive source binding";
   }
@@ -4021,7 +4086,7 @@ PredictiveStreamFrontier::validate(
   }
   if (latestCommittedGroupId) {
     if (retainedGroupCommitNames.back() !=
-        makePredictiveGroupName(definition, *latestCommittedGroupId)) {
+        makePredictiveGroupManifestName(definition, *latestCommittedGroupId)) {
       return "predictive frontier latest group mismatch";
     }
     uint64_t previous = 0;
@@ -4031,16 +4096,27 @@ PredictiveStreamFrontier::validate(
       const auto& name = retainedGroupCommitNames[index];
       const auto root = definition.mappingRoot();
       if (!root.isPrefixOf(name) || name.size() != root.size() + 4 ||
-          name[root.size()].toUri() != "v" ||
-          !name[root.size() + 1].isNumber() ||
-          name[root.size() + 1].toNumber() != definition.mappingVersion ||
-          name[root.size() + 2].toUri() != "group" ||
-          !name[root.size() + 3].isNumber()) {
+          name[root.size()] != ndn::name::Component("GROUP") ||
+          !name[root.size() + 1].isVersion() ||
+          name[root.size() + 1].toVersion() != definition.mappingVersion ||
+          name[root.size() + 3] != ndn::name::Component("MANIFEST")) {
         return "invalid predictive frontier group name";
       }
-      const auto groupId = name[root.size() + 3].toNumber();
+      uint64_t groupId = 0;
+      try {
+        const auto& component = name[root.size() + 2];
+        if (component.type() != ndn::tlv::GenericNameComponent)
+          return "invalid predictive frontier group number";
+        groupId = std::stoull(std::string(
+          reinterpret_cast<const char*>(component.value()), component.value_size()));
+        if (component != makeNamingDecimalComponent(groupId))
+          return "non-canonical predictive frontier group number";
+      }
+      catch (const std::exception&) {
+        return "invalid predictive frontier group number";
+      }
       if ((!first && groupId <= previous) ||
-          name != makePredictiveGroupName(definition, groupId)) {
+          name != makePredictiveGroupManifestName(definition, groupId)) {
         return "non-canonical predictive frontier group order";
       }
       if (retainedGroupFirstCursors[index] >
@@ -4470,11 +4546,36 @@ LiveStreamPublisher::startPredictive()
     }
     m_startCalled = true;
     m_predictiveMode = true;
-    m_expectedRoutes = 1;
+    m_expectedRoutes = 2;
   }
   auto weak = weak_from_this();
   m_payloadRoute = m_face.setInterestFilter(
     m_definition.mappingRoot(),
+    [weak] (const auto&, const ndn::Interest& interest) {
+      if (const auto self = weak.lock()) self->onPayloadInterest(interest);
+    },
+    [weak] (const ndn::Name&) {
+      if (const auto self = weak.lock()) {
+        {
+          std::lock_guard<std::mutex> guard(self->m_mutex);
+          ++self->m_routesReady;
+        }
+        self->m_routeCondition.notify_all();
+      }
+    },
+    [weak] (const ndn::Name&, const std::string& reason) {
+      if (const auto self = weak.lock()) {
+        {
+          std::lock_guard<std::mutex> guard(self->m_mutex);
+          self->m_routeFailed = true;
+          self->m_state = LiveStreamLifecycleState::Failed;
+          self->m_reason = "predictive-route-registration-failed:" + reason;
+        }
+        self->m_routeCondition.notify_all();
+      }
+    });
+  m_mappingRoute = m_face.setInterestFilter(
+    makePredictiveFrontierName(m_definition.mappingRoot()),
     [weak] (const auto&, const ndn::Interest& interest) {
       if (const auto self = weak.lock()) self->onPayloadInterest(interest);
     },
@@ -4553,9 +4654,10 @@ LiveStreamPublisher::activatePredictive(double measuredSamplePeriodMs)
     m_predictiveFrontier.sessionEpoch = m_definition.sessionEpoch;
     m_predictiveFrontier.mappingVersion = m_definition.mappingVersion;
     frontierPacket = makePredictiveControlPacket(
-      makePredictiveFrontierName(m_definition.mappingRoot()),
+      makeFrontierSnapshotName(m_definition.mappingRoot(), m_predictiveFrontier.wireEncode()),
       m_predictiveFrontier.wireEncode());
     m_payloadPackets[frontierPacket->getName()] = frontierPacket;
+    m_frontierSnapshots.push_back(frontierPacket->getName());
     m_measuredSamplePeriodMs = measuredSamplePeriodMs;
     m_state = LiveStreamLifecycleState::Active;
   }
@@ -4844,13 +4946,14 @@ LiveStreamPublisher::publishSignedData(
   const auto& name = signedData->getName();
   const auto root = m_definition.mappingRoot();
   if (!root.isPrefixOf(name) || name.size() != root.size() + 3 ||
-      name[root.size()].toUri() != "v" ||
-      !name[root.size() + 1].isNumber() ||
-      name[root.size() + 1].toNumber() != m_definition.mappingVersion ||
+      name[root.size()] != ndn::name::Component("DATA") ||
+      !name[root.size() + 1].isVersion() ||
+      name[root.size() + 1].toVersion() != m_definition.mappingVersion ||
       !name[root.size() + 2].isSequenceNumber()) {
     throw std::invalid_argument("non-canonical predictive Data name");
   }
   const auto cursor = name[root.size() + 2].toSequenceNumber();
+  checkNamingNameSize(name);
   const auto wire = signedData->wireEncode();
   if (wire.size() > m_definition.signedWireCap ||
       wire.size() > ndn::MAX_NDN_PACKET_SIZE) {
@@ -4952,18 +5055,29 @@ LiveStreamPublisher::verifyPredictiveSourceSignature(
 
 std::shared_ptr<ndn::Data>
 LiveStreamPublisher::makePredictiveControlPacket(
-  const ndn::Name& name, const ndn::Block& content) const
+  const ndn::Name& name, const ndn::Block& content, bool zeroFreshness) const
 {
+  checkNamingNameSize(name);
   auto packet = std::make_shared<ndn::Data>(name);
   packet->setContentType(ndn::tlv::ContentType_Manifest);
   packet->setFreshnessPeriod(ndn::time::milliseconds(
-    std::max<uint64_t>(100, static_cast<uint64_t>(
+    zeroFreshness ? 0 : std::max<uint64_t>(100, static_cast<uint64_t>(
       std::ceil(m_definition.samplePeriodMs * 4.0)))));
   packet->setContent(content);
   m_keyChain.sign(*packet, m_signingInfo);
   if (packet->wireEncode().size() > m_definition.signedWireCap) {
     throw std::length_error(
       "signed predictive control Data exceeds wire budget");
+  }
+  // Retention must also fit the inline reply's actual longer RPC name.
+  const auto snapshotPrefix = ndn::Name(m_definition.mappingRoot().getPrefix(-1))
+    .append("FRONTIER").append("SNAPSHOT");
+  if (snapshotPrefix.isPrefixOf(name)) {
+    auto budgetPacket = *packet; // Size estimate only; never published with this signature.
+    budgetPacket.setName(makePredictiveFrontierInterest(m_definition.mappingRoot()).getName());
+    budgetPacket.setFreshnessPeriod(ndn::time::milliseconds(0));
+    if (budgetPacket.wireEncode().size() + 4 > m_definition.signedWireCap)
+      throw std::length_error("inline frontier RPC exceeds signed wire budget");
   }
   return packet;
 }
@@ -5066,12 +5180,12 @@ LiveStreamPublisher::commitPredictiveGroup(
     }
 
     stagedPackets.push_back(makePredictiveControlPacket(
-      makePredictiveGroupName(m_definition, groupId), group.wireEncode()));
+      makePredictiveGroupManifestName(m_definition, groupId), group.wireEncode()));
 
     frontier = m_predictiveFrontier;
     frontier.latestCommittedGroupId = groupId;
     frontier.retainedGroupCommitNames.push_back(
-      makePredictiveGroupName(m_definition, groupId));
+      makePredictiveGroupManifestName(m_definition, groupId));
     frontier.retainedGroupFirstCursors.push_back(
       sourceReservations.front().cursor);
     frontier.retainedGroupLastCursors.push_back(
@@ -5105,7 +5219,7 @@ LiveStreamPublisher::commitPredictiveGroup(
     while (!frontierPacket) {
       try {
         frontierPacket = makePredictiveControlPacket(
-          makePredictiveFrontierName(m_definition.mappingRoot()),
+          makeFrontierSnapshotName(m_definition.mappingRoot(), frontier.wireEncode()),
           frontier.wireEncode());
       }
       catch (const std::length_error&) {
@@ -5125,6 +5239,11 @@ LiveStreamPublisher::commitPredictiveGroup(
     }
     maxGroups = std::min(
       maxGroups, frontier.retainedGroupCommitNames.size());
+    m_frontierSnapshots.push_back(frontierPacket->getName());
+    while (m_frontierSnapshots.size() > maxGroups) {
+      m_payloadPackets.erase(m_frontierSnapshots.front());
+      m_frontierSnapshots.pop_front();
+    }
     stagedPackets.push_back(std::move(frontierPacket));
 
     m_predictiveGroups.emplace(groupId, group);
@@ -5138,7 +5257,7 @@ LiveStreamPublisher::commitPredictiveGroup(
           m_payloadPackets.erase(repairName);
         }
         m_payloadPackets.erase(
-          makePredictiveGroupName(m_definition, evicted));
+          makePredictiveGroupManifestName(m_definition, evicted));
         m_predictiveGroups.erase(evictedGroup);
       }
     }
@@ -5536,6 +5655,7 @@ LiveStreamPublisher::stop()
     m_reason = "stopped";
     m_pendingMappings.clear();
     m_pendingPayloads.clear();
+    m_frontierReplies.clear();
     for (auto& weakFeed : m_packetFeeds) {
       if (auto feed = weakFeed.lock()) feed->close();
     }
@@ -5591,8 +5711,41 @@ LiveStreamPublisher::onPayloadInterest(const ndn::Interest& interest)
   std::optional<StreamCursor> futureCursor;
   {
     std::lock_guard<std::mutex> guard(m_mutex);
-    const auto found = m_payloadPackets.find(interest.getName());
-    if (found != m_payloadPackets.end()) packet = found->second;
+    const auto rpc = makePredictiveFrontierName(m_definition.mappingRoot());
+    if (m_predictiveMode && rpc.isPrefixOf(interest.getName())) {
+      try {
+        const auto& name = interest.getName();
+        const auto producer = m_definition.provider;
+        if (m_state != LiveStreamLifecycleState::Active ||
+            !parseControlRpcName(interest, producer, "FRONTIER") ||
+            name.getPrefix(-2) != rpc)
+          return;
+        auto parameters = interest.getApplicationParameters();
+        parameters.parse();
+        if (parameters.elements().size() != 1 ||
+            parameters.elements().front() != m_definition.mappingRoot().wireEncode())
+          return;
+        const auto controlExpiry = controlNonceExpiry(producer, interest);
+        if (!controlExpiry) return;
+        const auto expires = *controlExpiry - 270000; // 30s frontier query horizon
+        const auto now = streamNowMs();
+        if (expires <= now) return;
+        for (auto it = m_frontierReplies.begin(); it != m_frontierReplies.end();) {
+          if (it->second.first <= now) it = m_frontierReplies.erase(it);
+          else ++it;
+        }
+        const auto existing = m_frontierReplies.find(name);
+        if (existing != m_frontierReplies.end()) packet = existing->second.second;
+        else {
+          if (m_frontierReplies.size() >= m_definition.maxPendingInterests) return;
+          packet = makePredictiveControlPacket(name, m_predictiveFrontier.wireEncode(), true);
+          m_frontierReplies.emplace(name, std::make_pair(expires, packet));
+        }
+      }
+      catch (const std::exception&) { return; }
+    }
+    else if (const auto found = m_payloadPackets.find(interest.getName());
+             found != m_payloadPackets.end()) packet = found->second;
     else {
       std::optional<StreamCursor> pendingCursor;
       if (const auto reservation = m_reservations.find(interest.getName());
@@ -5604,9 +5757,9 @@ LiveStreamPublisher::onPayloadInterest(const ndn::Interest& interest)
         const auto root = m_definition.mappingRoot();
         const auto& name = interest.getName();
         if (root.isPrefixOf(name) && name.size() == root.size() + 3 &&
-            name[root.size()].toUri() == "v" &&
-            name[root.size() + 1].isNumber() &&
-            name[root.size() + 1].toNumber() == m_definition.mappingVersion &&
+            name[root.size()] == ndn::name::Component("DATA") &&
+            name[root.size() + 1].isVersion() &&
+            name[root.size() + 1].toVersion() == m_definition.mappingVersion &&
             name[root.size() + 2].isSequenceNumber()) {
           pendingCursor = name[root.size() + 2].toSequenceNumber();
         }

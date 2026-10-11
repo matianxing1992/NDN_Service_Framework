@@ -10,9 +10,137 @@
 #include <thread>
 #include <vector>
 
+namespace ndn_service_framework {
+
+struct NetworkTelemetryStoreTestAccess
+{
+  static void ageCaptures(NetworkTelemetryStore& store, uint64_t ageMs)
+  {
+    std::lock_guard<std::mutex> lock(store.m_mutex);
+    const auto now = NetworkTelemetryStore::nowMs();
+    for (auto& entry : store.m_snapshots)
+      entry.second.lastUpdatedMs = now - ageMs;
+  }
+
+  static void tieCaptureTimes(NetworkTelemetryStore& store)
+  {
+    std::lock_guard<std::mutex> lock(store.m_mutex);
+    uint64_t latest = 0;
+    for (const auto& entry : store.m_snapshots)
+      latest = std::max(latest, entry.second.lastUpdatedMs);
+    for (auto& entry : store.m_snapshots)
+      entry.second.lastUpdatedMs = latest;
+  }
+};
+
+} // namespace ndn_service_framework
+
 namespace ndn_service_framework::test {
 
 BOOST_AUTO_TEST_SUITE(NetworkTelemetry)
+
+BOOST_AUTO_TEST_CASE(ProbeReuseKeepsOriginalExpiryWithPlanningHeadroom)
+{
+  const ndn::Name observer("/provider/observer"), peer("/provider/peer");
+  NetworkTelemetryStore store(1.0, std::chrono::seconds(30));
+  store.updateActiveProbe(observer, peer, "verified", "peer-boot",
+                          ndn::Name("/peer/rtt/verified"), 12.0);
+  NetworkProbePacketTimes rtts{}; rtts.fill(20.0);
+  NetworkProbeArrivalGaps interests{}; interests.fill(4.0);
+  NetworkProbeArrivalGaps arrivals{}; arrivals.fill(4.0);
+  NetworkProbeSourceGaps sends{}; sends.fill(0.5);
+  NetworkProbeWireSizes wire{}; wire.fill(10000);
+  const auto payload = NETWORK_PROBE_WARMED_SEGMENTS * NETWORK_PROBE_WARMED_PAYLOAD_BYTES;
+  store.updateActiveProbeGoodput(observer, peer, "verified", "peer-boot",
+    ndn::Name("/peer/goodput/verified"), payload, payload + 10000,
+    NETWORK_PROBE_WARMED_SEGMENTS, 1.0, 30.0, NETWORK_PROBE_TRAIN_PROFILE_DIGEST,
+    true, rtts, interests, arrivals, wire, sends, true);
+  NetworkTelemetryStoreTestAccess::ageCaptures(store, 3000);
+  const auto reused = store.getCachedActiveProbeSamples(observer, {peer});
+  BOOST_REQUIRE_EQUAL(reused.size(), 2U);
+  for (const auto& item : reused)
+    BOOST_CHECK_EQUAL(item.second, item.first.lastUpdatedMs + 5000);
+  BOOST_CHECK(store.getReusableActiveProbe(observer, peer,
+    NetworkTelemetrySampleKind::ActiveProbeRtt, "peer-boot").has_value());
+  BOOST_CHECK(!store.getReusableActiveProbe(observer, peer,
+    NetworkTelemetrySampleKind::ActiveProbeRtt, "foreign-boot").has_value());
+  NetworkTelemetryStoreTestAccess::ageCaptures(store, 4000);
+  BOOST_CHECK(store.getCachedActiveProbeSamples(observer, {peer}).empty());
+
+  NetworkTelemetryStore shortLived(1.0, std::chrono::seconds(2));
+  shortLived.updateActiveProbe(observer, peer, "short", "peer-boot",
+                              ndn::Name("/peer/rtt/short"), 12.0);
+  NetworkTelemetryStoreTestAccess::ageCaptures(shortLived, 3000);
+  BOOST_CHECK(shortLived.getCachedActiveProbeSamples(observer, {peer}).empty());
+}
+
+BOOST_AUTO_TEST_CASE(PassiveProbeCopiesKeepOriginalIdentityLifetimeAndStoreState)
+{
+  NetworkTelemetryStore store(1.0, std::chrono::seconds(30));
+  const ndn::Name observer("/provider/observer"), peer("/provider/peer");
+  store.updateActiveProbe(observer, peer, "original-scope", "original-peer-boot",
+                          ndn::Name("/provider/peer/probe/unique"), 12.0);
+  const auto count = store.size();
+  auto copied = store.getCachedActiveProbeSamples(observer, {observer, peer});
+  BOOST_REQUIRE_EQUAL(copied.size(), 1U);
+  BOOST_CHECK_EQUAL(copied.front().first.peerBootEpoch, "original-peer-boot");
+  BOOST_CHECK_EQUAL(copied.front().second, copied.front().first.lastUpdatedMs + 5000);
+  const auto captured = copied.front().first.lastUpdatedMs;
+  const auto expiry = copied.front().second;
+  copied.front().first.rttMs = 999.0;
+  const auto again = store.getCachedActiveProbeSamples(observer, {peer});
+  BOOST_REQUIRE_EQUAL(again.size(), 1U);
+  BOOST_CHECK_EQUAL(again.front().first.rttMs, 12.0);
+  BOOST_CHECK_EQUAL(again.front().first.lastUpdatedMs, captured);
+  BOOST_CHECK_EQUAL(again.front().second, expiry);
+  BOOST_CHECK_EQUAL(store.size(), count);
+  BOOST_CHECK(store.getCachedActiveProbeSamples(peer, {observer}).empty());
+  BOOST_CHECK(store.getCachedActiveProbeSamples(observer, {ndn::Name("/other")}).empty());
+  BOOST_CHECK(store.getCachedActiveProbeSamples(observer, {}).empty());
+  BOOST_CHECK(store.getCachedActiveProbeSamples(observer, std::vector<ndn::Name>(18, peer)).empty());
+  NetworkTelemetryStore shortLived(1.0, std::chrono::milliseconds(10));
+  shortLived.updateActiveProbe(observer, peer, "short", "boot", ndn::Name("/peer/probe"), 10.0);
+  const auto shortCopy = shortLived.getCachedActiveProbeSamples(observer, {peer});
+  BOOST_REQUIRE_EQUAL(shortCopy.size(), 1U);
+  BOOST_CHECK_EQUAL(shortCopy.front().second, shortCopy.front().first.lastUpdatedMs + 10);
+  std::this_thread::sleep_for(std::chrono::milliseconds(15));
+  BOOST_CHECK(shortLived.getCachedActiveProbeSamples(observer, {peer}).empty());
+}
+
+BOOST_AUTO_TEST_CASE(PassiveProbeQueryOmitsLatestUnverifiedTrainInsteadOfOlderSuccess)
+{
+  NetworkTelemetryStore store(1.0, std::chrono::seconds(30));
+  const ndn::Name observer("/provider/observer"), peer("/provider/peer");
+  NetworkProbePacketTimes rtts{}; rtts.fill(20.0);
+  NetworkProbeArrivalGaps interests{}; interests.fill(4.0);
+  NetworkProbeArrivalGaps arrivals{}; arrivals.fill(4.0);
+  NetworkProbeSourceGaps sends{}; sends.fill(0.5);
+  NetworkProbeWireSizes wire{}; wire.fill(10000);
+  const auto put = [&](const std::string& scope, bool signatureValid) {
+    const auto payload = NETWORK_PROBE_WARMED_SEGMENTS * NETWORK_PROBE_WARMED_PAYLOAD_BYTES;
+    store.updateActiveProbeGoodput(observer, peer, scope, "peer-boot",
+      ndn::Name("/peer/probe").append(scope), payload, payload + 10000,
+      NETWORK_PROBE_WARMED_SEGMENTS, 1.0, 30.0, NETWORK_PROBE_TRAIN_PROFILE_DIGEST,
+      signatureValid, rtts, interests, arrivals, wire, sends, true);
+  };
+  put("old-valid", true);
+  BOOST_REQUIRE_EQUAL(store.getCachedActiveProbeSamples(observer, {peer}).size(), 1U);
+  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  put("new-invalid", false);
+  BOOST_CHECK(store.getCachedActiveProbeSamples(observer, {peer}).empty());
+  NetworkTelemetryStoreTestAccess::tieCaptureTimes(store);
+  BOOST_CHECK(store.getCachedActiveProbeSamples(observer, {peer}).empty());
+}
+
+BOOST_AUTO_TEST_CASE(PassiveProbeQueryRejectsTiedConflictingPeerBoots)
+{
+  NetworkTelemetryStore store;
+  const ndn::Name observer("/provider/observer"), peer("/provider/peer");
+  store.updateActiveProbe(observer, peer, "first", "boot-1", ndn::Name("/peer/first"), 10.0);
+  store.updateActiveProbe(observer, peer, "second", "boot-2", ndn::Name("/peer/second"), 10.0);
+  NetworkTelemetryStoreTestAccess::tieCaptureTimes(store);
+  BOOST_CHECK(store.getCachedActiveProbeSamples(observer, {peer}).empty());
+}
 
 BOOST_AUTO_TEST_CASE(EwmaConfidenceAndGoodput)
 {

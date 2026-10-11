@@ -325,8 +325,10 @@ NativeYoloComponentSplit::enumerateImpl(const NativeModelDescriptor& model,
     candidate.selectionPriority = spec->priority;
     candidate.inputIngressRole = spec->inputIngressRole;
     candidate.resultEgressRole = spec->resultEgressRole;
-    candidate.mergeKind = contains(spec->roles, "Merge") ? spec->mergeKind : "";
-    candidate.postprocessingJson = contains(spec->roles, "Merge") ? m_postprocessingJson : "{}";
+    const bool hasTerminalMergeRole =
+      spec->inputIngressRole != spec->resultEgressRole && !spec->mergeKind.empty();
+    candidate.mergeKind = hasTerminalMergeRole ? spec->mergeKind : "";
+    candidate.postprocessingJson = hasTerminalMergeRole ? m_postprocessingJson : "{}";
     std::uint64_t knownBytes = 0;
     std::uint64_t crossedBytes = 0;
     for (const auto& edge : graph.edges) {

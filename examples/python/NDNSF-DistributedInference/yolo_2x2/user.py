@@ -343,7 +343,7 @@ def _build_grant_seam(client, *, registry_path, model_manifest_digest,
                 content_key=content_key_owner(current_manifest(), epoch),
                 now_ms=int(time.time() * 1000))
             name = canonical_grant_name(
-                authority=requester_identity, provider_identity=binding.provider,
+                publication_identity=requester_identity, provider_identity=binding.provider,
                 request_id=binding.request_id, attempt=binding.attempt,
                 plan_core_digest=binding.plan_core_digest,
                 model_manifest_digest=grant.model_manifest_digest,
@@ -636,6 +636,14 @@ def _load_yolo_ack_driven(client, args) -> int:
     return 0
 
 
+def _emit_native_request_result(record: str) -> None:
+    # C++ loggers share this destination and may leave an unfinished line.
+    # Frame the result in one write so the collector sees a standalone row.
+    encoded = ("\n" + record + "\n").encode("utf-8")
+    if os.write(sys.stdout.fileno(), encoded) != len(encoded):
+        raise OSError("incomplete native YOLO result record write")
+
+
 def _load_yolo_native_payload(client, args) -> int:
     """Submit the maintained YOLO payload through the native requester.
 
@@ -658,6 +666,12 @@ def _load_yolo_native_payload(client, args) -> int:
     if args.lifecycle_output_dir or args.lifecycle_case or args.request_id:
         raise RuntimeError(
             "native YOLO route does not yet support Spec180 lifecycle journaling")
+    if (args.async_requests != 1 or args.sequential_duration_s != 0 or
+            args.preflight_requests != 0 or args.sequential_interval_ms != 0 or
+            args.sequential_requests < 0):
+        raise RuntimeError(
+            "native YOLO route requires a nonnegative sequential request count "
+            "and no async, duration, preflight or interval options")
 
     package = Path(args.canonical_package).expanduser().resolve()
     registry = Path(args.catalogue_registry).expanduser().resolve()
@@ -686,53 +700,87 @@ def _load_yolo_native_payload(client, args) -> int:
     options.ack_timeout_ms = int(args.ack_timeout_ms)
     options.output_mode = "FULL"
     runtime = getattr(client, "_native_runtime", None)
+    gate_dir = Path(args.native_restart_gate) if args.native_restart_gate else None
+    if gate_dir is not None and (
+            not args.native_restart_ticket or args.native_restart_after < 2 or
+            args.sequential_requests < args.native_restart_after + 2):
+        raise RuntimeError("native restart gate requires a ticket and two requests on each side")
     contract = getattr(runtime, "contract", None)
     task_name = str(getattr(contract, "task_name", ""))
     if not task_name:
         raise RuntimeError("native YOLO runtime has no task identity")
 
     service = yolo_inference_service(client.deployment)
-    reference = client.publish_application_input_reference(
-        service,
-        payload,
-        object_label="inference-input-image",
-        object_type="application/x-ndnsf-di-input+native-tensor",
-        freshness_ms=120000,
-    )
-    handle = client.request_native_reference(
-        reference,
-        options=options,
-        task_name=task_name,
-        application_options=b"{}",
-    )
-    try:
-        result = handle.result(int(args.timeout_ms))
-    except Exception as exc:
-        print(
-            "YOLO_NATIVE_REQUEST_RESULT status=false "
-            f"request={handle.request_id} error={exc}",
-            flush=True,
+    for request_index in range(max(1, args.sequential_requests)):
+        started = time.monotonic()
+        print(f"YOLO_NATIVE_REQUEST_START index={request_index}", flush=True)
+        # Keep the native runtime warm, but publish a fresh input for each call.
+        reference = client.publish_application_input_reference(
+            service,
+            payload,
+            object_label="inference-input-image",
+            object_type="application/x-ndnsf-di-input+native-tensor",
+            freshness_ms=120000,
         )
-        return 3
-    response_payload = bytes(result.payload)
-    matched = False
-    try:
-        _, actual = decode_yolo_output(response_payload, native_predictions_only=True)
-        oracle = compare_reference(numerical_reference, actual)
-        matched = bool(oracle["matched"])
-        max_diff = oracle["maxAbsError"]
-        mean_diff = None
-    except (ValueError, KeyError, UnicodeError, OverflowError):
-        max_diff = float("inf")
-        mean_diff = float("inf")
-    print(
-        "YOLO_NATIVE_REQUEST_RESULT "
-        f"status={str(bool(result.payload) and matched).lower()} "
-        f"request={handle.request_id} payload_bytes={len(response_payload)} "
-        f"max_diff={max_diff} mean_diff={mean_diff}",
-        flush=True,
-    )
-    return 0 if matched else 4
+        handle = client.request_native_reference(
+            reference,
+            options=options,
+            task_name=task_name,
+            application_options=b"{}",
+        )
+        try:
+            result = handle.result(int(args.timeout_ms))
+        except Exception as exc:
+            _emit_native_request_result(
+                "YOLO_NATIVE_REQUEST_RESULT status=false "
+                f"request={handle.request_id} index={request_index} "
+                f"elapsed_ms={(time.monotonic() - started) * 1000:.3f} error={exc}",
+            )
+            return 3
+        elapsed_ms = (time.monotonic() - started) * 1000
+        response_payload = bytes(result.payload)
+        matched = False
+        try:
+            _, actual = decode_yolo_output(response_payload, native_predictions_only=True)
+            oracle = compare_reference(numerical_reference, actual)
+            matched = bool(oracle["matched"])
+            max_diff = oracle["maxAbsError"]
+            mean_diff = None
+        except (ValueError, KeyError, UnicodeError, OverflowError):
+            max_diff = float("inf")
+            mean_diff = float("inf")
+        succeeded = bool(result.payload) and matched
+        _emit_native_request_result(
+            "YOLO_NATIVE_REQUEST_RESULT "
+            f"status={str(succeeded).lower()} "
+            f"request={handle.request_id} payload_bytes={len(response_payload)} "
+            f"max_diff={max_diff} mean_diff={mean_diff} "
+            f"index={request_index} elapsed_ms={elapsed_ms:.3f}",
+        )
+        if not succeeded:
+            return 4
+        if gate_dir is not None and request_index + 1 == args.native_restart_after:
+            # No request is active here; the harness may restart Providers while
+            # this process retains its native runtime and published fixed source.
+            marker = {"ticket": args.native_restart_ticket, "pid": os.getpid(),
+                      "completed": request_index + 1}
+            ready = gate_dir / "ready.json"
+            temporary = gate_dir / "ready.tmp"
+            temporary.write_text(json.dumps(marker), encoding="utf-8")
+            temporary.replace(ready)
+            print("YOLO_NATIVE_RESTART_GATE_READY " + json.dumps(marker), flush=True)
+            deadline = time.monotonic() + 600
+            release = gate_dir / "release.json"
+            while not release.is_file():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("native Provider restart gate timed out")
+                time.sleep(0.05)
+            if json.loads(release.read_text(encoding="utf-8")) != marker:
+                raise RuntimeError("native Provider restart gate release does not match")
+            if getattr(client, "_native_runtime", None) is not runtime:
+                raise RuntimeError("native runtime changed across Provider restart gate")
+            print("YOLO_NATIVE_RESTART_GATE_RELEASED " + json.dumps(marker), flush=True)
+    return 0
 
 
 def main() -> int:
@@ -764,6 +812,10 @@ def main() -> int:
         help="artifact reference manifest produced by the repo-backed deployer",
     )
     parser.add_argument("--sequential-requests", type=int, default=0)
+    parser.add_argument("--native-restart-gate", default="",
+                        help="optional experiment-only request-boundary gate directory")
+    parser.add_argument("--native-restart-after", type=int, default=0)
+    parser.add_argument("--native-restart-ticket", default="")
     parser.add_argument("--sequential-duration-s", type=float, default=0.0,
                         help="Run sequential requests for this many seconds; 0 disables duration mode")
     parser.add_argument("--sequential-interval-ms", type=int, default=0,

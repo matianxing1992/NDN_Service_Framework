@@ -4,6 +4,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
@@ -27,6 +30,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "ndn-service-framework/EncryptedLargeDataRangeStore.hpp"
 #include "ndn-service-framework/InvocationStream.hpp"
 #include "ndnsf-integration-fixture.hpp"
@@ -57,6 +61,20 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+
+namespace ndn_service_framework {
+struct ServiceProviderTestAccess
+{
+  static void seedCachedRtt(ServiceProvider& observer, ServiceProvider& peer)
+  {
+    // Controlled validated-store boundary; targeted response authentication and
+    // requester cache admission still use the production implementations.
+    observer.m_networkTelemetry.updateActiveProbe(observer.getName(), peer.getName(),
+      "spec199-cache-fixture", peer.getProviderBootEpoch(),
+      ndn::Name(peer.getName()).append("spec199-cached-rtt"), 20.0);
+  }
+};
+} // namespace ndn_service_framework
 
 namespace ndnsf::di::tests {
 namespace {
@@ -1802,7 +1820,8 @@ makeV3TensorEndpointJson(const std::string& producerNamespace,
                          const std::string& operation,
                          const std::string& endpointDigest,
                          const std::string& manifestDigest,
-                         std::uint64_t attempt = 1)
+                         std::uint64_t attempt = 1,
+                         std::uint64_t namingOperationStride = 0)
 {
   return std::string("{\"attempt\":") + std::to_string(attempt) +
     ",\"consumer_role\":\"" +
@@ -1820,6 +1839,7 @@ makeV3TensorEndpointJson(const std::string& producerNamespace,
     "\",\"request_id\":\"" + requestId +
     "\",\"requester\":\"" + requester +
     "\",\"round\":" + std::to_string(round) +
+    ",\"naming_operation_stride\":" + std::to_string(namingOperationStride) +
     ",\"security_profile\":\"NDNSF_DATA_V1\",\"segment_count\":1,"+
     "\"source_kind\":\"ROLE\",\"target_layout_digest\":\"" +
     targetLayoutDigest + "\",\"tensor_digest\":\"" + tensorDigest +
@@ -1833,17 +1853,32 @@ withApplicationInput(std::string dataflow, const std::string& requester,
                      const std::string& requestId, const std::string& planDigest,
                      const std::string& role, std::uint64_t attempt = 1)
 {
-  const auto identity = "APPLICATION_INPUT|" + requester + "|" + requestId +
-    "|" + planDigest + "|" + role + "|" + std::to_string(attempt);
-  const auto endpointDigest = sha256TensorBytes(
-    std::vector<std::uint8_t>(identity.begin(), identity.end()));
-  auto endpoint = makeV3TensorEndpointJson(
-    requester, requester, requestId, planDigest, "request-input", 0, "", 0,
-    role, "\"" + role + "\"", "request-input", planDigest, planDigest,
-    planDigest, "APPLICATION_INPUT", endpointDigest, planDigest, attempt);
-  const std::string source = "\"source_kind\":\"ROLE\"";
-  endpoint.replace(endpoint.find(source), source.size(),
-                   "\"source_kind\":\"APPLICATION_INPUT\"");
+  NativeTensorEndpointV3 input;
+  input.producerNamespace = requester;
+  input.requester = requester;
+  input.requestId = requestId;
+  input.attempt = attempt;
+  input.planDigest = planDigest;
+  input.groupId = "request-input";
+  input.groupEpoch = std::to_string(attempt);
+  input.operation = "APPLICATION_INPUT";
+  input.sourceKind = "APPLICATION_INPUT";
+  input.consumerRole = role;
+  input.consumerRoles = {role};
+  input.tensorId = "request-input";
+  input.tensorDigest = planDigest;
+  input.layoutDigest = planDigest;
+  input.targetLayoutDigest = planDigest;
+  input.segmentCount = 1;
+  input.manifestDigest = planDigest;
+  input.securityProfile = "NDNSF_DATA_V1";
+  input.noProgressDeadlineMs = 2000;
+  input.hardDeadlineMs = 8000;
+  auto identity = nativeEndpointJson(input);
+  identity.erase("endpoint_digest");
+  identity.erase("consumer_role");
+  input.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+  const auto endpoint = nativeCanonicalJson(nativeEndpointJson(input));
   const std::string marker = "\"must_fetch\":[";
   const auto offset = dataflow.find(marker);
   if (offset == std::string::npos) {
@@ -2329,6 +2364,28 @@ BOOST_AUTO_TEST_CASE(ExactTensorDataUsesSignedConsumerPullAndSameNameRetry)
   BOOST_CHECK_EQUAL(exactInterestCount, 1U);
   BOOST_CHECK(everyInterestWasExact);
 
+  ndn::time::milliseconds readinessLifetime{0};
+  auto observeReadinessLifetime = consumerFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) {
+        if (interest.getName() == manifestName) {
+          readinessLifetime = interest.getInterestLifetime();
+        }
+      });
+  auto readyFetch = std::async(std::launch::async, [&] {
+    return consumerContext.fetchSignedExactData(
+        "epoch/group-1", manifestName, producer.getName(), 1000, {}, nullptr, {},
+        ServiceProvider::ExactDataFetchPhase::AwaitPublication);
+  });
+  environment.pumpUntil([&] {
+    return readyFetch.wait_for(0ms) == std::future_status::ready;
+  });
+  const auto readyResult = readyFetch.get();
+  BOOST_REQUIRE(readyResult);
+  BOOST_CHECK_EQUAL_COLLECTIONS(readyResult->begin(), readyResult->end(),
+                                manifestWire.begin(), manifestWire.end());
+  BOOST_CHECK_GT(readinessLifetime.count(), 500);
+  BOOST_CHECK_LE(readinessLifetime.count(), 1000);
+
   ndn::Name missingName = manifestName.getPrefix(-1);
   missingName.append("SEG").appendSegment(77);
   std::vector<ndn::Name> retryNames;
@@ -2351,6 +2408,62 @@ BOOST_AUTO_TEST_CASE(ExactTensorDataUsesSignedConsumerPullAndSameNameRetry)
                           [&] (const ndn::Name& name) {
                             return name == missingName;
                           }));
+
+  retryNames.clear();
+  ndn::time::milliseconds firstReadinessLifetime{0};
+  auto observeReadinessRetries = consumerFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) {
+        if (interest.getName() == missingName && firstReadinessLifetime.count() == 0) {
+          firstReadinessLifetime = interest.getInterestLifetime();
+        }
+      });
+  auto awaitingMissing = std::async(std::launch::async, [&] {
+    return consumerContext.fetchSignedExactData(
+        "epoch/group-1", missingName, producer.getName(), 650, {}, nullptr, {},
+        ServiceProvider::ExactDataFetchPhase::AwaitPublication);
+  });
+  environment.pumpUntil([&] {
+    return awaitingMissing.wait_for(0ms) == std::future_status::ready;
+  });
+  BOOST_CHECK(!awaitingMissing.get());
+  BOOST_CHECK_GT(firstReadinessLifetime.count(), 500);
+  BOOST_CHECK_LE(firstReadinessLifetime.count(), 650);
+  BOOST_REQUIRE_GE(retryNames.size(), 2U);
+  BOOST_CHECK(std::all_of(retryNames.begin(), retryNames.end(),
+                          [&] (const ndn::Name& name) { return name == missingName; }));
+
+  // A Nack arriving while the publication renewal is queued must not
+  // subsequently replace that renewal with a second stale retry.
+  ndn::Name racingName = manifestName.getPrefix(-1);
+  racingName.append("SEG").appendSegment(79);
+  std::size_t racingInterests = 0;
+  bool racingNackDelivered = false;
+  auto injectRenewalNack = consumerFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) {
+        if (interest.getName() != racingName || ++racingInterests != 1) {
+          return;
+        }
+        // Hold the single Face owner until renewal is due. The first pending
+        // Interest cannot be replaced while this send handler is running, so
+        // this Nack targets the live first attempt, not an already removed one.
+        // Renewal and Nack recovery then both precede their five-ms adapters.
+        std::this_thread::sleep_for(501ms);
+        ndn::lp::Nack nack(interest);
+        nack.setReason(ndn::lp::NackReason::CONGESTION);
+        consumerFace.receive(nack);
+        racingNackDelivered = true;
+      });
+  auto racingFetch = std::async(std::launch::async, [&] {
+    return consumerContext.fetchSignedExactData(
+        "epoch/group-1", racingName, producer.getName(), 650, {}, nullptr, {},
+        ServiceProvider::ExactDataFetchPhase::AwaitPublication);
+  });
+  environment.pumpUntil([&] {
+    return racingFetch.wait_for(0ms) == std::future_status::ready;
+  });
+  BOOST_CHECK(!racingFetch.get());
+  BOOST_CHECK(racingNackDelivered);
+  BOOST_CHECK_EQUAL(racingInterests, 2U);
 
   ndn::Name wrongSignerName = manifestName.getPrefix(-1);
   wrongSignerName.append("SEG").appendSegment(78);
@@ -2379,6 +2492,17 @@ BOOST_AUTO_TEST_CASE(ExactTensorDataUsesSignedConsumerPullAndSameNameRetry)
   BOOST_CHECK(!wrongSigner.get());
   BOOST_CHECK_EQUAL(wrongSignerInterests, 1U);
 
+  auto awaitingWrongSigner = std::async(std::launch::async, [&] {
+    return consumerContext.fetchSignedExactData(
+        "epoch/group-1", wrongSignerName, producer.getName(), 650, {}, nullptr, {},
+        ServiceProvider::ExactDataFetchPhase::AwaitPublication);
+  });
+  environment.pumpUntil([&] {
+    return awaitingWrongSigner.wait_for(0ms) == std::future_status::ready;
+  });
+  BOOST_CHECK(!awaitingWrongSigner.get());
+  BOOST_CHECK_EQUAL(wrongSignerInterests, 2U);
+
   ndn::Name cancelledName = manifestName.getPrefix(-1);
   cancelledName.append("SEG").appendSegment(79);
   std::atomic<bool> cancelFetch{false};
@@ -2404,155 +2528,406 @@ BOOST_AUTO_TEST_CASE(ExactTensorDataUsesSignedConsumerPullAndSameNameRetry)
   BOOST_CHECK(!cancelled.get());
   BOOST_CHECK_EQUAL(cancelledInterests, 1U);
   BOOST_CHECK_LT(cancelElapsed.count(), 500);
+
+  cancelFetch = false;
+  const auto awaitingCancelStarted = std::chrono::steady_clock::now();
+  auto awaitingCancelled = std::async(std::launch::async, [&] {
+    return consumerContext.fetchSignedExactData(
+        "epoch/group-1", cancelledName, producer.getName(), 1000,
+        [&] { return cancelFetch.load(); }, nullptr, {},
+        ServiceProvider::ExactDataFetchPhase::AwaitPublication);
+  });
+  environment.pumpUntil([&] {
+    return awaitingCancelled.wait_for(0ms) == std::future_status::ready;
+  });
+  BOOST_CHECK(!awaitingCancelled.get());
+  BOOST_CHECK_EQUAL(cancelledInterests, 2U);
+  BOOST_CHECK_LT(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - awaitingCancelStarted).count(), 500);
+
+  bool invalidPhaseReported = false;
+  const auto invalidPhaseResult = consumerContext.fetchSignedExactData(
+      "epoch/group-1", manifestName, producer.getName(), 1000, {}, nullptr,
+      [&](std::exception_ptr error) { invalidPhaseReported = static_cast<bool>(error); },
+      static_cast<ServiceProvider::ExactDataFetchPhase>(-1));
+  BOOST_CHECK(!invalidPhaseResult);
+  BOOST_CHECK(invalidPhaseReported);
+  BOOST_CHECK_EQUAL(exactInterestCount, 2U);
+
+  // All names must be pending before any object is produced. Reverse
+  // publication order independently checks input-order reconstruction.
+  std::vector<ndn::Name> batchNames;
+  std::vector<std::pair<ndn::Name, ndn::Buffer>> batchObjects;
+  for (std::size_t index = 0; index < 13; ++index) {
+    auto name = manifestName.getPrefix(-1);
+    name.append("SEG").appendSegment(1000 + index);
+    batchNames.push_back(name);
+    batchObjects.emplace_back(name, ndn::Buffer{'b', static_cast<std::uint8_t>(index)});
+  }
+  std::vector<ndn::Name> batchObserved;
+  bool batchSelectorsExact = true;
+  const auto faceOwner = std::this_thread::get_id();
+  bool batchOneFaceOwner = true;
+  auto observeBatch = consumerFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) {
+        if (std::find(batchNames.begin(), batchNames.end(), interest.getName()) ==
+            batchNames.end()) return;
+        batchObserved.push_back(interest.getName());
+        batchSelectorsExact = batchSelectorsExact && !interest.getCanBePrefix() &&
+                              interest.getMustBeFresh();
+        batchOneFaceOwner = batchOneFaceOwner && std::this_thread::get_id() == faceOwner;
+      });
+  std::atomic<bool> batchDispatched{false};
+  std::atomic<bool> batchDispatchFailed{false};
+  CollaborationTransferMetrics batchMetrics;
+  auto batchFetch = std::async(std::launch::async, [&] {
+    return consumerContext.fetchSignedExactDataBatch(
+        "epoch/group-1", batchNames, producer.getName(), 1000, {}, &batchMetrics,
+        [&](std::exception_ptr error) {
+          batchDispatchFailed.store(static_cast<bool>(error));
+          batchDispatched.store(true);
+        }, ServiceProvider::ExactDataFetchPhase::AwaitPublication);
+  });
+  environment.pumpUntil([&] {
+    return batchDispatched.load() || batchFetch.wait_for(0ms) == std::future_status::ready;
+  });
+  // Do not throw while a worker still borrows the environment: finish/drain
+  // the batch before assertions that may abort the fixture.
+  const auto beforePublication = batchObserved;
+  const bool waitingForProduction = batchFetch.wait_for(0ms) != std::future_status::ready;
+  std::reverse(batchObjects.begin(), batchObjects.end());
+  const bool batchPublished = producerContext.publishSignedExactData(
+      "epoch/group-1", batchObjects, 60000);
+  environment.pumpUntil([&] { return batchFetch.wait_for(0ms) == std::future_status::ready; });
+  const auto batchResult = batchFetch.get();
+  BOOST_CHECK(batchPublished);
+  BOOST_CHECK(batchDispatched.load());
+  BOOST_CHECK(!batchDispatchFailed.load());
+  BOOST_CHECK(waitingForProduction);
+  BOOST_CHECK_EQUAL(beforePublication.size(), 13U);
+  BOOST_CHECK_EQUAL_COLLECTIONS(beforePublication.begin(), beforePublication.end(),
+                                batchNames.begin(), batchNames.end());
+  BOOST_CHECK(batchSelectorsExact);
+  BOOST_CHECK(batchOneFaceOwner);
+  BOOST_REQUIRE(batchResult);
+  BOOST_REQUIRE_EQUAL(batchResult->size(), 13U);
+  for (std::size_t index = 0; index < 13; ++index) {
+    const ndn::Buffer expected{'b', static_cast<std::uint8_t>(index)};
+    BOOST_CHECK_EQUAL_COLLECTIONS((*batchResult)[index].begin(), (*batchResult)[index].end(),
+                                  expected.begin(), expected.end());
+  }
+  BOOST_REQUIRE(batchMetrics.interestCount);
+  BOOST_REQUIRE(batchMetrics.retryCount);
+  BOOST_REQUIRE(batchMetrics.transportPayloadBytes);
+  BOOST_REQUIRE(batchMetrics.wireBytes);
+  BOOST_CHECK_EQUAL(*batchMetrics.interestCount, 13U);
+  BOOST_CHECK_EQUAL(*batchMetrics.retryCount, 0U);
+  BOOST_CHECK_EQUAL(*batchMetrics.transportPayloadBytes, 26U);
+  BOOST_CHECK_GE(*batchMetrics.wireBytes, *batchMetrics.transportPayloadBytes);
+
+  // Exercise the nonblocking entry directly on the Face owner: no waiting
+  // worker exists for this batch, and publication follows all13 dispatches.
+  std::vector<ndn::Name> asyncNames;
+  std::vector<std::pair<ndn::Name, ndn::Buffer>> asyncObjects;
+  for (std::size_t index = 0; index < 13; ++index) {
+    auto name = manifestName.getPrefix(-1);
+    name.append("SEG").appendSegment(2000 + index);
+    asyncNames.push_back(name);
+    asyncObjects.emplace_back(name, ndn::Buffer{'a', static_cast<std::uint8_t>(index)});
+  }
+  std::vector<ndn::Name> asyncObserved;
+  auto observeAsync = consumerFace.onSendInterest.connect(
+      [&](const ndn::Interest& interest) {
+        if (std::find(asyncNames.begin(), asyncNames.end(), interest.getName()) !=
+            asyncNames.end()) asyncObserved.push_back(interest.getName());
+      });
+  bool asyncDispatched = false;
+  bool asyncDispatchError = false;
+  unsigned validatedCallbacks = 0;
+  auto asyncBatch = consumerContext.startSignedExactDataBatch(
+      "epoch/group-1", asyncNames, producer.getName(), 1000, {},
+      [&](std::exception_ptr error) {
+        asyncDispatchError = static_cast<bool>(error);
+        asyncDispatched = true;
+      }, ServiceProvider::ExactDataFetchPhase::AwaitPublication,
+      [&] { ++validatedCallbacks; return true; });
+  const bool returnedBeforePump = !asyncDispatched;
+  environment.pumpUntil([&] {
+    return asyncDispatched || asyncBatch.wait_for(0ms) == std::future_status::ready;
+  });
+  const auto asyncBeforePublication = asyncObserved;
+  const bool asyncWaiting = asyncBatch.wait_for(0ms) != std::future_status::ready;
+  std::reverse(asyncObjects.begin(), asyncObjects.end());
+  const bool asyncPublished = producerContext.publishSignedExactData(
+      "epoch/group-1", asyncObjects, 60000);
+  environment.pumpUntil([&] { return asyncBatch.wait_for(0ms) == std::future_status::ready; });
+  const auto asyncResult = asyncBatch.get();
+  BOOST_CHECK(returnedBeforePump);
+  BOOST_CHECK(asyncDispatched);
+  BOOST_CHECK(!asyncDispatchError);
+  BOOST_CHECK(asyncWaiting);
+  BOOST_CHECK(asyncPublished);
+  BOOST_CHECK_EQUAL_COLLECTIONS(asyncBeforePublication.begin(), asyncBeforePublication.end(),
+                                asyncNames.begin(), asyncNames.end());
+  BOOST_REQUIRE(asyncResult);
+  BOOST_REQUIRE_EQUAL(asyncResult->contents.size(), 13U);
+  for (std::size_t index = 0; index < 13; ++index) {
+    const ndn::Buffer expected{'a', static_cast<std::uint8_t>(index)};
+    BOOST_CHECK_EQUAL_COLLECTIONS(asyncResult->contents[index].begin(), asyncResult->contents[index].end(),
+                                  expected.begin(), expected.end());
+  }
+  BOOST_CHECK_EQUAL(validatedCallbacks, 13U);
+  BOOST_REQUIRE(asyncResult->metrics.interestCount);
+  BOOST_REQUIRE(asyncResult->metrics.retryCount);
+  BOOST_CHECK_EQUAL(*asyncResult->metrics.interestCount, 13U);
+  BOOST_CHECK_EQUAL(*asyncResult->metrics.retryCount, 0U);
+  for (const bool throwFromCallback : {false, true}) {
+    unsigned rejectedProgress = 0;
+    auto rejected = consumerContext.startSignedExactDataBatch(
+        "epoch/group-1", {asyncNames.front()}, producer.getName(), 650, {}, {},
+        ServiceProvider::ExactDataFetchPhase::Published, [&]() -> bool {
+          ++rejectedProgress;
+          if (throwFromCallback) throw std::runtime_error("controlled progress failure");
+          return false;
+        });
+    environment.pumpUntil([&] { return rejected.wait_for(0ms) == std::future_status::ready; });
+    BOOST_CHECK(!rejected.get());
+    BOOST_CHECK_EQUAL(rejectedProgress, 1U);
+  }
+  auto abandonedName = manifestName.getPrefix(-1);
+  abandonedName.append("SEG").appendSegment(4000);
+  unsigned abandonedReads = 0;
+  unsigned abandonedErrors = 0;
+  auto observeAbandoned = consumerFace.onSendInterest.connect(
+      [&](const ndn::Interest& interest) {
+        if (interest.getName() == abandonedName) ++abandonedReads;
+      });
+  {
+    auto abandoned = consumerContext.startSignedExactDataBatch(
+        "epoch/group-1", {abandonedName}, producer.getName(), 1000, {},
+        [&](std::exception_ptr error) { if (error) ++abandonedErrors; },
+        ServiceProvider::ExactDataFetchPhase::AwaitPublication);
+  }
+  bool abandonmentDrained = false;
+  boost::asio::post(consumerFace.getIoContext(), [&] { abandonmentDrained = true; });
+  environment.pumpUntil([&] { return abandonmentDrained; });
+  BOOST_CHECK(abandonmentDrained);
+  BOOST_CHECK_EQUAL(abandonedErrors, 1U);
+  BOOST_CHECK_EQUAL(abandonedReads, 0U);
+
+  const auto observedBeforeInvalid = batchObserved.size();
+  unsigned rejectedBatches = 0;
+  for (const auto& names : {std::vector<ndn::Name>{},
+                            std::vector<ndn::Name>{batchNames.front(), batchNames.front()}}) {
+    const auto invalid = consumerContext.fetchSignedExactDataBatch(
+        "epoch/group-1", names, producer.getName(), 1000, {}, nullptr,
+        [&](std::exception_ptr error) { if (error) ++rejectedBatches; },
+        ServiceProvider::ExactDataFetchPhase::Published);
+    BOOST_CHECK(!invalid);
+  }
+  BOOST_CHECK_EQUAL(rejectedBatches, 2U);
+  BOOST_CHECK_EQUAL(batchObserved.size(), observedBeforeInvalid);
+
+  auto missingBatchName = manifestName.getPrefix(-1);
+  missingBatchName.append("SEG").appendSegment(1500);
+  auto partialBatch = std::async(std::launch::async, [&] {
+    return consumerContext.fetchSignedExactDataBatch(
+        "epoch/group-1", {batchNames.front(), missingBatchName}, producer.getName(),
+        200, {}, nullptr, {}, ServiceProvider::ExactDataFetchPhase::Published);
+  });
+  environment.pumpUntil([&] { return partialBatch.wait_for(0ms) == std::future_status::ready; });
+  BOOST_CHECK(!partialBatch.get());
+
+  auto wrongSignerBatch = std::async(std::launch::async, [&] {
+    return consumerContext.fetchSignedExactDataBatch(
+        "epoch/group-1", {batchNames.front(), wrongSignerName}, producer.getName(),
+        650, {}, nullptr, {}, ServiceProvider::ExactDataFetchPhase::Published);
+  });
+  environment.pumpUntil([&] { return wrongSignerBatch.wait_for(0ms) == std::future_status::ready; });
+  BOOST_CHECK(!wrongSignerBatch.get());
+
+  cancelFetch = false;
+  const auto cancelBatchStarted = std::chrono::steady_clock::now();
+  auto cancelledBatch = std::async(std::launch::async, [&] {
+    return consumerContext.fetchSignedExactDataBatch(
+        "epoch/group-1", {batchNames.front(), cancelledName}, producer.getName(),
+        1000, [&] { return cancelFetch.load(); }, nullptr, {},
+        ServiceProvider::ExactDataFetchPhase::AwaitPublication);
+  });
+  environment.pumpUntil([&] { return cancelledBatch.wait_for(0ms) == std::future_status::ready; });
+  BOOST_CHECK(!cancelledBatch.get());
+  BOOST_CHECK_LT(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - cancelBatchStarted).count(), 500);
 }
 
 BOOST_AUTO_TEST_CASE(V3DependencyIoPublishesManifestThenReconstructsExactSegments)
 {
-  ndn_service_framework::test::BootstrapProfile profile;
-  profile.providerCount = 2;
-  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
-  environment.bootstrap();
-  BOOST_REQUIRE(environment.status() ==
-                ndn_service_framework::test::EnvironmentStatus::Ready);
-  environment.enableProductionIngressForTest();
+  // The large case lasts over the250ms idle window with authenticated
+  // segment progress every50ms, and needs20 segments without a16 limit.
+  for (const bool largeObject : {false, true}) {
+    ndn_service_framework::test::BootstrapProfile profile;
+    profile.providerCount = 2;
+    ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+    environment.bootstrap();
+    BOOST_REQUIRE(environment.status() ==
+                  ndn_service_framework::test::EnvironmentStatus::Ready);
+    environment.enableProductionIngressForTest();
 
-  auto& producerFace = environment.providerFace(0);
-  auto& consumerFace = environment.providerFace(1);
-  auto& producer = environment.provider(0);
-  auto& consumer = environment.provider(1);
-  auto forwardInterest = consumerFace.onSendInterest.connect(
-      [&] (const ndn::Interest& interest) { producerFace.receive(interest); });
-  auto forwardData = producerFace.onSendData.connect(
-      [&] (const ndn::Data& data) { consumerFace.receive(data); });
+    auto& producerFace = environment.providerFace(0);
+    auto& consumerFace = environment.providerFace(1);
+    auto& producer = environment.provider(0);
+    auto& consumer = environment.provider(1);
+    auto forwardInterest = consumerFace.onSendInterest.connect(
+        [&] (const ndn::Interest& interest) { producerFace.receive(interest); });
+    ndn::Scheduler delayedData(consumerFace.getIoContext());
+    auto forwardData = producerFace.onSendData.connect(
+        [&] (const ndn::Data& data) {
+          if (largeObject && !data.getName().empty() && data.getName()[-1].isSegment()) {
+            delayedData.schedule(ndn::time::milliseconds(
+              50 * data.getName()[-1].toSegment()), [&, data] { consumerFace.receive(data); });
+          }
+          else {
+            consumerFace.receive(data);
+          }
+        });
 
-  const auto sha = [] (char value) {
-    return std::string("sha256:") + std::string(64, value);
-  };
-  const ndn::Name requestId("/request/v3-exact-dependency");
-  const std::string planDigest = sha('1');
-  const std::string groupId = "group-v3-exact";
-  const std::string sourceLayout = sha('2');
-  const std::string targetLayout = sha('3');
-  const std::string tensorDigest = sha('4');
+    const auto sha = [] (char value) {
+      return std::string("sha256:") + std::string(64, value);
+    };
+    const ndn::Name requestId("/request/v3-exact-dependency");
+    const std::string planDigest = sha('1');
+    const std::string groupId = "group-v3-exact";
+    const std::string sourceLayout = sha('2');
+    const std::string targetLayout = sha('3');
+    const std::string tensorDigest = sha('4');
 
-  GroupOperationV1 operation;
-  operation.operationIndex = 7;
-  operation.kind = "PIPELINE_TRANSFER";
-  operation.producerRanks = {"0"};
-  operation.consumerRanks = {"1"};
-  operation.tensorLayoutDigest = sourceLayout;
-  operation.maxBytes = 256;
-  operation.maxSegments = 8;
+    GroupOperationV1 operation;
+    operation.operationIndex = 7;
+    operation.kind = "PIPELINE_TRANSFER";
+    operation.producerRanks = {"0"};
+    operation.consumerRanks = {"1"};
+    operation.tensorLayoutDigest = sourceLayout;
+    operation.maxBytes = 256;
+    operation.maxSegments = largeObject ? 32 : 8;
 
-  auto producerCoordinator =
-      std::make_shared<ProviderGroupCoordinator>(makeD2bCoordinatorOptions());
-  const auto capability = producerCoordinator->createCapability(
-      requestId.toUri(), "attempt-1", planDigest, groupId, 3,
-      {{producer.getName().toUri(), 0, "offer-producer",
-        producer.getName().toUri()},
-       {consumer.getName().toUri(), 1, "offer-consumer",
-        consumer.getName().toUri()}},
-      {operation}, 1024, 1000, 5000);
-  auto consumerCoordinator =
-      std::make_shared<ProviderGroupCoordinator>(makeD2bCoordinatorOptions());
-  consumerCoordinator->installCapability(
-      capability,
-      producerCoordinator->epochKeyForProvider(producer.getName().toUri()),
-      true);
+    auto producerCoordinator =
+        std::make_shared<ProviderGroupCoordinator>(makeD2bCoordinatorOptions());
+    const auto capability = producerCoordinator->createCapability(
+        requestId.toUri(), "attempt-1", planDigest, groupId, 3,
+        {{producer.getName().toUri(), 0, "offer-producer",
+          producer.getName().toUri()},
+         {consumer.getName().toUri(), 1, "offer-consumer",
+          consumer.getName().toUri()}},
+        {operation}, largeObject ? 256 * 1024 : 1024, largeObject ? 250 : 1000, 5000);
+    auto consumerCoordinator =
+        std::make_shared<ProviderGroupCoordinator>(makeD2bCoordinatorOptions());
+    consumerCoordinator->installCapability(
+        capability,
+        producerCoordinator->epochKeyForProvider(producer.getName().toUri()),
+        true);
 
-  NativeTensorEndpointV3 endpoint;
-  endpoint.producerNamespace = producer.getName().toUri();
-  endpoint.requester = profile.userIdentity.toUri();
-  endpoint.requestId = requestId.toUri();
-  endpoint.attempt = 1;
-  endpoint.planDigest = planDigest;
-  endpoint.groupId = groupId;
-  endpoint.groupEpoch = "3";
-  endpoint.operation = operation.kind;
-  endpoint.round = operation.operationIndex;
-  endpoint.sourceKind = "ROLE";
-  endpoint.producerRole = "S0R0";
-  endpoint.producerRank = 0;
-  endpoint.consumerRole = "S1R0";
-  endpoint.consumerRoles = {"S1R0"};
-  endpoint.tensorId = "hidden";
-  endpoint.tensorDigest = tensorDigest;
-  endpoint.layoutDigest = sourceLayout;
-  endpoint.targetLayoutDigest = targetLayout;
-  endpoint.microbatch = 0;
-  endpoint.segmentCount = operation.maxSegments;
-  endpoint.manifestDigest = sha('5');
-  endpoint.securityProfile = "NDNSF_DATA_V1";
-  endpoint.noProgressDeadlineMs = capability.noProgressMs;
-  endpoint.hardDeadlineMs = capability.hardDeadlineMs;
-  endpoint.endpointDigest = sha('6');
+    NativeTensorEndpointV3 endpoint;
+    endpoint.producerNamespace = producer.getName().toUri();
+    endpoint.requester = profile.userIdentity.toUri();
+    endpoint.requestId = requestId.toUri();
+    endpoint.attempt = 1;
+    endpoint.planDigest = planDigest;
+    endpoint.groupId = groupId;
+    endpoint.groupEpoch = "3";
+    endpoint.operation = operation.kind;
+    endpoint.round = operation.operationIndex;
+    endpoint.sourceKind = "ROLE";
+    endpoint.producerRole = "S0R0";
+    endpoint.producerRank = 0;
+    endpoint.consumerRole = "S1R0";
+    endpoint.consumerRoles = {"S1R0"};
+    endpoint.tensorId = "hidden";
+    endpoint.tensorDigest = tensorDigest;
+    endpoint.layoutDigest = sourceLayout;
+    endpoint.targetLayoutDigest = targetLayout;
+    endpoint.microbatch = 0;
+    endpoint.segmentCount = operation.maxSegments;
+    endpoint.manifestDigest = sha('5');
+    endpoint.securityProfile = "NDNSF_DATA_V1";
+    endpoint.noProgressDeadlineMs = capability.noProgressMs;
+    endpoint.hardDeadlineMs = capability.hardDeadlineMs;
+    {
+      auto identity = nativeEndpointJson(endpoint);
+      identity.erase("endpoint_digest"); identity.erase("consumer_role");
+      endpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+    }
 
-  DependencyEdge edge;
-  edge.scope = groupId;
-  edge.producerRole = endpoint.producerRole;
-  edge.consumerRole = endpoint.consumerRole;
-  edge.consumerRoles = endpoint.consumerRoles;
-  edge.plannedDataName = tensorObjectNamePrefix(endpoint);
-  edge.tensors = {endpoint.tensorId};
-  edge.requestId = endpoint.requestId;
-  edge.attemptEpoch = endpoint.attempt;
-  edge.useNdnsfDataV1 = true;
-  edge.collectiveOperationIndex = operation.operationIndex;
-  edge.collectiveProducerRank = "0";
-  edge.collectiveSourceLayoutDigest = sourceLayout;
-  edge.collectiveTargetLayoutDigest = targetLayout;
-  edge.collectiveTensorDigest = tensorDigest;
-  edge.transportScope = groupId;
-  edge.producerProvider = producer.getName().toUri();
-  edge.declaredByV3 = true;
-  edge.manifestDataName = tensorObjectManifestName(endpoint);
-  edge.maxSegments = endpoint.segmentCount;
-  edge.endpointDigest = endpoint.endpointDigest;
-  edge.planDigest = planDigest;
-  edge.manifestContractDigest = endpoint.manifestDigest;
-  edge.tensorDigest = tensorDigest;
-  edge.layoutDigest = sourceLayout;
-  edge.securityProfile = endpoint.securityProfile;
-  edge.operationKind = operation.kind;
-  edge.round = operation.operationIndex;
-  edge.microbatch = 0;
-  edge.noProgressDeadlineMs = capability.noProgressMs;
-  edge.hardDeadlineMs = capability.hardDeadlineMs;
+    DependencyEdge edge;
+    edge.scope = groupId;
+    edge.producerRole = endpoint.producerRole;
+    edge.consumerRole = endpoint.consumerRole;
+    edge.consumerRoles = endpoint.consumerRoles;
+    edge.plannedDataName = tensorObjectNamePrefix(endpoint);
+    edge.tensors = {endpoint.tensorId};
+    edge.requestId = endpoint.requestId;
+    edge.attemptEpoch = endpoint.attempt;
+    edge.useNdnsfDataV1 = true;
+    edge.collectiveOperationIndex = operation.operationIndex;
+    edge.collectiveProducerRank = "0";
+    edge.collectiveSourceLayoutDigest = sourceLayout;
+    edge.collectiveTargetLayoutDigest = targetLayout;
+    edge.collectiveTensorDigest = tensorDigest;
+    edge.transportScope = groupId;
+    edge.producerProvider = producer.getName().toUri();
+    edge.declaredByV3 = true;
+    edge.manifestDataName = tensorObjectManifestName(endpoint);
+    edge.maxSegments = endpoint.segmentCount;
+    edge.endpointDigest = endpoint.endpointDigest;
+    edge.executionObjectDigest = computeTensorExecutionObjectDigest(endpoint);
+    edge.namingOperationStride = endpoint.namingOperationStride;
+    edge.planDigest = planDigest;
+    edge.manifestContractDigest = endpoint.manifestDigest;
+    edge.tensorDigest = tensorDigest;
+    edge.layoutDigest = sourceLayout;
+    edge.securityProfile = endpoint.securityProfile;
+    edge.operationKind = operation.kind;
+    edge.round = operation.operationIndex;
+    edge.microbatch = 0;
+    edge.noProgressDeadlineMs = capability.noProgressMs;
+    edge.hardDeadlineMs = capability.hardDeadlineMs;
 
-  ServiceProvider::CollaborationAssignment producerAssignment;
-  producerAssignment.role = endpoint.producerRole;
-  producerAssignment.service = profile.serviceName;
-  ServiceProvider::CollaborationAssignment consumerAssignment;
-  consumerAssignment.role = endpoint.consumerRole;
-  consumerAssignment.service = profile.serviceName;
-  ServiceProvider::CollaborationContext producerContext(
-      producer, profile.userIdentity, requestId, RequestMessage(),
-      producerAssignment);
-  ServiceProvider::CollaborationContext consumerContext(
-      consumer, profile.userIdentity, requestId, RequestMessage(),
-      consumerAssignment);
+    ServiceProvider::CollaborationAssignment producerAssignment;
+    producerAssignment.role = endpoint.producerRole;
+    producerAssignment.service = profile.serviceName;
+    ServiceProvider::CollaborationAssignment consumerAssignment;
+    consumerAssignment.role = endpoint.consumerRole;
+    consumerAssignment.service = profile.serviceName;
+    ServiceProvider::CollaborationContext producerContext(
+        producer, profile.userIdentity, requestId, RequestMessage(),
+        producerAssignment);
+    ServiceProvider::CollaborationContext consumerContext(
+        consumer, profile.userIdentity, requestId, RequestMessage(),
+        consumerAssignment);
 
-  const TensorBundle original{
-      "hidden", {0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
-                 10, 11, 12, 13, 14, 15, 16, 17, 18}, 0, 0};
-  NdnsfCollaborationDependencyIo producerIo(
-      producerContext, 1500, 7, 60000, producerCoordinator);
-  NdnsfCollaborationDependencyIo consumerIo(
-      consumerContext, 1500, 7, 60000, consumerCoordinator);
-  BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
+    TensorBundle original{"hidden", {}, 0, 0};
+    original.payload.resize(largeObject ? 140 : 19);
+    for (std::size_t index = 0; index < original.payload.size(); ++index) {
+      original.payload[index] = static_cast<std::uint8_t>(index);
+    }
+    NdnsfCollaborationDependencyIo producerIo(
+        producerContext, largeObject ? 3000 : 1500, 7, 60000, producerCoordinator);
+    NdnsfCollaborationDependencyIo consumerIo(
+        consumerContext, largeObject ? 3000 : 1500, 7, 60000, consumerCoordinator);
+    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
 
-  auto fetched = consumerIo.prefetchInput("session-v3", edge);
-  environment.pumpUntil([&] {
-    return fetched.wait_for(0ms) == std::future_status::ready;
-  });
-  std::optional<TensorBundle> reconstructed;
-  BOOST_REQUIRE_NO_THROW(reconstructed = fetched.get());
-  BOOST_REQUIRE(reconstructed);
-  BOOST_CHECK_EQUAL_COLLECTIONS(
-      reconstructed->payload.begin(), reconstructed->payload.end(),
-      original.payload.begin(), original.payload.end());
-  BOOST_CHECK_EQUAL(reconstructed->expectedSegments, 3U);
-  BOOST_CHECK_EQUAL(reconstructed->expectedBytes, original.payload.size());
+    auto fetched = consumerIo.prefetchInput("session-v3", edge);
+    environment.pumpUntil([&] {
+      return fetched.wait_for(0ms) == std::future_status::ready;
+    });
+    std::optional<TensorBundle> reconstructed;
+    BOOST_REQUIRE_NO_THROW(reconstructed = fetched.get());
+    BOOST_REQUIRE(reconstructed);
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        reconstructed->payload.begin(), reconstructed->payload.end(),
+        original.payload.begin(), original.payload.end());
+    BOOST_CHECK_EQUAL(reconstructed->expectedSegments, largeObject ? 20U : 3U);
+    BOOST_CHECK_EQUAL(reconstructed->expectedBytes, original.payload.size());
+  }
 }
 
 BOOST_AUTO_TEST_CASE(V3DependencyIoWaitsForInitialProducerReadiness)
@@ -2634,7 +3009,11 @@ BOOST_AUTO_TEST_CASE(V3DependencyIoWaitsForInitialProducerReadiness)
   endpoint.securityProfile = "NDNSF_DATA_V1";
   endpoint.noProgressDeadlineMs = capability.noProgressMs;
   endpoint.hardDeadlineMs = capability.hardDeadlineMs;
-  endpoint.endpointDigest = sha('6');
+  {
+      auto identity = nativeEndpointJson(endpoint);
+      identity.erase("endpoint_digest"); identity.erase("consumer_role");
+      endpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+    }
 
   DependencyEdge edge;
   edge.scope = groupId;
@@ -2657,6 +3036,8 @@ BOOST_AUTO_TEST_CASE(V3DependencyIoWaitsForInitialProducerReadiness)
   edge.manifestDataName = tensorObjectManifestName(endpoint);
   edge.maxSegments = endpoint.segmentCount;
   edge.endpointDigest = endpoint.endpointDigest;
+    edge.executionObjectDigest = computeTensorExecutionObjectDigest(endpoint);
+    edge.namingOperationStride = endpoint.namingOperationStride;
   edge.planDigest = planDigest;
   edge.manifestContractDigest = endpoint.manifestDigest;
   edge.tensorDigest = tensorDigest;
@@ -3881,9 +4262,11 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
                   return;
                 }
                 try {
-                  const ndn::Data inner(data.getContent().blockFromValue());
-                  if (inner.getName().toUri().find(
-                        "NDNSF-DI/COLLECTIVE/v1/") == std::string::npos) {
+                  const ndn::Data& inner = data;
+                  const auto named = parseProducerDataName(inner.getName(),
+                    environment.provider(source).getName());
+                  if (!named || named->nameSpace != "NDNSF-DI" || named->category != "tensor" ||
+                      !inner.getName().get(-1).isSegment()) {
                     forward(data);
                     return;
                   }
@@ -3936,12 +4319,7 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
                       bytes.data(), bytes.size()));
                     environment.keyChain().sign(
                       mutatedInner, ndn::security::signingWithSha256());
-                    ndn::Data mutatedOuter = data;
-                    const auto innerWire = mutatedInner.wireEncode();
-                    mutatedOuter.setContent(innerWire);
-                    environment.keyChain().sign(
-                      mutatedOuter, ndn::security::signingWithSha256());
-                    forward(mutatedOuter);
+                    forward(mutatedInner);
                     return;
                   }
                 }
@@ -3957,10 +4335,8 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
   const auto requesterName = environment.user().getName();
   const auto provider0Name = environment.provider(0).getName();
   const auto provider1Name = environment.provider(1).getName();
-  auto producerPrefix = environment.profile().providerNode;
-  producerPrefix.append("0");
-  auto consumerPrefix = environment.profile().providerNode;
-  consumerPrefix.append("p1").append("0");
+  const auto producerPrefix = provider0Name;
+  const auto consumerPrefix = provider1Name;
   const auto requestId = ndn::Name("/d2b-production-data-v1");
 
   ProviderGroupCoordinator producerCoordinator(makeD2bCoordinatorOptions());
@@ -3974,9 +4350,41 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
       provider0Name.toUri());
   ProviderGroupCoordinator receiverCoordinator(makeD2bCoordinatorOptions());
   receiverCoordinator.installCapability(capability, epochKey, true);
-  const auto sealed = producerCoordinator.sealOperation(
-      operation, "0", "src-d2b", "dst-d2b", "tensor-d2b",
-      {{'a', 'b'}, {'c', 'd'}}, 100);
+  NativeTensorEndpointV3 endpoint;
+  endpoint.requester = requesterName.toUri(ndn::name::UriFormat::CANONICAL);
+  endpoint.requestId = requestId.toUri(ndn::name::UriFormat::CANONICAL);
+  endpoint.attempt = 1;
+  endpoint.planDigest = nativePlanningDigest(capability.planDigest);
+  endpoint.producerNamespace = provider0Name.toUri(ndn::name::UriFormat::CANONICAL);
+  endpoint.producerRole = "producer";
+  endpoint.consumerRole = "consumer";
+  endpoint.consumerRoles = {"consumer"};
+  endpoint.producerRank = 0;
+  endpoint.groupId = capability.groupId;
+  endpoint.groupEpoch = std::to_string(capability.epoch);
+  endpoint.operation = operation.kind;
+  endpoint.round = operation.operationIndex;
+  endpoint.sourceKind = "ROLE";
+  endpoint.tensorId = "tensor-d2b";
+  endpoint.tensorDigest = nativePlanningDigest("tensor-d2b");
+  endpoint.layoutDigest = endpoint.targetLayoutDigest = nativePlanningDigest("fixture-layout-d2b");
+  endpoint.manifestDigest = nativePlanningDigest("fixture-manifest-d2b");
+  endpoint.segmentCount = operation.maxSegments;
+  endpoint.securityProfile = "NDNSF_DATA_V1";
+  endpoint.noProgressDeadlineMs = capability.noProgressMs;
+  endpoint.hardDeadlineMs = capability.hardDeadlineMs;
+  auto endpointIdentity = nativeEndpointJson(endpoint);
+  endpointIdentity.erase("endpoint_digest"); endpointIdentity.erase("consumer_role");
+  endpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(endpointIdentity));
+  std::vector<ndn::Name> exactNames;
+  std::vector<std::string> sealedNames;
+  for (std::uint64_t index = 0; index != 2; ++index) {
+    sealedNames.push_back(tensorObjectSegmentName(endpoint, index));
+    exactNames.emplace_back(sealedNames.back());
+  }
+  const auto sealed = producerCoordinator.sealOperation(operation, "0", endpoint.layoutDigest,
+    endpoint.targetLayoutDigest, endpoint.tensorDigest,
+    {{'a', 'b'}, {'c', 'd'}}, 100, sealedNames);
 
   std::vector<std::pair<ndn::Name, ndn::Buffer>> publications;
   for (const auto& segment : sealed.segments) {
@@ -3984,15 +4392,7 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
         sealed.manifest, segment);
     const ndn::Name canonicalDataName(segment.dataName);
     BOOST_REQUIRE(provider0Name.isPrefixOf(canonicalDataName));
-    // The retired SVS DATA_V1 transport demultiplexes on its producer-node
-    // prefix.  Keep that outer publication locator for this compatibility
-    // test, while the encoded/capability-bound segment retains its canonical
-    // producer-identity Data name used by the Spec175 exact-Data path.
-    ndn::Name transportPublicationName(producerPrefix);
-    transportPublicationName.append(
-        canonicalDataName.getSubName(provider0Name.size()));
-    publications.emplace_back(std::move(transportPublicationName),
-                              ndn::Buffer(wire.begin(), wire.end()));
+    publications.emplace_back(canonicalDataName, ndn::Buffer(wire.begin(), wire.end()));
   }
 
   std::atomic<bool> ackObserved{false};
@@ -4031,7 +4431,7 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
         if (!consumerSubscriptionReady) {
           return;
         }
-        provider0Published = context.publishDataV1Segments(
+        provider0Published = context.publishSignedExactData(
             "/scope/d2b", publications, 60000);
       });
   environment.provider(1).addCollaborationHandler(
@@ -4045,16 +4445,14 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
         provider1HandlerCalled = true;
         auto contextCopy = std::make_shared<ServiceProvider::CollaborationContext>(context);
         fetchThread = std::thread(
-            [contextCopy, fetchPromise, producerPrefix, operation,
+            [contextCopy, fetchPromise, producerPrefix, exactNames,
              &consumerSubscriptionReady, &fetchCompleted] {
               try {
-                fetchPromise->set_value(contextCopy->fetchDataV1Segments(
-                    "/scope/d2b", producerPrefix, operation.operationIndex,
-                    "0", "tensor-d2b", 2, operation.maxSegments, 3000,
-                    {}, DataV1SegmentNameFilter{
-                      {}, [&consumerSubscriptionReady] {
-                        consumerSubscriptionReady = true;
-                      }}));
+                fetchPromise->set_value(contextCopy->fetchSignedExactDataBatch(
+                    "/scope/d2b", exactNames, producerPrefix, 3000, {}, nullptr,
+                    [&consumerSubscriptionReady](std::exception_ptr error) {
+                      if (!error) consumerSubscriptionReady = true;
+                    }, ServiceProvider::ExactDataFetchPhase::Published));
                 fetchCompleted = true;
               }
               catch (...) {
@@ -4189,23 +4587,10 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
   }
   if (fault == ProductionD2bDataV1Fault::Tamper) {
     BOOST_CHECK(faultApplied);
-    BOOST_CHECK(fetchError == nullptr);
-    BOOST_REQUIRE(fetched);
-    bool rejected = false;
-    for (const auto& wire : *fetched) {
-      try {
-        const auto decoded = ProviderGroupCoordinator::decodeSegment(
-            ProviderGroupBytes(wire.begin(), wire.end()));
-        BOOST_REQUIRE_EQUAL(decoded.segments.size(), 1U);
-        receiverCoordinator.openSegment(
-            decoded.manifest, decoded.segments.front());
-      }
-      catch (const std::exception&) {
-        rejected = true;
-        break;
-      }
-    }
-    BOOST_CHECK(rejected);
+    // Core exact fetch rejects the tampered original at signature admission;
+    // plaintext is never released. Crypto-only corruption/replay tests remain
+    // in the group and direct SVS fixtures.
+    BOOST_CHECK(fetchError != nullptr || !fetched);
     return;
   }
   if (fault == ProductionD2bDataV1Fault::Duplicate ||
@@ -4219,15 +4604,16 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
   BOOST_REQUIRE_EQUAL(fetched->size(), sealed.segments.size());
 
   std::vector<std::uint8_t> plaintext;
-  for (const auto& wire : *fetched) {
+  for (std::size_t index = 0; index < fetched->size(); ++index) {
+    const auto& wire = fetched->at(index);
     const auto decoded = ProviderGroupCoordinator::decodeSegment(
         ProviderGroupBytes(wire.begin(), wire.end()));
     BOOST_REQUIRE_EQUAL(decoded.segments.size(), 1U);
     const auto accepted = receiverCoordinator.acceptSegment(
-        decoded.manifest, decoded.segments.front());
+        decoded.manifest, decoded.segments.front(), sealedNames.at(index));
     BOOST_REQUIRE(accepted == DataSegmentReplayWindow::Result::Accepted);
     const auto segmentPlaintext = receiverCoordinator.openSegment(
-        decoded.manifest, decoded.segments.front());
+        decoded.manifest, decoded.segments.front(), sealedNames.at(index));
     plaintext.insert(plaintext.end(), segmentPlaintext.begin(), segmentPlaintext.end());
   }
   const std::vector<std::uint8_t> expected{'a', 'b', 'c', 'd'};
@@ -4235,27 +4621,27 @@ runProductionD2bDataV1Case(ProductionD2bDataV1Fault fault)
                                 expected.begin(), expected.end());
 }
 
-BOOST_AUTO_TEST_CASE(ProductionIngressRunsD2bSelectionIntoSvsDataV1)
+BOOST_AUTO_TEST_CASE(ProductionIngressRunsD2bSelectionIntoExactC04Data)
 {
   runProductionD2bDataV1Case(ProductionD2bDataV1Fault::None);
 }
 
-BOOST_AUTO_TEST_CASE(ProductionIngressRejectsTamperedD2bSvsDataV1)
+BOOST_AUTO_TEST_CASE(ProductionIngressRejectsTamperedD2bExactC04Data)
 {
   runProductionD2bDataV1Case(ProductionD2bDataV1Fault::Tamper);
 }
 
-BOOST_AUTO_TEST_CASE(ProductionIngressBoundsDroppedD2bSvsDataV1)
+BOOST_AUTO_TEST_CASE(ProductionIngressBoundsDroppedD2bExactC04Data)
 {
   runProductionD2bDataV1Case(ProductionD2bDataV1Fault::Drop);
 }
 
-BOOST_AUTO_TEST_CASE(ProductionIngressDeduplicatesD2bSvsDataV1)
+BOOST_AUTO_TEST_CASE(ProductionIngressDeduplicatesD2bExactC04Data)
 {
   runProductionD2bDataV1Case(ProductionD2bDataV1Fault::Duplicate);
 }
 
-BOOST_AUTO_TEST_CASE(ProductionIngressReordersD2bSvsDataV1)
+BOOST_AUTO_TEST_CASE(ProductionIngressReordersD2bExactC04Data)
 {
   runProductionD2bDataV1Case(ProductionD2bDataV1Fault::Reorder);
 }
@@ -5343,8 +5729,7 @@ runSpec175NativeTinyOneRoleCase()
     operation.maxSegments = 1;
     operations.push_back(std::move(operation));
   }
-  auto providerPrefix = environment.profile().providerNode;
-  providerPrefix.append("0");
+  const auto providerPrefix = providerName;
   ProviderGroupCoordinator capabilitySealer(makeD2bCoordinatorOptions());
   const auto capability = capabilitySealer.createCapability(
     requestId.toUri(), "attempt-1", planDigest, "group-spec175-i01", 1,
@@ -5353,19 +5738,8 @@ runSpec175NativeTinyOneRoleCase()
   const auto providerCapabilityHex = bytesToHex(
     ProviderGroupCoordinator::encodeCapability(
       capability.projectForProvider(providerName.toUri())));
-  const auto publishEndpoint = makeV3TensorEndpointJson(
-    providerPrefix.toUri(), requesterName.toUri(), requestId.toUri(),
-    planDigest, "group-spec175-i01", 0, role, 0, role, "\"" + role + "\"",
-    "input_ids", feedback.collectiveTensorDigest,
-    feedback.collectiveSourceLayoutDigest, feedback.collectiveTargetLayoutDigest,
-    "TOKEN_FEEDBACK", feedback.collectiveTensorDigest,
-    feedback.collectiveTensorDigest);
-  const auto fetchEndpoint = makeV3TensorEndpointJson(
-    providerPrefix.toUri(), requesterName.toUri(), requestId.toUri(),
-    planDigest, "group-spec175-i01", 0, role, 0, role, "\"" + role + "\"",
-    "input_ids", feedback.collectiveTensorDigest,
-    feedback.collectiveSourceLayoutDigest, feedback.collectiveTargetLayoutDigest,
-    "TOKEN_FEEDBACK", spec175Digest('b'), feedback.collectiveTensorDigest);
+  // The authenticated single-role generation keeps feedback in LocalDependencyIo.
+  // Its signed plan dependency remains; it has no network tensor endpoint.
   const auto dependenciesJson = std::string("[{\"consumers\":[\"") + role +
     "\"],\"expected_segments\":0,\"key_scope\":\"token-feedback\"," +
     "\"object_name_template\":\"{producerProvider}/NDNSF-DI/{sessionId}/" +
@@ -5382,8 +5756,7 @@ runSpec175NativeTinyOneRoleCase()
   const auto roleJson = makeSpec175CertifiedRoleJson(
     role, 0, 1, artifactDigest, recipeDigest);
   const auto dataflowJson = std::string("{\"attempt\":1,\"dataflow_digest\":\"") +
-    planDigest + "\",\"may_publish\":[" + publishEndpoint +
-    "],\"must_fetch\":[" + fetchEndpoint + "],\"plan_digest\":\"" + planDigest +
+    planDigest + "\",\"may_publish\":[],\"must_fetch\":[],\"plan_digest\":\"" + planDigest +
     "\",\"request_id\":\"" + requestId.toUri() + "\",\"role\":\"" + role +
     "\",\"terminal_response_owner\":true,\"wait_for\":[]}";
   const auto projectionJson = makeV3SelectionProjectionJson(
@@ -5430,6 +5803,17 @@ runSpec175NativeTinyOneRoleCase()
     };
   handlerConfig.requireGenerationTextOutput = true;
   handlerConfig.allowPreassembledV3Compatibility = true;
+  auto nativeFailure = std::make_shared<std::atomic<bool>>(false);
+  auto nativeFailureMessage = std::make_shared<std::string>();
+  auto nativeFailureMutex = std::make_shared<std::mutex>();
+  handlerConfig.nativeFailureObserver = std::make_shared<
+    NativeProviderHandlerConfig::NativeFailureObserver>(
+      [nativeFailure, nativeFailureMessage, nativeFailureMutex] (
+          const std::string& failedRole, const std::string& message) {
+        std::lock_guard<std::mutex> lock(*nativeFailureMutex);
+        *nativeFailureMessage = failedRole + ": " + message;
+        nativeFailure->store(true, std::memory_order_release);
+      });
   auto cacheObservations = std::make_shared<
     std::vector<NativeEpochCoordinatorResult::CacheObservation>>();
   auto cacheObservationMutex = std::make_shared<std::mutex>();
@@ -5616,10 +6000,16 @@ runSpec175NativeTinyOneRoleCase()
   }
 
   const auto terminal = [&] {
-    return result.completed || result.failed || result.timedOut;
+    return result.completed || result.failed || result.timedOut ||
+      nativeFailure->load(std::memory_order_acquire);
   };
   for (int round = 0; round < 16 && !terminal(); ++round) {
     environment.pumpUntil(terminal);
+  }
+  if (nativeFailure->load(std::memory_order_acquire)) {
+    std::lock_guard<std::mutex> lock(*nativeFailureMutex);
+    result.failed = true;
+    result.error = *nativeFailureMessage;
   }
   result.decodeStateSnapshots.push_back(decodeStateSnapshotReader());
   {
@@ -5867,9 +6257,9 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       break;
     case Spec175NativeTinyFault::RetentionExpiredEvent5:
       transportFaults.dropStreamInterestPredicate =
-        [retentionExpirations] (const ndn::Interest& interest) {
-          const auto parsed = parseInvocationEventName(interest.getName());
-          return parsed && parsed->cursor == 5 &&
+        [retentionExpirations, eventProducer = environment.provider(roleProviderIndex.back()).getName()] (const ndn::Interest& interest) {
+          const auto parsed = test::inspectEventCursorForTest(interest.getName(), eventProducer);
+          return parsed && *parsed == 5 &&
             retentionExpirations->load(std::memory_order_relaxed) == 0;
         };
       break;
@@ -6126,14 +6516,8 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
         dependency.collectiveTensorDigest + "\"}";
       const auto producerRoleIndex = dependency.operationKind == "TOKEN_FEEDBACK"
         ? providerCount - 1 : edgeIndex;
-      // TOKEN_FEEDBACK is a sealed generation-control dependency, not a V3
-      // tensor endpoint.  The production NativeProviderHandler appends its
-      // exact plan-owned edge after parsing the cross-Provider projection.
-      // Emitting it here would create a duplicate edge with a different
-      // transport scope and make both sides wait for the wrong exact object.
-      if (dependency.operationKind == "TOKEN_FEEDBACK") {
-        continue;
-      }
+      // Cross-role feedback carries the same signed C04 endpoint/stride as
+      // activations; only the authenticated single-role self edge stays local.
       // A generation projection must carry one endpoint for every epoch.  The
       // production V3 parser validates this before the native coordinator can
       // enter sequence zero; a single epoch-0 endpoint is not a complete
@@ -6153,6 +6537,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
         certifiedEndpoint.groupEpoch = std::to_string(attempt);
         certifiedEndpoint.operation = dependency.operationKind;
         certifiedEndpoint.round = round;
+        certifiedEndpoint.namingOperationStride = providerCount;
         certifiedEndpoint.sourceKind = "ROLE";
         certifiedEndpoint.producerRole = dependency.producers.front();
         certifiedEndpoint.producerRank = producerRoleIndex;
@@ -6198,7 +6583,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
           dependency.collectiveSourceLayoutDigest,
           dependency.collectiveTargetLayoutDigest, dependency.operationKind,
           certifiedEndpoint.endpointDigest, certifiedEndpoint.manifestDigest,
-          attempt);
+          attempt, certifiedEndpoint.namingOperationStride);
         if (dependency.producers.front() == roles[roleIndex]) {
           mayPublish.push_back(endpoint);
         }
@@ -6553,9 +6938,9 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   auto heldPublicationMutex = std::make_shared<std::mutex>();
   if (caseOptions.fault == Spec175NativeTinyFault::NeverRetainedEvent5) {
     finalProvider.setStreamRetentionInterceptorForTest(
-      [retentionSuppressions] (const ndn::Data& data) {
-        const auto parsed = parseInvocationEventName(data.getName());
-        if (parsed && parsed->cursor == 5) {
+      [retentionSuppressions, eventProducer = finalProvider.getName()] (const ndn::Data& data) {
+        const auto parsed = test::inspectEventCursorForTest(data.getName(), eventProducer);
+        if (parsed && *parsed == 5) {
           retentionSuppressions->fetch_add(1, std::memory_order_relaxed);
           return false;
         }
@@ -6564,9 +6949,9 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   }
   if (caseOptions.fault == Spec175NativeTinyFault::RetentionExpiredEvent5) {
     finalProvider.setStreamRetentionExpiryObserverForTest(
-      [retentionExpirations] (const ndn::Name& name) {
-        const auto parsed = parseInvocationEventName(name);
-        if (parsed && parsed->cursor == 5) {
+      [retentionExpirations, eventProducer = finalProvider.getName()] (const ndn::Name& name) {
+        const auto parsed = test::inspectEventCursorForTest(name, eventProducer);
+        if (parsed && *parsed == 5) {
           retentionExpirations->fetch_add(1, std::memory_order_relaxed);
         }
       });
@@ -6584,13 +6969,13 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
        publicationReorders, publicationDuplicates,
        providerTransportDetachments, heldPublication,
        heldPublicationMutex, &finalProviderPubSub,
-       &finalProviderIo] (const ndn::Data& data) {
-        const auto parsed = parseInvocationEventName(data.getName());
+       &finalProviderIo, eventProducer = finalProvider.getName()] (const ndn::Data& data) {
+        const auto parsed = test::inspectEventCursorForTest(data.getName(), eventProducer);
         if (!parsed) {
           return true;
         }
         if (fault == Spec175NativeTinyFault::TamperEventOneSignature &&
-            parsed->cursor == 1) {
+            *parsed == 1) {
           // Keep the authentic packet in the IMS, suppress its normal SVS
           // publication, and let the transport fault mutate the exact Data on
           // the Provider-to-User link. This models one on-path corruption
@@ -6599,24 +6984,24 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
           return false;
         }
         if (fault == Spec175NativeTinyFault::ProviderUnavailableAfterEvent3 &&
-            parsed->cursor >= 4) {
+            *parsed >= 4) {
           publicationSuppressions->fetch_add(1, std::memory_order_relaxed);
           return false;
         }
         if (fault == Spec175NativeTinyFault::ProviderUnavailableAfterEvent3WithReplacement &&
-            parsed->cursor >= 4) {
+            *parsed >= 4) {
           publicationSuppressions->fetch_add(1, std::memory_order_relaxed);
           return false;
         }
         if (fault == Spec175NativeTinyFault::ReorderEvent3After4 &&
-            parsed->cursor == 3) {
+            *parsed == 3) {
           std::lock_guard<std::mutex> lock(*heldPublicationMutex);
           *heldPublication = data;
           publicationSuppressions->fetch_add(1, std::memory_order_relaxed);
           return false;
         }
         if (fault == Spec175NativeTinyFault::ReorderEvent3After4 &&
-            parsed->cursor == 4) {
+            *parsed == 4) {
           std::optional<ndn::Data> held;
           {
             std::lock_guard<std::mutex> lock(*heldPublicationMutex);
@@ -6633,7 +7018,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
           return true;
         }
         if (fault == Spec175NativeTinyFault::DuplicateEvent4 &&
-            parsed->cursor == 4) {
+            *parsed == 4) {
           boost::asio::post(finalProviderIo,
             [pubSub = &finalProviderPubSub, duplicate = ndn::Data(data)] () mutable {
               pubSub->publishPacket(duplicate);
@@ -6644,7 +7029,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
         if ((fault == Spec175NativeTinyFault::DropFirstEvent5Data ||
              fault == Spec175NativeTinyFault::RetentionExpiredEvent5 ||
              fault == Spec175NativeTinyFault::EndBeforeGapEvent5) &&
-            parsed->cursor == 5) {
+            *parsed == 5) {
           publicationSuppressions->fetch_add(1, std::memory_order_relaxed);
           return false;
         }
@@ -7039,7 +7424,8 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     [&] (const StreamedInvocationError& error) {
       trace("initial-error code=" +
             std::to_string(static_cast<int>(error.code)) +
-            " cursor=" + std::to_string(error.expectedCursor));
+            " cursor=" + std::to_string(error.expectedCursor) +
+            " message=" + error.message);
       if (caseOptions.allowReplacement && !replacementStarted) {
         replacementStarted = true;
         trace("replacement-begin");
@@ -7107,6 +7493,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     });
   BOOST_REQUIRE_EQUAL(returnedRequestId, requestId);
   const auto terminal = [&] {
+    if (caseOptions.fault == Spec175NativeTinyFault::None && result.failed) return true;
     // An already-expired request is rejected by Core before the native handler
     // runs. Observe each committed Selection's real Provider terminal status;
     // nativeFailureObserver must stay silent at this earlier boundary.
@@ -7647,6 +8034,9 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                                     bool spec196TargetedPlacement = false,
                                     bool spec196RejectProbeResponse = false,
                                     Spec196ProbeResponseFault spec196ProbeResponseFault =
+                                      Spec196ProbeResponseFault::None,
+                                    bool spec199CacheHit = false,
+                                    Spec196ProbeResponseFault spec199CacheFault =
                                       Spec196ProbeResponseFault::None)
 {
   using namespace ndn_service_framework;
@@ -8021,6 +8411,11 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   auto repositoryReferenceObserved = std::make_shared<std::atomic<bool>>(false);
   auto observedRequestWireSize = std::make_shared<std::atomic<std::size_t>>(0);
   auto targetedHandlerCalls = std::make_shared<std::atomic<unsigned>>(0);
+  auto cachedProbeCalls = std::make_shared<std::atomic<unsigned>>(0);
+  auto probeGrantCalls = std::make_shared<std::atomic<unsigned>>(0);
+  auto probeMeasureCalls = std::make_shared<std::atomic<unsigned>>(0);
+  auto cacheFaultMutations = std::make_shared<std::atomic<unsigned>>(0);
+  auto probeRefillCalls = std::make_shared<std::atomic<unsigned>>(0);
   auto targetedFaultMutations = std::make_shared<std::atomic<unsigned>>(0);
   auto v4OfferCalls = std::make_shared<std::atomic<unsigned>>(0);
   auto selectedProviderMutex = std::make_shared<std::mutex>();
@@ -8261,8 +8656,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
         receipt.graphSemanticDigest = model.semanticsDigest;
         receipt.adapterDigest = model.adapter.descriptorDigest();
         receipt.roleName = role;
-        receipt.roleSplitDigest = projection.selectedRole.recipeDigest;
-        receipt.layoutDigest = projection.selectedRole.artifactProfileDigest;
+        receipt.roleSplitDigest = projection.selectedRoleContract().recipeDigest;
+        receipt.layoutDigest = projection.selectedRoleContract().artifactProfileDigest;
         receipt.planRoleMapDigest = binding.planRoleMapDigest;
         receipt.providerIdentity = ctx.localProvider().toUri();
         receipt.providerBootId = localProviderBootId;
@@ -8332,22 +8727,38 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       auto measurementHandler = makeNativePlacementMeasurementTargetedHandler(provider);
       ServiceProvider::AsyncTargetedRequestHandler targetedHandler =
         [measurementHandler = std::move(measurementHandler), targetedHandlerCalls,
-         targetedFaultMutations, spec196RejectProbeResponse, spec196ProbeResponseFault]
+         targetedFaultMutations, spec196RejectProbeResponse, spec196ProbeResponseFault,
+         cachedProbeCalls, probeGrantCalls, probeMeasureCalls,
+         cacheFaultMutations, spec199CacheFault, probeRefillCalls]
         (const ndn::Name& requester, const ndn::Name& providerName,
          const ndn::Name& requestedService, const ndn::Name& requestId,
          const RequestMessage& request,
          ServiceProvider::AsyncTargetedCompletion complete) mutable {
           targetedHandlerCalls->fetch_add(1, std::memory_order_relaxed);
           bool isMeasureRequest = false;
+          bool isCacheRequest = false;
+          if (request.getPayload().empty() &&
+              request.getTokens().count("targeted.refill") &&
+              request.getTokens().at("targeted.refill") == "1")
+            ++*probeRefillCalls;
           try {
             const auto payload = request.getPayload();
             const auto probe = nativeParseJson(std::string(payload.begin(), payload.end()));
+            BOOST_TEST_MESSAGE("SPEC199_TARGETED_HANDLER schema=" << probe.value("schema", std::string{})
+              << " action=" << probe.value("action", std::string{})
+              << " target=" << providerName.toUri());
             isMeasureRequest = probe.value("schema", std::string{}) ==
                   "ndnsf-di-placement-probe-request-v1" &&
                 probe.value("action", std::string{}) == "measure";
+            isCacheRequest = probe.value("action", std::string{}) == "cache";
+            if (isCacheRequest) ++*cachedProbeCalls;
+            if (isMeasureRequest) ++*probeMeasureCalls;
+            if (probe.value("action", std::string{}) == "authorize") ++*probeGrantCalls;
           }
           catch (const std::exception&) {
             // Malformed fixture input follows the production handler below.
+            BOOST_TEST_MESSAGE("SPEC199_TARGETED_HANDLER unparsed target=" << providerName.toUri()
+              << " payloadBytes=" << request.getPayload().size());
           }
           if (spec196RejectProbeResponse) {
             if (isMeasureRequest) {
@@ -8358,8 +8769,9 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
               return;
             }
           }
-          auto mutateCompletion = [complete = std::move(complete), isMeasureRequest,
-                                   spec196ProbeResponseFault, targetedFaultMutations]
+          auto mutateCompletion = [complete = std::move(complete), isMeasureRequest, isCacheRequest,
+                                   spec196ProbeResponseFault, targetedFaultMutations,
+                                   spec199CacheFault, cacheFaultMutations]
             (ResponseMessage response) mutable {
               if (isMeasureRequest && response.getStatus() &&
                   spec196ProbeResponseFault != Spec196ProbeResponseFault::None) {
@@ -8371,6 +8783,10 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                   // The assertion after the request reports a fault not injected.
                 }
               }
+              if (isCacheRequest && response.getStatus() &&
+                  spec199CacheFault != Spec196ProbeResponseFault::None &&
+                  rewriteSpec196ProbeResponse(response, spec199CacheFault))
+                ++*cacheFaultMutations;
               complete(std::move(response));
             };
           measurementHandler(requester, providerName, requestedService, requestId,
@@ -8391,6 +8807,17 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                          exerciseReplacement);
   if (alternateProvider)
     installProviderHandler(environment.provider(1), alternateOfferConfig, false);
+
+  std::atomic<unsigned> cachePeerInterests{0};
+  auto cachePeerConnection = environment.providerFace(0).onSendInterest.connect(
+    [&](const ndn::Interest& interest) {
+      const auto name = interest.getName().toUri();
+      if (name.find("/NDNSF/PEER-PROBE/") != std::string::npos ||
+          name.find("/NDNSF/PEER-PROBE-READY/") != std::string::npos)
+        ++cachePeerInterests;
+    });
+  if (spec199CacheHit)
+    ServiceProviderTestAccess::seedCachedRtt(environment.provider(0), environment.provider(1));
 
   if (spec196TargetedPlacement) {
     environment.user().setUseTokens(true);
@@ -8590,7 +9017,21 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                       "native-unary-response");
     if (spec196TargetedPlacement) {
       BOOST_CHECK_EQUAL(v4OfferCalls->load(), 2U);
-      BOOST_CHECK_EQUAL(targetedHandlerCalls->load(), 2U);
+      const bool cacheHit = spec199CacheHit &&
+        spec199CacheFault == Spec196ProbeResponseFault::None;
+      // The unprotected fixture also executes Core's empty token-refill call.
+      // Count it explicitly so it cannot masquerade as a second probe/grant.
+      BOOST_CHECK_EQUAL(targetedHandlerCalls->load(),
+        cachedProbeCalls->load() + probeGrantCalls->load() +
+        probeMeasureCalls->load() + probeRefillCalls->load());
+      BOOST_CHECK_LE(probeRefillCalls->load(), 1U);
+      if (cacheHit) BOOST_CHECK_EQUAL(probeRefillCalls->load(), 0U);
+      BOOST_CHECK_EQUAL(cachedProbeCalls->load(), 1U);
+      BOOST_CHECK_EQUAL(probeGrantCalls->load(), cacheHit ? 0U : 1U);
+      BOOST_CHECK_EQUAL(probeMeasureCalls->load(), cacheHit ? 0U : 1U);
+      BOOST_CHECK_EQUAL(cacheFaultMutations->load(),
+        spec199CacheFault == Spec196ProbeResponseFault::None ? 0U : 1U);
+      if (cacheHit) BOOST_CHECK_EQUAL(cachePeerInterests.load(), 0U);
       const bool expectedProbeAccepted = !spec196RejectProbeResponse &&
         spec196ProbeResponseFault == Spec196ProbeResponseFault::None;
       BOOST_CHECK_EQUAL(targetedFaultMutations->load(),
@@ -8841,6 +9282,21 @@ BOOST_AUTO_TEST_CASE(Spec196NativeClientJoinsCoreProbeIntoFinalPlacement)
 {
   runR4B6RealProviderConversationCase(
     false, true, false, true, false, false, false, false, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec199NativeClientCacheHitSkipsPeerAuthorizationAndMeasurement)
+{
+  runR4B6RealProviderConversationCase(false, true, false, true, false, false,
+    false, false, false, true, false, Spec196ProbeResponseFault::None, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec199NativeClientInvalidCacheFallsBackExactlyOnce)
+{
+  for (const auto fault : {Spec196ProbeResponseFault::ReplayedNonce,
+                          Spec196ProbeResponseFault::StaleObservation,
+                          Spec196ProbeResponseFault::WrongTargetBoot})
+    runR4B6RealProviderConversationCase(false, true, false, true, false, false,
+      false, false, false, true, false, Spec196ProbeResponseFault::None, true, fault);
 }
 
 BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackWhenCoreProbeIsUnavailable)
@@ -11277,7 +11733,7 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaborat
       [&] (const ndn::Name& messageName, const ndn::Buffer& wire) {
         const auto parsedAck = parseRequestAckNameV2(messageName);
         const auto parsedResponse = parseResponseNameV2(messageName);
-        if (!parsedAck && !parsedResponse && !parseInvocationEventName(messageName)) {
+        if (!parsedAck && !parsedResponse && !test::inspectEventCursorForTest(messageName, environment)) {
             return;
         }
         environment.providerPubSub().publish(

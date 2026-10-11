@@ -40,8 +40,8 @@ struct BootstrapProfile
 {
   ndn::Name groupPrefix{ "/ndnsf/spec170" };
   ndn::Name syncPrefix{ "/ndnsf/spec170/sync" };
-  ndn::Name userNode{ "/ndnsf/spec170/user" };
-  ndn::Name providerNode{ "/ndnsf/spec170/provider" };
+  ndn::Name userNode{ "/test/user/spec170/user" };
+  ndn::Name providerNode{ "/test/provider/spec170/provider" };
   ndn::Name userIdentity{ "/test/user/spec170" };
   ndn::Name providerIdentity{ "/test/provider/spec170" };
   ndn::Name attributeAuthority{ "/test/aa/spec170" };
@@ -58,6 +58,9 @@ struct BootstrapProfile
   // synchronous DummyFace receive() re-entry. The default preserves the
   // historical inline bridge used by existing experiment selectors.
   bool deferBridgeDelivery = false;
+  // Opt into the actual Core cryptographic and per-inner validator for
+  // invocation protocol qualification, rather than the fixture transport bypass.
+  bool validateSvsPackets = false;
   // Optional controller-authorized collaboration roles included in the
   // bootstrap ProviderPermission wave. Empty keeps legacy fixture behavior.
   std::vector<std::string> providerRoles;
@@ -266,5 +269,40 @@ private:
   std::optional<ndn::Data> m_pendingStreamProviderData;
   std::optional<std::string> m_activeRequestId;
 };
+
+// Fault instrumentation only: this does not authenticate a StreamBinding.
+// The actor is supplied by the existing fixture, never inferred from markers.
+inline std::optional<uint64_t>
+inspectEventCursorForTest(const ndn::Name& name, const ndn::Name& producer)
+{
+  try {
+    const auto boundary = producer.size();
+    if (producer.empty() || !producer.isPrefixOf(name) || name.size() != boundary + 10 ||
+        name[boundary] != ndn::name::Component("NDNSF") ||
+        name[boundary + 1] != ndn::name::Component("event") ||
+        name[boundary + 2] != ndn::name::Component("REQUEST") ||
+        name[boundary + 4] != ndn::name::Component("ATTEMPT") ||
+        name[boundary + 6] != ndn::name::Component("SERVICE") ||
+        name[-1].type() != ndn::tlv::SequenceNumNameComponent) return std::nullopt;
+    const auto cursor = name[-1].toSequenceNumber();
+    if (cursor == 0) return std::nullopt;
+    return cursor;
+  }
+  catch (const std::exception&) { return std::nullopt; }
+}
+
+inline std::optional<uint64_t>
+inspectEventCursorForTest(const ndn::Name& name, NdnsfIntegrationEnvironment& environment)
+{
+  std::optional<uint64_t> cursor;
+  for (size_t index = 0; index < environment.providerCount(); ++index) {
+    const auto found = inspectEventCursorForTest(name, environment.provider(index).getName());
+    if (found) {
+      if (cursor) return std::nullopt;
+      cursor = found;
+    }
+  }
+  return cursor;
+}
 
 } // namespace ndn_service_framework::test

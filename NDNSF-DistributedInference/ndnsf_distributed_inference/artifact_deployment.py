@@ -38,7 +38,7 @@ from ndnsf import (
 from py_repoclient.orchestration import NetworkDistributedRepoClient, RepoObjectManifest
 
 from .core.contracts import ProviderResidencyIdentity
-from .repo_reference import repo_manifest_from_large_data_reference
+from .repo_reference import repo_manifest_from_large_data_reference, publication_manifest_name
 
 
 class _ManifestOnlyRepoClient:
@@ -188,6 +188,7 @@ class CanonicalCatalogEnsurer:
                 role_kind=spec.role_kind,
                 layer_begin=spec.layer_begin,
                 layer_end=spec.layer_end,
+                rank=spec.rank,
             )
             key = (spec.role if role_counts[spec.role] == 1
                    else f"{spec.role}#{spec.rank}")
@@ -202,8 +203,39 @@ class CanonicalCatalogEnsurer:
                     raise ValueError("canonical ensurer root changed after publication")
                 root_name = self._published_root_name
             else:
+                from .naming import canonical_name_uri
+                self._catalog._require_publication_owner(self._publisher)
+                # Canonical URI escapes component bytes, so '/' is always a
+                # Name boundary. Never use the caller's raw URI as a prefix.
+                owner = canonical_name_uri(self._publisher) + "/"
+                from .app_sdk.canonical_artifacts import (
+                    canonical_initializer_reference, canonical_model_object_name,
+                    _publication_idempotency_key)
                 source_name, source_digest, source_bytes = (
                     self._source_reference(root.metadata))
+                initializer_name, initializer_digest, initializer_bytes = (
+                    canonical_initializer_reference(root.metadata, require=False))
+                pending = []
+                if self._canonical_source_payload is not None:
+                    pending.append(source_name)
+                if self._canonical_initializer_payload is not None:
+                    pending.append(initializer_name)
+                if any(not canonical_name_uri(name).startswith(owner) for name in pending):
+                    raise ValueError("canonical payload publisher does not own its complete Data name")
+                for has_payload, name, digest, kind, label in (
+                    (self._canonical_source_payload is not None, source_name, source_digest,
+                     "model-file", "canonical-source"),
+                    (self._canonical_initializer_payload is not None, initializer_name,
+                     initializer_digest, "initializer", "initializers"),
+                ):
+                    if not has_payload:
+                        continue
+                    expected = canonical_model_object_name(
+                        publisher=self._publisher, model_name=root.model_name,
+                        model_digest=root.model_identity.digest, object_kind=kind,
+                        object_label=label, object_digest=digest)
+                    if canonical_name_uri(name) != expected:
+                        raise ValueError("canonical payload name does not match model content identity")
                 if self._canonical_source_payload is not None:
                     payload_digest = "sha256:" + hashlib.sha256(
                         self._canonical_source_payload).hexdigest()
@@ -211,23 +243,8 @@ class CanonicalCatalogEnsurer:
                             self._canonical_source_payload):
                         raise ValueError(
                             "canonical source payload does not match ACTIVE root")
-                    if not self._published_source_name:
-                        result = self._publish_object(
-                            name=source_name,
-                            payload=self._canonical_source_payload,
-                            manifest={
-                                "schema": "ndnsf-di-canonical-source-v1",
-                                "sourceDigest": source_digest,
-                                "sourceBytes": source_bytes,
-                            },
-                            idempotency_key=source_digest)
-                        if str(result) != source_name:
-                            raise ValueError(
-                                "Repo publisher returned a different canonical source name")
-                        self._published_source_name = source_name
-                from .app_sdk.canonical_artifacts import canonical_initializer_reference
-                initializer_name, initializer_digest, initializer_bytes = (
-                    canonical_initializer_reference(root.metadata, require=False))
+                # Validate every supplied payload before any publication. A
+                # bad initializer must not leave an already published source.
                 if initializer_name:
                     if self._canonical_initializer_payload is None:
                         raise ValueError(
@@ -238,6 +255,23 @@ class CanonicalCatalogEnsurer:
                             or len(self._canonical_initializer_payload) != initializer_bytes):
                         raise ValueError(
                             "canonical initializer payload does not match ACTIVE root")
+                if self._canonical_source_payload is not None:
+                    if not self._published_source_name:
+                        result = self._publish_object(
+                            name=source_name,
+                            payload=self._canonical_source_payload,
+                            manifest={
+                                "schema": "ndnsf-di-canonical-source-v1",
+                                "sourceDigest": source_digest,
+                                "sourceBytes": source_bytes,
+                            },
+                            idempotency_key=_publication_idempotency_key(
+                                source_name, self._publisher, source_digest))
+                        if str(result) != source_name:
+                            raise ValueError(
+                                "Repo publisher returned a different canonical source name")
+                        self._published_source_name = source_name
+                if initializer_name:
                     if not self._published_initializer_name:
                         result = self._publish_object(
                             name=initializer_name,
@@ -247,7 +281,8 @@ class CanonicalCatalogEnsurer:
                                 "objectDigest": initializer_digest,
                                 "objectBytes": initializer_bytes,
                             },
-                            idempotency_key=initializer_digest)
+                            idempotency_key=_publication_idempotency_key(
+                                initializer_name, self._publisher, initializer_digest))
                         if str(result) != initializer_name:
                             raise ValueError(
                                 "Repo publisher returned a different canonical initializer name")
@@ -1842,39 +1877,57 @@ def publish_execution_artifact_spec(
     object_label_prefix: str = "execution",
     max_artifact_chunk_size: int = 512 * 1024,
     freshness_ms: int = 60000,
+    expected_model_name: str = "",
 ):
-    refs: list[ExecutionArtifact] = []
+    from .naming import validate_semantic_content_fields
+    # Validate the entire local set before any publication side effect.
+    # Core segments each logical file; historical SDK chunks remain readable.
+    prepared = []
+    model_kinds = {
+        "model": {"model-file", "artifact-file"},
+        "model-file": {"model-file"},
+        "artifact-file": {"artifact-file"},
+        "weights": {"weights"},
+        "initializer": {"initializer"},
+        "tokenizer": {"tokenizer"},
+    }
     for name, value in artifacts.items():
         if isinstance(value, dict):
             repo_artifact = _artifact_from_repo_spec(name, value)
             if repo_artifact is not None:
-                refs.append(repo_artifact)
+                prepared.append((repo_artifact, None))
                 continue
-        payload, filename, kind, executable, cache_name = _artifact_spec_parts(value)
-        chunks: list[str] = []
-        data_name = ""
-        if max_artifact_chunk_size > 0 and len(payload) > max_artifact_chunk_size:
-            for offset in range(0, len(payload), max_artifact_chunk_size):
-                chunk_index = offset // max_artifact_chunk_size
-                result = user.publish_encrypted_large_data(
-                    service,
-                    payload[offset : offset + max_artifact_chunk_size],
-                    object_label=f"{object_label_prefix}-{role}-{name}-part{chunk_index:04d}",
-                    freshness_ms=freshness_ms,
-                )
-                if not result.success:
-                    return result
-                chunks.append(result.encrypted_data_name)
+        parts = _artifact_spec_parts(value)
+        kind = parts[2]
+        label = f"{object_label_prefix}-{role}-{name}"
+        fields = value.get("content_name", {}) if isinstance(value, dict) else {}
+        if kind in model_kinds:
+            if not fields:
+                raise ValueError(f"model artifact {name!r} requires semantic content_name")
+            fields = validate_semantic_content_fields(dict(fields))
+            if fields["kind"] not in model_kinds[kind]:
+                raise ValueError(f"model artifact {name!r} has incompatible semantic kind")
         else:
-            result = user.publish_encrypted_large_data(
-                service,
-                payload,
-                object_label=f"{object_label_prefix}-{role}-{name}",
-                freshness_ms=freshness_ms,
-            )
-            if not result.success:
-                return result
-            data_name = result.encrypted_data_name
+            fields = validate_semantic_content_fields(dict(fields) if fields else
+                                                       {"kind": "material", "label": label})
+        if expected_model_name and fields.get("model_name", expected_model_name) != expected_model_name:
+            raise ValueError(f"artifact {name!r} does not belong to the expected model")
+        prepared.append((None, (name, parts, label, fields)))
+    refs: list[ExecutionArtifact] = []
+    for repo_artifact, local_artifact in prepared:
+        if repo_artifact is not None:
+            refs.append(repo_artifact)
+            continue
+        name, parts, label, fields = local_artifact
+        payload, filename, kind, executable, cache_name = parts
+        chunks: list[str] = []
+        result = user.publish_encrypted_large_data(
+            service, payload, object_label=label, freshness_ms=freshness_ms,
+            content_name=fields,
+        )
+        if not result.success:
+            return result
+        data_name = publication_manifest_name(result)
         digest = hashlib.sha256(payload).hexdigest()
         refs.append(
             ExecutionArtifact(
@@ -1908,11 +1961,13 @@ def publish_execution_artifact_spec(
         artifacts=refs,
         metadata=dict(metadata or {}),
     )
+    spec_label = f"{object_label_prefix}-{role}-spec"
     return user.publish_encrypted_large_data(
         service,
         spec.to_bytes(),
-        object_label=f"{object_label_prefix}-{role}-spec",
+        object_label=spec_label,
         freshness_ms=freshness_ms,
+        content_name={"kind": "material", "label": spec_label},
     )
 
 
@@ -2024,6 +2079,12 @@ def _artifact_from_repo_spec(name: str, spec: dict) -> ExecutionArtifact | None:
     manifest = spec.get("repo_manifest", spec.get("repoManifest"))
     if not manifest:
         return None
+    names = list(manifest.get("replicaDataNames", []))
+    if not names:
+        names = [location.get("versionedDataName") or location.get("dataName")
+                 for location in manifest.get("segmentLocations", [])]
+    if not names or any(not isinstance(value, str) or not value for value in names):
+        raise ValueError("repo manifest is missing original Producer Data names")
     return ExecutionArtifact(
         name=name,
         data_name="",
@@ -2036,7 +2097,7 @@ def _artifact_from_repo_spec(name: str, spec: dict) -> ExecutionArtifact | None:
         repo_manifest=dict(manifest),
         large_data_reference={
             "source": "repo-manifest",
-            "dataName": str(manifest.get("objectName", "")),
+            "dataName": names[0],
             "objectType": str(spec.get("kind", "model")),
             "objectId": str(spec.get("cache_name", spec.get("cacheName", spec["filename"]))),
             "plaintextSize": int(manifest.get("size", 0)),
@@ -2123,12 +2184,10 @@ def _fetch_repo_manifest_payload(manifest: dict) -> bytes:
             )
     else:
         replica_nodes = [str(value) for value in manifest.get("replicaNodes", [])]
-        data_names = [str(value) for value in manifest.get("replicaDataNames", [])]
-        if not data_names:
-            data_names = [
-                RepoDataName.data_name(repo_node, str(manifest["objectName"]))
-                for repo_node in replica_nodes
-            ]
+        data_names = list(manifest.get("replicaDataNames", []))
+        if (not replica_nodes or len(data_names) != len(replica_nodes) or
+                any(not isinstance(name, str) or not name for name in data_names)):
+            raise ValueError("repo manifest is missing original Producer Data names for replicas")
         last_error = None
         for repo_node, data_name in zip(replica_nodes, data_names):
             try:
@@ -2158,13 +2217,6 @@ def _fetch_repo_manifest_payload(manifest: dict) -> bytes:
     return payload
 
 
-class RepoDataName:
-    @staticmethod
-    def data_name(repo_node: str, object_name: str) -> str:
-        digest = hashlib.sha256(object_name.encode()).hexdigest()
-        return f"{repo_node.rstrip('/')}/NDNSF-DISTRIBUTED-REPO/DATA/{digest}"
-
-
 def _safe_file_token(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in value).strip("-") or "artifact"
 
@@ -2189,7 +2241,18 @@ def _write_cached_artifact(artifact: ExecutionArtifact, payload: bytes) -> None:
     path = _artifact_cache_path(artifact)
     if path is None:
         return
+    if hashlib.sha256(payload).hexdigest() != artifact.sha256:
+        raise RuntimeError(f"repo artifact cache write digest mismatch: {artifact.cache_name}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(payload)
-    if artifact.executable:
-        path.chmod(0o700)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as temporary_file:
+            temporary_file.write(payload)
+        temporary_path.chmod(0o700 if artifact.executable else 0o600)
+        os.replace(temporary_path, path)
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass

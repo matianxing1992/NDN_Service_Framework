@@ -43,7 +43,7 @@ from ..provider import (
     ProviderAdmissionPolicy,
     ProviderRuntimeContext,
 )
-from ..repo_reference import repo_manifest_from_large_data_reference
+from ..repo_reference import repo_manifest_from_large_data_reference, publication_manifest_name
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,7 @@ class ModelPart:
     provisioning_timeout_ms: int = 60000
     min_providers: int = 1
     max_providers: int = 1
+    content_name: Mapping[str, str] = field(default_factory=dict)
 
     def payload(self) -> bytes:
         if isinstance(self.model, bytes):
@@ -139,6 +140,7 @@ class InferencePlanBuilder:
         provisioning_timeout_ms: int = 60000,
         min_providers: int = 1,
         max_providers: int = 1,
+        content_name: Mapping[str, str] | None = None,
     ) -> "InferencePlanBuilder":
         self._parts.append(ModelPart(
             role=role,
@@ -157,6 +159,7 @@ class InferencePlanBuilder:
             provisioning_timeout_ms=provisioning_timeout_ms,
             min_providers=min_providers,
             max_providers=max_providers,
+            content_name=dict(content_name or {}),
         ))
         return self
 
@@ -172,6 +175,7 @@ class InferencePlanBuilder:
         backend: str = "",
         runtime: RuntimeSpec | None = None,
         metadata: dict | None = None,
+        content_name: Mapping[str, str] | None = None,
     ) -> "InferencePlanBuilder":
         """Add one role from a stage/shard split.
 
@@ -189,6 +193,7 @@ class InferencePlanBuilder:
             kind=kind,
             backend=backend,
             runtime=runtime,
+            content_name=content_name,
             metadata={
                 "stage": stage,
                 "shard": shard,
@@ -213,6 +218,7 @@ class InferencePlanBuilder:
                     cache_name=part.cache_name,
                     large_data_reference=dict(part.large_data_reference or {}),
                     repo_manifest=dict(part.repo_manifest or {}),
+                    content_name=dict(part.content_name),
                 ),
                 runtime=part.runtime or self.runtime,
                 service=part.service,
@@ -434,6 +440,7 @@ class APPClient:
                               dynamic_provisioning: bool | None = None,
                               runtime: RuntimeSpec | None = None,
                               artifact_references: dict | str | Path | None = None,
+                              local_artifacts: Mapping[str, ArtifactSpec] | None = None,
                               role_app_requirements: Mapping[str, bytes] | None = None) -> InferenceResult:
         """Run one distributed inference request for a deployed service.
 
@@ -456,6 +463,7 @@ class APPClient:
                     service,
                     runtime=runtime,
                     artifact_references=artifact_references,
+                    local_artifacts=local_artifacts,
                 ),
                 payload,
                 ack_timeout_ms=ack_timeout_ms,
@@ -477,6 +485,7 @@ class APPClient:
         *,
         runtime: RuntimeSpec | None = None,
         artifact_references: dict | str | Path | None = None,
+        local_artifacts: Mapping[str, ArtifactSpec] | None = None,
     ) -> DistributedInferencePlan:
         """Build a dynamic provisioning plan from a service policy.
 
@@ -527,9 +536,19 @@ class APPClient:
                 repo_manifest_from_large_data_reference(role_manifests["model"])
                 if role_manifests and "model" in role_manifests else {}
             )
+            local = None
+            if not model_manifest:
+                local = (local_artifacts or {}).get(artifact.role)
+                if not isinstance(local, ArtifactSpec) or not local.content_name:
+                    raise ValueError(f"local model role {artifact.role!r} requires an explicit ArtifactSpec context")
+                if (local.kind != artifact.kind
+                        or local.content_name.get("kind") not in {
+                            "model-file", "artifact-file", "weights", "initializer", "tokenizer"}
+                        or local.content_name.get("model_name") != builder.model_name):
+                    raise ValueError(f"local model role {artifact.role!r} has incompatible model context")
             builder.add_part(
                 role=artifact.role,
-                model=b"" if role_manifests else artifact.path,
+                model=b"" if model_manifest else local.payload,
                 artifact_name=artifact.artifact_name,
                 filename=artifact.filename,
                 kind=artifact.kind,
@@ -537,6 +556,7 @@ class APPClient:
                 cache_name=artifact.artifact_name,
                 large_data_reference=model_reference,
                 repo_manifest=model_manifest,
+                content_name=local.content_name if local is not None else None,
                 runtime=role_runtime,
                 metadata=dict(artifact.metadata or {}),
                 allow_dynamic_provisioning=True,
@@ -736,6 +756,8 @@ class APPClient:
             bytes(payload),
             object_label=object_label,
             freshness_ms=freshness_ms,
+            content_name={"kind": "input", "label": object_label,
+                          "input_kind": "application"},
         )
 
     def publish_large_payload_reference(
@@ -765,7 +787,7 @@ class APPClient:
             raise RuntimeError(f"large payload publish failed: {published.error}")
         effective_digest = digest or ("sha256:" + hashlib.sha256(payload).hexdigest())
         return encode_large_data_reference_payload(LargeDataReference(
-            data_name=published.encrypted_data_name,
+            data_name=publication_manifest_name(published),
             object_type=object_type,
             object_id=published.object_id,
             plaintext_size=len(payload),
@@ -784,6 +806,7 @@ class APPClient:
         dynamic_provisioning: bool | None = None,
         runtime: RuntimeSpec | None = None,
         artifact_references: dict | str | Path | None = None,
+        local_artifacts: Mapping[str, ArtifactSpec] | None = None,
         role_app_requirements: Mapping[str, bytes] | None = None,
         deployment_revision: str = "",
         on_result: Callable[[InferenceResult], None] | None = None,
@@ -797,7 +820,8 @@ class APPClient:
         if dynamic_provisioning:
             plan = self.service_plan(
                 service, runtime=runtime,
-                artifact_references=artifact_references)
+                artifact_references=artifact_references,
+                local_artifacts=local_artifacts)
             if deployment_revision:
                 plan = replace(plan, roles=[
                     replace(role, metadata={
@@ -970,6 +994,7 @@ class APPClient:
             self.deployment.service_manifest_payload(),
             object_label=object_label,
             freshness_ms=freshness_ms,
+            content_name={"kind": "material", "label": object_label},
         )
 
     def plan_builder(self, service: str, *,

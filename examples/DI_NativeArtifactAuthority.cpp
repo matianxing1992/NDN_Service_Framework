@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 
@@ -199,10 +200,12 @@ main(int argc, char** argv)
         return decision;
       },
       [issuer, identity, maxTtlMs](const ndn::Name& requesterIdentity,
-                                   const ndn::Name&, const ndn::Name&, const ndn::Name&,
+                                   const ndn::Name&, const ndn::Name&, const ndn::Name& invocationId,
                                    const ndn_service_framework::RequestMessage& request) {
+        const auto handlerStarted = detail::nativePhaseStarted();
         ndn_service_framework::ResponseMessage response;
         try {
+          auto phaseStarted = detail::nativePhaseStarted();
           const auto envelope = nativeGrantAuthorityRequestFromJson(bufferText(request.getPayload()));
           if (requesterIdentity.toUri() != envelope.request.requesterIdentity ||
               envelope.request.requesterIdentity != issuer->requesterIdentity())
@@ -210,16 +213,23 @@ main(int argc, char** argv)
           const auto now = nowMs();
           if (envelope.expiresAtMs <= now || envelope.expiresAtMs - now > maxTtlMs)
             throw std::runtime_error("grant expiry exceeds authority policy");
+          detail::logNativeWorkPhase(invocationId, "authority_request_decode", phaseStarted);
+          phaseStarted = detail::nativePhaseStarted();
           const auto grant = issuer->issue(envelope.request, now, envelope.expiresAtMs,
                                             envelope.publishedManifestJson);
+          detail::logNativeWorkPhase(invocationId, "authority_grant_issue", phaseStarted);
+          phaseStarted = detail::nativePhaseStarted();
           auto payload = buffer(nativeKeyGrantJson(grant));
           response.setStatus(true);
           response.setPayload(payload, payload.size());
+          detail::logNativeWorkPhase(invocationId, "authority_response_encode", phaseStarted);
         }
         catch (const std::exception& error) {
           response.setStatus(false);
           response.setErrorInfo(std::string("DI_PROTECTED_GRANT_REJECTED: ") + error.what());
         }
+        // This complete interval retains failure paths and diagnostic overhead.
+        detail::logNativeWorkPhase(invocationId, "authority_handler", handlerStarted);
         return response;
       },
       ndn_service_framework::ServiceProvider::ServiceInvocationMode::TargetedOnly);

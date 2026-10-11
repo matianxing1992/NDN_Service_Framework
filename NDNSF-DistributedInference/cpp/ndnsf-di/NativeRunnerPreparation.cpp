@@ -70,9 +70,9 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
   spec.metadata["evidence.epoch"] = "1";
   spec.metadata["evidence.createdAtMs"] = std::to_string(context.providerStartedAtMs);
   spec.metadata["evidence.planDigest"] = projection.planDigest;
-  spec.metadata["evidence.modelDigest"] = projection.assembly.modelManifestDigest.empty()
-    ? projection.planDigest : projection.assembly.modelManifestDigest;
-  spec.metadata["evidence.artifactDigest"] = projection.assembly.artifactDigest;
+  spec.metadata["evidence.modelDigest"] = projection.assemblyContract().modelManifestDigest.empty()
+    ? projection.planDigest : projection.assemblyContract().modelManifestDigest;
+  spec.metadata["evidence.artifactDigest"] = projection.assemblyContract().artifactDigest;
 
   // A resident session owns one immutable load-time profile. A per-request
   // profile path would contaminate the load identity and disable the session
@@ -121,10 +121,10 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
     };
     const auto stateInputs = localNames(
       projection.generationContract.stateInputNames,
-      projection.assembly.expectedInputs);
+      projection.assemblyContract().expectedInputs);
     const auto stateOutputs = localNames(
       projection.generationContract.stateOutputNames,
-      projection.assembly.expectedOutputs);
+      projection.assemblyContract().expectedOutputs);
     if (stateInputs.empty() || stateInputs.size() != stateOutputs.size()) {
       throw std::invalid_argument(
         "generation state contract does not match prepared role boundary");
@@ -141,8 +141,8 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
     spec.metadata["stateInputNames"] = join(stateInputs);
     spec.metadata["stateOutputNames"] = join(stateOutputs);
     std::vector<std::string> inputNames;
-    inputNames.reserve(projection.assembly.expectedInputs.size());
-    for (const auto& tensor : projection.assembly.expectedInputs)
+    inputNames.reserve(projection.assemblyContract().expectedInputs.size());
+    for (const auto& tensor : projection.assemblyContract().expectedInputs)
       inputNames.push_back(tensor.name);
 
     const auto& successorMap = projection.generationContract.stateSuccessorMap;

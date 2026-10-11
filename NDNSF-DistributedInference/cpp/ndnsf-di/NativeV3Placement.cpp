@@ -1,4 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "ndn-service-framework/NetworkProbeRate.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include <algorithm>
@@ -7,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <locale>
 #include <map>
 #include <optional>
 #include <set>
@@ -18,6 +21,51 @@ namespace {
 bool contains(const std::vector<std::string>& values, const std::string& value)
 {
   return std::find(values.begin(), values.end(), value) != values.end();
+}
+bool sameAssemblyTensors(const std::vector<NativeAssemblyTensorContractV3>& left,
+                         const std::vector<NativeAssemblyTensorContractV3>& right)
+{
+  return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(),
+    [](const auto& a, const auto& b) {
+      return a.name == b.name && a.dtype == b.dtype && a.shape == b.shape;
+    });
+}
+
+bool samePreparedAssemblyMetadata(const NativeSelectionRoleV3& prepared,
+                                  const NativeSelectionRoleV3& proposed)
+{
+  // Match the assembly wire fields in NativeSelectionJson.cpp. Placement
+  // intentionally substitutes backend/deviceSet; selectedRole is checked
+  // separately, and materializedRole is not part of this wire identity.
+  return prepared.role == proposed.role && prepared.rank == proposed.rank &&
+    prepared.layerBegin == proposed.layerBegin && prepared.layerEnd == proposed.layerEnd &&
+    prepared.requiredDeviceMemoryMb == proposed.requiredDeviceMemoryMb &&
+    prepared.artifactDigest == proposed.artifactDigest &&
+    prepared.recipeDigest == proposed.recipeDigest && prepared.roleKind == proposed.roleKind &&
+    prepared.adapterId == proposed.adapterId && prepared.adapterVersion == proposed.adapterVersion &&
+    prepared.modelManifestDigest == proposed.modelManifestDigest &&
+    prepared.artifactProfileDigest == proposed.artifactProfileDigest &&
+    prepared.graphDigest == proposed.graphDigest &&
+    prepared.canonicalInitializerDigest == proposed.canonicalInitializerDigest &&
+    prepared.adapterDescriptorDigest == proposed.adapterDescriptorDigest &&
+    prepared.assemblerDescriptorDigest == proposed.assemblerDescriptorDigest &&
+    prepared.backendAbi == proposed.backendAbi && prepared.nodeIndices == proposed.nodeIndices &&
+    sameAssemblyTensors(prepared.expectedInputs, proposed.expectedInputs) &&
+    sameAssemblyTensors(prepared.expectedOutputs, proposed.expectedOutputs) &&
+    prepared.precision == proposed.precision && prepared.quantization == proposed.quantization &&
+    prepared.layout == proposed.layout && prepared.padding == proposed.padding &&
+    prepared.protectionEpoch == proposed.protectionEpoch && prepared.mergeKind == proposed.mergeKind &&
+    prepared.postprocessIdentity == proposed.postprocessIdentity &&
+    prepared.postprocessOutputName == proposed.postprocessOutputName &&
+    std::isfinite(prepared.postprocessConfidenceThreshold) &&
+    std::isfinite(proposed.postprocessConfidenceThreshold) &&
+    prepared.postprocessConfidenceThreshold == proposed.postprocessConfidenceThreshold &&
+    std::signbit(prepared.postprocessConfidenceThreshold) ==
+      std::signbit(proposed.postprocessConfidenceThreshold) &&
+    prepared.postprocessSort == proposed.postprocessSort &&
+    prepared.maxSourceBytes == proposed.maxSourceBytes &&
+    prepared.maxAssembledBytes == proposed.maxAssembledBytes &&
+    prepared.maxNodes == proposed.maxNodes;
 }
 bool cpuBackend(std::string value)
 {
@@ -212,9 +260,18 @@ std::vector<Cost> feasibleChoices(const NativeSelectionRoleV3& role,
       }
   return choices;
 }
-std::map<std::string, std::set<std::uint64_t>> validateSnapshot(
+using RoleReferences = std::vector<const NativeSelectionRoleV3*>;
+RoleReferences roleReferences(const std::vector<NativeSelectionRoleV3>& roles)
+{
+  RoleReferences result;
+  result.reserve(roles.size());
+  for (const auto& role : roles) result.push_back(&role);
+  return result;
+}
+
+std::map<std::string, std::set<std::uint64_t>> validateSnapshotReferences(
   const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
-  const std::vector<NativeSelectionRoleV3>& roles,
+  const RoleReferences& roles,
   const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs,
   const ExtensionControl* control)
 {
@@ -224,11 +281,12 @@ std::map<std::string, std::set<std::uint64_t>> validateSnapshot(
       !digest(ackClosedDigest) || context.deadlineMs <= nowMs)
     throw std::invalid_argument("incomplete V3 planning snapshot");
   std::map<std::string, std::set<std::uint64_t>> ranks;
-  for (const auto& role : roles) {
+  for (const auto* rolePointer : roles) {
+    const auto& role = *rolePointer;
     if (control) control->requireActive();
     if (role.role.empty() || role.backend.empty() || !digest(role.artifactDigest) ||
         !digest(role.recipeDigest) || !digest(role.graphDigest) ||
-        role.graphDigest != roles.front().graphDigest ||
+        role.graphDigest != roles.front()->graphDigest ||
         !ranks[role.role].insert(role.rank).second)
       throw std::invalid_argument("invalid or duplicate V3 role/rank");
   }
@@ -249,6 +307,15 @@ std::map<std::string, std::set<std::uint64_t>> validateSnapshot(
       throw std::invalid_argument("invalid admitted offer planning binding");
   }
   return ranks;
+}
+
+std::map<std::string, std::set<std::uint64_t>> validateSnapshot(
+  const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+  const std::vector<NativeSelectionRoleV3>& roles,
+  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs,
+  const ExtensionControl* control)
+{
+  return validateSnapshotReferences(context, ackClosedDigest, roleReferences(roles), offers, nowMs, control);
 }
 }
 
@@ -481,29 +548,32 @@ NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRoles(
   return result;
 }
 
-void validateNativeRolePlacement(
+namespace {
+void validateRolePlacementReferences(
   const NativeRolePlacementProposalV3& proposal,
-  const std::vector<NativeSelectionRoleV3>& preparedRoles,
-  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs)
+  const RoleReferences& preparedRoles, const RoleReferences& chosenRoles,
+  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs, bool validateAssemblies)
 {
-  const auto ranks = validateSnapshot(proposal.context, proposal.ackClosedDigest, preparedRoles, offers, nowMs, nullptr);
+  const auto ranks = validateSnapshotReferences(proposal.context, proposal.ackClosedDigest, preparedRoles, offers, nowMs, nullptr);
   proposal.strategy.validate();
   if (proposal.placementProbeIntent) {
-    if (!proposal.roles.empty() || !proposal.providerByRole.empty() ||
+    if (!chosenRoles.empty() || !proposal.providerByRole.empty() ||
         !proposal.offerDigestByProvider.empty() || proposal.placementDecisionV4)
       throw std::invalid_argument("V4 placement probe intent must not carry an assignment");
     return;
   }
-  if (proposal.roles.size() != preparedRoles.size() || proposal.providerByRole.size() != preparedRoles.size())
+  if (chosenRoles.size() != preparedRoles.size() || proposal.providerByRole.size() != preparedRoles.size())
     throw std::invalid_argument("V3 proposal role cover differs from prepared roles");
   std::set<std::string> seenRoles;
   std::set<std::pair<std::string, std::string>> usedDevices;
   std::map<std::pair<std::string, std::string>, std::uint64_t> reservedMemory;
   std::map<std::string, std::string> offerDigests;
-  for (const auto& role : proposal.roles) {
-    validateNativeAssembly(role);
+  for (const auto* rolePointer : chosenRoles) {
+    const auto& role = *rolePointer;
+    // Custom numeric facets retain the legacy assembly conversion checks.
+    if (validateAssemblies || std::locale() != std::locale::classic()) validateNativeAssembly(role);
     const auto original = std::find_if(preparedRoles.begin(), preparedRoles.end(), [&](const auto& r) {
-      return r.role == role.role && r.rank == role.rank;
+      return r->role == role.role && r->rank == role.rank;
     });
     if (original == preparedRoles.end()) throw std::invalid_argument("V3 proposal contains a foreign role");
     const auto key = ranks.at(role.role).size() == 1 ? role.role : role.role + "#" + std::to_string(role.rank);
@@ -514,7 +584,7 @@ void validateNativeRolePlacement(
       return o.observation().provider == assignment->second;
     });
     if (admitted == offers.end()) throw std::invalid_argument("V3 proposal Provider was not admitted");
-    const auto choices = feasibleChoices(*original, admitted->observation(), nowMs, nullptr);
+    const auto choices = feasibleChoices(**original, admitted->observation(), nowMs, nullptr);
     const auto device = role.deviceSet.empty() ? "cpu" : role.deviceSet.front();
     if (device != "cpu" && !usedDevices.insert(std::make_pair(assignment->second, device)).second)
       throw std::invalid_argument("V3 proposal reuses an exclusive Provider device");
@@ -534,10 +604,19 @@ void validateNativeRolePlacement(
         throw std::overflow_error("V3 Provider device reservation overflows uint64");
       reservedMemory[keyMemory] = alreadyReserved + role.requiredDeviceMemoryMb;
     }
-    auto expected = *original;
-    expected.backend = role.backend; expected.deviceSet = role.deviceSet;
-    if (nativeCanonicalJson(nativeAssemblyJson(expected)) != nativeCanonicalJson(nativeAssemblyJson(role)))
-      throw std::invalid_argument("V3 proposal modified prepared assembly metadata");
+    if (!samePreparedAssemblyMetadata(**original, role)) {
+      auto expected = **original;
+      expected.backend = role.backend; expected.deviceSet = role.deviceSet;
+      const auto expectedAssembly = nativeAssemblyJson(expected);
+      const auto proposedAssembly = nativeAssemblyJson(role);
+      // Retain canonical comparison and its exceptions for differing values.
+      if (expectedAssembly != proposedAssembly ||
+          std::signbit(expected.postprocessConfidenceThreshold) !=
+            std::signbit(role.postprocessConfidenceThreshold)) {
+        if (nativeCanonicalJson(expectedAssembly) != nativeCanonicalJson(proposedAssembly))
+          throw std::invalid_argument("V3 proposal modified prepared assembly metadata");
+      }
+    }
     offerDigests.emplace(assignment->second, admitted->observation().offerDigest);
   }
   if (offerDigests != proposal.offerDigestByProvider)
@@ -571,7 +650,7 @@ void validateNativeRolePlacement(
     if ((status == "SCORED" && !fallbackReason.empty()) ||
         (status == "BASELINE_FALLBACK" && fallbackReason.empty()) ||
         (status != "SCORED" && status != "BASELINE_FALLBACK") ||
-        decision.at("selected_assignments").size() != proposal.roles.size())
+        decision.at("selected_assignments").size() != chosenRoles.size())
       throw std::invalid_argument("V4 decision status or assignment cover is invalid");
     std::set<std::string> decisionRoles;
     for (const auto& item : decision.at("selected_assignments")) {
@@ -583,19 +662,56 @@ void validateNativeRolePlacement(
         throw std::invalid_argument("V4 decision assignment row is invalid");
       const auto key = item.at("role_key").get<std::string>();
       const auto assigned = proposal.providerByRole.find(key);
-      const auto selectedRole = std::find_if(proposal.roles.begin(), proposal.roles.end(),
-        [&key] (const auto& role) { return role.selectedRole == key; });
-      const auto device = selectedRole == proposal.roles.end() ||
-          selectedRole->deviceSet.empty() ? std::string("cpu") :
-          selectedRole->deviceSet.front();
+      const auto selectedRole = std::find_if(chosenRoles.begin(), chosenRoles.end(),
+        [&key] (const auto& role) { return role->selectedRole == key; });
+      const auto device = selectedRole == chosenRoles.end() ||
+          (*selectedRole)->deviceSet.empty() ? std::string("cpu") :
+          (*selectedRole)->deviceSet.front();
       if (!decisionRoles.insert(key).second || assigned == proposal.providerByRole.end() ||
-          selectedRole == proposal.roles.end() ||
+          selectedRole == chosenRoles.end() ||
           item.at("provider").get<std::string>() != assigned->second ||
           item.at("device").get<std::string>() != device ||
-          item.at("backend").get<std::string>() != selectedRole->backend)
+          item.at("backend").get<std::string>() != (*selectedRole)->backend)
         throw std::invalid_argument("V4 decision assignment differs from proposal");
     }
   }
+}
+
+} // namespace
+
+void validateNativeRolePlacement(const NativeRolePlacementProposalV3& proposal,
+  const std::vector<NativeSelectionRoleV3>& preparedRoles,
+  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs)
+{
+  validateRolePlacementReferences(proposal, roleReferences(preparedRoles), roleReferences(proposal.roles),
+    offers, nowMs, true);
+}
+
+void validateNativeRolePlacementWithFixedCore(const NativeRolePlacementProposalV3& proposal,
+  const std::vector<NativeSelectionRoleV3>& preparedRoles, const NativeFixedPlacementCoreV1& fixed,
+  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs)
+{
+  bool structurallyKnown = proposal.roles.size() == fixed.roles().size();
+  for (const auto& role : proposal.roles) {
+    const auto found = fixed.roles().find(role.selectedRole);
+    if (found == fixed.roles().end() || !digest(role.recipeDigest) || !digest(role.modelManifestDigest) ||
+        role.materializedRole != found->second.materializedRole ||
+        !nativeSelectionRoleContractsEqualExceptCertificatesV3(role, found->second, true, true)) {
+      structurallyKnown = false;
+      break;
+    }
+  }
+  validateRolePlacementReferences(proposal, roleReferences(preparedRoles), roleReferences(proposal.roles),
+    offers, nowMs, !structurallyKnown);
+}
+
+void validateNativePublishedRolePlacement(const NativeRolePlacementProposalV3& proposal,
+  const NativeFixedPlacementCoreV1& fixed, const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs)
+{
+  RoleReferences published;
+  published.reserve(proposal.roles.size());
+  for (const auto& role : proposal.roles) published.push_back(&fixed.roles().at(role.selectedRole));
+  validateRolePlacementReferences(proposal, published, published, offers, nowMs, false);
 }
 
 namespace {
@@ -1173,7 +1289,8 @@ NativeRolePlacementProposalV3 NativeObservationAwarePlacementV4::proposeRolesImp
 
   const auto& snapshot = context.placementObservationSnapshot;
   if (!snapshot.is_object() ||
-      nativePlanningDigest(nativeCanonicalJson(snapshot)) !=
+      nativePlanningDigest(nativePlacementObservationCanonicalJson(
+        snapshot, context.preparedPlanningTemplate.get())) !=
         context.placementObservationSnapshotDigest ||
       snapshot.value("schema", std::string{}) !=
         "ndnsf-placement-observation-snapshot-v4" ||
@@ -1247,16 +1364,14 @@ NativeRolePlacementProposalV3 NativeObservationAwarePlacementV4::proposeRolesImp
 
   chirps = v4ProbeTrainEstimates(snapshot);
   const auto ranks = validateSnapshot(context, ackClosedDigest, roles, offers, nowMs, nullptr);
-  NativeJson preparedRoles = NativeJson::array();
-  for (const auto& role : roles)
-    preparedRoles.push_back(nativeAssemblyJson(role));
   const NativeJson* candidateGraph = nullptr;
   if (snapshot.contains("prepared_role_graph") &&
       snapshot.at("prepared_role_graph").is_array()) {
     for (const auto& candidate : snapshot.at("prepared_role_graph")) {
       if (candidate.is_object() && candidate.contains("roles") &&
-          candidate.at("roles").is_array() &&
-          nativeCanonicalJson(candidate.at("roles")) == nativeCanonicalJson(preparedRoles)) {
+          candidate.at("roles").is_array() && candidate.at("roles").size() == roles.size() &&
+          std::equal(roles.begin(), roles.end(), candidate.at("roles").begin(),
+            [](const auto& role, const auto& value) { return nativeAssemblyJsonMatches(role, value); })) {
         candidateGraph = &candidate;
         break;
       }

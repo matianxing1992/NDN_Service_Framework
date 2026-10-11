@@ -876,7 +876,10 @@ class _TinyCanonicalArtifactEnsurer:
         binding = self.describe(candidate)
         source_result = self._service_user.publish_encrypted_large_data(
             self._service, self._source,
-            object_label="spec175-tiny-canonical-source", freshness_ms=60000)
+            object_label="spec175-tiny-canonical-source", freshness_ms=60000,
+            content_name={"kind": "model-file", "label": "role-0.onnx",
+                          "model_name": self._model.model_name,
+                          "model_identity": self._model.content_digest[7:]})
         if not source_result.success or not source_result.encrypted_data_name.startswith("/"):
             raise RuntimeError(
                 f"tiny canonical source publication failed: {source_result.error}")
@@ -900,7 +903,10 @@ class _TinyCanonicalArtifactEnsurer:
             self._model.model_name.strip("/") + "/MANIFEST/" + root_digest)
         root_result = self._service_user.publish_encrypted_large_data(
             self._service, root_payload,
-            object_label="spec175-tiny-canonical-root", freshness_ms=60000)
+            object_label="spec175-tiny-canonical-root", freshness_ms=60000,
+            content_name={"kind": "model-file", "label": "model-manifest.json",
+                          "model_name": self._model.model_name,
+                          "model_identity": self._model.content_digest[7:]})
         if not root_result.success or not root_result.encrypted_data_name.startswith("/"):
             raise RuntimeError(
                 f"tiny canonical root publication failed: {root_result.error}")

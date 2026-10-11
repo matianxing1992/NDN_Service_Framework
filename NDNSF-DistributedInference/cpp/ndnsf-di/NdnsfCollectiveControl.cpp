@@ -509,6 +509,13 @@ DataSegmentReplayWindow::accept(const NdnsfDataV1Segment& segment,
                                 const std::string& expectedDataName)
 {
   const auto plaintext = NdnsfCollectiveControl::open(segment, epochKey, expectedDataName);
+  return acceptAuthenticated(segment, plaintext.size());
+}
+
+DataSegmentReplayWindow::Result
+DataSegmentReplayWindow::acceptAuthenticated(const NdnsfDataV1Segment& segment,
+                                             std::size_t plaintextBytes)
+{
   if (!m_bound) {
     m_bound = true;
     m_epoch = segment.descriptor.epoch;
@@ -537,11 +544,11 @@ DataSegmentReplayWindow::accept(const NdnsfDataV1Segment& segment,
     throw std::runtime_error("NDNSF_DATA_V1 conflicting duplicate segment");
   }
   if (m_seenDigests.size() >= m_maxSegments ||
-      plaintext.size() > m_maxBytes - m_acceptedBytes) {
+      plaintextBytes > m_maxBytes - m_acceptedBytes) {
     throw std::invalid_argument("NDNSF_DATA_V1 replay window byte bound exceeded");
   }
   m_seenDigests.emplace(segment.descriptor.segmentNo, digest);
-  m_acceptedBytes += plaintext.size();
+  m_acceptedBytes += plaintextBytes;
   return Result::Accepted;
 }
 

@@ -365,8 +365,12 @@ BOOST_AUTO_TEST_CASE(PredictiveProviderExactWireValidationAndAtomicFlush)
   BOOST_CHECK_NO_THROW(publisher->flush());
   BOOST_CHECK_NO_THROW(publisher->flush()); // empty flush is a no-op
 
-  const auto waitForData = [&] (const ndn::Name& name) {
-    face.receive(ndn::Interest(name));
+  const auto waitForData = [&] (const ndn::Name& name, const ndn::Interest* query = nullptr) {
+    {
+      std::lock_guard<std::mutex> guard(observedMutex);
+      observedWires.erase(name);
+    }
+    face.receive(query ? *query : ndn::Interest(name));
     std::unique_lock<std::mutex> lock(observedMutex);
     return observedCondition.wait_for(
       lock, std::chrono::seconds(1),
@@ -382,12 +386,13 @@ BOOST_AUTO_TEST_CASE(PredictiveProviderExactWireValidationAndAtomicFlush)
   }
 
   const auto groupName =
-    makePredictiveGroupName(descriptor.definition, 0);
+    makePredictiveGroupManifestName(descriptor.definition, 0);
   const auto repairName =
     makePredictiveRepairName(descriptor.definition, 0, 0);
   BOOST_REQUIRE(waitForData(groupName));
   BOOST_REQUIRE(waitForData(repairName));
-  BOOST_REQUIRE(waitForData(descriptor.frontierName));
+  const auto frontierInterest = makePredictiveFrontierInterest(descriptor.definition.mappingRoot());
+  BOOST_REQUIRE(waitForData(frontierInterest.getName(), &frontierInterest));
 
   ndn::Data groupData;
   ndn::Data repairData;
@@ -396,7 +401,7 @@ BOOST_AUTO_TEST_CASE(PredictiveProviderExactWireValidationAndAtomicFlush)
     std::lock_guard<std::mutex> guard(observedMutex);
     groupData.wireDecode(observedWires.at(groupName));
     repairData.wireDecode(observedWires.at(repairName));
-    frontierData.wireDecode(observedWires.at(descriptor.frontierName));
+    frontierData.wireDecode(observedWires.at(frontierInterest.getName()));
   }
   groupData.getContent().parse();
   repairData.getContent().parse();
@@ -426,6 +431,7 @@ BOOST_AUTO_TEST_CASE(PredictiveProviderExactWireValidationAndAtomicFlush)
   BOOST_CHECK_EQUAL(frontier.checkpoint.nextExpectedSampleId, 2);
   BOOST_REQUIRE(frontier.latestCommittedGroupId);
   BOOST_CHECK_EQUAL(*frontier.latestCommittedGroupId, 0);
+  BOOST_CHECK_EQUAL(frontierData.getFreshnessPeriod().count(), 0);
 
   auto wrongPrefix = std::make_shared<ndn::Data>(
     ndn::Name("/outside/predictive/authority").appendSequenceNumber(2));
@@ -467,7 +473,7 @@ BOOST_AUTO_TEST_CASE(PredictiveProviderExactWireValidationAndAtomicFlush)
   BOOST_CHECK_NO_THROW(publisher->flush());
 
   const auto group1Name =
-    makePredictiveGroupName(descriptor.definition, 1);
+    makePredictiveGroupManifestName(descriptor.definition, 1);
   BOOST_REQUIRE(waitForData(group1Name));
   ndn::Data group1Data;
   {
@@ -479,6 +485,32 @@ BOOST_AUTO_TEST_CASE(PredictiveProviderExactWireValidationAndAtomicFlush)
   BOOST_REQUIRE(group1.wireDecode(group1Data.getContent().elements().at(0)));
   BOOST_CHECK_EQUAL(group1.sourceNames.size(), 1);
   BOOST_CHECK_EQUAL(group1.sourceNames.front(), source2->getName());
+
+  // A retry keeps the original signed snapshot even after the frontier advances.
+  BOOST_REQUIRE(waitForData(frontierInterest.getName(), &frontierInterest));
+  {
+    std::lock_guard<std::mutex> guard(observedMutex);
+    BOOST_CHECK(observedWires.at(frontierInterest.getName()) == frontierData.wireEncode());
+  }
+  const auto currentQuery = makePredictiveFrontierInterest(descriptor.definition.mappingRoot());
+  BOOST_REQUIRE(waitForData(currentQuery.getName(), &currentQuery));
+  ndn::Data currentFrontierData;
+  {
+    std::lock_guard<std::mutex> guard(observedMutex);
+    currentFrontierData.wireDecode(observedWires.at(currentQuery.getName()));
+  }
+  currentFrontierData.getContent().parse();
+  PredictiveStreamFrontier currentFrontier;
+  BOOST_REQUIRE(currentFrontier.wireDecode(currentFrontierData.getContent().elements().at(0)));
+  BOOST_REQUIRE(!currentFrontier.validate(descriptor.definition));
+  BOOST_CHECK_EQUAL(currentFrontier.checkpoint.latestProducedSampleId, 2);
+  BOOST_CHECK_EQUAL(currentFrontierData.getName(), currentQuery.getName());
+  auto wrongQuery = makePredictiveFrontierInterest(descriptor.definition.mappingRoot());
+  auto wrongName = wrongQuery.getName().getPrefix(-2);
+  wrongName.append("0-" + std::string(32, 'a')); // valid opaque suffix, expired timestamp
+  wrongQuery.setName(wrongName);
+  BOOST_REQUIRE(wrongQuery.isParametersDigestValid());
+  BOOST_CHECK(!waitForData(wrongQuery.getName(), &wrongQuery));
 
   // A long stream must prune old recovery references before the signed
   // frontier exceeds the one-Data wire budget.

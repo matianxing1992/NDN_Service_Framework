@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from ndnsf import CollaborationDependency, CollaborationRole, ServiceResponse, ServiceUser
 
 from .artifact_deployment import publish_execution_artifact_spec
+from .repo_reference import publication_manifest_name
 from .core import (
     CoreAssignment,
     CoreExecutionPlan,
@@ -230,6 +231,7 @@ def _artifact_fingerprint(artifact) -> dict:
         "payloadSize": len(payload),
         "largeDataReference": _jsonable(artifact.large_data_reference),
         "repoManifest": _jsonable(artifact.repo_manifest),
+        "contentName": dict(artifact.content_name),
     }
 
 
@@ -379,6 +381,7 @@ class DistributedInferenceClient:
                 backend=role.backend,
                 entrypoint=role.runtime.entrypoint,
                 artifacts=role.artifacts(),
+                expected_model_name=plan.model_name,
                 metadata={
                     "model": plan.model_name,
                     "role": role.role,
@@ -392,7 +395,7 @@ class DistributedInferenceClient:
             if not published.success:
                 raise RuntimeError(
                     f"artifact publish failed for {role.role}: {published.error}")
-            artifact_data_names[role.role] = published.encrypted_data_name
+            artifact_data_names[role.role] = publication_manifest_name(published)
         return artifact_data_names
 
     def publish_scope_keys(
@@ -412,7 +415,7 @@ class DistributedInferenceClient:
             )
             if not result.success:
                 raise RuntimeError(f"scope key publish failed for {scope}: {result.error}")
-            scope_key_data_names[scope] = result.encrypted_data_name
+            scope_key_data_names[scope] = publication_manifest_name(result)
         return scope_key_data_names
 
     def publish_scope_keys_for_scopes(
@@ -433,7 +436,7 @@ class DistributedInferenceClient:
             )
             if not result.success:
                 raise RuntimeError(f"scope key publish failed for {scope}: {result.error}")
-            scope_key_data_names[scope] = result.encrypted_data_name
+            scope_key_data_names[scope] = publication_manifest_name(result)
         return scope_key_data_names
 
     def infer(

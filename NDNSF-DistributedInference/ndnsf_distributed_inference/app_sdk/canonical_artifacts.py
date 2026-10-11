@@ -16,6 +16,13 @@ import re
 import struct
 from typing import Any, Callable, Iterable, Mapping
 
+from ndn.encoding import Component, Name
+from ..naming import (canonical_name_uri, make_naming_digest_component,
+                      make_producer_data_prefix, check_naming_name_size,
+                      make_naming_label_component, make_semantic_content_prefix,
+                      compute_naming_digest, NamingDigestField,
+                      parse_producer_data_name)
+
 
 _TOKEN = re.compile(r"^[A-Za-z0-9._~-]+$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -89,10 +96,15 @@ def _digest_or_empty(value: str, field: str) -> str:
 
 
 def _ndn_identity(value: str, field: str) -> str:
-    parts = tuple(part for part in str(value).strip("/").split("/") if part)
-    if not parts:
-        raise ValueError(f"{field} is required")
-    return "/" + "/".join(_token(part, field) for part in parts)
+    if not isinstance(value, str) or not value.startswith("/"):
+        raise ValueError(f"{field} must be a complete NDN name")
+    try:
+        make_producer_data_prefix(value, "MODEL")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid {field}") from exc
+    # Preserve typed, binary and empty components; do not tokenize a Name as
+    # a filesystem path or change the existing logical identity transcript.
+    return value
 
 
 def canonical_source_reference(
@@ -380,6 +392,54 @@ class CanonicalArtifactBinding:
             or self.canonical_initializer_bytes))
 
 
+def _model_naming_identity(model_name: str, model_digest: str) -> str:
+    """Bind the full readable label to the validated SDK model identity."""
+    make_naming_label_component(model_name)
+    _require_digest(model_digest, "model_digest")
+    return "sha256:" + compute_naming_digest("ndnsf-naming/sdk-model", [
+        NamingDigestField(1, 2, model_name.encode("utf-8")),
+        NamingDigestField(2, 4, bytes.fromhex(model_digest[7:])),
+    ])
+
+
+def canonical_model_object_name(*, publisher: str, model_name: str, model_digest: str,
+                                object_kind: str, object_label: str, object_digest: str) -> str:
+    """Logical C02 name for a standalone byte object of a verified SDK model."""
+    if object_kind not in {"model-file", "weights", "initializer", "tokenizer"}:
+        raise ValueError("unsupported standalone model object kind")
+    _require_digest(object_digest, "object_digest")
+    prefix = make_semantic_content_prefix(publisher, {
+        "kind": object_kind, "label": object_label, "model_name": model_name,
+        "model_identity": _model_naming_identity(model_name, model_digest)[7:],
+    }, object_digest[7:])
+    return canonical_name_uri(prefix)
+
+
+def _publication_idempotency_key(name: str, publisher: str, payload_digest: str) -> str:
+    _require_digest(payload_digest, "payload_digest")
+    parsed = parse_producer_data_name(name, publisher)
+    if parsed is None or parsed.name_space != "NDNSF-DI" or parsed.category != "model":
+        raise ValueError("publication name is not owned by the model publisher")
+    full_name = make_producer_data_prefix(publisher, "model", name_space="NDNSF-DI") + parsed.suffix
+    return "sha256:" + compute_naming_digest("ndnsf-naming/sdk-publication", [
+        NamingDigestField(1, 1, bytes(Name.encode(full_name))),
+        NamingDigestField(2, 4, bytes.fromhex(payload_digest[7:])),
+    ])
+
+
+def _artifact_coordinate(role_kind: str, begin: int, end: int, rank: int) -> tuple[str, str]:
+    if any(type(value) is not int or not 0 <= value < 2**64
+           for value in (begin, end, rank)) or end <= begin:
+        raise ValueError("invalid artifact coordinate")
+    kind = _component_kind(role_kind)
+    labels = {"PIPELINE_RANGE": "stage", "TENSOR_RANK": "tensor-rank",
+              "HYBRID_RANK": "hybrid-rank", "COMPONENT_SET": "component-set"}
+    coordinate = f"layers={begin}-{end - 1}"
+    if kind in {"TENSOR_RANK", "HYBRID_RANK"}:
+        coordinate += f".rank={rank}"
+    return labels[kind], coordinate
+
+
 def canonical_layer_name(*, publisher: str, model_name: str, model_digest: str,
                          profile: str, graph_digest: str, role_kind: str,
                          layer_begin: int, layer_end: int, rank: int = 0,
@@ -387,58 +447,43 @@ def canonical_layer_name(*, publisher: str, model_name: str, model_digest: str,
                          model_manifest_digest: str = "",
                          layer_manifest_digest: str = "",
                          segment_number: int = 0) -> str:
-    """Build the only Spec 170 V3 public layer/object namespace.
+    """Return a reusable byte object's logical Producer content prefix.
 
-    Request/attempt/provider/role/rank/placement values are deliberately not
-    path components.  ``role_kind`` is the adapter-defined component kind and
-    the stable coordinate is the graph layer interval; rank remains a field in
-    the signed manifest for execution, never an artifact equality key.
+    The actual packet owner appends its representation/protection identity
+    and manifest/segment suffix. Model, profile and layer coordinates remain
+    visible and are bound to the immutable semantic object identity.
     """
 
-    model_name = "/".join(_token(part, "model name component")
-                           for part in str(model_name).strip("/").split("/"))
-    if not model_name:
-        raise ValueError("model name is required")
+    make_naming_label_component(model_name)
     if layer_begin < 0 or layer_end <= layer_begin or rank < 0:
         raise ValueError("invalid layer coordinate")
     for field, value in (("model_digest", model_digest),
                          ("graph_digest", graph_digest),
                          ("object_digest", object_digest)):
         _require_digest(value, field)
-    role_kind = _component_kind(role_kind)
-    recipe_digest = recipe_digest or _digest(
-        f"{role_kind}:{layer_begin}:{layer_end}".encode("utf-8"))
-    _require_digest(recipe_digest, "recipe_digest")
-    publisher = "/" + "/".join(_token(part, "publisher component")
-                                for part in str(publisher).strip("/").split("/"))
+    _component_kind(role_kind)
+    if recipe_digest:
+        _require_digest(recipe_digest, "recipe_digest")
+    publisher = _ndn_identity(publisher, "publisher")
     if str(profile) in {"REV", "CFG", "CONTENT"}:
         raise ValueError("legacy REV/CFG/CONTENT alias is not a V3 profile")
-    profile_digest = _identity_digest(str(profile), "profile")
+    _identity_digest(str(profile), "profile")
     if model_manifest_digest:
         _require_digest(model_manifest_digest, "model_manifest_digest")
-    else:
-        model_manifest_digest = _digest(json.dumps({
-            "modelName": model_name,
-            "modelDigest": model_digest,
-            "profileDigest": profile_digest,
-            "graphDigest": graph_digest,
-        }, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     if layer_manifest_digest:
         _require_digest(layer_manifest_digest, "layer_manifest_digest")
-    else:
-        layer_manifest_digest = _digest(json.dumps({
-            "componentKind": role_kind,
-            "stableCoordinate": f"layers-{layer_begin}-{layer_end}",
-            "recipeDigest": recipe_digest,
-            "graphDigest": graph_digest,
-        }, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-    if segment_number < 0:
-        raise ValueError("segment_number must be non-negative")
-    return (f"{publisher}/NDNSF-DI/MODEL/v1/NAME/{model_name}/MID/{model_digest}"
-            f"/PROFILE/{profile_digest}/MANIFEST/{model_manifest_digest}"
-            f"/LAYER/{role_kind}"
-            f"/layers-{layer_begin}-{layer_end}/MANIFEST/{layer_manifest_digest}"
-            f"/OBJECT/{object_digest}/{segment_number}")
+    if type(segment_number) is not int or segment_number != 0:
+        raise ValueError("packet segment naming requires the actual representation producer")
+    kind, coordinate = _artifact_coordinate(role_kind, layer_begin, layer_end, rank)
+    name = make_semantic_content_prefix(publisher, {
+        "kind": "artifact-file", "label": "model.onnx",
+        "model_name": model_name,
+        "model_identity": _model_naming_identity(model_name, model_digest)[7:],
+        "artifact_kind": kind, "coordinate": coordinate,
+        "profile_identity": _identity_digest(str(profile), "profile")[7:],
+    }, object_digest[7:])
+    check_naming_name_size(name)
+    return canonical_name_uri(name)
 
 
 def _normalize_tensor_index(
@@ -517,6 +562,7 @@ class CanonicalLayerManifest:
     output_contracts: tuple[Mapping[str, Any], ...] = ()
     model_manifest_name_digest: str = field(default="", compare=False)
     schema: str = "ndnsf-di-canonical-layer-v1"
+    semantic_coordinate: str = field(init=False)
 
     def __post_init__(self) -> None:
         if self.schema != "ndnsf-di-canonical-layer-v1":
@@ -524,6 +570,9 @@ class CanonicalLayerManifest:
         if self.object_bytes < 0 or self.layer_end <= self.layer_begin:
             raise ValueError("invalid canonical layer bounds")
         object.__setattr__(self, "role_kind", _component_kind(self.role_kind))
+        _, coordinate = _artifact_coordinate(
+            self.role_kind, self.layer_begin, self.layer_end, self.rank)
+        object.__setattr__(self, "semantic_coordinate", coordinate)
         _require_digest(self.model_digest, "model_digest")
         _require_digest(self.graph_digest, "graph_digest")
         _require_digest(self.recipe_digest, "recipe_digest")
@@ -555,6 +604,7 @@ class CanonicalLayerManifest:
         return {
             "schema": self.schema,
             "modelName": self.model_name, "modelDigest": self.model_digest,
+            "stableCoordinate": self.semantic_coordinate,
             "profile": self.profile, "graphDigest": self.graph_digest,
             "roleKind": self.role_kind, "layerBegin": self.layer_begin,
             "layerEnd": self.layer_end,
@@ -587,7 +637,10 @@ class CanonicalLayerManifest:
     def layer_manifest_digest(self) -> str:
         return _digest(json.dumps({
             "componentKind": self.role_kind,
-            "stableCoordinate": f"layers-{self.layer_begin}-{self.layer_end}",
+            "stableCoordinate": self.semantic_coordinate,
+            "modelName": self.model_name,
+            "modelDigest": self.model_digest,
+            "profileDigest": self.profile_digest,
             "recipeDigest": self.recipe_digest,
             "graphDigest": self.graph_digest,
             "tensorIndex": list(self.tensor_index),
@@ -609,12 +662,25 @@ class CanonicalLayerManifest:
 
     @property
     def manifest_name(self) -> str:
-        return self.name.rsplit("/OBJECT/", 1)[0]
+        kind, coordinate = _artifact_coordinate(
+            self.role_kind, self.layer_begin, self.layer_end, self.rank)
+        name = make_producer_data_prefix(self.publisher, "model", name_space="NDNSF-DI") + [
+            make_naming_label_component(self.model_name),
+            make_naming_digest_component(_model_naming_identity(self.model_name, self.model_digest)[7:]),
+            bytes(Component.from_str("PROFILE")),
+            make_naming_digest_component(self.profile_digest[7:]),
+            bytes(Component.from_str("ARTIFACT")),
+            bytes(Component.from_str(kind)),
+            bytes(Component.from_bytes(coordinate.encode("ascii"))),
+            bytes(Component.from_str("MANIFEST")),
+            make_naming_digest_component(self.manifest_digest[7:]),
+        ]
+        check_naming_name_size(name)
+        return canonical_name_uri(name)
 
     @property
     def manifest_digest(self) -> str:
-        return _digest(json.dumps(self.to_dict(), sort_keys=True,
-                                  separators=(",", ":")).encode())
+        return _digest(_canonical_bytes(self.to_dict()))
 
 
 @dataclass(frozen=True)
@@ -644,11 +710,7 @@ class CanonicalModelManifest:
             raise ValueError("unsupported canonical model manifest schema")
         if self.state != "ACTIVE":
             raise ValueError("only a completely verified ACTIVE root is publishable")
-        name = "/".join(_token(part, "model name component")
-                        for part in str(self.model_name).strip("/").split("/"))
-        if not name:
-            raise ValueError("model name is required")
-        object.__setattr__(self, "model_name", name)
+        make_naming_label_component(self.model_name)
         digests = tuple(sorted(set(self.layer_manifest_digests)))
         if not digests or len(digests) != len(self.layer_manifest_digests):
             raise ValueError("model manifest layer cover is empty or duplicated")
@@ -696,9 +758,14 @@ class CanonicalModelManifest:
 
     @property
     def name(self) -> str:
-        return (f"{self.model_identity.publisher}/NDNSF-DI/MODEL/v1/NAME/"
-                f"{self.model_name}/MID/{self.model_identity.digest}/PROFILE/"
-                f"{self.artifact_profile.digest}/MANIFEST/{self.digest}")
+        name = make_producer_data_prefix(self.model_identity.publisher, "model", name_space="NDNSF-DI") + [
+            make_naming_label_component(self.model_name),
+            make_naming_digest_component(_model_naming_identity(self.model_name, self.model_identity.digest)[7:]),
+            bytes(Component.from_str("MANIFEST")),
+            make_naming_digest_component(self.digest[7:]),
+        ]
+        check_naming_name_size(name)
+        return canonical_name_uri(name)
 
     def verify(
         self,
@@ -789,7 +856,8 @@ class CanonicalLayerCatalog:
         if not self._layers:
             raise ValueError("cannot activate an empty canonical root")
         for layer in self._layers.values():
-            if (layer.model_digest != model_identity.digest
+            if (layer.model_name != model_name
+                    or layer.model_digest != model_identity.digest
                     or layer.profile_digest != artifact_profile.digest
                     or layer.graph_digest != model_identity.graph_digest):
                 raise ValueError("canonical root/layer identity cover mismatch")
@@ -927,16 +995,22 @@ class CanonicalLayerCatalog:
 
     def select_components(
         self, *, role_kind: str, layer_begin: int, layer_end: int,
+        rank: int | None = None,
     ) -> tuple[CanonicalLayerManifest, ...]:
         """Resolve the complete canonical component cover for one role range."""
         if self._active_manifest is None:
             raise RuntimeError("component retrieval requires an ACTIVE model root")
         kind = _component_kind(role_kind)
+        ranked = kind in {"TENSOR_RANK", "HYBRID_RANK"}
+        if ranked and rank is None:
+            raise ValueError("canonical tensor/hybrid selector requires an explicit rank")
+        _artifact_coordinate(kind, layer_begin, layer_end, 0 if rank is None else rank)
         if layer_begin < 0 or layer_end <= layer_begin:
             raise ValueError("invalid canonical component selector")
         selected = tuple(sorted(
             (item for item in self._layers.values()
              if item.role_kind == kind
+             and (not ranked or item.rank == rank)
              and item.layer_begin >= layer_begin
              and item.layer_end <= layer_end),
             key=lambda item: (item.layer_begin, item.layer_end,
@@ -951,46 +1025,64 @@ class CanonicalLayerCatalog:
             raise ValueError("canonical component cover is incomplete")
         return selected
 
+    def _require_publication_owner(self, publisher: str) -> None:
+        if self._active_manifest is None:
+            raise RuntimeError("Repo publication requires a verified ACTIVE root")
+        actual = make_producer_data_prefix(publisher, "model", name_space="NDNSF-DI")
+        if (make_producer_data_prefix(self._active_manifest.model_identity.publisher, "model", name_space="NDNSF-DI") != actual
+                or any(make_producer_data_prefix(item.publisher, "model", name_space="NDNSF-DI") != actual
+                       for item in self._layers.values())):
+            raise ValueError("canonical catalog publisher does not own all publication names")
+
     def publish_via(self, publish_object, *, publisher: str,
                     deadline_ms: int | None = None) -> str:
-        """Publish objects, then layer manifests, then the root manifest."""
+        """Publish logical byte objects, then exact layer/root descriptors.
+
+        The byte callback owns the final representation and packet geometry;
+        its logical name is not permission to emit a Data at the bare prefix.
+        """
         if not callable(publish_object):
             raise TypeError("canonical catalog publisher is not callable")
         import time
         if not self._layers:
             raise ValueError("cannot publish empty canonical root")
-        if self._active_manifest is None:
-            raise RuntimeError("Repo publication requires a verified ACTIVE root")
+        self._require_publication_owner(publisher)
 
         def check_deadline() -> None:
             if deadline_ms is not None and int(time.time() * 1000) >= int(deadline_ms):
                 raise TimeoutError("canonical catalog publication deadline expired")
 
+        published_objects = set()
         for digest in sorted(self._layers):
             check_deadline()
             manifest = self._layers[digest]
             object_name = manifest.name
-            result = publish_object(
-                name=object_name, payload=self._bytes[digest],
-                manifest={"schema": "ndnsf-di-canonical-object-v1",
-                          "objectDigest": manifest.object_digest,
-                          "layerManifestDigest": manifest.layer_manifest_digest},
-                idempotency_key=manifest.object_digest)
-            if str(result) != object_name:
-                raise ValueError("Repo publisher returned a different canonical name")
+            if object_name not in published_objects:
+                result = publish_object(
+                    name=object_name, payload=self._bytes[digest],
+                    manifest={"schema": "ndnsf-di-canonical-object-v1",
+                              "objectDigest": manifest.object_digest,
+                              "objectBytes": manifest.object_bytes},
+                    idempotency_key=_publication_idempotency_key(
+                        object_name, manifest.publisher, manifest.object_digest))
+                if str(result) != object_name:
+                    raise ValueError("Repo publisher returned a different canonical name")
+                published_objects.add(object_name)
             check_deadline()
             layer_payload = _canonical_bytes(manifest.to_dict())
             result = publish_object(
                 name=manifest.manifest_name, payload=layer_payload,
                 manifest=manifest.to_dict(),
-                idempotency_key=manifest.layer_manifest_digest)
+                idempotency_key=_publication_idempotency_key(
+                    manifest.manifest_name, manifest.publisher, manifest.manifest_digest))
             if str(result) != manifest.manifest_name:
                 raise ValueError("Repo publisher returned a different layer manifest name")
         check_deadline()
         root = self._active_manifest
         result = publish_object(
             name=root.name, payload=_canonical_bytes(root.to_dict()),
-            manifest=root.to_dict(), idempotency_key=root.digest)
+            manifest=root.to_dict(), idempotency_key=_publication_idempotency_key(
+                root.name, root.model_identity.publisher, root.digest))
         if str(result) != root.name:
             raise ValueError("Repo publisher returned a different canonical root name")
         return root.name

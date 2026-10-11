@@ -1,6 +1,8 @@
+#include <ndn-cxx/name.hpp>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include <openssl/evp.h>
 #include <algorithm>
@@ -103,6 +105,9 @@ NativeAuthenticatedGrantClient::Issue coreIssue(
     ndn_service_framework::RequestMessage message;
     ndn::Buffer payload(reinterpret_cast<const std::uint8_t*>(wire.data()), wire.size());
     message.setPayload(payload, payload.size());
+    // Scoped authority calls cannot consume cached Targeted token pairs.
+    // Core applies this local hint only when the actual call is scoped.
+    message.setTokens({{"targeted.scoped_batch_hint", "1"}});
     const auto now = std::chrono::system_clock::now();
     if (now >= control.deadline) {
       control.check();
@@ -140,16 +145,58 @@ NativeAuthenticatedGrantClient::Issue coreIssue(
     // dispatch makes the queued closure a no-op; abandoning after dispatch
     // leaves Core's own bounded timeout to erase its pending call, while late
     // callbacks are ignored by the shared state.
+    auto queueStarted = detail::nativePhaseStarted();
+    std::string traceRequestId, traceProvider, traceGrantViewDigest;
+    if (queueStarted.enabled) {
+      try {
+        traceRequestId = request.requestId;
+        traceProvider = request.providerIdentity;
+        traceGrantViewDigest = request.grantViewDigest;
+      }
+      catch (...) {
+        queueStarted.enabled = false;
+        traceRequestId.clear();
+        traceProvider.clear();
+        traceGrantViewDigest.clear();
+      }
+    }
+    // This interval crosses workers: only the same-process steady clock is valid.
+    queueStarted.threadCpuNs = -1;
+    if (queueStarted.enabled) queueStarted.wall = std::chrono::steady_clock::now();
     user->postToIo([user, pending, authorityIdentity = std::move(authorityIdentity),
                     authorityService = std::move(authorityService), message = std::move(message),
                     timeoutMs, control, timeoutHandler, responseHandler,
-                    completeWithError] () mutable {
+                    completeWithError, queueStarted,
+                    traceRequestId = std::move(traceRequestId),
+                     traceProvider = std::move(traceProvider),
+                     traceGrantViewDigest = std::move(traceGrantViewDigest),
+                    attempt = request.attempt] () mutable {
       if (pending->abandoned.load()) return;
+      detail::logNativeWorkPhase(traceRequestId, "grant_authority_io_queue",
+                                 queueStarted, traceProvider, attempt);
+      const auto admissionStarted = queueStarted.enabled
+        ? detail::nativePhaseStarted() : detail::NativePhaseTiming{};
+      bool admissionFinished = false;
       try {
         control.check();
         const auto requestId = user->RequestServiceTargeted(
           ndn::Name(authorityIdentity), ndn::Name(authorityService), std::move(message),
           timeoutMs, timeoutHandler, responseHandler);
+        admissionFinished = true;
+        detail::logNativeWorkPhase(traceRequestId, "grant_authority_io_admission",
+                                   admissionStarted, traceProvider, attempt);
+        if (queueStarted.enabled && !requestId.empty()) {
+          try {
+            // API return is a child-identity join, not the request's send time.
+            // Diagnostic failures must not turn an admitted call into an error.
+            logRuntimePhase("di-grant", "authorityDispatched", traceRequestId,
+              std::to_string(attempt), {{"coreRequestId", requestId.toUri()},
+              {"authorityIdentity", authorityIdentity}, {"targetProvider", traceProvider},
+              {"grantViewDigest", traceGrantViewDigest}});
+          }
+          catch (...) {
+          }
+        }
         if (requestId.empty()) {
           completeWithError(pending, std::make_exception_ptr(std::runtime_error(
             "DI_PROTECTED_GRANT_REJECTED: authority request was not admitted")));
@@ -159,6 +206,9 @@ NativeAuthenticatedGrantClient::Issue coreIssue(
         if (pending->abandoned.load() || pending->done) return;
       }
       catch (...) {
+        if (!admissionFinished)
+          detail::logNativeWorkPhase(traceRequestId, "grant_authority_io_admission",
+                                     admissionStarted, traceProvider, attempt);
         completeWithError(pending, std::current_exception());
       }
     });
@@ -175,12 +225,16 @@ NativeAuthenticatedGrantClient::Issue coreIssue(
       throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: authority rejected request: " +
                                pending->response.getErrorInfo());
     }
+    const auto decodeStarted = detail::nativePhaseStarted();
     const auto responsePayload = pending->response.getPayload();
     if (responsePayload.empty()) {
       throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: authority returned an empty grant");
     }
-    return nativeKeyGrantFromJson(std::string(
+    auto grant = nativeKeyGrantFromJson(std::string(
       reinterpret_cast<const char*>(responsePayload.data()), responsePayload.size()));
+    detail::logNativeWorkPhase(request.requestId, "grant_authority_response_decode",
+                               decodeStarted, request.providerIdentity, request.attempt);
+    return grant;
   };
 }
 }
@@ -279,7 +333,10 @@ NativeGrantBinding NativeAuthenticatedGrantClient::acquireWithScope(
   const std::string& role, const NativeGrantLeaseScope* leaseScope) const
 {
   control.check();
+  auto phaseStarted = detail::nativePhaseStarted();
   const auto view = NativePlanSealer::grantView(core, offer, security, role);
+  detail::logNativeWorkPhase(core.requestId, "grant_view", phaseStarted, role, core.attempt);
+  phaseStarted = detail::nativePhaseStarted();
   if (view.requesterIdentity != m_requester || view.protectionEpoch == "plaintext-v1" ||
       !security.requireProtectedArtifacts || view.modelManifestDigest.empty())
     throw std::invalid_argument("authenticated grant view does not match requester or protection policy");
@@ -304,7 +361,8 @@ NativeGrantBinding NativeAuthenticatedGrantClient::acquireWithScope(
   request.requestId = requestId; request.attempt = attempt;
   request.planCoreDigest = planCoreDigest; request.modelManifestDigest = view.modelManifestDigest;
   request.protectionEpoch = view.protectionEpoch; request.issuedAtMs = m_clock();
-  const auto roleDigest = nativePlanningDigest(nativeCanonicalJson(nativeAssemblyJson(core.assemblyByRole.at(view.role))));
+  const auto roleDigest = core.fixedCoreOwner ? core.fixedCoreOwner->roleDigest(view.role)
+    : nativePlanningDigest(nativeCanonicalJson(nativeAssemblyJson(core.roleContracts().at(view.role))));
   request.grantViewDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
     {"provider", view.provider}, {"request_id", requestId}, {"attempt", attempt},
     {"plan_core_digest", planCoreDigest}, {"offer_digest", core.offerDigestByProvider.at(view.provider)},
@@ -313,15 +371,34 @@ NativeGrantBinding NativeAuthenticatedGrantClient::acquireWithScope(
     {"lease_scope_digest", leaseScope ? leaseScope->scopeDigest : std::string{}}}));
   request = request.sign(*m_requesterKey);
   control.check();
+  detail::logNativeWorkPhase(core.requestId, "grant_request_prepare", phaseStarted, role, core.attempt);
+  phaseStarted = detail::nativePhaseStarted();
+  if (phaseStarted.enabled) {
+    try {
+      // Conversation grants use a lease ID on the signed wire. Preserve its
+      // exact association to this planner without changing that wire binding.
+      logRuntimePhase("di-grant", "authorityPrepared", core.requestId,
+        std::to_string(core.attempt), {{"signedGrantRequestId", request.requestId},
+        {"signedGrantAttempt", std::to_string(request.attempt)},
+        {"targetProvider", request.providerIdentity}, {"grantViewDigest", request.grantViewDigest}});
+    }
+    catch (...) {
+    }
+  }
   const auto grant = m_issue(request, core.artifacts.canonicalManifestJson,
                              expiresAtMs, control);
   control.check();
+  detail::logNativeWorkPhase(core.requestId, "grant_authority_issue_wait", phaseStarted, role, core.attempt);
+  phaseStarted = detail::nativePhaseStarted();
   detail::verifyNativeIssuedGrant(grant, request, m_authority, m_authorityPublicKey,
     m_clock(), expiresAtMs);
   control.check();
+  detail::logNativeWorkPhase(core.requestId, "grant_verify", phaseStarted, role, core.attempt);
+  phaseStarted = detail::nativePhaseStarted();
   const auto name = m_publish(grant.grantName, grant.wireJson, control);
   control.check();
-  if (name != grant.grantName)
+  detail::logNativeWorkPhase(core.requestId, "grant_publish_wait", phaseStarted, role, core.attempt);
+  if (ndn::Name(name) != ndn::Name(grant.grantName))
     throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: publication name mismatch");
   return {view.provider, view.role, name, grant.grantDigest, grant.recipient, grant.wireJson, grant.expiresAtMs};
 }

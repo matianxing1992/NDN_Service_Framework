@@ -497,6 +497,42 @@ encodeTensorObjectManifest(const TensorObjectManifestV1& manifest)
 }
 
 std::vector<std::uint8_t>
+encodeTensorManifestWithFirstSegment(const std::vector<std::uint8_t>& manifest,
+                                    const std::vector<std::uint8_t>& segment,
+                                    std::size_t maxWireBytes)
+{
+  constexpr std::array<std::uint8_t, 8> marker{{'N','D','I','M','S','0','0','1'}};
+  constexpr std::size_t framingBytes = marker.size() + 2 * sizeof(std::uint32_t);
+  if (manifest.empty() || segment.empty() || maxWireBytes < framingBytes ||
+      manifest.size() > maxWireBytes - framingBytes ||
+      segment.size() > maxWireBytes - framingBytes - manifest.size())
+    throw std::invalid_argument("inline tensor manifest exceeds packet bound");
+  std::vector<std::uint8_t> output(marker.begin(), marker.end());
+  output.reserve(framingBytes + manifest.size() + segment.size());
+  appendSizedBytes(output, manifest);
+  appendSizedBytes(output, segment);
+  return output;
+}
+
+std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>>
+decodeTensorManifestWithFirstSegment(const std::vector<std::uint8_t>& wire,
+                                    std::size_t maxWireBytes)
+{
+  constexpr std::array<std::uint8_t, 8> marker{{'N','D','I','M','S','0','0','1'}};
+  if (wire.empty() || wire.size() > maxWireBytes)
+    throw std::invalid_argument("inline tensor manifest exceeds packet bound");
+  if (wire.size() < marker.size() ||
+      !std::equal(marker.begin(), marker.end(), wire.begin()))
+    return {wire, {}};
+  std::size_t offset = marker.size();
+  auto manifest = readSizedBytes(wire, offset, maxWireBytes);
+  auto segment = readSizedBytes(wire, offset, maxWireBytes);
+  if (manifest.empty() || segment.empty() || offset != wire.size())
+    throw std::invalid_argument("invalid inline tensor manifest framing");
+  return {std::move(manifest), std::move(segment)};
+}
+
+std::vector<std::uint8_t>
 encodeTensorObjectManifestContextCompact(
   const TensorObjectManifestV1& manifest)
 {
@@ -698,20 +734,49 @@ makeFloat32Tensor(std::string name,
   return tensor;
 }
 
+std::uint64_t
+tensorBundleEncodedSize(const std::vector<TensorBundleEncodingMember>& members)
+{
+  if (members.size() > MAX_TENSOR_COUNT) {
+    throw std::invalid_argument("tensor bundle tensor count exceeds limit");
+  }
+  std::uint64_t bytes = tensorBundleMagic().size() + sizeof(std::uint32_t);
+  for (const auto& member : members) {
+    if (member.nameBytes == 0 || member.nameBytes > MAX_TENSOR_NAME_BYTES ||
+        member.rank > MAX_TENSOR_RANK || member.payloadBytes > MAX_TENSOR_PAYLOAD_BYTES)
+      throw std::invalid_argument("tensor bundle encoding layout exceeds codec limits");
+    const std::uint64_t framing = 3 * sizeof(std::uint32_t) + sizeof(std::uint64_t) +
+      member.nameBytes + member.rank * sizeof(std::int64_t);
+    if (member.payloadBytes > std::numeric_limits<std::uint64_t>::max() - framing ||
+        framing + member.payloadBytes > std::numeric_limits<std::uint64_t>::max() - bytes)
+      throw std::invalid_argument("tensor bundle encoded size overflows");
+    bytes += framing + member.payloadBytes;
+  }
+  return bytes;
+}
+
 std::vector<std::uint8_t>
 encodeTensorBundle(const std::vector<NamedTensor>& tensors)
 {
-  if (tensors.size() > MAX_TENSOR_COUNT) {
+  if (tensors.size() > MAX_TENSOR_COUNT)
     throw std::invalid_argument("tensor bundle tensor count exceeds limit");
+  std::vector<TensorBundleEncodingMember> members;
+  members.reserve(tensors.size());
+  for (const auto& tensor : tensors) {
+    validateNamedTensor(tensor);
+    members.push_back({tensor.name.size(), tensor.shape.size(), tensor.payload.size()});
   }
+  const auto encodedSize = tensorBundleEncodedSize(members);
   std::vector<std::uint8_t> output;
+  if (encodedSize > output.max_size())
+    throw std::length_error("tensor bundle encoded size exceeds vector limit");
+  output.reserve(static_cast<std::size_t>(encodedSize));
   const auto& magic = tensorBundleMagic();
   appendBytes(output,
               reinterpret_cast<const std::uint8_t*>(magic.data()),
               magic.size());
   appendScalar<std::uint32_t>(output, static_cast<std::uint32_t>(tensors.size()));
   for (const auto& tensor : tensors) {
-    validateNamedTensor(tensor);
     appendScalar<std::uint32_t>(output, static_cast<std::uint32_t>(tensor.name.size()));
     appendBytes(output,
                 reinterpret_cast<const std::uint8_t*>(tensor.name.data()),

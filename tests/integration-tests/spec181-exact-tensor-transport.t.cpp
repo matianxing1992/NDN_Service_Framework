@@ -3,26 +3,74 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
+#include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <boost/asio/post.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <future>
+#include <ndn-cxx/util/signal/scoped-connection.hpp>
 #include <map>
 #include <mutex>
+#include <optional>
+#include <set>
+
+namespace ndn_service_framework::test {
+struct TensorOriginalOracle
+{
+  static void poison(ServiceProvider& provider, const ndn::Data& packet)
+  {
+    std::lock_guard<std::mutex> lock(provider._cache_mutex);
+    provider.m_IMS.insert(packet);
+  }
+};
+}
 
 namespace ndnsf::di::tests {
 using namespace ndn_service_framework;
 using namespace std::chrono_literals;
 
 BOOST_AUTO_TEST_SUITE(Spec181ExactTensorTransport)
+
 void
-runTransfer(const std::string& mode)
+probeCancelledSourcePending(ndn::DummyClientFace& face, ndn::KeyChain& keyChain,
+                            const ndn::Name& producer,
+                            const std::map<ndn::Name, ndn::Interest>& issued)
 {
+  // Diagnostic only: receive is synchronous; no Face is pumped, and these
+  // packets are never inserted into IMS or sent on a transport. The caller
+  // retains its original pending count for the existing failure assertion.
+  for (const auto& [name, interest] : issued) {
+    ndn::Data probe(name);
+    probe.setFreshnessPeriod(ndn::time::seconds(1));
+    keyChain.sign(probe, ndn::security::signingByIdentity(producer));
+    const bool observable = interest.matchesData(probe);
+    BOOST_CHECK_MESSAGE(observable, "pending source probe cannot match " << name);
+    if (!observable) continue;
+    const auto before = face.getNPendingInterests();
+    face.receive(probe);
+    const auto after = face.getNPendingInterests();
+    BOOST_TEST_MESSAGE("SOURCE_PENDING_PROBE name=" << name
+      << " canBePrefix=" << interest.getCanBePrefix()
+      << " mustBeFresh=" << interest.getMustBeFresh()
+      << " before=" << before << " after=" << after);
+    BOOST_CHECK_MESSAGE(before == after, "cancelled source still pending: " << name);
+  }
+}
+
+void
+runTransfer(const std::string& mode, bool enableSpeculation = true)
+{
+  const bool inlineDelivery = mode.rfind("inline", 0) == 0;
   ndn_service_framework::test::BootstrapProfile profile;
   profile.providerCount = 2;
   ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
@@ -38,29 +86,66 @@ runTransfer(const std::string& mode)
   auto& consumer = environment.provider(1);
   std::size_t mutations = 0;
   std::size_t segmentInterests = 0;
+  std::set<ndn::Name> requestedSegments;
+  std::map<ndn::Name, ndn::Interest> earlyInterests;
   std::atomic<std::size_t> manifestInterests{0};
+  std::size_t segmentNamesBeforeManifest = 0;
+  std::optional<ndn::Data> heldManifest;
   std::mutex manifestNameMutex;
   std::string expectedManifestUri;
+  std::map<ndn::Name, ndn::Interest> issuedSourceInterests;
   auto forwardInterest = consumerFace.onSendInterest.connect(
       [&] (const ndn::Interest& interest) {
         bool isExpectedManifest = false;
         {
           std::lock_guard<std::mutex> lock(manifestNameMutex);
           isExpectedManifest = !expectedManifestUri.empty() &&
-            interest.getName().toUri() == expectedManifestUri;
+            interest.getName() == ndn::Name(expectedManifestUri);
+          if (!expectedManifestUri.empty() &&
+              ndn::Name(expectedManifestUri).getPrefix(-1).isPrefixOf(interest.getName()))
+            issuedSourceInterests.insert_or_assign(interest.getName(), interest);
         }
         if (isExpectedManifest) {
           ++manifestInterests;
         }
-        if (interest.getName().toUri().find("/SEG/") != std::string::npos) {
+        if (mode == "prefetch-renewals" &&
+            (isExpectedManifest || (interest.getName().size() >= 2 && interest.getName().get(-2) == ndn::name::Component("DATA") && interest.getName().get(-1).isSegment()))) {
+          earlyInterests.emplace(interest.getName(), interest);
+        }
+        if ((interest.getName().size() >= 2 && interest.getName().get(-2) == ndn::name::Component("DATA") && interest.getName().get(-1).isSegment())) {
           ++segmentInterests;
+          requestedSegments.insert(interest.getName());
+          if ((mode == "prefetch" || mode == "prefetch-bytes" ||
+               mode == "prefetch-chunk") && requestedSegments.size() == 13 && heldManifest) {
+            segmentNamesBeforeManifest = requestedSegments.size();
+            consumerFace.receive(*heldManifest);
+            heldManifest.reset();
+          }
+          if (mode == "inline-prefetch" && requestedSegments.size() == 12 && heldManifest) {
+            segmentNamesBeforeManifest = requestedSegments.size();
+            consumerFace.receive(*heldManifest);
+            heldManifest.reset();
+          }
         }
         producerFace.receive(interest);
       });
   auto forwardData = producerFace.onSendData.connect([&] (const ndn::Data& data) {
-    const bool root = data.getName().get(-1).toUri() == "MANIFEST";
-    const bool segment = data.getName().toUri().find("/SEG/") != std::string::npos;
-    if (mutations == 0 && ((root && (mode == "signature" || mode == "bounds")) ||
+    const bool root = data.getName().get(-1) == ndn::name::Component("MANIFEST");
+    if ((mode == "prefetch" || mode == "prefetch-bytes" ||
+         mode == "prefetch-chunk") && root && requestedSegments.size() < 13) {
+      // Deterministic barrier: a manifest-dependent implementation cannot
+      // satisfy this oracle by issuing the remaining names after its reply.
+      heldManifest = data;
+      return;
+    }
+    if (mode == "inline-prefetch" && root && requestedSegments.size() < 12) {
+      heldManifest = data;
+      return;
+    }
+    if (root && segmentNamesBeforeManifest == 0)
+      segmentNamesBeforeManifest = requestedSegments.size();
+    const bool segment = (data.getName().size() >= 2 && data.getName().get(-2) == ndn::name::Component("DATA") && data.getName().get(-1).isSegment());
+    if (mutations == 0 && ((root && (mode == "signature" || mode == "bounds" || mode == "inline-corrupt")) ||
                           (segment && mode == "ciphertext"))) {
       ++mutations;
       auto modified = data;
@@ -109,7 +194,13 @@ runTransfer(const std::string& mode)
   std::map<ndn::Name, ndn::Buffer> uniquePackets;
   std::size_t largestPacket = 0;
   auto observe = producerFace.onSendData.connect([&] (const ndn::Data& data) {
-    if (data.getName().toUri().find("/NDNSF-DI/TENSOR/") != std::string::npos) {
+    bool tensorPacket = false;
+    {
+      std::lock_guard<std::mutex> lock(manifestNameMutex);
+      tensorPacket = !expectedManifestUri.empty() &&
+        ndn::Name(expectedManifestUri).getPrefix(-1).isPrefixOf(data.getName());
+    }
+    if (tensorPacket) {
       ++packets;
       const auto& wire = data.wireEncode();
       const ndn::Buffer bytes(wire.begin(), wire.end());
@@ -131,8 +222,9 @@ runTransfer(const std::string& mode)
   const std::string tensorDigest = sha('4');
 
   GroupOperationV1 operation;
-  operation.operationIndex = 7;
-  operation.kind = "PIPELINE_TRANSFER";
+  const bool feedback = mode == "feedback" || mode == "feedback-next";
+  operation.operationIndex = feedback ? (mode == "feedback-next" ? 5 : 2) : 7;
+  operation.kind = feedback ? "TOKEN_FEEDBACK" : "PIPELINE_TRANSFER";
   operation.producerRanks = {"0"};
   operation.consumerRanks = {"1"};
   operation.tensorLayoutDigest = sourceLayout;
@@ -147,7 +239,9 @@ runTransfer(const std::string& mode)
         producer.getName().toUri()},
        {consumer.getName().toUri(), 1, "offer-consumer",
         consumer.getName().toUri()}},
-      {operation}, 2U << 20, 5000, 30000);
+      {operation}, mode == "prefetch-budget" ? 100000 :
+        enableSpeculation ? 2U << 20 : ndn::MAX_NDN_PACKET_SIZE,
+      5000, 30000);
   auto consumerCoordinator =
       std::make_shared<ProviderGroupCoordinator>(options);
   consumerCoordinator->installCapability(
@@ -165,12 +259,14 @@ runTransfer(const std::string& mode)
   endpoint.groupEpoch = "3";
   endpoint.operation = operation.kind;
   endpoint.round = operation.operationIndex;
+  endpoint.namingOperationStride = feedback ? 3 : 0;
   endpoint.sourceKind = "ROLE";
-  endpoint.producerRole = "S0R0";
+  endpoint.producerRole = feedback ? "S1R0" : "S0R0";
   endpoint.producerRank = 0;
-  endpoint.consumerRole = "S1R0";
-  endpoint.consumerRoles = {"S1R0"};
-  endpoint.tensorId = std::string(160, 't');
+  endpoint.consumerRole = feedback ? "S0R0" : "S1R0";
+  endpoint.consumerRoles = mode == "reuse" ?
+    std::vector<std::string>{"S1R0", "S1R1"} : std::vector<std::string>{endpoint.consumerRole};
+  endpoint.tensorId = feedback ? "input_ids" : std::string(160, 't');
   endpoint.tensorDigest = tensorDigest;
   endpoint.layoutDigest = sourceLayout;
   endpoint.targetLayoutDigest = targetLayout;
@@ -180,7 +276,11 @@ runTransfer(const std::string& mode)
   endpoint.securityProfile = "NDNSF_DATA_V1";
   endpoint.noProgressDeadlineMs = capability.noProgressMs;
   endpoint.hardDeadlineMs = capability.hardDeadlineMs;
-  endpoint.endpointDigest = sha('6');
+  {
+    auto identity = nativeEndpointJson(endpoint);
+    identity.erase("endpoint_digest"); identity.erase("consumer_role");
+    endpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+  }
 
   DependencyEdge edge;
   edge.scope = groupId;
@@ -203,6 +303,8 @@ runTransfer(const std::string& mode)
   edge.manifestDataName = tensorObjectManifestName(endpoint);
   edge.maxSegments = endpoint.segmentCount;
   edge.endpointDigest = endpoint.endpointDigest;
+  edge.executionObjectDigest = computeTensorExecutionObjectDigest(endpoint);
+  edge.namingOperationStride = endpoint.namingOperationStride;
   edge.planDigest = planDigest;
   edge.manifestContractDigest = endpoint.manifestDigest;
   edge.tensorDigest = tensorDigest;
@@ -213,6 +315,7 @@ runTransfer(const std::string& mode)
   edge.microbatch = 0;
   edge.noProgressDeadlineMs = capability.noProgressMs;
   edge.hardDeadlineMs = capability.hardDeadlineMs;
+  edge.inlineFirstSegment = inlineDelivery;
   {
     std::lock_guard<std::mutex> lock(manifestNameMutex);
     expectedManifestUri = edge.manifestDataName;
@@ -232,20 +335,80 @@ runTransfer(const std::string& mode)
       consumerAssignment);
 
   const bool legacy = mode == "legacy" || mode == "legacy-binding";
+  const bool prefetch = mode.rfind("prefetch", 0) == 0 || mode == "inline-prefetch" || mode == "inline-cancel";
+  const bool cancellation = mode == "cancel" || mode == "prefetch-cancel" || mode == "inline-cancel";
   const bool manual = legacy || mode == "hmac" || mode == "index";
-  const std::size_t chunkSize = legacy ? 7 : 7000;
+  // Both URI profiles measured 7750 as 8577 standalone/8766 inline wire bytes.
+  // Adding 100 leaves 123 bytes standalone headroom and crosses the signed
+  // inline limit by 66; the actual wire assertions below verify the boundary.
+  const std::size_t chunkSize = legacy ? 7 : mode == "inline-oversize" ? 7850 : 7000;
   TensorBundle original;
   original.name = endpoint.tensorId;
-  original.payload.resize(mode.empty() ? 200 * 7000 + 17 : legacy ? 19 : 7017);
+  original.payload.resize(mode == "inline-oversize" ? chunkSize + 17 :
+    mode == "inline-single" ? 5994 : prefetch ? 12 * 7000 + 17 :
+    mode.empty() ? 200 * 7000 + 17 : legacy ? 19 : 7017);
   for (std::size_t index = 0; index < original.payload.size(); ++index) {
     original.payload[index] = static_cast<std::uint8_t>(index * 31 + 7);
+  }
+  if (feedback) {
+    NamedTensor token;
+    token.name = "input_ids";
+    token.elementType = TensorElementType::Int64;
+    token.shape = {1, 1};
+    const std::int64_t value = 7;
+    token.payload.resize(sizeof(value));
+    std::memcpy(token.payload.data(), &value, sizeof(value));
+    original = makeEncodedTensorBundle(endpoint.tensorId, {std::move(token)});
   }
   NdnsfCollaborationDependencyIo producerIo(
       producerContext, 5000, chunkSize, 60000, producerCoordinator);
   NdnsfCollaborationDependencyIo consumerIo(
       consumerContext, 5000, chunkSize, 60000, consumerCoordinator);
+  if (mode == "admission") {
+    std::vector<DependencyEdge> invalid;
+    auto bad = edge; bad.declaredByV3 = false; invalid.push_back(bad);
+    bad = edge; bad.producerProvider += "/transport"; invalid.push_back(bad);
+    bad = edge; bad.operationKind = "TOKEN_FEEDBACK"; invalid.push_back(bad);
+    bad = edge; bad.producerRole.clear(); invalid.push_back(bad);
+    bad = edge; bad.namingOperationStride = 3; invalid.push_back(bad);
+    bad = edge;
+    auto foreignCategory = producer.getName(); foreignCategory.append("NDNSF-DI").append("blob");
+    bad.plannedDataName = foreignCategory.toUri(ndn::name::UriFormat::CANONICAL);
+    bad.manifestDataName = foreignCategory.append("MANIFEST").toUri(ndn::name::UriFormat::CANONICAL);
+    invalid.push_back(bad);
+    bad = edge;
+    auto foreignKey = ndn::Name(edge.plannedDataName).getPrefix(-1);
+    foreignKey.append(makeNamingDigestComponent(std::string(64, '9')));
+    bad.plannedDataName = foreignKey.toUri(ndn::name::UriFormat::CANONICAL);
+    bad.manifestDataName = foreignKey.append("MANIFEST").toUri(ndn::name::UriFormat::CANONICAL);
+    invalid.push_back(bad);
+    for (const auto& rejected : invalid) {
+      BOOST_CHECK_THROW(producerIo.publishOutput("session-v3", rejected, original), std::exception);
+      BOOST_CHECK_THROW(consumerIo.prefetchInput("session-v3", rejected).get(), std::exception);
+      BOOST_CHECK_EQUAL(manifestInterests.load(), 0U);
+      BOOST_CHECK_EQUAL(segmentInterests, 0U);
+      BOOST_CHECK_EQUAL(packets, 0U);
+      BOOST_CHECK(uniquePackets.empty());
+    }
+  }
+  if (mode == "quota") {
+    TensorBundle oversized;
+    oversized.name = original.name;
+    oversized.payload.resize(64U * 1024U * 1024U + 1);
+    BOOST_CHECK_THROW(producerIo.publishOutput("session-v3", edge, oversized), std::length_error);
+    BOOST_CHECK_EQUAL(packets, 0U);
+    BOOST_CHECK(uniquePackets.empty());
+    // The failed reservation must leave this same endpoint publishable.
+  }
   const auto expectedSegments = 1 + (original.payload.size() - 1) / chunkSize;
-  if (mode == "cancel") {
+  if (prefetch) {
+    edge.prefetchBundleBytes = original.payload.size();
+    edge.prefetchSegmentBytes = chunkSize;
+    if (mode == "prefetch-count") edge.prefetchBundleBytes += chunkSize;
+    if (mode == "prefetch-bytes") --edge.prefetchBundleBytes;
+    if (mode == "prefetch-chunk") --edge.prefetchSegmentBytes;
+  }
+  if (cancellation) {
     // Leave the authorized exact manifest absent so cancellation must stop a
     // real production adapter fetch rather than a completed/local fast path.
   }
@@ -258,7 +421,7 @@ runTransfer(const std::string& mode)
       const auto end = std::min(original.payload.size(), offset + chunkSize);
       chunks.emplace_back(original.payload.begin() + offset, original.payload.begin() + end);
       auto name = ndn::Name(edge.manifestDataName).getPrefix(-1);
-      names.push_back(name.append("SEG").appendSegment(names.size()).toUri());
+      names.push_back(name.append("DATA").appendSegment(names.size()).toUri(ndn::name::UriFormat::CANONICAL));
     }
     const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count();
@@ -321,12 +484,14 @@ runTransfer(const std::string& mode)
                               ndn::Buffer(wire.begin(), wire.end()));
     BOOST_REQUIRE(producerContext.publishSignedExactData(groupId, publications, 60000));
   }
-  else {
-    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
+  else if (mode != "prefetch-renewals") {
+    auto publishEdge = edge;
+    if (mode == "inline-fallback") publishEdge.inlineFirstSegment = false;
+    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", publishEdge, original));
   }
   if (mode == "context") edge.endpointDigest = sha('9');
 
-  if (mode == "cancel") {
+  if (cancellation) {
     const auto roleName = endpoint.consumerRole;
     NativeProviderRuntime runtime(1);
     auto runner = makeNativeModelRunner(
@@ -437,33 +602,78 @@ runTransfer(const std::string& mode)
     BOOST_CHECK_GE(interestCountAtEvent.load(std::memory_order_acquire), 1U);
     const auto cancelDeadline = std::chrono::steady_clock::now() +
                                 std::chrono::milliseconds(100);
-    while (consumerFace.getNPendingInterests() != pendingInterestsBefore &&
-           std::chrono::steady_clock::now() < cancelDeadline) {
-      consumerFace.processEvents(ndn::time::milliseconds(1));
-      consumerFace.getIoContext().restart();
-    }
-    BOOST_CHECK_EQUAL(consumerFace.getNPendingInterests(), pendingInterestsBefore);
+    // Drain all fixture Faces: unrelated bootstrap/control replies also need
+    // their peers pumped. Keep the original deadline and exact leak assertion.
+    environment.pumpUntil([&] {
+      return consumerFace.getNPendingInterests() == pendingInterestsBefore ||
+        std::chrono::steady_clock::now() >= cancelDeadline;
+    });
+    const auto observedPending = consumerFace.getNPendingInterests();
+    probeCancelledSourcePending(consumerFace, environment.keyChain(),
+                                profile.providerIdentity, issuedSourceInterests);
+    BOOST_CHECK_EQUAL(observedPending, pendingInterestsBefore);
     return;
   }
 
   auto fetched = consumerIo.prefetchInput("session-v3", edge);
+  if (mode == "prefetch-renewals") {
+    environment.pumpUntil([&] { return earlyInterests.size() == expectedSegments + 1; });
+    BOOST_REQUIRE_EQUAL(earlyInterests.size(), expectedSegments + 1);
+    // Model repeated readiness renewals without a wall-clock sleep. Nonce
+    // changes do not alter the Data name or its content authority.
+    for (const auto& entry : earlyInterests) {
+      for (unsigned renewal = 0; renewal < 32; ++renewal) {
+        auto interest = entry.second;
+        interest.refreshNonce();
+        producerFace.receive(interest);
+      }
+    }
+    bool drained = false;
+    boost::asio::post(producerFace.getIoContext(), [&] { drained = true; });
+    environment.pumpUntil([&] { return drained; });
+    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
+  }
   environment.pumpUntil([&] {
     return fetched.wait_for(0ms) == std::future_status::ready;
   });
-  if (!mode.empty() && mode != "legacy") {
-    const auto expected = mode == "ciphertext" ? "ciphertext commitment mismatch" :
+  if (!mode.empty() && !feedback && mode != "admission" && mode != "reuse" && mode != "quota" && mode != "legacy" && !prefetch && (!inlineDelivery || mode == "inline-corrupt")) {
+    const auto expected = (mode == "ciphertext" || mode == "inline-corrupt") ? "ciphertext commitment mismatch" :
                           mode == "bounds" ? "does not match mustFetch authority" :
                           mode == "hmac" ? "HMAC verification failed" :
                           mode == "index" ? "index/rank/size mismatch" :
                           mode == "legacy-binding" ? "inner manifest mismatch" :
                                              "producer signature mismatch";
+    if (mode == "context") {
+      BOOST_CHECK_EXCEPTION(fetched.get(), std::invalid_argument,
+        [](const std::invalid_argument& error) {
+          return std::string(error.what()) ==
+            "C04 tensor readable fields or commitment mismatch";
+        });
+      BOOST_CHECK_EQUAL(manifestInterests.load(), 0U);
+      BOOST_CHECK_EQUAL(segmentInterests, 0U);
+    }
+    else {
     BOOST_CHECK_EXCEPTION(fetched.get(), std::runtime_error,
       [&] (const std::runtime_error& error) {
         BOOST_TEST_MESSAGE("Actual rejection: " << error.what());
         return std::string(error.what()).find(expected) != std::string::npos;
       });
+    }
     if (mode != "context" && !manual) BOOST_CHECK_EQUAL(mutations, 1U);
-    if (mode == "bounds") BOOST_CHECK_EQUAL(segmentInterests, 0U);
+    if (mode == "bounds") {
+      if (!enableSpeculation) {
+        BOOST_CHECK_EQUAL(segmentInterests, 0U);
+      }
+      else {
+        // The sealed deterministic first packet may overlap manifest fetch.
+        // Invalid manifest bounds must prevent expansion to any other name;
+        // the future still rejects instead of returning reconstructed bytes.
+        BOOST_CHECK_LE(requestedSegments.size(), 1U);
+        for (const auto& name : requestedSegments)
+          BOOST_CHECK(name == ndn::Name(tensorObjectSegmentName(endpoint, 0)));
+        BOOST_CHECK_LE(largestPacket, ndn::MAX_NDN_PACKET_SIZE);
+      }
+    }
     return;
   }
   std::optional<TensorBundle> reconstructed;
@@ -474,23 +684,309 @@ runTransfer(const std::string& mode)
       original.payload.begin(), original.payload.end());
   BOOST_CHECK_EQUAL(reconstructed->expectedSegments, expectedSegments);
   BOOST_CHECK_EQUAL(reconstructed->expectedBytes, original.payload.size());
-  BOOST_CHECK_EQUAL(uniquePackets.size(), expectedSegments + 1);
+  if (mode == "reuse") {
+    const auto firstWires = uniquePackets;
+    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
+    auto anotherProjection = edge;
+    anotherProjection.consumerRole = "S1R1";
+    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", anotherProjection, original));
+    auto changed = original;
+    changed.payload.back() ^= 1;
+    BOOST_CHECK_THROW(producerIo.publishOutput("session-v3", edge, changed), std::invalid_argument);
+    auto changedProtection = edge;
+    changedProtection.transportScope += "-changed";
+    BOOST_CHECK_THROW(producerIo.publishOutput("session-v3", changedProtection, original), std::invalid_argument);
+    auto changedMetadata = edge;
+    changedMetadata.consumerRoles.push_back("foreign-consumer");
+    BOOST_CHECK_THROW(producerIo.publishOutput("session-v3", changedMetadata, original), std::invalid_argument);
+    auto reads = std::async(std::launch::async, [&] {
+      for (const auto& item : firstWires) {
+        const auto content = consumerContext.fetchSignedExactData(
+          groupId, item.first, producer.getName(), 5000);
+        if (!content) throw std::runtime_error("exact tensor retry original is absent");
+      }
+    });
+    environment.pumpUntil([&] { return reads.wait_for(0ms) == std::future_status::ready; });
+    BOOST_REQUIRE_NO_THROW(reads.get());
+    BOOST_CHECK(uniquePackets == firstWires);
+    BOOST_CHECK_GT(packets, firstWires.size());
+    const auto& first = firstWires.rbegin()->second;
+    auto conflicting = std::make_shared<ndn::Data>(ndn::Block(
+      ndn::span<const std::uint8_t>(first.data(), first.size())));
+    conflicting->setContent(ndn::Buffer{0x42});
+    environment.keyChain().sign(*conflicting, ndn::security::signingByCertificate(
+      producer.getSigningCertificateName()));
+    ndn::nacabe::SPtrVector<ndn::Data> injected{conflicting}, noKeys;
+    // Explicit local fault injection keeps both same-Name/different-digest
+    // IMS entries. Arbitrary find(Name) cannot qualify immutable admission.
+    BOOST_CHECK_THROW(producer.serveDataWithIMS(injected, noKeys), std::invalid_argument);
+    ndn_service_framework::test::TensorOriginalOracle::poison(producer, *conflicting);
+    const auto beforeRejectedReplay = packets;
+    BOOST_CHECK_THROW(producerIo.publishOutput("session-v3", edge, original), std::invalid_argument);
+    BOOST_CHECK_EQUAL(packets, beforeRejectedReplay);
+    std::vector<std::pair<ndn::Name, ndn::Buffer>> originalObjects;
+    for (const auto& item : firstWires) {
+      const ndn::Data packet(ndn::Block(ndn::span<const std::uint8_t>(item.second.data(), item.second.size())));
+      originalObjects.emplace_back(packet.getName(), ndn::Buffer(
+        packet.getContent().value_begin(), packet.getContent().value_end()));
+    }
+    BOOST_CHECK_THROW(producerContext.publishSignedExactData(groupId, originalObjects, 60000), std::invalid_argument);
+    BOOST_CHECK_EQUAL(packets, beforeRejectedReplay);
+  }
+  const bool expectInline = inlineDelivery && mode != "inline-fallback" && mode != "inline-oversize";
+  BOOST_CHECK_EQUAL(uniquePackets.size(), expectedSegments + (expectInline ? 0U : 1U));
+  if (mode == "inline-oversize") {
+    BOOST_CHECK_EQUAL(requestedSegments.count(ndn::Name(tensorObjectSegmentName(endpoint, 0))), 1U);
+    const ndn::Data rawManifest(ndn::Block(std::make_shared<const ndn::Buffer>(
+      uniquePackets.at(ndn::Name(edge.manifestDataName)))));
+    const ndn::Data rawFirst(ndn::Block(std::make_shared<const ndn::Buffer>(
+      uniquePackets.at(ndn::Name(tensorObjectSegmentName(endpoint, 0))))));
+    BOOST_CHECK_LE(rawFirst.wireEncode().size(), ndn::MAX_NDN_PACKET_SIZE);
+    const auto& header = rawManifest.getContent();
+    const auto& first = rawFirst.getContent();
+    const std::vector<std::uint8_t> headerWire{header.value_begin(), header.value_end()};
+    const auto plainManifest = decodeTensorManifestWithFirstSegment(headerWire, ndn::MAX_NDN_PACKET_SIZE);
+    BOOST_CHECK(plainManifest.second.empty());
+    BOOST_CHECK(plainManifest.first == headerWire);
+    const auto candidate = encodeTensorManifestWithFirstSegment(
+      {header.value(), header.value() + header.value_size()},
+      {first.value(), first.value() + first.value_size()}, ndn::MAX_NDN_PACKET_SIZE);
+    BOOST_REQUIRE_LE(candidate.size(), ndn::MAX_NDN_PACKET_SIZE);
+    ndn::Data oversized(ndn::Name(edge.manifestDataName));
+    oversized.setFreshnessPeriod(ndn::time::milliseconds(60000));
+    oversized.setContent(ndn::Buffer(candidate.begin(), candidate.end()));
+    environment.keyChain().sign(oversized, ndn::security::signingByCertificate(
+      producer.getSigningCertificateName()));
+    BOOST_TEST_MESSAGE("Actual inline boundary chunk=" << chunkSize
+      << " wrapper=" << candidate.size()
+      << " standalone_wire=" << rawFirst.wireEncode().size()
+      << " candidate_wire=" << oversized.wireEncode().size());
+    BOOST_CHECK_GT(oversized.wireEncode().size(), ndn::MAX_NDN_PACKET_SIZE);
+  }
+  if (expectInline) {
+    BOOST_CHECK_EQUAL(requestedSegments.count(
+      ndn::Name(tensorObjectSegmentName(endpoint, 0))), 0U);
+    if (mode == "inline-single") BOOST_CHECK_EQUAL(segmentInterests, 0U);
+    if (mode == "inline-prefetch") {
+      BOOST_CHECK_EQUAL(expectedSegments, 13U);
+      BOOST_CHECK_EQUAL(segmentNamesBeforeManifest, 12U);
+      BOOST_CHECK_EQUAL(segmentInterests, 12U);
+    }
+  }
+  if (feedback) {
+    BOOST_CHECK_GT(manifestInterests.load(), 0U);
+    BOOST_CHECK_GT(segmentInterests, 0U);
+    BOOST_CHECK_EQUAL(requestedSegments.count(ndn::Name(tensorObjectSegmentName(endpoint, 0))), 1U);
+    const auto binding = parseProducerDataName(ndn::Name(edge.plannedDataName), producer.getName());
+    BOOST_REQUIRE(binding);
+    BOOST_CHECK(binding->suffix.get(5) == makeNamingDecimalComponent(mode == "feedback-next" ? 1 : 0));
+    BOOST_CHECK(binding->suffix.get(11) == makeNamingDecimalComponent(2));
+    BOOST_CHECK(binding->suffix.get(7) == makeNamingLabelComponent("S1R0"));
+  }
   BOOST_CHECK_GE(packets, uniquePackets.size());
+  if (mode == "prefetch-renewals") BOOST_CHECK_EQUAL(packets, expectedSegments + 1);
   BOOST_CHECK_LE(largestPacket, ndn::MAX_NDN_PACKET_SIZE);
+  if (mode == "prefetch" || mode == "prefetch-bytes" || mode == "prefetch-chunk") {
+    BOOST_CHECK_EQUAL(expectedSegments, 13U);
+    BOOST_CHECK_EQUAL(segmentNamesBeforeManifest, expectedSegments);
+    BOOST_CHECK_EQUAL(segmentInterests, expectedSegments);
+  }
+  if (mode == "prefetch-budget")
+    BOOST_CHECK_LE(segmentNamesBeforeManifest, 1U);
   BOOST_TEST_MESSAGE("Actual signed packets: " << packets << ", largest bytes: " << largestPacket);
 }
 
 BOOST_AUTO_TEST_CASE(LargeTensorUsesBoundedSignedPackets) { runTransfer(""); }
+BOOST_AUTO_TEST_CASE(ExactTensorRetryReusesOriginalSignedPacketsAndRejectsConflicts) { runTransfer("reuse"); }
+BOOST_AUTO_TEST_CASE(TensorOriginalQuotaRejectsBeforePacketsAndLeavesEndpointReusable) { runTransfer("quota"); }
+BOOST_AUTO_TEST_CASE(InlineManifestDeliversSingleSegmentWithoutSegmentInterest) { runTransfer("inline-single"); }
+BOOST_AUTO_TEST_CASE(InlineManifestRetainsRemainingSegmentPrefetch) { runTransfer("inline-prefetch"); }
+BOOST_AUTO_TEST_CASE(InlineManifestAcceptsPlainManifestFallback) { runTransfer("inline-fallback"); }
+BOOST_AUTO_TEST_CASE(InlineManifestFallsBackOnActualSignedPacketBound) { runTransfer("inline-oversize"); }
+BOOST_AUTO_TEST_CASE(InlineManifestCancellationStopsRemainingPrefetch) { runTransfer("inline-cancel"); }
+BOOST_AUTO_TEST_CASE(InlineManifestRejectsResignedEmbeddedCiphertextChange) { runTransfer("inline-corrupt"); }
+BOOST_AUTO_TEST_CASE(InlineManifestFramingRejectsTruncationAndBounds)
+{
+  const std::vector<std::uint8_t> manifest{1, 2, 3}, segment{4, 5, 6};
+  auto wire = encodeTensorManifestWithFirstSegment(manifest, segment, 64);
+  auto decoded = decodeTensorManifestWithFirstSegment(wire, 64);
+  BOOST_CHECK(decoded.first == manifest);
+  BOOST_CHECK(decoded.second == segment);
+  BOOST_CHECK_THROW(encodeTensorManifestWithFirstSegment(manifest, segment, 21), std::invalid_argument);
+  for (std::size_t count = 8; count < wire.size(); ++count) {
+    const std::vector<std::uint8_t> truncated(wire.begin(), wire.begin() + count);
+    BOOST_CHECK_THROW(decodeTensorManifestWithFirstSegment(truncated, 64), std::invalid_argument);
+  }
+  wire.push_back(0);
+  BOOST_CHECK_THROW(decodeTensorManifestWithFirstSegment(wire, 64), std::invalid_argument);
+  BOOST_CHECK_THROW(decodeTensorManifestWithFirstSegment(wire, 8), std::invalid_argument);
+}
+BOOST_AUTO_TEST_CASE(AllThirteenSegmentsAreRequestedBeforeManifest) { runTransfer("prefetch"); }
+BOOST_AUTO_TEST_CASE(ReadinessRenewalsSendOneDataPerObject) { runTransfer("prefetch-renewals"); }
+BOOST_AUTO_TEST_CASE(WrongPrefetchCountFallsBackToAuthenticatedManifest) { runTransfer("prefetch-count"); }
+BOOST_AUTO_TEST_CASE(AdvisoryByteVariationReusesAuthenticatedPrefetch) { runTransfer("prefetch-bytes"); }
+BOOST_AUTO_TEST_CASE(AdvisoryChunkVariationReusesAuthenticatedPrefetch) { runTransfer("prefetch-chunk"); }
+BOOST_AUTO_TEST_CASE(PrefetchRespectsActualInflightBudget) { runTransfer("prefetch-budget"); }
+BOOST_AUTO_TEST_CASE(CancellationStopsWholePrefetch) { runTransfer("prefetch-cancel"); }
 BOOST_AUTO_TEST_CASE(LegacyRepresentationStillReconstructs) { runTransfer("legacy"); }
 BOOST_AUTO_TEST_CASE(RejectsChangedProducerSignature) { runTransfer("signature"); }
 BOOST_AUTO_TEST_CASE(RejectsChangedCiphertextCommitment) { runTransfer("ciphertext"); }
 BOOST_AUTO_TEST_CASE(RejectsChangedAuthenticatedContext) { runTransfer("context"); }
-BOOST_AUTO_TEST_CASE(RejectsBoundsBeforeFetchingSegments) { runTransfer("bounds"); }
+BOOST_AUTO_TEST_CASE(RejectsBoundsBeforeFetchingSegments) { runTransfer("bounds", false); }
+BOOST_AUTO_TEST_CASE(RejectsBoundsWithoutExpandingSpeculativeFetch) { runTransfer("bounds"); }
 
 BOOST_AUTO_TEST_CASE(RejectsInnerHmacWithValidOuterManifest) { runTransfer("hmac"); }
 BOOST_AUTO_TEST_CASE(RejectsSegmentIndexWithValidOuterManifest) { runTransfer("index"); }
 BOOST_AUTO_TEST_CASE(LegacyFieldsAreCheckedBeforeRestoration) { runTransfer("legacy-binding"); }
 BOOST_AUTO_TEST_CASE(PromptCancellationStopsExactManifestFetch) { runTransfer("cancel"); }
+
+BOOST_AUTO_TEST_CASE(CrossRoleFeedbackUsesActualC04ManifestAndSegmentInterests) { runTransfer("feedback"); }
+BOOST_AUTO_TEST_CASE(NextEpochFeedbackUsesSignedStrideAndActualC04Interests) { runTransfer("feedback-next"); }
+BOOST_AUTO_TEST_CASE(CollectiveReferencesRejectInvalidOwnerKindKeyAndStrideBeforeIo) { runTransfer("admission"); }
+
+BOOST_AUTO_TEST_CASE(CurrentLargeFetchRejectsMissingExpiredOrCancelledFenceBeforeIo)
+{
+  ndn_service_framework::test::BootstrapProfile profile;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == ndn_service_framework::test::EnvironmentStatus::Ready);
+  auto& provider = environment.provider(0);
+  PublishedContentName sourceIdentity;
+  sourceIdentity.label = "fixed-assignment";
+  const auto source = sourceIdentity.contentPrefix(profile.userIdentity, std::string(64, '1'))
+    .append("PROTECTED").append(makeNamingDigestComponent(std::string(64, '2'))).append("DATA");
+  BOOST_REQUIRE(ProtectedBlobManifest::inferDataProducer(source) == profile.userIdentity);
+  std::size_t interests = 0;
+  std::map<ndn::Name, ndn::Interest> issuedSourceInterests;
+  ndn::signal::ScopedConnection connection = environment.providerFace(0).onSendInterest.connect(
+    [&](const ndn::Interest& interest) {
+      if (source.isPrefixOf(interest.getName())) {
+        ++interests;
+        issuedSourceInterests.insert_or_assign(interest.getName(), interest);
+      }
+    });
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "fixed-assignment";
+  assignment.service = profile.serviceName;
+  const ndn::Name requestId("/request/fixed-assignment-fence");
+  const auto future = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  ServiceProvider::CollaborationContext missing(
+    provider, profile.userIdentity, requestId, RequestMessage(), assignment);
+  BOOST_CHECK(!missing.fetchEncryptedLargeDataCurrent(source, future));
+  assignment.workDeadline = future;
+  assignment.workCurrent = [] { return false; };
+  ServiceProvider::CollaborationContext cancelled(
+    provider, profile.userIdentity, requestId, RequestMessage(), assignment);
+  BOOST_CHECK(!cancelled.fetchEncryptedLargeDataCurrent(source, future));
+  assignment.workCurrent = [] { return true; };
+  assignment.workDeadline = std::chrono::steady_clock::now() - std::chrono::milliseconds(1);
+  ServiceProvider::CollaborationContext expired(
+    provider, profile.userIdentity, requestId, RequestMessage(), assignment);
+  BOOST_CHECK(!expired.fetchEncryptedLargeDataCurrent(source, future));
+  assignment.workDeadline = future;
+  ServiceProvider::CollaborationContext callerExpired(
+    provider, profile.userIdentity, requestId, RequestMessage(), assignment);
+  BOOST_CHECK(!callerExpired.fetchEncryptedLargeDataCurrent(
+    source, std::chrono::steady_clock::now() - std::chrono::milliseconds(1)));
+  bool drained = false;
+  boost::asio::post(environment.providerFace(0).getIoContext(), [&] { drained = true; });
+  environment.pumpUntil([&] { return drained; });
+  BOOST_REQUIRE(drained);
+  BOOST_CHECK_EQUAL(interests, 0U);
+
+  // A non-publisher collaboration role receives the same streamed Request,
+  // but has no User-facing stream lifecycle. Its current dispatch still may
+  // fetch a fixed source; the missing source below bounds the network probe.
+  StreamRequestOptions options;
+  options.generationId.fill(1);
+  options.streamEpoch = 1;
+  options.eventKeyCommitment.fill(2);
+  options.deadlineEpochMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()) + 60000;
+  RequestMessage streamedRequest;
+  streamedRequest.setStreamRequestOptions(options);
+  assignment.workDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+  ServiceProvider::CollaborationContext nonPublisher(
+    provider, profile.userIdentity, requestId, streamedRequest, assignment);
+  auto fetch = std::async(std::launch::async, [&] {
+    return nonPublisher.fetchEncryptedLargeDataCurrent(source, assignment.workDeadline);
+  });
+  environment.pumpUntil([&] {
+    return fetch.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  });
+  BOOST_CHECK(!fetch.get());
+  BOOST_CHECK_GT(interests, 0U);
+
+  const auto pendingBaseline = environment.providerFace(0).getNPendingInterests();
+  struct LateAdmission {
+    std::atomic<unsigned> checks{0};
+    std::mutex mutex;
+    std::condition_variable ready;
+    bool posted = false;
+  };
+  const auto late = std::make_shared<LateAdmission>();
+  assignment.workCurrent = [late] {
+    // Context admission is the first call. Without pumping the Face, the
+    // second call is the worker wait after it has posted the start closure.
+    if (++late->checks == 2) {
+      {
+        std::lock_guard<std::mutex> lock(late->mutex);
+        late->posted = true;
+      }
+      late->ready.notify_one();
+      return false;
+    }
+    return true;
+  };
+  assignment.workDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+  ServiceProvider::CollaborationContext lateStart(
+    provider, profile.userIdentity, requestId, streamedRequest, assignment);
+  const auto beforeLate = interests;
+  auto lateFetch = std::async(std::launch::async, [&] {
+    return lateStart.fetchEncryptedLargeDataCurrent(source, assignment.workDeadline);
+  });
+  bool observedPosted = false;
+  {
+    std::unique_lock<std::mutex> lock(late->mutex);
+    observedPosted = late->ready.wait_for(lock, std::chrono::seconds(1), [late] { return late->posted; });
+  }
+  environment.pumpUntil([&] {
+    return lateFetch.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  });
+  BOOST_CHECK(!lateFetch.get());
+  BOOST_REQUIRE(observedPosted);
+  BOOST_CHECK_EQUAL(late->checks.load(), 2U);
+  BOOST_CHECK_EQUAL(interests, beforeLate);
+  const auto observedLatePending = environment.providerFace(0).getNPendingInterests();
+  probeCancelledSourcePending(environment.providerFace(0), environment.keyChain(),
+                              profile.userIdentity, issuedSourceInterests);
+  BOOST_CHECK_LE(observedLatePending, pendingBaseline);
+
+  const auto current = std::make_shared<std::atomic<bool>>(true);
+  assignment.workCurrent = [current] { return current->load(); };
+  assignment.workDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+  ServiceProvider::CollaborationContext startedCancel(
+    provider, profile.userIdentity, requestId, streamedRequest, assignment);
+  ndn::signal::ScopedConnection cancelAfterStart = environment.providerFace(0).onSendInterest.connect(
+    [current, source](const ndn::Interest& interest) {
+      if (source.isPrefixOf(interest.getName())) current->store(false);
+    });
+  const auto beforeCancel = interests;
+  auto cancelledFetch = std::async(std::launch::async, [&] {
+    return startedCancel.fetchEncryptedLargeDataCurrent(source, assignment.workDeadline);
+  });
+  environment.pumpUntil([&] {
+    return cancelledFetch.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  });
+  BOOST_CHECK(!cancelledFetch.get());
+  BOOST_CHECK_GT(interests, beforeCancel);
+  BOOST_CHECK(!current->load());
+  const auto observedCancelPending = environment.providerFace(0).getNPendingInterests();
+  probeCancelledSourcePending(environment.providerFace(0), environment.keyChain(),
+                              profile.userIdentity, issuedSourceInterests);
+  BOOST_CHECK_LE(observedCancelPending, pendingBaseline);
+}
 
 BOOST_AUTO_TEST_SUITE_END()
 } // namespace ndnsf::di::tests

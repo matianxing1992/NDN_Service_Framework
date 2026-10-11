@@ -8,7 +8,7 @@ namespace ndnsf::di {
 struct NativeCanonicalPreparationCatalog::State
 {
   struct Record {
-    NativeInspectedModel model;
+    std::shared_ptr<const NativeInspectedModel> model;
     // This pointer is replaced atomically when the full source is no longer
     // needed.  A caller receives an owning immutable snapshot, so releasing
     // the catalog's transient owner cannot invalidate a concurrent reader.
@@ -28,9 +28,13 @@ struct NativeCanonicalPreparationCatalog::State
 
   const Record& find(const NativeInspectedModel& model) const
   {
+    // This private pointer match is possible only for the independently
+    // frozen catalog object. Value/custom inputs retain complete validation.
+    for (const auto& item : records)
+      if (item.second.model.get() == &model) return item.second;
     model.validate();
     const auto& record = find(model.descriptor);
-    const auto& pinned = record.model;
+    const auto& pinned = *record.model;
     if (model.graph.graphDigest != pinned.graph.graphDigest ||
         model.canonicalSourceName != pinned.canonicalSourceName ||
         model.canonicalSourceDigest != pinned.canonicalSourceDigest ||
@@ -126,7 +130,11 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
     if (entry.publication.maxPublicationBytes == 0)
       throw std::invalid_argument("native publication budget is not positive");
     const auto key = model.canonicalJson();
-    State::Record record{std::move(entry.model),
+    // Deep-copy before freezing: a caller may retain pointers into the entry's
+    // vectors even when transferring the containing entry by move.
+    auto immutableModel = std::make_shared<const NativeInspectedModel>(entry.model);
+    immutableModel->validate();
+    State::Record record{std::move(immutableModel),
       std::make_shared<const NativeCanonicalSource>(std::move(entry.source)),
       std::move(roles), std::move(entry.publication)};
     if (!state->records.emplace(key, std::move(record)).second)
@@ -199,6 +207,12 @@ NativeCanonicalPreparationCatalog::releaseTransientSourceBytes() const
       std::shared_ptr<const NativeCanonicalSource>(std::move(reduced)),
       std::memory_order_release);
   }
+}
+
+std::shared_ptr<const NativeInspectedModel>
+NativeCanonicalPreparationCatalog::modelRefFor(const NativeModelDescriptor& model) const
+{
+  return m_state->find(model).model;
 }
 
 NativeCanonicalSource NativeCanonicalPreparationCatalog::sourceFor(
@@ -274,7 +288,7 @@ NativeCanonicalPreparationCatalog::preparePublication(
         throw std::runtime_error("native preparation source is no longer resident");
       return source;
     });
-  return publisher.prepare(record.model, control);
+  return publisher.prepare(*record.model, control);
 }
 
 std::shared_ptr<NativeRequestPreparation>
@@ -302,10 +316,17 @@ NativeCanonicalPreparationCatalog::makePreparation(
   }
   if (preparedPublication)
     preparedPublication->validate();
-  return std::make_shared<NativeRequestPreparation>(state->adapters,
-    [state](const NativePreparedInput& input, const NativeModelDescriptor& model) {
-      input.validate();
-      return state->find(model).model;
+  return std::shared_ptr<NativeRequestPreparation>(new NativeRequestPreparation(state->adapters,
+    NativeRequestPreparation::OwnedInspection{
+      [state](const NativePreparedInput& input, const NativeModelDescriptor& model) {
+        input.validate();
+        return state->find(model).model;
+      },
+      [state](const NativeInspectedModel& model) {
+        for (const auto& item : state->records)
+          if (item.second.model.get() == &model) return true;
+        return false;
+      }
     },
     [state, publishers, preparedPublication = std::move(preparedPublication)](
       const auto& model, const auto& candidate, const auto& roles, const auto& control) {
@@ -321,7 +342,7 @@ NativeCanonicalPreparationCatalog::makePreparation(
     },
     [state](const auto& model, const auto& candidate, const auto& control) {
       return state->find(model).roles.prepare(model, candidate, control);
-    });
+    }, NativeRequestPreparation::OwnedInspectionTag{}));
 }
 
 } // namespace ndnsf::di

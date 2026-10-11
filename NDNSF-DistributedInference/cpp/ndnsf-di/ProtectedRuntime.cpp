@@ -1,3 +1,4 @@
+#include <ndn-cxx/name.hpp>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
@@ -239,11 +240,11 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
       ? m_binding.planCoreDigest : m_binding.grantPlanCoreDigest;
     const auto grantExpiry = m_binding.grantExpiresAtMs == 0
       ? m_binding.expiresAtMs : m_binding.grantExpiresAtMs;
-    const auto separator = m_binding.grantName.find("/NDNSF-DI/KEY-GRANT/v1/");
-    if (separator == std::string::npos || m_binding.grantName != canonicalNativeGrantName(
-          m_binding.grantName.substr(0, separator), m_binding.provider,
+    if (config.publicationIdentity.empty() ||
+        ndn::Name(m_binding.grantName) != ndn::Name(canonicalNativeGrantName(
+          config.publicationIdentity, m_binding.provider,
           grantRequestId, grantAttempt, grantPlanCoreDigest,
-          config.modelManifestDigest, m_binding.protectionEpoch, m_binding.grantDigest)) {
+          config.modelManifestDigest, m_binding.protectionEpoch, m_binding.grantDigest))) {
       throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: canonical grant name mismatch");
     }
     auto result = verifyAndUnwrapNativeGrant(

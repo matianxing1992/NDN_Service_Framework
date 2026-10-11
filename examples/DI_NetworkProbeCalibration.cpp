@@ -135,8 +135,14 @@ NativeJson measure(ndn::Face& face, ServiceUser& user, const NativeJson& config,
   const auto requester = user.getName().toUri();
   std::vector<std::string> roster{source, observer};
   std::sort(roster.begin(), roster.end());
-  if (source == observer || ndn::Name(source).toUri() != source ||
-      ndn::Name(observer).toUri() != observer)
+  const auto isStandardIdentity = [](const std::string& value) {
+    const ndn::Name name(value);
+    return !name.empty() &&
+      (name.toUri(ndn::name::UriFormat::CANONICAL) == value ||
+       name.toUri(ndn::name::UriFormat::ALTERNATE) == value);
+  };
+  if (!isStandardIdentity(source) || !isStandardIdentity(observer) ||
+      ndn::Name(source) == ndn::Name(observer))
     throw std::runtime_error("calibration requires two canonical Provider identities");
   const auto deadline = Clock::now() + std::chrono::seconds(5);
   const auto deadlineMs = wallMs() + 5000;
@@ -204,7 +210,7 @@ bool hasAuthenticatedSigner(const ResponseMessage& response,
     return false;
   try {
     return ndn::security::extractIdentityFromCertName(
-      ndn::Name(response.getSignerCertificate())).toUri() == expectedProvider;
+      ndn::Name(response.getSignerCertificate())) == ndn::Name(expectedProvider);
   }
   catch (const std::exception&) {
     return false;

@@ -24,6 +24,53 @@ def load_exporter():
     return module
 
 
+def test_fixed_export_persists_static_intermediate_shapes(monkeypatch, tmp_path):
+    import onnx
+    import torch
+    exporter = load_exporter()
+
+    class TinyModel(torch.nn.Module):
+        def forward(self, image):
+            return torch.relu(image + image)
+
+    monkeypatch.setattr(exporter, "_load_yolo", lambda _: TinyModel().eval())
+    output = tmp_path / "canonical.onnx"
+    exporter._export_onnx(tmp_path / "unused.pt", output, input_size=32, opset=17)
+    graph = onnx.load(str(output)).graph
+    assert graph.value_info
+    assert all(all(d.HasField("dim_value") and d.dim_value > 0
+                   for d in v.type.tensor_type.shape.dim) for v in graph.value_info)
+    assert [node.op_type for node in graph.node] == ["Add", "Relu"]
+
+
+@pytest.mark.parametrize("mutation", ["none", "node", "initializer", "input"])
+def test_shape_annotations_cannot_change_computation(monkeypatch, tmp_path, mutation):
+    import copy
+    import onnx
+    import torch
+    from onnxruntime.tools.symbolic_shape_infer import SymbolicShapeInference
+    exporter = load_exporter()
+    monkeypatch.setattr(exporter, "_load_yolo", lambda _: torch.nn.Identity())
+
+    def changed(model, **_):
+        if mutation == "none":
+            return None
+        result = copy.deepcopy(model)
+        if mutation == "node":
+            result.graph.node[0].name += "-changed"
+        elif mutation == "initializer":
+            result.graph.initializer.append(onnx.helper.make_tensor(
+                "injected", onnx.TensorProto.FLOAT, [1], [1.0]))
+        else:
+            result.graph.input[0].type.tensor_type.shape.dim[0].dim_value = 2
+        return result
+
+    monkeypatch.setattr(SymbolicShapeInference, "infer_shapes", changed)
+    with pytest.raises(exporter.ExportError, match="shape inference changed"):
+        exporter._export_onnx(tmp_path / "unused.pt", tmp_path / "canonical.onnx",
+                             input_size=32, opset=17)
+
+
 def test_checkpoint_digest_is_pinned_and_wrong_source_fails(tmp_path: Path):
     exporter = load_exporter()
     assert exporter.sha256_file(declared_yolo_checkpoint()) == exporter.EXPECTED_CHECKPOINT_SHA256

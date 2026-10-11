@@ -59,6 +59,7 @@ int main(int argc, char** argv)
     if (repeats == 0 || repeats > 1000) throw std::runtime_error("invalid repeat count");
     for (unsigned index = 0; index < repeats; ++index) {
       auto config = loadNativeProtectedGrantConfig(binding.provider, "YOLO26n", binding.protectionEpoch);
+      config.publicationIdentity = input.get<std::string>("requesterIdentity");
       config.modelManifestDigest = input.get<std::string>("role.model_manifest_digest");
       if (argc == 3) {
         config.fetchGrant = [path = std::string(argv[2])] (const std::string&) {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -30,7 +31,9 @@ from py_repoclient.network_artifact_backend import (
     _NetworkFetchDriver,
     _artifact_adaptive_fetch_options,
     _execute_repo_store_assignment,
+    _rehydrate_committed_artifact_producers,
 )
+from ndnsf import make_segmented_data_packets, inspect_data_name
 
 
 class FakeInvocation:
@@ -456,6 +459,15 @@ class CollaborationArtifactBackendTests(unittest.TestCase):
                 packet_payload_bytes=7600,
                 chunk_bytes=30_400,
             )
+            for name in (prepared.payload_name, prepared.root_name, prepared.page_name):
+                self.assertTrue(name.startswith(inspect_data_name("/publisher")["canonical_name"] + "/"))
+                self.assertNotIn("NDNSF-ARTIFACT-SOURCE", name)
+            from ndn.encoding import Name, Component
+            payload_components = Name.from_str(prepared.payload_name)
+            self.assertEqual(bytes(Component.get_value(payload_components[1])), b"NDNSF")
+            self.assertEqual(bytes(Component.get_value(payload_components[2])), b"blob")
+            self.assertTrue(bytes(Component.get_value(payload_components[3])).startswith(b"name=artifact-payload:"))
+            self.assertEqual([len(Component.get_value(value)) for value in payload_components[4:6]], [32, 32])
             persistence = SqliteRepositoryPersistence(
                 root / "repo.sqlite3", "spec164-network-test"
             )
@@ -469,6 +481,7 @@ class CollaborationArtifactBackendTests(unittest.TestCase):
                 ),
                 _artifact_file_producers={},
                 _artifact_file_producer_lock=threading.RLock(),
+                _activate_serving_prefix=mock.Mock(),
             )
             assignment_payload = _store_assignment_payload(
                 "operation-real-network",
@@ -492,54 +505,36 @@ class CollaborationArtifactBackendTests(unittest.TestCase):
                 )
             )
 
-            def fetch_small(name, **_kwargs):
-                if name == prepared.root_name:
-                    return prepared.root_path.read_bytes()
-                if name == prepared.page_name:
-                    return prepared.page_path.read_bytes()
-                raise AssertionError(name)
+            original_packets = {}
+            with mock.patch.dict(os.environ, {
+                    "NDN_CLIENT_PIB": "pib-sqlite3:" + str(root / "pib"),
+                    "NDN_CLIENT_TPM": "tpm-file:" + str(root / "tpm")}):
+                for name, payload in ((prepared.root_name, prepared.root_path.read_bytes()),
+                                      (prepared.page_name, prepared.page_path.read_bytes()),
+                                      (prepared.payload_name, source_bytes)):
+                    original_packets[name] = make_segmented_data_packets(
+                        name, payload, signing_identity="/publisher",
+                        max_segment_size=prepared.packet_payload_bytes, freshness_ms=60_000)
 
             def fetch_payload(name, on_packet, **_kwargs):
-                self.assertEqual(name, prepared.payload_name)
-                delivered = 0
-                for segment, offset in enumerate(
-                    range(0, len(source_bytes), prepared.packet_payload_bytes)
-                ):
-                    content = source_bytes[
-                        offset:offset + prepared.packet_payload_bytes
-                    ]
-                    on_packet(SimpleNamespace(
-                        segment=segment, content=content
-                    ))
-                    delivered += 1
-                return SimpleNamespace(delivered_segments=delivered)
-
-            class FakeProducer:
-                def __init__(self, *_args, **_kwargs):
-                    self.started = False
-
-                def start(self):
-                    self.started = True
-                    return self
-
-                def stop(self):
-                    self.started = False
+                packets = original_packets[name]
+                for packet in reversed(packets):
+                    on_packet(packet)
+                    self.assertIsNone(persistence.lookup_original_packet(
+                        inspect_data_name(packet.name)["canonical_name"], False))
+                return SimpleNamespace(delivered_segments=len(packets), total_segments=len(packets))
 
             try:
                 with mock.patch(
-                    "py_repoclient.network_artifact_backend."
-                    "fetch_segmented_object",
-                    side_effect=fetch_small,
-                ), mock.patch(
                     "py_repoclient.network_artifact_backend."
                     "fetch_adaptive_segmented_data_packets",
                     side_effect=fetch_payload,
                 ), mock.patch(
                     "py_repoclient.network_artifact_backend."
                     "FileSegmentedObjectProducer",
-                    FakeProducer,
-                ):
+                ) as republisher:
                     receipt = _execute_repo_store_assignment(repo, context)
+                    republisher.assert_not_called()
                 self.assertEqual(
                     receipt["receipt"]["artifact"]["contentDigest"],
                     artifact.content_digest,
@@ -562,8 +557,66 @@ class CollaborationArtifactBackendTests(unittest.TestCase):
                     )
                 )
                 self.assertEqual(committed.read_bytes(), source_bytes)
-                self.assertIn(artifact.content_digest,
-                              repo._artifact_file_producers)
+                self.assertEqual(receipt["dataName"], inspect_data_name(
+                    original_packets[prepared.payload_name][0].name)["segment_prefix"])
+                repo._activate_serving_prefix.reset_mock()
+                self.assertEqual(_execute_repo_store_assignment(repo, context), receipt)
+                def rebound_context(value):
+                    transfer = value["transfer"]
+                    payload = _store_assignment_payload(value["operationId"], value["repoNode"],
+                        artifact_reference_from_dict(value["artifact"]),
+                        source_root_name=transfer["sourceRootName"],
+                        source_page_name=transfer["sourcePageName"],
+                        source_payload_name=transfer["sourcePayloadName"],
+                        publisher_key_pem=transfer["publisherKeyPem"],
+                        publisher_key_locator=transfer["publisherKeyLocator"],
+                        packet_payload_bytes=transfer["packetPayloadBytes"],
+                        manifest_page_encoded_bytes=transfer["manifestPageEncodedBytes"],
+                        receipt_scope=transfer["receiptScope"], receipt_topic=transfer["receiptTopic"],
+                        coordinator_role=transfer["coordinatorRole"],
+                        requested_replicas=transfer["requestedReplicas"])
+                    return SimpleNamespace(assignment=SimpleNamespace(assignment_payload=payload))
+                for field, value in (("contentDigest", "f" * 64),
+                                     ("publisherIdentity", "/other-publisher")):
+                    conflicting = json.loads(assignment_payload)
+                    conflicting["artifact"][field] = value
+                    bad_context = rebound_context(conflicting)
+                    repo._activate_serving_prefix.reset_mock()
+                    with self.assertRaisesRegex(ValueError, "artifact-conflict"):
+                        _execute_repo_store_assignment(repo, bad_context)
+                    repo._activate_serving_prefix.assert_not_called()
+                alternate = json.loads(assignment_payload)
+                alternate["repoNode"] = inspect_data_name(alternate["repoNode"])["canonical_name"]
+                for field in ("publisherIdentity", "rootManifestName"):
+                    alternate["artifact"][field] = inspect_data_name(alternate["artifact"][field])["canonical_name"]
+                alternate["transfer"]["sourcePayloadName"] = inspect_data_name(
+                    alternate["transfer"]["sourcePayloadName"])["alternate_name"]
+                alias_context = rebound_context(alternate)
+                self.assertEqual(_execute_repo_store_assignment(repo, alias_context), receipt)
+                conflicting = json.loads(assignment_payload)
+                conflicting["transfer"]["sourcePayloadName"] += "/8=other"
+                bad_context = rebound_context(conflicting)
+                repo._activate_serving_prefix.reset_mock()
+                with self.assertRaisesRegex(ValueError, "source-conflict"):
+                    _execute_repo_store_assignment(repo, bad_context)
+                repo._activate_serving_prefix.assert_not_called()
+                for packets in original_packets.values():
+                    for packet in packets:
+                        row = persistence.lookup_original_packet(
+                            inspect_data_name(packet.name)["canonical_name"], False)
+                        self.assertEqual(bytes(row[1]), packet.wire)
+                persistence.close()
+                persistence = SqliteRepositoryPersistence(root / "repo.sqlite3", "spec164-network-test")
+                repo._persistence = persistence
+                repo._activate_serving_prefix.reset_mock()
+                with mock.patch("py_repoclient.network_artifact_backend.FileSegmentedObjectProducer") as republisher:
+                    _rehydrate_committed_artifact_producers(repo)
+                    republisher.assert_not_called()
+                self.assertGreaterEqual(repo._activate_serving_prefix.call_count, 3)
+                for packets in original_packets.values():
+                    for packet in packets:
+                        self.assertEqual(bytes(persistence.lookup_original_packet(
+                            inspect_data_name(packet.name)["canonical_name"], False)[1]), packet.wire)
             finally:
                 persistence.close()
                 prepared.stop()

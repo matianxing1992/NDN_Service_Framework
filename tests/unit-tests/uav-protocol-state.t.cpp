@@ -653,7 +653,7 @@ makeUavStreamDescriptorFields()
   ndn::Name dataPrefix("/uav/7/video/front");
   dataPrefix.append(streamId).appendVersion(23);
   return {
-    {"data_prefix", dataPrefix.toUri()},
+    {"data_prefix", dataPrefix.toUri(ndn::name::UriFormat::ALTERNATE)},
     {"fec_data_shards", "4"},
     {"fec_parity_shards", "1"},
     {"key_epoch", "3"},
@@ -664,7 +664,8 @@ makeUavStreamDescriptorFields()
     {"mapping_anchor_content_digest", std::string(64, '0')},
     {"mapping_block_capacity", "4"},
     {"mapping_committed_through_cursor", "7"},
-    {"mapping_root", "/uav/7/NDNSF/STREAM-MAP/" + streamId},
+    {"mapping_root", ndn_service_framework::makeStreamNameMapRoot(
+      ndn::Name("/uav/7"), streamId, 17).toUri(ndn::name::UriFormat::ALTERNATE)},
     {"mapping_version", "23"},
     {"max_name_reservations", "65536"},
     {"next_reserved_cursor", "8"},
@@ -739,7 +740,7 @@ BOOST_AUTO_TEST_CASE(UavStreamDescriptorStrictContract)
     "latest_join_media_sequence=3;latest_produced_cursor=5;mapping_anchor_block=1;"
     "mapping_anchor_content_digest=0000000000000000000000000000000000000000000000000000000000000000;"
     "mapping_block_capacity=4;mapping_committed_through_cursor=7;"
-    "mapping_root=/uav/7/NDNSF/STREAM-MAP/stream-00112233445566778899aabbccddeeff;"
+    "mapping_root=/uav/7/NDNSF/STREAM/name%253Dstream-00112233445566778899aabbccddeeff/o%25021G%2514%25B6eLQ%2560%25D7%25E5A%2518%25A1%257C%25F0%2509%252B%25C7h%25CB%253A%258A%25E1%2583%259BJ%25A8%25BB%25FA%25EE/EPOCH/17/MAP;"
     "mapping_version=23;max_name_reservations=65536;next_reserved_cursor=8;"
     "nonce_salt_hex=a1b2c3d4;"
     "oldest_retained_cursor=0;prefetch_eligibility=ahead-mapped;"
@@ -758,7 +759,7 @@ BOOST_AUTO_TEST_CASE(UavStreamDescriptorStrictContract)
   BOOST_CHECK_EQUAL(descriptor.mappingVersion, 23);
   BOOST_CHECK_EQUAL(descriptor.mappingRoot,
                     ndn_service_framework::makeStreamNameMapRoot(
-                      provider, descriptor.streamId));
+                      provider, descriptor.streamId, descriptor.sessionEpoch));
   BOOST_CHECK(descriptor.dataPrefix[-1].isVersion());
   BOOST_CHECK_EQUAL(descriptor.dataPrefix[-1].toVersion(), 23);
   BOOST_CHECK_EQUAL(descriptor.streamKey.size(), 32);
@@ -769,6 +770,14 @@ BOOST_AUTO_TEST_CASE(UavStreamDescriptorStrictContract)
   BOOST_CHECK_EQUAL(descriptor.frontiers.mappingCommittedThrough, 7);
   BOOST_CHECK_EQUAL(descriptor.frontiers.nextReserved, 8);
   BOOST_CHECK_EQUAL(encodeVideoStreamDescriptor(descriptor), wire);
+  auto canonicalFields = fields;
+  canonicalFields["data_prefix"] = descriptor.dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
+  canonicalFields["mapping_root"] = descriptor.mappingRoot.toUri(ndn::name::UriFormat::CANONICAL);
+  const auto canonicalDescriptor = decodeVideoStreamDescriptorStrict(
+    encodeFields(canonicalFields), provider, provider, service, service);
+  BOOST_CHECK_EQUAL(canonicalDescriptor.dataPrefix, descriptor.dataPrefix);
+  BOOST_CHECK_EQUAL(canonicalDescriptor.mappingRoot, descriptor.mappingRoot);
+  BOOST_CHECK_EQUAL(encodeVideoStreamDescriptor(canonicalDescriptor), wire);
 
   const auto resolverConfig = makeUavStreamNameMapResolverConfig(descriptor);
   BOOST_CHECK_EQUAL(resolverConfig.contractVersion,
@@ -787,8 +796,8 @@ BOOST_AUTO_TEST_CASE(UavStreamDescriptorStrictContract)
   BOOST_CHECK_EQUAL(
     ndn_service_framework::makeStreamNameMapBlockName(
       descriptor.mappingRoot, descriptor.mappingVersion,
-      descriptor.mappingAnchorBlock).toUri(),
-    "/uav/7/NDNSF/STREAM-MAP/stream-00112233445566778899aabbccddeeff/"
+      descriptor.mappingAnchorBlock).toUri(ndn::name::UriFormat::ALTERNATE),
+    "/uav/7/NDNSF/STREAM/name%3Dstream-00112233445566778899aabbccddeeff/o%021G%14%B6eLQ%60%D7%E5A%18%A1%7C%F0%09%2B%C7h%CB%3A%8A%E1%83%9BJ%A8%BB%FA%EE/EPOCH/17/MAP/"
     "v=23/seq=1");
 
   BOOST_CHECK_THROW(
@@ -976,7 +985,7 @@ BOOST_AUTO_TEST_CASE(UavStreamSemanticDataNameContract)
   const auto dataName = makeUavVideoDataName(descriptor, data);
   BOOST_CHECK_EQUAL(dataName.cursor, 6);
   BOOST_CHECK(!dataName.parity);
-  BOOST_CHECK_EQUAL(dataName.name.toUri(),
+  BOOST_CHECK_EQUAL(dataName.name.toUri(ndn::name::UriFormat::ALTERNATE),
     "/uav/7/video/front/stream-00112233445566778899aabbccddeeff/"
     "v=23/fec-group/seq=9/data/seg=1");
   BOOST_CHECK(dataName.finalBlockId.isSegment());
@@ -988,7 +997,7 @@ BOOST_AUTO_TEST_CASE(UavStreamSemanticDataNameContract)
   parity.fecSymbolIndex = 3;
   const auto parityName = makeUavVideoDataName(descriptor, parity);
   BOOST_CHECK(parityName.parity);
-  BOOST_CHECK_EQUAL(parityName.name.toUri(),
+  BOOST_CHECK_EQUAL(parityName.name.toUri(ndn::name::UriFormat::ALTERNATE),
     "/uav/7/video/front/stream-00112233445566778899aabbccddeeff/"
     "v=23/fec-group/seq=9/parity/seg=0");
   BOOST_CHECK_EQUAL(parityName.finalBlockId.toSegment(), 0);
@@ -1249,7 +1258,7 @@ BOOST_AUTO_TEST_CASE(UavStreamEncryptedVideoPacketStrictRoundTrip)
   wrongStream.dataPrefix.append(wrongStream.streamId)
                         .appendVersion(wrongStream.mappingVersion);
   wrongStream.mappingRoot = ndn_service_framework::makeStreamNameMapRoot(
-    wrongStream.providerIdentity, wrongStream.streamId);
+    wrongStream.providerIdentity, wrongStream.streamId, wrongStream.sessionEpoch);
   auto wrongStreamPacket = packet;
   wrongStreamPacket.streamId = wrongStream.streamId;
   const auto wrongStreamBinding = makeUavVideoDataName(

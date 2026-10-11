@@ -117,6 +117,9 @@ public:
                                    std::chrono::steady_clock::time_point deadline) const;
 
   NativeInspectedModel inspectModel(const NativePreparedInput& input) const;
+  /** Reuse catalog-owned immutable inspection; custom ports are fully checked. */
+  std::shared_ptr<const NativeInspectedModel> inspectModelShared(
+    const NativePreparedInput& input) const;
 
   std::vector<NativeSelectionRoleV3> prepareRoles(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeRequestControl& control) const;
@@ -136,10 +139,47 @@ public:
     const std::vector<NativeSelectionRoleV3>& roles, const NativeArtifactBinding& artifacts);
 
 private:
+  friend class NativeCanonicalPreparationCatalog;
+  friend class NativePlanSealer;
+  friend class NativeCanonicalArtifactPublisher;
+  // The sealer may reuse model/candidate validation only in the same
+  // callback-free section. Proposal role and publication checks still run.
+  static void validateRoleBindingsForCheckedCandidate(
+    const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+    const std::vector<NativeSelectionRoleV3>& roles);
+  static std::vector<NativeSelectionRoleV3> bindPublishedRolesForCheckedCandidate(
+    const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+    const std::vector<NativeSelectionRoleV3>& roles, const NativeArtifactBinding& artifacts);
+  static bool canReusePublishedRolesForCheckedCandidate(
+    const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+    const std::vector<NativeSelectionRoleV3>& roles, const NativeArtifactBinding& artifacts,
+    const NativeFixedPlacementCoreV1& fixed);
+  struct OwnedInspectionTag {};
+  using OwnedInspectPort = std::function<std::shared_ptr<const NativeInspectedModel>(
+    const NativePreparedInput&, const NativeModelDescriptor&)>;
+  // Stored inside the existing erased callable; instance layout stays unchanged.
+  // Only the catalog can establish ownership of a deep-frozen model snapshot.
+  struct OwnedInspection
+  {
+    OwnedInspectPort inspect;
+    std::function<bool(const NativeInspectedModel&)> owns;
+    std::shared_ptr<const NativeInspectedModel> operator()(
+      const NativePreparedInput& input, const NativeModelDescriptor& model) const
+    { return inspect(input, model); }
+  };
+  bool ownsInspectedModel(const NativeInspectedModel& model) const;
+  static void validateRolesForValidatedModel(const NativeInspectedModel& model,
+    const NativeSplitCandidate& candidate, const std::vector<NativeSelectionRoleV3>& roles);
+  NativeRequestPreparation(std::shared_ptr<const NativeAdapterRegistry> adapters,
+                          OwnedInspectPort inspect, ArtifactPort artifacts,
+                          RolePort roles, OwnedInspectionTag);
+  std::shared_ptr<const NativeInspectedModel> inspectModelSharedImpl(
+    const NativePreparedInput& input, bool reuseOwned) const;
   std::shared_ptr<const NativeAdapterRegistry> m_adapters;
   InspectPort m_inspect;
   ArtifactPort m_artifacts;
   RolePort m_roles;
+  OwnedInspectPort m_ownedInspect;
 };
 
 } // namespace ndnsf::di

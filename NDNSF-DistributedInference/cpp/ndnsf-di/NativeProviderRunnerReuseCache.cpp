@@ -47,7 +47,8 @@ std::string
 runnerReuseKey(const NativeSelectionProjectionV3& projection,
                const std::string& providerIdentity,
                const std::string& providerBootId,
-               const std::shared_ptr<ProtectedRuntime>& protectedRuntime)
+               const std::shared_ptr<ProtectedRuntime>& protectedRuntime,
+               NativeProviderRunnerReuseCache::OutputBinding outputBinding)
 {
   std::ostringstream canonical;
   const auto frame = [&canonical] (const std::string& value) {
@@ -81,8 +82,11 @@ runnerReuseKey(const NativeSelectionProjectionV3& projection,
       }
     }
   };
-  const auto& role = projection.assembly;
-  canonical << "ndnsf-di-live-runner-v2";
+  const auto& role = projection.assemblyContract();
+  const bool roleContract = outputBinding ==
+    NativeProviderRunnerReuseCache::OutputBinding::RoleContract;
+  canonical << (roleContract ? "ndnsf-di-role-contract-runner-v1" :
+                              "ndnsf-di-live-runner-v2");
   frame(projection.provider.empty() ? providerIdentity : projection.provider);
   frame(providerBootId);
   frame(projection.canonicalArtifactName);
@@ -113,16 +117,14 @@ runnerReuseKey(const NativeSelectionProjectionV3& projection,
     frameUint(index);
   frameTensors(role.expectedInputs);
   frameTensors(role.expectedOutputs);
-  // A live runner stores output scopes and passthrough tensor names in its
-  // NativeModelRunnerSpec. Reusing it across a different request group would
-  // publish under the previous Selection's scope. Derive these fields through
-  // the same authenticated projection used by assembly, while keeping request
-  // and attempt identity out of the key when the runner binding is unchanged.
+  // ScopeBound runners retain transport scopes in their spec. RoleContract
+  // runners return generic tensors routed through the current worker edges.
+  // Both retain the authenticated tensor selection and terminal contract.
   frame(projection.dataflow.terminalResponseOwner ? "terminal-output" : "role-output");
   const auto roleSpec = roleSpecFromSelectionProjectionV3(projection, {});
   frameUint(roleSpec.outputs.size());
   for (const auto& output : roleSpec.outputs) {
-    frame(output.scope);
+    if (!roleContract) frame(output.scope);
     frameStrings(output.bundleTensorNames);
   }
   frame(role.materializedRole ? "true" : "false");
@@ -161,20 +163,20 @@ protectedResidentIdentity(const NativeSelectionProjectionV3& projection,
                           const std::string& providerBootId,
                           const std::shared_ptr<ProtectedRuntime>& runtime)
 {
-  if (!runtime || projection.assembly.mergeKind == "NATIVE_POSTPROCESS")
+  if (!runtime || projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS")
     return std::nullopt;
   ProtectedResidentIdentityV1 identity;
   identity.provider = projection.provider.empty() ? providerIdentity : projection.provider;
   identity.providerBootId = providerBootId;
-  identity.role = projection.assembly.selectedRole;
-  identity.modelManifestDigest = projection.assembly.modelManifestDigest;
-  identity.graphDigest = projection.assembly.graphDigest;
-  identity.initializerDigest = projection.assembly.canonicalInitializerDigest;
-  identity.artifactDigest = projection.assembly.artifactDigest;
-  identity.recipeDigest = projection.assembly.recipeDigest;
-  identity.backend = projection.assembly.backend;
-  identity.backendAbi = projection.assembly.backendAbi;
-  identity.protectionEpoch = projection.selectedRole.protectionEpoch;
+  identity.role = projection.assemblyContract().selectedRole;
+  identity.modelManifestDigest = projection.assemblyContract().modelManifestDigest;
+  identity.graphDigest = projection.assemblyContract().graphDigest;
+  identity.initializerDigest = projection.assemblyContract().canonicalInitializerDigest;
+  identity.artifactDigest = projection.assemblyContract().artifactDigest;
+  identity.recipeDigest = projection.assemblyContract().recipeDigest;
+  identity.backend = projection.assemblyContract().backend;
+  identity.backendAbi = projection.assemblyContract().backendAbi;
+  identity.protectionEpoch = projection.selectedRoleContract().protectionEpoch;
   identity.planCoreDigest = projection.planCoreDigest;
   identity.planDigest = projection.planDigest;
   identity.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
@@ -266,12 +268,14 @@ struct NativeProviderRunnerReuseCache::State
     std::uint64_t lastUse = 0;
   };
 
-  explicit State(std::size_t maxEntries)
+  explicit State(std::size_t maxEntries, OutputBinding outputBinding)
     : maxEntries(std::max<std::size_t>(1, maxEntries))
+    , outputBinding(outputBinding)
   {
   }
 
   const std::size_t maxEntries;
+  const OutputBinding outputBinding;
   std::mutex mutex;
   std::uint64_t sequence = 0;
   std::map<std::string, Entry> entries;
@@ -279,8 +283,35 @@ struct NativeProviderRunnerReuseCache::State
 };
 
 NativeProviderRunnerReuseCache::NativeProviderRunnerReuseCache(std::size_t maxEntries)
-  : m_state(std::make_shared<State>(maxEntries))
+  : NativeProviderRunnerReuseCache(maxEntries, OutputBinding::ScopeBound)
 {
+}
+
+NativeProviderRunnerReuseCache::NativeProviderRunnerReuseCache(
+  std::size_t maxEntries, OutputBinding outputBinding)
+  : m_state(std::make_shared<State>(maxEntries, outputBinding))
+{
+}
+
+void
+NativeProviderRunnerReuseCache::prepareRoleContractOutputs(NativeModelRunnerSpec& spec)
+{
+  if (spec.kind != "onnx") return;
+  for (auto it = spec.metadata.begin(); it != spec.metadata.end();) {
+    const auto& name = it->first;
+    if (name == "outputScope" || name == "output_scope" ||
+        name == "outputBundleScope" || name == "output_bundle_scope" ||
+        name.compare(0, 12, "outputScope.") == 0 ||
+        name.compare(0, 13, "output_scope.") == 0)
+      it = spec.metadata.erase(it);
+    else
+      ++it;
+  }
+  const auto final = spec.metadata.find("final");
+  const auto isFinal = spec.metadata.find("is_final");
+  if ((final != spec.metadata.end() && final->second == "true") ||
+      (isFinal != spec.metadata.end() && isFinal->second == "true"))
+    spec.metadata["outputScope"] = "final-response";
 }
 
 std::shared_ptr<NativeModelRunner>
@@ -290,7 +321,8 @@ NativeProviderRunnerReuseCache::lookup(
   const std::string& providerBootId,
   const std::shared_ptr<ProtectedRuntime>& runtime)
 {
-  const auto key = runnerReuseKey(projection, providerIdentity, providerBootId, runtime);
+  const auto key = runnerReuseKey(projection, providerIdentity, providerBootId, runtime,
+                                 m_state->outputBinding);
   std::shared_ptr<NativeModelRunner> runner;
   {
     std::lock_guard<std::mutex> lock(m_state->mutex);
@@ -322,7 +354,8 @@ NativeProviderRunnerReuseCache::publish(
 {
   if (!runner)
     return;
-  const auto key = runnerReuseKey(projection, providerIdentity, providerBootId, runtime);
+  const auto key = runnerReuseKey(projection, providerIdentity, providerBootId, runtime,
+                                 m_state->outputBinding);
   const auto keyDigest = sha256TensorBytes(
     std::vector<std::uint8_t>(key.begin(), key.end()));
   const auto identity = protectedResidentIdentity(
@@ -337,17 +370,17 @@ NativeProviderRunnerReuseCache::publish(
     protectedIdentityKey = use.identity();
     residentLease = std::make_shared<ProtectedResidentAuthority::Use>(std::move(use));
   }
-  auto deviceSet = projection.assembly.deviceSet;
+  auto deviceSet = projection.assemblyContract().deviceSet;
   std::sort(deviceSet.begin(), deviceSet.end());
   NativeProviderResidencyIdentityV4 placementIdentity{
-    projection.assembly.artifactDigest,
-    projection.assembly.modelManifestDigest,
-    projection.assembly.graphDigest,
-    projection.assembly.role.empty() ? projection.assembly.selectedRole
-                                     : projection.assembly.role,
-    projection.assembly.rank,
-    projection.assembly.backend,
-    projection.assembly.protectionEpoch,
+    projection.assemblyContract().artifactDigest,
+    projection.assemblyContract().modelManifestDigest,
+    projection.assemblyContract().graphDigest,
+    projection.assemblyContract().role.empty() ? projection.assemblyContract().selectedRole
+                                     : projection.assemblyContract().role,
+    projection.assemblyContract().rank,
+    projection.assemblyContract().backend,
+    projection.assemblyContract().protectionEpoch,
     std::move(deviceSet)};
   std::optional<NativeProviderResidencyIdentityV4> storedIdentity;
   if (placementIdentity.isValid())
@@ -370,7 +403,7 @@ NativeProviderRunnerReuseCache::publish(
     std::string("NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_PUBLISHED") +
     " requestId=" + projection.requestId +
     " provider=" + (projection.provider.empty() ? providerIdentity : projection.provider) +
-    " role=" + projection.assembly.selectedRole + " keyDigest=" + keyDigest +
+    " role=" + projection.assemblyContract().selectedRole + " keyDigest=" + keyDigest +
     " detail=live-runner");
 }
 
