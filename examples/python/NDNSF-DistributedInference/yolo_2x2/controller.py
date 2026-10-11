@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import signal
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -18,8 +19,16 @@ from ndnsf_distributed_inference.app_sdk.controller import APPController
 from ndnsf_distributed_inference.app_sdk import (
     APPDeployment,
 )
-from ndnsf_distributed_inference.repo_reference import repo_artifact_reference
-from py_repoclient.orchestration import NetworkDistributedRepoClient
+from ndnsf_distributed_inference.app_sdk.contracts import ArtifactReference as DIArtifactReference
+from ndnsf_distributed_inference.repo_artifact_resolver import binding_from_native_handle
+from py_repoclient import (
+    ArtifactCapabilityRequirements,
+    ArtifactReference,
+    RepoClient,
+    RepoWriteConsistency,
+    SelectedRepoSet,
+    SelectedRepoTarget,
+)
 from yolo_2x2_lib import REPO_SERVICE, build_runner_script, yolo_inference_service
 
 
@@ -105,7 +114,7 @@ def main() -> int:
     parser.add_argument("--config", default=CONFIG_FILE)
     parser.add_argument("--generated-policy-dir",
                         default="/tmp/ndnsf-di-yolo-2x2-policy")
-    parser.add_argument("--deploy-to-repo-manifest", default="")
+    parser.add_argument("--deploy-artifact-references", default="")
     parser.add_argument("--deploy-only", action="store_true",
                         help="Upload controller-owned artifacts to repo and exit")
     parser.add_argument("--replication-factor", type=int, default=1)
@@ -117,15 +126,15 @@ def main() -> int:
     )
     args = parser.parse_args()
     if args.deploy_only:
-        if not args.deploy_to_repo_manifest:
-            raise ValueError("--deploy-only requires --deploy-to-repo-manifest")
+        if not args.deploy_artifact_references:
+            raise ValueError("--deploy-only requires --deploy-artifact-references")
         _deploy_artifacts_to_repo(
             args.config,
             args.generated_policy_dir,
-            args.deploy_to_repo_manifest,
+            args.deploy_artifact_references,
             args.replication_factor,
         )
-        print("YOLO_2X2_CONTROLLER_REPO_DEPLOYED", args.deploy_to_repo_manifest, flush=True)
+        print("YOLO_2X2_CONTROLLER_REPO_DEPLOYED", args.deploy_artifact_references, flush=True)
         return 0
 
     controller = APPController.from_config(
@@ -136,7 +145,7 @@ def main() -> int:
     # operation, not a repository deployment. Keep it usable without a deploy
     # manifest; otherwise the controller would take the ordinary
     # ``controller.run()`` path and the runner would wait forever for a receipt.
-    if (not args.deploy_to_repo_manifest
+    if (not args.deploy_artifact_references
             and not args.spec180_runtime_publication_file):
         return controller.run()
 
@@ -188,16 +197,16 @@ def main() -> int:
             if shutdown.is_set():
                 controller.stop()
                 return 0
-        if not args.deploy_to_repo_manifest:
+        if not args.deploy_artifact_references:
             raise RuntimeError(
-                "repository deployment manifest is required when runtime publication is absent")
+                "artifact references are required when runtime publication is absent")
         _deploy_artifacts_to_repo(
             args.config,
             args.generated_policy_dir,
-            args.deploy_to_repo_manifest,
+            args.deploy_artifact_references,
             args.replication_factor,
         )
-        print("YOLO_2X2_CONTROLLER_REPO_DEPLOYED", args.deploy_to_repo_manifest, flush=True)
+        print("YOLO_2X2_CONTROLLER_REPO_DEPLOYED", args.deploy_artifact_references, flush=True)
         while True:
             time.sleep(3600)
     finally:
@@ -276,8 +285,10 @@ def _publish_spec180_runtime(config: str, generated_policy_dir: str,
 
 
 def _deploy_artifacts_to_repo(config: str, generated_policy_dir: str,
-                              manifest_path: str, replication_factor: int) -> None:
-    print("YOLO_2X2_CONTROLLER_REPO_DEPLOY_BEGIN", manifest_path, flush=True)
+                              artifact_references_path: str,
+                              replication_factor: int) -> None:
+    print("YOLO_2X2_CONTROLLER_REPO_DEPLOY_BEGIN",
+          artifact_references_path, flush=True)
     deployment = APPDeployment.from_config(
         config,
         generated_policy_dir=generated_policy_dir,
@@ -292,62 +303,98 @@ def _deploy_artifacts_to_repo(config: str, generated_policy_dir: str,
         ack_threads=1,
         adaptive_admission=False,
     )
-    repo = NetworkDistributedRepoClient(
+    repo = RepoClient(
         user=user,
-        service_name=REPO_SERVICE,
-        upload_prefix=f"{deployment.controller}/NDNSF-DISTRIBUTED-REPO/UPLOAD",
+        repo_service_name=REPO_SERVICE,
         ack_timeout_ms=1500,
         timeout_ms=60000,
-        verbose=True,
     )
-    print("YOLO_2X2_CONTROLLER_REPO_WAIT_READY", flush=True)
-    repo.wait_until_ready(60.0)
-    print("YOLO_2X2_CONTROLLER_REPO_READY", flush=True)
+    api = repo.artifact_api
+
+    def publish_binding(source: Path, *, logical_name: str, filename: str,
+                        role: str, use: str, object_type: str) -> dict:
+        payload_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        reference = ArtifactReference(
+            logical_name=logical_name,
+            content_digest=payload_digest,
+            size_bytes=source.stat().st_size,
+            root_manifest_name=logical_name + "/root",
+            publisher_identity=deployment.controller,
+            policy_epoch="/Policy/yolo-2x2/v1",
+        )
+        requirements = ArtifactCapabilityRequirements()
+        requirements.artifact = reference
+        candidates = api.discover_repo_candidates(requirements, 60000).candidates
+        if len(candidates) < replication_factor:
+            raise RuntimeError(
+                f"Repo discovery returned {len(candidates)} candidates; "
+                f"need {replication_factor}")
+        selected = SelectedRepoSet()
+        selected.targets = []
+        for candidate in candidates[:replication_factor]:
+            target = SelectedRepoTarget()
+            target.repo_node = candidate.repo_node
+            target.provider_identity = candidate.provider_identity
+            target.service_prefix = candidate.service_prefix
+            selected.targets.append(target)
+        selected.seed_repo_id = selected.targets[0].repo_node
+        selected.consistency = RepoWriteConsistency.ALL
+        result = repo.publish_file(source, reference, selected, timeout_ms=60000)
+        if not result.success or result.handle is None:
+            raise RuntimeError(f"native Repo publish failed for {logical_name}")
+        uri = "urn:ndnsf:repo-artifact:" + hashlib.sha256(
+            result.handle.to_json().encode("utf-8")).hexdigest()
+        projection = DIArtifactReference(
+            uri=uri,
+            digest="sha256:" + payload_digest,
+            size_bytes=source.stat().st_size,
+            mount_path=filename,
+        )
+        binding = binding_from_native_handle(
+            result.handle, projection, role=role, use=use)
+        return {
+            "repoBinding": binding.to_dict(),
+            "filename": filename,
+            "kind": object_type,
+            "metadata": {"kind": object_type},
+        }
+
     service = deployment.service_policy(yolo_inference_service(deployment))
     artifacts = {artifact.role: artifact for artifact in service.artifacts}
     runner_payload = build_runner_script()
     runner_hash = hashlib.sha256(runner_payload).hexdigest()[:16]
-    manifests = {"roles": {}}
+    artifact_references = {"roles": {}}
     layout = str(service.metadata.get("layout", "2x2"))
-    for role in service.roles:
-        artifact = artifacts[role]
-        model_payload = Path(artifact.path).read_bytes()
-        model_object = repo.publisher_object_name(
-            "NDNSF-DI/ARTIFACT/AI/YOLO/" + layout + role + "/model"
-        )
-        runner_object = repo.publisher_object_name(
-            "NDNSF-DI/RUNTIME/AI/YOLO/" + layout + "/runner/" + runner_hash
-        )
-        model_manifest = repo.store_object(
-            object_name=model_object,
-            payload=model_payload,
-            object_type=artifact.kind or "model",
-            replication_factor=replication_factor,
-            policy_epoch="/Policy/yolo-" + layout + "/v1",
-        )
-        runner_manifest = repo.store_object(
-            object_name=runner_object,
-            payload=runner_payload,
-            object_type="runtime-script",
-            replication_factor=replication_factor,
-            policy_epoch="/Policy/yolo-" + layout + "/v1",
-        )
-        manifests["roles"][role] = {
-            "model": repo_artifact_reference(
-                model_manifest,
-                object_type=artifact.kind or "model",
-                object_id=artifact.artifact_name or role + "/model",
-            ),
-            "runner": repo_artifact_reference(
-                runner_manifest,
-                object_type="runtime-script",
-                object_id="runner/" + runner_hash,
-            ),
-        }
-        print("YOLO_2X2_CONTROLLER_REPO_OBJECT", role, model_object, flush=True)
-    target = Path(manifest_path)
+    with tempfile.TemporaryDirectory(prefix="ndnsf-di-yolo-repo-publish-") as temp:
+        runner_path = Path(temp) / "runner.py"
+        runner_path.write_bytes(runner_payload)
+        for role in service.roles:
+            artifact = artifacts[role]
+            model_path = Path(artifact.path)
+            root = f"/NDNSF-DI/{layout}/{role}"
+            artifact_references["roles"][role] = {
+                "model": publish_binding(
+                    model_path,
+                    logical_name=root + "/model/" + model_path.name,
+                    filename=model_path.name,
+                    role=role,
+                    use="model",
+                    object_type=artifact.kind or "onnx-model",
+                ),
+                "runner": publish_binding(
+                    runner_path,
+                    logical_name=f"/NDNSF-DI/{layout}/runner/{runner_hash}",
+                    filename="runner.py",
+                    role=role,
+                    use="runtime",
+                    object_type="runtime-script",
+                ),
+            }
+            print("YOLO_2X2_CONTROLLER_REPO_OBJECT", role, root, flush=True)
+    target = Path(artifact_references_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(manifests, indent=2, sort_keys=True), encoding="utf-8")
+    target.write_text(
+        json.dumps(artifact_references, indent=2, sort_keys=True), encoding="utf-8")
 
 
 if __name__ == "__main__":

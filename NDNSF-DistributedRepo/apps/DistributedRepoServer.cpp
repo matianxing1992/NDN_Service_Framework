@@ -1,9 +1,11 @@
 #include "ndnsf-distributed-repo/PersistentRepoServerConfig.hpp"
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
+#include "ndn-service-framework/ServiceUser.hpp"
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
@@ -25,7 +27,8 @@ printUsage(std::ostream& output)
             "--authority-identity NAME --trust-schema ABS_PATH "
             "[--repo-mode persistent] [--service-prefix NAME] "
             "[--cache-bytes N] [--large-object-threshold-bytes N] "
-            "[--failure-domain NAME]\n";
+            "[--failure-domain NAME] [--ack-collection-ms N] "
+            "[--request-timeout-ms N] [--availability-freshness-ms N]\n";
 }
 
 ndn::security::Certificate
@@ -49,7 +52,7 @@ main(int argc, char* argv[])
   }
 
   try {
-    // Parsing and mode/path validation precede Face, KeyChain, Repo, SQLite,
+    // Parsing and mode/path validation precede Face, KeyChain, Repo stores,
     // and Provider construction so unsupported modes have no startup effects.
     const auto config =
       ndnsf_distributed_repo::PersistentRepoServerConfig::fromArguments(argc, argv);
@@ -69,18 +72,31 @@ main(int argc, char* argv[])
       std::filesystem::space(config.databasePath.parent_path()).available;
     capability.failureDomain = config.failureDomain;
 
+    const auto repoStoreRoot = config.databasePath.string() + ".store";
+    auto repoStore = ndnsf_distributed_repo::makeTieredRepoStore(
+      ndnsf_distributed_repo::makeFilesystemRepoStore(
+        repoStoreRoot, config.largeObjectThresholdBytes,
+        config.largeObjectThresholdBytes,
+        config.repoNode + "|" + config.providerIdentity.toUri()),
+      config.memoryCacheBytes, "filesystem", config.largeObjectThresholdBytes);
+
     ndn_service_framework::CertificatePublisher certificatePublisher(
       face, keyChain, providerCert.getName());
     (void)certificatePublisher;
+    auto publisherUser = std::make_shared<ndn_service_framework::ServiceUser>(
+      face, config.groupPrefix, providerCert, authorityCert,
+      config.trustSchemaPath.string());
+    publisherUser->init();
+    publisherUser->fetchPermissionsFromController(config.authorityIdentity);
     auto repo = std::make_shared<ndnsf_distributed_repo::RepoNode>(
       config.servicePrefix,
       std::move(capability),
-      ndnsf_distributed_repo::makeTieredRepoStore(
-        config.databasePath.string(), config.memoryCacheBytes,
-        config.largeObjectThresholdBytes),
+      std::move(repoStore),
       config.repoNode,
       config.providerIdentity.toUri(),
-      config.databasePath.string() + ".artifact-v2.sqlite");
+      config.databasePath.string() + ".artifact-v2.sqlite",
+      ndnsf_distributed_repo::ArtifactLimits{},
+      config.availabilityFreshnessMs);
     ndn_service_framework::ServiceProvider provider(
       face,
       config.groupPrefix,
@@ -88,13 +104,15 @@ main(int argc, char* argv[])
       authorityCert,
       config.trustSchemaPath.string());
 
-    repo->registerServices(provider);
+    repo->registerServices(provider, publisherUser,
+                           config.ackCollectionTimeMs,
+                           config.requestTimeoutMs);
     provider.init();
     provider.fetchPermissionsFromController(config.authorityIdentity);
 
     std::cout << "Persistent Repo serving " << repo->servicePrefix()
               << " as " << config.repoNode << " using "
-              << config.databasePath << std::endl;
+              << repoStoreRoot << std::endl;
     face.processEvents();
     return 0;
   }

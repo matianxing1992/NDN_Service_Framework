@@ -229,6 +229,10 @@ sameManifestIdentity(const RepoObjectManifest& lhs,
          lhsRequiredAcks == rhsRequiredAcks &&
          lhs.operationId == rhs.operationId &&
          lhs.lifecycleState == rhs.lifecycleState &&
+         lhs.dataReceiptId == rhs.dataReceiptId &&
+         lhs.dataReceiptRepoNode == rhs.dataReceiptRepoNode &&
+         lhs.dataReceiptProviderIdentity == rhs.dataReceiptProviderIdentity &&
+         lhs.dataReceiptCommittedAtMs == rhs.dataReceiptCommittedAtMs &&
          lhs.policyEpoch == rhs.policyEpoch &&
          lhs.replicaNodes == rhs.replicaNodes &&
          lhsConfirmed == rhsConfirmed &&
@@ -309,6 +313,7 @@ FilesystemRepoStoreBackend::FilesystemRepoStoreBackend(
   }
   ensurePrivateDirectory(fs::path(m_rootPath));
   ensurePrivateDirectory(fs::path(m_rootPath) / "manifests");
+  ensurePrivateDirectory(fs::path(m_rootPath) / "data-receipts");
   recoverOrphans();
 }
 
@@ -406,13 +411,16 @@ FilesystemRepoStoreBackend::get(const std::string& objectName) const
     ++m_fullCopyFallbacks;
     throw std::runtime_error("repo-large-object-vector-path-disabled");
   }
-  if (manifest.size == 0) {
-    return StoredObject{manifest, {}};
+  std::vector<uint8_t> payload;
+  if (manifest.size != 0) {
+    const auto reference = artifactReference(manifest);
+    payload = m_payloadStore.readRange(reference, manifest.generation,
+                                       ArtifactByteRange{0, manifest.size});
   }
-  const auto reference = artifactReference(manifest);
-  return StoredObject{manifest,
-                      m_payloadStore.readRange(reference, manifest.generation,
-                                                ArtifactByteRange{0, manifest.size})};
+  if (sha256Hex(payload) != manifest.sha256) {
+    throw std::runtime_error("repo-file-vector-payload-corrupt: stored bytes differ from manifest");
+  }
+  return StoredObject{manifest, std::move(payload)};
 }
 
 bool
@@ -442,6 +450,14 @@ FilesystemRepoStoreBackend::erase(const std::string& objectName)
   }
   catch (const std::out_of_range&) {
     return false;
+  }
+
+  if (manifest.objectType == "ndn-data-wire" && !manifest.dataReceiptId.empty()) {
+    const auto directory = receiptDirectory(objectName, manifest.sha256);
+    ensurePrivateDirectory(directory);
+    fsyncDirectory(directory.parent_path());
+    atomicWrite(directory / (objectKey(manifest.dataReceiptId) + ".json"),
+                manifest.toJson());
   }
 
   // Metadata is the visibility boundary.  Remove and fsync the manifest
@@ -774,6 +790,81 @@ FilesystemRepoStoreBackend::getManifest(const std::string& objectName) const
   return readManifest(objectName);
 }
 
+RepoObjectMetadataProbe
+FilesystemRepoStoreBackend::probeObjectMetadata(
+  const std::string& objectName) const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  RepoObjectMetadataProbe result;
+  try {
+    result.manifest = readManifestUnlocked(objectName);
+    result.manifestPresent = true;
+  }
+  catch (const std::out_of_range&) {
+    return result;
+  }
+  if (isMetadataOnly(result.manifest)) {
+    result.payloadMetadataAvailable = true;
+    result.payloadRepresentationValid = true;
+    return result;
+  }
+  const auto payload = m_payloadStore.inspectCommitted(
+    artifactReference(result.manifest));
+  result.payloadMetadataAvailable = true;
+  result.payloadPresent = payload.exists;
+  result.payloadRepresentationValid = payload.regularFile;
+  result.payloadSize = payload.sizeBytes;
+  return result;
+}
+
+std::optional<RepoObjectManifest>
+FilesystemRepoStoreBackend::findRetainedDataReceipt(
+  const std::string& dataName, const std::string& wireSha256) const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto directory = receiptDirectory(dataName, wireSha256);
+  if (!fs::exists(directory)) return std::nullopt;
+  std::optional<RepoObjectManifest> selected;
+  for (const auto& entry : fs::directory_iterator(directory)) {
+    if (!entry.is_regular_file()) continue;
+    const auto manifest = parseManifestJson(readText(entry.path()));
+    if (manifest.objectName != dataName || manifest.sha256 != wireSha256 ||
+        manifest.objectType != "ndn-data-wire" || manifest.dataReceiptId.empty()) {
+      throw std::runtime_error("repo-file-data-receipt-corrupt");
+    }
+    if (!selected ||
+        manifest.dataReceiptCommittedAtMs > selected->dataReceiptCommittedAtMs ||
+        (manifest.dataReceiptCommittedAtMs == selected->dataReceiptCommittedAtMs &&
+         manifest.dataReceiptId > selected->dataReceiptId)) {
+      selected = manifest;
+    }
+  }
+  return selected;
+}
+
+void
+FilesystemRepoStoreBackend::attachImportedDataReceipt(
+  const RepoObjectManifest& expected, const RepoObjectManifest& updated)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto current = readManifestUnlocked(expected.objectName);
+  auto withoutReceipt = updated;
+  withoutReceipt.dataReceiptId.clear();
+  withoutReceipt.dataReceiptRepoNode.clear();
+  withoutReceipt.dataReceiptProviderIdentity.clear();
+  withoutReceipt.dataReceiptCommittedAtMs = 0;
+  if (current.toJson() != expected.toJson() ||
+      !current.dataReceiptId.empty() ||
+      withoutReceipt.toJson() != expected.toJson() ||
+      updated.objectType != "ndn-data-wire" ||
+      updated.dataReceiptId.empty() || updated.dataReceiptRepoNode.empty() ||
+      updated.dataReceiptProviderIdentity.empty() ||
+      updated.dataReceiptCommittedAtMs == 0) {
+    throw std::runtime_error("repo-data-import-manifest-conflict");
+  }
+  writeManifest(updated);
+}
+
 bool
 FilesystemRepoStoreBackend::supportsRange() const noexcept
 {
@@ -934,6 +1025,17 @@ FilesystemRepoStoreBackend::manifestPath(const std::string& objectName) const
   return fs::path(m_rootPath) / "manifests" / (objectKey(objectName) + ".json");
 }
 
+fs::path
+FilesystemRepoStoreBackend::receiptDirectory(
+  const std::string& dataName, const std::string& wireSha256) const
+{
+  if (dataName.empty() || dataName.front() != '/' || wireSha256.size() != 64) {
+    throw std::invalid_argument("repo-file-data-receipt-key-invalid");
+  }
+  return fs::path(m_rootPath) / "data-receipts" /
+         objectKey(dataName + "\n" + wireSha256);
+}
+
 RepoObjectManifest
 FilesystemRepoStoreBackend::readManifest(const std::string& objectName) const
 {
@@ -993,7 +1095,8 @@ FilesystemRepoStoreBackend::isMetadataOnly(
   const RepoObjectManifest& manifest) noexcept
 {
   return manifest.objectType == "ndn-segmented-data" ||
-         manifest.segmentCount > 1 || manifest.packetNames.size() > 1;
+         manifest.segmentCount > 1 ||
+         (!manifest.packetNames.empty() && manifest.objectType != "ndn-data-wire");
 }
 
 void

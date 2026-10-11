@@ -123,6 +123,7 @@ BOOST_AUTO_TEST_CASE(ProductionOnResponseRejectsValidDataSignedByWrongProvider)
       tlv::FirstResponding);
   BOOST_REQUIRE(!requestId.empty());
   BOOST_REQUIRE_EQUAL(environment.user().getPendingCallCount(), 1U);
+  environment.markRequestPublished(scope);
 
   // The fixture uses an accept-all SVS validator. Publish a syntactically
   // valid Response name for Provider 0 using Provider 1's real KeyChainSigner;
@@ -131,6 +132,8 @@ BOOST_AUTO_TEST_CASE(ProductionOnResponseRejectsValidDataSignedByWrongProvider)
       providers[0], requesterName, serviceName, requestId);
   ResponseMessage response;
   response.setStatus(true);
+  response.setPolicyEpoch(status.getControllerVersion().controllerEpoch);
+  response.setControllerVersion(status.getControllerVersion());
   ndn::Buffer responsePayload{'o', 'k'};
   response.setPayload(responsePayload, responsePayload.size());
   const auto responseWire = response.WireEncode();

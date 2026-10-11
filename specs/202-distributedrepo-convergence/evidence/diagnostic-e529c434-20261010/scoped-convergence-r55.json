@@ -1,0 +1,99 @@
+{
+  "status": "SCOPED_STATIC_DELTA_REVIEW_COMPLETE",
+  "qualification_status": "INCOMPLETE",
+  "branch": "Repo",
+  "head": "09a64fda",
+  "source_candidate_sha256": "f4f244a7ac4c5011f1a70c8e818aa950db878d5705d95aec3ea3fa2733bf6dec",
+  "source_inputs": 688,
+  "receipt_sha256": "db9a0bc61f0fd779beefe5000ff90f47709227f0a2925ed27eb9ef299d2ba054",
+  "baseline": {
+    "source": "d75cf28e0f2e43dbe90ca85588c214605f7d9418316795a21f3c9501c43963ea",
+    "archive": "../candidate-build-20261009-sdk11/convergence-source-v3.zip",
+    "static_review": "../candidate-build-20261009-sdk11/design-code-convergence-review.json",
+    "registered_source_comparison": "688 current inputs compared byte-for-byte; no absent baseline entry; exactly seven changed paths",
+    "unchanged_code": "681 inputs unchanged; baseline code reasoning may inform this delta review, but baseline runtime/network PASS is not inherited"
+  },
+  "delta": [
+    {
+      "path": "NDNSF-DistributedRepo/src/RepoClient.cpp",
+      "review": "Removed selected-request diagnostics. Current CodeGraph source retains unique authenticated ACK matching, exact Provider selection, absolute deadline and atomic emission claim/cancellation.",
+      "requirements": ["FR-004", "FR-007", "FR-010"],
+      "evidence": ["native-all-seven-r47/manifest.json", "normal-all-seven-r49/manifest.json"]
+    },
+    {
+      "path": "ndn-service-framework/ServiceProvider.cpp",
+      "review": "Capture plaintext size before moving the buffer into the encryption closure; preserve existing independent fetch-pool dispatch, Face posts and inline fallback. No public API or authorization change.",
+      "requirements": ["FR-010", "FR-016"],
+      "evidence": ["native-all-seven-r47/manifest.json", "normal-all-seven-r49/manifest.json", "../../../../docs/failure-log.md"]
+    },
+    {
+      "path": "tests/integration-tests/spec192-persistent-artifact-api.t.cpp",
+      "review": "Added isolated source-loss regression. Existing recovery fixture now uses 8000ms ACK collection and 12000ms status queries, a 60s terminal-wait assertion and its recovery API configuration. These are explicit fixture changes relative to SDK11; do not describe the SDK11-to-current fixture as unchanged. Current full normal and leak-enabled runs preserve ledger, durable receipt and late-response assertions.",
+      "requirements": ["FR-003", "FR-004", "FR-015"],
+      "evidence": ["native-all-seven-r47/manifest.json", "normal-all-seven-r49/manifest.json"],
+      "limitation": "The r38 original-library control and r42 repaired-library result concern the same later fixture; they do not establish identical SDK11 timing. No timing guarantee is inferred."
+    },
+    {
+      "path": "tests/minindn/run_spec192_real_cpp_repo.py",
+      "review": "O17_ROUTE captures IPv4 UDP/TCP protocol fragments and IPv6 protocol chains rather than only initial UDP/TCP fragments. Other cases retain their existing UDP filter.",
+      "requirements": ["FR-009", "FR-010", "FR-015"],
+      "remaining": "Fresh O17_ROUTE and all required subscenarios in both MiniNDN rounds"
+    },
+    {
+      "path": "tests/minindn/spec193_packet_oracle.py",
+      "review": "Metadata-denial collector recognizes bounded SVS MAPPING fields and rejects advertised forbidden ACK/Response names. Malformed or unsupported capture remains inconclusive. Caller certificate and inner/outer request signatures are verified; Provider advertisements are conservatively treated as counterevidence without claiming their signature was verified.",
+      "requirements": ["FR-010", "FR-015"],
+      "evidence": ["admission-oracles-r51.log"],
+      "remaining": "Current-candidate O17 server-metadata-auth captures; offline fixtures alone are not network proof"
+    },
+    {
+      "path": "tests/minindn/test_spec202_sync_oracle.py",
+      "review": "Added unrelated mapping acceptance and forbidden ACK advertisement rejection, while retaining signed-request and incomplete-transport negative checks.",
+      "requirements": ["FR-010", "FR-015"],
+      "evidence": ["admission-oracles-r51.log"]
+    },
+    {
+      "path": "tests/standalone/spec192-repo-client.cpp",
+      "review": "Join Face thread, enqueue shutdown and barrier, poll one callback at a time, stop at barrier or caught exception. Keeps teardown work out of the joined thread; does not alter publication or authorization.",
+      "requirements": ["FR-013", "FR-015", "FR-018"],
+      "remaining": "Fresh MiniNDN finite-client exit checks, including conflicting idempotency request; native suites do not execute this client teardown"
+    }
+  ],
+  "dependency_delta": {
+    "commit": "ac189f60825ed0233ae733d73ae1bf0f822c3481",
+    "owner": "ndn-cxx/util/regex/regex-component-matcher.cpp",
+    "review": "Literal fast path excludes every ECMAScript regex metacharacter and retains matched component; other regex/capture path is unchanged. Rebuilt implementation is registered in the existing SDK identity; headers/SONAME remain equivalent.",
+    "evidence": ["normal-dependency-promotion-r48.json", "ndn-cxx-installed-regex-r48.log"],
+    "library_sha256": "be8ea6eb22c591a3622f5a726130891ab976d901c262c79e23983fa912b5bc78"
+  },
+  "scorecard": {
+    "intent": "All APIs and full Spec202 scope retained; local emulated MiniNDN only",
+    "necessity": "Localized correctness repair, diagnostic cleanup and independent oracles; no new product API",
+    "architecture": "Core encryption/dispatch, Repo state and test-only oracle owners retained",
+    "consistency": "All 126 registered primary declarations found in current headers; acceptance and task bodies remain authoritative",
+    "code_reality": "Current CodeGraph source and byte-level baseline deltas inspected; not inferred from task checkboxes",
+    "distributed_correctness": "Native receipts/deadline/failure gates passed; actual network authorization/route/cache evidence remains open",
+    "executability": "Ten outcome-based tasks retain precise owners, dependencies and closing gates",
+    "validation": "Full seven native suites and Python/admission gates measured; two-round network scope not reduced",
+    "evidence": "r47/r49 both have seven exit-zero records and actual library maps; r47 has zero sanitizer reports; r50 exit zero/33 files; r51 41 tests pass",
+    "migration": "Importer code unchanged and full production integration replay passed; explicit no-replace/source preservation retained",
+    "operations": "Independent rebuild uses j2; no concurrent runtime tests while clone temporarily installs globals; restoration must be verified",
+    "documentation": "LOW: API_REFERENCE_zh historical aeb815 test-status prose is stale relative to r47-r51; refresh before final completion. Structural plan heading warning remains non-controlling."
+  },
+  "fresh_checks": {
+    "current_source_hash": "MATCHED",
+    "current_receipt_hash": "MATCHED",
+    "archive_source_missing": 0,
+    "changed_registered_sources": 7,
+    "changed_baseline_support": ["AGENTS.md", "specs/202-distributedrepo-convergence/api-inventory.md", "specs/202-distributedrepo-convergence/tasks.md", "specs/202-distributedrepo-convergence/validation-matrix.md"],
+    "support_delta_review": "AGENTS adds explicit local authorization/service-error handling; matrix changes progress/status cells; tasks progress reflects current gates; inventory adds usage and corrects destructor spelling"
+  },
+  "remaining_gates": [
+    "Independent r54 rebuild, complete normal/Python/admission replay and exact original-global restoration",
+    "Hash-bound current release and six explicit profile compositions",
+    "All 59 IDs/68 scenarios in each of two MiniNDN rounds, with current storage/consumer/signed-wire/actual-runtime/finite-exit/cleanup evidence",
+    "Final evidence and documentation reconciliation"
+  ],
+  "controlling_code_findings_in_reviewed_delta": [],
+  "completion": "No whole-Spec PASS; r54 is still live and full MiniNDN qualification remains open"
+}

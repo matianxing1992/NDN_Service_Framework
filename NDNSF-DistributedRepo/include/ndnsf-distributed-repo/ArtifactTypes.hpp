@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -311,6 +312,218 @@ struct ArtifactLocationRequest
   static ArtifactLocationRequest
   fromJson(const std::string& wire, const ArtifactLimits& limits = {});
 };
+
+/** Handle-scoped immutable receipt lookup over the existing STATUS service. */
+struct RepoReceiptLookupRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string receiptId;
+  std::string repoNode;
+  std::string providerIdentity;
+  ArtifactReference reference;
+
+  std::string toJson() const;
+  static RepoReceiptLookupRequest
+  fromJson(const std::string& wire, const ArtifactLimits& limits = {});
+};
+
+/** Direct, current-location tuple used to fence one availability probe. */
+struct ArtifactExpectedLocation
+{
+  std::string repoNode;
+  std::string providerIdentity;
+  std::string operationId;
+  std::string receiptId;
+  uint64_t generation = 0;
+  uint64_t locationVersion = 0;
+
+  void validate(const ArtifactLimits& limits = {}) const;
+  std::string toJson() const;
+  static ArtifactExpectedLocation
+  fromJson(const std::string& wire, const ArtifactLimits& limits = {});
+};
+
+struct RepoAvailabilityProbeRequest
+{
+  uint32_t schemaVersion = 1;
+  ArtifactReference reference;
+  ArtifactExpectedLocation expectedLocation;
+  std::string probeKind = "metadata";
+
+  std::string toJson() const;
+  static RepoAvailabilityProbeRequest
+  fromJson(const std::string& wire, const ArtifactLimits& limits = {});
+};
+
+/** One authenticated Repo's observation; values are deliberately orthogonal. */
+struct AvailabilityLocationReport
+{
+  uint32_t schemaVersion = 1;
+  std::string locationKind;
+  std::string repoNode;
+  std::string providerIdentity;
+  uint64_t generation = 0;
+  std::string operationId;
+  std::string receiptId;
+  uint64_t locationVersion = 0;
+  std::string reachability = "UNKNOWN";
+  std::string objectPresence = "UNKNOWN";
+  std::string integrity = "NOT_CHECKED";
+  uint64_t observedAtMs = 0;
+  uint64_t validUntilMs = 0;
+  std::string probeKind = "metadata";
+  std::string reason;
+
+  void validate(const ArtifactLimits& limits = {}) const;
+  std::string toJson() const;
+  static AvailabilityLocationReport
+  fromJson(const std::string& wire, const ArtifactLimits& limits = {});
+};
+
+/** Signed STATUS response echoes its request fence separately from the
+ * optional current tuple in report, so stale requests cannot look current. */
+struct RepoAvailabilityProbeResponse
+{
+  uint32_t schemaVersion = 1;
+  ArtifactReference reference;
+  ArtifactExpectedLocation expectedLocation;
+  AvailabilityLocationReport report;
+
+  void validate(const ArtifactLimits& limits = {}) const;
+  std::string toJson() const;
+  static RepoAvailabilityProbeResponse
+  fromJson(const std::string& wire, const ArtifactLimits& limits = {});
+};
+
+struct AvailabilityReport
+{
+  uint32_t schemaVersion = 1;
+  ArtifactReference reference;
+  std::string probeKind = "metadata";
+  std::vector<AvailabilityLocationReport> locations;
+
+  void validate(const ArtifactLimits& limits = {}) const;
+  std::string toJson() const;
+  static AvailabilityReport
+  fromJson(const std::string& wire, const ArtifactLimits& limits = {});
+};
+
+struct RepoArtifactTarget
+{
+  std::string repoNode;
+  std::string providerIdentity;
+  std::string servicePrefix;
+
+  bool operator==(const RepoArtifactTarget& other) const noexcept
+  {
+    return repoNode == other.repoNode && providerIdentity == other.providerIdentity &&
+           servicePrefix == other.servicePrefix;
+  }
+
+  bool operator!=(const RepoArtifactTarget& other) const noexcept
+  {
+    return !(*this == other);
+  }
+};
+
+struct PublishOperationIntent
+{
+  uint32_t schemaVersion = 1;
+  std::string idempotencyKeyDigest;
+  std::string requestDigest;
+  ArtifactReference reference;
+  uint64_t generation = 0;
+  RepoArtifactTarget seed;
+  std::string consistency;
+  std::vector<RepoArtifactTarget> targets;
+
+  void validate(const ArtifactLimits& limits = {}) const;
+  std::string toJson() const;
+  static PublishOperationIntent fromJson(const std::string& wire,
+                                         const ArtifactLimits& limits = {});
+};
+
+struct PublishOperationStatusRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string operationId;
+  std::optional<RepoArtifactTarget> target;
+
+  std::string toJson() const;
+  static PublishOperationStatusRequest fromJson(const std::string& wire);
+};
+
+struct PublishOperationHandle
+{
+  uint32_t schemaVersion = 1;
+  std::string operationId;
+  RepoArtifactTarget seed;
+
+  void validate(const ArtifactLimits& limits = {}) const;
+  std::string toJson() const;
+  static PublishOperationHandle fromJson(const std::string& wire,
+                                         const ArtifactLimits& limits = {});
+};
+
+struct RepoArtifactCommitReceipt
+{
+  uint32_t schemaVersion = 1;
+  std::string repoNode;
+  std::string providerIdentity;
+  std::string operationId;
+  std::string receiptId;
+  ArtifactReference reference;
+  uint64_t generation = 0;
+  uint64_t persistedBytes = 0;
+  uint64_t completedAtMs = 0;
+  uint64_t locationVersion = 0;
+  std::string routeState;
+  std::string forwardingHint;
+
+  void validate(const ArtifactLimits& limits = {}) const;
+  std::string toJson() const;
+  static RepoArtifactCommitReceipt fromJson(const std::string& wire,
+                                           const ArtifactLimits& limits = {});
+};
+
+struct PublishOperationTargetStatus
+{
+  RepoArtifactTarget target;
+  std::string state;
+  uint32_t attemptCount = 0;
+  uint64_t updatedAtMs = 0;
+  std::optional<RepoArtifactCommitReceipt> receipt;
+  std::string failureCode;
+};
+
+struct PublishOperationStatus
+{
+  uint32_t schemaVersion = 1;
+  std::string operationId;
+  ArtifactReference reference;
+  uint64_t generation = 0;
+  RepoArtifactTarget seed;
+  std::string consistency;
+  std::vector<PublishOperationTargetStatus> targets;
+  std::string state;
+  uint64_t updatedAtMs = 0;
+  std::string receiptId;
+
+  void validate(const ArtifactLimits& limits = {}) const;
+  std::string toJson() const;
+  static PublishOperationStatus fromJson(const std::string& wire,
+                                        const ArtifactLimits& limits = {});
+};
+
+std::string digestPublishIdempotencyKey(const std::string& key);
+std::string makePublishOperationId(const std::string& submittingPrincipal,
+                                   const RepoArtifactTarget& seed,
+                                   const std::string& idempotencyKeyDigest);
+std::string makePublishRequestDigest(const ArtifactReference& reference,
+                                    uint64_t generation,
+                                    const RepoArtifactTarget& seed,
+                                    const std::string& consistency,
+                                    const std::vector<RepoArtifactTarget>& targets);
 
 struct ArtifactManifestChild
 {

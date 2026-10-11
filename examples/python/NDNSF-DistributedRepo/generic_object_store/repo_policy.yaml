@@ -58,6 +58,18 @@ services:
     dependencies: []
     users: *repo_public_callers
     providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Object/v1/DATA_RECEIPT
+    model: /NDNSF/DistributedRepo/Object/v1/DATA_RECEIPT
+    roles: []
+    dependencies: []
+    users: *repo_public_callers
+    providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Object/v1/DATA_LOCATION
+    model: /NDNSF/DistributedRepo/Object/v1/DATA_LOCATION
+    roles: []
+    dependencies: []
+    users: *repo_public_callers
+    providers: *repo_providers
   - name: /NDNSF/DistributedRepo/Object/v1/FETCH
     model: /NDNSF/DistributedRepo/Object/v1/FETCH
     roles: []

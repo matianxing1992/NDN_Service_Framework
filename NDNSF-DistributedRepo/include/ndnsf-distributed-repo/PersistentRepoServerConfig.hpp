@@ -30,6 +30,9 @@ struct PersistentRepoServerConfig
   std::filesystem::path trustSchemaPath;
   uint64_t memoryCacheBytes = 64ULL * 1024 * 1024;
   uint64_t largeObjectThresholdBytes = 1024ULL * 1024;
+  int ackCollectionTimeMs = 250;
+  int requestTimeoutMs = 5000;
+  uint64_t availabilityFreshnessMs = 5000;
   std::string failureDomain;
 
   static PersistentRepoServerConfig

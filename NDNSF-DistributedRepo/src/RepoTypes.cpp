@@ -103,6 +103,49 @@ jsonString(const detail::JsonValue::Object& object, const char* key)
   return detail::member(object, key, detail::JsonValue::Kind::String).string;
 }
 
+std::string
+operationOwnerJson(const std::optional<RepoArtifactTarget>& operationOwner)
+{
+  if (!operationOwner) return "null";
+  return "{\"repoNode\":" + jsonQuote(operationOwner->repoNode) +
+    ",\"providerIdentity\":" + jsonQuote(operationOwner->providerIdentity) +
+    ",\"servicePrefix\":" + jsonQuote(operationOwner->servicePrefix) + "}";
+}
+
+void
+validateOperationOwner(const std::optional<RepoArtifactTarget>& operationOwner,
+                       const ArtifactLimits& limits)
+{
+  if (!operationOwner) return;
+  validateName(operationOwner->repoNode, limits, "operationOwner.repoNode");
+  validateName(operationOwner->providerIdentity, limits,
+                "operationOwner.providerIdentity");
+  validateName(operationOwner->servicePrefix, limits,
+                "operationOwner.servicePrefix");
+}
+
+std::optional<RepoArtifactTarget>
+parseOperationOwner(const detail::JsonValue& value)
+{
+  if (value.kind == detail::JsonValue::Kind::Null) return std::nullopt;
+  const auto& object = detail::requireObject(value);
+  detail::requireExactKeys(object, {"repoNode", "providerIdentity", "servicePrefix"});
+  RepoArtifactTarget target{
+    jsonString(object, "repoNode"),
+    jsonString(object, "providerIdentity"),
+    jsonString(object, "servicePrefix")};
+  validateOperationOwner(target, ArtifactLimits{});
+  return target;
+}
+
+bool
+hasArtifactFrameMagic(const std::vector<uint8_t>& wire, const char* magic)
+{
+  return wire.size() >= 8 &&
+    std::equal(wire.begin(), wire.begin() + 8,
+               reinterpret_cast<const uint8_t*>(magic));
+}
+
 std::vector<uint8_t>
 frameArtifactRequest(const char* magic, const std::string& header,
                      const std::vector<uint8_t>& payload = {})
@@ -242,6 +285,14 @@ public:
          "sha256 TEXT NOT NULL,"
          "object_type TEXT NOT NULL,"
          "updated_at INTEGER NOT NULL)");
+    exec("CREATE TABLE IF NOT EXISTS data_receipt_history ("
+         "receipt_id TEXT PRIMARY KEY,"
+         "object_name TEXT NOT NULL,"
+         "digest TEXT NOT NULL,"
+         "committed_at_ms INTEGER NOT NULL,"
+         "manifest_json TEXT NOT NULL)");
+    exec("CREATE INDEX IF NOT EXISTS data_receipt_history_lookup "
+         "ON data_receipt_history(object_name,digest,committed_at_ms DESC)");
   }
 
   ~SqliteRepoStore() override
@@ -343,6 +394,36 @@ public:
     return parseManifestJson(columnText(stmt, 0));
   }
 
+  RepoObjectMetadataProbe
+  probeObjectMetadata(const std::string& objectName) const override
+  {
+    sqlite3_stmt* stmt = nullptr;
+    prepare("SELECT manifest_json,payload_size,length(payload),typeof(payload) "
+            "FROM objects WHERE object_name=?", &stmt);
+    StatementGuard guard(stmt);
+    bindText(stmt, 1, objectName);
+    const int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_DONE) return {};
+    if (rc != SQLITE_ROW) throwSqlite("failed to inspect Repo object metadata");
+
+    RepoObjectMetadataProbe result;
+    result.manifestPresent = true;
+    result.manifest = parseManifestJson(columnText(stmt, 0));
+    const auto recordedSize = sqlite3_column_int64(stmt, 1);
+    const auto actualSize = sqlite3_column_int64(stmt, 2);
+    const auto recordedSizeType = sqlite3_column_type(stmt, 1);
+    const auto actualSizeType = sqlite3_column_type(stmt, 2);
+    const auto type = columnText(stmt, 3);
+    result.payloadMetadataAvailable = true;
+    result.payloadPresent = type != "null";
+    result.payloadRepresentationValid = result.payloadPresent && type == "blob" &&
+      recordedSizeType == SQLITE_INTEGER && actualSizeType == SQLITE_INTEGER &&
+      recordedSize >= 0 && actualSize >= 0 && recordedSize == actualSize;
+    result.payloadSize = actualSizeType == SQLITE_INTEGER && actualSize >= 0
+      ? static_cast<uint64_t>(actualSize) : 0;
+    return result;
+  }
+
   bool supportsManifestLookup() const noexcept override
   {
     return true;
@@ -366,12 +447,119 @@ public:
 
   bool erase(const std::string& objectName) override
   {
+    exec("BEGIN IMMEDIATE");
+    try {
+      std::optional<RepoObjectManifest> previous;
+      {
+        sqlite3_stmt* stmt = nullptr;
+        prepare("SELECT manifest_json FROM objects WHERE object_name=?", &stmt);
+        StatementGuard guard(stmt);
+        bindText(stmt, 1, objectName);
+        const int rc = sqlite3_step(stmt);
+        if (rc == SQLITE_ROW) previous = parseManifestJson(columnText(stmt, 0));
+        else if (rc != SQLITE_DONE) throwSqlite("failed to inspect repo object before delete");
+      }
+      if (!previous) {
+        exec("COMMIT");
+        return false;
+      }
+      if (previous->objectType == "ndn-data-wire" &&
+          !previous->dataReceiptId.empty()) {
+        sqlite3_stmt* stmt = nullptr;
+        prepare("INSERT OR IGNORE INTO data_receipt_history "
+                "(receipt_id,object_name,digest,committed_at_ms,manifest_json) "
+                "VALUES (?,?,?,?,?)", &stmt);
+        StatementGuard guard(stmt);
+        bindText(stmt, 1, previous->dataReceiptId);
+        bindText(stmt, 2, previous->objectName);
+        bindText(stmt, 3, previous->sha256);
+        if (sqlite3_bind_int64(stmt, 4, static_cast<sqlite3_int64>(
+              previous->dataReceiptCommittedAtMs)) != SQLITE_OK) {
+          throwSqlite("failed to bind data receipt commit time");
+        }
+        bindText(stmt, 5, previous->toJson());
+        stepDone(stmt, "failed to retain data receipt");
+      }
+      {
+        sqlite3_stmt* stmt = nullptr;
+        prepare("DELETE FROM objects WHERE object_name=?", &stmt);
+        StatementGuard guard(stmt);
+        bindText(stmt, 1, objectName);
+        stepDone(stmt, "failed to delete repo object");
+      }
+      const bool removed = sqlite3_changes(m_db) > 0;
+      exec("COMMIT");
+      return removed;
+    }
+    catch (...) {
+      try { exec("ROLLBACK"); } catch (...) {}
+      throw;
+    }
+  }
+
+  std::optional<RepoObjectManifest>
+  findRetainedDataReceipt(const std::string& dataName,
+                          const std::string& wireSha256) const override
+  {
     sqlite3_stmt* stmt = nullptr;
-    prepare("DELETE FROM objects WHERE object_name=?", &stmt);
+    prepare("SELECT manifest_json FROM data_receipt_history "
+            "WHERE object_name=? AND digest=? "
+            "ORDER BY committed_at_ms DESC,receipt_id DESC LIMIT 1", &stmt);
     StatementGuard guard(stmt);
-    bindText(stmt, 1, objectName);
-    stepDone(stmt, "failed to delete repo object");
-    return sqlite3_changes(m_db) > 0;
+    bindText(stmt, 1, dataName);
+    bindText(stmt, 2, wireSha256);
+    const int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_DONE) return std::nullopt;
+    if (rc != SQLITE_ROW) throwSqlite("failed to query retained data receipt");
+    auto manifest = parseManifestJson(columnText(stmt, 0));
+    if (manifest.objectName != dataName || manifest.sha256 != wireSha256 ||
+        manifest.objectType != "ndn-data-wire" || manifest.dataReceiptId.empty()) {
+      throw std::runtime_error("repo-sqlite-data-receipt-corrupt");
+    }
+    return manifest;
+  }
+
+  void attachImportedDataReceipt(const RepoObjectManifest& expected,
+                                 const RepoObjectManifest& updated) override
+  {
+    std::string currentJson;
+    {
+      sqlite3_stmt* readStmt = nullptr;
+      prepare("SELECT manifest_json FROM objects WHERE object_name=?", &readStmt);
+      StatementGuard readGuard(readStmt);
+      bindText(readStmt, 1, expected.objectName);
+      const int readResult = sqlite3_step(readStmt);
+      if (readResult != SQLITE_ROW) {
+        if (readResult != SQLITE_DONE) throwSqlite("failed to inspect Data import");
+        throw std::runtime_error("repo-data-import-manifest-conflict");
+      }
+      currentJson = columnText(readStmt, 0);
+    }
+    const auto current = parseManifestJson(currentJson);
+    auto withoutReceipt = updated;
+    withoutReceipt.dataReceiptId.clear();
+    withoutReceipt.dataReceiptRepoNode.clear();
+    withoutReceipt.dataReceiptProviderIdentity.clear();
+    withoutReceipt.dataReceiptCommittedAtMs = 0;
+    if (current.toJson() != expected.toJson() || !current.dataReceiptId.empty() ||
+        withoutReceipt.toJson() != expected.toJson() ||
+        updated.objectType != "ndn-data-wire" || updated.dataReceiptId.empty() ||
+        updated.dataReceiptRepoNode.empty() ||
+        updated.dataReceiptProviderIdentity.empty() ||
+        updated.dataReceiptCommittedAtMs == 0) {
+      throw std::runtime_error("repo-data-import-manifest-conflict");
+    }
+    sqlite3_stmt* updateStmt = nullptr;
+    prepare("UPDATE objects SET manifest_json=? WHERE object_name=? AND manifest_json=?",
+            &updateStmt);
+    StatementGuard updateGuard(updateStmt);
+    bindText(updateStmt, 1, updated.toJson());
+    bindText(updateStmt, 2, expected.objectName);
+    bindText(updateStmt, 3, currentJson);
+    stepDone(updateStmt, "failed to attach imported Data receipt");
+    if (sqlite3_changes(m_db) != 1) {
+      throw std::runtime_error("repo-data-import-manifest-conflict");
+    }
   }
 
   size_t size() const override
@@ -703,6 +891,32 @@ public:
     return m_authoritativeStore->getManifest(objectName);
   }
 
+  RepoObjectMetadataProbe
+  probeObjectMetadata(const std::string& objectName) const override
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    return m_authoritativeStore->probeObjectMetadata(objectName);
+  }
+
+  std::optional<RepoObjectManifest>
+  findRetainedDataReceipt(const std::string& dataName,
+                          const std::string& wireSha256) const override
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    return m_authoritativeStore->findRetainedDataReceipt(dataName, wireSha256);
+  }
+
+  void attachImportedDataReceipt(const RepoObjectManifest& expected,
+                                 const RepoObjectManifest& updated) override
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    m_authoritativeStore->attachImportedDataReceipt(expected, updated);
+    std::lock_guard<std::mutex> lock(m_mutex);
+    invalidate(expected.objectName);
+    ++m_epochs[expected.objectName];
+    ++m_status.backingWrites;
+  }
+
   bool supportsManifestLookup() const noexcept override
   {
     return m_authoritativeStore->supportsManifestLookup();
@@ -997,6 +1211,11 @@ RepoObjectManifest::toJson() const
      << ",";
   os << "\"operationId\":" << jsonQuote(operationId) << ",";
   os << "\"lifecycleState\":" << jsonQuote(lifecycleState) << ",";
+  os << "\"dataReceiptId\":" << jsonQuote(dataReceiptId) << ",";
+  os << "\"dataReceiptRepoNode\":" << jsonQuote(dataReceiptRepoNode) << ",";
+  os << "\"dataReceiptProviderIdentity\":"
+     << jsonQuote(dataReceiptProviderIdentity) << ",";
+  os << "\"dataReceiptCommittedAtMs\":" << dataReceiptCommittedAtMs << ",";
   os << "\"policyEpoch\":" << jsonQuote(policyEpoch) << ",";
   os << "\"publicationIdentity\":" << jsonQuote(publicationIdentity) << ",";
   os << "\"protectionEpoch\":" << jsonQuote(protectionEpoch) << ",";
@@ -1086,21 +1305,140 @@ RepoWriteReceipt::toJson() const
   return os.str();
 }
 
+RepoWriteReceipt
+RepoWriteReceipt::dataPacketFromJson(const std::string& wire)
+{
+  using Kind = detail::JsonValue::Kind;
+  const auto parsed = detail::parseJson(wire, 4096);
+  const auto& object = detail::requireObject(parsed);
+  detail::requireExactKeys(object, {
+    "operationId", "repoNode", "providerIdentity", "objectName", "generation",
+    "digest", "persistedBytes", "state", "completedAtMs"});
+  RepoWriteReceipt receipt;
+  receipt.operationId = detail::member(object, "operationId", Kind::String).string;
+  receipt.repoNode = detail::member(object, "repoNode", Kind::String).string;
+  receipt.providerIdentity = detail::member(object, "providerIdentity", Kind::String).string;
+  receipt.objectName = detail::member(object, "objectName", Kind::String).string;
+  receipt.generation = detail::member(object, "generation", Kind::Unsigned).number;
+  receipt.digest = detail::member(object, "digest", Kind::String).string;
+  receipt.persistedBytes = detail::member(object, "persistedBytes", Kind::Unsigned).number;
+  receipt.state = detail::member(object, "state", Kind::String).string;
+  receipt.completedAtMs = detail::member(object, "completedAtMs", Kind::Unsigned).number;
+  if (receipt.operationId.empty() || receipt.repoNode.empty() ||
+      receipt.providerIdentity.empty() || receipt.objectName.empty() ||
+      receipt.generation == 0 || receipt.digest.size() != 64 ||
+      receipt.persistedBytes == 0 || receipt.completedAtMs == 0 ||
+      receipt.state != "COMMITTED") {
+    throw std::invalid_argument("repo-data-receipt-invalid");
+  }
+  return receipt;
+}
+
+std::string
+RepoDataPacketQuery::toJson() const
+{
+  std::ostringstream os;
+  os << "{\"schemaVersion\":" << schemaVersion
+     << ",\"dataName\":" << jsonQuote(dataName)
+     << ",\"expectedWireSha256\":" << jsonQuote(expectedWireSha256) << "}";
+  return os.str();
+}
+
+RepoDataPacketQuery
+RepoDataPacketQuery::fromJson(const std::string& wire)
+{
+  using Kind = detail::JsonValue::Kind;
+  const auto parsed = detail::parseJson(wire, 8192);
+  const auto& object = detail::requireObject(parsed);
+  detail::requireExactKeys(object, {"schemaVersion", "dataName", "expectedWireSha256"});
+  RepoDataPacketQuery query;
+  const auto schemaVersion = detail::member(object, "schemaVersion", Kind::Unsigned).number;
+  if (schemaVersion != 1) throw std::invalid_argument("repo-data-query-invalid");
+  query.schemaVersion = 1;
+  query.dataName = detail::member(object, "dataName", Kind::String).string;
+  query.expectedWireSha256 = detail::member(
+    object, "expectedWireSha256", Kind::String).string;
+  if (query.dataName.empty() ||
+      query.expectedWireSha256.size() != 64 ||
+      !std::all_of(query.expectedWireSha256.begin(), query.expectedWireSha256.end(),
+                   [] (char ch) { return (ch >= '0' && ch <= '9') ||
+                                          (ch >= 'a' && ch <= 'f'); })) {
+    throw std::invalid_argument("repo-data-query-invalid");
+  }
+  return query;
+}
+
+std::string
+RepoDataPacketLocation::toJson() const
+{
+  std::ostringstream os;
+  os << "{\"schemaVersion\":" << schemaVersion
+     << ",\"receiptId\":" << jsonQuote(receiptId)
+     << ",\"repoNode\":" << jsonQuote(repoNode)
+     << ",\"providerIdentity\":" << jsonQuote(providerIdentity)
+     << ",\"dataName\":" << jsonQuote(dataName)
+     << ",\"wireSha256\":" << jsonQuote(wireSha256)
+     << ",\"state\":" << jsonQuote(state)
+     << ",\"forwardingHint\":" << jsonQuote(forwardingHint)
+     << ",\"observedAtMs\":" << observedAtMs
+     << ",\"expiresAtMs\":" << expiresAtMs << "}";
+  return os.str();
+}
+
+RepoDataPacketLocation
+RepoDataPacketLocation::fromJson(const std::string& wire)
+{
+  using Kind = detail::JsonValue::Kind;
+  const auto parsed = detail::parseJson(wire, 8192);
+  const auto& object = detail::requireObject(parsed);
+  detail::requireExactKeys(object, {"schemaVersion", "receiptId", "repoNode",
+    "providerIdentity", "dataName", "wireSha256", "state", "forwardingHint",
+    "observedAtMs", "expiresAtMs"});
+  RepoDataPacketLocation location;
+  const auto schemaVersion = detail::member(object, "schemaVersion", Kind::Unsigned).number;
+  if (schemaVersion != 1) throw std::invalid_argument("repo-data-location-invalid");
+  location.schemaVersion = 1;
+  location.receiptId = detail::member(object, "receiptId", Kind::String).string;
+  location.repoNode = detail::member(object, "repoNode", Kind::String).string;
+  location.providerIdentity = detail::member(
+    object, "providerIdentity", Kind::String).string;
+  location.dataName = detail::member(object, "dataName", Kind::String).string;
+  location.wireSha256 = detail::member(object, "wireSha256", Kind::String).string;
+  location.state = detail::member(object, "state", Kind::String).string;
+  location.forwardingHint = detail::member(object, "forwardingHint", Kind::String).string;
+  location.observedAtMs = detail::member(object, "observedAtMs", Kind::Unsigned).number;
+  location.expiresAtMs = detail::member(object, "expiresAtMs", Kind::Unsigned).number;
+  if (location.receiptId.empty() ||
+      location.repoNode.empty() || location.providerIdentity.empty() ||
+      location.dataName.empty() || location.wireSha256.size() != 64 ||
+      location.observedAtMs == 0 || location.expiresAtMs <= location.observedAtMs ||
+      (location.state != "PRESENT" && location.state != "ABSENT" &&
+       location.state != "UNKNOWN") ||
+      (location.state == "PRESENT"
+         ? location.forwardingHint != location.providerIdentity
+         : !location.forwardingHint.empty())) {
+    throw std::invalid_argument("repo-data-location-invalid");
+  }
+  return location;
+}
+
 std::vector<uint8_t>
 ArtifactStoreRequest::toWire(const ArtifactLimits& limits) const
 {
-  if (schemaVersion != 1 || generation == 0 ||
+  if (schemaVersion != 2 || generation == 0 ||
       bytes.size() != reference.sizeBytes ||
       bytes.size() > std::min<uint64_t>(limits.maxChunkBytes, 16 * 1024 * 1024)) {
     throw std::invalid_argument("repo-artifact-store-request-invalid: version, size, or generation is invalid");
   }
   validateIdentifier(operationId, 256, "operationId", artifact_error::InvalidReceipt);
   reference.validate(limits);
-  const std::string header = "{\"schemaVersion\":1,\"operationId\":" +
+  validateOperationOwner(operationOwner, limits);
+  const std::string header = "{\"schemaVersion\":2,\"operationId\":" +
     detail::quoteJson(operationId) + ",\"generation\":" +
     std::to_string(generation) + ",\"artifact\":" + reference.toJson() +
+    ",\"operationOwner\":" + operationOwnerJson(operationOwner) +
     ",\"payloadBytes\":" + std::to_string(bytes.size()) + "}";
-  return frameArtifactRequest("ARV2PUT1", header, bytes);
+  return frameArtifactRequest("ARV2PUT2", header, bytes);
 }
 
 ArtifactStoreRequest
@@ -1108,19 +1446,32 @@ ArtifactStoreRequest::fromWire(const std::vector<uint8_t>& wire,
                                const ArtifactLimits& limits)
 {
   size_t payloadOffset = 0;
-  const auto header = unframeArtifactRequest(wire, "ARV2PUT1", payloadOffset);
+  const bool version2Frame = hasArtifactFrameMagic(wire, "ARV2PUT2");
+  const auto header = unframeArtifactRequest(
+    wire, version2Frame ? "ARV2PUT2" : "ARV2PUT1", payloadOffset);
   const auto root = detail::parseJson(header, 64 * 1024);
   const auto& object = detail::requireObject(root);
-  detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation",
-    "artifact", "payloadBytes"});
-  if (jsonUnsigned(object, "schemaVersion") != 1) {
+  const auto wireVersion = jsonUnsigned(object, "schemaVersion");
+  if ((wireVersion != 1 && wireVersion != 2) ||
+      (wireVersion == 2) != version2Frame) {
     throw std::invalid_argument("repo-artifact-store-request-invalid: unknown schema version");
+  }
+  if (wireVersion == 2) {
+    detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation",
+      "artifact", "operationOwner", "payloadBytes"});
+  }
+  else {
+    detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation",
+      "artifact", "payloadBytes"});
   }
   ArtifactStoreRequest result;
   result.operationId = jsonString(object, "operationId");
   result.generation = jsonUnsigned(object, "generation");
   result.reference = ArtifactReference::fromJson(
     detail::renderJson(object.at("artifact")), limits);
+  if (wireVersion == 2) {
+    result.operationOwner = parseOperationOwner(object.at("operationOwner"));
+  }
   const auto payloadBytes = jsonUnsigned(object, "payloadBytes");
   if (payloadBytes != wire.size() - payloadOffset) {
     throw std::invalid_argument("repo-artifact-store-request-invalid: payload length mismatch");
@@ -1133,7 +1484,7 @@ ArtifactStoreRequest::fromWire(const std::vector<uint8_t>& wire,
 std::vector<uint8_t>
 ArtifactRangeWriteRequest::toWire(const ArtifactLimits& limits) const
 {
-  if (schemaVersion != 1 || generation == 0 || lengthBytes == 0 ||
+  if (schemaVersion != 2 || generation == 0 || lengthBytes == 0 ||
       lengthBytes != bytes.size() || offsetBytes > reference.sizeBytes ||
       lengthBytes > reference.sizeBytes - offsetBytes ||
       lengthBytes > std::min<uint64_t>(limits.maxChunkBytes, 16 * 1024 * 1024)) {
@@ -1141,13 +1492,15 @@ ArtifactRangeWriteRequest::toWire(const ArtifactLimits& limits) const
   }
   validateIdentifier(operationId, 256, "operationId", artifact_error::InvalidReceipt);
   reference.validate(limits);
-  const std::string header = "{\"schemaVersion\":1,\"operationId\":" +
+  validateOperationOwner(operationOwner, limits);
+  const std::string header = "{\"schemaVersion\":2,\"operationId\":" +
     detail::quoteJson(operationId) + ",\"generation\":" +
     std::to_string(generation) + ",\"artifact\":" + reference.toJson() +
+    ",\"operationOwner\":" + operationOwnerJson(operationOwner) +
     ",\"offsetBytes\":" + std::to_string(offsetBytes) +
     ",\"lengthBytes\":" + std::to_string(lengthBytes) +
     ",\"payloadBytes\":" + std::to_string(bytes.size()) + "}";
-  return frameArtifactRequest("ARV2RNG1", header, bytes);
+  return frameArtifactRequest("ARV2RNG2", header, bytes);
 }
 
 ArtifactRangeWriteRequest
@@ -1155,19 +1508,32 @@ ArtifactRangeWriteRequest::fromWire(const std::vector<uint8_t>& wire,
                                     const ArtifactLimits& limits)
 {
   size_t payloadOffset = 0;
-  const auto header = unframeArtifactRequest(wire, "ARV2RNG1", payloadOffset);
+  const bool version2Frame = hasArtifactFrameMagic(wire, "ARV2RNG2");
+  const auto header = unframeArtifactRequest(
+    wire, version2Frame ? "ARV2RNG2" : "ARV2RNG1", payloadOffset);
   const auto root = detail::parseJson(header, 64 * 1024);
   const auto& object = detail::requireObject(root);
-  detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation",
-    "artifact", "offsetBytes", "lengthBytes", "payloadBytes"});
-  if (jsonUnsigned(object, "schemaVersion") != 1) {
+  const auto wireVersion = jsonUnsigned(object, "schemaVersion");
+  if ((wireVersion != 1 && wireVersion != 2) ||
+      (wireVersion == 2) != version2Frame) {
     throw std::invalid_argument("repo-artifact-range-request-invalid: unknown schema version");
+  }
+  if (wireVersion == 2) {
+    detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation",
+      "artifact", "operationOwner", "offsetBytes", "lengthBytes", "payloadBytes"});
+  }
+  else {
+    detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation",
+      "artifact", "offsetBytes", "lengthBytes", "payloadBytes"});
   }
   ArtifactRangeWriteRequest result;
   result.operationId = jsonString(object, "operationId");
   result.generation = jsonUnsigned(object, "generation");
   result.reference = ArtifactReference::fromJson(
     detail::renderJson(object.at("artifact")), limits);
+  if (wireVersion == 2) {
+    result.operationOwner = parseOperationOwner(object.at("operationOwner"));
+  }
   result.offsetBytes = jsonUnsigned(object, "offsetBytes");
   result.lengthBytes = jsonUnsigned(object, "lengthBytes");
   const auto payloadBytes = jsonUnsigned(object, "payloadBytes");
@@ -1182,15 +1548,17 @@ ArtifactRangeWriteRequest::fromWire(const std::vector<uint8_t>& wire,
 std::vector<uint8_t>
 ArtifactRangeCommitRequest::toWire(const ArtifactLimits& limits) const
 {
-  if (schemaVersion != 1 || generation == 0) {
+  if (schemaVersion != 2 || generation == 0) {
     throw std::invalid_argument("repo-artifact-commit-request-invalid: generation or version invalid");
   }
   validateIdentifier(operationId, 256, "operationId", artifact_error::InvalidReceipt);
   reference.validate(limits);
-  const std::string header = "{\"schemaVersion\":1,\"operationId\":" +
+  validateOperationOwner(operationOwner, limits);
+  const std::string header = "{\"schemaVersion\":2,\"operationId\":" +
     detail::quoteJson(operationId) + ",\"generation\":" +
-    std::to_string(generation) + ",\"artifact\":" + reference.toJson() + "}";
-  return frameArtifactRequest("ARV2COM1", header);
+    std::to_string(generation) + ",\"artifact\":" + reference.toJson() +
+    ",\"operationOwner\":" + operationOwnerJson(operationOwner) + "}";
+  return frameArtifactRequest("ARV2COM2", header);
 }
 
 ArtifactRangeCommitRequest
@@ -1198,21 +1566,34 @@ ArtifactRangeCommitRequest::fromWire(const std::vector<uint8_t>& wire,
                                      const ArtifactLimits& limits)
 {
   size_t payloadOffset = 0;
-  const auto header = unframeArtifactRequest(wire, "ARV2COM1", payloadOffset);
+  const bool version2Frame = hasArtifactFrameMagic(wire, "ARV2COM2");
+  const auto header = unframeArtifactRequest(
+    wire, version2Frame ? "ARV2COM2" : "ARV2COM1", payloadOffset);
   if (payloadOffset != wire.size()) {
     throw std::invalid_argument("repo-artifact-commit-request-invalid: unexpected payload bytes");
   }
   const auto root = detail::parseJson(header, 64 * 1024);
   const auto& object = detail::requireObject(root);
-  detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation", "artifact"});
-  if (jsonUnsigned(object, "schemaVersion") != 1) {
+  const auto wireVersion = jsonUnsigned(object, "schemaVersion");
+  if ((wireVersion != 1 && wireVersion != 2) ||
+      (wireVersion == 2) != version2Frame) {
     throw std::invalid_argument("repo-artifact-commit-request-invalid: unknown schema version");
+  }
+  if (wireVersion == 2) {
+    detail::requireExactKeys(object,
+      {"schemaVersion", "operationId", "generation", "artifact", "operationOwner"});
+  }
+  else {
+    detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation", "artifact"});
   }
   ArtifactRangeCommitRequest result;
   result.operationId = jsonString(object, "operationId");
   result.generation = jsonUnsigned(object, "generation");
   result.reference = ArtifactReference::fromJson(
     detail::renderJson(object.at("artifact")), limits);
+  if (wireVersion == 2) {
+    result.operationOwner = parseOperationOwner(object.at("operationOwner"));
+  }
   (void)result.toWire(limits);
   return result;
 }
@@ -1655,6 +2036,26 @@ RepoObjectManifest
 RepoStoreBackend::getManifest(const std::string& objectName) const
 {
   return get(objectName).manifest;
+}
+
+RepoObjectMetadataProbe
+RepoStoreBackend::probeObjectMetadata(const std::string&) const
+{
+  return {};
+}
+
+std::optional<RepoObjectManifest>
+RepoStoreBackend::findRetainedDataReceipt(const std::string&,
+                                          const std::string&) const
+{
+  return std::nullopt;
+}
+
+void
+RepoStoreBackend::attachImportedDataReceipt(const RepoObjectManifest&,
+                                            const RepoObjectManifest&)
+{
+  throw std::runtime_error("repo-data-import-backend-unsupported");
 }
 
 bool

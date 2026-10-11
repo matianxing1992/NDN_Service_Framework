@@ -91,7 +91,7 @@
 | `RepoNode::RepoNode(ndn::Name servicePrefix, StorageCapability capability, std::shared_ptr<RepoStoreBackend> store, std::string repoNode = {}, std::string providerIdentity = {}, std::string artifactMetadataPath = {}, ArtifactLimits artifactLimits = {}, uint64_t availabilityFreshnessMs = 5000)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
 | `RepoNode::~RepoNode()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
 | `RepoNode::servicePrefix()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
-| `RepoNode::core()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
+| `RepoNode::core() const` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
 | `RepoNode::core()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
 | `RepoNode::registerLocalServices(ndn_service_framework::LocalServiceRegistry& registry)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
 | `RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N01–10（注册集合）；A04 |
@@ -155,6 +155,7 @@ DB002前置：调用者在fetch期间独占destination namespace，不支持跨A
 DB003：native worker join/drain先于publisher User/Face/scheduler析构，fault fixture须bounded释放handler；count是worker attempt，emission用独立handler/pcap。
 DB004：锁前/锁后verified replay都重新执行parent barrier，post-rename目标不删除，source inventory/identity/source unchanged继续验证。
 Public模式：当前native路径显式BeginCollaborationWithProviders/CommitCollaborationPlan；旧Targeted compat按版本化reject/明确隔离，不虚构新native mode switch。
+
 ## 当前 API 用法与用例（2026-10-10）
 
 核对对象：`Repo` 分支 `9fafa6ef` 加当前未提交源码。上方保留原始 baseline；本节按当前 header 和 Python wrapper 补充调用指南，不代表新的运行资格。三个主要 C++ 公开类逐声明共 126 项：ArtifactRepositoryApi 14、RepoClient 66、RepoNode 46（包含 Node 构造、析构及两个 core overload）。更正原清单把 `~RepoNode()` 写成无参构造的错误；当前没有公开无参 RepoNode 构造。

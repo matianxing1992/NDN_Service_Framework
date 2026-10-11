@@ -1,0 +1,903 @@
+{
+  "build_receipt_sha256": "db9a0bc61f0fd779beefe5000ff90f47709227f0a2925ed27eb9ef299d2ba054",
+  "execution_rules": [
+    "sequential runs; fresh output per attempt",
+    "first full run per profile writes lock; all later runs including round2 replay that exact profile lock",
+    "each round uses separate durable object and artifact roots; fresh seed/read processes; no STORE during read",
+    "untraced sudo-n-E env, pinned SVS before normal build libraries",
+    "stop on first failure; preserve manifest, finite-child exits, nonempty per-host pcaps, loaded library hashes and bounded cleanup",
+    "planned stable-ID links are not qualification evidence; inspect scenario/storage/consumer/signed oracles before marking a matrix row PASS"
+  ],
+  "outer_timeout_basis": {
+    "A06": "600 publish + 300 fetch + 1800 allowance",
+    "A06_LARGE": "3600 publish + 300 fetch + 1800 allowance, rounded up",
+    "A06_RANGE": "900 publish + 300 fetch + 1800 allowance",
+    "ARTIFACT_BASELINE_and_SIX_HOST": "7840 lexical child caps plus two additional 4200-second loop iterations and allowance, rounded up",
+    "P01_P02": "2640 sequential child caps + 1800 allowance, rounded up",
+    "P03_P04": "three 4200-second DI publishes plus remaining requests/bindings and allowance",
+    "other_scenarios": "4200 supervisor covers ordinary multi-child, local/rejection loops and repeated availability probes plus 1800 allowance; explicit independent review required",
+    "scope": "supervisor only; existing runner child/operation budgets unchanged",
+    "setup_oracle_cleanup_allowance_seconds": 1800
+  },
+  "profiles": {
+    "object5": {
+      "hosts": 5,
+      "include_importer": false,
+      "include_object_server": false,
+      "object_mode": true,
+      "topology": "Experiments/Topology/AI_Lab.conf"
+    },
+    "object5-import": {
+      "hosts": 5,
+      "include_importer": true,
+      "include_object_server": false,
+      "object_mode": true,
+      "topology": "Experiments/Topology/AI_Lab.conf"
+    },
+    "persistent5": {
+      "hosts": 5,
+      "include_importer": false,
+      "include_object_server": false,
+      "object_mode": false,
+      "topology": "Experiments/Topology/AI_Lab.conf"
+    },
+    "persistent6": {
+      "hosts": 6,
+      "include_importer": false,
+      "include_object_server": false,
+      "object_mode": false,
+      "topology": "tests/minindn/spec193_six_host.conf"
+    },
+    "persistent6-mixed": {
+      "hosts": 6,
+      "include_importer": false,
+      "include_object_server": true,
+      "object_mode": false,
+      "topology": "tests/minindn/spec193_six_host.conf"
+    },
+    "persistent7": {
+      "hosts": 7,
+      "include_importer": false,
+      "include_object_server": false,
+      "object_mode": false,
+      "topology": "tests/minindn/spec193_seven_host.conf"
+    }
+  },
+  "required_before_execution": [
+    "all normal gates PASS",
+    "current native ASAN/UBSAN PASS",
+    "closing design-code/evidence review PASS",
+    "sealed v4 reproduction PASS and original globals restored"
+  ],
+  "rounds": [
+    1,
+    2
+  ],
+  "runner_sha256": "5a51f9ffae07d269504edf8e02384b75cd2f3aed439147aae663a26a084a30c8",
+  "runs_per_round": 68,
+  "scenarios": [
+    {
+      "campaign_case": "A05",
+      "flags": [],
+      "label": "A05",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A05"
+      ]
+    },
+    {
+      "campaign_case": "ARTIFACT_BASELINE",
+      "flags": [],
+      "label": "ARTIFACT_BASELINE",
+      "outer_timeout_seconds": 21600,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": []
+    },
+    {
+      "campaign_case": "ARTIFACT_SIX_HOST",
+      "flags": [],
+      "label": "ARTIFACT_SIX_HOST",
+      "outer_timeout_seconds": 21600,
+      "persistence": null,
+      "profile": "persistent6",
+      "stable_ids": []
+    },
+    {
+      "campaign_case": "OBJECT_BASELINE",
+      "flags": [],
+      "label": "OBJECT_BASELINE",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": []
+    },
+    {
+      "campaign_case": "PERSIST_SEED",
+      "flags": [],
+      "label": "PERSIST_SEED",
+      "outer_timeout_seconds": 4200,
+      "persistence": "object",
+      "profile": "object5",
+      "stable_ids": []
+    },
+    {
+      "campaign_case": "PERSIST_READ",
+      "flags": [],
+      "label": "PERSIST_READ",
+      "outer_timeout_seconds": 4200,
+      "persistence": "object",
+      "profile": "object5",
+      "stable_ids": []
+    },
+    {
+      "campaign_case": "PERSIST_ARTIFACT_SEED",
+      "flags": [],
+      "label": "PERSIST_ARTIFACT_SEED",
+      "outer_timeout_seconds": 4200,
+      "persistence": "artifact",
+      "profile": "persistent5",
+      "stable_ids": []
+    },
+    {
+      "campaign_case": "PERSIST_ARTIFACT_READ",
+      "flags": [],
+      "label": "PERSIST_ARTIFACT_READ",
+      "outer_timeout_seconds": 4200,
+      "persistence": "artifact",
+      "profile": "persistent5",
+      "stable_ids": []
+    },
+    {
+      "campaign_case": "L01",
+      "flags": [],
+      "label": "L01",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "L01"
+      ]
+    },
+    {
+      "campaign_case": "L02",
+      "flags": [],
+      "label": "L02",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "L02"
+      ]
+    },
+    {
+      "campaign_case": "L03_L04",
+      "flags": [],
+      "label": "L03_L04",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "L03",
+        "L04"
+      ]
+    },
+    {
+      "campaign_case": "NW_OBJECT",
+      "flags": [],
+      "label": "NW_OBJECT",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "N01",
+        "N02",
+        "N04",
+        "N05",
+        "N06",
+        "N09"
+      ]
+    },
+    {
+      "campaign_case": "NW_MALFORMED",
+      "flags": [],
+      "label": "NW_MALFORMED",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "N08"
+      ]
+    },
+    {
+      "campaign_case": "O01",
+      "flags": [],
+      "label": "O01",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O01"
+      ]
+    },
+    {
+      "campaign_case": "O02",
+      "flags": [],
+      "label": "O02",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O02"
+      ]
+    },
+    {
+      "campaign_case": "O03",
+      "flags": [],
+      "label": "O03",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O03"
+      ]
+    },
+    {
+      "campaign_case": "O04",
+      "flags": [],
+      "label": "O04",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O04"
+      ]
+    },
+    {
+      "campaign_case": "O05",
+      "flags": [],
+      "label": "O05",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O05"
+      ]
+    },
+    {
+      "campaign_case": "O06_O07",
+      "flags": [],
+      "label": "O06_O07",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O06",
+        "O07"
+      ]
+    },
+    {
+      "campaign_case": "O08",
+      "flags": [],
+      "label": "O08",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O08"
+      ]
+    },
+    {
+      "campaign_case": "O09",
+      "flags": [],
+      "label": "O09",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O09"
+      ]
+    },
+    {
+      "campaign_case": "O10",
+      "flags": [],
+      "label": "O10",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O10"
+      ]
+    },
+    {
+      "campaign_case": "O11",
+      "flags": [],
+      "label": "O11",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O11"
+      ]
+    },
+    {
+      "campaign_case": "O12",
+      "flags": [],
+      "label": "O12",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O12"
+      ]
+    },
+    {
+      "campaign_case": "O13",
+      "flags": [],
+      "label": "O13",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O13"
+      ]
+    },
+    {
+      "campaign_case": "O14",
+      "flags": [],
+      "label": "O14",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O14"
+      ]
+    },
+    {
+      "campaign_case": "O15",
+      "flags": [],
+      "label": "O15",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O15"
+      ]
+    },
+    {
+      "campaign_case": "O16",
+      "flags": [],
+      "label": "O16",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O16"
+      ]
+    },
+    {
+      "campaign_case": "O17_ROUTE",
+      "flags": [],
+      "label": "O17_ROUTE",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O17"
+      ]
+    },
+    {
+      "campaign_case": "O17_ROUTE",
+      "flags": [
+        "--o17-failover"
+      ],
+      "label": "O17_FAILOVER",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O17"
+      ]
+    },
+    {
+      "campaign_case": "O17_ROUTE",
+      "flags": [
+        "--o17-corrupt-location"
+      ],
+      "label": "O17_CORRUPT_LOCATION",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O17"
+      ]
+    },
+    {
+      "campaign_case": "O17_ROUTE",
+      "flags": [
+        "--o17-drop-original-data"
+      ],
+      "label": "O17_DROP_ORIGINAL_DATA",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O17"
+      ]
+    },
+    {
+      "campaign_case": "O17_ROUTE",
+      "flags": [
+        "--o17-import-legacy"
+      ],
+      "label": "O17_IMPORT_LEGACY",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O17"
+      ]
+    },
+    {
+      "campaign_case": "O17_ROUTE",
+      "flags": [
+        "--o17-cache-hit"
+      ],
+      "label": "O17_CACHE_HIT",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O17"
+      ]
+    },
+    {
+      "campaign_case": "O17_ROUTE",
+      "flags": [
+        "--o17-server-auth"
+      ],
+      "label": "O17_SERVER_AUTH",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "O17"
+      ]
+    },
+    {
+      "campaign_case": "PERSISTENT_MODE_BOUNDARY",
+      "flags": [],
+      "label": "PERSISTENT_MODE_BOUNDARY",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "N10"
+      ]
+    },
+    {
+      "campaign_case": "NW_REJECT",
+      "flags": [],
+      "label": "NW_REJECT",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "N10"
+      ]
+    },
+    {
+      "campaign_case": "NW_NEGATIVE",
+      "flags": [],
+      "label": "NW_NEGATIVE",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "N08"
+      ]
+    },
+    {
+      "campaign_case": "NW_WRONG_SIGNER",
+      "flags": [],
+      "label": "NW_WRONG_SIGNER",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5",
+      "stable_ids": [
+        "N08"
+      ]
+    },
+    {
+      "campaign_case": "P01_P02",
+      "flags": [],
+      "label": "P01_P02",
+      "outer_timeout_seconds": 4800,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "P01",
+        "P02"
+      ]
+    },
+    {
+      "campaign_case": "P06",
+      "flags": [],
+      "label": "P06",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "P06"
+      ]
+    },
+    {
+      "campaign_case": "P05",
+      "flags": [],
+      "label": "P05",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "object5-import",
+      "stable_ids": [
+        "P05"
+      ]
+    },
+    {
+      "campaign_case": "P03_P04",
+      "flags": [],
+      "label": "P03_P04",
+      "outer_timeout_seconds": 18000,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "P03",
+        "P04"
+      ]
+    },
+    {
+      "campaign_case": "INAPP_MATRIX",
+      "flags": [],
+      "label": "INAPP_MATRIX",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A01",
+        "A02",
+        "A03"
+      ]
+    },
+    {
+      "campaign_case": "A04",
+      "flags": [],
+      "label": "A04",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A04"
+      ]
+    },
+    {
+      "campaign_case": "A06",
+      "flags": [],
+      "label": "A06",
+      "outer_timeout_seconds": 2700,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A06"
+      ]
+    },
+    {
+      "campaign_case": "A06_RANGE",
+      "flags": [],
+      "label": "A06_RANGE",
+      "outer_timeout_seconds": 3000,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A06"
+      ]
+    },
+    {
+      "campaign_case": "A06_LARGE",
+      "flags": [],
+      "label": "A06_LARGE",
+      "outer_timeout_seconds": 6000,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A06"
+      ]
+    },
+    {
+      "campaign_case": "A09",
+      "flags": [],
+      "label": "A09",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A09"
+      ]
+    },
+    {
+      "campaign_case": "A07",
+      "flags": [],
+      "label": "A07",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent7",
+      "stable_ids": [
+        "A07"
+      ]
+    },
+    {
+      "campaign_case": "A08_ONE",
+      "flags": [],
+      "label": "A08_ONE",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent6",
+      "stable_ids": [
+        "A08"
+      ]
+    },
+    {
+      "campaign_case": "A08_QUORUM",
+      "flags": [],
+      "label": "A08_QUORUM",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent6",
+      "stable_ids": [
+        "A08"
+      ]
+    },
+    {
+      "campaign_case": "A08_REJECT",
+      "flags": [],
+      "label": "A08_REJECT",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent6-mixed",
+      "stable_ids": [
+        "A08"
+      ]
+    },
+    {
+      "campaign_case": "A10_A11",
+      "flags": [],
+      "label": "A10_A11",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A10",
+        "A11"
+      ]
+    },
+    {
+      "campaign_case": "A12",
+      "flags": [],
+      "label": "A12",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A12"
+      ]
+    },
+    {
+      "campaign_case": "NW_ARTIFACT",
+      "flags": [],
+      "label": "NW_ARTIFACT",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "N03",
+        "N07"
+      ]
+    },
+    {
+      "campaign_case": "A13",
+      "flags": [],
+      "label": "A13",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A13"
+      ]
+    },
+    {
+      "campaign_case": "A14_SOURCE",
+      "flags": [],
+      "label": "A14_SOURCE",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A14"
+      ]
+    },
+    {
+      "campaign_case": "A14_TARGET",
+      "flags": [],
+      "label": "A14_TARGET",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A14"
+      ]
+    },
+    {
+      "campaign_case": "A14_SEED",
+      "flags": [],
+      "label": "A14_SEED",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A14"
+      ]
+    },
+    {
+      "campaign_case": "A15",
+      "flags": [],
+      "label": "A15",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A15"
+      ]
+    },
+    {
+      "campaign_case": "A16",
+      "flags": [],
+      "label": "A16",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A16"
+      ]
+    },
+    {
+      "campaign_case": "A17",
+      "flags": [],
+      "label": "A17",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A17"
+      ]
+    },
+    {
+      "campaign_case": "A18",
+      "flags": [],
+      "label": "A18",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A18"
+      ]
+    },
+    {
+      "campaign_case": "A19",
+      "flags": [],
+      "label": "A19",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A19"
+      ]
+    },
+    {
+      "campaign_case": "A20",
+      "flags": [],
+      "label": "A20",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A20"
+      ]
+    },
+    {
+      "campaign_case": "A21",
+      "flags": [],
+      "label": "A21",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent6",
+      "stable_ids": [
+        "A21"
+      ]
+    },
+    {
+      "campaign_case": "A22",
+      "flags": [],
+      "label": "A22",
+      "outer_timeout_seconds": 4200,
+      "persistence": null,
+      "profile": "persistent5",
+      "stable_ids": [
+        "A22"
+      ]
+    }
+  ],
+  "source_candidate_sha256": "f4f244a7ac4c5011f1a70c8e818aa950db878d5705d95aec3ea3fa2733bf6dec",
+  "stable_ids": [
+    "A01",
+    "A02",
+    "A03",
+    "A04",
+    "A05",
+    "A06",
+    "A07",
+    "A08",
+    "A09",
+    "A10",
+    "A11",
+    "A12",
+    "A13",
+    "A14",
+    "A15",
+    "A16",
+    "A17",
+    "A18",
+    "A19",
+    "A20",
+    "A21",
+    "A22",
+    "L01",
+    "L02",
+    "L03",
+    "L04",
+    "N01",
+    "N02",
+    "N03",
+    "N04",
+    "N05",
+    "N06",
+    "N07",
+    "N08",
+    "N09",
+    "N10",
+    "O01",
+    "O02",
+    "O03",
+    "O04",
+    "O05",
+    "O06",
+    "O07",
+    "O08",
+    "O09",
+    "O10",
+    "O11",
+    "O12",
+    "O13",
+    "O14",
+    "O15",
+    "O16",
+    "O17",
+    "P01",
+    "P02",
+    "P03",
+    "P04",
+    "P05",
+    "P06"
+  ],
+  "status": "PREPARED_PENDING_REPRODUCTION_AND_RELEASE",
+  "total_planned_runs": 136
+}

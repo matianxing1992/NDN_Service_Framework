@@ -1847,6 +1847,7 @@ class DistributedInferenceProvider:
         queue_depth: int = 0,
         allow_executables: bool = False,
         dependency_graph=None,
+        repo_resolver=None,
     ) -> None:
         safe_role = _validate_list_token(role, "role")
 
@@ -1874,6 +1875,7 @@ class DistributedInferenceProvider:
                     temp_root=temp_dir,
                     allow_executables=allow_executables,
                     progress=report,
+                    repo_resolver=repo_resolver,
                 )
             except Exception as exc:
                 sequence += 1
@@ -1958,6 +1960,7 @@ class DistributedInferenceProvider:
         selection_cached_shards: Callable[[], Sequence[object]] | None = None,
         selection_reusable_state: Callable[[], Sequence[object]] | None = None,
         runtime_preparer: Callable | None = None,
+        repo_resolver=None,
     ) -> None:
         """Register one provider as capable of serving multiple inference roles.
 
@@ -2651,6 +2654,7 @@ class DistributedInferenceProvider:
                         temp_root=temp_dir,
                         allow_executables=allow_executables,
                         progress=report,
+                        repo_resolver=repo_resolver,
                     )
                 elif has_model:
                     execution = self._local_execution(

@@ -58,9 +58,7 @@ from ndnsf_distributed_inference.planner.sequential_split import (
     recommend_sequential_splits,
 )
 from ndnsf_distributed_inference.plan import nxm_stage_roles
-from ndnsf_distributed_inference.repo_reference import (
-    repo_manifest_from_large_data_reference,
-)
+from ndnsf_distributed_inference.app_sdk.contracts import DIRepoArtifactBinding
 from ndnsf_distributed_inference.plan import (
     ArtifactSpec,
     ModelFamily,
@@ -2350,12 +2348,12 @@ def build_dynamic_plan(client):
     return builder.build()
 
 
-def load_repo_manifests(path: str | Path) -> dict:
+def load_artifact_references(path: str | Path) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def build_repo_plan(client, manifest_path: str | Path):
-    manifests = load_repo_manifests(manifest_path)
+def build_repo_plan(client, artifact_references_path: str | Path):
+    references = load_artifact_references(artifact_references_path)
     service_name = yolo_inference_service(client.deployment)
     service_policy = client.deployment.service_policy(service_name)
     runtime = runtime_spec()
@@ -2363,9 +2361,13 @@ def build_repo_plan(client, manifest_path: str | Path):
     artifacts = {artifact.role: artifact for artifact in service_policy.artifacts}
     for role in service_policy.roles:
         artifact = artifacts[role]
-        role_manifests = manifests["roles"][role]
-        runner_manifest = repo_manifest_from_large_data_reference(role_manifests["runner"])
-        model_manifest = repo_manifest_from_large_data_reference(role_manifests["model"])
+        role_manifests = references["roles"][role]
+        runner_binding = DIRepoArtifactBinding.from_dict(
+            role_manifests["runner"]["repoBinding"]
+        ).to_dict()
+        model_binding = DIRepoArtifactBinding.from_dict(
+            role_manifests["model"]["repoBinding"]
+        ).to_dict()
         builder.add_part(
             role=role,
             model=b"",
@@ -2384,11 +2386,11 @@ def build_repo_plan(client, manifest_path: str | Path):
                     kind=runtime.artifact.kind,
                     executable=runtime.artifact.executable,
                     cache_name=runtime.artifact.cache_name,
-                    repo_manifest=runner_manifest,
+                    repo_binding=runner_binding,
                 ),
             ),
             cache_name=artifact.artifact_name,
-            repo_manifest=model_manifest,
+            repo_binding=model_binding,
             allow_dynamic_provisioning=True,
         )
     return builder.build()

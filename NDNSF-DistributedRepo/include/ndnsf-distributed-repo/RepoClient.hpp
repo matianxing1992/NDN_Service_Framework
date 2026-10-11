@@ -6,8 +6,13 @@
 
 #include "ndn-service-framework/ServiceUser.hpp"
 
+#include <ndn-cxx/data.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/signing-info.hpp>
+
+#include <atomic>
+#include <functional>
+#include <memory>
 
 namespace ndn_service_framework {
 class LocalServiceRegistry;
@@ -16,6 +21,13 @@ class LocalServiceRegistry;
 namespace ndnsf_distributed_repo {
 
 class RepoNode;
+
+struct OriginalDataReplica
+{
+  std::string repoNode;
+  ndn::Name providerIdentity;
+  ndn::Name servicePrefix;
+};
 
 struct StoreOptions
 {
@@ -29,6 +41,17 @@ class RepoClient
 {
 public:
   static constexpr const char* DEFAULT_SERVICE_NAME = "/NDNSF/DistributedRepo/Object/v1";
+
+  /** Query each Repo's stored Data receipt and current location before an
+   * original-name Interest. Producer trust is mandatory and caller-owned.
+   */
+  static std::vector<uint8_t> fetchOriginalDataPacket(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& dataName,
+    const std::string& expectedWireSha256,
+    const std::vector<OriginalDataReplica>& replicas,
+    const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
+    int timeoutMs);
 
   static RepoObjectManifest put(RepoNode& node,
                                 const std::string& objectName,
@@ -315,6 +338,8 @@ public:
    * Run one request through the normal ACK/selection/Response path while
    * restricting both ACK collection and final selection to one application-
    * selected Provider identity.
+   * The optional emission latch is caller-owned: clear it once before a
+   * multi-request target attempt; this helper only sets it.
    */
   static std::vector<uint8_t> requestSelectedService(
     ndn_service_framework::ServiceUser& user,
@@ -322,7 +347,8 @@ public:
     const ndn::Name& serviceName,
     const std::vector<uint8_t>& payload,
     int ackCollectionTimeMs,
-    int timeoutMs);
+    int timeoutMs,
+    std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted = {});
 
   static ndn::Name requestCommitRanges(
     ndn_service_framework::ServiceUser& user,
@@ -409,6 +435,24 @@ public:
     const ndn::Name& provider,
     const ndn::Name& repoServicePrefix,
     const ArtifactLocationRequest& request,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  static ndn::Name requestReceipt(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& provider,
+    const ndn::Name& repoServicePrefix,
+    const RepoReceiptLookupRequest& request,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  static ndn::Name requestAvailability(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& provider,
+    const ndn::Name& repoServicePrefix,
+    const RepoAvailabilityProbeRequest& request,
     int timeoutMs,
     ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <limits>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -23,6 +24,16 @@ parseUnsigned(const std::string& value, const std::string& option)
     throw std::invalid_argument("invalid unsigned value for " + option);
   }
   return result;
+}
+
+int
+parsePositiveInt(const std::string& value, const std::string& option)
+{
+  const auto parsed = parseUnsigned(value, option);
+  if (parsed == 0 || parsed > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+    throw std::invalid_argument("invalid positive integer for " + option);
+  }
+  return static_cast<int>(parsed);
 }
 
 std::string
@@ -98,13 +109,27 @@ PersistentRepoServerConfig::fromArguments(int argc, char* argv[])
     config.failureDomain = it->second;
     options.erase(it);
   }
+  if (const auto it = options.find("--ack-collection-ms"); it != options.end()) {
+    config.ackCollectionTimeMs = parsePositiveInt(it->second, it->first);
+    options.erase(it);
+  }
+  if (const auto it = options.find("--request-timeout-ms"); it != options.end()) {
+    config.requestTimeoutMs = parsePositiveInt(it->second, it->first);
+    options.erase(it);
+  }
+  if (const auto it = options.find("--availability-freshness-ms"); it != options.end()) {
+    config.availabilityFreshnessMs = parseUnsigned(it->second, it->first);
+    options.erase(it);
+  }
 
   for (const auto& [option, value] : options) {
     (void)value;
     if (option != "--repo-mode" && option != "--repo-node" &&
         option != "--database" && option != "--group-prefix" &&
         option != "--provider-identity" && option != "--authority-identity" &&
-        option != "--trust-schema") {
+        option != "--trust-schema" && option != "--ack-collection-ms" &&
+        option != "--request-timeout-ms" &&
+        option != "--availability-freshness-ms") {
       throw std::invalid_argument("unknown option " + option);
     }
   }
@@ -138,14 +163,20 @@ PersistentRepoServerConfig::validate() const
     throw std::invalid_argument("trust-schema must be a regular file");
   }
   // Run the same ndn-cxx ValidatorConfig parser used by ServiceProvider before
-  // the server creates its Face, Repo directory, SQLite store, or Provider.
+  // the server creates its Face, filesystem Repo store, artifact SQLite store,
+  // or Provider.
   // The offline fetcher is sufficient because loading parses local policy and
   // trust-anchor declarations but must not perform network certificate fetches.
   ndn::ValidatorConfig validator(
     std::make_unique<ndn::security::CertificateFetcherOffline>());
   validator.load(trustSchemaPath.string());
-  if (memoryCacheBytes == 0 || largeObjectThresholdBytes == 0) {
+  if (memoryCacheBytes == 0 || largeObjectThresholdBytes == 0 ||
+      availabilityFreshnessMs == 0) {
     throw std::invalid_argument("cache and large-object threshold must be positive");
+  }
+  if (ackCollectionTimeMs <= 0 || requestTimeoutMs <= ackCollectionTimeMs) {
+    throw std::invalid_argument(
+      "ACK collection time must be positive and less than the request timeout");
   }
 }
 

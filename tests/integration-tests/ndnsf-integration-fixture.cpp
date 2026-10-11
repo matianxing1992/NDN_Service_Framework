@@ -215,7 +215,10 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
     return policy;
   };
   const auto userAttributePolicy = makeAttributePolicy("/PERMISSION");
-  const auto providerAttributePolicy = makeAttributePolicy("/SERVICE");
+  auto providerAttributePolicy = makeAttributePolicy("/SERVICE");
+  if (m_profile.providerCanActAsUser) {
+    providerAttributePolicy += " OR " + userAttributePolicy;
+  }
   m_attributeAuthority->addNewPolicy(userCert, userAttributePolicy);
   m_attributeAuthority->addNewPolicy(providerCert, providerAttributePolicy);
   // AttributeAuthority installs the PUBLIC-PARAMS Interest filter from the
@@ -332,7 +335,7 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
             [&] (const ndn::Interest& interest) {
               forwardInterest(*m_userFace, interest, false);
             }));
-    m_extraProviderDataBridges.emplace_back(
+        m_extraProviderDataBridges.emplace_back(
         extraFace->onSendData.connect(
             [&] (const ndn::Data& data) {
               forwardData(*m_userFace, data, false);
@@ -511,6 +514,9 @@ NdnsfIntegrationEnvironment::computeSnapshot()
          << m_profile.serviceName.toUri()
          << m_profile.trustSchemaPath
          << providerCount();
+  if (m_profile.providerCanActAsUser) {
+    digest << "provider-can-act-as-user";
+  }
   for (const auto& service : configuredServices(m_profile)) {
     if (service != m_profile.serviceName) {
       digest << service.toUri();

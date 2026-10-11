@@ -62,6 +62,10 @@ struct BootstrapProfile
   // embedding fixture must not call processEvents/restart on that same
   // io_context from its pump thread.
   bool providerFacesHaveDedicatedIoWorkers = false;
+  // Persistent Repo operation workers run a ServiceUser under their own
+  // Provider identity so that the target Provider permissions bind to the
+  // server that owns recovery, not to the original submitting application.
+  bool providerCanActAsUser = false;
 };
 
 struct FaultProfile

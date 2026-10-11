@@ -1,0 +1,7 @@
+{
+  "status": "NOT_RELEASED",
+  "source_candidate_sha256": "f4f244a7ac4c5011f1a70c8e818aa950db878d5705d95aec3ea3fa2733bf6dec",
+  "convergence_status": "PENDING_REPRODUCTION",
+  "inputs": {},
+  "remaining": "Independent r54 full replay and exact global restoration; release integrity audit"
+}

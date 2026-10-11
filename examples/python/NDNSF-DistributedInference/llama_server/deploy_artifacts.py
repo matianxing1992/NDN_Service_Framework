@@ -9,11 +9,7 @@ from pathlib import Path
 
 from ndnsf import ServiceUser
 from ndnsf_distributed_inference.app_sdk import APPDeployment
-from py_repoclient.orchestration import (
-    LocalDistributedRepo,
-    NetworkDistributedRepoClient,
-    StorageCapability,
-)
+from py_repoclient import RepoClient
 
 from llama_server_lib import (
     build_llama_server_artifact_references,
@@ -31,18 +27,14 @@ def main() -> int:
                         help="Path to llama-server executable")
     parser.add_argument("--out", default="/tmp/ndnsf-di-llama-server-artifacts.json")
     parser.add_argument("--repo-service", default="/NDNSF/DistributedRepo")
-    parser.add_argument("--repo-upload-prefix", default="")
     parser.add_argument("--replication-factor", type=int, default=1)
     parser.add_argument("--local-smoke-export", action="store_true",
                         help="Write a local-payload artifact reference without contacting NDNSF repo")
     args = parser.parse_args()
 
     if args.local_smoke_export:
-        repo = LocalDistributedRepo([
-            StorageCapability(repo_node="/local/repo", free_bytes=8_000_000_000)
-        ])
         references = build_llama_server_artifact_references(
-            repo,
+            None,
             model_path=args.model,
             llama_server_path=args.llama_server,
             replication_factor=args.replication_factor,
@@ -56,29 +48,25 @@ def main() -> int:
         user = ServiceUser(
             group=deployment.group,
             controller=deployment.controller,
-            user=deployment.controller,
+            user=deployment.user,
             trust_schema=deployment.trust_schema,
             permission_wait_ms=6000,
             handler_threads=1,
             ack_threads=1,
             adaptive_admission=False,
         )
-        repo = NetworkDistributedRepoClient(
+        repo = RepoClient(
             user=user,
-            service_name=args.repo_service,
-            upload_prefix=args.repo_upload_prefix or (
-                f"{deployment.controller}/NDNSF-DISTRIBUTED-REPO/UPLOAD"
-            ),
+            repo_service_name=args.repo_service,
             ack_timeout_ms=1500,
             timeout_ms=60000,
-            verbose=True,
         )
-        repo.wait_until_ready(60.0)
         references = build_llama_server_artifact_references(
             repo,
             model_path=args.model,
             llama_server_path=args.llama_server,
             replication_factor=args.replication_factor,
+            publisher_identity=deployment.user,
         )
 
     target = write_artifact_references(args.out, references)

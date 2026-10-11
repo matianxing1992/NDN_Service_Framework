@@ -318,16 +318,43 @@ main()
       return 1;
     }
   }
+  uint64_t deletedCatalogEpoch = 0;
   {
     RepoCore restartedCore(
       {"/repo/persistent", 1024 * 1024, 0, 0.0, 1.0, "local", {"persistent"}},
       makeTieredRepoStore(sqlitePath.string(), 4096));
+    const auto restartedCatalog = restartedCore.catalogStatus();
+    const auto restartedSnapshot = restartedCore.catalogSnapshot();
+    const auto restartedDelta = restartedCore.catalogDelta(0);
     if (restartedCore.get(persistentObjectName) != payload ||
+        restartedCore.get(persistentObjectName) != payload ||
         restartedCore.getManifest(persistentObjectName).objectType !=
           "persistent-object" ||
+        restartedCatalog.objectCount != 1 ||
+        restartedSnapshot.entries.size() != 1 ||
+        restartedSnapshot.entries.front().manifest.objectName != persistentObjectName ||
+        (restartedDelta.entries.empty() && !restartedCatalog.reconciliationRequired) ||
         restartedCore.cacheStatus().misses != 1 ||
         restartedCore.cacheStatus().hits != 1) {
       std::cerr << "sqlite repo restart fetch mismatch\n";
+      return 1;
+    }
+    if (!restartedCore.remove(persistentObjectName)) {
+      std::cerr << "sqlite repo restart delete mismatch\n";
+      return 1;
+    }
+    deletedCatalogEpoch = restartedCore.catalogStatus().catalogEpoch;
+  }
+  {
+    RepoCore emptyAfterDelete(
+      {"/repo/persistent", 1024 * 1024, 0, 0.0, 1.0, "local", {"persistent"}},
+      makeTieredRepoStore(sqlitePath.string(), 4096));
+    if (deletedCatalogEpoch == 0 ||
+        emptyAfterDelete.catalogStatus().objectCount != 0 ||
+        !emptyAfterDelete.catalogStatus().reconciliationRequired ||
+        !emptyAfterDelete.catalogSnapshot().entries.empty() ||
+        !emptyAfterDelete.catalogDelta(deletedCatalogEpoch).entries.empty()) {
+      std::cerr << "sqlite repo empty restart lost catalog reconciliation\n";
       return 1;
     }
   }

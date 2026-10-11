@@ -17,5 +17,6 @@
 **Static release**: 审查指出server输出路径与宽泛case占位，均已修正；T002–04 focused release PASS。完整产品/动态/资格不能由baseline静态审查推出。
 **Compile/link/runtime/dynamic**: NOT_RUN；final equality与affected consumer重建归T009。已核对actualoutputpath，不虚构rebuilt hash。
 **Changed gate**: 逐header overload accounting、明确Python独立TU、两种目的namespace与两replay分支，避免仅看旧inventory/静态archive。
+**Supplement / changed gate**: Red review发现旧candidate列表没有clean tests/main.cpp；其原字节由T001 commit685e8efb固定，并保存在同目录clean-test-driver-supplement.zip。baseline完整组成是150-input ZIP加此clean-driver supplement，不能声称150-file ZIP独自包含所有build inputs。T009闭合工具必须对照实际Waf target source/TU列表，包括clean driver与外部fixtures，作为重复source-closure漏检的替代强制检查，不能仅合并dirty/历史candidate列表。
 **Retrospective**: static修正遗漏入口和路径；compile/link尚未观测；runtime/test尚未执行；unobserved为新candidate所有行为/动态/资格。
 **Closing**: CLOSED_FOR_VALIDATION at B1 staticbaseline；B2/T002开始focused red/repair，产品BLOCK直至全部控制缺口关闭。DeepSeek helper tools/ai/deepseek_delegate.py在当前checkout缺失，采用primary实现+canonical只读reviewer，不调用未知外部路径。

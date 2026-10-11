@@ -96,6 +96,8 @@ def default_large_data_interest_lifetime_ms() -> int:
 
 @dataclass(frozen=True)
 class ServiceResponse:
+    """Response payload with local transport-authentication metadata."""
+
     status: bool
     payload: bytes = b""
     error: str = ""
@@ -103,6 +105,7 @@ class ServiceResponse:
     data_name: str = ""
     signer_certificate: str = ""
     wire_digest: str = ""
+    provider_identity: str = ""
 
 
 @dataclass(frozen=True)
@@ -1418,6 +1421,7 @@ def _from_native_response(response: _ndnsf.ServiceResponse) -> ServiceResponse:
         data_name=str(response.data_name),
         signer_certificate=str(response.signer_certificate),
         wire_digest=str(response.wire_digest),
+        provider_identity=str(response.provider_identity),
     )
 
 

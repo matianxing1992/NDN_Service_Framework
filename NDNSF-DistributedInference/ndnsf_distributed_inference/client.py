@@ -184,6 +184,10 @@ def _plan_fingerprint(plan: DistributedInferencePlan) -> str:
                         if role.runtime.artifact is not None else None
                     ),
                 },
+                "auxiliaryArtifacts": {
+                    name: _artifact_fingerprint(artifact)
+                    for name, artifact in sorted(role.auxiliary_artifacts.items())
+                },
                 "metadata": _jsonable(role.metadata),
             }
             for role in plan.roles
@@ -230,6 +234,7 @@ def _artifact_fingerprint(artifact) -> dict:
         "payloadSize": len(payload),
         "largeDataReference": _jsonable(artifact.large_data_reference),
         "repoManifest": _jsonable(artifact.repo_manifest),
+        "repoBinding": _jsonable(artifact.repo_binding),
     }
 
 

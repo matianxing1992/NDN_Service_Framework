@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
-"""DistributedRepo ACK selection honors core readiness envelopes."""
+"""Native Repo value codecs and retired Python discovery boundaries."""
 
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
 
-from ndnsf import (
-    AckCandidate,
-    GenericProviderRuntimeHint,
-    ProviderCapabilityHint,
-    encode_ack_metadata,
-)
 from py_repoclient import (
     RepoCacheStatus,
+    RepoCompatibilityError,
     RepoDataReference,
     RepoObjectManifest,
     RepoOperationStatus,
@@ -27,54 +21,10 @@ from py_repoclient import (
     repo_service_for_operation,
     repo_versioned_services,
 )
-from py_repoclient import _capacity_selector
-from py_repoclient.orchestration import RepoNodeApp, encode_repo_request
-
-
-def _candidate(provider: str, payload: bytes, *, status: bool = True) -> AckCandidate:
-    return AckCandidate(
-        provider,
-        "/NDNSF/DistributedRepo",
-        "req-1",
-        status,
-        "ack",
-        payload,
-    )
-
-
-def _repo_hint_payload(provider: str, *, ready: bool = True, drain_state: str = "ACTIVE") -> bytes:
-    hint = ProviderCapabilityHint(
-        provider_name=provider,
-        service_name="/NDNSF/DistributedRepo",
-        ready=ready,
-        drain_state=drain_state,
-        runtime_hint=GenericProviderRuntimeHint(
-            provider_name=provider,
-            capacity_hints={"freeBytes": 4096},
-        ),
-        service_payload_schema="ndnsf-repo-capability-v1",
-        service_payload={
-            "repoNode": provider,
-            "freeBytes": 4096,
-            "usedBytes": 12,
-            "availability": 0.95,
-            "storageClasses": ["model"],
-            "repoMode": "persistent",
-        },
-    )
-    return encode_ack_metadata(hint.to_ack_fields())
+import py_repoclient.orchestration as legacy_repo
 
 
 class RepoCoreDiscoverySelectionTest(unittest.TestCase):
-    @staticmethod
-    def _repo_app_validation_fixture() -> RepoNodeApp:
-        app = RepoNodeApp.__new__(RepoNodeApp)
-        app.service_name = "/NDNSF/DistributedRepo"
-        app.provider_name = "/example/provider/repo-a"
-        app.provider_prefix = "/example/provider"
-        app.peer_provider_identities = frozenset()
-        return app
-
     def test_repo_operations_have_versioned_public_or_internal_services(self) -> None:
         self.assertEqual(
             repo_service_for_operation("FETCH"),
@@ -86,40 +36,18 @@ class RepoCoreDiscoverySelectionTest(unittest.TestCase):
         )
         self.assertEqual(len(repo_versioned_services()), 11)
         for retired_operation in ("RESERVE_CAPACITY", "RELEASE_CAPACITY"):
-            with self.assertRaisesRegex(
-                    ValueError, "unsupported repo operation"):
+            with self.assertRaisesRegex(ValueError, "unsupported repo operation"):
                 repo_service_for_operation(retired_operation)
 
-    def test_versioned_service_rejects_payload_operation_mismatch(self) -> None:
-        app = self._repo_app_validation_fixture()
-        with self.assertRaisesRegex(
-                PermissionError, "repo-operation-service-mismatch"):
-            app._validate_versioned_request(
-                repo_service_for_operation("FETCH"),
-                encode_repo_request("DELETE", objectName="/data/x"),
-                "/example/user/alice",
-            )
+    def test_python_owned_request_codec_and_service_validation_are_retired(self) -> None:
+        with self.assertRaises(RepoCompatibilityError) as codec_error:
+            legacy_repo.encode_repo_request("FETCH")
+        self.assertEqual(codec_error.exception.code, "SPEC192_COMPATIBILITY_V1")
+        with self.assertRaises(RepoCompatibilityError) as server_error:
+            legacy_repo.RepoNodeApp()
+        self.assertEqual(server_error.exception.code, "SPEC192_COMPATIBILITY_V1")
 
-    def test_internal_service_rejects_missing_or_ordinary_client_identity(self) -> None:
-        app = self._repo_app_validation_fixture()
-        service = repo_service_for_operation("CATALOG_DELTA")
-        payload = encode_repo_request("CATALOG_DELTA", sinceEpoch=0)
-        with self.assertRaisesRegex(PermissionError, "repo-peer-identity-required"):
-            app._validate_versioned_request(service, payload, "")
-        with self.assertRaisesRegex(PermissionError, "repo-peer-identity-required"):
-            app._validate_versioned_request(
-                service, payload, "/example/user/alice")
-
-    def test_internal_service_accepts_authenticated_provider_identity(self) -> None:
-        app = self._repo_app_validation_fixture()
-        request = app._validate_versioned_request(
-            repo_service_for_operation("CATALOG_DELTA"),
-            encode_repo_request("CATALOG_DELTA", sinceEpoch=0),
-            "/example/provider/repo-b",
-        )
-        self.assertEqual(request["operation"], "CATALOG_DELTA")
-
-    def test_manifest_binding_preserves_canonical_lifecycle_fields(self) -> None:
+    def test_native_manifest_status_reference_and_cache_codecs_round_trip(self) -> None:
         manifest = RepoObjectManifest()
         manifest.object_name = "/data/model/v=1"
         manifest.packet_names = ["/data/model/v=1/seg=0"]
@@ -130,15 +58,13 @@ class RepoCoreDiscoverySelectionTest(unittest.TestCase):
         manifest.confirmed_replica_nodes = ["/repo/A", "/repo/B"]
         manifest.operation_id = "op-4"
         manifest.lifecycle_state = "COMMITTED"
+        parsed_manifest = parse_manifest_json(manifest.to_json())
+        self.assertEqual(parsed_manifest.packet_names, manifest.packet_names)
+        self.assertEqual(parsed_manifest.generation, 4)
+        self.assertEqual(parsed_manifest.parent_generation, 3)
+        self.assertEqual(parsed_manifest.required_write_acks, 2)
+        self.assertEqual(parsed_manifest.operation_id, "op-4")
 
-        parsed = parse_manifest_json(manifest.to_json())
-        self.assertEqual(parsed.packet_names, manifest.packet_names)
-        self.assertEqual(parsed.generation, 4)
-        self.assertEqual(parsed.parent_generation, 3)
-        self.assertEqual(parsed.required_write_acks, 2)
-        self.assertEqual(parsed.operation_id, "op-4")
-
-    def test_reference_status_and_cache_bindings_round_trip(self) -> None:
         reference = RepoDataReference()
         reference.object_name = "/data/video/v=1"
         reference.data_prefix = "/data/video/v=1"
@@ -168,61 +94,16 @@ class RepoCoreDiscoverySelectionTest(unittest.TestCase):
         self.assertEqual(parsed_cache.authoritative_backend, "sqlite")
         self.assertEqual(parsed_cache.hits, 3)
 
-    def test_ready_typed_hint_yields_ready_capability(self) -> None:
-        candidate = _candidate("/repo/A", _repo_hint_payload("/repo/A"))
-
-        record = discovery_record_from_ack(candidate)
-        capability = ready_capability_from_ack(candidate)
-
-        self.assertTrue(record.ready_for_new_request())
-        self.assertIsNotNone(capability)
-        self.assertEqual(capability.repo_node, "/repo/A")
-        self.assertEqual(capability.free_bytes, 4096)
-
-    def test_draining_typed_hint_is_not_selectable_even_with_capacity(self) -> None:
-        candidate = _candidate(
-            "/repo/B",
-            _repo_hint_payload("/repo/B", ready=True, drain_state="DRAINING"),
-        )
-
-        record = discovery_record_from_ack(candidate)
-
-        self.assertFalse(record.ready_for_new_request())
-        self.assertIsNotNone(capability_from_ack(candidate))
-        self.assertIsNone(ready_capability_from_ack(candidate))
-
-    def test_unready_typed_hint_is_not_selected(self) -> None:
-        ready = _candidate("/repo/ready", _repo_hint_payload("/repo/ready"))
-        unready = _candidate("/repo/unready", _repo_hint_payload("/repo/unready", ready=False))
-        selector = _capacity_selector(replication_factor=2, object_size=128)
-
-        selected = selector([unready, ready])
-
-        self.assertEqual(selected, ["/repo/ready"])
-
-    def test_legacy_ack_requires_explicit_mixed_reader(self) -> None:
-        payload = (
-            b"repoNode=/repo/legacy;freeBytes=2048;usedBytes=0;"
-            b"availability=1;storageClasses=model;"
-        )
-        candidate = _candidate("/repo/legacy-provider", payload)
-
-        with patch.dict("os.environ", {"NDNSF_ACK_COMPATIBILITY_MODE": "mixed"}):
-            record = discovery_record_from_ack(candidate)
-            capability = ready_capability_from_ack(candidate)
-
-        self.assertTrue(record.ready_for_new_request())
-        self.assertIsNotNone(capability)
-        self.assertEqual(capability.repo_node, "/repo/legacy")
-
-    def test_all_unready_candidates_return_empty_selection(self) -> None:
-        selector = _capacity_selector(replication_factor=1, object_size=128)
-        selected = selector([
-            _candidate("/repo/A", _repo_hint_payload("/repo/A", ready=False)),
-            _candidate("/repo/B", _repo_hint_payload("/repo/B", drain_state="DRAINING")),
-        ])
-
-        self.assertEqual(selected, [])
+    def test_python_owned_discovery_and_selection_imports_are_retired(self) -> None:
+        for operation in (
+            capability_from_ack,
+            ready_capability_from_ack,
+            discovery_record_from_ack,
+        ):
+            with self.subTest(operation=operation.__name__):
+                with self.assertRaises(RepoCompatibilityError) as caught:
+                    operation(object())
+                self.assertEqual(caught.exception.code, "SPEC192_COMPATIBILITY_V1")
 
 
 if __name__ == "__main__":

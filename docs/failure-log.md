@@ -1,5 +1,106 @@
 # Failure Log and Evidence Index
 
+- **Spec202 model-service interruption, 2026-10-09 17:31 CDT:** Session 01a1170d-1f8b-7522-a1bc-44c6182cca29, turn 01a122c9-580c-7340-a9ae-61c4ba8bc8f3 ended at 22:31:15.032Z with task_complete.error.codex_error_info=cyber_policy; message flagged possible cybersecurity risk. Goal status later observed blocked, updatedAt1791585074, matching the interruption. No preceding agent update_goal call established this stop. The interrupted work inspected local Spec202 native crash evidence and C++ request paths; the maintained runner creates MiniNDN hosts locally and contains no SSH/HTTP or physical-address target invocation. Classifier rationale is not returned, so exact triggering content and a definitive false-positive diagnosis remain unverified. Clarified actual authorized local scope in AGENTS.md; checkpoints and failed experiment evidence remain intact. Supported goal resume requires the user/client lifecycle control; service-side classification cannot be repaired by repository code. If repeated, report timestamp/session/turn/error to support. Lesson: distinguish service interruption and goal lifecycle from application failures; do not interpret cyber_policy as a repository security finding or erase qualification failures.
+
+## 2026-10-07 — Spec193 O17 cache seed omitted its Repo receipt
+
+- **Symptom:** `spec193-o17-receipt-039/040` each completed a signed original Data fetch from Repo B, but the cache scenario failed before its second read. Repo A received `DATA_RECEIPT` but never `DATA_LOCATION`; both runs are FAIL with cleanup PASS.
+- **Root cause:** The new `data-cache-seed` command entered the existing seed branch, but a two-way ternary treated every command other than `data-seed` as legacy. It stored A's wire through `RepoCore::putDataPacket` without Node/Provider identity, creating no receipt. B's copied wire had a normal receipt, so the client correctly failed over to B.
+- **Fix:** Select the no-receipt Core path only for `data-legacy-seed`; normal and cache seeds use `RepoClient::putDataPacket` through the RepoNode owner. Rebuild and repeat under new evidence IDs.
+- **Lesson:** A test fixture variant must preserve the production commit boundary unless the case explicitly tests a legacy state.
+
+## 2026-10-07 — Spec193 O17 legacy import oracle selected the pre-import Repo log
+
+- **Symptom:** `spec193-o17-receipt-036` completed import, original-name fetch, and cleanup, but the final packet oracle raised `FileNotFoundError` for `cpp-repo-ucla-o17-legacy-import.log`; the run manifest remains FAIL.
+- **Root cause:** `restart_repo_servers` appends each restart suffix to the existing process label. The actual active log is `cpp-repo-ucla-o17-original-seed-o17-legacy-import.log`. The oracle reconstructed a label instead of using the active process record.
+- **Fix:** Pass each active Repo process's exact log path to the packet oracle. A read-only replay over `036` then found one A-hinted original Interest and the expected signed wire on consumer and Repo A captures, with no raw flow on B. Preserve `036` as FAIL and repeat under new evidence IDs.
+- **Lesson:** A packet oracle must bind serving evidence to the process instance that was active during the captured exchange.
+
+## 2026-10-07 — Spec193 O17 legacy import oracle included the manifest in payload inventory
+
+- **Symptom:** `spec193-o17-receipt-035` imported legacy Data and passed its local idempotence check, then the runner raised `O17 import changed original payload bytes`; MiniNDN cleanup passed. This run is FAIL and supplies no end-to-end import qualification.
+- **Root cause:** `repo_database_state()["payload_files"]` includes all non-SQLite files, including the manifest that import must update. The oracle compared that whole list as if it contained only original payload bytes. Its manifest summary also omits `dataReceiptId`, so the pre-import absence check was ineffective.
+- **Fix:** Compare only SHA-named payload files and inspect the actual durable manifest JSON for the absent pre-import receipt. Repeat with a new evidence ID and require the full network packet oracle.
+- **Lesson:** An independent storage oracle must distinguish expected metadata changes from forbidden payload changes and read the exact field it claims to verify.
+
+## 2026-10-07 — Spec193 O17 unauthorized query diagnostic stopped at client bootstrap
+
+- **Symptom:** `spec193-o17-receipt-025` stopped before either unauthorized metadata query. The standalone client reported `repo-request-bootstrap-timeout`; MiniNDN cleanup passed. This run is FAIL and proves no authorization outcome.
+- **Root cause:** The shared standalone `PersistentContext` waited for authorized Repo service/provider readiness before entering its test mode. The deliberately unauthorized identity cannot satisfy that precondition.
+- **Fix:** Allow the standalone denial-audit mode alone to skip this readiness wait while still initializing `ServiceUser`, its certificate, controller permissions, and Face. Repeat under a new candidate and require both query failures with no Repo handler invocation.
+- **Lesson:** A negative authorization test must reach the authorization boundary; setup rejection is not evidence that the queried operation denied access.
+
+## 2026-10-07 — Spec193 O17 denial diagnostic accepted a version-readiness failure
+
+- **Symptom:** `spec193-o17-receipt-026` returned overall PASS, but both alleged denial lines said `deferred collaboration ControllerVersion is not ready`. No Repo handler ran. This does not independently prove a service-specific ACL rejection, so the authorization portion of this run is invalid.
+- **Root cause:** The test identity was unauthorized for every Repo service. Skipping the standalone readiness gate let it invoke the API without proving that its controller state and normal Repo bootstrap were healthy.
+- **Fix:** Use the provisioned USER identity for the denial audit. In O17's generated policy, keep USER authorized for ordinary Repo services but exclude it from `DATA_RECEIPT` and `DATA_LOCATION`; verify that exact exception in runtime-policy preflight. Restore normal standalone bootstrap and require its ready marker before interpreting the two query failures. Rerun on a new candidate.
+- **Lesson:** A failed request only proves an ACL boundary when the test principal can complete the surrounding authenticated setup and the denied operation is the controlled difference.
+
+## 2026-10-07 — Spec193 O17 capture close timing resolved in later runs
+
+- **Symptom:** `spec193-o17-receipt-005` passed the packet oracle after a consumer CS erase reporting `count=0`, but the same candidate's `006` missed the original packets despite a successful fetch, Repo A serve event, and cleanup.
+- **Root cause:** The exact packet-loss mechanism was not instrumented. The run stopped tcpdump immediately after the client and storage checks, leaving no bounded drain interval; this timing is a credible cause of the intermittent missing tail packets, not a proven transport defect.
+- **Fix:** Keep capture processes alive for two seconds after the original exchange. Same-candidate `007/008` then both passed the Arizona/UCLA original-name, Provider hint, exact wire, five-host capture, and cleanup checks. A separate A-stopped failover candidate `009/010` passed twice with Repo B hint and WUSTL serving while UCLA carried no original-name traffic.
+- **Lesson:** Preserve both failed and passed runs; a single passing trace cannot qualify a timing-sensitive packet oracle.
+
+## 2026-10-07 — Spec193 receipt-selected O17 transport remains unproved
+
+- **Symptom:** `spec193-o17-receipt-002/003` completed the producer-signed original Data fetch with matching wire digest. Active Repo A logged authenticated `DATA_RECEIPT` and `DATA_LOCATION` queries and exact-name Data serving. Five NFD hosts and cleanup completed, but the independent Arizona packet oracle found no original-name Interest/Data in its UDP/TCP capture. Both runs remain FAIL. `004` added server `strace` and disturbed cleanup, so it is diagnostic-only FAIL.
+- **Known evidence:** The client connected to `/run/nfd/arizona.sock`; restarted Repo A connected to `/run/nfd/ucla.sock`; Arizona's Provider route used a nonlocal UDP next hop. Captures contain the authenticated query names but no original Data name. These facts do not identify the actual original Data transport or prove the hint on the wire.
+- **Root cause:** Unresolved. Correct socket selection rules out one suspected wrong-NFD path. The server trace wrapper caused `004` cleanup failure and was removed.
+- **Fix and next diagnostic:** Keep O17 OPEN and retain the strict packet oracle. Inspect NFD per-face forwarding and capture lifecycle around the raw Interest; qualify only when the actual transport shows its original name, hint, and returned wire. The receipt lifecycle tests independently pass and do not close this network gate.
+- **Lesson:** Application success and matching serving logs do not establish the transport path or forwarding hint.
+
+## 2026-10-07 — Spec193 O17 build exhausted root filesystem
+
+- **Symptom:** `./waf build --targets=spec192-repo-client,spec193-object-repo-server -j4` failed while writing compiler assembly under `/tmp` with `No space left on device`; `/` had about 311 MB free.
+- **Root cause:** This host's root filesystem was at 100% use; the repository's build tree alone occupied about 12 GB, including an unused 1.4 GB Spec192 ThreadSanitizer variant.
+- **Fix:** Confirmed no live command used `build/spec192-tsan-clang`, removed that rebuildable build-only directory with targeted `rm -r`, and recovered about 1.4 GB. The Spec193 source, specs, and evidence were left intact. Retry the build on the final source state.
+- **Lesson:** Check free space before parallel native builds on this host; preserve evidence while reclaiming disposable build variants.
+
+## 2026-10-07 — Spec193 O17 diagnostic client relocation compile failure
+
+- **Symptom:** The first rebuild after moving the temporary raw Data fetch from public `RepoClient` to the standalone diagnostic client failed at `interest.setCanBePrefix` and `Face::expressInterest`.
+- **Root cause:** `ndn::Interest interest(ndn::Name(dataName));` was parsed as a function declaration in C++.
+- **Fix:** Construct with braces, `ndn::Interest interest{ndn::Name(dataName)};`, and repeat the same target build.
+- **Lesson:** Keep a diagnostic-only fetch out of the public product API until receipt-selected routing is implemented; use unambiguous object initialization when moving it.
+
+## 2026-10-07 — Spec193 O17_ROUTE transport capture remains incomplete
+
+- **Symptom:** `o17-route-diag-007` widened host captures to UDP or TCP but still found no parseable original-name Interest/Data; `009` repeated this after recording NFD face and route tables. Both consumer and active Repo A handler reported the exact wire digest, and cleanup passed. Both runs remain FAIL for the packet oracle.
+- **Known evidence:** In `009`, Arizona's NFD routed `/example/repo/provider/repoA` to a static nonlocal next hop; UCLA routed that prefix to the Repo A application face. The capture files contain other IP traffic but no raw target name. This establishes configured route state, not which face carried the particular Interest.
+- **Unresolved cause:** Current UDP/TCP host capture and textual handler events do not independently bind the original Interest and returned Data to NFD forwarding. The alternative path or capture omission is not established.
+- **Next diagnostic:** Capture the actual client-to-NFD and inter-NFD traffic or NFD per-face packet traces with the original Name and ForwardingHint, then correlate to the active Repo process and consumer digest. Do not weaken the oracle or count these runs as O17 PASS.
+
+## 2026-10-07 — Spec193 O17_ROUTE NFD diagnostic launch path
+
+- **Symptom:** `o17-route-diag-008` stopped before its face/route probe with `FileNotFoundError: mnexec`; cleanup passed.
+- **Root cause:** The added `nfdc` diagnostic used `node_environment(..., no_python=True)`. Unlike the known C++ binaries, `nfdc` did not trigger `spawn`'s alternate launch environment, so its restricted `PATH` hid MiniNDN's `mnexec` launcher.
+- **Fix:** Run the read-only `nfdc` probes with the ordinary node environment; retain the strict no-Python environment on the native Repo and client binaries. Repeat the scenario.
+- **Lesson:** A diagnostic child still needs the MiniNDN launcher even when its executable path is absolute.
+
+## 2026-10-07 — Spec193 O17_ROUTE active serving without UDP packet witness
+
+- **Symptom:** `o17-route-diag-006` had a zero-exit consumer, matching original wire digest, an exact-name/digest serve event in the active Repo A process, and cleanup PASS. The UDP-only captures on all five hosts contained no parseable original-name Interest/Data, so the packet oracle failed.
+- **Root cause status:** Not established. The harness captures only UDP (`tcpdump ... udp`); the available evidence does not identify the transport used by this exchange or prove where the original Interest was forwarded. Do not infer a cache hit or a specific alternative transport from absence in this capture.
+- **Disposition:** Keep this run FAIL for the packet gate and O17 OPEN. A later diagnostic must record the active NFD face/route and capture the actual client-to-NFD and inter-NFD packet path, then bind it to the Repo A handler event and consumer wire digest.
+- **Lesson:** A service log plus consumer digest proves bytes were served and received, but does not satisfy an independent network-path oracle when the selected capture filter missed the flow.
+
+## 2026-10-07 — Spec193 O17_ROUTE oracle read the pre-restart Repo log
+
+- **Symptom:** `o17-route-diag-005` consumer and Repo A completed the original Data exchange, but the oracle reported that Repo A did not serve it; MiniNDN cleanup passed.
+- **Root cause:** The scenario restarts each Repo after seeding and writes the active Repo A output to `cpp-repo-ucla-o17-original-seed.log`. The new oracle read the stopped pre-seed `cpp-repo-ucla.log` instead. The active log contains `repo-original-data-served` with the exact Data name and wire digest.
+- **Fix:** Read the active restarted A/B logs in the O17_ROUTE oracle. Preserve this run as FAIL and repeat the revised candidate.
+- **Lesson:** Bind a server witness to the active process epoch, not only to its host name.
+
+## 2026-10-07 — Spec193 O17_ROUTE second-run packet-oracle failure
+
+- **Symptom:** `o17-route-diag-004` fetched the correct original Data and cleaned MiniNDN successfully, but the independent packet oracle failed because UCLA's capture had no matching original Interest/Data even though Arizona's capture did.
+- **Cause and boundary:** The oracle assumed every selected Repo's UDP capture must contain both packets. That capture alone cannot prove whether the Repo handler served the Data; a cache hit or an unobserved local/link path can produce the same client result. The run is retained as FAIL, not relabeled PASS.
+- **Fix:** The client now sets `MustBeFresh` on each hinted original-name Interest. The Repo's original Data handler logs the exact name and wire digest after `face.put`; the oracle requires the consumer's hinted Interest/Data plus this Repo A handler witness, rejects Repo B activity, and checks UCLA's packet fields when present. A new candidate and repeated MiniNDN runs are required before making a route claim.
+- **Lesson:** Client wire and forwarding hint prove requested name/content and intended route, but not which Repo actually served a cached Data packet.
+
 ## 2026-09-23 — Spec190 B190-30 async prepare Repo lookup parity
 
 - **Status:** `ADVANCE` for the T005 async-entry correction; T005 remains complete,
@@ -16467,6 +16568,16 @@ containing selector has not yet run. See the next review/build/run record in
   an OOM-terminated run cannot establish full suite completion. Split large
   affected-suite execution at process boundaries when the host cannot sustain
   the monolithic test process.
+- **Current-candidate re-observation (2026-10-03):** On candidate
+  `712575c308c63448f6335c16d287f50e50ab699aa1c9050fafe847f54b9bd35f`, the
+  1,318-case umbrella run repeated the same three Spec182 assertions. At the
+  4-minute mark the host had 361 MiB available, all 8 GiB of swap was used,
+  memory PSI `full avg10` was 21.08%, and the test process used 6.8 GiB RSS;
+  `/proc/<pid>/stack` showed `swap_readpage`. The process was stopped manually
+  (exit 143), not killed by the kernel. Full output:
+  `specs/192-distributedrepo-lifecycle/evidence/T010-712575c3-20261003/unit/unit-tests.log`.
+  This confirms paging pressure during the run; it does not establish that
+  paging caused the individual Spec182 assertion failures.
 
 ### 2026-09-30 — Spec192 T010 Repo-reference integration used stale OpenABE
 
@@ -18097,6 +18208,1835 @@ containing selector has not yet run. See the next review/build/run record in
 - **Lesson:** Successful Repo artifact publication does not establish that a
   separate DI service provider is authorized to register or serve its prefix.
 
+### 2026-10-01 — Spec192 VM-21 run44 C++ consumer request timeout
+
+- **Symptom:** `vm21-run44-separated-repo-user-svs-trace` passed In-App
+  reopen, explicit two-Repo archive, Python fetch of the C++ object, native
+  receipt query, and Python publication. The independent no-Python C++ client
+  then failed while fetching the Python-published object with
+  `repo-request-timeout: Provider response callback was not delivered before
+  the request deadline`; VM-21 stopped before DI authorization. The Repo A
+  log shows the consumer reached `STATUS` and `FETCH_RANGE`, so the request
+  entered the real C++ service path but the exact unanswered request is not
+  identified.
+- **Root cause:** Not established. `cpp-client-fetch-python-receipt-no-python`
+  had no per-request ServiceUser/SVS trace in this run. Python publication
+  returned a committed receipt, but that does not prove the independent C++
+  consumer completed its later read.
+- **Fix:** No product or protocol change. Five packet captures are nonempty;
+  MiniNDN cleanup passed. The DI RepoClient identity separation was present
+  in this diagnostic candidate, but the DI stage was not reached.
+- **Next:** Repeat VM-21 with selected-request and ServiceUser/SVSPubSub trace
+  on `cpp-client-fetch-python-receipt-no-python`, then correlate its final
+  request with Repo A/B response events before changing behavior.
+- **Lesson:** A successful Python publish receipt is not evidence that a
+  separate native consumer read completed.
+
+### 2026-10-01 — Spec192 VM-21 run45 Python receipt STATUS timeout
+
+- **Symptom:** `vm21-run45-cpp-consumer-svs-trace` passed In-App reopen,
+  explicit archive, and Python fetch of the archived C++ object. The Python
+  binding's native `get_receipt()` then failed with
+  `repo-request-timeout: Provider response callback was not delivered before
+  the request deadline`; VM-21 stopped before Python publication or DI. The
+  Repo A/B request logs contain no matching new `STATUS` from `/example/repo/user`
+  at that point, so the request did not reach a Repo handler in the available
+  service evidence.
+- **Root cause:** Not established. The failed child and Repo servers lacked a
+  correlated request trace for this STATUS call; available evidence bounds
+  the failure before Repo handler dispatch but does not identify whether
+  ServiceUser send, face registration, routing, or network delivery lost it.
+- **Fix:** No source or protocol change. MiniNDN cleanup passed and all five
+  packet captures completed with nonempty data. Candidate source digest was
+  `3c7b89209886edef473cedcb87a30bc887aea724d26bac66a73ce17e0c43955d`.
+- **Next:** Repeat the frozen candidate with selected-request, timeline, and
+  ServiceUser/SVSPubSub trace on `python-binding-query-cpp-native-receipt`;
+  enable matching request tracing on the two Repo providers.
+- **Lesson:** A client timeout without a provider-side request event is not
+  evidence of Repo authorization denial or handler failure.
+
+### 2026-10-01 — Spec192 VM-21 run46 STATUS response closure timeout
+
+- **Symptom:** `vm21-run46-full-client-service-svs-trace` failed in the same
+  Python native `get_receipt()` stage. The selected STATUS request reached
+  Repo A and Repo B. Repo B's ACK Data reached the requester, which correctly
+  rejected it because receipt lookup targets only seed Repo A. Repo A logged
+  ACK publication and its ACK Data appears on the Repo A-to-Memphis capture,
+  but that exact ACK name does not appear on the APP host (`neu`) capture and
+  no matching Repo A ACK was processed by the requester. The client ended
+  with `repo-request-timeout`; VM-21 did not reach DI. Earlier generic user
+  response-stage lines belong to other requests and are not counted as this
+  receipt query's completion evidence.
+- **Root cause:** Not established. The trace bounds the gap after Repo A's
+  publication call and before the requester processes its ACK. It does not
+  identify whether SVS mapping/fetch scheduling or packet forwarding lost the
+  data. Both providers also logged `piggyback_skip` because the STATUS ACK
+  payload exceeded the 800-byte piggyback limit; this is a fallback path, not
+  itself proof of failure.
+- **Fix:** No source or protocol change. MiniNDN cleanup passed and all five
+  packet captures completed. Candidate digest remained
+  `3c7b89209886edef473cedcb87a30bc887aea724d26bac66a73ce17e0c43955d`.
+- **Next:** Raise the bounded SVS publication fetch window to 64 for one
+  diagnostic MiniNDN run, then correlate the exact Repo A mapping, ACK fetch,
+  Selection, and Response Data. Run47 exercised that profile but failed later
+  during DI; its evidence is recorded below. No default-window qualification
+  follows from that diagnostic.
+- **Evidence detail:** The exact STATUS request was
+  `20261001T162331.011464-8e000c22aa410eee`; its only processed ACK was from
+  Repo B and was rejected as `provider-not-requested`, as required by the
+  seed-only provider set. Repo A's matching ACK did not reach the APP-host
+  requester in the captured trace.
+- **Lesson:** `get_receipt()` completion requires the final authenticated
+  Response callback; ACK publication and callback entry are intermediate
+  evidence only.
+
+### 2026-10-01 — Spec192 VM-21 run47 authorized DI request timeout
+
+- **Symptom:** `vm21-run47-svs-window64-trace` used candidate
+  `3c7b89209886edef473cedcb87a30bc887aea724d26bac66a73ce17e0c43955d` with
+  `NDNSF_SVS_EXPECTED_RPS=100`, adaptive fetch bounds 32–64, and a derived
+  window of 64. The In-App reopen, Repo lifecycle, Python binding receipt and
+  publication, independent no-Python C++ fetch of the Python publication, and
+  C++ DI artifact commits completed. The authorized DI request then failed
+  after its 60-second request timeout:
+  `timeout: /20261001T165125.875254-f363aa522c4b289`.
+- **Root cause:** Not established. The exact DI Request name appears in the
+  five-host pcap trace, including the neu host capture, but no matching
+  ACK/Selection/Response name or `SPEC192_DI_PROVIDER_ARTIFACTS` event appears.
+  The fresh Provider remained serving with identity
+  `/example/repo/provider/spec192-di`; its separate Repo reader used the
+  authorized `/example/repo/user` identity. The Repo reader fetched the
+  consumer SVS publication, which does not prove that the APPProvider handled
+  the DI Request. Available evidence places the failure after network
+  publication and before an app-level Provider response, without proving
+  whether local NFD delivery, registration, or request dispatch is at fault.
+  Follow-up static review found the test peer printed its serving marker before
+  blocking `app.run()` had completed native initialization and permission fetch;
+  this is a plausible readiness race, not yet a proven cause of the timeout.
+- **Fix:** Candidate `074049d224609e326faca2e163f760948cd8f957cb83024d9273b22e8ace1897`
+  changes the test peer to call public `APPProvider.start()` before publishing
+  its readiness marker. This waits for handler registration, permission fetch,
+  and Face-loop readiness. Runtime validation is pending. Run47 MiniNDN cleanup
+  passed, child daemons stopped without SIGKILL fallback, and all five host
+  pcaps are nonempty. The run47 window-64 profile remains diagnostic only.
+- **Next:** Rerun bounded VM-21 on candidate `074049d2…ace1897`, verify the
+  authorized response and unauthorized denial, then qualify any result under
+  the default fetch-window profile separately. Keep the authorized Repo-reader
+  identity separate from the service Provider identity.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-4302e71c-20261001/minindn/vm21-run47-svs-window64-trace/run-manifest.json`
+  records status `FAIL`, candidate SHA, and `minindn_cleanup=PASS`; all five
+  pcap files have nonzero size. `runtime-profile.json` records the window-64
+  environment. The run reached DI but did not execute the unauthorized DI
+  branch.
+- **Lesson:** Seeing a request in host packet capture proves network
+  publication to that host, not delivery to the registered application
+  handler. SVS window tuning alone did not close DI request/response dispatch.
+
+### 2026-10-01 — Spec192 unit result collector rejected singular assertion grammar
+
+- **Symptom:** The 20 exact-candidate unit commands all exited 0, but the first
+  generated `results.tsv` marked two one-case selectors as 0 cases / 0
+  assertions and reported 18/20 selectors. Their raw Boost.Test logs show
+  one passing case and one passing assertion each.
+- **Root cause:** The result collector accepted singular `test case` but its
+  assertion parser matched only plural `assertions`, so it discarded the full
+  module aggregate when those one-assertion selectors ran.
+- **Fix:** Reparse the original logs with singular/plural support. The corrected
+  aggregate is 20/20 selectors, 99 cases, and 1,511 assertions, with no test
+  execution failures.
+- **Next:** Continue with the complete affected integration selectors/targets
+  on the same source candidate; retain the original logs and corrected summary.
+- **Lesson:** A collector that cannot parse an aggregate must fail closed and
+  must never convert successful test output into a zero-case failure record.
+
+### 2026-10-01 — Spec192 integration launcher dropped selector arguments
+
+- **Symptom:** The first row in the exact-candidate integration batch ran
+  `build/integration-tests` without a filter, lasted 338.8 seconds, and exited
+  201 with 17 failures from the unfiltered module. After the argument error was
+  identified, the accidentally started second unfiltered process was stopped.
+  No one of the nine intended integration selectors/targets is qualified by
+  this attempt.
+- **Root cause:** The prior `commands.tsv` header has two columns while its
+  command arguments occupy additional tab-separated columns. The collector
+  used a two-column `DictReader` field and retained only the binary path,
+  dropping every `--run_test` and report option.
+- **Fix:** Preserve each row as raw tab-separated fields and validate that
+  every integration-test executable row retains its complete selector and
+  reporting arguments before execution. Move the unfiltered diagnostic output
+  aside; do not count its unrelated failures as T010 integration results.
+- **Next:** Run the intended four nested production-ingress selectors, the
+  selection/confidentiality/provider-identity suites, and both focused Repo
+  integration targets serially on candidate `074049d2…ace1897`.
+- **Evidence:** The unfiltered log and malformed command list are preserved at
+  `specs/192-distributedrepo-lifecycle/evidence-T010-074049d2-20261001/integration/unfiltered-diagnostic/`.
+- **Lesson:** Validate argv shape before launching a long test process; a
+  passing executable build does not prove that a filtered test command ran.
+
+### 2026-10-01 — Spec192 VM-21 run48 partial explicit archive
+
+- **Symptom:** Default-profile `vm21-run48-default-startup-ready` used exact
+  candidate
+  `074049d224609e326faca2e163f760948cd8f957cb83024d9273b22e8ace1897`, passed
+  MiniNDN cleanup, and failed the explicit archive oracle because the
+  independent receipt recorded only one of the two selected C++ Repos. The
+  receipt reports `writeConsistency=ALL`, `achievedReplicas=1`, RepoA
+  `COMMITTED`, and RepoB `FAILED` with `repo-target-outcome-unknown`. RepoB's
+  process log records two `STORE_RANGE` requests from RepoA and no
+  `COMMIT_RANGES`; the five packet captures are nonempty, and the built server
+  and client match the candidate closure hashes.
+- **Root cause:** Not established. The request log and packet captures show the
+  request boundary but do not identify whether RepoB's staged response,
+  authenticated seed-status verification, or RepoA's request callback failed.
+  `repo-target-outcome-unknown` is the worker's generic classification after a
+  request may have been emitted; it is not a diagnostic cause.
+- **Fix:** No source or oracle change. Preserve the failed run and its partial
+  receipt; do not weaken the two-selected-Repo archive assertion.
+- **Next:** Repeat the same bounded default-profile VM-21 scenario with the
+  existing `NDNSF_SPEC192_SELECTED_REQUEST_TRACE=1` diagnostics enabled. Match
+  RepoA's selected-request stages with RepoB's owner-STATUS handler stages and
+  the existing packet trace before deciding whether a source repair is needed.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-074049d2-20261001/minindn/vm21-run48-default-startup-ready/`
+  contains the run manifest, independent receipt/handle, both Repo logs, and
+  five packet captures. The manifest records the exact candidate SHA and
+  `minindn_cleanup=PASS`.
+- **Lesson:** An authenticated Data packet and a provider-side service log do
+  not establish application-level success. Keep the failure generic until the
+  selected-request and handler traces identify the first failed stage.
+
+### 2026-10-01 — Spec192 traced VM-21 run49 exhausted C++ publish discovery budget
+
+- **Symptom:** Traced default-SVS-profile run49 used exact candidate
+  `074049d224609e326faca2e163f760948cd8f957cb83024d9273b22e8ace1897` and
+  completed cleanup. Its explicit archive receipt committed both selected
+  Repos; Python binding publication/status/fetch and independent no-Python C++
+  fetch passed; C++ DI-model publication passed. The following
+  `cpp-publish-di-input` child exited 2 with
+  `repo-request-timeout-invalid: selected request timeout must exceed ACK window`.
+- **Root cause:** The standalone publish mode uses a 30-second ACK window and
+  `publishFile(..., 180000)`. `beginPublishFileImpl` shares its 180-second
+  begin deadline across the initial STATUS check, fresh authenticated
+  discovery, and seed STORE. The trace shows the input operation completed its
+  STATUS requests and closed its two-provider CAPABILITY set, then emitted no
+  subsequent selected request. In source order, the next call is seed STORE;
+  `remaining()` had reached the 30-second ACK boundary, so
+  `runSelectedRepoRequest` rejected it locally before emitting that request.
+- **Fix:** Increase only the standalone C++ publish mode's request timeout to
+  240 seconds while retaining the 180-second operation wait and 30-second ACK
+  window; raise the derived MiniNDN child supervisor to 480 seconds so its
+  existing 60-second margin remains intact. Production Repo timing and
+  acceptance rules stay unchanged.
+- **Next:** Review the changed test timeout and derived child guard, recompute
+  the source candidate, then rerun the ordered build/runtime, affected unit,
+  affected integration, and untraced default-SVS-profile VM-21 gates. Run48's
+  RepoB outcome remains a separate unproven transient boundary; run49 does not
+  retroactively qualify it.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-074049d2-20261001/minindn/vm21-run49-default-selected-trace/`
+  records the candidate, trace logs, partial receipt evidence, and
+  `minindn_cleanup=PASS`.
+- **Lesson:** A per-request timeout must cover the whole sequential discovery
+  phase as well as one ACK window; the child guard must remain derived from
+  both the begin and operation-wait budgets.
+
+### 2026-10-01 Spec192 integration attempt used an unpinned runtime overlay
+
+- **Symptom:** The c4d7fbb2 exact-candidate integration command batch started
+  without the `LD_LIBRARY_PATH` recorded in the candidate build/runtime
+  closure. Its first four filtered `build/integration-tests` selectors each
+  aborted with `*** stack smashing detected ***` and exit 201. The next
+  `RequestScopedSelection` process was cancelled after those startup failures;
+  the remaining four selectors were not run. This attempt is not integration
+  qualification.
+- **Root cause:** The direct launcher did not reproduce the runtime closure.
+  `ldd` resolved `libopenabe.so` and `librelic{,_ec}.so` from `/usr/local/lib`
+  instead of the candidate report's `/tmp/ndnsf-spec192-openabe-20261001/lib`.
+  `libonnxruntime.so.1` resolved from the same `/opt/onnxruntime/lib` path in
+  both attempts and is not identified as the cause. The no-overlay logs are
+  preserved under
+  `specs/192-distributedrepo-lifecycle/evidence-T010-c4d7fbb2-20261001/integration/launch-environment-diagnostic/initial-no-overlay/`.
+- **Fix:** Pin integration launches to the exact candidate runtime overlay:
+  `<repo>/build:/tmp/ndnsf-spec192-openabe-20261001/lib:/usr/local/lib`.
+  Re-running the first selector under that environment exited 0 with one case
+  and eight assertions. Its command, log, and selected `ldd` paths are in
+  `integration/launch-environment-diagnostic/`.
+- **Next:** Rerun all nine integration selectors/targets serially with the
+  recorded environment and stop at the first failed selector. Preserve the
+  complete result separately; the integration gate remains open.
+- **Lesson:** A successful `ldd -r` report qualifies only the environment
+  captured by that report. Every later test process must inherit the recorded
+  loader paths; otherwise a candidate-linked test can exercise incompatible
+  same-SONAME libraries.
+
+### 2026-10-01 Spec192 untraced VM-21 run50 failed fresh DI-output discovery
+
+- **Symptom:** Exact candidate `c4d7fbb238484a77639e87f2bd2eb07306e93e927e007b0c62cf6c5501320ff6`
+  ran untraced under the default SVS profile. In-App publish/reopen, the
+  explicit C++ archive (independent receipt: `ALL`, 2/2 committed), Python
+  binding publish/status/fetch, no-Python C++ fetch of the Python artifact,
+  and DI model/input publications all passed. The DI-output child exited 2
+  with `repo-selected-target-stale: a selected Repo/Provider tuple is absent
+  from fresh authenticated discovery`. Its selected target failed the fresh
+  capability membership check before the output seed STORE. The run manifest
+  records `status=FAIL`, `minindn_cleanup=PASS`, all five nonempty pcaps, and
+  the exact candidate. VM-14/15 authorized and unauthorized Provider branches
+  were not reached.
+- **Root cause:** Not established. Source inspection confirms that
+  `beginPublishFileImpl` compares each selected target's Repo id, provider
+  identity, and service prefix with fresh authenticated capability discovery;
+  this run did not enable the existing diagnostic that prints the missing
+  tuple and observed candidates. The failure is at discovery closure, before
+  any DI-output write request; no protocol or authorization rule is relaxed.
+- **Fix:** No source change yet. Preserve this untraced qualification attempt
+  and run a separate diagnostic scenario with the existing
+  `NDNSF_SPEC192_SELECTED_REQUEST_TRACE=1` instrumentation so the missing and
+  observed tuples plus selected-request stages are captured. Traced results
+  are diagnostic only because instrumentation changes timing.
+- **Next:** Review the exact discovery/capability trace and per-node Repo logs;
+  repair only if they identify a source or harness defect. Then rerun the full
+  default-profile, untraced VM-21 scenario on the exact reviewed candidate and
+  require both fresh-Provider DI authorization branches and cleanup.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-c4d7fbb2-20261001/minindn/vm21-run50-default-untraced/`
+  contains the run manifest, independent receipts and Repo snapshots, process
+  logs, and five packet captures. The exception text is in
+  `logs/cpp-publish-di-output.log`.
+- **Lesson:** A passing prior publish on the same Repo does not prove that a
+  later operation's selected tuple still appears in its fresh authenticated
+  capability snapshot. Preserve the pre-STORE boundary and exact membership
+  evidence rather than treating this as a transport timeout.
+
+### 2026-10-01 Spec192 VM-21 run51 global capability trace exhausted the DI-input request budget
+
+- **Symptom:** The separate traced diagnostic used exact candidate
+  `c4d7fbb238484a77639e87f2bd2eb07306e93e927e007b0c62cf6c5501320ff6` and the
+  default SVS profile. In-App reopen, explicit archive with an independent
+  2/2 receipt, Python binding publish/status/fetch, independent no-Python C++
+  fetch, and DI-model publication passed. The `cpp-publish-di-input` child
+  then exited before the DI-output case with
+  `repo-request-timeout-invalid: discovery timeout must exceed ACK window`.
+  The manifest records `status=FAIL`, `minindn_cleanup=PASS`, and six nonempty
+  packet captures. VM-14/15 authorization branches were not reached.
+- **Root cause:** The existing trace flag was inherited by every C++ client
+  child, so verbose selected-request and ACK logging slowed the earlier
+  DI-input STATUS/discovery sequence until the request's remaining deadline
+  no longer exceeded its ACK window. The run did not instrument the DI-output
+  boundary that run50 left unobserved; it does not classify run50's missing
+  capability tuple.
+- **Fix:** None yet. Add a harness-only child-scoped trace option that strips
+  the global trace from every child and enables it only for
+  `cpp-publish-di-output`. Preserve production selection, request deadlines,
+  and wire behavior. Treat the resulting run as diagnostic only.
+- **Next:** Statically review and syntax-check the scoped runner change, then
+  rerun the trace diagnostic with only the DI-output child instrumented. Use
+  its missing/observed tuples to identify a concrete defect or classify the
+  environmental boundary; do not claim VM-21 until a fresh untraced full run
+  passes both VM-14/15 branches and cleanup. VM-24 remains a separate gate.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-c4d7fbb2-20261001/minindn/vm21-run51-capability-trace/`
+- **Lesson:** Broad tracing can consume a request's discovery budget before
+  reaching the boundary under investigation. Scope instrumentation to the
+  first unobserved child and keep diagnostic runs separate from qualification.
+
+### 2026-10-01 Spec192 VM-21 run52 timed out before the scoped DI-output trace
+
+- **Symptom:** Exact runner candidate
+  `e26641a788dead3ff48ff7169b03628ec4d449f2fa11420c05d9d83b994b9c8b` ran
+  under the default SVS profile with trace scoped to `cpp-publish-di-output`.
+  In-App reopen, archive 2/2, and Python binding fetch of the C++ artifact
+  passed. `python-binding-query-cpp-native-receipt` then failed with
+  `repo-request-timeout: Provider response callback was not delivered before
+  the request deadline`. The RepoA/RepoB handler traces contain no new
+  request after the prior consumer FETCH_RANGE/COMMIT_RANGES; run50's same
+  receipt query completed. The manifest records `status=FAIL`,
+  `minindn_cleanup=PASS`, and five nonempty pcaps. The scoped DI-output child
+  and VM-14/15 authorization branches were not reached.
+- **Root cause:** Not established. Available handler logs show the receipt
+  request did not enter either Repo service before the client deadline, but
+  they do not establish whether the Interest was never emitted, was not
+  routed, or was rejected before the registered handler. The failure occurs
+  before the selected trace scope and is not evidence about run50's missing
+  output tuple.
+- **Fix:** No product or test-source change. Preserve this exact-candidate
+  diagnostic and compare its pcap/client startup boundary with run50 before
+  deciding whether the same scoped diagnostic can be retried.
+- **Next:** Packet decoding found no Repo STATUS/service exchange after the
+  preceding binding fetch, while background NLSR traffic continued; run50's
+  same receipt query succeeded. Run one fresh default-profile repeat on the
+  unchanged e266 candidate with the same output-only trace scope. If the
+  receipt query fails at the same boundary again, stop repeating the full
+  scenario and inspect that client/service-user path. Then reach and classify
+  the DI-output selected tuple, obtain an untraced VM-21 pass through both DI
+  authorization branches and cleanup, and run offline VM-24 separately.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-e26641a7-20261001/minindn/vm21-run52-output-scoped-trace/`
+  and the command record at
+  `specs/192-distributedrepo-lifecycle/evidence-T010-e26641a7-20261001/minindn/vm21-run52-output-scoped-trace-record.md`.
+- **Packet boundary review:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-e26641a7-20261001/minindn/vm21-run52-pcap-boundary-review.md`.
+- **Lesson:** A diagnostic may fail before its intended instrumentation point;
+  keep the first missing request boundary separate from the original failing
+  boundary and avoid attributing it to trace timing without evidence.
+
+### 2026-10-01 Spec192 VM-21 run53 failed Python binding publish before the trace target
+
+- **Symptom:** The unchanged e266 candidate passed the Python native receipt
+  query that failed in run52, returning a committed receipt. The next
+  `python-binding-publish-status-fetch` child exited with
+  `repo-ack-authentication-failed: selected Provider ACK was absent,
+  duplicated, or untrusted (matching=0, observed=0)`. The manifest records
+  `status=FAIL`, `minindn_cleanup=PASS`, and five nonempty host pcaps. The
+  selected DI-output trace and VM-14/15 branches were not reached.
+- **Root cause:** Not established. RepoA/RepoB handler traces contain no new
+  Repo service event after the successful receipt query. Arizona's pcap has no
+  `NDNSF/REQUEST`, `NDNSF/ACK`, or `NDNSF/RESPONSE` service-name packet in the
+  final 180 seconds before cleanup. This narrows the observed boundary to
+  before a network-visible Repo request/ACK exchange but does not establish
+  whether it was not emitted, rejected locally, or blocked before capture.
+  Run50's corresponding earlier steps passed; run52 failed at a different
+  earlier query and run53 passed that query.
+- **Fix:** No source change. Preserve this second distinct pre-trace boundary;
+  do not infer a deterministic product or trace-scope defect from the moving
+  failure point.
+- **Next:** Stop full scoped diagnostic repetitions. Run the required fresh
+  untraced VM-21 qualification on the unchanged e266 candidate. If it stops
+  before DI-output, inspect that exact client path before any further full
+  run. A VM-21 pass still requires both VM-14/15 branches and cleanup; VM-24
+  remains separate.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-e26641a7-20261001/minindn/vm21-run53-output-scoped-trace/`
+  and `vm21-run53-pcap-boundary-review.md` in the same `minindn/` directory.
+- **Lesson:** Repeated full scenarios that fail at different early request
+  handshakes are not diagnostic repetitions of one bug. Record each first
+  boundary and change the next gate to the actual untraced acceptance run.
+
+### 2026-10-01 Spec192 VM-21 run54 no-Python C++ fetch timed out before Repo service exchange
+
+- **Symptom:** Exact e266 candidate, default profile, no trace variables.
+  In-App reopen, archive 2/2, Python binding fetch, native receipt query, and
+  Python binding publish with `writeConsistency=ALL` passed. The independent
+  `cpp-client-fetch-python-receipt-no-python` child then exited with
+  `repo-request-timeout: Provider response callback was not delivered before
+  the request deadline`. The manifest records `status=FAIL`, cleanup PASS, and
+  five nonempty pcaps. The scenario did not reach DI model/input/output or
+  VM-14/15.
+- **Root cause:** Not established. RepoA/RepoB handler logs contain no new
+  request from the no-Python C++ fetch after the previous Python publish. The
+  Neu capture has 116 UDP/6363 packets in the final 180 seconds but no decoded
+  Repo service request/ACK/response name at that boundary. Run50's same C++
+  fetch of a Python artifact passed. The evidence does not distinguish a
+  local request failure from a request blocked before the host capture.
+- **Fix:** No source change. Preserve the failure boundary and its complete
+  pcap/process evidence; do not classify it as a production Repo failure from
+  the timeout alone.
+- **Next:** Make one fresh untraced VM-21 candidate attempt. If the same
+  pre-service boundary repeats, stop full MiniNDN runs and inspect the
+  standalone fetch/ServiceUser path before another qualification attempt. A
+  VM-21 pass still requires both VM-14/15 branches and cleanup; VM-24 remains
+  separate.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-e26641a7-20261001/minindn/vm21-run54-default-untraced/`
+  and `vm21-run54-pcap-boundary-review.md` in the same `minindn/` directory.
+- **Lesson:** A failure before the Repo handler is an incomplete
+  interoperability observation. Preserve the sender pcap and handler log
+  together, then repeat once on the exact candidate before assigning cause.
+
+### 2026-10-01 Spec192 VM-21 run55 stale DI-model target before seed STORE
+
+- **Symptom:** Exact e266 candidate, default profile, no trace variables.
+  In-App reopen, archive, Python binding fetch/query/publish, and independent
+  no-Python C++ fetch passed. The next `cpp-publish-di-model` child failed
+  before seed STORE with `repo-selected-target-stale: a selected Repo/Provider
+  tuple is absent from fresh authenticated discovery`. The manifest records
+  `status=FAIL`, cleanup PASS, and five nonempty pcaps. DI input/output and
+  VM-14/15 were not reached.
+- **Root cause:** Not established. This reproduces run50's stale tuple class at
+  the model slot, but run50 reached DI-output; later e266 runs fail at different
+  earlier service boundaries. Preserve the tuple-selection trace before
+  assigning the issue to Repo selection, discovery, or timing.
+- **Fix:** No production change. The test harness now permits a per-child trace
+  for `cpp-publish-di-model`, `cpp-publish-di-input`, or
+  `cpp-publish-di-output`; servers and unrelated C++ children remain untraced.
+- **Next:** Run one model-scoped diagnostic on harness candidate
+  `31d66b30a0876240854f229ab152cf27150de80f80158b29087fb07ab096f688`.
+  This is diagnostic only. Qualification still requires a fresh untraced
+  complete VM-21 run, both VM-14/15 branches, and cleanup; VM-24 remains
+  separate.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-e26641a7-20261001/minindn/vm21-run55-default-untraced/`.
+- **Lesson:** Trace the failing DI slot itself; a trace limited to output cannot
+  explain an earlier model-selection rejection.
+
+### 2026-10-01 Spec192 VM-21 run56 authorized DI request timed out before a visible service Interest
+
+- **Symptom:** Exact harness candidate
+  `31d66b30a0876240854f229ab152cf27150de80f80158b29087fb07ab096f688`, model-
+  scoped Repo trace. In-App reopen, archive, Python fetch/query/publish,
+  no-Python C++ fetch, and DI model/input/output Persistent publishes passed.
+  The fresh authorized DI Provider started and the request-side plan cache
+  logged a miss (`artifacts=1 scopes=1`), but
+  `spec192-di-request-authorized` exited 1 after about 60 seconds with
+  `DI request failed: timeout: /20261001T205008.518507-91f9d958f5d7d255`.
+  The manifest records `status=FAIL`, cleanup PASS, and five nonempty pcaps;
+  VM-15 was not reached.
+- **Root cause:** Not established. The authorized request log reports
+  `request_ms=60003.09` and no response. The fresh Provider log contains only
+  its serving marker. During the exact UTC request window
+  `2026-10-01T20:50:08.517853Z`–`20:51:08.817853Z`, Arizona's captured
+  UDP/6363 trace has 17 packets (12 Interest, 5 Data) and Neu's has 33 (20
+  Interest, 13 Data). The decoded traffic includes consumer SVS group-sync
+  exchange reaching Neu near request start, but no Provider Interest fetching
+  the consumer's `/NDNSF/REQUEST/...` Data was observed. This does not prove
+  that the client failed to publish SVS data or locate the loss between local
+  emission and forwarding.
+- **Fix:** No production change. Run56's selected-request trace was scoped to
+  the Repo DI-model publish child; all 48 recorded Repo STATUS/STORE stages
+  completed, so that trace does not explain the later DI request timeout.
+- **Next:** Make one fresh untraced VM-21 attempt on the same 31d66 candidate.
+  If the authorized DI request again times out without a captured service
+  Interest, stop full runs and inspect the request/route startup boundary.
+  VM-21 still requires both authorization branches and cleanup; VM-24 remains
+  separate.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-31d66b30-20261001/minindn/vm21-run56-model-scoped-trace/`.
+- **Lesson:** A Provider readiness marker and plan-cache miss do not prove the
+  request Interest reached either NFD capture point.
+
+### 2026-10-01 Spec192 VM-21 run57 repeated stale DI-model selection
+
+- **Symptom:** Exact 31d66 candidate, default profile, both trace variables
+  unset. In-App reopen, archive, Python binding fetch/query/publish, and
+  no-Python C++ fetch passed. `cpp-publish-di-model` then exited 2 before seed
+  STORE with `repo-selected-target-stale: a selected Repo/Provider tuple is
+  absent from fresh authenticated discovery`. The manifest records
+  `status=FAIL`, cleanup PASS, and five nonempty pcaps. DI input/output and
+  VM-14/15 were not reached.
+- **Root cause:** Not established. This repeats run55's same DI-model boundary;
+  run56's scoped-trace run passed model/input/output publication and later
+  timed out before a visible VM-14 DI service Interest. Run50 observed the
+  stale-tuple class at DI-output. The varying outcome shows the selection
+  failure is intermittent, not that a particular tuple or cause is known.
+- **Fix:** No production change. CodeGraph confirms
+  `spec192DiscoveryTraceEnabled()` reads
+  `NDNSF_SPEC192_SELECTED_REQUEST_TRACE`; at the stale check the enabled path
+  emits `[SPEC192_CAPABILITY] selected-missing` and every discovered tuple.
+- **Next:** Run one DI-model-scoped trace diagnostic on 31d66 to capture the
+  selected and observed tuples if the stale condition recurs. If the diagnostic
+  passes the model stage, continue to the untraced full VM-21 qualification.
+  T010 remains open; VM-24 is separate.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-31d66b30-20261001/minindn/vm21-run57-default-untraced/`.
+- **Lesson:** The per-child discovery trace is required to attribute an
+  intermittent membership rejection; a generic error string is insufficient.
+
+### 2026-10-01 Spec192 VM-21 run58 archive receipt was partial
+
+- **Symptom:** Exact 31d66 candidate with a model-child trace scope. In-App
+  publish/reopen passed. The explicit archive helper returned a handle and
+  receipt, but the independent receipt oracle rejected it:
+  `state=PARTIAL`, `requestedReplicas=2`, `requiredAcks=2`,
+  `achievedReplicas=1`. RepoA has a `COMMITTED` replica; RepoB is
+  `FAILED/repo-target-outcome-unknown`. RepoB's handler log records three
+  `STORE_RANGE` requests from RepoA and no `COMMIT_RANGES`. The manifest records
+  `status=FAIL`, cleanup PASS, and five nonempty pcaps. Python binding/DI and
+  VM-14/15 were not reached.
+- **Root cause:** Not established. The selection handle names both C++ Repos,
+  but no durable RepoB receipt was produced. The observable gap is after its
+  range writes and before a recorded commit; logs do not identify whether the
+  final request/ack was emitted, delivered, or accepted. The standalone test
+  client prints `ARCHIVE_COMMITTED` unconditionally; this text is not an
+  oracle, and the independent PARTIAL receipt is authoritative.
+- **Fix:** No production change. Preserve the partial receipt and RepoB
+  request log; do not classify this as a complete archive or as proof of a
+  storage corruption.
+- **Next:** Run one fresh untraced VM-21 attempt on 31d66. If the same partial
+  replica result repeats, stop broad runs and inspect the T004 RepoB range to
+  commit/status transition. T010 remains open; VM-24 is separate.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-31d66b30-20261001/minindn/vm21-run58-model-scoped-trace/`.
+- **Lesson:** A durable-looking handle and helper success marker cannot replace
+  replica-level receipt state and independent Repo inventory.
+
+### 2026-10-01 Spec192 VM-21 run59 authorized DI request timed out after SVS group sync
+
+- **Symptom:** Harness candidate
+  `31d66b30a0876240854f229ab152cf27150de80f80158b29087fb07ab096f688`, default
+  profile, with both trace variables unset. In-App reopen, archive receipt
+  (2/2), Python binding fetch/query/publish, standalone no-Python C++ fetch,
+  and Persistent DI model/input/output publishes passed. The authorized DI
+  request then timed out after 60 seconds with
+  `request_ms=60001.33`, request
+  `/20261001T212637.927328-831bd739cf097123`, and status=false. Its plan cache
+  logged a miss (`artifacts=1 scopes=1`); the fresh Provider log contains only
+  its serving marker. The manifest records FAIL, cleanup PASS, and five
+  nonempty pcaps; VM-15 was not reached.
+- **Root cause:** Not established. In the exact request window
+  `2026-10-01T21:26:37.927328Z`–`21:27:38.247980Z`, Arizona captured 17 and Neu
+  captured 31 UDP/6363 packets. Decoding shows consumer SVS group-sync traffic
+  reached Neu near request start. No Provider Interest fetching the consumer's
+  `/NDNSF/REQUEST/...` Data was observed. This evidence does not prove whether
+  the local SVS data publication happened or identify the forwarding boundary.
+- **Fix:** No production or selector source change. A runner-only diagnostic
+  adds `NDN_LOG=*=TRACE` and the existing selected-request trace flag solely
+  to `spec192-di-request-authorized`; per-child isolation passed its stub
+  probe. The vendored ndn-cxx logger accepts colon-separated `module=level`
+  rules and a trailing `*` prefix, so this rule selects TRACE for this one
+  child. Run60 is diagnostic only.
+- **Next:** Inspect run60 for `ServiceUser::PublishMessage` entry, attribute
+  lookup, SVS publication and request-send outcomes. Do not claim a client-side
+  publication failure from pcap Name decoding alone. After the boundary is
+  understood, return to a fresh untraced complete VM-21 qualification; VM-24
+  remains a separate offline gate.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-31d66b30-20261001/minindn/vm21-run59-default-untraced/`.
+- **Lesson:** SVS group-sync Names carry the request transport; absence of a
+  literal service Name in NFD packet captures is not proof that the request
+  was never published.
+
+### 2026-10-01 Spec192 VM-21 run60 repeated stale DI-output selection
+
+- **Symptom:** Harness candidate
+  `650878448ce7afd1695cc80468f0f8a5201fbcd1fcc630e0ce576c3e11397dad`, default
+  profile, with selected-target trace scoped to the authorized-request child
+  and NDN logger trace scoped to that same child. In-App/archive, Python
+  binding, standalone no-Python C++ fetch, and DI model/input publishes passed.
+  `cpp-publish-di-output` exited 2 with
+  `repo-selected-target-stale: a selected Repo/Provider tuple is absent from
+  fresh authenticated discovery`. The manifest records FAIL, cleanup PASS, and
+  five nonempty pcaps. VM-14 and VM-15 were not reached.
+- **Root cause:** Not established. Run59 passed DI model/input/output before
+  reaching VM-14, while run60 reproduced the stale-target class at output.
+  This preserves the earlier finding that selection rejection is intermittent
+  and may occur at different DI artifact slots. Run60 did not enable the
+  selected-target trace on output, and its authorized-request logger child was
+  never launched; it provides no selected/missing tuple or request-publish
+  trace.
+- **Fix:** No production change. The runner now accepts separate, validated
+  child scopes for `NDNSF_SPEC192_SELECTED_REQUEST_TRACE` and `NDN_LOG`. Stub
+  isolation verified output receives only capability trace, the authorized
+  request receives only `NDN_LOG=*=TRACE`, and servers/unrelated children
+  receive neither. The resulting candidate is
+  `3ffc3048f77e34dbe6bd20226eeeb0f942ea279efdb3d7753571b2386f8c9415` (102
+  source paths).
+- **Next:** Run61 uses selected-target trace on `cpp-publish-di-output` and
+  NDN TRACE on `spec192-di-request-authorized`. If output is rejected, retain
+  the exact missing and freshly observed tuples. If output passes, inspect the
+  request-side ServiceUser publish/attribute/SVS path. Run61 remains a
+  diagnostic and cannot close VM-21; resume fresh untraced qualification after
+  the diagnostic boundary is understood.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-650878448ce7-20261001/minindn/vm21-run60-authorized-request-trace/`.
+- **Lesson:** An NDN logger scope that is correctly isolated is still
+  uninformative when an earlier scenario child aborts; combine independent
+  child-scoped diagnostics when either boundary can stop the serial scenario.
+
+### 2026-10-01 Spec192 VM-21 run61 stopped at Python publish ACK
+
+- **Symptom:** Harness candidate
+  `3ffc3048f77e34dbe6bd20226eeeb0f942ea279efdb3d7753571b2386f8c9415`, default
+  profile. The In-App stage and archive receipt stage passed; the Python
+  binding publish/status/fetch child failed at publish with
+  `repo-ack-authentication-failed: selected Provider ACK was absent,
+  duplicated, or untrusted (matching=0, observed=0)`. The manifest records
+  FAIL, cleanup PASS, and five nonempty pcaps. No DI publish or VM-14/15 stage
+  ran.
+- **Root cause:** Not established. Earlier candidate runs passed this Python
+  binding stage, so this is another intermittent authorization/network
+  boundary. Run61's command also misspelled the selected-target scope variable
+  as `NDNSF_SPEC192_SPEC192_SELECTED_REQUEST_TRACE_CHILD`; therefore output
+  target tracing was not active. The authorized-request logger child was
+  never reached, so it contributes no request trace.
+- **Fix:** No production change. Correct the command variable for run62 and
+  preserve separate scopes: selected-target trace on DI-output, `NDN_LOG`
+  TRACE on the authorized request child. Candidate source remains unchanged.
+- **Next:** One bounded run62 diagnostic on the same `3ffc3048` candidate. If
+  Python publish fails again, inspect its ACK/capture boundary before further
+  full topology runs; if it passes, continue and retain the output tuple or
+  authorized request logger evidence. Run62 remains non-qualifying.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-3ffc3048-20261001/minindn/vm21-run61-dual-scope-trace/`.
+- **Lesson:** Validate the exact inherited environment-variable spelling in
+  the command record before launching a long network diagnostic.
+
+### 2026-10-01 Spec192 VM-21 run62 exhausted the C++ DI publish begin budget
+
+- **Symptom:** Harness candidate
+  `3ffc3048f77e34dbe6bd20226eeeb0f942ea279efdb3d7753571b2386f8c9415`, with
+  the corrected selected-target and NDN logger child scopes. In-App/archive,
+  Python binding, and standalone no-Python C++ fetch passed. The DI-model
+  publish child exited 2 with
+  `repo-request-timeout-invalid: selected request timeout must exceed ACK
+  window`. The manifest records FAIL, cleanup PASS, and five nonempty pcaps;
+  DI input/output and VM-14/15 were not reached, so neither scoped trace child
+  started.
+- **Root cause:** `beginPublishFileImpl` uses one begin deadline for the
+  accepted-operation STATUS query, fresh CAPABILITY discovery, and seed STORE.
+  It passed `remaining()` into the internal selected-request helper. The
+  helper rejected a remaining budget at or below the 30 s ACK window with
+  `std::invalid_argument`, despite the public begin timeout having passed its
+  precondition. This is deadline exhaustion, not invalid caller input. The
+  evidence supports that the previous STATUS/discovery work consumed nearly
+  all of the 240 s budget; it does not independently time each substage.
+- **Fix:** The internal helper now throws `RepoRequestTimeoutError` with the
+  stable `repo-request-timeout:` prefix when the remaining deadline cannot
+  cover its ACK window. The standalone cold MiniNDN publish profile now allows
+  480 s for STATUS/discovery/seed begin and retains a separate 180 s operation
+  wait; the runner's derived child bound is 720 s including its 60 s margin.
+  This keeps each operation bounded while allowing the cold five-host path
+  several serial ACK windows.
+- **Next:** Rebuild and freeze the changed candidate; rerun complete affected
+  C++ unit tests, then complete integration tests, then a fresh untraced VM-21
+  including VM-14/15 and cleanup, followed by the independent offline VM-24
+  gate. No claim of qualification is made from run62.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-3ffc3048-20261001/minindn/vm21-run62-corrected-dual-scope-trace/`.
+- **Lesson:** A dynamic remaining deadline must be classified separately from
+  the caller's initial timeout precondition; cold-path harness budgets must
+  cover the full serial operation structure, not only one request window.
+
+### 2026-10-01 Spec192 unit-selector invocation accidentally started full suite
+
+- **Symptom:** The first T010 unit-gate command launched `build/unit-tests`
+  without a `--run_test` selector and ran for 149 s while growing to about
+  7.1 GiB resident memory and several GiB of swap. It was terminated before
+  producing a test result; zero selectors count toward the gate.
+- **Root cause:** The command reader treated the saved three-column
+  `selector<TAB>executable<TAB>arguments` file as a two-column TSV. It kept
+  only the executable column and silently dropped all Boost.Test arguments.
+- **Fix:** Preserve the failed launch record under
+  `evidence-T010-c47757cf-20261001/unit/incorrect-full-suite-invocation/`.
+  The corrected runner reads the executable and all remaining tab-separated
+  argument fields, verifies `--run_test=<selector>` in each command before
+  launch, and executes selectors serially.
+- **Next:** Rerun all 20 unit selectors against candidate
+  `c47757cf51e6e7f97f6a271a25e0202f509caa73c9de3826efd087804bd5cfb6`; do not
+  count the interrupted full-suite process.
+- **Lesson:** Validate command parsing against the ledger's actual column
+  shape before executing a selector batch.
+
+### 2026-10-01 Spec192 VM-21 run63 partial C++ archive receipt
+
+- **Symptom:** Candidate
+  `c47757cf51e6e7f97f6a271a25e0202f509caa73c9de3826efd087804bd5cfb6`, fresh
+  untraced five-host MiniNDN. The In-App reopen/archive child exited 0 and
+  printed `ARCHIVE_COMMITTED`, but the independent receipt oracle reported
+  `PARTIAL`, `achievedReplicas=1`, `requestedReplicas=2`. RepoA committed;
+  RepoB had `repo-target-outcome-unknown`, an empty receipt, generation 0 and
+  location version 0. RepoB logged one `STORE_RANGE` and no later range or
+  `COMMIT_RANGES`; RepoA logged no matching RepoB STATUS handler. Cleanup
+  passed, all five pcaps were nonempty, and VM-14/15 did not run.
+- **Root cause:** Not proven. The first RepoB range handler performs a fresh
+  authenticated seed-owner STATUS proof. Defaults are ACK collection 250 ms
+  and request timeout 5 s; owner verification caps its request at 2 s. The
+  RepoB pcap shows the request-input fetch and later STATUS HYBRID-KEY setup,
+  while RepoA has no matching handler before the unknown target outcome. This
+  is consistent with the short ACK window expiring during remote owner proof,
+  but the capture/log pair does not identify the exact failed ACK/response
+  stage.
+- **Fix:** Keep production defaults unchanged. The VM-21 runner now supplies
+  `--ack-collection-ms 1000 --request-timeout-ms 30000` to both Repo server
+  startup paths, including the RepoC path and same-argv restarts, and writes
+  the effective values into the run manifest. The exact new source candidate
+  is `35a7306c123673aac0184f8ee5a175c14cb54cfaada7c97c091da4f1392780b9`.
+- **Next:** Review the exact new candidate, rerun its complete affected C++
+  unit suite and integration suite serially, then a fresh untraced VM-21 with
+  VM-14/15 and cleanup. Run offline VM-24 separately. Run63 does not qualify
+  T010.
+- **Evidence:**
+  `specs/192-distributedrepo-lifecycle/evidence-T010-c47757cf-20261001/minindn/vm21-run63-summary.md`.
+- **Lesson:** A child-level success marker is not a durable multi-Repo oracle;
+  use the independent per-Repo receipt before advancing the lifecycle gate.
+
+### 2026-10-01 Spec192 unit result parser rejected valid Boost.Test output
+
+- **Symptom:** On candidate `35a7306c123673aac0184f8ee5a175c14cb54cfaada7c97c091da4f1392780b9`, the first `DistributedRepoArtifactManifest` process exited 0 and reported 9/9 test cases, but the gate parser recorded 789 assertions instead of 263 and stopped before selector 2. After that was corrected, an old c477 count comparison falsely stopped on `DistributedRepoPersistentService` (exit 0, 8/8 cases, 123 current assertions versus 121 in the prior run). A third parser revision assumed plural “test cases” and stopped on a valid one-case selector. All three raw selector processes exited 0; no unit assertion failed.
+- **Root cause:** The initial parser summed suite totals and per-case details together. Follow-up revisions respectively treated prior-run counts as invariants and rejected singular grammar. The same `build/unit-tests` SHA-256 (`14dc9fd678ee9ad30df27ae1e97c8de2602226e3b73349afadf6613699d92db2`) produced internally consistent passing module/per-case counts across the c477 and current runs; `DistributedRepoPersistentService` reported 121 in c477 and 123 in the current run, so assertion count is not a fixed cross-run oracle.
+- **Fix:** Preserve all parser diagnostic tables/logs. The exact-candidate local gate runner now accepts singular/plural case and assertion summaries, counts per-case assertions only, and requires the current module summary to agree with those details. It uses the prior ledger for selector names/argv, not expected assertion totals. All 20 selectors were validated serially.
+- **Result:** PASS, 20/20 selectors, 99 test cases, 1,513 assertions; each process exited 0. The exact-candidate results, per-selector logs, and `run-unit-gate.py` are under `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/unit/final/`.
+- **Next:** Run the nine affected integration selectors/targets serially on candidate `35a7306c`.
+- **Lesson:** Parse module and per-case output as separate summaries, handle singular grammar, and validate totals within the same run rather than assuming assertion counts stay fixed across executions.
+
+### 2026-10-01 Spec192 VM-21 run64 timed out before the native receipt query reached a Repo handler
+
+- **Symptom:** Candidate `35a7306c123673aac0184f8ee5a175c14cb54cfaada7c97c091da4f1392780b9` passed In-App reopen, the independent 2/2 C++ archive receipt, and Python binding fetch of the C++ artifact. The following `python-binding-query-cpp-native-receipt` operation timed out at its 60-second deadline without a Provider callback. Cleanup passed and all five host pcaps were nonempty; VM-14/15 did not run.
+- **Root cause:** Not established. RepoA/RepoB logs contain no STATUS handler after the preceding FETCH_RANGE/COMMIT_RANGES. The Neu pcap's final 75-second window has 26 UDP/6363 packets and no decoded outer V2 Repo service Name for the query, while NLSR/group-name traffic continues. A request carried inside an encrypted/sync payload would not be named by this outer-Name check, so the evidence does not distinguish local admission, SVS publication/delivery, or another pre-handler stage. The same query failed in run52 and passed in run50/run53.
+- **Fix:** No product or test-source change is justified by this non-deterministic boundary. A temporary unproven `getReceipt()` rewrite to `requestSelectedService()` was reverted; the exact 102-path source candidate recomputes to `35a7306c123673aac0184f8ee5a175c14cb54cfaada7c97c091da4f1392780b9`.
+- **Next:** Inspect the ServiceUser/SVS pre-handler path using the retained pcap and exact request lifecycle before deciding whether a further full MiniNDN run can add evidence. Run64 does not qualify VM-21. Evidence: `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run64-pcap-boundary-review.md` and `vm21-run64-final-untraced/run-manifest.json`.
+- **Lesson:** A visible service request embedded inside an encrypted/sync payload is not proof that a Repo handler received it; distinguish outer service-name traffic from nested payload material and preserve intermittent successes alongside failures.
+
+### 2026-10-01 Spec192 VM-21 run65 launcher rejected a pre-created output directory
+
+- **Symptom:** The run65 diagnostic launcher exited before MiniNDN startup. It produced no run manifest, packet captures, or lifecycle result.
+- **Root cause:** The wrapper created the output directory before invoking the runner, while the runner deliberately rejects an existing output directory to prevent evidence overwrite.
+- **Fix:** Invoke the runner with a nonexistent output path; the run66 command record uses that contract.
+- **Next:** Treat run65 as a launcher failure only. It supplies no VM-21 evidence.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run65-command.md`.
+- **Lesson:** Evidence wrappers must preserve the runner's create-once output-directory contract.
+
+### 2026-10-01 Spec192 VM-21 run66 receipt query timed out under diagnostic tracing
+
+- **Symptom:** The traced `python-binding-query-cpp-native-receipt` child timed out; its lifecycle trace ended at `TIMED_OUT` and pending cleanup. MiniNDN cleanup passed. The first user-level sanitizer attempt could not overwrite a root-owned log; privileged post-processing then retained the filtered evidence.
+- **Root cause:** The request lifecycle and packet captures do not identify one failed stage between local admission, publication, network delivery, and response handling.
+- **Fix:** No product change was justified. Sanitization completed against the existing files with the required owner privileges.
+- **Next:** Preserve run66 as a failed diagnostic. It does not qualify VM-21.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run66-command.md` and the run66 manifest/logs.
+- **Lesson:** A `TIMED_OUT` lifecycle endpoint narrows the result but does not prove where packet publication stopped.
+
+### 2026-10-01 Spec192 VM-21 run67 passed receipt lookup but failed a later fetch
+
+- **Symptom:** On candidate `35a7306c123673aac0184f8ee5a175c14cb54cfaada7c97c091da4f1392780b9`, the native receipt query completed, then the separate `cpp-client-fetch-python-receipt-no-python` child failed with `repo-request-timeout`. Cleanup passed.
+- **Root cause:** The evidence shows the earlier receipt-query timeout is intermittent; the later Python-published-receipt fetch timeout remains unexplained.
+- **Fix:** No product change was justified by this diagnostic run.
+- **Next:** Keep both the successful receipt query and the subsequent failure in the record. Run67 is not a complete VM-21 qualification.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run67-command.md` and its manifest/logs.
+- **Lesson:** Passing one independent operation cannot qualify a later operation or the full lifecycle.
+
+### 2026-10-01 Spec192 VM-21 run68 DI request timed out
+
+- **Symptom:** Untraced run68 on candidate `35a7306c123673aac0184f8ee5a175c14cb54cfaada7c97c091da4f1392780b9` passed the 2/2 archive receipt and cross-binding fetches, then the authorized DI request timed out after about 60 seconds. Cleanup passed and all five host pcaps were nonempty.
+- **Root cause:** Not established. The corrected parser found no decoded outer V2 DI service Name matching the generic request/response pattern after the target request ID timestamp (2026-10-02 00:47:40.847 UTC), although captures continue through 00:48:36 UTC. Earlier `/Spec192/DI/Infer` occurrences are `NDNSF/POLICY-STATUS/<service>` control Names. The generic request may be carried inside an encrypted/sync payload, so pcap does not distinguish local admission/preparation from SVS publication/delivery or a later handler stage.
+- **Fix:** No product change is justified until a target-scoped framework lifecycle trace identifies the stage.
+- **Next:** Keep VM-21 open; run the targeted DI request diagnostic with framework TRACE scoped to that child, then an untraced exact-candidate qualification only after any behavior fix passes static review and affected gates.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run68-command.md`, `vm21-run68-di-pcap-boundary-review.md`, and the run68 manifest.
+- **Lesson:** A service-name component inside a Name is not by itself evidence that the generic request protocol was emitted.
+
+### 2026-10-01 Spec192 VM-21 run69 selected RepoB was absent from fresh discovery
+
+- **Symptom:** The targeted-trace attempt stopped at `cpp-publish-di-model` because its selected RepoB tuple was stale; the discovery result contained RepoA only. Cleanup passed, and the trace target was never launched.
+- **Root cause:** Run69 proves that RepoB was not present in that request's fresh discovery result. It does not explain why RepoB did not answer or appear; no routing, registration, or authorization cause is established.
+- **Fix:** Preserve the fail-closed selected-target check. Do not disable it to force this diagnostic forward.
+- **Next:** Run69 is diagnostic only and says nothing about the authorized DI request. The run69 pcap review finds no decoded outer Name matching generic V2 DI or Repo STATUS service patterns; it cannot rule out a request carried inside a sync payload. Raw service-name components alone are not request evidence.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run69-command.md`, its diagnostic summary, and run manifest.
+- **Lesson:** A selected provider must still be present in that operation's fresh authenticated discovery result.
+
+### 2026-10-01 Spec192 VM-21 pcap service parser initially produced false negatives
+
+- **Symptom:** The first evidence parser reported zero DI and Repo service packets in runs64, 68, and 69.
+- **Root cause:** It assumed every generic service Name was encoded immediately as `NDNSF/<kind>/<service>` and conflated any Name containing a service component sequence with a generic V2 request/ACK/selection/response.
+- **Fix:** The parser now reports raw service-name occurrences separately from decoded outer Names matching generic V2 packet patterns, and records packet type, timestamp, and IP direction. Reprocessing confirms raw service-name components occur in these captures, while no matching generic V2 service pattern occurs in the decoded outer Names of runs64, 68, or 69. The parser does not decrypt or inspect SVS payload content.
+- **Next:** Use the corrected `review_vm21_di_pcap.py` output and the run-specific boundary reviews; the old zero counts are superseded.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/review_vm21_di_pcap.py` and the run64/run68/run69 capture manifests.
+- **Lesson:** Parse protocol markers and application service components as separate predicates; never infer a request exchange from a service substring alone.
+
+### 2026-10-01 Spec192 VM-21 run70 diagnostic launcher failed before MiniNDN
+
+- **Symptom:** The run70 diagnostic helper returned 1 with no run manifest, packet captures, or target trace. The runner traceback stopped in `source_candidate()` while Git attempted to inspect the candidate.
+- **Root cause:** The helper was launched under an outer `sudo -E`, then correctly used its own `sudo` for the experiment runner. The nested privilege transition made Git reject the repository as dubious ownership; MiniNDN never started.
+- **Fix:** Keep the evidence helper under the repository owner and let only its runner subprocess elevate. Run71 uses this invocation shape; its evidence is recorded separately.
+- **Next:** Treat run70 as a launcher failure without VM evidence. Complete run71 diagnostics, then run a fresh untraced VM-21 qualification only if the candidate remains unchanged and all diagnostic prerequisites pass.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run70-di-request-trace/diagnostic-summary.json` and `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run70-runner.stdout.log`.
+- **Lesson:** Do not wrap a helper that already uses `sudo` in a second outer `sudo`; preserve Git's repository-owner context for candidate hashing.
+
+### 2026-10-01 Spec192 VM-21 run71 DI request received no ACK
+
+- **Symptom:** Exact candidate `35a7306c123673aac0184f8ee5a175c14cb54cfaada7c97c091da4f1392780b9` passed the archive receipt, both Python/C++ cross-binding checks, and all three DI artifact publications. The authorized DI request was published through SVS but received zero ACKs; custom selection selected no Provider, and the request timed out at 60 seconds. The DI handler did not report artifact materialization. Cleanup passed. VM-14/15 and VM-21 remain unqualified.
+- **Root cause:** Not established. The target Provider had entered its ready/serving loop before the request. Requester trace proves local admission, generic V2 request construction, `SVS_PUBLISH_DONE`, then `ACK_SELECTION_BEGIN ackCount=0` and timeout with `selectedProvider=-`. This run traced the requester, not the Provider; it does not distinguish missed SVS delivery, Provider decryption/authorization rejection, or another Provider-side pre-ACK stage.
+- **Fix:** No product change is justified from requester-only evidence. Run71's first post-run sanitization attempt failed because the root-owned trace could not be rewritten by the unprivileged helper; the preserved manifest/trace were sanitized afterward with the helper's existing `--sanitize-existing` mode under one `sudo`. This did not rerun MiniNDN or alter its result.
+- **Next:** Add a narrow NDN logger trace to the authorized Provider child and inspect its receive/decrypt/dispatch path before changing behavior. After any behavior fix, reopen static review and rerun the affected unit/integration gates before a fresh untraced VM-21 qualification.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run71-command.md`, `vm21-run71-di-request-boundary-review.md`, `vm21-run71-di-request-trace/run-manifest.json`, and `diagnostic-summary.json`.
+- **Lesson:** A serving marker proves Provider startup, and an SVS publish marker proves local publication; neither proves that the Provider received or accepted the request.
+
+### 2026-10-01 Spec192 VM-21 run72 Provider trace child was rejected by the runner
+
+- **Symptom:** The run72 runner exited during setup with `unsupported NDN logger trace child: spec192-di-provider-authorized`. Cleanup passed; no authorized DI request or Provider trace ran. The unprivileged helper then hit the known root-owned manifest rewrite issue; a single-`sudo` sanitizer produced the diagnostic summary without rerunning MiniNDN.
+- **Root cause:** The tracked runner accepts NDN logger tracing only for `spec192-di-request-authorized`. Adding the provider label there would change the exact candidate, so run72 cannot be used as a diagnosis.
+- **Fix:** Add an evidence-only wrapper under the ignored Spec192 evidence directory. It imports the unchanged runner and scopes `NDN_LOG=*=TRACE` to the authorized DI Provider only at the existing `spawn()` boundary. The wrapper is outside the candidate paths; rerun candidate hashing before launch.
+- **Next:** Use run73 with the evidence wrapper and verify the manifest records unchanged candidate `35a7306c`, one Provider-scoped trace, and cleanup.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run72-command.md`, `vm21-run72-di-request-trace/run-manifest.json`, and `diagnostic-summary.json`.
+- **Lesson:** Do not broaden a tracked qualification runner's diagnostic allow-list after freezing its candidate; use an evidence-only scoped wrapper and keep candidate identity intact.
+
+### 2026-10-01 Spec192 VM-21 run73 evidence wrapper passed environment flags in the wrong order
+
+- **Symptom:** The run73 wrapper exited before MiniNDN startup with `env: '-u': No such file or directory`; no run manifest or network evidence was produced.
+- **Root cause:** The wrapper placed environment assignments before `env -u` options.
+- **Fix:** Order all `env` options before assignments in the ignored evidence helper. The corrected provider trace wrapper reached the run74 DI request without changing the tracked candidate.
+- **Next:** Treat run73 as a launcher failure only; use run74 for Provider-side diagnosis.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run73-runner.stdout.log` and `vm21-run74-di-request-trace/diagnostic-summary.json`.
+- **Lesson:** Validate the final `env` argument vector before launching privileged MiniNDN work.
+
+### 2026-10-01 Spec192 VM-21 runs75 and76 native Repo receipt lookup intermittently timed out
+
+- **Symptom:** Both runs reached `python-binding-query-cpp-native-receipt`, then failed with `repo-request-timeout: Provider response callback was not delivered before the request deadline`. MiniNDN cleanup passed; neither run reached the DI peers. The same child passed in run74 and run77.
+- **Root cause:** The retained child log does not establish whether the selected Repo request was lost before provider dispatch or its response was lost. The repetition is real, but a cause is not established.
+- **Fix:** No product change. Preserve both failures and the intervening successful receipt query; root-owned manifests were sanitized with the helper's existing `--sanitize-existing` mode.
+- **Next:** Continue only with a fresh output directory and retain exact child/cleanup status. These runs provide no DI or VM-21 qualification.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run75-di-request-trace/diagnostic-summary.json`, `vm21-run76-di-request-trace/diagnostic-summary.json`, and their `logs/python-binding-query-cpp-native-receipt.log` files.
+- **Lesson:** Distinguish intermittent precondition transport failures from the target DI request failure; a later passing precondition does not erase prior reds.
+
+### 2026-10-01 Spec192 VM-21 run77 Repo artifact publication lost fresh discovery for repoA
+
+- **Symptom:** The run77 `cpp-publish-di-model` child exited with `repo-selected-target-stale`: authenticated fresh discovery returned repoB but not repoA. Cleanup passed; DI peers and VM-21 teardown assertions did not run.
+- **Root cause:** The run manifest and child log show an incomplete fresh discovery result, but do not identify why repoA was absent.
+- **Fix:** No product change. Keep the failed run evidence and retry using a new isolated run label.
+- **Next:** If a later exact-candidate run reaches DI, inspect both user and provider ControllerVersion status traces; run77 itself has no DI trace.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run77-di-request-trace/diagnostic-summary.json` and `logs/cpp-publish-di-model.log`.
+- **Lesson:** A partial authenticated service-discovery set is not sufficient evidence for a two-Repo publication gate.
+
+### 2026-10-01 Spec192 VM-21 run78 native Repo receipt lookup timed out before DI setup
+
+- **Symptom:** The `python-binding-query-cpp-native-receipt` child failed with `repo-request-timeout: Provider response callback was not delivered before the request deadline`. Cleanup passed and no DI peer started.
+- **Root cause:** The captured log confirms missing response delivery but does not locate the failure before or after Repo provider dispatch. Run77 passed this child; run78 reproduces the run75/run76 symptom.
+- **Fix:** No product change. The existing evidence-only sanitizer ran once with privilege after the MiniNDN runner exited; the manifest shows cleanup PASS.
+- **Next:** Use a new evidence directory for any retry. This run provides no DI or VM-21 qualification.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run78-di-request-trace/diagnostic-summary.json` and `logs/python-binding-query-cpp-native-receipt.log`.
+- **Lesson:** Preserve both passing and failing repetitions of this Repo child; do not infer a stable failure cause from its timeout alone.
+
+### 2026-10-01 Spec192 VM-21 run79 collaboration request omitted the service ControllerVersion
+
+- **Symptom:** The fresh authorized Provider received and decrypted the DI request, then rejected it as stale ControllerVersion. The requester collected zero ACKs and timed out. Cleanup passed; VM-14/15 did not run.
+- **Root cause:** The DI Python client enters `ServiceUser::RequestCollaboration`. That path creates a RequestMessage with only payload and strategy, then queues it directly. Unlike `startRequestServiceWithRequestId` and `BeginCollaborationWithProviders`, it does not call `prepareRequestControllerVersion`; `PublishRequestV2` adds PolicyEpoch but does not add ControllerVersion. Requester and Provider traces both installed the same signed version (generation `1790909794344`, epoch 1), so the wire request lacked the required version and the protected Provider correctly failed closed.
+- **Fix:** Add the existing ControllerVersion/readiness gate and user-permission check to `RequestCollaboration` before it stores or publishes the PendingCall; add focused regression coverage.
+- **Next:** Reopen source review, run affected C++ unit and integration suites, then a fresh untraced VM-21 run on the final candidate. T010 remains IN_PROGRESS.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-35a7306c-20261001/minindn/vm21-run79-command.md`, `vm21-run79-di-request-trace/diagnostic-summary.json`, `logs/spec192-di-request-authorized.log`, and `logs/spec192-di-provider-authorized.log`.
+- **Lesson:** Every public request path, including collaboration APIs, must pass the same service-scoped authorization/version preparation before `PublishRequestV2`.
+
+### 2026-10-02 Spec192 candidate d609 persistent Repo API integration run was intermittent
+
+- **Symptom:** The first complete T010 integration pass failed `RecoveredPendingPublishTargetGetsOneDurableReceipt`: reconciliation ended `PARTIAL`, the replica target was `UNKNOWN`, and the injected STORE handler ran once instead of twice. The isolated case then passed (1 case, 261 assertions), and a full rerun of the same four-case persistent API target passed (4 cases, 722 assertions).
+- **Root cause:** The first run does not establish why the second logical STORE attempt failed to reach the injected handler. The isolated and full reruns pass on the same candidate, so the failure is classified as intermittent; its lower-level cause remains unproven.
+- **Fix:** No product change. Preserve the first red run and both successful retries; the final 9-target integration aggregate is green on candidate `d609b01b4752e8d1fd746af1ceca644a9c3348022639f6d87236c3d120e36221`.
+- **Next:** Keep the original red visible in T010 evidence and finish the exact-candidate VM-21 run before closing T010.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-d609b01b-20261001/integration/final/initial-full-gate-results.tsv`, `integration/retry-persistent-api-full/attempt-1-summary.txt`, and `integration/retry-recovered-pending-publish/attempt-1-summary.txt`.
+- **Lesson:** A passing isolated retry does not erase an initial full-suite failure; rerun the complete target and retain both outcomes.
+
+### 2026-10-02 Same-provider collaboration diagnostic closed before its ACK arrived
+
+- **Symptom:** Two direct runs of `Spec170NdnsfDiCoreFlow/PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaboration` failed before selection and response; seven assertions failed each time. This selector was an extra diagnostic and is outside the T010 nine-target integration gate.
+- **Root cause:** The test sets a 30 ms ACK collection window. The TRACE run shows the User closed that window before `ACK_MATCH_ATTEMPT`; the Provider had already published the ACK, but local delivery arrived after the window. This test calls `BeginCollaboration`, not the `RequestCollaboration` path changed for Spec192.
+- **Fix:** No production change. A test-only window increase is the direct correction, but it is outside T010 and was not added to candidate `d609`.
+- **Next:** Treat this selector separately if its own collaboration test scope is resumed; it does not replace the passing four-Provider `RequestCollaboration` regression result.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-d609b01b-20261001/integration/collaboration-regression/PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaboration-trace.log` and its `-attempt-2.log`.
+- **Lesson:** Use traced event order to distinguish a failed ACK path from an ACK that arrives after a deliberately short collection window.
+
+### 2026-10-02 Spec192 VM-21 run89 DI output publish exhausted its request deadline
+
+- **Symptom:** The traced `cpp-publish-di-input` child authenticated both selected Repo candidates and committed `PERSISTENT_COMMITTED`. The following `cpp-publish-di-output` child exited 2 with `repo-request-timeout: remaining deadline cannot exceed the selected request ACK window`. The manifest records the exact frozen candidate and `minindn_cleanup=PASS`; teardown left no MiniNDN namespaces or service processes.
+- **Root cause:** The failing selected Repo request reached `runSelectedRepoRequest` with at most the configured 1,000 ms ACK collection window remaining, so the deadline guard rejected it. The output child was not traced, so the request that consumed the operation budget and why it took that long remain unknown.
+- **Fix:** No product change. Preserve this diagnostic as a failure and run a fresh trace scoped to `cpp-publish-di-output`; retain the deadline guard until the consuming request boundary is understood.
+- **Next:** Use a new output directory and inspect the selected-request trace. Then perform a fresh untraced VM-21 qualification; run89 is not a qualification pass.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-d609b01b-20261001/minindn/vm21-run89-di-input-trace/run-manifest.json`, `logs/cpp-publish-di-input.log`, and `logs/cpp-publish-di-output.log`.
+- **Lesson:** A committed input artifact does not qualify the full DI lifecycle; retain the absolute operation deadline and trace the request sequence that consumed it.
+
+### 2026-10-02 Spec192 VM-21 run90 stopped at the native receipt lookup
+
+- **Symptom:** The output-scoped diagnostic exited before `cpp-publish-di-output`: `python-binding-query-cpp-native-receipt` timed out with `repo-request-timeout: Provider response callback was not delivered before the request deadline`. The manifest records the frozen candidate and `minindn_cleanup=PASS`.
+- **Root cause:** The response callback was not delivered within the request deadline. Repo server logs end with the prior consumer `FETCH_RANGE` and contain no receipt request entry, so this run does not establish whether the receipt Interest reached a Repo service or where delivery stopped. This matches the intermittent run78 boundary; the lower-level cause remains unproven.
+- **Fix:** No product change. Preserve run90 and its cleanup result; do not count it as evidence for the output trace.
+- **Next:** Retry the output-scoped diagnostic in a new directory. If the receipt lookup fails again, retain that boundary and inspect its per-node NDN traces before another retry.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-d609b01b-20261001/minindn/vm21-run90-di-output-trace/run-manifest.json`, `logs/python-binding-query-cpp-native-receipt.log`, `logs/cpp-repo-ucla.log`, and `logs/cpp-repo-wustl.log`.
+- **Lesson:** Keep the failing child boundary separate from the requested trace target; trace configuration does not imply that the target child was reached.
+
+### 2026-10-02 Spec192 VM-21 run91 DI Repo resolution used the local simple-service path
+
+- **Symptom:** Run91's authorized DI request reached the Provider handler, which logged `session=simple-service`, then returned `KeyError('model')` after about 202 ms. No `SPEC192_DI_PROVIDER_ARTIFACTS` marker was emitted. The runner reports `status=FAIL` and `minindn_cleanup=PASS`; VM-14/15 did not run.
+- **Root cause:** `APPProvider.serve_service()` enabled `register_simple_service` for a one-role service without dependencies even when `repo_resolver` was supplied. `DistributedInferenceProvider.add_capability_handler()` registered the local `simple_handler` and returned before installing the collaboration handler. The simple handler built execution only from the empty local artifact map, so `ctx.execution.path("model")` raised before Repo-backed `prepare_execution()` could resolve the bound artifacts. Static harness review also found that both DI Providers previously used Repo identity `/example/repo/user`, which is in the Repo reader ACL; that setup could not prove unauthorized Repo access.
+- **Fix:** Gate simple registration on `repo_resolver is None`, with a regression asserting Repo-backed services use the collaboration registration path and no-resolver local services retain the simple path. Give authorized and unauthorized DI Providers separate Repo reader identities; include only the authorized reader in `repo_users`. Current 102-path candidate: `4cfc46454de0633a7318b12da1d6dec10df6e5cdca848f12e7fb572457ae70f7`.
+- **Next:** The focused Python binding module passes 14/14 cases, including the route regression. Complete the fresh T010 convergence review and the ordered full affected unit, integration, and untraced VM-21 gates on the new candidate. Run91 remains a failure on old candidate `d609b01b`; it is not repaired-candidate evidence.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-d609b01b-20261001/minindn/vm21-run91-di-output-trace/run-manifest.json`, `logs/spec192-di-request-authorized.log`, and `logs/spec192-di-provider-authorized.log`; changed-gate review and current test results are in `specs/192-distributedrepo-lifecycle/audit.md`.
+- **Lesson:** A Repo resolver must force the request path that carries authenticated artifact assignment into preparation; DI service identity and Repo reader identity must be separate when the negative oracle is Repo authorization.
+
+### 2026-10-02 Spec192 unit result collector misclassified passing selectors
+
+- **Symptom:** The first eleven T010 unit selectors each returned exit code 0, but the local result collector marked the eleventh `NativeArtifactMaterializerCachesLocalPayloadReferences` as failed and under-counted or over-counted earlier assertions. The Boost.Test logs show all completed selectors passed; no test failure occurred.
+- **Root cause:** The first parser used `\s` in a multiline assertion pattern, so it crossed line boundaries and counted per-case plus module totals more than once. A follow-up parser handled singular per-case `assertion`, but selector `NativeArtifactMaterializerRejectsHashMismatch` showed the module aggregate also uses singular grammar when its total is one.
+- **Fix:** Keep the first parser's TSV as `results-parser-attempt1.tsv`. The evidence-local collector now parses summaries line-by-line, supports singular/plural case and module counts, self-tests both forms, cross-checks aggregate totals against all per-case summaries, validates the unit-binary SHA against the recorded start, and resumes only selectors without valid saved logs. All 20 selectors then passed; the 13 already-completed selectors were recovered from their exit codes/logs without rerun.
+- **Next:** All 20 current-candidate selectors passed; proceed to fresh untraced VM-21 and retain the original d609 integration red as a separate candidate-bound result.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-4cfc4645-20261002/unit/full-affected-20261002/collect_unit_gate.py`, `results-parser-attempt1.tsv`, corrected `results.tsv`, and per-selector logs.
+- **Lesson:** Treat command exit, module aggregate, and leaf-case assertion summaries as separate checks; a parser failure is a result-collection failure, not a test red.
+
+### 2026-10-02 Spec192 VM-21 run92 DI input publication lost a selected target
+
+- **Symptom:** Current candidate `4cfc46454de0633a7318b12da1d6dec10df6e5cdca848f12e7fb572457ae70f7` passed the mixed In-App/archive flow, Python binding fetch and native-receipt query, Python publish with two committed Repo replicas, independent no-Python C++ fetch, and DI model publication. `cpp-publish-di-input` then exited 2 with `repo-selected-target-stale: a selected Repo/Provider tuple is absent from fresh authenticated discovery`. The run manifest records `status=FAIL` and `minindn_cleanup=PASS`; VM-14/15 did not start.
+- **Root cause:** The child log establishes that a selected tuple was absent from that operation's fresh authenticated discovery, but does not identify the tuple or explain whether its omission arose from request delivery, provider response, or authenticated candidate admission. The five per-node pcaps and Repo logs do not establish the lower-level cause. This is an observed discovery failure, not a proven Repo service or authorization defect.
+- **Fix:** No product change. Preserve run92 and its full packet captures; keep the selected-target check fail-closed. The runner's 102-path `source_candidate_sha256` (`8c0fdd7b22270b12c2a438d64f79132389702b04063d7f70165b60f90ff39fdf`) was recomputed after teardown and matches the manifest.
+- **Next:** The fresh run93 input-child trace accepted both Repo candidates and committed the input, so it did not reproduce or explain run92's missing tuple. See run93 below; trace the next stale-target boundary, `cpp-publish-di-output`, before another untraced qualification attempt. T010 remains IN_PROGRESS.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-4cfc4645-20261002/minindn/vm21-run92-command.md`, `vm21-run92-final-untraced/run-manifest.json`, `logs/cpp-publish-di-model.log`, `logs/cpp-publish-di-input.log`, `logs/python-binding-publish-status-fetch.log`, `logs/cpp-client-fetch-python-receipt-no-python.log`, and `pcap/*.pcap`.
+- **Lesson:** A two-Repo model commit does not establish that the next independent artifact publication receives the complete fresh authenticated discovery set.
+
+### 2026-10-02 Spec192 VM-21 run93 input trace passed; output publication lost a selected target
+
+- **Symptom:** Run93 used the same current 102-path source candidate as run92 and enabled the selected-request trace only for `cpp-publish-di-input`. The trace recorded a fresh closure with two raw candidates; both RepoA and RepoB passed authenticated candidate validation. The input artifact then committed with receipt `artifact-commit-2603c1e0034c1b627f5b7c536bd9b141fd2be96c62306cf94c38d5c596ea4e48`. The following untraced `cpp-publish-di-output` child exited 2 with `repo-selected-target-stale`. The manifest records `status=FAIL`, `minindn_cleanup=PASS`, and successful pcap capture on all five hosts; VM-14/15 did not start.
+- **Root cause:** Run93 proves the input child can discover and authenticate both selected tuples; it does not explain run92's earlier input failure. The output child was not traced, so its candidate set and the cause of its missing selected tuple are unknown. Do not infer one shared cause for the two stage-specific failures.
+- **Fix:** No product change. Preserve run93 as a diagnostic, not qualification; keep fail-closed selection. Its 102-path `source_candidate_sha256` (`8c0fdd7b22270b12c2a438d64f79132389702b04063d7f70165b60f90ff39fdf`) matches run92 and a post-run recomputation.
+- **Next:** Run94 traced `cpp-publish-di-output`: its fresh closure had only RepoA (`raw-candidates=1`) and marked RepoB `selected-missing`; the cause is still unproven. Run one fresh untraced full VM-21 attempt on the same candidate. If stale discovery recurs, preserve the result and add provider-side request/ACK boundary evidence before considering any source change. T010 remains IN_PROGRESS.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-4cfc4645-20261002/minindn/vm21-run93-command.md`, `vm21-run93-input-discovery-trace/run-manifest.json`, `logs/cpp-publish-di-input.log`, `logs/cpp-publish-di-output.log`, and `pcap/*.pcap`.
+- **Lesson:** Each artifact publication has its own fresh discovery result; success for model or input does not qualify the next artifact's selected target set.
+
+### 2026-10-02 Spec192 VM-21 run94 output trace found RepoB absent from fresh discovery
+
+- **Symptom:** Run94 used the same frozen 102-path candidate (`source_candidate_sha256=8c0fdd7b22270b12c2a438d64f79132389702b04063d7f70165b60f90ff39fdf`) and enabled selected-request tracing only for `cpp-publish-di-output`. The fresh capability closure recorded `raw-candidates=1`: RepoA was accepted, while the selected RepoB tuple was `selected-missing`. The output publish exited 2 with `repo-selected-target-stale`; the manifest is `status=FAIL`, `minindn_cleanup=PASS`, and all five pcap captures exited 0. VM-14/15 did not start.
+- **Root cause:** The trace localizes the omission to the fresh authenticated candidate set, but does not prove why RepoB did not enter it. RepoB's service log has no user STATUS handler entry for this boundary. The request ID appearing in WUSTL's pcap proves sync Data traffic only; it does not establish that RepoNode received or handled the application request or generated an ACK. Do not infer a production service, transport, or authorization defect from these observations.
+- **Fix:** No product change. Preserve run94 as a diagnostic and keep stale-target handling fail-closed. The same 102-path runner hash was confirmed in its manifest; the output-scoped trace is under `evidence-T010-4cfc4645-20261002/minindn/vm21-run94-output-discovery-trace/`.
+- **Next:** Run one fresh untraced full VM-21 on the same candidate and fresh output path. If the stale-target failure recurs, add provider-side request/ACK boundary instrumentation scoped to the missing Repo before another qualification attempt. Current-candidate VM-24 remains pending; T010 stays IN_PROGRESS.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-4cfc4645-20261002/minindn/vm21-run94-command.md`, `vm21-run94-output-discovery-trace/run-manifest.json`, `logs/cpp-publish-di-output.log`, Repo service logs, and `pcap/*.pcap`.
+- **Lesson:** A sync packet visible at a host does not prove application-level request handling; keep the conclusion at the earliest boundary supported by the service log and trace.
+
+### 2026-10-02 Spec192 VM-21 run95 stopped at authorized DI event parsing
+
+- **Symptom:** Run95 used the same 102-path candidate as runs92–94 and passed In-App publish/reopen, archive, Python/C++ receipt interoperability, DI model/input/output commits, and the fresh authorized Provider request. The authorized request child exited successfully and its log contains `SPEC192_DI_REQUEST_PASS` plus the expected model/input/output digests; the Provider log contains the matching `SPEC192_DI_PROVIDER_ARTIFACTS`. The runner then exited with `AttributeError("'str' object has no attribute 'open'")` at `json_event(child["log"], ...)`. Manifest status is `FAIL`, `minindn_cleanup=PASS`, and all five pcap captures exited 0. The unauthorized Provider and transient-state inventory oracles did not run.
+- **Root cause:** `spawn()` records its log as a `Path`, while `run_child()` returns a JSON-safe result whose `log` field is a string. `json_event()` declared `Path` and passed either representation directly to `read_log()`, which calls `.open()`.
+- **Fix:** Normalize the `json_event()` argument with `Path(path)` and declare the accepted `Union[Path, str]` type. The helper now passes a direct check with both input forms; the changed harness is re-reviewed and all current-candidate T010 gates remain to be rerun.
+- **Next:** Complete candidate-bound static convergence and affected unit/integration gates, then run fresh untraced VM-21 including both authorized and unauthorized Provider checks and transient-state inventory, followed by current-candidate VM-24. Preserve run95 as a harness failure with useful partial service evidence; T010 stays IN_PROGRESS.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-4cfc4645-20261002/minindn/vm21-run95-command.md`, `vm21-run95-final-untraced/run-manifest.json`, `logs/cpp-publish-di-model.log`, `logs/cpp-publish-di-input.log`, `logs/cpp-publish-di-output.log`, `logs/spec192-di-request-authorized.log`, `logs/spec192-di-provider-authorized.log`, `logs/cpp-repo-ucla.log`, `logs/cpp-repo-wustl.log`, and `pcap/*.pcap`.
+- **Lesson:** JSON-ready child summaries convert filesystem paths to strings; helpers that also consume live process records must normalize both path forms at their boundary.
+
+### 2026-10-02 Spec192 VM-21 run96 unauthorized DI request timed out
+
+- **Symptom:** Untraced run96 on corrected candidate `ae6fcc966f5919521bae0fe5039c89841f7a8666fb6a15a3614aab6a4e638002` passed lifecycle/archive, Python/C++ receipt interoperability, Python publish, independent no-Python C++ fetch, DI model/input/output publications, and the authorized DI Provider request. The unauthorized DI request exited 1 after 60.5 seconds with `RuntimeError: DI request failed: timeout: /20261003T021342.933578-df525a9a337d06b0`.
+- **Boundary evidence:** The unauthorized Provider log contains `SPEC192_DI_PROVIDER_SERVING` but no post-materialization handler timing marker. That marker is inside the final application handler after artifact materialization; its absence does not prove the Provider callback was not invoked. RepoA/UCLA logs contain three authorized-identity `FETCH_RANGE` requests and none from `/example/repo/di-unauthorized-reader`. Service discovery/selection, permission admission, Provider handling, and other pre-Repo boundaries remain possible; the timeout is not an explicit authorization denial.
+- **Disposition:** No implementation or oracle change is justified yet. Preserve this as a failed diagnostic. The transient-state inventory was not reached. Manifest status is FAIL, `minindn_cleanup=PASS`, all five pcap captures exited 0, and no NFD/NDNSF processes remained after the runner stopped the unauthorized Provider, both Repo servers, and Controller.
+- **Next:** Static review the requester/Provider-scoped NDN TRACE harness candidate `3d7f563c93a61b0a745ca3e110293400b87c64cccab59bd88d0a0f690a1bf4fe`; if it passes, rerun the exact-candidate binding, complete affected unit, and integration gates, then use one bounded trace diagnostic to locate the first missing boundary. Only fix behavior demonstrated by that trace; afterward obtain a complete fresh untraced VM-21 with VM-14/15 and transient-state checks, then current-candidate VM-24 and final convergence.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-ae6fcc96-20261002/minindn/vm21-run96-command.md`, `vm21-run96-final-untraced/run-manifest.json`, authorized/unauthorized request and Provider logs, RepoA/UCLA logs, and `pcap/*.pcap`.
+- **Lesson:** A timed-out negative request is not a security denial oracle; locate the first missing protocol boundary before drawing an authorization conclusion.
+
+### 2026-10-02 Spec192 trace harness static review blocked candidate 3d7f563c
+
+- **Symptom:** Paired read-only static reviews BLOCKed the 102-path trace candidate `3d7f563c93a61b0a745ca3e110293400b87c64cccab59bd88d0a0f690a1bf4fe`. The NDN logger child allowlist accepted the authorized requester, ambient `NDN_LOG` could reach unrelated processes through Mininet's inherited host environment, invalid logger selectors were rejected only after MiniNDN startup, and `assert_no_remote_artifacts()` initialized `checked=True`, disabling its expected-table presence check.
+- **Root cause:** The runner's environment sanitation was conditional on a requester trace selector and removed variables only from the passed dictionary; Mininet overlays that dictionary on its host baseline, where absent keys remain inherited. The allowed child list included both positive and negative requester labels, the logger checks lived in `run_scenario()` after startup, and the table-presence sentinel started true.
+- **Fix:** The updated runner candidate preflights the exact unauthorized request and Provider selectors before MiniNDN startup, removes ambient `NDN_LOG` from the runner environment before MiniNDN/NFD creation, strips logging and trace-control variables from child environment copies, enables TRACE only on the validated unauthorized request/Provider copies, and initializes the table-presence sentinel false. Exact candidate: `bad20cd4136c4cd78f94b48895adfe64b52e36bdc9444976659db810202de5b6` (102 paths); runner SHA-256 `52d5d86391addf09b01f8fac8c805cc0814bbd123b315dda64b334e8d322c413`.
+- **Next:** Both independent static reviews now PASS the exact candidate with no findings. The candidate fingerprint and runner SHA were reverified; `py_compile` and `git diff --check` pass; binding passes 14/14; unit passes 20 selectors / 99 cases / 1,511 assertions; integration passes nine selectors/targets / 21 cases / 7,464 assertions. Next run one bounded unauthorized-request/Provider TRACE diagnostic, then resume complete untraced VM-21 and current-candidate VM-24. Preserve the run96 timeout as unclassified; it is not authorization-denial evidence.
+- **Evidence:** Read-only review reports for base `90f5a164ce03f5c72dd586d6388753c18ed67e5d` and blocked candidate `3d7f563c93a61b0a745ca3e110293400b87c64cccab59bd88d0a0f690a1bf4fe`; source is `tests/minindn/run_spec192_real_cpp_repo.py`.
+- **Lesson:** Scope and clear environment variables before launching the process tree; deleting a key from an overlay does not remove it from the host baseline.
+
+### 2026-10-02 Spec192 VM-21 run97 stopped at receipt callback; first trace candidate missed that path
+
+- **Symptom:** Diagnostic run97 on `bad20cd4136c4cd78f94b48895adfe64b52e36bdc9444976659db810202de5b6` failed at `python-binding-query-cpp-native-receipt` with `repo-request-timeout: Provider response callback was not delivered before the request deadline`. It did not reach the unauthorized DI requester or Provider TRACE selectors. Manifest status is FAIL, cleanup PASS, and all five pcap captures exited 0.
+- **Root cause:** The runtime reason the receipt response callback was not delivered remains unknown. Static re-review of the next trace candidate found that its selected-request stage logger lives in `RepoClient::requestSelectedService()`, while the failing receipt lookup goes through `RepoClient::requestReceipt()` and `ServiceUser::RequestService()`. The allowlist change alone therefore could not emit stages for the failing path.
+- **Fix:** Added opt-in stage logging around `requestReceipt()` request submission and its timeout/response callbacks, gated by `NDNSF_SPEC192_SELECTED_REQUEST_TRACE=1`; the disabled path preserves the original callback forwarding. Both independent exact-candidate static reviews PASSed with no findings on `11bd71a84b12590f21e21b93800c1d96eb384f71b5859ed5e656d7f3815b8633` (102 paths). Build and runtime gates remain pending.
+- **Next:** Recompute the frozen candidate identity, then run its binding, unit, and integration gates before another bounded trace run. Treat run97 as diagnostic failure only; no VM-21 authorization or VM-15 inventory claim follows from it.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-bad20cd4-20261002/minindn/vm21-run97-unauthorized-ndn-trace-command.md` and `vm21-run97-unauthorized-ndn-trace/`; reviewed candidate `ed61888ab078e86ea41dd2f6b88a1a81b9dd29a5fd29e2619823ffee8e798fb5` and the current diagnostic candidate `11bd71a84b12590f21e21b93800c1d96eb384f71b5859ed5e656d7f3815b8633`.
+- **Lesson:** Place diagnostic stages on the exact production path that ran, at the request and callback boundary whose absence is being investigated.
+
+### 2026-10-02 Spec192 current-candidate Python extension build stopped at native digest preflight
+
+- **Symptom:** Rebuilding `py_repoclient._py_repoclient` with `python3 setup.py build_ext --force --build-lib build/lib.linux-x86_64-3.8 --build-temp build/temp.spec192-11bd71a8` exited 1 before compilation with `RuntimeError: NDNSF_GLOBAL_NATIVE_DIGESTS is required for host binding builds; derive it from the installed /usr/local/lib closure`.
+- **Root cause:** The host binding build intentionally fails closed when its pinned digest description for installed global native libraries is absent. The invocation omitted that environment value.
+- **Fix:** Used the documented `/usr/local/lib` digest derivation from `NDNSF-DistributedRepo/pythonWrapper/README.md` and retried with the exact installed native-library closure; no setup check was bypassed.
+- **Next:** Run the corrected binding build, then the exact-candidate binding selector. The initial failure output is preserved at `evidence-T010-11bd71a8-20261002/binding/build-extension-missing-digest.log`.
+- **Lesson:** Before invoking editable native-binding builds, load the repository's declared host runtime digest environment; a raw setup.py invocation is not a valid build profile.
+
+### 2026-10-02 Spec192 forced extension rebuilds interrupted before completion
+
+- **Symptom:** The forced extension build using the repository's native-library digest pin compiled two C++ sources, then was intentionally interrupted before completion. Retrying with `--parallel 4` in a fresh temp directory again showed one compiler process because the extension has a single extension module; that attempt was also interrupted before completion. A non-forced build in the existing temp tree then began compiling the extension's sources and is the current active build. The first log showed an existing `-Wunused-function` warning for `makePersistentOperationId` while compiling `ArtifactRepositoryApi.cpp`.
+- **Root cause:** `build_ext --parallel` schedules extension modules, not source files inside one extension, so a single-module binding remains serial. The previous extension output is older than the current sources, causing `build_ext` to recompile the full 14-source extension despite the cached object set.
+- **Fix:** Let the one active build finish in its existing tree and keep it exclusive; do not run another binding, Waf, or setuptools build concurrently.
+- **Next:** Confirm the extension build and exact-candidate binding selector, then continue the unit and integration gates. The two operator interruptions are not candidate test failures.
+- **Evidence:** `evidence-T010-11bd71a8-20261002/binding/build-extension-serial-interrupted.log` and `build-extension-parallel4-interrupted.log`.
+- **Lesson:** Check setuptools' parallelization granularity before selecting a build strategy; a timestamp-aware incremental extension build is the smallest closure when one translation unit changed.
+
+### 2026-10-02 Spec192 unit result parser initially double-counted summaries
+
+- **Symptom:** All 20 fresh unit selector processes exited 0, but the first evidence parser marked every selector FAIL because its assertion total was exactly triple the known values; the raw logs contain both module/suite summaries and per-case assertion rows.
+- **Root cause:** The parser summed every `assertions out of` row, including the duplicated module and suite totals, then required that aggregate to equal only the per-case assertion sum.
+- **Fix:** Reparse the preserved logs by pairing each `Test case ... has passed with:` header only with its immediately following assertion row; independently require each selector process exit 0 and all 99 case rows to pass.
+- **Next:** Validate aggregate 99 cases / 1,511 assertions from the existing logs, then continue to integration. No unit selector is rerun unless parsing finds a real test failure.
+- **Evidence:** `evidence-T010-11bd71a8-20261002/unit/selector_logs/` and the first ledger `results.tsv`, which is superseded by a correctly parsed ledger.
+- **Lesson:** Boost.Test detailed reports repeat assertion totals at module, suite, and case scopes; only per-case rows belong in this gate's aggregate.
+
+### 2026-10-02 Spec192 unit parser missed singular assertion rows
+
+- **Symptom:** The corrected unit parser ignored two selectors that exited 0 because their per-case lines say `1 assertion out of 1 passed` (singular); the parser's exact row pattern required `assertions` (plural), yielding 95 cases / 1,507 assertions instead of the 99 cases in the case-header count.
+- **Root cause:** The per-case assertion-row regular expression did not accept Boost.Test's singular form.
+- **Fix:** Accept both `assertion` and `assertions`, pair the row only with its immediately preceding `Test case ... has passed with:` header, and recompute the saved ledger. Do not rerun the already green selectors.
+- **Next:** Confirm the full aggregate matches 99 cases / 1,511 assertions with all 20 exits zero, then proceed to integration.
+- **Evidence:** `evidence-T010-11bd71a8-20261002/unit/selector_logs/` and the superseded parser ledger in `results.tsv`.
+- **Lesson:** Treat singular and plural result wording as a formatting variant while maintaining per-case scope.
+
+### 2026-10-02 Spec192 VM-21 run98 receipt response authenticated but callback timed out
+
+- **Symptom:** Traced run98 on exact candidate `11bd71a84b12590f21e21b93800c1d96eb384f71b5859ed5e656d7f3815b8633` reached `python-binding-query-cpp-native-receipt`, logged `request-service-begin` and `request-service-returned`, then invoked `timeout-callback`; no `response-callback` occurred. Six STATUS response subscriptions reached both `response-subscription-entered` and `response-provider-authenticated`, but no response-decryption or application-callback stage followed. The unauthorized DI trace and VM-14/15 did not start.
+- **Root cause:** Still unknown. The current trace distinguishes transport/subscription entry and Provider identity authentication from application callback delivery, but it does not report the post-auth pending-request, duplicate/in-flight, selected-provider, or decryption transition. The six authenticated STATUS responses may include unrelated/stale requests; they carry no request identity in this trace, so they cannot be equated with the receipt query.
+- **Fix:** No behavior or oracle change. Add opt-in, fixed stage markers for post-auth pending lookup outcomes and response admission/decryption start, gated by `NDNSF_SPEC192_SELECTED_REQUEST_TRACE=1`; do not log request IDs, receipt contents, or credentials.
+- **Next:** Re-review the exact diagnostic candidate with both static reviewers, rerun all changed-component binding/unit/integration gates, then one fresh bounded trace. A later complete untraced VM-21 must still prove VM-14/15 denial and VM-15 transient-state inventory; run98 does not qualify it.
+- **Evidence:** `evidence-T010-11bd71a8-20261002/minindn/vm21-run98-command.md`, `vm21-run98-receipt-callback-trace/run-manifest.json`, `logs/python-binding-query-cpp-native-receipt.log`, five `pcap/*.pcap`, and the manifest cleanup record.
+- **Lesson:** Authenticated Provider identity is only an early response boundary. Trace pending-call lookup, provider admission, and decryption separately before attributing a missing callback.
+
+### 2026-10-03 Spec192 candidate `37afe17c` integration response-selection failure
+
+- **Symptom:** The current exact candidate `37afe17c25d3361afa463c9c70e73af5639825df795bc04b756b8bceaa4ae199` built successfully, passed the focused DI binding test (14/14), and passed the affected C++ unit gate (20 selectors, 99 cases, 1,511 assertions). The nine-target integration gate built successfully; eight targets passed. `RequestScopedSelection` exited 201: 3/4 cases passed, with two failed assertions in `ModifiedInlineResponseCiphertextIsRejectedBeforeDelivery` (`request-scoped-selection.t.cpp:224, 484`). The direct wrong-Provider response-name call unexpectedly returned true, then the expected Provider-0 Selection name remained empty. All other eight integration targets passed, including the Persistent API target (4/4, 722 assertions) and legacy-import target (4/4, 60 assertions).
+- **Root cause:** Unknown. The fixture and direct helper path were inspected, but the first run does not establish why the altered Provider name was accepted or why Provider-0 selection capture was absent. The failure is not attributed to the diagnostic-only `ServiceUser::OnResponse` trace delta without evidence. The candidate result ledger initially recorded only passed counts; it was corrected to distinguish passed from total counts, using the raw Boost.Test logs.
+- **Fix:** None yet. Preserve both failed assertions and the original exit. Do not weaken the wrong-Provider rejection assertion or count the integration gate as PASS.
+- **Next:** Reproduce the exact case in isolation on the same candidate, inspect request-scoped Provider binding state and selection publication/callback ordering, and record Provider identities at a fixed non-sensitive boundary if needed. Identify a changed gate before any retry. Once the test passes after an evidence-based correction, rerun the complete affected integration gate for the new frozen candidate.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-37afe17c-20261003/integration/results.tsv`, `integration/target_logs/RequestScopedSelection.log`, all eight passing target logs, and `integration/build.log`.
+- **Lesson:** Preserve case-level failed and total counts, and investigate a security-boundary assertion at its direct helper and production selection-state boundary before making a runtime attribution.
+
+### 2026-10-03 Spec192 35-second STATUS selection outlived provider pending state
+
+- **Symptom:** Diagnostic candidate `d83bb5bca898cd370e2f885bdfd75971ffbe734f1405d771a07df2551a48730b` ran the Python binding STATUS query with a 35 s ACK-collection window and server configuration `request_timeout_ms=45000`. RepoA's ACK matched and the user closed ACK collection with one candidate at 35.00 s, but the provider had expired that request's pending state at 31.03 s; the subsequent Selection produced `SELECTION_NO_PENDING`. The Python binding operation timed out. The manifest is `FAIL`; MiniNDN cleanup is `PASS`, and all five pcap captures exited 0.
+- **Root cause:** The server's `--request-timeout-ms` config is passed to the Persistent Repo operation worker; it does not configure `ServiceProvider`'s pending Request/Selection retention. Repo `AckDecision.pendingStateTtlMs` remains zero, so Core uses its default 30 s pending-state TTL plus the default 1 s grace. The 45 s operation timeout therefore did not keep the provider state alive through a 35 s client ACK window.
+- **Fix:** Current candidate `712575c308c63448f6335c16d287f50e50ab699aa1c9050fafe847f54b9bd35f` sets Repo provider ACK pending-state TTL to 60 seconds in `NDNSF-DistributedRepo/src/RepoNode.cpp`. Two fresh exact-candidate reviews pass, and the affected C++ unit and integration gates pass. The 35-second ACK runtime proof remains pending.
+- **Next:** Run the current candidate with the same 35-second Python ACK window and 45-second Repo request timeout; require the independent Provider/Selection and operation oracles to pass before counting VM-21. Then complete VM-14/15 and the transient-state inventory.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence-T010-d83bb5bc-20261003/minindn/vm21-five-host-python-ack35-server45-diagnostic-retry1/run-manifest.json`, `logs/python-binding-publish-status-fetch.log`, and `logs/cpp-repo-ucla.log`.
+- **Lesson:** Client ACK collection, provider pending-state retention, and Repo operation deadlines are separate clocks; align and verify each at its owner instead of inferring one timeout from another.
+
+### 2026-10-03 Spec192 MiniNDN preflight must match the runner library path
+
+- **Symptom:** A pre-run `ldd -r` of `DistributedRepoServer` without the MiniNDN runner's environment resolved `/usr/local/lib/libndn-service-framework.so.0.1.0` and reported `ResponseMessage::getProviderIdentity()` unresolved. No MiniNDN topology was started.
+- **Root cause:** The server has no RUNPATH, while the canonical runner prepends the candidate `build/` directory to `LD_LIBRARY_PATH` for every node.
+- **Fix:** Rechecked both the server and `spec192-repo-client` with `LD_LIBRARY_PATH="$PWD/build"`; both resolve `build/libndn-service-framework.so.0.1.0` and report zero unresolved references.
+- **Next:** Keep preflight and runtime closure checks aligned with `run_spec192_real_cpp_repo.py::node_environment`; do not interpret a host-default loader result as candidate runtime behavior.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-712575c3-20261003/minindn/build-services.log`, `build-services.exit`, and the same-candidate `ldd -r` check.
+- **Lesson:** Match the loader environment used by the actual child process when checking dynamic-library closure.
+
+### 2026-10-03 Spec192 ACK-35 wrapper must leave the runner output path absent
+
+- **Symptom:** The first ACK-35 wrapper invocation exited before topology creation because the canonical runner refused its pre-existing output directory. The only file there was the wrapper's ACK configuration; no network namespace or service was started.
+- **Root cause:** The wrapper created the runner-owned output directory early to save its effective configuration.
+- **Fix:** Moved that configuration record beside the output directory and let the canonical runner create its own fresh run directory. Preserved the rejected invocation's console log and moved the lone preflight record out before removing the empty directory.
+- **Next:** Retry the same ACK-35/45 configuration on the unchanged 712575c3 candidate; require the wrapper to record exactly one substituted binding child.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-712575c3-20261003/minindn/ack35-console.log`, `ack35-configuration-first-attempt.json`, and `run_spec192_ack35_diagnostic.py`.
+- **Lesson:** Keep per-run setup metadata outside the unique output path when the canonical MiniNDN runner owns directory creation.
+
+### 2026-10-03 Spec192 explicit archive deadline was below its seed-recovery reserve
+
+- **Symptom:** Candidate `712575c308c63448f6335c16d287f50e50ab699aa1c9050fafe847f54b9bd35f` started the five-host MiniNDN scenario but failed at `explicit-archive-process` with `repo-operation-timeout: insufficient begin budget for seed write and status recovery`. Cleanup passed. VM-14/15 and the 35-second Python ACK request did not run.
+- **Root cause:** `tests/standalone/spec192-repo-client.cpp` configured a 1,500 ms ACK window and passed a fixed 60,000 ms deadline to `ArtifactRepositoryApi::archive`; the guard requires more than the 60,000 ms STATUS reserve plus the ACK window. The Repo server's 45,000 ms request timeout was a separate clock and did not cause this failure.
+- **Fix:** Candidate `f4c14cdb3c3ec4f425f493a6a6a3ab71f6b4b7361ea32f22f05f62195a927e9f` raises only the standalone archive test client's operation budget to 90,000 ms, leaving a 30-second seed-write window while preserving the STATUS reserve. Fresh candidate review and unit/integration gates are pending.
+- **Next:** Re-review and rerun T010 unit and integration gates on candidate `f4c14cdb`, then rerun ACK-35/45 MiniNDN and complete VM-14/15 plus transient-state inventory.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-712575c3-20261003/minindn/vm21-five-host-ack35-server45/run-manifest.json` and `logs/explicit-archive-process.log`.
+- **Lesson:** Every test client's operation deadline must exceed the seed-write window plus its configured STATUS recovery reserve and ACK window.
+
+## 2026-10-03 — Spec192 Persistent API test budgets omitted the recovery reserve
+
+- **Symptom:** Candidate `f4c14cdb3c3ec4f425f493a6a6a3ab71f6b4b7361ea32f22f05f62195a927e9f` passed seven assigned integration selectors and the legacy-import integration, but `spec192-repo-persistent-api` exited 201: two of four cases aborted (266/268 assertions passed) with `repo-operation-timeout: insufficient begin budget for seed write and status recovery`.
+- **Root cause:** Two affected test cases still passed 60,000 ms to persistent begin/publish operations. The current implementation reserves at least 60,000 ms for STATUS recovery plus the configured ACK window (up to 5,000 ms), so those test inputs could not satisfy the begin contract. The executable RUNPATH resolved the current repository build, so this was not a stale-library or host-permission failure.
+- **Fix:** Changed the affected accepted operation budgets to 90,000 ms in the integration test source only. Candidate `cfdfd006fb7cff57be4cfe56d7f1a157e7f8a34e89270dfa6cbaa9c0173983a5` is under requalification; build and test reruns are pending.
+- **Lesson:** Keep test operation deadlines above the full recovery reserve plus ACK window; do not treat the reserve itself as usable seed-write time.
+
+## 2026-10-03 — Persistent synchronous publish reused the post-accept wait as its begin deadline
+
+- **Symptom:** Candidate `cfdfd006fb7cff57be4cfe56d7f1a157e7f8a34e89270dfa6cbaa9c0173983a5` still failed both Persistent API integration cases after test budgets were raised to 90,000 ms. The short-wait case uses `publishFile(..., 500)`; the other case exhausted its begin reserve during pre-seed STATUS/discovery/intent work.
+- **Root cause:** The synchronous `publishFile` wrapper derived `beginTimeout` from the caller's post-accept wait budget. This contradicted `contracts/repo-api.md`, which says that budget only bounds STATUS polling after seed acceptance. The valid production STATUS reserve could therefore reject both short waits and long pre-seed setup.
+- **Fix:** Candidate `4bba5dda0b5024dd0e266565b11eab1747a23bdd5c0663ce05f8bdf0211a29fc` computes a separate bounded begin deadline from request/ACK windows, the actual STORE or range-write request count, the existing STATUS recovery reserve, and one local-work margin window. Caller wait behavior stays unchanged. Two independent static reviews and candidate build/test reruns are pending.
+- **Lesson:** Bound seed acceptance and post-accept polling separately; do not reuse one caller timeout for both phases.
+
+## 2026-10-03 — Spec192 begin timeout omitted request caps, recovery window, and lock wait
+
+- **Symptom:** Both independent static reviews rejected candidate `4bba5dda0b5024dd0e266565b11eab1747a23bdd5c0663ce05f8bdf0211a29fc`. Reviewer A showed a begin call could wait behind another API operation longer than its own derived deadline. Reviewer B showed one request could consume the windows budgeted for subsequent range chunks and COMMIT_RANGES, and a configured request timeout above 60 seconds could exceed the fixed recovery reserve.
+- **Root cause:** `beginPublishFileImpl` started the deadline only after taking `operationMutex`, passed all remaining begin time to each selected-service request, and reserved only `max(60 seconds, two ACK windows)` for STATUS recovery.
+- **Fix:** Candidate `e5365810fd52a34995ca99ca64e0de3bf1c19b4e1e220363d418f185f96bbea9` starts the deadline before bounded mutex acquisition, caps each selected request at `requestTimeoutMs`, and reserves at least the configured STATUS request plus an ACK margin. The contract and integration oracle were updated; fresh paired exact-candidate review is pending.
+- **Next:** Keep the candidate frozen until both fresh reviewers return PASS; then rerun affected unit and integration gates before MiniNDN or VM-24. No build or selector evidence exists for candidate e5365810.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/static-review.md` and `candidate-e5365810-20261003/static-review.md`.
+- **Lesson:** A multi-request deadline formula is sound only when each request is individually capped, the recovery reserve covers the configured request window, and serialized lock acquisition consumes the same operation deadline.
+
+
+## 2026-10-03 — Spec192 e536 deadline candidate failed paired review
+
+- **Symptom:** Both exact-candidate reviews rejected `e5365810fd52a34995ca99ca64e0de3bf1c19b4e1e220363d418f185f96bbea9`. Reviewer A found the MiniNDN timeout preflight still encoded the old reserve/request formula, the 900-second child kill deadline was shorter than the current source-derived operation bound, the synchronous wrapper reserved less STATUS recovery time than the begin helper, status polling could wait indefinitely for `operationMutex`, and `beginArchive()` started its begin deadline after local In-App materialization. Reviewer B confirmed the stale guard, wrapper reserve mismatch and timeout-budget inconsistency.
+- **Root cause:** e536 updated the begin helper but did not propagate the same timeout contract through its synchronous caller, archive entry point, public status query, and MiniNDN process supervisor. The static guard was coupled to the old implementation shape rather than deriving the actual configured deadline.
+- **Fix:** Candidate `598a30b678007ab4ff021ab28076cf49e385de54044aedf013d5e59dbeb22c67` uses a shared overflow-safe reserve formula for begin and sync publish, bounds status mutex wait and request by one absolute deadline, preserves the `beginArchive()` entry deadline across local source materialization, and replaces stale guard assumptions with source-derived checks. The DI publish child cap is raised to the calculated 4,020 seconds for its 600-second request / 30-second ACK / 180-second wait profile and literal single-chunk payloads. A concurrent STATUS lock-wait regression is added. Static preflight passes; paired exact-candidate review is pending.
+- **Next:** Keep candidate `598a30b6` frozen until both exact-hash reviews pass; then run affected unit, integration, bounded MiniNDN VM-21 with VM-14/15, offline VM-24, and the final convergence audit in order. No candidate build/test evidence exists. No commit or push.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-598a30b6-20261003/static-review.md`.
+- **Lesson:** A deadline must cover every synchronous pre-accept stage and serialized API wait, while each child-process cap must be derived from the actual request windows, source size, and caller wait.
+
+## 2026-10-03 — Spec192 STATUS lock regression used a handle from another test case
+
+- **Symptom:** Static inspection of candidate `598a30b678007ab4ff021ab28076cf49e385de54044aedf013d5e59dbeb22c67` found that the new concurrent `getPublishStatus` lock-wait regression referenced `timeoutHandle`, declared in a different Boost.Test case. The code would not compile.
+- **Root cause:** The regression was inserted into the availability/lock-contention test but reused a fixture variable from the earlier publish-timeout test.
+- **Fix:** Candidate `94e62b4c2c0e172cc4db1fbd500f022ec7f52ebf1ff2779644914e354e821d7a` uses the accepted `availabilityPublished.handle` already in scope in the enclosing test case. The corrected exact-hash candidate is frozen for paired review; no build or selector has run.
+- **Next:** Obtain both exact-hash reviews for `94e62b4c`, then run the affected unit and integration gates before MiniNDN or VM-24.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-94e62b4c-20261003/static-review.md`.
+- **Lesson:** A regression must use test state created in the same fixture scope; source inspection can catch this before spending time on a full build.
+
+## 2026-10-03 — Spec192 candidate 94e62b4c failed paired deadline/oracle review
+
+- **Symptom:** Both exact-hash reviewers blocked candidate `94e62b4c2c0e172cc4db1fbd500f022ec7f52ebf1ff2779644914e354e821d7a`. Reviewer A found synchronous `publishFile()` can rethrow `repo-request-timeout-invalid` after post-accept STATUS lock contention leaves no full ACK window. Reviewer B found `beginArchive()` can wait indefinitely on In-App API mutexes and then copy after its deadline; the MiniNDN guard also does not bind its derived child cap to the actual `run_child()` argument or verify the original archive deadline is passed through.
+- **Root cause:** The deadline was propagated across Persistent STATUS queries but the insufficient post-lock window retained a validation-error type; the archive path delegated to unbounded public In-App methods; the source-derived guard checked constants and statement order rather than the call arguments.
+- **Fix:** Pending. Candidate `94e62b4c` is rejected and superseded; no build or selector ran. The replacement must classify exhausted post-accept budget as unavailable, bound In-App lock acquisition under the archive deadline and stop before local copy/network work after expiry, add `beginArchive` contention/deadline coverage, and verify the actual child timeout and deadline arguments in the AST guard.
+- **Next:** Implement all findings, freeze a new source hash, obtain fresh paired exact-hash PASS, then proceed to the assigned unit/integration and T010 runtime gates.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-94e62b4c-20261003/static-review.md`.
+- **Lesson:** End-to-end deadline contracts include lock waits at every ownership boundary, and static guards must bind the values to the production call sites they claim to qualify.
+
+## 2026-10-03 — Spec192 94e62b4c deadline/oracle findings remediated in a new candidate
+
+- **Symptom:** Candidate `94e62b4c2c0e172cc4db1fbd500f022ec7f52ebf1ff2779644914e354e821d7a` was blocked by paired review for three P2 issues: synchronous STATUS lock contention could discard an accepted result, `beginArchive()` source-side In-App API lock waits escaped its entry deadline, and MiniNDN static checks did not bind calculated values to actual call arguments.
+- **Root cause:** The timeout classification, source-side lock ownership, and static guard were not all tied to the same operation deadline and production call sites.
+- **Fix:** Candidate `48c8a296f722ffb12bd76df357ba4d0e458ab29bebf1fb66adf2eb45e7f99d75` translates an insufficient post-lock ACK window to `repo-operation-timeout`; gives `beginArchive()` deadline-bounded private In-App lookup/fetch paths and checks expiry before copy and before Persistent begin; and AST-checks the actual DI `run_child()` timeout plus the original archive deadline argument. Integration oracles cover near-ACK STATUS contention and a held In-App SQLite writer lock. Static preflight, Python syntax, CodeGraph sync/status, and `git diff --check` pass. Paired exact-hash review is pending; no C++ build or selector has run.
+- **Next:** Keep candidate `48c8a296` frozen for both fresh exact-hash reviews. Only after both PASS, run the assigned unit and integration gates, then bounded VM-21 with VM-14/15, VM-24, and final convergence.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-48c8a296-20261003/static-review.md`.
+- **Lesson:** Deadline correctness depends on checking elapsed time after any noninterruptible local work and binding each static guard to the arguments that actually launch production operations.
+
+## 2026-10-03 — Spec192 archive fetch deadline guard missed the actual argument
+
+- **Symptom:** Candidate `48c8a296f722ffb12bd76df357ba4d0e458ab29bebf1fb66adf2eb45e7f99d75` received one exact-hash static PASS and one BLOCK. Reviewer B found the MiniNDN preflight checked that `lookupLocalCommitUntil()` and `fetchFileUntil()` appeared in order but did not check their `deadline` arguments. The production implementation passed the correct deadline, but replacing the fetch argument with an unbounded value would evade both the guard and the new lookup-lock regression.
+- **Root cause:** The archive guard bound the final Persistent `beginPublishFileImpl()` argument but did not bind the preceding In-App fetch call; the contention regression exercised the source API lock before lookup and could not prove the fetch argument remained bounded.
+- **Fix:** Candidate `f574b6b02b5c43e6b68e4907952576f7665693c31b13f7578a66662c955cd94e` adds exact source-pattern checks requiring the original `deadline` as the In-App lookup and fetch arguments. Python syntax, timeout preflight, CodeGraph sync/status, `git diff --check`, and the 103-path fingerprint calculation pass. New paired exact-hash review is pending; no C++ build or selector has run.
+- **Next:** Keep `f574b6b0` frozen for fresh independent reviews; only after both PASS, run assigned unit and integration gates, bounded VM-21 with VM-14/15, VM-24, and final convergence.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-48c8a296-20261003/static-review.md` and the replacement candidate note.
+- **Lesson:** Static deadline guards must inspect the values passed to every timed call, not just verify statement order or the final call site.
+
+## 2026-10-03 — Spec192 large-response replay oracle could miss delayed refetch
+
+- **Symptom:** Fresh T010 code review found the large-response replay test could pass after a bounded 200-iteration pump ended without observing resolver completion. A delayed duplicate resolution could emit its reference Interest after the test had already checked the unchanged counters.
+- **Root cause:** The test counted exact-reference Interests and callbacks, but did not assert that its bounded pump reached a completion condition. Silence during a finite pump did not establish that replay was rejected before asynchronous resolution.
+- **Fix:** Candidate `a395ac1f74216e78d3968db525404cc359feb733a41e671e3b8088b87927dd57` attempted to add a synchronous diagnostic at the duplicate/completed skip branch, but reviewer A found replay occurs after successful response handling erases pending state. That candidate therefore watched the wrong branch and is superseded without runtime validation. Candidate `8864b3dd400f579eb8a1c65e565070a34c3cfa08c98b464aea4deff590ca5c85` moves the diagnostic into the actual no-pending rejection while retaining immediate independent exact-reference Interest and callback count checks. Paired review is pending.
+- **Next:** Keep candidate `8864b3dd` frozen for two exact-hash static reviews. After both PASS, rerun the full Spec Kit convergence audit, then complete the affected unit and integration gates before MiniNDN or VM-24.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-a395ac1f-20261003/static-review.md`.
+- **Lesson:** A negative asynchronous test must observe the synchronous decision point or establish a completion barrier; a timed-out pump is not evidence that no work started.
+
+## 2026-10-03 — Spec192 replay diagnostic observed the wrong dispatcher branch
+
+- **Symptom:** Reviewer A found that candidate `a395ac1f` required a diagnostic increment at the duplicate/completed branch, but replay produced no increment there.
+- **Root cause:** The first response path erases the request's pending entry before invoking the successful application callback. The test replays that completed response afterward, so `finishDecryptedResponseByName()` takes the `pendingIt == end` rejection, not the duplicate-entry branch.
+- **Fix:** Supersede `a395ac1f`. Candidate `8864b3dd400f579eb8a1c65e565070a34c3cfa08c98b464aea4deff590ca5c85` adds `responseLargeReferenceSkippedNoPending` at the actual no-pending return and asserts exactly one increment while exact-reference Interests and callback count remain unchanged immediately after replay. Static preflight passes; paired review is pending. No build or test ran.
+- **Next:** Complete paired exact-hash static reviews, then fresh full Spec Kit convergence audit. Only a PASS permits the affected unit and integration suites, followed by VM-21 and separate VM-24.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-a395ac1f-20261003/static-review.md` and the current candidate note.
+- **Lesson:** Test instrumentation must follow the state transition that the test actually reaches; a plausible nearby branch is not an oracle for the executed path.
+
+**Review/audit closure (2026-10-03 09:49 CDT):** Both independent five-lane exact-hash reviewers PASSed candidate `8864b3dd400f579eb8a1c65e565070a34c3cfa08c98b464aea4deff590ca5c85` across 104 paths and matched the identity before/after. The fresh full Spec Kit convergence audit also PASSed with no unresolved static discrepancy. Candidate-specific unit, integration, MiniNDN, VM-14/15, and VM-24 gates had not started at that checkpoint.
+
+## 2026-10-03 — Spec192 8864b3dd full target build exposed test compile errors
+
+- **Symptom:** After the paired static reviews and 09:49 full audit PASS, the `-j4` build of the nine T010 targets stopped while compiling `tests/integration-tests/spec192-persistent-artifact-api.t.cpp`. `std::future::get()` was called on a `const` future at lines 3145 and 3162. Two `getPublishStatus()` calls passed an `ArtifactHandle` at lines 3706 and 3722, while the API requires a `PublishOperationHandle`. No selectors ran.
+- **Root cause:** The archive source-lock regression made its future immutable even though `get()` consumes it; the status-lock regressions reused the artifact data handle rather than the separate operation handle returned by `publishFile()`.
+- **Fix:** Change the future to mutable, require `availabilityPublished.operationHandle`, and pass that handle to both status calls. This creates a new source candidate; the prior `8864b3dd` build and static audit remain historical and do not qualify the replacement.
+- **Resolution:** The compile repair is candidate `e4c7a145f0f3cbb85a6d98b1b8bb11a08030929b3be9fc4238ce1007d836a2a3`; paired exact-hash reviews and the fresh full audit PASSed. Its nine-target `-j4` build PASSed at 10:44 CDT; all 20 affected unit selectors PASSed at 10:48 (99 cases / 1,513 assertions, all exit 0).
+- **Next:** Run the complete affected integration suite, then bounded VM-21 with VM-14/15 and transient-state inventory, separate VM-24, and final convergence.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-8864b3dd-20261003/unit/build.log`.
+- **Lesson:** Compile every newly registered integration oracle in the complete affected target set before treating a test-only repair as gate-ready.
+
+## 2026-10-03 — Spec192 integration run exposed two test-oracle errors
+
+- **Symptom:** Candidate `e4c7a145f0f3cbb85a6d98b1b8bb11a08030929b3be9fc4238ce1007d836a2a3` passed eight of nine affected integration commands. `spec192-repo-persistent-api` failed three assertions: a test treated the `RequestPublisher` callback's final argument as a 500 ms timeout, expected a response-timeout error after suppressing the request, and counted two unrelated concurrent service requests as near-ACK STATUS requests. The standalone legacy-import integration command passed.
+- **Root cause:** `ServiceUser` passes selection strategy as the `RequestPublisher` callback's final argument. The test publisher suppresses outgoing requests, so the provider cannot send an ACK and the correct result is an absent-ACK failure. The near-ACK counter counted all publisher callbacks while its flag was set, without checking service or operation ID.
+- **Fix:** Replacement candidate `bf00c48a57f7cac71d92a0d0dc280bfbccb386f7e166b18c64d9cbdfee20bb56` removes the false timeout assertion, asserts the absent-ACK failure and no subsequent service request, and scopes near-ACK counting to the matching STATUS operation ID. No production implementation changed.
+- **Next:** Fresh exact-candidate review and Spec Kit audit, then rebuild and rerun all affected unit and integration gates before MiniNDN, VM-14/15, VM-24, and final convergence.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-e4c7a145-20261003/integration/results.tsv` and `.../selector_logs/spec192-repo-persistent-api.log`.
+- **Lesson:** Test seams must be read against their declared callback signature and lifecycle point; suppressing the request itself cannot simulate a provider that ACKs but never responds.
+
+## 2026-10-03 — Spec192 near-ACK request counter could include a concurrent STATUS caller
+
+- **Symptom:** Read-only review of candidate `bf00c48a57f7cac71d92a0d0dc280bfbccb386f7e166b18c64d9cbdfee20bb56` found that the near-ACK STATUS counter matched service and operation ID, but the earlier `statusLockDeadlineFuture` used that same operation handle and could still run while attribution was armed.
+- **Root cause:** Matching the wire operation ID excluded unrelated calls but could not distinguish two callers querying the same operation; the test had no completion barrier between the short lock contenders and near-ACK probe.
+- **Fix:** Candidate `4edbf6ebb10f235553766188b279ebcb8108997a86a8c795752bfe450d038b26` gates the near-ACK future on a promise, drains all three earlier contention futures before arming its counter, and computes the remaining timeout only afterward. The test-only candidate is under fresh static re-review; no production code, build, or selector changed in this repair.
+- **Next:** Require a clean exact-hash review and fresh full Spec Kit convergence audit, then rerun the complete affected unit suite followed by all affected integration selectors. VM-21/VM-14/15 and VM-24 stay pending.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-bf00c48a-20261003/static-review.md` and the candidate 4edbf6eb note.
+- **Lesson:** Wire-level identity does not attribute concurrent calls when they intentionally share the same logical operation; isolate caller lifetimes before counting emitted requests.
+
+## 2026-10-03 — Spec192 near-ACK gate still had bounded-pump and scheduling gaps
+
+- **Symptom:** Read-only review blocked candidate `4edbf6ebb10f235553766188b279ebcb8108997a86a8c795752bfe450d038b26` with two P2 findings. A 200-round fixture pump can return before its predicate becomes true, and the near-ACK timeout was computed on the main thread before worker scheduling. The oracle also accepted empty success without proving it reached the insufficient-ACK-window path.
+- **Root cause:** Completion was inferred from one bounded pump call, and a relative timeout computed outside the worker did not preserve the intended absolute deadline.
+- **Fix:** Candidate `13e61609a193c350e874918e5d85552cf1080f6154b20017ec7ce2bff3f0ee05` rechecks readiness and leaves attribution disarmed on incomplete setup, repeats bounded face-pump rounds, computes remaining time after the worker gate opens, uses a 500 ms ACK window with a 2,200 ms absolute deadline, and requires the exact insufficient-window error with zero emitted STATUS requests. Fresh exact-hash review is pending; no build or selector ran.
+- **Next:** Obtain a clean exact-candidate static review and fresh full Spec Kit audit, then run the complete affected unit suite followed by all affected integration selectors. VM-21/VM-14/15 and VM-24 remain pending.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-4edbf6eb-20261003/static-review.md` and `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-13e61609-20261003/candidate-note.md`.
+- **Lesson:** A concurrency oracle needs both a checked completion barrier and a deadline computed at the actual API entry boundary; assert the precise failure class the regression is meant to protect.
+- **Resolution:** Candidate `13e61609` passed fresh read-only five-lane exact-hash review with no findings; review verified its identity before and after. No build or selector ran. The next gate is the fresh full Spec Kit convergence audit, followed by the complete affected unit suite and integration selectors; VM-21/VM-14/15 and VM-24 remain pending.
+
+## 2026-10-03 — Spec192 unit assertion count varies with recovery polling
+
+- **Symptom:** The e4 unit evidence reports 99 cases / 1,513 assertions, while the exact 13e run reports 99 / 1,511, despite all 20 selectors passing in both runs.
+- **Root cause:** The only per-selector difference is `DistributedRepoPersistentService/AcceptedPublishRecoversFromSeedReceiptAfterOwnerRestart`. It performs successful checks inside a bounded STATUS polling loop; the 13e run reached a terminal state one nonterminal poll sooner, executing two fewer checks. The test cases and pass/fail result are unchanged.
+- **Fix:** Record the exact measured count per candidate and treat exit status, all cases passing, and explicit terminal-state assertions as acceptance. Do not use the aggregate assertion count as a fixed threshold.
+- **Lesson:** Retry-loop assertions make aggregate assertion counts timing-dependent; compare selector/case identity and outcomes, not totals alone.
+
+## 2026-10-03 — Spec192 integration command used unqualified nested Boost.Test selectors
+
+- **Symptom:** The first candidate-13e integration wrapper returned Boost.Test exit 200 for four `ProductionIngress...` filters with `Test setup error: no test cases matching filter or all test cases were disabled`. Three other selectors passed; the wrapper was interrupted before the Persistent API executable completed, so the nine-command gate did not run to completion.
+- **Root cause:** Those four cases are nested under the `Spec170NativePostSelection` suite. Copying leaf names from the prior summary omitted the required suite path.
+- **Fix:** Preserve the partial outputs under `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-13e61609-20261003/integration/invalid-selector-invocation-20261003/`; rerun the entire nine-command gate serially with `Spec170NativePostSelection/<case>` selectors. Do not count the partial output toward T010.
+- **Lesson:** The integration manifest must store the executed Boost.Test path including its suite prefix, not just the leaf case label.
+
+## 2026-10-03 — Spec192 VM-21 Python binding fetch aborts on heap corruption
+
+- **Symptom:** Exact candidate `13e61609a193c350e874918e5d85552cf1080f6154b20017ec7ce2bff3f0ee05` starts the five-host MiniNDN scenario, then `python-binding-fetch-cpp-artifact` exits `-6`; the child log contains glibc `corrupted size vs. prev_size`. Run manifest status is `FAIL`, candidate hash matches, `private_keys_shared=false`, and `minindn_cleanup=PASS`.
+- **Root cause:** Not established. The failure occurs in the Python-to-C++ Repo fetch boundary, but no core dump or C++ backtrace is present. Candidate source, Python module identity, and loaded native-library provenance must be examined before attributing it to binding ownership, transport, or ABI.
+- **Fix:** Pending a minimized, instrumented reproducer; do not make a speculative source change or run VM-14/15/VM-24 against this failed candidate.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-13e61609-20261003/minindn/T010-vm21-13e-20261003-1219/run-manifest.json` and `logs/python-binding-fetch-cpp-artifact.log`.
+- **Lesson:** A passing subprocess launch and cleanup do not qualify a Python binding path; the native crash must be localized and fixed before the dependent lifecycle gates.
+
+## 2026-10-03 — Spec192 VM-21 GDB locates heap abort during NativeServiceUser startup
+
+- **Symptom:** A second exact-candidate five-host VM-21 run reproduced `corrupted size vs. prev_size`, child exit `-6`, and MiniNDN cleanup PASS. The run is diagnostic and remains `FAIL`.
+- **Evidence:** Python faulthandler reaches `_ndnsf.NativeServiceUser` construction at `pythonWrapper/ndnsf/service.py:2389` from `spec192_binding_client.py:66`; Repo `fetch_file()` has not begun. GDB catches the abort while freeing `std::vector<ndn::Block>` inside an `ndn::Name` captured by the retry failure lambda at `ndn-service-framework/utils.cpp:1256`. The stack proceeds through `ndn::Face::Impl::registerPrefix`, `Controller::processCommandResponse`, and `Face::onReceiveElement`. This is the allocator detection site, not proof of the original corrupting write or that the failure callback ran. The pinned NDN-CXX build artifact, installed library, and `name.hpp`, `block.hpp`, and `face.hpp` match byte-for-byte, so a stale same-SONAME NDN-CXX library is not supported by this evidence.
+- **Root cause:** Still unknown. No source change was made.
+- **Diagnostic tool failure:** The first Waf ASan build command used a build-time `--out` and entered the default `build/` tree; it completed against the already-built normal target and the VM-21 framework hash remained unchanged. The corrected configure-time output selection then stopped before compiling because the global dependency identity receipt expects OpenABE hash `581b49ea…`, while `/usr/local` and the experiment overlay both contain `605371bf…`. No system library was installed or changed. Reconcile that receipt only through its owned installer before retrying ASan; until then continue with GDB.
+- **Next:** Use a bounded GDB breakpoint on the registration callback and capture callback arguments/prefix plus the control-response result. Do not run VM-14/15 or VM-24 until a corrected candidate passes VM-21 and its required inventories.
+- **Lesson:** A child label does not prove the labeled API was entered; distinguish binding construction and permission startup from the later Repo fetch. A destructor frame identifies where corruption was detected, not where it originated.
+
+## 2026-10-03 — Spec192 rebuilt Python binding reaches the negative DI Repo check
+
+- **Symptom:** Exact candidate `13e61609a193c350e874918e5d85552cf1080f6154b20017ec7ce2bff3f0ee05` no longer aborts during `NativeServiceUser` startup after rebuilding the Python extension. The untraced five-host VM-21 run completed Python native fetch (9,001 bytes), receipt query, Python publish/status/fetch (9,022 bytes), C++ fetch of the Python object, three DI artifact publishes, and authorized fresh-Provider inference (status true, 1,960.86 ms). It then exited 1 at `spec192-di-request-unauthorized` because APPClient returned status false with a timeout rather than a permission word. MiniNDN cleanup passed; five packet captures exited 0; transient-state inventory and final checks were not reached.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-13e61609-20261003/minindn/T010-vm21-13e-20261003-131751-rebuilt-binding/run-manifest.json`. The rebuilt extension SHA-256 is `46c616f57e43b0ba7958d4f470bc0ad226787a2a766e127943f10b13858a7adc` (old module `823ad1d4…`); native framework/DI libraries were unchanged. Packet decode shows a signed `SELECTION-STATUS state=Failed` carrying `repo-request-start-failed: Core rejected Provider request`, no normal `/Spec192/DI/Infer` service Interest, and no Repo `DI/REQUEST-INPUT/FETCH_RANGE` Interest from the excluded identity. The unauthorized Provider emitted no artifact-materialization marker. This run proves the old crash did not recur through these paths, but does not prove the original corrupting write or finish VM-21.
+- **Root cause:** The stale Python extension built before the current `ServiceUser` header/ABI change is the leading explanation for the old heap corruption. The forced current-header rebuild removed the failure, but no captured invalid-write stack proves that explanation conclusively. The remaining run failure is a test-oracle mismatch: it reads APPClient's timeout text to infer the Provider's native Repo authorization result, while the explicit denial is at the Provider's Repo request boundary.
+- **Fix:** Force-rebuilt only the local pybind extension using the recorded native digest receipt; no system installation changed. Candidate `e1db16bb568895bac3041025ddd859f5aa15bedbd2a042e058220f70e112e410` instruments that native fetch boundary, preserves the APPClient result separately, and requires the exact Repo request-admission rejection plus the existing no-handler and unchanged-inventory checks. Fresh review and VM-21 remain pending.
+- **Lesson:** Check the loaded extension hash after native header changes. To qualify authorization, observe the native producer-side rejection and independent data-plane/inventory oracles; do not accept a generic client timeout as proof.
+
+## 2026-10-03 — Spec192 Repo-reader identity counterfactual stopped before the DI check
+
+- **Symptom:** A diagnostic run temporarily mapped `DI_UNAUTHORIZED_PROVIDER` to `DI_PROVIDER` to isolate the Repo reader identity. It made no progress beyond `python-binding-publish-status-fetch` for more than three minutes and was interrupted with SIGINT. The source fingerprint was `e1db16bb…`, although the explicitly supplied output path was under the older `candidate-13e61609` directory; the manifest is authoritative for the source hash, and the path mismatch is retained as a diagnostic limitation.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-13e61609-20261003/minindn/T010-vm21-13e-20261003-repo-reader-isolation/run-manifest.json`; manifest status `FAIL`, `minindn_cleanup=PASS`, and all NFD, Repo, controller, tcpdump and child processes were cleaned up. The negative DI phase was not reached.
+- **Root cause:** Unknown. The counterfactual generated a duplicate service-Provider identity in runtime policy, so it is confounded and cannot isolate Repo reader authorization or explain the Python publish stall.
+- **Fix:** No product change was made from this run. Keep it diagnostic-only; the normal untraced qualification must use the repository's unmodified identity policy and exact output directory for candidate `e1db16bb`.
+- **Lesson:** Do not patch a global identity constant for an identity-isolation experiment when it also feeds policy generation and route setup. Make a narrowly scoped test parameter with unique policy entries, or use producer-side evidence from the unmodified scenario.
+
+## 2026-10-03 — Spec192 negative-oracle probe violated the native resolver type boundary
+
+- **Symptom:** Static audit of candidate `e1db16bb568895bac3041025ddd859f5aa15bedbd2a042e058220f70e112e410` found `_RepoFetchProbe` passed directly to `DIRepoArtifactResolver`, although the resolver constructor requires an exact `RepoClient` or `ArtifactRepositoryApi` type. The probe would raise `TypeError` before either authorized or unauthorized inference could use Repo.
+- **Root cause:** The test-only wrapper was placed at the resolver constructor boundary without checking `DIRepoArtifactResolver.__init__`'s exact-type guard.
+- **Fix:** Construct the resolver with the real `RepoClient`, then replace its private backing client with the transparent logging probe. This preserves constructor validation and the native call path while observing and rethrowing fetch failures. Candidate e1db is superseded; fresh review and MiniNDN evidence are required for the replacement candidate.
+- **Evidence:** CodeGraph nodes for `DIRepoArtifactResolver.__init__` and `tests/minindn/spec192_di_peer.py::_serve_provider`; source-level check before any VM-21 rerun.
+- **Lesson:** Test instrumentation must preserve production boundary checks; inspect constructor contracts before injecting a proxy.
+
+## 2026-10-03 — Spec192 peer help command used the host loader instead of the MiniNDN runtime
+
+- **Symptom:** Running `tests/minindn/spec192_di_peer.py --help` directly failed during `_ndnsf` import with an undefined `ResponseMessage::getProviderIdentity` symbol.
+- **Root cause:** The ad-hoc host invocation omitted the runner's runtime environment, so the loader selected stale `/usr/local` Framework libraries and lacked the matching Python wrapper path. The qualification runner's `node_environment()` prepends the workspace `build/` and Repo extension directories and supplies the wrapper `PYTHONPATH`.
+- **Fix:** Re-ran the help command with the exact runner-style `LD_LIBRARY_PATH` and `PYTHONPATH`; it exited 0. No source or library was changed for this diagnostic.
+- **Evidence:** `codegraph node node_environment`; matched-environment `spec192_di_peer.py --help` exit 0.
+- **Lesson:** Run Python binding checks inside the experiment's recorded runtime closure; bare-host loader failures are not source evidence.
+
+## 2026-10-03 — Spec192 candidate 7a7 VM-21 receipt query timed out before DI
+
+- **Symptom:** The fresh untraced five-host run on candidate `7a7c46526359824069af3817fb5c3ae3a255a045e754d05f59b076674825cd6c` exited 1 at `python-binding-query-cpp-native-receipt`; `ArtifactRepositoryApi.get_receipt()` raised `repo-request-timeout: Provider response callback was not delivered before the request deadline`. The DI authorization case, VM-14/15 inventory, transient-state inventory, and final checks were not reached.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-7a7c4652-20261003/minindn/T010-vm21-7a7-20261003-1451/run-manifest.json` records candidate hash 7a7, `status=FAIL`, `private_keys_shared=false`, MiniNDN cleanup `PASS`, and five nonempty PCAP captures with exit 0. Repo service logs show STATUS requests from `/example/repo/user` reached Repo A, but the request/response callback boundary is not resolved. The source emits an opt-in selected-request trace for this exact child.
+- **Root cause:** Unknown. The failure is before DI and differs from the previous 13e negative-oracle failure. No source fix is inferred from the timeout.
+- **Fix:** Pending a bounded diagnostic run with `NDNSF_SPEC192_SELECTED_REQUEST_TRACE_CHILD=python-binding-query-cpp-native-receipt`, followed by a fresh untraced run after the first failing boundary is understood.
+- **Lesson:** Preserve failures by exact candidate and child stage; a timeout is not evidence of an authorization or product-source failure until the Producer callback path is observed.
+
+## 2026-10-03 — Spec192 traced receipt diagnostic reached DI, then selected-target discovery failed
+
+- **Symptom:** Candidate `7a7c46526359824069af3817fb5c3ae3a255a045e754d05f59b076674825cd6c` completed the traced `python-binding-query-cpp-native-receipt` child, including its STATUS response callback, then exited 1 in `cpp-publish-di-model` with `repo-selected-target-stale: a selected Repo/Provider tuple is absent from fresh authenticated discovery`.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-7a7c4652-20261003/minindn/T010-vm21-7a7-receipt-trace-20261003-1500/run-manifest.json` records candidate 7a7, `status=FAIL`, MiniNDN cleanup `PASS`, and `private_keys_shared=false`. `python-binding-query-cpp-native-receipt.log` ends with `stage=response-callback`; `cpp-publish-di-model.log` records the exact stale-target error. Only the receipt child was traced, so discovery candidate details were not captured.
+- **Root cause:** Not yet determined. The fresh authenticated candidate set did not match at least one selected Repo/Provider/service-prefix tuple during the first DI model publish. The diagnostic advanced further than the untraced receipt timeout but is not a qualification pass.
+- **Fix:** Pending a fresh diagnostic run with `NDNSF_SPEC192_SELECTED_REQUEST_TRACE_CHILD=cpp-publish-di-model` to capture the selected and observed tuples. Any source change requires static convergence review and a fresh untraced end-to-end qualification.
+- **Lesson:** Trace the exact failing child; successful completion under trace of an earlier stage does not qualify the full workflow or identify later discovery failures.
+
+## 2026-10-03 — Spec192 multi-child trace reproduced the receipt timeout
+
+- **Symptom:** Candidate `c553f7eccd314a99f50b6ba040a22ab271139e83b4d628a4eb8f616a5238710b` enabled selected-request tracing for both the Python receipt query and the first DI model publish, but exited 1 in the receipt child before the DI child started. The log records five authenticated STATUS response subscriptions followed by `response-pending-call-missing`, repeated `ack-pending-request-missing`, and `repo-request-timeout`.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-c553f7ec-20261003/minindn/T010-vm21-c553-multi-trace-20261003/run-manifest.json` records candidate c553, `status=FAIL`, `minindn_cleanup=PASS`, and `private_keys_shared=false`. Repo A received nine STATUS requests from `/example/repo/user`; Repo B received none from that user. No DI publish child ran.
+- **Root cause:** Still unknown. The additional STATUS response subscriptions are authenticated, but their RequestIds do not map to an active `ServiceUser::m_pendingCalls` entry; current selected-request tracing omits those RequestIds, so it cannot distinguish late responses from an ID mismatch.
+- **Fix:** Pending targeted `NDN_LOG` capture for only `python-binding-query-cpp-native-receipt`, alongside the selected-request trace, to correlate incoming response RequestIds with the query and pending-call lifetime. Keep this run diagnostic-only.
+- **Lesson:** Stage-only traces cannot resolve pending-call correlation; capture the request IDs at the existing ServiceUser trace boundary before changing production request behavior.
+
+## 2026-10-03 — Spec192 targeted NDN logger trace rejected by the runner preflight
+
+- **Symptom:** The request-correlation diagnostic exited before MiniNDN setup because `main()` still validated `NDNSF_SPEC192_NDN_LOG_TRACE_CHILD` as one exact label, even though the child launcher had been updated to accept an allow-listed comma-separated set.
+- **Evidence:** Command used candidate `baeedcfde00f55ee5d4acbf2a5fecd529003a9a18c1e20c3bd9a2f175fc4ed2f`; stderr was `unsupported NDN logger trace child: python-binding-query-cpp-native-receipt`. No output directory or run manifest was created.
+- **Root cause:** The environment option has two validation sites; only `run_scenario()` was updated in the first patch.
+- **Fix:** Updated `main()` to validate the same comma-separated values against `NDN_LOG_TRACE_CHILDREN`. This was a harness preflight failure, not a MiniNDN or product run.
+- **Lesson:** Keep entrypoint and execution-time option validation in sync when adding a diagnostic opt-in.
+
+## 2026-10-03 — Spec192 request-correlation trace advanced to DI, then input target was stale
+
+- **Symptom:** Candidate `d0f77941a9c15daf56c553c8b2fcc7692e38a5fb32ad689edcb5ea59f63bdb97` completed the Python receipt query and Python binding publish/fetch. The traced `cpp-publish-di-model` performed fresh authenticated discovery, accepted Repo A and Repo B, and completed its STATUS/STORE response callbacks. The next child, `cpp-publish-di-input`, exited 2 with `repo-selected-target-stale` before its child-specific trace was enabled.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-d0f77941-20261003/minindn/T010-vm21-d0f77941-request-correlation-trace/run-manifest.json` records candidate d0f, `status=FAIL`, `minindn_cleanup=PASS`, and `private_keys_shared=false`. Its model log records two accepted candidates and four completed selected-request callbacks; its input log contains the exact stale-target error with no capability detail.
+- **Root cause:** Not yet determined. The stale selected tuple occurs at a later publish child than the prior traced model failure, so the issue is intermittent or depends on request/candidate state; the input child must be traced directly.
+- **Fix:** Pending a diagnostic run targeting `cpp-publish-di-input` for selected-request trace, retaining the receipt correlation trace. Do not infer qualification from the successful model publish.
+- **Lesson:** Capability evidence is operation-specific; record the discovery set for each DI artifact slot rather than extrapolating from the model slot.
+
+## 2026-10-03 — Spec192 input publish authenticated only Repo B
+
+- **Symptom:** In the fresh `cpp-publish-di-input` child, capability discovery returned one raw candidate (Repo B). The preselected Repo A tuple was therefore rejected as stale before input publication. The same candidate's model publish had discovered and accepted both Repo A and Repo B.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-d0f77941-20261003/minindn/T010-vm21-d0f77941-input-discovery-trace/run-manifest.json` records candidate d0f, `status=FAIL`, MiniNDN cleanup `PASS`, and `private_keys_shared=false`. `logs/cpp-publish-di-input.log` records `raw-candidates=1`, `selected-missing repoA`, and the sole `selected-observed repoB` immediately before `repo-selected-target-stale`.
+- **Root cause:** Repo A's authenticated CAPABILITY response was absent or failed qualification for the input artifact; the current trace does not distinguish no response, decode/validation rejection, or a legitimate capability constraint.
+- **Fix:** Pending producer-to-consumer trace of Repo A's CAPABILITY request/response and exact capability validation. Do not weaken stale-target validation or silently drop Repo A from the selected replication set.
+- **Lesson:** Compare per-artifact capability responses from each Repo before treating a two-Repo selection as reusable across all artifact slots.
+
+## 2026-10-03 — Repo A published the input CAPABILITY ACK for the exact closure RequestId
+
+- **Symptom:** The Repo A server TRACE confirms its CAPABILITY handler completed and published a positive ACK for the same RequestId that the input client's capability closure reports with only one candidate (Repo B).
+- **Evidence:** Candidate `bdc44a66cacc04504c2b29163d2cc48144e40499c39a6ba4134d107403ba1177`; run directory `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-bdc44a66-20261003/minindn/T010-vm21-bdc44a66-repo-a-capability-trace`. The Repo A log has `ACK_DECISION status=true` and `ACK_PUBLISHED status=true` for `/20261003T205647.978063-ae4b51c22af40756`; the input log reports that exact closure RequestId with `raw-candidates=1` and lists only Repo B. Cleanup is `PASS`; private keys were not shared.
+- **Root cause:** The Repo A ACK does not enter the authenticated candidate closure even though Repo A publishes it for the correct request. Whether the consumer receives it and rejects it for provider scope, signer/trust, or another admission reason remains unknown.
+- **Fix:** Pending a targeted ServiceUser TRACE on `cpp-publish-di-input` to extract the matching ACK RequestId and its exact reject/accept path. No stale-target validation is being weakened.
+- **Lesson:** Correlate producer publication and consumer admission with the same RequestId; successful ACK generation alone does not prove the consumer accepted it.
+
+## 2026-10-03 — Spec192 input discovery accepted both Repos; output discovery still failed
+
+- **Symptom:** Candidate `5305ae2ca9c127e13c3cdf3df20b7ad49d03b7b22d30025f960b89a79b1ca0af` accepted both Repo A and Repo B in the DI input capability closure, then exited 1 at `cpp-publish-di-output` with `repo-selected-target-stale`.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-5305ae2c-20261003/minindn/T010-vm21-5305ae2c-input-ack-admission-trace/run-manifest.json` records `status=FAIL`, candidate 5305, cleanup `PASS`, and `private_keys_shared=false`. The input log records `raw-candidates=2`, accepted Repo B and Repo A, and two `ACK_MATCHED_PENDING_CALL` events for the matching closure RequestId. The output log records the stale-target error without capability detail because that child was not yet traced.
+- **Root cause:** The output artifact's per-operation authenticated discovery/ACK admission remains unresolved. Success for the input slot does not generalize to the output slot.
+- **Fix:** Pending a targeted selected-request and ServiceUser trace for `cpp-publish-di-output`, while retaining the query/input traces and Repo A provider trace.
+- **Lesson:** Each artifact slot needs its own Repo capability closure evidence and consumer admission result.
+
+## 2026-10-03 — Spec192 Repo A CAPABILITY data arrived too late for input discovery
+
+- **Symptom:** Candidate `5e4872feb4f94b3fa4cb5867c7fd8875d941e8cb808bb69f77e5575b881e6155` completed the model publish, then failed input publish with `repo-selected-target-stale`. The model ACK from Repo A was matched at 28.243 seconds in a 30-second collection window; the input window closed with only Repo B.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-5e4872feb4f94b3fa4cb5867c7fd8875d941e8cb808bb69f77e5575b881e6155-20261003/minindn/T010-vm21-input-output-admission-trace-r2/run-manifest.json` records `status=FAIL`, `private_keys_shared=false`, and Repo/controller cleanup by SIGTERM. For input RequestId `/20261003T220259.193155-7a93f9122c23e8f5`, Repo A logged `ACK_DECISION status=true` and `ACK_PUBLISHED status=true`; the client logged `ACK_RECEIVED` and `ACK_MATCHED_PENDING_CALL` only for Repo B, then `COLLAB_ACK_CLOSED candidateCount=1` at 30.000 seconds. It reported `selected-missing repoA` and `selected-observed repoB`. Reassembled pcaps show Repo A's SVS Data for this RequestId leaving the UCLA side and reaching WUSTL but not `neu` before closure. In the same candidate's model trace, Repo A's matching SVS Data reached `neu` at 28.2 seconds and its ACK was matched at 28.243 seconds. During trace setup, the runner also needed the model child added to both the NDN trace allowlist and logger-level map; this is fixed and covered by `py_compile`, an AST allowlist check, and CodeGraph sync.
+- **Root cause:** Repo A's ACK is not rejected by ServiceUser; its SVS Data is delayed or not forwarded to the application node within the 30-second CAPABILITY collection window. The model case succeeds only narrowly inside the window. The precise NFD/SVS forwarding mechanism remains under investigation.
+- **Fix:** Keep stale-target validation intact. Next test a 60-second ACK collection window in the MiniNDN publish client and trace the exact input/output ACK arrival, to distinguish late SVS delivery from permanent loss before selecting a product-layer change.
+- **Lesson:** Positive provider-side ACK publication is insufficient; for multi-Repo discovery, qualify the complete provider set before the caller's collection deadline and preserve per-operation packet timing.
+
+## 2026-10-03 — Spec192 input/output trace run stopped at receipt timeout
+
+- **Symptom:** Candidate `5e4872feb4f94b3fa4cb5867c7fd8875d941e8cb808bb69f77e5575b881e6155` exited before the targeted input/output children. `python-binding-query-cpp-native-receipt` failed with `repo-request-timeout: Provider response callback was not delivered before the request deadline`.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-5e4872feb4f94b3fa4cb5867c7fd8875d941e8cb808bb69f77e5575b881e6155-20261003/minindn/T010-vm21-input-output-admission-trace/run-manifest.json` records `status=FAIL`, `private_keys_shared=false`, and Repo/controller cleanup by SIGTERM. No `cpp-publish-di-input.log` or `cpp-publish-di-output.log` was produced.
+- **Root cause:** Unknown. The run did not reach the selected target discovery that this trace was intended to observe; the intermittent receipt callback timeout is separate from the per-slot stale-target result.
+- **Fix:** No product change. Retry the input/output trace on a fresh MiniNDN run; keep the receipt timeout as a failed run and do not count it toward T010 qualification.
+- **Lesson:** A diagnostic run only answers its targeted question after all preceding gates pass; classify pre-target failures separately and retain their cleanup manifest.
+
+## 2026-10-03 — Spec192 60-second discovery admitted both Repos; VM-20 later timed out
+
+- **Symptom:** Candidate `30ce213aef9ce3fbef287d78f86f1fa97ea656383b61606ae0ed23485a0d4869` completed DI model, input, and output artifacts with a 60-second C++ publish ACK window, then failed at the VM-20 seed publisher with `repo-request-timeout: Provider request timed out`.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-30ce213aef9ce3fbef287d78f86f1fa97ea656383b61606ae0ed23485a0d4869-20261003/minindn/T010-vm21-60s-input-output-trace/run-manifest.json` records `status=FAIL`, `private_keys_shared=false`, and Repo/controller cleanup by SIGTERM. Input CAPABILITY request `/20261003T223312.381165-3b123a1294e19487` and output request `/20261003T223813.036944-10873bfbc97a4640` each closed with `raw-candidates=2` and accepted Repo A and Repo B; both ACKs matched their pending call. The VM-20 child failed later; Repo A logged a positive STATUS ACK and response for `/20261003T224450.911901-4f425efb522a0a01`, but this child had no ServiceUser trace.
+- **Root cause:** The 60-second diagnostic run demonstrates both DI artifact slots can admit both Repos, but it does not establish why earlier 30-second runs omitted Repo A. The later VM-20 STATUS callback timeout remains unresolved; server publication alone does not show whether the client received it.
+- **Fix:** Keep the 60-second setting as diagnostic evidence only until an exact-candidate untraced run passes. Next add a narrow ServiceUser trace to the VM-20 operation-begin child and correlate that STATUS request with the provider response. Do not weaken selected-target validation.
+- **Lesson:** Per-slot discovery and VM-20 recovery have distinct deadlines and failure boundaries; a passing input/output trace does not qualify the full VM-21 scenario.
+
+## 2026-10-03 — pcap field inspection emitted raw payload hex once
+
+- **Symptom:** One exploratory `tshark` field command printed raw UDP payload hex into the tool result while trying to inspect a CAPABILITY packet.
+- **Root cause:** The command requested `data.data` directly instead of transforming it in-process before output.
+- **Fix:** Stopped direct payload display. Subsequent pcap analysis used in-memory IP reassembly and `ndn-dissect`, returning packet names, endpoints, timestamps, and event summaries only. No packet bytes were copied into repository documents.
+- **Lesson:** Treat packet captures as sensitive; never print `data.data` or raw packet rows. Emit only an explicit allowlist of derived metadata.
+
+## 2026-10-03 — Spec192 Python publish received no selected Repo ACK before VM-20
+
+- **Symptom:** Candidate `728fb253a6f55add43e723ae8714924e7e1dbe8469c3e045cfe9957eec97d606` failed in `python-binding-publish-status-fetch` before reaching the VM-20 restart scenario. The native publish call reported `repo-ack-authentication-failed` with `matching=0, observed=0`.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-728fb253a6f55add43e723ae8714924e7e1dbe8469c3e045cfe9957eec97d606-20261003/minindn/T010-vm21-vm20-client-trace/run-manifest.json` records `status=FAIL`, `private_keys_shared=false`, and cleanup of both Repo servers and the controller by SIGTERM. Aggregate Repo A output contained CAPABILITY, ACK, and RESPONSE_PUBLISHED activity, but the failing Python child had no selected-request trace to correlate its closure; aggregate activity does not establish delivery for that request.
+- **Root cause:** The failing selected-provider closure contained no ACK candidates. The available evidence does not distinguish an absent request/response from client-side callback admission before per-child tracing.
+- **Fix:** Add the same narrow selected-request and ServiceUser trace to `python-binding-publish-status-fetch`, then rerun to correlate the client closure with Repo A's request and response. Keep the VM-20 trace opt-in and preserve selected-target authentication checks.
+- **Lesson:** Provider-wide ACK counts cannot explain a selected request; retain per-request evidence at both client and provider before changing admission behavior.
+
+## 2026-10-03 — Spec192 Python fetch missed the selected Repo response callback
+
+- **Symptom:** Candidate `cf02c02e1740fa792e881f038286bcb61ae1d5dba0f65bcf64666f1b12e0d7d6` stopped in `python-binding-fetch-cpp-artifact` before Python publish or VM-20, with `repo-request-timeout: Provider response callback was not delivered before the request deadline`.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-cf02c02e1740fa792e881f038286bcb61ae1d5dba0f65bcf64666f1b12e0d7d6-20261003/minindn/T010-vm21-python-vm20-ack-trace/run-manifest.json` records `status=FAIL`, `private_keys_shared=false`, and SIGTERM cleanup of both Repo servers and the controller. Repo B's authenticated request trace includes `FETCH_RANGE`, but this child had no response trace, and Repo B had no ServiceProvider trace; request arrival alone does not identify why the callback was missed.
+- **Root cause:** The selected-provider fetch request timed out without invoking the response callback. The current evidence does not distinguish provider response failure from client-side response admission.
+- **Fix:** Enable selected-request and ServiceUser trace for `python-binding-fetch-cpp-artifact`, and trace Repo B's ServiceProvider response path on the next bounded MiniNDN run.
+- **Lesson:** Trace the first failing API boundary on both client and selected provider; a later publish diagnostic cannot explain an earlier fetch timeout.
+
+## 2026-10-03 — Spec192 VM-20 fresh CAPABILITY discovery closed empty
+
+- **Symptom:** Candidate `2dc203cb02533140b831beac35c2857ae9141c17e34c2d190c1ac24cc39e5308` completed the Python binding round trips and all three DI artifact publishes, then VM-20 failed before seed durability with `repo-selected-target-stale`.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-2dc203cb02533140b831beac35c2857ae9141c17e34c2d190c1ac24cc39e5308-20261003/minindn/T010-vm21-fetch-client-provider-trace/run-manifest.json` records `status=FAIL`, `private_keys_shared=false`, and SIGTERM cleanup. The VM-20 client trace shows one earlier selected request with one authenticated ACK, selection commit, and response callback. A later fresh CAPABILITY closure had `raw-candidates=0`, followed by `selected-missing ... discovered=0`; the same request ID had publish and closure events but no ACK-received or ACK-matched event. The direct packet capture was not used to attribute the missing ACK because its packet-to-request correlation is not yet established.
+- **Root cause:** The CAPABILITY discovery used by `beginPublishFileImpl` returns an empty authenticated candidate set after the prior status request succeeds. The evidence does not yet locate the loss at Repo A publication, transport, or client admission.
+- **Fix:** Trace Repo A's ServiceProvider path for the same VM-20 child and correlate the CAPABILITY request against response events. Preserve the stale-target check and all target authentication rules.
+- **Lesson:** A successful STATUS callback does not prove that the subsequent fresh CAPABILITY discovery reached or was admitted by the selected Repo.
+
+## 2026-10-03 — Spec192 VM-20 discovery found Repo A but omitted selected Repo B
+
+- **Symptom:** A second run of candidate `2dc203cb02533140b831beac35c2857ae9141c17e34c2d190c1ac24cc39e5308` completed Python round trips and all three DI publishes, then VM-20 failed before seed commit with `repo-selected-target-stale`.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-2dc203cb02533140b831beac35c2857ae9141c17e34c2d190c1ac24cc39e5308-20261003/minindn/T010-vm21-fetch-repoA-provider-trace/run-manifest.json` records `status=FAIL`, `private_keys_shared=false`, and SIGTERM cleanup. The CAPABILITY closure contained one accepted candidate for Repo A. The selected-missing diagnostic identifies Repo B as the absent target (`discovered=1`); the observed Repo A tuple matches the configured Repo A identity and service prefix. Repo A's provider trace contains the same request ID, `REQUEST_RECEIVED`, and `ACK_PUBLISHED`. Repo B's ServiceProvider trace was not enabled in this run.
+- **Root cause:** Fresh authenticated discovery did not include selected Repo B, even though Repo A's ACK was received and accepted. The evidence does not yet show whether Repo B missed the Interest, failed to publish an ACK, or its ACK was lost or rejected by the client.
+- **Fix:** Trace Repo B's ServiceProvider path against this VM-20 CAPABILITY request and compare it with the client closure. Keep the requirement that all selected Repo tuples appear in fresh authenticated discovery.
+- **Lesson:** A valid Repo A candidate does not satisfy the selected set when Repo B is also required; verify each provider in the same closure.
+
+## 2026-10-03 — Spec192 Python native receipt lookup timed out before VM-20
+
+- **Symptom:** Candidate `2dc203cb02533140b831beac35c2857ae9141c17e34c2d190c1ac24cc39e5308` failed in `python-binding-query-cpp-native-receipt` with `repo-request-timeout: Provider response callback was not delivered before the request deadline`; the run stopped before VM-20 and cleaned up Repo A, Repo B, and the controller with SIGTERM.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-2dc203cb02533140b831beac35c2857ae9141c17e34c2d190c1ac24cc39e5308-20261003/minindn/T010-vm21-fetch-repoB-provider-trace/run-manifest.json` records `status=FAIL` and `private_keys_shared=false`. The manifest names the failing receipt-query child. The selected-request trace in this run covered the separate `python-binding-fetch-cpp-artifact` child, whose STATUS and FETCH_RANGE callbacks completed; those events do not correlate with the failing receipt query. Repo B provider tracing was enabled, but the receipt-query child lacked selected-request and ServiceUser trace, so its RequestId cannot yet be matched to provider events.
+- **Root cause:** The persistent receipt request did not deliver a response callback before its deadline. Current evidence does not distinguish a missing ACK, response publication/transport loss, or client admission failure.
+- **Fix:** On the next bounded run, enable selected-request and ServiceUser trace for `python-binding-query-cpp-native-receipt` and retain Repo B provider tracing. Correlate the exact STATUS RequestId through request admission, ACK/selection, and response callback before changing protocol behavior.
+- **Lesson:** Similar API labels in separate child processes are not evidence of the same request. Trace the child named by the failure manifest and correlate one exact RequestId end to end.
+
+## 2026-10-03 — Spec192 VM-20 fresh discovery omitted Repo B's published ACK
+
+- **Symptom:** Candidate `2dc203cb02533140b831beac35c2857ae9141c17e34c2d190c1ac24cc39e5308` reached `vm20-operation-begin-before-owner-restart` but stopped with `repo-selected-target-stale`: fresh authenticated CAPABILITY discovery returned Repo A only, although the selected set required Repo A and Repo B.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-2dc203cb02533140b831beac35c2857ae9141c17e34c2d190c1ac24cc39e5308-20261003/minindn/T010-vm21-receipt-query-client-repoB-provider-trace/run-manifest.json` records `status=FAIL` and `private_keys_shared=false`. For the same CAPABILITY RequestId, Repo B logged `REQUEST_RECEIVED` at 1791074563026856, `ACK_PUBLISHED` at 1791074563064646, and `SVS_PUBLISH_DONE` at 1791074563069740. The client logged Repo A's `ACK_RECEIVED` at 1791074563211989 and `COLLAB_ACK_CLOSED` at 1791074564487490 with one candidate; it logged no Repo B ACK decrypt or receipt for that RequestId. Both client and server loaded `/usr/local/lib/libndn-svs.so.0.1.0` with the same recorded SHA-256. The captured pcap packets around this interval are truncated, so they cannot establish packet delivery.
+- **Root cause:** Repo B's published ACK did not reach the client's ACK subscription before closure. IP-reassembled pcap analysis subsequently found Repo B's ACK-bearing SVS Data at Repo B and the transit node, but not at the application node; the client likewise recorded no Repo B decrypt event. The exact SVS fetch/forwarding decision remains unproven. The previously suspected 100 ms decrypt deferral is not implicated because the client never logged Repo B's `ACK_DECRYPT_IN_FLIGHT`.
+- **Fix:** Preserve the fail-closed selected-target check. Correlate the Repo B SVS Data name with the application's fetch/subscription path and identify the delivery failure before changing code; no protocol repair is yet justified by this run.
+- **Lesson:** Producer-side `SVS_PUBLISH_DONE` proves publication, not subscriber delivery. A fresh selected-target closure must be judged from authenticated ACKs observed by the client.
+
+## 2026-10-03 — Spec192 VM-20 STATUS selected Repo response timed out
+
+- **Symptom:** Candidate `7e87a92f2adc737c81c8cd7e3b096ff3f1783f62c89c121638429787ea68cca6` passed the earlier interop and DI stages, then failed in `vm20-operation-begin-before-owner-restart` before the seed commit with `repo-request-timeout: Provider request timed out` for the STATUS phase. The prior Repo B CAPABILITY omission did not recur.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/T010-vm22-full-pcap-repoB-ack/run-manifest.json` records `status=FAIL` and `private_keys_shared=false`. The client authenticated a STATUS ACK, selected Repo A, and published SELECTION at 1791076692436587, then timed out at 1791076720931580. Repo B logged receipt and ACK publication for the same STATUS RequestId before that selection. The pcap needed IP reassembly; in-memory analysis found Repo A's response-bearing SVS Data at Repo A and the transit host, but not at the application host. Pcap metadata alone does not prove the embedded response was admitted or that all NDN fetches were satisfied.
+- **Root cause:** The selected STATUS response did not reach the client callback before its 30-second deadline. Available traces narrow the boundary to response delivery/fetch or client admission after selection; they do not yet isolate a source defect. This run used the same `/usr/local/lib/libndn-svs.so.0.1.0` in client and server per its manifest.
+- **Fix:** Preserve the selected-target and response authentication checks. Correlate the selected STATUS response-bearing SVS Data name and fetch path from Repo A through the transit host to the application host, with Repo A and client trace enabled on one exact request; change implementation only after identifying the failed stage.
+- **Lesson:** A later runtime failure can supersede an earlier intermittent discovery failure on the next exact candidate. The original pcap already had a 262144-byte snapshot limit, so adding `tcpdump -s 0` did not change this boundary and was reverted. IP fragments need reassembly before drawing delivery conclusions.
+
+## 2026-10-03 — ACK decrypt deferral could freeze collaboration before authentication completed
+
+- **Symptom:** Static review found that `ServiceUser::handleAckCollectionTimeout` stopped deferring after five 20 ms checks even while a predeadline ACK remained in `ackDecryptsInFlight`. It could freeze `ACK_CLOSED` without that ACK, contrary to the immutable authenticated-candidate contract. This was not the cause of either observed VM-20 MiniNDN failure: the omitted Repo B ACK never entered client decryption in the first run, and the second run timed out after a valid STATUS selection.
+- **Root cause:** A fixed five-deferral cap was shorter than the request's existing total deadline and was applied to asynchronous ACK authentication.
+- **Fix:** Keep deferring while ACK decryption is in flight, bounded by the request deadline; at that deadline, leave closure uncommitted and let the request timeout path fail closed. Extended `DelayedAuthenticationDrainsBeforeAckClosed` across six 20 ms checks and added a deferred collaboration case for authentication before the total deadline and timeout at the deadline. `./waf build -j4 --targets=spec190-ack-window` passed; with the recorded local runtime-library overlay, the focused deferred case and full binary passed (10 cases / 139 assertions). The nine Spec192 affected targets also built at `-j4`; CodeGraph was synced after the source edit.
+- **Lesson:** An ACK observed before the collection deadline must not be omitted merely because authentication takes longer than a short polling grace. Use the request deadline as the final bound and keep timeout fail-closed.
+
+## 2026-10-03 — SVS publication fetch order starved a selected Repo ACK
+
+- **Symptom:** Diagnostic candidate `3d33b099ca5f4a029308af54696ac95e036e32ec7ff3d7d8180a98700f7fdf1d` failed VM-20 fresh CAPABILITY discovery with zero authenticated ACK candidates. The client received the Repo B publication mapping and queued Repo B's ACK-bearing SVS publication at sequence 84, but did not dispatch a fetch before `COLLAB_ACK_CLOSED` about 1.4 seconds later.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/T010-vm23-client-svs-repoA-trace/run-manifest.json` records `status=FAIL` and `private_keys_shared=false`. In the VM-20 client log, SVSPubSub recorded 220 `publication_fetch_queued`, 56 `publication_fetch_dispatch`, and 56 `publication_fetch_success` events. Repo B's sequence 84 was queued at 1791080861.635619 but had no matching dispatch; collaboration closed at 1791080863.048473. The dispatch window of 10 was repeatedly filled with Repo A historical sequences 128 through 89. The installed ndn-svs shared library has SHA-256 `90d1dacc77b43732294eacf30e7659a7590491630a4450543a407e9c76486bc1`; the pinned Experimental source sorts ready publications by retry count, then common bootstrap time, then sequence number globally, even though sequence numbers are local to each producer.
+- **Root cause:** A new subscriber can backlog on historical publications. With a common bootstrap time, the ndn-svs fetch scheduler orders all producers by their incomparable per-producer sequence numbers; Repo A's higher history consumed the bounded fetch window ahead of Repo B's current ACK. This explains the observed queued-but-undispatched Repo B publication, without weakening NDNSF's selected-target validation.
+- **Fix:** Repair producer fairness in the pinned ndn-svs scheduler and qualify the exact rebuilt dependency with the NDNSF client/server runtime closure. Keep the traced run diagnostic; an untraced MiniNDN run is still required after the dependency fix.
+- **Lesson:** Publisher sequence numbers establish order within one producer, not priority across producers. Correlate mapping queue, fetch dispatch, and callback receipt before attributing a missing ACK to authentication.
+
+## 2026-10-03 — Pinned ndn-svs fairness build exposed toolchain and ABI closure requirements
+
+- **Symptom:** The first pinned ndn-svs unit-test link failed because the Linuxbrew linker could not resolve the distro Boost filesystem transitive dependency. A later static review found that the fairness repair adds state to the public `SVSPubSub` class, changing its object size while retaining the same SONAME. A MiniNDN run with the new library overlay and old NDNSF binaries was stopped before qualification.
+- **Evidence:** Building with `PATH=/usr/bin:/bin:/usr/local/bin ./waf build -j4 --targets=unit-tests` passed. The rebuilt ndn-svs unit binary passed 89 cases / 645 assertions, including a one-slot producer-rotation regression. The interrupted MiniNDN manifest at `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/T010-vm24-svs-fairness-untraced/run-manifest.json` records `FAIL`, `KeyboardInterrupt()`, `private_keys_shared=false`, and `minindn_cleanup=PASS`; it provides no runtime qualification.
+- **Root cause:** PATH selected the Linuxbrew linker ahead of the system binutils. Separately, a same-SONAME library replacement cannot be loaded by consumers whose `SVSPubSub` allocations were compiled against the old header.
+- **Fix:** Use system binutils for the pinned Boost 1.71 build. The repository installer `./install_ndnsf_stack.sh --deps-only --no-system-packages --jobs 4` verified all installed packages and reissued the stale global identity receipt after OpenABE had changed; it did not rebuild the packages. Waf rejected the review worktree under `/home` as a dependency root, so the reviewed patch was applied to the clean pinned worktree under `/usr/local/src/spec192-ndn-svs-9f2d8a4`. Its exact library SHA-256 is `fc3d4f3da30022c00a34cbb77f4da3aa19de6ee9357d02b9cde147e2fec7d9b2`; the full unit suite passed 89 cases / 645 assertions there. NDNSF configure passed with that explicit source/build pair. Rebuild every relevant native and Python consumer, verify each loaded library path and SHA-256, then rerun MiniNDN. Do not install the patched shared library globally or reuse old-header consumers.
+- **Lesson:** A green dependency test and matching SONAME do not prove ABI compatibility. Treat the header, linked library, and every object-allocating consumer as one exact runtime candidate.
+
+## 2026-10-03 — Patched-SVS MiniNDN stopped at native receipt response timeout
+
+- **Symptom:** After all nine affected NDNSF targets were rebuilt against pinned patched ndn-svs and unit/integration gates passed, the fresh untraced MiniNDN run stopped in `python-binding-query-cpp-native-receipt` with `repo-request-timeout: Provider response callback was not delivered before the request deadline`. VM-20 was not reached.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/T010-vm25-svs-fairness-rebuilt-consumers/run-manifest.json` records `FAIL`, `private_keys_shared=false`, `minindn_cleanup=PASS`, NDNSF source candidate `3d33b099ca5f4a029308af54696ac95e036e32ec7ff3d7d8180a98700f7fdf1d`, and client/server loaded ndn-svs SHA-256 `fc3d4f3da30022c00a34cbb77f4da3aa19de6ee9357d02b9cde147e2fec7d9b2`. Repo A's aggregate log has STATUS requests but no RequestId, so those lines cannot be assigned to the failing receipt query.
+- **Root cause:** The selected receipt request's response callback was absent before its deadline. The untraced run cannot distinguish a request/ACK path failure, response publication/fetch loss, or client admission failure.
+- **Fix:** Use the runner's existing per-child selected-request and ServiceUser trace for `python-binding-query-cpp-native-receipt` together with Repo A's ServiceProvider trace, then correlate one RequestId end to end. Keep the run classified FAIL until that boundary is proven and a fresh untraced run passes.
+- **Lesson:** Exact dependency ABI closure and green component gates do not imply network callback delivery. Aggregate provider activity cannot identify the failed request without its RequestId.
+
+## 2026-10-03 — Receipt diagnostic passed, independent C++ fetch timed out
+
+- **Symptom:** The traced follow-up run passed `python-binding-query-cpp-native-receipt`, then stopped in `cpp-client-fetch-python-receipt-no-python` with `repo-request-timeout: Provider response callback was not delivered before the request deadline`.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/T010-vm26-receipt-selected-provider-trace/run-manifest.json` records `FAIL`, `private_keys_shared=false`, `minindn_cleanup=PASS`, source candidate `3d33b099ca5f4a029308af54696ac95e036e32ec7ff3d7d8180a98700f7fdf1d`, and the same patched ndn-svs SHA-256 `fc3d4f3da30022c00a34cbb77f4da3aa19de6ee9357d02b9cde147e2fec7d9b2` for client and server. The failing C++ child log contains only the timeout, because it was outside the previous per-child trace allowlist.
+- **Root cause:** Callback delivery failed at a later independent client boundary; this run does not identify whether request, ACK, response publication/fetch, or admission failed. The earlier Python receipt timeout is intermittent under this candidate.
+- **Fix:** Add the exact failing C++ child to the runner's optional selected-request and SVS trace allowlists and capture it together with the receipt-query child, then correlate RequestIds and fetch dispatches. Preserve a fresh untraced qualification requirement after any fix.
+- **Lesson:** Moving past one timeout on a repeat does not prove its root cause was repaired. A cross-language failure at the same callback boundary warrants per-request transport and admission evidence.
+
+## 2026-10-03 — Patched-SVS run reached VM-20 but selected discovery stayed stale
+
+- **Symptom:** A diagnostic run with both receipt-query clients traced passed the previous Python and no-Python C++ receipt boundaries, committed model/input/output DI artifacts, and reached VM-20. Its `operation-begin` publisher exited before the seed commit with `repo-selected-target-stale: a selected Repo/Provider tuple is absent from fresh authenticated discovery`.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/T010-vm27-two-receipt-clients-svs-trace/run-manifest.json` records `FAIL`, `private_keys_shared=false`, `minindn_cleanup=PASS`, source candidate `6ad738499e159ab2d48e363390858269d4994b01241fdcfeb829feb4bb71899a`, and patched ndn-svs SHA-256 `fc3d4f3da30022c00a34cbb77f4da3aa19de6ee9357d02b9cde147e2fec7d9b2` for both client and server. VM-20 was not among the enabled trace children, so its log has only the final error.
+- **Root cause:** Fresh authenticated discovery omitted at least one selected Repo/Provider tuple despite the fairer SVS publication scheduler. The current run does not show whether its mapping was unseen, queued-but-undispatched, fetched but unadmitted, or absent at publication.
+- **Fix:** Trace VM-20's exact selected request, client SVSPubSub queue/dispatch, and Repo B's ServiceProvider publication on one bounded run. Keep selected-target validation fail-closed and use the resulting RequestId to identify the first missing stage.
+- **Lesson:** A component-level starvation fix can remove one demonstrated mechanism without proving the end-to-end selected discovery contract; qualify the exact runtime path before closing T010.
+
+## 2026-10-04 — VM-20 targeted run stopped at DI response delivery first
+
+- **Symptom:** The run intended to trace VM-20 passed Python/C++ Repo interoperability and all three DI artifact commits, then the authorized DI inference request timed out after 60.5 s before VM-20 started.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/T010-vm28-patched-svs-vm20-client-repoB-trace/run-manifest.json` records `FAIL`, `private_keys_shared=false`, `minindn_cleanup=PASS`, source candidate `6ad738499e159ab2d48e363390858269d4994b01241fdcfeb829feb4bb71899a`, and patched ndn-svs SHA-256 `fc3d4f3da30022c00a34cbb77f4da3aa19de6ee9357d02b9cde147e2fec7d9b2` in client and server. The authorized Provider log shows the matching session entered its handler, fetched model/input/output with expected digests, and ended after about 0.9 ms; the client then reported `timeout` for that same session. VM-20 tracing did not run.
+- **Root cause:** The first missing boundary is after successful Provider handler execution and before the client's response callback. Existing logs do not distinguish response publication, SVS mapping/fetch, or client response admission.
+- **Fix:** Add opt-in trace for the exact authorized DI request child and Provider, recording ServiceUser/ServiceProvider and SVSPubSub events. Correlate the response publication and consumer queue/dispatch for one session. Stop repeating full runs without that boundary evidence.
+- **Lesson:** A successfully executed Provider handler and verified artifact digest do not prove that its network response reached the client; separate service execution from response delivery.
+
+## 2026-10-04 — DI response diagnostic stopped at model-publish ACK first
+
+- **Symptom:** The next run intended to trace the authorized DI response passed Python/C++ Repo interoperability but failed earlier in `cpp-publish-di-model`: `repo-ack-authentication-failed` with `matching=0, observed=0`.
+- **Evidence:** `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/T010-vm29-di-response-and-vm20-trace/run-manifest.json` records `FAIL`; the model-publish child was outside the enabled trace scope. The DI authorized response and VM-20 trace targets were not reached.
+- **Root cause:** This run cannot locate the missing selected ACK within request publication, Provider ACK publication, SVS mapping/fetch, or client admission.
+- **Fix:** Use one bounded run that enables optional selected-request and SVS logging on every known first-failure child, and narrow Provider/SVS logging on both Repo servers and the DI Provider. Capture and correlate the first failing RequestId rather than repeating different single-child trace configurations.
+- **Lesson:** When the first failing child changes across runs, selective tracing of a late target wastes complete scenario setup; make diagnostic coverage span the known failure frontier.
+
+## 2026-10-04 — SVS fetch window did not refill after successful publication
+
+- **Symptom:** Static scheduling review found that `SVSPubSub::cleanUpFetch` removed a completed publication but did not dispatch another queued publication when the bounded fetch window gained capacity. The first fairness regression test had manually called `fetchAll()` after receiving the first Data and therefore masked this gap.
+- **Evidence:** In the pinned ndn-svs review worktree, removing that manual call made `TestSVSPubSub/PublicationFetchSingleSlotRotatesProducers` fail with only one Interest observed when two were required. After scheduling a guarded next `fetchAll()` from `cleanUpFetch`, the same test passed 4/4 assertions; the full ndn-svs unit suite passed 89/89 cases and 645/645 assertions. This proves the local scheduler gap; it does not yet prove the Spec192 MiniNDN failures share that cause.
+- **Root cause:** The fetch scheduler ran on new Sync updates and retry timers, but not when a successful fetch freed a window slot. Queued publications could wait for an unrelated later update despite available capacity.
+- **Fix:** Schedule a zero-delay refill after removing a completed/expired publication while pending fetches remain, guarded by the instance lifetime token. Keep producer-fair ordering and retry priority. The follow-up static review found no new blocker. The exact pinned `/usr/local/src` dependency was rebuilt; its new library SHA-256 is `d87ae04f4555817a5d16a4c12e0e289cdad212574932abf4a16799dd15576c69`, and its complete 89-case unit suite passed. NDNSF loader, unit, integration, and MiniNDN gates are being rerun against that library.
+- **Lesson:** A fairness comparator is insufficient if the queue is not serviced when capacity becomes available. A regression must assert automatic progress without calling the scheduler directly.
+
+## 2026-10-04 — Broad SVS diagnostic deliberately interrupted for rebuilt dependency
+
+- **Symptom:** `T010-vm30-frontier-svs-trace` was running with the older patched SVS library when the independently reproduced fetch-window refill defect was repaired and reviewed.
+- **Evidence:** The runner received SIGINT during `cpp-client-fetch-python-receipt-no-python` and exited 130. Its `run-manifest.json` records `status=FAIL`, `private_keys_shared=false`, and `minindn_cleanup=PASS`. The interrupted run is diagnostic only and supplies no VM-21 qualification.
+- **Root cause:** The running child had loaded the previous library candidate; continuing it could not qualify the new source-level repair.
+- **Fix:** Preserve the failed run and cleanup evidence, copy the reviewed source into the pinned build tree, rebuild the dependency, and rerun ordered gates before a fresh MiniNDN candidate.
+- **Lesson:** A live experiment cannot inherit a dependency change made after its children start; pin and verify loaded hashes per run.
+
+## 2026-10-04 — Reused VM-24 runner carried an outdated runtime overlay
+
+- **Symptom:** The first VM-24 rerun passed its importer selectors but inherited a runner's hard-coded `LD_LIBRARY_PATH` that omitted the rebuilt SVS directory.
+- **Evidence:** Its `vm24/results.json` records the old overlay beginning with the repository `build/` path. That run is excluded from exact-overlay qualification.
+- **Root cause:** The older evidence runner pinned the source hash but not the newly rebuilt dependency path.
+- **Fix:** Copy the runner into `candidate-a155009e-svsd87ae04f-20261004/vm24-exact-overlay/`, pin the current source hash, put `/usr/local/src/spec192-ndn-svs-9f2d8a4/build` first, and rerun serially. The exact-overlay build and both importer selectors exited 0, and the pinned SQL fixture hashes remained unchanged.
+- **Lesson:** A source fingerprint alone does not identify the native runtime; store and inspect the complete loader overlay with every offline gate.
+
+## 2026-10-04 — VM-20 multi-chunk seed exhausted the test client's begin budget
+
+- **Symptom:** Exact-overlay untraced `T010-vm31-svs-refill-untraced` passed Repo C++/Python interoperability, three DI artifact publications, and the authorized new-Provider DI request, then failed before VM-20's seed commit with `repo-operation-timeout: insufficient begin budget for seed write and status recovery`.
+- **Evidence:** Its manifest records `FAIL`, `minindn_cleanup=PASS`, `private_keys_shared=false`, current source hash `a155009e08506e378fd30ebf2f1e060972e656cc56c2563fd9127a677954adf5`, and identical client/server SVS SHA-256 `d87ae04f4555817a5d16a4c12e0e289cdad212574932abf4a16799dd15576c69`. The test client gave `operation-begin` 120 seconds while production `beginPublishFileImpl` reserves at least 60 seconds for a possible STATUS recovery; cold status/discovery/intent consumed the remaining seed-write window.
+- **Root cause:** The VM-20 harness used a 120-second begin deadline for an 8 MiB multi-chunk seed after cold five-host discovery, while its seed-payload wait was separately fixed at 120 seconds. Later VM-32 evidence refined this diagnosis: the effective wire-safe range is 4,400 bytes, so this fixture requires about 1,907 serial range requests. The production deadline guard behaved as configured; the run does not prove a production timeout bug.
+- **Fix:** Raise only the standalone test client's `operation-begin` bound to 360 seconds, the VM-20 seed-payload wait to 390 seconds, and post-seed child finish wait to 90 seconds. Preserve the production deadline and recovery reserve. Then reduce the recovery fixture to a bounded size that still exercises multiple range writes, as recorded below.
+- **Lesson:** A multi-stage test must budget discovery, intent, actual wire-size range count, and recovery reserve under one operation deadline; the supervisor's wait must cover that bound.
+
+## 2026-10-04 — VM-20 fixture required about 1,907 serial range requests
+
+- **Symptom:** Fresh untraced `T010-vm32-vm20-begin-budget-untraced` reached VM-20 after the earlier Repo/DI stages but exhausted even the revised 360-second begin deadline before seed commit.
+- **Evidence:** Its manifest records `FAIL`, `minindn_cleanup=PASS`, `private_keys_shared=false`, source candidate `7966d442b8cee3c628d51807bb0166e6b477b65def257d8e16d7f93b65143186`, and current SVS SHA-256 `d87ae04f4555817a5d16a4c12e0e289cdad212574932abf4a16799dd15576c69` in both client and server. Repo A's log contains 189 authenticated `STORE_RANGE` requests for the VM-20 publisher before the client logged the begin-budget error; no `COMMIT_RANGES` followed. The production chunk expression limits each range to `maxPacketPayloadBytes / 2 = 4400` bytes under the default 8800-byte limit. The 8 MiB + 17-byte fixture therefore needs about 1,907 range writes before commit.
+- **Root cause:** The fixture size was unsuitable for a bounded five-host recovery scenario. The transfer made progress but could not reach the seed commit inside 360 seconds at the observed serial request rate. Increasing the deadline alone would turn this functional gate into an hour-scale transfer.
+- **Fix:** Change only the VM-20 fixture to 64 KiB + 17 bytes, which still requires 15 range writes and exercises the same seed/owner-restart/idempotency contract. Keep the production wire limit and request loop unchanged. Re-run the exact candidate; do not claim VM-20 PASS from the smaller local fixture until all receipt, process-epoch, source/digest, and restart oracles pass.
+- **Lesson:** Compute expected protocol request count from the actual wire cap before choosing a campaign payload; large bytes alone do not improve the specific recovery oracle.
+
+## 2026-10-04 — VM-20 controlled Repo stop misclassified SIGTERM exit
+
+- **Symptom:** `T010-vm33-vm20-bounded-multichunk-untraced` passed VM-20's Repo A seed-payload and durable-state checks, then the runner aborted when stopping Repo B: `Repo service did not stop cleanly`, with `stop_method=SIGTERM` and `exit_code=-15`.
+- **Evidence:** The manifest records `FAIL`, `minindn_cleanup=PASS`, current source hash `c99df4ec489199f76511f28401d8bd274b8f05d34f2248f19a6545eda9a49142`, and the exact rebuilt SVS library loaded in client and server. `stop_daemon` sent `SIGTERM` to a live Repo process and collected `-15`; `stop_repo_server` had incorrectly required only exit 0. The subsequent Repo B absence, owner restart, and receipt oracles were not reached.
+- **Root cause:** The C++ Repo process exits by the delivered signal when it has no SIGTERM handler; Python `Popen.returncode=-15` is the expected controlled stop result, not a crash or a SIGKILL fallback.
+- **Fix:** Accept only exit 0 or `-signal.SIGTERM` when `stop_method` is exactly `SIGTERM`. Continue to reject already-exited services, SIGKILL fallback, or any other exit code. Preserve the exact stop method and exit code in the run record.
+- **Lesson:** A supervisor should distinguish an intentional signal exit from an uncommanded process failure using both the method it issued and the collected return code.
+
+## 2026-10-04 — VM-11 third-Repo publish supervisor timeout preceded client bound
+
+- **Symptom:** `T010-vm34-controlled-stop-untraced` completed VM-20 owner restart and its recovery/replay/old-handle checks, then the runner timed out `vm11-three-replica-publish` at 120 seconds. The child log was empty because the C++ CLI reports only at completion.
+- **Evidence:** The manifest records `FAIL`, `minindn_cleanup=PASS`, and source candidate `9d887b677ff907f4e5252e269e66710b6b0f3b1064032e60e6b698bfa7559d5a`. VM-20 logs include `OPERATION_RESUME_PASS state=COMMITTED targets=2`, same-key replay, conflict rejection, new-key operation and old-handle LOCATION checks. VM-11 had just started a cold third C++ Repo, but its supervisor supplied 120 seconds while the same standalone client `publish` mode uses a 60-second ACK collection window, a 600-second request bound and a 180-second operation wait. The DI uses of that mode already have a much larger child bound. No VM-11 receipt was produced before supervisor timeout.
+- **Root cause:** The VM-11 runner's 120-second child bound was shorter than the legitimate cold three-Provider publish path; the result cannot distinguish slow discovery from a later request failure.
+- **Fix:** Give this one child a bounded 600-second supervisor window, leaving the client and production deadlines unchanged. Re-run the exact-source scenario and use independent three-Repo receipts; if it still stalls, trace the first missing network stage instead of extending the bound again.
+- **Lesson:** A subprocess supervisor timeout must cover the underlying operation's configured ACK and request windows, especially when it starts a new Provider immediately before the call.
+
+## 2026-10-04 — VM-20 publisher hit an intermittent native protection fault
+
+- **Symptom:** `T010-vm35-three-repo-bound-untraced` passed Repo/DI setup, but its VM-20 publisher exited before the seed commit with an empty child log. The runner's old error omitted the child return code.
+- **Evidence:** The manifest records `FAIL`, `minindn_cleanup=PASS`, and source candidate `72267b93abab9e7ec36027021c77bfd1033f65085d47b5cbe12efdc24fd6514b`. The kernel logged a general protection fault for `spec192-repo-client` PID 685888 at 03:09:38 CDT. The text mapping offset is `0x486bd`; the PIE executable's text segment starts at ELF virtual address `0x43000`, so the correct symbol address is `0x8b6bd`, inside `std::vector<ndn::Block>::~vector()`. An earlier direct `addr2line` on `0x486bd` incorrectly attributed the instruction to an `ndn::Name` destructor; that attribution is withdrawn. The corrected site does not identify the prior invalidation. The same exact native closure reached VM-20 recovery in VM-34, so the fault is intermittent. Core dumps were disabled (`ulimit -c 0`) and `/var/crash` held no new report.
+- **Root cause:** Unknown. A native lifetime/heap fault or ABI issue remains possible. A source-level fix is not justified from the faulting vector destructor alone.
+- **Fix:** Make `wait_for_repo_payload` include the publisher's exit code alongside its log tail. For the next bounded run, enable a core limit through passwordless sudo without changing global `core_pattern`, then inspect any native crash report. Keep the exact SVS/NDNSF loader hashes pinned.
+- **Lesson:** An empty child log must not erase the signal exit code; capture the failing instruction and a native stack before attributing intermittent memory faults to a protocol stage.
+
+## 2026-10-04 — VM-20 native client crash reproduced with pinned runtime
+
+- **Symptom:** The second exact-source untraced VM21 run, `T010-vm37-core-enabled-untraced`, again reached VM20 and then reported `VM-20 publisher exited before seed commit: exit_code=-11 log_tail=`. The manifest is `FAIL` with `minindn_cleanup=PASS` on source fingerprint `35602f9bff778833ac152769ce2aad399c746c2d6dd363cafd016cd98970c678`.
+- **Evidence:** The 04:26:59 CDT kernel entry records a segmentation fault at address `0x10` in `/usr/local/lib/libndn-cxx.so.0.9.0`. The text mapping offset is `0x272d94`; the library's text segment starts at ELF virtual address `0x153000`, so the correct symbol address is `0x3c5d94`. `addr2line -i` maps it to `ndn::UnixTransport::close()` / `StreamTransportImpl::close()` at `Transport::setState`; disassembly shows a pointer read at offset `0x10`. An earlier direct mapping of `0x272d94` to LP packet decoding omitted the ELF segment offset and is withdrawn. VM35 faulted at a different vector-destruction site. VM35, passing VM36, and failing VM37 have the same C++ client SHA-256 `b29dadf3ac1bc5473fe000fff50821876da2ddfcbb50302513e35c0a4642ab9c`, server SHA-256 `de58686d7d6c59d6cbea19f41e104e57514d418fc3f861d21bb2283a0a4f7dfc`, and pinned SVS SHA-256 `d87ae04f4555817a5d16a4c12e0e289cdad212574932abf4a16799dd15576c69`. The installed ndn-cxx library matches the pinned build hash `c25dbd3df6a8103a0e1f46b6d3d6df005b593e298c3e4b4e97a2f05701671b29`.
+- **Root cause:** Still unknown. The two fault locations indicate native memory corruption or lifetime misuse, but neither vector destruction nor transport closure identifies the writer. An unlimited per-run core limit did not produce a new Apport report under `/var/crash`; the host routes cores through Apport.
+- **Fix/status:** Preserve both failed manifests and the passing VM36 control. T010 remains blocked. Capture a native stack or sanitizer report from an instrumented VM20 child before changing production code, then rerun all gates that the fix affects.
+- **Lesson:** A passing retry does not close a reproduced native crash; compare exact binary/library hashes and preserve the second fault site before editing.
+
+## 2026-10-04 — VM39 STORE ACKs stopped before application-side fetch
+
+- **Symptom:** `T010-vm39-vm20-replay-stress-diagnostic` reached the ordinary VM20 `operation-begin` before its planned replay loop. The client exited 2 with `repo-ack-authentication-failed: selected Provider ACK was absent, duplicated, or untrusted (matching=0, observed=0)`; the seed was not committed. The manifest is `FAIL`, `minindn_cleanup=PASS`, source fingerprint `35602f9bff778833ac152769ce2aad399c746c2d6dd363cafd016cd98970c678`. No native crash occurred, so no `libSegFault` report exists.
+- **Evidence:** IP-reassembled five-host pcap analysis identifies Repo A `provider/465/.../0x82` and Repo B `provider/437/.../0x55` Data whose content includes `ACK`, `STORE`, and the same VM20 request ID `20261004T103105.923899-cec01cd6fd51bf83`. Those exact Data names appear at their producers and transit host but not `neu`; `neu` has no exact-name or prefix Interest for either. All five tcpdump logs report zero kernel drops. Details and limits are in `specs/192-distributedrepo-lifecycle/evidence/T010-4bba5dda-20261003/candidate-35602f9b-svsd87ae04f-20261004/vm39-ack-path.md`.
+- **Timing:** The `neu` wire capture contains an incoming V3 sync Interest advertising Repo A sequence 130 and Repo B sequence 85 about 1.47 seconds after the STORE request ID timestamp. The standalone client's selected-request ACK window is 1,500 ms; if the request ID time approximates the window start, the announcement left about 26 ms for subscription fetch and ACK validation. This is a timing inference, not proof of when the application callback ran.
+- **Root cause:** Unknown at the subscription boundary. The evidence supports missing client-side retrieval of both ACK publications, but it does not distinguish a missing SVS sync announcement from a queued-but-undispatched fetch or another subscriber-state fault. This is separate from VM35/VM37's native crash sites.
+- **Fix/status:** Keep T010 blocked. Trace the matching SVS sync update and subscriber fetch queue on the exact VM20 request before modifying the pinned ndn-svs scheduler or NDNSF ACK logic. Preserve selected-Provider authentication.
+- **Lesson:** A zero-ACK client result requires both publisher and subscriber packet oracles; a published ACK at the producer is insufficient when the application host emitted no fetch Interest.
+
+### 2026-10-04 — Spec192 VM41 repair begin exceeded the runner's 60-second cap
+
+- **Symptom:** Exact source candidate `d1fe387db69b61be9223f965cd658d894ea225f5cdc2d85f59aa57e65a30c683` passed nine target builds, 20 unit selectors, nine integration commands, and the offline VM24 gate. Its untraced five-host VM41 completed the initial VM20 begin, owner restart, status, replay, and conflicting-key rejection, then stopped at `vm20-same-reference-new-key` with `child timed out`; manifest `status=FAIL`, `minindn_cleanup=PASS`.
+- **Cause:** The VM39 packet oracle showed the 1,500 ms standalone-client ACK window was nearly consumed before the app host saw the selected Providers' SVS announcement. This candidate raised `operation-begin` ACK collection to 10,000 ms, but the runner still gave the repair begin an independent 60-second process cap. That cap ended the child before its own 360-second operation budget; the empty child log does not establish whether the operation would have committed.
+- **Fix/status:** Matched the repair begin runner cap to the initial VM20 begin's bounded 390-second cap. New exact candidate `e1fb2609…` passed build/unit/integration/offline VM24 and the complete untraced VM42 five-host gate; VM42 crossed the second begin, then completed VM11/12 with cleanup PASS. T010 remains blocked because the separate VM35/VM37 native faults are unclassified.
+- **Lesson:** When a scenario increases a bounded network collection window, audit each outer process deadline for that path. A harness timeout is evidence of an invalid gate bound, not proof of a production failure or a successful retry.
+
+### 2026-10-04 — Spec192 native Face close hypothesis remains unproven after VM43/VM44
+
+- **Symptom:** VM35/VM37 crashed in the standalone native client at two different detection sites while exact-candidate VM36 and later runs passed. VM37's site was inside ndn-cxx Unix transport close. No native stack identifies the earlier invalidating write.
+- **Source finding:** `PersistentContext::stopFaceThread()` posted `Face::shutdown()` while its event thread could still dispatch handlers, then stopped and joined that thread. The local ndn-cxx `Face::shutdown()` implementation posts a callback that calls `Impl::shutdown()` and `m_transport->close()`. This order allows close to run on the worker before `join()`; it does not by itself prove a data race or that close caused VM35/VM37.
+- **Change and evidence:** Candidate `e8807ff8f649311477a2d15880d6a66c83d6a15dcf200b869144c80c8ae5948f` moves `Face::shutdown()` after stop/join, then polls its callback on one thread. Nine-target build, loader, 20 unit selectors, nine integration commands, offline VM24, and complete untraced VM43 all passed; VM43 cleanup passed. Separate VM44 diagnostic injected `libSegFault` into VM20 clients and passed 16/16 fresh same-key replays with cleanup PASS and no fault report. VM44 returned before VM11/12 and is not qualification.
+- **Status:** Root cause remains unknown; final T010 audit stays BLOCK and T010 unchecked. A further native stack, sanitizer report, or specific lifetime trace is needed to distinguish the Face close hypothesis from earlier heap corruption or another callback owner.
+- **Lesson:** Serializing an asynchronous close and accumulating passing runs improves confidence but does not identify an intermittent memory corrupting operation. Preserve the failed candidate and both fault sites until a mechanism is demonstrated.
+
+### 2026-10-04 — Spec192 standalone client registered SVS subscriptions after starting its Face thread
+
+- **Symptom:** VM35/VM37 had intermittent native client faults before VM20 seed. The Face shutdown order change in `e8807ff8…` passed one complete VM43 and VM44's 16 replay clients, but it did not identify an invalidating write.
+- **Confirmed source defect:** `PersistentContext` started the Face event thread, then called `ServiceUser::init()`. The latter's `registerNDNSFMessages()` appends four regex subscriptions through pinned ndn-svs `SVSPubSub::subscribeWithRegex()`. That method mutates `m_subscriptionCount` and `m_regexSubscriptions` without a lock, while the Face-driven receive path iterates `m_regexSubscriptions` without a lock. This is a possible concurrent vector read/write and invalidation in the old standalone client. The VM35/VM37 fault sites do not prove this exact interleaving occurred in those runs.
+- **Fix:** Candidate `a4cf277a850206523acb27f22cfbc1af23dd0f09439ed005d848ffc82c29789e` completes subscription registration and submits asynchronous permission Interests before starting the only Face processing thread; the bootstrap wait still begins afterward. It retains serial Face shutdown and the bounded ACK/runner windows. No production Repo/Core/DI or wire change was needed.
+- **Evidence:** Nine-target build/loader, 20 unit selectors, nine integration commands, and offline VM24 passed. Two fresh untraced five-host runs, VM45 and VM46, used identical client/server/SVS hashes and each recorded `PASS`, cleanup `PASS`, 30 zero child exits, five nonempty captures, and the DI/VM20/VM11/12 oracles. The old native fault mechanism is narrowed to a concrete removed data-race window, but its original write is not proven by the kernel detection addresses. Final audit confines its PASS to the defined local Spec192 acceptance gates.
+- **Lesson:** Register callback containers before starting the event loop that can traverse them; an asynchronous permission Interest can be submitted before processing starts, preserving readiness order without concurrent subscription mutation.
+## 2026-10-04 — Spec193 A05 discovery oracle compatibility failures
+
+- **Symptom:** The first five-host A05 diagnostic appeared PASS while its raw `CAPABILITY` byte check actually matched Controller `POLICY-STATUS` packets. After adding signed-packet correlation, `a05-diag-002` failed in the runner on `str.removeprefix` (absent in this host's Python 3.8), and `a05-diag-003` failed because this host's `tshark` emitted an empty `frame.file_off` field. Both failed manifests retain `minindn_cleanup=PASS`; the native client in each returned two Repo candidates.
+- **Root cause:** The initial byte oracle did not decode packet ownership. The next two failures were harness assumptions about interpreter and dissector versions, not evidence of a Repo product failure.
+- **Fix:** The A05 oracle now validates the root/leaf certificate chain and both signed Data layers, correlates the exact API request ID and accepted ACK wire digests/KeyLocators, uses Python 3.8-compatible string slicing, and computes the case's first frame directly from classic pcap record offsets before asking `tshark` for frame numbers. Offline replay of `a05-diag-003` confirms the three-host request/ACK correlation; a fresh online run is still required.
+- **Lesson:** A protocol keyword in a capture is not proof of the intended transaction. Check local tool output formats and interpreter syntax against the experiment host before upgrading a diagnostic result to qualification.
+
+### 2026-10-05 — Spec193 object Repo startup selected the artifact publisher overload
+
+- **Symptom:** `object-baseline-diag-001` failed before the first object request. The test-only Repo process exited with `repo-publish-worker-config-invalid: persistent store and valid request deadlines are required`; MiniNDN cleanup completed.
+- **Root cause:** The test process passed a `ServiceUser` to `RepoNode::registerServices(provider, publisherUser, ...)`, which enables the Persistent artifact publishing worker even though this RepoNode intentionally has no artifact metadata store.
+- **Fix:** The test process now uses the production object-protocol overload `registerServices(provider)` shown by `NetworkRegistrationCoversOperationsAndRetainsRepoLifetime`; the object server rebuilt successfully. A fresh five-host network run is required to verify the repair.
+- **Lesson:** The registration overload is a mode boundary. Reuse the overload matching the RepoNode storage mode instead of supplying a publisher worker to an object-only Repo.
+
+### 2026-10-05 — Spec193 object CAPABILITY oracle rejected a valid broadcast ACK
+
+- **Symptom:** Offline signed-packet replay of `object-baseline-diag-002` rejected the run because Repo B published an ACK for the same CAPABILITY request ID, although Repo A was the accepted Provider and Repo B had zero new objects.
+- **Root cause:** The first oracle incorrectly treated selected Provider filtering as a guarantee that other Providers would never publish an ACK. NDNSF request publication reaches both Providers; selection filters the authenticated candidates and final operation. The captured Repo B ACK is signed by its own certificate.
+- **Fix:** The object packet oracle now verifies and records Repo B's signed ACK, binds Repo A's accepted wire digest and KeyLocator to its signed packet, and relies on the final selection/storage oracle to prohibit writes to Repo B. N01/N09 matrix expectations were corrected accordingly. Offline replay passed; a fresh online run is still required.
+- **Lesson:** Distinguish ACK publication from final Selection and durable writes when evaluating a selected request over SVS multicast.
+### 2026-10-05 — Spec193 traced C++ client inherited an unusable Mininet launch PATH
+
+- **Symptom:** The first five-host `INAPP_MATRIX` diagnostic failed with `FileNotFoundError: mnexec` before the traced A02 client started; MiniNDN cleanup passed and all five captures closed cleanly.
+- **Root cause:** The runner recognized a bare C++ client as requiring the isolated no-Python PATH, but did not recognize `/usr/bin/strace` wrapping that client. Mininet resolves `mnexec` using the launch PATH before entering the namespace, so the isolated child PATH hid its launcher.
+- **Fix:** Treat `strace` wrapping a known standalone C++ binary as the same no-Python launch case: retain the normal PATH for Mininet launch and clear it inside the namespace before exec.
+- **Lesson:** Namespace launcher lookup and the program's runtime PATH occur at different stages; verify both when tracing a standalone binary.
+### 2026-10-05 — Spec193 A06 client mode broke the Spec192 timeout source guard
+
+- **Symptom:** A06 preflight stopped before creating an output directory with `cannot derive the native Spec192 publish timeout bounds`; the C++ target had built successfully.
+- **Root cause:** The runner's existing timeout guard intentionally matches the exact `if (mode == "publish")` source branch. Extending that condition to include `single-publish` prevented the guard from locating its pinned timeout values.
+- **Fix:** Preserve the original `publish` branch and give `single-publish` its own equivalent timeout assignment; rerun preflight before the five-node campaign.
+- **Lesson:** Source-derived launch guards are part of the harness contract. Add new modes without changing the syntax they inspect unless the guard is deliberately revised.
+### 2026-10-05 — Spec193 A06 multi-range diagnostic exceeded its child timeout
+
+- **Symptom:** The first A06 five-host run timed out after 600 seconds in `single-publish` while Repo A logged one `STORE` and six `STORE_RANGE` requests. Repo B logged no writes; all five packet captures and MiniNDN cleanup passed. No final handle or receipt was returned.
+- **Root cause:** The 600-second harness cap is shorter than the API's computed multi-range begin budget. With the default `maxPacketPayloadBytes=8800`, the 131123-byte source needs about 30 serial 4400-byte range requests; the client was still issuing them when the harness killed it. The trace does not yet prove whether the product would eventually complete or fail within its own deadline.
+- **Fix:** Retain the failed run as separate multi-range evidence and run the A06 single-target contract with a 2048-byte payload. Investigate the larger transfer separately before claiming a general large-file Persistent publish pass.
+- **Lesson:** A timed-out child with partial `STORE_RANGE` traffic is not a committed publication. Bound a case to its stated API behavior and preserve incomplete range evidence for a dedicated failure campaign.
+
+### 2026-10-05 — Spec193 A08 attempted target was reported as skipped
+
+- **Symptom:** In `a08-reject-diag-001`, replacement Repo B logged an authenticated `STORE` from owner A, but the terminal QUORUM receipt recorded B as `SKIPPED`. A/C committed and the required threshold was met. MiniNDN cleanup passed.
+- **Root cause:** `RepoNode::runPublishOperationPass` finalization converted every pending target to `NOT_ATTEMPTED`, including B's durable `IN_FLIGHT` target with a nonzero attempt count. Receipt construction then mapped it to `SKIPPED` and erased the attempted outcome.
+- **Fix:** At terminal finalization, retain an attempted pending target as `UNKNOWN` with `repo-target-outcome-unknown`; only a zero-attempt target becomes `NOT_ATTEMPTED`. The aggregate receipt maps the attempted unknown outcome to `FAILED` without claiming that a remote write definitely did or did not persist. The A08 fault runner checks B's request log, failed receipt, independent consumer bytes, durable stores, six captures, and cleanup.
+- **Evidence:** `a08-reject-fix-003/004` both passed under candidate lock `4a244b9cdb1b79e994cf541fe29a0d939cf97bd753db041794cbbbe55a48f6ed`: A/C `COMMITTED`, B `FAILED/repo-target-outcome-unknown`, QUORUM `required=2 achieved=2`, six nonempty captures, cleanup PASS. The affected Persistent service suite passed 34/34 cases and 680/680 assertions; the Persistent API integration suite passed 4/4 cases and 750/750 assertions. Full all-case qualification remains open.
+- **Lesson:** A threshold completion must preserve the distinction between a target never contacted and a target contacted without a proven terminal result.
+
+### 2026-10-05 — Spec193 A08 fault oracle confused an empty object Repo with missing evidence
+
+- **Symptom:** `a08-reject-fix-001` failed after the repaired product emitted the expected B `FAILED` receipt because the fault oracle required Persistent tables in the deliberately object-only replacement. `a08-reject-fix-002` then rejected its automatically created `.authority.lock` as payload. Both runs completed MiniNDN cleanup.
+- **Root cause:** The empty-store assertion assumed every Repo used Persistent SQLite tables and that every file in the object store root was artifact payload.
+- **Fix:** Permit absent Persistent tables for this object-only replacement while still requiring zero manifests/table rows, and allow only its exact authority lock file among non-database files. Offline inspection of the retained replacement directory confirmed the single lock file and zero manifests before two fresh online passes.
+- **Lesson:** Fault-injection oracles must model the replacement implementation's benign initialization state without weakening artifact detection.
+
+### 2026-10-05 — Spec193 A10/A11 diagnostic held the replica offline past bounded recovery
+
+- **Symptom:** `a10a11-diag-001` passed seed persistence, public nonterminal status and idempotency checks, then the terminal status command returned `PARTIAL` after Repo B was restarted. B's replacement log had no authenticated write. MiniNDN cleanup and all five captures passed.
+- **Root cause:** The diagnostic ran two additional fresh-client replay/conflict requests while B remained stopped. The initial status already showed B `IN_FLIGHT` with one attempt; the delayed restart allowed that uncertain placement to reach a terminal partial outcome. This diagnostic does not establish a product defect in the bounded retry policy.
+- **Fix:** Restart B immediately after recording the seed-only public status, wait for the same operation to commit, then test replay and conflict against the terminal receipt. The standalone client now saves terminal status JSON before reporting an unexpected non-COMMITTED state, so future failures retain the exact target outcome.
+- **Evidence:** `a10a11-diag-002/003` used the same candidate lock `062c23c530907a91dae13d54765d2acf17fca881acdc18c05b88d1d196f335f6` and both passed on five hosts: initial A COMMITTED/B IN_FLIGHT, final A/B COMMITTED, B two attempts, idempotent replay/conflict inventory unchanged, five child exits zero, five nonempty captures and cleanup PASS.
+- **Lesson:** A recovery test must state and control how long the target is unavailable; an intentionally bounded retry policy can legitimately return PARTIAL if recovery occurs after its terminal decision.
+
+### 2026-10-05 — Spec193 A13 consumer fetched bytes but could not query the submitter's receipt
+
+- **Symptom:** `a13-diag-001` completed both explicit archive paths and wrote the independent consumer destination, then its final client exited with `repo-publish-operation-unauthorized: requester is not the submitting principal`. Five captures closed and MiniNDN cleanup passed.
+- **Root cause:** The test passed `--receipt` to the independent consumer's `fetch` command. That option performs an additional public `getReceipt` query after fetching bytes. The publish operation status/receipt is bound to the submitting user, so a different consumer can read authorized artifact bytes but cannot query that owner's operation receipt.
+- **Fix:** Keep independent consumer `fetch` as a byte/digest oracle without `--receipt`; run the receipt equality query separately as the original submitting user. Preserve the failed diagnostic as an authorization-boundary observation, not an archive product failure.
+- **Evidence:** `a13-diag-002/003` both passed under candidate lock `2dfa2388219e3a29a4002df8d4bb775e42b6547bdc7852306bf2fbad66d41088`: two In-App commits with remote zero writes, `beginArchive` and `archive` each committed across A/B, independent consumer SHA matched, owner receipt check passed, seven child exits zero, five nonempty captures and cleanup PASS.
+- **Lesson:** Separate a read principal's artifact access from the submitting principal's operation-status privilege when a test client combines fetch and receipt checks.
+
+### 2026-10-05 — Spec193 A14 target oracle opened the startup database path
+
+- **Symptom:** `a14-target-diag-001` stopped after the old `ALL` operation reached its partial state because the harness raised `OperationalError('unable to open database file')` while reading its aggregate receipt. All five packet captures and MiniNDN cleanup completed; this diagnostic is not a passing A14 target result.
+- **Root cause:** The oracle used `servers[0]["database"]`, which names the startup database path. The artifact-v2 aggregate receipt was stored in the Repo metadata database discovered by `repo_database_state`, under `repo.sqlite.artifact-v2.sqlite`.
+- **Fix:** Select the database containing `artifact_publish_receipts` from the captured Repo state, then read and compare the old aggregate receipt there. `a14-target-diag-002/003` both passed on five hosts under candidate lock `6604f94a5893cc7e8a7f634a328eed95227e37eaa9da49b45d75ba8b69736983`: old `ALL` stayed `PARTIAL` at one of two targets, B's attempted result was recorded as failed, a new operation committed after B recovered, and the old receipt bytes stayed unchanged. Each run retained five nonempty captures and cleanup PASS.
+- **Lesson:** Query the database actually holding a receipt instead of assuming the server startup path is the artifact metadata store.
+
+### 2026-10-05 — Spec193 A15 fetch oracle rejected a valid range read
+
+- **Symptom:** `a15-diag-001` published the artifact and fetched its bytes after source removal, but the harness marked the run FAIL with `A15 lacks an authenticated remote FETCH`. The manifest retained five nonempty packet captures and MiniNDN cleanup PASS.
+- **Root cause:** The 4401-byte artifact used the public range transfer path, so the Repo recorded an authenticated `FETCH_RANGE` request from the independent consumer. The A15 oracle accepted only a literal `FETCH` operation.
+- **Fix:** Accept authenticated `FETCH` or `FETCH_RANGE` from the independent consumer while retaining the source-absent, cross-host/process, destination digest, and unchanged Repo artifact inventory checks. Rerun on a fresh candidate before claiming A15 PASS.
+- **Lesson:** A transfer oracle must recognize both public whole-object and range read request types for data that crosses the packet payload boundary.
+
+### 2026-10-05 — Spec193 A15 cross-process log slicing omitted the consumer request
+
+- **Symptom:** `a15-diag-002` again reported no authenticated remote `FETCH/FETCH_RANGE`, although the Repo B log contains `FETCH_RANGE requester=/example/repo/consumer`; the destination digest and source-absent checks had passed before this assertion. Five captures and cleanup passed.
+- **Root cause:** `repo_request_events` concatenates traces by server process, not global time. The harness took a total event count before fetch and sliced the later concatenated list at that index, which can discard a newly appended event within an earlier process's block.
+- **Fix:** Filter the complete authenticated request collection by the independent consumer identity, which makes this case's read request unambiguous; keep the `FETCH`/`FETCH_RANGE` operation check. Rerun on a fresh candidate before claiming a pass.
+- **Lesson:** A length-based slice is valid only for a sequence whose ordering is stable as new events arrive. Per-process log aggregation needs per-process cursors or identity-based filtering.
+- **Evidence after fix:** `a15-diag-003/004` both passed under candidate lock `bde2e5142bedb12351c9d90ed74551b221d1b55f57c10465d6b877069533c189`. The consumer on `arizona` used authenticated `FETCH_RANGE`, recovered the original SHA-256 after the source path was removed, and left Repo artifact inventories unchanged; both runs had five nonempty captures and cleanup PASS.
+
+### 2026-10-05 — Spec193 A16 oracle expected a separate RECEIPT service
+
+- **Symptom:** `a16-diag-001` published two distinct single-target receipts, queried each successfully, re-queried the old receipt byte-identically, and rejected both wrong-handle and forged-handle lookups. The final harness assertion failed with `A16 authenticated receipt query targeted wrong Repo`; both Repo logs had no `RECEIPT` service event. Five captures and MiniNDN cleanup passed.
+- **Root cause:** The public `RepoClient::requestReceipt` deliberately sends the lookup through the registered `STATUS` service with a receipt-query payload. The oracle counted a nonexistent separate `RECEIPT` service operation.
+- **Fix:** Around each query child, compare the authenticated `STATUS` request count per Repo. Require the handle's seed Repo alone to receive a request; require locally rejected mismatches to emit no request. Preserve the byte-for-byte receipt and durable inventory checks, then rerun a fresh candidate before claiming A16 PASS.
+- **Lesson:** Derive a network oracle from the actual public client route and distinguish operation payloads using controlled before/after request windows when multiple APIs share one service name.
+- **Evidence after fix:** `a16-diag-002/003` both passed under candidate lock `81b4fdc9c1045b8fdd8bf51510238cb91ebb703405ccf8b4b84bf1e4a79044f7`. In each five-host run, authenticated `STATUS` deltas were A-only, B-only, A-only, zero for local rejection, and A-only for the remote not-found rejection; both historical receipt bytes and Repo artifact inventories stayed unchanged. Each run had seven zero-exit clients, five nonempty captures, and cleanup PASS.
+
+### 2026-10-05 CDT — Spec193 A17 metadata report parser used the wrong field name
+
+- **Symptom:** `a17-diag-001` published to A/B and produced a metadata report with both locations `REACHABLE/PRESENT/NOT_CHECKED`, but the runner raised `A17 metadata report omitted current selected locations`. Five captures and MiniNDN cleanup passed; the diagnostic does not qualify A17.
+- **Root cause:** The runner compared `report["reference"]` with the handle. The public `AvailabilityReport::toJson` schema names that field `artifact`.
+- **Fix:** Compare `report["artifact"]` to the handle reference, then rerun on a fresh source candidate before claiming A17 PASS.
+- **Lesson:** Read a public report's actual serialization schema before making field-level evidence assertions.
+- **Evidence after fix:** `a17-diag-002/003` both passed under candidate lock `2d2b24525ab5a24d685cd510e306b5d723196b8fb576a16f380109c1b36d6472`. An independent consumer on `arizona` received current A/B `REACHABLE/PRESENT/NOT_CHECKED` metadata with handle-bound location versions, two authenticated `STATUS` requests per Repo, and unchanged durable artifact inventories. Each run had two zero-exit clients, five nonempty captures, and cleanup PASS.
+
+### 2026-10-06 CDT — Spec193 A20 harness treated a child log path as a Path object
+
+- **Symptom:** `a20-diag-001` completed single-Repo and all-Repo offline availability probes and an all-down fetch, then the runner raised `AttributeError: 'str' object has no attribute 'open'` when parsing the fetch log. The fetch log recorded one timeout failure per selected Provider and `ALL_DOWN_FETCH_BOUNDED attempts=2 elapsedMs=4001`. Five captures and MiniNDN cleanup passed; recovery was not reached, so this diagnostic is not an A20 PASS.
+- **Root cause:** `run_child` serializes its `log` field as a string; the A20 oracle passed that string to `read_log`, which expects a `Path`.
+- **Fix:** Wrap the child log value with `Path(...)` before reading; rerun a fresh candidate through recovery and NFD epoch checks.
+- **Lesson:** Keep the in-memory process record and serialized child result types distinct when adding post-run log oracles.
+- **Evidence after fix:** `a20-diag-003/004` both passed under candidate lock `a670ff6339ce49f082013a6bb149edb47a2eeb7067f4d56098582e2cad577a57`. Each five-host run had seven zero-exit clients, five nonempty captures, cleanup PASS, bounded all-down fetch attempts for A/B, unchanged existing destination, and dual `PRESENT` after Repo restart with both NFD start times unchanged. A B-first probe independently confirmed the surviving Repo while A was stopped; an A-first probe exhausted its global deadline and left B `UNKNOWN`, as did the all-down report. `a20-diag-002` passed a narrower pre-B-first version and is not counted toward the strengthened same-candidate pair.
+
+### 2026-10-06 CDT — Spec193 A21 preflight lacked the local Python wrapper path
+
+- **Symptom:** The first `A21 --preflight-only` invocation returned `REJECT MISSING_PYTHON_MODULE: py_repoclient` before starting MiniNDN.
+- **Root cause:** The shell had no `PYTHONPATH`; `sudo -E` cannot preserve a wrapper path that was not set. The exact native/Python candidate was present on disk.
+- **Fix:** Pass `PYTHONPATH` for `pythonWrapper`, `NDNSF-DistributedRepo/pythonWrapper`, and `NDNSF-DistributedInference` after `sudo -n -E /usr/bin/env -u NDN_LOG`, together with the pinned `LD_LIBRARY_PATH`. Update the local `AGENTS.md` command example with these tested paths.
+- **Lesson:** Distinguish missing import search paths from a missing extension or denied sudo; verify the actual privileged runner environment before changing source or permissions.
+- **Evidence after fix:** `a21-diag-001/002` preflights passed with candidate lock `2fcb705152048c7e1a355f0fadc2c578d6bc2758e74f8262d8c6ec6ef7701b33`, and both six-host runs completed with scenario/cleanup PASS. A21 remains PARTIAL for a separate offline-attempt wire-oracle gap.
+
+### 2026-10-06 CDT — Spec193 A22 historical receipt probe used a different principal
+
+- **Symptom:** `a22-diag-001` made two real `ALL` commits to A/B for one reference, advanced both current LOCATION versions from 1 to 2, and read dual `PRESENT` through the old handle. It then failed at `spec193-a22-old-receipt-query` with `repo-publish-operation-unauthorized: requester is not the submitting principal`. Five nonempty captures and cleanup passed; expiration/fallback was not reached, so this run is not A22 PASS.
+- **Root cause:** The runner queried an operation-scoped historical receipt as the independent consumer rather than the original submitting application principal. The product correctly enforces the submitting-principal boundary.
+- **Fix:** Query the old receipt from the original app host with the publisher identity. Keep availability/fetch probes on the independent consumer, and rerun from a fresh candidate.
+- **Lesson:** Distinguish a public read API's caller scope from its returned data: availability can be queried by an authorized consumer, while an operation receipt remains bound to its submitter.
+- **Evidence after fix:** `a22-diag-002/003` both passed with candidate lock `37de13ccbf23d9daba095ba376171d810b3bc704fc6b348912b163a84afe92b5`. In each five-host run, two real `ALL` commits advanced A/B current LOCATION versions from 1 to 2, the old handle saw new current metadata, the original publisher queried the unchanged historical receipt, and a live expired-location injection produced A `REACHABLE/UNKNOWN` while B remained `PRESENT`. Old-handle fetch fell back from A to B with the original digest; restoring the expiry restored dual `PRESENT` and the previous durable artifact inventory. Seven clients exited 0, five captures were nonempty, and MiniNDN cleanup passed in each run.
+
+### 2026-10-06 CDT — Spec193 O06/O07 precondition used Persistent tables in object mode
+
+- **Symptom:** `o06-o07-diag-001` failed before local segmentation with `pre-archive oracle did not find Repo object/receipt tables`. Five captures and cleanup passed; no O06/O07 behavior was exercised.
+- **Root cause:** The new object-protocol runner reused `assert_no_remote_artifacts`, whose required table set belongs to Persistent artifact-v2 metadata. The object Repo deliberately has no artifact receipt table.
+- **Fix:** Require zero object manifests and payload files in the object mode's precondition, then rerun a fresh candidate.
+- **Lesson:** Keep preconditions aligned with the selected Repo mode; absence of artifact-v2 tables is a mode boundary, not missing object evidence.
+- **Diagnostic continuation:** `o06-o07-diag-002` also failed before segmentation because the replacement precondition required a globally empty object manifest/payload inventory. It was too broad for a fresh, uniquely named target. The runner now asserts absence of the exact target namespace and retains full before/after Repo snapshots; this still rejects accidental reuse without requiring unrelated object inventory to be empty.
+
+### 2026-10-06 CDT — Spec193 O06/O07 candidate lock included AGENTS.md
+
+- **Symptom:** `o06-o07-diag-003` passed all O06/O07 checks, but the next same-lock preflight returned `CANDIDATE_MISMATCH` before starting MiniNDN.
+- **Root cause:** The candidate lock includes `AGENTS.md`; the requested passwordless-sudo documentation update changed that file after the first run. The source candidate file set did not include `AGENTS.md`, but the lock correctly rejected a changed review input.
+- **Fix:** Keep the updated `AGENTS.md`, generate a fresh candidate lock, and run `o06-o07-diag-004/005` on that same lock.
+- **Lesson:** Freeze every lock-covered instruction and documentation file before the first qualification run, not only source and binaries. A passing run under an earlier lock cannot be paired with a run after a covered document changes.
+- **Evidence after fix:** Both five-host runs passed under lock `1b1e4b878626e652945919f7036cba4bf3dc42a77c7caee359661a424da21dd3`, with ten zero-exit substeps, five nonempty captures, and MiniNDN cleanup PASS per run.
+
+### 2026-10-06 CDT — Spec193 O08 certificate wire export used an unavailable Block method
+
+- **Symptom:** The first O08 standalone build failed because this ndn-cxx `ndn::Block` has no `wire()` member.
+- **Root cause:** The new test helper assumed a raw pointer accessor from a different Block API shape.
+- **Fix:** Copy the certificate block through its `begin()`/`end()` iterators into a byte vector before writing it; the second `-j4` build passed.
+- **Lesson:** Use the pinned ndn-cxx Block interface when exporting exact certificate wire, then compare the exported bytes with the fetched Data verification input.
+- **Evidence after fix:** `o08-diag-001/002` passed under candidate lock `408afd22dcfa2378743ad17dc0df347213bdbfcaa6b610c22f2098c5193802bf`, each with valid Data signature verification, unchanged fetched wire digest, five nonempty captures, and MiniNDN cleanup PASS.
+
+### 2026-10-06 CDT — Spec193 O10 single-packet INSERT parent rejected by filesystem store
+
+- **Symptom:** `o10-diag-001` published and fetched signed Data over the five-host network, then `INSERT` returned `FAILED` with `repo-file-manifest-payload-required: ordinary manifest must use put or ranges`. The runner stopped before independent consumer verification; five captures and MiniNDN cleanup passed. This diagnostic is not O10 PASS.
+- **Root cause:** `FilesystemRepoStoreBackend::isMetadataOnly` recognized parent Data manifests by `ndn-segmented-data`, segment count above one, or more than one packet name. A legitimate one-packet parent with custom `objectType` and one `packetNames` entry matched none of those conditions. Its child `ndn-data-wire` manifest also has one packet name, so the fix must preserve the child payload classification.
+- **Fix:** Treat a nonempty packet-name list as metadata-only unless `objectType` is `ndn-data-wire`. Rebuild the Repo library and standalone server/client, then qualify the new exact candidate.
+- **Lesson:** Parent/child storage classification cannot infer packet-backed metadata solely from segment count; one-packet publications are a real API case.
+- **Evidence after fix:** `o10-diag-002/003` both passed five-host MiniNDN under candidate lock `3ec16c1cf2e0573379ab2b9ce64cf086fdc5ddf116d0176f2b94ebfa4eee35ac`: APP-published Data was fetched over NDN, `INSERT`/two-principal `STATUS` returned `DONE`, Repo A retained the exact child wire and parent manifest, the independent consumer verified the signature and identical bytes, five captures were nonempty, and cleanup passed. `o08-regression-o10-fix-001` passed under the same lock, proving an ordinary `ndn-data-wire` child remains readable after the classification change.
+
+### 2026-10-06 CDT — DistributedRepoSmoke SQLite restart/cache assertion remained red
+
+- **Symptom:** After the O10 rebuild, `build/NDNSF-DistributedRepo/DistributedRepoSmoke` exited 1 with `sqlite repo restart fetch mismatch` at its restart/cache assertion.
+- **Root cause:** The Smoke code performed one `restartedCore.get`, then `getManifest`, but expected one cache miss and one cache hit. `TieredRepoStore::getManifest` directly queries the authoritative store and does not count as a vector-cache hit; the one `get` produces only the miss. This stale assertion is separate from the O10 filesystem edit.
+- **Fix:** Perform a second `restartedCore.get` before asserting `misses == 1` and `hits == 1`, so the Smoke test exercises the claimed cache hit. Rebuilt `DistributedRepoSmoke` with `-j4`; it exited 0 with `DISTRIBUTED_REPO_SMOKE_OK`.
+- **Lesson:** Assert cache counters against actual cache operations; a metadata-only lookup is not a payload-cache hit.
+
+### 2026-10-06 CDT — Spec193 O12 result assembly added dictionary restart records
+
+- **Symptom:** `o12-diag-001` completed the three local INSERT rejection probes, restarted Repo A, and the independent consumer fetched the unchanged original Data, but the runner exited 1 while building `scenario_result`. The manifest recorded `FAIL` with cleanup `PASS`.
+- **Root cause:** Both restart helpers return dictionaries; the O12 result assembled them with `baseline["restart_epochs"] + restart`, which raises `TypeError` after the checks have run.
+- **Fix:** Preserve the two restart records under named `baseline` and `after_rejections` fields. Requalify with a new candidate lock and fresh run directories; do not reclassify the failed diagnostic as PASS.
+- **Lesson:** Build the result object within the same verification path and check the final manifest, not just child logs or process exit statuses.
+- **Evidence after fix:** `o12-diag-002/003` both passed five-host MiniNDN under candidate lock `487ec5685ef8f446e02c5d283a7902ab48c49720c8f3e46ac3a2e406e5b33cf1`; each run recorded three `FAILED` operation statuses, unchanged Repo A/B durable snapshots through restart and re-fetch, four zero-exit children, five nonempty captures, and cleanup PASS.
+
+### 2026-10-06 CDT — Spec193 O14 restarted catalog hid lost in-memory deltas
+
+- **Symptom:** `o14-diag-001` created an object over authenticated STORE and passed live independent CATALOG_STATUS/SNAPSHOT/DELTA/LOOKUP, but the restarted consumer exited 2: `O14 restart lost delta without reconciliation flag`. The run manifest is FAIL; five captures were nonempty and cleanup passed.
+- **Root cause:** `RepoCore` starts each process with epoch zero and an empty in-memory change journal. Existing durable manifests survive, but the constructor left `m_catalogReconciliationRequired` false, so a client seeing no delta had no signal to rebuild from `catalogSnapshot()`.
+- **Fix:** On construction, mark catalog reconciliation required when the authoritative store already has manifests. Add a SQLite restart smoke assertion for the snapshot and missing-delta signal. Requalify with a new candidate lock and run directories.
+- **Lesson:** Durable object presence and an empty process-local delta journal must be observable as a reconciliation gap; a clean live catalog result does not cover restart semantics.
+- **Evidence after fix:** `o14-diag-002/003` both passed five-host MiniNDN under candidate lock `14e57b3cfd2db01f2afd260cb0ff20856e0b04f7eef51d9c90dd74994f854adc`. In each run, live status/one-entry delta matched the durable manifest, restart retained one snapshot entry with an empty delta and `reconciliationRequired=true`, all three children exited 0, five captures were nonempty, and cleanup passed. `DistributedRepoSmoke` also passed with the new SQLite restart assertion.
+
+### 2026-10-06 CDT — Spec193 O15 deleted-empty restart hid lost tombstone
+
+- **Symptom:** `o15-diag-001` passed authenticated STORE, live DELETE, and the independent stale-epoch DELTA/LOOKUP check. After Repo A restart, the stale consumer exited 2 with `O15 restart lost deletion without reconciliation flag`. The run manifest is FAIL; five captures were nonempty and cleanup passed.
+- **Root cause:** The O14 repair inferred a lost process-local change journal only from currently durable manifests. Once the only object was deleted, the store was empty at restart; the lost DELETED tombstone could no longer be inferred from object count, and `reconciliationRequired` incorrectly reset to false.
+- **Fix:** Mark the process-local catalog journal as needing reconciliation at RepoCore construction, because this interface has no durable journal history that can distinguish a never-used empty store from one emptied by deletion. Add a SQLite smoke regression for delete, empty-store restart, old-epoch delta, and snapshot. Requalify O15 and rerun O14 on the changed product candidate.
+- **Lesson:** An empty durable snapshot does not prove there was no prior deletion. A client with an old epoch must be told to reconcile when tombstone history is unavailable.
+- **Evidence after fix:** `o15-diag-002/003` both passed five-host MiniNDN under candidate lock `54440214229bff98b515961992e0a13ba429f397071cbcbd04e42633c0467103`. Each run had a live epoch-2 DELETED tombstone for a client holding epoch 1, no durable target after deletion, and an empty restarted snapshot/delta with `reconciliationRequired=true`; all five children exited 0, five captures were nonempty, and cleanup passed. `DistributedRepoSmoke` passed its empty-after-delete SQLite restart assertion, and `o14-regression-o15-fix-001` passed on the same lock.
+
+### 2026-10-06 CDT — Spec193 O03 missing-range diagnostic reused an existing digest
+
+- **Symptom:** `o03-diag-001/002` failed in the local missing-range assertion. The second diagnostic recorded `rejection=0 absent=0 reason=`, showing that `commitRanges` succeeded and published the object despite only one range being written. Both five-host runs cleaned up.
+- **Root cause:** The harness used identical payload bytes and SHA-256 for the already committed owner object and each later fault object. The filesystem backend uses content-addressed committed payloads; the incomplete object could reference the already complete payload. This did not exercise a missing-content commit.
+- **Fix:** Give incomplete, aborted, and bounds cases distinct payload bytes and digests. The independent network audit confirms only the rightful owner object is visible after restart. Strengthen the local case with a fixed 1400-byte quota: a concurrent 509-byte reservation must be denied while another is staged, then admitted after incomplete commit failure or explicit abort.
+- **Lesson:** A negative range test must use a digest absent from committed storage. Content deduplication can make a sparse write safe to commit when the complete digest is already durable.
+- **Evidence after fix:** `o03-diag-003/004` passed the distinct-digest rejection matrix under lock `a3ba50a95b6eb3eac921528d6b196299373488b753889d377bd2e857f767f2a8`. The stronger `o03-diag-005/006` candidate passed twice under lock `e3aa5881a96c21ec79556dc2c7e477fc0f9beb8cf1fd8d937ca505936e7e65d5`, including fixed-quota reservation refusal and post-failure/abort readmission. Each final run had two zero-exit children, five nonempty captures, one durable owner object and no staging file, and cleanup PASS.
+
+### 2026-10-06 CDT — Spec193 O05 vector fetch returned corrupted persisted bytes
+
+- **Symptom:** `o05-diag-001` flipped one byte in Repo A's committed payload file after seeding a 487-byte object. The independent consumer's authenticated `FETCH` returned bytes instead of rejecting the corrupt object; its O05 child exited 2. The run manifest is FAIL, MiniNDN cleanup PASS, and the runner's `finally` restored the physical payload.
+- **Root cause:** `FilesystemRepoStoreBackend::get` read the full vector from `FilesystemArtifactPayloadStore::readRange` and returned it without checking the SHA-256 against the durable manifest. The low-level range reader validates bounds and representation, not content integrity on each read. `TieredRepoStore` would then be able to cache those bytes.
+- **Fix:** Validate the full returned vector against `manifest.sha256` inside the file backend's vector `get` before returning it. Reject a mismatch as `repo-file-vector-payload-corrupt`; keep the range API unchanged. Add a filesystem backend unit regression that flips and restores the committed file.
+- **Lesson:** A content-addressed pathname does not prove the current file bytes still match its digest. Verify bytes at the full-vector read boundary before they can be served or cached.
+- **Evidence after fix:** The targeted regression passed (5 assertions), and the 35-case `spec192-repo-persistent-service` binary passed (685 assertions). `o05-diag-002/003` both passed five-host MiniNDN under candidate lock `c100a5e07383614071bac37cf9991fd32ed539f1819f9b02fa43522ccf81f2e1`: corrupted FETCH was rejected, the preexisting destination digest stayed unchanged, physical bytes were restored, and a later FETCH returned the original 487-byte payload. Both runs had three zero-exit children, five nonempty captures, and cleanup PASS. On the corrected documentation lock `cceb9f603d003e19ff56dccd8ab3ecf6526a84b048f5b95f8ca66e23a85ec1a8`, `o01-regression-o05-fix-001` and `o02-regression-o05-fix-001` each passed five hosts with zero-exit children, five nonempty captures, and cleanup PASS. The earlier attempt to reuse the O05 lock was rejected before MiniNDN because the Spec 193 task and coverage documents had changed hashes.
+
+### 2026-10-06 CDT — Spec193 L02 harness expected the wrong range error
+
+- **Symptom:** `l02-diag-001` failed its local range child after the invalid-input checks. MiniNDN cleanup passed. The isolated store contained exactly the intended committed manifest and payload, with no staging files or rejected-object manifests.
+- **Root cause:** The harness expected a backend-style `length-mismatch` error for a 30-byte range supplied with 29 bytes. `encodeRangeWriteRequest` rejects this before dispatch with `repo range write payload length mismatch`, so the request was rejected but the harness reported a false failure. An intermediate retry expected Core's combined bounds error and failed for the same reason; it also cleaned up and left only the intended committed object.
+- **Fix:** Match the client encoder's actual error and keep independent no-half-object filesystem assertions. Verify the branch with a standalone local run, then rebuild and rerun L02 on a new candidate lock.
+- **Lesson:** A negative test must verify both rejection and state, using the public API's actual error boundary rather than a lower backend's private diagnostic.
+- **Evidence after fix:** A standalone local invocation passed before retrying MiniNDN. `l02-diag-003/004` then both passed five-host MiniNDN under candidate lock `1e19dedbcec0cf807bf43763e2c19779a76d98b68baa3683cd3b4c95f3278901`. Each showed two staging files during partial write and zero after rejection/abort/commit, one durable 467-byte object, no remote authenticated Repo requests, a zero-exit C++ child, five nonempty captures, and cleanup PASS.
+### 2026-10-07 CDT — Spec193 original Data serving first build used unavailable logging and handle checks
+
+- **Symptom:** The first `spec193-object-repo-server` build failed in `RepoNode::registerOriginalDataServing`: `NDN_LOG_ERROR` had no logger in this translation unit, and the installed ndn-cxx `ScopedCancelHandle::operator bool` could not compile for the two Face handle types.
+- **Root cause:** The new callback copied logging and handle-check conventions from other components without checking this Repo translation unit and the host's ndn-cxx handle implementation.
+- **Fix:** Use the existing C stdio diagnostic path for asynchronous route/serve errors and an explicit registration-state bool; keep the scoped handles solely for cancellation. Rebuilding the affected Repo library and Spec193 server succeeded with `-j4`.
+- **Lesson:** Check the exact linked ndn-cxx API and logging setup before using convenience macros or handle conversions in a new callback.
+
+### 2026-10-07 CDT — Spec193 O17 route diagnostic selected the Persistent server
+
+- **Symptom:** `o17-route-diag-001` stopped at the first local signed-Data seed: `DistributedRepoServer error: unknown option --local-certificate`. Preflight passed, five-node setup started, and cleanup completed; the run does not qualify O17.
+- **Root cause:** The new case was added to the preflight object-mode set but omitted from the runner's two server-selection/ready-text sets, so `build_services` launched the Persistent artifact server.
+- **Fix:** Add `O17_ROUTE` to both object-server selection branches and rerun under a new evidence ID; the client/server product code is unchanged by this harness correction.
+- **Lesson:** A new campaign case must be wired through preflight, executable selection, readiness, and dispatch, not just the CLI choice list.
+
 ### 2026-10-07 CDT — Spec193 O17 server authorization diagnostic stopped at storage admission
 
 - **Symptom:** `specs/193-distributedrepo-multinode-api-campaign/evidence/o17-server-auth-diag-001` passed preflight under lock `82aed5df0c785584f89136a76b7c5d6c17d85769dfe0ec1681d090c9bf325449`, but the native original Data seed exited 2 with `repo node has insufficient free space for Data packet`. The authorization probe never ran. Run status FAIL; MiniNDN cleanup PASS.
@@ -18311,7 +20251,6 @@ containing selector has not yet run. See the next review/build/run record in
 - **Symptom / evidence:** SDK4 all nine normal gates and first six whole ASAN/UBSAN suites passed; whole Persistent exited201 with24 business assertions failed, without sanitizer diagnostics. `evidence/dynamic-20261008-sdk4/dynamic-validation.json` and raw logs retain the result; no network started.
 - **Diagnosis / attempted repair:** Two focused recovery reds reproduced owner-query timeouts. Core timing showed the fixed singleton Provider still waited the full ACK window. Using its existing authenticated ACK-coverage hook advanced recovery, but two untraced repaired runs still failed (184/185 and229/232 assertions passed). Diagnostic-only Core logs also show a later ACK arriving after the2s owner deadline; remaining delay is not resolved.
 - **Lesson / next gate:** This is an open business regression, not a sanitizer finding or proven SDK-header defect. Keep budgets and authentication checks unchanged, finish diagnosis, then reseal/retest the changed candidate. Current RepoClient edit invalidates SDK4 source/build receipt; neither partial progress nor traced diagnostics qualifies release.
-
 - **Follow-up experiment:** Temporary timing observed 116–766ms provider pump calls; the existing deferred bridge remained red (154/155 assertions passed), so both experimental fixture changes were removed. Independent fresh Og+ASAN/UBSAN construction is underway at source0e111078, with identical deadlines/assertions and no suppressions; see `evidence/dynamic-20261009-og/construction.json`. This tests O0 overhead, not an established root cause.
 - **Og result / budget seam:** SDK5 completed all nine normal gates and six whole dynamic suites, including actual CLI/runtime closure. Whole Persistent remained red: exit201,23/486 business assertions failed in254.25s, no sanitizer diagnostics. The private owner probe caps total time at2000ms even with configured1500ms ACK collection and8000ms request timeout, leaving at most500ms for selection/execution/response. A controlled encrypted delayed-owner regression is being added before changing this private budget; configuration ceiling, authentication, exact binding, receipt revalidation and enclosing STORE timeout remain controlling. This is a pending repair, not release evidence.
 - **Regression fixture correction:** First draft normal/ASAN runs both exited201 before transport: synthesized status lacked the mandatory committed seed receipt. These are fixture errors, not budget reds. Replace synthesized status with the actual production seed STORE receipt/journal snapshot and selected target update; separately reviewed fixes use a fresh timeout node, owned immutable handler snapshots, explicit drain assertions and a strict fresh-query retry oracle. Preserve draft logs under `evidence/owner-probe-budget-20261009/`; qualification remains stopped until a valid red/green run.
@@ -18329,7 +20268,6 @@ containing selector has not yet run. See the next review/build/run record in
 - **REQUEST capture removal rejected:** Whole normal/ASAN conformance passed99/29956, but complete ASAN recovery stayed271/274 business-red (81.846s), with unchanged<20s/STORE1-vs2/subsequent-ACK failures and no sanitizer diagnostic. Idle normal benchmark731.338→802.125ms regressed; reverted helper/production/test experiment, retaining three omitted Core conformance inputs and their mutation/deletion regression. Original budgets/oracles remain unchanged; restored binaries must rebuild before further runtime claims.
 - **Spec202 SDK source closure / literal prototype:** SDK inventory omitted SVS implementation and wscript; mutation/deletion probes pass after inclusion. Preserve actual dirty9f2 overlay. Draft tests required explicit namespace/io_context includes, exact-name piggy binding and known mapping before empty-VV cache dispatch; corrected. Wrong WAFLOCK failed before compilation; use the discovered platform lock. ABI-preserving prefix-cache variant is rebuilding; no installed-library or qualification change.
 - **Spec202 SDK7 global-root gate:** Canonical configure rejected the /home derived SDK with the existing installed-global-root guard; no receipt accepted. Preserve the guard and failed fresh output. Materialize exact committed1687dc9 in a separately owned /usr/local/src SDK (all79 tracked files byte-identical), rebuild/retest there, then use fresh SDK8. Never relabel a temporary checkout as an installed composition or reuse a failed output directory.
-
 - **Spec202 sealed reproduction build-dir guard:** First sealed attempt exited2 before configure: `--build-dir must be a fresh build-spec202-candidate* child`; the wrapper used `build-spec202-sealed-sdk8`. Original SDK8 global libraries and receipt/artifacts were restored and hash-verified. Preserve `sealed-reproduction.json`/`reproduction-build.log`; fresh v2 uses `build-spec202-candidate-sealed-sdk8-v2` and separate outputs/backups. Keep canonical argument guards and verify exact accepted naming before launching a reproduction build.
 - **Spec202 sealed configure exposed missing build inputs:** Fresh v2 exited2 at configure because wscript:359 reads `scripts/configure_dependencies.py`, absent from the 680-input seal; original global SDK8 libraries/receipt were restored and verified. Trace found omitted examples Waf registration, Python build metadata and selected-test authorization policy too. Added eight mandatory inputs with hash-mutation/deletion rejection (focused PASS); new sourcee94324e3/688 needs a fresh receipt and scoped review. Changed gate: compiler dependency outputs do not cover configure/build helpers or packaging metadata; require executable sealed configure/build reproduction and inspect unselected registration scaffolding separately. Preserve both failed attempts; old SDK8 9/7 gates remain old-source evidence.
 - **Spec202 sealed SDK9 eager registration:** v3 failed before compilation when unselected `tests/wscript` Spec181 `find_node` returned None; original global libraries and receipt/artifacts restored with matching hashes. v4 archives every literal node reference plus computed worker-tool/UAV install paths; all870 entries verify bytes/modes and extracted source remains e94324e3/688. Static archive bootstrap PASS was invalidated by the real failure; independent v4 six-step build and whole normal cohorts remain required. Keep failed v3 JSON/logs; compiler closure and selected-target checks alone do not prove eager build registration closure.
@@ -18345,7 +20283,6 @@ containing selector has not yet run. See the next review/build/run record in
 - **Spec202 complete Python support reads:** Fresh v4 native7 passed but full Python ran112PASS/5FAIL on missing native-tracer launcher, captured legacy-subject JSON and two existing README files; original globals restored and v4 FAIL retained. Collection117 had not exercised these reads. Full33-file static dependency sweep and independent review found four additions; archive-v3 preserves1102 entries and fences all ten supplemental inputs, with unchanged native construction. Actual full Python precheck117PASS preceded reviewed v5 full-nine replay; v5 native7/Python117 nowPASS, admission/restoration/closing pending. Independently A05 signed Request/ACK oracle did not reject Selection; external component-aware Data plus fail-closed signed Sync mapping audit added, including relay certs, ParametersDigest/conflict checks and caller Request positive; scoped reviewPASS, fresh network proof pending. Lesson: exercise complete file-read support before replay and distinguish positive packet evidence from sound absence evidence.
 - **Spec202 A05 runtime auxiliary classification:** Full independent reproduction/restore/integrity/closing passed and native T002–004/R01–07 closed. First formal A05 runner/cleanup and independent signed Data/Sync noSelection audit passed, but runtime audit stopped on a fast local certificate-import helper missed by polling. Generic native argv/no-Python classification had re-included auxiliaries that static review intended to exclude. Production mode returns after local PIB import before constructing Repo API/network actor. Scoped correction requires exactly two declared label forms, five-element import argv, receipted executable hash, exit0/import marker and retained certificate/log hashes; all participating native/binding/DI/importer maps remain required. Reanalysis validates four actors/thirteen auxiliaries, not the failed whole matrix. v1 FAIL_STOPPED/release retained, refreshed exact harness release and fresh complete136-run v2 started as75028; native source/build unchanged. Lesson: define auxiliary roles from exact production behavior and verify executed classification, not only a intended exclusion; never upgrade failed matrix history.
 - **Spec202 formal v2 changed-request native crash:** Candidate d75cf28e/receipt ce2207fd completed round1 A05, then ARTIFACT_BASELINE stopped when vm20-same-key-changed-request-rejected exited SIGSEGV(-11) with empty child log; MiniNDN cleanup PASS. Evidence retained under specs/202-distributedrepo-convergence/evidence/campaign-sdk11-d75cf28e-two-rounds-v2; qualification-index FAIL_STOPPED. Kernel PID2329707 fault resolves to std::vector<ndn::Block>::~vector at ELF offset0xec419; Apport ignored the separate mount namespace, so no retained backtrace. Root cause unresolved; no fix or whole-matrix PASS claimed. Next: obtain a bounded native error-path reproduction/backtrace, repair the owning source if confirmed and add a real regression before updating affected qualification gates. Lesson: passing native suites and sealed reproduction do not prove network error-path safety; preserve the first failure and stop qualification at an actual crash.
-- **Spec202 model-service interruption, 2026-10-09 17:31 CDT:** Session 01a1170d-1f8b-7522-a1bc-44c6182cca29, turn 01a122c9-580c-7340-a9ae-61c4ba8bc8f3 ended at 22:31:15.032Z with task_complete.error.codex_error_info=cyber_policy; message flagged possible cybersecurity risk. Goal status later observed blocked, updatedAt1791585074, matching the interruption. No preceding agent update_goal call established this stop. The interrupted work inspected local Spec202 native crash evidence and C++ request paths; the maintained runner creates MiniNDN hosts locally and contains no SSH/HTTP or physical-address target invocation. Classifier rationale is not returned, so exact triggering content and a definitive false-positive diagnosis remain unverified. Clarified actual authorized local scope in AGENTS.md; checkpoints and failed experiment evidence remain intact. Supported goal resume requires the user/client lifecycle control; service-side classification cannot be repaired by repository code. If repeated, report timestamp/session/turn/error to support. Lesson: distinguish service interruption and goal lifecycle from application failures; do not interpret cyber_policy as a repository security finding or erase qualification failures.
 
 ### 2026-10-10 CDT — Spec202 changed-key crash was standalone client teardown
 
@@ -18364,6 +20301,13 @@ containing selector has not yet run. See the next review/build/run record in
 - **Evidence:** Focused tests passed (`17 passed`); `api-o17-server-auth-selected-trace-20261010-r1` passed on candidate `aeb815ea2b362b857c398d910bb1464426e580b1121eee241b2206002d1c26e2`, lock `f410b1633b85fff46ceceeeb8d899b6f2bec4af4979aac3c31525375e37b4f1a`, all five nonempty pcaps, original-route and metadata-denial packet oracles, loaded-library hash checks, and MiniNDN cleanup. Preserve the r2 failure separately at `api-o17-server-auth-oracle-fix-20261010-r2`.
 - **Qualification limit:** This closes the packet-oracle false inconclusives and records a passing O17 server-auth rerun only. The intermittent Repo A fallback remains unexplained, and Spec202 T010's complete two-round API matrix remains open.
 - **Lesson:** A fail-closed packet oracle must distinguish valid SVS control mappings from application replies and capture every IP fragment. A successful fallback or retry does not erase an earlier route-selection failure; retain both outcomes and keep the full matrix open until repeated evidence is consistent.
+
+### 2026-10-10 CDT — Spec202 aeb815 sanitizer build setup and bounded resume
+
+- **Symptom / evidence:** The first current-candidate ASAN/UBSAN attempt stopped during Repo configure because its SVS sanitizer build tree was under the repository workspace; after moving that tree to `/usr/local/src/spec192-ndn-svs-9f2d8a4/build-asan-aeb815`, dependency configure/build and `ldd -r` passed. Repo build r2 was then stopped at 15/167 after `-j2` reduced available memory to about 676 MiB with 5.3 GiB swap in use. The same configured tree resumed at `-j1`; r3 reached 65/167 before the runner's 1800-second timeout. Logs and manifests remain under `specs/202-distributedrepo-convergence/evidence/dynamic-aeb815-20261010/`.
+- **Root cause:** The first stop was the Repo Waf global dependency-root policy, the second was host memory pressure from concurrent sanitizer compilers, and the third was an experiment-runner timeout that expired during a still-progressing build. None was a source compile error or a sanitizer test result.
+- **Fix / continuation:** Keep the exact aeb815 source, SVS source/build pair, and configured Repo build tree; resume at `-j1` with a 7200-second build timeout and a new manifest/log suffix. Verify each previous log and dependency hash, and ensure no compiler process remains after a timeout.
+- **Lesson:** Classify configure policy, resource interruption, and runner timeouts separately from source/test failures. Preserve every failed attempt, resume only the exact frozen build tree, and claim sanitizer PASS only after all seven suites complete; MiniNDN matrix qualification remains separate.
 
 ### 2026-10-10 CDT — Spec202 persistent API sanitizer red and harness-pump rejection
 

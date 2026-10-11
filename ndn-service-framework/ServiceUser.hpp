@@ -630,6 +630,7 @@ namespace ndn_service_framework{
                 uint64_t callbackSkippedTimeout = 0;
                 uint64_t responseAfterPendingTimeout = 0;
                 uint64_t responseRejectedProviderIdentity = 0;
+                uint64_t responseLargeReferenceSkippedNoPending = 0;
                 std::vector<double> ackLatenciesMs;
             };
             RuntimeDiagnostics consumeRuntimeDiagnostics();

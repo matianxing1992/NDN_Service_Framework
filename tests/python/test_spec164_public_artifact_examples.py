@@ -39,7 +39,7 @@ class PublicArtifactExamplesTest(unittest.TestCase):
             for token in forbidden:
                 self.assertNotIn(token, source, f"{path}: forbidden {token}")
 
-    def test_local_advanced_publish_and_async_fetch(self):
+    def test_native_in_app_publish_and_fetch(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             source = root / "source.bin"
@@ -47,23 +47,18 @@ class PublicArtifactExamplesTest(unittest.TestCase):
             source.write_bytes(payload)
             digest = hashlib.sha256(payload).hexdigest()
             reference = root / "reference.json"
-            publish_result = root / "publish.json"
-            fetch_result = root / "fetch.json"
             destination = root / "destination.bin"
             env = dict(os.environ)
             env["PYTHONPATH"] = str(PYTHON_WRAPPER)
 
-            subprocess.run(
+            published = subprocess.run(
                 [
                     sys.executable,
                     str(PUBLISH),
                     "--store-dir", str(root / "store"),
                     "--source", str(source),
                     "--name", "/examples/spec164/public",
-                    "--expected-sha256", digest,
                     "--reference-out", str(reference),
-                    "--result-out", str(publish_result),
-                    "--advanced",
                 ],
                 cwd=ROOT,
                 env=env,
@@ -72,15 +67,13 @@ class PublicArtifactExamplesTest(unittest.TestCase):
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            subprocess.run(
+            fetched = subprocess.run(
                 [
                     sys.executable,
                     str(FETCH),
                     "--store-dir", str(root / "store"),
                     "--reference", str(reference),
                     "--destination", str(destination),
-                    "--result-out", str(fetch_result),
-                    "--async",
                 ],
                 cwd=ROOT,
                 env=env,
@@ -91,16 +84,12 @@ class PublicArtifactExamplesTest(unittest.TestCase):
             )
 
             self.assertEqual(destination.read_bytes(), payload)
-            publication = json.loads(
-                publish_result.read_text(encoding="utf-8")
-            )
-            retrieval = json.loads(
-                fetch_result.read_text(encoding="utf-8")
-            )
-            self.assertEqual(publication["achievedReplicas"], 1)
-            self.assertEqual(retrieval["transferredBytes"], len(payload))
-            self.assertGreaterEqual(publication["progressEvents"], 1)
-            self.assertGreaterEqual(retrieval["progressEvents"], 1)
+            publication = json.loads(published.stdout)
+            retrieval = json.loads(fetched.stdout)
+            self.assertEqual(publication["achievedReplicas"], 0)
+            self.assertIsNotNone(publication["receipt"])
+            self.assertIsNotNone(publication["handle"])
+            self.assertEqual(retrieval["sha256"], digest)
 
     def test_bilingual_readmes_cover_public_contract(self):
         english = (
@@ -111,14 +100,13 @@ class PublicArtifactExamplesTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         required = (
             "ArtifactRepositoryApi",
-            "publish_file",
-            "fetch_file",
+            "make_in_app",
+            "make_persistent",
+            "DistributedRepoServer",
+            "SPEC192_COMPATIBILITY_V1",
+            "ArtifactHandle",
             "ArtifactPublishResult",
             "ArtifactFetchResult",
-            "UNSUPPORTED_CAPABILITY",
-            "DURABILITY_NOT_ACHIEVED",
-            "DESTINATION_CONFLICT",
-            "exact-packet-v1",
         )
         for token in required:
             self.assertIn(token, english)

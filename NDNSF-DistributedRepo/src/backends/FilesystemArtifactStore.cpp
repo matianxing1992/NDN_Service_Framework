@@ -1,4 +1,5 @@
 #include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
+#include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 
 #include <openssl/evp.h>
 #include <sqlite3.h>
@@ -15,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
+#include <utility>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -855,6 +857,32 @@ FilesystemArtifactPayloadStore::isCommitted(const ArtifactReference& artifact,
   return fs::exists(status);
 }
 
+CommittedPayloadMetadata
+FilesystemArtifactPayloadStore::inspectCommitted(
+  const ArtifactReference& artifact) const
+{
+  std::lock_guard<std::mutex> guard(m_mutex);
+  const auto committed = committedPath(artifact);
+  std::error_code error;
+  const auto status = fs::symlink_status(committed, error);
+  if (error == std::errc::no_such_file_or_directory) {
+    return {};
+  }
+  if (error) {
+    throw std::runtime_error("repo-artifact-committed-stat-failed: " + error.message());
+  }
+  CommittedPayloadMetadata result;
+  result.exists = fs::exists(status);
+  result.regularFile = fs::is_regular_file(status);
+  if (result.regularFile) {
+    result.sizeBytes = fs::file_size(committed, error);
+    if (error) {
+      throw std::runtime_error("repo-artifact-committed-stat-failed: " + error.message());
+    }
+  }
+  return result;
+}
+
 void
 FilesystemArtifactPayloadStore::abort(const ArtifactReference& artifact,
                                       uint64_t generation)
@@ -869,7 +897,7 @@ FilesystemArtifactPayloadStore::abort(const ArtifactReference& artifact,
 
 struct SqliteArtifactMetadataStore::Impl
 {
-  static constexpr uint64_t RUNTIME_SCHEMA_GENERATION = 14;
+  static constexpr uint64_t RUNTIME_SCHEMA_GENERATION = 15;
 
   struct Profile
   {
@@ -931,6 +959,9 @@ struct SqliteArtifactMetadataStore::Impl
     const bool schema14 = observed.generation == 14 &&
                           observed.hasLocalCommitCatalog &&
                           observed.hasPersistentCatalog;
+    const bool schema15 = observed.generation == 15 &&
+                          observed.hasLocalCommitCatalog &&
+                          observed.hasPersistentCatalog;
     const bool markerOnlyNine = observed.generation == 9 &&
                                 observed.hasLocalCommitCatalog;
 
@@ -958,13 +989,17 @@ struct SqliteArtifactMetadataStore::Impl
       return;
     }
 
-    if (!schema12 && !schema13 && !schema14 && !markerOnlyNine) {
+    if (!schema12 && !schema13 && !schema14 && !schema15 && !markerOnlyNine) {
       throw std::runtime_error(
         "repo-schema-unsupported-profile: generation marker and table shape do not match");
     }
 
     preflight.reset();
     openExistingDatabase(SQLITE_OPEN_READWRITE);
+    const bool migratingPersistentCatalog = observed.generation < 15;
+    if (migratingPersistentCatalog) {
+      sqlExec(database, "PRAGMA foreign_keys=OFF");
+    }
     try {
       sqlExec(database, "BEGIN IMMEDIATE");
       const Profile rechecked = inspectProfile(database);
@@ -985,14 +1020,17 @@ struct SqliteArtifactMetadataStore::Impl
       else if (schema13) {
         migration.action = "roll-forward";
       }
-      if (!schema14) {
+      if (!rechecked.hasPersistentCatalog) {
         if (!rechecked.hasPersistentCatalog) {
-          createPersistentCatalog(database);
+          createPersistentCatalog14(database);
         }
+        setGeneration(database, 14);
+      }
+      if (migratingPersistentCatalog) {
+        migratePersistentCatalogTo15(database);
         setGeneration(database, RUNTIME_SCHEMA_GENERATION);
-        if (migration.action == "marker-repaired") {
-          migration.action = "marker-repaired+roll-forward";
-        }
+        if (migration.action.empty()) migration.action = "roll-forward";
+        migration.action += "+schema-15";
       }
       else {
         migration.action = "none";
@@ -1005,7 +1043,17 @@ struct SqliteArtifactMetadataStore::Impl
       }
       catch (...) {
       }
+      if (migratingPersistentCatalog) {
+        try {
+          sqlExec(database, "PRAGMA foreign_keys=ON");
+        }
+        catch (...) {
+        }
+      }
       throw;
+    }
+    if (migratingPersistentCatalog) {
+      sqlExec(database, "PRAGMA foreign_keys=ON");
     }
     sqlExec(database, "PRAGMA journal_mode=WAL");
     sqlExec(database, "PRAGMA synchronous=FULL");
@@ -1027,6 +1075,7 @@ struct SqliteArtifactMetadataStore::Impl
       throw std::runtime_error("repo-metadata-open-failed: " + detail);
     }
     sqlite3_busy_timeout(opened.get(), 5000);
+    sqlExec(opened.get(), "PRAGMA foreign_keys=ON");
     return opened.release();
   }
 
@@ -1168,6 +1217,37 @@ struct SqliteArtifactMetadataStore::Impl
   }
 
   static bool
+  hasPrimaryKey(sqlite3* db, const char* table,
+                const std::vector<std::string>& expected)
+  {
+    Statement columns(db, "SELECT name,pk FROM pragma_table_info(?)");
+    bindText(db, columns.get(), 1, table);
+    std::vector<std::pair<int, std::string>> primaryKey;
+    for (;;) {
+      const int status = sqlite3_step(columns.get());
+      if (status == SQLITE_DONE) {
+        break;
+      }
+      if (status != SQLITE_ROW) {
+        throw std::runtime_error(
+          std::string("repo-metadata-sql-failed: inspect primary key: ") +
+          sqlite3_errmsg(db));
+      }
+      const int ordinal = sqlite3_column_int(columns.get(), 1);
+      if (ordinal > 0) {
+        primaryKey.emplace_back(ordinal, columnText(columns.get(), 0));
+      }
+    }
+    std::sort(primaryKey.begin(), primaryKey.end());
+    std::vector<std::string> actual;
+    actual.reserve(primaryKey.size());
+    for (const auto& column : primaryKey) {
+      actual.push_back(column.second);
+    }
+    return actual == expected;
+  }
+
+  static bool
   hasUniqueReferenceIndex(sqlite3* db)
   {
     return hasUniqueIndex(db, "artifact_local_commits", {
@@ -1202,7 +1282,7 @@ struct SqliteArtifactMetadataStore::Impl
   }
 
   static bool
-  hasPersistentCatalogConstraints(sqlite3* db)
+  hasPersistentCatalogConstraints(sqlite3* db, uint64_t generation)
   {
     const std::vector<std::string> referenceColumns{
       "repo_node", "provider_identity", "logical_name", "digest_algorithm",
@@ -1212,12 +1292,37 @@ struct SqliteArtifactMetadataStore::Impl
     const std::vector<std::string> operationColumns{
       "repo_node", "provider_identity", "operation_id",
     };
-    return hasUniqueIndex(db, "artifact_persistent_receipts", {"receipt_id"}) &&
-           hasUniqueIndex(db, "artifact_persistent_receipts", operationColumns) &&
-           hasUniqueIndex(db, "artifact_persistent_receipts", referenceColumns) &&
-           hasUniqueIndex(db, "artifact_locations", referenceColumns) &&
-           hasForeignKey(db, "artifact_locations", "artifact_persistent_receipts",
-                         "receipt_id", "receipt_id");
+    const bool receiptConstraints =
+      hasUniqueIndex(db, "artifact_persistent_receipts", {"receipt_id"}) &&
+      hasUniqueIndex(db, "artifact_persistent_receipts", operationColumns) &&
+      (generation == 14
+         ? hasUniqueIndex(db, "artifact_persistent_receipts", referenceColumns)
+         : !hasUniqueIndex(db, "artifact_persistent_receipts", referenceColumns));
+    const bool locationConstraints =
+      hasUniqueIndex(db, "artifact_locations", referenceColumns) &&
+      hasForeignKey(db, "artifact_locations", "artifact_persistent_receipts",
+                    "receipt_id", "receipt_id");
+    if (generation < 15) return receiptConstraints && locationConstraints;
+    const bool publishOperationConstraints =
+      hasUniqueIndex(db, "artifact_publish_operations", {"operation_id"}) &&
+      hasPrimaryKey(db, "artifact_publish_operations", {"operation_id"}) &&
+      hasUniqueIndex(db, "artifact_publish_operations",
+                     {"submitting_principal", "idempotency_key_digest"}) &&
+      hasUniqueIndex(db, "artifact_publish_targets",
+                     {"operation_id", "repo_node", "provider_identity", "service_prefix"}) &&
+      hasPrimaryKey(db, "artifact_publish_targets",
+                    {"operation_id", "repo_node", "provider_identity", "service_prefix"}) &&
+      hasForeignKey(db, "artifact_publish_targets", "artifact_publish_operations",
+                    "operation_id", "operation_id") &&
+      hasUniqueIndex(db, "artifact_publish_receipts", {"receipt_id"}) &&
+      hasUniqueIndex(db, "artifact_publish_receipts", {"operation_id"}) &&
+      hasForeignKey(db, "artifact_publish_receipts", "artifact_publish_operations",
+                    "operation_id", "operation_id");
+    return receiptConstraints && locationConstraints &&
+           publishOperationConstraints &&
+           tableExists(db, "artifact_publish_operations") &&
+           tableExists(db, "artifact_publish_targets") &&
+           tableExists(db, "artifact_publish_receipts");
   }
 
   static uint64_t
@@ -1319,7 +1424,35 @@ struct SqliteArtifactMetadataStore::Impl
         throw std::runtime_error(
           "repo-schema-unsupported-profile: Persistent catalog columns are incompatible");
       }
-      if (!hasPersistentCatalogConstraints(db)) {
+      if (profile.generation >= 15) {
+        const std::set<std::string> writeSnapshot{
+          "location_version", "route_state", "forwarding_hint",
+        };
+        const std::set<std::string> requiredOperations{
+          "operation_id", "submitting_principal", "idempotency_key_digest",
+          "request_digest", "intent_json", "state", "created_at_ms",
+          "updated_at_ms", "accepted_at_ms", "terminal_at_ms", "status_json",
+        };
+        const std::set<std::string> requiredTargets{
+          "operation_id", "repo_node", "provider_identity", "service_prefix",
+          "state", "attempt_count", "updated_at_ms", "receipt_json", "failure_code",
+        };
+        const std::set<std::string> requiredAggregate{
+          "receipt_id", "operation_id", "receipt_json", "terminal_at_ms",
+        };
+        if (!containsColumns(tableColumns(db, "artifact_persistent_receipts"),
+                             writeSnapshot) ||
+            !containsColumns(tableColumns(db, "artifact_publish_operations"),
+                             requiredOperations) ||
+            !containsColumns(tableColumns(db, "artifact_publish_targets"),
+                             requiredTargets) ||
+            !containsColumns(tableColumns(db, "artifact_publish_receipts"),
+                             requiredAggregate)) {
+          throw std::runtime_error(
+            "repo-schema-unsupported-profile: operation journal columns are incompatible");
+        }
+      }
+      if (!hasPersistentCatalogConstraints(db, profile.generation)) {
         throw std::runtime_error(
           "repo-schema-unsupported-profile: Persistent catalog constraints are incompatible");
       }
@@ -1358,7 +1491,7 @@ struct SqliteArtifactMetadataStore::Impl
   }
 
   static void
-  createPersistentCatalog(sqlite3* db)
+  createPersistentCatalog14(sqlite3* db)
   {
     sqlExec(db,
       "CREATE TABLE artifact_persistent_receipts("
@@ -1393,6 +1526,146 @@ struct SqliteArtifactMetadataStore::Impl
   }
 
   static void
+  createPersistentCatalog(sqlite3* db)
+  {
+    sqlExec(db,
+      "CREATE TABLE artifact_persistent_receipts("
+      "receipt_id TEXT PRIMARY KEY,operation_id TEXT NOT NULL,repo_node TEXT NOT NULL,"
+      "provider_identity TEXT NOT NULL,logical_name TEXT NOT NULL,digest_algorithm TEXT NOT NULL,"
+      "content_digest TEXT NOT NULL,size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),"
+      "format_version TEXT NOT NULL,root_manifest_name TEXT NOT NULL,"
+      "publisher_identity TEXT NOT NULL,policy_epoch TEXT NOT NULL,"
+      "generation INTEGER NOT NULL CHECK(generation>0),"
+      "persisted_bytes INTEGER NOT NULL CHECK(persisted_bytes>=0),"
+      "committed_at_ms INTEGER NOT NULL CHECK(committed_at_ms>0),"
+      "state TEXT NOT NULL CHECK(state='COMMITTED'),"
+      "location_version INTEGER CHECK(location_version IS NULL OR location_version>0),"
+      "route_state TEXT CHECK(route_state IS NULL OR route_state IN ('ROUTABLE','UNROUTABLE')),"
+      "forwarding_hint TEXT,"
+      "UNIQUE(repo_node,provider_identity,operation_id))");
+    sqlExec(db,
+      "CREATE TABLE artifact_locations("
+      "repo_node TEXT NOT NULL,provider_identity TEXT NOT NULL,logical_name TEXT NOT NULL,"
+      "digest_algorithm TEXT NOT NULL,content_digest TEXT NOT NULL,"
+      "size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),format_version TEXT NOT NULL,"
+      "root_manifest_name TEXT NOT NULL,publisher_identity TEXT NOT NULL,"
+      "policy_epoch TEXT NOT NULL,receipt_id TEXT NOT NULL,operation_id TEXT NOT NULL,"
+      "generation INTEGER NOT NULL CHECK(generation>0),"
+      "location_version INTEGER NOT NULL CHECK(location_version>0),"
+      "committed_at_ms INTEGER NOT NULL CHECK(committed_at_ms>0),"
+      "expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms>committed_at_ms),"
+      "route_state TEXT NOT NULL CHECK(route_state IN ('ROUTABLE','UNROUTABLE')),"
+      "forwarding_hint TEXT NOT NULL,"
+      "PRIMARY KEY(repo_node,provider_identity,logical_name,digest_algorithm,content_digest,"
+      "size_bytes,format_version,root_manifest_name,publisher_identity,policy_epoch),"
+      "FOREIGN KEY(receipt_id) REFERENCES artifact_persistent_receipts(receipt_id))");
+  }
+
+  static void
+  createPublishOperationTables(sqlite3* db)
+  {
+    sqlExec(db,
+      "CREATE TABLE artifact_publish_operations("
+      "operation_id TEXT PRIMARY KEY,submitting_principal TEXT NOT NULL,"
+      "idempotency_key_digest TEXT NOT NULL,request_digest TEXT NOT NULL,"
+      "intent_json TEXT NOT NULL,state TEXT NOT NULL,created_at_ms INTEGER NOT NULL,"
+      "updated_at_ms INTEGER NOT NULL,accepted_at_ms INTEGER,terminal_at_ms INTEGER,"
+      "status_json TEXT NOT NULL DEFAULT '',"
+      "UNIQUE(submitting_principal,idempotency_key_digest))");
+    sqlExec(db,
+      "CREATE INDEX idx_artifact_publish_operations_state "
+      "ON artifact_publish_operations(state,updated_at_ms)");
+    sqlExec(db,
+      "CREATE TABLE artifact_publish_targets("
+      "operation_id TEXT NOT NULL,repo_node TEXT NOT NULL,provider_identity TEXT NOT NULL,"
+      "service_prefix TEXT NOT NULL,state TEXT NOT NULL,attempt_count INTEGER NOT NULL "
+      "CHECK(attempt_count>=0 AND attempt_count<=65535),updated_at_ms INTEGER NOT NULL,"
+      "receipt_json TEXT NOT NULL DEFAULT '',failure_code TEXT NOT NULL DEFAULT '',"
+      "PRIMARY KEY(operation_id,repo_node,provider_identity,service_prefix),"
+      "FOREIGN KEY(operation_id) REFERENCES artifact_publish_operations(operation_id) "
+      "ON DELETE CASCADE)");
+    sqlExec(db,
+      "CREATE INDEX idx_artifact_publish_targets_state "
+      "ON artifact_publish_targets(operation_id,state)");
+    sqlExec(db,
+      "CREATE TABLE artifact_publish_receipts("
+      "receipt_id TEXT PRIMARY KEY,operation_id TEXT NOT NULL UNIQUE,"
+      "receipt_json TEXT NOT NULL,terminal_at_ms INTEGER NOT NULL,"
+      "FOREIGN KEY(operation_id) REFERENCES artifact_publish_operations(operation_id))");
+  }
+
+  static void
+  migratePersistentCatalogTo15(sqlite3* db)
+  {
+    sqlExec(db, "ALTER TABLE artifact_locations RENAME TO artifact_locations_v14");
+    sqlExec(db,
+      "ALTER TABLE artifact_persistent_receipts "
+      "RENAME TO artifact_persistent_receipts_v14");
+    Statement missingSnapshot(db,
+      "SELECT 1 FROM artifact_persistent_receipts_v14 r "
+      "WHERE NOT EXISTS (SELECT 1 FROM artifact_locations_v14 l "
+      "WHERE l.receipt_id=r.receipt_id AND l.operation_id=r.operation_id "
+      "AND l.repo_node=r.repo_node AND l.provider_identity=r.provider_identity "
+      "AND l.logical_name=r.logical_name AND l.digest_algorithm=r.digest_algorithm "
+      "AND l.content_digest=r.content_digest AND l.size_bytes=r.persisted_bytes "
+      "AND l.format_version=r.format_version "
+      "AND l.root_manifest_name=r.root_manifest_name "
+      "AND l.publisher_identity=r.publisher_identity AND l.policy_epoch=r.policy_epoch "
+      "AND l.generation=r.generation AND l.committed_at_ms=r.committed_at_ms) LIMIT 1");
+    const int missingStatus = sqlite3_step(missingSnapshot.get());
+    if (missingStatus == SQLITE_ROW) {
+      throw std::runtime_error(
+        "repo-schema-migration-location-snapshot-missing: schema-14 receipt has no exact current location");
+    }
+    if (missingStatus != SQLITE_DONE) {
+      throw std::runtime_error(
+        std::string("repo-metadata-sql-failed: validate schema-14 receipt snapshots: ") +
+        sqlite3_errmsg(db));
+    }
+    createPersistentCatalog(db);
+    sqlExec(db,
+      "INSERT INTO artifact_persistent_receipts(receipt_id,operation_id,repo_node,"
+      "provider_identity,logical_name,digest_algorithm,content_digest,size_bytes,"
+      "format_version,root_manifest_name,publisher_identity,policy_epoch,generation,"
+      "persisted_bytes,committed_at_ms,state,location_version,route_state,forwarding_hint) "
+      "SELECT r.receipt_id,r.operation_id,r.repo_node,r.provider_identity,r.logical_name,"
+      "r.digest_algorithm,r.content_digest,r.size_bytes,r.format_version,r.root_manifest_name,"
+      "r.publisher_identity,r.policy_epoch,r.generation,r.persisted_bytes,r.committed_at_ms,r.state,"
+      "l.location_version,l.route_state,l.forwarding_hint "
+      "FROM artifact_persistent_receipts_v14 r "
+      "JOIN artifact_locations_v14 l ON l.receipt_id=r.receipt_id "
+      "AND l.operation_id=r.operation_id AND l.repo_node=r.repo_node "
+      "AND l.provider_identity=r.provider_identity AND l.logical_name=r.logical_name "
+      "AND l.digest_algorithm=r.digest_algorithm AND l.content_digest=r.content_digest "
+      "AND l.size_bytes=r.persisted_bytes AND l.format_version=r.format_version "
+      "AND l.root_manifest_name=r.root_manifest_name "
+      "AND l.publisher_identity=r.publisher_identity AND l.policy_epoch=r.policy_epoch "
+      "AND l.generation=r.generation AND l.committed_at_ms=r.committed_at_ms");
+    sqlExec(db,
+      "INSERT INTO artifact_locations(repo_node,provider_identity,logical_name,"
+      "digest_algorithm,content_digest,size_bytes,format_version,root_manifest_name,"
+      "publisher_identity,policy_epoch,receipt_id,operation_id,generation,location_version,"
+      "committed_at_ms,expires_at_ms,route_state,forwarding_hint) "
+      "SELECT repo_node,provider_identity,logical_name,digest_algorithm,content_digest,"
+      "size_bytes,format_version,root_manifest_name,publisher_identity,policy_epoch,"
+      "receipt_id,operation_id,generation,location_version,committed_at_ms,expires_at_ms,"
+      "route_state,forwarding_hint FROM artifact_locations_v14");
+    sqlExec(db, "DROP TABLE artifact_locations_v14");
+    sqlExec(db, "DROP TABLE artifact_persistent_receipts_v14");
+    createPublishOperationTables(db);
+    Statement check(db, "PRAGMA foreign_key_check");
+    const int status = sqlite3_step(check.get());
+    if (status == SQLITE_ROW) {
+      throw std::runtime_error(
+        "repo-schema-migration-foreign-key-failed: schema 15 contains a broken reference");
+    }
+    if (status != SQLITE_DONE) {
+      throw std::runtime_error(
+        std::string("repo-schema-migration-foreign-key-failed: ") + sqlite3_errmsg(db));
+    }
+  }
+
+  static void
   setGeneration(sqlite3* db, uint64_t generation)
   {
     Statement statement(
@@ -1415,10 +1688,11 @@ struct SqliteArtifactMetadataStore::Impl
       sqlExec(database,
         "CREATE TABLE repo_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)");
       sqlExec(database,
-        "INSERT INTO repo_meta(key,value) VALUES('schema_generation','14')");
+        "INSERT INTO repo_meta(key,value) VALUES('schema_generation','15')");
       createLifecycleJournal(database);
       createLocalCommitCatalog(database);
       createPersistentCatalog(database);
+      createPublishOperationTables(database);
       sqlExec(database, "COMMIT");
     }
     catch (...) {
@@ -1720,147 +1994,797 @@ SqliteArtifactMetadataStore::lookupLocalCommit(
   return record;
 }
 
+std::optional<ArtifactLocalCommitRecord>
+SqliteArtifactMetadataStore::lookupLocalCommit(uint64_t localCommitId) const
+{
+  if (localCommitId == 0 ||
+      localCommitId > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+    return std::nullopt;
+  }
+  std::lock_guard<std::mutex> guard(m_impl->mutex);
+  if (!m_impl->catalogAvailable) return std::nullopt;
+  Statement lookup(m_impl->database,
+    "SELECT local_commit_id,logical_name,digest_algorithm,content_digest,"
+    "size_bytes,format_version,root_manifest_name,publisher_identity,"
+    "policy_epoch,committed_at_ms FROM artifact_local_commits WHERE local_commit_id=?");
+  bindInt64(m_impl->database, lookup.get(), 1, static_cast<int64_t>(localCommitId));
+  const int status = sqlite3_step(lookup.get());
+  if (status == SQLITE_DONE) return std::nullopt;
+  if (status != SQLITE_ROW) {
+    throw std::runtime_error(
+      std::string("repo-metadata-sql-failed: local receipt lookup: ") +
+      sqlite3_errmsg(m_impl->database));
+  }
+  const auto id = sqlite3_column_int64(lookup.get(), 0);
+  const auto size = sqlite3_column_int64(lookup.get(), 4);
+  const auto timestamp = sqlite3_column_int64(lookup.get(), 9);
+  if (id <= 0 || size < 0 || timestamp <= 0) {
+    throw std::runtime_error(
+      "repo-schema-local-commit-invalid: stored local commit fields are out of range");
+  }
+  ArtifactLocalCommitRecord record;
+  record.localCommitId = static_cast<uint64_t>(id);
+  record.reference = ArtifactReference{
+    columnText(lookup.get(), 1), columnText(lookup.get(), 2),
+    columnText(lookup.get(), 3), static_cast<uint64_t>(size),
+    columnText(lookup.get(), 5), columnText(lookup.get(), 6),
+    columnText(lookup.get(), 7), columnText(lookup.get(), 8),
+  };
+  record.committedAtMs = static_cast<uint64_t>(timestamp);
+  return record;
+}
+
+std::optional<std::string>
+SqliteArtifactMetadataStore::lookupAggregateReceipt(
+  const std::string& receiptId) const
+{
+  validateIdentifier(receiptId, 256, "receiptId", artifact_error::InvalidReceipt);
+  std::lock_guard<std::mutex> guard(m_impl->mutex);
+  Statement lookup(m_impl->database,
+    "SELECT receipt_json FROM artifact_publish_receipts WHERE receipt_id=?");
+  bindText(m_impl->database, lookup.get(), 1, receiptId);
+  const int status = sqlite3_step(lookup.get());
+  if (status == SQLITE_DONE) return std::nullopt;
+  if (status != SQLITE_ROW) {
+    throw std::runtime_error(
+      std::string("repo-metadata-sql-failed: aggregate receipt lookup: ") +
+      sqlite3_errmsg(m_impl->database));
+  }
+  return columnText(lookup.get(), 0);
+}
+
 void
 SqliteArtifactMetadataStore::recordPersistentCommit(
   const ArtifactLocationRecord& location)
 {
   location.validate();
-  if (location.reference.sizeBytes > static_cast<uint64_t>(INT64_MAX) ||
-      location.generation > static_cast<uint64_t>(INT64_MAX) ||
-      location.locationVersion > static_cast<uint64_t>(INT64_MAX) ||
-      location.committedAtMs > static_cast<uint64_t>(INT64_MAX) ||
-      location.expiresAtMs > static_cast<uint64_t>(INT64_MAX)) {
-    throw std::invalid_argument(
-      "repo-artifact-persistent-receipt-invalid: value exceeds SQLite integer range");
-  }
-  std::lock_guard<std::mutex> guard(m_impl->mutex);
-  if (!m_impl->migration.writesEnabled ||
-      m_impl->migration.databaseSchemaGeneration < 14) {
+  RepoArtifactCommitReceipt receipt;
+  receipt.repoNode = location.repoNode;
+  receipt.providerIdentity = location.providerIdentity;
+  receipt.operationId = location.operationId;
+  receipt.receiptId = location.receiptId;
+  receipt.reference = location.reference;
+  receipt.generation = location.generation;
+  receipt.persistedBytes = location.reference.sizeBytes;
+  receipt.completedAtMs = location.committedAtMs;
+  receipt.locationVersion = location.locationVersion;
+  receipt.routeState = location.routeState;
+  receipt.forwardingHint = location.forwardingHint;
+  const auto committed = commitPersistentArtifact(receipt, location.expiresAtMs);
+  if (committed.currentLocation.locationVersion != location.locationVersion) {
     throw std::runtime_error(
-      "repo-artifact-writes-disabled: Persistent catalog is unavailable");
+      "repo-artifact-location-conflict: requested location version is not current");
+  }
+}
+
+PersistentArtifactCommitResult
+SqliteArtifactMetadataStore::commitPersistentArtifact(
+  const RepoArtifactCommitReceipt& requestedReceipt, uint64_t expiresAtMs,
+  const std::string& requesterIdentity)
+{
+  RepoArtifactCommitReceipt receipt = requestedReceipt;
+  receipt.reference.validate();
+  if (receipt.reference.sizeBytes > static_cast<uint64_t>(INT64_MAX) ||
+      receipt.generation == 0 || receipt.generation > static_cast<uint64_t>(INT64_MAX) ||
+      receipt.completedAtMs == 0 ||
+      receipt.completedAtMs > static_cast<uint64_t>(INT64_MAX) ||
+      expiresAtMs <= receipt.completedAtMs ||
+      expiresAtMs > static_cast<uint64_t>(INT64_MAX)) {
+    throw std::invalid_argument(
+      "repo-artifact-persistent-receipt-invalid: value exceeds SQLite range or lease is invalid");
   }
 
-  const auto& reference = location.reference;
-  sqlExec(m_impl->database, "BEGIN IMMEDIATE");
-  try {
-    Statement receipt(m_impl->database,
-      "INSERT INTO artifact_persistent_receipts(receipt_id,operation_id,repo_node,"
-      "provider_identity,logical_name,digest_algorithm,content_digest,size_bytes,"
-      "format_version,root_manifest_name,publisher_identity,policy_epoch,generation,"
-      "persisted_bytes,committed_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-      "ON CONFLICT(receipt_id) DO NOTHING");
-    bindText(m_impl->database, receipt.get(), 1, location.receiptId);
-    bindText(m_impl->database, receipt.get(), 2, location.operationId);
-    bindText(m_impl->database, receipt.get(), 3, location.repoNode);
-    bindText(m_impl->database, receipt.get(), 4, location.providerIdentity);
-    bindReference(m_impl->database, receipt.get(), 5, reference);
-    bindInt64(m_impl->database, receipt.get(), 13, static_cast<int64_t>(location.generation));
-    bindInt64(m_impl->database, receipt.get(), 14, static_cast<int64_t>(reference.sizeBytes));
-    bindInt64(m_impl->database, receipt.get(), 15, static_cast<int64_t>(location.committedAtMs));
-    bindText(m_impl->database, receipt.get(), 16, "COMMITTED");
-    if (sqlite3_step(receipt.get()) != SQLITE_DONE) {
+  bool acceptedSeedOperation = false;
+  {
+    std::lock_guard<std::mutex> guard(m_impl->mutex);
+    if (!m_impl->migration.writesEnabled ||
+        m_impl->migration.databaseSchemaGeneration < 15) {
       throw std::runtime_error(
-        std::string("repo-metadata-sql-failed: Persistent receipt insert: ") +
-        sqlite3_errmsg(m_impl->database));
+        "repo-artifact-writes-disabled: Persistent catalog is unavailable");
     }
-
-    Statement checkReceipt(m_impl->database,
-      "SELECT operation_id,repo_node,provider_identity,logical_name,digest_algorithm,"
-      "content_digest,size_bytes,format_version,root_manifest_name,publisher_identity,"
-      "policy_epoch,generation,persisted_bytes,committed_at_ms,state "
-      "FROM artifact_persistent_receipts WHERE receipt_id=?");
-    bindText(m_impl->database, checkReceipt.get(), 1, location.receiptId);
-    if (sqlite3_step(checkReceipt.get()) != SQLITE_ROW ||
-        columnText(checkReceipt.get(), 0) != location.operationId ||
-        columnText(checkReceipt.get(), 1) != location.repoNode ||
-        columnText(checkReceipt.get(), 2) != location.providerIdentity ||
-        referenceFromColumns(checkReceipt.get(), 3) != reference ||
-        sqlite3_column_int64(checkReceipt.get(), 11) != static_cast<int64_t>(location.generation) ||
-        sqlite3_column_int64(checkReceipt.get(), 12) != static_cast<int64_t>(reference.sizeBytes) ||
-        sqlite3_column_int64(checkReceipt.get(), 13) != static_cast<int64_t>(location.committedAtMs) ||
-        columnText(checkReceipt.get(), 14) != "COMMITTED") {
-      throw std::runtime_error(
-        "repo-artifact-receipt-conflict: receipt ID has another durable binding");
-    }
-
-    Statement current(m_impl->database,
-      "SELECT receipt_id,operation_id,generation,location_version,committed_at_ms,"
-      "expires_at_ms,route_state,forwarding_hint FROM artifact_locations WHERE "
-      "repo_node=? AND provider_identity=? AND logical_name=? AND digest_algorithm=? AND "
-      "content_digest=? AND size_bytes=? AND format_version=? AND root_manifest_name=? AND "
-      "publisher_identity=? AND policy_epoch=?");
-    bindText(m_impl->database, current.get(), 1, location.repoNode);
-    bindText(m_impl->database, current.get(), 2, location.providerIdentity);
-    bindReference(m_impl->database, current.get(), 3, reference);
-    const int found = sqlite3_step(current.get());
-    if (found == SQLITE_DONE) {
-      Statement insert(m_impl->database,
-        "INSERT INTO artifact_locations(repo_node,provider_identity,logical_name,"
+    sqlExec(m_impl->database, "BEGIN IMMEDIATE");
+    try {
+      const auto& reference = receipt.reference;
+      Statement existing(m_impl->database,
+        "SELECT receipt_id,operation_id,repo_node,provider_identity,logical_name,"
         "digest_algorithm,content_digest,size_bytes,format_version,root_manifest_name,"
-        "publisher_identity,policy_epoch,receipt_id,operation_id,generation,location_version,"
-        "committed_at_ms,expires_at_ms,route_state,forwarding_hint) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-      bindText(m_impl->database, insert.get(), 1, location.repoNode);
-      bindText(m_impl->database, insert.get(), 2, location.providerIdentity);
-      bindReference(m_impl->database, insert.get(), 3, reference);
-      bindText(m_impl->database, insert.get(), 11, location.receiptId);
-      bindText(m_impl->database, insert.get(), 12, location.operationId);
-      bindInt64(m_impl->database, insert.get(), 13, static_cast<int64_t>(location.generation));
-      bindInt64(m_impl->database, insert.get(), 14, static_cast<int64_t>(location.locationVersion));
-      bindInt64(m_impl->database, insert.get(), 15, static_cast<int64_t>(location.committedAtMs));
-      bindInt64(m_impl->database, insert.get(), 16, static_cast<int64_t>(location.expiresAtMs));
-      bindText(m_impl->database, insert.get(), 17, location.routeState);
-      bindText(m_impl->database, insert.get(), 18, location.forwardingHint);
-      if (sqlite3_step(insert.get()) != SQLITE_DONE) {
-        throw std::runtime_error(
-          std::string("repo-metadata-sql-failed: Persistent location insert: ") +
-          sqlite3_errmsg(m_impl->database));
-      }
-    }
-    else if (found == SQLITE_ROW) {
-      const auto oldVersion = sqlite3_column_int64(current.get(), 3);
-      if (oldVersion <= 0 || columnText(current.get(), 0) != location.receiptId ||
-          columnText(current.get(), 1) != location.operationId ||
-          sqlite3_column_int64(current.get(), 2) != static_cast<int64_t>(location.generation) ||
-          location.locationVersion < static_cast<uint64_t>(oldVersion)) {
-        throw std::runtime_error(
-          "repo-artifact-location-conflict: receipt binding changed or version rolled back");
-      }
-      const bool sameVersionSameValue =
-        location.locationVersion == static_cast<uint64_t>(oldVersion) &&
-        sqlite3_column_int64(current.get(), 4) == static_cast<int64_t>(location.committedAtMs) &&
-        sqlite3_column_int64(current.get(), 5) == static_cast<int64_t>(location.expiresAtMs) &&
-        columnText(current.get(), 6) == location.routeState &&
-        columnText(current.get(), 7) == location.forwardingHint;
-      if (location.locationVersion == static_cast<uint64_t>(oldVersion) &&
-          !sameVersionSameValue) {
-        throw std::runtime_error(
-          "repo-artifact-location-conflict: same version carries different location data");
-      }
-      if (location.locationVersion > static_cast<uint64_t>(oldVersion)) {
-        Statement update(m_impl->database,
-          "UPDATE artifact_locations SET location_version=?,expires_at_ms=?,"
-          "route_state=?,forwarding_hint=? WHERE repo_node=? AND provider_identity=? AND "
-          "logical_name=? AND digest_algorithm=? AND content_digest=? AND size_bytes=? AND "
-          "format_version=? AND root_manifest_name=? AND publisher_identity=? AND policy_epoch=?");
-        bindInt64(m_impl->database, update.get(), 1, static_cast<int64_t>(location.locationVersion));
-        bindInt64(m_impl->database, update.get(), 2, static_cast<int64_t>(location.expiresAtMs));
-        bindText(m_impl->database, update.get(), 3, location.routeState);
-        bindText(m_impl->database, update.get(), 4, location.forwardingHint);
-        bindText(m_impl->database, update.get(), 5, location.repoNode);
-        bindText(m_impl->database, update.get(), 6, location.providerIdentity);
-        bindReference(m_impl->database, update.get(), 7, reference);
-        if (sqlite3_step(update.get()) != SQLITE_DONE || sqlite3_changes(m_impl->database) != 1) {
+        "publisher_identity,policy_epoch,generation,persisted_bytes,committed_at_ms,state,"
+        "location_version,route_state,forwarding_hint FROM artifact_persistent_receipts "
+        "WHERE repo_node=? AND provider_identity=? AND operation_id=?");
+      bindText(m_impl->database, existing.get(), 1, receipt.repoNode);
+      bindText(m_impl->database, existing.get(), 2, receipt.providerIdentity);
+      bindText(m_impl->database, existing.get(), 3, receipt.operationId);
+      const int existingStatus = sqlite3_step(existing.get());
+      if (existingStatus == SQLITE_ROW) {
+        RepoArtifactCommitReceipt prior;
+        prior.receiptId = columnText(existing.get(), 0);
+        prior.operationId = columnText(existing.get(), 1);
+        prior.repoNode = columnText(existing.get(), 2);
+        prior.providerIdentity = columnText(existing.get(), 3);
+        prior.reference = referenceFromColumns(existing.get(), 4);
+        const auto generation = sqlite3_column_int64(existing.get(), 12);
+        const auto bytes = sqlite3_column_int64(existing.get(), 13);
+        const auto committedAt = sqlite3_column_int64(existing.get(), 14);
+        if (generation <= 0 || bytes < 0 || committedAt <= 0 ||
+            columnText(existing.get(), 15) != "COMMITTED") {
           throw std::runtime_error(
-            std::string("repo-metadata-sql-failed: Persistent location update: ") +
+            "repo-schema-persistent-receipt-invalid: stored receipt fields are out of range");
+        }
+        prior.generation = static_cast<uint64_t>(generation);
+        prior.persistedBytes = static_cast<uint64_t>(bytes);
+        prior.completedAtMs = static_cast<uint64_t>(committedAt);
+        if (sqlite3_column_type(existing.get(), 16) == SQLITE_NULL ||
+            sqlite3_column_type(existing.get(), 17) == SQLITE_NULL ||
+            sqlite3_column_type(existing.get(), 18) == SQLITE_NULL) {
+          throw std::runtime_error(
+            "repo-artifact-legacy-receipt-no-snapshot: schema-14 receipt has no historical location snapshot");
+        }
+        const auto version = sqlite3_column_int64(existing.get(), 16);
+        if (version <= 0) {
+          throw std::runtime_error(
+            "repo-schema-persistent-receipt-invalid: snapshot version is out of range");
+        }
+        prior.locationVersion = static_cast<uint64_t>(version);
+        prior.routeState = columnText(existing.get(), 17);
+        prior.forwardingHint = columnText(existing.get(), 18);
+        prior.validate();
+        if (prior.receiptId != receipt.receiptId || prior.reference != receipt.reference ||
+            prior.generation != receipt.generation ||
+            prior.persistedBytes != receipt.persistedBytes) {
+          throw std::runtime_error(
+            "repo-artifact-receipt-conflict: operation replay has another immutable binding");
+        }
+        receipt = std::move(prior);
+
+        Statement operation(m_impl->database,
+          "SELECT state FROM artifact_publish_operations WHERE operation_id=?");
+        bindText(m_impl->database, operation.get(), 1, receipt.operationId);
+        const int operationStatus = sqlite3_step(operation.get());
+        if (operationStatus == SQLITE_ROW) {
+          const auto state = columnText(operation.get(), 0);
+          if (state == "PREPARING") {
+            throw std::runtime_error(
+              "repo-publish-operation-corrupt: seed receipt exists before atomic acceptance");
+          }
+          acceptedSeedOperation = state == "ACCEPTED" || state == "IN_PROGRESS";
+        }
+        else if (operationStatus != SQLITE_DONE) {
+          throw std::runtime_error(
+            std::string("repo-metadata-sql-failed: operation replay lookup: ") +
             sqlite3_errmsg(m_impl->database));
         }
       }
+      else if (existingStatus == SQLITE_DONE) {
+        Statement current(m_impl->database,
+          "SELECT location_version FROM artifact_locations WHERE repo_node=? AND "
+          "provider_identity=? AND logical_name=? AND digest_algorithm=? AND "
+          "content_digest=? AND size_bytes=? AND format_version=? AND "
+          "root_manifest_name=? AND publisher_identity=? AND policy_epoch=?");
+        bindText(m_impl->database, current.get(), 1, receipt.repoNode);
+        bindText(m_impl->database, current.get(), 2, receipt.providerIdentity);
+        bindReference(m_impl->database, current.get(), 3, reference);
+        const int currentStatus = sqlite3_step(current.get());
+        uint64_t nextVersion = 1;
+        if (currentStatus == SQLITE_ROW) {
+          const auto oldVersion = sqlite3_column_int64(current.get(), 0);
+          if (oldVersion <= 0 || oldVersion == INT64_MAX) {
+            throw std::runtime_error(
+              "repo-schema-location-invalid: current version cannot be advanced");
+          }
+          nextVersion = static_cast<uint64_t>(oldVersion + 1);
+        }
+        else if (currentStatus != SQLITE_DONE) {
+          throw std::runtime_error(
+            std::string("repo-metadata-sql-failed: Persistent location lookup: ") +
+            sqlite3_errmsg(m_impl->database));
+        }
+        receipt.locationVersion = nextVersion;
+        receipt.validate();
+
+        Statement insertReceipt(m_impl->database,
+          "INSERT INTO artifact_persistent_receipts(receipt_id,operation_id,repo_node,"
+          "provider_identity,logical_name,digest_algorithm,content_digest,size_bytes,"
+          "format_version,root_manifest_name,publisher_identity,policy_epoch,generation,"
+          "persisted_bytes,committed_at_ms,state,location_version,route_state,forwarding_hint) "
+          "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        bindText(m_impl->database, insertReceipt.get(), 1, receipt.receiptId);
+        bindText(m_impl->database, insertReceipt.get(), 2, receipt.operationId);
+        bindText(m_impl->database, insertReceipt.get(), 3, receipt.repoNode);
+        bindText(m_impl->database, insertReceipt.get(), 4, receipt.providerIdentity);
+        bindReference(m_impl->database, insertReceipt.get(), 5, reference);
+        bindInt64(m_impl->database, insertReceipt.get(), 13,
+                  static_cast<int64_t>(receipt.generation));
+        bindInt64(m_impl->database, insertReceipt.get(), 14,
+                  static_cast<int64_t>(receipt.persistedBytes));
+        bindInt64(m_impl->database, insertReceipt.get(), 15,
+                  static_cast<int64_t>(receipt.completedAtMs));
+        bindText(m_impl->database, insertReceipt.get(), 16, "COMMITTED");
+        bindInt64(m_impl->database, insertReceipt.get(), 17,
+                  static_cast<int64_t>(receipt.locationVersion));
+        bindText(m_impl->database, insertReceipt.get(), 18, receipt.routeState);
+        bindText(m_impl->database, insertReceipt.get(), 19, receipt.forwardingHint);
+        if (sqlite3_step(insertReceipt.get()) != SQLITE_DONE) {
+          throw std::runtime_error(
+            std::string("repo-metadata-sql-failed: Persistent receipt insert: ") +
+            sqlite3_errmsg(m_impl->database));
+        }
+
+        Statement upsertLocation(m_impl->database,
+          "INSERT INTO artifact_locations(repo_node,provider_identity,logical_name,"
+          "digest_algorithm,content_digest,size_bytes,format_version,root_manifest_name,"
+          "publisher_identity,policy_epoch,receipt_id,operation_id,generation,location_version,"
+          "committed_at_ms,expires_at_ms,route_state,forwarding_hint) "
+          "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(repo_node,provider_identity,"
+          "logical_name,digest_algorithm,content_digest,size_bytes,format_version,"
+          "root_manifest_name,publisher_identity,policy_epoch) DO UPDATE SET "
+          "receipt_id=excluded.receipt_id,operation_id=excluded.operation_id,"
+          "generation=excluded.generation,location_version=excluded.location_version,"
+          "committed_at_ms=excluded.committed_at_ms,expires_at_ms=excluded.expires_at_ms,"
+          "route_state=excluded.route_state,forwarding_hint=excluded.forwarding_hint");
+        bindText(m_impl->database, upsertLocation.get(), 1, receipt.repoNode);
+        bindText(m_impl->database, upsertLocation.get(), 2, receipt.providerIdentity);
+        bindReference(m_impl->database, upsertLocation.get(), 3, reference);
+        bindText(m_impl->database, upsertLocation.get(), 11, receipt.receiptId);
+        bindText(m_impl->database, upsertLocation.get(), 12, receipt.operationId);
+        bindInt64(m_impl->database, upsertLocation.get(), 13,
+                  static_cast<int64_t>(receipt.generation));
+        bindInt64(m_impl->database, upsertLocation.get(), 14,
+                  static_cast<int64_t>(receipt.locationVersion));
+        bindInt64(m_impl->database, upsertLocation.get(), 15,
+                  static_cast<int64_t>(receipt.completedAtMs));
+        bindInt64(m_impl->database, upsertLocation.get(), 16,
+                  static_cast<int64_t>(expiresAtMs));
+        bindText(m_impl->database, upsertLocation.get(), 17, receipt.routeState);
+        bindText(m_impl->database, upsertLocation.get(), 18, receipt.forwardingHint);
+        if (sqlite3_step(upsertLocation.get()) != SQLITE_DONE) {
+          throw std::runtime_error(
+            std::string("repo-metadata-sql-failed: Persistent location upsert: ") +
+            sqlite3_errmsg(m_impl->database));
+        }
+
+        Statement operation(m_impl->database,
+          "SELECT submitting_principal,intent_json,state FROM artifact_publish_operations "
+          "WHERE operation_id=?");
+        bindText(m_impl->database, operation.get(), 1, receipt.operationId);
+        const int operationStatus = sqlite3_step(operation.get());
+        if (operationStatus == SQLITE_ROW) {
+          const auto submitter = columnText(operation.get(), 0);
+          const auto intentWire = columnText(operation.get(), 1);
+          const auto state = columnText(operation.get(), 2);
+          if (state != "PREPARING" || requesterIdentity.empty() ||
+              requesterIdentity != submitter) {
+            throw std::runtime_error(
+              "repo-publish-seed-identity-mismatch: seed commit is not from the submitting principal");
+          }
+          const auto intent = PublishOperationIntent::fromJson(intentWire);
+          if (makePublishOperationId(submitter, intent.seed,
+                                     intent.idempotencyKeyDigest) != receipt.operationId ||
+              intent.seed.repoNode != receipt.repoNode ||
+              intent.seed.providerIdentity != receipt.providerIdentity ||
+              intent.reference != receipt.reference || intent.generation != receipt.generation) {
+            throw std::runtime_error(
+              "repo-publish-intent-binding-failed: seed receipt differs from reserved intent");
+          }
+
+          PublishOperationStatus status;
+          status.operationId = receipt.operationId;
+          status.reference = intent.reference;
+          status.generation = intent.generation;
+          status.seed = intent.seed;
+          status.consistency = intent.consistency;
+          status.state = "ACCEPTED";
+          status.updatedAtMs = receipt.completedAtMs;
+          for (const auto& target : intent.targets) {
+            PublishOperationTargetStatus targetStatus;
+            targetStatus.target = target;
+            targetStatus.state = target == intent.seed ? "COMMITTED" : "QUEUED";
+            targetStatus.attemptCount = target == intent.seed ? 1 : 0;
+            targetStatus.updatedAtMs = receipt.completedAtMs;
+            if (target == intent.seed) targetStatus.receipt = receipt;
+            status.targets.push_back(targetStatus);
+
+            Statement updateTarget(m_impl->database,
+              "UPDATE artifact_publish_targets SET state=?,attempt_count=?,updated_at_ms=?,"
+              "receipt_json=?,failure_code='' WHERE operation_id=? AND repo_node=? AND "
+              "provider_identity=? AND service_prefix=?");
+            bindText(m_impl->database, updateTarget.get(), 1, targetStatus.state);
+            bindInt64(m_impl->database, updateTarget.get(), 2,
+                      static_cast<int64_t>(targetStatus.attemptCount));
+            bindInt64(m_impl->database, updateTarget.get(), 3,
+                      static_cast<int64_t>(targetStatus.updatedAtMs));
+            bindText(m_impl->database, updateTarget.get(), 4,
+                      targetStatus.receipt ? targetStatus.receipt->toJson() : "");
+            bindText(m_impl->database, updateTarget.get(), 5, receipt.operationId);
+            bindText(m_impl->database, updateTarget.get(), 6, target.repoNode);
+            bindText(m_impl->database, updateTarget.get(), 7, target.providerIdentity);
+            bindText(m_impl->database, updateTarget.get(), 8, target.servicePrefix);
+            if (sqlite3_step(updateTarget.get()) != SQLITE_DONE ||
+                sqlite3_changes(m_impl->database) != 1) {
+              throw std::runtime_error(
+                "repo-publish-target-journal-missing: seed target row was not reserved");
+            }
+          }
+          status.validate();
+          Statement accept(m_impl->database,
+            "UPDATE artifact_publish_operations SET state='ACCEPTED',updated_at_ms=?,"
+            "accepted_at_ms=?,status_json=? WHERE operation_id=? AND state='PREPARING'");
+          bindInt64(m_impl->database, accept.get(), 1,
+                    static_cast<int64_t>(receipt.completedAtMs));
+          bindInt64(m_impl->database, accept.get(), 2,
+                    static_cast<int64_t>(receipt.completedAtMs));
+          bindText(m_impl->database, accept.get(), 3, status.toJson());
+          bindText(m_impl->database, accept.get(), 4, receipt.operationId);
+          if (sqlite3_step(accept.get()) != SQLITE_DONE ||
+              sqlite3_changes(m_impl->database) != 1) {
+            throw std::runtime_error(
+              "repo-publish-operation-accept-conflict: operation was not preparing");
+          }
+          acceptedSeedOperation = true;
+        }
+        else if (operationStatus != SQLITE_DONE) {
+          throw std::runtime_error(
+            std::string("repo-metadata-sql-failed: operation lookup: ") +
+            sqlite3_errmsg(m_impl->database));
+        }
+      }
+      else {
+        throw std::runtime_error(
+          std::string("repo-metadata-sql-failed: Persistent receipt lookup: ") +
+          sqlite3_errmsg(m_impl->database));
+      }
+      sqlExec(m_impl->database, "COMMIT");
     }
-    else {
+    catch (...) {
+      sqlite3_exec(m_impl->database, "ROLLBACK", nullptr, nullptr, nullptr);
+      throw;
+    }
+  }
+
+  PersistentArtifactCommitResult result;
+  result.receipt = receipt;
+  result.acceptedSeedOperation = acceptedSeedOperation;
+  const auto location = lookupPersistentLocation(
+    receipt.reference, receipt.repoNode, receipt.providerIdentity, 0);
+  if (!location) {
+    throw std::runtime_error(
+      "repo-artifact-location-missing: committed receipt has no current location");
+  }
+  result.currentLocation = *location;
+  return result;
+}
+
+std::string
+SqliteArtifactMetadataStore::reservePublishOperation(
+  const std::string& operationId, const std::string& submittingPrincipal,
+  const PublishOperationIntent& intent, uint64_t nowMs)
+{
+  intent.validate();
+  validateName(submittingPrincipal, ArtifactLimits{}, "submittingPrincipal");
+  if (operationId != makePublishOperationId(submittingPrincipal, intent.seed,
+                                             intent.idempotencyKeyDigest) ||
+      nowMs == 0 || nowMs > static_cast<uint64_t>(INT64_MAX)) {
+    throw std::invalid_argument(
+      "repo-publish-operation-invalid: identity, key binding, or time is invalid");
+  }
+  const auto intentWire = intent.toJson();
+
+  std::lock_guard<std::mutex> guard(m_impl->mutex);
+  if (!m_impl->migration.writesEnabled ||
+      m_impl->migration.databaseSchemaGeneration < 15) {
+    throw std::runtime_error(
+      "repo-artifact-writes-disabled: publish journal is unavailable");
+  }
+  sqlExec(m_impl->database, "BEGIN IMMEDIATE");
+  try {
+    Statement existing(m_impl->database,
+      "SELECT operation_id,request_digest FROM artifact_publish_operations "
+      "WHERE submitting_principal=? AND idempotency_key_digest=?");
+    bindText(m_impl->database, existing.get(), 1, submittingPrincipal);
+    bindText(m_impl->database, existing.get(), 2, intent.idempotencyKeyDigest);
+    const int status = sqlite3_step(existing.get());
+    if (status == SQLITE_ROW) {
+      const auto priorId = columnText(existing.get(), 0);
+      const auto priorDigest = columnText(existing.get(), 1);
+      if (priorId != operationId || priorDigest != intent.requestDigest) {
+        throw std::runtime_error(
+          "repo-publish-idempotency-conflict: key is already bound to another request");
+      }
+      sqlExec(m_impl->database, "COMMIT");
+      return priorId;
+    }
+    if (status != SQLITE_DONE) {
       throw std::runtime_error(
-        std::string("repo-metadata-sql-failed: Persistent location lookup: ") +
+        std::string("repo-metadata-sql-failed: idempotency lookup: ") +
         sqlite3_errmsg(m_impl->database));
+    }
+
+    Statement insert(m_impl->database,
+      "INSERT INTO artifact_publish_operations(operation_id,submitting_principal,"
+      "idempotency_key_digest,request_digest,intent_json,state,created_at_ms,updated_at_ms,"
+      "accepted_at_ms,terminal_at_ms,status_json) VALUES(?,?,?,?,?,'PREPARING',?,?,NULL,NULL,'')");
+    bindText(m_impl->database, insert.get(), 1, operationId);
+    bindText(m_impl->database, insert.get(), 2, submittingPrincipal);
+    bindText(m_impl->database, insert.get(), 3, intent.idempotencyKeyDigest);
+    bindText(m_impl->database, insert.get(), 4, intent.requestDigest);
+    bindText(m_impl->database, insert.get(), 5, intentWire);
+    bindInt64(m_impl->database, insert.get(), 6, static_cast<int64_t>(nowMs));
+    bindInt64(m_impl->database, insert.get(), 7, static_cast<int64_t>(nowMs));
+    if (sqlite3_step(insert.get()) != SQLITE_DONE) {
+      throw std::runtime_error(
+        std::string("repo-metadata-sql-failed: publish operation insert: ") +
+        sqlite3_errmsg(m_impl->database));
+    }
+    for (const auto& target : intent.targets) {
+      Statement insertTarget(m_impl->database,
+        "INSERT INTO artifact_publish_targets(operation_id,repo_node,provider_identity,"
+        "service_prefix,state,attempt_count,updated_at_ms,receipt_json,failure_code) "
+        "VALUES(?,?,?,?,'QUEUED',0,?, '', '')");
+      bindText(m_impl->database, insertTarget.get(), 1, operationId);
+      bindText(m_impl->database, insertTarget.get(), 2, target.repoNode);
+      bindText(m_impl->database, insertTarget.get(), 3, target.providerIdentity);
+      bindText(m_impl->database, insertTarget.get(), 4, target.servicePrefix);
+      bindInt64(m_impl->database, insertTarget.get(), 5, static_cast<int64_t>(nowMs));
+      if (sqlite3_step(insertTarget.get()) != SQLITE_DONE) {
+        throw std::runtime_error(
+          std::string("repo-metadata-sql-failed: publish target insert: ") +
+          sqlite3_errmsg(m_impl->database));
+      }
+    }
+    sqlExec(m_impl->database, "COMMIT");
+    return operationId;
+  }
+  catch (...) {
+    sqlite3_exec(m_impl->database, "ROLLBACK", nullptr, nullptr, nullptr);
+    throw;
+  }
+}
+
+std::optional<ArtifactPublishOperationRecord>
+SqliteArtifactMetadataStore::lookupPublishOperation(
+  const std::string& operationId, const std::string& requesterIdentity,
+  const std::optional<RepoArtifactTarget>& authorizedTarget) const
+{
+  std::lock_guard<std::mutex> guard(m_impl->mutex);
+  Statement lookup(m_impl->database,
+    "SELECT submitting_principal,idempotency_key_digest,request_digest,state,"
+    "created_at_ms,updated_at_ms,accepted_at_ms,terminal_at_ms,status_json,intent_json "
+    "FROM artifact_publish_operations WHERE operation_id=?");
+  bindText(m_impl->database, lookup.get(), 1, operationId);
+  const int status = sqlite3_step(lookup.get());
+  if (status == SQLITE_DONE) return std::nullopt;
+  if (status != SQLITE_ROW) {
+    throw std::runtime_error(
+      std::string("repo-metadata-sql-failed: publish operation lookup: ") +
+      sqlite3_errmsg(m_impl->database));
+  }
+  ArtifactPublishOperationRecord record;
+  record.operationId = operationId;
+  record.submittingPrincipal = columnText(lookup.get(), 0);
+  record.idempotencyKeyDigest = columnText(lookup.get(), 1);
+  record.requestDigest = columnText(lookup.get(), 2);
+  record.intent = PublishOperationIntent::fromJson(columnText(lookup.get(), 9));
+  record.state = columnText(lookup.get(), 3);
+  const auto createdAt = sqlite3_column_int64(lookup.get(), 4);
+  const auto updatedAt = sqlite3_column_int64(lookup.get(), 5);
+  if (createdAt <= 0 || updatedAt <= 0) {
+    throw std::runtime_error(
+      "repo-schema-publish-operation-invalid: timestamps are out of range");
+  }
+  record.createdAtMs = static_cast<uint64_t>(createdAt);
+  record.updatedAtMs = static_cast<uint64_t>(updatedAt);
+  if (sqlite3_column_type(lookup.get(), 6) != SQLITE_NULL) {
+    const auto acceptedAt = sqlite3_column_int64(lookup.get(), 6);
+    if (acceptedAt <= 0) throw std::runtime_error("repo-schema-publish-operation-invalid: accepted time");
+    record.acceptedAtMs = static_cast<uint64_t>(acceptedAt);
+  }
+  if (sqlite3_column_type(lookup.get(), 7) != SQLITE_NULL) {
+    const auto terminalAt = sqlite3_column_int64(lookup.get(), 7);
+    if (terminalAt <= 0) throw std::runtime_error("repo-schema-publish-operation-invalid: terminal time");
+    record.terminalAtMs = static_cast<uint64_t>(terminalAt);
+  }
+  const auto statusJson = columnText(lookup.get(), 8);
+  if (!statusJson.empty()) {
+    record.status = PublishOperationStatus::fromJson(statusJson);
+  }
+  if (record.state == "PREPARING" && !statusJson.empty()) {
+    throw std::runtime_error(
+      "repo-schema-publish-operation-invalid: preparing row cannot expose accepted status");
+  }
+  if (!authorizedTarget) {
+    if (requesterIdentity != record.submittingPrincipal) {
+      throw std::runtime_error(
+        "repo-publish-operation-unauthorized: requester is not the submitting principal");
+    }
+  }
+  else {
+    const auto& target = *authorizedTarget;
+    if (requesterIdentity != target.providerIdentity || record.state == "PREPARING" ||
+        record.status.operationId != operationId ||
+        !(record.status.reference == record.intent.reference) ||
+        record.status.generation != record.intent.generation ||
+        !(record.status.seed == record.intent.seed)) {
+      throw std::runtime_error(
+        "repo-publish-operation-unauthorized: target is not authorized for accepted status");
+    }
+    const auto selected = std::find(record.intent.targets.begin(), record.intent.targets.end(), target);
+    const auto targetStatus = std::find_if(
+      record.status.targets.begin(), record.status.targets.end(), [&target] (const auto& item) {
+        return item.target == target;
+      });
+    if (selected == record.intent.targets.end() ||
+        targetStatus == record.status.targets.end() || targetStatus->attemptCount == 0 ||
+        (targetStatus->state != "IN_FLIGHT" && targetStatus->state != "STAGED" &&
+         targetStatus->state != "COMMITTED" && targetStatus->state != "UNKNOWN")) {
+      throw std::runtime_error(
+        "repo-publish-operation-unauthorized: target is not an attempted selected Repo");
+    }
+  }
+  Statement aggregate(m_impl->database,
+    "SELECT receipt_json FROM artifact_publish_receipts WHERE operation_id=?");
+  bindText(m_impl->database, aggregate.get(), 1, operationId);
+  const int aggregateStatus = sqlite3_step(aggregate.get());
+  if (aggregateStatus == SQLITE_ROW) {
+    record.aggregateReceiptJson = columnText(aggregate.get(), 0);
+  }
+  else if (aggregateStatus != SQLITE_DONE) {
+    throw std::runtime_error(
+      std::string("repo-metadata-sql-failed: aggregate receipt lookup: ") +
+      sqlite3_errmsg(m_impl->database));
+  }
+  return record;
+}
+
+std::vector<ArtifactPublishOperationRecord>
+SqliteArtifactMetadataStore::recoverablePublishOperations() const
+{
+  std::lock_guard<std::mutex> guard(m_impl->mutex);
+  Statement lookup(m_impl->database,
+    "SELECT operation_id,submitting_principal,idempotency_key_digest,request_digest,state,"
+    "created_at_ms,updated_at_ms,accepted_at_ms,terminal_at_ms,status_json,intent_json "
+    "FROM artifact_publish_operations WHERE state IN ('ACCEPTED','IN_PROGRESS') "
+    "ORDER BY created_at_ms,operation_id");
+  std::vector<ArtifactPublishOperationRecord> records;
+  for (;;) {
+    const int status = sqlite3_step(lookup.get());
+    if (status == SQLITE_DONE) return records;
+    if (status != SQLITE_ROW) {
+      throw std::runtime_error(
+        std::string("repo-metadata-sql-failed: recovery scan: ") +
+        sqlite3_errmsg(m_impl->database));
+    }
+    ArtifactPublishOperationRecord record;
+    record.operationId = columnText(lookup.get(), 0);
+    record.submittingPrincipal = columnText(lookup.get(), 1);
+    record.idempotencyKeyDigest = columnText(lookup.get(), 2);
+    record.requestDigest = columnText(lookup.get(), 3);
+    record.intent = PublishOperationIntent::fromJson(columnText(lookup.get(), 10));
+    record.state = columnText(lookup.get(), 4);
+    const auto createdAt = sqlite3_column_int64(lookup.get(), 5);
+    const auto updatedAt = sqlite3_column_int64(lookup.get(), 6);
+    const auto acceptedAt = sqlite3_column_int64(lookup.get(), 7);
+    if (createdAt <= 0 || updatedAt <= 0 || acceptedAt <= 0) {
+      throw std::runtime_error(
+        "repo-schema-publish-operation-invalid: recoverable timestamps are missing");
+    }
+    record.createdAtMs = static_cast<uint64_t>(createdAt);
+    record.updatedAtMs = static_cast<uint64_t>(updatedAt);
+    record.acceptedAtMs = static_cast<uint64_t>(acceptedAt);
+    if (sqlite3_column_type(lookup.get(), 8) != SQLITE_NULL) {
+      const auto terminalAt = sqlite3_column_int64(lookup.get(), 8);
+      if (terminalAt <= 0) throw std::runtime_error("repo-schema-publish-operation-invalid: terminal time");
+      record.terminalAtMs = static_cast<uint64_t>(terminalAt);
+    }
+    const auto statusJson = columnText(lookup.get(), 9);
+    if (statusJson.empty()) {
+      throw std::runtime_error(
+        "repo-schema-publish-operation-invalid: accepted row has no status snapshot");
+    }
+    record.status = PublishOperationStatus::fromJson(statusJson);
+    records.push_back(std::move(record));
+  }
+}
+
+void
+SqliteArtifactMetadataStore::updatePublishOperationTarget(
+  const std::string& operationId, const PublishOperationTargetStatus& targetStatus,
+  uint64_t updatedAtMs)
+{
+  if (updatedAtMs == 0 || updatedAtMs > static_cast<uint64_t>(INT64_MAX)) {
+    throw std::invalid_argument("repo-publish-target-time-invalid: time must fit SQLite integer");
+  }
+  std::lock_guard<std::mutex> guard(m_impl->mutex);
+  if (!m_impl->migration.writesEnabled ||
+      m_impl->migration.databaseSchemaGeneration < 15) {
+    throw std::runtime_error("repo-artifact-writes-disabled: publish journal is unavailable");
+  }
+  sqlExec(m_impl->database, "BEGIN IMMEDIATE");
+  try {
+    Statement operation(m_impl->database,
+      "SELECT state,status_json FROM artifact_publish_operations WHERE operation_id=?");
+    bindText(m_impl->database, operation.get(), 1, operationId);
+    if (sqlite3_step(operation.get()) != SQLITE_ROW) {
+      throw std::runtime_error("repo-publish-operation-not-found: operation is absent");
+    }
+    const auto state = columnText(operation.get(), 0);
+    if (state != "ACCEPTED" && state != "IN_PROGRESS") {
+      throw std::runtime_error("repo-publish-operation-terminal: operation cannot be changed");
+    }
+    auto status = PublishOperationStatus::fromJson(columnText(operation.get(), 1));
+    auto found = std::find_if(status.targets.begin(), status.targets.end(),
+      [&targetStatus] (const auto& value) { return value.target == targetStatus.target; });
+    if (found == status.targets.end()) {
+      throw std::runtime_error("repo-publish-target-not-selected: target is outside the journal");
+    }
+    *found = targetStatus;
+    found->updatedAtMs = updatedAtMs;
+    status.updatedAtMs = updatedAtMs;
+    status.state = "IN_PROGRESS";
+    const bool hasNonterminal = std::any_of(status.targets.begin(), status.targets.end(),
+      [] (const auto& item) {
+        return item.state == "QUEUED" || item.state == "IN_FLIGHT" || item.state == "STAGED";
+      });
+    if (!hasNonterminal) {
+      throw std::runtime_error(
+        "repo-publish-terminalization-required: persist the final target with the aggregate receipt");
+    }
+    status.validate();
+
+    Statement updateTarget(m_impl->database,
+      "UPDATE artifact_publish_targets SET state=?,attempt_count=?,updated_at_ms=?,"
+      "receipt_json=?,failure_code=? WHERE operation_id=? AND repo_node=? AND "
+      "provider_identity=? AND service_prefix=?");
+    bindText(m_impl->database, updateTarget.get(), 1, targetStatus.state);
+    bindInt64(m_impl->database, updateTarget.get(), 2,
+              static_cast<int64_t>(targetStatus.attemptCount));
+    bindInt64(m_impl->database, updateTarget.get(), 3, static_cast<int64_t>(updatedAtMs));
+    bindText(m_impl->database, updateTarget.get(), 4,
+              targetStatus.receipt ? targetStatus.receipt->toJson() : "");
+    bindText(m_impl->database, updateTarget.get(), 5, targetStatus.failureCode);
+    bindText(m_impl->database, updateTarget.get(), 6, operationId);
+    bindText(m_impl->database, updateTarget.get(), 7, targetStatus.target.repoNode);
+    bindText(m_impl->database, updateTarget.get(), 8, targetStatus.target.providerIdentity);
+    bindText(m_impl->database, updateTarget.get(), 9, targetStatus.target.servicePrefix);
+    if (sqlite3_step(updateTarget.get()) != SQLITE_DONE || sqlite3_changes(m_impl->database) != 1) {
+      throw std::runtime_error("repo-publish-target-not-selected: target journal row is absent");
+    }
+    Statement updateOperation(m_impl->database,
+      "UPDATE artifact_publish_operations SET state='IN_PROGRESS',updated_at_ms=?,status_json=? "
+      "WHERE operation_id=? AND state IN ('ACCEPTED','IN_PROGRESS')");
+    bindInt64(m_impl->database, updateOperation.get(), 1, static_cast<int64_t>(updatedAtMs));
+    bindText(m_impl->database, updateOperation.get(), 2, status.toJson());
+    bindText(m_impl->database, updateOperation.get(), 3, operationId);
+    if (sqlite3_step(updateOperation.get()) != SQLITE_DONE ||
+        sqlite3_changes(m_impl->database) != 1) {
+      throw std::runtime_error("repo-publish-operation-update-conflict: operation changed");
+    }
+    sqlExec(m_impl->database, "COMMIT");
+  }
+  catch (...) {
+    sqlite3_exec(m_impl->database, "ROLLBACK", nullptr, nullptr, nullptr);
+    throw;
+  }
+}
+
+void
+SqliteArtifactMetadataStore::finalizePublishOperation(
+  const std::string& operationId, const PublishOperationStatus& status,
+  const std::string& aggregateReceiptJson, uint64_t terminalAtMs)
+{
+  status.validate();
+  const auto aggregate = ArtifactCommitReceipt::fromJson(aggregateReceiptJson);
+  if (status.operationId != operationId || status.receiptId != aggregate.receiptId ||
+      aggregate.operationId != operationId || aggregate.reference != status.reference ||
+      aggregate.state != status.state || aggregate.completedAtMs != terminalAtMs ||
+      terminalAtMs == 0 || terminalAtMs > static_cast<uint64_t>(INT64_MAX)) {
+    throw std::invalid_argument(
+      "repo-publish-terminal-receipt-invalid: status and aggregate receipt disagree");
+  }
+  std::lock_guard<std::mutex> guard(m_impl->mutex);
+  if (!m_impl->migration.writesEnabled ||
+      m_impl->migration.databaseSchemaGeneration < 15) {
+    throw std::runtime_error("repo-artifact-writes-disabled: publish journal is unavailable");
+  }
+  sqlExec(m_impl->database, "BEGIN IMMEDIATE");
+  try {
+    Statement operation(m_impl->database,
+      "SELECT state,status_json FROM artifact_publish_operations WHERE operation_id=?");
+    bindText(m_impl->database, operation.get(), 1, operationId);
+    if (sqlite3_step(operation.get()) != SQLITE_ROW) {
+      throw std::runtime_error("repo-publish-operation-not-found: operation is absent");
+    }
+    const auto priorState = columnText(operation.get(), 0);
+    if (priorState == "COMMITTED" || priorState == "PARTIAL" || priorState == "FAILED") {
+      const auto priorStatus = PublishOperationStatus::fromJson(columnText(operation.get(), 1));
+      Statement priorReceipt(m_impl->database,
+        "SELECT receipt_json FROM artifact_publish_receipts WHERE operation_id=?");
+      bindText(m_impl->database, priorReceipt.get(), 1, operationId);
+      if (sqlite3_step(priorReceipt.get()) == SQLITE_ROW &&
+          priorStatus.toJson() == status.toJson() &&
+          columnText(priorReceipt.get(), 0) == aggregateReceiptJson) {
+        sqlExec(m_impl->database, "COMMIT");
+        return;
+      }
+      throw std::runtime_error("repo-publish-operation-terminal: terminal result is immutable");
+    }
+    if (priorState != "ACCEPTED" && priorState != "IN_PROGRESS") {
+      throw std::runtime_error("repo-publish-operation-not-accepted: cannot finalize operation");
+    }
+    const auto priorStatus = PublishOperationStatus::fromJson(columnText(operation.get(), 1));
+    if (priorStatus.reference != status.reference || priorStatus.seed != status.seed ||
+        priorStatus.generation != status.generation ||
+        priorStatus.consistency != status.consistency ||
+        priorStatus.targets.size() != status.targets.size()) {
+      throw std::runtime_error("repo-publish-terminal-binding-failed: selected set changed");
+    }
+    for (size_t i = 0; i < status.targets.size(); ++i) {
+      if (priorStatus.targets[i].target != status.targets[i].target) {
+        throw std::runtime_error("repo-publish-terminal-binding-failed: target set changed");
+      }
+      const auto& target = status.targets[i];
+      Statement updateTarget(m_impl->database,
+        "UPDATE artifact_publish_targets SET state=?,attempt_count=?,updated_at_ms=?,"
+        "receipt_json=?,failure_code=? WHERE operation_id=? AND repo_node=? AND "
+        "provider_identity=? AND service_prefix=?");
+      bindText(m_impl->database, updateTarget.get(), 1, target.state);
+      bindInt64(m_impl->database, updateTarget.get(), 2,
+                static_cast<int64_t>(target.attemptCount));
+      bindInt64(m_impl->database, updateTarget.get(), 3,
+                static_cast<int64_t>(target.updatedAtMs));
+      bindText(m_impl->database, updateTarget.get(), 4,
+                target.receipt ? target.receipt->toJson() : "");
+      bindText(m_impl->database, updateTarget.get(), 5, target.failureCode);
+      bindText(m_impl->database, updateTarget.get(), 6, operationId);
+      bindText(m_impl->database, updateTarget.get(), 7, target.target.repoNode);
+      bindText(m_impl->database, updateTarget.get(), 8, target.target.providerIdentity);
+      bindText(m_impl->database, updateTarget.get(), 9, target.target.servicePrefix);
+      if (sqlite3_step(updateTarget.get()) != SQLITE_DONE ||
+          sqlite3_changes(m_impl->database) != 1) {
+        throw std::runtime_error("repo-publish-target-not-selected: target journal row is absent");
+      }
+    }
+    Statement insertReceipt(m_impl->database,
+      "INSERT INTO artifact_publish_receipts(receipt_id,operation_id,receipt_json,terminal_at_ms) "
+      "VALUES(?,?,?,?)");
+    bindText(m_impl->database, insertReceipt.get(), 1, aggregate.receiptId);
+    bindText(m_impl->database, insertReceipt.get(), 2, operationId);
+    bindText(m_impl->database, insertReceipt.get(), 3, aggregateReceiptJson);
+    bindInt64(m_impl->database, insertReceipt.get(), 4, static_cast<int64_t>(terminalAtMs));
+    if (sqlite3_step(insertReceipt.get()) != SQLITE_DONE) {
+      throw std::runtime_error(
+        std::string("repo-metadata-sql-failed: aggregate receipt insert: ") +
+        sqlite3_errmsg(m_impl->database));
+    }
+    Statement updateOperation(m_impl->database,
+      "UPDATE artifact_publish_operations SET state=?,updated_at_ms=?,terminal_at_ms=?,"
+      "status_json=? WHERE operation_id=? AND state IN ('ACCEPTED','IN_PROGRESS')");
+    bindText(m_impl->database, updateOperation.get(), 1, status.state);
+    bindInt64(m_impl->database, updateOperation.get(), 2, static_cast<int64_t>(terminalAtMs));
+    bindInt64(m_impl->database, updateOperation.get(), 3, static_cast<int64_t>(terminalAtMs));
+    bindText(m_impl->database, updateOperation.get(), 4, status.toJson());
+    bindText(m_impl->database, updateOperation.get(), 5, operationId);
+    if (sqlite3_step(updateOperation.get()) != SQLITE_DONE ||
+        sqlite3_changes(m_impl->database) != 1) {
+      throw std::runtime_error("repo-publish-terminal-conflict: operation changed");
     }
     sqlExec(m_impl->database, "COMMIT");
   }
@@ -1920,6 +2844,97 @@ SqliteArtifactMetadataStore::lookupPersistentLocation(
   if (nowMs != 0 && nowMs >= result.expiresAtMs) return std::nullopt;
   result.validate(nowMs);
   return result;
+}
+
+bool
+SqliteArtifactMetadataStore::hasPersistentCommitReceipt(
+  const ArtifactReference& reference, const std::string& repoNode,
+  const std::string& providerIdentity, const std::string& operationId,
+  const std::string& receiptId, uint64_t generation) const
+{
+  reference.validate();
+  std::lock_guard<std::mutex> guard(m_impl->mutex);
+  Statement lookup(m_impl->database,
+    "SELECT generation,persisted_bytes,state FROM artifact_persistent_receipts WHERE "
+    "repo_node=? AND provider_identity=? AND operation_id=? AND receipt_id=? AND "
+    "logical_name=? AND "
+    "digest_algorithm=? AND content_digest=? AND size_bytes=? AND format_version=? AND "
+    "root_manifest_name=? AND publisher_identity=? AND policy_epoch=?");
+  bindText(m_impl->database, lookup.get(), 1, repoNode);
+  bindText(m_impl->database, lookup.get(), 2, providerIdentity);
+  bindText(m_impl->database, lookup.get(), 3, operationId);
+  bindText(m_impl->database, lookup.get(), 4, receiptId);
+  bindReference(m_impl->database, lookup.get(), 5, reference);
+  const int status = sqlite3_step(lookup.get());
+  if (status == SQLITE_DONE) return false;
+  if (status != SQLITE_ROW) {
+    throw std::runtime_error(
+      std::string("repo-metadata-sql-failed: persistent receipt verification: ") +
+      sqlite3_errmsg(m_impl->database));
+  }
+  const auto storedGeneration = sqlite3_column_int64(lookup.get(), 0);
+  const auto storedBytes = sqlite3_column_int64(lookup.get(), 1);
+  return storedGeneration > 0 && storedBytes >= 0 &&
+         static_cast<uint64_t>(storedGeneration) == generation &&
+         static_cast<uint64_t>(storedBytes) == reference.sizeBytes &&
+         columnText(lookup.get(), 2) == "COMMITTED";
+}
+
+bool
+SqliteArtifactMetadataStore::hasPersistentCommitReceiptForObject(
+  const std::string& objectName, const std::string& repoNode,
+  const std::string& providerIdentity, const std::string& sha256,
+  uint64_t sizeBytes, const std::string& policyEpoch,
+  uint64_t generation) const
+{
+  if (objectName.empty() || repoNode.empty() || providerIdentity.empty() ||
+      generation == 0 || sizeBytes > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+      generation > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+    return false;
+  }
+  std::lock_guard<std::mutex> guard(m_impl->mutex);
+  Statement lookup(m_impl->database,
+    "SELECT logical_name,digest_algorithm,content_digest,size_bytes,format_version,"
+    "root_manifest_name,publisher_identity,policy_epoch,generation,persisted_bytes "
+    "FROM artifact_persistent_receipts WHERE repo_node=? AND provider_identity=? AND "
+    "digest_algorithm='sha256' AND lower(content_digest)=lower(?) AND size_bytes=? AND policy_epoch=? AND "
+    "generation=? AND persisted_bytes=? AND state='COMMITTED'");
+  bindText(m_impl->database, lookup.get(), 1, repoNode);
+  bindText(m_impl->database, lookup.get(), 2, providerIdentity);
+  bindText(m_impl->database, lookup.get(), 3, sha256);
+  bindInt64(m_impl->database, lookup.get(), 4, static_cast<int64_t>(sizeBytes));
+  bindText(m_impl->database, lookup.get(), 5, policyEpoch);
+  bindInt64(m_impl->database, lookup.get(), 6, static_cast<int64_t>(generation));
+  bindInt64(m_impl->database, lookup.get(), 7, static_cast<int64_t>(sizeBytes));
+
+  while (true) {
+    const int status = sqlite3_step(lookup.get());
+    if (status == SQLITE_DONE) return false;
+    if (status != SQLITE_ROW) {
+      throw std::runtime_error(
+        std::string("repo-metadata-sql-failed: artifact visibility receipt lookup: ") +
+        sqlite3_errmsg(m_impl->database));
+    }
+    const auto storedSize = sqlite3_column_int64(lookup.get(), 3);
+    const auto storedGeneration = sqlite3_column_int64(lookup.get(), 8);
+    const auto persistedBytes = sqlite3_column_int64(lookup.get(), 9);
+    if (storedSize < 0 || storedGeneration <= 0 || persistedBytes < 0) continue;
+
+    ArtifactReference reference;
+    reference.logicalName = columnText(lookup.get(), 0);
+    reference.digestAlgorithm = columnText(lookup.get(), 1);
+    reference.contentDigest = columnText(lookup.get(), 2);
+    reference.sizeBytes = static_cast<uint64_t>(storedSize);
+    reference.formatVersion = columnText(lookup.get(), 4);
+    reference.rootManifestName = columnText(lookup.get(), 5);
+    reference.publisherIdentity = columnText(lookup.get(), 6);
+    reference.policyEpoch = columnText(lookup.get(), 7);
+    if (static_cast<uint64_t>(storedGeneration) == generation &&
+        static_cast<uint64_t>(persistedBytes) == sizeBytes &&
+        artifactStorageObjectName(reference) == objectName) {
+      return true;
+    }
+  }
 }
 
 const std::string&

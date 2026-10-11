@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -50,6 +51,13 @@ public:
   std::vector<uint8_t> getRange(const std::string& objectName,
                                 RepoByteRange range) const override;
   RepoObjectManifest getManifest(const std::string& objectName) const override;
+  RepoObjectMetadataProbe
+  probeObjectMetadata(const std::string& objectName) const override;
+  std::optional<RepoObjectManifest>
+  findRetainedDataReceipt(const std::string& dataName,
+                          const std::string& wireSha256) const override;
+  void attachImportedDataReceipt(const RepoObjectManifest& expected,
+                                 const RepoObjectManifest& updated) override;
   bool supportsRange() const noexcept override;
   uint64_t fullCopyFallbackCount() const noexcept override;
   void abortRanges(const std::string& objectName) override;
@@ -72,6 +80,8 @@ private:
 
   ArtifactReference artifactReference(const RepoObjectManifest& manifest) const;
   std::filesystem::path manifestPath(const std::string& objectName) const;
+  std::filesystem::path receiptDirectory(const std::string& dataName,
+                                         const std::string& wireSha256) const;
   RepoObjectManifest readManifest(const std::string& objectName) const;
   RepoObjectManifest readManifestUnlocked(const std::string& objectName) const;
   void writeManifest(const RepoObjectManifest& manifest) const;

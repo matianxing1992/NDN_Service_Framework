@@ -33,6 +33,64 @@ namespace ndn_service_framework
 
     namespace
     {
+        bool
+        isSpec192SelectedRequestTraceEnabled()
+        {
+            const char* setting = std::getenv("NDNSF_SPEC192_SELECTED_REQUEST_TRACE");
+            return setting != nullptr && setting[0] == '1' && setting[1] == '\0';
+        }
+
+        bool
+        isSpec192StatusService(const ndn::Name& serviceName)
+        {
+            if (!isSpec192SelectedRequestTraceEnabled()) {
+                return false;
+            }
+            const auto uri = serviceName.toUri();
+            constexpr char suffix[] = "/STATUS";
+            return uri.size() >= sizeof(suffix) - 1 &&
+                   uri.compare(uri.size() - (sizeof(suffix) - 1),
+                               sizeof(suffix) - 1, suffix) == 0;
+        }
+
+        bool
+        isSpec192StatusResponseName(const ndn::Name& messageName)
+        {
+            if (!isSpec192SelectedRequestTraceEnabled()) {
+                return false;
+            }
+            const auto response = parseResponseNameV2(messageName);
+            return response && isSpec192StatusService(response->serviceName);
+        }
+
+        bool
+        isSpec192StatusAckName(const ndn::Name& messageName)
+        {
+            if (!isSpec192SelectedRequestTraceEnabled()) {
+                return false;
+            }
+            const auto ack = parseRequestAckNameV2(messageName);
+            return ack && isSpec192StatusService(ack->serviceName);
+        }
+
+        void
+        traceSpec192StatusResponse(const char* stage)
+        {
+            if (isSpec192SelectedRequestTraceEnabled()) {
+                std::cerr << "Spec192 provider STATUS response: stage="
+                          << stage << std::endl;
+            }
+        }
+
+        void
+        traceSpec192StatusAcknowledgement(const char* stage)
+        {
+            if (isSpec192SelectedRequestTraceEnabled()) {
+                std::cerr << "Spec192 provider STATUS ACK: stage="
+                          << stage << std::endl;
+            }
+        }
+
         void
         configureSvsProtocol(ndn::svs::SVSPubSubOptions& options)
         {
@@ -2064,7 +2122,14 @@ namespace ndn_service_framework
                                      ServiceMode mode)
     {
         std::lock_guard<std::mutex> regLock(m_registrationControl->mutex);
+        const bool traceSpec192Status = isSpec192StatusService(serviceName);
+        if (traceSpec192Status) {
+            traceSpec192StatusAcknowledgement("service-registration-attempted");
+        }
         if (!allowLegacyServiceTakeover(serviceName)) {
+            if (traceSpec192Status) {
+                traceSpec192StatusAcknowledgement("service-registration-refused");
+            }
             NDN_LOG_WARN("[ServiceProvider] legacy service registration refused "
                          "over active scoped registration service="
                          << serviceName.toUri());
@@ -2092,6 +2157,9 @@ namespace ndn_service_framework
         NDN_LOG_WARN("Registered service handler for " << serviceUri
                      << " mode="
                      << (mode == ServiceMode::Targeted ? "Targeted" : "Normal"));
+        if (traceSpec192Status) {
+            traceSpec192StatusAcknowledgement("service-registration-installed");
+        }
     }
 
     void ServiceProvider::addService(const ndn::Name& serviceName,
@@ -4959,6 +5027,10 @@ namespace ndn_service_framework
         AckDecision decision,
         std::shared_ptr<RegistrationState> registrationState)
     {
+        const bool traceSpec192Status = isSpec192StatusService(serviceName);
+        if (traceSpec192Status) {
+            traceSpec192StatusAcknowledgement("ack-decision-entered");
+        }
         if (m_timelineTrace) {
             logTimelineTrace("provider", "ack_finish_enter", requestId,
                              {{"providerName", identity.toUri()},
@@ -4975,6 +5047,9 @@ namespace ndn_service_framework
                                    .append(serviceName)
                                    .append(requestId);
         if (decision.suppressAck) {
+            if (traceSpec192Status) {
+                traceSpec192StatusAcknowledgement("ack-decision-suppressed");
+            }
             NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=ACK_SUPPRESSED timestamp_us="
                       << nowMicroseconds()
                       << " providerName=" << identity.toUri()
@@ -5004,6 +5079,10 @@ namespace ndn_service_framework
             // retired registration's name.
             decision.status = false;
             decision.message = "Service registration closed before ACK committed";
+        }
+        if (traceSpec192Status) {
+            traceSpec192StatusAcknowledgement(
+                decision.status ? "ack-decision-accepted" : "ack-decision-denied");
         }
         std::string providerToken;
         if (decision.status) {
@@ -5055,6 +5134,9 @@ namespace ndn_service_framework
                   << " providerTokenPresent=" << !providerToken.empty()
                   << " ackQueueDepth=" << m_ackPool.getQueueSize()
                   << " handlerQueueDepth=" << m_handlerPool.getQueueSize());
+        if (traceSpec192Status) {
+            traceSpec192StatusAcknowledgement("ack-publish-call-entered");
+        }
         PublishRequestAckMessageV2(requesterIdentity,
                                    serviceName,
                                    requestId,
@@ -5065,6 +5147,9 @@ namespace ndn_service_framework
                                    providerToken,
                                    &requestMessage,
                                    &decision);
+        if (traceSpec192Status) {
+            traceSpec192StatusAcknowledgement("ack-publish-call-returned");
+        }
     }
 
     bool ServiceProvider::consumeTargetedProviderToken(
@@ -5870,6 +5955,7 @@ namespace ndn_service_framework
         encryptedDataName.appendVersion();
 
         const auto chunkBytes = requestScopedResponseChunkBytes(threshold);
+        const auto finalSegment = (payload.size() - 1) / chunkBytes;
         result.largeData.digest = sha256DigestString(payload);
         size_t segmentCount = 0;
         std::string publicationStage = "initialization";
@@ -5894,6 +5980,8 @@ namespace ndn_service_framework
                     ndn::Name(encryptedDataName).appendSegment(segmentCount));
                 data->setContent(envelopeWire);
                 data->setFreshnessPeriod(freshness);
+                data->setFinalBlock(
+                    ndn::name::Component::fromSegment(finalSegment));
                 publicationStage = "sign";
                 auto& activeKeyChain = m_testSigningKeyChain ?
                     *m_testSigningKeyChain : m_keyChain;
@@ -5951,6 +6039,10 @@ namespace ndn_service_framework
         std::string selectionDigest,
         std::shared_ptr<RegistrationState> registrationState)
     {
+        const bool traceSpec192Status = isSpec192StatusService(serviceName);
+        if (traceSpec192Status) {
+            traceSpec192StatusResponse("execution-response-entered");
+        }
         auto releaseR1Reservation = [this, &requesterName, &serviceName,
                                      &requestId](const std::string& cause) {
             const ndn::Name key = ndn::Name(requesterName).append(serviceName).append(requestId);
@@ -6126,7 +6218,13 @@ namespace ndn_service_framework
                   << " serviceName=" << serviceName.toUri()
                   << " responseName=" << responseName.toUri());
         try {
+            if (traceSpec192Status) {
+                traceSpec192StatusResponse("response-publish-call-entered");
+            }
             PublishMessage(responseName, responseNameWithoutPrefix, response);
+            if (traceSpec192Status) {
+                traceSpec192StatusResponse("response-publish-call-returned");
+            }
             NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=RESPONSE_PUBLISHED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
@@ -10361,10 +10459,24 @@ namespace ndn_service_framework
     {
         const auto plaintextBlock = message.WireEncode();
         auto plaintext = ndn::Buffer(plaintextBlock.begin(), plaintextBlock.end());
+        const bool traceSpec192Status = isSpec192StatusResponseName(messageName);
+        const bool traceSpec192StatusAck = isSpec192StatusAckName(messageName);
+        if (traceSpec192Status) {
+            traceSpec192StatusResponse("hybrid-message-encoded-queued");
+        }
+        if (traceSpec192StatusAck) {
+            traceSpec192StatusAcknowledgement("hybrid-message-encoded-queued");
+        }
         boost::asio::post(m_face.getIoContext(),
             [this, messageName, plaintext = std::move(plaintext)]() mutable {
-                publishHybridEncodedMessage(messageName, std::move(plaintext));
-            });
+            publishHybridEncodedMessage(messageName, std::move(plaintext));
+        });
+        if (traceSpec192Status) {
+            traceSpec192StatusResponse("hybrid-message-queue-returned");
+        }
+        if (traceSpec192StatusAck) {
+            traceSpec192StatusAcknowledgement("hybrid-message-queue-returned");
+        }
     }
 
     void ServiceProvider::publishHybridEncodedMessage(const ndn::Name& messageName,
@@ -10389,11 +10501,25 @@ namespace ndn_service_framework
             NDN_LOG_ERROR("Hybrid publish unsupported message name: " << messageName);
             return;
         }
+        const bool traceSpec192Status = isSpec192StatusResponseName(messageName);
+        const bool traceSpec192StatusAck = isSpec192StatusAckName(messageName);
+        if (traceSpec192Status) {
+            traceSpec192StatusResponse("hybrid-encode-entered");
+        }
+        if (traceSpec192StatusAck) {
+            traceSpec192StatusAcknowledgement("hybrid-encode-entered");
+        }
 
         const auto messageType = hybridMessageTypeForName(messageName);
         const auto accessAttribute = hybridAccessAttributeForName(messageName, serviceName);
         auto key = m_hybridMessageCrypto.getOrCreateSendKey(
             serviceName, senderPrefix, accessAttribute, messageType, m_hybridCryptoCounters);
+        if (traceSpec192Status) {
+            traceSpec192StatusResponse("hybrid-send-key-ready");
+        }
+        if (traceSpec192StatusAck) {
+            traceSpec192StatusAcknowledgement("hybrid-send-key-ready");
+        }
 
         const auto ad = hybridAssociatedData(messageName, messageType, requestId,
                                             serviceName, senderPrefix,
@@ -10467,9 +10593,16 @@ namespace ndn_service_framework
                               {"serviceName", serviceName.toUri()},
                               {"messageType", messageType}});
         }
+        if (traceSpec192Status) {
+            traceSpec192StatusResponse("hybrid-key-wrap-ready");
+        }
+        if (traceSpec192StatusAck) {
+            traceSpec192StatusAcknowledgement("hybrid-key-wrap-ready");
+        }
 
         const auto plaintextBytes = plaintext.size();
         auto encryptAndPost = [this, messageName, requestId, serviceName, messageType,
+                               traceSpec192Status, traceSpec192StatusAck,
                                keyId = key.keyId, epochId = key.epochId,
                                keyBytes = key.key, ad = std::move(ad),
                                plaintext = std::move(plaintext),
@@ -10494,9 +10627,16 @@ namespace ndn_service_framework
             catch (const std::exception& e) {
                 error = e.what();
             }
+            if (traceSpec192Status && error.empty()) {
+                traceSpec192StatusResponse("hybrid-aes-envelope-ready");
+            }
+            if (traceSpec192StatusAck && error.empty()) {
+                traceSpec192StatusAcknowledgement("hybrid-aes-envelope-ready");
+            }
             const auto aesEndUs = timelineSteadyMicroseconds();
             boost::asio::post(m_face.getIoContext(),
                 [this, messageName, requestId, serviceName, messageType,
+                 traceSpec192Status, traceSpec192StatusAck,
                  keyId, epochId, aesStartUs, aesEndUs, wrappedKeyAttached,
                  ciphertextBytes, error = std::move(error),
                  buffer = std::move(buffer)]() mutable {
@@ -10578,7 +10718,19 @@ namespace ndn_service_framework
                     }
                 }
                 const bool asyncPublish = useAsyncSvsPublish();
+                if (traceSpec192Status) {
+                    traceSpec192StatusResponse("svs-publish-entered");
+                }
+                if (traceSpec192StatusAck) {
+                    traceSpec192StatusAcknowledgement("svs-publish-entered");
+                }
                 const auto publishedSeqNo = publishSvs(m_svsps, messageName, contentBlock);
+                if (traceSpec192Status) {
+                    traceSpec192StatusResponse("svs-publish-returned");
+                }
+                if (traceSpec192StatusAck) {
+                    traceSpec192StatusAcknowledgement("svs-publish-returned");
+                }
                 NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event="
                               << (asyncPublish ? "SVS_PUBLISH_ACCEPTED" : "SVS_PUBLISH_DONE")
                               << " timestamp_us=" << nowMicroseconds()
@@ -11473,6 +11625,10 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
     const ndn::Name& requestId,
     ndn_service_framework::RequestMessage requestMessage)
 {
+    const bool traceSpec192Status = isSpec192StatusService(serviceName);
+    if (traceSpec192Status) {
+        traceSpec192StatusAcknowledgement("decoded-request-entered");
+    }
     NDN_LOG_DEBUG("OnRequestDecryptionSuccessCallbackV2: "
         << requesterIdentity.toUri()
         << serviceName.toUri()
@@ -11526,6 +11682,9 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
     if (m_useTokens && requestMessage.getUserToken().empty()) {
         NDN_LOG_ERROR("OnRequestDecryptionSuccessCallbackV2: Missing UserToken");
         return;
+    }
+    if (traceSpec192Status) {
+        traceSpec192StatusAcknowledgement("decoded-request-authorized");
     }
     if (m_timelineTrace) {
         logTimelineTrace("provider", "user_token_validate_done", requestId,
@@ -11591,6 +11750,9 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
 
     if (hasService(serviceName) ||
         m_collaborationServices.find(serviceName) != m_collaborationServices.end()) {
+        if (traceSpec192Status) {
+            traceSpec192StatusAcknowledgement("registered-service-dispatch-entered");
+        }
         NDN_LOG_DEBUG("Dispatch request using V2 dynamic handler for "
                      << serviceName.toUri());
 
@@ -11664,6 +11826,9 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
             ackHandler = collabService->second.ackHandler;
         }
         if (ackHandler) {
+            if (traceSpec192Status) {
+                traceSpec192StatusAcknowledgement("ack-handler-dispatch-entered");
+            }
             if (m_timelineTrace) {
                 logTimelineTrace("provider", "ack_decision_start", requestId,
                                  {{"serviceName", serviceName.toUri()}});
@@ -11688,6 +11853,9 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
                     decision.status ? "Permission Granted" : "Permission Denied";
             }
         }
+        else if (traceSpec192Status) {
+            traceSpec192StatusAcknowledgement("ack-handler-missing-default-decision");
+        }
         finishAckDecisionOnEventLoop(requesterIdentity,
                                      serviceName,
                                      requestId,
@@ -11697,6 +11865,9 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
         return;
     }
 
+    if (traceSpec192Status) {
+        traceSpec192StatusAcknowledgement("unregistered-service-default-ack");
+    }
     NDN_LOG_INFO("No V2 dynamic handler for " << serviceName.toUri());
 
     if (shouldSuppressAdaptiveAck(requesterIdentity, serviceName, requestId)) {

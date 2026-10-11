@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <iterator>
@@ -105,6 +106,40 @@ dispatch(ndn_service_framework::ServiceProvider& provider,
   return provider.dispatchRequest(
     ndn::Name("/spec192/user"), provider.getName(), service,
     ndn::Name("/spec192/request").append(requestId), request);
+}
+
+std::string
+responseString(const ndn_service_framework::ResponseMessage& response);
+
+std::string
+reservePublishOperation(ndn_service_framework::ServiceProvider& provider,
+                        const ndn::Name& storeService,
+                        const RepoArtifactTarget& seed,
+                        const ArtifactReference& reference,
+                        uint64_t generation,
+                        const std::string& idempotencyKey,
+                        const std::vector<RepoArtifactTarget>& targets,
+                        const std::string& requestId)
+{
+  PublishOperationIntent intent;
+  intent.idempotencyKeyDigest = digestPublishIdempotencyKey(idempotencyKey);
+  intent.reference = reference;
+  intent.generation = generation;
+  intent.seed = seed;
+  intent.consistency = "ONE";
+  intent.targets = targets;
+  intent.requestDigest = makePublishRequestDigest(
+    reference, generation, seed, intent.consistency, targets);
+  const auto expectedOperationId = makePublishOperationId(
+    "/spec192/user", seed, intent.idempotencyKeyDigest);
+  const auto wire = intent.toJson();
+  const std::vector<uint8_t> payload(wire.begin(), wire.end());
+  const auto response = dispatch(provider, storeService, payload, requestId);
+  if (!response.getStatus() || responseString(response) != expectedOperationId) {
+    BOOST_ERROR("PUBLISH_INTENT reservation failed: " + response.getErrorInfo());
+    return {};
+  }
+  return expectedOperationId;
 }
 
 std::vector<uint8_t>
@@ -234,7 +269,199 @@ checkPersistentReceiptRow(const std::string& databasePath,
   BOOST_CHECK_EQUAL(sqlite3_step(statement.get()), SQLITE_DONE);
 }
 
+size_t
+countPersistentReceipts(const std::string& databasePath,
+                        const ArtifactReference& reference)
+{
+  sqlite3* rawDatabase = nullptr;
+  if (sqlite3_open_v2(databasePath.c_str(), &rawDatabase,
+                      SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+    if (rawDatabase != nullptr) sqlite3_close(rawDatabase);
+    throw std::runtime_error("cannot open Persistent receipt database for counting");
+  }
+  std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(rawDatabase, sqlite3_close);
+  sqlite3_stmt* rawStatement = nullptr;
+  const char* sql =
+    "SELECT COUNT(*) FROM artifact_persistent_receipts WHERE logical_name=? "
+    "AND digest_algorithm=? AND content_digest=? AND size_bytes=? "
+    "AND format_version=? AND root_manifest_name=? AND publisher_identity=? "
+    "AND policy_epoch=?";
+  if (sqlite3_prepare_v2(database.get(), sql, -1, &rawStatement, nullptr) != SQLITE_OK) {
+    throw std::runtime_error("cannot prepare Persistent receipt count query");
+  }
+  std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(rawStatement,
+                                                                       sqlite3_finalize);
+  const auto bindTextValue = [&] (int index, const std::string& value) {
+    if (sqlite3_bind_text(statement.get(), index, value.c_str(), -1,
+                          SQLITE_TRANSIENT) != SQLITE_OK) {
+      throw std::runtime_error("cannot bind Persistent receipt count query");
+    }
+  };
+  bindTextValue(1, reference.logicalName);
+  bindTextValue(2, reference.digestAlgorithm);
+  bindTextValue(3, reference.contentDigest);
+  if (sqlite3_bind_int64(statement.get(), 4,
+                         static_cast<sqlite3_int64>(reference.sizeBytes)) != SQLITE_OK) {
+    throw std::runtime_error("cannot bind Persistent receipt size");
+  }
+  bindTextValue(5, reference.formatVersion);
+  bindTextValue(6, reference.rootManifestName);
+  bindTextValue(7, reference.publisherIdentity);
+  bindTextValue(8, reference.policyEpoch);
+  if (sqlite3_step(statement.get()) != SQLITE_ROW) {
+    throw std::runtime_error("cannot read Persistent receipt count");
+  }
+  return static_cast<size_t>(sqlite3_column_int64(statement.get(), 0));
+}
+
+void
+replaceCurrentLocationReceiptId(const std::string& databasePath,
+                                const std::string& operationId,
+                                const std::string& receiptId)
+{
+  sqlite3* rawDatabase = nullptr;
+  BOOST_REQUIRE_EQUAL(sqlite3_open_v2(databasePath.c_str(), &rawDatabase,
+                                      SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
+  std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(rawDatabase, sqlite3_close);
+  sqlite3_stmt* rawStatement = nullptr;
+  BOOST_REQUIRE_EQUAL(sqlite3_prepare_v2(database.get(),
+    "UPDATE artifact_locations SET receipt_id=? WHERE operation_id=?",
+    -1, &rawStatement, nullptr), SQLITE_OK);
+  std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(
+    rawStatement, sqlite3_finalize);
+  BOOST_REQUIRE_EQUAL(sqlite3_bind_text(statement.get(), 1, receiptId.c_str(), -1,
+                                        SQLITE_TRANSIENT), SQLITE_OK);
+  BOOST_REQUIRE_EQUAL(sqlite3_bind_text(statement.get(), 2, operationId.c_str(), -1,
+                                        SQLITE_TRANSIENT), SQLITE_OK);
+  BOOST_REQUIRE_EQUAL(sqlite3_step(statement.get()), SQLITE_DONE);
+  BOOST_CHECK_EQUAL(sqlite3_changes(database.get()), 1);
+}
+
 } // namespace
+
+BOOST_AUTO_TEST_CASE(PublishOperationDigestsMatchKnownAnswers)
+{
+  const std::string key = "spec192-known-key";
+  const auto keyDigest = digestPublishIdempotencyKey(key);
+  BOOST_CHECK_EQUAL(
+    keyDigest,
+    "d4c47c2e7196d0c8d2b6cf3db760d77c65831e43868322737cbae42d9d2f5f3e");
+
+  const RepoArtifactTarget seed{
+    "/logical/seed", "/provider/seed", "/NDNSF/DistributedRepo/Object/v1"};
+  const RepoArtifactTarget replica{
+    "/logical/replica", "/provider/replica", "/NDNSF/DistributedRepo/Object/v1"};
+  BOOST_CHECK_EQUAL(
+    makePublishOperationId("/spec192/user", seed, keyDigest),
+    "a0aa24e8f9edd06bd0f7dc82e2f1b3bc3fdf3308b7bca05174c8586e0b7a326e");
+
+  const auto reference = makeReference("known-answer", {'A', 'B', 'C'});
+  const std::vector<RepoArtifactTarget> reversedTargets{seed, replica};
+  const std::vector<RepoArtifactTarget> sortedTargets{replica, seed};
+  const auto reversedDigest = makePublishRequestDigest(
+    reference, 1, seed, "QUORUM", reversedTargets);
+  BOOST_CHECK_EQUAL(
+    reversedDigest,
+    "8b21d1640a47a6654db1fa904f42fb88c27c051b838c189344b99b955e904258");
+  BOOST_CHECK_EQUAL(reversedDigest,
+                    makePublishRequestDigest(reference, 1, seed, "QUORUM",
+                                             sortedTargets));
+
+  PublishOperationIntent intent;
+  intent.idempotencyKeyDigest = keyDigest;
+  intent.requestDigest = reversedDigest;
+  intent.reference = reference;
+  intent.generation = 1;
+  intent.seed = seed;
+  intent.consistency = "QUORUM";
+  intent.targets = reversedTargets;
+  const auto wire = intent.toJson();
+  BOOST_CHECK_EQUAL(wire.find(key), std::string::npos);
+  BOOST_CHECK_EQUAL(PublishOperationIntent::fromJson(wire).toJson(), wire);
+}
+
+BOOST_AUTO_TEST_CASE(PublishOperationStatusRequestOptionallyBindsExactTarget)
+{
+  const RepoArtifactTarget target{
+    "/logical/replica", "/provider/replica",
+    "/NDNSF/DistributedRepo/Object/v1"};
+  PublishOperationStatusRequest request;
+  request.operationId = std::string(64, 'a');
+  request.target = target;
+
+  const auto wire = request.toJson();
+  const auto decoded = PublishOperationStatusRequest::fromJson(wire);
+  BOOST_REQUIRE(decoded.target);
+  BOOST_CHECK_EQUAL(decoded.operationId, request.operationId);
+  BOOST_CHECK(*decoded.target == target);
+
+  const PublishOperationStatusRequest legacy{1, request.operationId};
+  const auto legacyDecoded = PublishOperationStatusRequest::fromJson(legacy.toJson());
+  BOOST_CHECK(!legacyDecoded.target);
+  BOOST_CHECK_EQUAL(legacyDecoded.operationId, request.operationId);
+
+  auto extraField = wire;
+  extraField.insert(extraField.size() - 1, ",\"unexpected\":true");
+  BOOST_CHECK_THROW(PublishOperationStatusRequest::fromJson(extraField),
+                    std::exception);
+
+  auto nonCanonicalTarget = request;
+  nonCanonicalTarget.target->servicePrefix = "//NDNSF/DistributedRepo/Object/v1";
+  BOOST_CHECK_THROW(nonCanonicalTarget.toJson(), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(PublishIntentRejectsAnUnrepresentableTerminalStatus)
+{
+  const auto quote = [] (const std::string& value) {
+    return "\"" + value + "\"";
+  };
+  auto reference = makeReference("status-size", {'A'});
+  reference.logicalName = "/" + std::string(4095, 'a');
+  reference.rootManifestName = "/" + std::string(4095, 'b');
+  reference.publisherIdentity = "/" + std::string(4095, 'c');
+
+  std::vector<RepoArtifactTarget> targets;
+  for (size_t i = 0; i < 90; ++i) {
+    targets.push_back({"/repo/" + std::to_string(i),
+                       "/provider/" + std::to_string(i),
+                       "/NDNSF/DistributedRepo/Object/v1"});
+  }
+  const auto seed = targets.front();
+  const auto requestDigest = makePublishRequestDigest(
+    reference, 1, seed, "ALL", targets);
+
+  const auto referenceWire = "{\"logicalName\":" + quote(reference.logicalName) +
+    ",\"digestAlgorithm\":" + quote(reference.digestAlgorithm) +
+    ",\"contentDigest\":" + quote(reference.contentDigest) +
+    ",\"sizeBytes\":" + std::to_string(reference.sizeBytes) +
+    ",\"formatVersion\":" + quote(reference.formatVersion) +
+    ",\"rootManifestName\":" + quote(reference.rootManifestName) +
+    ",\"publisherIdentity\":" + quote(reference.publisherIdentity) +
+    ",\"policyEpoch\":" + quote(reference.policyEpoch) + "}";
+  const auto targetWire = [&quote] (const RepoArtifactTarget& target) {
+    return "{\"repoNode\":" + quote(target.repoNode) +
+      ",\"providerIdentity\":" + quote(target.providerIdentity) +
+      ",\"servicePrefix\":" + quote(target.servicePrefix) + "}";
+  };
+  std::string targetsWire = "[";
+  for (size_t i = 0; i < targets.size(); ++i) {
+    if (i != 0) targetsWire.push_back(',');
+    targetsWire += targetWire(targets[i]);
+  }
+  targetsWire.push_back(']');
+  const auto intentWire = "{\"schemaVersion\":1,\"operation\":\"PUBLISH_INTENT\","
+    "\"idempotencyKeyDigest\":" + quote(std::string(64, 'a')) +
+    ",\"requestDigest\":" + quote(requestDigest) +
+    ",\"artifact\":" + referenceWire + ",\"generation\":1,\"seed\":" +
+    targetWire(seed) + ",\"consistency\":\"ALL\",\"targets\":" +
+    targetsWire + "}";
+  BOOST_REQUIRE_LT(intentWire.size(), 256U * 1024U);
+  BOOST_CHECK_EXCEPTION(PublishOperationIntent::fromJson(intentWire),
+    ArtifactValidationError,
+    [] (const ArtifactValidationError& error) {
+      return error.code() == artifact_error::LimitExceeded;
+    });
+}
 
 BOOST_AUTO_TEST_CASE(FullReferenceAndReceiptRoundTripKeepReplicaIdentity)
 {
@@ -403,18 +630,85 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
     servicePrefix, capability, store, logicalRepo, provider.getName().toUri(),
     metadataPath);
   node->registerServices(provider);
-  SqliteArtifactMetadataStore durableCatalog(metadataPath, false, 14);
-  BOOST_CHECK_EQUAL(durableCatalog.schemaGeneration(), 14U);
+  SqliteArtifactMetadataStore durableCatalog(metadataPath, false, 15);
+  BOOST_CHECK_EQUAL(durableCatalog.schemaGeneration(), 15U);
 
   const std::vector<uint8_t> directBytes{0x10, 0x20, 0x30, 0x40};
-  const auto directReference = makeReference("direct-store", directBytes);
+  const auto directReference = makeReference("PUBLISH_STATUS-direct-store", directBytes);
+  const auto callerIdentity = std::string("/spec192/user");
+  const RepoArtifactTarget localSeed{
+    logicalRepo, provider.getName().toUri(), servicePrefix.toUri()};
   ArtifactStoreRequest direct;
-  direct.operationId = "operation-direct";
   direct.generation = 1;
   direct.reference = directReference;
   direct.bytes = directBytes;
   const auto storeName = makeRepoServiceName(servicePrefix, "STORE");
-  auto response = dispatch(provider, storeName, direct.toWire(), "direct-store");
+
+  const auto unjournaledReference = makeReference(
+    "PUBLISH_STATUS-unjournaled-store", directBytes);
+  ArtifactStoreRequest unjournaled;
+  unjournaled.operationId = "operation-without-intent";
+  unjournaled.generation = 1;
+  unjournaled.reference = unjournaledReference;
+  unjournaled.bytes = directBytes;
+  auto response = dispatch(provider, storeName, unjournaled.toWire(),
+                           "unjournaled-seed-store");
+  BOOST_CHECK(!response.getStatus());
+  BOOST_CHECK(!node->core().has(artifactStorageObjectName(unjournaledReference)));
+  BOOST_CHECK(!durableCatalog.lookupPersistentLocation(
+    unjournaledReference, logicalRepo, provider.getName().toUri(), 0));
+  BOOST_CHECK_EQUAL(countPersistentReceipts(metadataPath, unjournaledReference), 0U);
+
+  const auto forgedOwnerReference = makeReference(
+    "PUBLISH_STATUS-forged-replica-owner", directBytes);
+  ArtifactStoreRequest forgedOwner = unjournaled;
+  forgedOwner.operationId = "operation-forged-replica-owner";
+  forgedOwner.reference = forgedOwnerReference;
+  forgedOwner.operationOwner = RepoArtifactTarget{
+    "/logical/remote-seed", "/spec192/seed-provider", servicePrefix.toUri()};
+  response = dispatch(provider, storeName, forgedOwner.toWire(),
+                      "forged-replica-owner-store");
+  BOOST_CHECK(!response.getStatus());
+  BOOST_CHECK(!node->core().has(artifactStorageObjectName(forgedOwnerReference)));
+  BOOST_CHECK(!durableCatalog.lookupPersistentLocation(
+    forgedOwnerReference, logicalRepo, provider.getName().toUri(), 0));
+  BOOST_CHECK_EQUAL(countPersistentReceipts(metadataPath, forgedOwnerReference), 0U);
+
+  PublishOperationIntent directIntent;
+  directIntent.idempotencyKeyDigest = digestPublishIdempotencyKey(
+    "spec192-direct-store-operation-key");
+  directIntent.reference = directReference;
+  directIntent.generation = direct.generation;
+  directIntent.seed = localSeed;
+  directIntent.consistency = "ONE";
+  directIntent.targets = {localSeed};
+  directIntent.requestDigest = makePublishRequestDigest(
+    directReference, directIntent.generation, localSeed,
+    directIntent.consistency, directIntent.targets);
+  direct.operationId = makePublishOperationId(
+    callerIdentity, localSeed, directIntent.idempotencyKeyDigest);
+  const auto directIntentJson = directIntent.toJson();
+  const std::vector<uint8_t> directIntentWire(
+    directIntentJson.begin(), directIntentJson.end());
+  response = dispatch(provider, storeName, directIntentWire, "direct-store-intent");
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  BOOST_CHECK_EQUAL(responseString(response), direct.operationId);
+
+  response = dispatch(provider, storeName, direct.toWire(), "direct-store");
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  const auto directReceipt = RepoArtifactCommitReceipt::fromJson(responseString(response));
+  BOOST_CHECK_EQUAL(directReceipt.repoNode, logicalRepo);
+  BOOST_CHECK_EQUAL(directReceipt.providerIdentity, provider.getName().toUri());
+  BOOST_CHECK(directReceipt.reference == directReference);
+  BOOST_CHECK_EQUAL(directReceipt.operationId, direct.operationId);
+  BOOST_CHECK_EQUAL(directReceipt.generation, direct.generation);
+  const auto committedDirectStatusName = makeRepoServiceName(servicePrefix, "STATUS");
+  ArtifactLocationRequest committedDirectQuery;
+  committedDirectQuery.reference = directReference;
+  const auto committedDirectQueryJson = committedDirectQuery.toJson();
+  response = dispatch(provider, committedDirectStatusName,
+    std::vector<uint8_t>(committedDirectQueryJson.begin(),
+                         committedDirectQueryJson.end()), "direct-location-after-commit");
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   const auto directLocation = ArtifactLocationRecord::fromJson(responseString(response));
   BOOST_CHECK_EQUAL(directLocation.repoNode, logicalRepo);
@@ -426,20 +720,40 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   BOOST_CHECK_EQUAL(directLocation.routeState, "ROUTABLE");
   BOOST_CHECK(durableCatalog.lookupPersistentLocation(
     directReference, logicalRepo, provider.getName().toUri(), 0).has_value());
+  BOOST_CHECK(durableCatalog.hasPersistentCommitReceipt(
+    directReference, logicalRepo, provider.getName().toUri(),
+    direct.operationId, directReceipt.receiptId, direct.generation));
+  BOOST_CHECK(!durableCatalog.hasPersistentCommitReceipt(
+    directReference, logicalRepo, provider.getName().toUri(),
+    direct.operationId, "receipt-from-another-operation", direct.generation));
   checkPersistentReceiptRow(metadataPath, directLocation);
 
   response = dispatch(provider, storeName, direct.toWire(), "direct-store-retry");
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
-  const auto retriedDirectLocation = ArtifactLocationRecord::fromJson(responseString(response));
-  BOOST_CHECK_EQUAL(retriedDirectLocation.toJson(), directLocation.toJson());
-  checkPersistentReceiptRow(metadataPath, retriedDirectLocation);
+  const auto retriedDirectReceipt = RepoArtifactCommitReceipt::fromJson(responseString(response));
+  BOOST_CHECK_EQUAL(retriedDirectReceipt.receiptId, directReceipt.receiptId);
+  checkPersistentReceiptRow(metadataPath, directLocation);
   BOOST_CHECK(RepoClient::getRange(
     *node, artifactStorageObjectName(directReference),
     RepoByteRange{0, directBytes.size()}) == directBytes);
 
   auto conflictingDirect = direct;
-  conflictingDirect.operationId = "operation-direct-conflict";
   conflictingDirect.generation = 2;
+  PublishOperationIntent conflictingIntent = directIntent;
+  conflictingIntent.idempotencyKeyDigest = digestPublishIdempotencyKey(
+    "spec192-direct-store-conflict-key");
+  conflictingIntent.generation = conflictingDirect.generation;
+  conflictingIntent.requestDigest = makePublishRequestDigest(
+    directReference, conflictingIntent.generation, localSeed,
+    conflictingIntent.consistency, conflictingIntent.targets);
+  conflictingDirect.operationId = makePublishOperationId(
+    callerIdentity, localSeed, conflictingIntent.idempotencyKeyDigest);
+  const auto conflictingIntentJson = conflictingIntent.toJson();
+  const std::vector<uint8_t> conflictingIntentWire(
+    conflictingIntentJson.begin(), conflictingIntentJson.end());
+  response = dispatch(provider, storeName, conflictingIntentWire,
+                      "direct-store-conflict-intent");
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   response = dispatch(provider, storeName, conflictingDirect.toWire(),
                       "direct-store-conflict");
   BOOST_CHECK(!response.getStatus());
@@ -465,7 +779,26 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
 
   const std::vector<uint8_t> rangedBytes{1, 2, 3, 4, 5, 6};
   const auto rangedReference = makeReference("ranged-store", rangedBytes);
-  const std::string operation = "operation-ranged";
+  PublishOperationIntent rangedIntent;
+  rangedIntent.idempotencyKeyDigest = digestPublishIdempotencyKey(
+    "spec192-ranged-store-operation-key");
+  rangedIntent.reference = rangedReference;
+  rangedIntent.generation = 1;
+  rangedIntent.seed = localSeed;
+  rangedIntent.consistency = "ONE";
+  rangedIntent.targets = {localSeed};
+  rangedIntent.requestDigest = makePublishRequestDigest(
+    rangedReference, rangedIntent.generation, localSeed,
+    rangedIntent.consistency, rangedIntent.targets);
+  const auto operation = makePublishOperationId(
+    callerIdentity, localSeed, rangedIntent.idempotencyKeyDigest);
+  const auto rangedIntentJson = rangedIntent.toJson();
+  const std::vector<uint8_t> rangedIntentWire(
+    rangedIntentJson.begin(), rangedIntentJson.end());
+  response = dispatch(provider, storeName, rangedIntentWire, "ranged-store-intent");
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  BOOST_CHECK_EQUAL(responseString(response), operation);
+
   ArtifactRangeWriteRequest first;
   first.operationId = operation;
   first.generation = 1;
@@ -494,6 +827,20 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   const auto commitName = makeRepoServiceName(servicePrefix, "COMMIT_RANGES");
   response = dispatch(provider, commitName, commit.toWire(), "ranged-commit");
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  const auto rangedReceipt = RepoArtifactCommitReceipt::fromJson(responseString(response));
+  BOOST_CHECK_EQUAL(rangedReceipt.repoNode, logicalRepo);
+  BOOST_CHECK_EQUAL(rangedReceipt.providerIdentity, provider.getName().toUri());
+  BOOST_CHECK(rangedReceipt.reference == rangedReference);
+  BOOST_CHECK_EQUAL(rangedReceipt.operationId, operation);
+  BOOST_CHECK_EQUAL(rangedReceipt.generation, 1U);
+  ArtifactLocationRequest committedRangeQuery;
+  committedRangeQuery.reference = rangedReference;
+  const auto committedRangeQueryJson = committedRangeQuery.toJson();
+  response = dispatch(provider, committedDirectStatusName,
+                      std::vector<uint8_t>(committedRangeQueryJson.begin(),
+                                           committedRangeQueryJson.end()),
+                      "ranged-location-after-commit");
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   const auto rangedLocation = ArtifactLocationRecord::fromJson(responseString(response));
   BOOST_CHECK_EQUAL(rangedLocation.repoNode, logicalRepo);
   BOOST_CHECK_EQUAL(rangedLocation.providerIdentity, provider.getName().toUri());
@@ -506,18 +853,49 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   BOOST_CHECK(localBytes == rangedBytes);
   checkPersistentReceiptRow(metadataPath, rangedLocation);
 
+  replaceCurrentLocationReceiptId(
+    metadataPath, direct.operationId, rangedReceipt.receiptId);
+  response = dispatch(provider, directStatusName,
+    std::vector<uint8_t>(directQueryJson.begin(), directQueryJson.end()),
+    "direct-location-rejects-mismatched-receipt-id");
+  BOOST_CHECK(!response.getStatus());
+  BOOST_CHECK(response.getErrorInfo().find(
+    "repo-artifact-location-invalid: current catalog receipt does not bind") != std::string::npos);
+  replaceCurrentLocationReceiptId(
+    metadataPath, direct.operationId, directReceipt.receiptId);
+  response = dispatch(provider, directStatusName,
+    std::vector<uint8_t>(directQueryJson.begin(), directQueryJson.end()),
+    "direct-location-after-mismatch-restore");
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  BOOST_CHECK_EQUAL(ArtifactLocationRecord::fromJson(responseString(response)).toJson(),
+                    directLocation.toJson());
+
   BOOST_CHECK_EQUAL(node->core().reapExpiredRangeReservations(0ms), 0U);
   response = dispatch(provider, storeRangeName, first.toWire(), "ranged-retry");
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   response = dispatch(provider, commitName, commit.toWire(), "ranged-recommit");
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
-  const auto retriedRangedLocation = ArtifactLocationRecord::fromJson(responseString(response));
-  BOOST_CHECK_EQUAL(retriedRangedLocation.toJson(), rangedLocation.toJson());
+  const auto retriedRangedReceipt = RepoArtifactCommitReceipt::fromJson(responseString(response));
+  BOOST_CHECK_EQUAL(retriedRangedReceipt.receiptId, rangedReceipt.receiptId);
   BOOST_CHECK_EQUAL(node->core().reapExpiredRangeReservations(0ms), 0U);
 
   auto conflictingRange = first;
-  conflictingRange.operationId = "operation-ranged-conflict";
   conflictingRange.generation = 2;
+  PublishOperationIntent conflictingRangeIntent = rangedIntent;
+  conflictingRangeIntent.idempotencyKeyDigest = digestPublishIdempotencyKey(
+    "spec192-ranged-store-conflict-key");
+  conflictingRangeIntent.generation = conflictingRange.generation;
+  conflictingRangeIntent.requestDigest = makePublishRequestDigest(
+    rangedReference, conflictingRange.generation, localSeed,
+    conflictingRangeIntent.consistency, conflictingRangeIntent.targets);
+  conflictingRange.operationId = makePublishOperationId(
+    callerIdentity, localSeed, conflictingRangeIntent.idempotencyKeyDigest);
+  const auto conflictingRangeIntentJson = conflictingRangeIntent.toJson();
+  const std::vector<uint8_t> conflictingRangeIntentWire(
+    conflictingRangeIntentJson.begin(), conflictingRangeIntentJson.end());
+  response = dispatch(provider, storeName, conflictingRangeIntentWire,
+                      "ranged-store-conflict-intent");
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   response = dispatch(provider, storeRangeName, conflictingRange.toWire(),
                       "ranged-store-conflict");
   BOOST_CHECK(!response.getStatus());
@@ -590,12 +968,17 @@ BOOST_AUTO_TEST_CASE(RangeAbortIsOwnerBoundAndExpiredStagingReleasesCapacity)
   node->registerServices(provider);
 
   const auto service = makeRepoServiceName(servicePrefix, "STORE_RANGE");
+  const auto publishService = makeRepoServiceName(servicePrefix, "STORE");
   const auto abortService = makeRepoServiceName(servicePrefix, "ABORT_RANGES");
   const auto commitService = makeRepoServiceName(servicePrefix, "COMMIT_RANGES");
+  const RepoArtifactTarget seed{
+    logicalRepo, provider.getName().toUri(), servicePrefix.toUri()};
   const std::vector<uint8_t> ownedBytes{0x10, 0x20, 0x30, 0x40};
   const auto ownedReference = makeReference("owner-bound", ownedBytes);
   ArtifactRangeWriteRequest write;
-  write.operationId = "owner-bound-operation";
+  write.operationId = reservePublishOperation(
+    provider, publishService, seed, ownedReference, 1,
+    "spec192-range-owner-key", {seed}, "range-owner-intent");
   write.generation = 1;
   write.reference = ownedReference;
   write.offsetBytes = 0;
@@ -612,8 +995,7 @@ BOOST_AUTO_TEST_CASE(RangeAbortIsOwnerBoundAndExpiredStagingReleasesCapacity)
   BOOST_CHECK(ArtifactRangeAbortRequest::fromWire(wrongWire).operationId ==
               wrongOwner.operationId);
   response = dispatch(provider, abortService, wrongWire, "range-wrong-abort");
-  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
-  BOOST_CHECK_EQUAL(responseString(response), "aborted");
+  BOOST_CHECK(!response.getStatus());
 
   ArtifactRangeCommitRequest commit;
   commit.operationId = write.operationId;
@@ -627,7 +1009,9 @@ BOOST_AUTO_TEST_CASE(RangeAbortIsOwnerBoundAndExpiredStagingReleasesCapacity)
 
   const std::vector<uint8_t> abortedBytes{0x51, 0x52, 0x53};
   const auto abortedReference = makeReference("exact-abort", abortedBytes);
-  write.operationId = "exact-abort-operation";
+  write.operationId = reservePublishOperation(
+    provider, publishService, seed, abortedReference, 1,
+    "spec192-range-exact-abort-key", {seed}, "range-exact-intent");
   write.reference = abortedReference;
   write.lengthBytes = abortedBytes.size();
   write.bytes = abortedBytes;
@@ -647,7 +1031,9 @@ BOOST_AUTO_TEST_CASE(RangeAbortIsOwnerBoundAndExpiredStagingReleasesCapacity)
 
   const std::vector<uint8_t> expiredBytes{0x61, 0x62, 0x63, 0x64, 0x65};
   const auto expiredReference = makeReference("expired-range", expiredBytes);
-  write.operationId = "expired-range-operation";
+  write.operationId = reservePublishOperation(
+    provider, publishService, seed, expiredReference, 1,
+    "spec192-range-expired-key", {seed}, "range-expired-intent");
   write.reference = expiredReference;
   write.lengthBytes = expiredBytes.size();
   write.bytes = expiredBytes;
@@ -690,6 +1076,264 @@ BOOST_AUTO_TEST_CASE(RepoRestartRemovesAbandonedRangeStaging)
       std::filesystem::directory_iterator(root / "staging"),
       std::filesystem::directory_iterator{}), 0);
   }
+}
+
+BOOST_AUTO_TEST_CASE(AvailabilityCodecsAndInAppReceiptRemainTruthful)
+{
+  const std::vector<uint8_t> bytes{0x41, 0x50, 0x49, 0x31};
+  const auto reference = makeReference("availability-codec", bytes);
+  RepoReceiptLookupRequest receiptQuery;
+  receiptQuery.receiptId = "in-app-local-7";
+  receiptQuery.repoNode = "/repo/local";
+  receiptQuery.providerIdentity = "/provider/local";
+  receiptQuery.reference = reference;
+  const auto parsedReceiptQuery = RepoReceiptLookupRequest::fromJson(
+    receiptQuery.toJson());
+  BOOST_CHECK_EQUAL(parsedReceiptQuery.toJson(), receiptQuery.toJson());
+
+  ArtifactExpectedLocation expected{
+    "/repo/local", "/provider/local", "operation-7", "receipt-7", 3, 9};
+  RepoAvailabilityProbeRequest probeRequest;
+  probeRequest.reference = reference;
+  probeRequest.expectedLocation = expected;
+  probeRequest.probeKind = "verify_content";
+  const auto parsedProbe = RepoAvailabilityProbeRequest::fromJson(
+    probeRequest.toJson());
+  BOOST_CHECK_EQUAL(parsedProbe.toJson(), probeRequest.toJson());
+
+  AvailabilityLocationReport location;
+  location.locationKind = "PERSISTENT";
+  location.repoNode = expected.repoNode;
+  location.providerIdentity = expected.providerIdentity;
+  location.generation = expected.generation;
+  location.operationId = expected.operationId;
+  location.receiptId = expected.receiptId;
+  location.locationVersion = expected.locationVersion;
+  location.reachability = "REACHABLE";
+  location.objectPresence = "PRESENT";
+  location.integrity = "VERIFIED";
+  location.probeKind = "verify_content";
+  location.observedAtMs = 100;
+  location.validUntilMs = 200;
+  RepoAvailabilityProbeResponse response;
+  response.reference = reference;
+  response.expectedLocation = expected;
+  response.report = location;
+  BOOST_CHECK_EQUAL(
+    AvailabilityLocationReport::fromJson(location.toJson()).toJson(),
+    location.toJson());
+  const auto parsedResponse = RepoAvailabilityProbeResponse::fromJson(
+    response.toJson());
+  BOOST_CHECK_EQUAL(parsedResponse.toJson(), response.toJson());
+
+  AvailabilityReport publicReport;
+  publicReport.reference = reference;
+  publicReport.probeKind = "verify_content";
+  publicReport.locations.push_back(location);
+  BOOST_CHECK_EQUAL(AvailabilityReport::fromJson(publicReport.toJson()).toJson(),
+                    publicReport.toJson());
+  AvailabilityLocationReport inAppLocation;
+  inAppLocation.locationKind = "IN_APP";
+  inAppLocation.generation = 1;
+  inAppLocation.reachability = "REACHABLE";
+  inAppLocation.objectPresence = "PRESENT";
+  inAppLocation.observedAtMs = 100;
+  inAppLocation.validUntilMs = 200;
+  BOOST_CHECK_EQUAL(
+    AvailabilityLocationReport::fromJson(inAppLocation.toJson()).toJson(),
+    inAppLocation.toJson());
+  auto inAppWithPartialTuple = inAppLocation.toJson();
+  const auto inAppReachabilityField = inAppWithPartialTuple.find(",\"reachability\":");
+  BOOST_REQUIRE_NE(inAppReachabilityField, std::string::npos);
+  inAppWithPartialTuple.insert(inAppReachabilityField,
+    ",\"operationId\":\"operation-7\"");
+  BOOST_CHECK_THROW(AvailabilityLocationReport::fromJson(inAppWithPartialTuple),
+                    ArtifactValidationError);
+  auto inAppWithEmptyTuple = inAppLocation.toJson();
+  const auto emptyInAppReachabilityField = inAppWithEmptyTuple.find(",\"reachability\":");
+  BOOST_REQUIRE_NE(emptyInAppReachabilityField, std::string::npos);
+  inAppWithEmptyTuple.insert(emptyInAppReachabilityField,
+    ",\"operationId\":\"\",\"receiptId\":\"\",\"locationVersion\":0");
+  BOOST_CHECK_THROW(AvailabilityLocationReport::fromJson(inAppWithEmptyTuple),
+                    ArtifactValidationError);
+  auto inAppWithCurrentTuple = inAppLocation.toJson();
+  const auto reachabilityField = inAppWithCurrentTuple.find(",\"reachability\":");
+  BOOST_REQUIRE_NE(reachabilityField, std::string::npos);
+  inAppWithCurrentTuple.insert(reachabilityField,
+    ",\"operationId\":\"operation-7\",\"receiptId\":\"receipt-7\",\"locationVersion\":9");
+  BOOST_CHECK_THROW(AvailabilityLocationReport::fromJson(inAppWithCurrentTuple),
+                    ArtifactValidationError);
+  AvailabilityReport inAppPublicReport;
+  inAppPublicReport.reference = reference;
+  inAppPublicReport.probeKind = "metadata";
+  inAppPublicReport.locations.push_back(inAppLocation);
+  BOOST_CHECK_EQUAL(AvailabilityReport::fromJson(inAppPublicReport.toJson()).toJson(),
+                    inAppPublicReport.toJson());
+  auto inAppWithCurrentPublicTuple = inAppPublicReport.toJson();
+  const auto currentPublicReachabilityField =
+    inAppWithCurrentPublicTuple.find(",\"reachability\":");
+  BOOST_REQUIRE_NE(currentPublicReachabilityField, std::string::npos);
+  inAppWithCurrentPublicTuple.insert(currentPublicReachabilityField,
+    ",\"operationId\":\"operation-7\",\"receiptId\":\"receipt-7\",\"locationVersion\":9");
+  BOOST_CHECK_THROW(AvailabilityReport::fromJson(inAppWithCurrentPublicTuple),
+                    ArtifactValidationError);
+  auto inAppWithEmptyCurrentTuple = inAppPublicReport.toJson();
+  const auto publicReachabilityField = inAppWithEmptyCurrentTuple.find(",\"reachability\":");
+  BOOST_REQUIRE_NE(publicReachabilityField, std::string::npos);
+  inAppWithEmptyCurrentTuple.insert(publicReachabilityField,
+    ",\"operationId\":\"\",\"receiptId\":\"\",\"locationVersion\":0");
+  BOOST_CHECK_THROW(AvailabilityReport::fromJson(inAppWithEmptyCurrentTuple),
+                    ArtifactValidationError);
+  auto inAppWithPartialPublicTuple = inAppPublicReport.toJson();
+  const auto partialPublicReachabilityField =
+    inAppWithPartialPublicTuple.find(",\"reachability\":");
+  BOOST_REQUIRE_NE(partialPublicReachabilityField, std::string::npos);
+  inAppWithPartialPublicTuple.insert(partialPublicReachabilityField,
+    ",\"operationId\":\"operation-7\"");
+  BOOST_CHECK_THROW(AvailabilityReport::fromJson(inAppWithPartialPublicTuple),
+                    ArtifactValidationError);
+
+  AvailabilityLocationReport persistentWithoutLocation;
+  persistentWithoutLocation.locationKind = "PERSISTENT";
+  persistentWithoutLocation.repoNode = expected.repoNode;
+  persistentWithoutLocation.providerIdentity = expected.providerIdentity;
+  persistentWithoutLocation.generation = expected.generation;
+  persistentWithoutLocation.reachability = "UNKNOWN";
+  persistentWithoutLocation.objectPresence = "UNKNOWN";
+  persistentWithoutLocation.integrity = "NOT_CHECKED";
+  persistentWithoutLocation.observedAtMs = 100;
+  persistentWithoutLocation.validUntilMs = 200;
+  BOOST_CHECK_EQUAL(
+    AvailabilityLocationReport::fromJson(persistentWithoutLocation.toJson()).toJson(),
+    persistentWithoutLocation.toJson());
+  AvailabilityReport persistentUnknownReport;
+  persistentUnknownReport.reference = reference;
+  persistentUnknownReport.probeKind = "metadata";
+  persistentUnknownReport.locations.push_back(persistentWithoutLocation);
+  BOOST_CHECK_EQUAL(
+    AvailabilityReport::fromJson(persistentUnknownReport.toJson()).toJson(),
+    persistentUnknownReport.toJson());
+  auto persistentUncommitted = persistentUnknownReport;
+  persistentUncommitted.locations.front().generation = 0;
+  BOOST_CHECK_EQUAL(
+    AvailabilityReport::fromJson(persistentUncommitted.toJson()).toJson(),
+    persistentUncommitted.toJson());
+  auto persistentUncommittedWithKnownPresence = persistentUncommitted;
+  persistentUncommittedWithKnownPresence.locations.front().objectPresence = "ABSENT";
+  BOOST_CHECK_THROW(persistentUncommittedWithKnownPresence.toJson(),
+                    ArtifactValidationError);
+  auto persistentUncommittedReachable = persistentUncommitted;
+  persistentUncommittedReachable.locations.front().reachability = "REACHABLE";
+  BOOST_CHECK_THROW(persistentUncommittedReachable.toJson(), ArtifactValidationError);
+
+  RepoAvailabilityProbeResponse responseWithoutCurrentLocation;
+  responseWithoutCurrentLocation.reference = reference;
+  responseWithoutCurrentLocation.expectedLocation = expected;
+  responseWithoutCurrentLocation.report = persistentWithoutLocation;
+  responseWithoutCurrentLocation.report.reachability = "REACHABLE";
+  const auto responseWithoutCurrentTupleJson = responseWithoutCurrentLocation.toJson();
+  BOOST_CHECK_EQUAL(
+    RepoAvailabilityProbeResponse::fromJson(responseWithoutCurrentTupleJson).toJson(),
+    responseWithoutCurrentTupleJson);
+  auto responseWithPartialCurrentTuple = responseWithoutCurrentTupleJson;
+  const auto partialResponseReportObject =
+    responseWithPartialCurrentTuple.find(",\"report\":{");
+  BOOST_REQUIRE_NE(partialResponseReportObject, std::string::npos);
+  const auto partialResponseReachabilityField =
+    responseWithPartialCurrentTuple.find(",\"reachability\":", partialResponseReportObject);
+  BOOST_REQUIRE_NE(partialResponseReachabilityField, std::string::npos);
+  responseWithPartialCurrentTuple.insert(partialResponseReachabilityField,
+    ",\"operationId\":\"operation-7\"");
+  BOOST_CHECK_THROW(RepoAvailabilityProbeResponse::fromJson(responseWithPartialCurrentTuple),
+                    ArtifactValidationError);
+  auto responseWithEmptyCurrentTuple = responseWithoutCurrentTupleJson;
+  const auto responseReportObject = responseWithEmptyCurrentTuple.find(",\"report\":{");
+  BOOST_REQUIRE_NE(responseReportObject, std::string::npos);
+  const auto responseReachabilityField =
+    responseWithEmptyCurrentTuple.find(",\"reachability\":", responseReportObject);
+  BOOST_REQUIRE_NE(responseReachabilityField, std::string::npos);
+  responseWithEmptyCurrentTuple.insert(responseReachabilityField,
+    ",\"operationId\":\"\",\"receiptId\":\"\",\"locationVersion\":0");
+  BOOST_CHECK_THROW(RepoAvailabilityProbeResponse::fromJson(responseWithEmptyCurrentTuple),
+                    ArtifactValidationError);
+
+  auto invalidReason = location;
+  invalidReason.reason = std::string(1, static_cast<char>(0xff));
+  BOOST_CHECK_THROW(invalidReason.toJson(), ArtifactValidationError);
+  auto oversizedReason = location;
+  oversizedReason.reason.assign(257, 'x');
+  BOOST_CHECK_THROW(oversizedReason.toJson(), ArtifactValidationError);
+  location.integrity = "FAILED";
+  location.objectPresence = "UNKNOWN";
+  BOOST_CHECK_THROW(location.toJson(), ArtifactValidationError);
+
+  TempRoot temporary;
+  InAppRepoConfig config;
+  config.durableRoot = temporary.path() / "in-app";
+  config.ownerId = "spec192-in-app-availability";
+  const auto sourcePath = temporary.path() / "source.bin";
+  {
+    std::ofstream output(sourcePath, std::ios::binary | std::ios::trunc);
+    BOOST_REQUIRE(output.good());
+    output.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    BOOST_REQUIRE(output.good());
+  }
+  auto api = ArtifactRepositoryApi::makeInApp(config);
+  const auto published = api.publishFile(sourcePath.string(), reference);
+  BOOST_REQUIRE(published.receipt);
+  BOOST_REQUIRE(published.handle);
+  const auto historical = api.getReceipt(published.receipt->receiptId,
+                                         published.handle);
+  BOOST_CHECK_EQUAL(historical.toJson(), published.receipt->toJson());
+
+  const auto metadata = api.checkAvailability(*published.handle, "metadata");
+  BOOST_REQUIRE_EQUAL(metadata.locations.size(), 1U);
+  BOOST_CHECK_EQUAL(metadata.locations[0].locationKind, "IN_APP");
+  BOOST_CHECK(metadata.locations[0].repoNode.empty());
+  BOOST_CHECK(metadata.locations[0].providerIdentity.empty());
+  BOOST_CHECK_EQUAL(metadata.locations[0].reachability, "REACHABLE");
+  BOOST_CHECK_EQUAL(metadata.locations[0].objectPresence, "PRESENT");
+  BOOST_CHECK_EQUAL(metadata.locations[0].integrity, "NOT_CHECKED");
+
+  const auto verified = api.checkAvailability(*published.handle, "verify_content");
+  BOOST_REQUIRE_EQUAL(verified.locations.size(), 1U);
+  BOOST_CHECK_EQUAL(verified.locations[0].integrity, "VERIFIED");
+
+  const auto committedPayload = config.durableRoot / "payloads" /
+    reference.digestAlgorithm / reference.contentDigest.substr(0, 2) /
+    reference.contentDigest;
+  BOOST_REQUIRE(std::filesystem::exists(committedPayload));
+  std::filesystem::remove(committedPayload);
+  const auto missingObject = api.checkAvailability(*published.handle, "metadata");
+  BOOST_REQUIRE_EQUAL(missingObject.locations.size(), 1U);
+  BOOST_CHECK_EQUAL(missingObject.locations[0].reachability, "REACHABLE");
+  BOOST_CHECK_EQUAL(missingObject.locations[0].objectPresence, "PARTIAL");
+  BOOST_CHECK_EQUAL(missingObject.locations[0].integrity, "NOT_CHECKED");
+
+  const auto payloadShard = committedPayload.parent_path();
+  std::filesystem::remove(payloadShard);
+  {
+    std::ofstream shardBlocker(payloadShard, std::ios::binary | std::ios::trunc);
+    BOOST_REQUIRE(shardBlocker.good());
+    shardBlocker << "not-a-directory";
+    BOOST_REQUIRE(shardBlocker.good());
+  }
+  const auto unobservableObject = api.checkAvailability(*published.handle, "metadata");
+  BOOST_REQUIRE_EQUAL(unobservableObject.locations.size(), 1U);
+  BOOST_CHECK_EQUAL(unobservableObject.locations[0].reachability, "REACHABLE");
+  BOOST_CHECK_EQUAL(unobservableObject.locations[0].objectPresence, "UNKNOWN");
+  BOOST_CHECK_EQUAL(unobservableObject.locations[0].integrity, "NOT_CHECKED");
+  std::filesystem::remove(payloadShard);
+
+  std::filesystem::remove_all(config.durableRoot);
+  const auto missingRoot = api.checkAvailability(*published.handle, "metadata");
+  BOOST_REQUIRE_EQUAL(missingRoot.locations.size(), 1U);
+  BOOST_CHECK_EQUAL(missingRoot.locations[0].reachability, "UNREACHABLE");
+  BOOST_CHECK_EQUAL(missingRoot.locations[0].objectPresence, "UNKNOWN");
+  const auto stillHistorical = api.getReceipt(published.receipt->receiptId,
+                                              published.handle);
+  BOOST_CHECK_EQUAL(stillHistorical.toJson(), published.receipt->toJson());
 }
 
 BOOST_AUTO_TEST_CASE(ServerAndClientDefaultsAndOverrideKeepRegisteredStatusPrefix)

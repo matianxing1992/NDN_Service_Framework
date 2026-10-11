@@ -31,6 +31,9 @@ public:
 
   RepoObjectManifest getManifest(const std::string& objectName) const;
 
+  RepoObjectMetadataProbe probeObjectMetadata(
+    const std::string& objectName) const;
+
   std::vector<RepoObjectManifest> list() const;
 
   bool remove(const std::string& objectName);
@@ -61,9 +64,20 @@ public:
   RepoObjectManifest commitRangesIfOwned(const RepoObjectManifest& manifest);
 
   RepoObjectManifest putDataPacket(const std::string& dataName,
-                                   const std::vector<uint8_t>& wire);
+                                   const std::vector<uint8_t>& wire,
+                                   const std::string& repoNode = {},
+                                   const std::string& providerIdentity = {});
+
+  /** Explicit local migration of a previously stored Data wire. */
+  RepoWriteReceipt importLegacyDataPacketReceipt(const std::string& dataName,
+                                                  const std::string& repoNode,
+                                                  const std::string& providerIdentity);
 
   std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
+
+  /** Return only a receipt embedded at the original Data commit boundary. */
+  RepoWriteReceipt getDataPacketReceipt(const std::string& dataName,
+                                        const std::string& wireSha256) const;
 
   bool hasDataPacket(const std::string& dataName) const;
 

@@ -1,134 +1,89 @@
 # py-repoclient
 
-`py-repoclient` is the Python binding for the reusable
-NDNSF-DistributedRepo client/protocol API. It is intentionally application
-neutral: it exposes repo manifests, placement decisions, request encoders, and
-a small Python `RepoClient` helper that can be used with the NDNSF Python
-`ServiceUser`.
+`py_repoclient` is a thin pybind projection of the C++ Repo API. C++ owns artifact
+validation, local storage, Persistent operations, receipts, availability, and
+error results. Python converts paths and retains the native `ServiceUser` owner.
 
-Install it after building NDNSF and NDNSF-DistributedRepo:
+## Build and install
 
-```bash
-cd NDNSF-DistributedRepo/pythonWrapper
-python3 -m pip install -e .
-```
-
-From the repository root, the same install can be triggered together with the
-DistributedRepo build:
+From the repository root, install the editable wrapper after its native
+dependencies and `ndnsf` extension have been built. Host builds pin the
+installed NDNSF libraries by digest before setuptools compiles the binding:
 
 ```bash
-./waf
+export NDNSF_LIBRARY_DIR=/usr/local/lib
+export NDNSF_GLOBAL_NATIVE_DIGESTS="$(python3 -c 'import hashlib,json; names=("libndn-service-framework.so","libndnsf-distributed-inference.so"); print(json.dumps({n:hashlib.sha256(open("/usr/local/lib/"+n,"rb").read()).hexdigest() for n in names}, sort_keys=True))')"
 python3 -m pip install -e NDNSF-DistributedRepo/pythonWrapper
 ```
 
-Minimal use:
+The extension links the C++ `ArtifactRepositoryApi`; it does not install a
+Python filesystem backend or Repo service handler.
+
+## In-App API
 
 ```python
-from ndnsf_distributed_inference import DistributedRepo
+import hashlib
+from pathlib import Path
 
-repo = DistributedRepo.from_repo_config(
-    controller="/example/repo/controller",
-    user="/example/repo/user",
-    group="/example/repo/group",
-    trust_schema="examples/trust-schema.conf",
+from py_repoclient import ArtifactReference, ArtifactRepositoryApi
+
+source = Path("model.onnx")
+payload = source.read_bytes()
+digest = hashlib.sha256(payload).hexdigest()
+reference = ArtifactReference(
+    "/models/example",
+    digest,
+    len(payload),
+    f"/example/publisher/NDNSF/ARTIFACT/{digest}/root",
+    "/example/publisher",
+    "policy-epoch-1",
 )
-manifest = repo.put(
-    "APP/Generic/BinaryBlob/demo",
-    b"...",
-    object_type="binary-blob",
-    replication_factor=2,
-    policy_epoch="/Policy/app/v1",
+
+api = ArtifactRepositoryApi.make_in_app(
+    durable_root="/var/lib/ndnsf-artifacts",
+    owner_id="/example/application",
 )
-payload = repo.get(manifest.object_name, manifest)
+published = api.publish_file(source, reference)
+api.fetch_file(reference, Path("cache/model.onnx"))
+receipt = published.receipt
+handle = published.handle
 ```
 
-The high-level API expands relative object suffixes under the publisher
-namespace, for example
-`/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/APP/Generic/BinaryBlob/demo`.
-The repo stores the app-created signed Data segments as opaque bytes; it does
-not add a second encryption layer to encrypted or plaintext application data.
-Those Data packet names must remain under the publisher identity so
-hierarchical trust schemas can validate them against a trust-root certificate
-anchor.
+`ArtifactReference`, `ArtifactHandle`, receipts, operation status, capability
+requirements, selected targets, and result values are native C++ types. Their
+JSON methods use the same strict codecs as C++.
 
-The namespace and trust rules are:
+## Persistent client lifetime
 
-- `/NDNSF/DistributedRepo` is the shared service name, not the stored-data
-  prefix;
-- stored objects and payload segments are under the publisher identity;
-- deployment config objects are under the controller publisher identity;
-- project roots should be parent namespaces such as `/example/repo`;
-- child certificates must be issued under that root namespace, for example
-  `/example/repo/user/KEY/.../ROOT/...`.
-
-`DistributedRepo.from_config("repo_policy.yaml")` is still useful for local
-tests and deployment-side tools that already have the policy file on disk.
-
-Use the lower-level `py_repoclient.RepoClient` only when your application
-already owns an NDNSF `ServiceUser`:
+Construct the framework `ServiceUser` over an application-owned `Face` whose
+event loop is already running on another thread. Calls release the Python GIL
+while waiting. The native Repo API retains its `NativeServiceUser` owner for its
+full lifetime. Stop and join the Face loop before releasing the service user;
+destroy the Repo API first.
 
 ```python
-from ndnsf import ServiceUser
-from py_repoclient import RepoClient
-
-user = ServiceUser(...)
-repo = RepoClient(user, "/NDNSF/DistributedRepo")
-
-manifest = repo.insert(
-    object_name="/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/APP/Model/Shard/0",
-    payload=b"...",
-    object_type="model-shard",
-    replication_factor=2,
-    policy_epoch="/Policy/app/v1",
+api = ArtifactRepositoryApi.make_persistent(
+    service_user,
+    ack_timeout_ms=1000,
+    timeout_ms=30000,
 )
-payload = repo.fetch(manifest.object_name)
 ```
 
-If you already have a manifest, use the manifest-aware object helper instead:
+The standalone Persistent server is the C++ `DistributedRepoServer`. Python
+does not register Repo handlers or own a network backend.
 
-```python
-payload = repo.fetch_object(manifest)
-```
+`RepoClient(service_user)` remains as a thin Persistent convenience facade over
+`ArtifactRepositoryApi`. It preserves `ack_timeout_ms=1000` and
+`timeout_ms=30000`, requires explicit native placement for publication, and
+delegates fetch/archive/status calls to the same C++ API. Legacy object-store,
+placement, and backend-injection operations raise a versioned compatibility
+error. The old async upload/fetch helpers are retired because their
+cancellation tokens had no native C++ equivalent.
 
-This verifies size and SHA-256 from the manifest and keeps the application
-independent from whether the repo stored the object as one payload or as
-object-level chunks.
+## Retired Python APIs
 
-For large objects or APP-signed `Data` segments, higher-level packages such as
-NDNSF-DistributedInference may still use the lower-level segmented Data APIs
-from `ndnsf` and keep `py-repoclient` for manifest/protocol and repo service
-operations.
-
-## Scalable artifact publication
-
-New large-artifact publication uses the ordinary delayed-planning NDNSF
-Collaboration API through `ReplicaTaskCollaborationClient`:
-
-```text
-begin_collaboration
-  -> advisory store-offer ACKs
-  -> ACK_CLOSED
-  -> commit_plan(exact Provider assignments)
-  -> Provider bounded queue
-  -> QUEUED -> RECEIVING -> VERIFIED -> COMMITTED -> ACTIVE
-```
-
-An `ArtifactStoreOffer` reports only bounded advisory metadata:
-`queue_depth`, `queue_capacity`, `available_bytes`, and
-`max_artifact_bytes`. A positive ACK does not reserve storage and does not lock
-a Provider resource. After Selection, the Provider accepts the exact
-`ArtifactStoreAssignment` into its bounded queue and processes tasks according
-to its local worker policy. Execution-time capacity drift must become an
-explicit failed task/response.
-
-`ArtifactUploadLease`, `ReplicaLeaseCollaborationClient`, and the
-`ndnsf-repo-upload-lease-v1` encoder remain compatibility-only surfaces for
-older deployments and evidence. Do not use them for new artifact
-publication.
-
-The immutable application identity is `ArtifactReference`, which binds the
-logical name, complete content digest, byte size, signed root-manifest name,
-publisher identity, format version, and policy epoch. New callers should use
-the high-level `publish_file`/`fetch_file` or resumable
-`begin_upload`/`begin_fetch` surface and must not use a logical name alone as a
-reuse key.
+Legacy imports such as `RepoNodeApp`, `NetworkDistributedRepoClient`,
+`FilesystemArtifactApiBackend`, upload/fetch sessions, backend injection, and
+Python placement helpers remain as compatibility names where needed. Calling a
+retired feature raises `RepoCompatibilityError` with code
+`SPEC192_COMPATIBILITY_V1`, the operation name, and a native replacement path.

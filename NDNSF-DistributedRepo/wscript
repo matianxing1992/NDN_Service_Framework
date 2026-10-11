@@ -41,6 +41,7 @@ def build(bld):
         'src/ArtifactRepositoryApi.cpp',
         'src/ArtifactTransfer.cpp',
         'src/ArtifactTypes.cpp',
+        'src/LegacyRepoImporter.cpp',
         'src/PersistentRepoServerConfig.cpp',
         'src/backends/FilesystemArtifactStore.cpp',
         'src/backends/FilesystemRepoStoreBackend.cpp',
@@ -62,6 +63,13 @@ def build(bld):
     bld.program(name='DistributedRepoServer',
                 target='DistributedRepoServer',
                 source=['apps/DistributedRepoServer.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                install_path=None)
+
+    bld.program(name='ndnsf-repo-import',
+                target='ndnsf-repo-import',
+                source=['apps/LegacyRepoImport.cpp'],
                 includes=['include', '..'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
                 install_path=None)

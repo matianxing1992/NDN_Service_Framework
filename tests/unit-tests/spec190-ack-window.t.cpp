@@ -71,6 +71,16 @@ public:
             pending->second.ackWindowDeadlineUs};
   }
 
+  uint64_t
+  requestDeadline(const ndn::Name& requestId) const
+  {
+    const auto pending = m_pendingCalls.find(requestId);
+    if (pending == m_pendingCalls.end()) {
+      throw std::logic_error("missing Spec190 pending collaboration");
+    }
+    return pending->second.requestDeadlineUs;
+  }
+
   void ingestAckPublication(const ndn::svs::SVSPubSub::SubscriptionData& publication)
   {
     OnRequestAck(publication);
@@ -478,9 +488,11 @@ BOOST_FIXTURE_TEST_CASE(DelayedAuthenticationDrainsBeforeAckClosed,
   // Model the production ACK decrypt/auth callback already admitted by the
   // SVS path but not yet drained when the timer fires.
   user.markAckDecryptInFlight(requestId);
-  clock.nowUs = bounds.second;
-  BOOST_CHECK(!user.expireAckWindowForTest(requestId));
-  BOOST_CHECK(!closure.has_value());
+  for (int deferral = 0; deferral < 6; ++deferral) {
+    clock.nowUs = bounds.second + static_cast<uint64_t>(deferral) * 20'000;
+    BOOST_CHECK(!user.expireAckWindowForTest(requestId));
+    BOOST_CHECK(!closure.has_value());
+  }
 
   auto authenticatedAck = makeSuccessAckForRequest(published, "token-auth");
   BOOST_REQUIRE(user.handleRequestAckByName(
@@ -493,6 +505,66 @@ BOOST_FIXTURE_TEST_CASE(DelayedAuthenticationDrainsBeforeAckClosed,
   BOOST_CHECK(closure->candidates.front().authenticationEvidence.trustSchemaValidated);
   BOOST_CHECK_EQUAL(user.closedAckCount(requestId), 1U);
   BOOST_CHECK(user.CancelCollaboration(requestId));
+}
+
+BOOST_FIXTURE_TEST_CASE(DeferredAckClosedWaitsForAuthenticationOrRequestTimeout,
+                        AckWindowFixture)
+{
+  const ndn::Buffer payload(reinterpret_cast<const uint8_t*>("payload"), 7);
+  ControlledClock clock(4'000'000);
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& request, size_t) {
+      published = request;
+    });
+  const std::vector<ndn::Name> providers{providerA};
+  const auto beginDeferred = [&] (std::optional<CollaborationAckClosure>& closure,
+                                  bool& timedOut) {
+    return user.BeginCollaborationWithProviders(
+      service, payload, 20, 1000,
+      [&] (const CollaborationAckClosure& value) { closure = value; },
+      [] (const ResponseMessage&) {},
+      [&] (const ndn::Name&) { timedOut = true; },
+      ndn::Name(),
+      [] (const std::vector<AckCandidate>&) { return false; },
+      RequestCapabilities(), std::nullopt, {}, {}, {}, providers);
+  };
+
+  std::optional<CollaborationAckClosure> closure;
+  bool timedOut = false;
+  const auto requestId = beginDeferred(closure, timedOut);
+  BOOST_REQUIRE(!requestId.empty());
+  BOOST_REQUIRE(!published.getPayload().empty());
+  const auto bounds = user.ackWindowBounds(requestId);
+  BOOST_CHECK_GT(user.requestDeadline(requestId), bounds.second + 100'000);
+  user.markAckDecryptInFlight(requestId);
+  for (int deferral = 0; deferral < 6; ++deferral) {
+    clock.nowUs = bounds.second + static_cast<uint64_t>(deferral) * 20'000;
+    BOOST_CHECK(!user.expireAckWindowForTest(requestId));
+    BOOST_CHECK(!closure.has_value());
+  }
+  const auto ack = makeSuccessAckForRequest(published, "token-auth");
+  BOOST_REQUIRE(user.handleRequestAckByName(
+    makeRequestAckNameV2(providerA, requester, service, requestId), ack,
+    makeValidatedAckEvidence(providerA)));
+  pumpFace(face, ndn::time::milliseconds(30));
+  BOOST_REQUIRE(closure.has_value());
+  BOOST_REQUIRE_EQUAL(closure->candidates.size(), 1U);
+  BOOST_CHECK(!timedOut);
+  BOOST_CHECK(user.CancelCollaboration(requestId));
+
+  std::optional<CollaborationAckClosure> expiredClosure;
+  bool expiredTimedOut = false;
+  const auto expiredRequestId = beginDeferred(expiredClosure, expiredTimedOut);
+  BOOST_REQUIRE(!expiredRequestId.empty());
+  user.markAckDecryptInFlight(expiredRequestId);
+  clock.nowUs = user.requestDeadline(expiredRequestId);
+  BOOST_CHECK(!user.expireAckWindowForTest(expiredRequestId));
+  BOOST_CHECK(!expiredClosure.has_value());
+  pumpFace(face, ndn::time::milliseconds(1100));
+  BOOST_CHECK(expiredTimedOut);
+  BOOST_CHECK(!expiredClosure.has_value());
 }
 
 BOOST_FIXTURE_TEST_CASE(CancelAtAckDeadlineSuppressesDeferredClosure,

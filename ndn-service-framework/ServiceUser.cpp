@@ -41,6 +41,52 @@ namespace ndn_service_framework
 
     NDN_LOG_INIT(ndn_service_framework.ServiceUser);
 
+    namespace
+    {
+        bool
+        isSpec192SelectedRequestTraceEnabled()
+        {
+            const char* setting = std::getenv("NDNSF_SPEC192_SELECTED_REQUEST_TRACE");
+            return setting != nullptr && setting[0] == '1' && setting[1] == '\0';
+        }
+
+        bool
+        isSpec192StatusService(const ndn::Name& serviceName)
+        {
+            // This classifier only gates optional traces; avoid URI creation
+            // on normal ACK and response processing when tracing is disabled.
+            if (!isSpec192SelectedRequestTraceEnabled()) return false;
+            const auto uri = serviceName.toUri();
+            constexpr char suffix[] = "/STATUS";
+            return uri.size() >= sizeof(suffix) - 1 &&
+                   uri.compare(uri.size() - (sizeof(suffix) - 1),
+                               sizeof(suffix) - 1, suffix) == 0;
+        }
+
+        void
+        traceSpec192StatusResponse(const char* stage)
+        {
+            if (!isSpec192SelectedRequestTraceEnabled()) return;
+            std::cerr << "Spec192 user STATUS response: stage="
+                      << stage << std::endl;
+        }
+
+        void
+        traceSpec192StatusAck(const ndn::Name& serviceName, const char* stage)
+        {
+            if (!isSpec192StatusService(serviceName)) return;
+            std::cerr << "[DEBUG-spec192-ack-user] " << stage << std::endl;
+        }
+
+        void
+        traceSpec192SelectedRequestAckStage(const char* stage)
+        {
+            if (!isSpec192SelectedRequestTraceEnabled()) return;
+            std::cerr << "Spec192 user STATUS ACK: stage="
+                      << stage << std::endl;
+        }
+    }
+
     struct ServiceUser::LargeDataKeyReleaseState
     {
         std::mutex mutex;
@@ -9219,6 +9265,14 @@ namespace ndn_service_framework
         // and can race the collaboration selector before all required roles
         // have returned ACKs.
         requestMessage.setStrategy(ndn_service_framework::tlv::AllSelected);
+        if (!prepareRequestControllerVersion(requestMessage, service, requestId)) {
+            return ndn::Name();
+        }
+        if (!hasUserPermissionForRequest({}, service)) {
+            NDN_LOG_ERROR("Reject collaboration request without user permission serviceName="
+                          << service.toUri());
+            return ndn::Name();
+        }
 
         PendingCall pendingCall;
         pendingCall.serviceName = service;
@@ -9645,6 +9699,9 @@ namespace ndn_service_framework
                       << " requestId=" << requestId.toUri()
                       << " userToken=" << responseMessage.getUserToken());
             return;
+        }
+        if (isSpec192StatusService(pendingCall->second.serviceName)) {
+            traceSpec192StatusResponse("application-callback-entered");
         }
 
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CALLBACK_ATTEMPT timestamp_us="
@@ -10531,6 +10588,7 @@ namespace ndn_service_framework
         if (parseLargeDataReferencePayload(responseMessage.getPayload())) {
             auto pendingIt = m_pendingCalls.find(requestId);
             if (pendingIt == m_pendingCalls.end()) {
+                ++m_runtimeDiagnostics.responseLargeReferenceSkippedNoPending;
                 ++m_runtimeDiagnostics.callbackSkippedNoPending;
                 ++m_runtimeDiagnostics.responseAfterPendingTimeout;
                 NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_LARGE_REFERENCE_SKIPPED"
@@ -10557,7 +10615,7 @@ namespace ndn_service_framework
                 pendingIt->second.expectedResponseProviders.size() > 1;
             if ((pendingIt->second.hasResponse && !expectMultipleResponses) ||
                 (expectMultipleResponses &&
-                 containsName(pendingIt->second.responseProviders, providerName)) ||
+                containsName(pendingIt->second.responseProviders, providerName)) ||
                 containsName(pendingIt->second.largeResponseReferenceProvidersInFlight,
                              providerName)) {
                 NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_LARGE_REFERENCE_SKIPPED"
@@ -10668,6 +10726,8 @@ namespace ndn_service_framework
                                "decoded_ack");
             auto pendingCall = m_pendingCalls.find(parsedV2->requestId);
             if (pendingCall == m_pendingCalls.end()) {
+                traceSpec192StatusAck(parsedV2->serviceName,
+                                      "ack-reject-reason-no-pending-after-decode");
                 logAckNoPending(parsedV2->requestId,
                                 ackName,
                                 parsedV2->providerName,
@@ -10684,6 +10744,8 @@ namespace ndn_service_framework
             // override the caller's explicit candidate set for this request.
             if (!pendingCall->second.providers.empty() &&
                 !containsName(pendingCall->second.providers, parsedV2->providerName)) {
+                traceSpec192StatusAck(parsedV2->serviceName,
+                                      "ack-reject-reason-provider-not-requested");
                 NDN_LOG_WARN("Reject ACK outside requested provider set requestId="
                              << parsedV2->requestId.toUri()
                              << " provider=" << parsedV2->providerName.toUri());
@@ -10699,6 +10761,8 @@ namespace ndn_service_framework
             maybeRefreshControllerVersionHint(parsedV2->serviceName, ackVersion);
             if (!authorizeControllerTransition(pendingCall->second.serviceName,
                                                ProtectedTransition::ACK_COLLECTION)) {
+                traceSpec192StatusAck(parsedV2->serviceName,
+                                      "ack-reject-reason-controller-transition");
                 NDN_LOG_ERROR("Reject ACK under revoked Controller status requestId="
                               << parsedV2->requestId.toUri());
                 if (completeAckDecrypt()) {
@@ -10709,6 +10773,8 @@ namespace ndn_service_framework
 
             if (!hasUserPermissionForProvider(parsedV2->providerName,
                                               pendingCall->second.serviceName)) {
+                traceSpec192StatusAck(parsedV2->serviceName,
+                                      "ack-reject-reason-provider-permission");
                 NDN_LOG_ERROR("Reject ACK from provider without user permission requestId="
                               << parsedV2->requestId.toUri()
                               << " provider=" << parsedV2->providerName.toUri()
@@ -10745,6 +10811,8 @@ namespace ndn_service_framework
             if (m_useTokens &&
                 (expectedUserToken.empty() ||
                  ackMessage.getUserToken() != expectedUserToken)) {
+                traceSpec192StatusAck(parsedV2->serviceName,
+                                      "ack-reject-reason-user-token");
                 NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_REJECTED_USER_TOKEN timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << parsedV2->requestId.toUri()
@@ -10760,6 +10828,8 @@ namespace ndn_service_framework
             }
             if (!isAcceptablePolicyEpoch(pendingCall->second.serviceName,
                                          ackMessage.getPolicyEpoch())) {
+                traceSpec192StatusAck(parsedV2->serviceName,
+                                      "ack-reject-reason-policy-epoch");
                 NDN_LOG_ERROR("Reject ACK with stale policy epoch for requestId="
                               << parsedV2->requestId.toUri()
                               << " provider=" << parsedV2->providerName.toUri()
@@ -10772,6 +10842,8 @@ namespace ndn_service_framework
             }
             if (!isAcceptableControllerVersion(pendingCall->second.serviceName,
                                                ackVersion)) {
+                traceSpec192StatusAck(parsedV2->serviceName,
+                                      "ack-reject-reason-controller-version");
                 NDN_LOG_ERROR("Reject ACK with stale ControllerVersion for requestId="
                               << parsedV2->requestId.toUri()
                               << " provider=" << parsedV2->providerName.toUri());
@@ -10783,6 +10855,8 @@ namespace ndn_service_framework
 
             if (m_useTokens &&
                 ackMessage.getStatus() && ackMessage.getProviderToken().empty()) {
+                traceSpec192StatusAck(parsedV2->serviceName,
+                                      "ack-reject-reason-provider-token");
                 NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_REJECTED_PROVIDER_TOKEN timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << parsedV2->requestId.toUri()
@@ -10809,6 +10883,8 @@ namespace ndn_service_framework
             if ((pendingCall->second.providerSelected ||
                  !pendingCall->second.selectedProvider.empty()) &&
                 !collectResponseRetryCandidate) {
+                traceSpec192StatusAck(parsedV2->serviceName,
+                                      "ack-reject-reason-provider-already-selected");
                 NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_IGNORED_PROVIDER_SELECTED timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << parsedV2->requestId.toUri()
@@ -10829,6 +10905,8 @@ namespace ndn_service_framework
                                        storedAck.requestId.equals(parsedV2->requestId);
                             });
             if (duplicateAck) {
+                traceSpec192StatusAck(parsedV2->serviceName,
+                                      "ack-reject-reason-duplicate");
                 NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_REPLAY_IGNORED timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << parsedV2->requestId.toUri()
@@ -11068,6 +11146,7 @@ namespace ndn_service_framework
         }
 
         NDN_LOG_WARN("handleRequestAckByName: non-V2 ACK name rejected: " << ackName);
+        traceSpec192SelectedRequestAckStage("ack-reject-reason-non-v2-name");
         return false;
     }
 
@@ -11076,6 +11155,7 @@ namespace ndn_service_framework
     {
         ndn_service_framework::RequestAckMessage ackMessage;
         if (!ackMessage.WireDecode(ackBlock)) {
+            traceSpec192SelectedRequestAckStage("ack-reject-reason-wire-decode");
             return false;
         }
 
@@ -11814,8 +11894,11 @@ namespace ndn_service_framework
         pendingCall->second.ackWindowExpired = true;
         if (shouldTrackAckDecrypt(pendingCall->second) &&
             !usesR1ReservationSelection(pendingCall->second) &&
-            pendingCall->second.ackDecryptsInFlight > 0 &&
-            pendingCall->second.ackSelectionDeferrals < 5) {
+            pendingCall->second.ackDecryptsInFlight > 0) {
+            if (pendingCall->second.requestDeadlineUs != 0 &&
+                nowUs >= pendingCall->second.requestDeadlineUs) {
+                return false;
+            }
             ++pendingCall->second.ackSelectionDeferrals;
             NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_DEFERRED_IN_FLIGHT timestamp_us="
                       << nowMicroseconds()
@@ -12879,6 +12962,13 @@ namespace ndn_service_framework
     void ServiceUser::OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
         if(!isFresh(subscription)) {
+            if (isSpec192SelectedRequestTraceEnabled()) {
+                const auto staleAck = parseRequestAckNameV2(subscription.name);
+                if (staleAck) {
+                    traceSpec192StatusAck(staleAck->serviceName,
+                                          "ack-data-rejected-stale");
+                }
+            }
             return;
         }
         // log message
@@ -12886,8 +12976,10 @@ namespace ndn_service_framework
 
         auto ackV2 = parseRequestAckNameV2(subscription.name);
         if (ackV2) {
+            traceSpec192StatusAck(ackV2->serviceName, "ack-data-received");
             const auto authenticationEvidence =
                 makeAckAuthenticationEvidence(subscription);
+            traceSpec192StatusAck(ackV2->serviceName, "ack-auth-evidence-created");
             logValidatedPublicationAudit(
                 "user", "ACK", subscription,
                 ackV2->requestId, ackV2->serviceName,
@@ -12902,6 +12994,9 @@ namespace ndn_service_framework
                               {"ackName", subscription.name.toUri()},
                               {"contentBytes", std::to_string(subscription.data.size())}});
             auto pendingCall = m_pendingCalls.find(ackV2->requestId);
+            traceSpec192StatusAck(ackV2->serviceName,
+                pendingCall == m_pendingCalls.end() ?
+                    "ack-pending-request-missing" : "ack-pending-request-found");
             const auto phaseAttempt = pendingCall != m_pendingCalls.end() &&
                 pendingCall->second.streamOptions &&
                 pendingCall->second.streamOptions->attemptEpoch != 0 ?
@@ -12936,6 +13031,8 @@ namespace ndn_service_framework
                 ((pendingCall->second.providerSelected ||
                   !pendingCall->second.selectedProvider.empty()) &&
                  !mayCollectResponseRetryCandidate)) {
+                traceSpec192StatusAck(ackV2->serviceName,
+                                     "ack-rejected-before-decryption");
                 if (pendingCall == m_pendingCalls.end()) {
                     logAckNoPending(ackV2->requestId,
                                     subscription.name,
@@ -12982,6 +13079,8 @@ namespace ndn_service_framework
                 if (pendingCall->second.ackWindowExpired &&
                     deadlineUs > 0 &&
                     ackReceiveUs > deadlineUs) {
+                    traceSpec192StatusAck(ackV2->serviceName,
+                                         "ack-rejected-after-collection-window");
                     NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SKIPPED_AFTER_ACK_WINDOW timestamp_us="
                               << ackReceiveUs
                               << " requestId=" << ackV2->requestId.toUri()
@@ -13003,6 +13102,8 @@ namespace ndn_service_framework
             }
 
             if(subscription.data.size() > 0){
+                traceSpec192StatusAck(ackV2->serviceName,
+                                     "ack-hybrid-decrypt-dispatch");
                 const auto decryptStartUs = nowMicroseconds();
                 if (m_timelineTrace) {
                     logTimelineTrace("user", "ack_decrypt_start", ackV2->requestId,
@@ -13113,6 +13214,8 @@ namespace ndn_service_framework
                                                                     error);
                             });
             }else{
+                traceSpec192StatusAck(ackV2->serviceName,
+                                     "ack-nac-consume-dispatch");
                 const auto decryptStartUs = nowMicroseconds();
                 activeNacConsumer().consume(
                             ndn::Name(subscription.name),
@@ -13171,6 +13274,10 @@ namespace ndn_service_framework
         providerName = resultsV2->providerName;
         ServiceName = resultsV2->serviceName;
         RequestId = resultsV2->requestId;
+        const bool traceSpec192Status = isSpec192StatusService(ServiceName);
+        if (traceSpec192Status) {
+            traceSpec192StatusResponse("response-subscription-entered");
+        }
 
         if (!subscription.packet) {
             NDN_LOG_WARN("Reject RESPONSE without its validated Data packet: "
@@ -13194,6 +13301,9 @@ namespace ndn_service_framework
                          "the Provider in its name: " << subscription.name);
             return;
         }
+        if (traceSpec192Status) {
+            traceSpec192StatusResponse("response-provider-authenticated");
+        }
         const std::string responseSignerCertificate = responseSignerName.toUri();
         const std::string authenticatedProviderIdentity =
             responseProviderIdentity->toUri();
@@ -13207,6 +13317,9 @@ namespace ndn_service_framework
             ndn_service_framework::stripTrailingResponseSegments(wireResponseName);
         auto responsePending = m_pendingCalls.find(RequestId);
         if (responsePending == m_pendingCalls.end()) {
+            if (traceSpec192Status) {
+                traceSpec192StatusResponse("response-pending-call-missing");
+            }
             ++m_runtimeDiagnostics.callbackSkippedNoPending;
             ++m_runtimeDiagnostics.responseAfterPendingTimeout;
             NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_SKIPPED_NO_PENDING timestamp_us="
@@ -13224,6 +13337,10 @@ namespace ndn_service_framework
              containsName(responsePending->second.responseProviders, providerName)) ||
             containsName(responsePending->second.responseDecryptProvidersInFlight,
                          providerName)) {
+            if (traceSpec192Status) {
+                traceSpec192StatusResponse(
+                    "response-duplicate-or-decrypt-in-flight");
+            }
             NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_DUPLICATE_SKIPPED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << RequestId.toUri()
@@ -13233,12 +13350,18 @@ namespace ndn_service_framework
         }
         if (expectMultipleResponses &&
             !containsName(responsePending->second.expectedResponseProviders, providerName)) {
+            if (traceSpec192Status) {
+                traceSpec192StatusResponse("response-provider-not-selected");
+            }
             NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_REJECTED_UNSELECTED_PROVIDER timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << RequestId.toUri()
                       << " providerName=" << providerName.toUri()
                       << " responseName=" << responseName.toUri());
             return;
+        }
+        if (traceSpec192Status) {
+            traceSpec192StatusResponse("response-admitted-for-decryption");
         }
         addUniqueName(responsePending->second.responseDecryptProvidersInFlight,
                       providerName);
@@ -13281,8 +13404,12 @@ namespace ndn_service_framework
             responseWire.data(), responseWire.data() + responseWire.size()));
         auto onSuccess = [this, responseName, RequestId, decryptStartUs,
                           responseDataName, responseSignerCertificate,
-                          responseWireDigest, authenticatedProviderIdentity](
+                          responseWireDigest, authenticatedProviderIdentity,
+                          traceSpec192Status](
                               const ndn::Buffer& buffer) {
+            if (traceSpec192Status) {
+                traceSpec192StatusResponse("response-decryption-complete");
+            }
             const auto decryptEndUs = nowMicroseconds();
             auto pendingIt = m_pendingCalls.find(RequestId);
             if (pendingIt != m_pendingCalls.end()) {
@@ -13317,6 +13444,9 @@ namespace ndn_service_framework
         };
         auto onError = [this, providerName, ServiceName, RequestId,
                         responseName, decryptStartUs](const std::string& error) {
+            if (isSpec192StatusService(ServiceName)) {
+                traceSpec192StatusResponse("response-decryption-failed");
+            }
             auto pendingIt = m_pendingCalls.find(RequestId);
             if (pendingIt != m_pendingCalls.end()) {
                 removeName(pendingIt->second.responseDecryptProvidersInFlight,
@@ -13378,6 +13508,9 @@ namespace ndn_service_framework
                                      ndn::Block(subscription.data),
                                      onSuccess,
                                      onError)) {
+                if (traceSpec192Status) {
+                    traceSpec192StatusResponse("response-decryption-started");
+                }
                 return;
             }
             onError("invalid hybrid response envelope");
@@ -13402,6 +13535,7 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
     const ndn::Buffer& buffer,
     AckAuthenticationEvidence authenticationEvidence)
 {
+    traceSpec192StatusAck(serviceName, "ack-decryption-complete");
     auto raw = std::make_shared<std::vector<uint8_t>>(buffer.begin(), buffer.end());
     auto decodeAndPost = [this, providerName, serviceName, requestID, raw,
                           authenticationEvidence]() mutable {
@@ -13416,6 +13550,9 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
         catch (const std::exception& e) {
             error = e.what();
         }
+        traceSpec192StatusAck(serviceName,
+                              error.empty() ? "ack-wire-decode-complete" :
+                                              "ack-wire-decode-failed");
 
         boost::asio::post(m_face.getIoContext(),
             [this, providerName, serviceName, requestID,
@@ -13473,8 +13610,12 @@ void ServiceUser::finishRequestAckOnEventLoop(
         const ndn::Name ackName =
             ndn_service_framework::makeRequestAckNameV2(providerName, identity,
                                                         serviceName, requestID);
-        if (!handleRequestAckByName(ackName, AckMessage,
-                                    std::move(authenticationEvidence))) {
+        const bool accepted = handleRequestAckByName(
+            ackName, AckMessage, std::move(authenticationEvidence));
+        traceSpec192StatusAck(serviceName,
+                              accepted ? "ack-candidate-stored" :
+                                         "ack-candidate-rejected-after-decode");
+        if (!accepted) {
             NDN_LOG_DEBUG("V2 ACK did not update pending call state for requestID: "
                           << requestID.toUri());
         }
@@ -13486,6 +13627,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         const ndn::Name& requestID,
         const std::string& error)
     {
+        traceSpec192StatusAck(serviceName, "ack-decryption-failed");
         // log error
         NDN_LOG_ERROR("OnRequestAckDecryptionErrorCallback: "
                       << providerName.toUri() << serviceName.toUri()

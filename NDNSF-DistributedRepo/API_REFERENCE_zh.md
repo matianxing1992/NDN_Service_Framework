@@ -1,6 +1,6 @@
 # DistributedRepo API 参考（当前 Repo 工作树）
 
-本文按 2026-10-10 的 `Repo` 工作树整理，包含 `HEAD e79b9dce` 及当前未提交的 Repo 源码变更。它是接口使用说明，不表示 Spec202 的 T007/T009/T010 或网络资格已完成。精确 C++ 类型、参数与默认值以所链接的头文件为准。
+本文按 2026-10-10 的 `Repo` 工作树整理：记录基线为 `HEAD 2be0e98b`，Repo 源码对应 Spec202 候选 `aeb815ea2b362b857c398d910bb1464426e580b1121eee241b2206002d1c26e2`（688 个候选输入）。本文是接口使用说明，不表示 Spec202 的 T007/T009/T010 或网络资格已完成。精确 C++ 类型、参数与默认值以所链接的头文件为准。
 
 ## API 分层
 
@@ -264,6 +264,20 @@ const auto manifest = LegacyRepoImporter::import(config);
 
 迁移是显式入口，不会因普通 `RepoClient` 读取而隐式执行。相同 import ID 用于对已写入的目标做验证/恢复；不要覆盖来源或目的目录中的现有数据。
 
+生产 CLI 使用相同的 native importer，适合在维护窗口显式迁移旧数据库和 payload tree：
+
+```sh
+build/NDNSF-DistributedRepo/ndnsf-repo-import \
+  --source-db ./old-repo.sqlite3 \
+  --source-payload-root ./old-payloads \
+  --destination ./repo-v2 \
+  --import-id migration-2026-10-10 \
+  --max-range-bytes 4194304 \
+  --max-data-wire-bytes 16777216
+```
+
+成功时 stdout 输出 `LegacyImportManifest` JSON；参数、源数据或目标检查失败时以非零状态退出。先在独立目标上验证输出，不要把 CLI 当作普通读 API 或覆盖式升级工具。
+
 ## 退役的 Python 兼容名称
 
 `py_repoclient` 当前把 native pybind 类型作为事实来源，并保留少数旧 import 名供调用方得到版本化错误。退役项包括 `RepoDataPlaneProducer`、`artifact_capability_from_ack`/`capability_from_ack`/`ready_capability_from_ack`/`discovery_record_from_ack`、Python-owned artifact backend/session/driver、`negotiate_artifact_capabilities`、`begin_upload`/`begin_fetch`、`publish_file_async`/`fetch_file_async`，以及 `RepoClient` 的 `artifact_capabilities`、`capability`、`delete`、`fetch`、`fetch_object`、`get`、`get_object`、`insert`、`inventory`、`list`、`lookup_local_commit`、`publisher_namespace`、`publisher_object_name`、`publish_file_async`、`remove` 和 `store`。它们会明确报 `RepoCompatibilityError`；迁移到 native `ArtifactRepositoryApi` 或 C++ `DistributedRepoServer`。不要把这些名字按当前 API 编写新代码。
@@ -280,3 +294,18 @@ const auto manifest = LegacyRepoImporter::import(config);
 | 存储和复用已签名原始 Data packet | `putDataPacket`、`getDataPacket(s)`；producer trust 仍由应用负责 |
 | 同一进程内 handler 调用 | `RepoClient::local*` 或 `registerLocalServices`；不能据此声称网络覆盖 |
 | 旧 Repo 数据搬到当前后端 | 显式 `LegacyRepoImporter::import` |
+
+## API 与测试用例对应
+
+下面列的是当前 Repo 候选已有的主要 native/Python 验证入口，便于按使用场景定位回归测试。组件测试和 authenticated in-process ServiceUser/Provider 测试不等于 MiniNDN 网络资格。
+
+| API / 使用场景 | 代表性测试与覆盖用例 |
+| --- | --- |
+| `ArtifactRepositoryApi::makeInApp`、`publishFile`、`fetchFile`、`lookupLocalCommit`：本地 durable artifact 发布、重开、取回 | [`distributed-repo-inapp-artifact-api.t.cpp`](../tests/unit-tests/distributed-repo-inapp-artifact-api.t.cpp)：`PublishesReopensFetchesAndMatchesIndependentDiskOracle`、`FullReferenceIsTheCatalogKeyNotDigestAlone`、配置/损坏/恢复/原子 destination 用例；目标 `spec192-repo-inapp-api`。 |
+| `ArtifactRepositoryApi::makePersistent`、候选发现、显式目标选择、发布状态、receipt、availability、fetch health：通过 NDNSF Provider 操作 artifact | [`spec192-persistent-artifact-api.t.cpp`](../tests/integration-tests/spec192-persistent-artifact-api.t.cpp)：`PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts`、`PersistentApiFetchHealthStateSerializesConcurrentCalls` 等；目标 `spec192-repo-persistent-api` 使用 authenticated in-process transport。 |
+| `RepoClient` / `RepoNode` 的对象、range、manifest、insert/status、catalog 和 handler：传统 Repo object 与服务端操作 | [`tests/wscript`](../tests/wscript) 中的 `spec202-repo-conformance` 汇总 `distributed-repo-*.t.cpp`、ACK-window 和 original-data receipt 用例；持久化 handler、注册生命周期、配置及身份约束另见 [`distributed-repo-persistent-service.t.cpp`](../tests/unit-tests/distributed-repo-persistent-service.t.cpp) 与 [`distributed-repo-artifact-receipt.t.cpp`](../tests/unit-tests/distributed-repo-artifact-receipt.t.cpp)。 |
+| `ArtifactTypes`、manifest/transfer 状态机、receipt/availability codec、range 后端与 SQLite schema：协议值和存储组件 | [`distributed-repo-artifact-types.t.cpp`](../tests/unit-tests/distributed-repo-artifact-types.t.cpp)、[`distributed-repo-artifact-manifest.t.cpp`](../tests/unit-tests/distributed-repo-artifact-manifest.t.cpp)、[`distributed-repo-artifact-transfer.t.cpp`](../tests/unit-tests/distributed-repo-artifact-transfer.t.cpp)、[`distributed-repo-filesystem-artifact-store.t.cpp`](../tests/unit-tests/distributed-repo-filesystem-artifact-store.t.cpp)。 |
+| Python `py_repoclient`、native bindings 与 `RepoClient` compatibility facade：应用侧调用 native Repo | 当前 Python conformance 执行 33 个文件、117 个测试通过；入口和 API-specific cases 可从 [`tests/python`](../tests/python) 中 `test_spec192_repo_*.py`、`test_ndnsf_repo_*.py` 和 `test_spec164_public_artifact_api.py` 定位。结果摘要保存在 Spec202 `tasks.md` 的 T009 记录。 |
+| `LegacyRepoImporter::import` 和 `ndnsf-repo-import`：受控迁移、恢复、source immutability、CLI/native parity | [`distributed-repo-legacy-import.t.cpp`](../tests/unit-tests/distributed-repo-legacy-import.t.cpp)、[`spec192-legacy-repo-import.t.cpp`](../tests/integration-tests/spec192-legacy-repo-import.t.cpp)；`productionCliMatchesNativeImportAndReplayWithoutSourceMutation` 检查生产 CLI、重放、目标 parity 与源不变。 |
+| 编译后 native/Python API smoke 与动态链接 | Spec202 T009 当前记录为：7 个 native targets、33-file/117-test Python suite、production CLI parity 均在候选 `aeb815...` 通过；详细日志见 [`tasks.md`](../specs/202-distributedrepo-convergence/tasks.md)。ASAN/UBSAN 和 fresh convergence 仍 OPEN。 |
+| 网络 API、Provider admission/selection、原名 Data packet 与跨节点行为 | 由 Spec202 T010 MiniNDN campaign 验证；T010 仍 IN_PROGRESS，旧 candidate 的 `FAIL_STOPPED` 状态没有被上述本地测试改写。不要用 `local*`、native component 或 in-process 测试声称网络 API 已通过。 |

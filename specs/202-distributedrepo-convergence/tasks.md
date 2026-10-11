@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前SDK11完整surface/local conformance98case normal1655/dynamic v3 1657断言PASS，DB007 STATIC_PASS，公开inventory保留。见T009；独立复现与network/profile资格待关闭，旧SDK9结果仅历史。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | 当前SDK11两binding fresh重建/import、33-file Python117PASS及全部7 native dynamic v3 PASS。见T009；不宣称Python instrumentation，sealed复现与crosslanguage/DI network待资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | r47/r49全7 native动态(leaks1)/normal均184用例执行/4070断言PASS；r50 Python33文件117PASS；r51 admission/身份/oracle41PASS。r48 fresh构建/两bindings/actualimport/receipt PASS，688源码f4f244a7前后稳定，SDK/runtime/hash复核PASS；A05仅preflight PASS。[证据](evidence/diagnostic-e529c434-20261010/literal-regex-r30-r39-manifest.json)。fresh收敛、封存/独立复现及59ID/两轮136次MiniNDN仍OPEN。 | 2026-10-11 |
+| T009 | PARTIAL | T002–T008 | r47/r49全7 native动态(leaks1)/normal均184用例执行/4070断言PASS；r50 Python33文件117PASS；r51 admission/身份/oracle41PASS。r48 fresh构建/两bindings/import/receipt PASS，688源码f4f244a7稳定；A05仅preflight PASS。[证据](evidence/diagnostic-e529c434-20261010/literal-regex-r30-r39-manifest.json)。r53封存校验PASS；[r55差异静态复审](evidence/diagnostic-e529c434-20261010/scoped-convergence-r55.json)完成；r54独立复现进行中，59ID/两轮136次MiniNDN仍OPEN。 | 2026-10-11 |
 | T010 | IN_PROGRESS | T009 | 正式冻结d75cf28e/688的两轮68场景/59ID共136次campaign状态仍按matrix记录为FAIL_STOPPED。f8011aa0候选的单轮ARTIFACT_BASELINE仅是修复后本地回归，不替代统一candidate、59 cases两轮、逐actor maps/pcap/finite exits/cleanup/storage/consumer/wire/cross-run检查；全项通过前保持OPEN。 | 2026-10-10 |
 
 ## Current Checkpoint

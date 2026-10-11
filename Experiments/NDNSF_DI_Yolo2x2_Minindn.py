@@ -34,7 +34,7 @@ OUT = REPO / "results/yolo_2x2_minindn_quick"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_2x2"
 CONFIG = OUT / "yolo_policy.yaml"
 GEN_POLICY = "/tmp/ndnsf-di-yolo-2x2-policy"
-REPO_MANIFEST = OUT / "repo-manifests.json"
+ARTIFACT_REFERENCES = OUT / "artifact-references.json"
 APP_ROOT = "/NDNSF-DistributeInference/example"
 CONTROLLER_IDENTITY = APP_ROOT + "/controller"
 USER_IDENTITY = APP_ROOT + "/user"
@@ -105,7 +105,7 @@ def native_provider_cmd(argv: list[str],
         "--workers", str(workers),
         "--handler-threads", str(handler_threads),
         "--ack-threads", str(ack_threads),
-        "--artifact-references", str(REPO_MANIFEST),
+        "--artifact-references", str(ARTIFACT_REFERENCES),
         "--artifact-cache-dir", str(OUT / "native-artifact-cache" / provider_id),
         "--repo-service", REPO_SERVICE,
         "--repo-fetch-timeout-ms", "60000",
@@ -794,38 +794,44 @@ def write_warm_rtt_nfd_monitor_summary(layout: str,
     )
 
 
-def validate_repo_manifest_references(path: Path) -> None:
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    roles = manifest.get("roles", {})
+def validate_di_repo_bindings(path: Path) -> None:
+    references = json.loads(path.read_text(encoding="utf-8"))
+    roles = references.get("roles", {})
     if not isinstance(roles, dict) or not roles:
-        raise RuntimeError(f"repo manifest has no roles: {path}")
+        raise RuntimeError(f"DI artifact references have no roles: {path}")
     for role, artifacts in roles.items():
         if not isinstance(artifacts, dict):
-            raise RuntimeError(f"repo manifest role {role} is not a mapping")
-        for artifact_name in ("model", "runner"):
-            entry = artifacts.get(artifact_name)
+            raise RuntimeError(f"DI artifact role {role} is not a mapping")
+        for slot, expected_use in (("model", "model"), ("runner", "runtime")):
+            entry = artifacts.get(slot)
             if not isinstance(entry, dict):
-                raise RuntimeError(f"repo manifest role {role} missing {artifact_name}")
-            repo_manifest = entry.get("repoManifest")
-            reference = entry.get("largeDataReference")
-            if not isinstance(repo_manifest, dict):
-                raise RuntimeError(f"repo manifest role {role} {artifact_name} missing repoManifest")
-            if not isinstance(reference, dict):
-                raise RuntimeError(f"repo manifest role {role} {artifact_name} missing largeDataReference")
-            if reference.get("source") != "repo-manifest":
-                raise RuntimeError(
-                    f"repo manifest role {role} {artifact_name} unexpected source={reference.get('source')}")
-            if reference.get("dataName") != repo_manifest.get("objectName"):
-                raise RuntimeError(
-                    f"repo manifest role {role} {artifact_name} dataName/objectName mismatch")
-            expected_digest = "sha256:" + str(repo_manifest.get("sha256", ""))
-            if reference.get("digest") != expected_digest:
-                raise RuntimeError(
-                    f"repo manifest role {role} {artifact_name} digest mismatch")
-            if int(reference.get("plaintextSize", -1)) != int(repo_manifest.get("size", -2)):
-                raise RuntimeError(
-                    f"repo manifest role {role} {artifact_name} size mismatch")
-    print(f"YOLO_2X2_REPO_MANIFEST_REFERENCES_OK path={path}")
+                raise RuntimeError(f"DI artifact role {role} missing {slot}")
+            binding = entry.get("repoBinding")
+            expected_fields = {
+                "schemaVersion", "repoHandleJson", "artifactReference", "role", "use"
+            }
+            if not isinstance(binding, dict) or set(binding) != expected_fields:
+                raise RuntimeError(f"DI artifact role {role} {slot} has invalid binding fields")
+            if (type(binding["schemaVersion"]) is not int
+                    or binding["schemaVersion"] != 1
+                    or not isinstance(binding["repoHandleJson"], str)
+                    or not binding["repoHandleJson"]
+                    or binding["role"] != role
+                    or binding["use"] != expected_use):
+                raise RuntimeError(f"DI artifact role {role} {slot} has invalid binding identity")
+            reference = binding["artifactReference"]
+            reference_fields = {"uri", "digest", "size_bytes", "mount_path"}
+            if (not isinstance(reference, dict)
+                    or set(reference) != reference_fields
+                    or not isinstance(reference["uri"], str)
+                    or not reference["uri"]
+                    or not isinstance(reference["digest"], str)
+                    or not reference["digest"].startswith("sha256:")
+                    or type(reference["size_bytes"]) is not int
+                    or reference["size_bytes"] < 0
+                    or not isinstance(reference["mount_path"], str)):
+                raise RuntimeError(f"DI artifact role {role} {slot} has invalid DI reference")
+    print(f"YOLO_2X2_DI_REPO_BINDINGS_OK path={path}")
 
 
 def read_node_traffic(node) -> dict[str, int]:
@@ -5735,14 +5741,14 @@ def main() -> None:
         safe_layout += "_parallel_detect_replicated_backbone"
     if args_cli.auto_parallel_detect_plan:
         safe_layout += "_auto_parallel_detect"
-    global OUT, CONFIG, GEN_POLICY, REPO_MANIFEST
+    global OUT, CONFIG, GEN_POLICY, ARTIFACT_REFERENCES
     OUT = Path(args_cli.results_dir).expanduser() if args_cli.results_dir else (
         REPO / f"results/yolo_{safe_layout}_minindn_quick")
     if not OUT.is_absolute():
         OUT = REPO / OUT
     CONFIG = OUT / "yolo_policy.yaml"
     GEN_POLICY = f"/tmp/ndnsf-di-yolo-{safe_layout}-policy"
-    REPO_MANIFEST = OUT / "repo-manifests.json"
+    ARTIFACT_REFERENCES = OUT / "artifact-references.json"
 
     setLogLevel("info")
     OUT.mkdir(parents=True, exist_ok=True)
@@ -6029,8 +6035,8 @@ def main() -> None:
         deployer_proc, deployer_log = start(ndn.net[AI_LAB_CONTROLLER_NODE], "controller-deployer",
                                             python_cmd("controller.py", common + [
                                                 "--deploy-only",
-                                                "--deploy-to-repo-manifest",
-                                                str(REPO_MANIFEST),
+                                                "--deploy-artifact-references",
+                                                str(ARTIFACT_REFERENCES),
                                                 "--replication-factor",
                                                 "1",
                                             ]), env, procs)
@@ -6041,7 +6047,7 @@ def main() -> None:
             raise RuntimeError(
                 "controller did not deploy repo artifacts; "
                 f"returncode={deployer_rc}; see {deployer_log}\n{deployer_tail}")
-        validate_repo_manifest_references(REPO_MANIFEST)
+        validate_di_repo_bindings(ARTIFACT_REFERENCES)
 
         def start_compute_providers(phase_suffix: str,
                                     provider_env: dict[str, str]
@@ -6104,8 +6110,8 @@ def main() -> None:
 
         def build_warm_user_args() -> list[str]:
             warm_user_args = common + [
-                "--repo-manifest-file",
-                str(REPO_MANIFEST),
+                "--artifact-references-file",
+                str(ARTIFACT_REFERENCES),
                 "--model", args_cli.model,
                 "--input-size", str(args_cli.input_size),
                 "--ack-timeout-ms", str(ack_timeout_ms),
@@ -6181,8 +6187,8 @@ def main() -> None:
 
         time.sleep(2)
         user_common = common + [
-            "--repo-manifest-file",
-            str(REPO_MANIFEST),
+            "--artifact-references-file",
+            str(ARTIFACT_REFERENCES),
             "--model", args_cli.model,
             "--input-size", str(args_cli.input_size),
             "--ack-timeout-ms", str(ack_timeout_ms),
