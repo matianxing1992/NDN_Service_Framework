@@ -214,6 +214,13 @@ RepoCore::putRangeLocked(const RepoObjectManifest& manifest, RepoByteRange range
 {
   if (hasDataPacket(manifest.objectName))
     throw std::runtime_error("repo-original-packet-is-immutable");
+  putAdmittedRangeLocked(manifest, range, bytes);
+}
+
+void
+RepoCore::putAdmittedRangeLocked(const RepoObjectManifest& manifest, RepoByteRange range,
+                                const std::vector<uint8_t>& bytes)
+{
   rejectExternallySuppliedDataReceipt(manifest);
   if (range.lengthBytes != bytes.size() ||
       range.offsetBytes > manifest.size ||
@@ -813,6 +820,11 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
   std::map<std::string, std::string> catalogMetadata;
   for (const auto& stored : m_store->listManifests()) {
     catalogMetadata.emplace(stored.objectName, stored.toJson());
+    if (stored.objectType == "ndn-data-wire") {
+      // Legacy rows may use ALTERNATE URI spelling for the same typed Name.
+      const auto canonical = ndn::Name(stored.objectName).toUri(ndn::name::UriFormat::CANONICAL);
+      if (incomingNames.count(canonical)) indexedPacketNames.insert(canonical);
+    }
     if (stored.objectType != "original-packet-set") continue;
     for (const auto& name : stored.packetNames) {
       if (incomingNames.count(name)) indexedPacketNames.insert(name);
@@ -850,6 +862,11 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
     requireCurrentCatalog();
     return *existing;
   }
+  // objectName is the first incoming packet name. The transaction snapshot
+  // already proves whether it is indexed by an existing original packet set.
+  // Reuse that admission result rather than rescanning for every range window.
+  if (indexedPacketNames.count(manifest.objectName))
+    throw std::runtime_error("repo-original-packet-is-immutable");
   input.clear();
   input.seekg(0);
   try {
@@ -859,7 +876,7 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
       std::vector<uint8_t> bytes(std::min(window, manifest.size - offset));
       input.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
       if (!input) throw std::runtime_error("repo-original-packet-input-truncated");
-      putRangeLocked(manifest, {offset, bytes.size()}, bytes);
+      putAdmittedRangeLocked(manifest, {offset, bytes.size()}, bytes);
       offset += bytes.size();
     }
     requireCurrentCatalog();

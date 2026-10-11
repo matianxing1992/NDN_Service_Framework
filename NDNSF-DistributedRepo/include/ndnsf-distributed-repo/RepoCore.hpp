@@ -149,6 +149,8 @@ private:
   std::string resolveObjectKey(const std::string& objectName) const;
   std::vector<uint8_t> deleteLocked(const std::string& objectName);
   void putRangeLocked(const RepoObjectManifest&, RepoByteRange, const std::vector<uint8_t>&);
+  // Caller holds m_mutex and has checked immutable-packet admission.
+  void putAdmittedRangeLocked(const RepoObjectManifest&, RepoByteRange, const std::vector<uint8_t>&);
   RepoObjectManifest commitRangesLocked(const RepoObjectManifest&);
 
   void refreshCapabilityUsage();

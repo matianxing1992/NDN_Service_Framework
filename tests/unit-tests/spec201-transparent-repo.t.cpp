@@ -74,10 +74,10 @@ struct CountingStore : RepoStoreBackend
 };
 
 std::vector<uint8_t>
-packet(const ndn::Name& name, uint8_t content = 42)
+packet(const ndn::Name& name, uint8_t content = 42, size_t contentBytes = 1)
 {
   ndn::Data data(name);
-  data.setContent(ndn::span<const uint8_t>(&content, 1));
+  data.setContent(std::vector<uint8_t>(contentBytes, content));
   ndn::KeyChain keyChain("pib-memory:", "tpm-memory:");
   keyChain.sign(data, ndn::security::signingWithSha256());
   const auto& wire = data.wireEncode();
@@ -342,7 +342,8 @@ struct AdmissionFile
   RepoObjectManifest manifest;
   std::filesystem::path path;
   std::vector<std::pair<ndn::Name, std::vector<uint8_t>>> packets;
-  AdmissionFile(const Fixture& fixture, const std::string& label, size_t count)
+  AdmissionFile(const Fixture& fixture, const std::string& label, size_t count,
+                size_t contentBytes = 1, size_t firstSegment = 0)
     : path(fixture.root / (label + ".bin"))
   {
     manifest.objectType = "original-packet-set";
@@ -350,8 +351,8 @@ struct AdmissionFile
     manifest.packetOffsets = {0};
     std::vector<uint8_t> archive;
     for (size_t i = 0; i < count; ++i) {
-      auto name = ndn::Name("/actual/producer/admission").append(label).appendSegment(i);
-      auto wire = packet(name);
+      auto name = ndn::Name("/actual/producer/admission").append(label).appendSegment(i + firstSegment);
+      auto wire = packet(name, 42, contentBytes);
       manifest.packetNames.push_back(name.toUri(ndn::name::UriFormat::CANONICAL));
       archive.insert(archive.end(), wire.begin(), wire.end());
       manifest.packetOffsets.push_back(archive.size());
@@ -404,6 +405,102 @@ BOOST_AUTO_TEST_CASE(PacketFileAdmissionRejectsExternalCatalogChange)
   BOOST_CHECK(changed);
   BOOST_CHECK(!store->has(incoming.manifest.objectName));
   BOOST_CHECK(repo.getDataPacket(packetName().toUri()) == original);
+}
+
+BOOST_AUTO_TEST_CASE(PacketFileCatalogScansDoNotGrowWithRangeWindows)
+{
+  Fixture fixture;
+  auto capability = fixture.capability();
+  capability.freeBytes = 8U << 20;
+  auto store = std::make_shared<CountingStore>(fixture.store("multi-window"));
+  RepoCore repo(capability, store);
+  AdmissionFile small(fixture, "one-window", 32);
+  store->enumerations = 0;
+  repo.commitOriginalPacketFile(small.manifest, small.path);
+  const auto oneWindowScans = store->enumerations;
+  AdmissionFile large(fixture, "multi-window", 800, 4000);
+  BOOST_REQUIRE_GT(large.manifest.size, 3U << 20);
+  store->enumerations = 0;
+  repo.commitOriginalPacketFile(large.manifest, large.path);
+  BOOST_CHECK_EQUAL(store->enumerations, oneWindowScans);
+  BOOST_CHECK_LE(store->enumerations, 8U);
+  for (const auto& item : large.packets)
+    BOOST_CHECK(repo.getDataPacket(item.first.toUri()) == item.second);
+}
+
+BOOST_AUTO_TEST_CASE(PacketFileAdmittedRangesKeepCollisionAndCatalogGuards)
+{
+  Fixture fixture;
+  auto capability = fixture.capability();
+  capability.freeBytes = 8U << 20;
+  auto store = fixture.store("guarded-windows");
+  RepoCore repo(capability, store);
+  AdmissionFile existing(fixture, "indexed-collision", 2);
+  repo.commitOriginalPacketFile(existing.manifest, existing.path);
+  AdmissionFile collision(fixture, "indexed-collision", 1, 1, 1);
+  BOOST_CHECK_EXCEPTION(repo.commitOriginalPacketFile(collision.manifest, collision.path),
+    std::runtime_error, [](const std::runtime_error& error) {
+      return std::string(error.what()) == "repo-original-packet-is-immutable";
+    });
+  BOOST_CHECK(!store->has(collision.manifest.objectName));
+  BOOST_CHECK_THROW(repo.putRange(collision.manifest, {0, 0}, {}), std::invalid_argument);
+  auto genericRange = collision.manifest;
+  genericRange.objectType = "blob";
+  BOOST_CHECK_EXCEPTION(repo.putRange(genericRange, {0, 0}, {}),
+    std::runtime_error, [](const std::runtime_error& error) {
+      return std::string(error.what()) == "repo-original-packet-is-immutable";
+    });
+
+  const auto original = packet(packetName());
+  repo.putDataPacket(packetName().toUri(), original);
+  AdmissionFile incoming(fixture, "changed-during-ranges", 800, 4000);
+  size_t callbacks = 0;
+  bool changed = false;
+  BOOST_CHECK_EXCEPTION(repo.commitOriginalPacketFile(incoming.manifest, incoming.path, [&] {
+    // Initial check, all packet validations, first window, then second window.
+    if (++callbacks == incoming.packets.size() + 3) {
+      auto metadata = store->getManifest(packetName().toUri(ndn::name::UriFormat::CANONICAL));
+      metadata.policyEpoch = "changed-after-first-range";
+      ++metadata.generation;
+      store->put(metadata, original);
+      changed = true;
+    }
+  }), std::runtime_error, [](const std::runtime_error& error) {
+    return std::string(error.what()) == "repo-original-packet-catalog-changed";
+  });
+  BOOST_CHECK(changed);
+  BOOST_CHECK(!store->has(incoming.manifest.objectName));
+  BOOST_CHECK(repo.getDataPacket(packetName().toUri()) == original);
+  // A failed transaction must release its range reservation and staging.
+  repo.commitOriginalPacketFile(incoming.manifest, incoming.path);
+  BOOST_CHECK(repo.getDataPacket(incoming.packets.back().first.toUri()) ==
+              incoming.packets.back().second);
+}
+
+BOOST_AUTO_TEST_CASE(PacketFileCannotShadowLegacyAlternateStandalonePacket)
+{
+  Fixture fixture;
+  auto store = fixture.store("legacy-admission");
+  RepoCore repo(fixture.capability(), store);
+  AdmissionFile incoming(fixture, "legacy-packet", 1);
+  const auto& name = incoming.packets.front().first;
+  const auto canonical = name.toUri(ndn::name::UriFormat::CANONICAL);
+  const auto alternate = name.toUri(ndn::name::UriFormat::ALTERNATE);
+  BOOST_REQUIRE_NE(canonical, alternate);
+  const auto& original = incoming.packets.front().second;
+  repo.putDataPacket(canonical, original);
+  auto legacy = store->getManifest(canonical);
+  legacy.objectName = alternate;
+  legacy.packetNames = {alternate};
+  store->put(legacy, original);
+  BOOST_REQUIRE(store->erase(canonical));
+  BOOST_REQUIRE(!store->has(canonical));
+  BOOST_CHECK_EXCEPTION(repo.commitOriginalPacketFile(incoming.manifest, incoming.path),
+    std::runtime_error, [](const std::runtime_error& error) {
+      return std::string(error.what()) == "repo-original-packet-is-immutable";
+    });
+  BOOST_CHECK(!store->has(canonical));
+  BOOST_CHECK(repo.getDataPacket(canonical) == original);
 }
 
 BOOST_AUTO_TEST_CASE(AtomicPacketSetBackendPreservesWireAcrossReuseAndRestart)
