@@ -52,7 +52,7 @@ ARTIFACT_CACHE_ROOT = DEFAULT_ARTIFACT_CACHE_ROOT
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_2x2"
 CONFIG = OUT / "yolo_policy.yaml"
 GEN_POLICY = str(OUT / "generated-policy")
-REPO_MANIFEST = OUT / "repo-manifests.json"
+ARTIFACT_REFERENCES = OUT / "artifact-references.json"
 APP_ROOT = "/NDNSF-DistributeInference/example"
 CONTROLLER_IDENTITY = APP_ROOT + "/controller"
 USER_IDENTITY = APP_ROOT + "/user"
@@ -165,6 +165,7 @@ def native_provider_cmd(argv: list[str],
         "--workers", str(workers),
         "--handler-threads", str(handler_threads),
         "--ack-threads", str(ack_threads),
+        "--artifact-references", str(ARTIFACT_REFERENCES),
         "--artifact-cache-dir", str(
             artifact_cache_root / "providers" /
             provider_cache_namespace(provider_identity(provider_id))),
@@ -918,38 +919,44 @@ def write_warm_rtt_nfd_monitor_summary(layout: str,
     )
 
 
-def validate_repo_manifest_references(path: Path) -> None:
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    roles = manifest.get("roles", {})
+def validate_di_repo_bindings(path: Path) -> None:
+    references = json.loads(path.read_text(encoding="utf-8"))
+    roles = references.get("roles", {})
     if not isinstance(roles, dict) or not roles:
-        raise RuntimeError(f"repo manifest has no roles: {path}")
+        raise RuntimeError(f"DI artifact references have no roles: {path}")
     for role, artifacts in roles.items():
         if not isinstance(artifacts, dict):
-            raise RuntimeError(f"repo manifest role {role} is not a mapping")
-        for artifact_name in ("model", "runner"):
-            entry = artifacts.get(artifact_name)
+            raise RuntimeError(f"DI artifact role {role} is not a mapping")
+        for slot, expected_use in (("model", "model"), ("runner", "runtime")):
+            entry = artifacts.get(slot)
             if not isinstance(entry, dict):
-                raise RuntimeError(f"repo manifest role {role} missing {artifact_name}")
-            repo_manifest = entry.get("repoManifest")
-            reference = entry.get("largeDataReference")
-            if not isinstance(repo_manifest, dict):
-                raise RuntimeError(f"repo manifest role {role} {artifact_name} missing repoManifest")
-            if not isinstance(reference, dict):
-                raise RuntimeError(f"repo manifest role {role} {artifact_name} missing largeDataReference")
-            if reference.get("source") != "repo-manifest":
-                raise RuntimeError(
-                    f"repo manifest role {role} {artifact_name} unexpected source={reference.get('source')}")
-            if reference.get("dataName") != repo_manifest.get("objectName"):
-                raise RuntimeError(
-                    f"repo manifest role {role} {artifact_name} dataName/objectName mismatch")
-            expected_digest = "sha256:" + str(repo_manifest.get("sha256", ""))
-            if reference.get("digest") != expected_digest:
-                raise RuntimeError(
-                    f"repo manifest role {role} {artifact_name} digest mismatch")
-            if int(reference.get("plaintextSize", -1)) != int(repo_manifest.get("size", -2)):
-                raise RuntimeError(
-                    f"repo manifest role {role} {artifact_name} size mismatch")
-    print(f"YOLO_2X2_REPO_MANIFEST_REFERENCES_OK path={path}")
+                raise RuntimeError(f"DI artifact role {role} missing {slot}")
+            binding = entry.get("repoBinding")
+            expected_fields = {
+                "schemaVersion", "repoHandleJson", "artifactReference", "role", "use"
+            }
+            if not isinstance(binding, dict) or set(binding) != expected_fields:
+                raise RuntimeError(f"DI artifact role {role} {slot} has invalid binding fields")
+            if (type(binding["schemaVersion"]) is not int
+                    or binding["schemaVersion"] != 1
+                    or not isinstance(binding["repoHandleJson"], str)
+                    or not binding["repoHandleJson"]
+                    or binding["role"] != role
+                    or binding["use"] != expected_use):
+                raise RuntimeError(f"DI artifact role {role} {slot} has invalid binding identity")
+            reference = binding["artifactReference"]
+            reference_fields = {"uri", "digest", "size_bytes", "mount_path"}
+            if (not isinstance(reference, dict)
+                    or set(reference) != reference_fields
+                    or not isinstance(reference["uri"], str)
+                    or not reference["uri"]
+                    or not isinstance(reference["digest"], str)
+                    or not reference["digest"].startswith("sha256:")
+                    or type(reference["size_bytes"]) is not int
+                    or reference["size_bytes"] < 0
+                    or not isinstance(reference["mount_path"], str)):
+                raise RuntimeError(f"DI artifact role {role} {slot} has invalid DI reference")
+    print(f"YOLO_2X2_DI_REPO_BINDINGS_OK path={path}")
 
 
 def read_node_traffic(node) -> dict[str, int]:
@@ -5802,6 +5809,9 @@ def main() -> None:
     parser.add_argument("--native-authority-binary",
                         default="/usr/local/bin/DI_NativeArtifactAuthority",
                         help="installed protected-artifact grant authority executable")
+    parser.add_argument("--native-repo-binary",
+                        default="/usr/local/bin/DistributedRepoServer",
+                        help="installed native Persistent Repo executable")
     parser.add_argument("--native-python-package", default="",
                         help="installed ndnsf Python package directory; defaults to this interpreter's site-packages/ndnsf")
     parser.add_argument("--native-library-path", default="",
@@ -5940,14 +5950,14 @@ def main() -> None:
         safe_layout += "_parallel_detect_replicated_backbone"
     if args_cli.auto_parallel_detect_plan:
         safe_layout += "_auto_parallel_detect"
-    global OUT, CONFIG, GEN_POLICY, REPO_MANIFEST, ARTIFACT_CACHE_ROOT
+    global OUT, CONFIG, GEN_POLICY, ARTIFACT_REFERENCES, ARTIFACT_CACHE_ROOT
     OUT = Path(args_cli.results_dir).expanduser() if args_cli.results_dir else (
         REPO / f"results/yolo_{safe_layout}_minindn_quick")
     if not OUT.is_absolute():
         OUT = REPO / OUT
     CONFIG = OUT / "yolo_policy.yaml"
     GEN_POLICY = str(OUT / "generated-policy")
-    REPO_MANIFEST = OUT / "repo-manifests.json"
+    ARTIFACT_REFERENCES = OUT / "artifact-references.json"
     ARTIFACT_CACHE_ROOT = resolve_artifact_cache_root(
         Path(args_cli.artifact_cache_root), OUT)
 
@@ -5963,7 +5973,8 @@ def main() -> None:
         naming_candidate = validate_spec201_candidate(
             args_cli.spec201_candidate, args_cli.spec201_candidate_sha256,
             [Path(args_cli.native_provider_binary),
-             Path(args_cli.native_assembly_worker_binary)] +
+             Path(args_cli.native_assembly_worker_binary),
+             Path(args_cli.native_repo_binary)] +
             ([Path(args_cli.native_requester_binary), Path(args_cli.native_authority_binary)]
              if args_cli.native_requester else []),
             selected_profile=("yolo", vars(args_cli)))
@@ -6126,6 +6137,9 @@ def main() -> None:
             "worker": (
                 Path(args_cli.native_assembly_worker_binary),
                 REPO / "build/DI_NativeOnnxAssemblyWorker"),
+            "repo": (
+                Path(args_cli.native_repo_binary),
+                REPO / "build/NDNSF-DistributedRepo/DistributedRepoServer"),
         }
         runtime_inputs = [REPO / "Experiments/native_probe_validation_links.py",
                           Path(__file__), PY_DIR / "user.py",
@@ -6434,6 +6448,11 @@ def main() -> None:
             f"{env.get('NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS', os.environ.get('NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS', 'default'))}"
         )
         bootstrap_env = dict(env)
+        if native_candidate is not None:
+            repo_component = native_candidate.get("components", {}).get("repo")
+            if not repo_component:
+                raise RuntimeError("CANDIDATE_NATIVE_REPO_COMPONENT_MISSING")
+            env["NDNSF_REPO_SERVER_SHA256"] = repo_component["installed"]["sha256"]
         if args_cli.quiet_perf_logs and not args_cli.svs_internal_timing:
             bootstrap_env["NDN_LOG"] = os.environ.get(
                 "NDN_LOG",
@@ -6486,6 +6505,7 @@ def main() -> None:
             ndn.net[AI_LAB_REPO_NODE],
             "repo",
             python_cmd("repo_node.py", common + [
+                "--server-binary", args_cli.native_repo_binary,
                 "--provider-id", "D",
                 "--repo-node", "/NDNSF-DistributeInference/example/provider/D",
                 "--failure-domain", "repo-rack",
@@ -6502,8 +6522,8 @@ def main() -> None:
         deployer_proc, deployer_log = start(ndn.net[AI_LAB_CONTROLLER_NODE], "controller-deployer",
                                             python_cmd("controller.py", common + [
                                                 "--deploy-only",
-                                                "--deploy-to-repo-manifest",
-                                                str(REPO_MANIFEST),
+                                                "--deploy-artifact-references",
+                                                str(ARTIFACT_REFERENCES),
                                                 "--replication-factor",
                                                 "1",
                                             ]),
@@ -6518,7 +6538,7 @@ def main() -> None:
             raise RuntimeError(
                 "controller did not deploy repo artifacts; "
                 f"returncode={deployer_rc}; see {deployer_log}\n{deployer_tail}")
-        validate_repo_manifest_references(REPO_MANIFEST)
+        validate_di_repo_bindings(ARTIFACT_REFERENCES)
 
         def start_compute_providers(phase_suffix: str,
                                     provider_env: dict[str, str]
@@ -6617,10 +6637,8 @@ def main() -> None:
 
         def build_warm_user_args() -> list[str]:
             warm_user_args = common + [
-                "--repo-manifest-file",
-                str(REPO_MANIFEST),
-                "--envelope-key-file",
-                str(envelope_key_file),
+                "--artifact-references-file",
+                str(ARTIFACT_REFERENCES),
                 "--model", args_cli.model,
                 "--input-size", str(args_cli.input_size),
                 "--ack-timeout-ms", str(ack_timeout_ms),
@@ -6712,10 +6730,8 @@ def main() -> None:
         envelope_key_file = ensure_request_envelope_key(OUT)
         native_request_count = cold_requests + warm_requests if native_assets is not None else cold_requests
         user_common = common + [
-            "--repo-manifest-file",
-            str(REPO_MANIFEST),
-            "--envelope-key-file",
-            str(envelope_key_file),
+            "--artifact-references-file",
+            str(ARTIFACT_REFERENCES),
             "--model", args_cli.model,
             "--input-size", str(args_cli.input_size),
             "--ack-timeout-ms", str(ack_timeout_ms),

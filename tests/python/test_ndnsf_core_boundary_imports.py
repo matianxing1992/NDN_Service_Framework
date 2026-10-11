@@ -76,7 +76,7 @@ class CoreBoundaryImportsTest(unittest.TestCase):
             "retry_call",
         ):
             self.assertFalse(hasattr(ndnsf, name), name)
-        self.assertEqual(RepoDataPlaneProducer.__module__, "py_repoclient")
+        self.assertTrue(RepoDataPlaneProducer.__module__.startswith("py_repoclient."))
         self.assertTrue(callable(retry_call))
         self.assertIsNotNone(RetryPolicy)
 
@@ -90,8 +90,9 @@ class CoreBoundaryImportsTest(unittest.TestCase):
             chunks=["/data/part0"],
             executable=False,
             cache_name="qwen-stage-0",
-            repo_manifest={"objectName": "/model/qwen"},
-            large_data_reference={"source": "repo-manifest"},
+            repo_manifest={},
+            large_data_reference={},
+            repo_binding={},
         )
         spec = ExecutionArtifactSpec(
             role="/Stage/0",
@@ -103,6 +104,18 @@ class CoreBoundaryImportsTest(unittest.TestCase):
         wire = spec.to_bytes()
         self.assertEqual(ExecutionArtifactSpec.from_bytes(wire), spec)
         self.assertEqual(ExecutionArtifactSpec.from_bytes(wire).to_bytes(), wire)
+
+    def test_retired_repo_manifest_cannot_be_decoded_as_a_generic_di_artifact(self):
+        from py_repoclient import RepoCompatibilityError
+
+        for fields in ({"repo_manifest": {"objectName": "/model/old"}},
+                       {"large_data_reference": {"source": "repo-manifest"}}):
+            with self.subTest(fields=fields):
+                artifact = ExecutionArtifact("model", "/data/model", "model.onnx", "abc", **fields)
+                spec = ExecutionArtifactSpec("/Stage/0", "onnxruntime", artifacts=[artifact])
+                with self.assertRaises(RepoCompatibilityError) as error:
+                    ExecutionArtifactSpec.from_bytes(spec.to_bytes())
+                self.assertEqual(error.exception.code, "SPEC192_COMPATIBILITY_V1")
 
     def test_publish_and_materialize_use_only_generic_large_data_primitives(self) -> None:
         user = FakeUser()

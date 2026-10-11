@@ -584,6 +584,12 @@ parseManifestJson(const std::string& manifestJson)
       parseRepoWriteConsistency(manifest.writeConsistency))));
   manifest.operationId = extractJsonString(manifestJson, "operationId");
   manifest.lifecycleState = extractJsonString(manifestJson, "lifecycleState");
+  manifest.dataReceiptId = extractJsonString(manifestJson, "dataReceiptId");
+  manifest.dataReceiptRepoNode = extractJsonString(manifestJson, "dataReceiptRepoNode");
+  manifest.dataReceiptProviderIdentity = extractJsonString(
+    manifestJson, "dataReceiptProviderIdentity");
+  manifest.dataReceiptCommittedAtMs = extractJsonUInt(
+    manifestJson, "dataReceiptCommittedAtMs", 0);
   if (manifest.lifecycleState.empty()) {
     manifest.lifecycleState = "COMMITTED";
   }

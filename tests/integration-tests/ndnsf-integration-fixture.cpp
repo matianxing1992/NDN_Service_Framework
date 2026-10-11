@@ -150,6 +150,28 @@ indexedName(const ndn::Name& base, size_t index)
   return ndn::Name(base).append("p" + std::to_string(index));
 }
 
+std::vector<ndn::Name>
+configuredServices(const BootstrapProfile& profile,
+                   const std::vector<ndn::Name>& roleServices = {})
+{
+  std::vector<ndn::Name> services{profile.serviceName};
+  for (const auto& service : profile.additionalServices) {
+    if (service.empty()) {
+      throw std::invalid_argument("integration fixture service names must not be empty");
+    }
+    if (std::find(services.begin(), services.end(), service) == services.end()) {
+      services.push_back(service);
+    }
+  }
+  for (const auto& service : roleServices) {
+    if (service.empty())
+      throw std::invalid_argument("integration fixture service names must not be empty");
+    if (std::find(services.begin(), services.end(), service) == services.end())
+      services.push_back(service);
+  }
+  return services;
+}
+
 } // namespace
 
 NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profile)
@@ -203,11 +225,13 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   // actual Controller projection migration remains the Spec201 T009 gate.
   const auto serviceUri = m_profile.serviceName.toUri(ndn::name::UriFormat::ALTERNATE);
   std::string userAbePolicy = "/PERMISSION" + serviceUri;
-  for (const auto& service : m_profile.userAdditionalServices)
+  for (const auto& service : configuredServices(m_profile, m_profile.userAdditionalServices))
     userAbePolicy += " OR /PERMISSION" + service.toUri(ndn::name::UriFormat::ALTERNATE);
   std::string providerAbePolicy = "/SERVICE" + serviceUri;
-  for (const auto& service : m_profile.providerAdditionalServices)
+  for (const auto& service : configuredServices(m_profile, m_profile.providerAdditionalServices))
     providerAbePolicy += " OR /SERVICE" + service.toUri(ndn::name::UriFormat::ALTERNATE);
+  if (m_profile.providerCanActAsUser)
+    providerAbePolicy += " OR " + userAbePolicy;
   m_attributeAuthority->addNewPolicy(
       userCert, userAbePolicy);
   m_attributeAuthority->addNewPolicy(
@@ -337,7 +361,7 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
             [&] (const ndn::Interest& interest) {
               forwardInterest(*m_userFace, interest, false);
             }));
-    m_extraProviderDataBridges.emplace_back(
+        m_extraProviderDataBridges.emplace_back(
         extraFace->onSendData.connect(
             [&] (const ndn::Data& data) {
               forwardData(*m_userFace, data, false);
@@ -452,6 +476,7 @@ NdnsfIntegrationEnvironment::enableProductionIngressForTest()
 void
 NdnsfIntegrationEnvironment::installPermissions()
 {
+  const auto serviceNames = configuredServices(m_profile);
   PermissionResponse userPermissions;
   userPermissions.setTargetIdentity(m_profile.userIdentity.toUri());
   userPermissions.setPermissionKind(tlv::UserPermission);
@@ -466,7 +491,7 @@ NdnsfIntegrationEnvironment::installPermissions()
     userEntry.setTtl(0);
     userEntry.setVersion(1);
     userPermissions.addEntry(userEntry);
-    for (const auto& service : m_profile.userAdditionalServices) {
+    for (const auto& service : configuredServices(m_profile, m_profile.userAdditionalServices)) {
       auto additional = userEntry;
       additional.setServiceName(service.toUri());
       userPermissions.addEntry(additional);
@@ -474,7 +499,7 @@ NdnsfIntegrationEnvironment::installPermissions()
     auto providerPermissions = makePermissionResponse(
         providerName, tlv::ProviderPermission, providerName,
         m_profile.serviceName);
-    for (const auto& service : m_profile.providerAdditionalServices) {
+    for (const auto& service : configuredServices(m_profile, m_profile.providerAdditionalServices)) {
       PermissionEntry additional;
       additional.setProviderName(providerName.toUri());
       additional.setServiceName(service.toUri());
@@ -519,6 +544,14 @@ NdnsfIntegrationEnvironment::computeSnapshot()
          << m_profile.serviceName.toUri()
          << m_profile.trustSchemaPath
          << providerCount();
+  if (m_profile.providerCanActAsUser) {
+    digest << "provider-can-act-as-user";
+  }
+  for (const auto& service : configuredServices(m_profile)) {
+    if (service != m_profile.serviceName) {
+      digest << service.toUri();
+    }
+  }
   for (size_t index = 0; index < providerCount(); ++index) {
     digest << provider(index).getName().toUri()
            << provider(index).getCurrentPolicyEpoch();

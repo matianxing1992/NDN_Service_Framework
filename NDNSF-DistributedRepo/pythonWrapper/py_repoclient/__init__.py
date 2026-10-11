@@ -1,139 +1,54 @@
-"""Python API for NDNSF-DistributedRepo RepoClient.
-
-This package is intentionally thin. The pybind11 extension exposes the C++
-manifest/protocol/placement helpers, and the Python ``RepoClient`` class adapts
-them to the installed NDNSF Python ``ServiceUser`` API.
-"""
+"""Python API for the C++ Distributed Repo and artifact repository."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from typing import Callable, Iterable, Optional, Union
+from . import _py_repoclient as _native
+from .compat import RepoCompatibilityError, retired_repo_feature
 
-from ndnsf import _ndnsf
-from ndnsf import (
-    AckCandidate,
-    ServiceDiscoveryRecord,
-    ServiceUser,
-    decode_provider_capability_ack,
-)
+# Keep the native value and protocol bindings as the source of truth. The
+# Python layer below adds Path conversion and retains selected legacy imports
+# only to raise the versioned compatibility error.
+for _name in dir(_native):
+    if not _name.startswith("_") and _name != "NativeArtifactRepositoryApi":
+        globals()[_name] = getattr(_native, _name)
 
-from ._py_repoclient import (
-    AdaptiveArtifactTransfer,
-    AdaptiveTransferOptions,
-    ArtifactCapability,
-    ArtifactChunk,
-    ArtifactLimits,
-    ArtifactManifestChild,
-    ArtifactManifestPage,
-    ArtifactManifestTrustPolicy,
-    ArtifactManifestVerificationResult,
-    ArtifactReference,
-    ArtifactResumeIdentity,
-    ArtifactResumeSession,
-    ArtifactResumeSnapshot,
-    ArtifactResumeState,
-    ArtifactReplicaReceipt,
-    ArtifactRootManifest,
-    ArtifactSegmentDisposition,
-    ArtifactSegmentRequest,
-    ArtifactTransferSnapshot,
-    SignedArtifactRoot,
-    ArtifactUploadLease,
-    ArtifactValidationError,
-    PlacementPolicy,
-    ReplicaLeaseControlFlow,
-    ReplicaLeaseControlSnapshot,
-    ReplicaLeaseControlState,
-    RepoCacheStatus,
-    RepoCatalogDelta,
-    RepoCatalogEntry,
-    RepoCatalogStatus,
-    RepoDataReference,
-    RepoObjectManifest,
-    RepoOperationMetrics,
-    RepoOperationStatus,
-    StorageCapability,
-    artifact_capability_from_dict,
-    artifact_chunk_from_dict,
-    artifact_manifest_child_from_dict,
-    artifact_manifest_page_from_dict,
-    artifact_reference_from_dict,
-    artifact_replica_receipt_from_dict,
-    artifact_resume_identity_from_dict,
-    artifact_root_manifest_from_dict,
-    artifact_upload_lease_from_dict,
-    artifact_sha256_hex,
-    canonical_manifest_page_bytes,
-    canonical_root_manifest_bytes,
-    decode_artifact_manifest_page,
-    decode_signed_artifact_root,
-    decode_store_request,
-    encode_inventory,
-    encode_artifact_manifest_page,
-    encode_signed_artifact_root,
-    encode_store_request,
-    make_manifest,
-    make_repo_service_name,
-    derive_artifact_data_name,
-    derive_manifest_page_name,
-    parse_manifest_json,
-    parse_cache_status_json,
-    parse_catalog_delta_json,
-    parse_catalog_entry_json,
-    parse_catalog_status_json,
-    parse_data_reference_json,
-    parse_inventory_json,
-    parse_operation_status_json,
-    select_replicas,
-    sha256_hex,
-    validate_artifact_resume_identity,
-    verify_artifact_chunk_payload,
-    verify_artifact_manifest_graph,
-    verify_artifact_payload,
-    verify_signed_artifact_root,
-)
-from .service_names import (
-    DEFAULT_REPO_SERVICE_ROOT,
-    canonical_repo_operation,
-    is_internal_repo_service,
-    repo_service_for_operation,
-    repo_versioned_services,
-)
-from .persistence import (
-    ARTIFACT_LIFECYCLE_STATES,
-    ARTIFACT_LIFECYCLE_TRANSITIONS,
-    ArtifactStorageIdentity,
-    ArtifactCapacityStatus,
-    ArtifactFinalizationRecord,
-    ArtifactTransferSessionRecord,
-    FilesystemCasPayloadStore,
-    LifecycleTransitionError,
-    MetadataStore,
-    PayloadStore,
-    PersistenceOwnershipError,
-    RepoLifecycleEvent,
-    SqliteRepositoryPersistence,
-)
-from .artifact_transfer import (
-    ArtifactStoreAssignment,
-    ArtifactStoreOffer,
-    ReplicaTaskControlSnapshot,
-    PendingReplicaTaskCollaboration,
-    ReplicaTaskCollaborationClient,
-    decode_store_assignment,
-    decode_store_offer_ack,
-    encode_store_offer_ack,
-    decode_upload_lease_assignment,
-    encode_upload_lease_ack,
-    PendingReplicaLeaseCollaboration,
-    ReplicaLeaseCollaborationClient,
-)
-from .network_artifact_backend import (
-    ArtifactControlMetrics,
-    CollaborationArtifactApiBackend,
-    install_artifact_collaboration_service,
+from .artifact_api import (
+    ArtifactApiBackend,
+    ArtifactApiError,
+    ArtifactCancellationToken,
+    ArtifactCapabilityNegotiation,
+    ArtifactCapabilityRejection,
+    ArtifactCapabilityRequirements,
+    ArtifactCommitReceipt,
+    ArtifactDescriptor,
+    ArtifactErrorCode,
+    ArtifactFetchAttempt,
+    ArtifactFetchDriver,
+    ArtifactFetchResult,
+    ArtifactFetchSession,
+    ArtifactHandle,
+    ArtifactProgress,
+    ArtifactPublishDriver,
+    ArtifactPublishResult,
+    ArtifactReplicaCommit,
+    ArtifactReplicaResult,
+    ArtifactRepositoryApi,
+    ArtifactSessionStatus,
+    ArtifactUploadSession,
+    AvailabilityLocationReport,
+    AvailabilityReport,
+    InAppRepoConfig,
+    LocalArtifactCommit,
+    PersistentRepoClientConfig,
+    PublishOperationHandle,
+    PublishOperationStatus,
+    RepoCandidate,
+    RepoCandidateSet,
+    SelectedRepoBinding,
+    SelectedRepoSet,
+    SelectedRepoTarget,
+    WriteConsistency,
+    negotiate_artifact_capabilities,
 )
 from .artifact_lifecycle import (
     AuthenticatedReplicaReceipt,
@@ -143,691 +58,69 @@ from .artifact_lifecycle import (
     resolve_active_artifact,
     retrieve_to_atomic_destination,
 )
-from .artifact_api import (
-    ArtifactApiBackend,
-    ArtifactApiError,
-    ArtifactCancellationToken,
-    ArtifactCapabilityNegotiation,
-    ArtifactCapabilityRejection,
-    ArtifactCapabilityRequirements,
-    ArtifactControlMode,
-    ArtifactControlOptions,
-    ArtifactDescriptor,
-    ArtifactErrorCode,
-    ArtifactFetchDriver,
-    ArtifactFetchResult,
-    ArtifactFetchSession,
-    ArtifactProgress,
-    ArtifactPublishDriver,
-    ArtifactPublishResult,
-    ArtifactReplicaResult,
-    ArtifactRepositoryApi,
-    ArtifactSessionStatus,
-    ArtifactUploadSession,
-    negotiate_artifact_capabilities,
+from .artifact_transfer import (
+    ArtifactStoreAssignment,
+    ArtifactStoreOffer,
+    PendingReplicaLeaseCollaboration,
+    PendingReplicaTaskCollaboration,
+    ReplicaLeaseCollaborationClient,
+    ReplicaTaskCollaborationClient,
+    ReplicaTaskControlSnapshot,
+    decode_store_assignment,
+    decode_store_offer_ack,
+    decode_upload_lease_assignment,
+    encode_store_offer_ack,
+    encode_upload_lease_ack,
 )
 from .local_artifact_backend import FilesystemArtifactApiBackend
-
-
-class RepoDataPlaneProducer:
-    """Serve repository Data through one callback-backed native Face."""
-
-    def __init__(
-        self,
-        lookup: Callable[[str, bool], Optional[bytes]],
-        *,
-        signing_identity: str = "",
-        forwarding_route_prefixes: Optional[list[str]] = None,
-    ) -> None:
-        self._native = _ndnsf.RepoDataPlaneProducer(
-            lookup,
-            signing_identity,
-            list(forwarding_route_prefixes or []),
-        )
-
-    def activate_prefix(self, prefix: str) -> None:
-        self._native.activate_prefix(prefix)
-
-    def start(self) -> "RepoDataPlaneProducer":
-        self._native.start()
-        return self
-
-    def stop(self) -> None:
-        self._native.stop()
-
-    @property
-    def status(self) -> dict[str, object]:
-        return {
-            "activePrefixCount": int(self._native.active_prefix_count),
-            "interestCount": int(self._native.interest_count),
-            "hitCount": int(self._native.hit_count),
-            "missCount": int(self._native.miss_count),
-            "threadCount": int(self._native.thread_count),
-            "error": str(self._native.error),
-        }
-
-
-def manifest_to_dict(manifest: RepoObjectManifest) -> dict:
-    return json.loads(manifest.to_json())
-
-
-def capability_from_ack(candidate: AckCandidate) -> Optional[StorageCapability]:
-    decoded = decode_provider_capability_ack(
-        bytes(candidate.payload),
-        provider_name=str(candidate.provider_name),
-        service_name=str(candidate.service_name),
-    )
-    hint = decoded.hint
-    fields: dict[str, object] = dict(hint.service_payload)
-    fields["repoNode"] = hint.provider_name
-    repo_node = fields.get("repoNode") or candidate.provider_name
-    try:
-        capability = StorageCapability()
-        capability.repo_node = repo_node
-        capability.free_bytes = int(fields.get("freeBytes", "0"))
-        capability.used_bytes = int(fields.get("usedBytes", "0"))
-        capability.recent_load = float(fields.get("recentLoad", fields.get("load", "0")))
-        capability.availability_score = float(
-            fields.get("availabilityScore", fields.get("availability", "1"))
-        )
-        capability.failure_domain = fields.get("failureDomain", "")
-        capability.repo_mode = fields.get("repoMode", "persistent")
-        capability.accepts_backup_replica = _parse_bool(
-            fields.get("acceptsBackupReplica", "true"))
-        storage_classes = fields.get("storageClasses", "")
-        if isinstance(storage_classes, str) and storage_classes:
-            capability.storage_classes = [
-                value for value in storage_classes.split(",") if value
-            ]
-        elif isinstance(storage_classes, (list, tuple)):
-            capability.storage_classes = [str(value) for value in storage_classes]
-        return capability
-    except ValueError:
-        return None
-
-
-def artifact_capability_from_ack(
-    candidate: AckCandidate,
-) -> Optional[ArtifactCapability]:
-    """Decode one strict artifact capability from a generic NDNSF ACK."""
-
-    decoded = decode_provider_capability_ack(
-        bytes(candidate.payload),
-        provider_name=str(candidate.provider_name),
-        service_name=str(candidate.service_name),
-    )
-    value = decoded.hint.service_payload.get("artifactCapability")
-    if not isinstance(value, dict):
-        return None
-    try:
-        return artifact_capability_from_dict(value)
-    except (ArtifactValidationError, TypeError, ValueError):
-        return None
-
-
-def discovery_record_from_ack(candidate: AckCandidate) -> ServiceDiscoveryRecord:
-    """Parse a core service-discovery record from a Repo ACK.
-
-    Legacy-only ACKs require the explicit ``mixed`` compatibility mode.
-    Typed ``ProviderCapabilityHint`` ACKs can mark a provider unready or
-    draining, which capacity selection should respect before applying
-    storage-placement policy.
-    """
-
-    hint = decode_provider_capability_ack(
-        bytes(candidate.payload),
-        provider_name=str(candidate.provider_name),
-        service_name=str(candidate.service_name),
-    ).hint
-    return ServiceDiscoveryRecord.from_provider_capability_hint(hint)
-
-
-def ready_capability_from_ack(candidate: AckCandidate) -> Optional[StorageCapability]:
-    record = discovery_record_from_ack(candidate)
-    if not record.ready_for_new_request():
-        return None
-    return capability_from_ack(candidate)
-
-
-class RepoClient:
-    """Small synchronous repo client built on NDNSF Python ``ServiceUser``.
-
-    Public operations use versioned operation services. The payload operation
-    remains as a fail-closed consistency check, not as the authorization key.
-    """
-
-    def __init__(
-        self,
-        user: ServiceUser,
-        repo_service_name: str = "/NDNSF/DistributedRepo",
-        *,
-        ack_timeout_ms: int = 1000,
-        timeout_ms: int = 30000,
-        artifact_backend: Optional[ArtifactApiBackend] = None,
-    ) -> None:
-        self.user = user
-        self.repo_service_name = repo_service_name
-        self.ack_timeout_ms = ack_timeout_ms
-        self.timeout_ms = timeout_ms
-        self._artifact_api = ArtifactRepositoryApi(
-            artifact_backend,
-            publisher_identity=str(self.user.user),
-            default_timeout_ms=max(int(timeout_ms), 60_000),
-        )
-
-    @property
-    def artifact_api(self) -> ArtifactRepositoryApi:
-        """Public advanced artifact facade; never exposes runtime private state."""
-
-        return self._artifact_api
-
-    def configure_artifact_backend(
-        self, backend: ArtifactApiBackend
-    ) -> None:
-        """Install the application/runtime artifact-manifest-v2 backend."""
-
-        self._artifact_api.backend = backend
-
-    def publish_file(self, path: Union[str, Path], **kwargs) -> ArtifactPublishResult:
-        return self._artifact_api.publish_file(path, **kwargs)
-
-    async def publish_file_async(
-        self, path: Union[str, Path], **kwargs
-    ) -> ArtifactPublishResult:
-        return await self._artifact_api.publish_file_async(path, **kwargs)
-
-    def fetch_file(
-        self,
-        reference: ArtifactReference,
-        destination: Union[str, Path],
-        **kwargs,
-    ) -> ArtifactFetchResult:
-        return self._artifact_api.fetch_file(
-            reference, destination, **kwargs
-        )
-
-    async def fetch_file_async(
-        self,
-        reference: ArtifactReference,
-        destination: Union[str, Path],
-        **kwargs,
-    ) -> ArtifactFetchResult:
-        return await self._artifact_api.fetch_file_async(
-            reference, destination, **kwargs
-        )
-
-    def begin_upload(
-        self, descriptor: ArtifactDescriptor, **kwargs
-    ) -> ArtifactUploadSession:
-        return self._artifact_api.begin_upload(descriptor, **kwargs)
-
-    def begin_fetch(
-        self,
-        reference: ArtifactReference,
-        destination: Union[str, Path],
-        **kwargs,
-    ) -> ArtifactFetchSession:
-        return self._artifact_api.begin_fetch(
-            reference, destination, **kwargs
-        )
-
-    def _service_for(self, operation: str) -> str:
-        return repo_service_for_operation(operation, self.repo_service_name)
-
-    @property
-    def publisher_namespace(self) -> str:
-        return (
-            f"{self.user.user.rstrip('/')}"
-            "/NDNSF-DISTRIBUTED-REPO/OBJECT"
-        )
-
-    def publisher_object_name(self, suffix: str) -> str:
-        suffix = str(suffix).strip()
-        if not suffix:
-            raise ValueError("repo object suffix must not be empty")
-        if suffix.startswith(self.publisher_namespace + "/"):
-            return suffix
-        return f"{self.publisher_namespace}/{suffix.strip('/')}"
-
-    def _require_publisher_object_name(self, object_name: str) -> str:
-        name = str(object_name).strip()
-        if not name:
-            raise ValueError("repo object name must not be empty")
-        if not name.startswith(self.publisher_namespace + "/"):
-            raise ValueError(
-                "repo object data names must be under the publisher namespace: "
-                f"{self.publisher_namespace}/..."
-            )
-        return name
-
-    @staticmethod
-    def make_manifest(
-        *,
-        object_name: str,
-        object_type: str,
-        payload: bytes,
-        replication_factor: int = 1,
-        replica_nodes: Iterable[str] = (),
-        policy_epoch: str = "",
-    ) -> RepoObjectManifest:
-        return make_manifest(
-            object_name,
-            object_type,
-            bytes(payload),
-            int(replication_factor),
-            list(replica_nodes),
-            policy_epoch,
-        )
-
-    def capability(self) -> list[StorageCapability]:
-        response = self.user.request_service(
-            self._service_for("CAPABILITY"),
-            _request("CAPABILITY"),
-            ack_timeout_ms=self.ack_timeout_ms,
-            timeout_ms=self.timeout_ms,
-            strategy="all-selected",
-        )
-        if not response.status:
-            raise RuntimeError(response.error)
-        obj = _json_payload(response.payload)
-        if "capabilities" in obj:
-            return [_capability_from_json(item) for item in obj.get("capabilities", [])]
-        if "repoNode" in obj:
-            return [_capability_from_json(obj)]
-        return []
-
-    def artifact_capabilities(self) -> list[ArtifactCapability]:
-        """Fetch validated format capabilities without inferring defaults."""
-
-        response = self.user.request_service(
-            self._service_for("CAPABILITY"),
-            _request("CAPABILITY"),
-            ack_timeout_ms=self.ack_timeout_ms,
-            timeout_ms=self.timeout_ms,
-            strategy="all-selected",
-        )
-        if not response.status:
-            raise RuntimeError(response.error)
-        obj = _json_payload(response.payload)
-        values = obj.get("capabilities", [obj])
-        capabilities = []
-        for value in values:
-            if not isinstance(value, dict):
-                continue
-            artifact_value = value.get("artifactCapability")
-            if not isinstance(artifact_value, dict):
-                continue
-            capabilities.append(
-                artifact_capability_from_dict(artifact_value)
-            )
-        return capabilities
-
-    def insert(
-        self,
-        *,
-        object_name: str,
-        payload: bytes,
-        object_type: str = "artifact",
-        replication_factor: int = 1,
-        replica_nodes: Iterable[str] = (),
-        policy_epoch: str = "",
-        selector: Optional[Callable[[list[AckCandidate]], list[str]]] = None,
-    ) -> RepoObjectManifest:
-        payload = bytes(payload)
-        object_name = self._require_publisher_object_name(object_name)
-        manifest = self.make_manifest(
-            object_name=object_name,
-            object_type=object_type,
-            payload=payload,
-            replication_factor=replication_factor,
-            replica_nodes=replica_nodes,
-            policy_epoch=policy_epoch,
-        )
-        if selector is None:
-            selector = _capacity_selector(replication_factor, len(payload))
-        response = self.user.request_service_select(
-            self._service_for("STORE"),
-            _request(
-                "STORE",
-                manifest=manifest_to_dict(manifest),
-                payloadB64=_b64(payload),
-            ),
-            selector,
-            ack_timeout_ms=self.ack_timeout_ms,
-            timeout_ms=max(self.timeout_ms, 60000),
-            request_strategy="all-selected",
-        )
-        if not response.status:
-            raise RuntimeError(response.error)
-        try:
-            stored = parse_manifest_json(response.payload.decode())
-            if stored.object_name:
-                return stored
-        except Exception:
-            pass
-        return manifest
-
-    def store(
-        self,
-        *,
-        object_name: str,
-        payload: bytes,
-        object_type: str = "artifact",
-        replication_factor: int = 1,
-        replica_nodes: Iterable[str] = (),
-        policy_epoch: str = "",
-        selector: Optional[Callable[[list[AckCandidate]], list[str]]] = None,
-    ) -> RepoObjectManifest:
-        return self.insert(
-            object_name=object_name,
-            payload=payload,
-            object_type=object_type,
-            replication_factor=replication_factor,
-            replica_nodes=replica_nodes,
-            policy_epoch=policy_epoch,
-            selector=selector,
-        )
-
-    def put(
-        self,
-        object_name: str,
-        payload: bytes,
-        *,
-        object_type: str = "object",
-        replication_factor: int = 1,
-        replica_nodes: Iterable[str] = (),
-        policy_epoch: str = "",
-        selector: Optional[Callable[[list[AckCandidate]], list[str]]] = None,
-    ) -> RepoObjectManifest:
-        return self.insert(
-            object_name=object_name,
-            payload=payload,
-            object_type=object_type,
-            replication_factor=replication_factor,
-            replica_nodes=replica_nodes,
-            policy_epoch=policy_epoch,
-            selector=selector,
-        )
-
-    def fetch(self, object_name: str) -> bytes:
-        response = self.user.request_service(
-            self._service_for("FETCH"),
-            _request("FETCH", objectName=object_name),
-            ack_timeout_ms=self.ack_timeout_ms,
-            timeout_ms=max(self.timeout_ms, 60000),
-            strategy="first-responding",
-        )
-        if not response.status:
-            raise RuntimeError(response.error)
-        obj = _json_payload(response.payload)
-        if "payloadB64" in obj:
-            return _unb64(obj["payloadB64"])
-        return bytes(response.payload)
-
-    def get(self, object_name: str) -> bytes:
-        return self.fetch(object_name)
-
-    def fetch_object(self, manifest: RepoObjectManifest) -> bytes:
-        """Fetch one logical object described by a repo manifest.
-
-        The current remote repo service returns object payloads by object name.
-        This helper gives callers the same object-level shape as the C++ API and
-        verifies manifest size/hash after the fetch. If a future remote service
-        exposes manifest-driven segmented fetch directly, this method remains
-        the stable high-level entry point.
-        """
-        payload = self.fetch(manifest.object_name)
-        _verify_manifest_payload(manifest, payload)
-        return payload
-
-    def get_object(self, manifest: RepoObjectManifest) -> bytes:
-        return self.fetch_object(manifest)
-
-    def manifest(self, object_name: str) -> RepoObjectManifest:
-        response = self.user.request_service(
-            self._service_for("MANIFEST"),
-            _request("MANIFEST", objectName=object_name),
-            ack_timeout_ms=self.ack_timeout_ms,
-            timeout_ms=self.timeout_ms,
-            strategy="first-responding",
-        )
-        if not response.status:
-            raise RuntimeError(response.error)
-        return parse_manifest_json(response.payload.decode())
-
-    def inventory(self) -> dict[str, RepoObjectManifest]:
-        response = self.user.request_service(
-            self._service_for("INVENTORY"),
-            _request("INVENTORY"),
-            ack_timeout_ms=self.ack_timeout_ms,
-            timeout_ms=self.timeout_ms,
-            strategy="all-selected",
-        )
-        if not response.status:
-            raise RuntimeError(response.error)
-        obj = _json_payload(response.payload)
-        objects = obj.get("objects", obj)
-        return {
-            name: parse_manifest_json(json.dumps(value, sort_keys=True))
-            for name, value in objects.items()
-        }
-
-    def list(self) -> dict[str, RepoObjectManifest]:
-        return self.inventory()
-
-    def delete(self, object_name: str) -> None:
-        response = self.user.request_service(
-            self._service_for("DELETE"),
-            _request("DELETE", objectName=object_name),
-            ack_timeout_ms=self.ack_timeout_ms,
-            timeout_ms=self.timeout_ms,
-            strategy="all-selected",
-        )
-        if not response.status:
-            raise RuntimeError(response.error)
-
-    def remove(self, object_name: str) -> None:
-        self.delete(object_name)
-
-
-def _capacity_selector(replication_factor: int, object_size: int):
-    def selector(candidates: list[AckCandidate]) -> list[str]:
-        capabilities = [
-            capability
-            for candidate in candidates
-            if (capability := ready_capability_from_ack(candidate)) is not None
-        ]
-        policy = PlacementPolicy()
-        policy.replication_factor = int(replication_factor)
-        selected = select_replicas(capabilities, policy, int(object_size))
-        return [capability.repo_node for capability in selected]
-
-    return selector
-
-
-def _capability_from_json(obj: dict) -> StorageCapability:
-    capability = StorageCapability()
-    capability.repo_node = str(obj.get("repoNode", ""))
-    capability.free_bytes = int(obj.get("freeBytes", 0))
-    capability.used_bytes = int(obj.get("usedBytes", 0))
-    capability.recent_load = float(obj.get("recentLoad", 0))
-    capability.availability_score = float(obj.get("availabilityScore", 1))
-    capability.failure_domain = str(obj.get("failureDomain", ""))
-    capability.storage_classes = [str(value) for value in obj.get("storageClasses", [])]
-    capability.repo_mode = str(obj.get("repoMode", "persistent"))
-    capability.accepts_backup_replica = _parse_bool(
-        str(obj.get("acceptsBackupReplica", "true")))
-    return capability
-
-
-def _parse_bool(value: str) -> bool:
-    return str(value).strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _request(operation: str, **fields) -> bytes:
-    return json.dumps(
-        {
-            "operation": operation,
-            **fields,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-
-
-def _json_payload(payload: bytes) -> dict:
-    obj = json.loads(bytes(payload).decode())
-    if not isinstance(obj, dict):
-        raise ValueError("repo response payload must be a JSON object")
-    return obj
-
-
-def _b64(payload: bytes) -> str:
-    import base64
-
-    return base64.b64encode(payload).decode()
-
-
-def _unb64(payload: str) -> bytes:
-    import base64
-
-    return base64.b64decode(payload.encode())
-
-
-def _verify_manifest_payload(manifest: RepoObjectManifest, payload: bytes) -> None:
-    if len(payload) != manifest.size:
-        raise ValueError(
-            f"repo object size mismatch for {manifest.object_name}: "
-            f"expected {manifest.size}, got {len(payload)}"
-        )
-    digest = sha256_hex(bytes(payload))
-    if manifest.sha256 and digest != manifest.sha256:
-        raise ValueError(f"repo object sha256 mismatch for {manifest.object_name}")
-
-
-__all__ = [
-    "ARTIFACT_LIFECYCLE_STATES",
-    "ARTIFACT_LIFECYCLE_TRANSITIONS",
-    "AdaptiveArtifactTransfer",
-    "AdaptiveTransferOptions",
-    "AuthenticatedReplicaReceipt",
-    "ArtifactApiBackend",
-    "ArtifactApiError",
-    "ArtifactCancellationToken",
-    "ArtifactCapabilityNegotiation",
-    "ArtifactCapabilityRejection",
-    "ArtifactCapabilityRequirements",
-    "ArtifactControlMetrics",
-    "ArtifactControlMode",
-    "ArtifactControlOptions",
-    "ArtifactDescriptor",
-    "ArtifactErrorCode",
-    "ArtifactFetchDriver",
-    "ArtifactFetchResult",
-    "ArtifactFetchSession",
-    "ArtifactProgress",
-    "ArtifactPublishDriver",
-    "ArtifactPublishResult",
-    "ArtifactReplicaResult",
-    "ArtifactRepositoryApi",
-    "ArtifactReplicaSession",
-    "ArtifactSessionStatus",
-    "ArtifactStorageIdentity",
-    "ArtifactUploadSession",
-    "AtomicArtifactDestination",
-    "ArtifactCapability",
-    "ArtifactChunk",
-    "ArtifactLimits",
-    "ArtifactManifestChild",
-    "ArtifactManifestPage",
-    "ArtifactManifestTrustPolicy",
-    "ArtifactManifestVerificationResult",
-    "ArtifactReference",
-    "ArtifactReplicaReceipt",
-    "ArtifactRootManifest",
-    "ArtifactSegmentDisposition",
-    "ArtifactSegmentRequest",
-    "ArtifactTransferSnapshot",
-    "SignedArtifactRoot",
-    "ArtifactUploadLease",
-    "ArtifactValidationError",
-    "DEFAULT_REPO_SERVICE_ROOT",
-    "FilesystemCasPayloadStore",
-    "FilesystemArtifactApiBackend",
-    "CollaborationArtifactApiBackend",
-    "install_artifact_collaboration_service",
-    "HmacReceiptAuthenticator",
-    "LifecycleTransitionError",
-    "MetadataStore",
-    "PayloadStore",
-    "PersistenceOwnershipError",
-    "PendingReplicaLeaseCollaboration",
-    "PendingReplicaTaskCollaboration",
-    "canonical_repo_operation",
-    "PlacementPolicy",
-    "ReplicaLeaseControlFlow",
-    "ReplicaLeaseControlSnapshot",
-    "ReplicaLeaseControlState",
-    "ReplicaLeaseCollaborationClient",
-    "ReplicaTaskCollaborationClient",
-    "ReplicaTaskControlSnapshot",
-    "ArtifactStoreAssignment",
-    "ArtifactStoreOffer",
-    "RepoClient",
-    "RepoCacheStatus",
-    "RepoCatalogDelta",
-    "RepoCatalogEntry",
-    "RepoCatalogStatus",
-    "RepoDataReference",
-    "RepoObjectManifest",
-    "RepoOperationMetrics",
-    "RepoOperationStatus",
-    "RepoLifecycleEvent",
-    "SqliteRepositoryPersistence",
-    "StorageCapability",
-    "discovery_record_from_ack",
+from .network_artifact_backend import (
+    ArtifactControlMetrics,
+    CollaborationArtifactApiBackend,
+    install_artifact_collaboration_service,
+)
+from .orchestration import NetworkDistributedRepoClient, RepoNodeApp
+from .persistence import (
+    ArtifactCapacityStatus,
+    ArtifactFinalizationRecord,
+    ArtifactStorageIdentity,
+    ArtifactTransferSessionRecord,
+    FilesystemCasPayloadStore,
+    LifecycleTransitionError,
+    MetadataStore,
+    PayloadStore,
+    PersistenceOwnershipError,
+    RepoLifecycleEvent,
+    SqliteRepositoryPersistence,
+)
+from .service_names import (
+    DEFAULT_REPO_SERVICE_ROOT,
+    canonical_repo_operation,
+    is_internal_repo_service,
+    repo_service_for_operation,
+    repo_versioned_services,
+)
+from .repo_client import RepoClient
+
+RepoDataPlaneProducer = retired_repo_feature(
+    "RepoDataPlaneProducer",
+    "use the C++ Repo server; Python callbacks are not invoked on the Face thread",
+)
+
+# These import names belonged to the Python-owned discovery and selection
+# implementation. Keep imports stable while making calls fail explicitly.
+for _name in (
+    "artifact_capability_from_ack",
     "capability_from_ack",
     "ready_capability_from_ack",
-    "resolve_active_artifact",
-    "retrieve_to_atomic_destination",
-    "decode_store_request",
-    "artifact_sha256_hex",
-    "artifact_capability_from_ack",
-    "canonical_manifest_page_bytes",
-    "canonical_root_manifest_bytes",
-    "decode_artifact_manifest_page",
-    "decode_upload_lease_assignment",
-    "encode_upload_lease_ack",
-    "decode_store_assignment",
-    "decode_store_offer_ack",
-    "encode_store_offer_ack",
-    "decode_signed_artifact_root",
-    "encode_inventory",
-    "encode_artifact_manifest_page",
-    "encode_signed_artifact_root",
-    "encode_store_request",
-    "make_manifest",
-    "make_repo_service_name",
-    "negotiate_artifact_capabilities",
-    "derive_artifact_data_name",
-    "derive_manifest_page_name",
-    "manifest_to_dict",
-    "is_internal_repo_service",
-    "parse_manifest_json",
-    "parse_cache_status_json",
-    "parse_catalog_delta_json",
-    "parse_catalog_entry_json",
-    "parse_catalog_status_json",
-    "parse_data_reference_json",
-    "parse_inventory_json",
-    "parse_operation_status_json",
-    "select_replicas",
-    "validate_artifact_resume_identity",
-    "verify_artifact_chunk_payload",
-    "verify_artifact_manifest_graph",
-    "verify_artifact_payload",
-    "verify_signed_artifact_root",
-    "repo_service_for_operation",
-    "repo_versioned_services",
-    "sha256_hex",
-]
+    "discovery_record_from_ack",
+):
+    globals()[_name] = retired_repo_feature(
+        _name,
+        "use ArtifactRepositoryApi candidate discovery and native selection",
+    )
+
+__all__ = sorted(
+    name
+    for name in globals()
+    if not name.startswith("_") and name != "retired_repo_feature"
+)

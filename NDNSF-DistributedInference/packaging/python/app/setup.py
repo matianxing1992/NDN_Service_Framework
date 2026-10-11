@@ -18,6 +18,7 @@ setup(
         "ndnsf_distributed_inference.deployment",
         "ndnsf_distributed_inference.policy",
         "ndnsf_distributed_inference.provider",
+        "ndnsf_distributed_inference.repo_artifact_resolver",
         "ndnsf_distributed_inference.repo_reference",
         # NativeTracer's deployed Python user imports these modules directly.
         # Keep them in the app wheel rather than relying on a source checkout.

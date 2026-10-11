@@ -4,6 +4,7 @@
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <filesystem>
@@ -32,6 +33,9 @@ public:
 
   RepoObjectManifest getManifest(const std::string& objectName) const;
 
+  RepoObjectMetadataProbe probeObjectMetadata(
+    const std::string& objectName) const;
+
   std::vector<RepoObjectManifest> list() const;
 
   bool remove(const std::string& objectName);
@@ -55,14 +59,27 @@ public:
                                        RepoByteRange range) const;
   bool removeIfCurrent(const RepoObjectManifest& expected);
   bool abortRangesIfOwned(const RepoObjectManifest& expected);
+  /** Drop idle range staging and its capacity reservation. */
+  uint64_t reapExpiredRangeReservations(std::chrono::steady_clock::duration idleTimeout);
   void putRangeIfAbsent(const RepoObjectManifest& manifest, RepoByteRange range,
                         const std::vector<uint8_t>& bytes);
   RepoObjectManifest commitRangesIfOwned(const RepoObjectManifest& manifest);
 
   RepoObjectManifest putDataPacket(const std::string& dataName,
-                                   const std::vector<uint8_t>& wire);
+                                   const std::vector<uint8_t>& wire,
+                                   const std::string& repoNode = {},
+                                   const std::string& providerIdentity = {});
+
+  /** Explicit local migration of a previously stored Data wire. */
+  RepoWriteReceipt importLegacyDataPacketReceipt(const std::string& dataName,
+                                                  const std::string& repoNode,
+                                                  const std::string& providerIdentity);
 
   std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
+
+  /** Return only a receipt embedded at the original Data commit boundary. */
+  RepoWriteReceipt getDataPacketReceipt(const std::string& dataName,
+                                        const std::string& wireSha256) const;
 
   bool hasDataPacket(const std::string& dataName) const;
 
@@ -170,6 +187,7 @@ private:
     uint64_t size = 0;
     uint64_t generation = 0;
     uint64_t additionalBytes = 0;
+    std::chrono::steady_clock::time_point lastActivity;
   };
   std::unordered_map<std::string, RangeReservation> m_rangeReservations;
   uint64_t m_reservedRangeBytes = 0;

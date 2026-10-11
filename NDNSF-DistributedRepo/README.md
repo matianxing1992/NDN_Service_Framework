@@ -4,8 +4,9 @@ NDNSF-DistributedRepo is an experimental C++ subproject for a distributed,
 NDN-native, policy-controlled artifact and intermediate-data storage layer for
 NDNSF applications.
 
-The current implementation is intentionally small, but it is already organized
-as both a reusable C++ API and an NDNSF service layer:
+The current implementation provides the reusable C++ storage API and the
+standalone C++ Persistent network service. Python exposes a thin binding over
+the same C++ artifact API:
 
 - `RepoObjectManifest`: signed-manifest-ready metadata for one stored object.
 - `StorageCapability`: advertised capacity/load/mode information for a repo
@@ -16,20 +17,21 @@ as both a reusable C++ API and an NDNSF service layer:
 - `selectReplicas`: deterministic placement over candidate storage nodes.
 - `RepoCore`: reusable in-process storage logic with no dependency on NDNSF
   networking.
-- `RepoNode`: a repo node that can register NDNSF services on a
-  `ServiceProvider` and delegates storage operations to `RepoCore`.
-- `RepoClient`: high-level `put/get/list/remove` helpers, plus lower-level
-  request helpers for applications that need direct `ServiceUser` control.
-- `py_repoclient`: a Python binding for the reusable repo client/protocol API.
+- `RepoNode`: the C++ Persistent service owner and trusted local adapter.
+- `DistributedRepoServer`: the standalone C++ production service entrypoint.
+- `ArtifactRepositoryApi`: the native C++ In-App and Persistent artifact API.
+- `py_repoclient`: a thin pybind projection of `ArtifactRepositoryApi` and its
+  native value/config/result types.
 
-The service name is application-configurable. By default, all repo nodes share:
+The Persistent service prefix is configurable. By default, Repo nodes use:
 
 ```text
-/NDNSF/DistributedRepo
+/NDNSF/DistributedRepo/Object/v1
 ```
 
-The C++ repo node exposes operation-specific services under this prefix. The
-repo-level operation is `INSERT`: an application publishes signed and optionally
+The standalone C++ `DistributedRepoServer` registers the Persistent network
+handlers under this prefix. C++ `RepoNode` also exposes trusted local services
+through `LocalServiceRegistry`. The repo-level operation is `INSERT`: an application publishes signed and optionally
 encrypted NDN Data segments, and the repo stores those opaque Data packets by
 name. `STORE` and `STORE_MANIFEST` are current payload-accepting adapters used
 by existing helpers and tests. They are input conveniences: the caller may hand
@@ -109,21 +111,22 @@ long-term data. A **Persistent Repo** runs as an independent repo node or
 server. It is the normal target for backup, durable storage, global catalog
 maintenance, and recovery after a node joins late or misses catalog updates.
 
-The code keeps the old `embedded` mode string for compatibility, but the design
-term is In-App Repo. The accepted mode strings are:
+The Python `ArtifactRepositoryApi` delegates to the native C++ API. Use
+`make_in_app(...)` for an app-owned durable root and `make_persistent(...)` for
+an existing authorized `ServiceUser`. Construct separate API instances when an
+application needs both paths. Python backend injection and Python-owned local or
+network lifecycle state are retired.
 
-```text
-remote          standalone Persistent Repo service path
-embedded        compatibility spelling for In-App Repo
-in-app          preferred spelling for In-App Repo
-both            expose both remote and in-process paths
-```
+`DistributedRepoServer` is the standalone Persistent service. In-App storage is
+an `ArtifactRepositoryApi` instance and does not register a network Repo node.
+Python publication returns `ArtifactPublishResult` with an immutable
+`ArtifactHandle`; retrieval returns `ArtifactFetchResult`. Archiving that handle
+to Persistent storage is an explicit operation.
 
-`StorageCapability` now carries `repoMode` and `acceptsBackupReplica`. Placement
-logic filters out candidates with `acceptsBackupReplica=false` when creating
-backup replicas. In-App Repos may still advertise cached objects, but their
-catalog role should be treated as local/ephemeral unless the application
-explicitly marks them as durable.
+The C++ `RepoDeploymentMode` parser retains legacy values for source
+compatibility; those values do not alter the standalone server's Persistent
+role. The separate `StorageCapability.acceptsBackupReplica` field controls
+whether a candidate may be selected for backup placement.
 
 ## Catalog and Replica Discovery
 
@@ -290,43 +293,51 @@ The corresponding trust schema should enforce:
 - production validation anchors are trust-root certificates, not permissive
   `type any` anchors.
 
-`DistributedRepo.from_config("repo_policy.yaml")` remains available for local
-tests and deployment tools that already have the policy file on disk.
-
-The lower-level Python binding remains available when a framework already owns
-the NDNSF `ServiceUser`:
+Python Repo storage and service orchestration are retired. Python applications
+use the native artifact API for immutable artifact files; generic objects and
+the Persistent network service remain C++ APIs. A local artifact store can be
+opened as follows:
 
 ```python
-from py_repoclient import RepoClient
+from pathlib import Path
+from py_repoclient import ArtifactReference, ArtifactRepositoryApi
 
-repo = RepoClient(user, "/NDNSF/DistributedRepo")
-manifest = repo.insert(
-    object_name="/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/APP/Generic/BinaryBlob/demo",
-    payload=payload,
-    object_type="binary-blob",
-    replication_factor=2,
-    policy_epoch="/Policy/example/v1",
+source_path = Path("model.onnx")
+destination_path = Path("model.onnx.copy")
+artifact_reference = ArtifactReference.from_json(
+    Path("model-reference.json").read_text(encoding="utf-8")
 )
-payload = repo.fetch(manifest.object_name)
+
+api = ArtifactRepositoryApi.make_in_app(
+    durable_root="/var/lib/ndnsf-artifacts",
+    owner_id="/example/repo/user",
+)
+published = api.publish_file(source_path, artifact_reference)
+api.fetch_file(published.reference, destination_path)
 ```
 
-If the caller already has a manifest and wants one logical object, prefer the
-manifest-aware helper:
+For authenticated network operations, construct the native Persistent client
+from an NDNSF `ServiceUser`:
 
 ```python
-payload = repo.fetch_object(manifest)
+api = ArtifactRepositoryApi.make_persistent(service_user, client_config)
 ```
 
-It verifies the returned payload against the manifest size and hash. This keeps
-application code independent from the repo's internal single-payload versus
-segmented-object layout.
+The API borrows that native owner for its lifetime. Run the Face event loop on a
+different thread; synchronous API calls release the Python GIL while waiting.
+Timeouts bound the wait and do not cancel an outstanding network operation.
+Destroy the API before stopping and destroying its `ServiceUser`.
 
 The recommended C++ object API is similarly object-oriented:
 
 ```cpp
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/RepoNode.hpp"
+
 using namespace ndnsf_distributed_repo;
 
-RepoNode node(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), capability);
+auto store = makeFilesystemRepoStore("./repo-data");
+RepoNode node(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), capability, store);
 StoreOptions options;
 options.objectType = "binary-blob";
 options.replicationFactor = 2;
@@ -363,51 +374,28 @@ auto verifiedPayload = RepoClient::getObject(node, manifest);
 `RepoClient::getSegmented(...)` remains available for tests and low-level code
 that explicitly needs to exercise the segmented-object path.
 
-## C++ Standalone Repo Node
+## Persistent Repo Node Runtime
 
-`DistributedRepoNodeApp` runs the same `RepoNode` adapter as a standalone NDNSF
-provider. It is configured with a small key/value file:
-
-```bash
-./build/NDNSF-DistributedRepo/DistributedRepoNodeApp \
-  --config NDNSF-DistributedRepo/configs/repo-node.conf
-```
-
-The default example config sets:
-
-```text
-service-prefix /NDNSF/DistributedRepo
-identity /example/repo/repo/A
-controller-prefix /example/repo/controller
-repo-node /example/repo/repo/A
-deployment-mode remote
-repo-mode persistent
-accepts-backup-replica true
-storage-backend tiered
-storage-path /tmp/ndnsf-distributed-repo/repo-node-A.sqlite3
-memory-cache-bytes 67108864
-```
-
-`deployment-mode remote` is the normal standalone Persistent Repo mode. The app
-also accepts `embedded`/`in-app` and `both` so the same config vocabulary can be
-shared with service containers, but local invocation is only useful to code
-running in the same trusted process.
-
-For build and config validation without starting NFD or a controller:
+The deployed network service is the standalone C++ `DistributedRepoServer`.
+Build it and inspect the required identity, authority, trust-schema, and
+database arguments:
 
 ```bash
-./build/NDNSF-DistributedRepo/DistributedRepoNodeApp \
-  --config NDNSF-DistributedRepo/configs/repo-node.conf \
-  --deployment-mode embedded \
-  --dry-run \
-  --local-smoke
+./waf build -j4 --targets=DistributedRepoServer
+./build/NDNSF-DistributedRepo/DistributedRepoServer --help
 ```
 
-## In-App Repo Plan
+The server validates its Persistent configuration before creating a Face,
+Provider, Repo node, or durable storage files. In-App storage uses a separate native
+`ArtifactRepositoryApi` instance and does not start a network service.
 
-NDNSF-DistributedRepo is being organized so the same repo implementation can run
-either as a standalone repo application or as an embedded service inside another
-trusted NDNSF service container.
+## In-App C++ Integration
+
+In-App and Persistent are separate lifecycle paths. Python applications call
+`ArtifactRepositoryApi.make_in_app(...)` for local storage and
+`ArtifactRepositoryApi.make_persistent(...)` for a caller-owned `ServiceUser`.
+Create separate API instances when both paths are needed. No mode string
+implicitly copies data between them.
 
 The intended layering is:
 
@@ -416,18 +404,15 @@ RepoCore
   pure storage logic: put/get/manifest/list/delete/capability/catalog
 
 RepoNode
-  NDNSF service adapter: registers STORE/FETCH/MANIFEST/INVENTORY/
-  CAPABILITY/DELETE/STATUS/CATALOG_* on a ServiceProvider and delegates every
-  operation to RepoCore
+  C++ adapter over RepoCore; exposes trusted local service registration
 
-Repo app or embedding container
-  chooses whether to expose RepoNode remotely, register local services, or both
+DistributedRepoServer
+  standalone C++ Persistent NDNSF provider and versioned network-service entry
 ```
 
-Current first step: `RepoCore` owns the object store, manifest validation, and
-capacity/catalog accounting. `RepoNode` keeps the existing public API and
-standalone service registration behavior, but now delegates storage and catalog
-work to `RepoCore`.
+`RepoCore` owns object storage, manifest validation, and capacity/catalog
+accounting. C++ `RepoNode` registers Persistent network handlers with the
+standalone server and exposes trusted local service registration.
 `RepoNode::registerLocalServices(LocalServiceRegistry&)` exposes the same
 STORE/FETCH/MANIFEST/INVENTORY/CAPABILITY/DELETE/STATUS/CATALOG_* handlers for
 trusted in-process invocation. The in-process repo path still uses the normal
@@ -436,16 +421,19 @@ important implementation detail is that NDNSF message payloads are carried as
 payload TLV `ndn::Block`s internally instead of being passed through a separate
 raw byte local API. Applications should still call the typed `RepoClient::local*`
 helpers rather than building repo service names or message wrappers by hand.
-`RepoDeploymentMode` selects which exposure path to enable:
+For a trusted same-process C++ call, register the local service handlers
+directly. `RepoDeploymentMode` parser/helper values do not perform registration:
 
 ```cpp
-RepoNode node(servicePrefix, capability);
-LocalServiceRegistry localRegistry;
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/RepoNode.hpp"
+#include "ndn-service-framework/LocalServiceRegistry.hpp"
 
-node.registerDeploymentServices(
-  nullptr,
-  &localRegistry,
-  RepoDeploymentMode::Embedded);
+// servicePrefix and capability are configured by the embedding application.
+auto store = ndnsf_distributed_repo::makeFilesystemRepoStore("./repo-data");
+ndnsf_distributed_repo::RepoNode node(servicePrefix, capability, store);
+ndn_service_framework::LocalServiceRegistry localRegistry;
+node.registerLocalServices(localRegistry);
 ```
 
 Embedded callers should use the local `RepoClient` helpers instead of hand
@@ -469,17 +457,10 @@ auto payloadAgain = RepoClient::localGet(
   manifest.objectName);
 ```
 
-Supported mode strings are `remote`, `embedded`, `in-app`, and `both`. Empty
-config keeps the default `remote` behavior for existing standalone repo
-deployments.
-
-Next steps:
-
-1. Let higher-level applications such as NDNSF-UAV-APP and
-   NDNSF-DistributedInference load this deployment mode from their service
-   container config and wire the embedded registry into their own components.
-2. Keep remote callers on the normal NDNSF service path with permissions,
-   signatures, NAC-ABE, and token/replay protection.
+The C++ `RepoDeploymentMode` parser/helper aliases do not register services and
+are not a standalone server configuration interface. Remote callers continue through
+the normal NDNSF service path with permissions, signatures, NAC-ABE, and
+token/replay protection.
 
 Repo services do not define a separate certificate-selection policy. Remote
 repo providers and clients inherit NDNSF runtime behavior: certificate roles are
@@ -523,16 +504,16 @@ The shared repo responsibilities are deliberately narrower:
   eligibility;
 - produce conservative repair plans and optionally execute repair actions when
   deployment policy allows it;
-- expose In-App and Persistent deployment modes without changing NDNSF remote
-  invocation semantics.
+- provide distinct In-App local and Persistent network storage paths without
+  changing NDNSF remote invocation semantics.
 
 This boundary keeps the repo useful to both applications without turning it
 into a UAV log browser or an AI artifact planner.
 
-## SQLite Authority and Bounded Hot Cache
+## Persistent Storage and Bounded Hot Cache
 
-Repo nodes are initialized with a logical capacity, for example the
-`free_bytes` parameter in the Python `RepoNodeApp`. The node advertises
+Repo nodes are initialized with a logical capacity from the C++ Persistent
+server configuration. The node advertises
 remaining capacity in ACK metadata so clients can choose storage replicas:
 
 ```text
@@ -542,17 +523,20 @@ usedBytes=...
 memoryCacheBytes=...
 memoryCacheUsedBytes=...
 storageBackend=tiered
-authoritativeBackend=sqlite
+authoritativeBackend=filesystem
 cachePolicy=lru
 ```
 
-Every deployed Repo node uses SQLite as its sole authority for manifests,
-opaque payloads, and stored Data packets. A single byte-bounded LRU memory tier
-accelerates newly committed and repeatedly fetched entries. Objects and complete
-packet sets share the same budget. Writes commit SQLite before cache admission;
-reads consult memory and fall back to SQLite; delete and overwrite change the
-cache only after the authoritative transaction succeeds. An oversized entry
-bypasses memory but remains available from SQLite.
+The standalone C++ `DistributedRepoServer` uses a filesystem Repo store for
+durable object manifests, opaque payloads, and stored Data packet ranges. Its
+store root is derived from the configured database path by appending `.store`.
+The separate SQLite database remains authoritative for artifact lifecycle
+metadata such as receipts, locations, and operation records. A single
+byte-bounded LRU memory tier accelerates Repo reads. Objects and complete
+packet sets share the same budget; writes reach the authoritative store before
+cache admission, and delete or overwrite changes the cache only after the
+authoritative operation succeeds. Oversized entries bypass memory while
+remaining available from the filesystem store.
 
 The C++ repo library exposes this policy through `RepoStoreBackend` and
 `makeTieredRepoStore(...)`:
@@ -564,35 +548,41 @@ RepoCore core(capability, makeTieredRepoStore(
 ```
 
 There is no memory-authoritative backend or default memory-only constructor.
-Tests use temporary SQLite databases or test-local fault-injection backends.
+The default library factory and tests use SQLite Repo stores or test-local
+fault-injection backends; the standalone Persistent server selects the
+filesystem Repo store so it can persist range writes. Artifact lifecycle
+metadata continues to use SQLite.
 
-`DistributedRepoNodeApp` reads this from config:
+The C++ `DistributedRepoServer` exposes the durable stores and bounded memory
+cache through `--database`, `--cache-bytes`, and
+`--large-object-threshold-bytes`. The database option is a base path from which
+the server derives its filesystem Repo store and SQLite artifact metadata
+database:
 
-```text
-storage-backend tiered
-storage-path /tmp/ndnsf-distributed-repo/repo-node-A.sqlite3
-memory-cache-bytes 67108864
+```bash
+--database /var/lib/ndnsf-repo/repo-node-A \
+--cache-bytes 67108864
 ```
 
-Set `memory-cache-bytes 0` to disable hot-cache admission while retaining the
-same SQLite authority and object API. This is SQLite-only operation, not a
-memory-only compatibility mode.
+The server derives `/var/lib/ndnsf-repo/repo-node-A.store` for filesystem Repo
+objects and `/var/lib/ndnsf-repo/repo-node-A.artifact-v2.sqlite` for artifact
+receipts, locations, and operation records. `--cache-bytes` must be positive;
+the server rejects a zero cache budget during configuration validation.
 
-`CACHE_STATUS` is available through direct, embedded, remote NDNSF, and Python
-client paths. It returns the backend/authority/policy, current
+`CACHE_STATUS` is available through the trusted C++ local-service path and the
+standalone C++ Persistent network service. It returns
+the backend/authority/policy, current
 `budgetBytes`/`usedBytes`/`entryCount`, and cumulative `hits`, `misses`,
 `admissions`, `evictions`, `invalidations`, `oversizedBypasses`, `backingReads`,
 and `backingWrites`. Cache contents and counters are process-local and reset on
-restart; SQLite objects do not.
+restart; filesystem Repo objects and SQLite artifact metadata remain durable.
 
-The persistent Python Repo follows the same ordering and derives a deterministic
-SQLite path under `/tmp/ndnsf-distributed-repo/` when no storage directory is
-given. It does not duplicate all persistent payloads in an unbounded Python
-dictionary. After a restart, a network fetch first sends `FETCH_PREPARE` to the
-selected Repo. The Repo loads the complete object or packet set through the hot
-cache/SQLite path, makes it available through the always-on Repo data plane,
-and then the client uses the normal segmented NDN fetch path. The data plane is
-a serving resource, not authoritative storage or a hot-cache entry.
+The Python `py_repoclient` package is a pybind projection of the native C++
+`ArtifactRepositoryApi`. Its Persistent factory uses a caller-owned authorized
+`ServiceUser` to call the C++ Repo service; Python does not start a separate
+Repo server or own a parallel persistent data plane. Generic Repo objects and
+packet ranges remain owned by the C++ Repo store, while artifact receipts and
+locations remain in the native lifecycle catalog.
 
 The packet API is distinct from the legacy opaque-object chunking helper.
 Already-signed Data is stored once in `data_packets` under its exact Data name;
@@ -689,118 +679,57 @@ integrity, and `usedBytes <= budgetBytes`.
 
 ## Public large-artifact Python API (`artifact-manifest-v2`)
 
-Applications publish and fetch immutable files through `ArtifactRepositoryApi`
-or the same methods on `RepoClient`. They do not build packet batches, select
-replicas through private fields, or invoke replica-internal control operations.
-The simplest local, persistent example is:
+The C++ `ArtifactRepositoryApi` is the semantic authority. Python's
+`ArtifactRepositoryApi` delegates to the same native API and exposes its
+reference, handle, receipt, operation, availability, and result types.
 
 ```python
-from py_repoclient import ArtifactRepositoryApi, FilesystemArtifactApiBackend
+from py_repoclient import ArtifactRepositoryApi, ArtifactReference
 
-api = ArtifactRepositoryApi(
-    FilesystemArtifactApiBackend("/var/lib/ndnsf-artifacts"),
-    publisher_identity="/example/publisher",
+api = ArtifactRepositoryApi.make_in_app(
+    durable_root="/var/lib/ndnsf-artifacts",
+    owner_id="/example/application",
 )
-published = api.publish_file(
-    "model.onnx",
-    name="/models/example",
-    expected_sha256="0123456789abcdef" * 4,
-    replicas=1,
-)
-fetched = api.fetch_file(published.reference, "cache/model.onnx")
+reference = ArtifactReference.from_json(reference_json)
+published = api.publish_file("model.onnx", reference)
+api.fetch_file(reference, "cache/model.onnx")
 ```
 
-`FilesystemArtifactApiBackend` is a single-replica, crash-safe local backend
-for development and local operation. A deployed NDNSF runtime installs an
-`ArtifactApiBackend` adapter that uses normal NDNSF Collaboration by default;
-`ArtifactControlOptions(mode=TARGETED, targeted_provider="/repo/A")` is an
-explicit known-provider optimization and retains NDNSF authorization, tokens,
-replay protection, manifest validation, and durable-receipt checks.
+The Persistent client factory accepts a caller-owned, authorized
+`ServiceUser`. Its `Face` event loop must already run on another thread. The
+native wrapper retains the owning `NativeServiceUser`, releases the GIL while
+waiting, and must be destroyed before the service user.
 
-The maintained command-line applications are
+The maintained local examples are
 `examples/python/NDNSF-DistributedRepo/artifact_api/publish_file.py` and
-`examples/python/NDNSF-DistributedRepo/artifact_api/fetch_file.py`. They expose
-sync, `--async`, and `--advanced` session modes. The advanced sequence is
-`begin_upload -> upload_file -> commit` or
-`begin_fetch -> transfer -> commit`; `abort(preserve_progress=True)` leaves
-verified staging state for an exact idempotency-key resume.
+`examples/python/NDNSF-DistributedRepo/artifact_api/fetch_file.py`. Both call
+the native In-App implementation. Persistent server behavior is provided by
+the standalone C++ `DistributedRepoServer`.
 
-### Publication arguments
+The Python wrapper supports synchronous native operations: publish by file and
+complete reference, begin/status publication, candidate discovery, explicit
+archive, fetch by reference or handle, local commit lookup, receipt lookup, and
+availability checks. Python upload/fetch sessions, async wrappers, progress or
+cancellation callbacks, backend injection, and Python placement logic are
+retired. Their import-compatible names raise `RepoCompatibilityError` with
+code `SPEC192_COMPATIBILITY_V1` and a native replacement path.
 
-| Argument | Meaning |
-|---|---|
-| `path` | Existing regular source file. |
-| `name` | Absolute logical NDN name; identity is completed by SHA-256, size, format, publisher, and policy epoch. |
-| `expected_sha256` | Required lowercase/uppercase SHA-256 assertion; publication fails before transfer on mismatch. |
-| `replicas` | Positive requested durable replica count. |
-| `verification` | Must be `signed-manifest` for `artifact-manifest-v2`. |
-| `resume` | Preserve and verify an exact-operation staging prefix after interruption. |
-| `on_progress` | Optional bounded observer receiving monotonic `ArtifactProgress`; a slow observer cannot block transfer. |
-| `idempotency_key` | Stable retry identity. If omitted, the facade derives it from logical name and digest. |
-| `policy_epoch` | Trust-policy version bound into `ArtifactReference`. |
-| `timeout_ms` | Positive total operation deadline; otherwise the API default is used. |
-| `control` | `ArtifactControlOptions`: Collaboration by default, or explicit Targeted provider. |
-| `cancellation` | Optional `ArtifactCancellationToken`; async task cancellation propagates to it. |
-
-`ArtifactPublishResult` returns `reference`, `operation_id`,
-`requested_replicas`, `achieved_replicas`, per-replica state/receipt,
-`deduplicated`, `resumed`, `total_duration_ms`, and phase durations. Achieved
-durability always equals the number of distinct authenticated `COMMITTED`
-receipts.
-
-### Retrieval arguments
-
-| Argument | Meaning |
-|---|---|
-| `reference` | Complete immutable `ArtifactReference`; a logical name alone is insufficient. |
-| `destination` | Final local path. It becomes visible only after full validation and atomic rename. |
-| `resume` | Reuse only a verified prefix belonging to the same operation/reference. |
-| `verify` | Verify the reconstructed immutable digest; deployed v2 backends must also validate the signed manifest. |
-| `replace` | Permit atomically replacing a conflicting existing destination; default is hard failure. |
-| `on_progress` | Optional bounded monotonic progress observer. |
-| `idempotency_key` | Stable retry identity; by default it is derived from digest and absolute destination. |
-| `timeout_ms` | Positive total operation deadline. |
-| `control` | Collaboration by default, or explicit Targeted provider. |
-| `cancellation` | Optional cancellation token. |
-
-`ArtifactFetchResult` returns `reference`, `operation_id`, `destination`,
-`reused_bytes`, `transferred_bytes`, source replicas, total duration, and phase
-durations. `reused_bytes + transferred_bytes` must equal the immutable size.
-Sync and async calls return the same typed results:
-
-```python
-published = await api.publish_file_async(
-    source, name=name, expected_sha256=digest)
-fetched = await api.fetch_file_async(published.reference, destination)
-```
-
-All public failures are `ArtifactApiError`. Its stable `code` is one of:
-`INVALID_ARGUMENT`, `UNSUPPORTED_CAPABILITY`, `AUTHORIZATION_FAILED`,
-`TRUST_VALIDATION_FAILED`, `MANIFEST_INVALID`, `CONTENT_DIGEST_MISMATCH`,
-`LEASE_EXPIRED`, `CAPACITY_UNAVAILABLE`, `TRANSFER_TIMEOUT`, `CANCELLED`,
-`REPLICA_COMMIT_FAILED`, `DURABILITY_NOT_ACHIEVED`,
-`DESTINATION_CONFLICT`, `RECOVERY_REQUIRED`, or `INTERNAL_ERROR`. The exception
-also carries a bounded message, operation ID, artifact reference when known,
-and achieved-replica count; peer-controlled raw diagnostics are not exposed.
-
-`exact-packet-v1` remains an explicit compatibility API for callers that must
-preserve application-signed Data wire bytes. It is not silently selected or
-reinterpreted by the file API above.
+`ArtifactPublishResult` and `ArtifactFetchResult` are native result values.
+Native fetch failures retain the structured `ArtifactFetchResult` on
+`ArtifactApiError`; validation errors remain native argument/validation
+exceptions. No Python code simulates Repo behavior.
 
 ### Artifact schema migration and rollback
 
-Artifact metadata uses durable schema generation 12. Startup performs only
-additive roll-forward and records explicit `formatVersion` and
-`digestAlgorithm` identity in the active catalog, authenticated receipts, and
-GC claims. It never rewrites committed payload bytes or legacy exact-packet
-wires.
+Artifact metadata uses additive native SQLite migrations. The current schema
+and supported prior generations are defined by the C++ data model and migration
+selectors; the Python wrapper does not open or upgrade Repo databases. The
+offline legacy importer reads its source without mutation and writes only to a
+new C++ destination.
 
-`RepoNodeApp(..., artifact_writes_enabled=False)` explicitly disables new v2
-publication. `artifact_max_write_schema_generation=N` also places a node in
-read-only rollback when its database is newer than `N`; an unknown generation
-newer than the runtime does the same automatically. Committed v2 objects remain
-readable, but all new v2 lifecycle, resume, finalization, reservation, and GC
-mutations fail with `repo-artifact-writes-disabled`.
+The standalone C++ server fails closed when its artifact catalog is unavailable
+or newer than the runtime supports. It does not rewrite committed payload bytes
+or legacy exact-packet wires during startup.
 
 ACK and `CAPABILITY` payloads expose bounded `artifactMigration` diagnostics.
 A read-only node withdraws `artifact-manifest-v2`, resume, and durable-receipt
@@ -810,79 +739,39 @@ semantics are unchanged.
 
 ## Python Binding
 
-`NDNSF-DistributedRepo/pythonWrapper` installs an importable package named
-`py_repoclient`. It exposes the same generic concepts as the C++ API:
-
-```python
-from py_repoclient import (
-    RepoClient,
-    RepoObjectManifest,
-    StorageCapability,
-    PlacementPolicy,
-    select_replicas,
-)
-```
-
-The binding is installed automatically during `./waf install` through
-`python3 -m pip install -e NDNSF-DistributedRepo/pythonWrapper`. For source-tree
-development it can also be installed manually:
+Install the native extension with:
 
 ```bash
 python3 -m pip install -e NDNSF-DistributedRepo/pythonWrapper
 ```
 
-Higher-level frameworks such as NDNSF-DistributedInference should use
-`py_repoclient` for repo service operations and placement metadata, while
-keeping AI-specific helpers such as `store_artifact(...)` in their own package.
+The `py_repoclient` package projects C++ artifact configs, values, results, and
+methods. It converts `Path` arguments and maps native fetch errors. It does not
+own a filesystem/network backend, Repo server handler, receipt validator,
+placement state machine, operation journal, or retry policy. Legacy Python-only
+APIs raise `RepoCompatibilityError` with the code
+`SPEC192_COMPATIBILITY_V1` and a replacement path.
 
-The long-term service design is:
+The standalone server remains usable without Python. Higher-level applications
+may prepare application data and reference metadata; C++ owns Repo storage,
+network handlers, receipts, current availability, placement/consistency, and
+fetch verification.
 
-```text
-NDNSF-DistributedInference
-  decides model roles, dependency graph, and runtime needs
+## Persistent C++ runtime contract
 
-NDNSF-DistributedRepo
-  stores model/runtime/intermediate objects with controlled replication
+For the standalone Persistent server, the filesystem Repo store owns durable
+object manifests and payload or packet ranges, while SQLite owns artifact
+receipts, locations, and operation records. The bounded memory cache accelerates
+Repo reads. Writes return native durable receipts, and `ONE`, `QUORUM`, and
+`ALL` determine the required selected-target count. ACK metadata is advisory;
+the selected Repo performs definitive capacity checks before committing.
+Persistent handlers are registered by `DistributedRepoServer` using the
+configured Provider identity.
 
-NDNSF Core
-  provides service discovery, selection, signing, NAC-ABE, and SVS transport
-```
-
-This subproject is not a replacement for NDN repo-ng. It is a policy-controlled
-NDNSF storage layer: NDNSF applications can ask a repo cluster where an object
-should live, store it with bounded replication, and fetch it later through NDNSF
-service invocation and normal NDNSF authentication/authorization paths.
-# High-availability runtime contract
-
-The persistent Repo path uses SQLite as authority and a bounded memory LRU as
-acceleration. Writes carry an idempotent operation ID and return durable
-per-replica receipts; `ONE`, `QUORUM`, and `ALL` determine the required receipt
-count. A positive ACK is an advisory capacity/queue snapshot and reserves no
-bytes. Selection assigns the task; the provider then admits it to its bounded
-execution queue and performs the definitive capacity check when execution
-starts. Placement cache entries expire, and overload, timeout, capacity, or
-integrity failures invalidate the affected node and place it in a short health
-cooldown.
-
-Repo Data is served by one long-lived producer per process. Exact app-signed
-Data wires are stored and returned under their original full names without
-renaming or re-signing. Opaque large objects continue to use SegmentFetcher;
-continuous publication is a stream concern and is not part of the Repo object
-API.
-
-Catalog journal entries, tombstones, peer watermarks, membership heartbeats,
-and repair jobs survive restart. Databases upgraded from older releases may
-retain a read-only `capacity_reservations` table for rollback; current ACK,
-placement, and write paths never consult or mutate it. Bucket digests support
-bounded anti-entropy. Same-generation live entries with different content
-digests are reported as `CONFLICT`; the repair scheduler does not choose one
-silently. Repair jobs are idempotent, leased, retried with backoff, and scanned
-periodically instead of being suppressed by process-lifetime sidecar state.
-
-The C++ library is the canonical object/protocol contract. Python owns NDNSF
-network orchestration, SQLite catalog/repair persistence, placement telemetry,
-and MiniNDN campaigns. `repo-ng` command-wire compatibility is a future adapter,
-not a second internal policy implementation.
+The native Repo preserves exact app-signed Data wire bytes. Artifact-v2 values,
+receipts, status, location, and availability are validated by the C++ API and
+production service. Python wrapper conformance does not replace those C++ unit,
+integration, or MiniNDN gates.
 
 ## Targeted parallel control plane
 
@@ -900,14 +789,13 @@ operation IDs, receipt validation, and write-consistency checks remain active.
 An optional bounded fallback keeps older Normal-only providers usable and is
 reported separately in the control metrics.
 
-`NetworkDistributedRepoClient` accepts `control_mode="normal"` or
-`control_mode="targeted"` and exposes `control_metrics()`. Current campaign
-lifecycle records use `planningMs`, `queueWaitMs`, `sessionStartMs`, and
-`storeMs`; readers normalize the historical `reserveMs` column to
-`sessionStartMs` without reintroducing a reservation protocol. Summary JSON
-records Targeted, normal, timeout, fallback, fan-out, and maximum-concurrency
-counters. The Targeted token batch can be tuned with
-`NDNSF_TARGETED_TOKEN_BATCH_SIZE` (1--256, default 8).
+### Historical Python client campaign measurements
+
+The Python `NetworkDistributedRepoClient` and its `control_metrics()` API were
+retired by Spec 192 T008. The measurements below describe that earlier
+implementation only. They are not current API conformance or T010 qualification
+evidence; current service behavior is owned by the C++ API and its production
+gates.
 
 Matched 60-second MiniNDN campaigns with RF=2 and W=ALL produced:
 

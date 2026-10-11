@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from ndnsf_distributed_inference.plan import ModelFamily, PlannerKind
+from ndnsf_distributed_inference.app_sdk.contracts import ArtifactReference as DIArtifactReference
+from ndnsf_distributed_inference.repo_artifact_resolver import binding_from_native_handle
 from ndnsf_distributed_inference.splitter import (
     SplitArtifact, SplitServiceSpec, SplitterOutput,
 )
-from ndnsf_distributed_inference.repo_reference import repo_artifact_reference
 from ndnsf_distributed_inference.adapters.llama.runtime import (
     call_openai_chat_runtime,
     decode_openai_chat_response,
@@ -193,69 +194,57 @@ def build_llama_server_artifact_references(
     object_prefix: str = "NDNSF-DI/ARTIFACT/AI/LLM/Qwen2.5-0.5B",
     replication_factor: int = 1,
     include_local_payload_paths: bool = False,
+    publisher_identity: str = "",
 ) -> dict[str, Any]:
-    """Store llama-server runtime/model artifacts and return DI references.
-
-    ``repo`` may be a real ``NetworkDistributedRepoClient`` or a smoke-test
-    ``LocalDistributedRepo``. The returned structure is intentionally the same
-    ``roles -> role -> {model, runner}`` artifact-reference shape already used
-    by DI dynamic provisioning.
-    """
+    """Publish native Repo bindings or return explicit local DI references."""
 
     model_file = Path(model_path)
     runtime_file = Path(llama_server_path)
-    model_payload = model_file.read_bytes()
-    runtime_payload = runtime_file.read_bytes()
-    model_digest = hashlib.sha256(model_payload).hexdigest()[:16]
-    runtime_digest = hashlib.sha256(runtime_payload).hexdigest()[:16]
-    model_manifest = _store_repo_artifact(
-        repo,
-        object_suffix=f"{object_prefix}/model/{model_digest}",
-        payload=model_payload,
-        object_type="model-artifact",
-        replication_factor=replication_factor,
-    )
-    runtime_manifest = _store_repo_artifact(
-        repo,
-        object_suffix=f"{object_prefix}/runtime/llama-server/{runtime_digest}",
-        payload=runtime_payload,
-        object_type="runtime-executable",
-        replication_factor=replication_factor,
-    )
-    model_entry = repo_artifact_reference(
-        model_manifest,
-        object_type="model-artifact",
-        object_id=MODEL_ARTIFACT_NAME,
-    )
-    model_entry.update({
-        "filename": model_file.name or MODEL_NAME,
-        "kind": "model",
-        "executable": False,
-        "metadata": {
-            "modelFamily": ModelFamily.LLM.value,
-            "modelFormat": "gguf",
-            "runtimeBackend": "llama.cpp",
-            "filename": model_file.name or MODEL_NAME,
-        },
-    })
-    runtime_entry = repo_artifact_reference(
-        runtime_manifest,
-        object_type="runtime-executable",
-        object_id=RUNTIME_ARTIFACT_NAME,
-    )
-    runtime_entry.update({
-        "filename": runtime_file.name or "llama-server",
-        "kind": "runtime",
-        "executable": True,
-        "metadata": {
-            "runtimeBackend": "llama.cpp",
-            "entrypoint": "llama-server",
-            "filename": runtime_file.name or "llama-server",
-        },
-    })
-    if include_local_payload_paths:
-        model_entry["localPayloadPath"] = str(model_file)
-        runtime_entry["localPayloadPath"] = str(runtime_file)
+    if repo is None or include_local_payload_paths:
+        model_entry = _local_artifact_entry(
+            model_file, kind="model", executable=False,
+            metadata={
+                "modelFamily": ModelFamily.LLM.value,
+                "modelFormat": "gguf",
+                "runtimeBackend": "llama.cpp",
+            },
+        )
+        runtime_entry = _local_artifact_entry(
+            runtime_file, kind="runtime", executable=True,
+            metadata={"runtimeBackend": "llama.cpp", "entrypoint": "llama-server"},
+        )
+    else:
+        model_entry = _publish_repo_artifact(
+            repo,
+            model_file,
+            logical_name=f"/{object_prefix.strip('/')}/model/{_sha256_file(model_file)}",
+            publisher_identity=publisher_identity,
+            role=role,
+            use="model",
+            kind="model",
+            executable=False,
+            metadata={
+                "modelFamily": ModelFamily.LLM.value,
+                "modelFormat": "gguf",
+                "runtimeBackend": "llama.cpp",
+            },
+            replication_factor=replication_factor,
+        )
+        runtime_entry = _publish_repo_artifact(
+            repo,
+            runtime_file,
+            logical_name=(
+                f"/{object_prefix.strip('/')}/runtime/llama-server/"
+                f"{_sha256_file(runtime_file)}"
+            ),
+            publisher_identity=publisher_identity,
+            role=role,
+            use="runtime",
+            kind="runtime",
+            executable=True,
+            metadata={"runtimeBackend": "llama.cpp", "entrypoint": "llama-server"},
+            replication_factor=replication_factor,
+        )
     return {
         "schemaVersion": 1,
         "roles": {
@@ -274,28 +263,105 @@ def write_artifact_references(path: str | Path, references: dict[str, Any]) -> P
     return target
 
 
-def _store_repo_artifact(
-    repo,
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _local_artifact_entry(
+    path: Path, *, kind: str, executable: bool, metadata: dict,
+) -> dict:
+    digest = _sha256_file(path)
+    reference = DIArtifactReference(
+        uri=f"urn:ndnsf:local-artifact:sha256:{digest}",
+        digest="sha256:" + digest,
+        size_bytes=path.stat().st_size,
+        mount_path=path.name,
+    )
+    return {
+        "artifactReference": {
+            "uri": reference.uri,
+            "digest": reference.digest,
+            "size_bytes": reference.size_bytes,
+            "mount_path": reference.mount_path,
+        },
+        "localPayloadPath": str(path),
+        "filename": path.name,
+        "kind": kind,
+        "executable": executable,
+        "metadata": dict(metadata),
+    }
+
+
+def _publish_repo_artifact(
+    repo_client,
+    path: Path,
     *,
-    object_suffix: str,
-    payload: bytes,
-    object_type: str,
+    logical_name: str,
+    publisher_identity: str,
+    role: str,
+    use: str,
+    kind: str,
+    executable: bool,
+    metadata: dict,
     replication_factor: int,
-):
-    if hasattr(repo, "publisher_object_name") and hasattr(repo, "store_object"):
-        object_name = repo.publisher_object_name(object_suffix)
-        return repo.store_object(
-            object_name=object_name,
-            payload=payload,
-            object_type=object_type,
-            replication_factor=replication_factor,
-            policy_epoch="/Policy/llama-server-qwen/v1",
+) -> dict:
+    from py_repoclient import (
+        ArtifactCapabilityRequirements,
+        ArtifactReference,
+        RepoWriteConsistency,
+        SelectedRepoSet,
+        SelectedRepoTarget,
+    )
+
+    if not publisher_identity.startswith("/"):
+        raise ValueError("native Repo publication requires publisher identity")
+    if replication_factor <= 0:
+        raise ValueError("replication_factor must be positive")
+    payload_digest = _sha256_file(path)
+    reference = ArtifactReference(
+        logical_name=logical_name,
+        content_digest=payload_digest,
+        size_bytes=path.stat().st_size,
+        root_manifest_name=logical_name + "/root",
+        publisher_identity=publisher_identity,
+        policy_epoch="/Policy/llama-server-qwen/v1",
+    )
+    api = repo_client.artifact_api
+    requirements = ArtifactCapabilityRequirements()
+    requirements.artifact = reference
+    candidates = api.discover_repo_candidates(requirements, 60000).candidates
+    if len(candidates) < replication_factor:
+        raise RuntimeError(
+            f"Repo discovery returned {len(candidates)} candidates; "
+            f"need {replication_factor}"
         )
-    object_name = "/" + object_suffix.strip("/")
-    if hasattr(repo, "put"):
-        return repo.put(
-            object_name=object_name,
-            payload=payload,
-            object_type=object_type,
-        )
-    raise TypeError("repo must provide store_object(...) or put(...)")
+    selected = SelectedRepoSet()
+    selected.targets = []
+    for candidate in candidates[:replication_factor]:
+        target = SelectedRepoTarget()
+        target.repo_node = candidate.repo_node
+        target.provider_identity = candidate.provider_identity
+        target.service_prefix = candidate.service_prefix
+        selected.targets.append(target)
+    selected.seed_repo_id = selected.targets[0].repo_node
+    selected.consistency = RepoWriteConsistency.ALL
+    result = repo_client.publish_file(path, reference, selected, timeout_ms=60000)
+    if not result.success or result.handle is None:
+        raise RuntimeError(f"native Repo publish failed for {logical_name}")
+    uri = "urn:ndnsf:repo-artifact:" + hashlib.sha256(
+        result.handle.to_json().encode("utf-8")).hexdigest()
+    projection = DIArtifactReference(
+        uri=uri,
+        digest="sha256:" + payload_digest,
+        size_bytes=path.stat().st_size,
+        mount_path=path.name,
+    )
+    binding = binding_from_native_handle(
+        result.handle, projection, role=role, use=use)
+    return {
+        "repoBinding": binding.to_dict(),
+        "filename": path.name,
+        "kind": kind,
+        "executable": executable,
+        "metadata": {**metadata, "role": role, "use": use},
+    }

@@ -807,9 +807,9 @@ def main() -> int:
     parser.add_argument("--deployed-models", action="store_true",
                         help="use providers that already have local model shards")
     parser.add_argument(
-        "--repo-manifest-file",
+        "--artifact-references-file",
         default="",
-        help="artifact reference manifest produced by the repo-backed deployer",
+        help="versioned DI artifact references produced by the Repo-backed deployer",
     )
     parser.add_argument("--sequential-requests", type=int, default=0)
     parser.add_argument("--native-restart-gate", default="",
@@ -979,14 +979,14 @@ def main() -> int:
         dynamic_provisioning = None
         if args.deployed_models:
             dynamic_provisioning = False
-        elif args.dynamic_provisioning or args.repo_manifest_file:
+        elif args.dynamic_provisioning or args.artifact_references_file:
             dynamic_provisioning = True
         plan_session = None
         if dynamic_provisioning:
             plan = client.service_plan(
                 service,
                 runtime=runtime_spec(),
-                artifact_references=args.repo_manifest_file or None,
+                artifact_references=args.artifact_references_file or None,
             )
             plan_session = client.deploy_plan(plan, freshness_ms=120000)
 
@@ -1005,7 +1005,7 @@ def main() -> int:
                 timeout_ms=args.timeout_ms,
                 dynamic_provisioning=False,
                 runtime=runtime_spec(),
-                artifact_references=args.repo_manifest_file or None,
+                artifact_references=args.artifact_references_file or None,
             )
 
         preflight_requests = max(0, int(args.preflight_requests or 0))
@@ -1027,7 +1027,7 @@ def main() -> int:
                     timeout_ms=args.timeout_ms,
                     dynamic_provisioning=False,
                     runtime=runtime_spec(),
-                    artifact_references=args.repo_manifest_file or None,
+                    artifact_references=args.artifact_references_file or None,
                 )
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             epoch_finished = time.time()
@@ -1086,7 +1086,7 @@ def main() -> int:
                         timeout_ms=args.timeout_ms,
                         dynamic_provisioning=False,
                         runtime=runtime_spec(),
-                        artifact_references=args.repo_manifest_file or None,
+                        artifact_references=args.artifact_references_file or None,
                     )
                 futures.append(_TimedFuture(future, started, None, epoch_started, None))
         ok = True

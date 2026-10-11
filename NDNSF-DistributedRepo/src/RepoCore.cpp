@@ -2,9 +2,13 @@
 
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
+#include <ndn-cxx/util/random.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <fstream>
@@ -30,6 +34,33 @@ validatePacketIndex(const RepoObjectManifest& manifest)
         !names.insert(name).second || manifest.packetOffsets[i + 1] <= manifest.packetOffsets[i] ||
         manifest.packetOffsets[i + 1] - manifest.packetOffsets[i] > ndn::MAX_NDN_PACKET_SIZE)
       throw std::invalid_argument("repo-invalid-original-packet-index");
+  }
+}
+
+bool
+hasDataReceiptMetadata(const RepoObjectManifest& manifest)
+{
+  return !manifest.dataReceiptId.empty() ||
+         !manifest.dataReceiptRepoNode.empty() ||
+         !manifest.dataReceiptProviderIdentity.empty() ||
+         manifest.dataReceiptCommittedAtMs != 0;
+}
+
+void
+rejectExternallySuppliedDataReceipt(const RepoObjectManifest& manifest)
+{
+  if (hasDataReceiptMetadata(manifest)) {
+    throw std::invalid_argument("repo-data-receipt-is-server-owned");
+  }
+}
+
+void
+rejectDataPacketReplacement(const RepoObjectManifest& previous)
+{
+  if (previous.objectType == "ndn-data-wire") {
+    throw std::runtime_error(
+      "repo-data-wire-conflict: immutable NDN Data name conflict: " +
+      previous.objectName);
   }
 }
 
@@ -65,6 +96,9 @@ RepoCore::RepoCore(StorageCapability capability, std::shared_ptr<RepoStoreBacken
     throw std::invalid_argument("repo store backend must not be null");
   }
   refreshCapabilityUsage();
+  // The change journal is process-local. An empty durable store may still
+  // have deleted objects whose tombstones disappeared across a restart.
+  m_catalogReconciliationRequired = true;
 }
 
 RepoObjectManifest
@@ -127,6 +161,13 @@ RepoCore::getManifest(const std::string& objectName) const
   return parseManifestJson(toString(handleManifest(toBytes(objectName))));
 }
 
+RepoObjectMetadataProbe
+RepoCore::probeObjectMetadata(const std::string& objectName) const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return m_store->probeObjectMetadata(objectName);
+}
+
 std::vector<RepoObjectManifest>
 RepoCore::list() const
 {
@@ -173,6 +214,7 @@ RepoCore::putRangeLocked(const RepoObjectManifest& manifest, RepoByteRange range
 {
   if (hasDataPacket(manifest.objectName))
     throw std::runtime_error("repo-original-packet-is-immutable");
+  rejectExternallySuppliedDataReceipt(manifest);
   if (range.lengthBytes != bytes.size() ||
       range.offsetBytes > manifest.size ||
       range.lengthBytes > manifest.size - range.offsetBytes) {
@@ -182,6 +224,7 @@ RepoCore::putRangeLocked(const RepoObjectManifest& manifest, RepoByteRange range
   uint64_t oldSize = 0;
   if (m_store->has(manifest.objectName)) {
     const auto previous = m_store->getManifest(manifest.objectName);
+    rejectDataPacketReplacement(previous);
     oldSize = previous.segmentCount > 1 || !previous.packetNames.empty()
                 ? 0 : previous.size;
     if (generation == 0) {
@@ -209,7 +252,8 @@ RepoCore::putRangeLocked(const RepoObjectManifest& manifest, RepoByteRange range
     found = m_rangeReservations.emplace(
       manifest.objectName,
       RangeReservation{rangeManifest.toJson(), manifest.sha256, manifest.size,
-                       generation, additionalBytes}).first;
+                       generation, additionalBytes,
+                       std::chrono::steady_clock::now()}).first;
     m_reservedRangeBytes += additionalBytes;
   }
   else if (found->second.digest != manifest.sha256 ||
@@ -220,6 +264,7 @@ RepoCore::putRangeLocked(const RepoObjectManifest& manifest, RepoByteRange range
   }
   try {
     m_store->putRange(rangeManifest, range, bytes);
+    found->second.lastActivity = std::chrono::steady_clock::now();
   }
   catch (...) {
     try {
@@ -262,6 +307,7 @@ RepoCore::commitRangesIfOwned(const RepoObjectManifest& manifest)
 RepoObjectManifest
 RepoCore::commitRangesLocked(const RepoObjectManifest& manifest)
 {
+  rejectExternallySuppliedDataReceipt(manifest);
   auto commitManifest = manifest;
   const auto reservation = m_rangeReservations.find(manifest.objectName);
   if (reservation != m_rangeReservations.end()) {
@@ -287,6 +333,7 @@ RepoCore::commitRangesLocked(const RepoObjectManifest& manifest)
   uint64_t oldSize = 0;
   if (m_store->has(manifest.objectName)) {
     const auto previous = m_store->getManifest(manifest.objectName);
+    rejectDataPacketReplacement(previous);
     oldSize = previous.segmentCount > 1 || !previous.packetNames.empty()
                 ? 0 : previous.size;
   }
@@ -400,12 +447,47 @@ RepoCore::abortRangesIfOwned(const RepoObjectManifest& expected)
   return true;
 }
 
+uint64_t
+RepoCore::reapExpiredRangeReservations(std::chrono::steady_clock::duration idleTimeout)
+{
+  if (idleTimeout < std::chrono::steady_clock::duration::zero()) {
+    throw std::invalid_argument("repo-range-idle-timeout-invalid");
+  }
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto expiredBefore = std::chrono::steady_clock::now() - idleTimeout;
+  uint64_t reaped = 0;
+  for (auto reservation = m_rangeReservations.begin();
+       reservation != m_rangeReservations.end();) {
+    if (reservation->second.lastActivity > expiredBefore) {
+      ++reservation;
+      continue;
+    }
+    try {
+      m_store->abortRanges(reservation->first);
+    }
+    catch (...) {
+      ++reservation;
+      continue;
+    }
+    m_reservedRangeBytes -= std::min(m_reservedRangeBytes,
+                                     reservation->second.additionalBytes);
+    reservation = m_rangeReservations.erase(reservation);
+    ++reaped;
+  }
+  return reaped;
+}
+
 RepoObjectManifest
 RepoCore::putDataPacket(const std::string& dataName,
-                        const std::vector<uint8_t>& wire)
+                        const std::vector<uint8_t>& wire,
+                        const std::string& repoNode,
+                        const std::string& providerIdentity)
 {
   if (dataName.empty()) {
     throw std::invalid_argument("NDN Data name must not be empty");
+  }
+  if (repoNode.empty() != providerIdentity.empty()) {
+    throw std::invalid_argument("repo-data-receipt-identity-incomplete");
   }
   std::string encodedName;
   try {
@@ -428,6 +510,9 @@ RepoCore::putDataPacket(const std::string& dataName,
   if (hasDataPacket(encodedName)) {
     if (getDataPacket(encodedName) != wire)
       throw std::runtime_error("repo-data-wire-conflict: " + encodedName);
+    const auto record = findPacketRecord(ndn::Name(encodedName));
+    if (record && record->first.objectType == "ndn-data-wire")
+      return record->first;
     if (!m_store->has(encodedName) ||
         m_store->getManifest(encodedName).objectType == "original-packet-set") {
       RepoObjectManifest packet;
@@ -467,6 +552,19 @@ RepoCore::putDataPacket(const std::string& dataName,
   manifest.segmentCount = 1;
   manifest.packetNames = {encodedName};
   manifest.generation = 1;
+  if (!repoNode.empty()) {
+    const auto committedAt = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    std::ostringstream nonce;
+    nonce << std::hex << ndn::random::generateWord64()
+          << ndn::random::generateWord64();
+    manifest.dataReceiptId = "repo-data-" + sha256Hex(toBytes(
+      repoNode + "\n" + providerIdentity + "\n" + dataName + "\n" +
+      manifest.sha256 + "\n" + nonce.str()));
+    manifest.dataReceiptRepoNode = repoNode;
+    manifest.dataReceiptProviderIdentity = providerIdentity;
+    manifest.dataReceiptCommittedAtMs = static_cast<uint64_t>(committedAt);
+  }
   try {
     m_store->put(manifest, wire);
   }
@@ -496,6 +594,64 @@ RepoCore::putDataPacket(const std::string& dataName,
   return durable;
 }
 
+RepoWriteReceipt
+RepoCore::importLegacyDataPacketReceipt(const std::string& dataName,
+                                        const std::string& repoNode,
+                                        const std::string& providerIdentity)
+{
+  if (dataName.empty() || repoNode.empty() || providerIdentity.empty() ||
+      repoNode != m_capability.repoNode) {
+    throw std::invalid_argument("repo-data-import-identity-invalid");
+  }
+  std::string digest;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto stored = m_store->get(dataName);
+    const auto& manifest = stored.manifest;
+    if (manifest.objectName != dataName || manifest.objectType != "ndn-data-wire" ||
+        manifest.size == 0 || manifest.size != stored.payload.size() ||
+        manifest.sha256 != sha256Hex(stored.payload) ||
+        manifest.packetNames != std::vector<std::string>{dataName} ||
+        manifest.generation == 0) {
+      throw std::runtime_error("repo-data-import-wire-invalid");
+    }
+    try {
+      ndn::Block block(ndn::span<const uint8_t>(stored.payload.data(),
+                                               stored.payload.size()));
+      block.parse();
+      if (ndn::Data(block).getName() != ndn::Name(dataName)) {
+        throw std::runtime_error("repo-data-import-name-mismatch");
+      }
+    }
+    catch (const std::exception& e) {
+      throw std::runtime_error(std::string("repo-data-import-wire-invalid: ") + e.what());
+    }
+    digest = manifest.sha256;
+    if (!manifest.dataReceiptId.empty()) {
+      if (manifest.dataReceiptRepoNode != repoNode ||
+          manifest.dataReceiptProviderIdentity != providerIdentity) {
+        throw std::runtime_error("repo-data-import-identity-conflict");
+      }
+    }
+    else {
+      auto updated = manifest;
+      const auto importedAt = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+      std::ostringstream nonce;
+      nonce << std::hex << ndn::random::generateWord64()
+            << ndn::random::generateWord64();
+      updated.dataReceiptId = "repo-import-data-" + sha256Hex(toBytes(
+        repoNode + "\n" + providerIdentity + "\n" + dataName + "\n" +
+        digest + "\n" + nonce.str()));
+      updated.dataReceiptRepoNode = repoNode;
+      updated.dataReceiptProviderIdentity = providerIdentity;
+      updated.dataReceiptCommittedAtMs = static_cast<uint64_t>(importedAt);
+      m_store->attachImportedDataReceipt(manifest, updated);
+    }
+  }
+  return getDataPacketReceipt(dataName, digest);
+}
+
 std::vector<uint8_t>
 RepoCore::getDataPacket(const std::string& dataName) const
 {
@@ -516,6 +672,60 @@ RepoCore::getDataPacket(const std::string& dataName) const
   return wire;
 }
 
+RepoWriteReceipt
+RepoCore::getDataPacketReceipt(const std::string& dataName,
+                               const std::string& wireSha256) const
+{
+  const auto encodedName = ndn::Name(dataName).toUri(ndn::name::UriFormat::CANONICAL);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  std::optional<RepoObjectManifest> found;
+  try {
+    RepoObjectManifest current;
+    try {
+      current = m_store->getManifest(encodedName);
+    }
+    catch (const std::out_of_range&) {
+      if (encodedName == dataName) throw;
+      current = m_store->getManifest(dataName);
+    }
+    if (current.sha256 == wireSha256 && !current.dataReceiptId.empty()) {
+      found = std::move(current);
+    }
+  }
+  catch (const std::out_of_range&) {
+    // The current object was deleted; a retained historical commit may exist.
+  }
+  if (!found) {
+    found = m_store->findRetainedDataReceipt(encodedName, wireSha256);
+    if (!found && encodedName != dataName)
+      found = m_store->findRetainedDataReceipt(dataName, wireSha256);
+  }
+  if (!found) {
+    throw std::out_of_range("repo-data-receipt-not-found: " + dataName);
+  }
+  const auto& manifest = *found;
+  if (ndn::Name(manifest.objectName) != ndn::Name(encodedName) || manifest.objectType != "ndn-data-wire" ||
+      manifest.sha256 != wireSha256 ||
+      manifest.dataReceiptId.empty() || manifest.dataReceiptRepoNode.empty() ||
+      manifest.dataReceiptProviderIdentity.empty() ||
+      manifest.dataReceiptCommittedAtMs == 0 || manifest.sha256.size() != 64 ||
+      manifest.size == 0 || manifest.generation == 0 ||
+      manifest.packetNames.size() != 1 ||
+      ndn::Name(manifest.packetNames.front()) != ndn::Name(encodedName)) {
+    throw std::out_of_range("repo-data-receipt-not-found: " + dataName);
+  }
+  RepoWriteReceipt receipt;
+  receipt.operationId = manifest.dataReceiptId;
+  receipt.repoNode = manifest.dataReceiptRepoNode;
+  receipt.providerIdentity = manifest.dataReceiptProviderIdentity;
+  receipt.objectName = encodedName;
+  receipt.generation = manifest.generation;
+  receipt.digest = manifest.sha256;
+  receipt.persistedBytes = manifest.size;
+  receipt.completedAtMs = manifest.dataReceiptCommittedAtMs;
+  return receipt;
+}
+
 bool
 RepoCore::hasDataPacket(const std::string& dataName) const
 {
@@ -533,6 +743,11 @@ RepoCore::findPacketRecord(const ndn::Name& name) const
     const auto manifest = m_store->getManifest(key);
     if (manifest.objectType == "ndn-data-wire") return std::make_pair(manifest, 0);
     if (manifest.objectType != "original-packet-set") return std::nullopt;
+  }
+  const auto alternate = name.toUri(ndn::name::UriFormat::ALTERNATE);
+  if (alternate != key && m_store->has(alternate)) {
+    const auto legacy = m_store->getManifest(alternate);
+    if (legacy.objectType == "ndn-data-wire") return std::make_pair(legacy, 0);
   }
   for (const auto& manifest : m_store->listManifests()) {
     if (manifest.objectType != "original-packet-set") continue;
@@ -663,6 +878,7 @@ RepoCore::handleStore(const std::vector<uint8_t>& request)
   RepoObjectManifest manifest;
   std::vector<uint8_t> payload;
   decodeStoreRequest(request, manifest, payload);
+  rejectExternallySuppliedDataReceipt(manifest);
 
   if (manifest.objectType == "original-packet-set" || manifest.objectType == "ndn-data-wire")
     throw std::invalid_argument("repo-original-packets-require-atomic-packet-api");
@@ -670,6 +886,9 @@ RepoCore::handleStore(const std::vector<uint8_t>& request)
   std::lock_guard<std::mutex> lock(m_mutex);
   if (hasDataPacket(manifest.objectName))
     throw std::runtime_error("repo-original-packet-is-immutable");
+  if (m_store->has(manifest.objectName)) {
+    rejectDataPacketReplacement(m_store->getManifest(manifest.objectName));
+  }
   if (m_rangeReservations.find(manifest.objectName) != m_rangeReservations.end()) {
     m_store->abortRanges(manifest.objectName);
     clearRangeReservation(manifest.objectName);
@@ -756,6 +975,10 @@ RepoCore::handleStoreManifest(const std::vector<uint8_t>& request)
   std::lock_guard<std::mutex> lock(m_mutex);
   if (hasDataPacket(manifest.objectName))
     throw std::runtime_error("repo-original-packet-is-immutable");
+  rejectExternallySuppliedDataReceipt(manifest);
+  if (m_store->has(manifest.objectName)) {
+    rejectDataPacketReplacement(m_store->getManifest(manifest.objectName));
+  }
   if (m_rangeReservations.find(manifest.objectName) != m_rangeReservations.end()) {
     m_store->abortRanges(manifest.objectName);
     clearRangeReservation(manifest.objectName);

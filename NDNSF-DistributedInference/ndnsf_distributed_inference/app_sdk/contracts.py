@@ -45,6 +45,71 @@ class ArtifactReference:
 
 
 @dataclass(frozen=True)
+class DIRepoArtifactBinding:
+    """Versioned DI projection of an opaque native Repo handle."""
+
+    repo_handle_json: str
+    artifact_reference: ArtifactReference
+    role: str
+    use: str
+    schema_version: int = 1
+
+    USES = frozenset({"model", "checkpoint", "dataset", "input", "output", "runtime"})
+
+    def __post_init__(self):
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("unsupported DI Repo binding schema")
+        if not isinstance(self.repo_handle_json, str) or not self.repo_handle_json:
+            raise ValueError("DI Repo binding requires opaque native handle JSON")
+        if not isinstance(self.artifact_reference, ArtifactReference):
+            raise TypeError("DI Repo binding requires a generic ArtifactReference")
+        if not isinstance(self.role, str) or not self.role.strip():
+            raise ValueError("DI Repo binding role is required")
+        if not isinstance(self.use, str) or self.use not in self.USES:
+            raise ValueError("unsupported DI Repo artifact use")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schemaVersion": self.schema_version,
+            "repoHandleJson": self.repo_handle_json,
+            "artifactReference": {
+                "uri": self.artifact_reference.uri,
+                "digest": self.artifact_reference.digest,
+                "size_bytes": self.artifact_reference.size_bytes,
+                "mount_path": self.artifact_reference.mount_path,
+            },
+            "role": self.role,
+            "use": self.use,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "DIRepoArtifactBinding":
+        if not isinstance(value, Mapping):
+            raise TypeError("DI Repo binding must be a mapping")
+        expected = {
+            "schemaVersion", "repoHandleJson", "artifactReference", "role", "use"
+        }
+        if set(value) != expected:
+            raise ValueError("DI Repo binding fields do not match schema version 1")
+        reference = value["artifactReference"]
+        reference_fields = {"uri", "digest", "size_bytes", "mount_path"}
+        if not isinstance(reference, Mapping) or set(reference) != reference_fields:
+            raise ValueError("DI Repo binding has an invalid generic artifact reference")
+        if (not isinstance(reference["uri"], str)
+                or not isinstance(reference["digest"], str)
+                or type(reference["size_bytes"]) is not int
+                or not isinstance(reference["mount_path"], str)):
+            raise ValueError("DI Repo binding artifact reference has invalid field types")
+        return cls(
+            repo_handle_json=value["repoHandleJson"],
+            artifact_reference=ArtifactReference(**dict(reference)),
+            role=value["role"],
+            use=value["use"],
+            schema_version=value["schemaVersion"],
+        )
+
+
+@dataclass(frozen=True)
 class ModelIntent:
     allowed: Tuple[str, ...]
 

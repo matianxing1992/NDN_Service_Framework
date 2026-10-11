@@ -323,7 +323,9 @@ def build_extension() -> Extension:
         "py_repoclient._py_repoclient",
         sources=[
             "src/py_repoclient/_py_repoclient.cpp",
+            "src/py_repoclient/artifact_repository_bindings.cpp",
             "../src/ArtifactManifest.cpp",
+            "../src/ArtifactRepositoryApi.cpp",
             "../src/ArtifactTransfer.cpp",
             "../src/ArtifactTypes.cpp",
             "../src/backends/FilesystemArtifactStore.cpp",
@@ -345,7 +347,7 @@ def build_extension() -> Extension:
             *include_dirs,
         ],
         library_dirs=library_dirs,
-        libraries=["ndn-service-framework", *libraries],
+        libraries=["ndn-service-framework", "sqlite3", *libraries],
         extra_objects=extra_objects,
         extra_compile_args=["-std=c++17"],
         extra_link_args=extra_link_args,

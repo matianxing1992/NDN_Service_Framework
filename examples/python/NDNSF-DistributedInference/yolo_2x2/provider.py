@@ -16,6 +16,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from ndnsf import ServiceUser
 from ndnsf_distributed_inference.app_sdk import APPProvider, ProviderRuntimeContext
 from ndnsf_distributed_inference.provider import DIProviderOfferIssuerV3
 from ndnsf_distributed_inference.policy import load_or_generate_deployment
@@ -24,6 +25,8 @@ from ndnsf_distributed_inference.artifact_deployment import (
     materialize_role_artifacts,
     materialized_path,
 )
+from ndnsf_distributed_inference.repo_artifact_resolver import DIRepoArtifactResolver
+from py_repoclient import RepoClient
 from ndnsf_distributed_inference.adapters.onnx.executor import (
     execute_onnx_dependency_chunk,
     prefetch_dependency_inputs,
@@ -38,6 +41,7 @@ from yolo_2x2_lib import (
     encode_yolo_output,
     optional_local_nfd,
     parse_args_with_common,
+    REPO_SERVICE,
     verify_referenced_payload,
     yolo_inference_service,
 )
@@ -109,20 +113,22 @@ def _install_yolo_artifacts(
     artifact_cache_dir: str,
     roles: list[str],
     local_artifacts: dict[str, dict],
+    repo_resolver: DIRepoArtifactResolver,
 ) -> None:
     for role in roles:
         artifacts = materialize_role_artifacts(
             artifact_references,
             role,
             artifact_cache_dir,
+            repo_resolver=repo_resolver,
         )
         model = materialized_path(artifacts, "model")
         artifact = artifacts["model"]
         local_artifacts[role] = {
             "path": str(model),
-            "artifact": artifact.manifest.object_name,
+            "artifact": str((artifact.artifact_reference or {}).get("uri", "")),
             "filename": model.name,
-            "kind": artifact.manifest.object_type or "onnx-model",
+            "kind": str((artifact.metadata or {}).get("kind", "onnx-model")),
             "backend": "onnxruntime",
             "metadata": dict(artifact.metadata or {}),
         }
@@ -376,7 +382,26 @@ def main() -> int:
             local_artifacts.update(
                 _local_model_artifacts(args.local_model_path, selected_roles))
         readiness = None
+        repo_resolver = None
+        repo_user = None
         if args.artifact_references:
+            deployment = provider.deployment
+            repo_user = ServiceUser(
+                group=deployment.group,
+                controller=deployment.controller,
+                user=(str(deployment.provider_prefix).rstrip("/")
+                      + "/" + str(args.provider_id).strip("/")),
+                trust_schema=deployment.trust_schema,
+                permission_wait_ms=6000,
+                adaptive_admission=False,
+            )
+            repo_user.start()
+            repo_client = RepoClient(
+                user=repo_user,
+                repo_service_name=REPO_SERVICE,
+                timeout_ms=30000,
+            )
+            repo_resolver = DIRepoArtifactResolver(repo_client)
             provisioning = ArtifactProvisioningState(
                 component="yolo onnx artifacts",
                 initial_status="installing",
@@ -388,6 +413,7 @@ def main() -> int:
                     artifact_cache_dir=args.artifact_cache_dir,
                     roles=selected_roles,
                     local_artifacts=local_artifacts,
+                    repo_resolver=repo_resolver,
                 ),
                 installing_message="materializing ONNX role artifacts",
                 ready_message="ONNX role artifacts ready",
@@ -440,6 +466,7 @@ def main() -> int:
             readiness_probe=readiness,
             local_artifacts=local_artifacts,
             selection_offer_issuer_v3=offer_issuer_v3,
+            repo_resolver=repo_resolver,
         )
         # spec181 T005: the Python provider serves through the native run
         # loop (GIL released); SIGINT would never be delivered at bytecode
@@ -460,6 +487,8 @@ def main() -> int:
                 return 0
         try:
             provider.stop()
+            if repo_user is not None:
+                repo_user.stop()
         except Exception:
             pass
         runner_thread.join(timeout=3)

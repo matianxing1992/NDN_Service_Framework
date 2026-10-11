@@ -16,7 +16,7 @@ from ndnsf_distributed_inference.artifact_deployment import (
     ArtifactProvisioningState,
     artifact_references_need_repo_client,
 )
-from py_repoclient.orchestration import NetworkDistributedRepoClient
+from py_repoclient import RepoClient
 from ndnsf_distributed_inference.experimental.semantic_cache import (
     SemanticPatternMeta,
     SemanticServiceCacheKey,
@@ -271,7 +271,7 @@ def materialize_llama_server_artifacts(
 
 
 def build_repo_client(deployment, *, provider_id: str, group: str,
-                      repo_service: str, upload_prefix: str):
+                      repo_service: str):
     provider_name = (
         f"{deployment.provider_prefix.rstrip('/')}/{provider_id.strip('/')}"
         if provider_id else deployment.provider_prefix.rstrip("/")
@@ -286,16 +286,11 @@ def build_repo_client(deployment, *, provider_id: str, group: str,
         ack_threads=1,
         adaptive_admission=False,
     )
-    return NetworkDistributedRepoClient(
+    return RepoClient(
         user=user,
-        service_name=repo_service,
-        upload_prefix=upload_prefix or f"{provider_name}/NDNSF-DISTRIBUTED-REPO/UPLOAD",
-        # Artifact materialization normally runs once at provider/session
-        # startup. Keep this bootstrap window conservative so a provider that
-        # just joined the SVS group does not race repo discovery.
+        repo_service_name=repo_service,
         ack_timeout_ms=8000,
         timeout_ms=60000,
-        verbose=True,
     )
 
 
@@ -311,7 +306,6 @@ def install_llama_server_runtime(
     artifact_references: str,
     cache_dir: str,
     repo_service: str,
-    repo_upload_prefix: str,
     base_url: str,
     no_auto_start: bool,
     extra_args: list[str],
@@ -323,9 +317,7 @@ def install_llama_server_runtime(
             provider_id=provider_id,
             group=group,
             repo_service=repo_service,
-            upload_prefix=repo_upload_prefix,
         )
-        repo_client.wait_until_ready(30.0, probe_timeout_ms=10000)
     model_path, runtime_path = materialize_llama_server_artifacts(
         artifact_references=artifact_references,
         cache_dir=cache_dir,
@@ -361,7 +353,6 @@ def main() -> int:
                         help="Repo-backed DI artifact reference JSON containing model and runner")
     parser.add_argument("--artifact-cache-dir", default="/tmp/ndnsf-di-llama-server-cache")
     parser.add_argument("--repo-service", default="/NDNSF/DistributedRepo")
-    parser.add_argument("--repo-upload-prefix", default="")
     parser.add_argument("--no-auto-start", action="store_true",
                         help="Materialize artifacts but do not start llama-server")
     parser.add_argument("--sync-materialize-before-serve", action="store_true",
@@ -401,9 +392,7 @@ def main() -> int:
                 provider_id=args.provider_id,
                 group=args.group,
                 repo_service=args.repo_service,
-                upload_prefix=args.repo_upload_prefix,
             )
-            repo_client.wait_until_ready(30.0, probe_timeout_ms=10000)
         materialize_llama_server_artifacts(
             artifact_references=args.artifact_references,
             cache_dir=args.artifact_cache_dir,
@@ -433,7 +422,6 @@ def main() -> int:
                 artifact_references=args.artifact_references,
                 cache_dir=args.artifact_cache_dir,
                 repo_service=args.repo_service,
-                repo_upload_prefix=args.repo_upload_prefix,
                 base_url=args.llama_url,
                 no_auto_start=args.no_auto_start,
                 extra_args=args.llama_server_extra_arg,

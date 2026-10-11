@@ -15,6 +15,8 @@
 namespace py = pybind11;
 namespace repo = ndnsf_distributed_repo;
 
+void bindArtifactRepositoryApi(py::module_& m);
+
 namespace {
 
 template<typename T>
@@ -397,7 +399,7 @@ capabilityRepr(const repo::StorageCapability& capability)
 
 PYBIND11_MODULE(_py_repoclient, m)
 {
-  m.doc() = "NDNSF-DistributedRepo RepoClient bindings";
+  m.doc() = "NDNSF-DistributedRepo native Repo and artifact API bindings";
 
   py::register_exception<repo::ArtifactValidationError>(
     m, "ArtifactValidationError", PyExc_ValueError);
@@ -462,6 +464,9 @@ PYBIND11_MODULE(_py_repoclient, m)
     .def_readonly("publisher_identity", &repo::ArtifactReference::publisherIdentity)
     .def_readonly("policy_epoch", &repo::ArtifactReference::policyEpoch)
     .def("same_bytes", &repo::ArtifactReference::sameBytes, py::arg("other"))
+    .def("to_json", &repo::ArtifactReference::toJson)
+    .def_static("from_json", &repo::ArtifactReference::fromJson,
+                py::arg("wire"), py::arg("limits") = repo::ArtifactLimits{})
     .def("to_dict", [] (const repo::ArtifactReference& reference) {
       py::dict result;
       result["logicalName"] = reference.logicalName;
@@ -1150,4 +1155,6 @@ PYBIND11_MODULE(_py_repoclient, m)
         py::arg("candidates"),
         py::arg("policy"),
         py::arg("object_size"));
+
+  bindArtifactRepositoryApi(m);
 }

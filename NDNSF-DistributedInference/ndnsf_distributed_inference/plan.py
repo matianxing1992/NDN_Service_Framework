@@ -16,7 +16,6 @@ from typing import Mapping, Optional
 
 from ndnsf import CollaborationDependency, CollaborationRole
 from .core.contracts import DATA_DRIVEN_V2
-from .repo_reference import large_data_reference_from_repo_manifest
 
 
 # Rollback-only V1 rendezvous. DATA_DRIVEN_V2 never emits or waits on this
@@ -183,6 +182,7 @@ class ArtifactSpec:
     cache_name: str = ""
     large_data_reference: dict = field(default_factory=dict)
     repo_manifest: dict = field(default_factory=dict)
+    repo_binding: dict = field(default_factory=dict)
     content_name: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -234,8 +234,17 @@ class ArtifactSpec:
         return cls(name=name, payload=payload, filename=filename, kind=kind, content_name=fields)
 
     def to_ndnsf_artifact(self) -> dict:
+        if self.repo_manifest:
+            from .repo_artifact_resolver import reject_legacy_repo_manifest
+            reject_legacy_repo_manifest("ArtifactSpec.repo_manifest")
         repo_manifest = dict(self.repo_manifest or {})
         large_data_reference = dict(self.large_data_reference or {})
+        if any(str(large_data_reference.get(key, "")).lower()
+               in {"repo", "repo-manifest", "repo_manifest"}
+               for key in ("source", "sourceType")):
+            from .repo_artifact_resolver import reject_legacy_repo_manifest
+            reject_legacy_repo_manifest("ArtifactSpec.large_data_reference Repo manifest")
+        repo_binding = dict(self.repo_binding or {})
         artifact = {
             "payload": self.payload,
             "filename": self.filename,
@@ -244,19 +253,13 @@ class ArtifactSpec:
             "cache_name": self.cache_name,
             "repo_manifest": repo_manifest,
             "repoManifest": repo_manifest,
+            "repo_binding": repo_binding,
+            "repoBinding": repo_binding,
             "large_data_reference": large_data_reference,
             "largeDataReference": large_data_reference,
         }
         if self.content_name:
             artifact["content_name"] = dict(self.content_name)
-        if not large_data_reference and repo_manifest:
-            large_data_reference = large_data_reference_from_repo_manifest(
-                repo_manifest,
-                object_type=self.kind,
-                object_id=self.name,
-            )
-            artifact["large_data_reference"] = large_data_reference
-            artifact["largeDataReference"] = large_data_reference
         return artifact
 
 
@@ -290,6 +293,7 @@ class InferenceRole:
     min_providers: int = 1
     max_providers: int = 1
     metadata: dict = field(default_factory=dict)
+    auxiliary_artifacts: dict[str, ArtifactSpec] = field(default_factory=dict)
 
     def ndnsf_role(self, default_service: str) -> CollaborationRole:
         revision = str(self.metadata.get("deploymentRevision", ""))
@@ -313,6 +317,13 @@ class InferenceRole:
         }
         if self.runtime.artifact is not None:
             artifacts["runner"] = self.runtime.artifact.to_ndnsf_artifact()
+        for name, artifact in self.auxiliary_artifacts.items():
+            slot = str(name).strip()
+            if not slot or slot in artifacts:
+                raise ValueError("DI role auxiliary artifact slot is empty or reserved")
+            if not isinstance(artifact, ArtifactSpec):
+                raise TypeError("DI role auxiliary artifacts must be ArtifactSpec values")
+            artifacts[slot] = artifact.to_ndnsf_artifact()
         return artifacts
 
 

@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
-"""Store and fetch real YOLO 2x2 artifacts through a shared-service repo cluster."""
+"""Publish and verify a YOLO model with the native DistributedRepo API."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
+import tempfile
 
 from ndnsf import ServiceUser
 from ndnsf_distributed_inference.app_sdk import APPDeployment
-from py_repoclient.orchestration import NetworkDistributedRepoClient
+from py_repoclient import (
+    ArtifactCapabilityRequirements,
+    ArtifactReference,
+    RepoClient,
+    RepoWriteConsistency,
+    SelectedRepoSet,
+    SelectedRepoTarget,
+)
 
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_policy.yaml"
 REPO_SERVICE = "/NDNSF/DistributedRepo"
-
-
-def split_payload(payload: bytes, count: int) -> list[bytes]:
-    step = (len(payload) + count - 1) // count
-    return [payload[index:index + step] for index in range(0, len(payload), step)]
 
 
 def main() -> int:
@@ -33,6 +37,8 @@ def main() -> int:
     parser.add_argument("--timeout-ms", type=int, default=20000)
     args = parser.parse_args()
 
+    if args.replication_factor <= 0:
+        raise ValueError("replication-factor must be positive")
     deployment = APPDeployment.from_config(
         args.config,
         generated_policy_dir=args.generated_policy_dir,
@@ -45,42 +51,64 @@ def main() -> int:
         permission_wait_ms=6000,
         adaptive_admission=False,
     )
-    repo = NetworkDistributedRepoClient(
+    repo = RepoClient(
         user=user,
-        service_name=REPO_SERVICE,
-        upload_prefix=f"{deployment.user}/NDNSF-DISTRIBUTED-REPO/UPLOAD",
+        repo_service_name=REPO_SERVICE,
         ack_timeout_ms=args.ack_timeout_ms,
         timeout_ms=args.timeout_ms,
     )
-    capability = repo.wait_until_ready(15.0)
-    model_path = Path(args.model)
-    payload = model_path.read_bytes()
+    source = Path(args.model)
+    payload = source.read_bytes()
     if args.max_bytes > 0:
         payload = payload[:args.max_bytes]
-    chunks = split_payload(payload, 4)
-    manifests = []
-    for index, chunk in enumerate(chunks):
-        print(f"store chunk {index} size={len(chunk)}", flush=True)
-        manifest = repo.store_object(
-            object_name=repo.publisher_object_name(
-                f"NDNSF-DI/ARTIFACT/AI/YOLO/2x2/real-model/chunk/{index}"
-            ),
-            payload=chunk,
-            object_type="model-shard",
-            replication_factor=args.replication_factor,
-            policy_epoch="/Policy/yolo-2x2/v1",
+    digest = hashlib.sha256(payload).hexdigest()
+    logical_name = f"/NDNSF-DI/ARTIFACT/AI/YOLO/2x2/real-model/{digest}"
+    reference = ArtifactReference(
+        logical_name=logical_name,
+        content_digest=digest,
+        size_bytes=len(payload),
+        root_manifest_name=logical_name + "/root",
+        publisher_identity=deployment.user,
+        policy_epoch="/Policy/yolo-2x2/v1",
+    )
+    requirements = ArtifactCapabilityRequirements()
+    requirements.artifact = reference
+    candidates = repo.discover_repo_candidates(
+        requirements, timeout_ms=args.timeout_ms
+    ).candidates
+    if len(candidates) < args.replication_factor:
+        raise RuntimeError(
+            f"Repo discovery returned {len(candidates)} candidates; "
+            f"need {args.replication_factor}"
         )
-        print(f"fetch chunk {index}", flush=True)
-        fetched = repo.fetch_object(manifest.object_name, manifest)
-        if fetched != chunk:
-            raise RuntimeError(f"repo fetch mismatch for {manifest.object_name}")
-        manifests.append(manifest)
-        print(f"verified chunk {index}", flush=True)
+    selected = SelectedRepoSet()
+    selected.targets = []
+    for candidate in candidates[:args.replication_factor]:
+        target = SelectedRepoTarget()
+        target.repo_node = candidate.repo_node
+        target.provider_identity = candidate.provider_identity
+        target.service_prefix = candidate.service_prefix
+        selected.targets.append(target)
+    selected.seed_repo_id = selected.targets[0].repo_node
+    selected.consistency = RepoWriteConsistency.ALL
 
-    print("YOLO_2X2_REAL_REPO_OK")
-    print("first_capability:", capability)
-    for manifest in manifests:
-        print("manifest:", manifest.to_dict())
+    with tempfile.TemporaryDirectory(prefix="ndnsf-yolo-repo-publish-") as temp:
+        source_path = Path(temp) / (source.name or "model.bin")
+        source_path.write_bytes(payload)
+        result = repo.publish_file(
+            source_path, reference, selected, timeout_ms=args.timeout_ms)
+        if not result.success or result.handle is None:
+            raise RuntimeError("native Repo publication failed")
+        destination = Path(temp) / "fetched.bin"
+        repo.fetch_file(result.handle, destination, timeout_ms=args.timeout_ms)
+        if destination.read_bytes() != payload:
+            raise RuntimeError("native Repo fetch did not reproduce the published bytes")
+
+    print("YOLO_2X2_NATIVE_REPO_OK")
+    print("logical_name:", logical_name)
+    print("digest:", "sha256:" + digest)
+    print("size_bytes:", len(payload))
+    print("replicas:", len(selected.targets))
     return 0
 
 

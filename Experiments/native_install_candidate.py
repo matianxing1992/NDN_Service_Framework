@@ -473,6 +473,31 @@ def apply_yolo_repo_operation_policy(policy_path: Path,
     ]
     if not repo_services:
         raise RuntimeError("CANDIDATE_REPO_OPERATION_POLICY_MISSING")
+    # The native API registers each operation as its own Core service.
+    # Reuse the template's explicit actors, adding only the native calls used
+    # by publication, fetch and replica workers.
+    read_template = next(service for service in repo_services
+                         if service.get("name") == prefix + "STATUS")
+    write_template = next(service for service in repo_services
+                          if service.get("name") == prefix + "INSERT")
+    repo_actors = [item["identity"] for item in read_template.get("providers", [])]
+    compute_actors = [item["identity"] for service in config.get("services", [])
+                      if str(service.get("name", "")).startswith("/AI/YOLO/")
+                      for item in service.get("providers", [])]
+    for service in repo_services:
+        if service.get("name") in {prefix + operation for operation in
+                                   ("STATUS", "MANIFEST", "FETCH")}:
+            service["users"] = sorted(set(service.get("users", [])) |
+                                      set(repo_actors) | set(compute_actors))
+    for operation in ("STORE", "STORE_RANGE", "COMMIT_RANGES", "ABORT_RANGES",
+                      "CAPABILITY", "FETCH_RANGE", "CACHE_STATUS"):
+        write = operation in {"STORE", "STORE_RANGE", "COMMIT_RANGES", "ABORT_RANGES"}
+        entry = dict(write_template if write else read_template)
+        entry["name"] = prefix + operation
+        entry["model"] = entry["name"]
+        entry["users"] = sorted(set(entry.get("users", [])) | set(repo_actors) |
+                                (set() if write else set(compute_actors)))
+        repo_services.append(entry)
     services = list(config.get("services", []))
     probe_name = "/NDNSF/Network/Probe/v1"
     probe_template = next((service for service in template.get("services", [])

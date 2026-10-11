@@ -41,8 +41,11 @@ def build(bld):
                           excl=['include/ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp']))
     repo_sources = [
         'src/ArtifactManifest.cpp',
+        'src/ArtifactRepositoryApi.cpp',
         'src/ArtifactTransfer.cpp',
         'src/ArtifactTypes.cpp',
+        'src/LegacyRepoImporter.cpp',
+        'src/PersistentRepoServerConfig.cpp',
         'src/backends/FilesystemArtifactStore.cpp',
         'src/backends/FilesystemRepoStoreBackend.cpp',
         'src/RepoClient.cpp',
@@ -70,7 +73,8 @@ def build(bld):
         bld.shlib(name='spec201-repo-python-binding',
                   target='../spec201-repo-python/_py_repoclient',
                   env=binding_env,
-                  source=['pythonWrapper/src/py_repoclient/_py_repoclient.cpp'],
+                  source=['pythonWrapper/src/py_repoclient/_py_repoclient.cpp',
+                          'pythonWrapper/src/py_repoclient/artifact_repository_bindings.cpp'],
                   includes=['include', '..', '../ndn-service-framework',
                             sysconfig.get_path('include'), pybind11.get_include()],
                   use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
@@ -84,6 +88,19 @@ def build(bld):
                 use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
                 rpath=[bld.bldnode.abspath()],
                 install_path='${BINDIR}')
+    bld.program(name='DistributedRepoServer',
+                target='DistributedRepoServer',
+                source=['apps/DistributedRepoServer.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                install_path='${BINDIR}')
+
+    bld.program(name='ndnsf-repo-import',
+                target='ndnsf-repo-import',
+                source=['apps/LegacyRepoImport.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                install_path=None)
 
     bld.program(name='DistributedRepoSmoke',
                 target='DistributedRepoSmoke',

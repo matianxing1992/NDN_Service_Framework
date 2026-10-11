@@ -588,6 +588,8 @@ namespace ndn_service_framework{
              * refresh whose Controller answer is authority. */
             void restorePersistedRuntimeStatuses();
             std::optional<ControllerVersion> getControllerVersion() const;
+            /// Whether ordinary calls default to protected, segmented request input.
+            bool hasRequestScopedDefault() const;
             std::optional<ControllerVersion> getControllerVersion(
                 const ndn::Name& serviceName) const;
             size_t getCurrentPolicyEpoch() const;
@@ -643,6 +645,8 @@ namespace ndn_service_framework{
                 uint64_t callbackSkippedNoPending = 0;
                 uint64_t callbackSkippedTimeout = 0;
                 uint64_t responseAfterPendingTimeout = 0;
+                uint64_t responseRejectedProviderIdentity = 0;
+                uint64_t responseLargeReferenceSkippedNoPending = 0;
                 std::vector<double> ackLatenciesMs;
             };
             RuntimeDiagnostics consumeRuntimeDiagnostics();
@@ -1259,7 +1263,8 @@ namespace ndn_service_framework{
                                                  const ndn::Buffer& buffer,
                                                  const std::string& dataName = {},
                                                  const std::string& signerCertificate = {},
-                                                 const std::string& wireDigest = {});
+                                                 const std::string& wireDigest = {},
+                                                 const std::string& providerIdentity = {});
             void finishDecryptedResponseByName(const ndn::Name& responseName,
                                                const ndn::Name& requestId,
                                                ndn_service_framework::ResponseMessage responseMessage);

@@ -1,5 +1,8 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
+#include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
+
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -67,6 +70,27 @@ public:
     return {pending->second.publishedAtUs,
             pending->second.ackWindowDeadlineUs};
   }
+
+  uint64_t
+  requestDeadline(const ndn::Name& requestId) const
+  {
+    const auto pending = m_pendingCalls.find(requestId);
+    if (pending == m_pendingCalls.end()) {
+      throw std::logic_error("missing Spec190 pending collaboration");
+    }
+    return pending->second.requestDeadlineUs;
+  }
+
+  void ingestAckPublication(const ndn::svs::SVSPubSub::SubscriptionData& publication)
+  {
+    OnRequestAck(publication);
+  }
+
+  size_t ackDecryptsInFlight(const ndn::Name& requestId) const
+  {
+    const auto pending = m_pendingCalls.find(requestId);
+    return pending == m_pendingCalls.end() ? 0 : pending->second.ackDecryptsInFlight;
+  }
 };
 
 struct AckWindowFixture
@@ -126,6 +150,104 @@ struct ControlledClock
 };
 
 } // namespace
+
+BOOST_FIXTURE_TEST_CASE(UnrequestedEncryptedAckDoesNotConsumeCollectionBudget,
+                        AckWindowFixture)
+{
+  const auto certificateA = makeRsaIdentity(keyChain, providerA);
+  const auto certificateB = makeRsaIdentity(keyChain, providerB);
+  const ndn::Buffer key(32, 0x42);
+  user.cacheHybridReceiveKeyForTest("spec202-ack-key", "spec202-epoch", key);
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& request, size_t) { published = request; });
+  const ndn::Buffer payload(1, 0x62);
+  std::optional<CollaborationAckClosure> closure;
+  bool mismatchedSignerObserved = false;
+  const auto begin = [&] (const std::vector<ndn::Name>& providers) {
+    return user.BeginCollaborationWithProviders(service, payload, 1000, 5000,
+      [&] (const CollaborationAckClosure& value) { closure = value; },
+      [] (const ResponseMessage&) {}, [] (const ndn::Name&) {}, ndn::Name(),
+      [&] (const std::vector<AckCandidate>& candidates) {
+        for (const auto& candidate : candidates) {
+          mismatchedSignerObserved = mismatchedSignerObserved ||
+            candidate.authenticationEvidence.signerIdentity != candidate.providerName.toUri();
+        }
+        return std::any_of(candidates.begin(), candidates.end(), [] (const auto& candidate) {
+          return candidate.ack.getStatus() &&
+                 candidate.authenticationEvidence.trustSchemaValidated &&
+                 candidate.authenticationEvidence.signerIdentity == candidate.providerName.toUri();
+        });
+      },
+      RequestCapabilities(), std::nullopt, {}, {}, {}, providers);
+  };
+  const auto deliver = [&] (const ndn::Name& provider, const ndn::Name& signer,
+                            const ndn::security::Certificate& certificate,
+                            const ndn::Name& requestId) {
+    const auto name = makeRequestAckNameV2(provider, requester, service, requestId);
+    const auto ack = makeSuccessAckForRequest(published, "spec202-token-" + provider.toUri());
+    const auto plaintext = ack.WireEncode();
+    const auto ad = hybridAssociatedData(name, "ACK", requestId, service, provider,
+                                         "spec202-ack-key", "spec202-epoch");
+    const auto encrypted = hybridAesGcmEncrypt(key,
+      ndn::span<const uint8_t>(plaintext.data(), plaintext.size()), ad);
+    HybridMessageEnvelope envelope;
+    envelope.setVersion(1);
+    envelope.setAlgorithm("AES-256-GCM");
+    envelope.setMessageType("ACK");
+    envelope.setKeyId("spec202-ack-key");
+    envelope.setEpochId("spec202-epoch");
+    envelope.setNonce(encrypted.nonce);
+    envelope.setCipherText(encrypted.ciphertext);
+    envelope.setAuthTag(encrypted.tag);
+    const auto wire = envelope.WireEncode();
+    ndn::Data packet(name);
+    packet.setContent(ndn::span<const uint8_t>(wire.data(), wire.size()));
+    keyChain.sign(packet, ndn::security::signingByIdentity(signer));
+    BOOST_REQUIRE(ndn::security::verifySignature(packet, certificate));
+    const std::optional<ndn::Data> signedPacket{packet};
+    const ndn::Name producerPrefix = ndn::Name(provider).append("0");
+    const ndn::svs::SVSPubSub::SubscriptionData publication{
+      name, ndn::span<const uint8_t>(wire.data(), wire.size()),
+      producerPrefix, 1, signedPacket};
+    user.ingestAckPublication(publication);
+  };
+  const auto requestId = begin({providerA});
+  BOOST_REQUIRE(!requestId.empty());
+  const auto bounds = user.ackWindowBounds(requestId);
+  const auto decrypts = user.getHybridCryptoCounters().symmetric_decrypt_count.load();
+  deliver(providerB, providerB, certificateB, requestId);
+  BOOST_CHECK_EQUAL(user.ackDecryptsInFlight(requestId), 0U);
+  pumpFace(face, ndn::time::milliseconds(10));
+  BOOST_CHECK_EQUAL(user.getHybridCryptoCounters().symmetric_decrypt_count.load(), decrypts);
+  BOOST_CHECK(user.ackWindowBounds(requestId) == bounds);
+  BOOST_CHECK(!closure);
+  BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(requestId), 0U);
+  deliver(providerA, providerA, certificateA, requestId);
+  pumpFace(face, ndn::time::milliseconds(10));
+  BOOST_REQUIRE(closure);
+  BOOST_REQUIRE_EQUAL(closure->candidates.size(), 1U);
+  BOOST_CHECK(closure->candidates.front().providerName == providerA);
+  BOOST_CHECK(closure->candidates.front().authenticationEvidence.trustSchemaValidated);
+  BOOST_CHECK(user.CancelCollaboration(requestId));
+  closure.reset();
+  // Core preserves provenance; the caller's coverage predicate must not
+  // count a requested name signed by another Provider as authenticated.
+  const auto forged = begin({providerA});
+  deliver(providerA, providerB, certificateB, forged);
+  pumpFace(face, ndn::time::milliseconds(10));
+  BOOST_CHECK(mismatchedSignerObserved);
+  BOOST_CHECK(!closure);
+  BOOST_CHECK(user.CancelCollaboration(forged));
+  const auto discovery = begin({});
+  deliver(providerB, providerB, certificateB, discovery);
+  pumpFace(face, ndn::time::milliseconds(10));
+  BOOST_REQUIRE(closure);
+  BOOST_REQUIRE_EQUAL(closure->candidates.size(), 1U);
+  BOOST_CHECK(closure->candidates.front().providerName == providerB);
+  BOOST_CHECK(user.CancelCollaboration(discovery));
+}
 
 BOOST_FIXTURE_TEST_CASE(RejectsInvalidAndAcceptsBoundaryAckWindows,
                         AckWindowFixture)
@@ -366,9 +488,11 @@ BOOST_FIXTURE_TEST_CASE(DelayedAuthenticationDrainsBeforeAckClosed,
   // Model the production ACK decrypt/auth callback already admitted by the
   // SVS path but not yet drained when the timer fires.
   user.markAckDecryptInFlight(requestId);
-  clock.nowUs = bounds.second;
-  BOOST_CHECK(!user.expireAckWindowForTest(requestId));
-  BOOST_CHECK(!closure.has_value());
+  for (int deferral = 0; deferral < 6; ++deferral) {
+    clock.nowUs = bounds.second + static_cast<uint64_t>(deferral) * 20'000;
+    BOOST_CHECK(!user.expireAckWindowForTest(requestId));
+    BOOST_CHECK(!closure.has_value());
+  }
 
   auto authenticatedAck = makeSuccessAckForRequest(published, "token-auth");
   BOOST_REQUIRE(user.handleRequestAckByName(
@@ -381,6 +505,66 @@ BOOST_FIXTURE_TEST_CASE(DelayedAuthenticationDrainsBeforeAckClosed,
   BOOST_CHECK(closure->candidates.front().authenticationEvidence.trustSchemaValidated);
   BOOST_CHECK_EQUAL(user.closedAckCount(requestId), 1U);
   BOOST_CHECK(user.CancelCollaboration(requestId));
+}
+
+BOOST_FIXTURE_TEST_CASE(DeferredAckClosedWaitsForAuthenticationOrRequestTimeout,
+                        AckWindowFixture)
+{
+  const ndn::Buffer payload(reinterpret_cast<const uint8_t*>("payload"), 7);
+  ControlledClock clock(4'000'000);
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& request, size_t) {
+      published = request;
+    });
+  const std::vector<ndn::Name> providers{providerA};
+  const auto beginDeferred = [&] (std::optional<CollaborationAckClosure>& closure,
+                                  bool& timedOut) {
+    return user.BeginCollaborationWithProviders(
+      service, payload, 20, 1000,
+      [&] (const CollaborationAckClosure& value) { closure = value; },
+      [] (const ResponseMessage&) {},
+      [&] (const ndn::Name&) { timedOut = true; },
+      ndn::Name(),
+      [] (const std::vector<AckCandidate>&) { return false; },
+      RequestCapabilities(), std::nullopt, {}, {}, {}, providers);
+  };
+
+  std::optional<CollaborationAckClosure> closure;
+  bool timedOut = false;
+  const auto requestId = beginDeferred(closure, timedOut);
+  BOOST_REQUIRE(!requestId.empty());
+  BOOST_REQUIRE(!published.getPayload().empty());
+  const auto bounds = user.ackWindowBounds(requestId);
+  BOOST_CHECK_GT(user.requestDeadline(requestId), bounds.second + 100'000);
+  user.markAckDecryptInFlight(requestId);
+  for (int deferral = 0; deferral < 6; ++deferral) {
+    clock.nowUs = bounds.second + static_cast<uint64_t>(deferral) * 20'000;
+    BOOST_CHECK(!user.expireAckWindowForTest(requestId));
+    BOOST_CHECK(!closure.has_value());
+  }
+  const auto ack = makeSuccessAckForRequest(published, "token-auth");
+  BOOST_REQUIRE(user.handleRequestAckByName(
+    makeRequestAckNameV2(providerA, requester, service, requestId), ack,
+    makeValidatedAckEvidence(providerA)));
+  pumpFace(face, ndn::time::milliseconds(30));
+  BOOST_REQUIRE(closure.has_value());
+  BOOST_REQUIRE_EQUAL(closure->candidates.size(), 1U);
+  BOOST_CHECK(!timedOut);
+  BOOST_CHECK(user.CancelCollaboration(requestId));
+
+  std::optional<CollaborationAckClosure> expiredClosure;
+  bool expiredTimedOut = false;
+  const auto expiredRequestId = beginDeferred(expiredClosure, expiredTimedOut);
+  BOOST_REQUIRE(!expiredRequestId.empty());
+  user.markAckDecryptInFlight(expiredRequestId);
+  clock.nowUs = user.requestDeadline(expiredRequestId);
+  BOOST_CHECK(!user.expireAckWindowForTest(expiredRequestId));
+  BOOST_CHECK(!expiredClosure.has_value());
+  pumpFace(face, ndn::time::milliseconds(1100));
+  BOOST_CHECK(expiredTimedOut);
+  BOOST_CHECK(!expiredClosure.has_value());
 }
 
 BOOST_FIXTURE_TEST_CASE(CancelAtAckDeadlineSuppressesDeferredClosure,

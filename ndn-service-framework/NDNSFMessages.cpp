@@ -4,11 +4,33 @@
 #include <algorithm>
 #include <cctype>
 #include <iomanip>
+#include <ndn-cxx/security/certificate.hpp>
 #include <openssl/sha.h>
 #include <sstream>
 #include <utility>
 
 namespace ndn_service_framework {
+
+std::optional<ndn::Name>
+detail::matchResponseProviderIdentity(
+    const ndn::Name& responseProvider,
+    const ndn::Name& keyLocatorCertificateName)
+{
+    if (responseProvider.empty() || keyLocatorCertificateName.empty()) {
+        return std::nullopt;
+    }
+    try {
+        auto signerIdentity =
+            ndn::security::extractIdentityFromCertName(keyLocatorCertificateName);
+        if (signerIdentity != responseProvider) {
+            return std::nullopt;
+        }
+        return signerIdentity;
+    }
+    catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
 
 namespace {
 
@@ -834,6 +856,7 @@ ResponseMessage::operator=(const ResponseMessage& other)
         dataName_ = other.dataName_;
         signerCertificate_ = other.signerCertificate_;
         wireDigest_ = other.wireDigest_;
+        providerIdentity_ = other.providerIdentity_;
         streamCompletion_ = other.streamCompletion_;
         if (other.aeadEnvelope_) {
             aeadEnvelope_ = cloneOpaqueContainer(
@@ -896,10 +919,12 @@ void ResponseMessage::clearAeadEnvelope() {
 void ResponseMessage::setAuthenticatedTransportEvidence(
     const std::string& dataName,
     const std::string& signerCertificate,
-    const std::string& wireDigest) {
+    const std::string& wireDigest,
+    std::string providerIdentity) {
     dataName_ = dataName;
     signerCertificate_ = signerCertificate;
     wireDigest_ = wireDigest;
+    providerIdentity_ = std::move(providerIdentity);
 }
 
 void ResponseMessage::setStreamCompletion(const StreamCompletion& completion) {
@@ -968,6 +993,10 @@ const std::string& ResponseMessage::getWireDigest() const {
     return wireDigest_;
 }
 
+const std::string& ResponseMessage::getProviderIdentity() const {
+    return providerIdentity_;
+}
+
 bool ResponseMessage::hasStreamCompletion() const {
     return streamCompletion_.has_value();
 }
@@ -990,6 +1019,7 @@ void ResponseMessage::Clear() {
     dataName_.clear();
     signerCertificate_.clear();
     wireDigest_.clear();
+    providerIdentity_.clear();
     streamCompletion_.reset();
     m_wire.reset();
 }

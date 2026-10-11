@@ -1,31 +1,34 @@
 #!/usr/bin/env python3
-"""Regression checks for long-running DistributedRepo collaborations."""
+"""Generic Core ACK retention survives retirement of Python Repo state."""
 
 import unittest
 from dataclasses import FrozenInstanceError
 
 from ndnsf import AckDecision
-from py_repoclient.network_artifact_backend import _repo_pending_state_ttl_ms
+from ndnsf.service import _to_native_ack
 
 
 class RepoPendingStateTtlTest(unittest.TestCase):
-    def test_small_artifacts_keep_the_default_horizon_bounded(self):
-        self.assertEqual(_repo_pending_state_ttl_ms(0), 300_000)
-        self.assertEqual(_repo_pending_state_ttl_ms(8 * 1024 * 1024), 301_000)
+    def test_default_ack_preserves_the_core_default_horizon(self):
+        decision = AckDecision()
+        self.assertEqual(decision.pending_state_ttl_ms, 0)
+        self.assertEqual(_to_native_ack(decision).pending_state_ttl_ms, 0)
 
-    def test_large_artifacts_get_a_transfer_aware_horizon(self):
-        self.assertEqual(_repo_pending_state_ttl_ms(18_530_194_174), 2_508_972)
+    def test_explicit_horizon_reaches_the_real_native_ack(self):
+        decision = AckDecision(pending_state_ttl_ms=60_000)
+        self.assertEqual(_to_native_ack(decision).pending_state_ttl_ms, 60_000)
 
-    def test_negative_sizes_are_safe(self):
-        self.assertEqual(_repo_pending_state_ttl_ms(-1), 300_000)
+    def test_negative_horizon_is_rejected_at_the_native_boundary(self):
+        with self.assertRaisesRegex(ValueError, "pending_state_ttl_ms must be non-negative"):
+            _to_native_ack(AckDecision(pending_state_ttl_ms=-1))
 
     def test_ack_decision_receives_ttl_at_construction(self):
         decision = AckDecision(
             status=True,
             message="repo-store-offer",
-            pending_state_ttl_ms=_repo_pending_state_ttl_ms(1 << 30),
+            pending_state_ttl_ms=60_000,
         )
-        self.assertGreater(decision.pending_state_ttl_ms, 300_000)
+        self.assertEqual(decision.pending_state_ttl_ms, 60_000)
         with self.assertRaises(FrozenInstanceError):
             decision.pending_state_ttl_ms = 1  # type: ignore[misc]
 

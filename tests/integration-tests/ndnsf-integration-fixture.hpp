@@ -49,6 +49,9 @@ struct BootstrapProfile
   // Additional independent service permissions; empty preserves existing tests.
   std::vector<ndn::Name> userAdditionalServices;
   std::vector<ndn::Name> providerAdditionalServices;
+  // Additional explicitly authorized service names for integration cases that
+  // register one production component across several Core service entries.
+  std::vector<ndn::Name> additionalServices;
   std::string trustSchemaPath{ "examples/trust-any.conf" };
   size_t providerCount = 1;
   // Give each additional Provider Face its own event loop when a test needs
@@ -68,6 +71,10 @@ struct BootstrapProfile
   // embedding fixture must not call processEvents/restart on that same
   // io_context from its pump thread.
   bool providerFacesHaveDedicatedIoWorkers = false;
+  // Persistent Repo operation workers run a ServiceUser under their own
+  // Provider identity so that the target Provider permissions bind to the
+  // server that owns recovery, not to the original submitting application.
+  bool providerCanActAsUser = false;
 };
 
 struct FaultProfile

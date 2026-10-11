@@ -1,9 +1,8 @@
 """Provider-side artifact materialization helpers.
 
 These helpers are intentionally above NDNSF Core. They understand DI artifact
-reference files and repo manifests, then write verified files into a local
-provider cache. A caller may supply either a real ``NetworkDistributedRepoClient``
-or a local repo-compatible object for smoke tests.
+references and versioned Repo bindings, then write verified files into a local
+provider cache. Repo operations are delegated to the T008 thin native API.
 """
 
 from __future__ import annotations
@@ -27,32 +26,7 @@ from ndnsf import (
     ServiceOperationStatus,
     encode_ack_metadata,
 )
-from ndnsf import (
-    SegmentHintRange,
-    fetch_known_segmented_object_with_segment_hints,
-    fetch_segmented_object,
-    fetch_segmented_object_with_segment_hints,
-)
-
-
-from py_repoclient.orchestration import NetworkDistributedRepoClient, RepoObjectManifest
-
 from .core.contracts import ProviderResidencyIdentity
-from .repo_reference import repo_manifest_from_large_data_reference, publication_manifest_name
-
-
-class _ManifestOnlyRepoClient:
-    timeout_ms = 60000
-    data_name = staticmethod(NetworkDistributedRepoClient.data_name)
-
-    def fetch_object(
-        self,
-        object_name: str,
-        manifest: RepoObjectManifest | None = None,
-    ) -> bytes:
-        if manifest is None:
-            raise ValueError("manifest-only artifact fetch requires repoManifest")
-        return NetworkDistributedRepoClient.fetch_object(self, object_name, manifest)
 
 
 @dataclass(frozen=True)
@@ -60,9 +34,11 @@ class MaterializedArtifact:
     role: str
     slot: str
     path: Path
-    manifest: RepoObjectManifest
+    manifest: Any | None = None
     executable: bool = False
     metadata: dict[str, Any] | None = None
+    repo_binding: dict[str, Any] | None = None
+    artifact_reference: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -681,30 +657,14 @@ def artifact_references_need_repo_client(
     references: str | Path | dict,
     role: str,
 ) -> bool:
-    """Return true when role artifacts need repo control-plane access.
-
-    Local payloads and repo manifests that already contain segment Data names
-    can be materialized directly. Entries without local bytes or concrete
-    segment/replica locations need a live repo client for lookup/fetch.
-    """
+    """Return true when role artifacts contain a versioned native Repo binding."""
 
     entries = role_artifact_entries(load_artifact_references(references), role)
     if not entries:
         return False
     for entry in entries.values():
-        manifest = entry.get("repoManifest", entry.get("manifest", {}))
-        if not isinstance(manifest, dict):
-            manifest = {}
-        metadata = entry.get("metadata", {})
-        if not isinstance(metadata, dict):
-            metadata = {}
-        if not (
-            entry.get("localPayloadPath") or
-            entry.get("payloadPath") or
-            metadata.get("localPayloadPath") or
-            manifest.get("segmentLocations") or
-            manifest.get("replicaDataNames")
-        ):
+        binding = _repo_binding_for_entry(entry)
+        if binding is not None:
             return True
     return False
 
@@ -715,26 +675,61 @@ def materialize_role_artifacts(
     cache_dir: str | Path,
     *,
     repo_client=None,
+    repo_resolver=None,
 ) -> dict[str, MaterializedArtifact]:
-    """Fetch and cache every artifact entry for ``role``.
+    """Fetch and cache a role's artifacts through the T008 native Repo API.
 
-    ``repo_client`` should implement ``fetch_object(object_name, manifest)``.
-    For local smoke tests, an entry may also carry ``localPayloadPath`` or
-    ``payloadPath``. The bytes are always verified against the repo manifest
-    hash and size before being written to the cache.
+    ``repo_client`` is retained as an argument name for the thin T008
+    ``RepoClient``. It does not accept a Python-owned Repo implementation.
+    Repo bindings always fetch through native authorization, including on cache
+    hits.
     """
 
+    if repo_client is not None and repo_resolver is not None:
+        raise TypeError("pass repo_client or repo_resolver, not both")
+    if repo_resolver is None and repo_client is not None:
+        from .repo_artifact_resolver import DIRepoArtifactResolver
+        repo_resolver = DIRepoArtifactResolver(repo_client)
+    else:
+        from .repo_artifact_resolver import require_di_repo_resolver
+        repo_resolver = require_di_repo_resolver(repo_resolver)
     loaded = load_artifact_references(references)
     entries = role_artifact_entries(loaded, role)
     root = Path(cache_dir)
     root.mkdir(parents=True, exist_ok=True)
     result: dict[str, MaterializedArtifact] = {}
     for slot, entry in entries.items():
-        manifest_dict = repo_manifest_from_large_data_reference(entry)
-        manifest = RepoObjectManifest.from_dict(manifest_dict)
-        payload = _fetch_payload(entry, manifest, repo_client)
-        _verify_payload(payload, manifest)
-        target = _artifact_target(root, role, slot, entry, manifest)
+        binding = _repo_binding_for_entry(entry)
+        if binding is not None:
+            if repo_resolver is None:
+                raise ValueError("Repo-backed DI artifact requires an authorized repo_resolver")
+            from .repo_artifact_resolver import validate_binding_scope
+            binding = validate_binding_scope(
+                binding, role=role, artifact_slot=slot)
+            payload = repo_resolver.fetch_bytes(binding)
+            reference = binding.artifact_reference
+            reference_dict = {
+                "uri": reference.uri,
+                "digest": reference.digest,
+                "size_bytes": reference.size_bytes,
+                "mount_path": reference.mount_path,
+            }
+            digest = reference.digest
+        else:
+            from .app_sdk.contracts import ArtifactReference
+            _reject_legacy_repo_entry(entry)
+            raw_reference = entry.get("artifactReference", entry.get("artifact_reference"))
+            if not isinstance(raw_reference, dict):
+                raise ValueError("local DI artifact requires a generic artifactReference")
+            reference = ArtifactReference(**raw_reference)
+            local_path = entry.get("localPayloadPath", entry.get("payloadPath"))
+            if not local_path:
+                raise ValueError("non-Repo materialization requires an explicit localPayloadPath")
+            payload = Path(str(local_path)).read_bytes()
+            digest = reference.digest
+            reference_dict = dict(raw_reference)
+            _verify_di_projection(payload, reference)
+        target = _artifact_target(root, role, slot, entry, digest)
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists() or target.read_bytes() != payload:
             target.write_bytes(payload)
@@ -745,10 +740,12 @@ def materialize_role_artifacts(
             role=role,
             slot=slot,
             path=target,
-            manifest=manifest,
+            manifest=None,
             executable=executable,
             metadata=dict(entry.get("metadata", {}))
             if isinstance(entry.get("metadata", {}), dict) else {},
+            repo_binding=binding.to_dict() if binding is not None else None,
+            artifact_reference=reference_dict,
         )
     return result
 
@@ -761,39 +758,67 @@ def materialized_path(artifacts: dict[str, MaterializedArtifact], *slots: str) -
     raise KeyError(f"none of the artifact slots are available: {', '.join(slots)}")
 
 
-def _fetch_payload(entry: dict, manifest: RepoObjectManifest, repo_client) -> bytes:
-    local_path = str(
-        entry.get("localPayloadPath") or
-        entry.get("payloadPath") or
-        manifest.metadata.get("localPayloadPath", "")
+def _repo_binding_for_entry(entry: dict):
+    from .app_sdk.contracts import DIRepoArtifactBinding
+    if not isinstance(entry, dict):
+        raise ValueError("artifact reference entry must be a mapping")
+    _reject_legacy_repo_entry(entry)
+    present, raw = _repo_binding_alias_value(entry)
+    if not present:
+        return None
+    return DIRepoArtifactBinding.from_dict(raw)
+
+
+def _repo_binding_alias_value(entry: dict) -> tuple[bool, Any]:
+    has_camel_binding = "repoBinding" in entry
+    has_snake_binding = "repo_binding" in entry
+    if has_camel_binding and has_snake_binding:
+        if entry["repoBinding"] != entry["repo_binding"]:
+            raise ValueError("conflicting Repo binding aliases")
+        raw = entry["repoBinding"]
+    elif has_camel_binding:
+        raw = entry["repoBinding"]
+    elif has_snake_binding:
+        raw = entry["repo_binding"]
+    else:
+        return False, None
+    # Empty values are the existing generic-artifact default in plan/request
+    # serialization. Conflicting aliases are rejected above before this
+    # compatibility case can hide a nonempty Repo binding.
+    return bool(raw), raw
+
+
+def _reject_legacy_repo_entry(entry: dict) -> None:
+    legacy_repo_source = {"repo", "repo-manifest", "repo_manifest"}
+    has_repo_manifest = any(
+        entry.get(key) for key in ("repoManifest", "repo_manifest")
     )
-    if local_path:
-        return Path(local_path).read_bytes()
-    if repo_client is None:
-        if manifest.segment_locations or manifest.replica_data_names:
-            return _ManifestOnlyRepoClient().fetch_object(
-                manifest.object_name,
-                manifest,
-            )
-        raise ValueError(
-            f"artifact {manifest.object_name} requires a repo_client, "
-            "repo segment locations, replica data names, or localPayloadPath"
-        )
-    return repo_client.fetch_object(manifest.object_name, manifest)
+    has_repo_source = any(
+        str(entry.get(key, "")).lower() in legacy_repo_source
+        for key in ("source", "sourceType")
+    )
+    has_repo_large_data_reference = False
+    for key in ("largeDataReference", "large_data_reference"):
+        reference = entry.get(key)
+        if not reference:
+            continue
+        if not isinstance(reference, dict):
+            raise ValueError("largeDataReference must be a mapping")
+        sources = {
+            str(reference.get(source_key, "")).lower()
+            for source_key in ("source", "sourceType")
+        }
+        if sources & legacy_repo_source:
+            has_repo_large_data_reference = True
+    if has_repo_manifest or has_repo_source or has_repo_large_data_reference:
+        from .repo_artifact_resolver import reject_legacy_repo_manifest
+        reject_legacy_repo_manifest("DI raw Repo manifest/segment reference")
 
 
-def _verify_payload(payload: bytes, manifest: RepoObjectManifest) -> None:
-    if len(payload) != manifest.size:
-        raise ValueError(
-            f"artifact size mismatch for {manifest.object_name}: "
-            f"expected {manifest.size}, got {len(payload)}"
-        )
-    actual = hashlib.sha256(payload).hexdigest()
-    if actual != manifest.sha256:
-        raise ValueError(
-            f"artifact sha256 mismatch for {manifest.object_name}: "
-            f"expected {manifest.sha256}, got {actual}"
-        )
+def _verify_di_projection(payload: bytes, reference) -> None:
+    actual = "sha256:" + hashlib.sha256(payload).hexdigest()
+    if len(payload) != reference.size_bytes or actual != reference.digest:
+        raise ValueError("materialized bytes do not match DI artifact reference")
 
 
 def _artifact_target(
@@ -801,15 +826,17 @@ def _artifact_target(
     role: str,
     slot: str,
     entry: dict,
-    manifest: RepoObjectManifest,
+    digest: str,
 ) -> Path:
-    filename = str(
-        entry.get("filename") or
-        manifest.metadata.get("filename", "") or
-        Path(manifest.object_name).name or
-        f"{slot}.bin"
-    )
-    digest = manifest.sha256[:16]
+    filename = str(entry.get("filename") or Path(
+        str(entry.get("mountPath", entry.get("mount_path", "")))
+    ).name or f"{slot}.bin")
+    candidate = Path(filename)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError("unsafe materialized artifact filename")
+    if digest.startswith("sha256:"):
+        digest = digest[len("sha256:"):]
+    digest = digest[:16]
     safe_role = role.strip("/").replace("/", "-") or "role"
     safe_slot = slot.strip("/").replace("/", "-") or "artifact"
     return root / safe_role / safe_slot / digest / filename
@@ -849,6 +876,7 @@ class ExecutionArtifact:
     cache_name: str = ""
     repo_manifest: dict | None = None
     large_data_reference: dict | None = None
+    repo_binding: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -877,6 +905,7 @@ class ExecutionArtifactSpec:
                         "cacheName": artifact.cache_name,
                         "repoManifest": dict(artifact.repo_manifest or {}),
                         "largeDataReference": dict(artifact.large_data_reference or {}),
+                        "repoBinding": dict(artifact.repo_binding or {}),
                     }
                     for artifact in (self.artifacts or [])
                 ],
@@ -888,25 +917,35 @@ class ExecutionArtifactSpec:
     @staticmethod
     def from_bytes(payload: bytes) -> "ExecutionArtifactSpec":
         obj = json.loads(payload.decode())
+        artifacts = []
+        for item in obj.get("artifacts", []):
+            if not isinstance(item, dict):
+                raise ValueError("execution artifact entry must be a mapping")
+            _reject_legacy_repo_entry(item)
+            binding_present, raw_binding = _repo_binding_alias_value(item)
+            if binding_present:
+                from .app_sdk.contracts import DIRepoArtifactBinding
+                repo_binding = DIRepoArtifactBinding.from_dict(raw_binding).to_dict()
+            else:
+                repo_binding = {}
+            artifacts.append(ExecutionArtifact(
+                name=str(item["name"]),
+                data_name=str(item["dataName"]),
+                filename=str(item["filename"]),
+                sha256=str(item["sha256"]),
+                kind=str(item.get("kind", "model")),
+                chunks=[str(value) for value in item.get("chunks", [])],
+                executable=bool(item.get("executable", False)),
+                cache_name=str(item.get("cacheName", "")),
+                repo_manifest=dict(item.get("repoManifest", {})),
+                large_data_reference=dict(item.get("largeDataReference", {})),
+                repo_binding=repo_binding,
+            ))
         return ExecutionArtifactSpec(
             role=str(obj["role"]),
             backend=str(obj["backend"]),
             entrypoint=str(obj.get("entrypoint", "")),
-            artifacts=[
-                ExecutionArtifact(
-                    name=str(item["name"]),
-                    data_name=str(item["dataName"]),
-                    filename=str(item["filename"]),
-                    sha256=str(item["sha256"]),
-                    kind=str(item.get("kind", "model")),
-                    chunks=[str(value) for value in item.get("chunks", [])],
-                    executable=bool(item.get("executable", False)),
-                    cache_name=str(item.get("cacheName", "")),
-                    repo_manifest=dict(item.get("repoManifest", {})),
-                    large_data_reference=dict(item.get("largeDataReference", {})),
-                )
-                for item in obj.get("artifacts", [])
-            ],
+            artifacts=artifacts,
             metadata=dict(obj.get("metadata", {})),
         )
 
@@ -1893,7 +1932,8 @@ def publish_execution_artifact_spec(
     }
     for name, value in artifacts.items():
         if isinstance(value, dict):
-            repo_artifact = _artifact_from_repo_spec(name, value)
+            repo_artifact = _artifact_from_repo_spec(
+                name, value, expected_role=role)
             if repo_artifact is not None:
                 prepared.append((repo_artifact, None))
                 continue
@@ -1977,7 +2017,11 @@ def prepare_execution(
     temp_root: Optional[str | Path] = None,
     allow_executables: bool = False,
     progress: Optional[Callable[[str, float], None]] = None,
+    repo_resolver=None,
 ) -> ExecutionContext:
+    from .repo_artifact_resolver import require_di_repo_resolver
+    repo_resolver = require_di_repo_resolver(repo_resolver)
+
     def report(phase: str, value: float) -> None:
         if progress is not None:
             progress(phase, value)
@@ -1994,6 +2038,9 @@ def prepare_execution(
     if spec_payload is None:
         raise RuntimeError("execution spec fetch returned no payload")
     spec = ExecutionArtifactSpec.from_bytes(spec_payload)
+    assigned_role = str(getattr(assignment, "role", ""))
+    if assigned_role and spec.role != assigned_role:
+        raise RuntimeError("execution artifact role does not match the assignment")
     report("VERIFYING", 0.35)
     root = Path(temp_root) if temp_root is not None else Path(tempfile.gettempdir())
     root.mkdir(parents=True, exist_ok=True)
@@ -2002,9 +2049,24 @@ def prepare_execution(
     )
     artifact_paths: dict[str, Path] = {}
     for artifact in spec.artifacts or []:
-        payload = _read_cached_artifact(artifact)
-        if payload is None:
-            payload = _fetch_artifact_payload(context, assignment.service, artifact)
+        _reject_legacy_repo_entry({
+            "repoManifest": artifact.repo_manifest,
+            "largeDataReference": artifact.large_data_reference,
+        })
+        if artifact.repo_binding:
+            # A local DI cache is not an authorization decision. Each binding
+            # resolution crosses the native Repo API before bytes are returned.
+            payload = _fetch_artifact_payload(
+                context, assignment.service, artifact,
+                repo_resolver=repo_resolver,
+                expected_role=spec.role,
+            )
+        else:
+            payload = _read_cached_artifact(artifact)
+            if payload is None:
+                payload = _fetch_artifact_payload(
+                    context, assignment.service, artifact,
+                    repo_resolver=repo_resolver)
         if hashlib.sha256(payload).hexdigest() != artifact.sha256:
             raise RuntimeError(f"artifact hash mismatch for {artifact.name}")
         artifact_path = Path(artifact.filename)
@@ -2025,20 +2087,35 @@ def prepare_execution(
     return ExecutionContext(spec=spec, artifact_paths=artifact_paths, work_dir=work_dir)
 
 
-def _fetch_artifact_payload(context: Any, service: str, artifact: ExecutionArtifact) -> bytes:
+def _fetch_artifact_payload(
+    context: Any,
+    service: str,
+    artifact: ExecutionArtifact,
+    *,
+    repo_resolver=None,
+    expected_role: str | None = None,
+) -> bytes:
+    from .repo_artifact_resolver import require_di_repo_resolver
+    repo_resolver = require_di_repo_resolver(repo_resolver)
+    _reject_legacy_repo_entry({
+        "repoManifest": artifact.repo_manifest,
+        "largeDataReference": artifact.large_data_reference,
+    })
+    if artifact.repo_binding:
+        if repo_resolver is None:
+            raise ValueError("Repo-bound execution artifact requires an authorized repo_resolver")
+        from .repo_artifact_resolver import validate_binding_scope
+        binding = validate_binding_scope(
+            artifact.repo_binding,
+            role=expected_role if expected_role is not None else "",
+            artifact_slot=artifact.name,
+        )
+        return repo_resolver.fetch_bytes(binding)
+
     if artifact.large_data_reference:
         reference = dict(artifact.large_data_reference)
-        source = str(reference.get("source", reference.get("sourceType", ""))).lower()
-        if source in {"repo", "repo-manifest", "repo_manifest"} or (
-            not source and artifact.repo_manifest
-        ):
-            if not artifact.repo_manifest:
-                raise RuntimeError("repo artifact reference has no manifest")
-            return _fetch_repo_manifest_payload(artifact.repo_manifest)
         data_name = str(reference.get("dataName", reference.get("data_name", "")))
         payload = context.fetch_encrypted_large_data(data_name or artifact.data_name, service)
-    elif artifact.repo_manifest:
-        return _fetch_repo_manifest_payload(artifact.repo_manifest)
     elif artifact.chunks:
         parts = [
             context.fetch_encrypted_large_data(name, service) for name in artifact.chunks
@@ -2075,150 +2152,48 @@ def _artifact_spec_parts(spec) -> tuple[bytes, str, str, bool, str]:
     return bytes(payload), str(filename), str(kind), bool(executable), str(cache_name)
 
 
-def _artifact_from_repo_spec(name: str, spec: dict) -> ExecutionArtifact | None:
-    manifest = spec.get("repo_manifest", spec.get("repoManifest"))
-    if not manifest:
-        return None
-    names = list(manifest.get("replicaDataNames", []))
-    if not names:
-        names = [location.get("versionedDataName") or location.get("dataName")
-                 for location in manifest.get("segmentLocations", [])]
-    if not names or any(not isinstance(value, str) or not value for value in names):
-        raise ValueError("repo manifest is missing original Producer Data names")
-    return ExecutionArtifact(
-        name=name,
-        data_name="",
-        filename=str(spec["filename"]),
-        sha256=str(manifest["sha256"]),
-        kind=str(spec.get("kind", "model")),
-        chunks=[],
-        executable=bool(spec.get("executable", False)),
-        cache_name=str(spec.get("cache_name", spec.get("cacheName", ""))),
-        repo_manifest=dict(manifest),
-        large_data_reference={
-            "source": "repo-manifest",
-            "dataName": names[0],
-            "objectType": str(spec.get("kind", "model")),
-            "objectId": str(spec.get("cache_name", spec.get("cacheName", spec["filename"]))),
-            "plaintextSize": int(manifest.get("size", 0)),
-            "encrypted": bool(manifest.get("encrypted", False)),
-            "digest": "sha256:" + str(manifest.get("sha256", "")),
-        },
-    )
+def _artifact_from_repo_spec(
+    name: str, spec: dict, *, expected_role: str,
+) -> ExecutionArtifact | None:
+    _reject_legacy_repo_entry(spec)
+    binding_present, raw_binding = _repo_binding_alias_value(spec)
+    if binding_present:
+        from .app_sdk.contracts import DIRepoArtifactBinding
+        from .repo_artifact_resolver import validate_binding_scope
+        binding = validate_binding_scope(
+            DIRepoArtifactBinding.from_dict(raw_binding),
+            role=expected_role,
+            artifact_slot=name,
+        )
+        reference = binding.artifact_reference
+        filename = str(
+            spec.get("filename") or Path(reference.mount_path).name
+            or f"{name}.bin"
+        )
+        return ExecutionArtifact(
+            name=name,
+            data_name="",
+            filename=filename,
+            sha256=(reference.digest[len("sha256:"):] if reference.digest.startswith("sha256:")
+                    else reference.digest),
+            kind=str(spec.get("kind", binding.use)),
+            chunks=[],
+            executable=bool(spec.get("executable", False)),
+            cache_name=str(spec.get("cache_name", spec.get("cacheName", ""))),
+            repo_binding=binding.to_dict(),
+        )
+    return None
 
 
 def _fetch_repo_manifest_payload(manifest: dict) -> bytes:
-    segment_count = int(manifest.get("segmentCount", 1))
-    size = int(manifest["size"])
-    expected_hash = str(manifest["sha256"])
-    segment_locations = list(manifest.get("segmentLocations", []))
-    if segment_locations:
-        by_data_name: dict[str, list[dict]] = {}
-        for location in segment_locations:
-            by_data_name.setdefault(str(location["dataName"]), []).append(dict(location))
-        last_error = None
-        for data_name, locations in by_data_name.items():
-            covered_segments = set()
-            hint_ranges: list[SegmentHintRange] = []
-            route_strategy = "hint-first"
-            for location in locations:
-                start = int(location.get("start", 0))
-                end = int(location.get("end", start))
-                covered_segments.update(range(start, end + 1))
-                if str(location.get("routeStrategy", "")) == "direct-first":
-                    route_strategy = "direct-first"
-                hint_ranges.append(SegmentHintRange(
-                    start=start,
-                    end=end,
-                    forwarding_hints=tuple(str(hint) for hint in location.get("hints", [])),
-                ))
-            if len(covered_segments) < segment_count:
-                continue
-            try:
-                versioned_names = {
-                    str(location.get("versionedDataName", ""))
-                    for location in locations
-                    if location.get("versionedDataName")
-                }
-                first_ranges = [] if route_strategy == "direct-first" else hint_ranges
-                second_ranges = hint_ranges if route_strategy == "direct-first" else []
-                if len(versioned_names) == 1:
-                    versioned_name = next(iter(versioned_names))
-                    try:
-                        payload = fetch_known_segmented_object_with_segment_hints(
-                            versioned_name,
-                            segment_count,
-                            timeout_ms=30000,
-                            interest_lifetime_ms=default_large_data_interest_lifetime_ms(),
-                            hint_ranges=first_ranges,
-                        )
-                    except Exception:
-                        payload = fetch_known_segmented_object_with_segment_hints(
-                            versioned_name,
-                            segment_count,
-                            timeout_ms=30000,
-                            interest_lifetime_ms=default_large_data_interest_lifetime_ms(),
-                            hint_ranges=second_ranges,
-                        )
-                else:
-                    try:
-                        payload = fetch_segmented_object_with_segment_hints(
-                            data_name,
-                            timeout_ms=30000,
-                            interest_lifetime_ms=default_large_data_interest_lifetime_ms(),
-                            hint_ranges=first_ranges,
-                        )
-                    except Exception:
-                        payload = fetch_segmented_object_with_segment_hints(
-                            data_name,
-                            timeout_ms=30000,
-                            interest_lifetime_ms=default_large_data_interest_lifetime_ms(),
-                            hint_ranges=second_ranges,
-                        )
-                break
-            except Exception as exc:
-                last_error = exc
-        else:
-            raise RuntimeError(
-                f"no repo segment location could serve {manifest.get('objectName')}: {last_error}"
-            )
-    else:
-        replica_nodes = [str(value) for value in manifest.get("replicaNodes", [])]
-        data_names = list(manifest.get("replicaDataNames", []))
-        if (not replica_nodes or len(data_names) != len(replica_nodes) or
-                any(not isinstance(name, str) or not name for name in data_names)):
-            raise ValueError("repo manifest is missing original Producer Data names for replicas")
-        last_error = None
-        for repo_node, data_name in zip(replica_nodes, data_names):
-            try:
-                hints = [] if data_name.startswith(repo_node.rstrip("/") + "/") else [repo_node]
-                payload = fetch_segmented_object(
-                    data_name,
-                    timeout_ms=30000,
-                    interest_lifetime_ms=default_large_data_interest_lifetime_ms(),
-                    init_cwnd=8.0,
-                    forwarding_hints=hints,
-                )
-                break
-            except Exception as exc:
-                last_error = exc
-        else:
-            raise RuntimeError(
-                f"no repo replica could serve {manifest.get('objectName')}: {last_error}"
-            )
-    if len(payload) != size:
-        raise RuntimeError(f"repo object size mismatch: {manifest.get('objectName')}")
-    digest = hashlib.sha256(payload).hexdigest()
-    if digest != expected_hash:
-        raise RuntimeError(
-            f"repo object hash mismatch: {manifest.get('objectName')}: "
-            f"expected {expected_hash}, got {digest}"
-        )
-    return payload
+    from .repo_artifact_resolver import reject_legacy_repo_manifest
+    reject_legacy_repo_manifest("DI raw Repo manifest payload fetch")
 
 
 def _safe_file_token(value: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in value).strip("-") or "artifact"
+    return "".join(
+        ch if ch.isalnum() or ch in "-_." else "-" for ch in value
+    ).strip("-") or "artifact"
 
 
 def _artifact_cache_path(artifact: ExecutionArtifact) -> Path | None:
@@ -2226,7 +2201,9 @@ def _artifact_cache_path(artifact: ExecutionArtifact) -> Path | None:
         return None
     root = os.environ.get("NDNSF_ARTIFACT_CACHE_DIR")
     cache_root = Path(root) if root else Path.home() / ".cache" / "ndnsf" / "artifacts"
-    return cache_root / f"{_safe_file_token(artifact.cache_name)}-{artifact.sha256[:16]}" / Path(artifact.filename).name
+    return cache_root / (
+        f"{_safe_file_token(artifact.cache_name)}-{artifact.sha256[:16]}"
+    ) / Path(artifact.filename).name
 
 
 def _read_cached_artifact(artifact: ExecutionArtifact) -> bytes | None:

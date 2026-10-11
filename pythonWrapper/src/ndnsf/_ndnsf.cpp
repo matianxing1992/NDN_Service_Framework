@@ -540,6 +540,7 @@ struct PyServiceResponse
   std::string requestId;
   std::string dataName;
   std::string signerCertificate;
+  std::string providerIdentity;
   std::string wireDigest;
 };
 
@@ -4249,6 +4250,15 @@ public:
     pump(m_permissionWaitMs);
   }
 
+  nsf::ServiceUser&
+  repoServiceUser()
+  {
+    if (!m_user) {
+      throw std::runtime_error("user is not initialized");
+    }
+    return *m_user;
+  }
+
   ~NativeServiceUser()
   {
     stop();
@@ -4495,6 +4505,7 @@ public:
           output.error = response.getErrorInfo();
           output.dataName = response.getDataName();
           output.signerCertificate = response.getSignerCertificate();
+          output.providerIdentity = response.getProviderIdentity();
           output.wireDigest = response.getWireDigest();
           done = true;
           cv.notify_one();
@@ -4614,6 +4625,7 @@ public:
           state->output.error = response.getErrorInfo();
           state->output.dataName = response.getDataName();
           state->output.signerCertificate = response.getSignerCertificate();
+          state->output.providerIdentity = response.getProviderIdentity();
           state->output.wireDigest = response.getWireDigest();
           state->done = true;
           state->cv.notify_one();
@@ -5075,6 +5087,7 @@ public:
           output.error = response.getErrorInfo();
           output.dataName = response.getDataName();
           output.signerCertificate = response.getSignerCertificate();
+          output.providerIdentity = response.getProviderIdentity();
           output.wireDigest = response.getWireDigest();
           done = true;
           cv.notify_one();
@@ -5272,6 +5285,7 @@ public:
               output.requestId = *actualRequestId;
               output.dataName = response.getDataName();
               output.signerCertificate = response.getSignerCertificate();
+              output.providerIdentity = response.getProviderIdentity();
               output.wireDigest = response.getWireDigest();
               try {
                 (*responseCallback)(output);
@@ -5556,6 +5570,7 @@ public:
             output.requestId = requestedRequestId;
             output.dataName = response.getDataName();
             output.signerCertificate = response.getSignerCertificate();
+            output.providerIdentity = response.getProviderIdentity();
             output.wireDigest = response.getWireDigest();
             try {
               (*responseCallback)(output);
@@ -7495,6 +7510,7 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("request_id", &PyServiceResponse::requestId)
     .def_readwrite("data_name", &PyServiceResponse::dataName)
     .def_readwrite("signer_certificate", &PyServiceResponse::signerCertificate)
+    .def_readwrite("provider_identity", &PyServiceResponse::providerIdentity)
     .def_readwrite("wire_digest", &PyServiceResponse::wireDigest);
 
   py::class_<PyAckDecision>(m, "AckDecision")
@@ -8294,6 +8310,11 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("get_collaboration_status_snapshot",
          &NativeServiceUser::getCollaborationStatusSnapshot,
          py::arg("request_id"), py::arg("timeout_ms") = 500)
+    .def("_repo_service_user_capsule", [] (NativeServiceUser& self) {
+      // The receiving Repo API wrapper retains self as a py::object; this
+      // capsule is only the borrowed native bridge for its lifetime.
+      return py::capsule(&self.repoServiceUser(), "ndnsf.ServiceUser.v1");
+    })
     .def("start", &NativeServiceUser::start)
     // Stopping may join the Face thread while the last native callback is
     // unwinding into Python.  Release the interpreter lock during the

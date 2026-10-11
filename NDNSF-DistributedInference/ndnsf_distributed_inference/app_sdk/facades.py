@@ -44,6 +44,7 @@ from ..provider import (
     ProviderRuntimeContext,
 )
 from ..repo_reference import repo_manifest_from_large_data_reference, publication_manifest_name
+from .contracts import DIRepoArtifactBinding
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class ModelPart:
     cache_name: str = ""
     large_data_reference: dict = field(default_factory=dict)
     repo_manifest: dict = field(default_factory=dict)
+    repo_binding: dict = field(default_factory=dict)
     runtime: RuntimeSpec | None = None
     service: str = ""
     metadata: dict = field(default_factory=dict)
@@ -67,6 +69,7 @@ class ModelPart:
     min_providers: int = 1
     max_providers: int = 1
     content_name: Mapping[str, str] = field(default_factory=dict)
+    auxiliary_artifacts: dict[str, ArtifactSpec] = field(default_factory=dict)
 
     def payload(self) -> bytes:
         if isinstance(self.model, bytes):
@@ -133,6 +136,7 @@ class InferencePlanBuilder:
         cache_name: str = "",
         large_data_reference: dict | None = None,
         repo_manifest: dict | None = None,
+        repo_binding: dict | None = None,
         runtime: RuntimeSpec | None = None,
         service: str = "",
         metadata: dict | None = None,
@@ -141,6 +145,7 @@ class InferencePlanBuilder:
         min_providers: int = 1,
         max_providers: int = 1,
         content_name: Mapping[str, str] | None = None,
+        auxiliary_artifacts: Mapping[str, ArtifactSpec] | None = None,
     ) -> "InferencePlanBuilder":
         self._parts.append(ModelPart(
             role=role,
@@ -152,6 +157,7 @@ class InferencePlanBuilder:
             cache_name=cache_name,
             large_data_reference=dict(large_data_reference or {}),
             repo_manifest=dict(repo_manifest or {}),
+            repo_binding=dict(repo_binding or {}),
             runtime=runtime or self.runtime,
             service=service,
             metadata=dict(metadata or {}),
@@ -160,6 +166,7 @@ class InferencePlanBuilder:
             min_providers=min_providers,
             max_providers=max_providers,
             content_name=dict(content_name or {}),
+            auxiliary_artifacts=dict(auxiliary_artifacts or {}),
         ))
         return self
 
@@ -219,6 +226,7 @@ class InferencePlanBuilder:
                     large_data_reference=dict(part.large_data_reference or {}),
                     repo_manifest=dict(part.repo_manifest or {}),
                     content_name=dict(part.content_name),
+                    repo_binding=dict(part.repo_binding or {}),
                 ),
                 runtime=part.runtime or self.runtime,
                 service=part.service,
@@ -227,6 +235,7 @@ class InferencePlanBuilder:
                 min_providers=part.min_providers,
                 max_providers=part.max_providers,
                 metadata=dict(part.metadata),
+                auxiliary_artifacts=dict(part.auxiliary_artifacts),
             ))
         return DistributedInferencePlan(
             service=self.service,
@@ -511,8 +520,16 @@ class APPClient:
             role_manifests = self._artifact_references_for_role(manifests, artifact.role)
             role_runtime = runtime
             if role_manifests and runtime.artifact is not None and "runner" in role_manifests:
-                runner_reference = self._large_data_reference_for_entry(role_manifests["runner"])
-                runner_manifest = repo_manifest_from_large_data_reference(role_manifests["runner"])
+                runner_binding = self._repo_binding_for_entry(role_manifests["runner"])
+                if runner_binding:
+                    from ..repo_artifact_resolver import validate_binding_scope
+                    runner_binding = validate_binding_scope(
+                        runner_binding, role=artifact.role, artifact_slot="runner"
+                    ).to_dict()
+                runner_reference = (
+                    {} if runner_binding else
+                    self._large_data_reference_for_entry(role_manifests["runner"])
+                )
                 role_runtime = RuntimeSpec(
                     name=runtime.name,
                     backend=runtime.backend,
@@ -525,19 +542,25 @@ class APPClient:
                         executable=runtime.artifact.executable,
                         cache_name=runtime.artifact.cache_name,
                         large_data_reference=runner_reference,
-                        repo_manifest=runner_manifest,
+                        repo_binding=runner_binding,
                     ),
                 )
+            model_binding = (
+                self._repo_binding_for_entry(role_manifests["model"])
+                if role_manifests and "model" in role_manifests else {}
+            )
+            if model_binding:
+                from ..repo_artifact_resolver import validate_binding_scope
+                model_binding = validate_binding_scope(
+                    model_binding, role=artifact.role, artifact_slot="model"
+                ).to_dict()
             model_reference = (
+                {} if model_binding else
                 self._large_data_reference_for_entry(role_manifests["model"])
                 if role_manifests and "model" in role_manifests else {}
             )
-            model_manifest = (
-                repo_manifest_from_large_data_reference(role_manifests["model"])
-                if role_manifests and "model" in role_manifests else {}
-            )
             local = None
-            if not model_manifest:
+            if not model_binding:
                 local = (local_artifacts or {}).get(artifact.role)
                 if not isinstance(local, ArtifactSpec) or not local.content_name:
                     raise ValueError(f"local model role {artifact.role!r} requires an explicit ArtifactSpec context")
@@ -546,18 +569,41 @@ class APPClient:
                             "model-file", "artifact-file", "weights", "initializer", "tokenizer"}
                         or local.content_name.get("model_name") != builder.model_name):
                     raise ValueError(f"local model role {artifact.role!r} has incompatible model context")
+            auxiliary_artifacts = {}
+            for slot, entry in role_manifests.items():
+                if slot in {"model", "runner"}:
+                    continue
+                binding = self._repo_binding_for_entry(entry)
+                if binding:
+                    from ..repo_artifact_resolver import validate_binding_scope
+                    binding = validate_binding_scope(
+                        binding, role=artifact.role, artifact_slot=slot
+                    ).to_dict()
+                large_reference = (
+                    {} if binding else self._large_data_reference_for_entry(entry)
+                )
+                auxiliary_artifacts[slot] = ArtifactSpec(
+                    name=slot,
+                    payload=b"",
+                    filename=str(entry.get("filename") or slot),
+                    kind=str(entry.get("kind") or "artifact"),
+                    cache_name=str(entry.get("cacheName") or entry.get("cache_name") or ""),
+                    large_data_reference=large_reference,
+                    repo_binding=binding,
+                )
             builder.add_part(
                 role=artifact.role,
-                model=b"" if model_manifest else local.payload,
+                model=b"" if model_binding else local.payload,
                 artifact_name=artifact.artifact_name,
                 filename=artifact.filename,
                 kind=artifact.kind,
                 backend=artifact.backend or runtime.backend,
                 cache_name=artifact.artifact_name,
                 large_data_reference=model_reference,
-                repo_manifest=model_manifest,
+                repo_binding=model_binding,
                 content_name=local.content_name if local is not None else None,
                 runtime=role_runtime,
+                auxiliary_artifacts=auxiliary_artifacts,
                 metadata=dict(artifact.metadata or {}),
                 allow_dynamic_provisioning=True,
             )
@@ -648,12 +694,50 @@ class APPClient:
     def _large_data_reference_for_entry(entry: dict) -> dict:
         if not isinstance(entry, dict):
             raise ValueError("artifact reference entry must be a mapping")
-        reference = entry.get("largeDataReference", entry.get("large_data_reference", {}))
-        if not reference:
+        references = []
+        for key in ("largeDataReference", "large_data_reference"):
+            reference = entry.get(key)
+            if not reference:
+                continue
+            if not isinstance(reference, dict):
+                raise ValueError("largeDataReference must be a mapping")
+            references.append(dict(reference))
+        legacy_repo_source = {"repo", "repo-manifest", "repo_manifest"}
+        if any(
+            str(reference.get(source_key, "")).lower() in legacy_repo_source
+            for reference in references
+            for source_key in ("source", "sourceType")
+        ):
+            from ..repo_artifact_resolver import reject_legacy_repo_manifest
+            reject_legacy_repo_manifest("DI largeDataReference repo-manifest")
+        return references[0] if references else {}
+
+    @staticmethod
+    def _repo_binding_for_entry(entry: dict) -> dict:
+        if not isinstance(entry, dict):
+            raise ValueError("artifact reference entry must be a mapping")
+        APPClient._large_data_reference_for_entry(entry)
+        legacy_repo_source = {"repo", "repo-manifest", "repo_manifest"}
+        if (entry.get("repoManifest") or entry.get("repo_manifest")
+                or any(str(entry.get(key, "")).lower() in legacy_repo_source
+                       for key in ("source", "sourceType"))):
+            from ..repo_artifact_resolver import reject_legacy_repo_manifest
+            reject_legacy_repo_manifest("DI raw Repo manifest")
+        has_camel_binding = "repoBinding" in entry
+        has_snake_binding = "repo_binding" in entry
+        if has_camel_binding and has_snake_binding:
+            if entry["repoBinding"] != entry["repo_binding"]:
+                raise ValueError("conflicting Repo binding aliases")
+            raw = entry["repoBinding"]
+        elif has_camel_binding:
+            raw = entry["repoBinding"]
+        elif has_snake_binding:
+            raw = entry["repo_binding"]
+        else:
             return {}
-        if not isinstance(reference, dict):
-            raise ValueError("largeDataReference must be a mapping")
-        return dict(reference)
+        if not raw:
+            return {}
+        return DIRepoArtifactBinding.from_dict(raw).to_dict()
 
     def _default_backend(self, service: str) -> str:
         service_policy = self.deployment.service_policy(service)
@@ -1133,6 +1217,7 @@ class APPProvider:
         selection_cached_shards=None,
         selection_reusable_state=None,
         runtime_preparer=None,
+        repo_resolver=None,
     ) -> None:
         if allow_executables:
             self.deployment.require_executable_artifacts_allowed()
@@ -1182,8 +1267,10 @@ class APPProvider:
             selection_cached_shards=selection_cached_shards,
             selection_reusable_state=selection_reusable_state,
             runtime_preparer=runtime_preparer,
+            repo_resolver=repo_resolver,
             register_simple_service=(
-                selection_offer_issuer is None
+                repo_resolver is None
+                and selection_offer_issuer is None
                 and selection_offer_issuer_v3 is None
                 and len(list(roles)) == 1
                 and not list(self.deployment.service_policy(service).dependencies)
@@ -1206,6 +1293,7 @@ class APPProvider:
         local_artifacts: dict[str, dict] | None = None,
         admission_policy: ProviderAdmissionPolicy | None = None,
         ready_without_model: bool = False,
+        repo_resolver=None,
     ) -> None:
         self.serve_service(
             service=service,
@@ -1219,6 +1307,7 @@ class APPProvider:
             allow_executables=allow_executables,
             readiness_probe=readiness_probe,
             local_artifacts=local_artifacts,
+            repo_resolver=repo_resolver,
             admission_policy=admission_policy,
             ready_without_model=ready_without_model,
         )

@@ -160,7 +160,13 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   environment.pumpUntilWithAttributeAuthority([] { return false; });
   std::vector<std::atomic<size_t>> requestExecutions(environment.providerCount());
   std::vector<std::atomic<bool>> requestObserved(environment.providerCount());
+  std::atomic<size_t> selectedProviderIndex{environment.providerCount()};
   std::atomic<bool> responseReceived{false};
+  std::atomic<std::size_t> responseCallbackCount{0};
+  std::atomic<std::size_t> responseReferenceFetchStarts{0};
+  std::vector<ndn::signal::ScopedConnection> responseReferenceFetchObservers;
+  responseReferenceFetchObservers.reserve(1);
+  std::atomic<bool> responseCaptured{false};
   std::atomic<bool> requestTimedOut{false};
   std::atomic<bool> selectionSeen{false};
   std::atomic<bool> discoveryPayloadWasEmpty{false};
@@ -197,7 +203,7 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
             [&, index] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
                         const ndn::Name&, const RequestMessage& request) {
               ++requestExecutions[index];
-              if (index != 0) {
+              if (index != selectedProviderIndex.load()) {
                 unselectedProviderExecuted = true;
               }
               const auto actualPayload = request.getPayload();
@@ -252,7 +258,9 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
           selectionSeen = true;
           ndn::Block block(publication.data);
           const auto wire = ndn::Buffer(block.data(), block.size());
-          if (index == 0 && capturedSelectionWire.empty()) {
+          auto noSelectedProvider = environment.providerCount();
+          if (selectedProviderIndex.compare_exchange_strong(noSelectedProvider,
+                                                             index)) {
             capturedSelectionName = publication.name;
             capturedSelectionWire = wire;
           }
@@ -287,7 +295,8 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
             return;
           }
           ndn::Block responseBlock(publication.data);
-          if (index == 0) {
+          const bool isFirstResponse = !responseCaptured.exchange(true);
+          if (isFirstResponse) {
             capturedResponseBlock = responseBlock;
             capturedResponseName = publication.name;
           }
@@ -298,29 +307,49 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
             responseWasOpaque = (response.hasAeadEnvelope() &&
                                  response.getPayload().empty()) ||
                                 (reference && reference->keyScope == "request");
+            if (isFirstResponse && useLargeResponse) {
+              BOOST_REQUIRE(reference);
+              const auto dataName = reference->dataName;
+              responseReferenceFetchObservers.emplace_back(
+                  environment.userFace().onSendInterest.connect(
+                      [&, dataName] (const ndn::Interest& interest) {
+                        if (interest.getName() == dataName) {
+                          ++responseReferenceFetchStarts;
+                        }
+                      }));
+            }
           }
-          if (index == 0 && !wrongProviderRejected.exchange(true)) {
+          const auto actualProviderIt = std::find(
+              providers.begin(), providers.end(), parsedResponse->providerName);
+          BOOST_REQUIRE(actualProviderIt != providers.end());
+          const auto actualProviderIndex = static_cast<size_t>(
+              actualProviderIt - providers.begin());
+          const auto wrongProviderIndex =
+              (actualProviderIndex + 1) % providers.size();
+          const auto& wrongProviderIdentity = providers[wrongProviderIndex];
+          if (!wrongProviderRejected.exchange(true)) {
             const auto wrongProviderName = makeResponseNameV2(
-                environment.provider(1).getName(), requesterName,
+                wrongProviderIdentity, requesterName,
                 serviceName, parsedResponse->requestId);
             BOOST_CHECK(!environment.user().handleDecryptedResponseByName(
                 wrongProviderName, responseBlock));
           }
-          if (index == 0 && !wrongRecipientRejected.exchange(true)) {
+          if (!wrongRecipientRejected.exchange(true)) {
             // A valid ciphertext must still be rejected when the Response
             // name targets a different User.  This is the request-scoped
             // recipient boundary, independent of the service-wide ABE key.
             const auto wrongRecipientName = makeResponseNameV2(
-                environment.provider(0).getName(), ndn::Name("/other-user"),
+                parsedResponse->providerName, ndn::Name("/other-user"),
                 serviceName, parsedResponse->requestId);
             BOOST_CHECK(!environment.user().handleDecryptedResponseByName(
                 wrongRecipientName, responseBlock));
           }
-          if (index == 0 && !wrongSignerRejected.exchange(true)) {
+          if (!wrongSignerRejected.exchange(true)) {
             ResponseMessage wrongSigner(response);
             wrongSigner.setAuthenticatedTransportEvidence(
                 publication.name.toUri(),
-                environment.provider(1).getSigningCertificateName().toUri(),
+                environment.provider(wrongProviderIndex)
+                    .getSigningCertificateName().toUri(),
                 "sha256:" + std::string(64, '1'));
             // The ciphertext may be valid and the packet may have arrived
             // under the expected response name, but authenticated transport
@@ -329,7 +358,7 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
             BOOST_CHECK(!environment.user().handleDecryptedResponseByName(
                 publication.name, wrongSigner));
           }
-          if (index == 0 && !mismatchedVersionRejected.exchange(true)) {
+          if (!mismatchedVersionRejected.exchange(true)) {
             ResponseMessage mismatchedVersion;
             BOOST_REQUIRE(mismatchedVersion.WireDecode(responseBlock));
             const auto currentVersion = status.getControllerVersion();
@@ -340,8 +369,7 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
             BOOST_CHECK(!environment.user().handleDecryptedResponseByName(
                 publication.name, mismatchedWire));
           }
-          if (index == 0 && tamperResponse &&
-              !tamperedResponseRejected.exchange(true)) {
+          if (tamperResponse && !tamperedResponseRejected.exchange(true)) {
             ResponseMessage tamperedResponseMessage;
             BOOST_REQUIRE(tamperedResponseMessage.WireDecode(responseBlock));
             // The short-response variant carries the result directly in an
@@ -358,7 +386,7 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
             BOOST_CHECK(!environment.user().handleDecryptedResponseByName(
                 publication.name, tamperedWire));
           }
-          if (index == 0 && revokeBeforeResponse &&
+          if (revokeBeforeResponse &&
               !revocationResponseRejected.exchange(true)) {
             auto revokedStatus = status;
             auto revokedVersion = status.getControllerVersion();
@@ -517,6 +545,7 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
       providers, serviceName, request, responseTimeoutMs,
       [&] (const ndn::Name&) { requestTimedOut = true; },
       [&] (const ResponseMessage& response) {
+        ++responseCallbackCount;
         const auto payload = response.getPayload();
         responseReceived = response.getStatus() &&
                            std::string(reinterpret_cast<const char*>(payload.data()),
@@ -536,6 +565,11 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   }
   else {
     BOOST_CHECK(!requestTimedOut);
+    BOOST_CHECK(responseReceived);
+    BOOST_CHECK_EQUAL(responseCallbackCount.load(), 1U);
+  }
+  if (revokeBeforeResponse) {
+    BOOST_CHECK_EQUAL(responseCallbackCount.load(), 0U);
   }
   BOOST_CHECK(selectionSeen);
   BOOST_CHECK(discoveryPayloadWasEmpty);
@@ -570,25 +604,58 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   BOOST_REQUIRE(capturedResponseBlock.has_value());
   BOOST_REQUIRE(!capturedSelectionName.empty());
   BOOST_REQUIRE(!capturedSelectionWire.empty());
+  const auto selectedIndex = selectedProviderIndex.load();
+  BOOST_REQUIRE_LT(selectedIndex, environment.providerCount());
+  const auto parsedSelection = parseServiceSelectionNameV2(capturedSelectionName);
+  BOOST_REQUIRE(parsedSelection);
+  BOOST_CHECK(parsedSelection->providerName.equals(
+      environment.provider(selectedIndex).getName()));
+  const auto parsedResponse = parseResponseNameV2(capturedResponseName);
+  BOOST_REQUIRE(parsedResponse);
+  BOOST_CHECK(parsedResponse->providerName.equals(
+      parsedSelection->providerName));
   // Once the valid response owns the terminal state, replaying its exact wire
-  // must not invoke the callback or decrypt the payload a second time.
-  BOOST_CHECK(!environment.user().handleDecryptedResponseByName(
-      capturedResponseName, *capturedResponseBlock));
+  // through the post-decryption dispatcher must not start another reference
+  // fetch or invoke the application callback a second time.
+  if (useLargeResponse) {
+    ResponseMessage replayedResponse;
+    BOOST_REQUIRE(replayedResponse.WireDecode(*capturedResponseBlock));
+    BOOST_REQUIRE_GE(responseReferenceFetchStarts.load(), 1U);
+    const auto diagnosticsBeforeReplay = environment.user().consumeRuntimeDiagnostics();
+    const auto callbacksBeforeReplay = responseCallbackCount.load();
+    const auto fetchStartsBeforeReplay = responseReferenceFetchStarts.load();
+    environment.user().finishDecryptedResponseByName(
+        capturedResponseName, parsedResponse->requestId,
+        std::move(replayedResponse));
+    const auto diagnosticsAfterReplay = environment.user().consumeRuntimeDiagnostics();
+    BOOST_CHECK_EQUAL(diagnosticsAfterReplay.responseLargeReferenceSkippedNoPending,
+                      diagnosticsBeforeReplay.responseLargeReferenceSkippedNoPending + 1);
+    BOOST_CHECK_EQUAL(responseReferenceFetchStarts.load(), fetchStartsBeforeReplay);
+    BOOST_CHECK_EQUAL(responseCallbackCount.load(), callbacksBeforeReplay);
+  }
+  else {
+    BOOST_CHECK(!environment.user().handleDecryptedResponseByName(
+        capturedResponseName, *capturedResponseBlock));
+  }
   // The selected Provider must consume a SelectionKeyEnvelope at most once.
   // Replaying the exact Selection after the invocation terminal state is
   // claimed must not execute the handler or create a second response.
-  const auto parsedSelection = parseServiceSelectionNameV2(capturedSelectionName);
-  BOOST_REQUIRE(parsedSelection);
-  environment.provider(0).OnServiceSelectionMessageDecryptionSuccessCallbackV2(
+  BOOST_CHECK_EQUAL(parsedSelection->providerName,
+                    environment.provider(selectedIndex).getName());
+  environment.provider(selectedIndex).OnServiceSelectionMessageDecryptionSuccessCallbackV2(
       parsedSelection->requesterName, parsedSelection->providerName,
       parsedSelection->serviceName, parsedSelection->requestId,
       capturedSelectionWire);
-  environment.pumpUntil([&] { return requestExecutions[0].load() > 1; });
-  selectionReplayRejected = requestExecutions[0].load() == 1;
+  environment.pumpUntil([&] {
+    return requestExecutions[selectedIndex].load() > 1;
+  });
+  selectionReplayRejected = requestExecutions[selectedIndex].load() == 1;
   BOOST_CHECK(requestObserved[0]);
   BOOST_CHECK(requestObserved[1]);
-  BOOST_CHECK_EQUAL(requestExecutions[0].load(), 1U);
-  BOOST_CHECK_EQUAL(requestExecutions[1].load(), 0U);
+  for (size_t index = 0; index < environment.providerCount(); ++index) {
+    BOOST_CHECK_EQUAL(requestExecutions[index].load(),
+                      index == selectedIndex ? 1U : 0U);
+  }
   BOOST_CHECK(selectionReplayRejected);
   BOOST_CHECK(!unselectedProviderExecuted);
   environment.updateRequestResidue(scope, {});

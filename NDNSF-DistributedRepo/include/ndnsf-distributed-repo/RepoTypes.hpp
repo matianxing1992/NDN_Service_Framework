@@ -1,9 +1,12 @@
 #ifndef NDNSF_DISTRIBUTED_REPO_REPO_TYPES_HPP
 #define NDNSF_DISTRIBUTED_REPO_REPO_TYPES_HPP
 
+#include "ndnsf-distributed-repo/ArtifactTypes.hpp"
+
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -77,6 +80,12 @@ struct RepoObjectManifest
   std::vector<std::string> confirmedReplicaNodes;
   std::string operationId;
   std::string lifecycleState = "COMMITTED";
+  // Original Data commits only. Persisted with the Data manifest, so a
+  // query never manufactures a receipt from unbound content metadata.
+  std::string dataReceiptId;
+  std::string dataReceiptRepoNode;
+  std::string dataReceiptProviderIdentity;
+  uint64_t dataReceiptCommittedAtMs = 0;
 
   // Private physical packet-set index; original Data wire remains unchanged.
   std::vector<uint64_t> packetOffsets;
@@ -84,6 +93,17 @@ struct RepoObjectManifest
   std::string dataPrefix;
 
   std::string toJson() const;
+};
+
+/** Bounded metadata-only view of one manifest and its committed payload. */
+struct RepoObjectMetadataProbe
+{
+  bool manifestPresent = false;
+  RepoObjectManifest manifest;
+  bool payloadMetadataAvailable = false;
+  bool payloadPresent = false;
+  bool payloadRepresentationValid = false;
+  uint64_t payloadSize = 0;
 };
 
 struct RepoWriteIntent
@@ -108,14 +128,101 @@ struct RepoWriteReceipt
 {
   std::string operationId;
   std::string repoNode;
+  std::string providerIdentity;
   std::string objectName;
   uint64_t generation = 0;
   std::string digest;
   uint64_t persistedBytes = 0;
   std::string state = "COMMITTED";
   uint64_t completedAtMs = 0;
+  std::optional<ArtifactReference> artifactReference;
 
   std::string toJson() const;
+  static RepoWriteReceipt dataPacketFromJson(const std::string& wire);
+};
+
+struct RepoDataPacketQuery
+{
+  uint32_t schemaVersion = 1;
+  std::string dataName;
+  std::string expectedWireSha256;
+
+  std::string toJson() const;
+  static RepoDataPacketQuery fromJson(const std::string& wire);
+};
+
+struct RepoDataPacketLocation
+{
+  uint32_t schemaVersion = 1;
+  std::string receiptId;
+  std::string repoNode;
+  std::string providerIdentity;
+  std::string dataName;
+  std::string wireSha256;
+  std::string state = "UNKNOWN";
+  std::string forwardingHint;
+  uint64_t observedAtMs = 0;
+  uint64_t expiresAtMs = 0;
+
+  std::string toJson() const;
+  static RepoDataPacketLocation fromJson(const std::string& wire);
+};
+
+struct ArtifactStoreRequest
+{
+  uint32_t schemaVersion = 2;
+  std::string operationId;
+  uint64_t generation = 0;
+  ArtifactReference reference;
+  // Set only when an authenticated seed Provider stores a selected replica.
+  // The local seed's foreground write instead requires its submitter journal.
+  std::optional<RepoArtifactTarget> operationOwner;
+  std::vector<uint8_t> bytes;
+
+  std::vector<uint8_t> toWire(const ArtifactLimits& limits = {}) const;
+  static ArtifactStoreRequest
+  fromWire(const std::vector<uint8_t>& wire, const ArtifactLimits& limits = {});
+};
+
+struct ArtifactRangeWriteRequest
+{
+  uint32_t schemaVersion = 2;
+  std::string operationId;
+  uint64_t generation = 0;
+  ArtifactReference reference;
+  std::optional<RepoArtifactTarget> operationOwner;
+  uint64_t offsetBytes = 0;
+  uint64_t lengthBytes = 0;
+  std::vector<uint8_t> bytes;
+
+  std::vector<uint8_t> toWire(const ArtifactLimits& limits = {}) const;
+  static ArtifactRangeWriteRequest
+  fromWire(const std::vector<uint8_t>& wire, const ArtifactLimits& limits = {});
+};
+
+struct ArtifactRangeCommitRequest
+{
+  uint32_t schemaVersion = 2;
+  std::string operationId;
+  uint64_t generation = 0;
+  ArtifactReference reference;
+  std::optional<RepoArtifactTarget> operationOwner;
+
+  std::vector<uint8_t> toWire(const ArtifactLimits& limits = {}) const;
+  static ArtifactRangeCommitRequest
+  fromWire(const std::vector<uint8_t>& wire, const ArtifactLimits& limits = {});
+};
+
+struct ArtifactRangeAbortRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string operationId;
+  uint64_t generation = 0;
+  ArtifactReference reference;
+
+  std::vector<uint8_t> toWire(const ArtifactLimits& limits = {}) const;
+  static ArtifactRangeAbortRequest
+  fromWire(const std::vector<uint8_t>& wire, const ArtifactLimits& limits = {});
 };
 
 struct RepoCapacityReservation
@@ -243,8 +350,8 @@ struct RepoCatalogStatus
   uint64_t catalogEpoch = 0;
   uint64_t objectCount = 0;
   bool acceptsBackupReplica = true;
-  // True when the durable manifest store is ahead of the in-memory delta
-  // journal and catalogSnapshot() is the reconciliation source of truth.
+  // True when the process-local delta journal may not cover durable history,
+  // including objects deleted before restart. Reconcile from catalogSnapshot().
   bool reconciliationRequired = false;
 
   std::string toJson() const;
@@ -376,6 +483,24 @@ public:
 
   virtual RepoObjectManifest
   getManifest(const std::string& objectName) const;
+
+  /** Must not materialize or read payload bytes. Unsupported stores return an
+   * unknown probe so callers do not mistake has()/cache state for durability. */
+  virtual RepoObjectMetadataProbe
+  probeObjectMetadata(const std::string& objectName) const;
+
+  /** Latest prior Data commit for an exact name and wire digest, retained
+   * after deletion. Durable backends override this; volatile stores may not.
+   */
+  virtual std::optional<RepoObjectManifest>
+  findRetainedDataReceipt(const std::string& dataName,
+                          const std::string& wireSha256) const;
+
+  /** Attach an explicit import receipt to an unchanged legacy Data manifest.
+   * The backend must compare the current manifest with expected and publish
+   * updated atomically without rewriting the original payload. */
+  virtual void attachImportedDataReceipt(const RepoObjectManifest& expected,
+                                         const RepoObjectManifest& updated);
 
   virtual bool supportsRange() const noexcept;
 

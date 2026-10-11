@@ -8,16 +8,243 @@
 
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
+#include <ndn-cxx/face.hpp>
 #include <ndn-cxx/util/segmenter.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <utility>
 
 namespace ndnsf_distributed_repo {
 
+std::vector<uint8_t>
+RepoClient::fetchOriginalDataPacket(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& dataName,
+  const std::string& expectedWireSha256,
+  const std::vector<OriginalDataReplica>& replicas,
+  const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
+  int timeoutMs)
+{
+  if (dataName.empty() || expectedWireSha256.size() != 64 || replicas.empty() ||
+      !verifyProducerSignature || timeoutMs <= 0) {
+    throw std::invalid_argument("repo-original-data-request-invalid");
+  }
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMs);
+  std::set<std::string> visitedProviders;
+  std::string lastError = "no committed, current Repo location";
+  for (size_t index = 0; index < replicas.size(); ++index) {
+    const auto& replica = replicas[index];
+    if (replica.repoNode.empty() || replica.providerIdentity.empty() ||
+        replica.servicePrefix.empty() ||
+        !visitedProviders.insert(replica.providerIdentity.toUri()).second) {
+      continue;
+    }
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deadline - std::chrono::steady_clock::now()).count();
+    if (remaining < 3000) break;
+    const auto candidateBudget = remaining / static_cast<int64_t>(replicas.size() - index);
+    if (candidateBudget < 3000) break;
+    const auto candidateDeadline = std::chrono::steady_clock::now() +
+                                   std::chrono::milliseconds(candidateBudget);
+    const RepoDataPacketQuery query{1, dataName.toUri(ndn::name::UriFormat::CANONICAL), expectedWireSha256};
+    const auto request = toBytes(query.toJson());
+    bool originalInterestExpressed = false;
+    try {
+      const int probeBudget = static_cast<int>(candidateBudget / 3);
+      const int ackBudget = std::max(1, std::min(250, probeBudget / 4));
+      const auto receiptWire = requestSelectedService(
+        user, replica.providerIdentity,
+        makeRepoServiceName(replica.servicePrefix, "DATA_RECEIPT"),
+        request, ackBudget, probeBudget);
+      const auto receipt = RepoWriteReceipt::dataPacketFromJson(toString(receiptWire));
+      if (receipt.objectName != query.dataName ||
+          receipt.digest != query.expectedWireSha256 ||
+          receipt.repoNode != replica.repoNode ||
+          receipt.providerIdentity != replica.providerIdentity.toUri()) {
+        throw std::runtime_error("repo-original-data-receipt-mismatch");
+      }
+      const auto locationWire = requestSelectedService(
+        user, replica.providerIdentity,
+        makeRepoServiceName(replica.servicePrefix, "DATA_LOCATION"),
+        request, ackBudget, probeBudget);
+      const auto location = RepoDataPacketLocation::fromJson(toString(locationWire));
+      const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+      if (location.receiptId != receipt.operationId ||
+          location.repoNode != receipt.repoNode ||
+          location.providerIdentity != receipt.providerIdentity ||
+          location.dataName != query.dataName ||
+          location.wireSha256 != query.expectedWireSha256 ||
+          location.state != "PRESENT" ||
+          location.forwardingHint != receipt.providerIdentity ||
+          location.observedAtMs > static_cast<uint64_t>(nowMs + 5000) ||
+          location.expiresAtMs <= static_cast<uint64_t>(nowMs)) {
+        throw std::runtime_error("repo-original-data-location-not-current");
+      }
+
+      ndn::Face face;
+      ndn::Interest interest(dataName);
+      interest.setCanBePrefix(false);
+      interest.setMustBeFresh(true);
+      interest.setForwardingHint({replica.providerIdentity});
+      const auto fetchRemaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        candidateDeadline - std::chrono::steady_clock::now()).count();
+      if (fetchRemaining <= 0) throw std::runtime_error("repo-original-data-deadline");
+      interest.setInterestLifetime(ndn::time::milliseconds(fetchRemaining));
+      bool done = false;
+      std::vector<uint8_t> wire;
+      std::string fetchError;
+      auto pending = face.expressInterest(
+        interest,
+        [&] (const ndn::Interest&, const ndn::Data& data) {
+          if (data.getName() != dataName) {
+            fetchError = "repo-original-data-name-mismatch";
+          }
+          else {
+            const auto& block = data.wireEncode();
+            wire.assign(block.begin(), block.end());
+          }
+          done = true;
+        },
+        [&] (const ndn::Interest&, const ndn::lp::Nack&) {
+          fetchError = "repo-original-data-nack";
+          done = true;
+        },
+        [&] (const ndn::Interest&) {
+          fetchError = "repo-original-data-timeout";
+          done = true;
+        });
+      originalInterestExpressed = true;
+      while (!done && std::chrono::steady_clock::now() < candidateDeadline) {
+        face.processEvents(ndn::time::milliseconds(25));
+        face.getIoContext().restart();
+      }
+      if (!done || !fetchError.empty()) {
+        throw std::runtime_error(fetchError.empty() ?
+          "repo-original-data-deadline" : fetchError);
+      }
+      if (wire.size() != receipt.persistedBytes ||
+          sha256Hex(wire) != expectedWireSha256) {
+        throw std::runtime_error("repo-original-data-wire-mismatch");
+      }
+      ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
+      block.parse();
+      const ndn::Data data(block);
+      if (data.getName() != dataName || !verifyProducerSignature(data)) {
+        throw std::runtime_error("repo-original-data-producer-signature-invalid");
+      }
+      return wire;
+    }
+    catch (const std::exception& error) {
+      lastError = error.what();
+      if (originalInterestExpressed) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline - std::chrono::steady_clock::now()).count();
+        if (remaining > 1500) {
+          try {
+            const int recheckBudget = static_cast<int>(std::min<int64_t>(3000, remaining / 3));
+            (void)RepoDataPacketLocation::fromJson(toString(requestSelectedService(
+              user, replica.providerIdentity,
+              makeRepoServiceName(replica.servicePrefix, "DATA_LOCATION"),
+              request, std::min(250, recheckBudget / 4), recheckBudget)));
+          }
+          catch (const std::exception&) {
+            // A failed recheck cannot make the old location usable; continue
+            // with a distinct candidate under the original deadline.
+          }
+        }
+      }
+    }
+  }
+  throw std::runtime_error("repo-original-data-unavailable: " + lastError);
+}
+
 namespace {
+
+struct SelectedRequestResult
+{
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool done = false;
+  std::string error;
+  std::vector<uint8_t> payload;
+};
+
+struct SelectedRequestStart
+{
+  enum class CommitState
+  {
+    Available,
+    Claimed,
+    Abandoned
+  };
+
+  std::atomic<bool> abandoned{false};
+  std::atomic<CommitState> commitState{CommitState::Available};
+  std::atomic<bool> cancellationIssued{false};
+};
+
+void
+completeSelectedRequest(const std::shared_ptr<SelectedRequestResult>& result,
+                        const std::string& error)
+{
+  {
+    std::lock_guard<std::mutex> guard(result->mutex);
+    if (result->done) return;
+    result->error = error;
+    result->done = true;
+  }
+  result->condition.notify_all();
+}
+
+class ExactRepoParticipantSelection final :
+  public ndn_service_framework::ParticipantSelectionPolicy
+{
+public:
+  ExactRepoParticipantSelection(ndn::Name provider, ndn::Name service)
+    : m_provider(std::move(provider))
+    , m_service(std::move(service))
+  {
+  }
+
+  std::vector<ndn_service_framework::SelectedParticipant>
+  select(const std::vector<ndn_service_framework::AckCandidate>& candidates,
+         const std::vector<ndn_service_framework::CollaborationRoleSpec>& roles) const override
+  {
+    if (roles.size() != 1) return {};
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [&] (const auto& candidate) {
+      return candidate.providerName == m_provider && candidate.serviceName == m_service &&
+             candidate.ack.getStatus() &&
+             candidate.authenticationEvidence.trustSchemaValidated &&
+             candidate.authenticationEvidence.signerIdentity == m_provider.toUri();
+    });
+    if (found == candidates.end()) return {};
+    ndn_service_framework::SelectedParticipant selected;
+    selected.role = roles.front().role;
+    selected.service = roles.front().service;
+    selected.provider = found->providerName;
+    selected.assignedArtifact = roles.front().requiredArtifact;
+    selected.requiresProvisioning = roles.front().allowDynamicProvisioning;
+    selected.provisioningTimeoutMs = roles.front().provisioningTimeoutMs;
+    selected.assignmentPayload = roles.front().assignmentPayload;
+    selected.ack = *found;
+    return {std::move(selected)};
+  }
+
+private:
+  ndn::Name m_provider;
+  ndn::Name m_service;
+};
 
 std::vector<uint8_t>
 localRequest(ndn_service_framework::LocalServiceRegistry& registry,
@@ -348,7 +575,7 @@ RepoClient::putSegmented(RepoNode& node,
   }
 
   auto manifest = makeParentManifest(objectName, payload, options, segmentCount);
-  return node.core().putManifest(manifest);
+  return node.putManifest(manifest);
 }
 
 std::vector<uint8_t>
@@ -698,6 +925,36 @@ RepoClient::requestStoreRange(
 }
 
 ndn::Name
+RepoClient::requestArtifactStoreRange(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  const ArtifactRangeWriteRequest& request,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    makeRepoServiceName(repoServicePrefix, "STORE_RANGE"),
+    makeRequest(request.toWire()), timeoutMs,
+    std::move(onTimeout), std::move(onResponse));
+}
+
+ndn::Name
+RepoClient::requestArtifactStore(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  const ArtifactStoreRequest& request,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    makeRepoServiceName(repoServicePrefix, "STORE"),
+    makeRequest(request.toWire()), timeoutMs,
+    std::move(onTimeout), std::move(onResponse));
+}
+
+ndn::Name
 RepoClient::requestCommitRanges(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
@@ -712,6 +969,352 @@ RepoClient::requestCommitRanges(
     timeoutMs,
     std::move(onTimeout),
     std::move(onResponse));
+}
+
+ndn::Name
+RepoClient::requestArtifactCommitRanges(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  const ArtifactRangeCommitRequest& request,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    makeRepoServiceName(repoServicePrefix, "COMMIT_RANGES"),
+    makeRequest(request.toWire()), timeoutMs,
+    std::move(onTimeout), std::move(onResponse));
+}
+
+std::vector<uint8_t>
+RepoClient::requestSelectedService(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& providerIdentity,
+  const ndn::Name& serviceName,
+  const std::vector<uint8_t>& payload,
+  int ackCollectionTimeMs,
+  int timeoutMs,
+  std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted)
+{
+  if (providerIdentity.empty() || serviceName.empty() || ackCollectionTimeMs <= 0 ||
+      timeoutMs <= ackCollectionTimeMs) {
+    throw std::invalid_argument("repo-selected-request-invalid: Provider, service, or deadline is invalid");
+  }
+  if (user.isOnIoThread()) {
+    throw std::logic_error(
+      "repo-selected-request-on-io-thread: blocking selected requests cannot run on the Face I/O thread");
+  }
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMs);
+  const std::string timeoutError =
+    "repo-request-timeout: Provider request timed out";
+  auto result = std::make_shared<SelectedRequestResult>();
+  auto startState = std::make_shared<SelectedRequestStart>();
+  ndn::Buffer requestPayload;
+  if (!payload.empty()) requestPayload = ndn::Buffer(payload.data(), payload.size());
+  const std::vector<ndn::Name> providers{providerIdentity};
+  const auto cancelRequest = [&user, startState] (const ndn::Name& requestId) {
+    if (!user.isOnIoThread() ||
+        startState->cancellationIssued.exchange(true,
+                                                 std::memory_order_acq_rel)) {
+      return;
+    }
+    try {
+      user.CancelCollaboration(requestId);
+    }
+    catch (...) {
+      // Cancellation is best-effort after the caller's absolute deadline.
+    }
+  };
+  auto startRequest = [&user, result, startState, providerIdentity, serviceName,
+                       requestPayload, ackCollectionTimeMs, deadline,
+                       timeoutError, requestMayHaveBeenEmitted,
+                       providers, cancelRequest] {
+    try {
+      if (startState->abandoned.load(std::memory_order_acquire) ||
+          std::chrono::steady_clock::now() >= deadline) {
+        startState->abandoned.store(true, std::memory_order_release);
+        completeSelectedRequest(result, timeoutError);
+        return;
+      }
+      const auto remainingTimeoutMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline - std::chrono::steady_clock::now()).count();
+      if (remainingTimeoutMs <= ackCollectionTimeMs) {
+        startState->abandoned.store(true, std::memory_order_release);
+        completeSelectedRequest(result, timeoutError);
+        return;
+      }
+      const auto invocationTimeoutMs = static_cast<int>(remainingTimeoutMs);
+      const auto requestId = user.BeginCollaborationWithProviders(
+        serviceName, requestPayload, ackCollectionTimeMs, invocationTimeoutMs,
+        [&user, result, startState, providerIdentity, serviceName,
+         ackCollectionTimeMs, invocationTimeoutMs, deadline, timeoutError,
+         requestMayHaveBeenEmitted, cancelRequest]
+        (const ndn_service_framework::CollaborationAckClosure& closure) {
+          try {
+            if (startState->abandoned.load(std::memory_order_acquire) ||
+                std::chrono::steady_clock::now() >= deadline) {
+              startState->abandoned.store(true, std::memory_order_release);
+              cancelRequest(closure.requestId);
+              completeSelectedRequest(result, timeoutError);
+              return;
+            }
+            size_t matching = 0;
+            for (const auto& candidate : closure.candidates) {
+              if (candidate.providerName == providerIdentity &&
+                  candidate.serviceName == serviceName && candidate.ack.getStatus() &&
+                  candidate.authenticationEvidence.trustSchemaValidated &&
+                  candidate.authenticationEvidence.signerIdentity ==
+                    providerIdentity.toUri()) {
+                ++matching;
+              }
+            }
+            if (matching != 1) {
+              throw std::runtime_error(
+                std::string("repo-ack-authentication-failed: selected Provider ACK was absent, duplicated, or untrusted") +
+                " (matching=" + std::to_string(matching) +
+                ", observed=" + std::to_string(closure.candidates.size()) + ")");
+            }
+            if (startState->abandoned.load(std::memory_order_acquire) ||
+                std::chrono::steady_clock::now() >= deadline) {
+              startState->abandoned.store(true, std::memory_order_release);
+              cancelRequest(closure.requestId);
+              completeSelectedRequest(result, timeoutError);
+              return;
+            }
+            ndn_service_framework::CollaborationRoleSpec role;
+            role.role = "artifact-repo-target";
+            role.service = serviceName;
+            role.minProviders = 1;
+            role.maxProviders = 1;
+            role.terminalResponseOwner = true;
+            role.assignmentPayload = ndn::Buffer(1);
+            role.assignmentPayload[0] = 1;
+            ndn_service_framework::CollaborationPlan plan;
+            plan.ackCollectionTimeMs = ackCollectionTimeMs;
+            plan.timeoutMs = invocationTimeoutMs;
+            plan.roles.push_back(std::move(role));
+            plan.participantSelector = std::make_shared<ExactRepoParticipantSelection>(
+              providerIdentity, serviceName);
+            if (startState->abandoned.load(std::memory_order_acquire) ||
+                std::chrono::steady_clock::now() >= deadline) {
+              startState->abandoned.store(true, std::memory_order_release);
+              cancelRequest(closure.requestId);
+              completeSelectedRequest(result, timeoutError);
+              return;
+            }
+            // CommitCollaborationPlan can publish a Selection before reporting
+            // an error. This atomic claim races the caller's deadline so a
+            // timed-out request cannot newly cross the emission boundary.
+            auto expectedCommitState = SelectedRequestStart::CommitState::Available;
+            if (!startState->commitState.compare_exchange_strong(
+                  expectedCommitState, SelectedRequestStart::CommitState::Claimed,
+                  std::memory_order_acq_rel)) {
+              startState->abandoned.store(true, std::memory_order_release);
+              cancelRequest(closure.requestId);
+              completeSelectedRequest(result, timeoutError);
+              return;
+            }
+            if (startState->abandoned.load(std::memory_order_acquire) ||
+                std::chrono::steady_clock::now() >= deadline) {
+              startState->abandoned.store(true, std::memory_order_release);
+              startState->commitState.store(
+                SelectedRequestStart::CommitState::Abandoned,
+                std::memory_order_release);
+              cancelRequest(closure.requestId);
+              completeSelectedRequest(result, timeoutError);
+              return;
+            }
+      if (requestMayHaveBeenEmitted) {
+        requestMayHaveBeenEmitted->store(true, std::memory_order_release);
+      }
+      if (!user.CommitCollaborationPlan(closure.requestId, closure.digest,
+                                        std::move(plan))) {
+        throw std::runtime_error(
+          "repo-selection-commit-failed: Core did not commit selected Provider");
+      }
+      if (startState->abandoned.load(std::memory_order_acquire) ||
+          std::chrono::steady_clock::now() >= deadline) {
+        startState->abandoned.store(true, std::memory_order_release);
+        startState->commitState.store(
+          SelectedRequestStart::CommitState::Abandoned,
+          std::memory_order_release);
+        cancelRequest(closure.requestId);
+        completeSelectedRequest(result, timeoutError);
+      }
+          }
+          catch (const std::exception& error) {
+            cancelRequest(closure.requestId);
+            if (startState->abandoned.load(std::memory_order_acquire) ||
+                std::chrono::steady_clock::now() >= deadline) {
+              startState->abandoned.store(true, std::memory_order_release);
+              completeSelectedRequest(result, timeoutError);
+            }
+            else {
+              completeSelectedRequest(result, error.what());
+            }
+          }
+          catch (...) {
+            cancelRequest(closure.requestId);
+            if (startState->abandoned.load(std::memory_order_acquire) ||
+                std::chrono::steady_clock::now() >= deadline) {
+              startState->abandoned.store(true, std::memory_order_release);
+              completeSelectedRequest(result, timeoutError);
+            }
+            else {
+              completeSelectedRequest(
+                result, "repo-selection-commit-failed: selected Provider request failed");
+            }
+          }
+        },
+        [result, startState, deadline, timeoutError]
+        (const ndn_service_framework::ResponseMessage& response) {
+          const auto responsePayload = response.getPayload();
+          {
+            std::lock_guard<std::mutex> guard(result->mutex);
+            if (result->done) return;
+            if (std::chrono::steady_clock::now() >= deadline) {
+              startState->abandoned.store(true, std::memory_order_release);
+              result->error = timeoutError;
+            }
+            else if (!response.getStatus()) {
+              result->error = response.getErrorInfo();
+            }
+            else {
+              result->payload.assign(responsePayload.begin(), responsePayload.end());
+            }
+            result->done = true;
+          }
+          result->condition.notify_all();
+        },
+        [result, startState, timeoutError] (const ndn::Name&) {
+          startState->abandoned.store(true, std::memory_order_release);
+          completeSelectedRequest(result, timeoutError);
+        },
+        ndn::Name(),
+        [providerIdentity, serviceName] (
+          const std::vector<ndn_service_framework::AckCandidate>& candidates) {
+          // The fixed Provider set is covered by one authenticated ACK. Core
+          // still freezes ACK_CLOSED; the callback above rechecks eligibility.
+          return std::count_if(candidates.begin(), candidates.end(),
+            [&providerIdentity, &serviceName] (const auto& candidate) {
+              return candidate.providerName == providerIdentity &&
+                     candidate.serviceName == serviceName && candidate.ack.getStatus() &&
+                     candidate.authenticationEvidence.trustSchemaValidated &&
+                     candidate.authenticationEvidence.signerIdentity ==
+                       providerIdentity.toUri();
+            }) == 1;
+        }, ndn_service_framework::RequestCapabilities(),
+        std::nullopt, {}, {}, {}, providers);
+      // Begin can return an ID after local admission rejection; the lifecycle
+      // check below handles that case. Otherwise the Request is admitted or
+      // queued, and ACK-close runs after this Face-thread start returns, so an
+      // empty ACK set leaves the provider outcome uncertain before Selection.
+      if (!requestId.empty()) {
+        const auto requestStatus = user.getRequestStatus(requestId);
+        const bool admissionRejected = requestStatus &&
+          requestStatus->state ==
+            ndn_service_framework::ServiceUser::RequestLifecycleState::ADMISSION_REJECTED;
+        if (admissionRejected) {
+          completeSelectedRequest(
+            result,
+            "repo-request-admission-rejected: local admission queue rejected Provider request");
+          return;
+        }
+        if (requestMayHaveBeenEmitted) {
+          requestMayHaveBeenEmitted->store(true, std::memory_order_release);
+        }
+      }
+      if (requestId.empty()) {
+        if (startState->abandoned.load(std::memory_order_acquire) ||
+            std::chrono::steady_clock::now() >= deadline) {
+          startState->abandoned.store(true, std::memory_order_release);
+          completeSelectedRequest(result, timeoutError);
+        }
+        else {
+          completeSelectedRequest(
+            result, "repo-request-start-failed: Core rejected selected Provider request");
+        }
+        return;
+      }
+      if (startState->abandoned.load(std::memory_order_acquire) ||
+          std::chrono::steady_clock::now() >= deadline) {
+        startState->abandoned.store(true, std::memory_order_release);
+        cancelRequest(requestId);
+        completeSelectedRequest(result, timeoutError);
+      }
+    }
+    catch (const std::exception& error) {
+      if (startState->abandoned.load(std::memory_order_acquire) ||
+          std::chrono::steady_clock::now() >= deadline) {
+        startState->abandoned.store(true, std::memory_order_release);
+        completeSelectedRequest(result, timeoutError);
+      }
+      else {
+        completeSelectedRequest(result, error.what());
+      }
+    }
+    catch (...) {
+      if (startState->abandoned.load(std::memory_order_acquire) ||
+          std::chrono::steady_clock::now() >= deadline) {
+        startState->abandoned.store(true, std::memory_order_release);
+        completeSelectedRequest(result, timeoutError);
+      }
+      else {
+        completeSelectedRequest(
+          result, "repo-request-start-failed: selected Provider request could not start");
+      }
+    }
+  };
+  try {
+    user.postToIo(std::move(startRequest));
+  }
+  catch (const std::exception& error) {
+    startState->abandoned.store(true, std::memory_order_release);
+    if (std::chrono::steady_clock::now() >= deadline) {
+      completeSelectedRequest(result, timeoutError);
+    }
+    else {
+      completeSelectedRequest(result, error.what());
+    }
+  }
+  catch (...) {
+    startState->abandoned.store(true, std::memory_order_release);
+    if (std::chrono::steady_clock::now() >= deadline) {
+      completeSelectedRequest(result, timeoutError);
+    }
+    else {
+      completeSelectedRequest(
+        result, "repo-request-start-failed: selected Provider request could not start");
+    }
+  }
+  std::unique_lock<std::mutex> lock(result->mutex);
+  const bool completed = result->condition.wait_until(
+    lock, deadline, [&] { return result->done; });
+  if (!completed) {
+    startState->abandoned.store(true, std::memory_order_release);
+    auto expectedCommitState = SelectedRequestStart::CommitState::Available;
+    if (!startState->commitState.compare_exchange_strong(
+          expectedCommitState, SelectedRequestStart::CommitState::Abandoned,
+          std::memory_order_acq_rel) &&
+        expectedCommitState == SelectedRequestStart::CommitState::Claimed &&
+        requestMayHaveBeenEmitted) {
+      // The ACK callback claimed the Selection boundary just before timeout;
+      // keep fallback logic from treating that in-flight publish as absent.
+      requestMayHaveBeenEmitted->store(true, std::memory_order_release);
+    }
+    result->error = timeoutError;
+    result->done = true;
+  }
+  auto error = std::move(result->error);
+  auto responsePayload = std::move(result->payload);
+  lock.unlock();
+  if (!completed) {
+    result->condition.notify_all();
+  }
+  if (!error.empty()) throw std::runtime_error(error);
+  return responsePayload;
 }
 
 ndn::Name
@@ -762,6 +1365,72 @@ RepoClient::requestFetch(
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));
+}
+
+ndn::Name
+RepoClient::requestReceipt(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& provider,
+  const ndn::Name& repoServicePrefix,
+  const RepoReceiptLookupRequest& request,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  const auto payload = toBytes(request.toJson());
+  const char* traceSetting =
+    std::getenv("NDNSF_SPEC192_SELECTED_REQUEST_TRACE");
+  const bool traceEnabled = traceSetting != nullptr &&
+                            traceSetting[0] == '1' && traceSetting[1] == '\0';
+  if (!traceEnabled) {
+    return user.RequestService(
+      std::vector<ndn::Name>{provider},
+      makeRepoServiceName(repoServicePrefix, "STATUS"), makeRequest(payload),
+      timeoutMs, std::move(onTimeout), std::move(onResponse),
+      ndn_service_framework::tlv::FirstResponding);
+  }
+  const auto traceStage = [] (const char* stage) {
+    std::fprintf(stderr, "Spec192 receipt request: stage=%s service=STATUS\n",
+                 stage);
+    std::fflush(stderr);
+  };
+  traceStage("request-service-begin");
+  auto tracedOnTimeout = [traceStage, onTimeout = std::move(onTimeout)]
+                         (const ndn::Name& timedOutRequest) mutable {
+    traceStage("timeout-callback");
+    if (onTimeout) onTimeout(timedOutRequest);
+  };
+  auto tracedOnResponse = [traceStage, onResponse = std::move(onResponse)]
+                          (const ndn_service_framework::ResponseMessage& response)
+                          mutable {
+    traceStage("response-callback");
+    if (onResponse) onResponse(response);
+  };
+  auto requestId = user.RequestService(
+    std::vector<ndn::Name>{provider},
+    makeRepoServiceName(repoServicePrefix, "STATUS"), makeRequest(payload),
+    timeoutMs, std::move(tracedOnTimeout), std::move(tracedOnResponse),
+    ndn_service_framework::tlv::FirstResponding);
+  traceStage("request-service-returned");
+  return requestId;
+}
+
+ndn::Name
+RepoClient::requestAvailability(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& provider,
+  const ndn::Name& repoServicePrefix,
+  const RepoAvailabilityProbeRequest& request,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  const auto payload = toBytes(request.toJson());
+  return user.RequestService(
+    std::vector<ndn::Name>{provider},
+    makeRepoServiceName(repoServicePrefix, "STATUS"), makeRequest(payload),
+    timeoutMs, std::move(onTimeout), std::move(onResponse),
+    ndn_service_framework::tlv::FirstResponding);
 }
 
 ndn::Name
@@ -843,6 +1512,44 @@ RepoClient::requestStatus(
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));
+}
+
+ndn::Name
+RepoClient::requestLocation(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& provider,
+  const ndn::Name& repoServicePrefix,
+  const ArtifactLocationRequest& request,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  const auto wire = request.toJson();
+  const auto payload = toBytes(wire);
+  return user.RequestService(
+    std::vector<ndn::Name>{provider},
+    makeRepoServiceName(repoServicePrefix, "STATUS"), makeRequest(payload),
+    timeoutMs, std::move(onTimeout), std::move(onResponse),
+    ndn_service_framework::tlv::FirstResponding);
+}
+
+ndn::Name
+RepoClient::requestFetchRange(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& provider,
+  const ndn::Name& repoServicePrefix,
+  const std::string& objectName,
+  RepoByteRange range,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    std::vector<ndn::Name>{provider},
+    makeRepoServiceName(repoServicePrefix, "FETCH_RANGE"),
+    makeRequest(encodeRangeReadRequest(objectName, range)), timeoutMs,
+    std::move(onTimeout), std::move(onResponse),
+    ndn_service_framework::tlv::FirstResponding);
 }
 
 } // namespace ndnsf_distributed_repo

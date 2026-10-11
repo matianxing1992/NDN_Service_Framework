@@ -26,6 +26,7 @@ From the repository root:
 
 ```bash
 python3 -m pip install -e ./pythonWrapper
+python3 -m pip install -e ./NDNSF-DistributedRepo/pythonWrapper
 python3 -m pip install -e ./NDNSF-DistributedInference
 ```
 
@@ -351,21 +352,18 @@ network-level regression because it starts per-node NFDs and routes.
 ## Dynamic Provisioning and Repo-Backed Artifacts
 
 `yolo_2x2/` demonstrates dynamic provisioning. The controller-side deployer
-stores model shards and runtime bundles in an NDNSF-DistributedRepo node before
-inference. The generated repo deployment manifest carries both `repoManifest`
-and `largeDataReference` metadata for each artifact instead of large model
-bytes. Selected providers fetch their assigned role artifacts, cache them
-locally, execute the role, and publish activation objects for dependent roles.
+publishes model shards and runtime bundles through the native `RepoClient`,
+then writes versioned `repoBinding` envelopes with opaque native handles and
+the unchanged DI `ArtifactReference` projection. Pass that file with
+`--artifact-references-file`. Providers resolve each Repo binding through
+their authorized native Repo client, including when local DI cache bytes
+already exist; DI cache entries are preparation files, not Repo receipts or
+replicas. Inter-stage activations use NDNSF's request data path and are not
+stored in Repo.
 
-Provider logs should show:
-
-```text
-NDNSF_EXECUTION_ARTIFACT_CACHE_MISS
-NDNSF_EXECUTION_ARTIFACT_CACHE_HIT
-```
-
-The first command should miss and fetch artifacts. Later commands can reuse
-the provider artifact cache.
+`yolo_2x2/repo_client.py` is the direct native publish/fetch example. The
+`plan_example.py` script only inspects the DI policy and does not create Python
+Repo state or publish transient activations.
 
 ## Common Mistakes
 
@@ -376,7 +374,7 @@ runtime.user_identity is not listed in any service users list
 provider identity is not listed in service providers
 service role has no authorized provider
 artifact path points to a missing file
-repo manifest was not published before inference
+Repo artifact binding is invalid or unauthorized for this requester
 input tensor shape/dtype does not match client.describe_input(service)
 provider has can_provision=False but does not have local model shards
 production trust.anchor_file is missing

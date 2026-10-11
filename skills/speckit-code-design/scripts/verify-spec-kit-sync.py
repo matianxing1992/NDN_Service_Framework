@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Verify that Spec Kit entrypoints and installed shared skills use one contract.
+"""Verify shared Spec Kit entrypoint contract blocks and installed shared skills.
 
-This is a synchronization check only.  It does not inspect product code or
-turn a skill/template check into implementation or qualification evidence.
+Command-specific entrypoints are not expected to be byte-identical. This checks
+their shared contract block byte-for-byte plus required markers/templates. It
+does not inspect product code or turn a workflow check into implementation or
+qualification evidence.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ TEMPLATES = (
 SHARED_FILES = (
     "SKILL.md",
     "agents/openai.yaml",
+    "references/entrypoint-shared-contract.md",
     "references/batch-quality-gates.md",
     "references/bounded-executor.md",
     "references/design-template.md",
@@ -49,6 +52,20 @@ SHARED_FILES = (
     "references/task-progress.md",
     "references/work-unit-contract.md",
 )
+
+ENTRYPOINT_SHARED_CONTRACT = "references/entrypoint-shared-contract.md"
+SHARED_CONTRACT_START = "<!-- SPECKIT_SHARED_CONTRACT_START -->"
+SHARED_CONTRACT_END = "<!-- SPECKIT_SHARED_CONTRACT_END -->"
+
+
+def extract_shared_contract(text: str) -> str | None:
+    if text.count(SHARED_CONTRACT_START) != 1 or text.count(SHARED_CONTRACT_END) != 1:
+        return None
+    start = text.index(SHARED_CONTRACT_START) + len(SHARED_CONTRACT_START)
+    end = text.index(SHARED_CONTRACT_END)
+    if end <= start:
+        return None
+    return text[start:end]
 
 ENTRYPOINT_MARKER_GROUPS = (
     ("skills/speckit-code-design/references/batch-quality-gates.md",),
@@ -147,6 +164,17 @@ def main() -> int:
     warnings: list[str] = []
     checks: list[dict[str, str]] = []
 
+    shared_contract_path = root / "skills/speckit-code-design" / ENTRYPOINT_SHARED_CONTRACT
+    if not shared_contract_path.is_file():
+        errors.append(f"missing canonical entrypoint contract: {shared_contract_path}")
+        expected_shared_contract = None
+    else:
+        expected_shared_contract = extract_shared_contract(
+            shared_contract_path.read_text(encoding="utf-8")
+        )
+        if expected_shared_contract is None:
+            errors.append(f"canonical entrypoint contract markers are invalid: {shared_contract_path}")
+
     shared_reference = root / "skills/speckit-code-design/references/batch-quality-gates.md"
     if not shared_reference.is_file():
         errors.append(f"missing shared reference: {shared_reference}")
@@ -170,6 +198,7 @@ def main() -> int:
             checks.append({"kind": "template", "status": "ok", "path": relative})
 
     installed_count = 0
+    shared_contract_match_count = 0
     for name in ENTRYPOINTS:
         path = entrypoint_root / name / "SKILL.md"
         if not path.is_file():
@@ -179,6 +208,16 @@ def main() -> int:
             continue
         installed_count += 1
         text = path.read_text(encoding="utf-8")
+        entrypoint_contract = extract_shared_contract(text)
+        if expected_shared_contract is None or entrypoint_contract is None:
+            errors.append(f"entrypoint shared contract block missing or malformed: {path}")
+            checks.append({"kind": "shared-contract", "status": "missing", "path": str(path)})
+        elif entrypoint_contract != expected_shared_contract:
+            errors.append(f"entrypoint shared contract differs from canonical source: {path}")
+            checks.append({"kind": "shared-contract", "status": "stale", "path": str(path)})
+        else:
+            shared_contract_match_count += 1
+            checks.append({"kind": "shared-contract", "status": "ok", "path": str(path)})
         missing = [
             " or ".join(group)
             for group in ENTRYPOINT_MARKER_GROUPS + (
@@ -232,6 +271,8 @@ def main() -> int:
         "entrypointRoot": str(entrypoint_root),
         "installedEntrypoints": installed_count,
         "expectedEntrypoints": len(ENTRYPOINTS),
+        "sharedContractMatches": shared_contract_match_count,
+        "sharedContractSource": str(shared_contract_path),
         "personalRoot": str(personal_root),
         "warnings": warnings,
         "errors": errors,
@@ -241,7 +282,8 @@ def main() -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         print(
-            f"{result['status']}: {installed_count}/{len(ENTRYPOINTS)} local entrypoints; "
+            f"{result['status']}: {shared_contract_match_count}/{len(ENTRYPOINTS)} exact shared-contract blocks; "
+            f"{installed_count}/{len(ENTRYPOINTS)} command-specific entrypoints present; "
             f"personal shared skill={'present' if personal_root.is_dir() else 'absent'}"
         )
         for message in warnings:
