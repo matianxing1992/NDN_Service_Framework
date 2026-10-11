@@ -60,7 +60,9 @@ def configure_probe_validation_links(ndn, output, bandwidth_mbps, providers):
         raise ValueError("probe validation requires two to four unique Provider bindings")
     from mininet.link import TCLink
     output = Path(output)
-    output.mkdir(parents=True, exist_ok=False)
+    if output.is_symlink():
+        raise ValueError("probe validation output must not be a symlink")
+    output.mkdir(parents=True, exist_ok=True)
     records = []
 
     def command(node, argv, timeout=15):
