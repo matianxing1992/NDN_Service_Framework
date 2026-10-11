@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前SDK11完整surface/local conformance98case normal1655/dynamic v3 1657断言PASS，DB007 STATIC_PASS，公开inventory保留。见T009；独立复现与network/profile资格待关闭，旧SDK9结果仅历史。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | 当前SDK11两binding fresh重建/import、33-file Python117PASS及全部7 native dynamic v3 PASS。见T009；不宣称Python instrumentation，sealed复现与crosslanguage/DI network待资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | f48733a1长度修复/c99210a4清诊断；r43 Core与r46全部7目标构建PASS。r47全7 native ASAN/UBSAN、leaks开启：184用例执行/4070断言PASS，0报告；逐进程maps确认Core84dff864/SVS a8f8cf8b/cxx be8ea6eb。原恢复302/短31完整保留。[证据](evidence/diagnostic-e529c434-20261010/native-all-seven-r47/manifest.json)。修复依赖纳入normal/Python/CLI、新收敛及统一candidate封存待完成；59ID/两轮136次MiniNDN仍OPEN。 | 2026-10-11 |
+| T009 | PARTIAL | T002–T008 | f48733a1长度修复/c99210a4清诊断；r47全7 native ASAN/UBSAN、leaks开启：184用例执行/4070断言PASS，0报告，逐进程maps/hash一致。[证据](evidence/diagnostic-e529c434-20261010/native-all-seven-r47/manifest.json)。r48正常SDK登记cxx be8ea6eb，原库/身份已备份；无LD覆盖Regex9/229 PASS。现有候选构建器待fresh normal/Python/CLI重建、新收敛与封存；59ID/两轮136次MiniNDN仍OPEN。 | 2026-10-11 |
 | T010 | IN_PROGRESS | T009 | 正式冻结d75cf28e/688的两轮68场景/59ID共136次campaign状态仍按matrix记录为FAIL_STOPPED。f8011aa0候选的单轮ARTIFACT_BASELINE仅是修复后本地回归，不替代统一candidate、59 cases两轮、逐actor maps/pcap/finite exits/cleanup/storage/consumer/wire/cross-run检查；全项通过前保持OPEN。 | 2026-10-10 |
 
 ## Current Checkpoint
