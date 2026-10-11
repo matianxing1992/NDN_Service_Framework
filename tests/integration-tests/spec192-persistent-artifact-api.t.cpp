@@ -565,6 +565,13 @@ makeRepoPublisherUser(NdnsfIntegrationEnvironment& environment, size_t index,
     [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
     pubSubOptions, security);
   publisherUser->attachLocalMockPubSubForTest(std::move(pubSub));
+  const char* selectedTrace = std::getenv("NDNSF_SPEC192_SELECTED_REQUEST_TRACE");
+  if (index == 0 && selectedTrace && selectedTrace[0] == '1' && selectedTrace[1] == '\0') {
+    publisherUser->setTimelineTrace(true);
+    for (size_t providerIndex = 0; providerIndex < environment.providerCount(); ++providerIndex) {
+      environment.provider(providerIndex).setTimelineTrace(true);
+    }
+  }
 
   ndn_service_framework::PermissionResponse permissions;
   permissions.setTargetIdentity(providerIdentity.toUri());
@@ -2021,10 +2028,12 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
 
   auto delayedStoreCalls = std::make_shared<std::atomic<unsigned>>(0);
   ndn_service_framework::ServiceProvider::RequestHandler delayedStore =
-    [delayedStoreCalls] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
-                         const ndn::Name&,
+    [delayedStoreCalls] (const ndn::Name&, const ndn::Name& provider,
+                         const ndn::Name& service, const ndn::Name& requestId,
                          const ndn_service_framework::RequestMessage&) {
       delayedStoreCalls->fetch_add(1);
+      BOOST_TEST_MESSAGE("[DEBUG-spec202-handler] delayed STORE provider=" << provider
+                         << " service=" << service << " request=" << requestId);
       std::this_thread::sleep_for(2s);
       ndn_service_framework::ResponseMessage response;
       response.setStatus(false);
@@ -2309,11 +2318,15 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   };
   environment.provider(1).addService(storeService, lossAck,
     [held, bStoreCalls, sourceRemoved, lossPayload] (
-      const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name& requestId,
+      const ndn::Name&, const ndn::Name& provider, const ndn::Name& service,
+      const ndn::Name& requestId,
       const ndn_service_framework::RequestMessage&) {
       bStoreCalls->fetch_add(1);
       std::error_code error;
       sourceRemoved->store(fs::remove(lossPayload, error) && !error);
+      BOOST_TEST_MESSAGE("[DEBUG-spec202-handler] B STORE provider=" << provider
+                         << " service=" << service << " request=" << requestId
+                         << " sourceRemoved=" << sourceRemoved->load());
       {
         std::unique_lock<std::mutex> lock(held->mutex);
         held->requestId = requestId;
@@ -2335,6 +2348,11 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     [held, lateBObserved, replicaProvider, storeService,
      requester = publisherUsers[0]->getName()] (
       const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+      const auto ack = ndn_service_framework::parseRequestAckNameV2(publication.name);
+      if (ack && ack->providerName == replicaProvider && ack->serviceName == storeService &&
+          ack->requesterName == requester) {
+        BOOST_TEST_MESSAGE("[DEBUG-spec202-observer] B STORE ACK request=" << ack->requestId);
+      }
       const auto response = ndn_service_framework::parseResponseNameV2(publication.name);
       std::lock_guard<std::mutex> lock(held->mutex);
       if (response && response->providerName == replicaProvider &&
@@ -2343,9 +2361,11 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     }, false);
   ProducerSubscriptionGuard lossSubscriptionGuard(lossObserver, lossSubscription);
   environment.provider(2).addService(storeService, lossAck,
-    [cStoreCalls] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
-                  const ndn::Name&, const ndn_service_framework::RequestMessage&) {
+    [cStoreCalls] (const ndn::Name&, const ndn::Name& provider, const ndn::Name& service,
+                  const ndn::Name& requestId, const ndn_service_framework::RequestMessage&) {
       cStoreCalls->fetch_add(1);
+      BOOST_TEST_MESSAGE("[DEBUG-spec202-handler] C STORE provider=" << provider
+                         << " service=" << service << " request=" << requestId);
       ndn_service_framework::ResponseMessage response;
       response.setStatus(false);
       response.setErrorInfo("spec202-C-store-must-not-be-emitted");
