@@ -17,12 +17,12 @@ node_modules/
 *.so
 *.egg-info/
 pythonWrapper/build/
+**/build/
 pythonWrapper/*.egg-info/
 .ndn/
 
-# Documentation and Spec Kit material are local working files.  Nothing under
-# these roots should be newly added to Git; durable source changes belong in
-# the code/tests or in a separately agreed release artifact.
+# Documentation and Spec Kit material are local working files, except for the
+# explicitly allowed NDNSF Overleaf paper source tree at the end of this file.
 /docs/
 /specs/
 results/
@@ -108,3 +108,29 @@ tests/container/**/actual/
 /**/CODEX*.md
 /**/codex*.md
 /scripts/codex_state_recovery.sh
+
+# User-authorized portable root instructions; nested/local instructions stay ignored.
+!/AGENTS.md
+
+# User-authorized exception: NDNSF paper source and its figure assets only.
+# Reopen each parent, but keep all siblings ignored.
+!/docs/
+/docs/*
+!/docs/PAPER/
+/docs/PAPER/*
+!/docs/PAPER/named-data-network-service-framework-paper/
+/docs/PAPER/named-data-network-service-framework-paper/*
+!/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/
+!/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/**
+# Figure PDFs are source assets; only exclude the generated manuscript PDF.
+/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/NDNSF.pdf
+/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/**/*.aux
+/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/**/*.log
+/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/**/*.bbl
+/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/**/*.blg
+/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/**/*.fls
+/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/**/*.fdb_latexmk
+/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/**/*.synctex.gz
+/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/**/*.out
+/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/**/.overleaf-build/
+/docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/**/AGENTS.md

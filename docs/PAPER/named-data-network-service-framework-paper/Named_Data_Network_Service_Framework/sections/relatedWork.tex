@@ -1,0 +1,19 @@
+Existing service invocation, publication, and access-control mechanisms provide the basis for NDNSF's candidate discovery and permission management.
+
+RICE~\cite{krol2018rice} studies remote method invocation in ICN, including an invocation handshake and parameter/result handling. NDNSF builds on these established ideas for invocation and protected parameter exchange.
+
+DNMP~\cite{nichols2019dnmp} publishes measurement commands through Sync and collects replies. VerSec relates allowed command components to role signing keys. The schema determines which roles may issue commands with particular targets and parameters.
+
+NDNSF instead uses service-attribute encryption to restrict descriptor readers and aggregates permissions in DKEYs. Adding encryption to a DNMP-style design would also protect command content, with additional key-distribution costs.
+
+NSC~\cite{meirovitch2021nsc} requires a signed initial invocation Interest, uses application-defined trust schemas, and describes encrypted input/result retrieval with NAC support. Its report also discusses retry behavior for long-running computation.
+
+NDNSF explicitly collects candidate feedback before selection. This differs from the basic NSC invocation sequence, but applications can extend an invocation system with discovery or negotiation; their complete costs must be compared.
+
+NDNSD~\cite{dulal2022ndnsd} supports service advertisement discovery and optional NAC-ABE protection of service information. NDNSF can use these advertisements for provider preselection, while its Request--ACK exchange obtains participation feedback for a particular task.
+
+NAC~\cite{zhang2018nac} automates named-data access-key distribution and analyzes ABE-based aggregation. Enhanced NAC-ABE supplies KP-ABE, policy-bearing DKEYs, validation support, and key segmentation~\cite{dulal2023nac-abe}.
+
+NDNSF applies these capabilities to service descriptors and invocation permissions. The reduction in credential objects follows from ABE permission aggregation. Section~\ref{sec:credential-cost} examines this benefit and its key-distribution and update costs.
+
+Trust schemas can encode general rules rather than one rule per entity or service~\cite{yu2015trust}. Other designs can also reuse identity credentials and general trust rules. NDNSF keeps service-permission lists in ABE policies rather than baseline trust rules; this does not establish lower rule-management or validation costs than every alternative.
