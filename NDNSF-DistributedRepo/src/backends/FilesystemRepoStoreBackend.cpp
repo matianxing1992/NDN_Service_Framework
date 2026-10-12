@@ -160,12 +160,15 @@ readText(const fs::path& path)
     throwSystem("repo-file-metadata-read-failed", "open", path);
   }
   struct stat status {};
-  if (::fstat(fd, &status) != 0 || status.st_size < 0 ||
+  const auto statResult = ::fstat(fd, &status);
+  if (statResult != 0 || status.st_size < 0 ||
       static_cast<uint64_t>(status.st_size) > 16 * 1024 * 1024) {
-    const int saved = errno;
+    // A successful stat does not set errno. Report the actual size rejection
+    // rather than an unrelated previous syscall's error (e.g. ENOENT).
+    const int saved = statResult != 0 ? errno : EFBIG;
     ::close(fd);
     errno = saved;
-    throwSystem("repo-file-metadata-read-failed", "stat", path);
+    throwSystem("repo-file-metadata-read-failed", statResult != 0 ? "stat" : "size-limit", path);
   }
   std::string value(static_cast<size_t>(status.st_size), '\0');
   size_t offset = 0;

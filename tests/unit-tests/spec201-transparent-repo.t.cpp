@@ -14,6 +14,7 @@
 #include <ndn-cxx/util/dummy-client-face.hpp>
 #include <boost/test/unit_test.hpp>
 #include <filesystem>
+#include <fstream>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <cstdlib>
@@ -596,6 +597,92 @@ BOOST_AUTO_TEST_CASE(CatalogParseCacheEvictsBeyondEntryBound)
   catalogParses = 0;
   BOOST_REQUIRE_EQUAL(store->listManifests().size(), 4097U);
   BOOST_CHECK_GT(catalogParses.load(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(CatalogParseCacheHonorsEncodedByteBound)
+{
+  Fixture fixture;
+  constexpr size_t budget = 64U * 1024U * 1024U;
+  for (const size_t encodedBytes : {budget - 1, budget, budget + 1}) {
+    const auto directory = fixture.root / ("byte-bound-" + std::to_string(encodedBytes));
+    auto store = makeFilesystemRepoStore(directory.string());
+    RepoObjectManifest metadata;
+    size_t totalBytes = 0, epochBytes = 0;
+    for (size_t i = 0; i < 5; ++i) {
+      // Each sidecar must respect readText's separate 16MiB input limit.
+      const auto bytes = i < 4 ? 13U * 1024U * 1024U : encodedBytes - totalBytes;
+      BOOST_REQUIRE_LE(bytes, 16U * 1024U * 1024U);
+      metadata.objectName = "/actual/producer/catalog/byte-bound/" + std::to_string(i);
+      const auto overhead = metadata.toJson().size();
+      BOOST_REQUIRE_LT(overhead, bytes);
+      // Synthetic opaque metadata exercises the cache budget, not a
+      // network packet limit or an authorization policy's epoch semantics.
+      metadata.policyEpoch.assign(bytes - overhead, 'x');
+      epochBytes += metadata.policyEpoch.size();
+      const auto sidecar = directory / "manifests" / (std::to_string(i) + ".json");
+      {
+        std::ofstream output(sidecar, std::ios::binary);
+        output << metadata.toJson();
+        BOOST_REQUIRE(output.good());
+      }
+      BOOST_REQUIRE_EQUAL(std::filesystem::file_size(sidecar), bytes);
+      totalBytes += bytes;
+      std::string{}.swap(metadata.policyEpoch);
+    }
+    BOOST_REQUIRE_EQUAL(totalBytes, encodedBytes);
+    CatalogParseScope counts;
+    {
+      const auto first = store->listManifests();
+      BOOST_REQUIRE_EQUAL(first.size(), 5U);
+      size_t decodedEpochBytes = 0;
+      for (const auto& item : first) decodedEpochBytes += item.policyEpoch.size();
+      BOOST_CHECK_EQUAL(decodedEpochBytes, epochBytes);
+    }
+    BOOST_CHECK_EQUAL(catalogParses.load(), 5U);
+    BOOST_REQUIRE_EQUAL(store->listManifests().size(), 5U);
+    if (encodedBytes <= budget) BOOST_CHECK_EQUAL(catalogParses.load(), 5U);
+    else BOOST_CHECK_GT(catalogParses.load(), 5U);
+
+    metadata.objectName = "/actual/producer/catalog/small";
+    {
+      std::ofstream output(directory / "manifests" / "small.json", std::ios::binary);
+      output << metadata.toJson();
+      BOOST_REQUIRE(output.good());
+    }
+    BOOST_REQUIRE_EQUAL(store->listManifests().size(), 6U);
+    catalogParses = 0;
+    BOOST_REQUIRE_EQUAL(store->listManifests().size(), 6U);
+    // All files together exceed the budget in every row. Their enumeration
+    // order may differ; an eviction must force a reparse.
+    BOOST_CHECK_GT(catalogParses.load(), 0U);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(CatalogParseRejectsOversizedMetadataWithSizeDiagnostic)
+{
+  Fixture fixture;
+  const auto directory = fixture.root / "oversized-sidecar";
+  auto store = makeFilesystemRepoStore(directory.string());
+  RepoObjectManifest metadata;
+  metadata.objectName = "/actual/producer/catalog/oversized";
+  constexpr size_t bytes = 16U * 1024U * 1024U + 1;
+  metadata.policyEpoch.assign(bytes - metadata.toJson().size(), 'x');
+  const auto sidecar = directory / "manifests" / "oversized.json";
+  {
+    std::ofstream output(sidecar, std::ios::binary);
+    output << metadata.toJson();
+    BOOST_REQUIRE(output.good());
+  }
+  BOOST_REQUIRE_EQUAL(std::filesystem::file_size(sidecar), bytes);
+  std::string{}.swap(metadata.policyEpoch);
+  CatalogParseScope counts;
+  // Size admission fails before parsing. Do not depend on strerror's locale.
+  BOOST_CHECK_EXCEPTION(store->listManifests(), std::runtime_error,
+    [](const std::runtime_error& error) {
+      return std::string(error.what()).find(
+        "repo-file-metadata-read-failed: size-limit ") == 0;
+    });
+  BOOST_CHECK_EQUAL(catalogParses.load(), 0U);
 }
 
 BOOST_AUTO_TEST_CASE(JsonQuotingPreservesLegacyBytesAndLargeMetadata)
