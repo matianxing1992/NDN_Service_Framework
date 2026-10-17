@@ -41,6 +41,8 @@ namespace ndn_service_framework
         const ndn::Interest& interest, const ndn::Name& expectedProducer,
         const std::string& expectedOperation);
     std::string makeControlQueryNonce();
+    /** Query identity retention; independent of validated PolicyStatus validity. */
+    uint64_t controlQueryLifetimeMs(const std::string& operation);
     std::optional<uint64_t> controlNonceExpiry(const ndn::Name& producer, const ndn::Interest& interest);
     /** Record commitment excludes its own Name; revision is the full signed plan digest. */
     ndn::Name makeDeploymentRecordName(const ndn::Name& producer,

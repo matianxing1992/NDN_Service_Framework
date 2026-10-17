@@ -1,9 +1,18 @@
 %TODO: cite the correct code
-NDNSF was implemented using \texttt{ndn-cxx}~\cite{ndn-cxx}, NDN-SVS~\cite{ndnsvs-github}, and NAC-ABE~\cite{dulal2023nac-abe}. The optional NDNSD integration exposes discovered service information to applications for provider preselection~\cite{dulal2022ndnsd}. The application passes its chosen provider to the targeted-request API; this API does not automatically select a provider from NDNSD advertisements. During development, we found that the baseline NAC-ABE and NDN-SVS implementations did not meet performance requirements, motivating several optimizations.
+\label{sec:impl}
+NDNSF was implemented using \texttt{ndn-cxx}~\cite{ndn-cxx}, NDN-SVS~\cite{ndnsvs-github}, and NAC-ABE~\cite{dulal2023nac-abe}.
 
-For NAC-ABE, we introduced key caching so cache hits avoid fetching and decrypting the same key again. For NDN-SVS, messages smaller than 512~bytes are embedded directly in Sync Interest Application Parameters, reducing publication-to-reception delay by one RTT. We also added regular-expression-based subscriptions to NDN-SVS so users and providers receive only relevant messages. For example, a user requesting \path{/ImageProc/YOLO12} subscribes only to matching ACK and Response messages, while a provider subscribes only to matching Request and Selection messages.
+NDNSF validates certificate chains against fixed trust anchors, checks certificate validity periods, and enforces configured application trust rules. Cached certificate validation expires with the validated chain.
 
-Finally, under high-frequency NDNSF workloads, the original blocking APIs and heavily single-threaded design of NDN-SVS became a bottleneck because most synchronization and processing logic executed on the main Face event loop. To address this issue, we redesigned Sync Interest handling and publication as an asynchronous pipeline. CPU-intensive tasks, including state-vector processing, decoding, comparison, and metadata preparation, are offloaded to a bounded worker pool, while all Face and \texttt{io\_context} operations remain on the main NDN thread for thread safety. We further introduced a nonblocking asynchronous publish path that prevents application-level request handling from stalling the Face event loop. These optimizations target event-loop blocking under high-frequency workloads; the evaluation does not isolate their individual contributions.
+For NAC-ABE, cached keys avoid repeated retrieval and decryption. Small publications can also be carried directly in Sync Interest Application Parameters, avoiding a separate publication fetch. Regular-expression subscriptions filter message types and Request service names; receivers then check the recipient, service and invocation bindings.
+
+Peers can reference immutable, producer-signed security profiles by exact Data name under the Producers' prefixes. Receivers fetch and validate uncached profiles, reuse their encryption certificates and capabilities within certificate validity, and retain authorization and request-binding checks for each invocation.
+
+SVS byte-publication preparation is synchronous by default; optional bounded workers can prepare publications asynchronously. Network operations remain on the Face event loop. The evaluation measures the combined invocation path rather than each optimization separately.
+
+Request-scoped protection is enabled by default for Controller-managed calls. With custom capability settings, input and result isolation depends on retaining request-scoped protection.
+
+A two-provider MiniNDN functional experiment verified protected nonempty input delivery and results for both selected providers; in a separate call, a nonselected provider did not obtain decrypted input or usable Selection keys. The performance experiments below select one provider per invocation.
 
 %NDNSF was implemented using ndn-cxx~\cite{ndn-cxx}, NDN-SVS~\cite{ndnsvs-github}, and NAC-ABE~\cite{dulal2023nac-abe}. During development, we observed that the baseline NAC-ABE and NDN-SVS implementations did not adequately meet performance expectations, and we therefore introduced several optimizations.
 

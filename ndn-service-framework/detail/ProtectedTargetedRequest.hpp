@@ -3,6 +3,7 @@
 
 #include "TargetedRequestRouting.hpp"
 #include "../NDNSFMessages.hpp"
+#include "../RequestConfidentiality.hpp"
 #include "../utils.hpp"
 
 #include <stdexcept>
@@ -13,9 +14,21 @@ namespace ndn_service_framework::detail {
 
 inline constexpr const char* TARGETED_KEY_ENVELOPE_FIELD =
   "TargetedRequestScopedKeyEnvelopeV1";
+inline constexpr const char* TARGETED_BINARY_KEY_ENVELOPE_FIELD =
+  "TargetedRequestScopedKeyEnvelopeBinaryV1";
+inline constexpr const char* TARGETED_COMPACT_KEY_ENVELOPE_FIELD =
+  "TargetedRequestScopedKeyEnvelopeCompactV1";
 inline constexpr const char* TARGETED_INLINE_INPUT_FIELD = "TargetedInlineSignedInputV1";
 inline constexpr std::size_t TARGETED_INLINE_INPUT_MAX_BYTES = 4096;
 inline constexpr std::size_t TARGETED_INLINE_REQUEST_MAX_BYTES = 8192;
+
+inline bool supportsBinaryTargetedKeyEnvelope(
+  const std::map<std::string, std::string>& authenticatedOffer,
+  bool protectedCarrierAllowed)
+{
+  const auto binary = authenticatedOffer.find("targeted.binaryKeyEnvelopeV1");
+  return protectedCarrierAllowed && binary != authenticatedOffer.end() && binary->second == "1";
+}
 
 inline bool hasOptionalInlineTargetedInput(const RequestMessage& request)
 {
@@ -47,7 +60,46 @@ inline bool hasProtectedTargetedCarrier(const RequestMessage& request)
 {
   return request.getRequestMode() == tlv::TargetedRequest &&
          request.hasRequestCapabilities() &&
-         request.getRequestCapabilities().hasField(TARGETED_KEY_ENVELOPE_FIELD);
+          (request.getRequestCapabilities().hasField(TARGETED_KEY_ENVELOPE_FIELD) ||
+           request.getRequestCapabilities().hasField(TARGETED_BINARY_KEY_ENVELOPE_FIELD) ||
+           request.getRequestCapabilities().hasField(TARGETED_COMPACT_KEY_ENVELOPE_FIELD));
+}
+
+// Decode only the negotiated carrier. A binary envelope is one canonical TLV,
+// not a text encoding; retaining a separate field keeps old peers unambiguous.
+inline ndn::Block decodeProtectedTargetedKeyEnvelope(const RequestMessage& request)
+{
+  if (!hasProtectedTargetedCarrier(request))
+    throw std::invalid_argument("missing protected Targeted key carrier");
+  const auto& caps = request.getRequestCapabilities();
+  const bool binary = caps.hasField(TARGETED_BINARY_KEY_ENVELOPE_FIELD);
+  const bool compact = caps.hasField(TARGETED_COMPACT_KEY_ENVELOPE_FIELD);
+  if (int(binary) + int(compact) + int(caps.hasField(TARGETED_KEY_ENVELOPE_FIELD)) != 1)
+    throw std::invalid_argument("ambiguous protected Targeted key carriers");
+  const auto& value = caps.getField(compact ? TARGETED_COMPACT_KEY_ENVELOPE_FIELD :
+                                  binary ? TARGETED_BINARY_KEY_ENVELOPE_FIELD :
+                                           TARGETED_KEY_ENVELOPE_FIELD);
+  if (value.empty() || value.size() > DeploymentControlMessage::MAX_FIELD_VALUE)
+    throw std::invalid_argument("protected Targeted key carrier exceeds bounds");
+  ndn::Buffer bytes;
+  if (binary || compact) bytes.assign(value.begin(), value.end());
+  else {
+    bytes = selectionGatedUnhex(value);
+    if (selectionGatedHex(bytes) != value)
+      throw std::invalid_argument("protected Targeted key carrier is not canonical hex");
+  }
+  const ndn::Block wire(ndn::span<const uint8_t>(bytes.data(), bytes.size()));
+  if (wire.size() != bytes.size() || wire.type() != SelectionKeyEnvelope::TYPE)
+    throw std::invalid_argument("malformed protected Targeted key carrier");
+  if (binary || compact) {
+    SelectionKeyEnvelope envelope;
+    if (!envelope.wireDecode(wire) || envelope.isCompact() != compact)
+      throw std::invalid_argument("malformed binary protected Targeted key envelope");
+    const auto canonical = envelope.wireEncode();
+    if (canonical != wire)
+      throw std::invalid_argument("noncanonical binary protected Targeted key envelope");
+  }
+  return wire;
 }
 
 // This local descriptor is crypto AAD, never a transmitted Selection or an
@@ -71,6 +123,10 @@ inline ServiceSelectionMessage makeProtectedTargetedBindingSelection(
     throw std::invalid_argument("invalid protected Targeted request binding");
   }
   const auto& original = request.getRequestCapabilities();
+  const bool binaryCarrier = original.hasField(TARGETED_BINARY_KEY_ENVELOPE_FIELD);
+  const bool compactCarrier = original.hasField(TARGETED_COMPACT_KEY_ENVELOPE_FIELD);
+  if (int(binaryCarrier) + int(compactCarrier) + int(original.hasField(TARGETED_KEY_ENVELOPE_FIELD)) > 1)
+    throw std::invalid_argument("ambiguous protected Targeted key carriers");
   if (original.getVersion() != DeploymentControlMessage::VERSION ||
       !original.hasField("RequestScopedConfidentialityV1") ||
       original.getField("RequestScopedConfidentialityV1") != "required") {
@@ -81,7 +137,8 @@ inline ServiceSelectionMessage makeProtectedTargetedBindingSelection(
   RequestCapabilities capabilities;
   capabilities.setVersion(original.getVersion());
   for (const auto& [name, value] : original.getFields()) {
-    if (name != TARGETED_KEY_ENVELOPE_FIELD)
+    if (name != TARGETED_KEY_ENVELOPE_FIELD && name != TARGETED_BINARY_KEY_ENVELOPE_FIELD &&
+        name != TARGETED_COMPACT_KEY_ENVELOPE_FIELD)
       capabilities.setField(name, value);
   }
   RequestMessage normalized(request);
@@ -95,11 +152,16 @@ inline ServiceSelectionMessage makeProtectedTargetedBindingSelection(
     normalized.setPayload(empty, 0);
   }
   const auto wire = normalized.WireEncode();
-  const std::string domain = "NDNSF-TARGETED-REQUEST-SCOPED-KEY-V1:";
+  // Bind encoding choice even though the carrier bytes themselves are omitted
+  // to avoid a circular digest. Switching profiles cannot preserve the AAD.
+  const std::string domain = compactCarrier ? "NDNSF-TARGETED-REQUEST-SCOPED-KEY-COMPACT-V1:" : binaryCarrier ?
+    "NDNSF-TARGETED-REQUEST-SCOPED-KEY-BINARY-V1:" :
+    "NDNSF-TARGETED-REQUEST-SCOPED-KEY-V1:";
   ndn::Buffer transcript(domain.begin(), domain.end());
   transcript.insert(transcript.end(), wire.begin(), wire.end());
 
   ServiceSelectionMessage binding;
+  binding.setCompactKeyEnvelopeMode(compactCarrier);
   binding.setRequestIDs({requestId.toUri()});
   binding.setAttempt(1); // A fresh Core RPC ID owns one transport invocation.
   binding.setPolicyEpoch(request.getPolicyEpoch());

@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 
 import pytest
 
@@ -12,10 +13,16 @@ DEFINITIONS, MAIN = SCRIPT.read_text().split('\ncd "$ROOT"\n', 1)
 
 
 def shell(code, *args, env=None):
-    return subprocess.run(
-        ["bash", "-c", code, str(SCRIPT), *args], text=True,
-        capture_output=True, env=env, timeout=10,
-    )
+    # Execute a real script beside the installer: preserve BASH_SOURCE/ROOT
+    # semantics and avoid Linux's per-argument limit for a growing installer.
+    with tempfile.NamedTemporaryFile(mode='w', dir=ROOT, suffix='.sh',
+                                     prefix='.stack-installer-test-') as script:
+        script.write(code)
+        script.flush()
+        return subprocess.run(
+            ['bash', script.name, *args], text=True,
+            capture_output=True, env=env, timeout=10,
+        )
 
 
 @pytest.mark.parametrize("args, message", [
@@ -262,23 +269,50 @@ install_external_dependencies
     assert "UNEXPECTED" not in result.stdout
 
 
-def test_waf_dependency_handles_quoted_source_path(tmp_path):
+@pytest.mark.parametrize('initial', ['clean', 'preapplied', 'incompatible'])
+@pytest.mark.parametrize('fail_build', [False, True])
+def test_waf_dependency_patch_lifecycle_and_quoted_source_path(tmp_path, initial, fail_build):
     source = tmp_path / "source ' with spaces" / "ndn-svs"
     source.mkdir(parents=True)
-    (source / ".git").write_text("gitdir: unused\n")
+    original = {'clean': 'original\n', 'preapplied': 'updated\n',
+                'incompatible': 'unrelated\n'}[initial]
+    (source / 'value.txt').write_text(original)
+    project = tmp_path / 'project'
+    patch = project / 'tools/ndn-svs/publication-latency.patch'
+    patch.parent.mkdir(parents=True)
+    patch.write_text('diff --git a/value.txt b/value.txt\n'
+                     '--- a/value.txt\n+++ b/value.txt\n'
+                     '@@ -1 +1 @@\n-original\n+updated\n')
     waf = source / "waf"
-    waf.write_text('#!/bin/bash\nprintf "FAKE_WAF:%s:%s\\n" "$PWD" "$*"\n')
-    waf.chmod(0o755)
+    waf.write_text('import os, sys\nfrom pathlib import Path\n'
+                   'assert Path("value.txt").read_text() == "updated\\n"\n'
+                   'print("FAKE_WAF:" + os.getcwd() + ":" + " ".join(sys.argv[1:]))\n'
+                   'if os.environ["NDNSF_TEST_FAIL_BUILD"] == "1" and sys.argv[1] == "-j2":\n'
+                   '    raise SystemExit(19)\n')
+    env = dict(os.environ, NDNSF_TEST_ROOT=str(project), NDNSF_TEST_BUILD=str(tmp_path / 'build'),
+               NDNSF_TEST_SOURCE=str(source), NDNSF_TEST_FAIL_BUILD=str(int(fail_build)))
     result = shell(DEFINITIONS + '''
+ROOT="$NDNSF_TEST_ROOT"
+BUILD_DIR="$NDNSF_TEST_BUILD"
 FORCE_DEPENDENCIES=1
 sudo_run() { :; }
-ensure_source_tree() { printf '%s\n' "$DEPS_DIR/ndn-svs"; }
-record_source_receipt() { :; }
+ensure_source_tree() { printf '%s\n' "$NDNSF_TEST_SOURCE"; }
+install_manifest_tree() { echo STAGED_INSTALL; }
+record_source_receipt() { echo SOURCE_RECEIPT; }
 build_waf_dependency ndn-svs libndn-svs invalid-url 0.1
-''', "--deps-dir", str(source.parent), "--jobs", "2")
-    assert result.returncode == 0, result.stderr
+''', "--deps-dir", str(source.parent), "--jobs", "2", env=env)
+    expected = 1 if initial == 'incompatible' else 19 if fail_build else 0
+    assert result.returncode == expected, result.stderr
+    assert (source / 'value.txt').read_text() == original
+    if initial == 'incompatible':
+        assert 'FAKE_WAF' not in result.stdout
+        return
     assert f"FAKE_WAF:{source}:configure --prefix=/usr/local" in result.stdout
     assert f"FAKE_WAF:{source}:-j2" in result.stdout
+    assert ('STAGED_INSTALL' in result.stdout) == (not fail_build)
+    assert ('SOURCE_RECEIPT' in result.stdout) == (not fail_build)
+    install_call = f"FAKE_WAF:{source}:install --destdir={tmp_path / 'build/install-staging/ndn-svs'}"
+    assert (install_call in result.stdout) == (not fail_build)
 
 
 def test_install_refreshes_loader_before_python_and_limits_jobs():

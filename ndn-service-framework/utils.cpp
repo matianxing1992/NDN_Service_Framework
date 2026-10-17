@@ -173,6 +173,12 @@ namespace ndn_service_framework
         return std::to_string(millis) + "-" + makeOpaqueControlHandle(16);
     }
 
+uint64_t
+controlQueryLifetimeMs(const std::string& operation)
+{
+  return operation == "POLICY-STATUS" ? 10000 : 300000;
+}
+
 std::optional<uint64_t> controlNonceExpiry(const ndn::Name& controller,
                                           const ndn::Interest& interest)
 {
@@ -180,6 +186,8 @@ std::optional<uint64_t> controlNonceExpiry(const ndn::Name& controller,
   if (!parsed || parsed->category != "RPC" || parsed->suffix.size() != 4 || parsed->suffix[2].type() != 8)
     return std::nullopt;
   const auto& component = parsed->suffix[2];
+  const auto lifetimeMs = controlQueryLifetimeMs(
+    parsed->suffix[0] == ndn::name::Component("POLICY-STATUS") ? "POLICY-STATUS" : "");
   const std::string nonce(reinterpret_cast<const char*>(component.value()), component.value_size());
   const auto separator = nonce.find('-');
   if (separator == std::string::npos || !isValidOpaqueControlHandle(nonce.substr(separator + 1)))
@@ -190,8 +198,8 @@ std::optional<uint64_t> controlNonceExpiry(const ndn::Name& controller,
     const auto now = static_cast<uint64_t>(ndn::time::duration_cast<ndn::time::milliseconds>(
       ndn::time::system_clock::now().time_since_epoch()).count());
     if (std::to_string(minted) != text || minted > now + 30000 ||
-        (minted <= now && now - minted >= 300000)) return std::nullopt;
-    return minted + 300000;
+        (minted <= now && now - minted >= lifetimeMs)) return std::nullopt;
+    return minted + lifetimeMs;
   }
   catch (const std::exception&) { return std::nullopt; }
 }
@@ -1023,6 +1031,7 @@ std::optional<uint64_t> controlNonceExpiry(const ndn::Name& controller,
     {
         ServiceSelectionMessage withoutEnvelope(message);
         withoutEnvelope.clearSelectionKeyEnvelope();
+        withoutEnvelope.clearInlineSignedInputData();
         // RequestSecurityBinding carries typed SHA-256 digests as
         // ``sha256:<hex>``.  The legacy selection-status paths intentionally
         // keep the bare hexadecimal digest, so canonicalize only this

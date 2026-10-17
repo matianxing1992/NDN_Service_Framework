@@ -2588,6 +2588,7 @@ class ServiceUser:
         request_capabilities: Optional[
             Union[Mapping[str, str], _ndnsf.NativeRequestCapabilities]
         ] = None,
+        discovery_payload: Optional[bytes] = None,
     ) -> ServiceResponse:
         response = self._native.request_service(
             service,
@@ -2598,6 +2599,7 @@ class ServiceUser:
             request_id=request_id,
             deployment_intent=_native_deployment_intent(deployment_intent),
             request_capabilities=_native_request_capabilities(request_capabilities),
+            discovery_payload=(None if discovery_payload is None else bytes(discovery_payload)),
         )
         return _from_native_response(response)
 
@@ -2997,6 +2999,7 @@ class ServiceUser:
         request_capabilities: Optional[
             Union[Mapping[str, str], _ndnsf.NativeRequestCapabilities]
         ] = None,
+        discovery_payload: Optional[bytes] = None,
     ) -> ServiceResponse:
         """Request a service using an application-defined ACK selector.
 
@@ -3040,6 +3043,7 @@ class ServiceUser:
             request_strategy=request_strategy,
             deployment_intent=_native_deployment_intent(deployment_intent),
             request_capabilities=_native_request_capabilities(request_capabilities),
+            discovery_payload=(None if discovery_payload is None else bytes(discovery_payload)),
         )
         return _from_native_response(response)
 

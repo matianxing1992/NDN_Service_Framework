@@ -11,10 +11,6 @@
   References below identify task inputs, output locations or optional tools;
   they do not delegate the rules to those files. Actual code, manuscript sources
   and task-specific evidence are still needed to perform the corresponding task.
-- NDNSF owns service discovery, participation feedback, selection and invocation.
-  UAV and distributed inference applications own task semantics and selection
-  policies. DistributedRepo stores and retrieves original signed Data; it must
-  not become a second execution or authorization authority.
 - Use Waf to configure, build and install this repository's targets. External
   dependencies use their own maintained build/install systems. MiniNDN runs
   consume system-installed libraries and applications, not ad hoc copied binaries.
@@ -37,6 +33,118 @@
 - Paths below describe supported tooling or optional manuscript work. Check that
   a referenced file exists before using it; its absence must not block unrelated
   repository work. Never recreate private baselines or experiment evidence.
+
+## Mandatory engineering principles
+
+These ten rules apply to every design and code change. Review the affected
+rules before declaring a change complete. A necessary exception must identify
+the conflict, rationale and impact and receive user approval before implementation;
+never hide an exception in a special-case branch. Higher-priority instructions
+and current explicit user decisions still take precedence.
+
+1. **Producer-owned, immutable Data identity.** Every published application Data
+   packet belongs under its actual Producer's complete prefix, followed by its
+   category and identity/version components, including payloads, manifests,
+   segments, control replies, ACKs, status records and transport Data envelopes.
+   The Producer generates and originally publishes the content, not merely
+   stores or forwards it. Validate the signer's authority for
+   that namespace; fail if the Producer cannot be resolved. Preserve standard
+   protocol naming conventions. Do not use another actor's prefix, a global-only
+   prefix or an inferred rank-only identity. Never reuse a name for changed
+   content or protection parameters. Immutable reusable objects keep stable
+   identities; execution outputs retain their required request/attempt/round
+   bindings. Objects referenced by a manifest retain their own Producer names.
+
+2. **Data-driven distributed execution.** Cross-node task assignment, dependency
+   delivery and result-driven state transitions use published, retrieved and
+   validated Named Data. A computation starts only after its declared input and
+   authorization prerequisites are satisfied. Timers and local policies may
+   trigger timeout, cancellation or the next publication, but cannot bypass
+   dependency admission or silently authorize remote execution. No undocumented
+   side channel may bypass this lifecycle. Local computation, device calls and
+   private in-process state need not become published Data.
+
+3. **Object- and context-based security.** Apply the same applicable name,
+   signature, trust, authorization and execution-binding checks whether an object
+   arrives from its Producer, a cache or a Repo. A valid signature alone does not
+   confer service permission; decryption does not replace signature validation.
+   Reject missing or mismatched required identities, permissions or bindings.
+   A trusted connection or cache hit must not bypass object admission.
+
+4. **Transparent Repo.** Store and retrieve original Data without renaming,
+   re-signing, re-encoding, re-encrypting, wrapping or modifying its wire packet,
+   content or metadata. Put replica locations and forwarding hints in retrieval
+   references, not replacement content names. Repo-generated management replies
+   and inventories use the Repo's own Producer prefix and reference original
+   names. Repo is not an application execution or authorization authority.
+
+5. **One owner and one authoritative implementation.** NDNSF owns discovery,
+   feedback, selection and invocation; applications own task semantics and
+   selection policies; adapters own backend computation; Repo owns storage.
+   Cross these boundaries through explicit interfaces, not private-state access
+   or mutable process-global state. Keep native DI protocol/execution logic in
+   C++; Python bindings and experiment orchestration must not duplicate its state
+   machines. Reuse maintained APIs and launchers instead of parallel implementations.
+
+6. **Owned, bounded lifecycles.** Every asynchronous worker, callback, timer,
+   cache, buffer and child process needs an owner, a resource bound or backpressure
+   policy, cancellation behavior and a release path. Preserve dependencies until
+   work drains; prevent strong callback-reference cycles. Terminal executions
+   cannot advance, and retries must not cause uncontrolled duplicate side effects.
+   Do not hide failures with unlimited queues, cache growth or retries.
+
+7. **Embedded ndn-cxx-style C++ subset.** Use two-space indentation, no tabs and
+   normally at most 100 columns. Types use `UpperCamelCase`, functions/variables
+   `lowerCamelCase`, non-public non-static members `m_`, and named constants/enum
+   values `UPPER_SNAKE_CASE`. New files use `lower-hyphen.hpp/.cpp`; do not rename
+   existing files merely for style. Class/function opening braces occupy a new
+   line; control-statement braces stay on the same line. Put return types on a
+   separate line in multiline function declarations/definitions. Headers have
+   include guards; use quotes for project headers and angle brackets for external
+   headers, grouped and sorted, with the corresponding header first in `.cpp`.
+   Write English `//` comments and `/** */` interface documentation. Normally mark
+   converting single-argument constructors `explicit`; avoid C-style casts.
+   Apply this subset to new and edited code without unrelated mass reformatting.
+   Reference only (not required reading):
+   https://docs.named-data.net/ndn-cxx/current/code-style.html
+
+8. **Production-path changes and proportionate evidence.** Coordinate interface,
+   naming and wire-format changes across producers, consumers, validation,
+   authorization, retrieval and cache keys; maintain C++/Python component-type and
+   wire parity where both implement a contract. Register new targets and install
+   outputs in the maintained Waf system. Verify actual production behavior and
+   relevant negative/recovery cases; do not substitute an experiment-only bypass
+   or a reimplementation of production logic for that evidence. Distinguish
+   static review, build, smoke tests and real end-to-end qualification.
+
+9. **Source-first static diagnosis.** Before a substantive fix or expensive
+   build/experiment, trace the affected production caller, owner and data/state
+   path and inspect the actual source. Check contracts, serialization, trust and
+   authorization, resource ownership, failure cleanup, build/link registration
+   and the relevant test/oracle as applicable. Use CodeGraph only when an index
+   exists, then confirm against source. Separate confirmed defects, conditional
+   risks and runtime questions; static inspection cannot prove runtime success.
+   Use small, targeted probes where source alone cannot resolve the question,
+   rather than blindly repeating full builds or experiments. After a failure,
+   retain the first boundary and revise the affected static check before retrying.
+   Keep this review within the existing work unit, not a new report bureaucracy.
+
+10. **Minimum sufficient design; no speculative engineering.** First establish
+    whether new code is necessary. Prefer, in order, an existing project path,
+    reusable project helper/type, standard library, suitable platform facility,
+    or an already-declared compatible dependency; otherwise add the smallest
+    maintainable custom implementation that satisfies the contract. Every new
+    abstraction, dependency, configuration option, worker, cache, build stage or
+    duplicated state must have a concrete current requirement and an owner.
+    Reject unused future extension points, parallel launch/build pipelines,
+    repeated conversions/copies and unrelated cleanup. Extract shared logic for
+    actual repeated behavior or a demonstrated ownership/testability boundary,
+    not hypothetical future consumers. Prefer one supported default path and
+    explicit configuration over hidden fallbacks and extra knobs. Minimize
+    independent concepts, mutable state and maintenance burden, not merely line
+    count. Never simplify by removing approved behavior, security checks,
+    cancellation/cleanup, necessary observability or required tests. Apply this
+    check to the affected diff within its existing review; add no separate gate.
 
 ## Bundled skills: install missing only
 
@@ -108,6 +216,11 @@
 - Prefer small, coherent work units with one behavioral outcome. Do not split
   ordinary coding, documentation and evidence into unrelated administrative tasks
   or accumulate unrelated changes merely to save a build.
+- Scope each Spec to one concrete outcome; first check whether qualified evidence
+  and maintained code already suffice. For every task, name the remaining gap
+  and the smallest change or check that closes it; remove speculative variants
+  and duplicate document work. Expand an experiment only when its current
+  condition cannot answer the stated question, not to seek a favorable result.
 - NDNSF-DI native behavior tests must exercise production C++ targets with C++
   fixtures and assertions. Python may orchestrate processes or test bindings, but
   cannot replace native behavior or cross-process end-to-end qualification.
@@ -171,7 +284,7 @@
   unrestricted parallel build. Reading or editing source needs no build launcher.
 
 <!-- SPEC_KIT_PLAN_START -->
-Active implementation plan is at specs/201-producer-data-naming/plan.md.
+Active implementation plan is at specs/207-ndnsf-contribution-evidence/plan.md.
 <!-- SPEC_KIT_PLAN_END -->
 
 ## Git boundary for documentation and specs
@@ -180,16 +293,18 @@ Active implementation plan is at specs/201-producer-data-naming/plan.md.
 - Preserve the ignore rules for all other documentation and specs. Do not broaden the paper-source exception or force-add unrelated files.
 - Put durable implementation changes in source code and tests. Keep planning and Spec Kit artifacts in the local `specs/` tree.
 
-## Data naming and transparent Repo
-
-- Every published Data packet must use the naming structure `<actual Producer's complete prefix>/<data category>/<identity and version information>`. This applies to business payloads, manifests, segments, control replies, ACKs, status records, and transport Data envelopes. Preserve standard protocol naming conventions beneath the authorized producer prefix.
-- The Producer is the actor that generates and originally publishes the content. Use its complete prefix and validate the signer's authorization for that namespace. Never substitute a global namespace, an inferred rank-only prefix, or another actor's prefix; fail explicitly if the Producer cannot be resolved.
-- Repo is transparent storage and retrieval: preserve the original Data name, content, metadata, signature, and wire packet. Do not rename, re-sign, re-encode, re-encrypt, wrap, or otherwise transform stored Data. Fetch hints and replica locations belong in references/routing metadata, not in replacement content names.
-- Repo-generated management replies and inventory records belong under the Repo's own producer prefix; they must reference stored objects by their original producer names.
-- Manifests may reference objects from different Producers. Each referenced object retains its own complete producer name. Coordinate names and authorization, retrieval, validation, and cache keys together when changing a naming format.
-- Use stable content identities for reusable immutable objects and explicit execution bindings for invocation outputs. Reuse unchanged objects without request-specific renaming; never reuse a name for changed content or changed protection parameters. Keep C++ and Python component types and wire encodings identical.
-
 ## NDNSF paper source and compilation
+
+- For authorized manuscript revisions, use the installed `academic-humanizer`
+  skill for the language pass, followed by `review` for necessity, technical
+  accuracy and evidence. Apply it to affected passages within the same revision;
+  do not create a separate report or rewrite unchanged prose solely for style.
+  Preserve numbers, equations, citation keys, protocol terminology and evidence
+  strength. The user's requested concision takes precedence over a skill's fixed
+  paragraph-count preference. This language pass does not replace experiment,
+  citation or submission-readiness checks. Installed source:
+  `AIScientists-Dev/academic-humanizer`, commit
+  `94b88b23703bed7df507acae7d6d5876209a0cdf` (version 0.3.3).
 
 - The NDNSF paper source copied from Overleaf is maintained in `docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/`. Its entry point is `NDNSF.tex`, chapter files are in `sections/`, and the bibliography is `sections/references.bib`. Preserve relative figure and bibliography paths; do not create a competing source tree or edit generated PDFs directly.
 - This is the user's older manuscript, distinct from the dissertation proposal in `docs/PAPER/proposal-defense/`. Do not silently substitute newer implementation claims. Compilation-only requests do not authorize manuscript revisions.

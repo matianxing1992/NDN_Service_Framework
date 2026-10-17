@@ -5,6 +5,28 @@ top = '..'
 import os
 
 def build(bld):
+    bld.program(target='../message-validator-trust-tests',
+                name='message-validator-trust-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/message-validator-trust.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+    bld.program(target='../spec205-profile-tests', name='spec205-profile-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/spec205-security-profile.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+    bld.program(target='../spec205-carrier-tests', name='spec205-carrier-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/spec205-protected-carrier.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
     # Small installed closure oracle. Reuse the independent production-linked
     # corpora; tensor/control/stream receipts remain separate existing targets.
     bld.program(target='../spec201-candidate-closure',
@@ -69,6 +91,8 @@ def build(bld):
                         bld.path.find_node('integration-tests/request-scoped-response-confidentiality.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp'),
                         bld.path.find_node('integration-tests/controller-revocation-flow.t.cpp'),
+                        bld.path.find_node('unit-tests/controller-revocation-state.t.cpp'),
+                        bld.path.find_node('unit-tests/generic-dynamic-api-targeted.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-protected-runtime-grant.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedInference/cpp/ndnsf-di'],
                 use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',

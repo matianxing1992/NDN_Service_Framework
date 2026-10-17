@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include <ndn-cxx/face.hpp>
+#include "../targeted-invocation/matched.hpp"
 #include <ndn-cxx/util/scheduler.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
@@ -96,6 +97,50 @@ public:
         for (const auto& provider : m_providers) {
             providerAttemptCounts[provider] = 0;
         }
+        spec206FixedArrivals = matchedRecords.enabled() &&
+                               matched203::setting("SPEC206_FIXED_ARRIVALS", 0) == 1;
+        m_matchedRateRps = matched203::setting("SPEC203_RATE_RPS", 0);
+        if (m_matchedRateRps > 0 && (!matchedRecords.enabled() || spec206FixedArrivals)) {
+            throw std::invalid_argument("SPEC203_RATE_RPS requires the matched window workload");
+        }
+        if (spec206FixedArrivals &&
+            (warmupCount != 0 || requestDeadlineMs > intervalInMs)) {
+            throw std::invalid_argument("fixed arrivals require no in-window warmup and no overlap");
+        }
+        if (spec206FixedArrivals) {
+            const char* path = std::getenv("SPEC206_TASK_PLAN");
+            if (path == nullptr || *path == '\0') {
+                throw std::invalid_argument("fixed arrivals require SPEC206_TASK_PLAN");
+            }
+            std::ifstream file(path, std::ios::binary);
+            if (!file) {
+                throw std::invalid_argument("cannot open fixed task plan");
+            }
+            std::string bytes(131073, '\0');
+            file.read(bytes.data(), bytes.size());
+            if (file.gcount() > 131072) {
+                throw std::invalid_argument("fixed task plan too large");
+            }
+            bytes.resize(static_cast<size_t>(file.gcount()));
+            const auto plan = nlohmann::json::parse(bytes);
+            const auto windowMs = matched203::setting("SPEC203_WINDOW_MS", 60000);
+            if (!plan.is_object() || plan.size() != 4 || plan.at("version") != 1 ||
+                plan.at("window_ms") != windowMs || plan.at("period_ms") != intervalInMs ||
+                !plan.at("tasks").is_array() ||
+                plan.at("tasks").size() != static_cast<size_t>(measuredCount)) {
+                throw std::invalid_argument("fixed task plan shape");
+            }
+            for (int index = 0; index < measuredCount; ++index) {
+                const auto& row = plan.at("tasks").at(index);
+                if (!row.is_object() || row.size() != 3 ||
+                    row.at("task") != index + 1 ||
+                    row.at("arrival_ms") != index * intervalInMs ||
+                    (row.at("class") != "compute" && row.at("class") != "memory")) {
+                    throw std::invalid_argument("fixed task plan row");
+                }
+                spec206Memory.push_back(row.at("class") == "memory");
+            }
+        }
     }
 
     void run()
@@ -107,6 +152,7 @@ public:
           INPUT_NAMESPACE,
           [this](const Name&) {
               inputPrefixRegistered = true;
+              if (matchedRecords.enabled()) scheduleWorkload();
               std::cout << "NSC_INPUT_PREFIX_READY prefix=" << INPUT_NAMESPACE
                         << std::endl;
           },
@@ -114,7 +160,10 @@ public:
         m_face.setInterestFilter(INPUT_NAMESPACE,
                                  bind(&rpcConsumer::onInterestForInput, this, _1, _2));
 
-        if (measurementStartMonotonicMs > 0) {
+        if (matchedRecords.enabled()) {
+            // Registration callback starts the optional serial experiment.
+        }
+        else if (measurementStartMonotonicMs > 0) {
             const int64_t delayMs = std::max<int64_t>(
               0, measurementStartMonotonicMs - monotonicNowMs());
             m_scheduler.schedule(
@@ -177,6 +226,7 @@ private:
         std::string inputName;
         ndn::time::steady_clock::time_point startedAt;
         ndn::time::steady_clock::time_point deadline;
+        uint64_t plannedNs = 0;
         PendingInterestHandle notificationHandle;
         PendingInterestHandle resultHandle;
         scheduler::EventId attemptTimer;
@@ -200,6 +250,82 @@ private:
     std::string FUNCTION_NAME = "/ManualControl";
     std::string INPUT_NAMESPACE;
     std::string runId;
+    matched203::Records matchedRecords;
+    uint64_t matchedT0 = 0, matchedT1 = 0;
+    bool matchedClosing = false;
+    int m_matchedRateRps = 0;
+    uint64_t m_matchedReadyNs = 0;
+    uint64_t m_matchedArrivalIndex = 0;
+    size_t m_matchedPending = 0;
+    bool spec206FixedArrivals = false;
+    std::vector<bool> spec206Memory;
+    std::string matchedCommand(int id) const {
+        if (!spec206FixedArrivals) {
+            return matched203::command(runId, id);
+        }
+        if (id <= 0 || static_cast<size_t>(id) > spec206Memory.size()) {
+            throw std::invalid_argument("fixed task identity");
+        }
+        std::ostringstream stream;
+        stream << "T205|M|" << (spec206Memory.at(id - 1) ? 'M' : 'C') << '|'
+               << std::setfill('0') << std::setw(10) << id << "|private-input";
+        auto text = stream.str();
+        text.resize(64, '_');
+        return text;
+    }
+    void matchedNext() {
+        if (matched203::now() >= matchedT1) {
+            if (m_matchedPending != 0) {
+                return;
+            }
+            if (!matchedClosing) {
+                matchedClosing = true;
+                m_scheduler.schedule(ndn::time::seconds(2), [this] {
+                    matchedRecords.write({{"event", "shutdown"}, {"attempts", rpcCall}});
+                    m_face.shutdown(); m_ioService.stop();
+                });
+            }
+            return;
+        }
+        if (m_matchedRateRps == 0) {
+            beginLogicalRequest();
+            return;
+        }
+        if (m_matchedPending >= 512) {
+            throw std::runtime_error("fixed-rate NSC client exceeded 512 pending calls");
+        }
+        const auto plannedNs = m_matchedReadyNs +
+            m_matchedArrivalIndex * 1000000000ULL / m_matchedRateRps;
+        ++m_matchedArrivalIndex;
+        beginLogicalRequest(plannedNs);
+        const auto nextNs = m_matchedReadyNs +
+            m_matchedArrivalIndex * 1000000000ULL / m_matchedRateRps;
+        const auto nowNs = matched203::now();
+        m_scheduler.schedule(ndn::time::nanoseconds(nextNs > nowNs ? nextNs - nowNs : 0),
+            [this] { matchedNext(); });
+    }
+    void matchedTerminal(RequestState& state, bool success) {
+        const uint64_t begin = ndn::time::duration_cast<ndn::time::nanoseconds>(
+            state.startedAt.time_since_epoch()).count();
+        const uint64_t terminal = matched203::now();
+        const uint64_t deadline = ndn::time::duration_cast<ndn::time::nanoseconds>(
+            state.deadline.time_since_epoch()).count();
+        const std::string status = terminal >= deadline ? "timeout" : success ? "success" : "response_error";
+        matchedRecords.write({{"event", "terminal"}, {"command", matchedCommand(state.id)},
+            {"begin_ns", begin}, {"planned_ns", state.plannedNs},
+            {"terminal_ns", terminal}, {"deadline_ns", deadline},
+            {"measured", begin >= matchedT0}, {"target", state.currentProvider},
+            {"payload_verified", success}, {"terminal", status}});
+        if (m_matchedRateRps > 0) {
+            --m_matchedPending;
+            if (terminal >= matchedT1) {
+                matchedNext();
+            }
+        }
+        else if (!spec206FixedArrivals) {
+            m_scheduler.schedule(ndn::time::milliseconds(0), [this] { matchedNext(); });
+        }
+    }
     std::vector<std::string> m_providers;
     const std::string APP_NACK = "APP_NACK";
     int intervalInMs = 1000;
@@ -300,6 +426,42 @@ private:
 
     void scheduleWorkload()
     {
+        if (matchedRecords.enabled()) {
+            const auto readyNs = matched203::now();
+            m_matchedReadyNs = readyNs;
+            const auto warmupMs = matched203::setting("SPEC203_WARMUP_MS", 10000);
+            const auto windowMs = matched203::setting("SPEC203_WINDOW_MS", 60000);
+            matchedT0 = measurementStartMonotonicMs > 0 && spec206FixedArrivals ?
+                        static_cast<uint64_t>(measurementStartMonotonicMs) * 1000000ULL :
+                        readyNs + static_cast<uint64_t>(warmupMs) * 1000000ULL;
+            matchedT1 = matchedT0 + static_cast<uint64_t>(windowMs) * 1000000ULL;
+            if (spec206FixedArrivals) {
+                const auto expectedCount = (windowMs + intervalInMs - 1) / intervalInMs;
+                if (matchedT0 <= readyNs || measuredCount != expectedCount) {
+                    throw std::invalid_argument("fixed arrival window/count/start mismatch");
+                }
+            }
+            matchedRecords.write({{"event", "ready"}, {"ready_ns", readyNs},
+                {"t0_ns", matchedT0}, {"t1_ns", matchedT1}, {"rate_rps", m_matchedRateRps}});
+            std::cout << "SPEC203_NSC_READY" << std::endl;
+            if (spec206FixedArrivals) {
+                for (int index = 0; index < measuredCount; ++index) {
+                    const auto plannedNs = matchedT0 +
+                        static_cast<uint64_t>(index) * intervalInMs * 1000000ULL;
+                    const auto delayMs = (plannedNs - readyNs + 999999ULL) / 1000000ULL;
+                    m_scheduler.schedule(ndn::time::milliseconds(delayMs),
+                        [this, plannedNs] { beginLogicalRequest(plannedNs); });
+                }
+                const auto shutdownMs = (matchedT1 - readyNs) / 1000000ULL +
+                    requestDeadlineMs + 1000;
+                m_scheduler.schedule(ndn::time::milliseconds(shutdownMs), [this] {
+                    matchedRecords.write({{"event", "shutdown"}, {"attempts", rpcCall}});
+                    m_face.shutdown(); m_ioService.stop();
+                });
+                return;
+            }
+            matchedNext(); return;
+        }
         measurementStartedMonotonicMs = monotonicNowMs();
         measurementStartLatenessMs = measurementStartMonotonicMs > 0 ?
           static_cast<double>(std::max<int64_t>(
@@ -330,13 +492,25 @@ private:
           [this] { calculateLatency(); });
     }
 
-    void beginLogicalRequest()
+    void beginLogicalRequest(uint64_t plannedNs = 0)
     {
+        if (matchedRecords.enabled() && !spec206FixedArrivals && matched203::now() >= matchedT1) {
+            matchedNext(); return;
+        }
         const int id = ++rpcCall;
         const auto now = ndn::time::steady_clock::now();
+        if (matchedRecords.enabled() && !spec206FixedArrivals && static_cast<uint64_t>(ndn::time::duration_cast<ndn::time::nanoseconds>(
+                now.time_since_epoch()).count()) >= matchedT1) {
+            --rpcCall; matchedNext(); return;
+        }
         auto& state = requests[id];
+        if (m_matchedRateRps > 0) {
+            ++m_matchedPending;
+        }
         state.id = id;
-        state.measured = id > warmupCount;
+        state.plannedNs = plannedNs ? plannedNs : matched203::now();
+        state.measured = matchedRecords.enabled() ? static_cast<uint64_t>(
+            ndn::time::duration_cast<ndn::time::nanoseconds>(now.time_since_epoch()).count()) >= matchedT0 : id > warmupCount;
         if (state.measured && !firstMeasuredRequestStarted) {
             firstMeasuredRequestStarted = true;
             const int64_t actualMs = monotonicNowMs();
@@ -355,12 +529,15 @@ private:
         state.firstProviderIndex = initialProviderIndex(id, m_providers.size());
         state.inputName = inputNameFor(id);
         state.startedAt = now;
-        state.deadline = now + ndn::time::milliseconds(requestDeadlineMs);
+        state.deadline = spec206FixedArrivals ?
+            ndn::time::steady_clock::time_point(ndn::time::nanoseconds(
+                state.plannedNs + static_cast<uint64_t>(requestDeadlineMs) * 1000000ULL)) :
+            now + ndn::time::milliseconds(requestDeadlineMs);
         if (state.measured) {
             rpcStartTimeMap[id] = now;
         }
         state.globalTimer = m_scheduler.schedule(
-          ndn::time::milliseconds(requestDeadlineMs),
+          ndn::time::milliseconds(std::max(0, remainingMs(state))),
           [this, id] { onGlobalDeadline(id); });
         startNextAttempt(id);
     }
@@ -478,9 +655,23 @@ private:
                  << " generation=" << generation
                  << " provider=" << state.currentProvider
                  << " timeout_ms=" << timeoutMs << std::endl;
+        if (matchedRecords.enabled() && matched203::setting("SPEC203_DUPLICATE_NOTIFY", 0)) {
+            m_scheduler.schedule(ndn::time::milliseconds(80), [this, id, generation, timeoutMs] {
+                if (!isCurrent(id, generation)) return;
+                const auto& current = requests.at(id);
+                // A distinct transport name prevents PIT aggregation or cached ACKs
+                // from hiding the replay of the same logical input.
+                Interest duplicate = createInterest(functionNameFor(current.currentProvider) +
+                    "/retry-check", true, true, timeoutMs);
+                addInterestParameterString(current.inputName, duplicate);
+                m_keyChain.sign(duplicate, security::signingByIdentity(Name(CONSUMER_IDENTITY)));
+                m_face.expressInterest(duplicate, [](const auto&, const auto&) {},
+                                      [](const auto&, const auto&) {}, [](const auto&) {});
+            });
+        }
     }
 
-    void onNotificationData(int id, uint64_t generation, const Interest&, const Data&)
+    void onNotificationData(int id, uint64_t generation, const Interest& sent, const Data& data)
     {
         if (!isCurrent(id, generation)) {
             recordLate(id, true);
@@ -496,6 +687,20 @@ private:
             ++notificationData;
         }
         nscLog() << "Received acknowledgement for request " << id << std::endl;
+        if (matchedRecords.enabled()) {
+            if (data.getName() != sent.getName() ||
+                !verifyDataSignature(data, state.currentProvider))
+                throw std::runtime_error("matched NSC ACK validation failed");
+            const auto reply = ndn::readString(data.getContent());
+            if (spec206FixedArrivals && reply == "APP_BUSY") {
+                matchedRecords.write({{"event", "busy_reject"}, {"task", id},
+                    {"provider", state.currentProvider}, {"mono_ns", matched203::now()}});
+                handleAttemptFailure(id, generation, FailureKind::Nack);
+                return;
+            }
+            if (reply != "APP_ACK")
+                throw std::runtime_error("matched NSC ACK validation failed");
+        }
     }
 
     void onInterestForInput(const InterestFilter&, const Interest& interest)
@@ -523,7 +728,8 @@ private:
             ++inputInterests;
         }
 
-        auto data = createData(interest.getName(), CCNUM, CONSUMER_IDENTITY);
+        auto data = createData(interest.getName(), matchedRecords.enabled() ?
+            matchedCommand(id) : CCNUM, CONSUMER_IDENTITY);
         m_face.put(*data);
         if (state.measured) {
             ++inputData;
@@ -579,6 +785,17 @@ private:
             ++resultData;
         }
         const std::string result = extractDataValue(data);
+        if (matchedRecords.enabled() && data.getName() != Name(expectedResultName(state)))
+            throw std::runtime_error("matched NSC result name mismatch");
+        if (spec206FixedArrivals && result == "APP_BUSY") {
+            matchedRecords.write({{"event", "busy_reject"}, {"task", id},
+                {"provider", state.currentProvider}, {"mono_ns", matched203::now()}});
+            handleAttemptFailure(id, generation, FailureKind::Nack);
+            return;
+        }
+        if (matchedRecords.enabled() && result != matchedCommand(id)) {
+            throw std::runtime_error("matched NSC result payload mismatch");
+        }
         if (isAppNACK(result)) {
             const std::string retryName = result.substr(APP_NACK.size());
             const Name providerService(state.currentProvider + SERVICE_NAME);
@@ -675,6 +892,7 @@ private:
         state.completed = true;
         cancelAttempt(state);
         state.globalTimer.cancel();
+        if (matchedRecords.enabled()) matchedTerminal(state, true);
         if (state.measured) {
             const auto completedAt = ndn::time::steady_clock::now();
             rpcEndTimeMap[state.id] = completedAt;
@@ -702,6 +920,7 @@ private:
         state.completed = true;
         cancelAttempt(state);
         state.globalTimer.cancel();
+        if (matchedRecords.enabled()) matchedTerminal(state, false);
         if (state.measured) {
             ++terminalFailures;
             const auto latencyMs = ndn::time::duration_cast<ndn::time::milliseconds>(
@@ -881,6 +1100,7 @@ private:
     //Signature Verification Functions for Interest
     bool verifyInterestSignature(const Interest &interest, std::string identity)
     {
+        if (matchedRecords.enabled()) return security::verifySignature(interest, getKeyForIdentity(identity));
         // skip verification because NDN_NSC does provide a good API for multiple identities;
         return true;
         if (security::verifySignature(interest, getKeyForIdentity(identity)))
@@ -898,6 +1118,8 @@ private:
     //Signature Verification Functions for Data
     bool verifyDataSignature(const Data &data, std::string identity)
     {
+        if (matchedRecords.enabled()) return Name(identity).isPrefixOf(data.getName()) &&
+            security::verifySignature(data, getKeyForIdentity(identity));
         // skip verification because NDN_NSC does provide a good API for multiple identities;
         return true;
         if (security::verifySignature(data, getKeyForIdentity(identity)))

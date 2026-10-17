@@ -989,6 +989,11 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
   const auto streamEvent = !userToProvider && faultsEnabled
     ? inspectEventCursorForTest(data.getName(), *this)
     : std::optional<uint64_t>{};
+  if (faultsEnabled && faults.dropDataPredicate && faults.dropDataPredicate(data)) {
+    std::lock_guard<std::mutex> lock(m_bridgeMutex);
+    ++m_bridgeStats.droppedPackets;
+    return;
+  }
   if (streamEvent && faults.tamperStreamDataCursor != 0 &&
       *streamEvent == faults.tamperStreamDataCursor) {
     bool tamper = false;

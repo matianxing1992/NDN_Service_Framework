@@ -82,6 +82,8 @@ struct FaultProfile
   bool dropPackets = false;
   bool duplicatePackets = false;
   bool reorderPackets = false;
+  // Selective application Data loss keeps unrelated admission traffic intact.
+  std::function<bool(const ndn::Data&)> dropDataPredicate;
   // Cursor-scoped stream faults are applied only to exact NDNSF EVENT
   // Interest/Data packets in the named direction.  They coexist with the
   // legacy whole-request flags above so formal Spec175 cases can perturb one

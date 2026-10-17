@@ -33,7 +33,8 @@ PolicyRefreshCoordinator::sameStatus(const PolicyStatusData& left,
 bool
 PolicyRefreshCoordinator::installCurrentStatus(const PolicyStatusData& status,
                                                 uint64_t nowMs,
-                                                bool controllerSignatureValid)
+                                                bool controllerSignatureValid,
+                                                bool preservePendingFetch)
 {
   if (!controllerSignatureValid || !status.validate(nowMs) ||
       (!m_serviceName.empty() && status.getServiceName() != m_serviceName)) {
@@ -48,14 +49,22 @@ PolicyRefreshCoordinator::installCurrentStatus(const PolicyStatusData& status,
   }
   m_status = status;
   m_hasStatus = true;
-  m_inFlight = false;
-  m_attempt = 0;
-  m_nextRetryAtMs = 0;
+  if (!preservePendingFetch) {
+    finishTransportFetch();
+  }
   if (m_highestCandidate &&
       m_highestCandidate->compare(m_status.getControllerVersion()) <= 0) {
     m_highestCandidate.reset();
   }
   return true;
+}
+
+void
+PolicyRefreshCoordinator::finishTransportFetch()
+{
+  m_inFlight = false;
+  m_attempt = 0;
+  m_nextRetryAtMs = 0;
 }
 
 PolicyRefreshCoordinator::Result
@@ -65,8 +74,10 @@ PolicyRefreshCoordinator::startFetch(const ControllerVersion& version,
   m_inFlight = true;
   m_attempt = 1;
   m_nextRetryAtMs = nowMs;
-  m_highestCandidate = version;
-  return {Outcome::FETCH_STARTED, FetchRequest{version, m_attempt},
+  if (!m_highestCandidate || version.compare(*m_highestCandidate) > 0) {
+    m_highestCandidate = version;
+  }
+  return {Outcome::FETCH_STARTED, FetchRequest{*m_highestCandidate, m_attempt},
           "refresh_fetch_started"};
 }
 
@@ -156,6 +167,8 @@ PolicyRefreshCoordinator::completeFetch(const PolicyStatusData& status,
   }
   const bool valid = controllerSignatureValid && status.validate(nowMs) &&
                      (m_serviceName.empty() || status.getServiceName() == m_serviceName) &&
+                     (!m_hasStatus ||
+                      status.getControllerVersion().compare(m_status.getControllerVersion()) >= 0) &&
                      (!m_highestCandidate ||
                       status.getControllerVersion().compare(*m_highestCandidate) >= 0);
   if (!valid) {

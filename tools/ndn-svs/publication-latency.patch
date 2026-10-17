@@ -1,0 +1,1028 @@
+diff --git a/ndn-svs/core.cpp b/ndn-svs/core.cpp
+index d771be3..20d7a2d 100644
+--- a/ndn-svs/core.cpp
++++ b/ndn-svs/core.cpp
+@@ -228,15 +228,18 @@ SVSyncCore::SVSyncCore(ndn::Face& face,
+   // Dispatch only the selected wire version locally, but advertise the group
+   // prefix so peers that follow the established SVS registration convention
+   // can reach this participant through the forwarder.
++  const auto& registrationSigningInfo = m_securityOptions.interestSigner->signingInfo;
+   m_syncInterestFilter =
+     m_face.setInterestFilter(m_syncInterestPrefix,
+                              std::bind(&SVSyncCore::onSyncInterest, this, _2));
+   m_syncRegisteredPrefix =
+     m_face.registerPrefix(m_syncPrefix,
+                           std::bind(&SVSyncCore::sendInitialInterest, this),
+-                          [this] (auto&&...) {
+-                            NDN_LOG_ERROR("Failed to register sync prefix " << m_syncPrefix);
+-                          });
++                          [this] (const Name& prefix, const std::string& reason) {
++                            NDN_LOG_ERROR("Failed to register sync prefix " << prefix
++                                          << " reason=" << reason);
++                          },
++                          registrationSigningInfo);
+ }
+ 
+ SVSyncCore::~SVSyncCore()
+diff --git a/ndn-svs/svspubsub.cpp b/ndn-svs/svspubsub.cpp
+index 4056aef..bae1278 100644
+--- a/ndn-svs/svspubsub.cpp
++++ b/ndn-svs/svspubsub.cpp
+@@ -16,6 +16,7 @@
+ 
+ #include "svspubsub.hpp"
+ #include "tlv.hpp"
++#include "detail/ndnsf-subscription-match.hpp"
+ 
+ #include <ndn-cxx/util/segment-fetcher.hpp>
+ #include <ndn-cxx/util/logger.hpp>
+@@ -25,6 +26,10 @@
+ 
+ #include <algorithm>
+ #include <chrono>
++#include <cstdlib>
++#include <ctime>
++#include <limits>
++#include <optional>
+ #include <set>
+ 
+ namespace ndn::svs {
+@@ -35,6 +40,32 @@ namespace {
+ 
+ using SteadyClock = std::chrono::steady_clock;
+ 
++bool
++phaseCpuDiagnosticsEnabled()
++{
++  const char* value = std::getenv("NDNSF_PHASE_TIMING");
++  if (value == nullptr) return false;
++  const std::string text(value);
++  return !(text.empty() || text == "0" || text == "false" ||
++           text == "FALSE" || text == "no" || text == "NO");
++}
++
++std::optional<uint64_t>
++threadCpuTimeUs() noexcept
++{
++#ifdef CLOCK_THREAD_CPUTIME_ID
++  timespec value{};
++  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) == 0 &&
++      value.tv_sec >= 0 && value.tv_nsec >= 0 && value.tv_nsec < 1000000000L) {
++    const auto seconds = static_cast<uint64_t>(value.tv_sec);
++    const auto micros = static_cast<uint64_t>(value.tv_nsec) / 1000;
++    if (seconds <= (std::numeric_limits<uint64_t>::max() - micros) / 1000000)
++      return seconds * 1000000 + micros;
++  }
++#endif
++  return std::nullopt;
++}
++
+ uint64_t
+ elapsedUs(const SteadyClock::time_point& begin, const SteadyClock::time_point& end)
+ {
+@@ -690,12 +721,36 @@ SVSPubSub::prepareSegmentedPackets(const AsyncPublication& publication)
+     while (offset < publication.value.size()) {
+       const size_t upper = std::min(MAX_DATA_SIZE, publication.value.size() - offset);
+       size_t low = 1;
+-      size_t high = upper;
++      size_t high = upper - 1;
+       size_t best = 0;
+       std::optional<Data> bestPacket;
+       const size_t segmentNo = packets.size();
+ 
+-      while (low <= high) {
++      // Usually one actual signed fit, or one correction for its overflow,
++      // avoids signing every binary-search candidate. Never infer safety from
++      // signature length: check the complete signed outer packet each time.
++      auto upperPacket = prepareOuterSegment(publication, segmentNo, finalBlock,
++                                             offset, upper);
++      const size_t upperWireSize = upperPacket.wireEncode().size();
++      if (isFinalPacketSizeAllowed(upperWireSize)) {
++        best = upper;
++        bestPacket = std::move(upperPacket);
++      }
++      else {
++        const size_t overflow = upperWireSize - MAX_SIGNED_PUBLICATION_SIZE;
++        if (overflow < upper) {
++          const size_t adjusted = upper - overflow;
++          auto adjustedPacket = prepareOuterSegment(publication, segmentNo, finalBlock,
++                                                    offset, adjusted);
++          if (isFinalPacketSizeAllowed(adjustedPacket.wireEncode().size())) {
++            best = adjusted;
++            bestPacket = std::move(adjustedPacket);
++          }
++        }
++      }
++
++      const bool useBinarySearch = !bestPacket;
++      while (useBinarySearch && low <= high) {
+         const size_t candidate = low + (high - low) / 2;
+         auto packet = prepareOuterSegment(publication, segmentNo, finalBlock,
+                                           offset, candidate);
+@@ -1279,7 +1334,7 @@ SVSPubSub::processMapping(const NodeID& nodeId, BootstrapTime bootstrapTime, Seq
+     }
+   }
+   for (const auto& sub : m_regexSubscriptions) {
+-    if (sub.regex->match(mapping.first)) {
++    if (detail::matchPublicationSubscription(*sub.regex, mapping.first)) {
+       queueOrDeliver(sub);
+     }
+   }
+@@ -1802,14 +1857,25 @@ SVSPubSub::onSyncData(const Data& firstData, const PublicationKey& publication)
+     SubscriptionData subData = {
+       innerData->getName(), innerContent, nodeId, seqNo, packet,
+     };
+-    bool hasFinalBlock = innerData->getFinalBlock().has_value();
+-    bool hasBlobSubcriptions = false;
+-
+-    for (const auto& sub : fetchIt->second) {
+-      if (sub.isPacketSubscription || !hasFinalBlock)
++    const bool hasFinalBlock = innerData->getFinalBlock().has_value();
++    // Keep pending subscriptions alive if a callback changes the fetch map.
++    const auto subscriptions = fetchIt->second;
++    const bool hasBlobSubcriptions = std::any_of(
++      subscriptions.begin(), subscriptions.end(), [](const auto& sub) {
++        return !sub.isPacketSubscription && sub.active->load(std::memory_order_relaxed);
++      });
++    bool remembered = false;
++    for (const auto& sub : subscriptions) {
++      if ((sub.isPacketSubscription || !hasFinalBlock) &&
++          sub.active->load(std::memory_order_relaxed)) {
++        // Blob completion must wait for all segments. Record before the callback
++        // so a reentrant mapping cannot queue this completed publication again.
++        if ((!hasFinalBlock || !hasBlobSubcriptions) && !remembered) {
++          rememberPiggyDeliveredPublication(publication);
++          remembered = true;
++        }
+         sub.deliver(subData);
+-
+-      hasBlobSubcriptions |= !sub.isPacketSubscription;
++      }
+     }
+ 
+     // If there are blob subscriptions and a final block, we need to fetch
+@@ -1883,8 +1949,15 @@ SVSPubSub::onSyncData(const Data& firstData, const PublicationKey& publication)
+                   state->name, state->payload, std::get<0>(publication),
+                   std::get<2>(publication), firstPacket,
+                 };
+-                for (const auto& sub : it->second) {
+-                  if (!sub.isPacketSubscription) {
++                const auto subscriptions = it->second;
++                bool remembered = false;
++                for (const auto& sub : subscriptions) {
++                  if (!sub.isPacketSubscription &&
++                      sub.active->load(std::memory_order_relaxed)) {
++                    if (!remembered) {
++                      rememberPiggyDeliveredPublication(publication);
++                      remembered = true;
++                    }
+                     sub.deliver(subData);
+                   }
+                 }
+@@ -1945,6 +2018,15 @@ SVSPubSub::cleanUpFetch(const PublicationKey& publication)
+ {
+   m_fetchMap.erase(publication);
+   m_publicationFetchStates.erase(publication);
++
++  if (!m_fetchMap.empty()) {
++    auto alive = m_asyncPublishAlive;
++    m_scheduler.schedule(1_ms, [this, alive] {
++      if (alive->load(std::memory_order_relaxed)) {
++        fetchAll();
++      }
++    });
++  }
+ }
+ 
+ bool
+@@ -2070,7 +2152,20 @@ SVSPubSub::onGetExtraData(const VersionVector&)
+   ndn::Block block = includedMappings.encode();
+   block.parse();
+   const auto initialEncodeDone = SteadyClock::now();
+-  size_t size = block.size();
++  size_t size = block.value_size();
++  // Appending children can widen the outer TLV Length encoding. Account for
++  // its final encoded size, including that growth, before accepting a child.
++  const auto fitsExtraChild = [&](size_t childSize) {
++    if (childSize > m_maxApplicationParametersSize ||
++        size > m_maxApplicationParametersSize - childSize) {
++      return false;
++    }
++    const auto valueSize = size + childSize;
++    const auto overhead = ndn::tlv::sizeOfVarNumber(block.type()) +
++                          ndn::tlv::sizeOfVarNumber(valueSize);
++    return overhead <= m_maxApplicationParametersSize &&
++           valueSize <= m_maxApplicationParametersSize - overhead;
++  };
+   size_t retainedCount = 0;
+   size_t expiredCount = 0;
+   size_t retainedMappingCount = 0;
+@@ -2083,7 +2178,7 @@ SVSPubSub::onGetExtraData(const VersionVector&)
+     MappingList repairMapping(it->nodeId, m_opts.syncProtocol.version);
+     repairMapping.pairs.push_back(it->mapping);
+     auto mappingBlock = repairMapping.encode();
+-    if (size + mappingBlock.size() > m_maxApplicationParametersSize) {
++    if (!fitsExtraChild(mappingBlock.size())) {
+       ++it->missed;
+       if (it->missed < m_opts.piggybackMissLimit) {
+         retainedMappings.push_front(*it);
+@@ -2111,7 +2206,7 @@ SVSPubSub::onGetExtraData(const VersionVector&)
+   const auto piggyStart = SteadyClock::now();
+   for (auto it = m_piggyDataQueue.rbegin(); it != m_piggyDataQueue.rend(); ++it) {
+     auto dataBlock = it->data.wireEncode();
+-    if (size + dataBlock.size() > m_maxApplicationParametersSize) {
++    if (!fitsExtraChild(dataBlock.size())) {
+       ++it->missed;
+       if (it->missed < m_opts.piggybackMissLimit) {
+         retained.push_front(*it);
+@@ -2143,7 +2238,7 @@ SVSPubSub::onGetExtraData(const VersionVector&)
+   const auto repairStart = SteadyClock::now();
+   for (auto it = m_repairRequestQueue.rbegin(); it != m_repairRequestQueue.rend(); ++it) {
+     auto repairBlock = encodeRepairRequests({it->info});
+-    if (size + repairBlock.size() > m_maxApplicationParametersSize) {
++    if (!fitsExtraChild(repairBlock.size())) {
+       ++it->missed;
+       if (it->missed < m_opts.piggybackMissLimit) {
+         retainedRepairs.push_front(*it);
+@@ -2280,6 +2375,17 @@ SVSPubSub::onRecvExtraData(const Block& block, const VersionVector&)
+ {
+   const auto totalStart = SteadyClock::now();
+   std::vector<PublicationKey> receivedMappings;
++  std::map<Name, bool> completedMappings;
++  const auto inspectMappings = [this, &completedMappings](const MappingList& list) {
++    for (const auto& entry : list.pairs) {
++      const bool completed = hasPiggyDeliveredPublication(
++        PublicationKey(list.nodeId, entry.bootstrapTime, entry.seqNo));
++      const auto [it, inserted] = completedMappings.emplace(entry.mapping.first, completed);
++      if (!inserted) {
++        it->second = it->second && completed;
++      }
++    }
++  };
+   size_t topLevelMappings = 0;
+   uint64_t topLevelParseUs = 0;
+   // Prepare: validate the complete known extension tree before changing any
+@@ -2291,14 +2397,14 @@ SVSPubSub::onRecvExtraData(const Block& block, const VersionVector&)
+     }
+     block.parse();
+     if (block.type() == tlv::MappingData) {
+-      static_cast<void>(MappingList(block, m_opts.syncProtocol.version));
++      inspectMappings(MappingList(block, m_opts.syncProtocol.version));
+     }
+     else {
+       static_cast<void>(decodeRepairRequests(block));
+     }
+     for (const auto& child : block.elements()) {
+       if (child.type() == tlv::MappingData) {
+-        static_cast<void>(MappingList(child, m_opts.syncProtocol.version));
++        inspectMappings(MappingList(child, m_opts.syncProtocol.version));
+       }
+       else if (child.type() == ndn::tlv::Data) {
+         static_cast<void>(Data(child));
+@@ -2371,7 +2477,31 @@ SVSPubSub::onRecvExtraData(const Block& block, const VersionVector&)
+         ndn::Data data(childBlock);
+         childDataParseUs += elapsedUs(childDataStart, SteadyClock::now());
+         if (m_securityOptions.encapsulatedDataValidator) {
++          // Discard only a wire-identical repeat of completed publications.
++          // This path never admits Data, satisfies a fetch, or invokes a subscriber.
++          // New mappings and pending fetches retain their ordinary validation path.
++          const auto fullName = data.getFullName();
++          const auto named = completedMappings.find(data.getName());
++          const auto exact = completedMappings.find(fullName);
++          if (m_fetchMap.empty() &&
++              (named != completedMappings.end() || exact != completedMappings.end()) &&
++              (named == completedMappings.end() || named->second) &&
++              (exact == completedMappings.end() || exact->second)) {
++            std::lock_guard<std::mutex> lock(m_extraDataMutex);
++            if (m_piggyDataCache.find(fullName) != m_piggyDataCache.end()) {
++              ++dataCount;
++              continue;
++            }
++          }
+           auto alive = m_asyncPublishAlive;
++          const bool measure = phaseCpuDiagnosticsEnabled();
++          bool wireCached = false;
++          if (measure) {
++            std::lock_guard<std::mutex> lock(m_extraDataMutex);
++            wireCached = m_piggyDataCache.find(fullName) != m_piggyDataCache.end();
++          }
++          const auto cpuBegin = measure ? threadCpuTimeUs() : std::nullopt;
++          const auto wallBegin = measure ? SteadyClock::now() : SteadyClock::time_point{};
+           m_securityOptions.encapsulatedDataValidator->validate(
+             data,
+             [this, alive](const Data& validatedData) {
+@@ -2387,6 +2517,18 @@ SVSPubSub::onRecvExtraData(const Block& block, const VersionVector&)
+                               << rejectedData.getName() << " error=" << error);
+               }
+             });
++          if (measure) {
++            const auto wallEnd = SteadyClock::now();
++            const auto cpuEnd = threadCpuTimeUs();
++            // Only the synchronous call is timed. Deferred validation work and
++            // certificate fetches remain outside this same-thread interval.
++            NDN_LOG_TRACE("event=piggyback_validation_dispatch data_name=" << data.getName()
++                          << " wire_cached=" << wireCached
++                          << " duration_us=" << elapsedUs(wallBegin, wallEnd)
++                          << " thread_cpu_us=" <<
++                             (cpuBegin && cpuEnd && *cpuEnd >= *cpuBegin ?
++                               std::to_string(*cpuEnd - *cpuBegin) : "unknown"));
++          }
+         }
+         else {
+           childCacheUs += acceptValidatedPiggyData(data);
+diff --git a/ndn-svs/svspubsub.hpp b/ndn-svs/svspubsub.hpp
+index 75e3402..e81879b 100644
+--- a/ndn-svs/svspubsub.hpp
++++ b/ndn-svs/svspubsub.hpp
+@@ -713,9 +713,14 @@ NDN_SVS_PUBLIC_WITH_TESTS_ELSE_PRIVATE:
+   static bool
+   isFinalPacketSizeAllowed(size_t wireSize)
+   {
+-    return wireSize <= MAX_NDN_PACKET_SIZE;
++    // The stream receive limit includes the LP envelope. Reserve 608 bytes
++    // for existing LP metadata around byte-publication Data; fitting the
++    // signed Data itself to 8800 can produce an undecodable 8813-byte frame.
++    return wireSize <= MAX_SIGNED_PUBLICATION_SIZE;
+   }
+ 
++  static constexpr size_t MAX_SIGNED_PUBLICATION_SIZE = 8192;
++
+   static std::optional<InnerSegmentAssembly>
+   decodeInnerSegments(const std::vector<Block>& blocks);
+ 
+diff --git a/ndn-svs/svsync-base.cpp b/ndn-svs/svsync-base.cpp
+index 93c3926..66c5563 100644
+--- a/ndn-svs/svsync-base.cpp
++++ b/ndn-svs/svsync-base.cpp
+@@ -48,7 +48,12 @@ SVSyncBase::SVSyncBase(const Name& syncPrefix,
+ 
+   // Register data prefix
+   m_registeredDataPrefix = m_face.setInterestFilter(
+-    m_dataPrefix, std::bind(&SVSyncBase::onDataInterest, this, _2), [](auto&&...) {});
++    m_dataPrefix, std::bind(&SVSyncBase::onDataInterest, this, _2),
++    [this] (const Name& prefix, const std::string& reason) {
++      NDN_LOG_ERROR("Failed to register SVS data prefix " << prefix
++                    << " reason=" << reason);
++    },
++    m_securityOptions.interestSigner->signingInfo);
+ }
+ 
+ SeqNo
+diff --git a/tests/unit-tests/core.t.cpp b/tests/unit-tests/core.t.cpp
+index f933dbe..26c0108 100644
+--- a/tests/unit-tests/core.t.cpp
++++ b/tests/unit-tests/core.t.cpp
+@@ -22,6 +22,7 @@
+ #include <ndn-cxx/mgmt/nfd/control-parameters.hpp>
+ #include <ndn-cxx/mgmt/nfd/control-response.hpp>
+ #include <ndn-cxx/security/signing-helpers.hpp>
++#include <ndn-cxx/signature-info.hpp>
+ #include <ndn-cxx/util/dummy-client-face.hpp>
+ #include <ndn-cxx/util/string-helper.hpp>
+ 
+@@ -211,6 +212,42 @@ BOOST_AUTO_TEST_CASE(DefaultProfileRegistersGroupPrefix)
+   BOOST_CHECK_EQUAL(parameters.getName(), m_syncPrefix);
+ }
+ 
++BOOST_AUTO_TEST_CASE(PrefixRegistrationsUseInterestSigner)
++{
++  DummyClientFace::Options options;
++  options.enableRegistrationReply = true;
++  KeyChain keyChain("pib-memory:core-registration-signer",
++                    "tpm-memory:core-registration-signer");
++  auto identity = keyChain.createIdentity("/ndn/svs-registration-signer");
++  const auto expectedCertificateName =
++    identity.getDefaultKey().getDefaultCertificate().getName();
++  DummyClientFace face(keyChain, options);
++  SecurityOptions security(keyChain);
++  security.interestSigner->signingInfo.setSigningKeyName(identity.getDefaultKey().getName());
++  SVSyncCore core(face, m_syncPrefix, [] (auto&&...) {}, security);
++
++  static const Name ribRegisterPrefix("/localhost/nfd/rib/register");
++  auto getRegistrationCount = [&] {
++    return std::count_if(face.sentInterests.begin(), face.sentInterests.end(),
++                         [] (const Interest& interest) {
++                           return ribRegisterPrefix.isPrefixOf(interest.getName());
++                         });
++  };
++  runIoUntil(face, [&] { return getRegistrationCount() >= 1; });
++  BOOST_REQUIRE_EQUAL(getRegistrationCount(), 1);
++
++  for (const auto& interest : face.sentInterests) {
++    if (!ribRegisterPrefix.isPrefixOf(interest.getName())) {
++      continue;
++    }
++    BOOST_REQUIRE(interest.isSigned());
++    const auto signatureInfo = interest.getSignatureInfo();
++    BOOST_REQUIRE(signatureInfo.has_value());
++    BOOST_REQUIRE(signatureInfo->hasKeyLocator());
++    BOOST_CHECK_EQUAL(signatureInfo->getKeyLocator().getName(), expectedCertificateName);
++  }
++}
++
+ BOOST_AUTO_TEST_CASE(GroupPrefixRegistrationIsReleasedOnDestruction)
+ {
+   DummyClientFace::Options options;
+diff --git a/tests/unit-tests/svspubsub.t.cpp b/tests/unit-tests/svspubsub.t.cpp
+index e1a6448..03dff87 100644
+--- a/tests/unit-tests/svspubsub.t.cpp
++++ b/tests/unit-tests/svspubsub.t.cpp
+@@ -13,7 +13,14 @@
+ 
+ #include <ndn-cxx/util/dummy-client-face.hpp>
+ #include <ndn-cxx/security/signing-helpers.hpp>
++#include <ndn-cxx/mgmt/nfd/control-parameters.hpp>
++#include <ndn-cxx/signature-info.hpp>
++#include <ndn-cxx/lp/packet.hpp>
++#include <ndn-cxx/lp/fields.hpp>
++#include <limits>
+ 
++#include <algorithm>
++#include <functional>
+ #include <boost/asio/io_context.hpp>
+ 
+ #include <limits>
+@@ -26,6 +33,8 @@ namespace ndn::tests {
+ using namespace ndn::svs;
+ using namespace std::chrono_literals;
+ 
++static void runIoUntil(Face& face, const std::function<bool()>& done);
++
+ BOOST_AUTO_TEST_CASE(ExplicitV2ProfilePropagatesThroughPubSub)
+ {
+   DummyClientFace face;
+@@ -36,6 +45,48 @@ BOOST_AUTO_TEST_CASE(ExplicitV2ProfilePropagatesThroughPubSub)
+   BOOST_CHECK_EQUAL(pubsub.getSyncProtocolOptions().syncInterestLifetime, 1_ms);
+ }
+ 
++BOOST_AUTO_TEST_CASE(DataPrefixRegistrationUsesConfiguredInterestSigner)
++{
++  DummyClientFace::Options faceOptions;
++  faceOptions.enableRegistrationReply = true;
++  KeyChain keyChain("pib-memory:data-prefix-registration-signer",
++                    "tpm-memory:data-prefix-registration-signer");
++  auto identity = keyChain.createIdentity("/ndn/svs-data-registration-signer");
++  const auto expectedCertificateName =
++    identity.getDefaultKey().getDefaultCertificate().getName();
++  DummyClientFace face(keyChain, faceOptions);
++  SecurityOptions security(keyChain);
++  security.interestSigner->signingInfo.setSigningKeyName(identity.getDefaultKey().getName());
++
++  const Name syncPrefix("/ndn/test/data-prefix-registration");
++  const Name dataPrefix("/ndn/test/data-prefix-registration/node");
++  const Name registeredDataPrefix = Name(dataPrefix).append(syncPrefix);
++  SVSPubSub pubsub(syncPrefix, dataPrefix, face, [] (const auto&) {}, {}, security);
++
++  static const Name ribRegisterPrefix("/localhost/nfd/rib/register");
++  auto findDataPrefixRegistration = [&] {
++    return std::find_if(face.sentInterests.begin(), face.sentInterests.end(),
++                        [&] (const Interest& interest) {
++      if (!ribRegisterPrefix.isPrefixOf(interest.getName()) ||
++          interest.getName().size() <= 4) {
++        return false;
++      }
++      nfd::ControlParameters parameters(interest.getName().at(4).blockFromValue());
++      return parameters.hasName() && parameters.getName() == registeredDataPrefix;
++    });
++  };
++  runIoUntil(face, [&] {
++    return findDataPrefixRegistration() != face.sentInterests.end();
++  });
++  const auto found = findDataPrefixRegistration();
++  BOOST_REQUIRE(found != face.sentInterests.end());
++  BOOST_REQUIRE(found->isSigned());
++  const auto signatureInfo = found->getSignatureInfo();
++  BOOST_REQUIRE(signatureInfo.has_value());
++  BOOST_REQUIRE(signatureInfo->hasKeyLocator());
++  BOOST_CHECK_EQUAL(signatureInfo->getKeyLocator().getName(), expectedCertificateName);
++}
++
+ BOOST_AUTO_TEST_CASE(PublicationPreparationWorkerModeIsDefaultOffAndSingleOnly)
+ {
+   DummyClientFace inlineFace;
+@@ -255,11 +306,14 @@ public:
+ class DeferredValidator final : public BaseValidator
+ {
+ public:
++  size_t validationCount = 0;
++
+   void
+   validate(const Data& data,
+            const security::DataValidationSuccessCallback& success,
+            const security::DataValidationFailureCallback& failure) override
+   {
++    ++validationCount;
+     m_data = data;
+     m_success = success;
+     m_failure = failure;
+@@ -462,6 +516,7 @@ BOOST_AUTO_TEST_CASE(RejectedPiggyDataIsNotDeliveredToSubscribers)
+   MappingList extra("/peer");
+   extra.pairs.push_back({bootstrapTime, 8, {Name("/app/item"), {}}});
+   Block params = extra.encode();
++  params.parse();
+   params.push_back(piggyData.wireEncode());
+   params.encode();
+ 
+@@ -470,6 +525,14 @@ BOOST_AUTO_TEST_CASE(RejectedPiggyDataIsNotDeliveredToSubscribers)
+ 
+   validator->reject();
+   BOOST_CHECK_EQUAL(callbackCount, 0);
++  pubsub.onRecvExtraData(params, VersionVector());
++  BOOST_CHECK_EQUAL(validator->validationCount, 2);
++  BOOST_CHECK_EQUAL(callbackCount, 0);
++  validator->succeed();
++  BOOST_CHECK_EQUAL(callbackCount, 1);
++  pubsub.onRecvExtraData(params, VersionVector());
++  BOOST_CHECK_EQUAL(validator->validationCount, 2);
++  BOOST_CHECK_EQUAL(callbackCount, 1);
+ }
+ 
+ BOOST_AUTO_TEST_CASE(ValidatedPiggyDataIsDeliveredExactlyOnce)
+@@ -508,6 +571,7 @@ BOOST_AUTO_TEST_CASE(ValidatedPiggyDataIsDeliveredExactlyOnce)
+   MappingList extra("/peer");
+   extra.pairs.push_back({bootstrapTime, 9, {Name("/app/item"), {}}});
+   Block params = extra.encode();
++  params.parse();
+   params.push_back(piggyData.wireEncode());
+   params.encode();
+ 
+@@ -517,9 +581,114 @@ BOOST_AUTO_TEST_CASE(ValidatedPiggyDataIsDeliveredExactlyOnce)
+   validator->succeed();
+   BOOST_CHECK_EQUAL(callbackCount, 1);
+   BOOST_CHECK_EQUAL(received, payload);
++  BOOST_CHECK_EQUAL(validator->validationCount, 1);
++  BOOST_REQUIRE(pubsub.hasPiggyDeliveredPublication({Name("/peer"), bootstrapTime, 9}));
+ 
+   pubsub.onRecvExtraData(params, VersionVector());
+   BOOST_CHECK_EQUAL(callbackCount, 1);
++  BOOST_CHECK_EQUAL(validator->validationCount, 1);
++
++  // The same name with different signed bytes is not an exact duplicate.
++  Data changed(piggyData);
++  changed.setContent("changed-content");
++  keyChain.sign(changed);
++  Block changedParams = extra.encode();
++  changedParams.parse();
++  changedParams.push_back(changed.wireEncode());
++  changedParams.encode();
++  pubsub.onRecvExtraData(changedParams, VersionVector());
++  BOOST_CHECK_EQUAL(validator->validationCount, 2);
++  validator->reject();
++  BOOST_CHECK_EQUAL(callbackCount, 1);
++
++  // A new publication referencing the same object still enters validation.
++  MappingList renewed("/peer");
++  renewed.pairs.push_back({bootstrapTime, 10, {Name("/app/item"), {}}});
++  Block renewedParams = renewed.encode();
++  renewedParams.parse();
++  renewedParams.push_back(piggyData.wireEncode());
++  renewedParams.encode();
++  pubsub.onRecvExtraData(renewedParams, VersionVector());
++  BOOST_CHECK_EQUAL(validator->validationCount, 3);
++  validator->succeed();
++  BOOST_CHECK_EQUAL(callbackCount, 2);
++
++  // Existing pending fetches retain the ordinary validation/recovery path.
++  pubsub.insertMapping("/peer", bootstrapTime, 11, "/app/pending", {});
++  BOOST_CHECK(pubsub.processMapping("/peer", bootstrapTime, 11));
++  pubsub.onRecvExtraData(params, VersionVector());
++  BOOST_CHECK_EQUAL(validator->validationCount, 4);
++  validator->succeed();
++  BOOST_CHECK_EQUAL(callbackCount, 2);
++}
++
++BOOST_AUTO_TEST_CASE(PiggyDuplicateDiscardRequiresCachedWireAndCompletedMappings)
++{
++  DummyClientFace face;
++  KeyChain keyChain("pib-memory:piggy-duplicate-boundaries",
++                    "tpm-memory:piggy-duplicate-boundaries");
++  keyChain.createIdentity("/piggy-duplicate-boundaries");
++  SecurityOptions securityOptions(keyChain);
++  auto validator = std::make_shared<DeferredValidator>();
++  securityOptions.encapsulatedDataValidator = validator;
++  SVSPubSubOptions opts;
++  opts.useTimestamp = false;
++  opts.piggyDataCacheLimit = 2; // One logical name and one exact full name.
++  SVSPubSub pubsub("/sync", "/local", face, [] (const auto&) {}, opts, securityOptions);
++  size_t deliveries = 0;
++  pubsub.subscribe("/app/item", [&] (const auto&) { ++deliveries; });
++
++  Data original("/app/item");
++  original.setContent("original");
++  keyChain.sign(original);
++  MappingList mapping("/peer");
++  mapping.pairs.push_back({103, 1, {original.getName(), {}}});
++  const auto appendData = [](const MappingList& list, const Data& data) {
++    Block params = list.encode();
++    params.parse();
++    params.push_back(data.wireEncode());
++    params.encode();
++    return params;
++  };
++  const auto params = appendData(mapping, original);
++  pubsub.onRecvExtraData(params, VersionVector());
++  BOOST_CHECK_EQUAL(validator->validationCount, 1);
++  BOOST_CHECK_EQUAL(deliveries, 0);
++  validator->succeed();
++  BOOST_CHECK_EQUAL(deliveries, 1);
++  pubsub.onRecvExtraData(params, VersionVector());
++  BOOST_CHECK_EQUAL(validator->validationCount, 1);
++
++  Data eviction("/unsubscribed/item");
++  eviction.setContent("eviction");
++  keyChain.sign(eviction);
++  MappingList empty("/peer");
++  pubsub.onRecvExtraData(appendData(empty, eviction), VersionVector());
++  BOOST_CHECK_EQUAL(validator->validationCount, 2);
++  validator->succeed();
++  // Completed sequence records alone cannot suppress an evicted wire packet.
++  pubsub.onRecvExtraData(params, VersionVector());
++  BOOST_CHECK_EQUAL(validator->validationCount, 3);
++  validator->succeed();
++  BOOST_CHECK_EQUAL(deliveries, 1);
++
++  // A cached packet without an associated completed mapping is not discarded.
++  pubsub.onRecvExtraData(appendData(empty, original), VersionVector());
++  BOOST_CHECK_EQUAL(validator->validationCount, 4);
++  validator->succeed();
++  BOOST_CHECK_EQUAL(deliveries, 1);
++
++  // Inspect later children too: the same name has an unfinished publication.
++  Block mixed = params;
++  mixed.parse();
++  MappingList later("/peer");
++  later.pairs.push_back({103, 2, {original.getName(), {}}});
++  mixed.push_back(later.encode());
++  mixed.encode();
++  pubsub.onRecvExtraData(mixed, VersionVector());
++  BOOST_CHECK_EQUAL(validator->validationCount, 5);
++  validator->succeed();
++  BOOST_CHECK_EQUAL(deliveries, 2);
+ }
+ 
+ BOOST_AUTO_TEST_CASE(RepeatedMappingDoesNotDuplicatePendingSubscription)
+@@ -1043,6 +1212,91 @@ BOOST_AUTO_TEST_CASE(PublicationFetchTimeoutBacksOffAndIncreasesLifetime)
+   BOOST_CHECK_GE(pubsub.getPiggybackStats().publicationRetryActivations, 1);
+ }
+ 
++BOOST_AUTO_TEST_CASE(PublicationFetchWindowRefillsAfterCompletion)
++{
++  DummyClientFace face;
++  SVSPubSubOptions opts;
++  opts.useTimestamp = false;
++  opts.publicationFetchWindow = 1;
++  opts.publicationFetchRetries = 0;
++  opts.publicationFetchInterestLifetime = 10_s;
++  opts.publicationFetchMinInterestLifetime = 10_s;
++  opts.publicationFetchMaxInterestLifetime = 10_s;
++
++  SVSPubSub pubsub("/sync", "/local", face,
++                   [] (const std::vector<MissingDataInfo>&) {},
++                   opts);
++  std::set<SeqNo> deliveredSequences;
++  pubsub.subscribe("/app/item", [&] (const SVSPubSub::SubscriptionData& data) {
++    BOOST_CHECK(pubsub.hasPiggyDeliveredPublication(
++      {data.producerPrefix, 700, data.seqNo}));
++    BOOST_CHECK(!pubsub.processMapping(data.producerPrefix, 700, data.seqNo));
++    deliveredSequences.insert(data.seqNo);
++  });
++  runIoFor(face, 20_ms);
++  face.sentInterests.clear();
++
++  constexpr BootstrapTime bootstrapTime = 700;
++  for (SeqNo seqNo = 1; seqNo <= 3; ++seqNo) {
++    pubsub.insertMapping("/peer", bootstrapTime, seqNo, "/app/item", {});
++    BOOST_REQUIRE(pubsub.processMapping("/peer", bootstrapTime, seqNo));
++  }
++  pubsub.fetchAll();
++
++  KeyChain keyChain("pib-memory:svspubsub-fetch-window",
++                    "tpm-memory:svspubsub-fetch-window");
++  keyChain.createIdentity("/svspubsub-test/fetch-window");
++  std::set<SeqNo> fetchedSequences;
++  for (size_t completion = 0; completion < 3; ++completion) {
++    SeqNo seqNo = 0;
++    Name interestName;
++    auto findUnfetchedPublicationInterest = [&] {
++      for (SeqNo candidate = 1; candidate <= 3; ++candidate) {
++        const auto expectedName =
++          pubsub.getSVSync().getDataName("/peer", bootstrapTime, candidate);
++        if (fetchedSequences.count(candidate) == 0 &&
++            std::any_of(face.sentInterests.begin(), face.sentInterests.end(),
++                        [&] (const Interest& interest) {
++                          return interest.getName() == expectedName;
++                        })) {
++          return true;
++        }
++      }
++      return false;
++    };
++    runIoUntil(face, findUnfetchedPublicationInterest);
++    for (SeqNo candidate = 1; candidate <= 3; ++candidate) {
++      interestName = pubsub.getSVSync().getDataName("/peer", bootstrapTime, candidate);
++      if (fetchedSequences.count(candidate) == 0 &&
++          std::any_of(face.sentInterests.begin(), face.sentInterests.end(),
++                      [&] (const Interest& interest) {
++                        return interest.getName() == interestName;
++                      })) {
++        seqNo = candidate;
++        break;
++      }
++    }
++    BOOST_REQUIRE_NE(seqNo, 0);
++    BOOST_REQUIRE(fetchedSequences.insert(seqNo).second);
++
++    Data inner(Name("/app/item").appendSequenceNumber(seqNo));
++    inner.setContent(makePayload(static_cast<size_t>(seqNo)));
++    keyChain.sign(inner);
++
++    Data outer(interestName);
++    outer.setContent(inner.wireEncode());
++    outer.setContentType(ndn::tlv::Data);
++    keyChain.sign(outer);
++    face.receive(outer);
++    runIoUntil(face, [&] { return deliveredSequences.count(seqNo) == 1; });
++    BOOST_CHECK(!pubsub.processMapping("/peer", bootstrapTime, seqNo));
++    BOOST_CHECK(!pubsub.hasFetchForTest({"/peer", bootstrapTime, seqNo}));
++  }
++
++  BOOST_CHECK_EQUAL(fetchedSequences.size(), 3);
++  BOOST_CHECK_EQUAL(deliveredSequences.size(), 3);
++}
++
+ BOOST_AUTO_TEST_CASE(RepairRequestRepiggybacksProducerData)
+ {
+   DummyClientFace producerFace;
+@@ -1153,17 +1407,28 @@ BOOST_AUTO_TEST_CASE(SegmentedPublicationFitsFinalSignedOuterBoundary)
+                             "tpm-memory:spec113-outer-boundary");
+   boundaryKeyChain.createIdentity("/spec113/outer-boundary");
+   const auto below = makeSignedOuterPacketOfSize(boundaryKeyChain,
+-                                                  MAX_NDN_PACKET_SIZE - 1);
++                                                  8191);
+   const auto exact = makeSignedOuterPacketOfSize(boundaryKeyChain,
+-                                                  MAX_NDN_PACKET_SIZE);
++                                                  8192);
+   const auto above = makeSignedOuterPacketOfSize(boundaryKeyChain,
+-                                                  MAX_NDN_PACKET_SIZE + 1);
+-  BOOST_CHECK_EQUAL(below.wireEncode().size(), MAX_NDN_PACKET_SIZE - 1);
+-  BOOST_CHECK_EQUAL(exact.wireEncode().size(), MAX_NDN_PACKET_SIZE);
+-  BOOST_CHECK_EQUAL(above.wireEncode().size(), MAX_NDN_PACKET_SIZE + 1);
++                                                  8193);
++  BOOST_CHECK_EQUAL(below.wireEncode().size(), 8191);
++  BOOST_CHECK_EQUAL(exact.wireEncode().size(), 8192);
++  BOOST_CHECK_EQUAL(above.wireEncode().size(), 8193);
+   BOOST_CHECK(SVSPubSub::isFinalPacketSizeAllowed(below.wireEncode().size()));
+   BOOST_CHECK(SVSPubSub::isFinalPacketSizeAllowed(exact.wireEncode().size()));
+   BOOST_CHECK(!SVSPubSub::isFinalPacketSizeAllowed(above.wireEncode().size()));
++  BOOST_CHECK(!SVSPubSub::isFinalPacketSizeAllowed(8800));
++  lp::Packet envelope(exact.wireEncode());
++  const ndn::Buffer pitToken(32, 0);
++  envelope.add<lp::PitTokenField>({pitToken.begin(), pitToken.end()});
++  envelope.add<lp::IncomingFaceIdField>(std::numeric_limits<uint64_t>::max());
++  envelope.add<lp::CongestionMarkField>(std::numeric_limits<uint64_t>::max());
++  BOOST_CHECK_LE(envelope.wireEncode().size(), MAX_NDN_PACKET_SIZE);
++  lp::Packet decoded(envelope.wireEncode());
++  const auto fragment = decoded.get<lp::FragmentField>();
++  BOOST_CHECK_EQUAL_COLLECTIONS(fragment.first, fragment.second,
++                                exact.wireEncode().begin(), exact.wireEncode().end());
+ 
+   for (const auto& applicationName : {
+          Name("/short"),
+@@ -1190,7 +1455,7 @@ BOOST_AUTO_TEST_CASE(SegmentedPublicationFitsFinalSignedOuterBoundary)
+       for (auto it = std::next(store->packets().begin(), before);
+            it != store->packets().end(); ++it) {
+         const auto& outer = it->second;
+-        BOOST_CHECK_LE(outer.wireEncode().size(), MAX_NDN_PACKET_SIZE);
++        BOOST_CHECK_LE(outer.wireEncode().size(), 8192);
+         Data inner(outer.getContent().blockFromValue());
+         const auto content = inner.getContent().value_bytes();
+         BOOST_CHECK(!content.empty());
+@@ -1484,8 +1749,10 @@ BOOST_AUTO_TEST_CASE(ValidationFailureAndLateCallbackReclaimFetchStateSafely)
+   {
+     SVSPubSub pubsub("/sync", "/local", face,
+                      [] (const std::vector<MissingDataInfo>&) {}, opts, securityOptions);
+-    pubsub.addFetchForTest(publication,
+-      {1, Name("/app"), [] (const SVSPubSub::SubscriptionData&) {}, false, false});
++    size_t deliveries = 0;
++    pubsub.subscribe("/app", [&] (const SVSPubSub::SubscriptionData&) { ++deliveries; });
++    pubsub.insertMapping("/peer", 10, 1, "/app/item", {});
++    BOOST_REQUIRE(pubsub.processMapping("/peer", 10, 1));
+ 
+     const auto payload = makePayload(64);
+     Data inner("/app/item");
+@@ -1498,6 +1765,15 @@ BOOST_AUTO_TEST_CASE(ValidationFailureAndLateCallbackReclaimFetchStateSafely)
+ 
+     pubsub.onSyncData(outer, publication);
+     validator->reject();
++    BOOST_CHECK_EQUAL(deliveries, 0);
++    BOOST_CHECK(!pubsub.hasFetchForTest(publication));
++    BOOST_CHECK(!pubsub.hasPiggyDeliveredPublication(publication));
++
++    BOOST_REQUIRE(pubsub.processMapping("/peer", 10, 1));
++    pubsub.onSyncData(outer, publication);
++    validator->succeed();
++    BOOST_CHECK_EQUAL(deliveries, 1);
++    BOOST_CHECK(pubsub.hasPiggyDeliveredPublication(publication));
+     BOOST_CHECK(!pubsub.hasFetchForTest(publication));
+ 
+     // Cleanup is idempotent: duplicate and late terminal events cannot revive state.
+@@ -1526,6 +1802,142 @@ BOOST_AUTO_TEST_CASE(ValidationFailureAndLateCallbackReclaimFetchStateSafely)
+   BOOST_CHECK_NO_THROW(lateValidator->succeed());
+ }
+ 
++BOOST_AUTO_TEST_CASE(NormalFetchWithoutActiveSubscriberRemainsRetryable)
++{
++  for (const bool cancelSubscription : {false, true}) {
++    DummyClientFace face;
++    KeyChain keyChain("pib-memory:fetch-cancel", "tpm-memory:fetch-cancel");
++    keyChain.createIdentity("/fetch-cancel");
++    SecurityOptions security(keyChain);
++    auto validator = std::make_shared<DeferredValidator>();
++    security.encapsulatedDataValidator = validator;
++    SVSPubSubOptions opts;
++    opts.useTimestamp = false;
++    SVSPubSub pubsub("/sync", "/local", face, [] (const auto&) {}, opts, security);
++    const SVSPubSub::PublicationKey publication("/peer", 700, 1);
++    size_t deliveries = 0;
++    auto callback = [&] (const SVSPubSub::SubscriptionData&) { ++deliveries; };
++    auto handle = pubsub.subscribe("/app", callback);
++    pubsub.insertMapping("/peer", 700, 1, "/app/item", {});
++    BOOST_REQUIRE(pubsub.processMapping("/peer", 700, 1));
++
++    Data inner("/app/item");
++    inner.setContent(makePayload(8));
++    keyChain.sign(inner);
++    Data outer(pubsub.getSVSync().getDataName("/peer", 700, 1));
++    outer.setContent(inner.wireEncode());
++    outer.setContentType(ndn::tlv::Data);
++    keyChain.sign(outer);
++    pubsub.onSyncData(outer, publication);
++    if (cancelSubscription) {
++      pubsub.unsubscribe(handle);
++    }
++    else {
++      pubsub.cleanUpFetch(publication);
++    }
++    validator->succeed();
++    BOOST_CHECK_EQUAL(deliveries, 0);
++    BOOST_CHECK(!pubsub.hasPiggyDeliveredPublication(publication));
++    if (cancelSubscription) {
++      pubsub.subscribe("/app", callback);
++    }
++    BOOST_REQUIRE(pubsub.processMapping("/peer", 700, 1));
++    pubsub.onSyncData(outer, publication);
++    validator->succeed();
++    BOOST_CHECK_EQUAL(deliveries, 1);
++    BOOST_CHECK(pubsub.hasPiggyDeliveredPublication(publication));
++  }
++}
++
++BOOST_AUTO_TEST_CASE(SegmentedFetchRecordsOnlyValidatedBlobCompletion)
++{
++  class SegmentValidator final : public BaseValidator
++  {
++  public:
++    void
++    validate(const Data& data,
++             const security::DataValidationSuccessCallback& success,
++             const security::DataValidationFailureCallback& failure) override
++    {
++      ++calls;
++      if (rejectLast && data.getName()[-1].isSegment() &&
++          data.getName()[-1].toSegment() == 1) {
++        failure(data, ValidationError(1, "injected last-segment validation failure"));
++      }
++      else {
++        success(data);
++      }
++    }
++
++    bool rejectLast = true;
++    size_t calls = 0;
++  };
++
++  DummyClientFace face;
++  KeyChain keyChain("pib-memory:fetch-segment-complete", "tpm-memory:fetch-segment-complete");
++  keyChain.createIdentity("/fetch-segment-complete");
++  SecurityOptions security(keyChain);
++  auto validator = std::make_shared<SegmentValidator>();
++  security.encapsulatedDataValidator = validator;
++  SVSPubSubOptions opts;
++  opts.useTimestamp = false;
++  SVSPubSub pubsub("/sync", "/local", face, [] (const auto&) {}, opts, security);
++  const SVSPubSub::PublicationKey publication("/peer", 700, 1);
++  const auto prefix = pubsub.getSVSync().getDataName("/peer", 700, 1);
++  const auto payload = makePayload(12);
++  size_t packetDeliveries = 0;
++  size_t blobDeliveries = 0;
++  pubsub.subscribe("/app", [&] (const SVSPubSub::SubscriptionData&) {
++    ++packetDeliveries;
++    BOOST_CHECK(!pubsub.hasPiggyDeliveredPublication(publication));
++  }, true);
++  pubsub.subscribe("/app", [&] (const SVSPubSub::SubscriptionData& data) {
++    ++blobDeliveries;
++    BOOST_CHECK_EQUAL_COLLECTIONS(data.data.begin(), data.data.end(),
++                                  payload.begin(), payload.end());
++    BOOST_CHECK(pubsub.hasPiggyDeliveredPublication(publication));
++    BOOST_CHECK(!pubsub.processMapping("/peer", 700, 1));
++  });
++  pubsub.insertMapping("/peer", 700, 1, "/app/item", {});
++  std::vector<Data> packets;
++  for (size_t segment = 0; segment < 2; ++segment) {
++    Data outer(Name(prefix).appendVersion(0).appendSegment(segment));
++    outer.setContent(makeInnerSegment(keyChain, "/app/item", segment, 1,
++                                      make_span(payload.data() + 6 * segment, 6)));
++    outer.setContentType(ndn::tlv::Data);
++    outer.setFinalBlock(name::Component::fromSegment(1));
++    outer.setFreshnessPeriod(1_s);
++    keyChain.sign(outer);
++    packets.push_back(std::move(outer));
++  }
++
++  for (const bool rejectLast : {true, false}) {
++    validator->rejectLast = rejectLast;
++    face.sentInterests.clear();
++    BOOST_REQUIRE(pubsub.processMapping("/peer", 700, 1));
++    pubsub.onSyncData(packets[0], publication);
++    auto hasInterest = [&] (const Name& name) {
++      return std::any_of(face.sentInterests.begin(), face.sentInterests.end(),
++                         [&] (const Interest& interest) { return interest.getName() == name; });
++    };
++    runIoUntil(face, [&] { return hasInterest(prefix); });
++    BOOST_REQUIRE(hasInterest(prefix));
++    face.receive(packets[0]);
++    runIoUntil(face, [&] { return hasInterest(packets[1].getName()); });
++    BOOST_REQUIRE(hasInterest(packets[1].getName()));
++    BOOST_CHECK(!pubsub.hasPiggyDeliveredPublication(publication));
++    BOOST_CHECK_EQUAL(blobDeliveries, 0);
++    face.receive(packets[1]);
++    runIoUntil(face, [&] { return !pubsub.hasFetchForTest(publication); });
++    BOOST_REQUIRE(!pubsub.hasFetchForTest(publication));
++    BOOST_CHECK_EQUAL(pubsub.hasPiggyDeliveredPublication(publication), !rejectLast);
++    BOOST_CHECK_EQUAL(blobDeliveries, rejectLast ? 0 : 1);
++  }
++  BOOST_CHECK_EQUAL(packetDeliveries, 2);
++  BOOST_CHECK_EQUAL(validator->calls, 6);
++  BOOST_CHECK(!pubsub.processMapping("/peer", 700, 1));
++}
++
+ BOOST_AUTO_TEST_SUITE_END()
+ 
+ } // namespace ndn::tests
+diff --git a/ndn-svs/detail/ndnsf-subscription-match.hpp b/ndn-svs/detail/ndnsf-subscription-match.hpp
+new file mode 100644
+index 0000000..b40001b
+--- /dev/null
++++ b/ndn-svs/detail/ndnsf-subscription-match.hpp
+@@ -0,0 +1,51 @@
++/* -*- Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil -*- */
++#pragma once
++
++#include <ndn-cxx/name.hpp>
++#include <ndn-cxx/util/regex.hpp>
++
++namespace ndn::svs::detail {
++
++// Private optimization for the four existing NDNSF subscriptions. Match Name
++// components, not URI substrings: typed components and escaped values differ.
++// These subscriptions consume only the boolean result, never regex captures.
++inline bool
++matchPublicationSubscription(Regex& regex, const Name& name)
++{
++  struct LiteralPair
++  {
++    LiteralPair(const char* expr, const char* kind)
++      : expression(expr)
++      , components(Name("/NDNSF").append(kind))
++      , literalUris(components[0].toUri() == "NDNSF" &&
++                    components[1].toUri() == kind)
++    {
++    }
++    const char* expression;
++    Name components;
++    bool literalUris;
++  };
++  static const LiteralPair pairs[] = {
++    {"^(<>*)<NDNSF><ACK>(<>*)$", "ACK"},
++    {"^(<>*)<NDNSF><RESPONSE>(<>*)$", "RESPONSE"},
++    {"^(<>*)<NDNSF><EVENT>(<>*)$", "EVENT"},
++    {"^(<>*)<NDNSF><COLLAB>(<>*)$", "COLLAB"},
++  };
++  for (const auto& pair : pairs) {
++    if (regex.getExpr() != pair.expression)
++      continue;
++    // RegexComponentMatcher uses toUri(), including ndn-cxx's cached URI
++    // formatting policy. Canonical generic URIs carry "8=", so retain Regex
++    // whenever the actual renderer does not produce these literal strings.
++    if (!pair.literalUris)
++      return regex.match(name);
++    for (size_t i = 1; i < name.size(); ++i) {
++      if (name[i - 1] == pair.components[0] && name[i] == pair.components[1])
++        return true;
++    }
++    return false;
++  }
++  return regex.match(name);
++}
++
++} // namespace ndn::svs::detail

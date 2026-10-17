@@ -12,6 +12,7 @@
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
 #include "RequestConfidentiality.hpp"
+#include "SecurityProfile.hpp"
 #include "GenericSelectionTxnStore.hpp"
 #include "NetworkTelemetry.hpp"
 #include "TimelineTrace.hpp"
@@ -19,6 +20,7 @@
 #include "StreamFacade.hpp"
 #include "RevocationState.hpp"
 #include "PolicyRefreshCoordinator.hpp"
+#include "detail/policy-status-fetch.hpp"
 #include "RuntimeStatusStore.hpp"
 
 #include <functional>
@@ -1385,11 +1387,19 @@ namespace ndn_service_framework{
                                                  const ndn::Name& serviceName,
                                                  int attempt = 1,
                                                  std::optional<ControllerVersion> expectedVersion = std::nullopt);
-            void onPolicyStatusData(const ndn::Interest& interest,
-                                    const ndn::Data& data,
-                                    int attempt = 1);
-            void onPolicyStatusTimeout(const ndn::Interest& interest,
-                                       int attempt = 1);
+            void dispatchPolicyStatusFetch(const ndn::Name& controllerPrefix,
+                                           const ndn::Name& serviceName, int attempt,
+                                           std::optional<ControllerVersion> expectedVersion,
+                                           bool replace);
+            bool isCurrentPolicyStatusFetch(const ndn::Name& serviceName, uint64_t ticket,
+                                            const ndn::Name& queryName) const;
+            std::optional<ndn::Name> policyStatusController(
+                const ndn::Interest& interest, uint64_t ticket) const;
+            void finishPolicyStatusFetch(const ndn::Name& serviceName, uint64_t ticket);
+            void onPolicyStatusData(const ndn::Interest& interest, const ndn::Data& data,
+                                    int attempt, uint64_t ticket);
+            void onPolicyStatusTimeout(const ndn::Interest& interest, int attempt,
+                                       uint64_t ticket);
             void scheduleControllerStatusRefresh(
                 const ndn::Name& serviceName,
                 const PolicyStatusData& status);
@@ -1597,19 +1607,23 @@ namespace ndn_service_framework{
             void PublishMessage(const ndn::Name& messageName,
                                 const ndn::Name& messageNameWithoutPrefix,
                                 AbstractMessage& message,
-                                bool deferLocalPublication = false);
+                                bool deferLocalPublication = false,
+                                std::optional<ResponseNameV2> responseContext = std::nullopt);
             void publishHybridMessage(const ndn::Name& messageName,
                                       const ndn::Name& messageNameWithoutPrefix,
-                                      AbstractMessage& message);
+                                      AbstractMessage& message,
+                                      std::optional<ResponseNameV2> responseContext = std::nullopt);
             void publishHybridMessageCandidates(
                 const ndn::Name& messageName,
                 std::vector<ndn::Buffer> plaintextCandidates,
-                bool deferLocalPublication = false);
+                bool deferLocalPublication = false,
+                std::optional<ResponseNameV2> responseContext = std::nullopt);
             void publishHybridEncodedMessage(const ndn::Name& messageName,
                                              ndn::Buffer plaintext);
             void publishHybridEncodedMessageCandidates(
                 const ndn::Name& messageName,
-                std::vector<ndn::Buffer> plaintextCandidates);
+                std::vector<ndn::Buffer> plaintextCandidates,
+                std::optional<ResponseNameV2> responseContext = std::nullopt);
             bool isHybridAckPacketWithinLimit(
                 const ndn::Name& messageName,
                 const HybridMessageEnvelope& envelope,
@@ -2317,6 +2331,9 @@ namespace ndn_service_framework{
             mutable std::mutex m_collaborationPublicationInterceptorMutex;
             CollaborationPublicationInterceptorForTest m_collaborationPublicationInterceptorForTest;
             std::shared_ptr<MessageValidator> validator;
+            std::unique_ptr<SecurityProfileStore> m_securityProfiles;
+            std::shared_ptr<const SecurityProfileStore::Record> m_localSecurityProfile;
+            std::shared_ptr<const SecurityProfileStore::Record> ensurePublishedSecurityProfile();
             // Face-owned diagnostic for explicit ambiguous request rejection.
             uint64_t m_ambiguousRequestContextRejections = 0;
             std::vector<std::string> m_serviceNames;
@@ -2339,7 +2356,7 @@ namespace ndn_service_framework{
             bool admitOriginalControlAck(const ndn::Name& name, uint64_t expiresAtUs);
             bool serveOriginalControlAck(const ndn::Interest& request);
             void publishOriginalControlAck(const ndn::Interest& request, const ndn::Data& packet, uint64_t expiresAtUs);
-            ndn::ValidatorConfig nac_validator{m_face};
+            TrustSchemaValidator nac_validator{m_face};
             ndn::security::Certificate identityCert;
             ndn::security::Certificate signingCert;
             ndn::security::Certificate attrAuthorityCertificate;
@@ -2440,7 +2457,9 @@ namespace ndn_service_framework{
             std::map<std::string, PolicyRefreshCoordinator>
                 m_policyRefreshCoordinators;
             ndn::Name m_controllerPrefix;
-            std::set<std::string> m_policyStatusFetchInFlight;
+            std::map<std::string, std::shared_ptr<detail::PolicyStatusFetch>>
+                m_policyStatusFetchInFlight;
+            uint64_t m_nextPolicyStatusFetchTicket = 0;
             std::map<std::string, ControllerVersion>
                 m_policyStatusRefreshScheduled;
             // A grant-only PermissionResponse can add a service while the

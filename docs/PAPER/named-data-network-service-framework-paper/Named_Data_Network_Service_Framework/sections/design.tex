@@ -1,6 +1,13 @@
-\begin{figure*}[]
+\begin{figure*}[t]
     \centering
-    \includegraphics[width=.8\textwidth]{figures/drones.png}
+    \begin{tikzpicture}
+      \node[inner sep=0pt, anchor=south west] (uav) at (0,0)
+        {\includegraphics[width=.8\textwidth]{figures/drones-corrected.png}};
+      \node[anchor=west, fill=white, inner sep=0pt,
+        font=\sffamily\fontsize{5.2pt}{6pt}\selectfont]
+        at ([xshift=.17\textwidth,yshift=14pt]uav.south west)
+        {/drone2/FlightControl/land};
+    \end{tikzpicture}
     \caption{UAV Network Application Example}
     \vspace{-3mm}
     \label{fig:UAV-NDNSF}
@@ -8,9 +15,7 @@
 
 An NDN service framework should provide three core functions: (1) \textbf{service publication and discovery} mechanisms that enable providers to publish services and users to locate available services; (2) \textbf{access control mechanisms}, including authorization and enforcement, that regulate which entities may provide or access services; and (3) \textbf{service invocation mechanisms} that allow users to request services.
 
-NDNSF additionally addresses discovery scenarios in which providers need task requirements to decide whether to participate, but those requirements should not be public. It protects the Request descriptor so that providers with the required decryption capability can assess the task before the user selects executors.
-
-NDNSF supports \textbf{\emph{fine-grained access control}}, where policies over named ABE attributes express service permissions for both service users and providers (Section~\ref{sec:service-controller}), and a \textbf{\emph{one-to-many service model with dynamic provider selection}}, which allows users to choose among multiple providers based on factors such as computing resources, network bandwidth, service cost, and other application-specific considerations (Section~\ref{sec:provider-selection}).
+NDNSF combines \textbf{\emph{fine-grained access control}}, where service and permission attributes authorize service users and providers (Section~\ref{sec:service-controller}), with a \textbf{\emph{one-to-many service model with dynamic provider selection}}, which allows users to choose among multiple providers based on factors such as computing resources, network bandwidth, service cost, and other application-specific considerations (Section~\ref{sec:provider-selection}).
 % (3) \textbf{security mechanisms} that ensure the integrity, authenticity, and confidentiality of service messages; and  
 In the rest of this section, we present the NDNSF design with the above functionality and features.
 % and illustrate how our design choices support the following design goals:
@@ -27,7 +32,7 @@ In the rest of this section, we present the NDNSF design with the above function
 
 \subsection{Design Overview}
 
-In an NDNSF-based distributed application, \emph{Service Providers} process requests and generate responses, \emph{Service Users} issue requests and consume responses, and the \emph{Service Controller} authorizes providers and users and defines their service permissions.  Figure~\ref{fig:UAV-NDNSF} illustrates these interactions in a UAV network. Drones act as \emph{Service Providers} offering flight-control and peer services (e.g., image processing or sensing), while the ground station serves as a \emph{Service User}. The \emph{Service Controller} may reside on the ground station or a dedicated in-network server. In the following sections, we present the design of NDNSF in detail.
+In an NDNSF-based distributed application, \emph{Service Providers} process requests and generate responses, \emph{Service Users} issue requests and consume responses, and the \emph{Service Controller} authorizes providers and users and defines their service permissions.  Figure~\ref{fig:UAV-NDNSF} illustrates these interactions in a UAV network. Drones act as \emph{Service Providers} offering flight-control and peer services (e.g., image processing or sensing), while the ground station serves as a \emph{Service User}. The \emph{Service Controller} may reside on the ground station or a dedicated in-network server.
 
 %To support the functionalities of these entities, NDNSF consists of four core functional modules:
 %(1) \textbf{Service Provider Bootstrap}, which enables Service Providers to obtain from the Service Controller the services they are authorized to offer and the necessary NAC-ABE keys; 
@@ -35,18 +40,36 @@ In an NDNSF-based distributed application, \emph{Service Providers} process requ
 %(3) \textbf{Secure Service Communication}, which ensures authenticity, integrity, and confidentiality of service messages over NDN; and
 %(4) \textbf{Provider Selection}, which manages interactions among multiple Service Providers using different selection strategies.
 
-\subsection{Service Discovery and Targeted Invocation}
+\subsection{Service Publication and Discovery}
 
-NDNSF optionally uses NDNSD~\cite{dulal2022ndnsd} to publish and discover service advertisements, such as service names, supported models, and sensor capabilities. These advertisements help applications identify potential providers before issuing a request. Previously published information may remain retrievable from other available copies even when its provider is offline. However, an advertisement does not establish the provider's current availability or willingness to execute a particular task.
+NDNSF discovers candidate providers through the Request--ACK exchange. The user publishes a Request for the service name, optionally carrying a protected task descriptor, without preselecting a provider. Providers that pass the applicable authorization checks assess the request and return positive ACKs when willing to participate; reading a protected descriptor also requires matching ABE decryption capability. The user then selects providers from their feedback. The message formats and authorization checks are described in Section~\ref{sec:messages}.
 
-When the user has not preselected a provider, NDNSF collects task-specific participation feedback through the Request--ACK exchange. The user publishes a Request containing the service name and a protected descriptor of task requirements. Providers with the required ABE decryption capability assess these requirements and return positive ACKs when willing to participate. The user then selects providers from their feedback. This keeps the descriptor non-public while allowing authorized providers to assess the task before executor selection. The message formats and authorization checks are described in Section~\ref{sec:messages}.
+\begin{figure}
+    \centering
+    \includegraphics[width=\columnwidth]{figures/ndnsd.pdf}
+    \caption{Service Publication and Discovery with NDNSD}
+    \vspace{-3mm}
+    \label{fig:NDNSD}
+\end{figure}
 
-Alternatively, the application can preselect a provider using discovered advertisements or other application knowledge and issue a targeted Request naming that provider. Targeted invocation avoids collecting competing offers. Without suitable cached authorization material, it uses an ACK--Selection exchange to establish the material needed for subsequent calls. With valid cached one-time challenge material, eligible calls can bypass ACK and Selection, while retaining authorization and request-state checks. An unavailable provider can still cause the request to time out.
+NDNSF can also use NDNSD~\cite{dulal2022ndnsd} to publish and discover service information before invocation. As shown in Figure~\ref{fig:NDNSD}, service providers publish their service information via NDN Sync (Section~\ref{sec:background}), allowing other participants in the Sync group (e.g., service users) to discover available services. Standard service information includes the service name, provider’s name prefix, lifetime of the service information, and description. For example, a drone may publish the following information for its service:
+\begin{quote}
+Service Name: \texttt{/UAVNET/ImageProc/YOLO12}
+
+Provider Name Prefix: \texttt{/UAVNET/drone2}
+
+ServiceInfo Lifetime: \texttt{60s}
+
+Description: \texttt{Real-time object detection service using YOLOv12}
+\end{quote}
+Advertisements help applications identify potential providers before issuing a request. Previously published information may remain retrievable from other available copies even when its provider is offline. However, an advertisement does not establish the provider's current availability or willingness to execute a particular task.
+
+As a special case, an application that has preselected a provider can name it in a targeted Request, for example to start a task on \texttt{drone1} or change that drone's flight-control setpoint. Targeted invocation reduces repeated-call delay (Appendix~\ref{sec:targeted-invocation-evaluation}), but does not substitute another device when the target is unavailable or guarantee a flight-control deadline.
 
 \subsection{Service Controller and Access Control}
 \label{sec:service-controller}
 
-\begin{figure*}
+\begin{figure*}[t]
 \centering 
 
 \begin{minipage}[c]{0.63\textwidth}
@@ -65,7 +88,7 @@ Alternatively, the application can preselect a provider using discovered adverti
     \begin{tikzpicture}[scale=0.78, transform shape]
     \def\W{1.0\linewidth} 
     \def\Hname{1.8}    % Vertically shrunk from 2.6
-    \def\Hcontent{1.7} % Vertically shrunk from 2.2
+    \def\Hcontent{2.1} % Vertically shrunk from 2.2
     \def\Hsig{1.0}
     
     \useasboundingbox (0,0) rectangle (\W,\Hname+\Hcontent+\Hsig);
@@ -74,7 +97,7 @@ Alternatively, the application can preselect a provider using discovered adverti
     \draw (0,\Hsig+\Hcontent) -- (\W,\Hsig+\Hcontent);
     
     \node[align=center, text width=0.95*\W, font=\small, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent+\Hname/2) {/$<$user$>$/\textbf{\allowbreak NDNSF}/\textbf{\allowbreak REQUEST}/\allowbreak $<$service$>$/\allowbreak $<$request-id$>$};
-    \node[align=center, text width=0.95*\W, font=\small, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent/2) {Content:\\RequestParams\\RequestNonce\\Strategy};
+    \node[align=center, text width=0.95*\W, font=\small, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent/2) {Content:\\(Task descriptor)\\RequestNonce\\Selection mode};
     \node[font=\small] at (0.5*\W,\Hsig/2) {Signature};
     \end{tikzpicture}
     \caption{Request}
@@ -85,7 +108,7 @@ Alternatively, the application can preselect a provider using discovered adverti
     \begin{tikzpicture}[scale=0.78, transform shape]
     \def\W{1.0\linewidth}
     \def\Hname{1.8}    % Vertically shrunk from 2.6
-    \def\Hcontent{1.7} % Vertically shrunk from 2.2
+    \def\Hcontent{2.1} % Vertically shrunk from 2.2
     \def\Hsig{1.0}
     
     \useasboundingbox (0,0) rectangle (\W,\Hname+\Hcontent+\Hsig);
@@ -93,8 +116,8 @@ Alternatively, the application can preselect a provider using discovered adverti
     \draw (0,\Hsig) -- (\W,\Hsig);
     \draw (0,\Hsig+\Hcontent) -- (\W,\Hsig+\Hcontent);
     
-    \node[align=center, text width=0.95*\W, font=\small, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent+\Hname/2) {/$<$provider$>/$\textbf{\allowbreak NDNSF}/\textbf{\allowbreak ACK}/\allowbreak $<$user$>$/\allowbreak $<$service$>$/\allowbreak $<$request-id$>$};
-    \node[align=center, text width=0.95*\W, font=\small, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent/2) {Content:\\ProviderChallenge\\RequestNonce\\(AckMetaData)};
+    \node[align=center, text width=0.95*\W, font=\small, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent+\Hname/2) {/$<$provider$>$/\textbf{\allowbreak NDNSF}/\textbf{\allowbreak ACK}/\allowbreak $<$user$>$/\allowbreak $<$service$>$/\allowbreak $<$request-id$>$};
+    \node[align=center, text width=0.95*\W, font=\small, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent/2) {Content:\\Status, RequestNonce\\ProviderChallenge\\(Feedback)};
     \node[font=\small] at (0.5*\W,\Hsig/2) {Signature};
     \end{tikzpicture}
     \caption{ACK}
@@ -108,7 +131,7 @@ Alternatively, the application can preselect a provider using discovered adverti
     \begin{tikzpicture}[scale=0.78, transform shape]
     \def\W{1.0\linewidth}
     \def\Hname{1.8}    % Vertically shrunk from 2.6
-    \def\Hcontent{1.7} % Vertically shrunk from 2.2
+    \def\Hcontent{2.1} % Vertically shrunk from 2.2
     \def\Hsig{1.0}
     
     \useasboundingbox (0,0) rectangle (\W,\Hname+\Hcontent+\Hsig);
@@ -117,7 +140,7 @@ Alternatively, the application can preselect a provider using discovered adverti
     \draw (0,\Hsig+\Hcontent) -- (\W,\Hsig+\Hcontent);
     
     \node[align=center, text width=0.95*\W, font=\small, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent+\Hname/2) {/$<$user$>$/\textbf{\allowbreak NDNSF}/\textbf{\allowbreak SELECTION}/\allowbreak $<$provider$>$/\allowbreak $<$service$>$/\allowbreak $<$request-id$>$};
-    \node[align=center, text width=0.95*\W, font=\footnotesize, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent/2) {Content:\\ProviderChallenge\\(ServiceInputEncKey)};
+    \node[align=center, text width=0.95*\W, font=\footnotesize, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent/2) {Content:\\ChallengeProof\\Input/response keys\\Protected input / name};
     \node[font=\small] at (0.5*\W,\Hsig/2) {Signature};
     \end{tikzpicture}
     \caption{Selection}
@@ -128,7 +151,7 @@ Alternatively, the application can preselect a provider using discovered adverti
     \begin{tikzpicture}[scale=0.78, transform shape]
     \def\W{1.0\linewidth}
     \def\Hname{1.8}    % Vertically shrunk from 2.6
-    \def\Hcontent{1.7} % Vertically shrunk from 2.2
+    \def\Hcontent{2.1} % Vertically shrunk from 2.2
     \def\Hsig{1.0}
     
     \useasboundingbox (0,0) rectangle (\W,\Hname+\Hcontent+\Hsig);
@@ -137,21 +160,21 @@ Alternatively, the application can preselect a provider using discovered adverti
     \draw (0,\Hsig+\Hcontent) -- (\W,\Hsig+\Hcontent);
     
     \node[align=center, text width=0.95*\W, font=\small, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent+\Hname/2) {/$<$provider$>$/\textbf{\allowbreak NDNSF}/\textbf{\allowbreak RESPONSE}/\allowbreak $<$user$>$/\allowbreak $<$service$>$/\allowbreak $<$request-id$>$};
-    \node[align=center, text width=0.95*\W, font=\small, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent/2) {Content:\\ServiceResult\\RequestNonce};
+    \node[align=center, text width=0.95*\W, font=\small, inner sep=1pt] at (0.5*\W,\Hsig+\Hcontent/2) {Content:\\Status, RequestNonce\\Protected result / name\\(Error information)};
     \node[font=\small] at (0.5*\W,\Hsig/2) {Signature};
     \end{tikzpicture}
     \caption{Response}
     \end{subfigure}
 
-\caption{Data Formats for the Basic NDNSF Invocation Flow}
+\caption{Principal fields of NDNSF's four invocation message types with request-scoped protection. ACK illustrates a positive reply; parentheses mark optional fields. Names are schematic; protection metadata and extensions are omitted.}
 \label{fig:ndnsf-message-formats}
 \end{minipage}
 \end{figure*}
 
 
-The \textbf{Service Controller} manages access control policies for providers and users. Provider policies specify which services an entity may offer, while user policies define which services it may access. These policies are designed to be simple and intuitive by leveraging NDN naming semantics. As shown on the left side of Figure~\ref{fig:PolicyExample}, drones 1-3 are authorized to provide the flight-control services \texttt{/FlightControl/Takeoff} and \texttt{/FlightControl/Land}. In addition, Drone~1 and Drone~2 may offer the image-processing service \texttt{/ImageProc/YOLO12}, while Drone~1 and Drone~3 may provide the sensing service \texttt{/Sensor/HyperSpectral}.   The right side of the figure shows the corresponding user policies: the ground station \texttt{/UAVNET/gs} may access the flight-control services of all three drones, Drone~2 may access the hyperspectral sensing service, and Drone~3 may access the image-processing service. 
+The \textbf{Service Controller} manages access control policies for providers and users. Provider policies specify which services an entity may offer, while user policies define which services it may access. These policies are designed to be simple and intuitive by leveraging NDN naming semantics. As shown on the left side of Figure~\ref{fig:PolicyExample}, drones 1-3 are authorized to provide their own flight-control services ending in \texttt{/FlightControl/Takeoff} and \texttt{/FlightControl/Land}. In addition, Drone~1 and Drone~2 may offer the image-processing service \texttt{/UAVNET/ImageProc/YOLO12}, while Drone~1 and Drone~3 may provide the sensing service \texttt{/UAVNET/Sensor/HyperSpectral}. The right side of the figure shows the corresponding user policies: the ground station \texttt{/UAVNET/gs} may access the flight-control services of all three drones, Drone~2 may access the hyperspectral sensing service, and Drone~3 may access the image-processing service.
 
-Access control policies are translated into logical combinations of ABE attributes. NDNSF uses \textbf{service attributes} (\texttt{/SERVICE/<service-name>}) and \textbf{permission attributes} (\texttt{/PERMISSION/<service-name>}) to represent provisioning and access rights, respectively.  Here, \texttt{<service-name>} is a hierarchical NDN name consisting of one or more components that identify either a common service offered by multiple providers, a provider-specific service, or even a function within a service.  As we will show in Section~\ref{sec:messages}, these attributes are used to encrypt the service messages published by service providers and users to control access to services.  Under one ABE authority and the same set of public parameters, one DKEY can encode multiple service permissions. The naming hierarchy alone does not grant access to all services under a prefix; the ABE policy must encode the intended permissions.
+Access control policies are translated into logical combinations of ABE attributes. NDNSF uses \textbf{service attributes} (\texttt{/SERVICE/<service-name>}) and \textbf{permission attributes} (\texttt{/PERMISSION/<service-name>}) to represent provisioning and access rights, respectively.  Here, \texttt{<service-name>} is a hierarchical NDN name consisting of one or more components that identify either a common service offered by multiple providers, a provider-specific service, or even a function within a service. These attributes encrypt service messages to control access (Section~\ref{sec:messages}). Under one ABE authority and the same set of public parameters, one DKEY can encode multiple service permissions. The naming hierarchy alone does not grant access to all services under a prefix; the ABE policy must encode the intended permissions.
 
 \begin{figure}
     \centering
@@ -212,40 +235,37 @@ Figure~\ref{fig:ServiceUser} shows that each \textbf{Service User} runs a Subscr
 \subsection{Service Messages and Secure Communication}
 \label{sec:messages}
 
-As shown in Figure~\ref{fig:ndnsf-message-formats}, NDNSF defines four service message types---\emph{Request}, \emph{ACK}, \emph{Selection}, and \emph{Response}---each published as an NDN Data object containing a name, content, and signature. Service Users and Providers publish messages under their namespaces using Sync and subscribe to the messages they are responsible for processing. A basic Request solicits one or more candidate providers, while a targeted Request names a preselected provider; each ACK, Selection, and Response addresses one participant. An intended recipient is not necessarily the only entity able to decrypt service-level encrypted content (see below).
+As shown in Figure~\ref{fig:ndnsf-message-formats}, NDNSF defines four service message types---\emph{Request}, \emph{ACK}, \emph{Selection}, and \emph{Response}---each published as an NDN Data object containing a name, content, and signature. Service Users and Providers publish messages under their namespaces, announce publications through Sync, and subscribe to the messages they are responsible for processing. The Request message is one-to-many, while the remaining messages are one-to-one. The names in the figure are schematic: service names and request IDs may occupy multiple components, while an addressed participant's name occupies one encoded component.
 
-These four Data types drive the basic invocation workflow: Request Data triggers provider participation assessment; ACK Data supplies candidate feedback for user selection; Selection Data authorizes the selected provider to execute; and Response Data delivers the result to the user. Each message is accepted only after the applicable signature, permission, and request-state checks. Local timers bound ACK collection and request duration.
+A \textbf{Request Message} invokes a service from one or more providers. Its name follows \path{/<user>/NDNSF/REQUEST/<service>/<request-id>}, identifying the requester, the target service, and a request ID for response matching. The content includes an optional task descriptor specifying task requirements, a fresh \emph{RequestNonce}, and the provider-selection mode, all encrypted under the service attribute. Providers return the RequestNonce in subsequent ACK and Response messages to bind them to this request. In the default request-scoped mode, the business input is encrypted and delivered after selection, with its key shared only with selected providers in the Selection message.
 
-A \textbf{Request Message} solicits participation from one or more providers. Its name follows \path{/<user>/NDNSF/REQUEST/<service>/<request-id>}, identifying the requester, the target service, and a request ID for response matching. The content includes request parameters specifying service input data and required resources, a fresh random request nonce (\emph{RequestNonce}) for checking access to the protected request, and the provider-selection strategy when multiple providers are available, all encrypted under the service attribute. Only authorized providers can decrypt the request and return the RequestNonce in subsequent ACK and Response messages, providing evidence of access to the protected request content. If the service input data must remain confidential to the providers later selected by the user, it can be encrypted with a symmetric key shared with those providers in the Selection message. Note that large data objects are published separately, with only their names included in the request.
+Upon receiving a Request Message, each authorized provider decides whether to respond based on requested resources and performance requirements (Section~\ref{sec:provider-acknowledgment}). If accepted, it publishes an \textbf{ACK Message} named \path{/<provider>/NDNSF/ACK/<user>/<service>/<request-id>}. The ACK content carries the decrypted \emph{RequestNonce}, a fresh \emph{ProviderChallenge}, and optional \emph{AckMetaData}, encrypted under the permission attribute. \emph{AckMetaData} can include the number of requests in the provider's task queue or other information that may help the user select providers, e.g., resources the provider can dedicate to this request. The ACK may also identify the Provider's encryption key.
 
-Upon receiving a Request Message, each authorized provider decides whether to respond based on requested resources and performance requirements (Section~\ref{sec:provider-acknowledgment}). If accepted, it publishes an \textbf{ACK Message} named \path{/<provider>/NDNSF/ACK/<user>/<service>/<request-id>}. The ACK content carries the decrypted \emph{RequestNonce}, a fresh random provider challenge (\emph{ProviderChallenge}), and optional \emph{AckMetaData}. These values are encrypted under the permission attribute so that only authorized users can decrypt them. By default, \emph{AckMetaData} contains the number of requests in the provider's task queue, but it can also include any other information that may help the user select providers, e.g., amount of resources the provider can dedicate to this request.
+After receiving one or more ACK messages, the user issues one or more \textbf{Selection Messages} according to the provider-selection strategy (Section~\ref{sec:provider-selection}). The message name follows \path{/<user>/NDNSF/SELECTION/<provider>/<service>/<request-id>}. Its content is encrypted under the service attribute and includes a \emph{ChallengeProof} derived from the ProviderChallenge. In the default request-scoped mode, it also carries the protected input or its Data name and input and response keys wrapped for the selected Provider. The Provider checks the proof and request binding before execution.
 
-After receiving one or more ACK messages, the user issues one or more \textbf{Selection Messages} according to the provider-selection strategy (Section~\ref{sec:provider-selection}). The message name follows \path{/<user>/NDNSF/SELECTION/<provider>/<service>/<request-id>}. Its content includes the \emph{ProviderChallenge} recovered from ACK Data, which the provider compares with its stored challenge for this request. If needed, Selection also carries the symmetric key protecting the service input data, encrypted with the provider's public key.
+Finally, each selected provider returns a \textbf{Response Message}, named \path{/<provider>/NDNSF/RESPONSE/<user>/<service>/<request-id>}, containing status, the protected service result or its Data name, and the \emph{RequestNonce}. The content is encrypted under the permission attribute. In request-scoped mode, the result also requires this invocation's response key; permission to read the outer message alone is insufficient. Larger input and result objects are published separately under their Producers' names.
 
-Finally, each selected provider returns a \textbf{Response Message}, named \path{/<provider>/NDNSF/RESPONSE/<user>/<service>/<request-id>}, containing the service result and the \emph{RequestNonce}. The content is encrypted under the permission attribute so that only authorized users can decrypt it. For pairwise confidentiality, providers may additionally encrypt the service result with the symmetric key shared with the user.
-
-Overall, NDNSF combines ABE-protected values with signature validation and request-state checks for service authorization and replay rejection. Data integrity and authenticity require signature and signing-authority validation under the application's trust model.
+A targeted Request names a preselected Provider. The Provider prepares pairs of requester and provider challenges for subsequent calls. A valid, unused pair can let a call omit a new ACK and Selection exchange; otherwise those exchanges run first.
 
 \input{sections/security-boundaries}
+
 
 \subsection{Message Recovery and Timeout Handling}
 \label{sec:loss-timeout}
 
 NDNSF handles packet loss at two layers. At the synchronization and retrieval layer, NDN-SVS synchronizes publication state and retries retrieval of missing Data~\cite{moll2021svs,ndnsvs-github}. These retries aim to recover service messages without initiating a new service invocation.
 
-At the invocation layer, NDNSF's data-driven workflow advances only when the required Data arrives and passes the applicable checks: in the basic invocation flow, ACK Data enables provider selection and Selection Data enables execution; Response Data delivers the result. An eligible targeted call instead uses the cached challenge material described above and does not wait for ACK or Selection. A step cannot advance while its required Data is missing. However, request timers and, where applicable, ACK-collection timers continue to run during retrieval retries, so a recovered message may arrive too late to be used in that invocation.
+At the invocation layer, NDNSF's data-driven workflow advances only when the required Data arrives and passes the applicable checks: in the four-message flow, ACK Data enables provider selection and Selection Data enables execution; Response Data delivers the result. An eligible targeted call instead uses the cached challenge material described above and does not wait for ACK or Selection. Request timers and, where applicable, ACK-collection timers continue to run during retrieval retries, so a recovered message may arrive too late to be used in that invocation.
 
-If no result is received before the request deadline, NDNSF calls \texttt{onTimeout}, and the application decides whether to issue a new service request. Thus, message retrieval retries are handled below the invocation workflow, while invocation retries remain an application decision. Because a provider may have executed the task even if its result was lost, a timeout does not prove that execution failed. Applications must account for this uncertainty to prevent unintended duplicate effects when retrying operations such as flight commands.
+If no result is accepted, the request timer triggers timeout handling. A grace interval after observed progress (500\,ms by default) and event-loop scheduling can extend acceptance beyond the configured timeout. The application decides whether to issue a new request, but a timeout does not prove that the provider did not execute the task. Retrying operations such as flight commands can therefore cause duplicate effects.
 
 %This integrated naming, content, and encryption design ensures that NDNSF messages are not exposed to unauthorized entities while simultaneously achieving bidirectional authorization. The use of encrypted RequestNonces and one-time service tokens binds message semantics to cryptographic verification, preventing unauthorized participation and mitigating replay attacks. Even if an adversary replays previously captured messages, expired or invalid tokens will not be accepted, thereby preserving the correctness and stability of the system.
 
 \subsection{ACK Strategy}
 \label{sec:provider-acknowledgment}
 
-In NDNSF, each provider makes a decision on whether to respond to a service request based on requested resources and performance requirements.  The requested resources may include CPU/GPU, memory, trusted execution environments, and bandwidth. Performance requirements may further include response time and computation accuracy level. Only providers that can satisfy these constraints publish an ACK message. 
+In NDNSF, each provider makes a decision on whether to respond to a service request based on requested resources and performance requirements. The requested resources may include CPU/GPU, memory, trusted execution environments, and bandwidth. Performance requirements may further include response time and computation accuracy level. A provider publishes a positive ACK when its application-defined strategy accepts the task; this reports willingness to participate, without reserving resources or guaranteeing that the requirements will still be met when execution begins.
 %This mechanism mitigates resource exhaustion, reduces unnecessary waiting time, and improves system stability. 
-
-Developers can also define custom ACK strategies based on application-specific factors such as security policies, user priority, and financial incentives, enabling flexible support for diverse distributed applications.
 
 \subsection{Provider Selection Strategy}
 \label{sec:provider-selection}
@@ -271,40 +291,14 @@ Developers can also define custom ACK strategies based on application-specific f
     \label{fig:All-Responders}
 \end{figure}
 
-\begin{figure}
-    \centering
-    \includegraphics[width=.9\columnwidth]{figures/CustomSelectionStrategy.png}
-    \caption{Custom-Selection Strategy}
-    \label{fig:CustomSelection}
-\end{figure}
-
-When multiple service providers offer the same service, NDNSF enables the user to select one or more providers for execution. It supports three built-in provider selection strategies, as well as user-defined custom strategies, allowing optimization based on metrics such as RTT, computational capacity, bandwidth, or other application-specific requirements.
-
+When multiple service providers offer the same service, NDNSF enables the user to select one or more providers for execution. It supports three built-in provider selection strategies, as well as user-defined custom strategies, allowing optimization based on metrics such as RTT, computational capacity, bandwidth, or other application-specific requirements. Candidates must return positive ACKs that pass the applicable message and authorization checks.
 \begin{enumerate}
-
 \item \textbf{First-Responding Strategy (Figure~\ref{fig:First-Responding})}: the user selects the first provider that returns a valid ACK. For example, if Drone~1 and Drone~2 both offer the \texttt{YOLO12} service and Drone~1 responds first, Drone~1 is selected.
-
-\item \textbf{Random-Selection Strategy (Figure~\ref{fig:Random-Selection})}: the user waits for a fixed timer interval and randomly selects one provider from those that return ACKs. 
-%LW: this is problematic - when do you ever timeout?
-%If no ACK is received within the interval, NDNSF falls back to First Responding. 
-This is suitable for load balancing among similar providers.
-
-\item \textbf{All-Responders Strategy (Figure~\ref{fig:All-Responders})}: all providers that return ACKs are selected to execute the service. This is useful for redundancy or cross-validation, e.g., multiple drones independently sensing the same target.
-
-\item \textbf{Custom-Selection Strategy (Figure~\ref{fig:CustomSelection})}: NDNSF also supports user-defined provider-selection strategies based on published service information, available runtime measurements (e.g., RTT and bandwidth), and optional metadata included in ACK messages by providers (e.g., resource availability and processing cost). This enables resource-, performance-, and cost-aware selection, and can further support learning-based decision strategies.
-
+\item \textbf{Random-Selection Strategy (Figure~\ref{fig:Random-Selection})}: when the ACK-collection window closes, the user randomly selects one provider from the collected valid ACKs. This is suitable for load balancing among similar providers.
+\item \textbf{All-Responders Strategy (Figure~\ref{fig:All-Responders})}: all providers whose valid ACKs are collected before the window closes are selected to execute the service. This is intended for redundancy or cross-validation, e.g., multiple drones independently sensing the same target.
+\item \textbf{Custom-Selection Strategy}: NDNSF also supports user-defined provider-selection strategies based on published service information, application-supplied runtime measurements, and optional metadata included in ACK messages by providers (e.g., resource availability and processing cost).
 \end{enumerate}
-
-%Service providers may consider the provider selection strategy when deciding whether to respond. For example, under the \emph{First Responding} strategy, a provider may suppress its ACK once another provider has responded. Under \emph{All Responders}, a provider may stop responding after more than two ACKs have been published.  Note that such schemes require the providers to subscribe to other providers' acknowledgments.
-
-%\begin{figure}
-%    \centering
-%    \includegraphics[width=0.45\textwidth]{figures/app.xml.png}
-%    \caption{Service Definition in app.yml}
-%    \label{fig:app.yml}
-%\end{figure}
-
-
+For strategies that collect ACKs, the window may close early when the reply count reaches the recently observed provider count, reducing wait while excluding later ACKs.
 \subsection{NDNSF Application Programming Interface}
 \label{sec:NDNSF-API}
 
@@ -318,7 +312,7 @@ This is suitable for load balancing among similar providers.
     caption={Provider-Side API},
     label={lst:provider-api}
 ]
-void Provider::RegisterService(
+void Provider::addService(
     ServiceName service,
     AckHandler onAck,
     RequestHandler onRequest
@@ -345,14 +339,16 @@ RequestId User::RequestService(
 );
 \end{lstlisting}
 
-\caption{NDNSF Core API Specifications}
+\caption{Simplified APIs for the four-message invocation flow}
 \label{fig:ndnsf-apis}
 \end{figure}
 
-NDNSF provides a simple and intuitive API for application development, as shown in Figure~\ref{fig:ndnsf-apis}.
+Figure~\ref{fig:ndnsf-apis} summarizes the invocation API using simplified types.
 
 %LW: does the provider call this only one time for all the incoming requests
-\texttt{RegisterService} is the primary provider-side interface. A provider registers a named service together with two callbacks, \texttt{onAck} and \texttt{onRequest}. In the basic invocation flow, the \texttt{onAck} callback is invoked when a request is received, allowing the provider to decide whether to serve the request and optionally include some metadata in the response. In the basic invocation flow, the \texttt{onRequest} callback is invoked after the user selects the provider and sends a Selection message; an eligible targeted call can reach execution without a new Selection exchange. This basic two-stage flow enables informed decision making by both providers and users.
+\texttt{addService} registers a named service together with two callbacks, \texttt{onAck} and \texttt{onRequest}. In the four-message flow, the \texttt{onAck} callback is invoked when a request is received, allowing the provider to decide whether to serve the request and optionally include metadata in its ACK. The \texttt{onRequest} callback is invoked after the user selects the provider and sends a Selection message; an eligible targeted call can reach execution without a new Selection exchange. This two-stage flow enables informed decision making by both providers and users.
 
 %LW: what if there are multiple responses?
-\texttt{RequestService} is the primary user-side service invocation interface. The application specifies the service name and request payload, without explicitly identifying providers. It also supplies two timeout values and three callback functions \texttt{selectionPolicy}, \texttt{onResponse}, and \texttt{onTimeout}. NDNSF publishes the request to solicit eligible providers, collects ACKs during \texttt{ackCollectionTimeMs}, applies the specified \texttt{selectionPolicy} to select provider(s), and invokes either \texttt{onResponse} upon receiving a response within \texttt{timeoutMs}, or \texttt{onTimeout} if no response arrives within \texttt{timeoutMs}.
+\texttt{RequestService} is the primary user-side service invocation interface. The application specifies the service name and request payload, without explicitly identifying providers. It also supplies two timeout values, a \texttt{selectionPolicy}, and two callbacks, \texttt{onResponse} and \texttt{onTimeout}. NDNSF publishes the request to solicit eligible providers and uses \texttt{ackCollectionTimeMs} to configure the ACK-collection window. It applies the policy as ACKs arrive or when the window closes. Accepted responses are delivered to \texttt{onResponse}; request expiration is handled by \texttt{onTimeout} as described in Section~\ref{sec:loss-timeout}.
+
+For a service registered to support targeted invocation, \texttt{RequestServiceTargeted} takes the provider name, service name, request, timeout and timeout/response callbacks. The application supplies the target; the framework applies the authorization checks and challenge-pair rules above.

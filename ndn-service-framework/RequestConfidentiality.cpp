@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <limits>
 #include <openssl/rand.h>
+#include <openssl/crypto.h>
 #include <openssl/sha.h>
 #include <sstream>
 #include <stdexcept>
@@ -28,6 +29,8 @@ enum : uint32_t {
   EnvelopeWrappedKeys = 0xF833,
   EnvelopeCreatedAt = 0xF834,
   EnvelopeExpiresAt = 0xF835,
+  CompactEnvelopeSchema = 0xF856,
+  CompactEnvelopeBindingDigest = 0xF857,
   AeadAlgorithm = 0xF821,
   AeadKeyId = 0xF822,
   AeadNonce = 0xF823,
@@ -420,9 +423,16 @@ RequestKeyBundle::zeroize() noexcept
 bool
 SelectionKeyEnvelope::isValid(uint64_t nowMs) const
 {
-  return binding.isValid() && envelopeAlgorithm == "RSA-OAEP-SHA256" &&
+  return (isCompact() ? bindingDigest.size() == SHA256_DIGEST_LENGTH : binding.isValid()) &&
+         envelopeAlgorithm == "RSA-OAEP-SHA256" &&
          !wrappedKeys.empty() && createdAtMs > 0 && expiresAtMs > createdAtMs &&
          nowMs < expiresAtMs;
+}
+
+void SelectionKeyEnvelope::useCompactBinding()
+{
+  if (!binding.isValid()) throw std::invalid_argument("compact envelope needs full source binding");
+  bindingDigest = sha256(binding.canonicalAad());
 }
 
 ndn::Block
@@ -431,9 +441,17 @@ SelectionKeyEnvelope::wireEncode() const
   if (!isValid(createdAtMs)) {
     throw std::invalid_argument("invalid SelectionKeyEnvelope");
   }
+  if (isCompact() && binding.isValid() && bindingDigest != sha256(binding.canonicalAad()))
+    throw std::invalid_argument("compact envelope source binding contradicts digest");
   ndn::Block block(TYPE);
-  block.push_back(binding.wireEncode());
-  block.push_back(ndn::makeStringBlock(EnvelopeAlgorithm, envelopeAlgorithm));
+  if (isCompact()) {
+    block.push_back(ndn::makeNonNegativeIntegerBlock(CompactEnvelopeSchema, 1));
+    block.push_back(ndn::makeBinaryBlock(CompactEnvelopeBindingDigest, bindingDigest));
+  }
+  else {
+    block.push_back(binding.wireEncode());
+    block.push_back(ndn::makeStringBlock(EnvelopeAlgorithm, envelopeAlgorithm));
+  }
   block.push_back(ndn::makeBinaryBlock(EnvelopeWrappedKeys,
                                        wrappedKeys.begin(), wrappedKeys.end()));
   block.push_back(ndn::makeNonNegativeIntegerBlock(EnvelopeCreatedAt, createdAtMs));
@@ -454,6 +472,18 @@ SelectionKeyEnvelope::wireDecode(const ndn::Block& block)
   bool expiresSeen = false;
   try {
     block.parse();
+    if (!block.elements().empty() && block.elements()[0].type() == CompactEnvelopeSchema) {
+      const auto& fields = block.elements();
+      if (fields.size() != 5 || ndn::readNonNegativeInteger(fields[0]) != 1 ||
+          fields[1].type() != CompactEnvelopeBindingDigest || fields[2].type() != EnvelopeWrappedKeys ||
+          fields[3].type() != EnvelopeCreatedAt || fields[4].type() != EnvelopeExpiresAt ||
+          !decodeBuffer(fields[1], decoded.bindingDigest) ||
+          !decodeBuffer(fields[2], decoded.wrappedKeys) || decoded.wrappedKeys.size() > 4096 ||
+          !decodeUint64(fields[3], decoded.createdAtMs) || !decodeUint64(fields[4], decoded.expiresAtMs) ||
+          !decoded.isValid(decoded.createdAtMs) || decoded.wireEncode() != block) return false;
+      *this = std::move(decoded);
+      return true;
+    }
     for (const auto& field : block.elements()) {
       switch (field.type()) {
       case RequestSecurityBinding::TYPE:
@@ -609,7 +639,8 @@ unwrapSelectionKeyEnvelope(const SelectionKeyEnvelope& envelope,
                            RequestCryptoFailure* failure)
 {
   setFailure(failure, RequestCryptoFailure::NONE);
-  if (!envelope.binding.isValid() ||
+  if ((envelope.isCompact() ? envelope.bindingDigest.size() != SHA256_DIGEST_LENGTH :
+                             !envelope.binding.isValid()) ||
       envelope.envelopeAlgorithm != "RSA-OAEP-SHA256" ||
       envelope.wrappedKeys.empty() || envelope.createdAtMs == 0 ||
       envelope.expiresAtMs <= envelope.createdAtMs) {
@@ -620,7 +651,13 @@ unwrapSelectionKeyEnvelope(const SelectionKeyEnvelope& envelope,
     setFailure(failure, RequestCryptoFailure::EXPIRED_KEY);
     return false;
   }
-  if (!expectedBinding.isValid() ||
+  if (!expectedBinding.isValid()) {
+    setFailure(failure, RequestCryptoFailure::INVALID_BINDING);
+    return false;
+  }
+  const auto expectedDigest = envelope.isCompact() ? sha256(expectedBinding.canonicalAad()) : ndn::Buffer{};
+  if (envelope.isCompact() ? CRYPTO_memcmp(envelope.bindingDigest.data(), expectedDigest.data(),
+                                         SHA256_DIGEST_LENGTH) != 0 :
       !sameBlock(envelope.binding.wireEncode(), expectedBinding.wireEncode())) {
     setFailure(failure, RequestCryptoFailure::INVALID_BINDING);
     return false;

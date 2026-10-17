@@ -747,6 +747,21 @@ int main() {
         conf.env.NDNSF_NAC_ABE_PREFIX = nac_abe_prefix
         conf.msg('Installed NAC-ABE prefix', nac_abe_prefix)
 
+    if not conf.check_cxx(
+            fragment='''
+#include <ndn-cxx/ims/in-memory-storage.hpp>
+void check(const ndn::InMemoryStorage& storage, const ndn::Name& name) {
+  ndn::InMemoryStorage::const_iterator entry = storage.lowerBound(name);
+  (void)entry;
+}
+''',
+            features='cxx', use='NDN_CXX', mandatory=False,
+            msg='Checking ndn-cxx indexed IMS lowerBound API'):
+        conf.fatal(
+            'ndn-cxx must provide InMemoryStorage::lowerBound. Rebuild/install ndn-cxx '
+            'with tools/ndn-cxx/ims-lower-bound.patch using install_ndnsf_stack.sh, '
+            'then configure NDNSF again.')
+
     # A layered application may link against staged builder inputs, but its
     # published ELF objects must resolve only through their APP-relative path
     # and the immutable base runtime.  When requested, replace every

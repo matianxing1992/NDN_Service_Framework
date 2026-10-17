@@ -52,7 +52,11 @@ public:
   /** Install the first/current signed status before processing hints. */
   bool installCurrentStatus(const PolicyStatusData& status,
                             uint64_t nowMs,
-                            bool controllerSignatureValid = true);
+                            bool controllerSignatureValid = true,
+                            bool preservePendingFetch = false);
+
+  /** End an externally owned transport fetch, retaining an unmet version hint. */
+  void finishTransportFetch();
 
   /** Process a version hint only after authenticating the enclosing message. */
   Result observeHint(const ControllerVersion& hintedVersion,

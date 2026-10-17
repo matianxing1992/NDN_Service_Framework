@@ -75,6 +75,15 @@ def test_receipts_invalidate_changed_upstream_and_library(tmp_path):
     for name in sources.order(data):
         assert sources.receipt(data, name, tmp_path, record=True)
         assert sources.receipt(data, name, tmp_path)
+    cxx_receipt = json.loads(
+        (tmp_path / 'share/ndnsf/source-receipts/ndn-cxx.json').read_text())
+    assert cxx_receipt['source']['commit'] == data['sources']['ndn-cxx']['commit']
+    assert cxx_receipt['patches'] == {
+        'ims-lower-bound.patch': sources.digest(ROOT / 'tools/ndn-cxx/ims-lower-bound.patch')}
+    svs_receipt = json.loads(
+        (tmp_path / 'share/ndnsf/source-receipts/ndn-svs.json').read_text())
+    assert svs_receipt['patches'] == {
+        'publication-latency.patch': sources.digest(ROOT / 'tools/ndn-svs/publication-latency.patch')}
     (lib / 'libndn-cxx.so').write_bytes(b'new ABI')
     assert not sources.receipt(data, 'ndn-cxx', tmp_path)
     assert not sources.receipt(data, 'ndn-svs', tmp_path)
@@ -97,6 +106,31 @@ def test_downstream_receipt_accepts_compatible_upstream_without_source_receipt(t
     assert not any(receipt_dir.glob('*.json'))
     assert sources.receipt(data, name, tmp_path, record=True)
     assert sources.receipt(data, name, tmp_path)
+
+
+@pytest.mark.parametrize('name,patch_name', [
+    ('ndn-cxx', 'ims-lower-bound.patch'),
+    ('ndn-svs', 'publication-latency.patch'),
+])
+def test_dependency_patch_change_invalidates_receipt(tmp_path, monkeypatch, name, patch_name):
+    data = sources.load_lock(LOCK)
+    project = tmp_path / 'project'
+    helper = project / 'scripts/stack_sources.py'
+    helper.parent.mkdir(parents=True)
+    helper.write_text('# fixture helper identity\n')
+    monkeypatch.setattr(sources, '__file__', str(helper))
+    patch = project / 'tools' / name / patch_name
+    patch.parent.mkdir(parents=True)
+    patch.write_bytes(b'first patch\n')
+    library_dir = tmp_path / 'lib'
+    library_dir.mkdir()
+    for dependency in [name] + data['sources'][name]['requires']:
+        (library_dir / sources.LIBRARIES[dependency]).write_bytes(dependency.encode())
+
+    assert sources.receipt(data, name, tmp_path, record=True)
+    assert sources.receipt(data, name, tmp_path)
+    patch.write_bytes(b'changed patch\n')
+    assert not sources.receipt(data, name, tmp_path)
 
 
 def test_different_pin_invalidates_receipt(tmp_path):

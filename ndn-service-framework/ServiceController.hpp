@@ -69,7 +69,7 @@ class ServiceController
 public:
   ServiceController(ndn::Face& face,
                     ndn::security::Certificate aaCert,
-                    ndn::ValidatorConfig& validator,
+                    ndn::security::Validator& validator,
                     const std::string& configFilePath);
 
   void setControllerPrefix(const ndn::Name& prefix);
@@ -213,7 +213,7 @@ private:
   ndn::security::Certificate m_aaCert;
 
   // 用传入的 validator（引用）
-  ndn::ValidatorConfig& m_validator;
+  ndn::security::Validator& m_validator;
 
   ndn::KeyChain m_keyChain;
   ndn::nacabe::KpAttributeAuthority m_aa;

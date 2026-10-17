@@ -226,7 +226,7 @@ makeCertificateBootstrapProofData(const CertificateBootstrapRequest& request)
 
 ServiceController::ServiceController(ndn::Face& face,
                                      ndn::security::Certificate aaCert,
-                                     ndn::ValidatorConfig& validator,
+                                     ndn::security::Validator& validator,
                                      const std::string& configFilePath)
   : m_configFilePath(configFilePath)
   , m_face(face)
@@ -1151,8 +1151,14 @@ bool ServiceController::admitControlQuery(const ndn::Interest& interest, const s
     it = m_originalControlReplies.erase(it);
   }
   if (m_originalControlReplies.count(interest.getName())) return true;
-  return m_originalControlReplies.size() < 4096 &&
+  const bool hasCapacity = m_originalControlReplies.size() < 4096 &&
     m_originalControlReplyBytes <= 64ULL * 1024 * 1024 - ndn::MAX_NDN_PACKET_SIZE;
+  if (!hasCapacity) {
+    NDN_LOG_WARN("Control query refused: original reply capacity exhausted operation="
+                 << operation << " entries=" << m_originalControlReplies.size()
+                 << " bytes=" << m_originalControlReplyBytes);
+  }
+  return hasCapacity;
 }
 
 bool ServiceController::serveOriginalControlReply(const ndn::Interest& interest)

@@ -1,6 +1,11 @@
 #include "common.hpp"
 
 #include <ndn-cxx/security/transform/public-key.hpp>
+#include <ndn-cxx/security/validity-period.hpp>
+#include <ndn-cxx/util/io.hpp>
+
+#include <boost/algorithm/string/predicate.hpp>
+#include <boost/property_tree/info_parser.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -8,39 +13,283 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <limits>
 #include <stdexcept>
 #include <string>
 
 namespace ndn_service_framework {
 
+class EncapsulatedMessageValidator final : public ndn::svs::BaseValidator
+{
+public:
+  explicit EncapsulatedMessageValidator(std::shared_ptr<MessageValidator> owner)
+    : m_owner(std::move(owner)) {}
+
+  void validate(const ndn::Data& data,
+                const ndn::security::DataValidationSuccessCallback& success,
+                const ndn::security::DataValidationFailureCallback& failure) override
+  { m_owner->validateEncapsulatedData(data, success, failure); }
+
+  void validate(const ndn::Interest& interest,
+                const ndn::security::InterestValidationSuccessCallback& success,
+                const ndn::security::InterestValidationFailureCallback& failure) override
+  { m_owner->validate(interest, success, failure); }
+
+private:
+  std::shared_ptr<MessageValidator> m_owner;
+};
+
+std::shared_ptr<ndn::svs::BaseValidator>
+MessageValidator::makeEncapsulatedValidator()
+{
+  return std::make_shared<EncapsulatedMessageValidator>(shared_from_this());
+}
+
 namespace {
 
-bool
-signatureTimingEnabled() noexcept
+using Certificate = ndn::security::Certificate;
+using ValidationState = ndn::security::ValidationState;
+using ValidationError = ndn::security::ValidationError;
+using TimePoint = ndn::time::system_clock::time_point;
+
+struct ChainLifetime
 {
-  const char* raw = std::getenv("NDNSF_PHASE_TIMING");
-  return raw != nullptr && *raw != '\0' &&
-         std::strcmp(raw, "0") != 0 && std::strcmp(raw, "false") != 0 &&
-         std::strcmp(raw, "FALSE") != 0 && std::strcmp(raw, "no") != 0 &&
-         std::strcmp(raw, "NO") != 0;
+  TimePoint expires;
+  uint64_t generation;
+};
+using ChainLifetimeTag = ndn::SimpleTag<ChainLifetime, 0x4e534654>;
+
+// Keep ndn-cxx's schema and chain verification; add lifetime bounds that its
+// trusted-certificate cache does not inherit from a certificate's ancestors.
+class FixedRootPolicy final : public ndn::security::ValidationPolicyConfig
+{
+public:
+  void
+  loadFixed(std::istream& input, const std::string& filename)
+  {
+    m_rootValidityPeriods.clear();
+    ++m_generation;
+    m_verifiedUntil = TimePoint::max();
+    m_validator->resetAnchors();
+    m_validator->resetVerifiedCertificates();
+    ndn::security::validator_config::ConfigSection config;
+    if (!input) throw std::runtime_error("Cannot open NDNSF trust schema: " + filename);
+    boost::property_tree::read_info(input, config);
+    std::vector<Certificate> roots;
+    std::vector<ndn::security::ValidityPeriod> rootValidityPeriods;
+    const auto directory = std::filesystem::absolute(filename).parent_path();
+    for (auto it = config.begin(); it != config.end();) {
+      if (!boost::iequals(it->first, "trust-anchor")) {
+        ++it;
+        continue;
+      }
+      const auto& anchor = it->second;
+      const auto type = anchor.get<std::string>("type", "");
+      std::shared_ptr<Certificate> certificate;
+      if (boost::iequals(type, "file")) {
+        // Pin the bytes loaded here. A file refresh must not silently replace
+        // the application's configured root while the validator is running.
+        if (anchor.get_optional<std::string>("refresh")) {
+          throw std::runtime_error("NDNSF requires a fixed trust-anchor file without refresh");
+        }
+        certificate = ndn::io::load<Certificate>(
+          (directory / anchor.get<std::string>("file-name")).string());
+      }
+      else if (boost::iequals(type, "base64")) {
+        std::istringstream input(anchor.get<std::string>("base64-string"));
+        certificate = ndn::io::load<Certificate>(input);
+      }
+      else {
+        throw std::runtime_error("NDNSF requires fixed file/base64 trust anchors; type " +
+                                 type + " is not allowed");
+      }
+      if (!certificate) {
+        throw std::runtime_error("NDNSF trust anchor is missing, malformed, or outside validity");
+      }
+      const auto validity = certificate->getValidityPeriod();
+      if (!validity.isValid()) {
+        throw std::runtime_error("NDNSF trust anchor is missing, malformed, or outside validity");
+      }
+      rootValidityPeriods.push_back(validity);
+      roots.push_back(std::move(*certificate));
+      it = config.erase(it);
+    }
+    if (roots.empty()) {
+      throw std::runtime_error("NDNSF trust schema must contain a fixed trust anchor");
+    }
+    ndn::security::ValidationPolicyConfig::load(config, filename);
+    for (const auto& root : roots) {
+      m_validator->loadAnchor(root.getName().toUri(), Certificate(root));
+    }
+    // Anchors are pinned until explicit reload. Decode their immutable dates
+    // once, but compare both bounds with the current clock on every packet.
+    m_rootValidityPeriods = std::move(rootValidityPeriods);
+  }
+
+  void
+  checkPolicy(const ndn::Data& data, const std::shared_ptr<ValidationState>& state,
+              const ValidationContinuation& continuation) override
+  {
+    if (!checkLifetime(state)) return;
+    if (data.getContentType() == ndn::tlv::ContentType_Key &&
+        Certificate::isValidName(data.getName())) {
+      bool valid = false;
+      TimePoint expires;
+      try {
+        const Certificate certificate(data);
+        valid = certificate.isValid();
+        expires = certificate.getValidityPeriod().getPeriod().second;
+      }
+      catch (const std::exception& error) {
+        state->fail({ValidationError::MALFORMED_CERT, error.what()});
+        return;
+      }
+      // Consumer callback exceptions must not be caught as certificate errors
+      // or cause a second terminal callback for the same validation state.
+      if (!valid) {
+        state->fail({ValidationError::EXPIRED_CERT, "certificate is outside its validity period"});
+        return;
+      }
+      auto lifetime = state->getTag<ChainLifetimeTag>()->get();
+      lifetime.expires = std::min(lifetime.expires, expires);
+      state->setTag(std::make_shared<ChainLifetimeTag>(lifetime));
+    }
+    ndn::security::ValidationPolicyConfig::checkPolicy(
+      data, state, guardContinuation(continuation));
+  }
+
+  void
+  checkPolicy(const ndn::Interest& interest, const std::shared_ptr<ValidationState>& state,
+              const ValidationContinuation& continuation) override
+  {
+    if (!checkLifetime(state)) return;
+    ndn::security::ValidationPolicyConfig::checkPolicy(
+      interest, state, guardContinuation(continuation));
+  }
+
+private:
+  bool
+  checkLifetime(const std::shared_ptr<ValidationState>& state)
+  {
+    const auto now = ndn::time::system_clock::now();
+    if (m_rootValidityPeriods.empty()) {
+      state->fail({ValidationError::POLICY_ERROR, "no fixed NDNSF trust anchor configured"});
+      return false;
+    }
+    auto rootExpiry = TimePoint::max();
+    for (const auto& validity : m_rootValidityPeriods) {
+      if (!validity.isValid(now)) {
+        m_validator->resetVerifiedCertificates();
+        state->fail({ValidationError::EXPIRED_CERT, "configured trust anchor is outside validity"});
+        return false;
+      }
+      rootExpiry = std::min(rootExpiry, validity.getPeriod().second);
+    }
+    if (now >= m_verifiedUntil) {
+      m_validator->resetVerifiedCertificates();
+      m_verifiedUntil = TimePoint::max();
+    }
+    auto tag = state->getTag<ChainLifetimeTag>();
+    if (!tag) {
+      tag = std::make_shared<ChainLifetimeTag>(
+        ChainLifetime{std::min(rootExpiry, m_verifiedUntil), m_generation});
+      state->setTag(tag);
+    }
+    if (tag->get().generation != m_generation || now >= tag->get().expires) {
+      state->fail({ValidationError::EXPIRED_CERT, "validation chain expired or trust was reloaded"});
+      return false;
+    }
+    return true;
+  }
+
+  ValidationContinuation
+  guardContinuation(ValidationContinuation continuation)
+  {
+    return [this, continuation = std::move(continuation)](
+      const std::shared_ptr<ndn::security::CertificateRequest>& request,
+      const std::shared_ptr<ValidationState>& state) {
+      if (!checkLifetime(state)) return;
+      if (!request || request->interest.getName() ==
+                        ndn::security::SigningInfo::getDigestSha256Identity()) {
+        state->fail({ValidationError::POLICY_ERROR,
+                     "NDNSF requires certificate-backed signature validation"});
+        return;
+      }
+      continuation(request, state);
+      if (state->getOutcome()) {
+        const auto lifetime = state->getTag<ChainLifetimeTag>()->get();
+        // ndn-cxx caches the chain after calling the consumer. A consumer may
+        // reload trust synchronously; do not retain the old chain afterward.
+        if (lifetime.generation != m_generation) {
+          m_validator->resetVerifiedCertificates();
+        }
+        else {
+          m_verifiedUntil = std::min(m_verifiedUntil, lifetime.expires);
+        }
+      }
+    };
+  }
+
+  std::vector<ndn::security::ValidityPeriod> m_rootValidityPeriods;
+  TimePoint m_verifiedUntil = TimePoint::max();
+  uint64_t m_generation = 0;
+};
+
+std::optional<Certificate>
+findPibCertificate(ndn::KeyChain& keyChain, const ndn::Interest& interest)
+{
+  try {
+    const auto identityName = ndn::security::extractIdentityNameFromKeyLocator(interest.getName());
+    const auto identity = keyChain.getPib().getIdentity(identityName);
+    for (const auto& key : identity.getKeys()) {
+      try {
+        const auto certificate = key.getDefaultCertificate();
+        if (interest.matchesData(certificate)) return certificate;
+      }
+      catch (const ndn::security::pib::Pib::Error&) {
+        // A key without a default certificate may still have other candidates.
+      }
+      for (const auto& candidate : key.getCertificates()) {
+        if (interest.matchesData(candidate)) return candidate;
+      }
+    }
+  }
+  catch (const std::exception&) {
+    // A local miss remains eligible for ordinary network certificate retrieval.
+  }
+  return std::nullopt;
 }
 
-std::optional<uint64_t>
-signatureThreadCpuUs() noexcept
+class PibCertificateFetcher final : public ndn::security::CertificateFetcherFromNetwork
 {
-  timespec value{};
-  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) != 0 ||
-      value.tv_sec < 0 || value.tv_nsec < 0 || value.tv_nsec >= 1000000000) {
-    return std::nullopt;
+public:
+  explicit
+  PibCertificateFetcher(ndn::Face& face)
+    : CertificateFetcherFromNetwork(face)
+  {
   }
-  const auto seconds = static_cast<uint64_t>(value.tv_sec);
-  const auto micros = static_cast<uint64_t>(value.tv_nsec) / 1000;
-  if (seconds > (std::numeric_limits<uint64_t>::max() - micros) / 1000000) {
-    return std::nullopt;
+
+private:
+  void
+  doFetch(const std::shared_ptr<ndn::security::CertificateRequest>& request,
+          const std::shared_ptr<ValidationState>& state,
+          const ValidationContinuation& continuation) override
+  {
+    auto certificate = findPibCertificate(m_keyChain, request->interest);
+    if (certificate) {
+      // CertificateFetcher::fetch caches this only as an unverified candidate
+      // and then continues ndn-cxx's recursive policy and signature validation.
+      continuation(*certificate, state);
+      return;
+    }
+    CertificateFetcherFromNetwork::doFetch(request, state, continuation);
   }
-  return seconds * 1000000 + micros;
-}
+
+  ndn::KeyChain m_keyChain;
+};
 
 size_t
 readSizeEnvironment(const char* name, size_t current)
@@ -99,49 +348,59 @@ readPositiveMillisecondsEnvironment(const char* name,
 
 } // namespace
 
+TrustSchemaValidator::TrustSchemaValidator(
+  std::unique_ptr<ndn::security::CertificateFetcher> fetcher,
+  const CommandInterestOptions& commandOptions,
+  const SignedInterestOptions& signedOptions)
+  : ndn::security::Validator(
+      std::make_unique<ndn::security::ValidationPolicySignedInterest>(
+        std::make_unique<ndn::security::ValidationPolicyCommandInterest>(
+          std::make_unique<FixedRootPolicy>(), commandOptions), signedOptions),
+      std::move(fetcher))
+{
+}
+
+TrustSchemaValidator::TrustSchemaValidator(ndn::Face& face,
+                                          const CommandInterestOptions& commandOptions,
+                                          const SignedInterestOptions& signedOptions)
+  : TrustSchemaValidator(std::make_unique<PibCertificateFetcher>(face),
+                         commandOptions, signedOptions)
+{
+}
+
+void
+TrustSchemaValidator::load(const std::string& filename)
+{
+  auto& policy = static_cast<FixedRootPolicy&>(getPolicy().getInnerPolicy().getInnerPolicy());
+  std::ifstream input(filename);
+  // Pass a failed stream through the same fail-closed reload path.
+  policy.loadFixed(input, filename);
+}
+
+void
+TrustSchemaValidator::load(const std::string& input, const std::string& filename)
+{
+  auto& policy = static_cast<FixedRootPolicy&>(getPolicy().getInnerPolicy().getInnerPolicy());
+  std::istringstream stream(input);
+  policy.loadFixed(stream, filename);
+}
+
+void
+loadTrustSchema(TrustSchemaValidator& validator, const std::string& filename)
+{
+  validator.load(filename);
+}
+
+std::unique_ptr<ndn::security::CertificateFetcher>
+MessageValidator::makeCertificateFetcher(ndn::Face& fallbackFace, ndn::Face* callbackFace)
+{
+  auto& face = callbackFace == nullptr ? fallbackFace : *callbackFace;
+  return std::make_unique<PibCertificateFetcher>(face);
+}
+
 NDN_LOG_MEMBER_INIT(SerializedWorkerQueue, ndn_service_framework.SerializedWorkerQueue);
 NDN_LOG_MEMBER_INIT(BoundedWorkerPool, ndn_service_framework.BoundedWorkerPool);
 NDN_LOG_MEMBER_INIT(MessageValidator, ndn_service_framework.MessageValidator);
-
-bool
-MessageValidator::verifyLocalDataSignature(
-  const ndn::Data& data,
-  const std::optional<ndn::security::Certificate>& cert)
-{
-  if (!signatureTimingEnabled()) {
-    return ndn::security::verifySignature(data, cert);
-  }
-  const auto wallBegin = std::chrono::steady_clock::now();
-  const auto cpuBegin = signatureThreadCpuUs();
-  const auto report = [&] (const char* result) noexcept {
-    try {
-      const auto cpuEnd = signatureThreadCpuUs();
-      const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now() - wallBegin).count();
-      std::string cpu = "unknown";
-      if (cpuBegin && cpuEnd && *cpuEnd >= *cpuBegin) {
-        cpu = std::to_string(*cpuEnd - *cpuBegin);
-      }
-      NDN_LOG_WARN("NDNSF_SIGNATURE_VERIFY data_name=" << data.getName()
-                   << " certificate_name=" << (cert ? cert->getName() : ndn::Name())
-                   << " result=" << result << " duration_us=" << duration
-                   << " thread_cpu_us=" << cpu);
-    }
-    catch (...) {
-      // Optional diagnostics must not change signature validation behavior.
-    }
-  };
-  bool verified;
-  try {
-    verified = ndn::security::verifySignature(data, cert);
-  }
-  catch (...) {
-    report("exception");
-    throw;
-  }
-  report(verified ? "valid" : "invalid");
-  return verified;
-}
 
 ndn::KeyType
 getCertificateKeyType(const ndn::security::Certificate& cert)
@@ -250,10 +509,15 @@ configureSvsPubSubOptionsFromEnvironment(ndn::svs::SVSPubSubOptions& options)
   // These are transport/resource bounds. They do not alter SVS suppression,
   // retry, or selection semantics; the piggyback value is only a safety
   // margin and oversized publications remain recoverable by name.
+  const ndn::svs::SVSPubSubOptions libraryDefaults;
+  const auto applicationBudget = options.maxApplicationParametersSize == libraryDefaults.maxApplicationParametersSize ?
+      6144 : options.maxApplicationParametersSize;
+  const auto piggyBudget = options.maxPiggyDataSize == libraryDefaults.maxPiggyDataSize ?
+      4096 : options.maxPiggyDataSize;
   options.maxApplicationParametersSize = readSizeEnvironment(
-    "NDNSF_SVS_MAX_APP_PARAMS_BYTES", options.maxApplicationParametersSize);
+    "NDNSF_SVS_MAX_APP_PARAMS_BYTES", applicationBudget);
   options.maxPiggyDataSize = readSizeEnvironment(
-    "NDNSF_SVS_MAX_PIGGYDATA_BYTES", options.maxPiggyDataSize);
+    "NDNSF_SVS_MAX_PIGGYDATA_BYTES", piggyBudget);
   if (std::getenv("NDNSF_SVS_PERIODIC_SYNC_MS") != nullptr) {
     // Configure this before SVSPubSub construction. Calling
     // setPeriodicSyncTime() afterward changes the stored interval but does not

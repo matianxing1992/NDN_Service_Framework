@@ -10,6 +10,7 @@
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
 #include "RequestConfidentiality.hpp"
+#include "SecurityProfile.hpp"
 #include "NetworkTelemetry.hpp"
 #include "NegativeAckReason.hpp"
 #include "TimelineTrace.hpp"
@@ -17,6 +18,7 @@
 #include "StreamFacade.hpp"
 #include "RevocationState.hpp"
 #include "PolicyRefreshCoordinator.hpp"
+#include "detail/policy-status-fetch.hpp"
 #include "RuntimeStatusStore.hpp"
 #include "EncryptedLargeDataRangeStore.hpp"
 #include "PublishedContentName.hpp"
@@ -1272,7 +1274,17 @@ namespace ndn_service_framework{
                                              const ndn::Name& ServiceName,
                                              const ndn::Name& requestID,
                                              ndn_service_framework::RequestAckMessage AckMessage,
-                                             AckAuthenticationEvidence authenticationEvidence = {});
+                                             AckAuthenticationEvidence authenticationEvidence = {},
+                                             uint64_t readerObservation = 0);
+            void decodeRequestAck(const ndn::Name& providerName, const ndn::Name& serviceName,
+                                  const ndn::Name& requestID, const ndn::Buffer& buffer,
+                                  AckAuthenticationEvidence evidence, uint64_t readerObservation);
+            uint64_t beginBasicReaderObservation(const ndn::Name& requestID,
+                                                  const ndn::Name& producer);
+            bool isBasicReaderObservationCurrent(const ndn::Name& requestID,
+                                                  const ndn::Name& producer, uint64_t serial) const;
+            void releaseBasicReaderObservation(const ndn::Name& requestID,
+                                               const ndn::Name& producer, uint64_t serial);
 
             virtual void OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
             void OnCollaborationData(
@@ -1295,11 +1307,19 @@ namespace ndn_service_framework{
                                                  const ndn::Name& serviceName,
                                                  int attempt = 1,
                                                  std::optional<ControllerVersion> expectedVersion = std::nullopt);
-            void onPolicyStatusData(const ndn::Interest& interest,
-                                    const ndn::Data& data,
-                                    int attempt = 1);
-            void onPolicyStatusTimeout(const ndn::Interest& interest,
-                                       int attempt = 1);
+            void dispatchPolicyStatusFetch(const ndn::Name& controllerPrefix,
+                                           const ndn::Name& serviceName, int attempt,
+                                           std::optional<ControllerVersion> expectedVersion,
+                                           bool replace);
+            bool isCurrentPolicyStatusFetch(const ndn::Name& serviceName, uint64_t ticket,
+                                            const ndn::Name& queryName) const;
+            std::optional<ndn::Name> policyStatusController(
+                const ndn::Interest& interest, uint64_t ticket) const;
+            void finishPolicyStatusFetch(const ndn::Name& serviceName, uint64_t ticket);
+            void onPolicyStatusData(const ndn::Interest& interest, const ndn::Data& data,
+                                    int attempt, uint64_t ticket);
+            void onPolicyStatusTimeout(const ndn::Interest& interest, int attempt,
+                                       uint64_t ticket);
             void scheduleControllerStatusRefresh(
                 const ndn::Name& serviceName,
                 const PolicyStatusData& status);
@@ -1444,6 +1464,15 @@ namespace ndn_service_framework{
 
             
 
+        private:
+            std::optional<RequestNameV2>
+            resolvePendingPublicationContext(const ndn::Name& messageName) const;
+
+            std::optional<ResponseNameV2>
+            resolvePendingReplyContext(const ndn::Name& name, const std::string& category,
+                                       const ndn::Name& expectedProducer = {},
+                                       bool allowTransport = false) const;
+
         protected:
             void finishCollaborationPublish() noexcept;
 
@@ -1513,6 +1542,8 @@ namespace ndn_service_framework{
                 uint64_t responseDecryptedAtUs = 0;
                 uint64_t responseValidatedAtUs = 0;
                 uint64_t requestDeadlineUs = 0;
+                uint64_t readerObservationSerial = 0;
+                std::map<ndn::Name, uint64_t> readerObservations;
                 AcksHandler acksHandler;
                 AckCandidatesHandler ackCandidatesHandler;
                 TimeoutHandler timeoutHandler;
@@ -1643,6 +1674,9 @@ namespace ndn_service_framework{
                 std::string recipientPublicKey;
                 bool protectedCarrierAllowed = false;
                 bool inlineSignedInputAllowed = false;
+                bool binaryKeyEnvelopeAllowed = false;
+                bool compactKeyEnvelopeAllowed = false;
+                bool securityProfileReferenceAllowed = false;
                 uint64_t expiresAtMs = 0;
                 uint64_t registrationGeneration = 0;
                 ControllerVersion controllerVersion{};
@@ -1927,6 +1961,29 @@ namespace ndn_service_framework{
             ndn::KeyChain* m_testSigningKeyChain = nullptr;
             std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;
             std::shared_ptr<MessageValidator> validator;
+            std::unique_ptr<SecurityProfileStore> m_securityProfiles;
+            std::shared_ptr<const SecurityProfileStore::Record> m_localSecurityProfile;
+            std::shared_ptr<const SecurityProfileStore::Record> ensurePublishedSecurityProfile();
+            struct ProfileReaderObservation {
+                ndn::Name producer;
+                ndn::Name service;
+                size_t policyEpoch = 0;
+                uint64_t expiresAtMs = 0;
+            };
+            // Face-owned codec observations; permissions remain in m_authorizations.
+            std::map<std::pair<ndn::Name, ndn::Name>, ProfileReaderObservation> m_profileReaderObservations;
+            struct ProfileAudienceMember {
+                ndn::Name producer;
+                std::string permissionKey;
+            };
+            // Optimization-only projection retaining exact signed grant identities.
+            std::map<std::string, std::vector<ProfileAudienceMember>> m_basicProfileAudiences;
+            void replaceBasicProfileAudience(
+                const std::vector<std::pair<ndn::Name, ndn::Name>>& producerServices);
+            void rememberBasicProfileReader(const ndn::Name& producer, const ndn::Name& service,
+                const RequestAckMessage& ack, const AckAuthenticationEvidence& evidence);
+            bool canUseBasicProfileReference(const ndn::Name& service) const;
+            bool prepareBasicProfileReference(RequestMessage& message, const ndn::Name& service);
             std::vector<std::string> m_serviceNames;
 
             //ndn::security::Validator nac_validator;
@@ -1949,7 +2006,7 @@ namespace ndn_service_framework{
             bool admitOriginalControlAck(const ndn::Name& name, uint64_t expiresAtUs);
             bool serveOriginalControlAck(const ndn::Interest& request);
             void publishOriginalControlAck(const ndn::Interest& request, const ndn::Data& packet, uint64_t expiresAtUs);
-            ndn::ValidatorConfig nac_validator{m_face};
+            TrustSchemaValidator nac_validator{m_face};
             ndn::security::Certificate identityCert;
             ndn::security::Certificate signingCert;
             ndn::security::Certificate attrAuthorityCertificate;
@@ -1976,7 +2033,9 @@ namespace ndn_service_framework{
             std::map<std::string, PolicyRefreshCoordinator>
                 m_policyRefreshCoordinators;
             ndn::Name m_controllerPrefix;
-            std::set<std::string> m_policyStatusFetchInFlight;
+            std::map<std::string, std::shared_ptr<detail::PolicyStatusFetch>>
+                m_policyStatusFetchInFlight;
+            uint64_t m_nextPolicyStatusFetchTicket = 0;
             std::map<std::string, ControllerVersion>
                 m_policyStatusRefreshScheduled;
             // A grant-only PermissionResponse can add a service while the

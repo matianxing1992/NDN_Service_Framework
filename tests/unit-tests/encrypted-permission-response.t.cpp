@@ -8,14 +8,58 @@
 
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
+#include <ndn-cxx/util/dummy-client-face.hpp>
 #include <ndn-cxx/util/io.hpp>
 
 #include <filesystem>
 #include <fstream>
 #include <chrono>
+#include <cstdlib>
+#include <vector>
 
 namespace ndn_service_framework::test {
 namespace {
+
+class ScopedRejectRsaSchema
+{
+public:
+  ScopedRejectRsaSchema()
+  {
+    auto pattern = (std::filesystem::temp_directory_path() /
+                    "ndnsf-reject-rsa-XXXXXX").string();
+    std::vector<char> buffer(pattern.begin(), pattern.end());
+    buffer.push_back('\0');
+    const char* directory = ::mkdtemp(buffer.data());
+    if (directory == nullptr) throw std::runtime_error("cannot make trust test directory");
+    m_directory = directory;
+    const auto root = m_keys.createIdentity(ndn::Name("/test/reject-rsa-root"),
+                                            ndn::RsaKeyParams(2048));
+    const auto rootPath = m_directory / "root.cert";
+    m_schemaPath = m_directory / "reject-rsa.conf";
+    ndn::io::save(root.getDefaultKey().getDefaultCertificate(), rootPath.string());
+    std::ofstream schema(m_schemaPath);
+    schema << "rule { id reject-rsa for data filter { type name regex ^<>*$ } "
+              "checker { type customized sig-type ecdsa-sha256 key-locator "
+              "{ type name regex ^<test|8=test><reject-rsa-root|8=reject-rsa-root>"
+              "<KEY|8=KEY><>{1,3}$ } } }\n"
+              "trust-anchor { type file file-name \"" << rootPath.string() << "\" }\n";
+    schema.close();
+    if (!schema) throw std::runtime_error("cannot write trust test schema");
+  }
+
+  ~ScopedRejectRsaSchema()
+  {
+    std::error_code ignored;
+    std::filesystem::remove_all(m_directory, ignored);
+  }
+
+  std::string path() const { return m_schemaPath.string(); }
+
+private:
+  ndn::KeyChain m_keys{"pib-memory:", "tpm-memory:"};
+  std::filesystem::path m_directory;
+  std::filesystem::path m_schemaPath;
+};
 
 class EncryptedPermissionResponseFixture
 {
@@ -546,7 +590,8 @@ BOOST_FIXTURE_TEST_CASE(PermissionResponseDataValidationRejectsForgedData,
                                      "/ObjectDetection/YOLOv8",
                                      "forged-token");
   const ndn::Name dataName("/test/controller/NDNSF/PERMISSIONS/USER/test/user/alice");
-  MessageValidator validator("tests/reject-rsa-data.conf");
+  ScopedRejectRsaSchema trust;
+  MessageValidator validator(trust.path());
   ServiceAuthorizationTable permissionTable;
 
   auto unsignedData = makeUnsignedEncryptedPermissionData(dataName,
@@ -603,7 +648,8 @@ BOOST_FIXTURE_TEST_CASE(PermissionResponseValidationRejectsUnsupportedSignatureA
                                      "/ObjectDetection/YOLOv8",
                                      "controller-token");
   const ndn::Name dataName("/test/controller/NDNSF/PERMISSIONS/USER/test/user/alice");
-  MessageValidator validator("examples/trust-any.conf");
+  ScopedRejectRsaSchema trust;
+  MessageValidator validator(trust.path());
   ServiceAuthorizationTable permissionTable;
 
   auto digestSignedData = makeDigestSignedEncryptedPermissionData(dataName,
@@ -658,7 +704,8 @@ BOOST_FIXTURE_TEST_CASE(PermissionResponseValidationRejectsUnsupportedSignatureA
 BOOST_FIXTURE_TEST_CASE(MessageValidatorFailureCallbackIsExplicit,
                         EncryptedPermissionResponseFixture)
 {
-  MessageValidator validator("tests/reject-rsa-data.conf");
+  ScopedRejectRsaSchema trust;
+  MessageValidator validator(trust.path());
 
   ndn::Data unsignedData(ndn::Name("/test/controller/NDNSF/PERMISSIONS/USER/test/user/alice"));
   unsignedData.setContent("bad");
@@ -680,9 +727,9 @@ BOOST_FIXTURE_TEST_CASE(MessageValidatorFailureCallbackIsExplicit,
   BOOST_CHECK_EQUAL(validator.getFailureCountForTesting(), 1);
 }
 
-BOOST_AUTO_TEST_CASE(MessageValidatorAcceptsBoundV3StateVectorName)
+BOOST_AUTO_TEST_CASE(MessageValidatorRejectsBoundV3StateVectorAgainstFixedPolicy)
 {
-  ndn::KeyChain keyChain;
+  ndn::KeyChain keyChain("pib-memory:bound-v3-state", "tpm-memory:bound-v3-state");
   const ndn::Name signerIdentity(
     "/example/spec114/provider-" +
     std::to_string(ndn::time::system_clock::now().time_since_epoch().count()));
@@ -693,37 +740,31 @@ BOOST_AUTO_TEST_CASE(MessageValidatorAcceptsBoundV3StateVectorName)
   stateData.setContent("state-vector");
   keyChain.sign(stateData, ndn::security::signingByCertificate(certificate));
 
-  MessageValidator validator("tests/reject-rsa-data.conf", groupPrefix);
-  bool successCalled = false;
-  bool failureCalled = false;
-  validator.validate(
-    stateData,
-    [&] (const ndn::Data&) { successCalled = true; },
-    [&] (const ndn::Data&, const ndn::security::ValidationError&) {
-      failureCalled = true;
-    });
-
-  BOOST_CHECK(successCalled);
-  BOOST_CHECK(!failureCalled);
-  BOOST_CHECK_EQUAL(validator.getFailureCountForTesting(), 0);
-  BOOST_CHECK_EQUAL(validator.getLocalCertificateCacheSizeForTesting(), 1);
+  ScopedRejectRsaSchema trust;
+  boost::asio::io_context io;
+  ndn::DummyClientFace face(io, keyChain);
+  auto validator = std::make_shared<MessageValidator>(trust.path(), groupPrefix, &face);
+  const auto rejected = [&](const ndn::Data& packet) {
+    bool successCalled = false;
+    bool failureCalled = false;
+    validator->validate(packet,
+      [&] (const ndn::Data&) { successCalled = true; },
+      [&] (const ndn::Data&, const ndn::security::ValidationError&) {
+        failureCalled = true;
+      });
+    for (int attempt = 0; attempt < 20 && !successCalled && !failureCalled; ++attempt) {
+      face.processEvents(ndn::time::milliseconds(2));
+    }
+    BOOST_CHECK(!successCalled);
+    BOOST_CHECK(failureCalled);
+  };
+  rejected(stateData);
 
   ndn::Data nextStateData(ndn::Name(groupPrefix).appendVersion(3));
   nextStateData.setContent("next-state-vector");
   keyChain.sign(nextStateData, ndn::security::signingByCertificate(certificate));
-  successCalled = false;
-  failureCalled = false;
-  validator.validate(
-    nextStateData,
-    [&] (const ndn::Data&) { successCalled = true; },
-    [&] (const ndn::Data&, const ndn::security::ValidationError&) {
-      failureCalled = true;
-    });
-
-  BOOST_CHECK(successCalled);
-  BOOST_CHECK(!failureCalled);
-  BOOST_CHECK_EQUAL(validator.getFailureCountForTesting(), 0);
-  BOOST_CHECK_EQUAL(validator.getLocalCertificateCacheSizeForTesting(), 1);
+  rejected(nextStateData);
+  BOOST_CHECK_EQUAL(validator->getFailureCountForTesting(), 2U);
 }
 
 BOOST_AUTO_TEST_CASE(MessageValidatorAsyncNetworkCallbacksOwnTheirState)
@@ -879,7 +920,8 @@ trust-anchor
 BOOST_FIXTURE_TEST_CASE(ValidatorFailureCallbacksAreExactlyOnceAndLeaveNoState,
                         EncryptedPermissionResponseFixture)
 {
-  MessageValidator validator("tests/reject-rsa-data.conf");
+  ScopedRejectRsaSchema trust;
+  MessageValidator validator(trust.path());
   ServiceAuthorizationTable permissionTable;
 
   const auto response = makeResponse(userIdentity,

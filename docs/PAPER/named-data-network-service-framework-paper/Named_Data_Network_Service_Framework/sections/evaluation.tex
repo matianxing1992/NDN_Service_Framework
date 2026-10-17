@@ -1,71 +1,26 @@
 \label{sec:eval}
 
+We first analyze credential-management costs, then evaluate service invocation against NSC~\cite{meirovitch2021nsc}, an NDN remote code execution framework, and gRPC, an IP-based remote procedure call framework. The invocation experiments examine reliability under loss and provider unavailability, followed by the effects of ACK and provider-selection strategies.
+
 \input{sections/credential-cost}
 
-In this section, we compare NDNSF with NSC \cite{meirovitch2021nsc}, an NDN remote code execution framework, and  gRPC, an IP-based remote procedure call framework. 
+\subsection{Permission Aggregation: Measured Costs and Limits}
+\label{sec:measured-permission-cost}
 
-\subsection{High-Level Comparison}
+We compare eight identities with 1, 4 or 16 permissions under three C++ measurement configurations: one aggregated NAC-ABE DKEY per identity, separate NAC-ABE DKEYs per permission, and one RSA-protected bundle of AES service keys per identity. Five matched repetitions check authorized access, rejection of tampered data, rejection of new ciphertext by revoked holders retaining old keys, and surviving users' access after revocation.
 
-\begin{table*}[]
-\centering
-\caption{High-Level Comparison of NDNSF, NSC, and gRPC}
-\label{table:Comparison}
-\small
-\begin{tabularx}{\textwidth}{|l|>{\hsize=0.7\hsize}X|>{\hsize=0.9\hsize}X|>{\hsize=1.3\hsize}X|X|X|>{\hsize=1.1\hsize}X|}
-\hline
-\textbf{Framework} 
-& \textbf{Network Layer} 
-& \textbf{Security Focus}
-& \textbf{Security Mechanisms} 
-& \textbf{Evaluated Provider Choice} 
-& \textbf{Loss Recovery} 
-& \textbf{Invocation Exchanges}
-\\
-\hline
-NDNSF 
-& NDN 
-& Data-centric 
-& Signatures; NAC-ABE 
-& Multiple candidates 
-& Sync and Data retrieval retries 
-& Request--ACK--Selection--Response  
-\\
-\hline
-NSC   
-& NDN 
-& Data-centric
-& Trust schema; encryption 
-& Fixed provider 
-& Depends on retry settings 
-& Invocation and input/result retrieval 
-\\
-\hline
-gRPC  
-& IP 
-& Channel-based 
-& TLS; authentication 
-& Fixed provider 
-& Transport recovery 
-& RPC request/reply  
-\\
-\hline
-\end{tabularx}
-\end{table*}
+At 16 permissions, initial local management CPU time, including key generation and recipient processing, is 303.10\,ms for aggregated ABE, 704.58\,ms for separate ABE keys and 6.15\,ms for batched RSA/AES. Aggregation lowers this cost relative to separate ABE keys, but the batched alternative has the lowest local cost in every measured phase.
 
-Table~\ref{table:Comparison} summarizes supported mechanisms and the provider-selection configurations used in this evaluation. Both NDNSF and NSC use NDN, while gRPC uses IP. NDNSF validates Data signatures under trust rules and uses NAC-ABE to restrict access to encrypted content, including cached copies. gRPC supports TLS and configurable authentication~\cite{grpc-auth}; applications can add object encryption for stored content. NSC also specifies signed invocation Interests, application-defined trust schemas, and encrypted inputs/results. The listed security capabilities are not measurements of security overhead or evidence that all capabilities were enabled in every experiment.
+A separate network comparison distributes pre-generated signed objects and excludes online generation. At 16 permissions, aggregation reduces initial management traffic from 281.72 to 86.74\,KiB relative to separate ABE keys (paired reduction 194.98\,KiB; 95\% interval 193.87--196.10), and revocation traffic from 247.11 to 75.80\,KiB. Eight aggregated DKEYs replace 128 separate DKEYs. At one permission, both ABE configurations use about 21.96\,KiB initially; a single new permission costs more under aggregation because it replaces a larger policy. The batched RSA/AES alternative uses only 27.25\,KiB initially and less traffic in every measured phase. Thus, aggregation helps relative to per-permission ABE when permissions are numerous, but is neither generally cheaper than batching nor free to update.
 
-NDNSF also provides a more flexible communication model. Whereas the evaluated gRPC and NSC configurations use one fixed provider, NDNSF supports both one-to-one and one-to-many service invocation by publishing requests as NDN data objects through Sync. This enables collection of current provider feedback, application-defined selection, and cross-validation of results. Loss recovery depends on retransmission and timeout configuration and should not be inferred from the network architecture alone.
+A separate MiniNDN~\cite{MININDN} experiment measures access recovery through the NDNSF Controller, Provider and User APIs, with five runs each at one and sixteen permissions per identity. All runs restore authorized access. At sixteen permissions, observed recovery takes 0.664--2.713\,s after a grant and 3.348--7.022\,s for the seven surviving users after revocation and key rotation. Calls using the pre-revocation permission state also complete after the revocation update, and some calls have no terminal result by the end of the observation window. These observations do not establish immediate revocation or uninterrupted service. This experiment does not compare management costs through the framework APIs across the three alternatives. Appendix~\ref{app:measured-permission-cost} gives the cost breakdown, reuse comparison and recovery details.
 
-In NDNSF's basic invocation flow, ACK collection and Selection introduce exchanges before execution. Their latency depends on dissemination, collection timeouts, and network conditions, rather than a universal RTT count. The experiments use the configurations described below; their authorization and recovery mechanisms are not identical.
+\subsection{Invocation Comparison Scope}
 
-%LW: I commented out this paragraph as I'm not sure if this is correct
-%Beyond these differences, a key distinguishing feature of NDNSF lies in its distributed authorization and verification mechanism. Unlike gRPC and NSC, which rely on an online server or infrastructure node for user onboarding and authorization, NDNSF allows new users to be securely added even when service providers are offline, after an initial bootstrap phase. This capability makes NDNSF particularly suitable for dynamic and intermittently connected environments.
-
-In the following sections, we will present performance evaluation results in a lightweight NDN emulator tool Mini-NDN~\cite{MININDN} and real-world experiments.
-
+In the multi-provider comparisons with fixed-provider baselines, NSC and gRPC call one fixed provider, while NDNSF solicits several candidates and selects from their ACKs. NSC and NDNSF use signed NDN packets; NDNSF additionally uses NAC-ABE to protect service content. The matched multi-provider experiment below also enables failover in NSC and gRPC, but compares complete invocation paths rather than isolating feedback. These cross-framework comparisons do not isolate security overhead.
 \subsection{Experimental Setup}
 
-%\subsubsection{Emulation Experiments}
+The original single-provider loss, fixed-provider, ACK-strategy, provider-selection, mobility and real-machine measurements used pre-provisioned certificates and excluded online certificate-chain retrieval and validation. They describe that implementation and do not quantify the current validation path. The no-loss single-provider and matched invocation studies use fixed-root certificate validation.
 
 \begin{figure}[]
     \centering
@@ -75,7 +30,7 @@ In the following sections, we will present performance evaluation results in a l
     \vspace{-3mm}
 \end{figure}
 
-Figure~\ref{fig:wired_topo} illustrates the emulated wired network, derived from a subset of the global NDN Testbed topology~\cite{testbedtopo}. All nodes are connected by 1~Gbps wired links, with per-link latency configured according to the values shown in the topology. Unless otherwise specified, all links are lossless; in lossy wired network experiments, a uniform packet loss rate of 1\% is applied to every link.
+Figure~\ref{fig:wired_topo} illustrates the emulated wired network used in the wired invocation experiments unless otherwise specified, derived from a subset of the global NDN Testbed topology~\cite{testbedtopo}. All nodes are connected by 1~Gbps wired links, with per-link latency configured according to the values shown in the topology. Unless otherwise specified, all links are lossless; in lossy wired network experiments, a uniform packet loss rate of 1\% is applied to every link.
 
 \begin{figure}[]
     \centering
@@ -87,11 +42,9 @@ Figure~\ref{fig:wired_topo} illustrates the emulated wired network, derived from
 
 Figure~\ref{fig:wifi_topo} depicts the emulated wireless network. All drones initially start 50~meters from the ground station and then move randomly within a 400\,m $\times$ 400\,m area centered at the ground station following the Random Waypoint mobility model. The WiFi access point (AP) is colocated with the ground station, and its communication range is varied across experiments. Drones moving outside the AP range cannot receive packets, resulting in mobility-induced packet loss.
 
-In addition to the emulation experiments, we conduct real-world experiments using a Lenovo Y70 laptop, a desktop PC equipped with an AMD Ryzen 7 3700X processor, and an Odroid C4 device. The Odroid C4 emulates a UAV, while the laptop and PC act as ground stations. The PC is connected directly to a WiFi AP over Ethernet, whereas the laptop and Odroid C4 communicate wirelessly through the same AP.
+In addition to the emulation experiments, we conduct real-world experiments using a Lenovo Y70 laptop, a desktop PC equipped with an AMD Ryzen 7 3700X processor, and an Odroid C4 device. The PC is connected directly to a WiFi AP over Ethernet, whereas the laptop and Odroid C4 communicate wirelessly through the same AP.
 
-In all the NDNSF experiments, users employ the first-responding provider-selection strategy unless otherwise specified. By default, providers acknowledge and serve all incoming requests. Each service request incurs a 5\,ms processing delay at the provider to emulate service execution overhead. 
-%Each experiment runs for 300~seconds.
-
+In the single-provider, fixed-provider, ACK-strategy, provider-selection, mobility and real-machine comparisons, NDNSF users employ the first-responding provider-selection strategy unless otherwise specified. By default, providers acknowledge and serve all incoming requests. Each service request incurs a 5\,ms processing delay at the provider to emulate service execution overhead. Except for the no-loss single-provider comparison, these experiments use a 512~B publication-embedding threshold, which limits the encoded Data size eligible for carriage in Sync Interests. The targeted, matched-availability, advertisement and permission studies specify their own workloads and completion criteria.
 \subsection{Performance Metrics}
 
 We use the following metrics in our evaluation:
@@ -99,52 +52,53 @@ We use the following metrics in our evaluation:
 \begin{enumerate}
 \item \textbf{Service Latency}: the time interval from initiating a service request to receiving the service result.
 
-\item \textbf{Success Rate}: the proportion of measured service requests for which the user receives the result within the configured timeout. A request counts once, regardless of message retrieval retries. A timeout does not establish whether the provider executed the request.
+\item \textbf{Success Rate}: the proportion of measured service requests for which the user accepts a result under the invocation's configured timeout handling. A request counts once, regardless of message retrieval retries. A timeout does not establish whether the provider executed the request.
 \end{enumerate}
 
-The reported results describe the evaluated configurations. This manuscript does not provide the original per-run logs, repetition counts, or random seeds needed to reconstruct confidence intervals; the point estimates should not be interpreted as statistically established differences. The comparisons also do not isolate authorization costs.
+The single-provider, fixed-provider, ACK-strategy, provider-selection, mobility and real-machine comparisons report point estimates without repetition-based uncertainty estimates. They do not establish statistical differences or isolate authorization costs. The matched studies report repetitions and uncertainty.
 
 \subsection{Wired Evaluation Results with One Provider}
 
-\begin{figure}[]
+\begin{figure}[!h]
   \centering
   \begin{tikzpicture}
     \begin{axis}[
       ybar,
       ymin=0,
-      ymax=270, % Increased slightly to give the "211" label breathing room at the top
+      ymax=280,
       xlabel={Requests Per Second},
       ylabel={Service Latency (ms)},
       symbolic x coords={10,30,50,70},
       xtick=data,
-      % Text formatting updates
+      ytick={0,50,100,150,200,250},
       label style={font=\footnotesize},
       tick label style={font=\footnotesize},
-      % Customizing the bar value labels to prevent collisions
       nodes near coords,
-      nodes near coords style={
-        font=\scriptsize, 
-        every node near coord/.append style={yshift=2pt} % Pushes text slightly above the bar
-      },
+      nodes near coords style={font=\tiny,
+        /pgf/number format/fixed, /pgf/number format/precision=0},
       nodes near coords align={vertical},
-      % Cleaned up legend formatting
       legend style={
-        at={(0.5,1.05)}, 
+        at={(0.5,1.03)},
         anchor=south,
-        legend columns=-1,
+        legend columns=2,
         draw=none,
         font=\footnotesize,
-        /tikz/every even column/.append style={column sep=5pt} % Adds neat spacing between legend items
-      }, 
-      bar width=9pt, % Slid down from 12pt to better match the tight width constraint
-      height=0.30\textwidth, 
-      width=0.40\textwidth,
-      enlarge x limits={0.25}, % Shifted to 0.25 to distribute the bars perfectly inside the frame
+        /tikz/every even column/.append style={column sep=6pt}
+      },
+      bar width=7pt,
+      height=0.70\columnwidth,
+      width=\columnwidth,
+      enlarge x limits={0.18},
       ]
-      \addplot[pattern=north east lines,pattern color=black] coordinates {(10,215) (30,218) (50,219)(70,228) };
-      \addplot[fill=gray] coordinates {(10,118) (30,122) (50,120)(70,123)};
-      \addplot[fill=white] coordinates {(10,182) (30,181) (50,182) (70,185)};
-      \legend{NSC,gRPC,NDNSF}
+      \addplot[pattern=north east lines,pattern color=black]
+        coordinates {(10,217.840) (30,210.937) (50,212.190) (70,215.500)};
+      \addplot[fill=gray]
+        coordinates {(10,116.204) (30,107.600) (50,111.480) (70,113.300)};
+      \addplot[fill=white]
+        coordinates {(10,226.449) (30,223.768) (50,218.264) (70,237.604)};
+      \addplot[pattern=dots,pattern color=black]
+        coordinates {(10,119.092) (30,115.440) (50,117.359) (70,117.489)};
+      \legend{NSC,gRPC,NDNSF,NDNSF-Targeted}
     \end{axis}
   \end{tikzpicture}
   \caption{Average Service Latency in Wired Network (Link Loss=0\%); this experimental data was collected between two nodes: Memphis and UCLA.}
@@ -152,11 +106,11 @@ The reported results describe the evaluated configurations. This manuscript does
   \vspace{-3mm}
 \end{figure}
 
-In the first experiment, Memphis and UCLA act as the service user and provider, respectively, while the request rate varies from 10 to 70 requests per second (RPS). The same request-generation rate is configured for all three systems.
+In the no-loss comparison, Memphis and UCLA act as the service user and provider, respectively. NDNSF, NDNSF-Targeted, NSC and gRPC use the same rates of 10, 30, 50 and 70 requests per second (RPS), with a 64~B echo workload and 5\,ms service delay. A timer submits requests without waiting for earlier calls to finish. Each measurement lasts 60\,s after a 10\,s warmup; the request deadline is 5\,s. NDNSF users and providers use ECDSA runtime signatures and separate RSA keys for NAC-ABE credential delivery, with fixed-root certificate validation and a 4096~B publication-embedding threshold. NSC validates signed packets against pinned ECDSA keys, and gRPC uses mutual TLS.
 
-Figure~\ref{fig:latency_0.00} shows the average service latency in a wired network without packet loss. gRPC achieves the lowest latency in this configuration. NDNSF maintains stable latency and has lower average latency than NSC in this experiment, despite the additional overhead of synchronization, provider selection, and access control. In addition, all three frameworks achieve a 100\% success rate (not shown in the figure). These results demonstrate that NDNSF supports stable and reliable service under increasing, though not yet saturated, workload.
+Figure~\ref{fig:latency_0.00} shows that NDNSF's four-step invocation has roughly twice the mean latency of two-step targeted invocation at 10--70 RPS: 218--238\,ms versus 115--119\,ms. During measurement, all targeted calls use the Request--Response path. NDNSF has higher mean latency than NSC, while gRPC has the lowest mean latency at each rate. All four configurations submit every scheduled request and complete all measured calls within the 5\,s deadline.
 
-\begin{figure}[]
+\begin{figure}[!h]
   \centering
   \begin{tikzpicture}
     \begin{axis}[
@@ -199,12 +153,12 @@ Figure~\ref{fig:latency_0.00} shows the average service latency in a wired netwo
       \legend{NSC,gRPC,NDNSF}
     \end{axis}
   \end{tikzpicture}
-  \caption{Success Rate in Wired Network (Link Loss=1\%); this experimental data was collected between two nodes: Memphis and UCLA.}
+  \caption{Success Rate in Wired Network (Link Loss=1\%, earlier implementation); this experimental data was collected between two nodes: Memphis and UCLA.}
   \label{fig:success_rate_0.01}
   %\vspace{-3mm}
 \end{figure}
 
-We next configure the wired network with 1\% link loss rate to compare the reliability of the three frameworks under moderate network impairment. Figure~\ref{fig:success_rate_0.01} shows that both gRPC and NDNSF maintain a 100\% success rate across all request rates. In contrast, NSC experiences more than 12\% request failures under the tested retry and timeout configuration. These results demonstrate that NDNSF achieves reliability comparable to TCP-based gRPC.
+The separate 1\% link-loss comparison uses the earlier implementation with the 512~B publication-embedding threshold and pre-provisioned certificate configuration described above. Figure~\ref{fig:success_rate_0.01} shows that both gRPC and NDNSF maintain a 100\% success rate across all request rates. In contrast, NSC experiences 12--13\% request failures under the tested retry and timeout configuration. NDNSF therefore matches TCP-based gRPC's completion rate in that configuration.
 
 \subsection{Reliability Under Intermittent Provider Failures}
 \label{sec:intermittent-provider-failures}
@@ -212,7 +166,7 @@ We next configure the wired network with 1\% link loss rate to compare the relia
 \begin{table}[t]
   \centering
   \caption{
-    Service Request Success Rate under Intermittent Provider Failures in a Wired Multi-Provider Environment
+    Service Request Success Rate (\%) under Intermittent Provider Failures in a Wired Multi-Provider Environment
     %Each provider independently enters a temporary unavailable state with the specified probability.
   }
   \label{tab:success_rate_wired_intermittent}
@@ -258,13 +212,69 @@ In this experiment, UCLA, WUSTL, and UIUC provide identical services to Memphis.
 
 Table~\ref{tab:success_rate_wired_intermittent} shows that NDNSF achieves higher completion rates than the fixed-provider NSC and gRPC configurations at all tested rejection probabilities. When the rejection probability is 20\%, NDNSF maintains a 99.46\% success rate, while NSC and gRPC achieve only 66.58\% and 66.69\%, respectively. Even at a 30\% rejection probability, NDNSF still achieves 96.70\% success. This improvement comes from NDNSF's one-to-many service invocation model: a request can use another available provider if selection and execution finish before timeout. In contrast, the configured gRPC and NSC clients are bound to a single provider, so requests fail whenever that provider is unavailable.
 
+\subsection{Task-Feedback Ablation}
+\label{sec:task-feedback-ablation}
+
+To isolate task feedback from access to alternative providers, we used an internal NDNSF ablation in five paired MiniNDN blocks of 13 planned tasks each. Both arms used the same two candidates, protected Request--ACK--Selection--Response path, fixed-root validation, task-state trace, 64-byte input, simulated 5-ms handler, and modeled 2-s target-recognition deadline. In both arms, the user selected the lowest provider name among the collected valid positive ACKs. Only the Provider's participation decision differed: a current-task capacity check versus ACK-all.
+
+Each 60\,s block schedules tasks every 4.7\,s, with at most three invocation attempts per task; an attempt is a new invocation, not a message-retrieval retry. Three 1\,Gbps links have 10\,ms one-way delay and no random loss. Both providers remain reachable. Their complementary capacity states alternate at intervals of 0.3--0.7\,s (mean 0.5\,s), with each provider constrained half the time. A constrained provider cannot accept its compute- or memory-specialty task, while the other remains eligible.
+
+Task feedback produced 65/65 timely correct completions versus 57/65 for ACK-all (paired gain 12.3 percentage points; block-bootstrap 95\% interval 7.7--18.5). It required 65 versus 89 attempts; 32 ACK-all attempts were rejected for insufficient capacity, versus none with feedback. Neither arm had duplicate or late eligible execution. Mean per-attempt submission-to-Selection time was 83.9 versus 50.1\,ms; gross relay IP traffic was 71.9 versus 99.2\,KiB per planned task. Feedback improved completion and reduced failed attempts in these traces at about 34\,ms additional selection delay. The result does not establish the same gain for other loads or deadlines.
+
+\subsection{Matched Multi-Provider Availability}
+\label{sec:matched-provider-availability}
+
+We next compare the full NDNSF invocation path with NSC and gRPC clients that can switch between the same two providers. The testbed uses three 1\,Gbps links with 10\,ms one-way delay and no random packet loss; the offline conditions additionally apply the scheduled disconnections. Five paired MiniNDN runs per condition use the same scheduled arrivals, provider-state trace, 64-byte input, simulated 5\,ms handler and 2\,s deadline from scheduled arrival. Each 60\,s run schedules 13 tasks at 4.7\,s intervals. The conditions are stable availability, slow or fast link disconnection, and fast online busy rejection. In the offline conditions, complementary link states leave exactly one provider reachable, with each reachable half the time. State intervals average 5\,s (slow) or 0.5\,s (fast); online busy rejection uses the fast trace to alternate which provider rejects all tasks.
+
+NDNSF uses Request--ACK--Selection--Response; NSC and gRPC retry with another provider after a failed attempt. NDNSF permits at most three invocation attempts per task; NSC and gRPC try each provider at most once (two attempts). After a timeout with possible execution, the NDNSF client keeps the attempt open until the task deadline; it retries only when non-execution is established. NDNSF allows 250\,ms for ACK collection and sets an initial 600\,ms attempt timeout, while NSC and gRPC use 250\,ms per attempt. Their security mechanisms also differ, so this comparison does not isolate cryptographic overhead. Here, correct completion requires a timely validated result without late or duplicate eligible handler execution; all planned tasks remain in the denominator. Table~\ref{tab:matched-provider-availability} reports the results.
+
+\begin{table}[!ht]
+  \centering
+  \caption{Matched multi-provider results (65 tasks per arm and condition). Latency includes a 2\,s penalty for failures; gross relay IP includes background traffic.}
+  \label{tab:matched-provider-availability}
+  \footnotesize
+  \setlength{\tabcolsep}{2.5pt}
+  \begin{tabular}{lccc}
+    \toprule
+    \multicolumn{4}{l}{Correct tasks/65 (mean latency, ms)} \\
+    Condition & NDNSF & NSC & gRPC \\
+    \midrule
+    Stable & 65/65 (121.6) & 65/65 (104.6) & 65/65 (56.4) \\
+    Slow offline & 63/65 (374.3) & 64/65 (255.3) & 55/65 (364.6) \\
+    Fast offline & 35/65 (1124.3) & 43/65 (798.5) & 31/65 (1122.2) \\
+    Fast busy & 65/65 (249.5) & 63/65 (197.7) & 65/65 (82.4) \\
+    \midrule
+    \multicolumn{4}{l}{Gross relay IP (KiB/task)} \\
+    Condition & NDNSF & NSC & gRPC \\
+    \midrule
+    Stable & 73.0 & 6.4 & 41.3 \\
+    Slow offline & 50.9 & 6.7 & 32.2 \\
+    Fast offline & 49.8 & 5.3 & 30.1 \\
+    Fast busy & 88.2 & 7.6 & 39.7 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+We assess completion from task plans, handler records and terminal states, and measure traffic from packet captures. Under slow disconnection, NDNSF completes 63/65 tasks, versus 64/65 for NSC and 55/65 for gRPC (NDNSF--gRPC paired difference 12.3 percentage points; block-bootstrap 95\% interval 7.7--18.5). Under fast disconnection, NDNSF completes 35/65 versus 43/65 and 31/65; its paired difference from NSC is $-12.3$ points (interval $-26.2$ to 1.5), without an established completion advantage. NDNSF has no observed duplicate or late eligible execution. NSC and gRPC each have one duplicate execution under slow disconnection; gRPC has three under fast disconnection. In stable conditions, all three complete 65/65; under online busy rejection, their counts are 65/65, 63/65 and 65/65. NDNSF has higher mean latency and gross relay traffic in all four conditions. Different retry policies, per-attempt timeouts and transport paths prevent attributing these cross-system results to feedback alone.
+
+We also compare five paired blocks with both providers reachable and task-specific capacity varying on the same fast trace: a constrained provider cannot accept its compute- or memory-specialty task, while the other provider remains eligible. Task classes follow a seed-shifted compute--compute--memory--memory cycle, while the NSC and gRPC clients rotate their default provider order across tasks. Generic gRPC health checks report reachability; NSC discovers task rejection after input delivery, while NDNSF receives it in ACK feedback. With the same 2\,s deadline, all three arms correctly complete 65/65 tasks without duplicate or late execution. NDNSF makes 71 attempts, versus 80 for NSC and 78 for gRPC, but its mean latency is 218.0\,ms versus 180.4 and 94.7\,ms, and gross relay IP is 78.6 versus 7.8 and 40.9\,KiB per planned task. All tasks finish within 521\,ms under this 64-byte, 5-ms-handler workload, leaving ample deadline slack. Thus, feedback avoids some retries here without improving deadline completion or offsetting its coordination cost.
+
+\subsection{Solicitation Versus Coarse Service Advertisements}
+\label{sec:dynamic-selection-cost}
+
+We compare task-specific solicitation with preselection from long-term service advertisements followed by protected targeted requests. The advertisement arm queries status after a failed call; its change-driven publications model service capabilities, not an unmodified NDNSD implementation. In five paired blocks, two providers receive one synthetic task per second with a 2\,s deadline and an 80\,ms simulated handler. Both arms use the same eligibility checks and at most three attempts. The solicitation client waits until the task deadline if an unanswered attempt may have executed; the advertisement client can retry a targeted call after its attempt timeout. These are simulated resource and link conditions, not measured inference or flight workloads.
+
+When temporary busy periods change task eligibility, both arms correctly complete 300/300 tasks; solicitation uses fewer submissions (313 versus 408) but more relay traffic (74.2 versus 56.5\,KiB per task). Mean latencies are 272.2 and 247.7\,ms, with no resolved paired latency difference. When complementary provider links alternate between reachable and unreachable, leaving one reachable at a time, solicitation completes 259/300 versus 270/300 tasks within 2\,s (paired difference $-3.7$ percentage points; 95\% interval $-5.3$ to $-1.7$). Its mean latency including the 2\,s failure penalty is lower (642.6 versus 732.3\,ms), but it uses more relay traffic (50.1 versus 42.1\,KiB per task). Solicitation has no observed duplicate or late eligible execution; one duplicate execution with advertisements is excluded from correct completion. Solicitation completes fewer tasks under these link changes. The comparison also changes invocation paths, retry behavior and advertisement visibility, so it does not isolate feedback alone.
+
 \subsection{Reliability Under Mobility-Induced Disconnections}
 \label{sec:mobility-induced-disconnections}
 
-\begin{table}[]
+In the wireless experiments, the ground station acts as the user and the drones act as providers. The AP WiFi range is varied from 100\,m to 200\,m in the simulated coverage model. When a drone moves outside the coverage area, it becomes temporarily unavailable.
+
+\begin{table}[!ht]
   \centering
   \caption{
-    Service Request Success Rate in a Wireless Mobile Network with Different WiFi Ranges
+    Service Request Success Rate (\%) in a Wireless Mobile Network with Different WiFi Ranges
   }
   \label{tab:success_rate_wifi_mobile}
 
@@ -304,18 +314,17 @@ Table~\ref{tab:success_rate_wired_intermittent} shows that NDNSF achieves higher
   \end{tabular}
 \end{table}
 
-In the wireless experiments, the ground station acts as the user and the drones act as providers. The AP WiFi range is varied from 100\,m to 200\,m in the simulated coverage model. When a drone moves outside the coverage area, it becomes temporarily unavailable.
-
 Table~\ref{tab:success_rate_wifi_mobile} shows that NDNSF achieves higher success rates than the fixed-provider NSC and gRPC configurations under the tested mobility-induced disconnections. With a 100\,m WiFi range, NDNSF achieves a 96.25\% success rate, compared to 45.42\% for NSC and 45.23\% for gRPC. As the WiFi range increases, the success rates of all systems improve, with NDNSF having the highest reported rates in these configurations, reaching 100\% at both 150\,m and 200\,m.
 
 This advantage stems from NDNSF's one-to-many service model. The ground station can dynamically select among multiple drones, allowing requests to use another reachable drone before timeout. In contrast, the configured gRPC and NSC clients bind the ground station to a single drone, making them more vulnerable to mobility-induced disconnections.
+
 
 \subsection{ACK Strategy Evaluation}
 \label{sec:selective-ack}
 
 This experiment evaluates NDNSF's Selective ACK mechanism in a multi-provider environment. Memphis acts as the service user with a request rate of 50~RPS, while CSU, UCLA, and WUSTL provide identical services. CSU is the closest provider but is intentionally overloaded: although it continues receiving requests, it delays responses by 30~seconds. Since the request timeout is 5~seconds, requests handled by CSU are expected to fail.  We compare two ACK mechanisms. Under \emph{ACK-all}, every provider always returns an ACK, even when they cannot complete requests before timeout. Under \emph{Selective ACK}, providers suppress ACKs when overloaded, preventing themselves from being selected.
 
-Table~\ref{tab:selective-ack} shows that ACK-all performs poorly because the first-responding strategy selects CSU for 2209 out of 2250 requests, all of which fail to return a response before the timeout, resulting in only a 1.82\% success rate. In contrast, Selective ACK prevents CSU from being selected while overloaded, allowing requests to be handled by UCLA and WUSTL and achieving a 100\% success rate. These results demonstrate that Selective ACK improves provider selection by preventing overloaded providers from advertising themselves as available.
+Table~\ref{tab:selective-ack} shows that ACK-all performs poorly because the first-responding strategy selects CSU for 2209 out of 2250 requests, all of which fail to return a response before the timeout, resulting in only a 1.82\% success rate. In contrast, Selective ACK prevents CSU from being selected while overloaded, allowing requests to be handled by UCLA and WUSTL and achieving a 100\% success rate. Under this forced-overload configuration, suppressing CSU's ACK prevents the first-responding strategy from choosing it.
 
 \begin{table}[]
   \centering
@@ -344,7 +353,7 @@ Table~\ref{tab:selective-ack} shows that ACK-all performs poorly because the fir
 
 This experiment evaluates NDNSF's customizable provider-selection mechanism. Memphis acts as the service user, while UIUC, UCLA, and WUSTL provide the same service. To create heterogeneous provider conditions, UIUC, the closest provider, is configured with the slowest service-processing delay (100\,ms), while UCLA and WUSTL use delays of 20\,ms and 5\,ms, respectively. Each provider returns ACKs carrying metadata containing current queue size. We compare two provider-selection strategies. \emph{First-Responding} selects the first provider returning a valid ACK, minimizing ACK waiting time but favoring nearby providers even when they have slower service execution. In contrast, \emph{Shortest-Queue-First}  selects the provider with the smallest reported queue.
 
-\begin{figure}[]
+\begin{figure}[!hb]
   \centering
   \begin{tikzpicture}
     \begin{axis}[
@@ -376,13 +385,13 @@ This experiment evaluates NDNSF's customizable provider-selection mechanism. Mem
   \label{fig:custom-selection-avg-latency}
 \end{figure}
 
-Figure~\ref{fig:custom-selection-avg-latency} shows that Shortest-Queue-First consistently achieves lower average latency than First-Responding. At 10, 30, and 50~RPS, latency decreases from 275.65\,ms, 282.96\,ms, and 317.50\,ms to 223.65\,ms, 233.42\,ms, and 299.76\,ms, respectively. Despite the additional ACK collection delay, Shortest-Queue-First reduces end-to-end latency by avoiding provider selection based solely on ACK arrival order.
-
-These results illustrate how ACK metadata supports application-defined selection in the tested heterogeneous provider configuration.
+Figure~\ref{fig:custom-selection-avg-latency} shows lower mean latency with Shortest-Queue-First at each tested rate; at 10~RPS, it is 223.65\,ms versus 275.65\,ms with First-Responding. In this configuration, using queue information offsets the additional ACK-collection delay.
 
 \subsection{Real-World Experiments}
 
-\begin{table}[]
+In the real-world experiments, the Odroid C4 acts as the service user, while the laptop and PC act as service providers. To evaluate robustness under intermittent service availability, the laptop is unavailable during the first half of the experiment, while the PC is unavailable during the middle half, leaving both providers simultaneously available only during the last quarter of the run. For gRPC and NSC, the Odroid C4 is bound to the laptop provider. In contrast, NDNSF allows both the laptop and PC to provide service to the Odroid C4.
+
+\begin{table}[!ht]
   \centering
   \caption{Service Availability in Real-World Experiments}
   \label{tab:real_machine_availability}
@@ -402,6 +411,4 @@ These results illustrate how ACK metadata supports application-defined selection
   \vspace{-3mm}
 \end{table}
 
-In the real-world experiments, the Odroid C4 acts as the service user, while the laptop and PC act as service providers. To evaluate robustness under intermittent service availability, the laptop is unavailable during the first half of the experiment, while the PC is unavailable during the middle half, leaving both providers simultaneously available only during the last quarter of the run. For gRPC and NSC, the Odroid C4 is bound to the laptop provider. In contrast, NDNSF allows both the laptop and PC to provide service to the Odroid C4.
-
-Table~\ref{tab:real_machine_availability} reports the resulting service request success rates. Because gRPC and NSC rely on a fixed provider, their success rates remain near 50\%, matching the provider availability period. In contrast, NDNSF dynamically selects among multiple providers and excludes unavailable ones through Selective ACK, achieving a success rate close to the expected 75\% service-availability window. These results demonstrate selection across the two configured providers under this availability schedule. They do not compare against a baseline with equivalent provider reselection.
+Table~\ref{tab:real_machine_availability} reports the resulting service request success rates. Because gRPC and NSC rely on a fixed provider, their success rates remain near 50\%, matching the provider availability period. NDNSF can select a reachable provider when one is available, achieving a success rate close to the expected 75\% service-availability window. This comparison supports the benefit of access to alternative providers, but does not isolate task-specific feedback.

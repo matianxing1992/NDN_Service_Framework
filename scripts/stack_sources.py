@@ -116,11 +116,18 @@ def fingerprint(data, name, prefix):
             # fabrication or a redundant upstream rebuild.
             'receipt': digest(upstream_receipt) if upstream_receipt.is_file() else None,
         }
-    return {'schema': 1, 'source': source, 'prefix': str(prefix),
-            'compiler': compiler, 'compiler_sha256': digest('/usr/bin/g++'),
-            'build_recipe_revision': source['build_recipe_revision'],
-            'source_helper': digest(__file__), 'upstream': upstream,
-            'library_realpath': str(library.resolve()), 'library_sha256': digest(library)}
+    result = {'schema': 1, 'source': source, 'prefix': str(prefix),
+              'compiler': compiler, 'compiler_sha256': digest('/usr/bin/g++'),
+              'build_recipe_revision': source['build_recipe_revision'],
+              'source_helper': digest(__file__), 'upstream': upstream,
+              'library_realpath': str(library.resolve()), 'library_sha256': digest(library)}
+    if name == 'ndn-cxx':
+        patch = Path(__file__).resolve().parents[1] / 'tools/ndn-cxx/ims-lower-bound.patch'
+        result['patches'] = {'ims-lower-bound.patch': digest(patch)}
+    elif name == 'ndn-svs':
+        patch = Path(__file__).resolve().parents[1] / 'tools/ndn-svs/publication-latency.patch'
+        result['patches'] = {'publication-latency.patch': digest(patch)}
+    return result
 
 
 def receipt(data, name, prefix, record=False):

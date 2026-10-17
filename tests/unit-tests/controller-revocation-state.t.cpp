@@ -178,6 +178,56 @@ BOOST_AUTO_TEST_CASE(HigherHintsCoalesceToOneHighestCandidate)
   BOOST_CHECK((coordinator.currentVersion() == ControllerVersion{1001, 1}));
 }
 
+BOOST_AUTO_TEST_CASE(TransportOwnedFetchSurvivesUnrelatedStatusInstall)
+{
+  PolicyRefreshCoordinator coordinator(ndn::Name("/ObjectDetection/YOLOv8"), 3, 10);
+  const ControllerVersion first{1000, 1};
+  const ControllerVersion second{1000, 2};
+  const ControllerVersion highest{1000, 3};
+  BOOST_REQUIRE(coordinator.installCurrentStatus(makeRefreshStatus(first), 200));
+  BOOST_REQUIRE(coordinator.observeHint(second, true, 300).request);
+  BOOST_CHECK(coordinator.observeHint(highest, true, 301).outcome ==
+              PolicyRefreshCoordinator::Outcome::FETCH_COALESCED);
+
+  // A separately validated status must not finish another transport's work.
+  BOOST_REQUIRE(coordinator.installCurrentStatus(makeRefreshStatus(second), 400, true, true));
+  BOOST_CHECK(coordinator.inFlight());
+  BOOST_CHECK_EQUAL(coordinator.attempt(), 1);
+  BOOST_CHECK(coordinator.currentVersion() == second);
+  BOOST_REQUIRE(coordinator.highestCandidate());
+  BOOST_CHECK(*coordinator.highestCandidate() == highest);
+  BOOST_CHECK(!coordinator.installCurrentStatus(makeRefreshStatus(highest), 401, false, true));
+  BOOST_CHECK(coordinator.currentVersion() == second);
+  BOOST_CHECK(coordinator.inFlight());
+
+  coordinator.finishTransportFetch();
+  BOOST_CHECK(!coordinator.inFlight());
+  BOOST_CHECK_EQUAL(coordinator.attempt(), 0);
+  BOOST_CHECK(!coordinator.retryIfDue(500));
+  BOOST_REQUIRE(coordinator.highestCandidate());
+  BOOST_CHECK(*coordinator.highestCandidate() == highest);
+
+  // A scheduled refresh of the current version cannot forget the higher hint.
+  const auto restarted = coordinator.startScheduledRefresh(4999, 10);
+  BOOST_REQUIRE(restarted.request);
+  BOOST_CHECK(restarted.request->version == highest);
+  BOOST_REQUIRE(coordinator.installCurrentStatus(makeRefreshStatus(highest), 4999, true, true));
+  BOOST_CHECK(coordinator.inFlight());
+  BOOST_CHECK(!coordinator.highestCandidate());
+  const auto staleCompletion = coordinator.completeFetch(makeRefreshStatus(second), 4999, true);
+  BOOST_CHECK(staleCompletion.outcome == PolicyRefreshCoordinator::Outcome::REJECTED_STATUS);
+  BOOST_CHECK(coordinator.currentVersion() == highest);
+  BOOST_CHECK(coordinator.inFlight());
+  coordinator.finishTransportFetch();
+  BOOST_CHECK(!coordinator.inFlight());
+  BOOST_CHECK(coordinator.currentVersion() == highest);
+
+  // Existing callers still finish a fetch on the ordinary three-argument install.
+  BOOST_REQUIRE(coordinator.startScheduledRefresh(4999, 10).request);
+  BOOST_REQUIRE(coordinator.installCurrentStatus(makeRefreshStatus(highest), 4999, true));
+  BOOST_CHECK(!coordinator.inFlight());
+}
+
 BOOST_AUTO_TEST_CASE(HigherHintNeverBecomesAuthorityBeforeExactStatusFetch)
 {
   PolicyRefreshCoordinator coordinator(ndn::Name("/ObjectDetection/YOLOv8"));

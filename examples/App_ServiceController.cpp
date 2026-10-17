@@ -1,5 +1,6 @@
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
+#include "ndn-service-framework/common.hpp"
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
@@ -116,7 +117,7 @@ main(int argc, char** argv)
   try {
     ndn::Face face;
     ndn::KeyChain keyChain;
-    ndn::ValidatorConfig validator(face);
+    ndn_service_framework::TrustSchemaValidator validator(face);
     ndn::Scheduler scheduler(face.getIoContext());
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     const std::string policyFile = getOption(argc, argv, "--policy-file", "examples/hello.policies");
@@ -164,7 +165,7 @@ main(int argc, char** argv)
     }
     ensureIdentities(keyChain, ensureIdentityCsv);
 
-    validator.load(trustSchema);
+    ndn_service_framework::loadTrustSchema(validator, trustSchema);
 
     std::cout << "[App_ServiceController] authority identity="
               << controllerCert.getIdentity().toUri()

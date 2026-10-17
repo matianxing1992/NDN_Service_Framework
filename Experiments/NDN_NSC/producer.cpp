@@ -2,6 +2,11 @@
 #define _GNU_SOURCE
 #endif
 #include <ndn-cxx/face.hpp>
+#include <set>
+#include <boost/asio/signal_set.hpp>
+#include <csignal>
+#include <memory>
+#include "../targeted-invocation/matched.hpp"
 #include <ndn-cxx/util/scheduler.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
@@ -26,8 +31,10 @@
 #include <iostream>
 #include <cstdlib>
 #include <map>
+#include <iterator>
 #include <streambuf>
 #include <algorithm>
+#include <vector>
 
 using namespace ndn;
 
@@ -66,6 +73,15 @@ public:
         BASE = PRODUCER_IDENTITY + std::string(service);
         FUNCTION = BASE + std::string(function);
         RESULTS = BASE + std::string("/results/");
+        if (matchedRecords.enabled()) {
+            CONSUMER_IDENTITY = "/muas/gs1";
+            matchedSignals = std::make_unique<boost::asio::signal_set>(m_ioService, SIGINT, SIGTERM);
+            matchedSignals->async_wait([this](const auto&, int) {
+                matchedRecords.write({{"event", "shutdown"}, {"provider", PRODUCER_IDENTITY}});
+                m_face.shutdown(); m_ioService.stop();
+            });
+        }
+        loadBusyTrace();
     }
 
     void run()
@@ -87,11 +103,21 @@ private:
     Face m_face;
     Scheduler m_scheduler;
     KeyChain m_keyChain;
+    matched203::Records matchedRecords;
+    std::unique_ptr<boost::asio::signal_set> matchedSignals;
+    std::map<std::string, std::string> matchedEcho;
+    std::map<std::string, uint64_t> matchedBegin;
+    std::map<std::string, std::shared_ptr<Data>> matchedResults;
+    std::set<std::string> matchedFinished;
     int m_serviceDelayMs = 0;
     double m_failureProbability = 0.0;
     int m_epochMs = 10000;
     uint32_t m_seed = 100;
     std::chrono::steady_clock::time_point m_startedAt;
+    std::string m_busyOriginPath;
+    std::vector<std::pair<uint64_t, bool>> m_busyChanges;
+    bool m_taskBusy = false;
+    std::set<std::string> matchedBusy;
     const double WAIT_TIME_FACTOR = .75;
 
     //Naming Scheme
@@ -119,7 +145,12 @@ private:
     void waitForNotification()
     {
         m_face.registerPrefix(BASE,
-                              RegisterPrefixSuccessCallback(),
+                              [this](const Name&) {
+                                  if (matchedRecords.enabled()) {
+                                      matchedRecords.write({{"event", "ready"}, {"provider", PRODUCER_IDENTITY}});
+                                      std::cout << "SPEC203_NSC_PROVIDER_READY" << std::endl;
+                                  }
+                              },
                               bind(&rpcProducer::onRegisterFailed, this, _1, _2));
 
         m_face.setInterestFilter(FUNCTION,
@@ -146,6 +177,13 @@ private:
 
         if (verifyInterestSignature(interest, CONSUMER_IDENTITY))
         {
+            if (!m_taskBusy && isBusy()) {
+                auto data = createData(interest.getName(), "APP_BUSY", PRODUCER_IDENTITY);
+                m_face.put(*data);
+                matchedRecords.write({{"event", "busy_reject"},
+                    {"provider", PRODUCER_IDENTITY}, {"mono_ns", matched203::now()}});
+                return;
+            }
             std::string consumerInputParam = extractInterestParam(interest);
             std::string token = extractRPCCaller(consumerInputParam);
             std::string resultName = RESULTS + token;
@@ -182,6 +220,87 @@ private:
         return dist(rng) < m_failureProbability;
     }
 
+    void loadBusyTrace()
+    {
+        const char* path = std::getenv("SPEC206_BUSY_TRACE");
+        const char* originPath = std::getenv("SPEC206_ORIGIN");
+        m_taskBusy = matched203::setting("SPEC206_TASK_BUSY", 0) == 1;
+        if (m_taskBusy && (path == nullptr || !matchedRecords.enabled()))
+            throw std::invalid_argument("task-busy requires matched trace");
+        if ((path == nullptr) != (originPath == nullptr))
+            throw std::invalid_argument("busy trace requires origin and path");
+        if (path == nullptr)
+            return;
+        if (!matchedRecords.enabled() || m_failureProbability != 0.0)
+            throw std::invalid_argument("busy trace requires matched, reachable producer");
+        m_busyOriginPath = originPath;
+        std::ifstream originInput(m_busyOriginPath);
+        uint64_t initialOrigin = 0;
+        if (!(originInput >> initialOrigin))
+            throw std::invalid_argument("busy trace origin missing or invalid");
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+            throw std::invalid_argument("busy trace missing");
+        const std::string bytes(std::istreambuf_iterator<char>{input}, {});
+        if (bytes.empty() || bytes.size() > 65536)
+            throw std::invalid_argument("busy trace size");
+        std::vector<std::set<std::string>> keys;
+        const auto trace = nlohmann::json::parse(bytes,
+            [&keys](int, nlohmann::json::parse_event_t event, nlohmann::json& value) {
+                if (event == nlohmann::json::parse_event_t::object_start)
+                    keys.emplace_back();
+                else if (event == nlohmann::json::parse_event_t::key) {
+                    if (keys.empty() || !keys.back().insert(value.get<std::string>()).second)
+                        throw std::invalid_argument("duplicate busy trace key");
+                }
+                else if (event == nlohmann::json::parse_event_t::object_end)
+                    keys.pop_back();
+                return true;
+            });
+        const std::string expected = PRODUCER_IDENTITY == "/muas/drone1" ?
+            "/example/hello/provider/A" : PRODUCER_IDENTITY == "/muas/drone2" ?
+            "/example/hello/provider/B" : "";
+        if (expected.empty() || !trace.is_object() || trace.size() != 5 ||
+            trace.at("version") != 1 || trace.at("producer") != expected ||
+            trace.at("tail") != "hold" || !trace.at("window_ms").is_number_unsigned() ||
+            trace.at("window_ms").get<uint64_t>() == 0 ||
+            trace.at("window_ms").get<uint64_t>() > 60000 ||
+            !trace.at("changes").is_array() || trace.at("changes").empty() ||
+            trace.at("changes").size() > 256)
+            throw std::invalid_argument("busy trace schema");
+        const auto windowMs = trace.at("window_ms").get<uint64_t>();
+        for (const auto& row : trace.at("changes")) {
+            if (!row.is_object() || row.size() != 2 ||
+                !row.at("offset_ms").is_number_unsigned() ||
+                !row.at("available").is_boolean())
+                throw std::invalid_argument("busy trace row");
+            const auto offset = row.at("offset_ms").get<uint64_t>();
+            const auto available = row.at("available").get<bool>();
+            if (offset >= windowMs || (m_busyChanges.empty() ? offset != 0 :
+                offset <= m_busyChanges.back().first ||
+                available == m_busyChanges.back().second))
+                throw std::invalid_argument("busy trace order");
+            m_busyChanges.emplace_back(offset, available);
+        }
+    }
+
+    bool isBusy(uint64_t atNs = 0) const
+    {
+        if (m_busyChanges.empty())
+            return false;
+        std::ifstream input(m_busyOriginPath);
+        uint64_t origin = 0;
+        if (!(input >> origin))
+            throw std::runtime_error("busy trace origin missing or invalid");
+        const auto observed = atNs == 0 ? matched203::now() : atNs;
+        if (origin == 0 || observed < origin)
+            return false;
+        const auto elapsedMs = (observed - origin) / 1000000ULL;
+        const auto next = std::upper_bound(m_busyChanges.begin(), m_busyChanges.end(), elapsedMs,
+            [](uint64_t elapsed, const auto& row) { return elapsed < row.first; });
+        return next != m_busyChanges.begin() && !std::prev(next)->second;
+    }
+
     //Request Consumer Input based on Parameter in Notification Interest
     void requestConsumerInput(std::string consumerInputParam, std::string token, std::string resultName)
     {
@@ -203,6 +322,42 @@ private:
         if (verifyDataSignature(data, CONSUMER_IDENTITY))
         {
             std::string dataValue = extractDataValue(data);
+            if (matchedRecords.enabled()) {
+                if (dataValue.size() != 64)
+                    throw std::runtime_error("invalid matched NSC input");
+                if (matchedEcho.count(token)) {
+                    if (matchedEcho.at(token) != dataValue)
+                        throw std::runtime_error("conflicting matched NSC input");
+                    matchedRecords.write({{"event", "input_reuse"}, {"command", dataValue},
+                                          {"provider", PRODUCER_IDENTITY}});
+                    scheduleResultReply(token); return;
+                }
+                matchedEcho[token] = dataValue;
+                matchedBegin[token] = matched203::now();
+                if (m_taskBusy) {
+                    if (dataValue.compare(0, 7, "T205|M|") != 0 ||
+                        (dataValue[7] != 'C' && dataValue[7] != 'M'))
+                        throw std::runtime_error("task-busy input class");
+                    const char specialty = PRODUCER_IDENTITY == "/muas/drone1" ? 'C' : 'M';
+                    if (isBusy(matchedBegin[token]) && dataValue[7] == specialty) {
+                        matchedBusy.insert(token);
+                        matchedFinished.insert(token);
+                        m_resultReadyAt[token] = ndn::time::steady_clock::now();
+                        matchedRecords.write({{"event", "task_busy_reject"},
+                            {"command", dataValue}, {"provider", PRODUCER_IDENTITY},
+                            {"mono_ns", matchedBegin[token]}});
+                        scheduleResultReply(token);
+                        return;
+                    }
+                }
+                m_scheduler.schedule(ndn::time::milliseconds(m_serviceDelayMs), [this, token] {
+                    matchedRecords.write({{"event", "execution"}, {"command", matchedEcho.at(token)},
+                        {"provider", PRODUCER_IDENTITY}, {"begin_ns", matchedBegin.at(token)},
+                        {"end_ns", matched203::now()}, {"payload_valid", true}});
+                    matchedFinished.insert(token);
+                    scheduleResultReply(token);
+                });
+            }
             m_resultValue[token] = ccCheck(dataValue);
             m_resultReadyAt[token] = ndn::time::steady_clock::now() +
                                      ndn::time::milliseconds(m_serviceDelayMs);
@@ -250,9 +405,24 @@ private:
             return;
         }
         auto interestName = m_pendingResultInterest[token];
-        auto data = createData(interestName, m_resultValue[token] ? SUCCESS : FAILURE, PRODUCER_IDENTITY);
+        if (matchedRecords.enabled() && matchedFinished.count(token) == 0) return;
+        if (matchedRecords.enabled() && matchedResults.count(token)) {
+            if (matchedResults.at(token)->getName() != interestName)
+                throw std::runtime_error("conflicting matched NSC result name");
+            m_face.put(*matchedResults.at(token));
+            m_pendingResultInterest.erase(token); return;
+        }
+        auto data = createData(interestName, matchedRecords.enabled() ?
+            (matchedBusy.count(token) ? "APP_BUSY" : matchedEcho.at(token)) :
+            (m_resultValue[token] ? SUCCESS : FAILURE), PRODUCER_IDENTITY);
+        if (matchedRecords.enabled() && matched203::setting("SPEC203_BAD_ECHO", 0))
+            data = createData(interestName, std::string(64, '!'), PRODUCER_IDENTITY);
+        if (matchedRecords.enabled()) {
+            matchedResults[token] = data;
+        }
         m_face.put(*data);
         m_pendingResultInterest.erase(token);
+        if (matchedRecords.enabled()) return;
         m_resultReadyAt.erase(token);
         m_resultValue.erase(token);
         nscLog() << "Generated Result for " << token << ", sending" << std::endl;
@@ -344,6 +514,7 @@ private:
     //extract Interest Parameter as String
     std::string extractDataValue(const Data &data)
     {
+        if (matchedRecords.enabled()) return ndn::readString(data.getContent());
         std::string dataValue(reinterpret_cast<const char *>(data.getContent().value()));
         return dataValue;
     }
@@ -414,6 +585,7 @@ private:
     //Signature Verification Functions for Interest
     bool verifyInterestSignature(const Interest &interest, std::string identity)
     {
+        if (matchedRecords.enabled()) return security::verifySignature(interest, getKeyForIdentity(identity));
         //skip verification because NDN_NSC does have a good API for mulitiple identities
         return true;
 
@@ -432,6 +604,8 @@ private:
     //Signature Verification Functions for Data
     bool verifyDataSignature(const Data &data, std::string identity)
     {
+        if (matchedRecords.enabled()) return Name(identity).isPrefixOf(data.getName()) &&
+            security::verifySignature(data, getKeyForIdentity(identity));
         //skip verification because NDN_NSC does have a good API for mulitiple identities
         return true;
 
@@ -456,6 +630,8 @@ private:
         // set content of data using content
         data->setContent(ndn::makeStringBlock(ndn::tlv::Content,content));
         m_keyChain.sign(*data, signingByIdentity(identity));
+        if (matchedRecords.enabled() && matched203::setting("SPEC203_BAD_SIGNER", 0))
+            m_keyChain.sign(*data, signingByIdentity("/example/hello/provider/B"));
 
         return data;
     }

@@ -1,5 +1,6 @@
 #include "NDNSFMessages.hpp"
 #include "HybridMessageCrypto.hpp"
+#include "ProducerDataNaming.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -450,6 +451,28 @@ EncryptionCertificateAdvertisement::WireDecode(const ndn::Block& block)
     }
 }
 
+ndn::Block SecurityProfileReference::wireEncode() const
+{
+    checkNamingNameSize(name);
+    if (name.empty()) throw std::invalid_argument("empty security profile reference");
+    ndn::Block block(TYPE);
+    block.push_back(name.wireEncode());
+    block.encode();
+    return block;
+}
+
+SecurityProfileReference SecurityProfileReference::wireDecode(const ndn::Block& wire)
+{
+    if (wire.type() != TYPE) throw std::invalid_argument("wrong profile reference type");
+    wire.parse();
+    if (wire.elements().size() != 1 || wire.elements()[0].type() != ndn::tlv::Name)
+        throw std::invalid_argument("malformed profile reference");
+    SecurityProfileReference reference{ndn::Name(wire.elements()[0]), {}};
+    if (reference.wireEncode() != wire)
+        throw std::invalid_argument("noncanonical profile reference");
+    return reference;
+}
+
 RequestMessage::RequestMessage() {}
 
 RequestMessage::RequestMessage(const RequestMessage& other)
@@ -466,12 +489,14 @@ RequestMessage::operator=(const RequestMessage& other)
         providerToken_ = other.providerToken_;
         payloadBlock_ = clonePayloadBlock(other.getPayloadBlock());
         payloadSize_ = other.payloadSize_;
+        m_discoveryPayload = other.m_discoveryPayload;
         strategy_ = other.strategy_;
         requestMode_ = other.requestMode_;
         targetProvider_ = other.targetProvider_;
         policyEpoch_ = other.policyEpoch_;
         controllerVersion_ = other.controllerVersion_;
         userEncryptionCertificate_ = other.userEncryptionCertificate_;
+        userSecurityProfile_ = other.userSecurityProfile_;
         deploymentIntent_ = other.deploymentIntent_;
         requestCapabilities_ = other.requestCapabilities_;
         encryptedRequestInput_ = other.encryptedRequestInput_;
@@ -511,6 +536,30 @@ void RequestMessage::setPayloadBlock(const ndn::Block& payloadBlock) {
     payloadSize_ = payloadBlock_->value_size();
 }
 
+void
+RequestMessage::setDiscoveryPayload(const ndn::Buffer& payload)
+{
+  if (payload.size() > MAX_DISCOVERY_PAYLOAD_SIZE) {
+    throw std::invalid_argument("discovery payload exceeds 4096 bytes");
+  }
+  m_discoveryPayload = payload;
+}
+
+bool
+RequestMessage::hasDiscoveryPayload() const
+{
+  return m_discoveryPayload.has_value();
+}
+
+const ndn::Buffer&
+RequestMessage::getDiscoveryPayload() const
+{
+  if (!m_discoveryPayload) {
+    throw std::logic_error("request has no discovery payload");
+  }
+  return *m_discoveryPayload;
+}
+
 void RequestMessage::setStrategy(size_t strategy) {
     strategy_ = strategy;
 }
@@ -539,7 +588,30 @@ void RequestMessage::setUserEncryptionCertificate(
         throw std::invalid_argument("invalid user encryption certificate advertisement");
     }
     userEncryptionCertificate_ = advertisement;
+    userSecurityProfile_.reset();
     m_wire.reset();
+}
+
+void RequestMessage::setUserSecurityProfile(const ndn::Name& name,
+    std::shared_ptr<const EncryptionCertificateAdvertisement> advertisement) {
+    SecurityProfileReference reference{name, std::move(advertisement)};
+    reference.wireEncode();
+    if (reference.advertisement && !reference.advertisement->isValid())
+        throw std::invalid_argument("invalid resolved User advertisement");
+    userSecurityProfile_ = std::move(reference);
+    userEncryptionCertificate_.reset();
+    m_wire.reset();
+}
+bool RequestMessage::hasUserSecurityProfile() const { return userSecurityProfile_.has_value(); }
+const ndn::Name& RequestMessage::getUserSecurityProfile() const {
+    if (!userSecurityProfile_) throw std::logic_error("request has no profile reference");
+    return userSecurityProfile_->name;
+}
+void RequestMessage::resolveUserSecurityProfile(
+    std::shared_ptr<const EncryptionCertificateAdvertisement> advertisement) {
+    if (!userSecurityProfile_ || !advertisement || !advertisement->isValid())
+        throw std::invalid_argument("invalid User profile resolution");
+    userSecurityProfile_->advertisement = std::move(advertisement);
 }
 
 void RequestMessage::setDeploymentIntent(const DeploymentIntent& intent) {
@@ -586,7 +658,8 @@ bool RequestMessage::hasRequestCapabilities() const { return requestCapabilities
 bool RequestMessage::hasEncryptedRequestInput() const { return encryptedRequestInput_.has_value(); }
 bool RequestMessage::hasRequestSecurityBinding() const { return requestSecurityBinding_.has_value(); }
 bool RequestMessage::hasUserEncryptionCertificate() const {
-    return userEncryptionCertificate_.has_value();
+    return userEncryptionCertificate_.has_value() ||
+        (userSecurityProfile_ && userSecurityProfile_->advertisement);
 }
 bool RequestMessage::hasStreamRequestOptions() const { return streamRequestOptions_.has_value(); }
 bool RequestMessage::hasConversationContinuation() const { return conversationContinuation_.has_value(); }
@@ -607,6 +680,8 @@ const ndn::Block& RequestMessage::getRequestSecurityBinding() const {
     return *requestSecurityBinding_;
 }
 const EncryptionCertificateAdvertisement& RequestMessage::getUserEncryptionCertificate() const {
+    if (userSecurityProfile_ && userSecurityProfile_->advertisement)
+        return *userSecurityProfile_->advertisement;
     if (!userEncryptionCertificate_) {
         throw std::logic_error("request has no user encryption certificate");
     }
@@ -680,12 +755,14 @@ void RequestMessage::Clear() {
     policyEpoch_ = 0;
     controllerVersion_.reset();
     userEncryptionCertificate_.reset();
+    userSecurityProfile_.reset();
     deploymentIntent_.reset();
     requestCapabilities_.reset();
     encryptedRequestInput_.reset();
     requestSecurityBinding_.reset();
     streamRequestOptions_.reset();
     conversationContinuation_.reset();
+    m_discoveryPayload.reset();
 }
 
 ndn::Block RequestMessage::WireEncode() const {
@@ -718,6 +795,7 @@ ndn::Block RequestMessage::WireEncode() const {
     }
     if (controllerVersion_) block.push_back(controllerVersion_->wireEncode());
     if (userEncryptionCertificate_) block.push_back(userEncryptionCertificate_->WireEncode());
+    if (userSecurityProfile_) block.push_back(userSecurityProfile_->wireEncode());
     if (deploymentIntent_) block.push_back(deploymentIntent_->WireEncode());
     if (requestCapabilities_) block.push_back(requestCapabilities_->WireEncode());
     if (encryptedRequestInput_) block.push_back(encryptedRequestInput_->WireEncode());
@@ -785,10 +863,14 @@ bool RequestMessage::WireDecode(const ndn::Block& block) {
             controllerVersion_ = std::move(version);
         }
         else if (b.type() == tlv::EncryptionCertificateAdvertisementType) {
-            if (userEncryptionCertificate_) return false;
+            if (userEncryptionCertificate_ || userSecurityProfile_) return false;
             EncryptionCertificateAdvertisement advertisement;
             if (!advertisement.WireDecode(b)) return false;
             userEncryptionCertificate_ = std::move(advertisement);
+        }
+        else if (b.type() == SecurityProfileReference::TYPE) {
+            if (userEncryptionCertificate_ || userSecurityProfile_) return false;
+            userSecurityProfile_ = SecurityProfileReference::wireDecode(b);
         }
         else if (b.type() == tlv::DeploymentIntentType) {
             DeploymentIntent intent;
@@ -858,6 +940,8 @@ ResponseMessage::operator=(const ResponseMessage& other)
         wireDigest_ = other.wireDigest_;
         providerIdentity_ = other.providerIdentity_;
         streamCompletion_ = other.streamCompletion_;
+        providerSecurityProfile_ = other.providerSecurityProfile_;
+        resolvedTokens_ = other.resolvedTokens_;
         if (other.aeadEnvelope_) {
             aeadEnvelope_ = cloneOpaqueContainer(
                 *other.aeadEnvelope_, tlv::AeadEnvelopeType);
@@ -880,6 +964,66 @@ void ResponseMessage::setErrorInfo(const std::string& errorInfo) {
 
 void ResponseMessage::setTokens(const std::map<std::string, std::string>& tokens) {
     tokens_ = tokens;
+    resolvedTokens_.reset();
+    if (providerSecurityProfile_) providerSecurityProfile_->advertisement.reset();
+}
+
+namespace {
+bool isStableTargetedRecipientField(const std::string& name)
+{
+    for (const char* field : {"targeted.recipientPublicKey", "targeted.recipientCertName",
+            "targeted.recipientCertDigest", "targeted.binaryKeyEnvelopeV1",
+            "targeted.inlineSignedInputV1", "targeted.compactKeyEnvelopeV1",
+            "targeted.securityProfileReferenceV1"}) {
+        if (name == field) return true;
+    }
+    return false;
+}
+bool hasLegacyTargetedRecipientMetadata(const std::map<std::string, std::string>& tokens)
+{
+    return std::any_of(tokens.begin(), tokens.end(), [](const auto& token) {
+        return isStableTargetedRecipientField(token.first);
+    });
+}
+}
+
+void ResponseMessage::setProviderSecurityProfile(const ndn::Name& name) {
+    if (hasLegacyTargetedRecipientMetadata(tokens_))
+        throw std::invalid_argument("Response mixes profile and recipient metadata");
+    SecurityProfileReference reference{name, {}};
+    reference.wireEncode();
+    providerSecurityProfile_ = std::move(reference);
+    resolvedTokens_.reset();
+    m_wire.reset();
+}
+bool ResponseMessage::hasProviderSecurityProfile() const { return providerSecurityProfile_.has_value(); }
+bool ResponseMessage::hasResolvedProviderSecurityProfile() const {
+    return providerSecurityProfile_ && providerSecurityProfile_->advertisement && resolvedTokens_;
+}
+const ndn::Name& ResponseMessage::getProviderSecurityProfile() const {
+    if (!providerSecurityProfile_) throw std::logic_error("Response has no profile reference");
+    return providerSecurityProfile_->name;
+}
+void ResponseMessage::resolveProviderSecurityProfile(
+    std::shared_ptr<const EncryptionCertificateAdvertisement> advertisement,
+    const std::map<std::string, std::string>& stableTokens) {
+    if (!providerSecurityProfile_ || !advertisement || !advertisement->isValid() ||
+        hasLegacyTargetedRecipientMetadata(tokens_))
+        throw std::invalid_argument("invalid Response profile resolution");
+    if (stableTokens.size() != 7 ||
+        !stableTokens.count("targeted.recipientCertName") ||
+        stableTokens.at("targeted.recipientCertName") != advertisement->certificateName.toUri())
+        throw std::invalid_argument("incomplete or contradictory Response profile metadata");
+    auto resolved = tokens_;
+    for (const auto& [field, value] : stableTokens) {
+        if (!isStableTargetedRecipientField(field) || value.empty())
+            throw std::invalid_argument("Response resolution changes dynamic tokens");
+        if (field.find("V1") != std::string::npos && value != "0" && value != "1")
+            throw std::invalid_argument("invalid resolved Response capability");
+        resolved.emplace(field, value);
+    }
+    providerSecurityProfile_->advertisement = std::move(advertisement);
+    resolvedTokens_ = std::make_shared<const std::map<std::string, std::string>>(std::move(resolved));
 }
 
 void ResponseMessage::setUserToken(const std::string& userToken) {
@@ -947,7 +1091,7 @@ const std::string& ResponseMessage::getErrorInfo() const {
 }
 
 const std::map<std::string, std::string>& ResponseMessage::getTokens() const {
-    return tokens_;
+    return resolvedTokens_ ? *resolvedTokens_ : tokens_;
 }
 
 const std::string& ResponseMessage::getUserToken() const {
@@ -1021,10 +1165,14 @@ void ResponseMessage::Clear() {
     wireDigest_.clear();
     providerIdentity_.clear();
     streamCompletion_.reset();
+    providerSecurityProfile_.reset();
+    resolvedTokens_.reset();
     m_wire.reset();
 }
 
 ndn::Block ResponseMessage::WireEncode() const {
+    if (providerSecurityProfile_ && hasLegacyTargetedRecipientMetadata(tokens_))
+        throw std::invalid_argument("Response mixes profile and recipient metadata");
     if (m_wire && m_wire->hasWire()) {
         m_wire.reset();
     }
@@ -1046,6 +1194,7 @@ ndn::Block ResponseMessage::WireEncode() const {
     }
     if (controllerVersion_) block.push_back(controllerVersion_->wireEncode());
     if (aeadEnvelope_) block.push_back(*aeadEnvelope_);
+    if (providerSecurityProfile_) block.push_back(providerSecurityProfile_->wireEncode());
     if (streamCompletion_) block.push_back(streamCompletion_->wireEncode());
     block.encode();
     m_wire = std::make_shared<const ndn::Block>(block);
@@ -1098,6 +1247,10 @@ bool ResponseMessage::WireDecode(const ndn::Block& block) {
             if (aeadEnvelope_) return false;
             aeadEnvelope_ = cloneOpaqueContainer(b, tlv::AeadEnvelopeType);
         }
+        else if (b.type() == SecurityProfileReference::TYPE) {
+            if (providerSecurityProfile_) return false;
+            providerSecurityProfile_ = SecurityProfileReference::wireDecode(b);
+        }
         else if (b.type() == tlv::StreamCompletionType) {
             if (streamCompletion_) return false;
             StreamCompletion completion;
@@ -1112,6 +1265,10 @@ bool ResponseMessage::WireDecode(const ndn::Block& block) {
       return false;
     }
 
+    if (providerSecurityProfile_ && hasLegacyTargetedRecipientMetadata(tokens_)) {
+        Clear();
+        return false;
+    }
     return true;
 }
 
@@ -1135,6 +1292,8 @@ RequestAckMessage::operator=(const RequestAckMessage& other)
         policyEpoch_ = other.policyEpoch_;
         controllerVersion_ = other.controllerVersion_;
         providerEncryptionCertificate_ = other.providerEncryptionCertificate_;
+        providerSecurityProfile_ = other.providerSecurityProfile_;
+        resolvedSelectionInputKeyOffer_ = other.resolvedSelectionInputKeyOffer_;
         providerCapabilityOffer_ = other.providerCapabilityOffer_;
         selectionInputKeyOffer_ = other.selectionInputKeyOffer_;
         reservationLease_ = other.reservationLease_;
@@ -1185,7 +1344,36 @@ void RequestAckMessage::setProviderEncryptionCertificate(
         throw std::invalid_argument("invalid provider encryption certificate advertisement");
     }
     providerEncryptionCertificate_ = advertisement;
+    providerSecurityProfile_.reset();
     m_wire.reset();
+}
+
+void RequestAckMessage::setProviderSecurityProfile(const ndn::Name& name,
+    std::shared_ptr<const EncryptionCertificateAdvertisement> advertisement) {
+    SecurityProfileReference reference{name, std::move(advertisement)};
+    reference.wireEncode();
+    if (reference.advertisement && !reference.advertisement->isValid())
+        throw std::invalid_argument("invalid resolved Provider advertisement");
+    providerSecurityProfile_ = std::move(reference);
+    providerEncryptionCertificate_.reset();
+    resolvedSelectionInputKeyOffer_.reset();
+    m_wire.reset();
+}
+bool RequestAckMessage::hasProviderSecurityProfile() const { return providerSecurityProfile_.has_value(); }
+const ndn::Name& RequestAckMessage::getProviderSecurityProfile() const {
+    if (!providerSecurityProfile_) throw std::logic_error("ACK has no profile reference");
+    return providerSecurityProfile_->name;
+}
+void RequestAckMessage::resolveProviderSecurityProfile(
+    std::shared_ptr<const EncryptionCertificateAdvertisement> advertisement) {
+    if (!providerSecurityProfile_ || !advertisement || !advertisement->isValid())
+        throw std::invalid_argument("invalid Provider profile resolution");
+    providerSecurityProfile_->advertisement = std::move(advertisement);
+}
+void RequestAckMessage::resolveSelectionInputKeyOffer(const SelectionInputKeyOffer& offer) {
+    if (!providerSecurityProfile_ || !providerSecurityProfile_->advertisement || !selectionInputKeyOffer_)
+        throw std::logic_error("ACK key offer resolution needs validated profile");
+    resolvedSelectionInputKeyOffer_ = std::make_shared<const SelectionInputKeyOffer>(offer);
 }
 
 void RequestAckMessage::setProviderCapabilityOffer(const ProviderCapabilityOffer& offer) {
@@ -1204,6 +1392,7 @@ const ProviderCapabilityOffer& RequestAckMessage::getProviderCapabilityOffer() c
 }
 void RequestAckMessage::setSelectionInputKeyOffer(const SelectionInputKeyOffer& offer) {
     selectionInputKeyOffer_ = offer;
+    resolvedSelectionInputKeyOffer_.reset();
     m_wire.reset();
 }
 void RequestAckMessage::setReservationLease(const ReservationLease& lease) {
@@ -1213,9 +1402,11 @@ void RequestAckMessage::setReservationLease(const ReservationLease& lease) {
 bool RequestAckMessage::hasSelectionInputKeyOffer() const { return selectionInputKeyOffer_.has_value(); }
 bool RequestAckMessage::hasReservationLease() const { return reservationLease_.has_value(); }
 bool RequestAckMessage::hasProviderEncryptionCertificate() const {
-    return providerEncryptionCertificate_.has_value();
+    return providerEncryptionCertificate_.has_value() ||
+        (providerSecurityProfile_ && providerSecurityProfile_->advertisement);
 }
 const SelectionInputKeyOffer& RequestAckMessage::getSelectionInputKeyOffer() const {
+    if (resolvedSelectionInputKeyOffer_) return *resolvedSelectionInputKeyOffer_;
     if (!selectionInputKeyOffer_) throw std::logic_error("ACK has no selection input key offer");
     return *selectionInputKeyOffer_;
 }
@@ -1224,6 +1415,8 @@ const ReservationLease& RequestAckMessage::getReservationLease() const {
     return *reservationLease_;
 }
 const EncryptionCertificateAdvertisement& RequestAckMessage::getProviderEncryptionCertificate() const {
+    if (providerSecurityProfile_ && providerSecurityProfile_->advertisement)
+        return *providerSecurityProfile_->advertisement;
     if (!providerEncryptionCertificate_) {
         throw std::logic_error("ACK has no provider encryption certificate");
     }
@@ -1278,6 +1471,8 @@ void RequestAckMessage::Clear() {
     policyEpoch_ = 0;
     controllerVersion_.reset();
     providerEncryptionCertificate_.reset();
+    providerSecurityProfile_.reset();
+    resolvedSelectionInputKeyOffer_.reset();
     providerCapabilityOffer_.reset();
     selectionInputKeyOffer_.reset();
     reservationLease_.reset();
@@ -1308,6 +1503,7 @@ ndn::Block RequestAckMessage::WireEncode() const {
     if (providerEncryptionCertificate_) {
         block.push_back(providerEncryptionCertificate_->WireEncode());
     }
+    if (providerSecurityProfile_) block.push_back(providerSecurityProfile_->wireEncode());
     if (providerCapabilityOffer_) block.push_back(providerCapabilityOffer_->WireEncode());
     if (selectionInputKeyOffer_) block.push_back(selectionInputKeyOffer_->WireEncode());
     if (reservationLease_) block.push_back(reservationLease_->WireEncode());
@@ -1351,10 +1547,15 @@ bool RequestAckMessage::WireDecode(const ndn::Block& block) {
             controllerVersion_ = std::move(version);
         }
         else if (b.type() == tlv::EncryptionCertificateAdvertisementType) {
-            if (providerEncryptionCertificate_) return false;
+            if (providerEncryptionCertificate_ || providerSecurityProfile_) return false;
             EncryptionCertificateAdvertisement advertisement;
             if (!advertisement.WireDecode(b)) return false;
             providerEncryptionCertificate_ = std::move(advertisement);
+        }
+        else if (b.type() == SecurityProfileReference::TYPE) {
+            if (providerEncryptionCertificate_ || providerSecurityProfile_) return false;
+            try { providerSecurityProfile_ = SecurityProfileReference::wireDecode(b); }
+            catch (const std::exception&) { Clear(); return false; }
         }
         else if (b.type() == tlv::ProviderCapabilityOfferType) {
             ProviderCapabilityOffer offer;
@@ -1719,6 +1920,9 @@ ServiceSelectionMessage::operator=(const ServiceSelectionMessage& other)
         deploymentPlan_ = other.deploymentPlan_;
         selectionDecision_ = other.selectionDecision_;
         selectionInputKeyGrant_ = other.selectionInputKeyGrant_;
+        compactKeyEnvelopeMode_ = other.compactKeyEnvelopeMode_;
+        optionalInlineSignedInput_ = other.optionalInlineSignedInput_;
+        inlineSignedInputData_ = other.inlineSignedInputData_;
         if (other.selectionKeyEnvelope_) {
             selectionKeyEnvelope_ = cloneOpaqueContainer(
                 *other.selectionKeyEnvelope_, tlv::SelectionKeyEnvelopeType);
@@ -1789,6 +1993,33 @@ void ServiceSelectionMessage::setSelectionKeyEnvelope(const ndn::Block& envelope
 }
 void ServiceSelectionMessage::clearSelectionKeyEnvelope() {
     selectionKeyEnvelope_.reset();
+    m_wire.reset();
+}
+void ServiceSelectionMessage::setCompactKeyEnvelopeMode(bool enabled) {
+    compactKeyEnvelopeMode_ = enabled;
+    m_wire.reset();
+}
+bool ServiceSelectionMessage::hasCompactKeyEnvelopeMode() const { return compactKeyEnvelopeMode_; }
+void ServiceSelectionMessage::setOptionalInlineSignedInput(bool enabled) {
+    optionalInlineSignedInput_ = enabled;
+    if (!enabled) inlineSignedInputData_.reset();
+    m_wire.reset();
+}
+bool ServiceSelectionMessage::hasOptionalInlineSignedInput() const { return optionalInlineSignedInput_; }
+void ServiceSelectionMessage::setInlineSignedInputData(const ndn::Block& data) {
+    if (!optionalInlineSignedInput_ || data.type() != ndn::tlv::Data || data.size() > 2048 ||
+        ndn::Data(data).wireEncode() != data)
+        throw std::invalid_argument("invalid bounded inline signed input Data");
+    inlineSignedInputData_ = std::make_shared<const ndn::Block>(data);
+    m_wire.reset();
+}
+bool ServiceSelectionMessage::hasInlineSignedInputData() const { return bool(inlineSignedInputData_); }
+const ndn::Block& ServiceSelectionMessage::getInlineSignedInputData() const {
+    if (!inlineSignedInputData_) throw std::logic_error("Selection has no inline input Data");
+    return *inlineSignedInputData_;
+}
+void ServiceSelectionMessage::clearInlineSignedInputData() {
+    inlineSignedInputData_.reset();
     m_wire.reset();
 }
 void ServiceSelectionMessage::setStreamEventKeyGrant(const ndn::Block& grant) {
@@ -1873,6 +2104,9 @@ void ServiceSelectionMessage::Clear() {
     selectionDecision_.reset();
     selectionInputKeyGrant_.reset();
     selectionKeyEnvelope_.reset();
+    compactKeyEnvelopeMode_ = false;
+    optionalInlineSignedInput_ = false;
+    inlineSignedInputData_.reset();
     streamEventKeyGrant_.reset();
     recipientEncryptedAssignment_.reset();
     m_wire.reset();
@@ -1919,6 +2153,14 @@ ndn::Block ServiceSelectionMessage::WireEncode() const {
     if (selectionDecision_) block.push_back(selectionDecision_->WireEncode());
     if (selectionInputKeyGrant_) block.push_back(selectionInputKeyGrant_->WireEncode());
     if (selectionKeyEnvelope_) block.push_back(*selectionKeyEnvelope_);
+    if (compactKeyEnvelopeMode_) block.push_back(ndn::makeNonNegativeIntegerBlock(0xF858, 1));
+    if (optionalInlineSignedInput_) {
+        ndn::Block inlineInput(0xF85A);
+        inlineInput.push_back(ndn::makeNonNegativeIntegerBlock(0xF85B, 1));
+        if (inlineSignedInputData_) inlineInput.push_back(*inlineSignedInputData_);
+        inlineInput.encode();
+        block.push_back(inlineInput);
+    }
     if (streamEventKeyGrant_) block.push_back(*streamEventKeyGrant_);
     if (recipientEncryptedAssignment_) block.push_back(recipientEncryptedAssignment_->WireEncode());
     block.encode();
@@ -1994,6 +2236,22 @@ bool ServiceSelectionMessage::WireDecode(const ndn::Block& block) {
             if (selectionKeyEnvelope_) return false;
             selectionKeyEnvelope_ = cloneOpaqueContainer(
                 b, tlv::SelectionKeyEnvelopeType);
+        }
+        else if (b.type() == 0xF858) {
+            if (compactKeyEnvelopeMode_ || b != ndn::makeNonNegativeIntegerBlock(0xF858, 1)) return false;
+            compactKeyEnvelopeMode_ = true;
+        }
+        else if (b.type() == 0xF85A) {
+            if (optionalInlineSignedInput_) return false;
+            try {
+                b.parse();
+                const auto& fields = b.elements();
+                if ((fields.size() != 1 && fields.size() != 2) ||
+                    fields[0] != ndn::makeNonNegativeIntegerBlock(0xF85B, 1)) return false;
+                optionalInlineSignedInput_ = true;
+                if (fields.size() == 2) setInlineSignedInputData(fields[1]);
+            }
+            catch (const std::exception&) { Clear(); return false; }
         }
         else if (b.type() == tlv::StreamEventKeyGrantType) {
             b.parse();

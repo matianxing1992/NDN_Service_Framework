@@ -11,6 +11,7 @@
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/io.hpp>
+#include <ndn-cxx/util/time-unit-test-clock.hpp>
 #include <ndn-cxx/lp/nack.hpp>
 #include <openssl/sha.h>
 #include <fstream>
@@ -18,6 +19,7 @@
 #include <thread>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <algorithm>
 #include <sstream>
 #include <cstdlib>
@@ -26,25 +28,88 @@
 namespace ndn_service_framework::test {
 // Existing private oracle friendship: no production layout or public API.
 struct InvocationNamesOracle {
-  static std::optional<ndn::Interest> policyStatusQuery(ServiceUser& user,
+  template<typename Runtime>
+  static std::optional<ndn::Interest> policyStatusQuery(Runtime& runtime,
       const ndn::Name& controller, const ndn::Name& service)
-  { return user.prepareControllerControlQuery(controller, "POLICY-STATUS",
-      encodeControlQueryParameters({{}, service, 0, 0}), 1); }
-  static std::optional<ndn::Interest> policyStatusQuery(ServiceProvider& provider,
+  {
+    runtime.fetchPolicyStatusFromController(controller, service);
+    const auto found = runtime.m_policyStatusFetchInFlight.find(service.toUri());
+    return found == runtime.m_policyStatusFetchInFlight.end() ? std::optional<ndn::Interest>() :
+                                                              found->second->query;
+  }
+  template<typename Runtime>
+  static void policyStatus(Runtime& runtime, const ndn::Interest& query, const ndn::Data& packet)
+  {
+    uint64_t ticket = 0;
+    int attempt = 1;
+    for (const auto& entry : runtime.m_policyStatusFetchInFlight) {
+      if (entry.second->query && entry.second->query->getName() == query.getName()) {
+        ticket = entry.second->ticket;
+        attempt = entry.second->attempts;
+      }
+    }
+    runtime.onPolicyStatusData(query, packet, attempt, ticket);
+  }
+  template<typename Runtime>
+  static uint64_t policyStatusTicket(const Runtime& runtime, const ndn::Name& service)
+  {
+    const auto found = runtime.m_policyStatusFetchInFlight.find(service.toUri());
+    return found == runtime.m_policyStatusFetchInFlight.end() ? 0 : found->second->ticket;
+  }
+  template<typename Runtime>
+  static void evictPreparedControlQueries(Runtime& runtime)
+  {
+    // Isolate cache eviction from transport ownership; timed expiry is tested separately.
+    runtime.m_preparedControlInterests.clear();
+  }
+  template<typename Runtime>
+  static void configureController(Runtime& runtime, const ndn::Name& controller)
+  {
+    runtime.m_controllerPrefix = controller;
+  }
+  template<typename Runtime>
+  static void authenticatedVersionHint(Runtime& runtime, const ndn::Name& service,
+                                       const ControllerVersion& version)
+  {
+    // Enter after the caller's authentication boundary; packet authentication
+    // itself is covered by the production invocation fixtures.
+    runtime.maybeRefreshControllerVersionHint(service, version);
+  }
+  template<typename Runtime>
+  static std::optional<ndn::Interest> retryPolicyStatusQuery(Runtime& runtime,
       const ndn::Name& controller, const ndn::Name& service)
-  { return provider.prepareControllerControlQuery(controller, "POLICY-STATUS",
-      encodeControlQueryParameters({{}, service, 0, 0}), 1); }
-  static void policyStatus(ServiceUser& user, const ndn::Interest& query, const ndn::Data& packet)
-  { user.onPolicyStatusData(query, packet, 1); }
-  static void policyStatus(ServiceProvider& provider, const ndn::Interest& query, const ndn::Data& packet)
-  { provider.onPolicyStatusData(query, packet, 1); }
+  {
+    const auto found = runtime.m_policyStatusFetchInFlight.find(service.toUri());
+    if (found == runtime.m_policyStatusFetchInFlight.end()) return std::nullopt;
+    runtime.dispatchPolicyStatusFetch(controller, service, found->second->attempts + 1,
+                                     std::nullopt, false);
+    const auto next = runtime.m_policyStatusFetchInFlight.find(service.toUri());
+    return next == runtime.m_policyStatusFetchInFlight.end() ? std::nullopt : next->second->query;
+  }
+  template<typename Runtime>
+  static std::optional<ndn::Interest> replacePolicyStatusQuery(Runtime& runtime,
+      const ndn::Name& controller, const ndn::Name& service)
+  {
+    runtime.dispatchPolicyStatusFetch(controller, service, 1, std::nullopt, true);
+    const auto found = runtime.m_policyStatusFetchInFlight.find(service.toUri());
+    return found == runtime.m_policyStatusFetchInFlight.end() ? std::optional<ndn::Interest>() :
+                                                              found->second->query;
+  }
+  template<typename Runtime>
+  static void latePolicyStatusCallbacks(Runtime& runtime, const ndn::Interest& query,
+                                       const ndn::Data& data, uint64_t ticket)
+  {
+    runtime.onPolicyStatusData(query, data, 1, ticket);
+    runtime.onPolicyStatusTimeout(query, 1, ticket);
+  }
   static bool ready(ServiceUser& user, const ndn::Interest& interest)
   { return user.handleProviderReadyInterest(interest); }
   static bool activate(ServiceProvider& provider, const ndn::Interest& interest)
   { return provider.handleExecutionActivateInterest(interest); }
   static bool statusReply(ServiceProvider& provider, const ndn::Interest& interest)
   { return provider.replySelectionExecutionStatus(interest); }
-  static void bindConfiguredValidator(ServiceUser& user, ndn::Face& face,
+  template<typename Runtime>
+  static void bindConfiguredValidator(Runtime& user, ndn::Face& face,
                                       const ndn::Name& group, const std::string& schema)
   { user.validator = std::make_shared<MessageValidator>(schema, group, &face); }
   static void status(ServiceProvider& provider, const ndn::Name& actor, const ndn::Name& service,
@@ -155,8 +220,88 @@ void pump(boost::asio::io_context& io, const std::function<bool()>& finished,
 
 BOOST_AUTO_TEST_SUITE(Spec201ControlAuthorization)
 
+BOOST_AUTO_TEST_CASE(StatusQueryLifetimePreservesOtherRpcAndClockSkewBoundaries)
+{
+  struct ClockGuard
+  {
+    std::shared_ptr<ndn::time::UnitTestSystemClock> system =
+      std::make_shared<ndn::time::UnitTestSystemClock>();
+
+    ClockGuard()
+    {
+      system->setNow(ndn::time::milliseconds(1700000000000ULL));
+      ndn::time::setCustomClocks(nullptr, system);
+    }
+
+    ~ClockGuard()
+    {
+      ndn::time::setCustomClocks();
+    }
+  } clock;
+  const ndn::Name controller("/test/controller");
+  constexpr uint64_t NOW_MS = 1700000000000ULL;
+  const auto generatedNonce = makeControlQueryNonce();
+  const auto opaqueSuffix = generatedNonce.substr(generatedNonce.find('-'));
+  const auto query = [&] (const std::string& operation, uint64_t minted) {
+    const auto parameters = encodeControlQueryParameters(
+      {{}, operation == "POLICY-STATUS" ? ndn::Name("/HELLO") : ndn::Name(), 0, 0});
+    ndn::Interest interest(makeControlRpcName(controller, operation, parameters,
+      std::to_string(minted) + opaqueSuffix));
+    interest.setApplicationParameters(parameters);
+    return interest;
+  };
+
+  const auto status = query("POLICY-STATUS", NOW_MS - 9999);
+  BOOST_REQUIRE(parseControlRpcName(status, controller, "POLICY-STATUS"));
+  const auto expiry = controlNonceExpiry(controller, status);
+  BOOST_REQUIRE(expiry);
+  BOOST_CHECK_EQUAL(*expiry, NOW_MS + 1);
+  clock.system->advance(ndn::time::milliseconds(1));
+  BOOST_CHECK(!controlNonceExpiry(controller, status));
+  clock.system->setNow(ndn::time::milliseconds(NOW_MS));
+  BOOST_CHECK(!controlNonceExpiry(controller, query("POLICY-STATUS", NOW_MS - 10000)));
+
+  const auto manifestExpiry = controlNonceExpiry(
+    controller, query("POLICY-MANIFEST", NOW_MS - 299999));
+  BOOST_REQUIRE(manifestExpiry);
+  BOOST_CHECK_EQUAL(*manifestExpiry, NOW_MS + 1);
+  BOOST_CHECK(!controlNonceExpiry(controller, query("POLICY-MANIFEST", NOW_MS - 300000)));
+
+  const auto future = query("POLICY-STATUS", NOW_MS + 30000);
+  const auto futureExpiry = controlNonceExpiry(controller, future);
+  BOOST_REQUIRE(futureExpiry);
+  BOOST_CHECK_EQUAL(*futureExpiry, NOW_MS + 40000);
+  BOOST_CHECK(!controlNonceExpiry(controller, query("POLICY-STATUS", NOW_MS + 30001)));
+  clock.system->advance(ndn::time::milliseconds(39999));
+  BOOST_REQUIRE(controlNonceExpiry(controller, future));
+  clock.system->advance(ndn::time::milliseconds(1));
+  BOOST_CHECK(!controlNonceExpiry(controller, future));
+}
+
 BOOST_AUTO_TEST_CASE(UnconfiguredStatusRepliesRequireExactPreparedOwnerAndSigner)
 {
+  struct TransportBoundaryGuard
+  {
+    std::optional<std::string> previousAttempts;
+    std::shared_ptr<ndn::time::UnitTestSteadyClock> steady =
+      std::make_shared<ndn::time::UnitTestSteadyClock>();
+    TransportBoundaryGuard()
+    {
+      if (const auto* value = ::getenv("NDNSF_PERMISSION_FETCH_MAX_ATTEMPTS")) {
+        previousAttempts = value;
+      }
+      ::setenv("NDNSF_PERMISSION_FETCH_MAX_ATTEMPTS", "3", 1);
+      ndn::time::setCustomClocks(steady, nullptr);
+    }
+    ~TransportBoundaryGuard()
+    {
+      ndn::time::setCustomClocks();
+      if (previousAttempts) {
+        ::setenv("NDNSF_PERMISSION_FETCH_MAX_ATTEMPTS", previousAttempts->c_str(), 1);
+      }
+      else ::unsetenv("NDNSF_PERMISSION_FETCH_MAX_ATTEMPTS");
+    }
+  } transportBoundary;
   struct GenerationState {
     std::optional<std::string> previous;
     std::filesystem::path path = std::filesystem::temp_directory_path() /
@@ -209,8 +354,22 @@ BOOST_AUTO_TEST_CASE(UnconfiguredStatusRepliesRequireExactPreparedOwnerAndSigner
     unowned.setApplicationParameters(parameters);
     InvocationNamesOracle::policyStatus(runtime, unowned, packet(unowned, issuer));
     BOOST_REQUIRE(!runtime.getControllerVersion());
-    const auto prepared = InvocationNamesOracle::policyStatusQuery(runtime, producer, service);
+    auto prepared = InvocationNamesOracle::policyStatusQuery(runtime, producer, service);
     BOOST_REQUIRE(prepared);
+    const auto oldQuery = *prepared;
+    const auto oldTicket = InvocationNamesOracle::policyStatusTicket(runtime, service);
+    prepared = InvocationNamesOracle::replacePolicyStatusQuery(runtime, producer, service);
+    BOOST_REQUIRE(prepared);
+    BOOST_CHECK(prepared->getName() != oldQuery.getName());
+    const auto replacementTicket = InvocationNamesOracle::policyStatusTicket(runtime, service);
+    BOOST_REQUIRE(replacementTicket != oldTicket);
+    InvocationNamesOracle::latePolicyStatusCallbacks(
+      runtime, oldQuery, packet(oldQuery, issuer), oldTicket);
+    BOOST_CHECK_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), replacementTicket);
+    BOOST_REQUIRE(!runtime.getControllerVersion());
+    // Bootstrap must retain the exact Controller even after the short-lived
+    // prepared-query cache is evicted, without accepting a different signer.
+    InvocationNamesOracle::evictPreparedControlQueries(runtime);
     // Same call identity with a different nonce is still unowned.
     InvocationNamesOracle::policyStatus(runtime, unowned, packet(unowned, issuer));
     BOOST_REQUIRE(!runtime.getControllerVersion());
@@ -221,6 +380,128 @@ BOOST_AUTO_TEST_CASE(UnconfiguredStatusRepliesRequireExactPreparedOwnerAndSigner
     InvocationNamesOracle::policyStatus(runtime, *prepared, packet(*prepared, issuer));
     BOOST_REQUIRE(runtime.getControllerVersion());
     BOOST_CHECK(*runtime.getControllerVersion() == status.getControllerVersion());
+    BOOST_CHECK_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), 0);
+    InvocationNamesOracle::latePolicyStatusCallbacks(
+      runtime, oldQuery, packet(oldQuery, issuer), oldTicket);
+    BOOST_CHECK_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), 0);
+
+    // Exercise the production dispatcher with steady time, independently of
+    // wall-clock query timestamps. This is not a scheduler-delivery test.
+    const auto first = InvocationNamesOracle::policyStatusQuery(runtime, producer, service);
+    BOOST_REQUIRE(first);
+    const auto firstTicket = InvocationNamesOracle::policyStatusTicket(runtime, service);
+    transportBoundary.steady->advance(ndn::time::milliseconds(9999));
+    const auto second = InvocationNamesOracle::retryPolicyStatusQuery(runtime, producer, service);
+    BOOST_REQUIRE(second);
+    BOOST_CHECK(first->getName() == second->getName());
+    BOOST_CHECK(first->getNonce() != second->getNonce());
+    transportBoundary.steady->advance(ndn::time::milliseconds(1));
+    InvocationNamesOracle::evictPreparedControlQueries(runtime);
+    const auto third = InvocationNamesOracle::retryPolicyStatusQuery(runtime, producer, service);
+    BOOST_REQUIRE(third);
+    BOOST_CHECK(third->getName() != second->getName());
+    const auto thirdTicket = InvocationNamesOracle::policyStatusTicket(runtime, service);
+    InvocationNamesOracle::latePolicyStatusCallbacks(runtime, *first, packet(*first, issuer),
+                                                    firstTicket);
+    BOOST_CHECK_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), thirdTicket);
+    // Renewing the name cannot reset the three-attempt transport budget.
+    BOOST_CHECK(!InvocationNamesOracle::retryPolicyStatusQuery(runtime, producer, service));
+    BOOST_CHECK_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), 0);
+
+    const auto rebound = InvocationNamesOracle::policyStatusQuery(runtime, producer, service);
+    BOOST_REQUIRE(rebound);
+    const auto reboundTicket = InvocationNamesOracle::policyStatusTicket(runtime, service);
+    InvocationNamesOracle::configureController(runtime, foreign.getIdentity());
+    InvocationNamesOracle::policyStatus(runtime, *rebound, packet(*rebound, issuer));
+    BOOST_CHECK_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), 0);
+    InvocationNamesOracle::configureController(runtime, producer);
+    const auto restarted = InvocationNamesOracle::policyStatusQuery(runtime, producer, service);
+    BOOST_REQUIRE(restarted);
+    const auto restartedTicket = InvocationNamesOracle::policyStatusTicket(runtime, service);
+    InvocationNamesOracle::latePolicyStatusCallbacks(runtime, *rebound, packet(*rebound, issuer),
+                                                    reboundTicket);
+    BOOST_CHECK_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), restartedTicket);
+    InvocationNamesOracle::policyStatus(runtime, *restarted, packet(*restarted, issuer));
+    BOOST_REQUIRE_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), 0);
+
+    auto higher = status.getControllerVersion();
+    ++higher.controllerEpoch;
+    auto highest = higher;
+    ++highest.controllerEpoch;
+    InvocationNamesOracle::authenticatedVersionHint(runtime, service, higher);
+    const auto hinted = InvocationNamesOracle::policyStatusQuery(runtime, producer, service);
+    BOOST_REQUIRE(hinted);
+    const auto hintedTicket = InvocationNamesOracle::policyStatusTicket(runtime, service);
+    InvocationNamesOracle::authenticatedVersionHint(runtime, service, highest);
+    const auto latest = InvocationNamesOracle::policyStatusQuery(runtime, producer, service);
+    BOOST_REQUIRE(latest);
+    const auto latestTicket = InvocationNamesOracle::policyStatusTicket(runtime, service);
+    BOOST_CHECK(latestTicket != hintedTicket);
+    BOOST_CHECK(latest->getName() != hinted->getName());
+    const auto currentQuery = decodeControlQueryParameters(latest->getApplicationParameters());
+    BOOST_REQUIRE(currentQuery);
+    BOOST_CHECK_EQUAL(currentQuery->generation, 0);
+    BOOST_CHECK_EQUAL(currentQuery->epoch, 0);
+    InvocationNamesOracle::authenticatedVersionHint(runtime, service, highest);
+    InvocationNamesOracle::authenticatedVersionHint(runtime, service, higher);
+    BOOST_CHECK_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), latestTicket);
+    // A correctly signed old status cannot satisfy the higher coalesced hint.
+    InvocationNamesOracle::policyStatus(runtime, *latest, packet(*latest, issuer));
+    BOOST_REQUIRE(runtime.getControllerVersion());
+    BOOST_CHECK(*runtime.getControllerVersion() == status.getControllerVersion());
+    BOOST_CHECK_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), latestTicket);
+    auto advancedStatus = status;
+    advancedStatus.setControllerVersion(highest);
+    ndn::Data advanced(latest->getName());
+    advanced.setContent(advancedStatus.wireEncode());
+    keys.sign(advanced, ndn::security::signingByCertificate(issuer));
+    InvocationNamesOracle::policyStatus(runtime, *latest, advanced);
+    BOOST_REQUIRE(runtime.getControllerVersion());
+    BOOST_CHECK(*runtime.getControllerVersion() == highest);
+    BOOST_CHECK_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), 0);
+
+    // Real MessageValidator posts validation on the Face and returns first.
+    // Change authority before delivering that queued validation work.
+    InvocationNamesOracle::bindConfiguredValidator(runtime, face,
+      ndn::Name("/spec201/query-owner"), "spec201-query-owner.conf");
+    const auto delayed = InvocationNamesOracle::policyStatusQuery(runtime, producer, service);
+    BOOST_REQUIRE(delayed);
+    auto later = highest;
+    ++later.controllerEpoch;
+    advancedStatus.setControllerVersion(later);
+    ndn::Data delayedData(delayed->getName());
+    delayedData.setContent(advancedStatus.wireEncode());
+    keys.sign(delayedData, ndn::security::signingByCertificate(issuer));
+    InvocationNamesOracle::policyStatus(runtime, *delayed, delayedData);
+    BOOST_REQUIRE(InvocationNamesOracle::policyStatusTicket(runtime, service) != 0);
+    InvocationNamesOracle::configureController(runtime, foreign.getIdentity());
+    const auto validationDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (InvocationNamesOracle::policyStatusTicket(runtime, service) != 0 &&
+           std::chrono::steady_clock::now() < validationDeadline) {
+      face.processEvents(ndn::time::milliseconds(-1));
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    BOOST_CHECK_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), 0);
+    BOOST_REQUIRE(runtime.getControllerVersion());
+    BOOST_CHECK(*runtime.getControllerVersion() == highest);
+    // Positive control: the same status/signer succeeds through the asynchronous
+    // validator when the Controller binding remains unchanged.
+    InvocationNamesOracle::configureController(runtime, producer);
+    const auto control = InvocationNamesOracle::policyStatusQuery(runtime, producer, service);
+    BOOST_REQUIRE(control);
+    ndn::Data controlData(control->getName());
+    controlData.setContent(advancedStatus.wireEncode());
+    keys.sign(controlData, ndn::security::signingByCertificate(issuer));
+    InvocationNamesOracle::policyStatus(runtime, *control, controlData);
+    const auto controlDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (InvocationNamesOracle::policyStatusTicket(runtime, service) != 0 &&
+           std::chrono::steady_clock::now() < controlDeadline) {
+      face.processEvents(ndn::time::milliseconds(-1));
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    BOOST_CHECK_EQUAL(InvocationNamesOracle::policyStatusTicket(runtime, service), 0);
+    BOOST_REQUIRE(runtime.getControllerVersion());
+    BOOST_CHECK(*runtime.getControllerVersion() == later);
   };
   exercise(user);
   exercise(provider);

@@ -58,12 +58,16 @@ struct SelectionKeyEnvelope
   static constexpr uint32_t TYPE = 0xF830;
 
   RequestSecurityBinding binding;
+  // Compact wire carries only this digest; unwrap derives the complete binding.
+  ndn::Buffer bindingDigest;
   std::string envelopeAlgorithm = "RSA-OAEP-SHA256";
   ndn::Buffer wrappedKeys;
   uint64_t createdAtMs = 0;
   uint64_t expiresAtMs = 0;
 
   bool isValid(uint64_t nowMs) const;
+  void useCompactBinding();
+  bool isCompact() const { return !bindingDigest.empty(); }
   ndn::Block wireEncode() const;
   bool wireDecode(const ndn::Block& block);
 };

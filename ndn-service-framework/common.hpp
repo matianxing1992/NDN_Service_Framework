@@ -66,6 +66,34 @@
 namespace ndn_service_framework{
     namespace test { struct InvocationNamesOracle; }
 
+  /** Configured ndn-cxx validation with pinned, currently valid trust anchors. */
+  class TrustSchemaValidator : public ndn::security::Validator
+  {
+  public:
+    using CommandInterestOptions = ndn::ValidatorConfig::CommandInterestOptions;
+    using SignedInterestOptions = ndn::ValidatorConfig::SignedInterestOptions;
+
+    explicit
+    TrustSchemaValidator(ndn::Face& face,
+                         const CommandInterestOptions& commandOptions = {},
+                         const SignedInterestOptions& signedOptions = {});
+
+    explicit
+    TrustSchemaValidator(std::unique_ptr<ndn::security::CertificateFetcher> fetcher,
+                         const CommandInterestOptions& commandOptions = {},
+                         const SignedInterestOptions& signedOptions = {});
+
+    void
+    load(const std::string& filename);
+
+    void
+    load(const std::string& input, const std::string& filename);
+  };
+
+  /** Load fixed file/base64 anchors; reject permissive or expired configurations. */
+  void
+  loadTrustSchema(TrustSchemaValidator& validator, const std::string& filename);
+
     ndn::KeyType
     getCertificateKeyType(const ndn::security::Certificate& cert);
 
@@ -462,38 +490,22 @@ namespace ndn_service_framework{
     {
     public:
         MessageValidator(std::string trustSchemaPath,
-                         std::optional<ndn::Name> svsGroupPrefix = std::nullopt,
+                         std::optional<ndn::Name> = std::nullopt,
                          ndn::Face* callbackFace = nullptr)
             : m_validator(makeCertificateFetcher(m_face, callbackFace),
                          makeCommandInterestOptions(), makeSignedInterestOptions()),
               m_producerSigners(trustSchemaPath + ".producer-signers"),
               m_callbackIo(callbackFace == nullptr
                              ? nullptr
-                             : &callbackFace->getIoContext()),
-              m_validationPool(callbackFace == nullptr
-                                 ? nullptr
-                                 : std::make_unique<boost::asio::thread_pool>(
-                                     std::thread::hardware_concurrency() >= 4
-                                       ? 2
-                                       : 1))
+                             : &callbackFace->getIoContext())
         {
-            if (svsGroupPrefix) {
-                m_svsStateVectorDataName = ndn::Name(*svsGroupPrefix).appendVersion(3);
-            }
-            m_validator.load(trustSchemaPath);
+            loadTrustSchema(m_validator, trustSchemaPath);
         }
 
         size_t
         getFailureCountForTesting() const
         {
             return m_failureCount.load();
-        }
-
-        size_t
-        getLocalCertificateCacheSizeForTesting() const
-        {
-            std::lock_guard<std::mutex> guard(m_localCertificateCacheMutex);
-            return m_localCertificateCache.size();
         }
 
         /**
@@ -505,7 +517,7 @@ namespace ndn_service_framework{
          * Exposing this reference keeps segmented retrieval on the same
          * configured trust schema instead of falling back to ValidatorNull.
          */
-        ndn::security::Validator&
+        TrustSchemaValidator&
         getConfiguredValidatorForSegmentFetcher() noexcept
         {
             return m_validator;
@@ -522,12 +534,9 @@ namespace ndn_service_framework{
         /**
          * @brief Validate Data through the configured trust schema only.
          *
-         * The normal SVS validator path has a local-certificate fast path for
-         * application Data.  Controller PolicyStatus is authority material,
-         * so it must not be accepted merely because a matching certificate is
-         * present in a local PIB.  This entry point deliberately bypasses the
-         * local signature shortcut and invokes ValidatorConfig, including its
-         * configured trust anchor and name rules.
+         * Authority material and ordinary application Data use the same
+         * configured trust anchors, certificate validation and name rules.
+         * Local PIB certificates are candidates, never trust anchors.
          */
         void
         validateWithConfiguredTrustSchema(
@@ -575,7 +584,7 @@ namespace ndn_service_framework{
         {
             // ndn-svs may invoke its validator from parallel Sync workers,
             // while CertificateFetcherFromNetwork completes on the Face
-            // io_context. ValidatorConfig and its validation states are owned
+            // io_context. The configured validator and validation states are owned
             // by that Face thread; starting them concurrently from workers can
             // corrupt the stored completion callback. Marshal the entire
             // validation entry back to the Face event loop and own every input
@@ -605,12 +614,11 @@ namespace ndn_service_framework{
           ndn::security::DataValidationSuccessCallback successCb,
           ndn::security::DataValidationFailureCallback failureCb)
         {
-            // This callback runs on the Face executor after cryptographic
-            // success, including the asynchronous local-certificate path.
-            // A versioned invocation assembly keeps one signer identity.
+            // This callback runs on the Face executor after configured
+            // cryptographic validation. A versioned invocation assembly
+            // keeps one signer identity.
             const auto owner = weak_from_this().lock();
-            // A stack instance may use the synchronous local-certificate path.
-            // Every escaping callback below requires the retained shared owner.
+            // Every escaping callback below retains the shared owner.
             const auto admittedSuccess = std::move(successCb);
             successCb = [owner, this, admittedSuccess, failureCb](const ndn::Data& validated) {
                 if (!acceptValidatedInvocationSegmentSigner(validated)) {
@@ -638,28 +646,7 @@ namespace ndn_service_framework{
                 }
                 return;
             }
-            try {
-                const auto keyLocator = data.getSignatureInfo().getKeyLocator();
-                if (keyLocator.getType() == ndn::tlv::Name) {
-                    const auto& klName = keyLocator.getName();
-                    NDN_LOG_DEBUG("MessageValidator Data validation begin name="
-                                  << data.getName()
-                                  << " sigType=" << sigType
-                                  << " keyLocator=" << klName);
-                    if (dispatchLocalCertificateValidation(
-                          data, klName, successCb, failureCb)) {
-                        return;
-                    }
-                    if (validateWithLocalCertificate(data, klName)) {
-                        successCb(data);
-                        return;
-                    }
-                }
-            }
-            catch (const std::exception&) {
-            }
-
-            // ValidatorConfig may complete only after one or more network
+            // Validation may complete only after one or more network
             // certificate fetches.  Own the callbacks for that asynchronous
             // lifetime; retaining references to validateData() parameters
             // makes them dangle as soon as this function returns.
@@ -705,32 +692,36 @@ namespace ndn_service_framework{
         void
         validate(const ndn::Interest &interest,
                  const ndn::security::InterestValidationSuccessCallback &successCb,
-                 const ndn::security::InterestValidationFailureCallback &failureCb) override
+                 const ndn::security::InterestValidationFailureCallback&) override
         {
-            // SVS Sync Interests only announce sync state and carry no NDNSF
-            // application payload. The actual SVS Data packets fetched after
-            // sync are still validated by the Data path above against the
-            // trust schema and trust anchor.
+            // SVS handles these transport notifications separately from
+            // application admission. Piggybacked publications and retrieved
+            // application Data must both pass the encapsulated Data validator
+            // before delivery; accepting this Interest does not admit them.
             successCb(interest);
-            return;
-            m_validator.validate(
-                interest,
-                [&](const ndn::Interest& interest)
-                {
-                    successCb(interest);
-                },
-                [&](const ndn::Interest& interest, const ndn::security::ValidationError& error)
-                {
-                    NDN_LOG_ERROR("MessageValidator Interest validation failed name="
-                                  << interest.getName()
-                                  << " reason=" << error);
-                    ++m_failureCount;
-                    if (failureCb) {
-                        failureCb(interest, error);
-                    }
-                });
-
         }
+
+    private:
+        friend class EncapsulatedMessageValidator;
+
+        void validateEncapsulatedData(
+          const ndn::Data& data,
+          const ndn::security::DataValidationSuccessCallback& success,
+          const ndn::security::DataValidationFailureCallback& failure)
+        {
+            // SVS may immediately process mappings after this callback. Keep
+            // its small cached packet ready without changing general callback
+            // ordering or running validation concurrently from workers.
+            if (m_callbackIo && m_callbackIo->get_executor().running_in_this_thread() &&
+                data.wireEncode().size() <= 4096) {
+                validateDataOnFace(data, success, failure);
+                return;
+            }
+            validateData(data, success, failure);
+        }
+
+    public:
+        std::shared_ptr<ndn::svs::BaseValidator> makeEncapsulatedValidator();
 
     private:
         void
@@ -768,165 +759,7 @@ namespace ndn_service_framework{
         }
 
         static std::unique_ptr<ndn::security::CertificateFetcher>
-        makeCertificateFetcher(ndn::Face& fallbackFace, ndn::Face* callbackFace)
-        {
-            // ValidatorConfig performs asynchronous certificate retrieval when
-            // the local PIB does not contain the signer certificate.  The
-            // ServiceUser/ServiceProvider face is the face whose IO loop is
-            // actually driven by the runtime; the private m_face is retained
-            // only as a fallback for local/mock construction.  Binding the
-            // network fetcher to the private face leaves remote certificates
-            // permanently pending on real multi-node deployments.
-            ndn::Face& fetchFace = callbackFace == nullptr ? fallbackFace : *callbackFace;
-            return std::make_unique<ndn::security::CertificateFetcherFromNetwork>(fetchFace);
-        }
-
-        std::optional<ndn::security::Certificate>
-        findLocalCertificate(const ndn::Data& data,
-                             const ndn::Name& certName)
-        {
-            if (!ndn::security::Certificate::isValidName(certName)) {
-                return std::nullopt;
-            }
-
-            const auto signerIdentity =
-                ndn::security::extractIdentityFromCertName(certName);
-            const bool isBoundSvsStateVector = m_svsStateVectorDataName &&
-                                               data.getName() == *m_svsStateVectorDataName;
-            if (!signerIdentity.isPrefixOf(data.getName()) && !isBoundSvsStateVector) {
-                return std::nullopt;
-            }
-
-            try {
-                {
-                    std::lock_guard<std::mutex> guard(
-                        m_localCertificateCacheMutex);
-                    const auto cached = m_localCertificateCache.find(certName);
-                    if (cached != m_localCertificateCache.end()) {
-                        return cached->second;
-                    }
-                }
-
-                const auto keyName =
-                    ndn::security::extractKeyNameFromCertName(certName);
-                const auto identity =
-                    m_keyChain.getPib().getIdentity(signerIdentity);
-                const auto key = identity.getKey(keyName);
-                const auto cert = key.getCertificate(certName);
-                std::lock_guard<std::mutex> guard(
-                    m_localCertificateCacheMutex);
-                m_localCertificateCache.emplace(certName, cert);
-                return cert;
-            }
-            catch (const std::exception& e) {
-                NDN_LOG_DEBUG("MessageValidator local PIB certificate lookup "
-                              "miss name=" << data.getName()
-                              << " cert=" << certName
-                              << " reason=" << e.what());
-                return std::nullopt;
-            }
-        }
-
-        static bool
-        verifyLocalDataSignature(
-          const ndn::Data& data,
-          const std::optional<ndn::security::Certificate>& cert);
-
-        bool
-        dispatchLocalCertificateValidation(
-          const ndn::Data& data,
-          const ndn::Name& certName,
-          const ndn::security::DataValidationSuccessCallback& successCb,
-          const ndn::security::DataValidationFailureCallback& failureCb)
-        {
-            if (m_callbackIo == nullptr || m_validationPool == nullptr) {
-                return false;
-            }
-
-            auto cert = findLocalCertificate(data, certName);
-            if (!cert) {
-                return false;
-            }
-
-            auto self = weak_from_this().lock();
-            if (!self) return false;
-            boost::asio::post(
-              *m_validationPool,
-              [self, data, cert = std::move(*cert), successCb, failureCb] {
-                bool verified = false;
-                try {
-                    verified = verifyLocalDataSignature(
-                      data,
-                      std::optional<ndn::security::Certificate>{cert});
-                }
-                catch (const std::exception&) {
-                    verified = false;
-                }
-                boost::asio::post(
-                  *self->m_callbackIo,
-                  [self, data, certName = cert.getName(), verified,
-                   successCb, failureCb] {
-                    if (verified) {
-                        NDN_LOG_DEBUG(
-                          "MessageValidator Data validated on ordered worker "
-                          "name=" << data.getName()
-                          << " cert=" << certName);
-                        successCb(data);
-                        return;
-                    }
-
-                    ndn::security::ValidationError error(
-                      ndn::security::ValidationError::INVALID_SIGNATURE,
-                      "signature mismatch for cached local certificate " +
-                        certName.toUri());
-                    NDN_LOG_ERROR("MessageValidator Data validation failed name="
-                                  << data.getName()
-                                  << " reason=" << error);
-                    ++self->m_failureCount;
-                    if (failureCb) {
-                      failureCb(data, error);
-                    }
-                  });
-              });
-            return true;
-        }
-
-        bool
-        validateWithLocalCertificate(const ndn::Data& data,
-                                     const ndn::Name& certName)
-        {
-            const auto cert = findLocalCertificate(data, certName);
-            if (!cert) {
-                return false;
-            }
-            const bool isBoundSvsStateVector = m_svsStateVectorDataName &&
-                                               data.getName() == *m_svsStateVectorDataName;
-
-            try {
-                if (!verifyLocalDataSignature(
-                        data,
-                        cert)) {
-                    NDN_LOG_ERROR("MessageValidator Data validation failed name="
-                                  << data.getName()
-                                  << " reason=signature mismatch cert="
-                                  << certName);
-                    ++m_failureCount;
-                    return false;
-                }
-                NDN_LOG_DEBUG("MessageValidator Data validated with local PIB "
-                              "certificate name=" << data.getName()
-                              << " cert=" << certName
-                              << " svsStateVector=" << isBoundSvsStateVector);
-                return true;
-            }
-            catch (const std::exception& e) {
-                NDN_LOG_DEBUG("MessageValidator local PIB certificate lookup "
-                              "miss name=" << data.getName()
-                              << " cert=" << certName
-                              << " reason=" << e.what());
-                return false;
-            }
-        }
+        makeCertificateFetcher(ndn::Face& fallbackFace, ndn::Face* callbackFace);
 
         static ndn::security::ValidatorConfig::CommandInterestOptions
         makeCommandInterestOptions()
@@ -997,19 +830,14 @@ namespace ndn_service_framework{
 
     private:
         NDN_LOG_MEMBER_DECL();
-        ndn::KeyChain m_keyChain;
         ndn::Face m_face;
-        ndn::ValidatorConfig m_validator;
+        TrustSchemaValidator m_validator;
         ProducerSignerPolicy m_producerSigners;
         // Face-thread owned; idle expiry bounds retention, admission never
         // evicts active original-packet signer evidence.
         std::map<ndn::Name, std::pair<ndn::Name, std::chrono::steady_clock::time_point>>
             m_invocationSegmentSigners;
-        std::optional<ndn::Name> m_svsStateVectorDataName;
-        mutable std::mutex m_localCertificateCacheMutex;
-        std::map<ndn::Name, ndn::security::Certificate> m_localCertificateCache;
         boost::asio::io_context* m_callbackIo = nullptr;
-        std::unique_ptr<boost::asio::thread_pool> m_validationPool;
         std::atomic<size_t> m_failureCount{0};
     };
 

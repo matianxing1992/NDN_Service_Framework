@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+APPNAME = 'ndnsf-system-benefit-experiments'
+VERSION = '1.0'
+top = '.'
+out = 'build'
+
+def options(opt):
+    opt.load('compiler_cxx gnu_dirs')
+
+def configure(conf):
+    conf.load('compiler_cxx gnu_dirs')
+    conf.env.CXXFLAGS += ['-std=c++17', '-O2', '-g0', '-Wall', '-Wextra']
+    conf.env.INCLUDES += [conf.path.find_dir('../../NDNSF-DistributedInference/cpp/vendor').abspath()]
+    # NAC-ABE algo headers use "common.hpp"; keep their own include directory
+    # ahead of NDNSF's directory, which contains a different common.hpp.
+    nac_include = conf.cmd_and_log(['pkg-config', '--variable=includedir', 'libnac-abe']).strip()
+    conf.env.INCLUDES += [nac_include + '/nac-abe']
+    conf.check_cfg(package='libndn-service-framework libndn-cxx libnac-abe ndnsd libndn-svs',
+                   args='--cflags --libs', uselib_store='NDNSF', mandatory=True)
+    conf.check_cxx(header_name='openabe/openabe.h', lib='openabe', uselib_store='OPENABE', mandatory=True)
+
+def build(bld):
+    bld.program(target='ndnsf-credential-cost', source='credential-cost.cpp',
+                use='NDNSF OPENABE', lib=['pthread', 'crypto'], install_path='${BINDIR}',
+                rpath=['/usr/local/lib'])
+    bld.program(target='ndnsf-credential-archive-oracle', source='credential-archive-oracle.cpp',
+                use='NDNSF OPENABE', lib=['pthread', 'crypto'], install_path='${BINDIR}',
+                rpath=['/usr/local/lib'])
+    bld.program(target='ndnsf-credential-network', source='credential-network.cpp',
+                use='NDNSF OPENABE', lib=['pthread', 'crypto'], install_path='${BINDIR}',
+                rpath=['/usr/local/lib'])
+    for role in ('provider', 'user'):
+        bld.program(target='ndnsf-dynamic-' + role, source='dynamic-' + role + '.cpp',
+                    use='NDNSF', lib=['pthread', 'crypto'], install_path='${BINDIR}',
+                    rpath=['/usr/local/lib'])
+    bld.program(target='ndnsf-dynamic-oracle', source='dynamic-oracle.cpp',
+                use='NDNSF', lib=['pthread', 'crypto'], install_path='${BINDIR}',
+                rpath=['/usr/local/lib'])
+    for role in ('controller', 'provider', 'user'):
+        bld.program(target='ndnsf-permission-' + role, source='permission-' + role + '.cpp',
+                    use='NDNSF', lib=['pthread', 'crypto'], install_path='${BINDIR}',
+                    rpath=['/usr/local/lib'])

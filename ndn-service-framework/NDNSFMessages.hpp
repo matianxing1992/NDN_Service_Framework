@@ -272,6 +272,16 @@ struct EncryptionCertificateAdvertisement : public AbstractMessage
     bool WireDecode(const ndn::Block& block) override;
 };
 
+/** Exact immutable profile reference. Resolution is local, never serialized. */
+struct SecurityProfileReference
+{
+    static constexpr uint32_t TYPE = 0xF855;
+    ndn::Name name;
+    std::shared_ptr<const EncryptionCertificateAdvertisement> advertisement;
+    ndn::Block wireEncode() const;
+    static SecurityProfileReference wireDecode(const ndn::Block& wire);
+};
+
 class RequestMessage : public AbstractMessage {
 public:
     RequestMessage();
@@ -283,6 +293,14 @@ public:
     void setProviderToken(const std::string& providerToken);
     void setPayload(ndn::Buffer& payload, size_t size);
     void setPayloadBlock(const ndn::Block& payloadBlock);
+    /** Local preparation input: protected candidate-visible bytes, separate from execution input.
+     * The User places these bytes in the existing Request Payload after preserving private input.
+     * This parameter is not a new wire field and requires request-scoped confidentiality.
+     */
+    static constexpr size_t MAX_DISCOVERY_PAYLOAD_SIZE = 4096;
+    void setDiscoveryPayload(const ndn::Buffer& payload);
+    bool hasDiscoveryPayload() const;
+    const ndn::Buffer& getDiscoveryPayload() const;
     // FirstResponding = 0, RandomSelection = 1, AllSelected = 2.
     void setStrategy(size_t strategy);
     void setRequestMode(size_t requestMode);
@@ -291,6 +309,12 @@ public:
     void setControllerVersion(const ControllerVersion& version);
     void setUserEncryptionCertificate(
       const EncryptionCertificateAdvertisement& advertisement);
+    void setUserSecurityProfile(const ndn::Name& exactName,
+      std::shared_ptr<const EncryptionCertificateAdvertisement> advertisement = {});
+    bool hasUserSecurityProfile() const;
+    const ndn::Name& getUserSecurityProfile() const;
+    void resolveUserSecurityProfile(
+      std::shared_ptr<const EncryptionCertificateAdvertisement> advertisement);
     void setDeploymentIntent(const DeploymentIntent& intent);
     void setRequestCapabilities(const RequestCapabilities& capabilities);
     void setEncryptedRequestInput(const EncryptedRequestInput& input);
@@ -336,12 +360,14 @@ private:
     std::string providerToken_;
     std::shared_ptr<const ndn::Block> payloadBlock_;
     size_t payloadSize_ = 0;
+    std::optional<ndn::Buffer> m_discoveryPayload;
     size_t strategy_ = tlv::FirstResponding;
     size_t requestMode_ = tlv::NormalRequest;
     ndn::Name targetProvider_;
     size_t policyEpoch_ = 0;
     std::optional<ControllerVersion> controllerVersion_;
     std::optional<EncryptionCertificateAdvertisement> userEncryptionCertificate_;
+    std::optional<SecurityProfileReference> userSecurityProfile_;
     std::optional<DeploymentIntent> deploymentIntent_;
     std::optional<RequestCapabilities> requestCapabilities_;
     std::optional<EncryptedRequestInput> encryptedRequestInput_;
@@ -360,6 +386,13 @@ public:
     void setStatus(bool status);
     void setErrorInfo(const std::string& errorInfo);
     void setTokens(const std::map<std::string, std::string>& tokens);
+    void setProviderSecurityProfile(const ndn::Name& exactName);
+    bool hasProviderSecurityProfile() const;
+    bool hasResolvedProviderSecurityProfile() const;
+    const ndn::Name& getProviderSecurityProfile() const;
+    void resolveProviderSecurityProfile(
+        std::shared_ptr<const EncryptionCertificateAdvertisement> advertisement,
+        const std::map<std::string, std::string>& stableTokens);
     void setUserToken(const std::string& userToken);
     void setPayload(ndn::Buffer& payload, size_t size);
     void setPayloadBlock(const ndn::Block& payloadBlock);
@@ -412,6 +445,8 @@ private:
     std::string wireDigest_;
     std::string providerIdentity_;
     std::optional<StreamCompletion> streamCompletion_;
+    std::optional<SecurityProfileReference> providerSecurityProfile_;
+    std::shared_ptr<const std::map<std::string, std::string>> resolvedTokens_;
     mutable std::shared_ptr<const ndn::Block> m_wire;
 };
 
@@ -431,6 +466,13 @@ public:
     void setControllerVersion(const ControllerVersion& version);
     void setProviderEncryptionCertificate(
       const EncryptionCertificateAdvertisement& advertisement);
+    void setProviderSecurityProfile(const ndn::Name& exactName,
+      std::shared_ptr<const EncryptionCertificateAdvertisement> advertisement = {});
+    bool hasProviderSecurityProfile() const;
+    const ndn::Name& getProviderSecurityProfile() const;
+    void resolveProviderSecurityProfile(
+      std::shared_ptr<const EncryptionCertificateAdvertisement> advertisement);
+    void resolveSelectionInputKeyOffer(const SelectionInputKeyOffer& offer);
     void setProviderCapabilityOffer(const ProviderCapabilityOffer& offer);
     void clearProviderCapabilityOffer();
     void setSelectionInputKeyOffer(const SelectionInputKeyOffer& offer);
@@ -467,6 +509,8 @@ private:
     size_t policyEpoch_ = 0;
     std::optional<ControllerVersion> controllerVersion_;
     std::optional<EncryptionCertificateAdvertisement> providerEncryptionCertificate_;
+    std::optional<SecurityProfileReference> providerSecurityProfile_;
+    std::shared_ptr<const SelectionInputKeyOffer> resolvedSelectionInputKeyOffer_;
     std::optional<ProviderCapabilityOffer> providerCapabilityOffer_;
     std::optional<SelectionInputKeyOffer> selectionInputKeyOffer_;
     std::optional<ReservationLease> reservationLease_;
@@ -541,6 +585,15 @@ public:
     void setSelectionInputKeyGrant(const SelectionInputKeyGrant& grant);
     void setSelectionKeyEnvelope(const ndn::Block& envelope);
     void clearSelectionKeyEnvelope();
+    void setCompactKeyEnvelopeMode(bool enabled);
+    bool hasCompactKeyEnvelopeMode() const;
+    void setOptionalInlineSignedInput(bool enabled);
+    bool hasOptionalInlineSignedInput() const;
+    void setInlineSignedInputData(const ndn::Block& data);
+    bool hasInlineSignedInputData() const;
+    const ndn::Block& getInlineSignedInputData() const;
+    // Remove the circular Data bytes while retaining the authenticated mode.
+    void clearInlineSignedInputData();
     /** Set the provider-specific streamed event-key grant. The block must
      * contain exactly one HybridMessageEnvelope and is emitted only in the
      * selected Provider's Selection projection. */
@@ -582,6 +635,9 @@ private:
     std::optional<SelectionDecision> selectionDecision_;
     std::optional<SelectionInputKeyGrant> selectionInputKeyGrant_;
     std::optional<ndn::Block> selectionKeyEnvelope_;
+    bool compactKeyEnvelopeMode_ = false;
+    bool optionalInlineSignedInput_ = false;
+    std::shared_ptr<const ndn::Block> inlineSignedInputData_;
     std::optional<ndn::Block> streamEventKeyGrant_;
     std::optional<RecipientEncryptedAssignment> recipientEncryptedAssignment_;
     mutable ndn::Block m_wire;

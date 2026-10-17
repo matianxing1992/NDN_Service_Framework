@@ -2,7 +2,8 @@
 
 The client deliberately avoids gRPC retry, hedging, and load-balancing policy.
 Every logical HELLO request has one global deadline and at most one explicit
-attempt per endpoint. Only UNAVAILABLE and DEADLINE_EXCEEDED are retryable.
+attempt per endpoint. UNAVAILABLE, DEADLINE_EXCEEDED and online busy
+(RESOURCE_EXHAUSTED) are retryable.
 The strict sequential mode disables proactive health routing; the health-
 assisted mode is retained as a separately labelled diagnostic. The optional
 parallel mode is a separately labelled first-success fan-out diagnostic: it
@@ -18,6 +19,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 import json
 import math
+from pathlib import Path
 import time
 from typing import Any, Iterable, Sequence
 
@@ -30,7 +32,50 @@ import helloworld_pb2_grpc
 RETRYABLE_STATUS_CODES = frozenset({
     grpc.StatusCode.UNAVAILABLE,
     grpc.StatusCode.DEADLINE_EXCEEDED,
+    grpc.StatusCode.RESOURCE_EXHAUSTED,
 })
+
+
+def load_fixed_task_plan(path: str, count: int, interval_ms: float) -> tuple[list[str], int]:
+    payload = Path(path).read_bytes()
+    if not payload or len(payload) > 131072:
+        raise ValueError("fixed task plan size")
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate fixed task plan key")
+            value[key] = item
+        return value
+
+    plan = json.loads(payload, object_pairs_hook=unique_object)
+    if (not isinstance(plan, dict) or set(plan) !=
+            {"version", "window_ms", "period_ms", "tasks"} or
+            type(plan["version"]) is not int or plan["version"] != 1 or
+            type(plan["window_ms"]) is not int or
+            not 1000 <= plan["window_ms"] <= 60000 or
+            type(plan["period_ms"]) is not int or
+            plan["period_ms"] not in (100, 4700) or
+            plan["period_ms"] != interval_ms or
+            not isinstance(plan["tasks"], list) or
+            len(plan["tasks"]) != count or
+            count > 600 or
+            count != (plan["window_ms"] + plan["period_ms"] - 1) //
+            plan["period_ms"]):
+        raise ValueError("fixed task plan shape")
+    names = []
+    for index, row in enumerate(plan["tasks"]):
+        if (not isinstance(row, dict) or set(row) !=
+                {"task", "arrival_ms", "class"} or
+                type(row["task"]) is not int or row["task"] != index + 1 or
+                type(row["arrival_ms"]) is not int or
+                row["arrival_ms"] != index * plan["period_ms"] or
+                row["class"] not in ("compute", "memory")):
+            raise ValueError("fixed task plan row")
+        task_class = "M" if row["class"] == "memory" else "C"
+        names.append(f"T205|M|{task_class}|{index + 1:010d}|private-input".ljust(64, "_"))
+    return names, plan["window_ms"]
 
 CHANNEL_OPTIONS = (
     ("grpc.enable_retries", 0),
@@ -94,11 +139,9 @@ class Metrics:
 def parse_target_specs(
     values: Sequence[str], *, allow_single_provider: bool = False,
 ) -> list[TargetSpec]:
-    if len(values) < 3 and not (allow_single_provider and len(values) == 1):
-        # Keep the historical wording for the three-provider contract tests,
-        # while allowing the four-provider mobility profile.
+    if len(values) < 2 and not (allow_single_provider and len(values) == 1):
         raise ValueError(
-            "the mobility baseline requires exactly three or more --target values")
+            "the multi-provider baseline requires at least two --target values")
     result: list[TargetSpec] = []
     provider_ids: set[str] = set()
     addresses: set[str] = set()
@@ -174,12 +217,18 @@ class ThreeProviderFailoverClient:
         parallel: bool = False,
         quiet: bool = False,
         allow_single_provider: bool = False,
+        tls_ca: str | None = None,
+        tls_cert: str | None = None,
+        tls_key: str | None = None,
     ) -> None:
-        if len(targets) < 3 and not (allow_single_provider and len(targets) == 1):
+        if len(targets) < 2 and not (allow_single_provider and len(targets) == 1):
             raise ValueError(
-                "exactly three or more independently addressed providers are required")
+                "at least two independently addressed providers are required")
         if allow_single_provider and len(targets) != 1:
             raise ValueError("single-provider mode requires exactly one target")
+        if any(value is not None for value in (tls_ca, tls_cert, tls_key)) and not all(
+                value is not None for value in (tls_ca, tls_cert, tls_key)):
+            raise ValueError("mutual TLS requires CA, certificate and key")
         for name, value in (
             ("global_deadline_s", global_deadline_s),
             ("attempt_timeout_s", attempt_timeout_s),
@@ -199,6 +248,10 @@ class ThreeProviderFailoverClient:
         self.parallel = bool(parallel)
         self.allow_single_provider = bool(allow_single_provider)
         self.quiet = quiet
+        self.tls_credentials = (grpc.ssl_channel_credentials(
+            root_certificates=Path(tls_ca).read_bytes(),
+            private_key=Path(tls_key).read_bytes(),
+            certificate_chain=Path(tls_cert).read_bytes()) if tls_ca else None)
         self.endpoints = [self._make_endpoint(target) for target in targets]
         self.health_checks = 0
         self.health_success = 0
@@ -207,9 +260,14 @@ class ThreeProviderFailoverClient:
         self._closing = False
         self._closed = False
 
-    @staticmethod
-    def _make_endpoint(target: TargetSpec) -> Endpoint:
-        channel = grpc.aio.insecure_channel(target.address, options=CHANNEL_OPTIONS)
+    def _make_endpoint(self, target: TargetSpec) -> Endpoint:
+        if self.tls_credentials is None:
+            channel = grpc.aio.insecure_channel(target.address, options=CHANNEL_OPTIONS)
+        else:
+            channel = grpc.aio.secure_channel(
+                target.address, self.tls_credentials,
+                options=CHANNEL_OPTIONS +
+                (("grpc.ssl_target_name_override", target.provider_id),))
         stub = helloworld_pb2_grpc.GreeterStub(channel)
         health = channel.unary_unary(
             "/NDNSFBaseline/Health",
@@ -388,16 +446,20 @@ class ThreeProviderFailoverClient:
         metrics: Metrics,
         *,
         measured: bool = True,
+        planned_at: float | None = None,
+        request_name: str | None = None,
     ) -> RequestOutcome:
-        request_started = time.monotonic()
+        published_at = time.monotonic()
+        request_started = planned_at if planned_at is not None else published_at
         print(
             f"GRPC_REQUEST_PUBLISHED request_id={logical_request_id} "
-            f"monotonic_s={request_started:.9f}",
+            f"monotonic_s={published_at:.9f} planned_monotonic_s={request_started:.9f}",
             flush=True,
         )
         if getattr(self, "parallel", False):
             return await self.execute_request_parallel(
-                logical_request_id, metrics, measured=measured)
+                logical_request_id, metrics, measured=measured,
+                planned_at=planned_at, request_name=request_name)
         request_deadline = request_started + self.global_deadline_s
         base_order = rotated(self.endpoints, logical_request_id)
         now = time.monotonic()
@@ -420,7 +482,8 @@ class ThreeProviderFailoverClient:
                 flush=True,
             )
 
-        request = helloworld_pb2.HelloRequest(name=f"Test-{logical_request_id}")
+        request = helloworld_pb2.HelloRequest(
+            name=request_name if request_name is not None else f"Test-{logical_request_id}")
         last_status = "NO_ATTEMPT"
         for attempt_number, endpoint in enumerate(attempt_order, start=1):
             remaining_s = request_deadline - time.monotonic()
@@ -441,6 +504,8 @@ class ThreeProviderFailoverClient:
                 metadata=(
                     ("x-ndnsf-logical-request-id", str(logical_request_id)),
                     ("x-ndnsf-attempt", str(attempt_number)),
+                    ("x-ndnsf-attempt-expires-ns",
+                     str(int((attempt_started + call_timeout_s) * 1e9))),
                 ),
             )
             try:
@@ -472,6 +537,26 @@ class ThreeProviderFailoverClient:
                     endpoint.last_status = last_status
                     endpoint.last_checked_at = time.monotonic()
                     continue
+                if request_name is not None:
+                    if response.message != f"Hello, {request_name}":
+                        last_status = "BAD_ECHO"
+                    elif metadata_value(trailing, "x-ndnsf-provider-id") != endpoint.provider_id:
+                        last_status = "WRONG_PROVIDER"
+                    elif metadata_value(trailing, "x-ndnsf-logical-request-id") != str(logical_request_id):
+                        last_status = "WRONG_REQUEST"
+                    elif time.monotonic() >= request_deadline:
+                        last_status = "LATE_REPLY"
+                    else:
+                        last_status = "OK"
+                    if last_status != "OK":
+                        if measured:
+                            metrics.handler_executions += 1
+                            metrics.status_counts[last_status] += 1
+                            metrics.failures += 1
+                            metrics.status_counts["LOGICAL_FAILURE"] += 1
+                        return RequestOutcome(logical_request_id, False,
+                                              endpoint.provider_id, last_status,
+                                              (time.monotonic() - request_started) * 1000.0)
                 if measured:
                     metrics.handler_executions += 1
                     metrics.status_counts["OK"] += 1
@@ -546,6 +631,8 @@ class ThreeProviderFailoverClient:
         metrics: Metrics,
         *,
         measured: bool = True,
+        planned_at: float | None = None,
+        request_name: str | None = None,
     ) -> RequestOutcome:
         """Issue one RPC to every endpoint and keep the first successful reply.
 
@@ -554,7 +641,7 @@ class ThreeProviderFailoverClient:
         timeout, and the same global deadline. Every issued RPC is counted as
         an attempt; fan-out and cancellation cost are recorded separately.
         """
-        request_started = time.monotonic()
+        request_started = planned_at if planned_at is not None else time.monotonic()
         request_deadline = request_started + self.global_deadline_s
         endpoints = rotated(self.endpoints, logical_request_id)
         if measured:
@@ -569,7 +656,8 @@ class ThreeProviderFailoverClient:
             return RequestOutcome(
                 logical_request_id, False, None, "NO_ENDPOINTS", 0.0)
 
-        request = helloworld_pb2.HelloRequest(name=f"Test-{logical_request_id}")
+        request = helloworld_pb2.HelloRequest(
+            name=request_name if request_name is not None else f"Test-{logical_request_id}")
 
         async def issue(endpoint: Endpoint, attempt_number: int) -> dict[str, Any]:
             remaining_s = request_deadline - time.monotonic()
@@ -589,6 +677,8 @@ class ThreeProviderFailoverClient:
                 metadata=(
                     ("x-ndnsf-logical-request-id", str(logical_request_id)),
                     ("x-ndnsf-attempt", str(attempt_number)),
+                    ("x-ndnsf-attempt-expires-ns",
+                     str(int((attempt_started + call_timeout_s) * 1e9))),
                     ("x-ndnsf-execution-mode", "parallel-first-success"),
                 ),
             )
@@ -707,8 +797,13 @@ async def schedule_requests(
     first_request_id: int,
     metrics: Metrics,
     measured: bool,
+    fixed_deadline: bool = False,
+    start_at: float | None = None,
+    request_names: Sequence[str] | None = None,
 ) -> list[RequestOutcome]:
-    started = time.monotonic()
+    if request_names is not None and len(request_names) != count:
+        raise ValueError("fixed task plan count")
+    started = start_at if start_at is not None else time.monotonic()
     tasks: list[asyncio.Task[RequestOutcome]] = []
     try:
         for index in range(count):
@@ -717,8 +812,13 @@ async def schedule_requests(
             if delay_s > 0:
                 await asyncio.sleep(delay_s)
             request_id = first_request_id + index
+            arguments = {"measured": measured}
+            if fixed_deadline:
+                arguments["planned_at"] = scheduled_at
+            if request_names is not None:
+                arguments["request_name"] = request_names[index]
             tasks.append(asyncio.create_task(
-                client.execute_request(request_id, metrics, measured=measured),
+                client.execute_request(request_id, metrics, **arguments),
                 name=f"grpc-request-{request_id}",
             ))
         if not tasks:
@@ -822,7 +922,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         required=True,
         metavar="PROVIDER_ID=HOST:PORT",
-        help="repeat at least three times; single-provider mode permits one",
+        help="repeat at least twice; single-provider mode permits one",
     )
     parser.add_argument(
         "--single-provider", action="store_true",
@@ -842,6 +942,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--measurement-start-delay-s", type=float, default=0.0)
     parser.add_argument("--measurement-start-monotonic-s", type=float, default=0.0)
     parser.add_argument("--measurement-start-tolerance-s", type=float, default=0.0)
+    parser.add_argument("--planned-deadline", action="store_true",
+                        help="bind each deadline to its scheduled arrival")
+    parser.add_argument("--task-plan", help="shared fixed-arrival task plan")
+    parser.add_argument("--tls-ca", help="CA certificate for mutual TLS")
+    parser.add_argument("--tls-cert", help="client certificate for mutual TLS")
+    parser.add_argument("--tls-key", help="client private key for mutual TLS")
     parser.add_argument("--require-all-prewarmed", action="store_true")
     parser.add_argument(
         "--disable-health-routing", action="store_true",
@@ -876,6 +982,7 @@ async def run_stats_from_args(args: argparse.Namespace) -> dict[str, Any]:
         parallel=False,
         quiet=True,
         allow_single_provider=args.single_provider,
+        tls_ca=args.tls_ca, tls_cert=args.tls_cert, tls_key=args.tls_key,
     )
     try:
         if args.reset_stats:
@@ -927,6 +1034,7 @@ async def run_from_args(args: argparse.Namespace) -> tuple[Metrics, str]:
         parallel=args.parallel,
         quiet=args.quiet,
         allow_single_provider=args.single_provider,
+        tls_ca=args.tls_ca, tls_cert=args.tls_cert, tls_key=args.tls_key,
     )
     try:
         await client.prewarm_all()
@@ -960,15 +1068,19 @@ async def run_from_args(args: argparse.Namespace) -> tuple[Metrics, str]:
                 absolute_monotonic_s=args.measurement_start_monotonic_s,
                 tolerance_s=args.measurement_start_tolerance_s,
             ))
+        planned_origin = (args.measurement_start_monotonic_s
+                          if args.planned_deadline and args.measurement_start_monotonic_s > 0
+                          else measurement_started)
         print(
             f"GRPC_MEASUREMENT_START monotonic_s={measurement_started:.6f} "
+            f"planned_monotonic_s={planned_origin:.6f} "
             f"offset_s={measurement_start_offset_s:.6f} "
             f"lateness_ms={measurement_lateness_s * 1000.0:.3f}",
             flush=True,
         )
         pre_measurement_health_checks, pre_measurement_health_success = (
             count_health_events(
-                client.health_events, float("-inf"), measurement_started))
+                client.health_events, float("-inf"), planned_origin))
         metrics = Metrics()
         if args.rate_rps > 0:
             count = max(1, int(round(args.rate_rps * args.duration_s)))
@@ -980,20 +1092,45 @@ async def run_from_args(args: argparse.Namespace) -> tuple[Metrics, str]:
             interval_s = args.interval_ms / 1000.0
             report_duration_s = 0.0
             offered_rps = 1.0 / interval_s if interval_s > 0 else 0.0
-        await schedule_requests(
+        task_names = None
+        fixed_window_ms = None
+        if args.task_plan:
+            if (not args.planned_deadline or args.rate_rps > 0 or args.smoke or
+                    args.parallel):
+                raise ValueError("task plan requires fixed planned-deadline mode")
+            task_names, fixed_window_ms = load_fixed_task_plan(
+                args.task_plan, count, args.interval_ms)
+        outcomes = await schedule_requests(
             client,
             count=count,
             interval_s=interval_s,
-            first_request_id=0,
+            first_request_id=1 if task_names is not None else 0,
             metrics=metrics,
             measured=True,
+            fixed_deadline=args.planned_deadline,
+            start_at=planned_origin if args.planned_deadline else None,
+            request_names=task_names,
         )
-        elapsed_s = time.monotonic() - measurement_started
+        if task_names is not None:
+            for outcome in outcomes:
+                print("GRPC_REQUEST_TERMINAL_JSON " + json.dumps({
+                    "task": outcome.request_id,
+                    "success": outcome.success,
+                    "provider": outcome.provider_id,
+                    "status": outcome.status,
+                    "latency_ms_from_planned": outcome.latency_ms,
+                    "response": outcome.response_message,
+                }, sort_keys=True, separators=(",", ":")), flush=True)
+            remaining = planned_origin + fixed_window_ms / 1000.0 - time.monotonic()
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            report_duration_s = fixed_window_ms / 1000.0
+        elapsed_s = time.monotonic() - planned_origin
         if report_duration_s <= 0:
             report_duration_s = max(elapsed_s, 1e-9)
-        measurement_ended = measurement_started + report_duration_s
+        measurement_ended = planned_origin + report_duration_s
         health_checks, health_success = count_health_events(
-            client.health_events, measurement_started, measurement_ended)
+            client.health_events, planned_origin, measurement_ended)
         summary = format_summary(
             metrics,
             health_checks=health_checks,

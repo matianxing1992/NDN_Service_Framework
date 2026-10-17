@@ -1545,6 +1545,34 @@ if (match.group(1) if match else "") != entry.get("soname"):
 PY
 }
 
+has_ndncxx_ims_lower_bound() {
+  local cflags
+  cflags="$(pkg_config --cflags libndn-cxx)" || return 1
+  "$PYTHON_BIN" - "$cflags" <<'PY'
+import os
+import shlex
+import subprocess
+import sys
+
+env = dict(os.environ)
+for key in ("CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "GCC_EXEC_PREFIX",
+            "COMPILER_PATH", "LIBRARY_PATH", "LD_LIBRARY_PATH"):
+    env.pop(key, None)
+env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+source = """
+#include <ndn-cxx/ims/in-memory-storage.hpp>
+void check(const ndn::InMemoryStorage& storage, const ndn::Name& name) {
+  ndn::InMemoryStorage::const_iterator entry = storage.lowerBound(name);
+  (void)entry;
+}
+"""
+result = subprocess.run(
+    ["/usr/bin/g++", "-std=c++17", "-x", "c++", "-fsyntax-only", "-",
+     *shlex.split(sys.argv[1])], input=source, text=True, env=env)
+raise SystemExit(result.returncode)
+PY
+}
+
 is_pkg_installed() {
   local package="$1"
   local minimum="${2:-0}"
@@ -1670,6 +1698,10 @@ require_global_external_closure() {
   probe_configured_openssl_api
   require_global_boost
   require_global_pkg "libndn-cxx" "$MIN_NDNCXX_VERSION" "libndn-cxx.so"
+  if ! has_ndncxx_ims_lower_bound; then
+    echo 'Installed ndn-cxx lacks InMemoryStorage::lowerBound; rebuild with tools/ndn-cxx/ims-lower-bound.patch via this installer.' >&2
+    return 1
+  fi
   require_global_pkg "ndnsd" "$MIN_NDNSD_VERSION" "libndnsd.so"
   require_global_pkg "libndn-svs" "$MIN_NDNSVS_VERSION" "libndn-svs.so"
   require_global_pkg "libnac-abe" "$MIN_NACABE_VERSION" "libnac-abe.so"
@@ -2133,13 +2165,16 @@ build_waf_dependency() {
   local pkg="$2"
   local url="$3"
   local minimum="$4"
-  local dir
+  local dir dependency_patch
   local install_stage="$BUILD_DIR/install-staging/$name"
   local -a waf_env
 
   if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum"; then
-    echo "==> $name already installed ($pkg); skipping"
-    return
+    if [[ "$name" != "ndn-cxx" ]] || has_ndncxx_ims_lower_bound >/dev/null 2>&1; then
+      echo "==> $name already installed ($pkg); skipping"
+      return
+    fi
+    echo '==> Installed ndn-cxx lacks InMemoryStorage::lowerBound; rebuilding with the maintained patch'
   fi
 
   dir="$(ensure_source_tree "$name" "$url" | tail -n 1)"
@@ -2159,13 +2194,31 @@ build_waf_dependency() {
   )
   (
     cd "$dir"
+    case "$name" in
+      ndn-cxx) dependency_patch="$ROOT/tools/ndn-cxx/ims-lower-bound.patch" ;;
+      ndn-svs) dependency_patch="$ROOT/tools/ndn-svs/publication-latency.patch" ;;
+      *) dependency_patch='' ;;
+    esac
+    if [[ -n "$dependency_patch" ]]; then
+      if git apply --check "$dependency_patch"; then
+        run git apply "$dependency_patch"
+        # Restore only our patch, so the pinned-source clean-tree check remains
+        # valid on retries. Preserve the original build/install failure status.
+        trap 'build_status=$?; if ! git apply --reverse "$dependency_patch"; then
+          echo "Could not restore the installer-owned $name patch in $dir" >&2
+          if (( build_status == 0 )); then build_status=1; fi
+        fi; exit "$build_status"' EXIT
+      elif git apply --reverse --check "$dependency_patch"; then
+        echo "==> $name patch already present; retaining it"
+      else
+        echo "$name source is incompatible with $dependency_patch; preserving it" >&2
+        exit 1
+      fi
+    fi
     run "${waf_env[@]}" "$PYTHON_BIN" ./waf distclean
     run "${waf_env[@]}" "$PYTHON_BIN" ./waf configure "--prefix=$GLOBAL_DEPENDENCY_PREFIX"
     run "${waf_env[@]}" "$PYTHON_BIN" ./waf "-j$JOBS"
-  )
-  echo "==> Installing dependency $name"
-  (
-    cd "$dir"
+    echo "==> Installing dependency $name"
     run "${waf_env[@]}" "$PYTHON_BIN" ./waf install "--destdir=$install_stage"
   )
   install_manifest_tree "$install_stage/usr/local" "$GLOBAL_DEPENDENCY_PREFIX" "$name"
@@ -2743,6 +2796,12 @@ install_host_sdk_prerequisites() {
   local onnx_version onnx_url onnx_ref onnx_commit onnx_prefix
   local crate rust_minimum bridge_path workspace archive extracted pc_file
   local stage build_dir actual_commit rust_version bridge_stage
+  # Reusing a complete installed SDK needs no download metadata. Keep the
+  # pinned lock mandatory whenever any SDK must actually be installed.
+  if has_onnxruntime_sdk && has_onnx_full_proto_sdk && has_global_tokenizer_bridge; then
+    echo '==> Complete host SDK prerequisites already installed; reusing'
+    return 0
+  fi
   ort_version="$(host_sdk_lock_field onnxRuntimeCpp.version)"
   ort_url="$(host_sdk_lock_field onnxRuntimeCpp.url)"
   ort_sha="$(host_sdk_lock_field onnxRuntimeCpp.sha256)"

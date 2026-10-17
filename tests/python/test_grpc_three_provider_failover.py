@@ -3,10 +3,13 @@
 import asyncio
 from contextlib import redirect_stdout
 import io
+import json
 from pathlib import Path
 import sys
+import tempfile
 import time
 import unittest
+import grpc
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -15,9 +18,57 @@ sys.path.insert(0, str(GRPC_EXPERIMENT))
 
 import greeter_failover_client as failover  # noqa: E402
 import greeter_server  # noqa: E402
+import helloworld_pb2  # noqa: E402
+sys.path.insert(0, str(REPO / "Experiments" / "targeted-invocation"))
+from run_minindn import prepare_tls  # noqa: E402
 
 
 class ThreeProviderFailoverUnitTests(unittest.TestCase):
+    def test_busy_trace_requires_target_identity_and_strict_rows(self):
+        trace = {"version": 1, "producer": "/example/hello/provider/A",
+                 "window_ms": 3000, "tail": "hold",
+                 "changes": [{"offset_ms": 0, "available": True},
+                             {"offset_ms": 1000, "available": False}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "busy.json"
+            path.write_text(json.dumps(trace))
+            self.assertEqual(greeter_server.load_busy_trace(path, "drone1"),
+                             [(0, True), (1000, False)])
+            with self.assertRaisesRegex(ValueError, "busy trace schema"):
+                greeter_server.load_busy_trace(path, "drone2")
+            path.write_text(path.read_text().replace(
+                '"version": 1', '"version": 1, "version": 1'))
+            with self.assertRaisesRegex(ValueError, "duplicate busy trace key"):
+                greeter_server.load_busy_trace(path, "drone1")
+
+    def test_busy_trace_missing_origin_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            origin = Path(directory) / "missing-origin"
+            greeter = greeter_server.Greeter(
+                busy_changes=[(0, False)], origin_path=origin)
+            with self.assertRaisesRegex(RuntimeError, "origin missing"):
+                greeter.busy()
+
+    def test_shared_task_plan_preserves_canonical_input_and_rejects_duplicates(self):
+        plan = {"version": 1, "window_ms": 1000, "period_ms": 100,
+                "tasks": [{"task": index + 1, "arrival_ms": index * 100,
+                           "class": "memory" if index % 2 else "compute"}
+                          for index in range(10)]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plan.json"
+            path.write_text(json.dumps(plan))
+            names, window_ms = failover.load_fixed_task_plan(str(path), 10, 100)
+            self.assertEqual(window_ms, 1000)
+            self.assertEqual(names[0],
+                             "T205|M|C|0000000001|private-input".ljust(64, "_"))
+            self.assertEqual(names[1],
+                             "T205|M|M|0000000002|private-input".ljust(64, "_"))
+            self.assertTrue(all(len(name) == 64 for name in names))
+            path.write_text(path.read_text().replace('"version": 1',
+                                                     '"version": 1, "version": 1'))
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                failover.load_fixed_task_plan(str(path), 10, 100)
+
     def test_targets_require_three_unique_provider_endpoints(self):
         targets = failover.parse_target_specs([
             "ucla=127.0.0.1:50051",
@@ -26,7 +77,7 @@ class ThreeProviderFailoverUnitTests(unittest.TestCase):
         ])
         self.assertEqual([item.provider_id for item in targets],
                          ["ucla", "wustl", "uiuc"])
-        with self.assertRaisesRegex(ValueError, "exactly three"):
+        with self.assertRaisesRegex(ValueError, "at least two"):
             failover.parse_target_specs(["ucla=127.0.0.1:50051"])
         with self.assertRaisesRegex(ValueError, "duplicate provider id"):
             failover.parse_target_specs([
@@ -48,11 +99,19 @@ class ThreeProviderFailoverUnitTests(unittest.TestCase):
 
     def test_single_provider_control_requires_explicit_opt_in(self):
         target = ["ucla=127.0.0.1:50051"]
-        with self.assertRaisesRegex(ValueError, "exactly three"):
+        with self.assertRaisesRegex(ValueError, "at least two"):
             failover.parse_target_specs(target)
         parsed = failover.parse_target_specs(
             target, allow_single_provider=True)
         self.assertEqual([item.provider_id for item in parsed], ["ucla"])
+
+    def test_two_provider_targets_match_dynamic_ndnsf_cohort(self):
+        targets = failover.parse_target_specs([
+            "drone1=127.0.0.1:50051",
+            "drone2=127.0.0.1:50052",
+        ])
+        self.assertEqual([item.provider_id for item in targets],
+                         ["drone1", "drone2"])
 
     def test_request_order_rotates_and_retry_policy_is_explicit(self):
         providers = ["ucla", "wustl", "uiuc"]
@@ -138,6 +197,26 @@ class MeasurementStartBarrierTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SchedulingCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fixed_arrivals_pass_planned_time_to_each_request(self):
+        class RecordingClient:
+            def __init__(self):
+                self.calls = []
+
+            async def execute_request(self, request_id, metrics, *, measured,
+                                      planned_at):
+                self.calls.append((request_id, planned_at))
+                return failover.RequestOutcome(
+                    request_id, True, "drone1", "OK", 0.0)
+
+        client = RecordingClient()
+        start = time.monotonic() + 0.02
+        outcomes = await failover.schedule_requests(
+            client, count=2, interval_s=0.01, first_request_id=1,
+            metrics=failover.Metrics(), measured=True,
+            fixed_deadline=True, start_at=start)
+        self.assertEqual([item.request_id for item in outcomes], [1, 2])
+        self.assertEqual(client.calls, [(1, start), (2, start + 0.01)])
+
     async def test_request_exception_cancels_and_gathers_siblings(self):
         class FaultingClient:
             def __init__(self):
@@ -222,6 +301,41 @@ class NoResponseFailoverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics.status_counts["NO_RESPONSE"], 4)
 
 
+class MutualTlsFailoverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_two_provider_client_uses_mutual_tls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tls = prepare_tls(Path(directory))
+            servers = []
+            targets = []
+            for actor in ("drone1", "drone2"):
+                server, _, port = greeter_server.build_server(
+                    bind="127.0.0.1:0", quiet=True, provider_id=actor,
+                    tls_ca=tls / "ca.crt", tls_cert=tls / (actor + ".crt"),
+                    tls_key=tls / (actor + ".key"))
+                server.start()
+                servers.append(server)
+                targets.append(failover.TargetSpec(actor, f"127.0.0.1:{port}"))
+            client = failover.ThreeProviderFailoverClient(
+                targets, global_deadline_s=2.0, attempt_timeout_s=0.6,
+                prewarm_timeout_s=2.0, quiet=True,
+                tls_ca=tls / "ca.crt", tls_cert=tls / "gs.crt",
+                tls_key=tls / "gs.key")
+            try:
+                await client.prewarm_all()
+                self.assertTrue(all(endpoint.channel_ready
+                                    for endpoint in client.endpoints))
+                metrics = failover.Metrics()
+                with redirect_stdout(io.StringIO()):
+                    outcome = await client.execute_request(
+                        0, metrics, request_name="T205|M|C|0000000001|private-input".ljust(64, "_"))
+                self.assertTrue(outcome.success)
+                self.assertEqual(metrics.success, 1)
+            finally:
+                await client.close()
+                for server in servers:
+                    server.stop(0).wait(timeout=1.0)
+
+
 class ThreeProviderFailoverIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.servers = []
@@ -254,6 +368,70 @@ class ThreeProviderFailoverIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.client.close()
         for server in self.servers:
             server.stop(0).wait(timeout=1.0)
+
+    async def test_expired_planned_deadline_never_issues_rpc(self):
+        metrics = failover.Metrics()
+        with redirect_stdout(io.StringIO()):
+            outcome = await self.client.execute_request(
+                0, metrics, planned_at=time.monotonic() - 2.0)
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.status, "GLOBAL_DEADLINE_EXCEEDED")
+        self.assertEqual(metrics.sent, 1)
+        self.assertEqual(metrics.attempts, 0)
+        self.assertEqual(metrics.failures, 1)
+        self.assertTrue(all(greeter.counters()["handler_executions"] == 0
+                            for greeter in self.greeters))
+
+    async def test_late_arrival_is_rejected_before_business_execution(self):
+        await self.client.endpoints[0].channel.channel_ready()
+        expired = str(time.monotonic_ns() - 1000000)
+        with self.assertRaises(grpc.aio.AioRpcError) as caught:
+            await self.client.endpoints[0].say_hello(
+                helloworld_pb2.HelloRequest(name="late-task"),
+                timeout=0.2,
+                metadata=(("x-ndnsf-logical-request-id", "late-task"),
+                          ("x-ndnsf-attempt-expires-ns", expired)),
+            )
+        self.assertEqual(caught.exception.code(), grpc.StatusCode.DEADLINE_EXCEEDED)
+        events = self.greeters[0]._service_events.values()
+        self.assertTrue(any(event["status"] == "DEADLINE_EXCEEDED" for event in events))
+        self.assertFalse(any(event["status"] == "OK" for event in events))
+
+    async def test_online_busy_is_retryable_and_fixed_reply_is_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            origin = Path(directory) / "origin"
+            origin.write_text(str(time.monotonic_ns() - 1000000000))
+            self.greeters[0].busy_changes = [(0, False)]
+            self.greeters[0].origin_path = origin
+            metrics = failover.Metrics()
+            task_input = "T205|M|C|0000000001|private-input".ljust(64, "_")
+            with redirect_stdout(io.StringIO()):
+                outcome = await self.client.execute_request(
+                    0, metrics, request_name=task_input)
+            self.assertTrue(outcome.success)
+            self.assertEqual(outcome.provider_id, "wustl")
+            self.assertEqual(outcome.response_message, "Hello, " + task_input)
+            self.assertEqual(metrics.status_counts["RESOURCE_EXHAUSTED"], 1)
+            self.assertEqual(metrics.failovers, 1)
+
+    async def test_all_online_busy_providers_fail_within_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            origin = Path(directory) / "origin"
+            origin.write_text(str(time.monotonic_ns() - 1000000000))
+            for greeter in self.greeters:
+                greeter.busy_changes = [(0, False)]
+                greeter.origin_path = origin
+            metrics = failover.Metrics()
+            with redirect_stdout(io.StringIO()):
+                outcome = await self.client.execute_request(
+                    1, metrics, request_name="all-busy-task")
+            self.assertFalse(outcome.success)
+            self.assertLess(outcome.latency_ms, 1000)
+            self.assertEqual(metrics.attempts, 3)
+            self.assertEqual(metrics.status_counts["RESOURCE_EXHAUSTED"], 3)
+            self.assertTrue(all(not any(event["status"] == "OK"
+                                        for event in greeter._service_events.values())
+                                for greeter in self.greeters))
 
     async def test_prewarm_health_and_retry_to_next_provider(self):
         with redirect_stdout(io.StringIO()):

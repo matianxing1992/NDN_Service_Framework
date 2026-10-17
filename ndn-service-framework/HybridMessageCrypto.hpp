@@ -36,6 +36,8 @@ public:
     static constexpr size_t MESSAGE_KEY_SIZE = 32;
     static constexpr size_t NONCE_SIZE = 12;
     static constexpr size_t TAG_SIZE = 16;
+    // Bound event-loop AES/TLV work; larger messages retain worker backpressure.
+    static constexpr size_t INLINE_CRYPTO_MAX_BYTES = 4096;
     static constexpr size_t MAX_EPOCH_USES = 10000;
     static constexpr auto MAX_EPOCH_AGE = std::chrono::seconds(60);
 

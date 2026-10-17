@@ -7,6 +7,7 @@
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/Stream.hpp"
+#include "ndn-service-framework/common.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
@@ -4002,6 +4003,9 @@ public:
     , m_validator(m_face)
     , m_serveCertificates(serveCertificates)
   {
+    if (m_trustSchema.empty()) {
+      throw std::invalid_argument("NativeServiceController requires a trust schema with a fixed root");
+    }
     m_controllerCert = getOrCreateIdentity(m_keyChain, m_controllerPrefix);
     {
       std::lock_guard<std::mutex> lock(g_keyChainMutex);
@@ -4012,9 +4016,7 @@ public:
         getOrCreateIdentity(m_keyChain, ndn::Name(identity));
       }
     }
-    if (!m_trustSchema.empty()) {
-      m_validator.load(m_trustSchema);
-    }
+    nsf::loadTrustSchema(m_validator, m_trustSchema);
     if (m_serveCertificates) {
       m_certPublisher = std::make_unique<nsf::CertificatePublisher>(
         m_face, m_keyChain, m_controllerCert.getName());
@@ -4176,7 +4178,7 @@ public:
   ndn::Name m_controllerPrefix;
   std::string m_policyFile;
   std::string m_trustSchema;
-  ndn::ValidatorConfig m_validator;
+  nsf::TrustSchemaValidator m_validator;
   bool m_serveCertificates = true;
   ndn::security::Certificate m_controllerCert;
   std::unique_ptr<nsf::CertificatePublisher> m_certPublisher;
@@ -4486,7 +4488,8 @@ public:
                  const std::string& strategy,
                  const std::string& requestedRequestId = "",
                  const std::optional<nsf::DeploymentIntent>& deploymentIntent = std::nullopt,
-                 const std::optional<nsf::RequestCapabilities>& requestCapabilities = std::nullopt)
+                 const std::optional<nsf::RequestCapabilities>& requestCapabilities = std::nullopt,
+                 const std::optional<py::bytes>& discoveryPayload = std::nullopt)
   {
     PyServiceResponse output;
     std::mutex mutex;
@@ -4494,9 +4497,14 @@ public:
     bool done = false;
 
     auto payload = toBuffer(requestPayload);
+    const auto discovery = discoveryPayload ?
+      std::optional<ndn::Buffer>(toBuffer(*discoveryPayload)) : std::nullopt;
+    if (discovery && discovery->size() > nsf::RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE) {
+      throw std::invalid_argument("discovery payload exceeds 4096 bytes");
+    }
     auto selection = selectionPolicyByName(strategy);
 
-    auto submit = [&, payload, selection, deploymentIntent, requestCapabilities] {
+    auto submit = [&, payload, selection, deploymentIntent, requestCapabilities, discovery] {
       auto onResponse = [&](const nsf::ResponseMessage& response) {
           py::gil_scoped_acquire gil;
           std::lock_guard<std::mutex> lock(mutex);
@@ -4517,13 +4525,15 @@ public:
           done = true;
           cv.notify_one();
       };
-      ndn::Name actualRequestId;
-      if (deploymentIntent || requestCapabilities) {
+      try {
+        ndn::Name actualRequestId;
+        if (deploymentIntent || requestCapabilities || discovery) {
         nsf::RequestMessage request;
         auto mutablePayload = payload;
         request.setPayload(mutablePayload, mutablePayload.size());
         if (deploymentIntent) request.setDeploymentIntent(*deploymentIntent);
         if (requestCapabilities) request.setRequestCapabilities(*requestCapabilities);
+        if (discovery) request.setDiscoveryPayload(*discovery);
         const auto nativeSelection = strategy == "all-selected" ?
           nsf::ServiceUser::AckSelectionStrategy::AllSelected :
           (strategy == "random" ?
@@ -4541,8 +4551,16 @@ public:
           onTimeout,
           requestedRequestId.empty() ? ndn::Name() : ndn::Name(requestedRequestId));
       }
-      std::lock_guard<std::mutex> lock(mutex);
-      output.requestId = actualRequestId.toUri();
+        std::lock_guard<std::mutex> lock(mutex);
+        output.requestId = actualRequestId.toUri();
+      }
+      catch (const std::exception& error) {
+        std::lock_guard<std::mutex> lock(mutex);
+        output.status = false;
+        output.error = error.what();
+        done = true;
+        cv.notify_one();
+      }
     };
 
     if (m_running.load()) {
@@ -5600,7 +5618,8 @@ public:
                        int timeoutMs,
                        const std::string& requestStrategy,
                        const std::optional<nsf::DeploymentIntent>& deploymentIntent = std::nullopt,
-                       const std::optional<nsf::RequestCapabilities>& requestCapabilities = std::nullopt)
+                       const std::optional<nsf::RequestCapabilities>& requestCapabilities = std::nullopt,
+                       const std::optional<py::bytes>& discoveryPayload = std::nullopt)
   {
     PyServiceResponse output;
     std::mutex mutex;
@@ -5608,6 +5627,11 @@ public:
     bool done = false;
 
     auto payload = toBuffer(requestPayload);
+    const auto discovery = discoveryPayload ?
+      std::optional<ndn::Buffer>(toBuffer(*discoveryPayload)) : std::nullopt;
+    if (discovery && discovery->size() > nsf::RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE) {
+      throw std::invalid_argument("discovery payload exceeds 4096 bytes");
+    }
     auto selectorFn = keepPyFunction(std::move(selector));
     const size_t nativeStrategy =
       (requestStrategy == "all-selected" || requestStrategy == "all-responders") ?
@@ -5648,13 +5672,16 @@ public:
         return selectedCandidates;
       };
 
-    auto submit = [&, payload, handler, nativeStrategy, deploymentIntent, requestCapabilities] {
+    auto submit = [&, payload, handler, nativeStrategy, deploymentIntent, requestCapabilities,
+                   discovery] {
+      try {
       nsf::RequestMessage requestMessage;
       auto mutablePayload = payload;
       requestMessage.setPayload(mutablePayload, mutablePayload.size());
       requestMessage.setStrategy(nativeStrategy);
       if (deploymentIntent) requestMessage.setDeploymentIntent(*deploymentIntent);
       if (requestCapabilities) requestMessage.setRequestCapabilities(*requestCapabilities);
+      if (discovery) requestMessage.setDiscoveryPayload(*discovery);
       m_user->RequestService(
         std::vector<ndn::Name>{},
         ndn::Name(serviceName),
@@ -5679,6 +5706,14 @@ public:
           cv.notify_one();
         },
         nativeStrategy);
+      }
+      catch (const std::exception& error) {
+        std::lock_guard<std::mutex> lock(mutex);
+        output.status = false;
+        output.error = error.what();
+        done = true;
+        cv.notify_one();
+      }
     };
 
     if (m_running.load()) {
@@ -8186,7 +8221,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("strategy") = "first-responding",
          py::arg("request_id") = "",
          py::arg("deployment_intent") = std::nullopt,
-         py::arg("request_capabilities") = std::nullopt)
+         py::arg("request_capabilities") = std::nullopt,
+         py::arg("discovery_payload") = std::nullopt)
     .def("request_service_targeted", &NativeServiceUser::requestServiceTargeted,
          py::arg("provider"),
          py::arg("service"),
@@ -8200,7 +8236,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("timeout_ms") = 5000,
          py::arg("request_strategy") = "first-responding",
          py::arg("deployment_intent") = std::nullopt,
-         py::arg("request_capabilities") = std::nullopt)
+         py::arg("request_capabilities") = std::nullopt,
+         py::arg("discovery_payload") = std::nullopt)
     .def("request_service_async", &NativeServiceUser::requestServiceAsync,
          py::arg("service"),
          py::arg("payload"),

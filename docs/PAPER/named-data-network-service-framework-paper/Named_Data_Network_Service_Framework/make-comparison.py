@@ -10,6 +10,7 @@ import tempfile
 baseline, current, preamble, output = map(Path, sys.argv[1:])
 input_re = re.compile(r'(?m)^[ \t]*\\input\{([^}]+)\}[ \t]*(?:%[^\n]*)?$')
 table_re = re.compile(r'\\begin\{(table\*?)\}.*?\\end\{\1\}', re.S)
+minipage_re = re.compile(r'\\begin\{minipage\}.*?\\end\{minipage\}', re.S)
 figure_re = re.compile(r'\\begin\{(figure\*?)\}.*?\\end\{\1\}', re.S)
 
 def flatten(path, root, stack=()):
@@ -30,10 +31,16 @@ tables = {}
 def mask(text):
     def replace(match):
         table = match[0]
-        token = 'NDNSFTABLE' + hashlib.sha256(table.encode()).hexdigest().upper()
+        # Placement alone is not a text change; retain the revised placement.
+        identity = re.sub(r'^(\\begin\{(?:table|figure)\*?\})(?:\[[^\]]*\])?',
+                          r'\1', table)
+        token = 'NDNSFTABLE' + hashlib.sha256(identity.encode()).hexdigest().upper()
         tables[token] = table
         return token
     text = table_re.sub(replace, text)
+    # Non-floating tables need the same whole-table markup as floating tables.
+    text = minipage_re.sub(
+        lambda m: replace(m) if r'\captionof{table}' in m[0] else m[0], text)
     # Retain deleted figures in red so references in deleted prose still resolve.
     def deleted_figure(match):
         labels = re.findall(r'\\label\{([^}]+)\}', match[0])
@@ -65,12 +72,27 @@ for token, table in tables.items():
         color = 'NDNSFAdded'
     else:
         color = None
+        # A moved, unchanged table appears only at its revised location.
+        diff = re.sub(r'\\DIFdel(?:FL)?\{\s*' + token + r'\s*\}', '', diff)
+        diff = re.sub(r'\\DIFadd(?:FL)?\{\s*' + token + r'\s*\}', token, diff)
     if color:
-        table = re.sub(r'(\\begin\{(?:table|figure)\*?\}(?:\[[^\]]*\])?)',
-                       lambda m: m[0] + '\n\\color{' + color + '}', table, count=1)
+        # The caption package resets text color, so color its text and label too.
+        color_setup = ('\n\\color{' + color + '}\n\\captionsetup{'
+                       'textfont+={color=' + color + '},'
+                       'labelfont+={color=' + color + '}}')
+        table = re.sub(
+            r'(\\begin\{(?:table|figure)\*?\}(?:\[[^\]]*\])?'
+            r'|\\begin\{minipage\}(?:\[[^\]]*\])?\{[^}]*\})',
+            lambda m: m[0] + color_setup, table, count=1)
     diff = diff.replace(token, '\n' + table + '\n')
 if 'NDNSFTABLE' in diff:
     raise ValueError('Unexpanded table marker')
 for label in removed_labels - new_labels:
     diff = diff.replace('\\ref{' + label + '}', '\\ref{removed:' + label + '}')
+# TeX ignores the source space between adjacent diff macros; retain a visible
+# separator when deleted and added phrases would otherwise run together.
+for suffix in ('', 'FL'):
+    diff = diff.replace(
+        rf'\DIFdelend{suffix} \DIFaddbegin{suffix} \DIFadd{suffix}',
+        rf'\DIFdelend{suffix}\ \DIFaddbegin{suffix} \DIFadd{suffix}')
 output.write_text(diff)

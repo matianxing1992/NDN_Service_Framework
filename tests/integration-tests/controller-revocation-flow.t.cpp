@@ -18,6 +18,8 @@
 #include <ndn-cxx/security/validator-config.hpp>
 #include <ndn-cxx/util/io.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
+#include <ndn-cxx/util/signal/scoped-connection.hpp>
+#include <ndn-cxx/util/time-unit-test-clock.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -25,8 +27,11 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
+#include <optional>
 #include <string>
 #include <stdexcept>
+#include <thread>
 #include <tuple>
 #include <unistd.h>
 #include <utility>
@@ -36,6 +41,19 @@ namespace ndn_service_framework {
 
 struct ServiceControllerTestAccess
 {
+  static size_t
+  originalReplyCount(const ServiceController& controller)
+  {
+    return controller.m_originalControlReplies.size();
+  }
+
+  static std::shared_ptr<const ndn::Data>
+  originalReply(const ServiceController& controller, const ndn::Name& name)
+  {
+    const auto found = controller.m_originalControlReplies.find(name);
+    return found == controller.m_originalControlReplies.end() ? nullptr : found->second.packet;
+  }
+
   static ndn::Name
   dkeyInterestPrefix(const ndn::Name& authority, const ndn::security::Certificate& certificate)
   {
@@ -463,6 +481,198 @@ struct TerminalLedger
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(ControllerRevocationFlow)
+
+BOOST_AUTO_TEST_CASE(PolicyStatusOriginalReplyCapacityExpiresWithoutRenamingOldReplies)
+{
+  struct StateGuard
+  {
+    std::optional<std::string> previous;
+    std::filesystem::path path = std::filesystem::temp_directory_path() /
+      ("spec205-status-capacity-" + std::to_string(::getpid()) + ".bin");
+    std::shared_ptr<ndn::time::UnitTestSystemClock> system =
+      std::make_shared<ndn::time::UnitTestSystemClock>();
+    StateGuard()
+    {
+      if (const auto* value = ::getenv("NDNSF_CONTROLLER_GENERATION_STATE")) previous = value;
+      ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", path.c_str(), 1);
+      system->setNow(ndn::time::system_clock::now().time_since_epoch());
+      ndn::time::setCustomClocks(nullptr, system);
+    }
+    ~StateGuard()
+    {
+      ndn::time::setCustomClocks();
+      if (previous) ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", previous->c_str(), 1);
+      else ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
+      std::error_code ignored;
+      std::filesystem::remove(path, ignored);
+      std::filesystem::remove(path.string() + ".lock", ignored);
+    }
+  } state;
+  ndn::KeyChain keys("pib-memory:spec205-capacity", "tpm-memory:spec205-capacity");
+  const auto certificate = keys.createIdentity(ndn::Name("/controller/spec205-capacity"),
+      ndn::RsaKeyParams(2048)).getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace face(keys);
+  ndn::ValidatorConfig validator(face);
+  ServiceController controller(face, certificate, validator, "examples/hello.policies");
+  const auto signer = ServiceControllerTestAccess::ensureInternalControllerSigner(controller);
+  ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
+  const auto query = [&] {
+    return ServiceControllerTestAccess::statusQuery(certificate.getIdentity(), ndn::Name("/HELLO"));
+  };
+  const auto first = query();
+  ServiceControllerTestAccess::policyStatusInterest(controller, first);
+  const auto original = ServiceControllerTestAccess::originalReply(controller, first.getName());
+  BOOST_REQUIRE(original);
+  BOOST_REQUIRE(ndn::security::verifySignature(*original, signer));
+  const ndn::Block originalWire = original->wireEncode();
+  for (size_t i = 1; i < 4096; ++i) {
+    ServiceControllerTestAccess::policyStatusInterest(controller, query());
+  }
+  BOOST_REQUIRE_EQUAL(ServiceControllerTestAccess::originalReplyCount(controller), 4096);
+  const auto overflow = query();
+  ServiceControllerTestAccess::policyStatusInterest(controller, overflow);
+  BOOST_CHECK(!ServiceControllerTestAccess::originalReply(controller, overflow.getName()));
+  ServiceControllerTestAccess::policyStatusInterest(controller, first);
+  const auto replay = ServiceControllerTestAccess::originalReply(controller, first.getName());
+  BOOST_REQUIRE(replay);
+  BOOST_CHECK(replay->wireEncode() == originalWire);
+  BOOST_CHECK_EQUAL(ServiceControllerTestAccess::originalReplyCount(controller), 4096);
+
+  state.system->advance(ndn::time::milliseconds(10000));
+  const auto renewed = query();
+  ServiceControllerTestAccess::policyStatusInterest(controller, renewed);
+  BOOST_REQUIRE_EQUAL(ServiceControllerTestAccess::originalReplyCount(controller), 1);
+  const auto current = ServiceControllerTestAccess::originalReply(controller, renewed.getName());
+  BOOST_REQUIRE(current);
+  BOOST_CHECK(ndn::security::verifySignature(*current, signer));
+  // Expired query identities cannot regenerate a packet under the old name.
+  ServiceControllerTestAccess::policyStatusInterest(controller, first);
+  BOOST_CHECK(!ServiceControllerTestAccess::originalReply(controller, first.getName()));
+  BOOST_CHECK_EQUAL(ServiceControllerTestAccess::originalReplyCount(controller), 1);
+  BOOST_CHECK(original->wireEncode() == originalWire);
+}
+
+BOOST_AUTO_TEST_CASE(PolicyStatusRetryChangesNetworkNonceAndPreservesOriginalReply)
+{
+  struct EnvironmentGuard {
+    std::map<std::string, std::optional<std::string>> previous;
+    std::filesystem::path state = std::filesystem::temp_directory_path() /
+      ("spec205-status-retry-" + std::to_string(::getpid()) + ".bin");
+
+    void set(const std::string& name, const std::string& value)
+    {
+      const auto old = std::getenv(name.c_str());
+      previous.emplace(name, old ? std::optional<std::string>(old) : std::nullopt);
+      ::setenv(name.c_str(), value.c_str(), 1);
+    }
+
+    ~EnvironmentGuard()
+    {
+      for (const auto& entry : previous) {
+        if (entry.second) ::setenv(entry.first.c_str(), entry.second->c_str(), 1);
+        else ::unsetenv(entry.first.c_str());
+      }
+      std::error_code ignored;
+      std::filesystem::remove(state, ignored);
+      std::filesystem::remove(state.string() + ".lock", ignored);
+    }
+  } environment;
+  environment.set("NDNSF_CONTROLLER_GENERATION_STATE", environment.state.string());
+  environment.set("NDNSF_PERMISSION_FETCH_LIFETIME_MS", "500");
+  environment.set("NDNSF_PERMISSION_FETCH_RETRY_BACKOFF_MS", "0");
+  environment.set("NDNSF_PERMISSION_FETCH_MAX_ATTEMPTS", "2");
+  ndn::KeyChain keys("pib-memory:spec205-status-retry", "tpm-memory:spec205-status-retry");
+  const auto controllerCert = keys.createIdentity(ndn::Name("/controller/spec205-retry"),
+      ndn::RsaKeyParams(2048)).getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace::Options options;
+  options.enableRegistrationReply = true;
+  ndn::DummyClientFace controllerFace(keys, options);
+  ndn::ValidatorConfig validator(controllerFace);
+  ServiceController controller(controllerFace, controllerCert, validator, "examples/hello.policies");
+  const auto signer = ServiceControllerTestAccess::ensureInternalControllerSigner(controller);
+  ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
+  controllerFace.processEvents(ndn::time::milliseconds(-1));
+  const auto preflight = ServiceControllerTestAccess::statusQuery(
+      controllerCert.getIdentity(), ndn::Name("/HELLO"));
+  ServiceControllerTestAccess::policyStatusInterest(controller, preflight);
+  controllerFace.processEvents(ndn::time::milliseconds(-1));
+  const auto preflightReply = std::find_if(controllerFace.sentData.begin(),
+      controllerFace.sentData.end(), [&] (const ndn::Data& data) {
+        return data.getName() == preflight.getName();
+      });
+  BOOST_REQUIRE(preflightReply != controllerFace.sentData.end());
+  BOOST_REQUIRE(ndn::security::verifySignature(*preflightReply, signer));
+  const auto userCert = ServiceControllerTestAccess::ensureInternalIdentity(
+      controller, ndn::Name("/example/hello/user"));
+  const auto providerCert = ServiceControllerTestAccess::ensureInternalIdentity(
+      controller, ndn::Name("/example/hello/provider"));
+  const auto prefix = controllerCert.getIdentity();
+  const ndn::Name service("/HELLO");
+  const auto version = controller.getControllerVersion();
+  BOOST_REQUIRE(version.isValid());
+
+  for (bool renewAfterExpiry : {false, true}) {
+    environment.set("NDNSF_PERMISSION_FETCH_LIFETIME_MS", renewAfterExpiry ? "11000" : "500");
+    for (bool providerRole : {false, true}) {
+    ndn::DummyClientFace actorFace(keys, options);
+    std::vector<ndn::Interest> queries;
+    std::vector<ndn::Block> replies;
+    ndn::signal::ScopedConnection interestRelay = actorFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) {
+        if (!parseControlRpcName(interest, prefix, "POLICY-STATUS")) return;
+        queries.push_back(interest);
+        ServiceControllerTestAccess::policyStatusInterest(controller, interest);
+      });
+    ndn::signal::ScopedConnection dataRelay = controllerFace.onSendData.connect(
+      [&] (const ndn::Data& data) {
+        if (queries.empty() || data.getName() != queries.back().getName()) return;
+        BOOST_CHECK(ndn::security::verifySignature(data, signer));
+        replies.push_back(data.wireEncode());
+        if (replies.size() > 1) actorFace.receive(data);
+      });
+    std::unique_ptr<ServiceUser> user;
+    std::unique_ptr<ServiceProvider> provider;
+    if (providerRole) {
+      provider = std::make_unique<ServiceProvider>(ServiceProvider::LocalMockTag{}, actorFace,
+          ndn::Name("/spec205/status-retry"), providerCert, signer, "examples/trust-any.conf");
+      provider->fetchPolicyStatusFromController(prefix, service);
+    }
+    else {
+      user = std::make_unique<ServiceUser>(ServiceUser::LocalMockTag{}, actorFace,
+          ndn::Name("/spec205/status-retry"), userCert, signer, "examples/trust-any.conf");
+      user->fetchPolicyStatusFromController(prefix, service);
+    }
+    const auto deadline = ndn::time::steady_clock::now() +
+      ndn::time::seconds(renewAfterExpiry ? 14 : 3);
+    do {
+      actorFace.processEvents(ndn::time::milliseconds(-1));
+      controllerFace.processEvents(ndn::time::milliseconds(-1));
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    } while (replies.size() < 2 && ndn::time::steady_clock::now() < deadline);
+    // Drain validation after receipt before inspecting the installed version.
+    actorFace.processEvents(ndn::time::milliseconds(-1));
+    BOOST_REQUIRE_EQUAL(queries.size(), 2U);
+    BOOST_REQUIRE_EQUAL(replies.size(), 2U);
+    if (renewAfterExpiry) {
+      // Real prepared-cache expiry precedes the first transport timeout.
+      // The callback must retain the bootstrap Controller and renew the name.
+      BOOST_CHECK(queries[0].getName() != queries[1].getName());
+    }
+    else {
+      BOOST_CHECK(queries[0].getName() == queries[1].getName());
+      BOOST_CHECK(replies[0] == replies[1]);
+    }
+    BOOST_CHECK(queries[0].getApplicationParameters() == queries[1].getApplicationParameters());
+    BOOST_REQUIRE(queries[0].isParametersDigestValid());
+    BOOST_REQUIRE(queries[1].isParametersDigestValid());
+    BOOST_CHECK_NE(queries[0].getNonce(), queries[1].getNonce());
+    const auto installed = providerRole ? provider->getControllerVersion(service) :
+                                         user->getControllerVersion(service);
+    BOOST_REQUIRE(installed);
+    BOOST_CHECK(*installed == version);
+    }
+  }
+}
 
 BOOST_AUTO_TEST_CASE(ActualBootstrapRequesterPinsControllerAndOriginalSubjectKey)
 {
