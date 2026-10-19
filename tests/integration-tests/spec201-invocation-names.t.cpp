@@ -390,7 +390,8 @@ BOOST_AUTO_TEST_CASE(ValidatedAssemblyBindsEverySignerAndExpiresWithoutEviction)
   ndn_service_framework::test::IsolatedTestTrust fixedTrust1{
     keys.getPib().getIdentity(actor).getDefaultKey().getDefaultCertificate(),
     keys.getPib().getIdentity(foreign).getDefaultKey().getDefaultCertificate()};
-  MessageValidator validator(fixedTrust1.schemaPath());
+  const auto validatorOwner = std::make_shared<MessageValidator>(fixedTrust1.schemaPath());
+  auto& validator = *validatorOwner;
   const auto base = makeRequestNameV2(actor, ndn::Name("/service"), ndn::Name("/a/tail")).appendVersion(0);
   auto packet = [&](const ndn::Name& signer, uint64_t segment) {
     ndn::Data data(ndn::Name(base).appendSegment(segment));
@@ -482,10 +483,14 @@ BOOST_AUTO_TEST_CASE(NestedAuthorizedMarkersAreAmbiguousAndFailClosed)
     permissions << "producer-signer\n{\n producer \"" << ancestor.toUri(ndn::name::UriFormat::CANONICAL)
                 << "\"\n signer \"" << actor.toUri(ndn::name::UriFormat::CANONICAL) << "\"\n}\n";
   }
-  MessageValidator validator(trust.string());
+  const auto validatorOwner = std::make_shared<MessageValidator>(trust.string());
+  auto& validator = *validatorOwner;
   bool rejected = false;
   validator.validate(original, [](const ndn::Data&) { BOOST_FAIL("ambiguous namespace accepted"); },
-    [&](const ndn::Data&, const auto&) { rejected = true; });
+    [&](const ndn::Data&, const auto& error) {
+      BOOST_CHECK_EQUAL(error.getCode(), ndn::security::ValidationError::POLICY_ERROR);
+      rejected = true;
+    });
   BOOST_CHECK(rejected);
   BOOST_CHECK_EQUAL(InvocationNamesOracle::bindings(validator), 0);
 }
