@@ -317,7 +317,7 @@ def build_extension() -> Extension:
         library_dirs.insert(0, str(nac / "lib"))
         libraries = [name for name in libraries if name != "nac-abe"]
         if not runtime_rpath:
-            extra_link_args.append(f"-Wl,-rpath,{nac / 'lib'}")
+            extra_link_args.insert(0, f"-Wl,-rpath,{nac / 'lib'}")
 
     return Extension(
         "py_repoclient._py_repoclient",

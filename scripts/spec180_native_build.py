@@ -527,9 +527,10 @@ def setup_dependency_environment(build_dir, svs, environ=None):
     # Only installed global roots may participate in binding/runtime lookup.
     # The build tree is intentionally excluded even though it contains the
     # freshly compiled objects; callers must install them before this step.
-    rpath_dirs = [GLOBAL_NATIVE_LIBRARY_DIR]
+    rpath_dirs = []
     if nac_prefix is not None:
         rpath_dirs.append(nac_prefix / "lib")
+    rpath_dirs.append(GLOBAL_NATIVE_LIBRARY_DIR)
     rpath_dirs.append(Path(svs["build_tree"]))
     linkflags = _waf_cache_value(build_dir, "LINKFLAGS")
     if linkflags is not None:

@@ -340,7 +340,7 @@ def build_extension() -> Extension:
         libraries = [name for name in libraries if name != "nac-abe"]
         nac_objects = [str(nac_prefix / "lib/libnac-abe.so")]
         if not runtime_rpath:
-            extra_link_args.append(f"-Wl,-rpath,{nac_prefix / 'lib'}")
+            extra_link_args.insert(0, f"-Wl,-rpath,{nac_prefix / 'lib'}")
 
     # setuptools only tracks extension source timestamps by default. The
     # binding uses public Core/DI C++ types, so header-only API changes must

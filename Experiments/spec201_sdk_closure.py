@@ -148,7 +148,7 @@ def verify_sdk_closure(record, binary_check):
     if package.name not in ('ndnsf', 'py_repoclient'):
         raise RuntimeError('SPEC201_SDK_PACKAGE_UNSUPPORTED')
     env['PYTHONPATH'] = str(package.parent)
-    env['LD_LIBRARY_PATH'] = '/usr/local/lib'
+    env['LD_LIBRARY_PATH'] = ''
     module = 'ndnsf._ndnsf' if package.name == 'ndnsf' else 'py_repoclient._py_repoclient'
     command = ['/usr/bin/python3', '-c',
                'import importlib; m=importlib.import_module(%r); '

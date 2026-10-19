@@ -269,3 +269,21 @@ def test_host_native_library_dir_cannot_select_another_system_root(
     monkeypatch.setenv("NDNSF_LIBRARY_DIR", "/usr/lib")
     with pytest.raises(RuntimeError, match="canonical host install root"):
         runpy.run_path(str(setup_path), run_name="__main__")
+
+
+def test_selected_nac_sdk_precedes_default_library_root(monkeypatch, tmp_path, setup_path):
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    namespace = runpy.run_path(str(setup_path), run_name="__main__")
+    prefix = tmp_path / "nac-sdk"
+    for relative in ("include/nac-abe/consumer.hpp", "lib/libnac-abe.so"):
+        path = prefix / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    monkeypatch.setenv("NDNSF_NAC_ABE_PREFIX", str(prefix))
+    build = namespace["build_extension"]
+    # This fixture exercises ordering; production path admission is covered above.
+    monkeypatch.setitem(build.__globals__, "reject_non_global_dependency_paths",
+                        lambda *args, **kwargs: None)
+    extension = build()
+    rpaths = [flag for flag in extension.extra_link_args if flag.startswith("-Wl,-rpath,")]
+    assert rpaths[0] == "-Wl,-rpath," + str(prefix / "lib")

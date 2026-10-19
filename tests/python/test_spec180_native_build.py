@@ -585,13 +585,13 @@ def test_setup_dependency_environment_follows_waf_nac_and_rpath_pair(tmp_path, m
     )
     assert result[native.NAC_PREFIX_ENV] == str(nac_prefix.resolve())
     assert result["rpath"] == [
-        str(native.GLOBAL_NATIVE_LIBRARY_DIR.resolve()),
         str(nac_prefix.joinpath("lib").resolve()),
+        str(native.GLOBAL_NATIVE_LIBRARY_DIR.resolve()),
         str(svs_build.resolve()), str(cxx_lib.resolve()),
     ]
     assert result[native.PKG_CONFIG_ENV].split(":") == [
-        str(native.GLOBAL_NATIVE_LIBRARY_DIR.resolve() / "pkgconfig"),
         str(nac_prefix.joinpath("lib/pkgconfig").resolve()),
+        str(native.GLOBAL_NATIVE_LIBRARY_DIR.resolve() / "pkgconfig"),
         str(svs_build.resolve()), str(cxx_lib.joinpath("pkgconfig").resolve()),
         str(ambient.resolve()),
     ]
