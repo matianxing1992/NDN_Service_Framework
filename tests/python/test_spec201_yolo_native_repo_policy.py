@@ -28,6 +28,22 @@ def test_splitter_carries_fixed_anchor_into_core_and_artifact_trust(tmp_path):
     assert f'file-name "{anchor}"' in schema
 
 
+def test_native_yolo_split_uses_the_selected_credential_bundle_root(tmp_path):
+    tree = ast.parse((ROOT / 'Experiments/NDNSF_DI_Yolo2x2_Minindn.py').read_text())
+    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                and node.name == 'main')
+    command = next(node.value for node in main.body if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == 'split_command'
+                           for target in node.targets))
+    index = next(i for i, node in enumerate(command.elts)
+                 if isinstance(node, ast.Constant) and node.value == '--trust-anchor-file')
+    expression = compile(ast.Expression(command.elts[index + 1]), '<split-anchor>', 'eval')
+    candidate = {'credentialBundles': {'yolo': {'rootCert': '/selected/root.cert'}}}
+    assert eval(expression, {'naming_candidate': candidate, 'OUT': tmp_path}) == '/selected/root.cert'
+    assert eval(expression, {'naming_candidate': None, 'OUT': tmp_path}) == str(
+        tmp_path / 'security/root.cert')
+
+
 def emitted_permissions(deployment, kind):
     text = Path(deployment.policy_file).read_text()
     return {identity: set(allows.split()) for identity, allows in re.findall(

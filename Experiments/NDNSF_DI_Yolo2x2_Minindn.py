@@ -6064,7 +6064,8 @@ def main() -> None:
         str(CONFIG),
         "--dynamic-provisioning",
         "--trust-anchor-file",
-        str(OUT / "security/root.cert"),
+        str(naming_candidate["credentialBundles"]["yolo"]["rootCert"]
+            if naming_candidate is not None else OUT / "security/root.cert"),
     ]
     if args_cli.parallel_output_shards:
         split_command.append("--parallel-output-shards")
