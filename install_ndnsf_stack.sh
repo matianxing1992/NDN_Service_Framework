@@ -28,6 +28,7 @@ LEGACY_BUILD_DIR="${NDNSF_LEGACY_BUILD_DIR:-}"
 PLAN_ONLY=0
 CONFIGURE_ONLY=0
 DEPS_ONLY=0
+NDNCXX_ONLY=0
 SOURCE_MODE=0
 LOCK_FILE="$ROOT/packaging/host-dependencies.lock.json"
 SOURCE_HELPER="$ROOT/scripts/stack_sources.py"
@@ -40,6 +41,7 @@ GLOBAL_LIBRARY_DIR="$GLOBAL_DEPENDENCY_PREFIX/lib"
 SYSTEM_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 PKG_CONFIG_BIN="/usr/bin/pkg-config"
 GLOBAL_PKG_CONFIG_PATH=""
+NAC_SDK_PREFIX=""
 # Host SDKs may have a versioned global prefix, but they must still be
 # installed outside the repository and visible to every consumer.  ONNX
 # Runtime is the only NDNSF dependency currently using such a versioned SDK;
@@ -101,6 +103,7 @@ Options:
   --lock-file PATH         Dependency URLs, refs, and exact commits.
   --plan, --dry-run        Offline plan; no fetch, install, or configure.
   --deps-only              Install/check dependencies, then stop.
+  --ndn-cxx-only           Install/check only the locked ndn-cxx dependency, then stop.
   --configure-only         Install prerequisites and configure Waf; do not build.
   --no-install              Configure without installing OS packages.
   --install-dependencies   Resolve missing dependencies from pinned sources.
@@ -166,6 +169,8 @@ while [[ $# -gt 0 ]]; do
       PLAN_ONLY=1; shift ;;
     --deps-only)
       DEPS_ONLY=1; shift ;;
+    --ndn-cxx-only)
+      NDNCXX_ONLY=1; DEPS_ONLY=1; INSTALL_DEPENDENCIES=1; shift ;;
     --configure-only)
       CONFIGURE_ONLY=1; shift ;;
     --no-install)
@@ -289,6 +294,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Reject unsupported options before apt, dependency installation, or configure.
+if (( NDNCXX_ONLY )); then
+  if (( NO_DEPENDENCIES_REQUESTED )); then
+    echo '--ndn-cxx-only cannot be combined with --no-dependencies' >&2
+    exit 2
+  fi
+  INSTALL_DEPENDENCIES=1
+  DEPS_ONLY=1
+fi
 if (( QWEN_MININDN )); then
   if (( CONFIGURE_ONLY || DEPS_ONLY || CHECK_DEPENDENCIES || ! RUN_SYSTEM_INSTALL )); then
     echo '--with-qwen-minindn requires a complete system installation' >&2
@@ -830,7 +843,9 @@ def build_marker(args: argparse.Namespace) -> None:
     if args.verify:
         if not marker.is_file() or json.loads(marker.read_text(encoding="utf-8")) != expected:
             raise ValueError(f"build directory is not recorded as owned by this checkout: {build}")
-        if not (build / "c4che/_cache.py").is_file() or not list(build.glob(".wafpickle-*")):
+        if not args.dependencies_only and (
+            not (build / "c4che/_cache.py").is_file() or not list(build.glob(".wafpickle-*"))
+        ):
             raise ValueError(f"recorded Waf build directory is no longer configured: {build}")
         print(f"Verified reusable NDNSF build directory: {build}")
         return
@@ -889,6 +904,7 @@ def main() -> int:
     build.add_argument("--build-dir", required=True)
     build.add_argument("--root", required=True)
     build.add_argument("--verify", action="store_true")
+    build.add_argument("--dependencies-only", action="store_true")
     build.set_defaults(function=build_marker)
     args = parser.parse_args()
     try:
@@ -1151,17 +1167,29 @@ check_waf_inventory() {
   env -u PKG_CONFIG_LIBDIR -u NDNSF_TOKENIZER_BRIDGE_ARCHIVE \
     PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
     PATH="$SYSTEM_PATH" "$PYTHON_BIN" "$ROOT/scripts/configure_dependencies.py" \
-    "$@" --onnx-prefix "$GLOBAL_ONNX_PREFIX"
+    "$@" --onnx-prefix "$GLOBAL_ONNX_PREFIX" --nac-abe-prefix "$NAC_SDK_PREFIX"
 }
 
 run_waf_clean() {
   refresh_global_pkg_config_path
   local -a waf_args=("$@")
+  local ndncxx_source_tree=""
+  local needs_ndncxx_test_source=0 arg
+  for arg in "${WAF_CONFIGURE_ARGS[@]}"; do
+    if [[ "$arg" == "--with-tests" ]]; then
+      needs_ndncxx_test_source=1
+      break
+    fi
+  done
+  if (( needs_ndncxx_test_source )); then
+    ndncxx_source_tree="$(ensure_source_tree "ndn-cxx" "$NDNCXX_REPO_URL")"
+  fi
   if [[ "${waf_args[0]:-}" == "configure" ]]; then
     # Waf defaults LIBDIR to lib64 on this Ubuntu host.  The global Python
     # bindings and dependency-identity receipt use the canonical /usr/local/lib
     # root, so keep the NDNSF libraries and pkg-config files there as well.
     waf_args+=("--libdir=$GLOBAL_LIBRARY_DIR")
+    [[ -z "$NAC_SDK_PREFIX" ]] || waf_args+=("--nac-abe-prefix=$NAC_SDK_PREFIX")
   fi
   # The top-level configure/build sees only canonical global pkg-config roots;
   # this includes NDN-CXX's valid /usr/local/lib64 installation.
@@ -1179,11 +1207,14 @@ run_waf_clean() {
     AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
     NM=/usr/bin/nm STRIP=/usr/bin/strip \
     NDNSF_LIBRARY_DIR="$GLOBAL_LIBRARY_DIR" \
+    NDNSF_NDN_CXX_SOURCE_TREE="$ndncxx_source_tree" \
     "$PYTHON_BIN" ./waf --out="$BUILD_DIR" --onnx-prefix="$GLOBAL_ONNX_PREFIX" "${waf_args[@]}"
 }
 
 prepare_build_dir() {
-  local existed=0 temp_dir
+  local existed=0 temp_dir raw_build
+  local -a marker_mode=()
+  (( ! DEPS_ONLY )) || marker_mode+=(--dependencies-only)
   if [[ -z "$BUILD_DIR" ]]; then
     [[ "$REUSE_BUILD_DIR" == 0 ]] || {
       echo 'NDNSF_REUSE_BUILD_DIR=1 requires NDNSF_BUILD_DIR to name an existing build directory' >&2
@@ -1191,6 +1222,12 @@ prepare_build_dir() {
     }
     BUILD_DIR="$(mktemp -d --tmpdir=/var/tmp ndnsf-build.XXXXXXXX)"
   else
+    raw_build="$BUILD_DIR"
+    while [[ "$raw_build" == */ && "$raw_build" != / ]]; do raw_build="${raw_build%/}"; done
+    if [[ -L "$raw_build" ]]; then
+      echo "build directory may not be a symlink: $BUILD_DIR" >&2
+      exit 2
+    fi
     BUILD_DIR="$(realpath -m -- "$BUILD_DIR")"
     case "$BUILD_DIR" in
       "$ROOT"|"$ROOT"/*)
@@ -1205,7 +1242,7 @@ prepare_build_dir() {
       }
       existed=1
       manifest_tool build-marker \
-        --build-dir "$BUILD_DIR" --root "$ROOT" --verify
+        --build-dir "$BUILD_DIR" --root "$ROOT" --verify "${marker_mode[@]}"
     else
       mkdir -p -- "$BUILD_DIR"
     fi
@@ -1289,6 +1326,7 @@ refresh_global_pkg_config_path() {
   local candidate
   GLOBAL_PKG_CONFIG_PATH=""
   for candidate in \
+      "${NAC_SDK_PREFIX:+$NAC_SDK_PREFIX/lib/pkgconfig}" \
       /usr/local/lib/pkgconfig /usr/local/lib64/pkgconfig \
       /opt/onnxruntime/lib/pkgconfig /opt/onnxruntime-1.26.0/lib/pkgconfig; do
     [[ -d "$candidate" ]] || continue
@@ -1300,6 +1338,39 @@ pkg_config() {
   refresh_global_pkg_config_path
   env -u PKG_CONFIG_LIBDIR PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
     "$PKG_CONFIG_BIN" "$@"
+}
+
+select_nac_sdk() {
+  local arg
+  NAC_SDK_PREFIX="$("$PYTHON_BIN" "$SOURCE_HELPER" sdk-prefix \
+    --lock "$LOCK_FILE" --name NAC-ABE --prefix "$GLOBAL_DEPENDENCY_PREFIX")" || return 1
+  for arg in "${WAF_CONFIGURE_ARGS[@]}"; do
+    case "$arg" in
+      --nac-abe-prefix)
+        echo 'The stack installer selects the locked NAC SDK; omit --nac-abe-prefix.' >&2
+        return 1 ;;
+      --nac-abe-prefix=*)
+        [[ "$arg" == "--nac-abe-prefix=$NAC_SDK_PREFIX" ]] || {
+          echo 'NAC prefix differs from the SDK selected by the source lock.' >&2
+          return 1
+        } ;;
+    esac
+  done
+  refresh_global_pkg_config_path
+}
+
+verify_nac_sdk() {
+  local selected
+  [[ -n "$NAC_SDK_PREFIX" ]] || return 1
+  is_pkg_installed libnac-abe "$MIN_NACABE_VERSION" || return 1
+  selected="$(pkg_config --variable=prefix libnac-abe)" || return 1
+  [[ "$(readlink -f "$selected")" == "$(readlink -f "$NAC_SDK_PREFIX")" ]] || return 1
+  "$PYTHON_BIN" "$SOURCE_HELPER" check --lock "$LOCK_FILE" --name NAC-ABE \
+    --prefix "$NAC_SDK_PREFIX" --upstream-prefix "$GLOBAL_DEPENDENCY_PREFIX" || return 1
+  refresh_global_pkg_config_path
+  env -u PKG_CONFIG_LIBDIR PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
+    "$PYTHON_BIN" "$SOURCE_HELPER" probe-api --lock "$LOCK_FILE" \
+    --name NAC-ABE --prefix "$NAC_SDK_PREFIX"
 }
 
 global_pkg_library_path() {
@@ -1602,7 +1673,8 @@ is_pkg_installed() {
 }
 
 require_global_pkg_flags() {
-  "$PYTHON_BIN" - "$@" <<'PY'
+  refresh_global_pkg_config_path
+  "$PYTHON_BIN" - "$GLOBAL_PKG_CONFIG_PATH" "$@" <<'PY'
 import os
 import pathlib
 import shlex
@@ -1615,12 +1687,10 @@ roots = tuple(pathlib.Path(item).resolve()
 env = dict(os.environ)
 env.pop("PKG_CONFIG_PATH", None)
 env.pop("PKG_CONFIG_LIBDIR", None)
-env["PKG_CONFIG_PATH"] = (
-    "/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:"
-    "/opt/onnxruntime/lib/pkgconfig:/opt/onnxruntime-1.26.0/lib/pkgconfig")
+env["PKG_CONFIG_PATH"] = sys.argv[1]
 env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
 
-for package in sys.argv[1:]:
+for package in sys.argv[2:]:
     output = subprocess.check_output(
         ["/usr/bin/pkg-config", "--cflags", "--libs", package], env=env, text=True)
     tokens = shlex.split(output)
@@ -1695,16 +1765,22 @@ require_global_file() {
 }
 
 require_global_external_closure() {
+  verify_nac_sdk || {
+    echo "Locked patched NAC SDK is absent or stale: $NAC_SDK_PREFIX; install dependencies first." >&2
+    return 1
+  }
   probe_configured_openssl_api
   require_global_boost
   require_global_pkg "libndn-cxx" "$MIN_NDNCXX_VERSION" "libndn-cxx.so"
   if ! has_ndncxx_ims_lower_bound; then
-    echo 'Installed ndn-cxx lacks InMemoryStorage::lowerBound; rebuild with tools/ndn-cxx/ims-lower-bound.patch via this installer.' >&2
+    echo 'Installed ndn-cxx lacks InMemoryStorage::lowerBound; rebuild from the locked ndn-cxx source with install_ndnsf_stack.sh --ndn-cxx-only.' >&2
     return 1
   fi
   require_global_pkg "ndnsd" "$MIN_NDNSD_VERSION" "libndnsd.so"
   require_global_pkg "libndn-svs" "$MIN_NDNSVS_VERSION" "libndn-svs.so"
   require_global_pkg "libnac-abe" "$MIN_NACABE_VERSION" "libnac-abe.so"
+  "$PYTHON_BIN" "$SOURCE_HELPER" check-runtime --lock "$LOCK_FILE" --name NAC-ABE \
+    --prefix "$NAC_SDK_PREFIX" --runtime-object "$(global_pkg_library_path ndnsd libndnsd.so)"
   require_global_sdk_pkg "onnxruntime" "1.26.0" "libonnxruntime.so"
   require_global_file "$GLOBAL_LIBRARY_DIR/libopenabe.so"
   require_global_file "$GLOBAL_ONNX_PREFIX/lib/libonnx.a"
@@ -2079,11 +2155,20 @@ PY
 }
 
 record_source_receipt() {
-  local name="$1" stage
+  local name="$1" prefix="${2:-$GLOBAL_DEPENDENCY_PREFIX}" stage relative component
+  [[ "$prefix" == "$GLOBAL_DEPENDENCY_PREFIX" || "$prefix" == "$GLOBAL_DEPENDENCY_PREFIX"/* ]] || {
+    echo 'Source receipt prefix must be inside the managed dependency root.' >&2
+    return 1
+  }
+  relative="${prefix#"$GLOBAL_DEPENDENCY_PREFIX"}"
+  relative="${relative#/}"
+  relative="${relative:+$relative/}share/ndnsf/source-receipts/$name.json"
+  component="source-receipt:$name"
+  [[ "$prefix" == "$GLOBAL_DEPENDENCY_PREFIX" ]] || component+=":${prefix##*/}"
   stage="$(mktemp -d "$BUILD_DIR/receipt-stage.XXXXXXXX")"
-  mkdir -p -- "$stage/share/ndnsf/source-receipts"
+  mkdir -p -- "$(dirname -- "$stage/$relative")"
   "$PYTHON_BIN" - "$ROOT/scripts" "$LOCK_FILE" "$name" \
-    "$GLOBAL_DEPENDENCY_PREFIX" "$stage/share/ndnsf/source-receipts/$name.json" <<'PY'
+    "$prefix" "$stage/$relative" "$GLOBAL_DEPENDENCY_PREFIX" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -2092,26 +2177,32 @@ sys.path.insert(0, sys.argv[1])
 import stack_sources
 
 receipt = stack_sources.fingerprint(
-    stack_sources.load_lock(sys.argv[2]), sys.argv[3], sys.argv[4])
+    stack_sources.load_lock(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[6])
 destination = Path(sys.argv[5])
 destination.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n",
                        encoding="utf-8")
 PY
-  install_manifest_tree "$stage" "$GLOBAL_DEPENDENCY_PREFIX" "source-receipt:$name"
+  install_manifest_tree "$stage" "$GLOBAL_DEPENDENCY_PREFIX" "$component"
   rm -rf -- "$stage"
 }
 
 build_openabe_dependency() {
-  local dir
+  local dir materialized_root
   local source_base="$BUILD_DIR/openabe-source"
   local install_stage="$BUILD_DIR/install-staging/openabe/usr/local"
 
-  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && has_openabe; then
-    echo "==> OpenABE already installed; skipping"
+  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && has_openabe &&
+      "$PYTHON_BIN" "$SOURCE_HELPER" check --lock "$LOCK_FILE" --name openabe \
+        --prefix "$GLOBAL_DEPENDENCY_PREFIX"; then
+    echo "==> Locked patched OpenABE already installed; skipping"
     return
   fi
 
   dir="$(ensure_source_tree "openabe" "$OPENABE_REPO_URL" "$source_base" | tail -n 1)"
+  dir="$("$PYTHON_BIN" "$SOURCE_HELPER" materialize --lock "$LOCK_FILE" \
+    --name openabe --source-dir "$dir" --build-root "$BUILD_DIR/source-materializations")" || return 1
+  materialized_root="$(dirname -- "$dir")"
+  echo "==> Isolated patched OpenABE source/build: $materialized_root"
   mkdir -p -- "$install_stage"
   echo "==> Building OpenABE from the dependency source tree"
   run bash -e -s -- "$dir" "$SYSTEM_PATH" "$JOBS" <<'OPENABE_BUILD'
@@ -2154,10 +2245,10 @@ OPENABE_BUILD
       NM=/usr/bin/nm STRIP=/usr/bin/strip && \
       USE_DEPS='relic gtest' make INSTALL_PREFIX=\"\$2\" install" _ "$dir" "$install_stage"
   install_manifest_tree "$install_stage" "$OPENABE_PREFIX" openabe
-  rm -rf -- "$BUILD_DIR/install-staging/openabe"
   sudo_run ldconfig
   verify_openabe_runtime_closure
   record_source_receipt openabe
+  rm -rf -- "$materialized_root" "$BUILD_DIR/install-staging/openabe"
 }
 
 build_waf_dependency() {
@@ -2174,7 +2265,7 @@ build_waf_dependency() {
       echo "==> $name already installed ($pkg); skipping"
       return
     fi
-    echo '==> Installed ndn-cxx lacks InMemoryStorage::lowerBound; rebuilding with the maintained patch'
+    echo '==> Installed ndn-cxx lacks InMemoryStorage::lowerBound; rebuilding from the locked ndn-cxx source'
   fi
 
   dir="$(ensure_source_tree "$name" "$url" | tail -n 1)"
@@ -2195,7 +2286,6 @@ build_waf_dependency() {
   (
     cd "$dir"
     case "$name" in
-      ndn-cxx) dependency_patch="$ROOT/tools/ndn-cxx/ims-lower-bound.patch" ;;
       ndn-svs) dependency_patch="$ROOT/tools/ndn-svs/publication-latency.patch" ;;
       *) dependency_patch='' ;;
     esac
@@ -2460,6 +2550,7 @@ install_yolo_minindn_profile() {
     --extra-index-url https://pypi.org/simple --target "$yolo_stage" \
     "torch==$torch_version" "torchvision==$torchvision_version" \
     "ultralytics==$YOLO_ULTRALYTICS_VERSION" \
+    "lap==0.5.12" \
     "onnxruntime==$onnxruntime_python_version"
 
   model_stage="$stage_root/usr/local/share/ndnsf/models/yolo26n.pt"
@@ -2653,6 +2744,7 @@ LAUNCHER
     "$PYTHON_BIN" - "$YOLO_ULTRALYTICS_VERSION" "$torch_version" \
     "$torchvision_version" "$onnxruntime_python_version" <<'PY'
 import importlib.metadata
+import lap
 import onnxruntime
 import torch
 import torchvision
@@ -2670,7 +2762,7 @@ assert 'CPUExecutionProvider' in onnxruntime.get_available_providers()
 assert torch.__version__ == expected_torch, torch.__version__
 assert torchvision.__version__ == expected_torchvision, torchvision.__version__
 assert torch.version.cuda is None, torch.version.cuda
-assert Minindn and NdnRoutingHelper and mininet and igraph and ultralytics
+assert Minindn and NdnRoutingHelper and mininet and igraph and ultralytics and lap
 assert Name and parse_data
 print('MININDN_YOLO_PYTHON_IMPORTS_OK')
 PY
@@ -2686,16 +2778,33 @@ build_cmake_dependency() {
   local pkg="$2"
   local url="$3"
   local minimum="$4"
-  local dir build_dir install_stage
+  local dir build_dir install_stage materialized_root=""
+  local dependency_prefix="$GLOBAL_DEPENDENCY_PREFIX"
 
-  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum"; then
+  if [[ "$name" == "NAC-ABE" ]]; then
+    [[ -n "$NAC_SDK_PREFIX" ]] || { echo 'Select the locked NAC SDK before building.' >&2; return 1; }
+    if [[ "$FORCE_DEPENDENCIES" != "1" ]] && verify_nac_sdk; then
+      echo "==> Locked patched NAC SDK already installed: $NAC_SDK_PREFIX"
+      return
+    fi
+  elif [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum"; then
     echo "==> $name already installed ($pkg); skipping"
     return
   fi
 
   dir="$(ensure_source_tree "$name" "$url" | tail -n 1)"
-  build_dir="$dir/.ndnsf-global-build-${name//[^A-Za-z0-9]/_}-$$"
-  install_stage="$BUILD_DIR/install-staging/$name/usr/local"
+  if [[ "$name" == "NAC-ABE" ]]; then
+    dir="$("$PYTHON_BIN" "$SOURCE_HELPER" materialize --lock "$LOCK_FILE" \
+      --name "$name" --source-dir "$dir" --build-root "$BUILD_DIR/source-materializations")" || return 1
+    materialized_root="$(dirname -- "$dir")"
+    build_dir="$materialized_root/build"
+    dependency_prefix="$NAC_SDK_PREFIX"
+    install_stage="$(mktemp -d "$BUILD_DIR/nac-install-stage.XXXXXXXX")"
+    echo "==> Isolated NAC source/build: $materialized_root; install staging: $install_stage"
+  else
+    build_dir="$dir/.ndnsf-global-build-${name//[^A-Za-z0-9]/_}-$$"
+    install_stage="$BUILD_DIR/install-staging/$name/usr/local"
+  fi
   mkdir -p -- "$install_stage"
   echo "==> Building dependency $name"
   if [[ "$name" == "NAC-ABE" && -n "$OPENABE_PREFIX" && -f "$OPENABE_PREFIX/lib/libopenabe.so" ]]; then
@@ -2714,7 +2823,7 @@ build_cmake_dependency() {
       cmake -S . -B \"\$2\" \
         -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
         -DCMAKE_LINKER=/usr/bin/ld -DCMAKE_AR=/usr/bin/ar -DCMAKE_RANLIB=/usr/bin/ranlib \
-        -DCMAKE_INSTALL_PREFIX='$GLOBAL_DEPENDENCY_PREFIX' \
+        -DCMAKE_INSTALL_PREFIX='$dependency_prefix' \
         -DBoost_NO_BOOST_CMAKE=ON -DBoost_NO_SYSTEM_PATHS=ON \
         -DBOOST_INCLUDEDIR='$BOOST_INCLUDE_DIR' -DBOOST_LIBRARYDIR='$BOOST_LIBRARY_DIR' \
         -DCMAKE_BUILD_RPATH='$OPENABE_PREFIX/lib' \
@@ -2739,7 +2848,7 @@ build_cmake_dependency() {
       cmake -S . -B \"\$2\" \
       -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
       -DCMAKE_LINKER=/usr/bin/ld -DCMAKE_AR=/usr/bin/ar -DCMAKE_RANLIB=/usr/bin/ranlib \
-      -DCMAKE_INSTALL_PREFIX='$GLOBAL_DEPENDENCY_PREFIX' \
+        -DCMAKE_INSTALL_PREFIX='$dependency_prefix' \
       -DBoost_NO_BOOST_CMAKE=ON -DBoost_NO_SYSTEM_PATHS=ON \
       -DBOOST_INCLUDEDIR='$BOOST_INCLUDE_DIR' -DBOOST_LIBRARYDIR='$BOOST_LIBRARY_DIR' && \
       env -u PKG_CONFIG_PATH -u CMAKE_PREFIX_PATH -u CMAKE_INCLUDE_PATH \
@@ -2752,6 +2861,16 @@ build_cmake_dependency() {
         cmake --build \"\$2\" --parallel '$JOBS'" _ "$dir" "$build_dir"
   fi
   echo "==> Installing dependency $name"
+  if [[ "$name" == "NAC-ABE" ]]; then
+    run env -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
+      PATH="$SYSTEM_PATH" DESTDIR="$install_stage" cmake --install "$build_dir"
+    install_manifest_tree "$install_stage$GLOBAL_DEPENDENCY_PREFIX" \
+      "$GLOBAL_DEPENDENCY_PREFIX" "NAC-ABE-sdk:${dependency_prefix##*/}"
+    record_source_receipt "$name" "$dependency_prefix"
+    verify_nac_sdk || { echo "Installed NAC SDK failed verification; preserved $materialized_root and $install_stage" >&2; return 1; }
+    rm -rf -- "$materialized_root" "$install_stage"
+    return
+  fi
   run bash -e -c "cd \"\$1\" && env -u BOOST_ROOT -u BOOST_INCLUDEDIR \
     -u BOOST_LIBRARYDIR PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ \
     LD=/usr/bin/ld AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
@@ -3024,7 +3143,7 @@ if (( PLAN_ONLY )); then
   if (( CONFIGURE_ONLY )); then
     echo "Mode: configure-only; OS package installation=$INSTALL_SYSTEM_PACKAGES"
   else
-    echo "Mode: stack; source installation=$INSTALL_DEPENDENCIES; deps-only=$DEPS_ONLY; check-only=$CHECK_DEPENDENCIES"
+    echo "Mode: stack; source installation=$INSTALL_DEPENDENCIES; deps-only=$DEPS_ONLY; ndn-cxx-only=$NDNCXX_ONLY; check-only=$CHECK_DEPENDENCIES"
     "$PYTHON_BIN" "$SOURCE_HELPER" plan --lock "$LOCK_FILE"
     echo "Install prefix: $GLOBAL_DEPENDENCY_PREFIX; source directory: $DEPS_DIR"
   fi
@@ -3064,16 +3183,6 @@ if (( PLAN_ONLY )); then
   exit 0
 fi
 
-if (( CONFIGURE_ONLY )); then
-  require_host_profile
-  export PATH="$SYSTEM_PATH:/usr/local/bin:$PATH"
-  install_common_system_packages
-  require_system_toolchain
-  prepare_build_dir
-  run_waf_clean configure "${WAF_CONFIGURE_ARGS[@]}"
-  exit 0
-fi
-
 # Resolve every source before any installation. URL-only overrides cannot
 # silently change the pinned build identity.
 for pair in 'ndn-cxx:NDNCXX_REPO_URL' 'ndn-svs:NDNSVS_REPO_URL' 'NDNSD:NDNSD_REPO_URL' 'openabe:OPENABE_REPO_URL' 'NAC-ABE:NACABE_REPO_URL'; do
@@ -3085,6 +3194,21 @@ for pair in 'ndn-cxx:NDNCXX_REPO_URL' 'ndn-svs:NDNSVS_REPO_URL' 'NDNSD:NDNSD_REP
   fi
   printf -v "$variable" '%s' "$locked_url"
 done
+select_nac_sdk
+
+if (( CONFIGURE_ONLY )); then
+  require_host_profile
+  export PATH="$SYSTEM_PATH:/usr/local/bin:$PATH"
+  verify_nac_sdk || {
+    echo "Configure-only requires the installed locked NAC SDK: $NAC_SDK_PREFIX; no dependency build or fallback was attempted." >&2
+    exit 1
+  }
+  install_common_system_packages
+  require_system_toolchain
+  prepare_build_dir
+  run_waf_clean configure "${WAF_CONFIGURE_ARGS[@]}"
+  exit 0
+fi
 
 echo "==> NDNSF stack install root: $ROOT"
 echo "==> Python: $PYTHON_BIN"
@@ -3105,6 +3229,24 @@ if [[ "$CHECK_DEPENDENCIES" == "1" ]]; then
 fi
 
 prepare_build_dir
+if (( NDNCXX_ONLY )); then
+  echo '==> Updating only the locked ndn-cxx dependency'
+  require_global_boost
+  probe_configured_openssl_api
+  build_waf_dependency "ndn-cxx" "libndn-cxx" "$NDNCXX_REPO_URL" "$MIN_NDNCXX_VERSION"
+  if ! has_ndncxx_ims_lower_bound; then
+    echo 'Locked ndn-cxx installation still lacks InMemoryStorage::lowerBound' >&2
+    exit 1
+  fi
+  require_global_pkg "libndn-cxx" "$MIN_NDNCXX_VERSION" "libndn-cxx.so"
+  if global_dependency_identity_receipt >/dev/null 2>&1; then
+    write_global_dependency_identity
+  else
+    echo '==> Global dependency identity not refreshed because another library is missing'
+  fi
+  echo '==> Locked ndn-cxx dependency is installed; other dependency closure was not checked'
+  exit 0
+fi
 if [[ "$INSTALL_DEPENDENCIES" != "0" ]]; then
   install_host_sdk_prerequisites
 fi
@@ -3184,6 +3326,13 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
   sudo_run /sbin/ldconfig
   require_global_file "$GLOBAL_LIBRARY_DIR/libndn-service-framework.so"
   require_global_file "$GLOBAL_LIBRARY_DIR/libndnsf-distributed-inference.so"
+  native_runtime_targets=("$GLOBAL_LIBRARY_DIR/libndn-service-framework.so"
+    "$GLOBAL_LIBRARY_DIR/libndnsf-distributed-inference.so")
+  if [[ -f "$GLOBAL_DEPENDENCY_PREFIX/bin/UavTrackingNode" ]]; then
+    native_runtime_targets+=("$GLOBAL_DEPENDENCY_PREFIX/bin/UavTrackingNode")
+  fi
+  "$PYTHON_BIN" "$SOURCE_HELPER" check-runtime --lock "$LOCK_FILE" --name NAC-ABE \
+    --prefix "$NAC_SDK_PREFIX" --require-nac --runtime-object "${native_runtime_targets[@]}"
 else
   echo "==> Skipping system C++ install"
   echo "==> Build-only mode stops before Python bindings because the global Core/DI install is required" >&2

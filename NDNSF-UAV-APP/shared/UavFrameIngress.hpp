@@ -10,6 +10,15 @@
 
 namespace ndnsf::examples::uav {
 
+struct ObservationDataObject
+{
+  std::string category;
+  std::string exactName;
+  std::string contentSha256;
+  std::string producerIdentity;
+  std::vector<uint8_t> payload;
+};
+
 struct FrameEnvelope
 {
   std::string cameraId;
@@ -22,6 +31,11 @@ struct FrameEnvelope
   std::vector<uint8_t> bytes;
   /** Canonical request-scoped motion metadata; empty for legacy frame inputs. */
   std::string motionMetadata;
+  /** Canonical source-owned Spec210 observation snapshot for this exact frame. */
+  std::string observationMetadata;
+  /** Individually named, source-signed records referenced by observationMetadata. */
+  std::vector<ObservationDataObject> observationObjects;
+  uint64_t timeUncertaintyUs = 0;
 };
 
 class IFrameSink

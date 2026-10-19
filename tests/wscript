@@ -207,35 +207,10 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()],
                 install_path=None)
 
-    framework_sources = bld.path.parent.ant_glob([
-        'ndn-service-framework/NDNSFMessages.cpp',
-        'ndn-service-framework/InvocationStream.cpp',
-        'ndn-service-framework/CertificatePublisher.cpp',
-        'ndn-service-framework/ConfigManager.cpp',
-        'ndn-service-framework/PolicyParser.cpp',
-        'ndn-service-framework/CertificateBootstrap.cpp',
-        'ndn-service-framework/ServiceProvider.cpp',
-        'ndn-service-framework/ServiceUser.cpp',
-        'ndn-service-framework/ServiceController.cpp',
-        'ndn-service-framework/RuntimeStatusStore.cpp',
-        'ndn-service-framework/Stream.cpp',
-        'ndn-service-framework/StreamFacade.cpp',
-        'ndn-service-framework/HybridMessageCrypto.cpp',
-        'ndn-service-framework/RequestConfidentiality.cpp',
-        'ndn-service-framework/ExecutionLease.cpp',
-        'ndn-service-framework/NetworkTelemetry.cpp',
-        'ndn-service-framework/NetworkProbeRate.cpp',
-        'ndn-service-framework/TimelineTrace.cpp',
-        'ndn-service-framework/GenericSelectionTxnStore.cpp',
-        'ndn-service-framework/ControllerVersion.cpp',
-        'ndn-service-framework/PolicyStatus.cpp',
-        'ndn-service-framework/ControllerGenerationStore.cpp',
-        'ndn-service-framework/RevocationState.cpp',
-        'ndn-service-framework/PolicyRefreshCoordinator.cpp',
-        'ndn-service-framework/OperationRuntime.cpp',
-        'ndn-service-framework/common.cpp',
-        'ndn-service-framework/utils.cpp',
-    ])
+    # Compile the same current framework source closure as the production
+    # library. A hand-maintained subset omitted new naming/blob-store sources
+    # and left integration binaries with unresolved framework symbols.
+    framework_sources = bld.path.parent.ant_glob('ndn-service-framework/**/*.cpp')
     framework_includes = ['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx']
@@ -478,7 +453,6 @@ def build(bld):
                 name='spec202-repo-conformance',
                 source=[bld.path.parent.find_node('tests/main.cpp')] +
                        bld.path.ant_glob(['unit-tests/distributed-repo-*.t.cpp',
-                                          'unit-tests/spec190-ack-window.t.cpp',
                                           'unit-tests/spec193-original-data-receipt.t.cpp']),
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS '
@@ -1258,36 +1232,13 @@ def build(bld):
 
     bld.program(target='../unit-tests',
                 name='unit-tests',
+                # Share the production framework closure.  A hand-maintained
+                # subset silently misses newer framework implementations.
                 source=([bld.path.find_node('main.cpp')] +
                         bld.path.ant_glob('unit-tests/**/*.cpp',
                                            excl=['unit-tests/sanitizer/**']) +
+                        framework_sources +
                         bld.path.parent.ant_glob([
-                            'ndn-service-framework/NDNSFMessages.cpp',
-                            'ndn-service-framework/InvocationStream.cpp',
-                            'ndn-service-framework/CertificatePublisher.cpp',
-                            'ndn-service-framework/ConfigManager.cpp',
-                            'ndn-service-framework/PolicyParser.cpp',
-                            'ndn-service-framework/CertificateBootstrap.cpp',
-                            'ndn-service-framework/ServiceProvider.cpp',
-                            'ndn-service-framework/ServiceUser.cpp',
-                            'ndn-service-framework/RuntimeStatusStore.cpp',
-                            'ndn-service-framework/Stream.cpp',
-                            'ndn-service-framework/StreamFacade.cpp',
-                            'ndn-service-framework/HybridMessageCrypto.cpp',
-                            'ndn-service-framework/RequestConfidentiality.cpp',
-                            'ndn-service-framework/ExecutionLease.cpp',
-                            'ndn-service-framework/NetworkTelemetry.cpp',
-                            'ndn-service-framework/NetworkProbeRate.cpp',
-                            'ndn-service-framework/TimelineTrace.cpp',
-                            'ndn-service-framework/GenericSelectionTxnStore.cpp',
-                            'ndn-service-framework/ControllerVersion.cpp',
-                            'ndn-service-framework/PolicyStatus.cpp',
-                            'ndn-service-framework/ControllerGenerationStore.cpp',
-                            'ndn-service-framework/RevocationState.cpp',
-                            'ndn-service-framework/PolicyRefreshCoordinator.cpp',
-                            'ndn-service-framework/OperationRuntime.cpp',
-                            'ndn-service-framework/common.cpp',
-                            'ndn-service-framework/utils.cpp',
                             'NDNSF-UAV-APP/shared/UavProtocol.cpp',
                             'NDNSF-UAV-APP/shared/UavMissionSession.cpp',
                             'NDNSF-UAV-APP/shared/UavCollaborationPolicy.cpp',
@@ -1299,7 +1250,13 @@ def build(bld):
                             'NDNSF-UAV-APP/shared/UavVideoPipeline.cpp',
                             'NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
                             'NDNSF-UAV-APP/shared/UavFrameIngress.cpp',
+                            'NDNSF-UAV-APP/shared/UavObservationSource.cpp',
+                            'NDNSF-UAV-APP/shared/UavObservationStream.cpp',
+                            'NDNSF-UAV-APP/shared/UavSourceGeneration.cpp',
+                            'NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp',
+                            'NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp',
                             'NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp',
+                            'NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp',
                             'NDNSF-UAV-APP/tracking/UavTrackingSession.cpp',
                             'NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp',
                             'NDNSF-DistributedRepo/src/ArtifactManifest.cpp',
@@ -1313,6 +1270,7 @@ def build(bld):
                             'NDNSF-DistributedRepo/src/RepoClient.cpp',
                             'NDNSF-DistributedRepo/src/RepoCore.cpp',
                             'NDNSF-DistributedRepo/src/RepoNode.cpp',
+                            'NDNSF-DistributedRepo/src/RepoPacketServer.cpp',
                             'NDNSF-DistributedRepo/src/RepoStoreBackend.cpp',
                             'NDNSF-DistributedRepo/src/RepoProtocol.cpp',
                             'NDNSF-DistributedRepo/src/RepoTypes.cpp',
@@ -1322,7 +1280,8 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp',
-                        ])),
+                        ]) +
+                        [bld.path.parent.find_node('examples/DI_NetworkProbeCalibration.cpp')]),
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
@@ -1331,7 +1290,7 @@ def build(bld):
                 # HAVE_TESTS.  The framework's generated config header does
                 # not propagate that macro into NAC-ABE's CMake-style public
                 # headers, so define it explicitly for the test executable.
-                defines=['HAVE_TESTS'],
+                defines=['HAVE_TESTS', 'NDNSF_PROBE_CALIBRATION_NO_MAIN'],
                 # GCC 9 can ICE during inlining while compiling the large UAV
                 # protocol and SVS translation units. Tests do not depend on
                 # optimization or debug info, so use a low-memory deterministic
@@ -1360,6 +1319,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/uav-collaboration-flow.t.cpp'),
                         bld.path.find_node('integration-tests/uav-multiview-flow.t.cpp'),
                         bld.path.find_node('integration-tests/uav-tracking-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/uav-observation-flow.t.cpp'),
                         bld.path.find_node('integration-tests/controller-revocation-flow.t.cpp'),
                         bld.path.find_node('integration-tests/controller-version-refresh.t.cpp'),
                         bld.path.find_node('integration-tests/request-scoped-selection.t.cpp'),
@@ -1373,6 +1333,7 @@ def build(bld):
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavDiagnostics.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavFrameIngress.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/tracking/UavTrackingSession.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.cpp'),
@@ -1399,12 +1360,28 @@ def build(bld):
     # Spec192's independent native client is launched as a separate process
     # by the MiniNDN harness.  It links only the C++ Repo/framework surface so
     # the VM-22 client path has no Python binding/runtime dependency.
+    # Its remote-public-certificate fixture needs the pinned PIB backend header:
+    # ndnsec cert-install cannot add a key that is absent from the local PIB.
+    ndn_cxx_source_tree = os.environ.get('NDNSF_NDN_CXX_SOURCE_TREE', '')
+    if not ndn_cxx_source_tree:
+        for candidate in ('../deps/ndn-cxx-1204b7528986bea82651f3fa9088c165667cd598',
+                          '../dependencies/ndn-cxx-1204b7528986bea82651f3fa9088c165667cd598'):
+            candidate_path = os.path.join(bld.path.abspath(), candidate)
+            if os.path.isfile(os.path.join(candidate_path,
+                                           'ndn-cxx/security/pib/impl/pib-sqlite3.hpp')):
+                ndn_cxx_source_tree = candidate_path
+                break
+    if not ndn_cxx_source_tree or not os.path.isfile(
+            os.path.join(ndn_cxx_source_tree,
+                         'ndn-cxx/security/pib/impl/pib-sqlite3.hpp')):
+        bld.fatal('spec192-repo-client requires the pinned ndn-cxx source tree '
+                  'for its remote public-certificate PIB fixture')
     bld.program(target='../spec192-repo-client',
                 name='spec192-repo-client',
                 source=[bld.path.find_node('standalone/spec192-repo-client.cpp')],
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include',
-                          '../dependencies/ndn-cxx-8296fc9462c7ef9635b7c45468c067fd39514e31'],
+                          ndn_cxx_source_tree],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -1416,7 +1393,7 @@ def build(bld):
                 source=[bld.path.find_node('standalone/spec193-object-repo-server.cpp')],
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include',
-                          '../dependencies/ndn-cxx-8296fc9462c7ef9635b7c45468c067fd39514e31'],
+                          '../dependencies/ndn-cxx-1204b7528986bea82651f3fa9088c165667cd598'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -1439,3 +1416,46 @@ def build(bld):
         bld.get_tgen_by_name(name).linkflags += [
             '-Wl,--wrap=fsync', '-Wl,--wrap=rename', '-Wl,--wrap=unlink',
             '-Wl,--wrap=flock']
+
+    # Append new test targets to preserve existing Waf task-generator indices.
+    # The native source boundary can be instrumented without rebuilding the
+    # unrelated framework suites; use the normal Waf sanitizer configuration.
+    bld.program(target='../uav-observation-source-tests',
+                name='uav-observation-source-tests',
+                source=[bld.path.find_node('standalone/uav-observation-source-main.cpp'),
+                        bld.path.find_node('unit-tests/uav-observation-source.t.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavObservationSource.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavObservationStream.cpp')],
+                includes=['..'], use='NDN_CXX BOOST', install_path=None)
+
+    # Reuse the production store/reference sources and their ordinary unit cases
+    # without compiling the unrelated distributed-inference unit-test suite.
+    bld.program(target='../uav-immutable-publication-tests',
+                name='uav-immutable-publication-tests',
+                source=[bld.path.find_node('standalone/uav-immutable-publication-main.cpp'),
+                        bld.path.find_node('unit-tests/immutable-protected-publication-store.t.cpp'),
+                        bld.path.find_node('unit-tests/uav-tracking-evidence.t.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavProtocol.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                rpath=[bld.bldnode.abspath()], install_path=None)
+    # Focused external-library ownership oracle; no Core objects or copied DSO.
+    bld.program(target='../spec202-openabe-policy-lifecycle',
+                name='spec202-openabe-policy-lifecycle',
+                source=[bld.path.find_node('standalone/spec202-openabe-policy-lifecycle.cpp')],
+                includes=['/usr/local/include'], lib=['openabe'],
+                libpath=['/usr/local/lib'], rpath=['/usr/local/lib'],
+                install_path=None)
+
+    # MiniNDN-only provider fixture for the Spec210 selected-calibration-role
+    # ownership regression. It publishes immutable test calibration bytes
+    # through the same Core role-dispatch and protected-publication path.
+    bld.program(target='../spec210-calibration-provider',
+                name='spec210-calibration-provider',
+                source=[bld.path.find_node('standalone/spec210-calibration-provider.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0'],
+                rpath=[bld.bldnode.abspath()], install_path=None)

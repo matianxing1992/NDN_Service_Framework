@@ -1590,6 +1590,11 @@ NativePlannedRequest planNativeRequestImpl(
           proposal.placementDecisionV4->value("status", std::string{}) ==
             "BASELINE_FALLBACK"))
       throw std::runtime_error("DI_NATIVE_POLICY_BUDGET_EXCEEDED");
+    // A strategy can observe cancellation/deadline through ExtensionControl
+    // and still return a partial proposal. Honor the control outcome before
+    // interpreting that proposal as a request-snapshot violation.
+    if (policyBudgetFallback) control.requireActive();
+    else extensionControl.requireActive();
     if (!sameStrategyIdentity(proposal.strategy, expectedPlacementIdentity))
       throw std::invalid_argument("native placement returned a foreign strategy identity");
     if (!sameOfferBindingContext(proposal.context, context))
@@ -1597,8 +1602,6 @@ NativePlannedRequest planNativeRequestImpl(
     // A legacy strategy need not carry the optional encoding hint. Reattach
     // our pin only after its actual current context has passed equality.
     proposal.context.preparedPlanningTemplate = context.preparedPlanningTemplate;
-    if (policyBudgetFallback) control.requireActive();
-    else extensionControl.requireActive();
     // Pin one immutable cache candidate through the current publication and
     // sealing checks; replacement of the shared cache cannot change it.
     const auto previousFixedCore = runtime.fixedRoleAssignments

@@ -1,5 +1,7 @@
 #include "tests/boost-test.hpp"
 
+#include <atomic>
+
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
@@ -37,6 +39,7 @@
 
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/sha256.hpp>
+#include <onnx/onnx_pb.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 
@@ -99,6 +102,80 @@ makePlan()
     "epoch-key", "/activation", "/NDNSF-DI/{sessionId}/{producerRole}/{role}/{sequence}",
     1, 8, std::vector<std::string>{"hidden"});
   return plan;
+}
+
+std::string
+makeQwenNativeConfigOnnxSource()
+{
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  auto* opset = model.add_opset_import();
+  opset->set_domain("");
+  opset->set_version(13);
+
+  auto* graph = model.mutable_graph();
+  graph->set_name("spec182-qwen-native-config");
+  const auto addTensor = [] (onnx::ValueInfoProto* value,
+                             const std::string& name,
+                             onnx::TensorProto_DataType elementType,
+                             const std::vector<std::string>& dimensions) {
+    value->set_name(name);
+    auto* tensorType = value->mutable_type()->mutable_tensor_type();
+    tensorType->set_elem_type(elementType);
+    for (const auto& dimension : dimensions)
+      tensorType->mutable_shape()->add_dim()->set_dim_param(dimension);
+  };
+
+  addTensor(graph->add_input(), "input_ids", onnx::TensorProto::INT64,
+            {"batch", "sequence"});
+  addTensor(graph->add_output(), "logits", onnx::TensorProto::FLOAT,
+            {"batch", "sequence"});
+  auto* logits = graph->add_node();
+  logits->set_name("embedding");
+  logits->set_op_type("Cast");
+  logits->add_input("input_ids");
+  logits->add_output("embedding_out");
+  auto* castType = logits->add_attribute();
+  castType->set_name("to");
+  castType->set_type(onnx::AttributeProto::INT);
+  castType->set_i(onnx::TensorProto::FLOAT);
+
+  std::string previousHidden = "embedding_out";
+  const std::vector<std::pair<std::string, std::string>> hiddenStages{
+    {"layer-00", "layer_00_out"}, {"layer-01", "layer_01_out"},
+    {"final-norm", "final_norm_out"}, {"head-hidden", "head_hidden_out"},
+    {"head-projection", "head_projection_out"}, {"logits", "logits"},
+  };
+  for (const auto& [stage, outputName] : hiddenStages) {
+    auto* node = graph->add_node();
+    node->set_name(stage);
+    node->set_op_type("Identity");
+    node->add_input(previousHidden);
+    node->add_output(outputName);
+    previousHidden = outputName;
+  }
+
+  const std::vector<std::pair<std::string, std::vector<std::string>>> stateShapes{
+    {"attention_kv", {"batch", "2", "past_sequence", "heads", "head_dim"}},
+    {"recurrent_state", {"batch", "heads", "head_dim"}},
+    {"convolution_state", {"batch", "heads", "kernel"}},
+  };
+  for (const auto& [family, shape] : stateShapes) {
+    const auto inputName = family + "_in";
+    const auto outputName = family + "_out";
+    addTensor(graph->add_input(), inputName, onnx::TensorProto::FLOAT, shape);
+    addTensor(graph->add_output(), outputName, onnx::TensorProto::FLOAT, shape);
+    auto* state = graph->add_node();
+    state->set_name(family + "_state_passthrough");
+    state->set_op_type("Identity");
+    state->add_input(inputName);
+    state->add_output(outputName);
+  }
+
+  std::string sourceBytes;
+  if (!model.SerializeToString(&sourceBytes))
+    throw std::runtime_error("failed to serialize Spec182 Qwen source fixture");
+  return sourceBytes;
 }
 
 class FixtureRequest
@@ -596,6 +673,8 @@ runNativeIngressCase(
 
   const auto serviceName = environment.profile().serviceName;
   const auto requesterName = environment.user().getName();
+  const auto requesterCertificate = environment.keyChain().getPib()
+    .getIdentity(requesterName).getDefaultKey().getDefaultCertificate();
   const auto providerName = environment.provider().getName();
   const auto requestId = ndn::Name(mismatch
                                    ? "/native-ingress-mismatch"
@@ -705,7 +784,7 @@ runNativeIngressCase(
   const auto artifactBlock = artifactEnvelope.WireEncode();
   const ndn::Buffer artifactWire(artifactBlock.data(), artifactBlock.size());
   ndn::Segmenter artifactSegmenter(
-    environment.keyChain(), ndn::security::signingWithSha256());
+    environment.keyChain(), ndn::security::signingByCertificate(requesterCertificate));
   const auto artifactSegments = artifactSegmenter.segment(
     ndn::span<const uint8_t>(artifactWire.data(), artifactWire.size()),
     encryptedDataName,
@@ -1072,6 +1151,8 @@ runNativeMultiRoleIngressCase(bool suppressBackboneOutput = false)
 
   const auto serviceName = environment.profile().serviceName;
   const auto requesterName = environment.user().getName();
+  const auto requesterCertificate = environment.keyChain().getPib()
+    .getIdentity(requesterName).getDefaultKey().getDefaultCertificate();
   const auto providerName = environment.provider().getName();
   const auto requestId = ndn::Name("/native-multi-role-success");
   const std::vector<std::string> roles{
@@ -1208,7 +1289,7 @@ runNativeMultiRoleIngressCase(bool suppressBackboneOutput = false)
   const auto artifactBlock = artifactEnvelope.WireEncode();
   const ndn::Buffer artifactWire(artifactBlock.data(), artifactBlock.size());
   ndn::Segmenter artifactSegmenter(
-    environment.keyChain(), ndn::security::signingWithSha256());
+    environment.keyChain(), ndn::security::signingByCertificate(requesterCertificate));
   const auto artifactSegments = artifactSegmenter.segment(
     ndn::span<const uint8_t>(artifactWire.data(), artifactWire.size()),
     encryptedDataName,
@@ -1818,16 +1899,15 @@ makeV3TensorEndpointJson(const std::string& producerNamespace,
                          const std::string& layoutDigest,
                          const std::string& targetLayoutDigest,
                          const std::string& operation,
-                         const std::string& endpointDigest,
                          const std::string& manifestDigest,
                          std::uint64_t attempt = 1,
                          std::uint64_t namingOperationStride = 0)
 {
-  return std::string("{\"attempt\":") + std::to_string(attempt) +
+  const auto wire = std::string("{\"attempt\":") + std::to_string(attempt) +
     ",\"consumer_role\":\"" +
     consumerRole + "\",\"consumer_roles\":[" + consumerRoles +
-    "],\"endpoint_digest\":\"" + endpointDigest +
-    "\",\"group_epoch\":\"" + std::to_string(attempt) +
+    "],\"endpoint_digest\":\"pending\"" +
+    ",\"group_epoch\":\"" + std::to_string(attempt) +
     "\",\"group_id\":\"" + groupId +
     "\",\"hard_deadline_ms\":8000,\"layout_digest\":\"" +
     layoutDigest + "\",\"manifest_digest\":\"" + manifestDigest +
@@ -1841,9 +1921,17 @@ makeV3TensorEndpointJson(const std::string& producerNamespace,
     "\",\"round\":" + std::to_string(round) +
     ",\"naming_operation_stride\":" + std::to_string(namingOperationStride) +
     ",\"security_profile\":\"NDNSF_DATA_V1\",\"segment_count\":1,"+
-    "\"source_kind\":\"ROLE\",\"target_layout_digest\":\"" +
+    "\"source_kind\":\"ROLE\",\"bundle_tensor_names\":[],"
+    "\"target_layout_digest\":\"" +
     targetLayoutDigest + "\",\"tensor_digest\":\"" + tensorDigest +
     "\",\"tensor_id\":\"" + tensorId + "\"}";
+  auto endpoint = nativeParseJson(wire);
+  auto identity = endpoint;
+  identity.erase("endpoint_digest");
+  identity.erase("consumer_role");
+  endpoint["endpoint_digest"] =
+    nativePlanningDigest(nativeCanonicalJson(identity));
+  return nativeCanonicalJson(endpoint);
 }
 
 // Fixtures declare ingress permission explicitly, just as the V3 sealer does.
@@ -3334,14 +3422,18 @@ BOOST_AUTO_TEST_CASE(Spec175UnaryYoloI14CompletesWithoutStreamState)
 
   const auto serviceName = environment.profile().serviceName;
   const auto providerName = environment.provider().getName();
-  bool requestPublished = false;
-  bool providerReceived = false;
-  bool handlerCalled = false;
-  bool ackPublished = false;
-  bool responsePublished = false;
-  bool responseReceived = false;
+  std::atomic<bool> requestPublished{false};
+  std::atomic<bool> providerReceived{false};
+  std::atomic<bool> handlerCalled{false};
+  std::atomic<bool> ackPublished{false};
+  std::atomic<bool> responsePublished{false};
+  std::atomic<bool> responseReceived{false};
+  std::atomic<bool> selectionSeen{false};
+  std::atomic<ndn_service_framework::ServiceUser::RequestLifecycleState>
+      lifecycleState{ndn_service_framework::ServiceUser::RequestLifecycleState::QUEUED_LOCAL};
   std::vector<uint8_t> deferredResponseWire;
   ndn::Name deferredResponseName;
+  ndn::Name deferredResponseRequestId;
 
   environment.provider().addHandler<FixtureRequest, FixtureResponse>(
       serviceName,
@@ -3359,6 +3451,22 @@ BOOST_AUTO_TEST_CASE(Spec175UnaryYoloI14CompletesWithoutStreamState)
       [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
         const auto parsed = parseRequestNameV2(publication.name);
         if (!parsed || parsed->serviceName != serviceName) {
+          const auto selection = parseServiceSelectionNameV2(publication.name);
+          if (selection) {
+            selectionSeen.store(true, std::memory_order_release);
+          }
+          if (selection && selection->requesterName == environment.user().getName() &&
+              selection->providerName == providerName &&
+              selection->serviceName == serviceName &&
+              selection->requestId == deferredResponseRequestId &&
+              !responsePublished.load(std::memory_order_acquire) &&
+              !deferredResponseWire.empty()) {
+            environment.providerPubSub().publish(
+                deferredResponseName,
+                ndn::span<const uint8_t>(deferredResponseWire.data(),
+                                         deferredResponseWire.size()));
+            responsePublished.store(true, std::memory_order_release);
+          }
           return;
         }
         providerReceived = true;
@@ -3377,17 +3485,17 @@ BOOST_AUTO_TEST_CASE(Spec175UnaryYoloI14CompletesWithoutStreamState)
         const auto ackName = makeRequestAckNameV2(
             providerName, parsed->requesterName, parsed->serviceName,
             parsed->requestId);
-        const auto ackBlock = ack.WireEncode();
-        environment.providerPubSub().publish(
-            ackName, ndn::span<const uint8_t>(ackBlock.data(), ackBlock.size()));
-        ackPublished = true;
-
+        deferredResponseRequestId = parsed->requestId;
         deferredResponseName = makeResponseNameV2(
             providerName, parsed->requesterName, parsed->serviceName,
             parsed->requestId);
         const auto responseBlock = response.WireEncode();
         deferredResponseWire.assign(responseBlock.data(),
                                     responseBlock.data() + responseBlock.size());
+        const auto ackBlock = ack.WireEncode();
+        environment.providerPubSub().publish(
+            ackName, ndn::span<const uint8_t>(ackBlock.data(), ackBlock.size()));
+        ackPublished = true;
       },
       true);
 
@@ -3398,13 +3506,7 @@ BOOST_AUTO_TEST_CASE(Spec175UnaryYoloI14CompletesWithoutStreamState)
         if (parsedAck && parsedAck->serviceName == serviceName) {
           ndn::Block ackBlock(publication.data);
           if (environment.user().handleRequestAckByName(publication.name, ackBlock)) {
-            if (!responsePublished && !deferredResponseWire.empty()) {
-              environment.providerPubSub().publish(
-                  deferredResponseName,
-                  ndn::span<const uint8_t>(deferredResponseWire.data(),
-                                           deferredResponseWire.size()));
-              responsePublished = true;
-            }
+            ackPublished.store(true, std::memory_order_release);
           }
           return;
         }
@@ -3419,6 +3521,15 @@ BOOST_AUTO_TEST_CASE(Spec175UnaryYoloI14CompletesWithoutStreamState)
       },
       true);
 
+  environment.user().setLocalPublicationHandler(
+      [&] (const ndn::Name& messageName, const ndn::Buffer& wire) {
+        if (!parseServiceSelectionNameV2(messageName)) {
+          return;
+        }
+        environment.userPubSub().publish(
+            messageName,
+            ndn::span<const uint8_t>(wire.data(), wire.size()));
+      });
   environment.user().setRequestPublisher(
       [&] (const ndn::Name&, const ndn::Name& requestName,
            const std::vector<ndn::Name>& providers,
@@ -3435,30 +3546,51 @@ BOOST_AUTO_TEST_CASE(Spec175UnaryYoloI14CompletesWithoutStreamState)
         requestPublished = true;
         environment.markRequestPublished(scope);
       });
+  environment.user().setRequestLifecycleCallback(
+      [&] (const ndn_service_framework::ServiceUser::RequestLifecycleStatus& status) {
+        lifecycleState.store(status.state, std::memory_order_release);
+      });
 
   FixtureRequest request;
   request.setPayload("fixture-payload");
-  bool typedCallbackCalled = false;
-  const auto requestId = environment.user().RequestService<FixtureRequest, FixtureResponse>(
+  std::atomic<bool> typedCallbackCalled{false};
+  ndn::Name requestId;
+  requestId = environment.user().RequestService<FixtureRequest, FixtureResponse>(
       {providerName}, serviceName, request,
       std::function<void(const FixtureResponse&)>(
           [&] (const FixtureResponse& response) {
             BOOST_CHECK_EQUAL(response.getLabel(), "fixture-response");
-            typedCallbackCalled = true;
+            typedCallbackCalled.store(true, std::memory_order_release);
           }),
-      std::function<void()>([] { BOOST_FAIL("fixture request unexpectedly timed out"); }),
-      1000, tlv::FirstResponding);
+      std::function<void()>([&] {
+        const auto status = environment.user().getRequestStatus(requestId);
+        const auto cleanupReason = status ? status->finalCleanupReason : "unavailable";
+        BOOST_FAIL(std::string("fixture request unexpectedly timed out: requestPublished=") +
+                   (requestPublished ? "true" : "false") +
+                   " providerReceived=" + (providerReceived ? "true" : "false") +
+                   " handlerCalled=" + (handlerCalled ? "true" : "false") +
+                   " ackPublished=" + (ackPublished ? "true" : "false") +
+                   " responsePublished=" + (responsePublished ? "true" : "false") +
+                   " responseReceived=" + (responseReceived ? "true" : "false") +
+                   " selectionSeen=" + (selectionSeen ? "true" : "false") +
+                   " cleanupReason=" + cleanupReason +
+                   " lifecycle=" + ndn_service_framework::ServiceUser::requestLifecycleStateToString(
+                       lifecycleState.load(std::memory_order_acquire)));
+      }),
+      5000, tlv::FirstResponding);
   BOOST_REQUIRE(!requestId.empty());
   BOOST_CHECK(!environment.user().hasStreamStateForTest(requestId));
 
-  environment.pumpUntil([&] { return typedCallbackCalled; });
-  BOOST_CHECK(requestPublished);
-  BOOST_CHECK(providerReceived);
-  BOOST_CHECK(handlerCalled);
-  BOOST_CHECK(ackPublished);
-  BOOST_CHECK(responsePublished);
-  BOOST_CHECK(responseReceived);
-  BOOST_CHECK(typedCallbackCalled);
+  environment.pumpUntil([&] {
+    return typedCallbackCalled.load(std::memory_order_acquire);
+  });
+  BOOST_CHECK(requestPublished.load(std::memory_order_acquire));
+  BOOST_CHECK(providerReceived.load(std::memory_order_acquire));
+  BOOST_CHECK(handlerCalled.load(std::memory_order_acquire));
+  BOOST_CHECK(ackPublished.load(std::memory_order_acquire));
+  BOOST_CHECK(responsePublished.load(std::memory_order_acquire));
+  BOOST_CHECK(responseReceived.load(std::memory_order_acquire));
+  BOOST_CHECK(typedCallbackCalled.load(std::memory_order_acquire));
   BOOST_CHECK(!environment.user().hasStreamStateForTest(requestId));
   environment.updateRequestResidue(scope, {});
   environment.resetRequest(scope);
@@ -3560,10 +3692,8 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsThreeProviderCustomSelection)
         },
         true);
 
-    auto providerNode = environment.profile().providerNode;
-    if (index > 0) {
-      providerNode.append("p" + std::to_string(index));
-    }
+    auto providerNode = environment.provider(index).getName();
+    providerNode.append("provider").append("0");
     environment.userPubSub().subscribeToProducer(
         providerNode,
         [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
@@ -3588,6 +3718,15 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsThreeProviderCustomSelection)
         true);
   }
 
+  environment.user().setLocalPublicationHandler(
+      [&] (const ndn::Name& messageName, const ndn::Buffer& wire) {
+        if (!parseServiceSelectionNameV2(messageName)) {
+          return;
+        }
+        environment.userPubSub().publish(
+            messageName,
+            ndn::span<const uint8_t>(wire.data(), wire.size()));
+      });
   environment.user().setRequestPublisher(
       [&] (const ndn::Name&,
            const ndn::Name& requestName,
@@ -3623,21 +3762,6 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsThreeProviderCustomSelection)
               }
             }
             BOOST_REQUIRE_EQUAL(selected.size(), 1);
-            const auto selectedRequestId = selected.front().requestId;
-            ServiceSelectionMessage selection;
-            selection.setRequestIDs({selectedRequestId.toUri()});
-            selection.setPolicyEpoch(environment.user().getCurrentPolicyEpoch());
-            SelectionProviderEntry providerEntry;
-            providerEntry.providerName = providerNames[1];
-            selection.addProviderEntry(providerEntry);
-            const auto selectionName = makeServiceSelectionNameV2(
-                environment.user().getName(), providerNames[1], serviceName,
-                selectedRequestId);
-            const auto selectionBlock = selection.WireEncode();
-            environment.userPubSub().publish(
-                selectionName,
-                ndn::span<const uint8_t>(
-                    selectionBlock.data(), selectionBlock.size()));
             return selected;
           }),
       1000,
@@ -4972,10 +5096,8 @@ runProductionNativeD2bCase(bool tamperCapability,
     }
   }
   for (size_t index = 0; index < environment.providerCount(); ++index) {
-    auto providerNode = environment.profile().providerNode;
-    if (index > 0) {
-      providerNode.append("p" + std::to_string(index));
-    }
+    auto providerNode = environment.provider(index).getName();
+    providerNode.append("provider").append("0");
     environment.userPubSub().subscribeToProducer(
       providerNode,
       [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
@@ -5040,8 +5162,7 @@ runProductionNativeD2bCase(bool tamperCapability,
       planDigest, "backbone-to-head0", 7, "/Backbone", 0,
       "/Head/Shard/0", "\"/Head/Shard/0\"", "features",
       featureTensorDigest, pipelineLayoutDigest, pipelineLayoutDigest,
-      "PIPELINE_TRANSFER",
-      featureTensorDigest, featureTensorDigest);
+      "PIPELINE_TRANSFER", featureTensorDigest);
     const auto dependenciesJson = std::string("[{\"consumers\":[\"/Head/Shard/0\"],") +
       "\"expected_segments\":0,\"key_scope\":\"backbone-to-head0\"," +
       "\"object_name_template\":\"{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}\"," +
@@ -6359,9 +6480,9 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     "group-spec175-" + caseOptions.caseId, 1, members,
     operations, 4096, 2000, 8000);
   std::optional<GroupCapabilityV1> replacementCapability;
+  auto replacementMembers = members;
   if (caseOptions.allowReplacement) {
     ProviderGroupCoordinator replacementCapabilitySealer(makeD2bCoordinatorOptions());
-    auto replacementMembers = members;
     const auto finalRoleIndex = providerCount - 1;
     const auto replacementPrefix =
       environment.provider(providerCount).getName();
@@ -6373,7 +6494,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     replacementCapability = replacementCapabilitySealer.createCapability(
       recoveryRequestId.toUri(), "attempt-2", planDigest,
       "group-spec175-" + caseOptions.caseId + "-recovery", 2,
-      std::move(replacementMembers), operations, 4096, 2000, 8000);
+      replacementMembers, operations, 4096, 2000, 8000);
   }
 
   auto runnerFactory = std::make_shared<RegistryNativeModelRunnerFactory>();
@@ -6488,6 +6609,9 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       std::uint64_t attempt,
       const std::string& projectedCapabilityHex,
       const std::vector<std::int64_t>& committedPrefix = {}) {
+    const auto& projectionMembers =
+      caseOptions.allowReplacement && projectionRequestId == recoveryRequestId
+        ? replacementMembers : members;
     std::string dependenciesJson = "[";
     std::vector<std::string> mayPublish;
     std::vector<std::string> mustFetch;
@@ -6528,7 +6652,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
         const auto groupId = std::string("group-spec175-") + caseOptions.caseId;
         NativeTensorEndpointV3 certifiedEndpoint;
         certifiedEndpoint.producerNamespace =
-          members[producerRoleIndex].endpointPrefix;
+          projectionMembers[producerRoleIndex].endpointPrefix;
         certifiedEndpoint.requester = requesterName.toUri();
         certifiedEndpoint.requestId = projectionRequestId.toUri();
         certifiedEndpoint.attempt = attempt;
@@ -6567,13 +6691,8 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
             {"tensor", certifiedEndpoint.tensorId},
             {"bundleTensorNames", certifiedEndpoint.bundleTensorNames},
             {"tensorDigest", certifiedEndpoint.tensorDigest}}));
-        auto endpointIdentity = nativeEndpointJson(certifiedEndpoint);
-        endpointIdentity.erase("endpoint_digest");
-        endpointIdentity.erase("consumer_role");
-        certifiedEndpoint.endpointDigest = nativePlanningDigest(
-          nativeCanonicalJson(endpointIdentity));
         const auto endpoint = makeV3TensorEndpointJson(
-          members[producerRoleIndex].endpointPrefix,
+          projectionMembers[producerRoleIndex].endpointPrefix,
           requesterName.toUri(), projectionRequestId.toUri(), planDigest,
           groupId, round,
           dependency.producers.front(), producerRoleIndex,
@@ -6582,7 +6701,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
           dependency.tensors.front(), dependency.collectiveTensorDigest,
           dependency.collectiveSourceLayoutDigest,
           dependency.collectiveTargetLayoutDigest, dependency.operationKind,
-          certifiedEndpoint.endpointDigest, certifiedEndpoint.manifestDigest,
+          certifiedEndpoint.manifestDigest,
           attempt, certifiedEndpoint.namingOperationStride);
         if (dependency.producers.front() == roles[roleIndex]) {
           mayPublish.push_back(endpoint);
@@ -7361,10 +7480,10 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     serviceName, requestPayload, 1000, 8000,
     [&] (const CollaborationAckClosure& closure) { commitPlan(closure); },
     [&] (const ResponseMessage& response) {
-      if (response.getStatus()) {
-        result.completed = true;
-      }
-      else {
+      // A successful encrypted Response can arrive before the stream's End
+      // event. Stream completion is owned by the onComplete callback below,
+      // which runs only after End and the matching Response are both verified.
+      if (!response.getStatus()) {
         result.failed = true;
         result.error = response.getErrorInfo();
       }
@@ -7494,9 +7613,9 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   BOOST_REQUIRE_EQUAL(returnedRequestId, requestId);
   const auto terminal = [&] {
     if (caseOptions.fault == Spec175NativeTinyFault::None && result.failed) return true;
-    // An already-expired request is rejected by Core before the native handler
-    // runs. Observe each committed Selection's real Provider terminal status;
-    // nativeFailureObserver must stay silent at this earlier boundary.
+    // An already-expired request is rejected by Core before Selection is
+    // published to any Provider, so there is no Provider execution status to
+    // observe and nativeFailureObserver must stay silent.
     if (caseOptions.fault == Spec175NativeTinyFault::ExpiredDeadline) {
       result.coreDeadlineFailures.clear();
       for (std::size_t index = 0; index < providerCount; ++index) {
@@ -7518,8 +7637,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       return false;
     }
     if (caseOptions.fault == Spec175NativeTinyFault::ExpiredDeadline) {
-      return providerDone &&
-        (result.timedOut || result.failed || result.cancelled || result.completed);
+      return result.timedOut || result.failed || result.cancelled || result.completed;
     }
     return result.timedOut ||
       ((result.failed || result.cancelled || result.completed) && providerDone);
@@ -8043,10 +8161,12 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   test::BootstrapProfile profile;
   profile.groupPrefix = ndn::Name("/ndnsf/spec182/r4-b6");
   profile.syncPrefix = ndn::Name("/ndnsf/spec182/r4-b6/sync");
-  profile.userNode = ndn::Name("/ndnsf/spec182/r4-b6/user");
-  profile.providerNode = ndn::Name("/ndnsf/spec182/r4-b6/provider");
   profile.userIdentity = ndn::Name("/spec182/r4-b6/user");
   profile.providerIdentity = ndn::Name("/spec182/r4-b6/provider");
+  profile.userNode = profile.userIdentity;
+  profile.userNode.append("user");
+  profile.providerNode = profile.providerIdentity;
+  profile.providerNode.append("provider");
   profile.attributeAuthority = ndn::Name("/spec182/r4-b6/aa");
   profile.serviceName = ndn::Name("/Spec182/R4B6/Conversation");
   profile.providerCount = alternateProvider ? 2 : 1;
@@ -8234,11 +8354,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   std::shared_ptr<const NativeAdapterRegistry> configuredRegistry;
   std::string configuredSourceDigest;
   if (nativeConfigQwen) {
-    std::ifstream sourceFile("tests/fixtures/spec182/qwen-native-config.onnx", std::ios::binary);
-    BOOST_REQUIRE(sourceFile.good());
-    const std::string sourceBytes((std::istreambuf_iterator<char>(sourceFile)),
-                                  std::istreambuf_iterator<char>());
     NativeCanonicalSource qwenSource;
+    const auto sourceBytes = makeQwenNativeConfigOnnxSource();
     qwenSource.modelBytes.assign(sourceBytes.begin(), sourceBytes.end());
     NativeAssemblyControl qwenControl{std::chrono::steady_clock::now() + std::chrono::seconds(30),
       [] {}, 1U << 20, 1U << 20};
@@ -8279,7 +8396,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
         {"artifact_digests_by_role", {{role, qwenArtifactDigest}}},
         {"weight_bytes_by_role", {{role, 1}}}, {"roles", {role}}, {"tensor_degrees", {1}}}},
       {"node_mapping", {{"embedding", {0}}, {"layer-00", {1}}, {"layer-01", {2}},
-        {"final-norm-head", {3, 4, 5, 6}}}},
+        {"final-norm-head", {3, 4, 5, 6, 7, 8, 9}}}},
       {"state_inputs", stateInputs}, {"state_outputs", stateOutputs}};
     configuredCatalog = std::make_shared<NativeRequestCatalog>(NativeRequestCatalog::load(
       nativeCanonicalJson(catalogConfiguration), std::move(qwenSource), qwenControl));
@@ -8570,8 +8687,29 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
           return;
         }
         const auto assignment = ctx.assignment().assignmentPayload;
-        std::istringstream input(std::string(assignment.begin(), assignment.end()));
-        const auto projection = nativeSelectionProjectionV3FromJson(input, role);
+        const std::string assignmentWire(assignment.begin(), assignment.end());
+        const auto assignmentRoot = nativeParseJson(assignmentWire);
+        std::istringstream input(assignmentWire);
+        NativeSelectionProjectionV3 projection;
+        if (assignmentRoot.value("schema", std::string{}) ==
+            "ndnsf-di-selection-invocation-v1") {
+          const auto& source = assignmentRoot.at("fixed_role_source");
+          const auto dataName = source.at("data_name").get<std::string>();
+          const auto digest = source.at("plaintext_digest").get<std::string>();
+          const auto size = source.at("plaintext_size").get<std::uint64_t>();
+          const auto fixedBytes = ctx.fetchEncryptedLargeData(
+            ndn::Name(dataName), ndn::Name(serviceName));
+          if (!fixedBytes || fixedBytes->size() != size ||
+              nativePlanningDigest(fixedBytes->data(), fixedBytes->size()) != digest) {
+            throw std::runtime_error("R4-B6 fixed role source fetch or digest mismatch");
+          }
+          std::istringstream fixedInput(std::string(fixedBytes->begin(), fixedBytes->end()));
+          const auto fixedOwner = nativeFixedRoleAssignmentV1FromJson(fixedInput);
+          projection = nativeSelectionInvocationV1FromJson(input, role, *fixedOwner);
+        }
+        else {
+          projection = nativeSelectionProjectionV3FromJson(input, role);
+        }
         if (!ctx.isStreamed()) {
           throw std::runtime_error("R4-B6 stream projection missing");
         }
@@ -9778,12 +9916,8 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxExpiredDeadlineCleansProviderState)
   BOOST_REQUIRE(result.timedOut || result.failed);
   BOOST_REQUIRE_EQUAL(result.providerFailures, 0U);
   BOOST_REQUIRE_EQUAL(result.providerCoordinatorCompletions, 0U);
-  BOOST_REQUIRE_EQUAL(result.coreDeadlineFailures.size(), 2U);
-  for (const auto& status : result.coreDeadlineFailures) {
-    BOOST_CHECK_EQUAL(status.runningAtUs, 0U);
-    BOOST_CHECK(!status.selectionDigest.empty());
-    BOOST_CHECK(status.message.find("REQUEST_DEADLINE") != std::string::npos);
-  }
+  BOOST_REQUIRE(result.error.find("REQUEST_DEADLINE") != std::string::npos);
+  BOOST_REQUIRE(result.coreDeadlineFailures.empty());
   BOOST_REQUIRE(result.events.empty());
   BOOST_REQUIRE_EQUAL(result.decodeStateSnapshots.size(), 2U);
   for (const auto& state : result.decodeStateSnapshots) {
@@ -9823,7 +9957,7 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI09RejectsTamperAndWithholdsUnselected
   BOOST_REQUIRE_EQUAL(result.unselectedProviderExecutions, 0U);
   BOOST_REQUIRE_EQUAL(result.tamperedPublications, 1U);
   BOOST_REQUIRE(result.events.empty());
-  BOOST_CHECK(result.errorCode == StreamedInvocationErrorCode::DecryptionFailed);
+  BOOST_CHECK(result.errorCode == StreamedInvocationErrorCode::InvalidSignature);
   BOOST_CHECK_EQUAL(result.errorExpectedCursor, 1U);
   BOOST_CHECK_EQUAL(result.errorRequestId, ndn::Name("/spec175-native-tiny-i09"));
 }
@@ -10073,10 +10207,10 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
   const std::array<ndn::Name, 2> providerNames{{
     environment.provider(0).getName(), environment.provider(1).getName(),
   }};
-  auto provider0Prefix = environment.profile().providerNode;
-  provider0Prefix.append("0");
-  auto provider1Prefix = environment.profile().providerNode;
-  provider1Prefix.append("p1").append("0");
+  auto provider0Prefix = environment.provider(0).getName();
+  provider0Prefix.append("provider").append("0");
+  auto provider1Prefix = environment.provider(1).getName();
+  provider1Prefix.append("provider").append("0");
   const ndn::Name requestId("/d2h-121-native-e2e");
   const auto planDigest = "sha256:" + std::string(64, '1');
   const auto layout0 = "sha256:" + std::string(64, '2');
@@ -10367,7 +10501,6 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
                                const std::string& targetLayout,
                                const std::string& operation,
                                char endpointTag) {
-    const auto endpointDigest = "sha256:" + std::string(64, endpointTag);
     const auto manifestDigest = "sha256:" + std::string(64, endpointTag + 1);
     return makeV3TensorEndpointJson(
       providerPrefixForRole(producerRole), requesterName.toUri(),
@@ -10375,7 +10508,7 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
       operation == "SCATTER" ? "boundary-0" : "boundary-1",
       operation == "SCATTER" ? 0 : 1, producerRole, producerRank,
       consumerRole, consumerRoles, tensorId, tensorDigest, sourceLayout,
-      targetLayout, operation, endpointDigest, manifestDigest);
+      targetLayout, operation, manifestDigest);
   };
   const auto makeDataflow = [&] (const std::string& role,
                                  const std::string& publish,
@@ -10560,10 +10693,10 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
   const std::array<ndn::Name, 2> providerNames{{
     environment.provider(0).getName(), environment.provider(1).getName(),
   }};
-  auto provider0Prefix = environment.profile().providerNode;
-  provider0Prefix.append("0");
-  auto provider1Prefix = environment.profile().providerNode;
-  provider1Prefix.append("p1").append("0");
+  auto provider0Prefix = environment.provider(0).getName();
+  provider0Prefix.append("provider").append("0");
+  auto provider1Prefix = environment.provider(1).getName();
+  provider1Prefix.append("provider").append("0");
   const ndn::Name requestId("/d2h-212-native-e2e");
   const auto planDigest = "sha256:" + std::string(64, 'a');
   const auto layout0 = "sha256:" + std::string(64, 'b');
@@ -10873,14 +11006,12 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
                                const std::string& targetLayout,
                                const std::string& operationName,
                                char endpointTag) {
-    const auto endpointDigest = "sha256:" + std::string(64, endpointTag);
     const auto manifestDigest = "sha256:" + std::string(64, endpointTag + 1);
     return makeV3TensorEndpointJson(
       providerPrefixForRole(producerRole), requesterName.toUri(),
       requestId.toUri(), planDigest, groupId, round, producerRole,
       producerRank, consumerRole, consumerRoles, tensorId, tensorDigest,
-      sourceLayout, targetLayout, operationName, endpointDigest,
-      manifestDigest);
+      sourceLayout, targetLayout, operationName, manifestDigest);
   };
   const auto makeDataflow = [&] (const std::string& role,
                                  const std::string& publish,
@@ -11574,10 +11705,8 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsFourProviderRoleSplitCollaborat
         },
         true);
 
-    auto providerNode = environment.profile().providerNode;
-    if (index > 0) {
-      providerNode.append("p" + std::to_string(index));
-    }
+    auto providerNode = environment.provider(index).getName();
+    providerNode.append("provider").append("0");
     environment.userPubSub().subscribeToProducer(
         providerNode,
         [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {

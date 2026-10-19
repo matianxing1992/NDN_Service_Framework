@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -52,7 +53,9 @@ struct BootstrapProfile
   // Additional explicitly authorized service names for integration cases that
   // register one production component across several Core service entries.
   std::vector<ndn::Name> additionalServices;
-  std::string trustSchemaPath{ "examples/trust-any.conf" };
+  // Empty selects fixed, per-run test identity anchors. Production integration
+  // cases may supply an explicit trust schema.
+  std::string trustSchemaPath;
   size_t providerCount = 1;
   // Give each additional Provider Face its own event loop when a test needs
   // to model the process boundary between MiniNDN Provider nodes.
@@ -188,6 +191,8 @@ public:
   ndn::DummyClientFace& providerFace();
   ndn::DummyClientFace& providerFace(size_t index);
   ndn::KeyChain& keyChain() { return *m_keyChain; }
+  /** Create and pin a self-signed identity certificate in this fixture's test trust store. */
+  ndn::security::Certificate createTestIdentityCertificate(const ndn::Name& identity);
   ndn::svs::SVSPubSub& userPubSub();
   ndn::svs::SVSPubSub& providerPubSub();
   ndn::svs::SVSPubSub& providerPubSub(size_t index);
@@ -226,6 +231,8 @@ private:
 
 private:
   BootstrapProfile m_profile;
+  std::filesystem::path m_testTrustDirectory;
+  std::vector<ndn::security::Certificate> m_testTrustAnchors;
   EnvironmentStatus m_status = EnvironmentStatus::New;
   EnvironmentSnapshot m_snapshot;
   std::string m_failureReason;

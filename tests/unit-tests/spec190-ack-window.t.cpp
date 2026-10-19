@@ -207,7 +207,7 @@ BOOST_FIXTURE_TEST_CASE(UnrequestedEncryptedAckDoesNotConsumeCollectionBudget,
     keyChain.sign(packet, ndn::security::signingByIdentity(signer));
     BOOST_REQUIRE(ndn::security::verifySignature(packet, certificate));
     const std::optional<ndn::Data> signedPacket{packet};
-    const ndn::Name producerPrefix = ndn::Name(provider).append("0");
+    const ndn::Name producerPrefix = ndn::Name(provider).append("provider").append("0");
     const ndn::svs::SVSPubSub::SubscriptionData publication{
       name, ndn::span<const uint8_t>(wire.data(), wire.size()),
       producerPrefix, 1, signedPacket};
@@ -232,12 +232,18 @@ BOOST_FIXTURE_TEST_CASE(UnrequestedEncryptedAckDoesNotConsumeCollectionBudget,
   BOOST_CHECK(closure->candidates.front().authenticationEvidence.trustSchemaValidated);
   BOOST_CHECK(user.CancelCollaboration(requestId));
   closure.reset();
-  // Core preserves provenance; the caller's coverage predicate must not
-  // count a requested name signed by another Provider as authenticated.
+  // A valid signature from another Provider cannot authorize A's namespace.
+  // Core must reject it before decryption or the caller's coverage predicate.
   const auto forged = begin({providerA});
+  const auto decryptsBeforeForgery =
+    user.getHybridCryptoCounters().symmetric_decrypt_count.load();
   deliver(providerA, providerB, certificateB, forged);
   pumpFace(face, ndn::time::milliseconds(10));
-  BOOST_CHECK(mismatchedSignerObserved);
+  BOOST_CHECK(!mismatchedSignerObserved);
+  BOOST_CHECK_EQUAL(user.getHybridCryptoCounters().symmetric_decrypt_count.load(),
+                    decryptsBeforeForgery);
+  BOOST_CHECK_EQUAL(user.ackDecryptsInFlight(forged), 0U);
+  BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(forged), 0U);
   BOOST_CHECK(!closure);
   BOOST_CHECK(user.CancelCollaboration(forged));
   const auto discovery = begin({});

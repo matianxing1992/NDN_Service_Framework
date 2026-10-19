@@ -1,7 +1,9 @@
 """Installer control-flow checks; never run apt, builds, or system installation."""
 import os
 from pathlib import Path
+import shlex
 import subprocess
+import sys
 import tempfile
 
 import pytest
@@ -13,14 +15,16 @@ DEFINITIONS, MAIN = SCRIPT.read_text().split('\ncd "$ROOT"\n', 1)
 
 
 def shell(code, *args, env=None):
-    # Execute a real script beside the installer: preserve BASH_SOURCE/ROOT
-    # semantics and avoid Linux's per-argument limit for a growing installer.
-    with tempfile.NamedTemporaryFile(mode='w', dir=ROOT, suffix='.sh',
-                                     prefix='.stack-installer-test-') as script:
-        script.write(code)
-        script.flush()
+    # Execute a file, as the real installer does. bash -c both loses the
+    # BASH_SOURCE file identity and hits Linux's per-argument size limit for
+    # the full installer. Only its repository-root setup is fixture-specific.
+    root_assignment = 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
+    code = code.replace(root_assignment, 'ROOT=' + shlex.quote(str(ROOT)), 1)
+    with tempfile.TemporaryDirectory(prefix='ndnsf-installer-test-') as directory:
+        fixture = Path(directory) / 'installer.sh'
+        fixture.write_text(code)
         return subprocess.run(
-            ['bash', script.name, *args], text=True,
+            ["bash", str(fixture), *args], text=True,
             capture_output=True, env=env, timeout=10,
         )
 
@@ -194,6 +198,7 @@ def test_profiles_install_only_selected_test_and_doc_packages(
     env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
     stubs = '''
 sudo_run() { printf 'SUDO:%s\\n' "$*"; }
+select_global_boost() { return 0; }
 install_common_system_packages
 '''
     result = shell(DEFINITIONS + stubs, mode, env=env)
@@ -317,6 +322,8 @@ build_waf_dependency ndn-svs libndn-svs invalid-url 0.1
 
 def test_install_refreshes_loader_before_python_and_limits_jobs():
     stubs = '''
+PYTHON_BIN=/bin/echo
+select_nac_sdk() { NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture; }
 require_system_toolchain() { :; }
 require_host_profile() { :; }
 install_common_system_packages() { :; }
@@ -328,17 +335,22 @@ run_waf_clean() { echo "WAF:$*"; }
 sudo_run() { echo "SUDO:$*"; }
 native_digest_receipt() { echo '{}'; }
 pip_install() { echo "PIP:$*"; }
-run() { :; }
+run() { printf 'RUN:%s\\n' "$*"; }
 '''
     result = shell(DEFINITIONS + stubs + MAIN, "--no-dependencies", "--jobs", "2")
     assert result.returncode == 0, result.stderr
     assert "WAF:-j2" in result.stdout
-    assert "./waf install -j2" in result.stdout
+    install = next(shlex.split(line[4:]) for line in result.stdout.splitlines()
+                   if line.startswith('RUN:') and './waf' in line and ' install ' in line)
+    assert '-j2' in install
+    assert any(token.startswith('--destdir=') for token in install)
     assert "NDNSF_SKIP_DEV_PIP_INSTALL=1" in result.stdout
     assert 'packaging/python/core' in result.stdout
     assert 'packaging/python/compat' in result.stdout
     assert result.stdout.count('PIP:') == 1
     assert result.stdout.index("SUDO:/sbin/ldconfig") < result.stdout.index("PIP:")
+    assert 'check-runtime' in result.stdout
+    assert '--prefix /usr/local/ndnsf-sdk/nac-abe/fixture --require-nac' in result.stdout
 
 
 def test_build_only_does_not_install_python():
@@ -366,7 +378,8 @@ def test_plan_is_offline_and_uses_experimental_pins(tmp_path):
     assert 'ref=Experimental' in result.stdout
     assert '9f2d8a47cd2a25a5f9ade661c9dbe8acd6416a20' in result.stdout
     assert '--with-tests' in result.stdout
-    assert 'Preinstalled SDKs:' in result.stdout
+    assert 'host SDKs pinned in packaging/host-sdk-dependencies.lock.json' in result.stdout
+    assert 'Configure-only mode requires' in result.stdout
     assert not (tmp_path / 'absent').exists()
 
 
@@ -500,8 +513,6 @@ build_waf_dependency ndn-svs libndn-svs unused 0.1
 
 @pytest.mark.parametrize('builder,detector', [
     ('build_waf_dependency ndn-svs libndn-svs unused 0.1', 'is_pkg_installed'),
-    ('build_cmake_dependency NAC-ABE libnac-abe unused 0.1', 'is_pkg_installed'),
-    ('build_openabe_dependency', 'has_openabe'),
 ])
 def test_all_dependency_builders_reuse_compatible_install_without_receipt(builder, detector):
     detector_stub = f'{detector}() {{ return 0; }}'
@@ -514,6 +525,71 @@ ensure_source_tree() { echo SOURCE_REQUIRED >&2; return 23; }
     assert 'already installed' in result.stdout
     assert 'RECEIPT_CHECK_SHOULD_NOT_RUN' not in result.stdout
     assert 'SOURCE_REQUIRED' not in result.stderr
+
+
+def test_nac_version_match_cannot_skip_required_patched_sdk():
+    result = shell(DEFINITIONS + '''
+NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture
+is_pkg_installed() { echo OLD_VERSION_MATCH; return 0; }
+verify_nac_sdk() { echo PATCHED_RECEIPT_REJECTED; return 1; }
+ensure_source_tree() { echo SOURCE_REQUIRED >&2; return 23; }
+build_cmake_dependency NAC-ABE libnac-abe unused 0.1
+''')
+    assert result.returncode == 23
+    assert 'PATCHED_RECEIPT_REJECTED' in result.stdout
+    assert 'SOURCE_REQUIRED' in result.stderr
+    assert 'already installed' not in result.stdout
+
+
+def test_nac_verified_sdk_reuses_without_touching_checkout():
+    result = shell(DEFINITIONS + '''
+NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture
+verify_nac_sdk() { return 0; }
+ensure_source_tree() { echo UNEXPECTED_CHECKOUT >&2; return 23; }
+build_cmake_dependency NAC-ABE libnac-abe unused 0.1
+''')
+    assert result.returncode == 0
+    assert 'Locked patched NAC SDK already installed' in result.stdout
+    assert 'UNEXPECTED_CHECKOUT' not in result.stderr
+
+
+def test_selected_nac_sdk_reaches_controlled_pkg_config_and_waf(tmp_path):
+    sdk = tmp_path / 'sdk with spaces'
+    (sdk / 'lib/pkgconfig').mkdir(parents=True)
+    probe = tmp_path / 'python-argv-probe'
+    probe.write_text('#!/bin/sh\nprintf "<%s>\\n" "$@"\n')
+    probe.chmod(0o755)
+    env = dict(os.environ, NDNSF_TEST_SDK=str(sdk), NDNSF_TEST_PYTHON=str(probe))
+    result = shell(DEFINITIONS + '''
+NAC_SDK_PREFIX="$NDNSF_TEST_SDK"
+refresh_global_pkg_config_path
+printf 'CONTROLLED_PATH=%s\n' "$GLOBAL_PKG_CONFIG_PATH"
+PYTHON_BIN="$NDNSF_TEST_PYTHON"
+run_waf_clean configure
+check_waf_inventory
+''', env=env)
+    assert result.returncode == 0
+    assert f'CONTROLLED_PATH={sdk}/lib/pkgconfig:' in result.stdout
+    assert f'<--nac-abe-prefix={sdk}>' in result.stdout
+    assert f'<--nac-abe-prefix>\n<{sdk}>' in result.stdout
+
+
+def test_configure_only_requires_patched_sdk_before_system_changes():
+    stubs = '''
+source_field() { echo https://example.invalid/repo.git; }
+select_nac_sdk() { echo SDK_SELECTED; NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture; }
+verify_nac_sdk() { echo SDK_REJECTED; return 1; }
+require_host_profile() { :; }
+install_common_system_packages() { echo UNEXPECTED_PACKAGES; }
+require_system_toolchain() { echo UNEXPECTED_TOOLCHAIN; }
+prepare_build_dir() { echo UNEXPECTED_BUILD_DIR; }
+run_waf_clean() { echo UNEXPECTED_WAF; }
+'''
+    result = shell(DEFINITIONS + stubs + MAIN, '--configure-only')
+    assert result.returncode != 0
+    assert 'SDK_SELECTED' in result.stdout and 'SDK_REJECTED' in result.stdout
+    assert 'UNEXPECTED_' not in result.stdout
+    assert 'no dependency build or fallback' in result.stderr
 
 
 def test_force_dependencies_rebuilds_even_when_detector_accepts_package():
@@ -565,13 +641,19 @@ check_waf_inventory() { echo MISSING_GTK >&2; return 37; }
 
 def test_pip_builds_wheels_then_privileged_noneditable_install():
     result = shell(DEFINITIONS + '''
+stage_python_wheel_sources() { shift; PYTHON_WHEEL_INPUTS=("$@"); }
 run() { printf 'BUILD:%s\\n' "$*"; touch "$wheel_dir/test.whl"; }
 sudo_run() { printf 'INSTALL:%s\\n' "$*"; }
 pip_install /example/package
 ''')
     assert result.returncode == 0, result.stderr
     assert '--isolated wheel --wheel-dir' in result.stdout
-    assert '--isolated install --no-index --no-deps --force-reinstall' in result.stdout
+    install = next(shlex.split(line[len('INSTALL:'):])
+                   for line in result.stdout.splitlines()
+                   if line.startswith('INSTALL:') and '-m pip --isolated install ' in line)
+    assert {'--isolated', '--no-index', '--no-deps', '--force-reinstall'} <= set(install)
+    assert not {'--user', '--editable', '-e'} & set(install)
+    assert any(token.endswith('/test.whl') for token in install)
     assert result.stdout.index('BUILD:') < result.stdout.index('INSTALL:')
 
 
@@ -587,3 +669,81 @@ printf 'PYTHON:%s\\n' "$PYTHON_BIN"
 ''', '--python', str(interpreter))
     assert result.returncode == 0, result.stderr
     assert 'PYTHON:/usr/bin/python3' in result.stdout
+
+
+@pytest.mark.parametrize("case, message", [
+    ("dependencies", None),
+    ("full", "recorded Waf build directory is no longer configured"),
+    ("foreign-root", "not recorded as owned by this checkout"),
+    ("symlink", "build directory may not be a symlink"),
+    ("symlink-slash", "build directory may not be a symlink"),
+    ("dangling-symlink", "build directory may not be a symlink"),
+])
+def test_owned_dependencies_only_build_root_reuse(tmp_path, case, message):
+    build = tmp_path / "build"
+    env = dict(os.environ, NDNSF_BUILD_DIR=str(build), NDNSF_REUSE_BUILD_DIR="0",
+               NDNSF_TEST_PYTHON=sys.executable)
+    prepare = '\nPYTHON_BIN="$NDNSF_TEST_PYTHON"\nDEPS_ONLY=1\nprepare_build_dir\n'
+    first = shell(DEFINITIONS + prepare, env=env)
+    assert first.returncode == 0, first.stderr
+    marker = build / ".ndnsf-stack-build.json"
+    original_marker = marker.read_bytes()
+    assert not (build / "c4che/_cache.py").exists()
+    env["NDNSF_REUSE_BUILD_DIR"] = "1"
+    if case == "full":
+        prepare = prepare.replace("DEPS_ONLY=1", "DEPS_ONLY=0")
+    elif case == "foreign-root":
+        foreign = tmp_path / "foreign"
+        foreign.mkdir()
+        env["NDNSF_TEST_OTHER_ROOT"] = str(foreign)
+        prepare = '\nROOT="$NDNSF_TEST_OTHER_ROOT"\n' + prepare
+    elif case in {"symlink", "symlink-slash", "dangling-symlink"}:
+        alias = tmp_path / "alias"
+        alias.symlink_to(tmp_path / "missing" if case == "dangling-symlink" else build,
+                         target_is_directory=True)
+        env["NDNSF_BUILD_DIR"] = str(alias) + ("///" if case == "symlink-slash" else "")
+    result = shell(DEFINITIONS + prepare, env=env)
+    if message is None:
+        assert result.returncode == 0, result.stderr
+        assert "Verified reusable NDNSF build directory" in result.stdout
+    else:
+        assert result.returncode != 0
+        assert message in result.stderr
+    assert marker.read_bytes() == original_marker
+    assert not (build / "c4che/_cache.py").exists()
+
+
+@pytest.mark.parametrize('receipt_matches', [False, True])
+def test_openabe_compatible_abi_requires_locked_source_receipt(tmp_path, receipt_matches):
+    helper = tmp_path / 'source-helper.sh'
+    helper.write_text('printf "%s\\n" "$*" >> "$RECEIPT_CALLS"\nexit ' +
+                      ('0' if receipt_matches else '1') + '\n')
+    calls = tmp_path / 'calls'
+    code = DEFINITIONS + '\n' + 'SOURCE_HELPER=' + shlex.quote(str(helper)) + '\n'
+    code += "PYTHON_BIN=/bin/bash\nhas_openabe() { return 0; }\n"
+    code += "ensure_source_tree() { echo SOURCE_REQUIRED >&2; return 23; }\n"
+    code += "build_openabe_dependency\n"
+    result = shell(code, env=dict(os.environ, RECEIPT_CALLS=str(calls)))
+    assert result.returncode == (0 if receipt_matches else 23), result.stderr
+    assert ('Locked patched OpenABE already installed' in result.stdout) == receipt_matches
+    assert ('SOURCE_REQUIRED' in result.stderr) != receipt_matches
+    invocation = calls.read_text()
+    assert 'check --lock ' in invocation
+    assert '--name openabe --prefix /usr/local' in invocation
+
+
+def test_openabe_materialization_failure_stops_before_build(tmp_path):
+    helper = tmp_path / 'source-helper.sh'
+    helper.write_text('printf "%s\\n" "$*" >> "$MATERIALIZE_CALLS"\nexit 29\n')
+    calls = tmp_path / 'calls'
+    code = DEFINITIONS + '\n' + 'SOURCE_HELPER=' + shlex.quote(str(helper)) + '\n'
+    code += 'PYTHON_BIN=/bin/bash\nhas_openabe() { return 1; }\n'
+    code += 'ensure_source_tree() { echo /fixture/clean-openabe; }\n'
+    code += 'run() { echo UNEXPECTED_BUILD >&2; return 99; }\n'
+    code += 'build_openabe_dependency\n'
+    result = shell(code, env=dict(os.environ, MATERIALIZE_CALLS=str(calls)))
+    assert result.returncode == 1, result.stderr
+    assert 'UNEXPECTED_BUILD' not in result.stderr
+    invocation = calls.read_text()
+    assert 'materialize --lock ' in invocation
+    assert '--name openabe --source-dir /fixture/clean-openabe --build-root ' in invocation

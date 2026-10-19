@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
@@ -99,6 +100,37 @@ def load_and_collect(path: Path, **kwargs: object) -> dict[str, bytes]:
 def summarize_motion_result(result: Mapping[str, object]) -> dict[str, object]:
     """Extract motion evidence without conflating input, estimate, and oracle."""
     motion = result.get("motion")
+    if isinstance(motion, Mapping) and motion.get("schema") == "uav-motion-result-v2":
+        measurements = motion.get("measurements", [])
+        if not isinstance(measurements, list):
+            raise ResultError("motion measurements must be a list")
+        accepted: list[dict[str, object]] = []
+        for item in measurements:
+            if not isinstance(item, Mapping):
+                raise ResultError("invalid Spec210 motion measurement")
+            for field in ("trackKey", "frameKey", "observationRef"):
+                if not isinstance(item.get(field), Mapping):
+                    raise ResultError(f"Spec210 measurement requires {field}")
+            for field in ("velocityEastMps", "velocityNorthMps", "speedMps", "courseDeg",
+                          "captureTimeUs", "estimateTimeUs", "rangeTimeUs",
+                          "horizontalRangeM", "slantRangeM", "sigmaSpeedMps",
+                          "sigmaCourseDeg", "sigmaRangeM"):
+                value = item.get(field)
+                if value is not None and (isinstance(value, bool) or
+                        not isinstance(value, (int, float)) or not math.isfinite(float(value))):
+                    raise ResultError(f"Spec210 measurement field {field} is not finite")
+            accepted.append(dict(item))
+        qualities = {str(item.get("quality", "unknown")) for item in accepted}
+        status = ("estimated" if qualities & {"estimated", "stationary"} else
+                  "warming-up" if "warming-up" in qualities else "unknown")
+        return {
+            "schema": "uav-motion-result-v2",
+            "status": status,
+            "sourceEpoch": motion.get("sourceEpoch"),
+            "inputProvenance": str(motion.get("inputProvenance", "unknown")),
+            "accuracyQualification": str(motion.get("accuracyQualification", "unvalidated")),
+            "measurements": accepted,
+        }
     if not isinstance(motion, Mapping) or motion.get("schema") != "spec191-motion-result-v1":
         return {"status": "unknown", "estimates": [], "inputProvenance": "unknown"}
     estimates = motion.get("estimates", [])
@@ -126,6 +158,9 @@ def summarize_motion_result(result: Mapping[str, object]) -> dict[str, object]:
             "egoMotionCompensation": str(item.get("egoMotionCompensation", "unknown")),
             "uncertainty": str(item.get("uncertainty", "unknown")),
         })
+        camera_id = item.get("cameraId")
+        if isinstance(camera_id, str) and camera_id:
+            normalized[-1]["cameraId"] = camera_id
     oracle = motion.get("oracle")
     return {
         "status": "estimated" if any(item["status"] == "ok" for item in normalized) else "unknown",

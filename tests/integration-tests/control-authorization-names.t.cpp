@@ -10,11 +10,14 @@
 
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
+#include <ndn-cxx/security/validator-null.hpp>
+#include <nac-abe/attribute-authority.hpp>
 #include <ndn-cxx/util/io.hpp>
 #include <ndn-cxx/util/time-unit-test-clock.hpp>
 #include <ndn-cxx/lp/nack.hpp>
 #include <openssl/sha.h>
 #include <fstream>
+#include <iomanip>
 #include <filesystem>
 #include <thread>
 #include <array>
@@ -1080,6 +1083,221 @@ BOOST_AUTO_TEST_CASE(WrappedKeySingleFetchRejectsSignerGeometryAndMalformedBlock
     if (fault == Fault::Signer) BOOST_CHECK(failure.find("signer is not authorized for Producer") != std::string::npos);
     if (fault == Fault::FinalBlock) BOOST_CHECK(failure.find("FinalBlock") != std::string::npos);
     if (fault == Fault::Block || fault == Fault::TrailingBlock) BOOST_CHECK(failure.find("valid NAC Block") != std::string::npos);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(StrictCkConsumerValidatesCertificateChainBeforeProducerAuthorization)
+{
+  // The event loop, keys, certificates and packet collections outlive all
+  // native actors and scoped handlers; there is no detached fixture worker.
+  boost::asio::io_context io;
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  auto pattern = (std::filesystem::temp_directory_path() / "spec210-ck-ca-XXXXXX").string();
+  std::vector<char> directory(pattern.begin(), pattern.end());
+  directory.push_back('\0');
+  const auto* created = ::mkdtemp(directory.data());
+  BOOST_REQUIRE(created != nullptr);
+  struct Cleanup {
+    std::filesystem::path path;
+    ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
+  } cleanup{created};
+  const ndn::Name rootName("/spec210/ck-chain");
+  const auto root = makeRsaIdentity(keys, rootName);
+  const auto issue = [&](const ndn::Name& name) {
+    const auto key = keys.createIdentity(name, ndn::RsaKeyParams(2048)).getDefaultKey();
+    const auto certificate = keys.makeCertificate(key, ndn::security::signingByCertificate(root));
+    keys.addCertificate(key, certificate);
+    keys.setDefaultCertificate(key, certificate);
+    return certificate;
+  };
+  const auto authorityCertificate = issue(ndn::Name(rootName).append("aa"));
+  const auto producerCertificate = issue(ndn::Name(rootName).append("producer"));
+  const auto consumerCertificate = makeRsaIdentity(keys, ndn::Name(rootName).append("consumer"));
+  BOOST_REQUIRE(ndn::security::verifySignature(authorityCertificate, root));
+  BOOST_REQUIRE(ndn::security::verifySignature(producerCertificate, root));
+  const auto producerName = producerCertificate.getIdentity();
+  const auto rogueKey = keys.createKey(keys.getPib().getIdentity(producerName), ndn::RsaKeyParams(2048));
+  const auto rogueKeySelfCertificate = rogueKey.getDefaultCertificate();
+  const auto rogueCertificate = keys.makeCertificate(rogueKey, ndn::security::signingByKey(rogueKey));
+  keys.addCertificate(rogueKey, rogueCertificate);
+  BOOST_REQUIRE(rogueCertificate.getIdentity() == producerName);
+  BOOST_REQUIRE(rogueCertificate.getKeyName() != producerCertificate.getKeyName());
+  BOOST_REQUIRE(rogueCertificate.getName() != producerCertificate.getName());
+  BOOST_REQUIRE(ndn::security::verifySignature(rogueCertificate, rogueCertificate));
+  BOOST_REQUIRE(!ndn::security::verifySignature(rogueCertificate, root));
+
+  const auto anchorPath = cleanup.path / "root.cert";
+  const auto schemaPath = cleanup.path / "trust.conf";
+  ndn::io::save(root, anchorPath.string());
+  {
+    std::ofstream schema(schemaPath);
+    schema << "rule { id ck-chain for data checker { type hierarchical sig-type rsa-sha256 } }\n"
+              "trust-anchor { type file file-name " << std::quoted(anchorPath.string()) << " }\n";
+  }
+  ndn::DummyClientFace authorityFace(io, keys, {false, true});
+  ndn::DummyClientFace producerFace(io, keys, {false, true});
+  ndn::DummyClientFace consumerFace(io, keys, {false, true});
+  producerFace.linkTo(authorityFace);
+  producerFace.linkTo(consumerFace);
+  ndn::security::ValidatorNull bootstrapValidator;
+  ndn::ValidatorConfig validator(consumerFace);
+  validator.load(schemaPath.string());
+  // Serve the rogue key's self-signed certificate so Validator can complete
+  // chain retrieval and reject it against the isolated root.
+  const std::vector<ndn::security::Certificate> certificates{
+    root, authorityCertificate, producerCertificate, rogueCertificate,
+    rogueKeySelfCertificate};
+  ndn::nacabe::SPtrVector<ndn::Data> dataPackets, originalCk, rogueCk;
+  size_t ckRequests = 0, rogueCertificateRequests = 0;
+  size_t rogueKeyCertificateRequests = 0, rogueKeyCertificateResponses = 0;
+  size_t authorizations = 0, successes = 0, errors = 0;
+  std::string failure;
+  bool serveRogue = false;
+  const ndn::Buffer expected{1, 2, 3};
+  ndn::signal::ScopedConnection serveCertificates = consumerFace.onSendInterest.connect(
+    [&](const ndn::Interest& interest) {
+      for (const auto& certificate : certificates) {
+        if (interest.matchesData(certificate)) {
+          if (certificate.getName() == rogueCertificate.getName()) ++rogueCertificateRequests;
+          if (certificate.getName() == rogueKeySelfCertificate.getName())
+            ++rogueKeyCertificateRequests;
+          consumerFace.receive(certificate);
+          if (certificate.getName() == rogueKeySelfCertificate.getName())
+            ++rogueKeyCertificateResponses;
+          return;
+        }
+      }
+    });
+  ndn::nacabe::KpAttributeAuthority authority(authorityCertificate, authorityFace,
+                                            bootstrapValidator, keys);
+  authority.addNewPolicy(consumerCertificate, "attr1 AND attr2");
+  // DummyClientFace completes PrefixRegistration through the io_context. Drain
+  // that registration before Consumer's constructor requests /PUBPARAMS.
+  io.poll();
+  io.restart();
+  ndn::nacabe::Producer producer(producerFace, keys, bootstrapValidator,
+                                producerCertificate, authorityCertificate, producerCertificate);
+  ndn::nacabe::Consumer consumer(consumerFace, keys, validator,
+                                consumerCertificate, authorityCertificate);
+  ndn::ScopedInterestFilterHandle serveCk = producerFace.setInterestFilter(producerName,
+    [&](const ndn::InterestFilter&, const ndn::Interest& interest) {
+      for (const auto& packet : (serveRogue ? rogueCk : originalCk)) {
+        if (interest.matchesData(*packet)) {
+          ++ckRequests;
+          producerFace.put(*packet);
+          return;
+        }
+      }
+    });
+  consumer.obtainDecryptionKey();
+  pump(io, [&] { return consumer.readyForDecryption() && !producer.getPublicParamsDigest().empty(); });
+  std::tie(dataPackets, originalCk) = producer.produce(ndn::Name("/payload"),
+    std::vector<std::string>{"attr1", "attr2"}, expected,
+    ndn::security::signingByCertificate(producerCertificate));
+  BOOST_REQUIRE(!dataPackets.empty());
+  BOOST_REQUIRE(!originalCk.empty());
+  const auto encoded = mergeDataContents(dataPackets);
+  const ndn::Block cipher(ndn::span<const uint8_t>(encoded.data(), encoded.size()));
+  const auto dataName = dataPackets.front()->getName().getPrefix(-1);
+  const auto read = [&] {
+    consumer.consumeWithCkAuthorization(dataName, cipher, producerName,
+      [&](const ndn::Data& packet) {
+        ++authorizations;
+        return ProducerSignerPolicy().allowsValidatedSigner(packet, producerName);
+      }, [] { return true; },
+      [&](const ndn::Buffer& plaintext) { BOOST_CHECK(plaintext == expected); ++successes; },
+      [&](const std::string& reason) { failure = reason; ++errors; });
+  };
+  read();
+  pump(io, [&] { return successes + errors == 1; });
+  BOOST_REQUIRE_MESSAGE(errors == 0, failure);
+  BOOST_REQUIRE_EQUAL(successes, 1U);
+  BOOST_REQUIRE_GT(ckRequests, 0U);
+  BOOST_REQUIRE_GT(authorizations, 0U);
+  const auto authorizedBefore = authorizations;
+  const auto requestedBefore = ckRequests;
+  for (const auto& original : originalCk) {
+    auto forged = std::make_shared<ndn::Data>(*original);
+    keys.sign(*forged, ndn::security::signingByCertificate(rogueCertificate));
+    BOOST_REQUIRE(forged->getName() == original->getName());
+    BOOST_REQUIRE(forged->getContent() == original->getContent());
+    BOOST_REQUIRE(forged->getFinalBlock() == original->getFinalBlock());
+    BOOST_REQUIRE(ndn::security::verifySignature(*forged, rogueCertificate));
+    // Counterfactual identity policy accepts this same-identity key. The real
+    // callback above must never receive it unless its chain was validated.
+    BOOST_REQUIRE(ProducerSignerPolicy().allowsValidatedSigner(*forged, producerName));
+    rogueCk.push_back(std::move(forged));
+  }
+  serveRogue = true;
+  read();
+  pump(io, [&] { return successes + errors == 2; });
+  BOOST_CHECK_GT(ckRequests, requestedBefore);
+  BOOST_CHECK_GT(rogueCertificateRequests, 0U);
+  BOOST_REQUIRE_GT(rogueKeyCertificateRequests, 0U);
+  BOOST_REQUIRE_EQUAL(rogueKeyCertificateResponses, rogueKeyCertificateRequests);
+  BOOST_CHECK_EQUAL(successes, 1U);
+  BOOST_CHECK_EQUAL(errors, 1U);
+  BOOST_CHECK_EQUAL(authorizations, authorizedBefore);
+  BOOST_REQUIRE_MESSAGE(failure.find("Segment validation failed:") != std::string::npos,
+                        "Expected Validator to reject the rogue CK certificate chain, got: " << failure);
+  BOOST_REQUIRE_MESSAGE(failure.find("certification chain") != std::string::npos,
+                        "Expected a certificate-chain validation error, got: " << failure);
+  consumer.stop();
+  producer.stop();
+  io.poll(); io.restart();
+}
+
+BOOST_AUTO_TEST_CASE(WrappedKeyOperationFenceCancelsBeforeStartAndDuringFetch)
+{
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  const auto owner = makeRsaIdentity(keys, ndn::Name("/spec210/wrapper/owner"));
+  ndn::io::save(owner, "spec210-wrapper-owner.cert");
+  {
+    std::ofstream schema("spec210-wrapper.conf");
+    schema << "rule { id wrapper for data checker { type hierarchical sig-type rsa-sha256 } }\n"
+              "trust-anchor { type file file-name spec210-wrapper-owner.cert }\n";
+  }
+  const ndn::Name service("/service"), producer = owner.getIdentity();
+  const auto attribute = makeAbeServiceAttribute(service, "SERVICE");
+  const auto locator = makeHybridMessageKeyDataName(service, producer, attribute, "epoch");
+  Bytes plaintext(9000, 0x33);
+  ndn::Block envelope(128);
+  envelope.push_back(ndn::makeBinaryBlock(129, plaintext.begin(), plaintext.end()));
+  envelope.encode();
+  const auto packets = prepareHybridMessageKeyPackets(service, producer, attribute, "epoch",
+      ndn::span<const uint8_t>(envelope.data(), envelope.size()), keys,
+      ndn::security::signingByIdentity(producer), ndn::time::milliseconds(1000), ndn::tlv::ContentType_Blob);
+  BOOST_REQUIRE_GT(packets.size(), 1U);
+  for (const unsigned cancelAt : {0U, 1U, 2U}) {
+    boost::asio::io_context io;
+    ndn::DummyClientFace face(io, keys);
+    ndn::ValidatorConfig validator(face);
+    validator.load("spec210-wrapper.conf");
+    bool current = cancelAt != 0;
+    unsigned interests = 0, successes = 0, failures = 0;
+    ndn::signal::ScopedConnection connection = face.onSendInterest.connect([&](const ndn::Interest& interest) {
+      ++interests;
+      if (interests >= cancelAt) { current = false; return; }
+      if (interest.getName() == locator) face.receive(*packets.front());
+    });
+    fetchHybridMessageKeyWrapper(face, validator, locator,
+      [producer](const ndn::Data& packet) { return ProducerSignerPolicy().allowsValidatedSigner(packet, producer); },
+      [&](const ndn::Name&, const ndn::Block&) { ++successes; },
+      [&](const std::string& reason) {
+        BOOST_CHECK(reason.find("canceled") != std::string::npos);
+        ++failures;
+      }, [&] { return current; });
+    pump(io, [&] { return failures != 0; }, std::chrono::seconds(3));
+    BOOST_REQUIRE_EQUAL(failures, 1U);
+    BOOST_CHECK_EQUAL(successes, 0U);
+    BOOST_CHECK_EQUAL(face.getNPendingInterests(), 0U);
+    if (cancelAt == 0) BOOST_CHECK_EQUAL(interests, 0U);
+    const auto terminalInterests = interests;
+    for (const auto& packet : packets) face.receive(*packet);
+    io.poll(); io.restart();
+    BOOST_CHECK_EQUAL(successes, 0U);
+    BOOST_CHECK_EQUAL(failures, 1U);
+    BOOST_CHECK_EQUAL(interests, terminalInterests);
   }
 }
 

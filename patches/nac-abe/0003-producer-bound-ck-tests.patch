@@ -1,0 +1,290 @@
+--- /dev/null
++++ b/tests/unit-tests/producer-bound-ck.t.cpp
+@@ -0,0 +1,287 @@
++/* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
++/*
++ * Copyright (c) 2017-2022, Regents of the University of California.
++ *
++ * This file is part of NAC-ABE.
++ *
++ * NAC-ABE is free software: you can redistribute it and/or modify it under the terms
++ * of the GNU General Public License as published by the Free Software Foundation, either
++ * version 3 of the License, or (at your option) any later version.
++ *
++ * NAC-ABE is distributed in the hope that it will be useful, but WITHOUT ANY
++ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
++ * PARTICULAR PURPOSE.  See the GNU General Public License for more details.
++ *
++ * You should have received copies of the GNU General Public License along with
++ * NAC-ABE, e.g., in COPYING.md file.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ * See AUTHORS.md for complete list of NAC-ABE authors and contributors.
++ */
++
++#include "consumer.hpp"
++#include "producer.hpp"
++#include "attribute-authority.hpp"
++#include "test-common.hpp"
++
++#include <ndn-cxx/security/validator-null.hpp>
++#include <ndn-cxx/security/verification-helpers.hpp>
++#include <ndn-cxx/util/dummy-client-face.hpp>
++#include <ndn-cxx/util/segmenter.hpp>
++
++namespace ndn {
++namespace nacabe {
++namespace tests {
++
++// Real segmented transport and crypto; signature-policy decisions are outside
++// this fixture's cache-invalidation boundary.
++class ProducerBoundCkFixture : public IdentityManagementTimeFixture
++{
++public:
++  ProducerBoundCkFixture()
++    : aaFace(io, m_keyChain, {false, true})
++    , producerFace(io, m_keyChain, {false, true})
++    , consumerFace(io, m_keyChain, {false, true})
++  {
++    producerFace.linkTo(aaFace);
++    producerFace.linkTo(consumerFace);
++    const auto aaCert = addIdentity("/revocation/aa").getDefaultKey().getDefaultCertificate();
++    const auto consumerCert = addIdentity("/revocation/user", RsaKeyParams())
++                                .getDefaultKey().getDefaultCertificate();
++    producerCert = addIdentity("/revocation/provider").getDefaultKey().getDefaultCertificate();
++    aa = std::make_unique<CpAttributeAuthority>(aaCert, aaFace, validator, m_keyChain);
++    aa->addNewPolicy(consumerCert, {"attr1"});
++    advanceClocks(time::milliseconds(20), 60);
++    consumer = std::make_unique<Consumer>(consumerFace, m_keyChain, validator, consumerCert, aaCert);
++    producer = std::make_unique<Producer>(producerFace, m_keyChain, validator,
++                                          producerCert, aaCert, producerCert);
++    advanceClocks(time::milliseconds(20), 60);
++    consumer->obtainDecryptionKey();
++    advanceClocks(time::milliseconds(20), 60);
++    BOOST_REQUIRE(consumer->readyForDecryption());
++    std::tie(data, ck) = producer->produce(Name("/payload"), "attr1", Buffer{1, 2, 3},
++                                           security::signingByCertificate(producerCert));
++    BOOST_REQUIRE_EQUAL(data.size(), 1U);
++    BOOST_REQUIRE(!ck.empty());
++    dataName = data.front()->getName().getPrefix(-1);
++    producerFace.setInterestFilter(producerCert.getIdentity(),
++      [this] (const InterestFilter&, const Interest& interest) {
++        for (const auto& packet : data) {
++          if (interest.matchesData(*packet)) {
++            ++dataRequests;
++            if (!holdData)
++              producerFace.put(*packet);
++            return;
++          }
++        }
++        for (const auto& packet : ck) {
++          if (interest.matchesData(*packet)) {
++            ++ckRequests;
++            if (!holdCk)
++              producerFace.put(*packet);
++            return;
++          }
++        }
++      });
++    advanceClocks(time::milliseconds(10), 2);
++  }
++
++  void
++  consume()
++  {
++    consumer->consume(dataName,
++      [this] (const Buffer& plain) {
++        BOOST_CHECK(plain == Buffer({1, 2, 3}));
++        ++successes;
++      }, [this] (const std::string&) { ++errors; });
++  }
++
++  Block encryptedPayload() const
++  {
++    auto bytes = std::make_shared<Buffer>();
++    for (const auto& packet : data) {
++      const auto& content = packet->getContent();
++      bytes->insert(bytes->end(), content.value_begin(), content.value_end());
++    }
++    return Block(bytes);
++  }
++
++  void strictConsume(const std::function<bool()>& current = [] { return true; })
++  {
++    consumer->consumeWithCkAuthorization(dataName, encryptedPayload(),
++      producerCert.getIdentity(),
++      [this](const Data& packet) { return security::verifySignature(packet, producerCert); },
++      current,
++      [this](const Buffer& plain) { BOOST_CHECK(plain == Buffer({1, 2, 3})); ++successes; },
++      [this](const std::string& reason) { errorReasons.push_back(reason); ++errors; });
++  }
++
++  DummyClientFace aaFace, producerFace, consumerFace;
++  security::ValidatorNull validator;
++  security::Certificate producerCert;
++  std::unique_ptr<CpAttributeAuthority> aa;
++  std::unique_ptr<Consumer> consumer;
++  std::unique_ptr<Producer> producer;
++  SPtrVector<Data> data, ck;
++  Name dataName;
++  bool holdData = false, holdCk = false;
++  size_t dataRequests = 0, ckRequests = 0, successes = 0, errors = 0;
++  std::vector<std::string> errorReasons;
++};
++
++BOOST_FIXTURE_TEST_SUITE(TestProducerBoundCk, ProducerBoundCkFixture)
++
++BOOST_AUTO_TEST_CASE(ActualProducerPositive)
++{
++  strictConsume();
++  advanceClocks(time::milliseconds(20), 100);
++  BOOST_CHECK_EQUAL(successes, 1U);
++  BOOST_CHECK_MESSAGE(errors == 0U, (errorReasons.empty() ? "unexpected failure count" : errorReasons.front()));
++  BOOST_CHECK_GT(ckRequests, 0U);
++}
++
++BOOST_AUTO_TEST_CASE(LaterCkSegmentMustAlsoBeProducerAuthorized)
++{
++  std::tie(data, ck) = producer->produce(Name("/multi"), "attr1", Buffer{1, 2, 3},
++      security::signingByCertificate(producerCert), std::make_shared<Data>(),
++      std::make_shared<Data>(), 128);
++  BOOST_REQUIRE_GT(ck.size(), 1U);
++  auto cipherBytes = std::make_shared<Buffer>();
++  for (const auto& packet : data) {
++    const auto& content = packet->getContent();
++    cipherBytes->insert(cipherBytes->end(), content.value_begin(), content.value_end());
++  }
++  const auto other = addIdentity("/revocation").getDefaultKey().getDefaultCertificate();
++  m_keyChain.sign(*ck.back(), security::signingByCertificate(other));
++  size_t authorizedSegments = 0, rejectedSegments = 0;
++  consumer->consumeWithCkAuthorization(data.front()->getName().getPrefix(-1), Block(cipherBytes),
++      producerCert.getIdentity(),
++      [&](const Data& packet) {
++        const bool allowed = security::verifySignature(packet, producerCert);
++        if (allowed) ++authorizedSegments;
++        else ++rejectedSegments;
++        return allowed;
++      }, [] { return true; },
++      [&](const Buffer&) { ++successes; }, [&](const std::string&) { ++errors; });
++  advanceClocks(time::milliseconds(20), 100);
++  BOOST_CHECK_GT(authorizedSegments, 0U);
++  BOOST_CHECK_EQUAL(rejectedSegments, 1U);
++  BOOST_CHECK_EQUAL(successes, 0U);
++  BOOST_CHECK_EQUAL(errors, 1U);
++}
++
++BOOST_AUTO_TEST_CASE(LegacyCacheCannotBypassProducerAuthorization)
++{
++  consume();
++  advanceClocks(time::milliseconds(20), 100);
++  BOOST_REQUIRE_EQUAL(successes, 1U);
++  const auto previousRequests = ckRequests;
++  const auto other = addIdentity("/revocation").getDefaultKey().getDefaultCertificate();
++  for (auto& packet : ck)
++    m_keyChain.sign(*packet, security::signingByCertificate(other));
++  strictConsume();
++  advanceClocks(time::milliseconds(20), 100);
++  BOOST_CHECK_EQUAL(successes, 1U);
++  BOOST_CHECK_EQUAL(errors, 1U);
++  BOOST_CHECK_GT(ckRequests, previousRequests);
++  BOOST_REQUIRE_EQUAL(errorReasons.size(), 1U);
++  BOOST_CHECK(errorReasons.front().find("authorization") != std::string::npos);
++}
++
++BOOST_AUTO_TEST_CASE(LegacyInflightCannotSatisfyStrictOperation)
++{
++  holdCk = true;
++  consume();
++  advanceClocks(time::milliseconds(10), 5);
++  BOOST_REQUIRE_GT(ckRequests, 0U);
++  const auto other = addIdentity("/revocation").getDefaultKey().getDefaultCertificate();
++  for (auto& packet : ck)
++    m_keyChain.sign(*packet, security::signingByCertificate(other));
++  strictConsume();
++  advanceClocks(time::milliseconds(10), 5);
++  holdCk = false;
++  for (const auto& packet : ck)
++    producerFace.put(*packet);
++  advanceClocks(time::milliseconds(20), 100);
++  BOOST_CHECK_EQUAL(successes, 1U); // Legacy API retains its trust-only semantics.
++  BOOST_CHECK_EQUAL(errors, 1U);    // Strict operation rejects the same packets.
++  BOOST_REQUIRE_EQUAL(errorReasons.size(), 1U);
++  BOOST_CHECK(errorReasons.front().find("authorization") != std::string::npos);
++}
++
++BOOST_AUTO_TEST_CASE(CurrentRevocationCompletesOnceAndStopsFetching)
++{
++  holdCk = true;
++  bool current = true;
++  strictConsume([&] { return current; });
++  advanceClocks(time::milliseconds(10), 5);
++  BOOST_REQUIRE_GT(ckRequests, 0U);
++  current = false;
++  advanceClocks(time::milliseconds(20), 10);
++  BOOST_REQUIRE_EQUAL(errors, 1U);
++  const auto requestsAtCancellation = ckRequests;
++  holdCk = false;
++  for (const auto& packet : ck)
++    producerFace.put(*packet);
++  advanceClocks(time::milliseconds(20), 100);
++  BOOST_CHECK_EQUAL(successes, 0U);
++  BOOST_CHECK_EQUAL(errors, 1U);
++  BOOST_CHECK_EQUAL(ckRequests, requestsAtCancellation);
++}
++
++BOOST_AUTO_TEST_CASE(CacheInvalidationCompletesStrictOperationOnce)
++{
++  holdCk = true;
++  strictConsume();
++  advanceClocks(time::milliseconds(10), 5);
++  BOOST_REQUIRE_GT(ckRequests, 0U);
++  consumer->clearCache();
++  advanceClocks(time::milliseconds(20), 100);
++  BOOST_CHECK_EQUAL(successes, 0U);
++  BOOST_CHECK_EQUAL(errors, 1U);
++}
++
++BOOST_AUTO_TEST_CASE(ConsumerDestructionCompletesWithOwnedCallback)
++{
++  holdCk = true;
++  strictConsume();
++  advanceClocks(time::milliseconds(10), 5);
++  BOOST_REQUIRE_GT(ckRequests, 0U);
++  consumer.reset();
++  BOOST_REQUIRE_EQUAL(errors, 0U); // No application reentry from destruction.
++  advanceClocks(time::milliseconds(20), 100);
++  BOOST_CHECK_EQUAL(successes, 0U);
++  BOOST_CHECK_EQUAL(errors, 1U);
++}
++
++BOOST_AUTO_TEST_CASE(InvalidLocatorRejectedBeforeAnyCkInterest)
++{
++  const std::vector<Name> invalid{
++    Name("/other/CK/1/ENC-BY/attr1"),
++    Name("/revocation/provider/CK/01/ENC-BY/attr1"),
++    Name("/revocation/provider/CK/4294967296/ENC-BY/attr1"),
++    Name("/revocation/provider/CK/no/ENC-BY/attr1"),
++    Name("/revocation/provider/CK/1/ENC-BY/attr1/extra"),
++    Name("/revocation/provider/CK/1/ENC-BY").appendVersion(1)};
++  for (const auto& locator : invalid) {
++    auto block = encryptedPayload();
++    block.parse();
++    block.remove(tlv::Name);
++    block.push_back(locator.wireEncode());
++    block.encode();
++    consumer->consumeWithCkAuthorization(dataName, block, producerCert.getIdentity(),
++      [](const Data&) { return true; }, [] { return true; },
++      [&](const Buffer&) { ++successes; }, [&](const std::string& reason) {
++        BOOST_CHECK(reason.find("CK") != std::string::npos);
++        ++errors;
++      });
++  }
++  advanceClocks(time::milliseconds(20), 100);
++  BOOST_CHECK_EQUAL(errors, invalid.size());
++  BOOST_CHECK_EQUAL(successes, 0U);
++  BOOST_CHECK_EQUAL(ckRequests, 0U);
++}
++
++BOOST_AUTO_TEST_SUITE_END()
++} // namespace tests
++} // namespace nacabe
++} // namespace ndn

@@ -9,9 +9,9 @@
 #include <ndn-cxx/encoding/block.hpp>
 #include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
+#include <ndn-cxx/security/pib/impl/pib-sqlite3.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/logging.hpp>
-#include <ndn-cxx/security/pib/impl/pib-sqlite3.hpp>
 #include <boost/asio/post.hpp>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
@@ -714,6 +714,8 @@ run(const Options& options)
   const auto mode = required(options, "mode");
   if (mode == "import-public-certificate") {
     const auto certificate = readCertificate(required(options, "certificate"));
+    // This is a remote key: ndnsec cert-install requires that key to exist already.
+    // The test backend imports the public key bits and certificate without a private key.
     ndn::security::pib::PibSqlite3 pib;
     pib.addCertificate(certificate);
     std::cout << "PUBLIC_CERTIFICATE_IMPORTED name=" << certificate.getName() << '\n';

@@ -16,6 +16,70 @@ NDNSF runtime 之上的应用层，而不是低层 core example。
 固定的本地视频和 CPU 模型，通过已验证的 NDNSF Named Data 传递帧与结果；不宣称跟踪
 准确率或真实飞行资格。
 
+### Spec210 运动观测与来源适配器
+
+Spec210 在同一个入口中增加逐帧、逐相机的车辆对地速度、真北方向以及水平/斜距。
+默认配置 `configs/uav_observation_demo.json` 使用明确标记为模拟的本地坐标系相机参数，
+采样率为 5 Hz；结果始终标记为未验证，不能把合成姿态说成真实飞行测量。旧版
+motion fixture 仍通过 `--motion-profile` 或 `--motion-fixture` 显式启用。
+
+默认假设三架无人机悬停：三路 `velocityWmps` 均为 `(0,0,0)`，相机位置和姿态保持固定。
+以后可通过同一配置字段设定低速漂移，或由现有观测 API 输入实际位姿。
+这些假设不代表参考视频的真实飞行参数；输出继续标为 `simulated / illustrative / unvalidated`。
+方向仍受原有不确定度与运动质量门限限制，静止或证据不足的车辆显示 unknown。
+
+`--observation-mode simulated` 使用默认演示；`replay` 只改变交付节奏而保留来源时间戳；
+`live-push` 则逐窗口写入有界 pipe。若 `source.kind=video-reference`，参考推送端会按视频
+真实 PTS 在运行时解码所需帧，不预先生成 JSONL 事件文件。该方式只验证推送路径，不代表
+接入了真实传感器。每个窗口的 JSON 结果旁会生成
+`motion-measurements-<sequence>.csv`，保存在
+`private/compute/worker/annotated/`；CSV 与 JSON 共用同一组逐帧测量，未知数值留空。
+
+界面速度使用 km/h，JSON/CSV 保留 m/s；同时显示几何质量和检测框底边中心近似接地点
+（`anchorApproximation=true`）。模拟/回放年龄使用随已验证输入推进、有背压时暂停的逻辑播放时钟，
+不代表墙钟处理时延。不确定度区间完全超过 1000 ms 才标 stale，完全不超过该门限才标 fresh，
+跨门限时为 unknown。runner 按当前 profile/source-generation 过滤旧结果，复用输出目录不会把上次运行标成 fresh。
+
+实测实时来源缺少同步的当前源时钟时，年龄显示 unknown。可通过已安装模块
+`display_clock.ClockSample.parse` 提供完整 `identity`、`clockBinding`、`currentTimeUs`、
+`uncertaintyUs`、`sampledAtSteadyUs`、有限 `rate`（0–4）与 `basis=source`。
+当前时间与采集时间必须使用同一映射时域，采样时刻使用 renderer 主机的 monotonic 微秒。
+`ComputeRenderer(clock_provider=...)` 接收 `{cameraId: ClockSample}`，本地 JSON API 也支持
+`DisplayFrame.ageClock` 记录；时钟失败退化 unknown，恢复后继续刷新缓存画面。
+旧版 v1 估计明确显示 `legacy estimate / unqualified`。
+旧速度只按明确的 `(cameraId, globalId)` 绑定；旧记录缺少相机身份或同键重复时显示 unknown，
+不借用其他相机的值。
+
+接入真实适配器时，使用 `acquisitionKind: "measured"`、`source.kind: "external-fd"`、
+`accuracyQualification: "unvalidated"` 的观测配置，并选择 `--observation-mode live-push`。
+使用 `--external-source-adapter` 指定可执行适配器。runner 会为每个相机启动一个受监督的适配器进程，
+并在启动相机节点前等待其向 stdout 输出准确的一行
+`UAV_OBSERVATION_SOURCE_ADAPTER_READY`。适配器应在初始化完成后、任何可能阻塞的 FIFO 打开操作之前输出该标记。
+runner 为每个相机和窗口创建有界 FIFO，不启动参考视频推送端。适配器按窗口顺序向提供的 FIFO 写入
+`uav-source-event-v2` JSONL 记录并遵守 pipe 背压。设备适配器可通过 Python
+`observation_source.write_event` 或 native `StreamObservationSource` 提交相同的标定、地面、
+位姿和帧事件；帧事件绑定原始图像字节和采集时间。适配器需要提供真实时钟对齐、相机标定、
+ENU 位姿/姿态和地面几何。必要输入缺失或无效时，检测仍可继续，但对应运动指标会变成
+unknown。在真实参数和误差预算通过资格验证前，结果仍然是未验证数据。
+
+来源可调用 `write_event(stream, "gap", payload)` 或 native `IObservationSink::submitGap(FrameGap)`
+明确声明丢帧。payload 仅含 `schema: "uav-frame-gap-v2"`、完整七字段 `identity`、
+闭区间 `firstSequence`/`lastSequence`（1..2^63-1）和 `reason`（`CAPTURE_DROPPED` 或 `QUEUE_FULL`）。
+Python writer 接收整数并编码为十进制字符串；gap 不含图像或虚构时间戳，幸存帧保留原始序号和采集时间。
+在 source executor 上调用 native `frameGaps()` 可取得最多128条记录的 owned 快照。
+请求已声明丢失的帧会明确返回 `FRAME_GAP` 并记录 `SOURCE_FRAME_GAP`；当前逐窗口 demo 可终止，
+不会替换成别的图像。队列拒绝本身不是丢帧；回放来源应保留同一帧并在背压解除后重试。
+JSONL 没有 admission 应答通道，应以 gap 替代主动省略的 frame 事件，不能用后续 gap 恢复已被拒绝的事件。
+
+可用重复参数 `--source-switch-after-window N` 在不中断分布式进程的情况下演示采集代次切换。
+`N` 表示已完成窗口数（一基数）；下一窗口使用新的逐相机 source ID 和递增 epoch。例如
+`--window-count 5 --source-switch-after-window 2` 会在 `window-2` 前切换。runner 为整次运行
+生成唯一的 `uav-source-generations-v1` 清单；source、compute 和 GroundStation 都按清单核验请求
+及结果，worker 在切换时清空跟踪和运动历史。外部适配器通过 `--source-generations PATH` 接收清单。
+请求切源时，适配器须加载清单，并在 `UAV_OBSERVATION_SOURCE_ADAPTER_READY` 标记中回显
+`generation-manifest-sha256=sha256:<64位小写十六进制>`；不切源时只需基础 READY 标记。该演示验证
+代次隔离，不代表实机传感器精度资格通过。
+
 核心思想是：一个进程可以承载多个 NDNSF service instances 和 client-side workflows。
 `UavDroneApp` 是 drone-side container，承载 MAVLink execution、video control、telemetry、
 camera frame、mission assignment 等服务实例。`UavGroundStationApp` 是 ground-station

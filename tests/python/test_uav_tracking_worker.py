@@ -4,15 +4,30 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 import cv2
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "NDNSF-UAV-APP/tracking"))
-from tracking_worker import CrossCameraAssociator, TrackingEngine  # noqa: E402
+from tracking_worker import CrossCameraAssociator, Track, TrackingEngine  # noqa: E402
 
 
 class TrackingWorkerTest(unittest.TestCase):
+    def test_byte_track_state_derives_update_age_when_ultralytics_omits_field(self) -> None:
+        track = SimpleNamespace(
+            _tlwh=np.asarray([1, 2, 3, 4], dtype=np.float32),
+            mean=np.zeros(8, dtype=np.float32),
+            covariance=np.eye(8, dtype=np.float32),
+            track_id=7, is_activated=True, state=1, score=0.9, cls=2, idx=0,
+            angle=0.0, start_frame=3, frame_id=8, tracklet_len=5)
+        tracker = SimpleNamespace(frame_id=10, tracked_stracks=[track],
+                                  lost_stracks=[], removed_stracks=[])
+
+        state = TrackingEngine._serialize_byte_tracker(tracker)
+
+        self.assertEqual(state["tracked"][0]["timeSinceUpdate"], 2)
+
     def test_functional_worker_preserves_source_time_and_ids(self) -> None:
         worker = TrackingEngine(functional=True)
         image = np.zeros((32, 48, 3), dtype=np.uint8)
@@ -22,6 +37,44 @@ class TrackingWorkerTest(unittest.TestCase):
         self.assertEqual(first["tracks"][0]["localId"], second["tracks"][0]["localId"])
         self.assertEqual(first["tracks"][0]["globalId"], second["tracks"][0]["globalId"])
         self.assertEqual(first["algorithmProfile"], "functional-test-v1")
+
+    def test_new_local_id_does_not_collide_with_initial_byte_track_ids(self) -> None:
+        worker = TrackingEngine(functional=True)
+        prior_box = (100, 100, 200, 200)
+        worker._last["UAV1"] = [Track(1, 1, "car", 0.9, prior_box, 1_000_000)]
+        worker._associator.observe("UAV1", 1, "car", prior_box,
+                                   1_000_000, (1000, 1000))
+        # This models a v3 snapshot written before nextLocal accounted for
+        # ByteTrack IDs adopted on the initial frame.
+        worker._next_local["UAV1"] = 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "tracking-state.json"
+            worker.save_state(state_path)
+            restored = TrackingEngine(functional=True)
+            restored.restore_state(state_path)
+        restored._frame_width = 1000
+        restored._frame_height = 1000
+        tracks = restored._assign_ids("UAV1", [
+            (prior_box, 0.9, "car", 1),
+            ((800, 800, 900, 900), 0.8, "car", None),
+        ], 1_200_000)
+
+        self.assertEqual([track.local_id for track in tracks], [1, 2])
+        self.assertEqual(len({track.local_id for track in tracks}), len(tracks))
+
+    def test_duplicate_initial_byte_track_id_gets_unique_local_ids(self) -> None:
+        worker = TrackingEngine(functional=True)
+        worker._frame_width = 1000
+        worker._frame_height = 1000
+
+        tracks = worker._assign_ids("UAV1", [
+            ((100, 100, 200, 200), 0.9, "car", 7),
+            ((800, 800, 900, 900), 0.8, "car", 7),
+        ], 1_000_000)
+
+        self.assertEqual([track.local_id for track in tracks], [7, 8])
+        self.assertEqual(len({track.local_id for track in tracks}), len(tracks))
 
     def test_real_worker_requires_explicit_checkpoint(self) -> None:
         with self.assertRaises(FileNotFoundError):

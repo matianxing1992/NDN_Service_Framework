@@ -393,6 +393,17 @@ containsTransportEndpoint(const ndn::Name& name)
 }
 
 bool
+hasCanonicalAttemptAndVersion(const ndn::Name& suffix)
+{
+  const auto& attempt = suffix[-2];
+  const auto& version = suffix[-1];
+  return attempt.isGeneric() && attempt.isNumber() && attempt.toNumber() > 0 &&
+         attempt == ndn::name::Component::fromNumber(attempt.toNumber()) &&
+         version.isVersion() && version.toVersion() > 0 &&
+         version == ndn::name::Component::fromVersion(version.toVersion());
+}
+
+bool
 isSha256Digest(const std::string& value)
 {
   if (value.size() != 71 || value.compare(0, 7, "sha256:") != 0) {
@@ -421,6 +432,62 @@ makeUavEvidenceName(const ndn::Name& producerIdentity,
   name.append("UAV").append("MISSION").append(missionId)
     .append("INCIDENT").append(incidentId).append("EVIDENCE")
     .append(evidenceId).append(ndn::name::Component::fromVersion(version));
+  return name;
+}
+
+ndn::Name
+makeUavObservationDataName(const ndn::Name& producerIdentity,
+                           const std::string& cameraId,
+                           uint64_t epoch, uint64_t sequence,
+                           const std::string& category, uint64_t version)
+{
+  if (producerIdentity.empty() || cameraId.empty() || epoch == 0 || sequence == 0 ||
+      version == 0 || (category != "FRAME" && category != "POSE" &&
+                       category != "OBSERVATION")) {
+    throw std::invalid_argument("invalid UAV observation data name fields");
+  }
+  ndn::Name name = producerIdentity;
+  name.append("UAV").append("OBS").append(cameraId)
+    .append(std::to_string(epoch)).append(std::to_string(sequence)).append(category)
+    .append(ndn::name::Component::fromVersion(version));
+  return name;
+}
+
+ndn::Name
+makeUavCalibrationDataName(const ndn::Name& producerIdentity,
+                           const std::string& cameraId,
+                           uint64_t revision, uint64_t version)
+{
+  if (producerIdentity.empty() || cameraId.empty() || revision == 0 || version == 0) {
+    throw std::invalid_argument("invalid UAV calibration data name fields");
+  }
+  ndn::Name name = producerIdentity;
+  name.append("UAV").append("CALIBRATION").append(cameraId)
+    .append(std::to_string(revision)).append(ndn::name::Component::fromVersion(version));
+  return name;
+}
+
+ndn::Name
+makeUavGroundDataName(const ndn::Name& producerIdentity, uint64_t revision, uint64_t version)
+{
+  if (producerIdentity.empty() || revision == 0 || version == 0) {
+    throw std::invalid_argument("invalid UAV ground data name fields");
+  }
+  ndn::Name name = producerIdentity;
+  name.append("UAV").append("GROUND").append(std::to_string(revision))
+    .append(ndn::name::Component::fromVersion(version));
+  return name;
+}
+
+ndn::Name
+makeUavClockDataName(const ndn::Name& producerIdentity, uint64_t revision, uint64_t version)
+{
+  if (producerIdentity.empty() || revision == 0 || version == 0) {
+    throw std::invalid_argument("invalid UAV clock data name fields");
+  }
+  ndn::Name name = producerIdentity;
+  name.append("UAV").append("CLOCK").append(std::to_string(revision))
+    .append(ndn::name::Component::fromVersion(version));
   return name;
 }
 
@@ -489,22 +556,25 @@ isUavProviderMultiViewDataName(const ndn::Name& providerIdentity,
   if (providerIdentity.empty() || missionSessionId.empty() || jobId.empty() ||
       (objectKind != "RESULT" && objectKind != "ANNOTATION") ||
       !providerIdentity.isPrefixOf(objectName) ||
-      containsTransportEndpoint(providerIdentity) || containsTransportEndpoint(objectName)) {
+      containsTransportEndpoint(providerIdentity)) {
     return false;
   }
   const auto suffix = objectName.getSubName(providerIdentity.size());
+  // The final fields encode integers; their binary bytes are not endpoint text.
   if (objectKind == "RESULT") {
     return suffix.size() == 9 && hasComponentAt(suffix, 0, "UAV") &&
            hasComponentAt(suffix, 1, "MULTIVIEW") && hasComponentAt(suffix, 2, "MISSION") &&
            hasComponentAt(suffix, 3, missionSessionId) && hasComponentAt(suffix, 4, "JOB") &&
            hasComponentAt(suffix, 5, jobId) && hasComponentAt(suffix, 6, "RESULT") &&
-           !suffix[7].empty() && !suffix[8].empty() && suffix[8].isVersion();
+           !containsTransportEndpoint(suffix.getPrefix(7)) &&
+           hasCanonicalAttemptAndVersion(suffix);
   }
   return suffix.size() == 10 && hasComponentAt(suffix, 0, "UAV") &&
          hasComponentAt(suffix, 1, "MULTIVIEW") && hasComponentAt(suffix, 2, "MISSION") &&
          hasComponentAt(suffix, 3, missionSessionId) && hasComponentAt(suffix, 4, "JOB") &&
          hasComponentAt(suffix, 5, jobId) && hasComponentAt(suffix, 6, "ANNOTATION") &&
-         !suffix[7].empty() && !suffix[8].empty() && !suffix[9].empty() && suffix[9].isVersion();
+         !suffix[7].empty() && !containsTransportEndpoint(suffix.getPrefix(8)) &&
+         hasCanonicalAttemptAndVersion(suffix);
 }
 
 bool

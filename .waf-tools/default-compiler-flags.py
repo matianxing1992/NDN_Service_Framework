@@ -137,7 +137,12 @@ class GccBasicFlags(CompilerFlags):
     def getGeneralFlags(self, conf):
         flags = super(GccBasicFlags, self).getGeneralFlags(conf)
         flags['CXXFLAGS'] += ['-std=c++17']
-        if Utils.unversioned_sys_platform() != 'darwin':
+        # Several targets use --no-relax.  Do not select LLD merely because the
+        # compiler driver accepts -fuse-ld=lld; older LLD releases reject that
+        # target link option and make the whole build fail at link time.
+        if (Utils.unversioned_sys_platform() != 'darwin' and
+                conf.check_cxx(linkflags=['-fuse-ld=lld', '-Wl,--no-relax'],
+                               mandatory=False)):
             flags['LINKFLAGS'] += ['-fuse-ld=lld']
         return flags
 

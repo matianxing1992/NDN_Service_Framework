@@ -1,0 +1,136 @@
+--- a/src/producer.cpp
++++ b/src/producer.cpp
+@@ -242,6 +242,8 @@
+     name::Component nc;
+     for (const auto& a : attributes)
+       nc.push_back(makeStringBlock(TLV_Attribute, a));
++    // Name components serialize their value bytes, not pending child blocks.
++    nc.encode();
+     Name ckDataName = security::extractIdentityFromCertName(m_cert.getName())
+                       .append(CONTENT_KEY)
+                       .append(std::to_string(random::generateSecureWord32()))
+--- a/tests/unit-tests/producer-bound-ck.t.cpp
++++ b/tests/unit-tests/producer-bound-ck.t.cpp
+@@ -37,7 +37,7 @@
+ class ProducerBoundCkFixture : public IdentityManagementTimeFixture
+ {
+ public:
+-  ProducerBoundCkFixture()
++  explicit ProducerBoundCkFixture(bool useKp = false)
+     : aaFace(io, m_keyChain, {false, true})
+     , producerFace(io, m_keyChain, {false, true})
+     , consumerFace(io, m_keyChain, {false, true})
+@@ -48,8 +48,14 @@
+     const auto consumerCert = addIdentity("/revocation/user", RsaKeyParams())
+                                 .getDefaultKey().getDefaultCertificate();
+     producerCert = addIdentity("/revocation/provider").getDefaultKey().getDefaultCertificate();
+-    aa = std::make_unique<CpAttributeAuthority>(aaCert, aaFace, validator, m_keyChain);
+-    aa->addNewPolicy(consumerCert, {"attr1"});
++    if (useKp) {
++      kpAa = std::make_unique<KpAttributeAuthority>(aaCert, aaFace, validator, m_keyChain);
++      kpAa->addNewPolicy(consumerCert, "attr1 AND attr2");
++    }
++    else {
++      aa = std::make_unique<CpAttributeAuthority>(aaCert, aaFace, validator, m_keyChain);
++      aa->addNewPolicy(consumerCert, {"attr1"});
++    }
+     advanceClocks(time::milliseconds(20), 60);
+     consumer = std::make_unique<Consumer>(consumerFace, m_keyChain, validator, consumerCert, aaCert);
+     producer = std::make_unique<Producer>(producerFace, m_keyChain, validator,
+@@ -58,8 +64,15 @@
+     consumer->obtainDecryptionKey();
+     advanceClocks(time::milliseconds(20), 60);
+     BOOST_REQUIRE(consumer->readyForDecryption());
+-    std::tie(data, ck) = producer->produce(Name("/payload"), "attr1", Buffer{1, 2, 3},
+-                                           security::signingByCertificate(producerCert));
++    if (useKp) {
++      std::tie(data, ck) = producer->produce(Name("/payload"),
++        std::vector<std::string>{"attr1", "attr2"}, Buffer{1, 2, 3},
++        security::signingByCertificate(producerCert));
++    }
++    else {
++      std::tie(data, ck) = producer->produce(Name("/payload"), "attr1", Buffer{1, 2, 3},
++        security::signingByCertificate(producerCert));
++    }
+     BOOST_REQUIRE_EQUAL(data.size(), 1U);
+     BOOST_REQUIRE(!ck.empty());
+     dataName = data.front()->getName().getPrefix(-1);
+@@ -119,6 +132,7 @@
+   security::ValidatorNull validator;
+   security::Certificate producerCert;
+   std::unique_ptr<CpAttributeAuthority> aa;
++  std::unique_ptr<KpAttributeAuthority> kpAa;
+   std::unique_ptr<Consumer> consumer;
+   std::unique_ptr<Producer> producer;
+   SPtrVector<Data> data, ck;
+@@ -261,7 +275,8 @@
+     Name("/revocation/provider/CK/4294967296/ENC-BY/attr1"),
+     Name("/revocation/provider/CK/no/ENC-BY/attr1"),
+     Name("/revocation/provider/CK/1/ENC-BY/attr1/extra"),
+-    Name("/revocation/provider/CK/1/ENC-BY").appendVersion(1)};
++    Name("/revocation/provider/CK/1/ENC-BY").appendVersion(1),
++    Name("/revocation/provider/CK/1/ENC-BY").append(name::Component())};
+   for (const auto& locator : invalid) {
+     auto block = encryptedPayload();
+     block.parse();
+@@ -282,6 +297,60 @@
+ }
+ 
+ BOOST_AUTO_TEST_SUITE_END()
++
++class ProducerBoundKpCkFixture : public ProducerBoundCkFixture
++{
++public:
++  ProducerBoundKpCkFixture() : ProducerBoundCkFixture(true) {}
++};
++
++BOOST_FIXTURE_TEST_SUITE(TestProducerBoundKpCk, ProducerBoundKpCkFixture)
++
++BOOST_AUTO_TEST_CASE(ActualKpProducerPreservesAttributesAndDecrypts)
++{
++  auto payload = encryptedPayload();
++  payload.parse();
++  const Name locator(payload.get(tlv::Name));
++  BOOST_REQUIRE(!ck.empty());
++  BOOST_CHECK(locator == ck.front()->getName().getPrefix(-1));
++  BOOST_REQUIRE_EQUAL(locator.size(), producerCert.getIdentity().size() + 4);
++  BOOST_CHECK(producerCert.getIdentity().isPrefixOf(locator));
++  auto attributes = locator[-1];
++  BOOST_REQUIRE_EQUAL(attributes.type(), tlv::GenericNameComponent);
++  BOOST_REQUIRE_GT(attributes.value_size(), 0U);
++  attributes.parse();
++  BOOST_REQUIRE_EQUAL(attributes.elements_size(), 2U);
++  size_t index = 0;
++  for (const auto& attribute : attributes.elements()) {
++    BOOST_CHECK_EQUAL(attribute.type(), TLV_Attribute);
++    const std::string value(reinterpret_cast<const char*>(attribute.value()), attribute.value_size());
++    BOOST_CHECK_EQUAL(value, index++ == 0 ? "attr1" : "attr2");
++  }
++  strictConsume();
++  advanceClocks(time::milliseconds(20), 100);
++  BOOST_CHECK_EQUAL(successes, 1U);
++  BOOST_CHECK_MESSAGE(errors == 0U, (errorReasons.empty() ? "unexpected failure" : errorReasons.front()));
++  BOOST_CHECK_GT(ckRequests, 0U);
++}
++
++BOOST_AUTO_TEST_CASE(ValidKpCipherRejectsSignatureValidWrongIdentityCk)
++{
++  const auto other = addIdentity("/revocation").getDefaultKey().getDefaultCertificate();
++  for (auto& packet : ck) {
++    m_keyChain.sign(*packet, security::signingByCertificate(other));
++    BOOST_REQUIRE(security::verifySignature(*packet, other));
++    BOOST_REQUIRE(!security::verifySignature(*packet, producerCert));
++  }
++  strictConsume();
++  advanceClocks(time::milliseconds(20), 100);
++  BOOST_CHECK_GT(ckRequests, 0U);
++  BOOST_CHECK_EQUAL(successes, 0U);
++  BOOST_CHECK_EQUAL(errors, 1U);
++  BOOST_REQUIRE_EQUAL(errorReasons.size(), 1U);
++  BOOST_CHECK(errorReasons.front().find("authorization") != std::string::npos);
++}
++
++BOOST_AUTO_TEST_SUITE_END()
+ } // namespace tests
+ } // namespace nacabe
+ } // namespace ndn

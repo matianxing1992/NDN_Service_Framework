@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "upstreamCommit": "cb2a18c2d2845a03ed502df4b77f596b55e48ebd",
+  "patches": [
+    {
+      "file": "0001-final-reference-release.patch",
+      "sha256": "4b323f9c82252a7d1ecc00cf065f3e95d078bb5bb2db7074b6e6efaa49b7ab10"
+    },
+    {
+      "file": "0002-aes-block-output-and-nist-vector.patch",
+      "sha256": "ba92abd9b3c42881dd7b268963dde4be2259268c7a455f23aeea975697167807"
+    }
+  ]
+}

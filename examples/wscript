@@ -215,6 +215,12 @@ def build(bld):
                     '../NDNSF-UAV-APP/tracking/UavTrackingNode.cpp',
                     '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
                     '../NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp',
+                    '../NDNSF-UAV-APP/shared/UavObservationSource.cpp',
+                    '../NDNSF-UAV-APP/shared/UavObservationStream.cpp',
+                    '../NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp',
+                    '../NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp',
+                    '../NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp',
+                    '../NDNSF-UAV-APP/shared/UavSourceGeneration.cpp',
                 ],
                 includes=['..', '../NDNSF-UAV-APP/shared'],
                 use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
@@ -227,11 +233,16 @@ def build(bld):
     bld.install_files(
         '${LIBEXECDIR}/ndnsf-uav/tracking',
         [bld.path.parent.find_node(path) for path in [
+            'NDNSF-UAV-APP/tracking/observation_source.py',
+            'NDNSF-UAV-APP/tracking/observation_schema.py',
             'NDNSF-UAV-APP/tracking/tracking_worker.py',
             'NDNSF-UAV-APP/tracking/tracking_display.py',
+            'NDNSF-UAV-APP/tracking/display_clock.py',
             'NDNSF-UAV-APP/tracking/motion_estimator.py',
             'NDNSF-UAV-APP/tracking/motion_schema.py',
         ]])
+    bld.install_files('${INCLUDEDIR}/ndnsf/uav', [
+        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavObservationSource.hpp')])
 
     bld.program(name='UavTrackingGroundStation',
                 target='UavTrackingGroundStation',
@@ -239,6 +250,8 @@ def build(bld):
                     '../NDNSF-UAV-APP/tracking/UavTrackingGroundStation.cpp',
                     '../NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp',
                     '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                    '../NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp',
+                    '../NDNSF-UAV-APP/shared/UavSourceGeneration.cpp',
                 ],
                 includes=['..', '../NDNSF-UAV-APP/shared',
                           '../NDNSF-UAV-APP/tracking'],

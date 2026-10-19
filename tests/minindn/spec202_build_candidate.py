@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TARGETS = preflight.BUILD_TARGETS
 NATIVE_OUTPUTS = preflight.BUILD_OUTPUTS
 INSTALLED_LIBRARIES = ("libndn-service-framework.so", "libndnsf-distributed-inference.so")
-LOCAL_NDN_CXX_HEADERS = "dependencies/ndn-cxx-8296fc9462c7ef9635b7c45468c067fd39514e31/ndn-cxx"
+LOCAL_NDN_CXX_HEADERS = "dependencies/ndn-cxx-1204b7528986bea82651f3fa9088c165667cd598/ndn-cxx"
 
 
 def hashes(paths):

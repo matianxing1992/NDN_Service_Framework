@@ -7,6 +7,7 @@
 #include "ndn-service-framework/ServiceController.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndn-service-framework/common.hpp"
 #include "ndn-service-framework/utils.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/CertificateBootstrap.hpp"
@@ -115,6 +116,13 @@ struct ServiceControllerTestAccess
           identity, ndn::RsaKeyParams(2048));
       return created.getDefaultKey().getDefaultCertificate();
     }
+  }
+
+  static ndn::security::Certificate
+  rsaEncryptionCertificate(ServiceController& controller,
+                           const ndn::security::Certificate& identityHint)
+  {
+    return getRsaEncryptionCertificateOrThrow(controller.m_keyChain, identityHint);
   }
 
   static ndn::security::Certificate
@@ -2582,6 +2590,13 @@ BOOST_AUTO_TEST_CASE(ServiceControllerPermissionHandlersEncryptCurrentRevocation
       serviceController, provider);
   const auto unaffectedProviderCert = ServiceControllerTestAccess::ensureInternalIdentity(
       serviceController, unaffectedProvider);
+  const auto userEncryptionCert =
+      ServiceControllerTestAccess::rsaEncryptionCertificate(serviceController, userCert);
+  const auto providerEncryptionCert =
+      ServiceControllerTestAccess::rsaEncryptionCertificate(serviceController, providerCert);
+  const auto unaffectedProviderEncryptionCert =
+      ServiceControllerTestAccess::rsaEncryptionCertificate(
+          serviceController, unaffectedProviderCert);
   const auto internalSigner = ServiceControllerTestAccess::ensureInternalControllerSigner(
       serviceController);
   const ndn::Name controllerPrefix("/controller/spec179-permission-wire");
@@ -2639,7 +2654,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerPermissionHandlersEncryptCurrentRevocation
   face.processEvents(ndn::time::milliseconds(1));
   BOOST_REQUIRE_EQUAL(face.sentData.size(), 1);
   const auto encryptedUser = decodeEncrypted(face.sentData.back());
-  BOOST_CHECK(ndn::Name(encryptedUser.getRecipientCertName()) == userCert.getName());
+  BOOST_CHECK(ndn::Name(encryptedUser.getRecipientCertName()) == userEncryptionCert.getName());
   const auto userBefore = ServiceControllerTestAccess::decryptPermissionResponse(
       serviceController, encryptedUser);
   BOOST_CHECK(ndn::Name(userBefore.getTargetIdentity()) == user);
@@ -2656,7 +2671,8 @@ BOOST_AUTO_TEST_CASE(ServiceControllerPermissionHandlersEncryptCurrentRevocation
   face.processEvents(ndn::time::milliseconds(1));
   BOOST_REQUIRE_EQUAL(face.sentData.size(), 1);
   const auto providerBeforeWire = decodeEncrypted(face.sentData.back());
-  BOOST_CHECK(ndn::Name(providerBeforeWire.getRecipientCertName()) == providerCert.getName());
+  BOOST_CHECK(ndn::Name(providerBeforeWire.getRecipientCertName()) ==
+              providerEncryptionCert.getName());
   const auto providerBefore = ServiceControllerTestAccess::decryptPermissionResponse(
       serviceController, providerBeforeWire);
   const auto& providerBeforeDataName = face.sentData.back().getName();
@@ -2670,7 +2686,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerPermissionHandlersEncryptCurrentRevocation
   // Replacing the recipient certificate must make the same ciphertext
   // undecryptable; a service-wide DKEY would not provide this boundary.
   auto wrongRecipient = encryptedUser;
-  wrongRecipient.setRecipientCertName(providerCert.getName().toUri());
+  wrongRecipient.setRecipientCertName(providerEncryptionCert.getName().toUri());
   BOOST_CHECK_THROW(
       ServiceControllerTestAccess::decryptPermissionResponse(
           serviceController, wrongRecipient), std::exception);
@@ -2722,7 +2738,8 @@ BOOST_AUTO_TEST_CASE(ServiceControllerPermissionHandlersEncryptCurrentRevocation
   face.processEvents(ndn::time::milliseconds(1));
   BOOST_REQUIRE_EQUAL(face.sentData.size(), 1);
   const auto providerWire = decodeEncrypted(face.sentData.back());
-  BOOST_CHECK(ndn::Name(providerWire.getRecipientCertName()) == providerCert.getName());
+  BOOST_CHECK(ndn::Name(providerWire.getRecipientCertName()) ==
+              providerEncryptionCert.getName());
   const auto providerAfter = ServiceControllerTestAccess::decryptPermissionResponse(
       serviceController, providerWire);
   BOOST_CHECK(std::any_of(
@@ -2766,7 +2783,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerPermissionHandlersEncryptCurrentRevocation
   providerCertificate.kind = RevocationKind::CERTIFICATE;
   providerCertificate.targetIdentity = provider;
   providerCertificate.certificateDigest =
-      ServiceControllerTestAccess::certificateDigest(providerCert);
+      ServiceControllerTestAccess::certificateDigest(providerEncryptionCert);
   BOOST_REQUIRE(serviceController.revoke(providerCertificate));
   providerInterest = permissionQuery("PROVIDER-PERMISSIONS", provider);
   ServiceControllerTestAccess::providerPermissionsInterest(
@@ -2789,7 +2806,8 @@ BOOST_AUTO_TEST_CASE(ServiceControllerPermissionHandlersEncryptCurrentRevocation
   face.processEvents(ndn::time::milliseconds(1));
   BOOST_REQUIRE_EQUAL(face.sentData.size(), 1);
   const auto unaffectedProviderWire = decodeEncrypted(face.sentData.back());
-  BOOST_CHECK(ndn::Name(unaffectedProviderWire.getRecipientCertName()) == unaffectedProviderCert.getName());
+  BOOST_CHECK(ndn::Name(unaffectedProviderWire.getRecipientCertName()) ==
+              unaffectedProviderEncryptionCert.getName());
   const auto unaffectedProviderResponse =
       ServiceControllerTestAccess::decryptPermissionResponse(
           serviceController, unaffectedProviderWire);

@@ -284,7 +284,7 @@ and current explicit user decisions still take precedence.
   unrestricted parallel build. Reading or editing source needs no build launcher.
 
 <!-- SPEC_KIT_PLAN_START -->
-Active implementation plan is at specs/207-ndnsf-contribution-evidence/plan.md.
+Active implementation plan is at specs/210-uav-metric-observation/plan.md.
 <!-- SPEC_KIT_PLAN_END -->
 
 ## Git boundary for documentation and specs
