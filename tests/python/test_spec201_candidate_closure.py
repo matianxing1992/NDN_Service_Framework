@@ -278,6 +278,22 @@ class CandidateClosureTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "CREDENTIAL_SCHEMA_MISMATCH"):
             self.validate()
 
+    def test_declared_sync_prefix_requires_matching_frozen_schema(self):
+        self.record["credentialBundles"]["yolo"]["syncPrefix"] = "/actual/group"
+        with self.assertRaisesRegex(RuntimeError, "CREDENTIAL_SCHEMA_MISMATCH"):
+            self.validate()
+
+    def test_exact_member_signed_sync_schema_is_accepted(self):
+        from native_probe_validation_links import render_anchored_probe_validation_schema
+        bundle = self.record["credentialBundles"]["yolo"]
+        bundle["syncPrefix"] = "/actual/group"
+        schema = self.root / "sync-schema.conf"
+        schema.write_text(render_anchored_probe_validation_schema(
+            bundle["applicationRoot"], [bundle["rootCert"]], sync_prefix=bundle["syncPrefix"]))
+        bundle["schema"] = str(schema)
+        self.record["generatedSchemas"].append(candidate.file_identity(schema))
+        self.validate()
+
     def test_changed_source_rejected_before_binary_or_launch(self):
         digest = self.freeze()
         self.asset.write_bytes(b"changed")
@@ -366,7 +382,8 @@ class CandidateClosureTest(unittest.TestCase):
             arguments = SimpleNamespace(native_providers=True, native_requester=False,
                 native_library_path=str(self.root), spec201_candidate=self.manifest,
                 spec201_candidate_sha256=digest, native_provider_binary=str(self.binary),
-                native_assembly_worker_binary=str(self.binary), model=str(self.asset))
+                native_assembly_worker_binary=str(self.binary),
+                native_repo_binary=str(self.repo_binary), model=str(self.asset))
             import os
             namespace = {argument_name: arguments, "Path": Path, "os": os,
                          "validate_spec201_candidate": candidate.validate_spec201_candidate,

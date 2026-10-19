@@ -57,7 +57,8 @@ class InstalledCandidateTest(unittest.TestCase):
             self.assertIn("for " + kind, schema)
         self.assertEqual(schema.count("sig-type rsa-sha256"), 2)
         self.assertEqual(schema.count("sig-type ecdsa-sha256"), 2)
-        self.assertIn(json.dumps("^<NDNSF\\-DistributeInference><example>[^<KEY>]*<KEY><>{1,3}$"), schema)
+        self.assertIn(json.dumps("^<NDNSF\\-DistributeInference|8=NDNSF\\-DistributeInference>"
+                                 "<example|8=example>[^<KEY|8=KEY>]*<KEY|8=KEY><>{1,3}$"), schema)
         with self.assertRaises(ValueError):
             render_anchored_probe_validation_schema("/example", [])
         with self.assertRaises(ValueError):
@@ -719,7 +720,7 @@ class NativeRequesterEvidenceTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "FINAL_PLACEMENT_INCOMPLETE"):
             self.validate(user_text, provider_text=self.provider_text)
 
-    def test_yolo_repo_grants_controller_only_probe_and_insert(self) -> None:
+    def test_yolo_repo_grants_compute_reads_without_write_or_delete(self) -> None:
         policy_path = (ROOT / "examples/python/NDNSF-DistributedInference/"
                        "yolo_2x2/yolo_policy.yaml")
         policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
@@ -727,16 +728,13 @@ class NativeRequesterEvidenceTest(unittest.TestCase):
                  for service in policy["services"]}
         controller = "/NDNSF-DistributeInference/example/controller"
         app_user = "/NDNSF-DistributeInference/example/user"
-        for service_name in (
-                "/NDNSF/DistributedRepo/Object/v1/STATUS",
-                "/NDNSF/DistributedRepo/Object/v1/INSERT"):
-            with self.subTest(service=service_name):
-                self.assertEqual(users[service_name], {controller, app_user})
-        for service_name in (
-                "/NDNSF/DistributedRepo/Object/v1/FETCH",
-                "/NDNSF/DistributedRepo/Object/v1/DELETE"):
-            with self.subTest(service=service_name):
-                self.assertEqual(users[service_name], {app_user})
+        readers = {"/NDNSF-DistributeInference/example/provider" + suffix
+                   for suffix in ("", "/A", "/B", "/C")}
+        prefix = "/NDNSF/DistributedRepo/Object/v1/"
+        self.assertEqual(users[prefix + "STATUS"], {controller, app_user} | readers)
+        self.assertEqual(users[prefix + "FETCH"], {controller, app_user} | readers)
+        self.assertEqual(users[prefix + "INSERT"], {controller, app_user})
+        self.assertEqual(users[prefix + "DELETE"], {app_user})
 
     def test_generated_yolo_policy_includes_repo_operation_permissions(self) -> None:
         controller = "/NDNSF-DistributeInference/example/controller"
@@ -767,8 +765,12 @@ class NativeRequesterEvidenceTest(unittest.TestCase):
                       provider_summary["services"])
         users = {service["name"]: set(service["users"])
                  for service in policy["services"]}
+        template_policy = yaml.safe_load(template.read_text(encoding="utf-8"))
+        original_status_users = set(next(service["users"] for service in template_policy["services"]
+                                         if service["name"] == "/NDNSF/DistributedRepo/Object/v1/STATUS"))
         self.assertEqual(users["/NDNSF/DistributedRepo/Object/v1/STATUS"],
-                         {controller, app_user})
+                         original_status_users | {"/custom/compute",
+                             "/NDNSF-DistributeInference/example/provider/D"})
         self.assertEqual(users["/NDNSF/DistributedRepo/Object/v1/INSERT"],
                          {controller, app_user})
         self.assertEqual(users["/NDNSF/DistributedRepo/Object/v1/DELETE"],

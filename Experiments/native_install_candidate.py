@@ -245,7 +245,8 @@ def validate_spec201_candidate(path: Path, expected_sha256: str,
                         ("qwen", [qwen["certs"][identity]
                                   for identity in sorted(qwen["certs"])])):
         bundle = bundles[name]
-        expected = render_anchored_probe_validation_schema(bundle["applicationRoot"], certs)
+        expected = render_anchored_probe_validation_schema(
+            bundle["applicationRoot"], certs, sync_prefix=bundle.get("syncPrefix"))
         if Path(bundle["schema"]).read_text() != expected:
             raise RuntimeError("SPEC201_CANDIDATE_CREDENTIAL_SCHEMA_MISMATCH")
     bootstrap = Path(qwen["bootstrapHome"]).resolve(strict=True)

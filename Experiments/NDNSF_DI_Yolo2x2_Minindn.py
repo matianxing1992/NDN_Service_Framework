@@ -6123,7 +6123,8 @@ def main() -> None:
             )
             from native_probe_validation_links import render_anchored_probe_validation_schema
             anchored_schema = render_anchored_probe_validation_schema(
-                APP_ROOT, [Path(naming_candidate["credentialBundles"]["yolo"]["rootCert"])])
+                APP_ROOT, [Path(naming_candidate["credentialBundles"]["yolo"]["rootCert"])],
+                sync_prefix=APP_ROOT + "/group")
             if anchored_schema != Path(
                     naming_candidate["credentialBundles"]["yolo"]["schema"]).read_text():
                 raise RuntimeError("SPEC201_YOLO_CREDENTIAL_SCHEMA_MISMATCH")

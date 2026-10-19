@@ -59,3 +59,24 @@ def test_existing_file_is_preserved(probe_module, tmp_path):
     with pytest.raises(FileExistsError):
         configure(probe_module, output)
     assert output.read_text() == 'keep'
+
+
+def test_sync_state_rule_is_exact_and_keeps_fixed_member_trust(probe_module, tmp_path):
+    anchor = tmp_path / 'root.cert'
+    schema = probe_module.render_anchored_probe_validation_schema(
+        '/app', [anchor], sync_prefix='/app/group')
+    assert '^<app|8=app><group|8=group><v=3|54=%03>$' in schema
+    state_rule = schema.split('\n', 2)[0:2]
+    assert 'hyper-relation' not in '\n'.join(state_rule)
+    assert 'key-locator { type name regex' in '\n'.join(state_rule)
+    assert 'hyper-relation' in schema
+    assert 'type any' not in schema
+    assert str(anchor) in schema
+    assert 'anchored SVS' not in probe_module.render_anchored_probe_validation_schema('/app', [anchor])
+
+
+@pytest.mark.parametrize('prefix', ['/foreign/group', '/application/group', '/app/group/bad value'])
+def test_sync_rule_rejects_foreign_or_unsupported_names(probe_module, tmp_path, prefix):
+    with pytest.raises(ValueError, match='sync namespace'):
+        probe_module.render_anchored_probe_validation_schema(
+            '/app', [tmp_path / 'root.cert'], sync_prefix=prefix)

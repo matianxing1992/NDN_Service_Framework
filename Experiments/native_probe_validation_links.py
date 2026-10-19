@@ -10,7 +10,7 @@ import subprocess
 import time
 
 
-def render_anchored_probe_validation_schema(application_root, certificates):
+def render_anchored_probe_validation_schema(application_root, certificates, *, sync_prefix=None):
     """Validate experiment packets against explicitly provisioned certificates."""
     components = application_root.strip("/").split("/")
     if (not application_root.startswith("/") or
@@ -38,6 +38,20 @@ def render_anchored_probe_validation_schema(application_root, certificates):
         for kind in ("rsa-sha256", "ecdsa-sha256"))
     rules = ['rule { id "anchored experiment data" for data %s }' % data_checkers,
              'rule { id "anchored experiment interest" for interest %s }' % checkers]
+    if sync_prefix is not None:
+        sync_components = sync_prefix.strip("/").split("/")
+        if ((sync_prefix != application_root and
+             not sync_prefix.startswith(application_root + "/")) or
+                any(not re.fullmatch(r"[A-Za-z0-9_.-]+", item) for item in sync_components)):
+            raise ValueError("sync namespace must be within the application namespace")
+        sync_pattern = "^" + "".join(
+            "<" + re.escape(item) + "|8=" + re.escape(item) + ">" for item in sync_components)
+        sync_pattern += "<v=3|54=%03>$"
+        # SVS v3 state Data uses the shared group name, signed by a member.
+        # Application Data below keeps its Producer-prefix relation check.
+        rules.insert(0, 'rule { id "anchored SVS v3 state" for data '
+                     'filter { type name regex %s } %s }' %
+                     (json.dumps(sync_pattern), checkers))
     rules.extend('trust-anchor { type file file-name %s }' % json.dumps(path)
                  for path in anchors)
     return "\n".join(rules) + "\n"
