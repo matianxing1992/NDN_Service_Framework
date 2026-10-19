@@ -2259,7 +2259,7 @@ def yolo_splitter_output(split: dict) -> SplitterOutput:
         provider_prefix=PROVIDER_PREFIX,
         services=[service, repo_service],
         provider_identities=compute_providers,
-        trust_app_roots=["/example"],
+        trust_app_roots=["/NDNSF-DistributeInference/example"],
         metadata=service.metadata,
     )
 

@@ -3,13 +3,29 @@ from pathlib import Path
 import ast
 import re
 
-from ndnsf_distributed_inference.policy import load_or_generate_deployment
+from ndnsf_distributed_inference.policy import generate_trust_schema, load_or_generate_deployment
+from ndnsf_distributed_inference.splitter import SplitterOutput
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / 'examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_policy.yaml'
 PREFIX = '/NDNSF/DistributedRepo/Object/v1/'
 ACTOR = '/NDNSF-DistributeInference/example/'
+
+
+def test_splitter_carries_fixed_anchor_into_core_and_artifact_trust(tmp_path):
+    anchor = str(tmp_path / 'root.cert')
+    output = SplitterOutput(
+        application='trust-regression', controller=ACTOR + 'controller',
+        group=ACTOR + 'group', user=ACTOR + 'user',
+        provider_prefix=ACTOR + 'provider', services=[],
+        trust_app_roots=[ACTOR.rstrip('/')], trust_anchor_file=anchor)
+    config = output.to_policy_config()
+    assert config['trust']['anchor_file'] == anchor
+    assert config['artifact_security']['anchor_file'] == anchor
+    schema = generate_trust_schema(config, ())
+    assert 'type any' not in schema
+    assert f'file-name "{anchor}"' in schema
 
 
 def emitted_permissions(deployment, kind):

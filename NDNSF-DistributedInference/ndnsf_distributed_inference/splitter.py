@@ -712,6 +712,8 @@ class SplitterOutput:
             },
             "trust": {
                 "app_roots": list(self.trust_app_roots),
+                **({"anchor_file": self.trust_anchor_file}
+                   if self.trust_anchor_file else {}),
             },
             "artifact_security": {
                 **({"anchor_file": self.trust_anchor_file}
