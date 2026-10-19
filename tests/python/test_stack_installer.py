@@ -643,6 +643,7 @@ check_waf_inventory() { echo MISSING_GTK >&2; return 37; }
 
 def test_pip_builds_wheels_then_privileged_noneditable_install():
     result = shell(DEFINITIONS + '''
+NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture
 stage_python_wheel_sources() { shift; PYTHON_WHEEL_INPUTS=("$@"); }
 run() { printf 'BUILD:%s\\n' "$*"; touch "$wheel_dir/test.whl"; }
 sudo_run() { printf 'INSTALL:%s\\n' "$*"; }
@@ -650,6 +651,7 @@ pip_install /example/package
 ''')
     assert result.returncode == 0, result.stderr
     assert '--isolated wheel --wheel-dir' in result.stdout
+    assert 'NDNSF_NAC_ABE_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture' in result.stdout
     install = next(shlex.split(line[len('INSTALL:'):])
                    for line in result.stdout.splitlines()
                    if line.startswith('INSTALL:') and '-m pip --isolated install ' in line)

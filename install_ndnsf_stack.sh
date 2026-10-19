@@ -1140,6 +1140,7 @@ pip_install() (
     -u CPLUS_INCLUDE_PATH -u LDSHARED -u PKG_CONFIG_LIBDIR \
     -u PYTHONPATH -u PYTHONHOME \
     PATH="$SYSTEM_PATH" PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
+    NDNSF_NAC_ABE_PREFIX="$NAC_SDK_PREFIX" \
     CC=/usr/bin/gcc CXX=/usr/bin/g++ PYTHONNOUSERSITE=1 \
     "$PYTHON_BIN" -m pip --isolated wheel --wheel-dir "$wheel_dir" \
     "${PYTHON_WHEEL_INPUTS[@]}"
