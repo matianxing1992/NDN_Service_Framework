@@ -26,13 +26,6 @@
 namespace ndn_service_framework::integration_test {
 namespace {
 
-ndn::security::Certificate
-makeIdentity(ndn::KeyChain& keyChain, const ndn::Name& identity)
-{
-  return keyChain.createIdentity(identity, ndn::RsaKeyParams(2048))
-      .getDefaultKey().getDefaultCertificate();
-}
-
 std::string
 certificateDigest(const ndn::security::Certificate& certificate)
 {

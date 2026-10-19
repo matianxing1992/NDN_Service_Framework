@@ -56,69 +56,6 @@ makeIdentity(ndn::KeyChain& keyChain, const ndn::Name& identity)
   return id.getDefaultKey().getDefaultCertificate();
 }
 
-std::filesystem::path
-makeTestTrustDirectory()
-{
-  auto pattern = (std::filesystem::temp_directory_path() /
-                  "ndnsf-spec170-trust-XXXXXX").string();
-  std::vector<char> buffer(pattern.begin(), pattern.end());
-  buffer.push_back('\0');
-  const char* directory = ::mkdtemp(buffer.data());
-  if (directory == nullptr) {
-    throw std::runtime_error("cannot create isolated Spec170 test trust directory");
-  }
-  return directory;
-}
-
-void
-writeTestTrustSchema(const std::filesystem::path& directory,
-                     const std::vector<ndn::security::Certificate>& anchors)
-{
-  for (const auto& entry : std::filesystem::directory_iterator(directory)) {
-    if (entry.path().filename().string().compare(0, 7, "anchor-") == 0) {
-      std::filesystem::remove(entry.path());
-    }
-  }
-  std::ofstream schema(directory / "trust.conf");
-  schema << R"SCHEMA(rule
-{
-  id "isolated test certificates and data"
-  for data
-  filter { type name regex ^<>*$ }
-  checker
-  {
-    type customized
-    sig-type rsa-sha256
-    key-locator { type name regex ^<>*$ }
-  }
-}
-rule
-{
-  id "isolated test command interests"
-  for interest
-  filter { type name regex ^<>*$ }
-  checker
-  {
-    type customized
-    sig-type rsa-sha256
-    key-locator { type name regex ^<>*$ }
-  }
-}
-)SCHEMA";
-  for (size_t index = 0; index < anchors.size(); ++index) {
-    const auto fileName = "anchor-" + std::to_string(index) + ".cert";
-    ndn::io::save(anchors[index], (directory / fileName).string());
-    schema << "trust-anchor { type file file-name \"" << fileName << "\" }\n";
-  }
-  if (anchors.empty()) {
-    throw std::logic_error("isolated Spec170 test trust schema has no anchors");
-  }
-  schema.close();
-  if (!schema) {
-    std::filesystem::remove_all(directory);
-    throw std::runtime_error("cannot write isolated Spec170 test trust schema");
-  }
-}
 
 PermissionResponse
 makePermissionResponse(const ndn::Name& targetIdentity,
@@ -245,27 +182,6 @@ configuredServices(const BootstrapProfile& profile,
 
 } // namespace
 
-IsolatedTestTrust::IsolatedTestTrust()
-  : m_directory(makeTestTrustDirectory())
-{
-}
-
-IsolatedTestTrust::~IsolatedTestTrust()
-{
-  std::error_code ignored;
-  std::filesystem::remove_all(m_directory, ignored);
-}
-
-ndn::security::Certificate
-IsolatedTestTrust::createTestIdentityCertificate(ndn::KeyChain& keyChain,
-                                                 const ndn::Name& identity)
-{
-  auto certificate = makeIdentity(keyChain, identity);
-  m_anchors.push_back(certificate);
-  writeTestTrustSchema(m_directory, m_anchors);
-  return certificate;
-}
-
 NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profile)
   : m_profile(std::move(profile))
   , m_keyChain(std::make_unique<ndn::KeyChain>(
@@ -286,7 +202,7 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   faceOptions.enableRegistrationReply = true;
 
   if (m_profile.trustSchemaPath.empty()) {
-    m_testTrustDirectory = makeTestTrustDirectory();
+    m_testTrustDirectory = trust_detail::makeTestTrustDirectory();
     trustFileGuard.path = m_testTrustDirectory;
     m_profile.trustSchemaPath = (m_testTrustDirectory / "trust.conf").string();
   }
@@ -313,7 +229,7 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
     m_testTrustAnchors.insert(m_testTrustAnchors.end(),
                               extraProviderCertificates.begin(),
                               extraProviderCertificates.end());
-    writeTestTrustSchema(m_testTrustDirectory, m_testTrustAnchors);
+    trust_detail::writeTestTrustSchema(m_testTrustDirectory, m_testTrustAnchors);
   }
   m_userSecurityOptions = std::make_unique<ndn::svs::SecurityOptions>(
       makeSecurityOptions(*m_keyChain, userCert, m_profile, *m_userFace));
@@ -542,7 +458,7 @@ NdnsfIntegrationEnvironment::createTestIdentityCertificate(const ndn::Name& iden
   }
   auto certificate = makeIdentity(*m_keyChain, identity);
   m_testTrustAnchors.push_back(certificate);
-  writeTestTrustSchema(m_testTrustDirectory, m_testTrustAnchors);
+  trust_detail::writeTestTrustSchema(m_testTrustDirectory, m_testTrustAnchors);
   return certificate;
 }
 

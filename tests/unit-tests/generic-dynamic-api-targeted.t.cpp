@@ -39,8 +39,10 @@ fixedTrustSchemaForTest(ndn::security::KeyChain& keyChain)
   }
   ::close(fd);
   std::ofstream schema(path.data());
-  schema << "rule { id fixture for data checker { type hierarchical "
-            "sig-type rsa-sha256 } }\n";
+  schema << "rule { id fixture for data checker { type customized sig-type rsa-sha256 "
+            "key-locator { type name hyper-relation { "
+            "k-regex \"^(<>*)<KEY|8=KEY><>{1,3}$\" k-expand \"\\\\1\" "
+            "h-relation is-prefix-of p-regex \"^(<>*)$\" p-expand \"\\\\1\" } } } }\n";
   for (const auto& identity : keyChain.getPib().getIdentities()) {
     std::ostringstream encoded;
     ndn::io::save(identity.getDefaultKey().getDefaultCertificate(), encoded);

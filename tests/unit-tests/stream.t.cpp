@@ -1,3 +1,4 @@
+#include "../integration-tests/isolated-test-trust.hpp"
 /* -*- Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil -*- */
 
 #include "ndn-service-framework/Stream.hpp"
@@ -2055,9 +2056,11 @@ BOOST_AUTO_TEST_CASE(LiveStreamAdaptiveSamplesUseWholeGroupsAndVariableFec)
     ++delivered;
     return LiveStreamItemAdmission::acceptItem();
   };
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust1{
+    identity.getDefaultKey().getDefaultCertificate()};
   auto consumer = std::make_shared<LiveStreamConsumerHandle>(
     descriptor, openOptions, consumerFace,
-    std::make_shared<MessageValidator>("examples/trust-any.conf"));
+    std::make_shared<MessageValidator>(fixedTrust1.schemaPath()));
   consumer->start();
 
   for (size_t iteration = 0; iteration < 800 && delivered.load() < 7; ++iteration) {
@@ -2164,9 +2167,11 @@ BOOST_AUTO_TEST_CASE(LiveStreamAdaptiveSkippedSourceCanRecoverExactlyOnceFromRep
     provenance.push_back(item.provenance);
     return LiveStreamItemAdmission::acceptItem();
   };
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust2{
+    identity.getDefaultKey().getDefaultCertificate()};
   auto consumer = std::make_shared<LiveStreamConsumerHandle>(
     descriptor, options, consumerFace,
-    std::make_shared<MessageValidator>("examples/trust-any.conf"));
+    std::make_shared<MessageValidator>(fixedTrust2.schemaPath()));
   consumer->start();
 
   const auto second = publisher->announceSample(2, "delta", names(2));
@@ -2301,9 +2306,11 @@ BOOST_AUTO_TEST_CASE(LiveStreamReorderedRepairDoesNotPreemptInFlightSignedSource
     BOOST_CHECK_EQUAL(item.content.front(), 0x42);
     return LiveStreamItemAdmission::acceptItem();
   };
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust3{
+    identity.getDefaultKey().getDefaultCertificate()};
   auto consumer = std::make_shared<LiveStreamConsumerHandle>(
     descriptor, options, consumerFace,
-    std::make_shared<MessageValidator>("examples/trust-any.conf"));
+    std::make_shared<MessageValidator>(fixedTrust3.schemaPath()));
   consumer->start();
 
   const auto pump = [&] {
@@ -2411,9 +2418,11 @@ BOOST_AUTO_TEST_CASE(LiveStreamAuthenticatedRepairRecoversAfterSourceTimeout)
     BOOST_CHECK_EQUAL(item.content.front(), 0x53);
     return LiveStreamItemAdmission::acceptItem();
   };
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust4{
+    identity.getDefaultKey().getDefaultCertificate()};
   auto consumer = std::make_shared<LiveStreamConsumerHandle>(
     descriptor, options, consumerFace,
-    std::make_shared<MessageValidator>("examples/trust-any.conf"));
+    std::make_shared<MessageValidator>(fixedTrust4.schemaPath()));
   consumer->start();
 
   const auto pump = [&] {
@@ -2518,9 +2527,11 @@ BOOST_AUTO_TEST_CASE(LiveStreamGf256AdaptiveRepairIsNotDeliveredAsApplicationPay
     delivered.push_back(item);
     return LiveStreamItemAdmission::acceptItem();
   };
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust5{
+    identity.getDefaultKey().getDefaultCertificate()};
   auto consumer = std::make_shared<LiveStreamConsumerHandle>(
     descriptor, options, consumerFace,
-    std::make_shared<MessageValidator>("examples/trust-any.conf"));
+    std::make_shared<MessageValidator>(fixedTrust5.schemaPath()));
   consumer->start();
   for (size_t iteration = 0; iteration < 500; ++iteration) {
     providerFace.processEvents(ndn::time::milliseconds(2));
@@ -2660,9 +2671,11 @@ BOOST_AUTO_TEST_CASE(LiveStreamAdaptiveSchedulingPrioritizesSourcesAcrossGroups)
   options.onItem = [] (const VerifiedLiveStreamItem&) {
     return LiveStreamItemAdmission::acceptItem();
   };
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust6{
+    identity.getDefaultKey().getDefaultCertificate()};
   auto consumer = std::make_shared<LiveStreamConsumerHandle>(
     descriptor, options, consumerFace,
-    std::make_shared<MessageValidator>("examples/trust-any.conf"));
+    std::make_shared<MessageValidator>(fixedTrust6.schemaPath()));
   consumer->start();
   for (size_t iteration = 0;
        iteration < 500 && payloadInterestKinds.size() < 5; ++iteration) {
@@ -2746,9 +2759,11 @@ BOOST_AUTO_TEST_CASE(LiveStreamFuturePayloadRetriesSameNameAndDeliversOnce)
     delivered.push_back(item.cursor);
     return LiveStreamItemAdmission::acceptItem();
   };
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust7{
+    identity.getDefaultKey().getDefaultCertificate()};
   auto consumer = std::make_shared<LiveStreamConsumerHandle>(
     descriptor, options, consumerFace,
-    std::make_shared<MessageValidator>("examples/trust-any.conf"));
+    std::make_shared<MessageValidator>(fixedTrust7.schemaPath()));
   consumer->start();
 
   const auto pump = [&] {
@@ -2892,9 +2907,11 @@ BOOST_AUTO_TEST_CASE(LiveStreamCompletedGroupsDoNotConsumeUnresolvedHorizon)
     ++delivered;
     return LiveStreamItemAdmission::acceptItem();
   };
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust8{
+    identity.getDefaultKey().getDefaultCertificate()};
   auto consumer = std::make_shared<LiveStreamConsumerHandle>(
     descriptor, options, consumerFace,
-    std::make_shared<MessageValidator>("examples/trust-any.conf"));
+    std::make_shared<MessageValidator>(fixedTrust8.schemaPath()));
   consumer->start();
 
   for (size_t iteration = 0; iteration < 40; ++iteration) {
@@ -3002,9 +3019,11 @@ BOOST_AUTO_TEST_CASE(LiveStreamAdaptiveConsumerPrefetchesNextUnpublishedMappingB
     ++delivered;
     return LiveStreamItemAdmission::acceptItem();
   };
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust9{
+    identity.getDefaultKey().getDefaultCertificate()};
   auto consumer = std::make_shared<LiveStreamConsumerHandle>(
     descriptor, openOptions, consumerFace,
-    std::make_shared<MessageValidator>("examples/trust-any.conf"));
+    std::make_shared<MessageValidator>(fixedTrust9.schemaPath()));
   consumer->start();
 
   const auto pump = [&] (size_t iterations) {
@@ -3142,9 +3161,11 @@ BOOST_AUTO_TEST_CASE(LiveStreamAdaptiveFirstFutureGroupKeepsOneProductionPeriod)
     ++delivered;
     return LiveStreamItemAdmission::acceptItem();
   };
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust10{
+    identity.getDefaultKey().getDefaultCertificate()};
   auto consumer = std::make_shared<LiveStreamConsumerHandle>(
     descriptor, openOptions, consumerFace,
-    std::make_shared<MessageValidator>("examples/trust-any.conf"));
+    std::make_shared<MessageValidator>(fixedTrust10.schemaPath()));
   consumer->start();
 
   const auto pump = [&] (size_t iterations) {
@@ -3327,9 +3348,11 @@ BOOST_AUTO_TEST_CASE(LiveStreamConsumerContinuesAcrossVerifiedMappingFrontiers)
     ++delivered;
     return LiveStreamItemAdmission::acceptItem();
   };
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust11{
+    identity.getDefaultKey().getDefaultCertificate()};
   auto consumer = std::make_shared<LiveStreamConsumerHandle>(
     descriptor, openOptions, consumerFace,
-    std::make_shared<MessageValidator>("examples/trust-any.conf"));
+    std::make_shared<MessageValidator>(fixedTrust11.schemaPath()));
   consumer->start();
 
   // Capture-to-receive is application latency, not the paper's DRD. Feeding a

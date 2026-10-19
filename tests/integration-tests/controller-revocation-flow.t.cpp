@@ -1,3 +1,4 @@
+#include "isolated-test-trust.hpp"
 #include "tests/boost-test.hpp"
 
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
@@ -638,16 +639,18 @@ BOOST_AUTO_TEST_CASE(PolicyStatusRetryChangesNetworkNonceAndPreservesOriginalRep
         replies.push_back(data.wireEncode());
         if (replies.size() > 1) actorFace.receive(data);
       });
+    ndn_service_framework::test::IsolatedTestTrust fixedTrust1{
+      controllerCert, signer, userCert, providerCert};
     std::unique_ptr<ServiceUser> user;
     std::unique_ptr<ServiceProvider> provider;
     if (providerRole) {
       provider = std::make_unique<ServiceProvider>(ServiceProvider::LocalMockTag{}, actorFace,
-          ndn::Name("/spec205/status-retry"), providerCert, signer, "examples/trust-any.conf");
+          ndn::Name("/spec205/status-retry"), providerCert, signer, fixedTrust1.schemaPath());
       provider->fetchPolicyStatusFromController(prefix, service);
     }
     else {
       user = std::make_unique<ServiceUser>(ServiceUser::LocalMockTag{}, actorFace,
-          ndn::Name("/spec205/status-retry"), userCert, signer, "examples/trust-any.conf");
+          ndn::Name("/spec205/status-retry"), userCert, signer, fixedTrust1.schemaPath());
       user->fetchPolicyStatusFromController(prefix, service);
     }
     const auto deadline = ndn::time::steady_clock::now() +
@@ -3196,12 +3199,16 @@ BOOST_AUTO_TEST_CASE(RealControllerStatusDrivesUserAndProviderRevocation)
   const auto aaCert = runtimeKeys.createIdentity(
       aaName, ndn::RsaKeyParams(2048)).getDefaultKey().getDefaultCertificate();
 
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust3{
+    controllerCert, userCert, providerCert, aaCert};
   ServiceUser user(ServiceUser::LocalMockTag{}, runtimeFace,
                    ndn::Name("/spec179/controller-runtime"), userCert, aaCert,
-                   "examples/trust-any.conf");
+                   fixedTrust3.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust4{
+    controllerCert, userCert, providerCert, aaCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{}, runtimeFace,
                            ndn::Name("/spec179/controller-runtime"), providerCert,
-                           aaCert, "examples/trust-any.conf");
+                           aaCert, fixedTrust4.schemaPath());
   size_t published = 0;
   size_t executions = 0;
   ndn::Name lastRequestName;
@@ -3360,12 +3367,16 @@ BOOST_AUTO_TEST_CASE(LiveControllerStatusRefreshRejectsRevokedRenewal)
 
   ndn::KeyChain runtimeKeys;
   ndn::DummyClientFace runtimeFace(runtimeKeys);
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust5{
+    controllerCert, runtimeAaCert, userCert, providerCert};
   ServiceUser user(ServiceUser::LocalMockTag{}, runtimeFace,
                    ndn::Name("/spec179/live-refresh"), userCert,
-                   runtimeAaCert, "examples/trust-any.conf");
+                   runtimeAaCert, fixedTrust5.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust6{
+    controllerCert, runtimeAaCert, userCert, providerCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{}, runtimeFace,
                            ndn::Name("/spec179/live-refresh"), providerCert,
-                           runtimeAaCert, "examples/trust-any.conf");
+                           runtimeAaCert, fixedTrust6.schemaPath());
   // Install the fixture-owned NAC Consumer/Producer pair for the runtime
   // keychain, matching the production bootstrap.  The LocalMock member
   // consumers would otherwise defer every post-install DKEY re-arm and the
@@ -3561,12 +3572,16 @@ BOOST_AUTO_TEST_CASE(GrantOnlyRefreshIssuesOneTargetFetchWithZeroFanOut)
 
   ndn::KeyChain runtimeKeys;
   ndn::DummyClientFace runtimeFace(runtimeKeys);
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust7{
+    controllerCert, runtimeAaCert, userCert, providerCert};
   ServiceUser user(ServiceUser::LocalMockTag{}, runtimeFace,
                    ndn::Name("/spec179/grant-fetch"), userCert,
-                   runtimeAaCert, "examples/trust-any.conf");
+                   runtimeAaCert, fixedTrust7.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust8{
+    controllerCert, runtimeAaCert, userCert, providerCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{}, runtimeFace,
                            ndn::Name("/spec179/grant-fetch"), providerCert,
-                           runtimeAaCert, "examples/trust-any.conf");
+                           runtimeAaCert, fixedTrust8.schemaPath());
   user.setUseTokens(false);
   provider.setUseTokens(false);
 
@@ -3722,12 +3737,16 @@ BOOST_AUTO_TEST_CASE(GrantOnlyRefreshSurvivesReverseOrderStatusFirstInstall)
 
   ndn::KeyChain runtimeKeys;
   ndn::DummyClientFace runtimeFace(runtimeKeys);
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust9{
+    controllerCert, runtimeAaCert, userCert, providerCert};
   ServiceUser user(ServiceUser::LocalMockTag{}, runtimeFace,
                    ndn::Name("/spec179/reverse-order"), userCert,
-                   runtimeAaCert, "examples/trust-any.conf");
+                   runtimeAaCert, fixedTrust9.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust10{
+    controllerCert, runtimeAaCert, userCert, providerCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{}, runtimeFace,
                            ndn::Name("/spec179/reverse-order"), providerCert,
-                           runtimeAaCert, "examples/trust-any.conf");
+                           runtimeAaCert, fixedTrust10.schemaPath());
   user.setUseTokens(false);
   provider.setUseTokens(false);
 
@@ -4114,11 +4133,15 @@ BOOST_AUTO_TEST_CASE(RealUserAndProviderEnforceControllerRevocationAtRuntime)
   const auto aaCert = keyChain.createIdentity(aaName, ndn::RsaKeyParams(2048))
                          .getDefaultKey().getDefaultCertificate();
 
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust11{
+    userCert, providerCert, aaCert};
   ServiceUser user(ServiceUser::LocalMockTag{}, face, ndn::Name("/spec179/runtime"),
-                   userCert, aaCert, "examples/trust-any.conf");
+                   userCert, aaCert, fixedTrust11.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust12{
+    userCert, providerCert, aaCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{}, face,
                            ndn::Name("/spec179/runtime"), providerCert, aaCert,
-                           "examples/trust-any.conf");
+                           fixedTrust12.schemaPath());
 
   const ControllerVersion version1{9100, 1};
   user.applyPermissionResponse(runtimePermission(
@@ -4231,8 +4254,10 @@ BOOST_AUTO_TEST_CASE(RuntimeRestartDropsControllerStatusAndFailsClosed)
 
   {
     ndn::Face face;
+    ndn_service_framework::test::IsolatedTestTrust fixedTrust13{
+      userCert, providerCert, aaCert};
     ServiceUser user(ServiceUser::LocalMockTag{}, face, groupPrefix,
-                     userCert, aaCert, "examples/trust-any.conf");
+                     userCert, aaCert, fixedTrust13.schemaPath());
     // This sets the runtime's configured-controller boundary without requiring
     // a live Controller; no event processing is needed for this assertion.
     user.fetchPermissionsFromController(controllerPrefix);
@@ -4244,8 +4269,10 @@ BOOST_AUTO_TEST_CASE(RuntimeRestartDropsControllerStatusAndFailsClosed)
   }
 
   ndn::Face restartedFace;
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust14{
+    userCert, providerCert, aaCert};
   ServiceUser restarted(ServiceUser::LocalMockTag{}, restartedFace, groupPrefix,
-                         userCert, aaCert, "examples/trust-any.conf");
+                         userCert, aaCert, fixedTrust14.schemaPath());
   restarted.fetchPermissionsFromController(controllerPrefix);
   // A stale permission snapshot by itself is not authority after restart.
   restarted.applyPermissionResponse(runtimePermission(
@@ -4295,8 +4322,10 @@ BOOST_AUTO_TEST_CASE(NewerServiceStatusDoesNotAuthorizeOtherService)
   const auto aaCert = keyChain.createIdentity(
       aaName, ndn::RsaKeyParams(2048)).getDefaultKey().getDefaultCertificate();
   ndn::Face face;
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust15{
+    userCert, aaCert};
   ServiceUser user(ServiceUser::LocalMockTag{}, face, groupPrefix, userCert,
-                   aaCert, "examples/trust-any.conf");
+                   aaCert, fixedTrust15.schemaPath());
   user.setUseTokens(false);
   user.fetchPermissionsFromController(controllerPrefix);
 
@@ -4381,11 +4410,15 @@ BOOST_AUTO_TEST_CASE(RealRuntimeEnforcesCertificateAndServiceRevocation)
   const auto aaCert = keyChain.createIdentity(aaName, ndn::RsaKeyParams(2048))
                          .getDefaultKey().getDefaultCertificate();
 
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust16{
+    userCert, providerCert, aaCert};
   ServiceUser user(ServiceUser::LocalMockTag{}, face, ndn::Name("/spec179/runtime-scope"),
-                   userCert, aaCert, "examples/trust-any.conf");
+                   userCert, aaCert, fixedTrust16.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust17{
+    userCert, providerCert, aaCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{}, face,
                            ndn::Name("/spec179/runtime-scope"), providerCert, aaCert,
-                           "examples/trust-any.conf");
+                           fixedTrust17.schemaPath());
   size_t published = 0;
   size_t executions = 0;
   RequestMessage lastRequest;
@@ -4563,9 +4596,11 @@ BOOST_AUTO_TEST_CASE(RealTargetedProviderRejectsRevokedExecution)
   const auto aaCert = keyChain.createIdentity(aaName, ndn::RsaKeyParams(2048))
                          .getDefaultKey().getDefaultCertificate();
 
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust18{
+    userCert, providerCert, aaCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{}, face,
                            ndn::Name("/spec179/targeted"), providerCert,
-                           aaCert, "examples/trust-any.conf");
+                           aaCert, fixedTrust18.schemaPath());
   provider.setUseTokens(false);
   size_t providerExecutions = 0;
   provider.addTargetedService(
@@ -4648,12 +4683,16 @@ BOOST_AUTO_TEST_CASE(ConfiguredControllerFailsClosedBeforeStatusInstallation)
   const auto aaCert = keyChain.createIdentity(aaName, ndn::RsaKeyParams(2048))
                          .getDefaultKey().getDefaultCertificate();
 
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust19{
+    userCert, providerCert, aaCert};
   ServiceUser user(ServiceUser::LocalMockTag{}, face,
                    ndn::Name("/spec179/no-status"), userCert, aaCert,
-                   "examples/trust-any.conf");
+                   fixedTrust19.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust20{
+    userCert, providerCert, aaCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{}, face,
                            ndn::Name("/spec179/no-status"), providerCert,
-                           aaCert, "examples/trust-any.conf");
+                           aaCert, fixedTrust20.schemaPath());
   // Configure the Controller prefix before applying a permission response so
   // its non-zero version is exercised as an authenticated-looking hint.  A
   // permission/manifest hint must not become authority without exact signed
@@ -4719,10 +4758,16 @@ BOOST_AUTO_TEST_CASE(UnprovisionedRuntimesConstructAndRemainUnauthorized,
         .getDefaultKey().getDefaultCertificate();
   };
   const auto aa = cert(ndn::Name("/spec179/unprovisioned/controller"));
+  const auto userCertificate = cert(userName);
+  const auto providerCertificate = cert(providerName);
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust21{
+    aa, userCertificate, providerCertificate};
   ServiceUser user(face, ndn::Name("/spec179/unprovisioned/group"),
-                   cert(userName), aa, "examples/trust-any.conf");
+                   userCertificate, aa, fixedTrust21.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust22{
+    aa, userCertificate, providerCertificate};
   ServiceProvider provider(face, ndn::Name("/spec179/unprovisioned/group"),
-                           cert(providerName), aa, "examples/trust-any.conf");
+                           providerCertificate, aa, fixedTrust22.schemaPath());
   BOOST_CHECK(!user.isNacConsumerReadyForTest());
   BOOST_CHECK(!provider.isNacConsumerReadyForTest());
   user.fetchPermissionsFromController(aa.getIdentity());
@@ -4766,8 +4811,12 @@ BOOST_AUTO_TEST_CASE(OnlineGrantWaitsForInitialDkeyAndReportsUnwrapFailure,
         .getDefaultKey().getDefaultCertificate();
   };
   const auto aa = cert(ndn::Name("/spec179/grant-pending/controller"));
+  const auto userCertificate = cert(userName);
+  const auto providerCertificate = cert(providerName);
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust23{
+    aa, userCertificate, providerCertificate};
   ServiceUser user(face, ndn::Name("/spec179/grant-pending/group"),
-                   cert(userName), aa, "examples/trust-any.conf");
+                   userCertificate, aa, fixedTrust23.schemaPath());
   const ControllerVersion version{9900, 1};
   user.applyPermissionResponse(runtimePermission(
       userName, tlv::UserPermission, providerName, ndn::Name(SERVICE), version));
@@ -4793,7 +4842,6 @@ BOOST_AUTO_TEST_CASE(OnlineGrantWaitsForInitialDkeyAndReportsUnwrapFailure,
   envelope.setNonce(ndn::Buffer(12, 0));
   envelope.setCipherText(ndn::Buffer(1, 0));
   envelope.setAuthTag(ndn::Buffer(16, 0));
-  cert(providerName);
   const auto ackName = makeRequestAckNameV2(providerName, userName, ndn::Name(SERVICE), ndn::Name("no-dkey"));
   const auto attribute = hybridAccessAttributeForName(ackName, ndn::Name(SERVICE), providerName);
   const auto locator = makeHybridMessageKeyDataName(ndn::Name(SERVICE), providerName, attribute, envelope.getEpochId());
@@ -4872,11 +4920,11 @@ BOOST_AUTO_TEST_CASE(PersistedRuntimeStatusSurvivesRuntimeRestart)
   const ndn::Name userName("/example/hello/user");
   const ndn::Name providerName("/example/hello/provider");
   const ndn::Name serviceName("/HELLO");
-  ndn::KeyChain runtimeKeys;
   const auto userCert = ServiceControllerTestAccess::ensureInternalIdentity(
       serviceController, userName);
   const auto providerCert = ServiceControllerTestAccess::ensureInternalIdentity(
       serviceController, providerName);
+  ndn::KeyChain runtimeKeys;
 
   ControllerVersion firstVersion;
   ControllerVersion advancedVersion;
@@ -4884,12 +4932,16 @@ BOOST_AUTO_TEST_CASE(PersistedRuntimeStatusSurvivesRuntimeRestart)
     // First runtime construction: accept statuses over the live fetch path,
     // which is the only accept path that persists.
     ndn::DummyClientFace runtimeFaceA(runtimeKeys);
+    ndn_service_framework::test::IsolatedTestTrust fixedTrust24{
+      controllerCert, runtimeAaCert, userCert, providerCert};
     ServiceUser userA(ServiceUser::LocalMockTag{}, runtimeFaceA,
                       ndn::Name("/spec179/restart"), userCert,
-                      runtimeAaCert, "examples/trust-any.conf");
+                      runtimeAaCert, fixedTrust24.schemaPath());
+    ndn_service_framework::test::IsolatedTestTrust fixedTrust25{
+      controllerCert, runtimeAaCert, userCert, providerCert};
     ServiceProvider providerA(ServiceProvider::LocalMockTag{}, runtimeFaceA,
                               ndn::Name("/spec179/restart"), providerCert,
-                              runtimeAaCert, "examples/trust-any.conf");
+                              runtimeAaCert, fixedTrust25.schemaPath());
     userA.useSigningKeyChainForTest(runtimeKeys);
     providerA.useSigningKeyChainForTest(runtimeKeys);
     userA.setUseTokens(false);
@@ -4951,12 +5003,16 @@ BOOST_AUTO_TEST_CASE(PersistedRuntimeStatusSurvivesRuntimeRestart)
       [&] (const ndn::Data& data) {
         runtimeFaceB.receive(data);
       });
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust26{
+    controllerCert, runtimeAaCert, userCert, providerCert};
   ServiceUser userB(ServiceUser::LocalMockTag{}, runtimeFaceB,
                     ndn::Name("/spec179/restart"), userCert,
-                    runtimeAaCert, "examples/trust-any.conf");
+                    runtimeAaCert, fixedTrust26.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust27{
+    controllerCert, runtimeAaCert, userCert, providerCert};
   ServiceProvider providerB(ServiceProvider::LocalMockTag{}, runtimeFaceB,
                             ndn::Name("/spec179/restart"), providerCert,
-                            runtimeAaCert, "examples/trust-any.conf");
+                            runtimeAaCert, fixedTrust27.schemaPath());
   userB.useSigningKeyChainForTest(runtimeKeys);
   providerB.useSigningKeyChainForTest(runtimeKeys);
   userB.setUseTokens(false);

@@ -1,3 +1,4 @@
+#include "isolated-test-trust.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
@@ -220,8 +221,10 @@ BOOST_AUTO_TEST_CASE(WorkerPublicationMeasuresOwnerDispatchAndPreservesOriginalP
   const auto actor = makeRsaIdentity(keys, ndn::Name("/spec201/worker-owner"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/worker-authority"));
   const ndn::Name service("/spec201/model");
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust1{
+    actor, authority};
   LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority,
-                        "examples/trust-any.conf");
+                        fixedTrust1.schemaPath());
   user.useSigningKeyChainForSigningOnlyForTest(keys);
   user.attachLocalMockPubSubForTest(pubsub(face, keys));
   user.init();
@@ -337,8 +340,10 @@ BOOST_AUTO_TEST_CASE(StrictReaderRejectsLegacyAndMalformedNamesBeforeInterest)
   ndn::DummyClientFace face(keys);
   const auto providerCertificate = makeRsaIdentity(keys, ndn::Name("/spec201/strict-provider"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/strict-authority"));
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust2{
+    providerCertificate, authority};
   LocalServiceProvider provider(face, ndn::Name("/spec201/strict"), providerCertificate,
-                                authority, "examples/trust-any.conf");
+                                authority, fixedTrust2.schemaPath());
   face.processEvents(ndn::time::milliseconds(1));
   const auto before = face.sentInterests.size();
   const std::vector<ndn::Name> rejected{
@@ -369,8 +374,10 @@ BOOST_AUTO_TEST_CASE(ExplicitLegacyDecryptsButCanonicalFailureNeverFallsBack)
   const auto producer = makeRsaIdentity(keys, ndn::Name("/spec201/legacy-producer"));
   const auto receiver = makeRsaIdentity(keys, ndn::Name("/spec201/legacy-receiver"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/legacy-authority"));
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust3{
+    producer, receiver, authority};
   LocalServiceProvider provider(face, ndn::Name("/spec201/legacy"), receiver, authority,
-                                "examples/trust-any.conf");
+                                fixedTrust3.schemaPath());
   provider.useSigningKeyChainForTest(keys);
   const ndn::Buffer key(32, 0x11), input{1, 2, 3};
   provider.cacheHybridReceiveKeyForTest("legacy-key", "1", key);
@@ -443,7 +450,9 @@ void runOriginalSignedPacketExecRestart(bool legacyV2, bool wrongManifest = fals
     ndn::DummyClientFace face(keys);
     const auto actor = makeRsaIdentity(keys, ndn::Name("/spec201/NDNSF/exec-owner"));
     const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/exec-authority"));
-    LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, "examples/trust-any.conf");
+    ndn_service_framework::test::IsolatedTestTrust fixedTrust4{
+      actor, authority};
+    LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, fixedTrust4.schemaPath());
     user.useSigningKeyChainForSigningOnlyForTest(keys);
     user.attachLocalMockPubSubForTest(pubsub(face, keys));
     user.setEncryptedLargeDataRangeStore(store);
@@ -701,15 +710,19 @@ BOOST_AUTO_TEST_CASE(SemanticManifestCategoriesKeepOriginalBlobPackets)
   const auto actor = makeRsaIdentity(keys, ndn::Name("/spec201/NDNSF/MODEL/owner"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/authority"));
   const ndn::Name service("/spec201/model");
-  LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, "examples/trust-any.conf");
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust5{
+    actor, authority};
+  LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, fixedTrust5.schemaPath());
   user.useSigningKeyChainForSigningOnlyForTest(keys);
   user.attachLocalMockPubSubForTest(pubsub(face, keys));
   user.init();
   face.processEvents(ndn::time::milliseconds(1));
   const auto sendKey = user.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
   const auto providerCertificate = makeRsaIdentity(keys, ndn::Name("/spec201/semantic-provider"));
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust6{
+    actor, authority, providerCertificate};
   LocalServiceProvider provider(face, ndn::Name("/spec201/raw"), providerCertificate, authority,
-                                "examples/trust-any.conf");
+                                fixedTrust6.schemaPath());
   provider.useSigningKeyChainForTest(keys);
   // Key injection isolates publication/fetch/decrypt from AA bootstrap.
   provider.cacheHybridReceiveKeyForTest(sendKey.keyId, sendKey.epochId, sendKey.key);
@@ -1008,8 +1021,10 @@ BOOST_AUTO_TEST_CASE(DelegatedProducerSignaturesAreCheckedForRootAndEverySegment
     BOOST_REQUIRE(out.good());
   }
   auto store = std::make_shared<PacketStore>(root / "store");
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust7{
+    owner, delegate, foreign, receiver, authority};
   LocalServiceUser user(publishingFace, ndn::Name("/spec201/delegated"), owner, authority,
-                        "examples/trust-any.conf");
+                        fixedTrust7.schemaPath());
   user.useSigningKeyChainForSigningOnlyForTest(keys);
   user.attachLocalMockPubSubForTest(pubsub(publishingFace, keys));
   user.setEncryptedLargeDataRangeStore(store);
@@ -1126,7 +1141,9 @@ BOOST_AUTO_TEST_CASE(RestartReplaysOriginalManifestAndEvictedSegments)
   std::vector<std::uint8_t> rootWire, firstWire;
   {
     auto store = std::make_shared<PacketStore>(root / "store");
-    LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, "examples/trust-any.conf");
+    ndn_service_framework::test::IsolatedTestTrust fixedTrust8{
+      actor, authority};
+    LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, fixedTrust8.schemaPath());
     user.useSigningKeyChainForSigningOnlyForTest(keys);
     user.attachLocalMockPubSubForTest(pubsub(face, keys));
     user.setEncryptedLargeDataRangeStore(store);
@@ -1182,7 +1199,9 @@ BOOST_AUTO_TEST_CASE(RestartReplaysOriginalManifestAndEvictedSegments)
   face.processEvents(ndn::time::milliseconds(1));
   {
     auto store = std::make_shared<PacketStore>(root / "store");
-    LocalServiceUser restored(face, ndn::Name("/spec201/raw"), actor, authority, "examples/trust-any.conf");
+    ndn_service_framework::test::IsolatedTestTrust fixedTrust9{
+      actor, authority};
+    LocalServiceUser restored(face, ndn::Name("/spec201/raw"), actor, authority, fixedTrust9.schemaPath());
     restored.useSigningKeyChainForSigningOnlyForTest(keys);
     restored.attachLocalMockPubSubForTest(pubsub(face, keys));
     restored.setEncryptedLargeDataRangeStore(store);
@@ -1239,7 +1258,9 @@ BOOST_AUTO_TEST_CASE(LegacyAndMalformedReferencesUseActualCoreRestore)
       };
       LargeDataPublishResult original;
       {
-        LocalServiceUser user(face, ndn::Name("/spec201/records"), actor, authority, "examples/trust-any.conf");
+        ndn_service_framework::test::IsolatedTestTrust fixedTrust10{
+          actor, authority};
+        LocalServiceUser user(face, ndn::Name("/spec201/records"), actor, authority, fixedTrust10.schemaPath());
         user.useSigningKeyChainForSigningOnlyForTest(keys);
         user.attachLocalMockPubSubForTest(pubsub(face, keys));
         user.setEncryptedLargeDataRangeStore(store);
@@ -1253,8 +1274,10 @@ BOOST_AUTO_TEST_CASE(LegacyAndMalformedReferencesUseActualCoreRestore)
       // mutating it.  The second restore must exercise positive syntax memo
       // reuse; subsequent malformed/external records must still be rejected.
       for (unsigned replay = 0; replay < 2; ++replay) {
+        ndn_service_framework::test::IsolatedTestTrust fixedTrust11{
+          actor, authority};
         LocalServiceUser warm(face, ndn::Name("/spec201/records"), actor, authority,
-                              "examples/trust-any.conf");
+                              fixedTrust11.schemaPath());
         warm.useSigningKeyChainForSigningOnlyForTest(keys);
         warm.attachLocalMockPubSubForTest(pubsub(face, keys));
         warm.setEncryptedLargeDataRangeStore(store);
@@ -1354,7 +1377,9 @@ BOOST_AUTO_TEST_CASE(LegacyAndMalformedReferencesUseActualCoreRestore)
       else write(current, mutated);
       const auto before = store->commits;
       {
-        LocalServiceUser restored(face, ndn::Name("/spec201/records"), actor, authority, "examples/trust-any.conf");
+        ndn_service_framework::test::IsolatedTestTrust fixedTrust12{
+          actor, authority};
+        LocalServiceUser restored(face, ndn::Name("/spec201/records"), actor, authority, fixedTrust12.schemaPath());
         restored.useSigningKeyChainForSigningOnlyForTest(keys);
         restored.attachLocalMockPubSubForTest(pubsub(face, keys));
         restored.setEncryptedLargeDataRangeStore(store);
@@ -1399,7 +1424,9 @@ BOOST_AUTO_TEST_CASE(RangeOnlyDurableBackendIsRejectedBeforeCommit)
   const auto actor = makeRsaIdentity(keys, ndn::Name("/spec201/reject/user"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/reject/authority"));
   auto store = std::make_shared<RangeOnlyDurableStore>();
-  LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, "examples/trust-any.conf");
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust13{
+    actor, authority};
+  LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, fixedTrust13.schemaPath());
   user.useSigningKeyChainForSigningOnlyForTest(keys);
   user.attachLocalMockPubSubForTest(pubsub(face, keys));
   user.setEncryptedLargeDataRangeStore(store);
@@ -1432,7 +1459,9 @@ BOOST_AUTO_TEST_CASE(CancelledPacketTransactionPreservesEarlierPublication)
   const auto actor = makeRsaIdentity(keys, ndn::Name("/spec201/cancel/user"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/cancel/authority"));
   auto store = std::make_shared<PacketStore>(root / "store");
-  LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, "examples/trust-any.conf");
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust14{
+    actor, authority};
+  LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, fixedTrust14.schemaPath());
   user.useSigningKeyChainForSigningOnlyForTest(keys);
   user.attachLocalMockPubSubForTest(pubsub(face, keys));
   user.setEncryptedLargeDataRangeStore(store);
@@ -1518,7 +1547,9 @@ BOOST_AUTO_TEST_CASE(RealCorePublicationUsesAtomicRepoBackendAndRestoresOriginal
   {
     auto repo = openRepo();
     auto backend = std::make_shared<RepoEncryptedLargeDataStore>(repo);
-    LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, "examples/trust-any.conf");
+    ndn_service_framework::test::IsolatedTestTrust fixedTrust15{
+      actor, authority};
+    LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, fixedTrust15.schemaPath());
     user.useSigningKeyChainForSigningOnlyForTest(keys);
     user.attachLocalMockPubSubForTest(pubsub(face, keys));
     user.setEncryptedLargeDataRangeStore(backend);
@@ -1576,7 +1607,9 @@ BOOST_AUTO_TEST_CASE(RealCorePublicationUsesAtomicRepoBackendAndRestoresOriginal
   }
   {
     auto repo = openRepo();
-    LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, "examples/trust-any.conf");
+    ndn_service_framework::test::IsolatedTestTrust fixedTrust16{
+      actor, authority};
+    LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, fixedTrust16.schemaPath());
     user.useSigningKeyChainForSigningOnlyForTest(keys);
     user.attachLocalMockPubSubForTest(pubsub(face, keys));
     user.setEncryptedLargeDataRangeStore(std::make_shared<RepoEncryptedLargeDataStore>(repo));

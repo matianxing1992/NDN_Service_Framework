@@ -171,6 +171,28 @@ using namespace ndn_service_framework;
 using namespace ndn_service_framework::test;
 using Bytes = std::vector<uint8_t>;
 
+// Keep hierarchical authorization identical in both ndn-cxx URI profiles.
+constexpr const char* HIERARCHICAL_TEST_RULE = R"SCHEMA(
+rule {
+  id reply
+  for data
+  checker {
+    type customized
+    sig-type rsa-sha256
+    key-locator {
+      type name
+      hyper-relation {
+        k-regex "^(<>*)<KEY|8=KEY><>{1,3}$"
+        k-expand "\\1"
+        h-relation is-prefix-of
+        p-regex "^(<>*)$"
+        p-expand "\\1"
+      }
+    }
+  }
+}
+)SCHEMA";
+
 Bytes wire(const ndn::Name& name)
 {
   const auto& value = name.wireEncode();
@@ -1135,8 +1157,8 @@ BOOST_AUTO_TEST_CASE(StrictCkConsumerValidatesCertificateChainBeforeProducerAuth
   ndn::io::save(root, anchorPath.string());
   {
     std::ofstream schema(schemaPath);
-    schema << "rule { id ck-chain for data checker { type hierarchical sig-type rsa-sha256 } }\n"
-              "trust-anchor { type file file-name " << std::quoted(anchorPath.string()) << " }\n";
+    schema << HIERARCHICAL_TEST_RULE
+           << "trust-anchor { type file file-name " << std::quoted(anchorPath.string()) << " }\n";
   }
   ndn::DummyClientFace authorityFace(io, keys, {false, true});
   ndn::DummyClientFace producerFace(io, keys, {false, true});
@@ -1258,8 +1280,8 @@ BOOST_AUTO_TEST_CASE(WrappedKeyOperationFenceCancelsBeforeStartAndDuringFetch)
   ndn::io::save(owner, "spec210-wrapper-owner.cert");
   {
     std::ofstream schema("spec210-wrapper.conf");
-    schema << "rule { id wrapper for data checker { type hierarchical sig-type rsa-sha256 } }\n"
-              "trust-anchor { type file file-name spec210-wrapper-owner.cert }\n";
+    schema << HIERARCHICAL_TEST_RULE
+           << "trust-anchor { type file file-name spec210-wrapper-owner.cert }\n";
   }
   const ndn::Name service("/service"), producer = owner.getIdentity();
   const auto attribute = makeAbeServiceAttribute(service, "SERVICE");
@@ -1317,7 +1339,7 @@ BOOST_AUTO_TEST_CASE(ActualReadyHandlerReplaysAuthenticatedQueryWithoutNonceReva
     std::ofstream schema("spec201-ack.conf");
     schema << "rule { id signed-call for interest checker { type customized sig-type rsa-sha256 "
               "key-locator { type name regex ^<>*$ } } }\n"
-              "rule { id reply for data checker { type hierarchical sig-type rsa-sha256 } }\n"
+           << HIERARCHICAL_TEST_RULE <<
               "trust-anchor { type file file-name spec201-ack-user.cert }\n"
               "trust-anchor { type file file-name spec201-ack-provider.cert }\n";
   }
@@ -1402,7 +1424,7 @@ BOOST_AUTO_TEST_CASE(ActualActivationHandlerExecutesOnceAndReplaysOriginalAuthen
     std::ofstream schema("spec201-activate.conf");
     schema << "rule { id call for interest checker { type customized sig-type rsa-sha256 "
               "key-locator { type name regex ^<>*$ } } }\n"
-              "rule { id reply for data checker { type hierarchical sig-type rsa-sha256 } }\n"
+           << HIERARCHICAL_TEST_RULE <<
               "trust-anchor { type file file-name spec201-activate-user.cert }\n"
               "trust-anchor { type file file-name spec201-activate-provider.cert }\n";
   }

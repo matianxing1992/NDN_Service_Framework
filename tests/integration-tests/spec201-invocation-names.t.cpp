@@ -1,3 +1,4 @@
+#include "isolated-test-trust.hpp"
 #include "ndnsf-integration-fixture.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/utils.hpp"
@@ -386,7 +387,10 @@ BOOST_AUTO_TEST_CASE(ValidatedAssemblyBindsEverySignerAndExpiresWithoutEviction)
   const ndn::Name actor("/spec201/segment-owner"), foreign("/spec201/segment-owner/NDNSF/REQUEST");
   keys.createIdentity(actor);
   keys.createIdentity(foreign);
-  MessageValidator validator("examples/trust-any.conf");
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust1{
+    keys.getPib().getIdentity(actor).getDefaultKey().getDefaultCertificate(),
+    keys.getPib().getIdentity(foreign).getDefaultKey().getDefaultCertificate()};
+  MessageValidator validator(fixedTrust1.schemaPath());
   const auto base = makeRequestNameV2(actor, ndn::Name("/service"), ndn::Name("/a/tail")).appendVersion(0);
   auto packet = [&](const ndn::Name& signer, uint64_t segment) {
     ndn::Data data(ndn::Name(base).appendSegment(segment));
@@ -430,7 +434,9 @@ BOOST_AUTO_TEST_CASE(InvalidSignatureNeverRefreshesAssemblyBinding)
   keys.createIdentity(actor);
   boost::asio::io_context io;
   ndn::DummyClientFace face(io, keys);
-  auto validator = std::make_shared<MessageValidator>("examples/trust-any.conf", std::nullopt, &face);
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust2{
+    keys.getPib().getIdentity(actor).getDefaultKey().getDefaultCertificate()};
+  auto validator = std::make_shared<MessageValidator>(fixedTrust2.schemaPath(), std::nullopt, &face);
   ndn::Data original(makeRequestNameV2(actor, ndn::Name("/service"), ndn::Name("/request"))
                        .appendVersion(0).appendSegment(0));
   original.setContent("valid");
@@ -468,13 +474,9 @@ BOOST_AUTO_TEST_CASE(NestedAuthorizedMarkersAreAmbiguousAndFailClosed)
   original.setContent("valid");
   original.setFinalBlock(ndn::name::Component::fromSegment(0));
   keys.sign(original, ndn::security::signingByIdentity(actor));
-  std::string pattern = (std::filesystem::temp_directory_path() / "spec201-invocation-policy-XXXXXX").string();
-  const auto* made = ::mkdtemp(pattern.data());
-  BOOST_REQUIRE(made != nullptr);
-  const std::filesystem::path directory(made);
-  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::filesystem::remove_all(path); } } cleanup{directory};
-  const auto trust = directory / "trust.conf";
-  std::filesystem::copy_file("examples/trust-any.conf", trust);
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust3{
+    keys.getPib().getIdentity(actor).getDefaultKey().getDefaultCertificate()};
+  const std::filesystem::path trust(fixedTrust3.schemaPath());
   {
     std::ofstream permissions(trust.string() + ".producer-signers");
     permissions << "producer-signer\n{\n producer \"" << ancestor.toUri(ndn::name::UriFormat::CANONICAL)

@@ -1,3 +1,4 @@
+#include "../integration-tests/isolated-test-trust.hpp"
 /* -*- Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil -*- */
 
 #include "ndn-service-framework/StreamFacade.hpp"
@@ -82,9 +83,11 @@ BOOST_AUTO_TEST_CASE(ProviderFacadeBootstrapsAndReleasesSessionClaim)
   ndn::DummyClientFace::Options faceOptions;
   faceOptions.enableRegistrationReply = true;
   ndn::DummyClientFace face(io, keyChain, faceOptions);
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust1{
+    providerCert, aaCert};
   LocalServiceProvider provider(
     face, ndn::Name("/test/spec147/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    fixedTrust1.schemaPath());
 
   std::atomic_bool running{true};
   std::thread faceThread([&] {
@@ -164,12 +167,16 @@ BOOST_AUTO_TEST_CASE(ConsumerFacadeOpensAndStartsExistingHandle)
   auto forwardData = providerFace.onSendData.connect(
     [&] (const ndn::Data& data) { consumerFace.receive(data); });
 
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust2{
+    providerCert, userCert, aaCert};
   LocalServiceProvider provider(
     providerFace, ndn::Name("/test/spec147/e2e/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    fixedTrust2.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust3{
+    providerCert, userCert, aaCert};
   LocalServiceUser user(
     consumerFace, ndn::Name("/test/spec147/e2e/group"), userCert, aaCert,
-    "examples/trust-any.conf");
+    fixedTrust3.schemaPath());
 
   std::atomic_bool providerRunning{true};
   std::thread providerThread([&] {
@@ -229,9 +236,11 @@ BOOST_AUTO_TEST_CASE(PredictiveFacadeDescriptorUsesConfiguredSession)
   ndn::DummyClientFace::Options faceOptions;
   faceOptions.enableRegistrationReply = true;
   ndn::DummyClientFace facadeFace(facadeIo, keyChain, faceOptions);
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust4{
+    providerCert, aaCert};
   LocalServiceProvider provider(
     facadeFace, ndn::Name("/test/spec147/parity/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    fixedTrust4.schemaPath());
 
   StreamConfig config;
   config.streamId = "generic";
@@ -281,9 +290,11 @@ BOOST_AUTO_TEST_CASE(PredictiveProviderExactWireValidationAndAtomicFlush)
   ndn::DummyClientFace::Options faceOptions;
   faceOptions.enableRegistrationReply = true;
   ndn::DummyClientFace face(io, keyChain, faceOptions);
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust5{
+    providerCert, attackerCert, aaCert};
   LocalServiceProvider provider(
     face, ndn::Name("/test/spec148/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    fixedTrust5.schemaPath());
 
   std::mutex observedMutex;
   std::condition_variable observedCondition;
@@ -611,12 +622,16 @@ BOOST_AUTO_TEST_CASE(PredictiveConsumerValidatesAndDeliversReorderedData)
       }
     });
 
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust6{
+    providerCert, userCert, aaCert};
   LocalServiceProvider provider(
     providerFace, ndn::Name("/test/spec148/e2e/group"),
-    providerCert, aaCert, "examples/trust-any.conf");
+    providerCert, aaCert, fixedTrust6.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust7{
+    providerCert, userCert, aaCert};
   LocalServiceUser user(
     consumerFace, ndn::Name("/test/spec148/e2e/group"),
-    userCert, aaCert, "examples/trust-any.conf");
+    userCert, aaCert, fixedTrust7.schemaPath());
 
   std::atomic_bool running{true};
   std::thread providerThread([&] {
@@ -829,12 +844,16 @@ BOOST_AUTO_TEST_CASE(PredictiveTerminalGapAdvancesOrderedDrain)
         consumerIo, [&, data] { consumerFace.receive(data); });
     });
 
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust8{
+    providerCert, userCert, aaCert};
   LocalServiceProvider provider(
     providerFace, ndn::Name("/test/spec150/group"),
-    providerCert, aaCert, "examples/trust-any.conf");
+    providerCert, aaCert, fixedTrust8.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust9{
+    providerCert, userCert, aaCert};
   LocalServiceUser user(
     consumerFace, ndn::Name("/test/spec150/group"),
-    userCert, aaCert, "examples/trust-any.conf");
+    userCert, aaCert, fixedTrust9.schemaPath());
 
   std::atomic_bool running{true};
   std::thread providerThread([&] {

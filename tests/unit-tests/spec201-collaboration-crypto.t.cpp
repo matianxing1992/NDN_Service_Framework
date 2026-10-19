@@ -1,3 +1,4 @@
+#include "../integration-tests/isolated-test-trust.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "ndn-service-framework/utils.hpp"
 #include <ndn-cxx/security/signing-helpers.hpp>
@@ -46,8 +47,12 @@ BOOST_AUTO_TEST_CASE(ActualProviderPublicationAndUserDecryptionKeepCanonicalKeyB
   const auto userCert = makeRsaIdentity(keys, requester);
   const auto authorityCert = makeRsaIdentity(keys, ndn::Name("/org/controller"));
   const auto node = ndn::Name(producer).append("provider").append("17");
-  CollaborationProvider provider(face, group, providerCert, authorityCert, "examples/trust-any.conf");
-  CollaborationUser user(face, group, userCert, authorityCert, "examples/trust-any.conf");
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust1{
+    providerCert, userCert, authorityCert};
+  CollaborationProvider provider(face, group, providerCert, authorityCert, fixedTrust1.schemaPath());
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust2{
+    providerCert, userCert, authorityCert};
+  CollaborationUser user(face, group, userCert, authorityCert, fixedTrust2.schemaPath());
   ndn::svs::SecurityOptions security(keys);
   security.interestSigner = std::make_shared<ndn::svs::BaseSigner>();
   security.dataSigner->signingInfo = ndn::security::signingByCertificate(providerCert);
