@@ -11,6 +11,7 @@
 #include "ndn-service-framework/utils.hpp"
 #include "ndn-service-framework/PeerProbeNaming.hpp"
 #include <ndn-cxx/encoding/block-helpers.hpp>
+#include <ndn-cxx/util/io.hpp>
 
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -27,6 +28,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -92,19 +94,25 @@ struct ServiceProviderTestAccess
   {
     provider.m_peerGoodputStageObserver = std::move(observer);
   }
+  static std::string fixedProbeAnchor(ServiceProvider& provider)
+  {
+    auto& keys = provider.m_testSigningKeyChain ? *provider.m_testSigningKeyChain : provider.m_keyChain;
+    const auto certificate = keys.getPib().getIdentity(provider.getName())
+      .getDefaultKey().getDefaultCertificate();
+    std::ostringstream encoded;
+    ndn::io::save(certificate, encoded);
+    auto base64 = encoded.str();
+    base64.erase(std::remove(base64.begin(), base64.end(), '\n'), base64.end());
+    return "trust-anchor { type base64 base64-string \"" + base64 + "\" }";
+  }
   static void anchorProbeValidation(ServiceProvider& receiver, ServiceProvider& source)
   {
-    // The general fixture's trust-any schema bypasses signature checks. This
-    // signature oracle instead uses the real validator with the source anchor.
+    // Restrict this signature oracle to the fixture's exact source certificate.
     receiver.nac_validator.load(
       "rule { id probe-signatures for data checker { type customized "
       "sig-type rsa-sha256 key-locator { type name name " +
       source.getName().toUri(ndn::name::UriFormat::CANONICAL) +
-      " relation equal } } }", "spec197-probe-signature-oracle");
-    auto& keys = source.m_testSigningKeyChain ? *source.m_testSigningKeyChain : source.m_keyChain;
-    auto certificate = keys.getPib().getIdentity(source.getName())
-      .getDefaultKey().getDefaultCertificate();
-    receiver.nac_validator.loadAnchor("spec197-probe-source", std::move(certificate));
+      " relation equal } } }\n" + fixedProbeAnchor(source), "spec197-probe-signature-oracle");
   }
   static void anchorProbeInterestValidation(ServiceProvider& target, ServiceProvider& observer)
   {
@@ -112,11 +120,7 @@ struct ServiceProviderTestAccess
       "rule { id probe-request-signatures for interest checker { type customized "
       "sig-type rsa-sha256 key-locator { type name name " +
       observer.getName().toUri(ndn::name::UriFormat::CANONICAL) +
-      " relation equal } } }", "spec201-probe-request-oracle");
-    auto& keys = observer.m_testSigningKeyChain ? *observer.m_testSigningKeyChain : observer.m_keyChain;
-    auto certificate = keys.getPib().getIdentity(observer.getName())
-      .getDefaultKey().getDefaultCertificate();
-    target.nac_validator.loadAnchor("spec201-probe-observer", std::move(certificate));
+      " relation equal } } }\n" + fixedProbeAnchor(observer), "spec201-probe-request-oracle");
   }
   static void receiveSignedProbe(ServiceProvider& target, ServiceProvider& observer,
                                  ndn::Interest& interest)
