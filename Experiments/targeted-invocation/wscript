@@ -16,6 +16,8 @@ def configure(conf):
                    args='--cflags --libs', uselib_store='NDNSF', mandatory=True)
     conf.env.NDNSF_NAC_LIBDIR = conf.cmd_and_log(
         ['/usr/bin/pkg-config', '--variable=libdir', 'libnac-abe']).strip()
+    conf.env.prepend_value('INCLUDES', conf.cmd_and_log(
+        ['/usr/bin/pkg-config', '--variable=includedir', 'libnac-abe']).strip())
     conf.check_cxx(header_name='nlohmann/json.hpp', mandatory=True)
 
 def build(bld):
