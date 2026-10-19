@@ -1,4 +1,5 @@
 #include "tests/boost-test.hpp"
+#include "isolated-test-trust.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
@@ -328,6 +329,7 @@ BOOST_AUTO_TEST_CASE(IndependentSegmentsUseSvsMappingRepairAndReplayFence)
 
 BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
 {
+  ndn_service_framework::test::IsolatedTestTrust trustOwner;
   boost::asio::io_context ioProducer;
   boost::asio::io_context ioReceiver;
   ndn::KeyChain keyChain("pib-memory:ndnsf-data-v1-provider-context",
@@ -360,23 +362,18 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
       [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
       svsOptions, securityOptions);
 
-  auto producerCert = keyChain.createIdentity(
-      ndn::Name("/test/provider/data-v1-producer"), ndn::RsaKeyParams(2048))
-                        .getDefaultKey().getDefaultCertificate();
-  auto receiverCert = keyChain.createIdentity(
-      ndn::Name("/test/provider/data-v1-receiver"), ndn::RsaKeyParams(2048))
-                        .getDefaultKey().getDefaultCertificate();
-  auto authorityCert = keyChain.createIdentity(
-      ndn::Name("/test/authority/data-v1"), ndn::RsaKeyParams(2048))
-                         .getDefaultKey().getDefaultCertificate();
+  auto producerCert = trustOwner.createTestIdentityCertificate(keyChain, producerNode);
+  auto receiverCert = trustOwner.createTestIdentityCertificate(keyChain, receiverNode);
+  auto authorityCert = trustOwner.createTestIdentityCertificate(
+      keyChain, ndn::Name("/test/authority/data-v1"));
 
   using FrameworkProvider = ndn_service_framework::ServiceProvider;
   FrameworkProvider producer(FrameworkProvider::LocalMockTag{}, producerFace,
                              ndn::Name("/test/group"), producerCert,
-                             authorityCert, "examples/trust-any.conf");
+                             authorityCert, trustOwner.schemaPath());
   FrameworkProvider receiver(FrameworkProvider::LocalMockTag{}, receiverFace,
                              ndn::Name("/test/group"), receiverCert,
-                             authorityCert, "examples/trust-any.conf");
+                             authorityCert, trustOwner.schemaPath());
   producer.attachLocalMockPubSubForTest(producerPub);
   receiver.attachLocalMockPubSubForTest(receiverPub);
   producer.useSigningKeyChainForTest(keyChain);

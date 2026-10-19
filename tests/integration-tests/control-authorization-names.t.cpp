@@ -1,4 +1,5 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "isolated-test-trust.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "ndn-service-framework/ServiceAuthorizationTable.hpp"
@@ -664,7 +665,7 @@ BOOST_AUTO_TEST_CASE(PermissionTableUsesCompleteNameWireAndKeepsEpochFence)
 
 BOOST_AUTO_TEST_CASE(PrefixOnlyControllerBootstrapCannotAdmitForgedData)
 {
-  ndn::KeyChain keys;
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
   const ndn::Name controller("/spec201/control/controller"), foreign("/spec201/control/user");
   const ndn::Name root("/spec201/control");
   const auto rootIdentity = keys.createIdentity(root, ndn::RsaKeyParams(2048));
@@ -683,6 +684,20 @@ BOOST_AUTO_TEST_CASE(PrefixOnlyControllerBootstrapCannotAdmitForgedData)
   auto validator = std::make_shared<MessageValidator>(schema, std::nullopt, &face);
   ndn::Data original(ndn::Name(controller).append("NDNSF").append("POLICY-MANIFEST"));
   original.setContent("original"); keys.sign(original, ndn::security::signingByIdentity(controller));
+  auto certificateRequests = std::make_shared<std::vector<std::string>>();
+  auto certificateReplies = std::make_shared<size_t>(0);
+  const std::vector<ndn::security::Certificate> originalCertificates{
+    controllerKey.getDefaultCertificate(), foreignKey.getDefaultCertificate()};
+  ndn::signal::ScopedConnection observeRequests = face.onSendInterest.connect(
+    [certificateRequests, certificateReplies, originalCertificates, &face](const ndn::Interest& interest) {
+      certificateRequests->push_back(interest.getName().toUri(ndn::name::UriFormat::CANONICAL) +
+        " CanBePrefix=" + (interest.getCanBePrefix() ? "true" : "false"));
+      for (const auto& certificate : originalCertificates) {
+        if (interest.matchesData(certificate)) {
+          ++*certificateReplies; face.receive(certificate); return;
+        }
+      }
+    });
   auto validate = [&](const ndn::Data& packet, bool success) {
     bool done = false;
     validator->validate(packet,
@@ -704,20 +719,6 @@ BOOST_AUTO_TEST_CASE(PrefixOnlyControllerBootstrapCannotAdmitForgedData)
   BOOST_REQUIRE(ndn::security::verifySignature(wrongActor,
       keys.getPib().getIdentity(foreign).getDefaultKey()));
   // Keep test assertions outside the asynchronous validator callback stack.
-  auto certificateRequests = std::make_shared<std::vector<std::string>>();
-  auto certificateReplies = std::make_shared<size_t>(0);
-  const std::vector<ndn::security::Certificate> originalCertificates{
-    controllerKey.getDefaultCertificate(), foreignKey.getDefaultCertificate()};
-  ndn::signal::ScopedConnection observeRequests = face.onSendInterest.connect(
-    [certificateRequests, certificateReplies, originalCertificates, &face](const ndn::Interest& interest) {
-      certificateRequests->push_back(interest.getName().toUri(ndn::name::UriFormat::CANONICAL) +
-        " CanBePrefix=" + (interest.getCanBePrefix() ? "true" : "false"));
-      for (const auto& certificate : originalCertificates) {
-        if (interest.matchesData(certificate)) {
-          ++*certificateReplies; face.receive(certificate); return;
-        }
-      }
-    });
   auto validateConfigured = [&](const ndn::Data& packet, bool expected) {
     struct Result { bool done = false; bool accepted = false; std::string error; };
     auto result = std::make_shared<Result>();
@@ -856,11 +857,14 @@ BOOST_AUTO_TEST_CASE(StackValidatorRejectsEscapingCertificateValidation)
 
 BOOST_AUTO_TEST_CASE(ActualUserGrantPublisherKeepsOriginalWireAndRejectsConflict)
 {
+  IsolatedTestTrust trustOwner;
   ndn::KeyChain keys("pib-memory:", "tpm-memory:");
   ndn::DummyClientFace face(keys);
-  const auto owner = makeRsaIdentity(keys, ndn::Name("/spec201/owner/NDNSF/GRANT"));
-  const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/authority"));
-  LocalServiceUser user(face, ndn::Name("/spec201/group"), owner, authority, "examples/trust-any.conf");
+  const auto owner = trustOwner.createTestIdentityCertificate(
+      keys, ndn::Name("/spec201/owner/NDNSF/GRANT"));
+  const auto authority = trustOwner.createTestIdentityCertificate(keys, ndn::Name("/spec201/authority"));
+  LocalServiceUser user(face, ndn::Name("/spec201/group"), owner, authority,
+                        trustOwner.schemaPath());
   user.useSigningKeyChainForTest(keys);
   const ndn::Name name(ndnsf::di::canonicalNativeGrantName(owner.getIdentity().toUri(), "/recipient", "/request", 1,
        digestText('a'), digestText('b'), "epoch", digestText('c')));

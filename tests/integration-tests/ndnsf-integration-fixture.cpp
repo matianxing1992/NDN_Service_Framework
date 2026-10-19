@@ -1,4 +1,5 @@
 #include "ndnsf-integration-fixture.hpp"
+#include "isolated-test-trust.hpp"
 
 #include "ndn-service-framework/NDNSFMessages.hpp"
 #include "ndn-service-framework/utils.hpp"
@@ -243,6 +244,27 @@ configuredServices(const BootstrapProfile& profile,
 }
 
 } // namespace
+
+IsolatedTestTrust::IsolatedTestTrust()
+  : m_directory(makeTestTrustDirectory())
+{
+}
+
+IsolatedTestTrust::~IsolatedTestTrust()
+{
+  std::error_code ignored;
+  std::filesystem::remove_all(m_directory, ignored);
+}
+
+ndn::security::Certificate
+IsolatedTestTrust::createTestIdentityCertificate(ndn::KeyChain& keyChain,
+                                                 const ndn::Name& identity)
+{
+  auto certificate = makeIdentity(keyChain, identity);
+  m_anchors.push_back(certificate);
+  writeTestTrustSchema(m_directory, m_anchors);
+  return certificate;
+}
 
 NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profile)
   : m_profile(std::move(profile))

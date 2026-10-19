@@ -177,7 +177,8 @@ def local(tmp_path, monkeypatch):
             assert timeout == 60
             return "ambient import log\nSPEC180_NATIVE_PROBE=" + json.dumps(runtime())
         if command[0] == "ldd":
-            return ("libdependency.so => {} (0x1234)\n".format(state["provider_dependency"]) +
+            return ("{} => {} (0x0123)\n".format(native.LIBRARY, state["framework"]) +
+                    "libdependency.so => {} (0x1234)\n".format(state["provider_dependency"]) +
                     "libndn-svs.so => {} (0x5678)\n".format(state["provider_svs"]) +
                     "libndn-cxx.so.0.9.0 => {} (0x9abc)\n".format(cxx_library) +
                     "libnac-abe.so => {} (0xdef0)\n".format(nac_library))
@@ -350,6 +351,52 @@ def test_provider_resolving_wrong_framework_is_rejected(local, monkeypatch):
     with pytest.raises(native.IdentityError, match="WRONG_PROVIDER_FRAMEWORK_LIBRARY"):
         build(local)
     assert not local["manifest"].exists()
+
+
+@pytest.mark.parametrize("location", ["global", "build"])
+def test_provider_accepts_matching_framework_only_in_selected_roots(local, monkeypatch, location):
+    original = native.run
+    selected = local["global_core"] if location == "global" else local["core"]
+
+    def selected_ldd(command, **kwargs):
+        output = original(command, **kwargs)
+        if command[0] == "ldd":
+            output = output.replace(str(local["global_core"]), str(selected))
+        return output
+
+    monkeypatch.setattr(native, "run", selected_ldd)
+    build(local)
+    verify(local)
+
+
+@pytest.mark.parametrize("kind", ["foreign", "stale", "missing", "duplicate", "escape"])
+def test_provider_rejects_unbound_framework(local, monkeypatch, kind):
+    original = native.run
+    selected = local["core"]
+    if kind == "foreign":
+        selected = local["put"]("foreign/" + native.LIBRARY, local["core"].read_bytes())
+    elif kind == "stale":
+        selected.write_bytes(b"stale core")
+    elif kind == "escape":
+        foreign = local["put"]("foreign/" + native.LIBRARY, local["core"].read_bytes())
+        selected.unlink()
+        selected.symlink_to(foreign)
+
+    def selected_ldd(command, **kwargs):
+        output = original(command, **kwargs)
+        if command[0] == "ldd":
+            lines = output.splitlines(keepends=True)
+            lines = [line for line in lines if not line.startswith(native.LIBRARY)]
+            if kind != "missing":
+                lines.append("{} => {} (0x0123)\n".format(native.LIBRARY, selected))
+            if kind == "duplicate":
+                lines.append("{}.duplicate => {} (0x1234)\n".format(native.LIBRARY, selected))
+            output = "".join(lines)
+        return output
+
+    monkeypatch.setattr(native, "run", selected_ldd)
+    with pytest.raises(native.IdentityError, match="WRONG_PROVIDER_FRAMEWORK_LIBRARY"):
+        native.provider_identity(local["root"], local["build_dir"], local["env"])
 
 
 @pytest.mark.parametrize("filename", native.CONFIG_FILES)

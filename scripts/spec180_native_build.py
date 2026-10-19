@@ -796,11 +796,17 @@ def provider_identity(root, build_dir, env, selected=None):
     probe_env.pop("LD_PRELOAD", None)
     dependencies = parse_ldd(run(["ldd", str(path)], cwd=root, env=probe_env,
                                  capture=True, timeout=60))
-    for name, library in dependencies.items():
-        if name.startswith(LIBRARY):
-            check_equal(library["realpath"],
-                        str((GLOBAL_NATIVE_LIBRARY_DIR / LIBRARY).resolve()),
-                        "WRONG_PROVIDER_FRAMEWORK_LIBRARY")
+    framework = [library for name, library in dependencies.items() if name.startswith(LIBRARY)]
+    installed = file_identity(GLOBAL_NATIVE_LIBRARY_DIR / LIBRARY)
+    # Waf build executables use a build-relative RPATH. Accept that exact
+    # configured output only when its bytes match the required global install.
+    allowed = {installed["realpath"]}
+    build_library = (build_dir / LIBRARY).resolve()
+    if build_library.parent == build_dir.resolve():
+        allowed.add(str(build_library))
+    if (len(framework) != 1 or framework[0]["realpath"] not in allowed
+            or framework[0]["sha256"] != installed["sha256"]):
+        raise IdentityError("WRONG_PROVIDER_FRAMEWORK_LIBRARY")
     if selected:
         validate_selected_dependency_mapping(
             dependencies, selected, "WRONG_PROVIDER_SELECTED_DEPENDENCY")

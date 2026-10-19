@@ -1,6 +1,7 @@
 #include "tests/boost-test.hpp"
 
 #include "ndnsf-integration-fixture.hpp"
+#include "isolated-test-trust.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
 #include "ndn-service-framework/RequestConfidentiality.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
@@ -92,6 +93,7 @@ BOOST_AUTO_TEST_SUITE(RequestScopedResponseConfidentiality)
 
 BOOST_AUTO_TEST_CASE(LargeResponseUsesConfiguredTrustAndRequestBoundAead)
 {
+  test::IsolatedTestTrust trustOwner;
   ndn::KeyChain keyChain("pib-memory:spec179-response-confidentiality",
                          "tpm-memory:spec179-response-confidentiality");
   ndn::DummyClientFace::Options faceOptions;
@@ -110,13 +112,13 @@ BOOST_AUTO_TEST_CASE(LargeResponseUsesConfiguredTrustAndRequestBoundAead)
   const ndn::Name providerName("/spec179/provider/camera");
   const ndn::Name serviceName("/ObjectDetection/YOLOv8");
   const ndn::Name requestId("/request/response-confidentiality");
-  const auto userCert = makeIdentity(keyChain, requesterName);
-  const auto providerCert = makeIdentity(keyChain, providerName);
-  const auto aaCert = makeIdentity(keyChain, ndn::Name("/spec179/aa"));
+  const auto userCert = trustOwner.createTestIdentityCertificate(keyChain, requesterName);
+  const auto providerCert = trustOwner.createTestIdentityCertificate(keyChain, providerName);
+  const auto aaCert = trustOwner.createTestIdentityCertificate(keyChain, ndn::Name("/spec179/aa"));
 
   ServiceProvider provider(ServiceProvider::LocalMockTag{}, providerFace,
                            ndn::Name("/spec179/group"), providerCert,
-                           aaCert, "examples/trust-any.conf");
+                           aaCert, trustOwner.schemaPath());
   // The production large-response path signs every segment with the Provider
   // certificate. LocalMock has an isolated keychain unless explicitly bound.
   provider.useSigningKeyChainForTest(keyChain);
@@ -203,9 +205,9 @@ BOOST_AUTO_TEST_CASE(LargeResponseUsesConfiguredTrustAndRequestBoundAead)
   }
   BOOST_REQUIRE_EQUAL(segments.size(), 1U);
 
-  // Validation must use the configured trust schema, not only a local
-  // certificate shortcut. trust-any.conf is intentionally a test anchor.
-  auto validator = std::make_shared<MessageValidator>("examples/trust-any.conf", std::nullopt, &consumerFace);
+  // Validate against the fixture's fixed certificate anchors.
+  auto validator = std::make_shared<MessageValidator>(
+      trustOwner.schemaPath(), std::nullopt, &consumerFace);
   size_t validated = 0;
   size_t validationFailures = 0;
   for (const auto& data : segments) {
