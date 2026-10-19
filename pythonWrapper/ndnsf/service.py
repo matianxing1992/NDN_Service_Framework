@@ -1773,7 +1773,13 @@ class CollaborationInvocation:
 
             terminal_reason = self._terminal_selection_failure()
             if terminal_reason:
-                self._state.set_timeout(terminal_reason)
+                # A local early return does not close the native request. A
+                # Response may have arrived while the status query ran.
+                with self._state.condition:
+                    if self._state.response is not None:
+                        return self._state.response
+                    if self._state.timeout_reason:
+                        raise TimeoutError(self._state.timeout_reason)
                 raise TimeoutError(terminal_reason)
 
             with self._state.condition:
@@ -1810,12 +1816,11 @@ class CollaborationInvocation:
                 self._state.stream_error)
 
     def _terminal_selection_failure(self) -> str:
-        """Return a fail-fast reason when every observed selection is terminal.
+        """Return a local early-failure reason from the complete native snapshot.
 
         Selection rejection is a durable protocol outcome, not transport
-        silence.  Polling the generic request snapshot keeps this behavior in
-        the framework collaboration handle while retaining the conservative
-        rule that one rejected Provider does not abort other live Providers.
+        silence. Core includes an Unknown entry for every selected Provider
+        without a status reply; one rejection cannot hide another live role.
         """
 
         if not self.fail_fast_terminal_selection:
@@ -3303,7 +3308,7 @@ class ServiceUser:
         """Run a generic multi-provider collaboration.
 
         Provider ACK payloads should include ``role=<role>;``. The built-in
-        Python selector assigns each requested role to the first successful ACK
+        native selector assigns each requested role to the first successful ACK
         advertising that role, then sends per-role assignment metadata with
         artifact Data names and scope-key Data names.
         ``ack_observer`` receives the ACK candidates collected for the

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -258,9 +259,8 @@ def main() -> int:
     parser.add_argument("--ndnts-peer", type=Path,
                         default=ROOT / "ndnts/svs3-peer.ts")
     parser.add_argument("--node-bin", type=Path,
-                        default=Path("/home/tianxing/.local/node-v22.23.1/bin/node"))
-    parser.add_argument("--ndn-svs", type=Path,
-                        default=Path("/home/tianxing/NDN/ndn-svs"))
+                        default=Path(shutil.which("node") or "node"))
+    parser.add_argument("--ndn-svs", type=Path, required=True)
     parser.add_argument("--settle-ms", type=int, default=8000)
     parser.add_argument("--timeout-seconds", type=float, default=20.0)
     args = parser.parse_args()

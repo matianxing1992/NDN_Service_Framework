@@ -29,7 +29,7 @@ from typing import Any, Iterable, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE = Path(os.environ.get(
-    "NDNSF_SPEC191_ASSET_ROOT", "/home/tianxing/.cache/ndnsf/spec191-assets"))
+    "NDNSF_SPEC191_ASSET_ROOT", str(Path.home() / ".cache/ndnsf/spec191-assets")))
 DEFAULT_MODEL = DEFAULT_SOURCE / "3UAVs.pt"
 DEFAULT_OUTPUT = ROOT / "results/uav-tracking/spec191-local"
 TOPOLOGY = Path(__file__).with_name("topology.conf")

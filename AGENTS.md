@@ -1,46 +1,94 @@
-# Repository agent instructions
+# NDNSF project handbook for agents
 
 ## Portable authority and scope
 
-- This tracked file contains the minimum repository-wide rules. Resolve all
-  relative paths from this checkout, not another machine's home directory.
-  User instructions and higher-priority agent instructions take precedence.
-- Except for the applicable bundled skills, no other file is required to define
-  or interpret these agent rules. There is no instruction include/import chain
-  through a README, design document, constitution, Spec or personal agent file.
-  References below identify task inputs, output locations or optional tools;
-  they do not delegate the rules to those files. Actual code, manuscript sources
-  and task-specific evidence are still needed to perform the corresponding task.
+- This file contains the project context, rules and essential workflow needed
+  to start work. Keep it self-contained: do not replace a rule or architecture
+  explanation with an instruction to read another document. Code paths below
+  locate implementations; they do not define additional agent rules.
+- Keep durable conventions, supported commands and protected paths here. Put
+  task plans, progress, experiment results and debugging history in their
+  existing task/evidence locations. Amend an existing rule instead of adding
+  another rule for the same responsibility.
+- Resolve relative paths from this checkout. Higher-priority instructions and
+  current user decisions take precedence. No README, design document, Spec,
+  personal configuration or skill is required to interpret this handbook.
+  Relevant source, task requirements and original evidence remain necessary
+  inputs to the work; self-contained rules do not replace inspecting them.
 - Use Waf to configure, build and install this repository's targets. External
   dependencies use their own maintained build/install systems. MiniNDN runs
   consume system-installed libraries and applications, not ad hoc copied binaries.
-- Respect analysis-only requests. Do not launch builds, MiniNDN, SIF construction
-  or cluster jobs merely to revise documentation or inspect source. Distinguish
-  static review, build success, focused tests and end-to-end qualification.
+- Respect analysis-only requests. Do not launch product builds, MiniNDN, SIF
+  construction or cluster jobs merely to revise documentation or inspect source.
+  Authorized manuscript revisions include the LaTeX builds specified below.
 - Preserve unrelated worktree and index changes. Stage explicit authorized paths;
   never use `git add -A` or destructive resets. Do not commit or push unless asked.
-- Local `specs/`, `.specify/`, `.agents/`, evidence and ignored documentation are
-  optional checkout context, not prerequisites for understanding these rules.
-  For Spec-based work, if present, `.specify/feature.json` selects the active
-  feature; check its plan and tasks before implementing that feature.
-  Follow specification -> plan -> tasks ->
-  implementation -> verification. If required task-specific contracts or evidence
-  are missing, report that gap rather than inventing requirements or completion.
-- The managed plan pointer below is local context, not a declaration that its
-  files exist in a fresh clone or that its feature is complete. Do not infer the
-  active feature from this pointer when a newer local feature pointer exists.
-  Ignore an unavailable pointer for unrelated tasks; it is not a startup gate.
-- Paths below describe supported tooling or optional manuscript work. Check that
-  a referenced file exists before using it; its absence must not block unrelated
-  repository work. Never recreate private baselines or experiment evidence.
+- For Spec-based work, `.specify/feature.json`, when present, selects the active
+  feature. Read that feature's plan and tasks; follow specification -> plan ->
+  tasks -> implementation -> verification.
+  A pointer is not evidence of completion. Do not create a Spec for an unrelated
+  small edit merely to satisfy this workflow.
+- Local Specs, skills, evidence and tools may be absent in a fresh checkout.
+  Check referenced paths before using them. Missing optional context must not
+  block unrelated work; report missing inputs needed for the actual task.
+  Never invent requirements, private baselines, experiment evidence or completion.
+
+## Project architecture and code entry points
+
+NDNSF is a C++ service framework over Named Data Networking (NDN). A `ServiceUser`
+invokes a service; a `ServiceProvider` hosts its application handler; a
+`ServiceController` manages service permissions, including grants and revocation.
+The framework integrates NDN object validation and NAC-ABE (Name-based Access
+Control with Attribute-Based Encryption). Service permission and trust in a
+signer's identity are separate checks.
+
+The normal invocation has four logical messages: User Request -> Provider ACK
+-> User Selection -> Provider Response. Providers supply participation feedback;
+the user selects according to application policy, and selected providers execute
+after input and authorization checks. NDNSD is an optional service-information
+discovery mechanism, not a prerequisite for Request/ACK participation discovery.
+
+Targeted invocation is supplementary and names a provider in advance. Eligible
+calls with the required authorization material can use Request -> Response;
+bootstrap or request-specific key establishment may still require ACK/Selection.
+Targeted mode does not bypass security checks, and restricting the normal path
+to one candidate does not by itself make it targeted invocation. These logical
+message sequences are not packet counts or latency guarantees.
+
+NDNSF-DI is the distributed-inference layer: it owns inference planning,
+assignments and tensor dependencies, using NDNSF for service invocation and
+adapters for backend execution. Repo stores original Named Data and serves it
+without becoming its Producer or executing application tasks. Models and
+application policy belong to the application/adapters, not generic NDNSF Core.
+Production behavior in NDNSF Core, NDNSF-DI, NDNSF-UAV-APP and
+NDNSF-DistributedRepo belongs in C++. Python is a thin interface for calling
+native APIs, translating inputs and outputs, launching processes, presenting
+UI, and preparing or orchestrating experiments. Python must not be the sole
+owner of a production protocol, authorization, planning, placement, task or
+artifact lifecycle, tracking decision, or Repo storage/repair algorithm.
+
+Use these source entry points, then trace the affected callers and consumers:
+
+| Responsibility | Source entry points |
+| --- | --- |
+| Invocation, feedback and selection | `ndn-service-framework/ServiceUser.cpp`, `ServiceProvider.cpp` and their adjacent headers |
+| Permissions and message protection | `ndn-service-framework/ServiceController.cpp`, `NDNSFMessages.cpp`, `SecurityProfile.cpp`, `HybridMessageCrypto.cpp` and their adjacent headers |
+| Native inference lifecycle and placement | `NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.cpp`, `NativeV3Placement.cpp`; backend adapters in `NDNSF-DistributedInference/cpp/adapters/` |
+| Repo storage and client operations | `NDNSF-DistributedRepo/src/RepoNode.cpp`, `RepoClient.cpp`; public interfaces in `NDNSF-DistributedRepo/include/ndnsf-distributed-repo/` |
+| Bindings, applications and experiments | `pythonWrapper/src/`, `examples/`, `NDNSF-UAV-APP/`, `Experiments/` |
+| Build and verification registration | Root `wscript`, `examples/wscript`, `tests/wscript`, `NDNSF-DistributedRepo/wscript`; fixtures in `tests/` |
+
+Paths grouped in one row share the stated directory unless another directory is
+given. This map identifies ownership and starting points, not proof that every
+path satisfies the rules below. Verify current behavior from source and relevant
+evidence before changing it or describing it as implemented.
 
 ## Mandatory engineering principles
 
-These ten rules apply to every design and code change. Review the affected
-rules before declaring a change complete. A necessary exception must identify
-the conflict, rationale and impact and receive user approval before implementation;
-never hide an exception in a special-case branch. Higher-priority instructions
-and current explicit user decisions still take precedence.
+Apply the relevant rules to design and code changes. If a necessary exception
+is not already authorized by the user, explain its conflict, rationale and
+impact and obtain approval before implementing it. Do not request the same
+approval again or hide an exception in a special-case branch.
 
 1. **Producer-owned, immutable Data identity.** Every published application Data
    packet belongs under its actual Producer's complete prefix, followed by its
@@ -82,9 +130,12 @@ and current explicit user decisions still take precedence.
    feedback, selection and invocation; applications own task semantics and
    selection policies; adapters own backend computation; Repo owns storage.
    Cross these boundaries through explicit interfaces, not private-state access
-   or mutable process-global state. Keep native DI protocol/execution logic in
-   C++; Python bindings and experiment orchestration must not duplicate its state
-   machines. Reuse maintained APIs and launchers instead of parallel implementations.
+   or mutable process-global state. Implement complete production behavior in
+   C++ across Core, DI, UAV and Repo; keep Python wrappers thin and free of
+   independent security, placement, execution or storage decisions. A Python
+   entry point must call the authoritative native path rather than duplicate its
+   state machine. Reuse maintained APIs and launchers instead of parallel
+   implementations.
 
 6. **Owned, bounded lifecycles.** Every asynchronous worker, callback, timer,
    cache, buffer and child process needs an owner, a resource bound or backpressure
@@ -117,9 +168,10 @@ and current explicit user decisions still take precedence.
    or a reimplementation of production logic for that evidence. Distinguish
    static review, build, smoke tests and real end-to-end qualification.
 
-9. **Source-first static diagnosis.** Before a substantive fix or expensive
-   build/experiment, trace the affected production caller, owner and data/state
-   path and inspect the actual source. Check contracts, serialization, trust and
+9. **Source-first static diagnosis.** Before a substantive code change or expensive
+   build/experiment, inspect the actual caller, owner, inputs, outputs, state
+   transitions and compatibility path. Source takes precedence over historical
+   documents or cached context. Check contracts, serialization, trust and
    authorization, resource ownership, failure cleanup, build/link registration
    and the relevant test/oracle as applicable. Use CodeGraph only when an index
    exists, then confirm against source. Separate confirmed defects, conditional
@@ -146,76 +198,53 @@ and current explicit user decisions still take precedence.
     cancellation/cleanup, necessary observability or required tests. Apply this
     check to the affected diff within its existing review; add no separate gate.
 
-## Bundled skills: install missing only
+## Optional skills and installation
 
-- The versioned `skills/` directory contains the portable skill packages and
-  their bundled references/scripts. Read the applicable `SKILL.md` before use.
-  Skills do not override this file or current user authorization.
-- At first use on a machine, check/install missing packages with:
-
-  ```bash
-  # Run from the repository root. This copies missing packages only.
-  python3 - <<'PY'
-  import os
-  from pathlib import Path
-  import shutil
-
-  source = Path.cwd() / 'skills'
-  if not (Path.cwd() / 'AGENTS.md').is_file() or not source.is_dir():
-      raise SystemExit('Run from the NDNSF repository root')
-  root = Path(os.environ.get('CODEX_HOME') or str(Path.home() / '.codex'))
-  destination = (root / 'skills').expanduser().resolve()
-  if destination == source.resolve() or source.resolve() in destination.parents:
-      raise SystemExit('Personal skills destination must be outside bundled skills')
-  destination.mkdir(parents=True, exist_ok=True)
-  for package in sorted(source.iterdir()):
-      if not package.is_dir() or not (package / 'SKILL.md').is_file():
-          continue
-      target = destination / package.name
-      if os.path.lexists(target):
-          print('SKIP existing:', target)
-          continue
-      if package.is_symlink() or any(p.is_symlink() for p in package.rglob('*')):
-          raise SystemExit('Refusing package with symlinks: ' + str(package))
-      try:
-          target.mkdir()  # Exclusive claim; do not overwrite a concurrent install.
-      except FileExistsError:
-          print('SKIP existing:', target)
-          continue
-      try:
-          shutil.copytree(package, target, dirs_exist_ok=True,
-                          ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-      except Exception:
-          print('Incomplete copy retained; inspect manually:', target)
-          raise
-      print('INSTALLED:', target)
-  PY
-  ```
-
-  The destination is `$CODEX_HOME/skills`, or the current user's
-  `~/.codex/skills` when `CODEX_HOME` is unset. No network, sudo or third-party
-  installer is needed. If copying fails, report the incomplete target; do not
-  automatically delete it or overwrite it on the next run.
-- Existing names, including symlinks, are always skipped: do not update,
-  synchronize, overwrite or delete an existing personal skill automatically.
-  Report incomplete installations or version differences; use the versioned
-  repository package explicitly when necessary and permitted by the client.
-  An actual personal-skill update needs separate user authorization.
+- Skills are optional execution aids; the required design, review and manuscript
+  checks are stated in this file. Use a skill when it helps the current task,
+  reading its `SKILL.md` before use. Do not make skill discovery or installation
+  a startup gate, or outsource project requirements to skill documents.
+- Available helpers may include `speckit-code-design` for design/tasks,
+  `ndnsf-minindn-experiment` for MiniNDN, `itiger-ndnsf-ops` for SIF/Tiger,
+  `academic-humanizer` for prose and `review` for changes. If unavailable, apply
+  this handbook directly; missing source, tools or evidence needed for the task
+  must still be reported.
+- Install bundled packages only when requested or needed for a chosen skill
+  workflow. Copy missing packages to `$CODEX_HOME/skills`, or `~/.codex/skills`
+  when `CODEX_HOME` is unset. Use this checkout's `skills/` as the source after
+  confirming the repository root and source directory exist; require a
+  destination outside that source tree. Copy
+  only directories containing `SKILL.md`; reject source packages with symlinks
+  and omit `__pycache__` and `*.pyc`. No network or sudo is needed.
+- Skip every existing destination name, including dangling symlinks. Claim each
+  new package directory exclusively before copying so concurrent installations
+  cannot overwrite each other. On failure, report and retain the incomplete
+  target; do not automatically delete, overwrite or retry into it.
+- Never automatically update, synchronize or delete an existing personal skill.
+  Report relevant version differences and use the bundled package explicitly
+  when necessary and supported by the client. Updating an installed skill needs
+  user authorization.
 - A client may require a new session/reload to discover newly installed skills.
   Installation alone does not enable external services, provide Spec Kit command
   entrypoints from `.agents/skills/`, or prove product/test readiness.
 
 ## Design, implementation and verification
 
-- Before a substantive change, identify the real caller, owner, inputs, outputs,
-  state transitions, compatibility path and failure cleanup. Use existing APIs
-  and maintained launchers rather than introducing parallel implementations.
+- Establish the requested outcome and scope first. Inspect worktree/index state
+  and the affected source, then choose the smallest change that closes the gap.
+  For Spec work, use the selected feature's requirements, plan and tasks as task
+  inputs. For a small direct fix, state the plan in the existing task or response;
+  do not create a document hierarchy just to begin work.
 - A design must state the observable result, an independent acceptance check and
   relevant negative/recovery cases. Task progress is not verification evidence.
-  Check actual source before relying on historical documents or cached context.
+- Execute builds and runtime checks only within the authorized task scope;
+  report checks not run. A documentation edit alone does not authorize product
+  tests or experiments.
 - Prefer small, coherent work units with one behavioral outcome. Do not split
   ordinary coding, documentation and evidence into unrelated administrative tasks
-  or accumulate unrelated changes merely to save a build.
+  or accumulate unrelated changes merely to save a build. Implementation tasks
+  should change product code or verify C++ behavior; update affected documentation
+  in the same task when an interface, behavior or security contract changes.
 - Scope each Spec to one concrete outcome; first check whether qualified evidence
   and maintained code already suffice. For every task, name the remaining gap
   and the smallest change or check that closes it; remove speculative variants
@@ -224,20 +253,32 @@ and current explicit user decisions still take precedence.
 - NDNSF-DI native behavior tests must exercise production C++ targets with C++
   fixtures and assertions. Python may orchestrate processes or test bindings, but
   cannot replace native behavior or cross-process end-to-end qualification.
-- Preserve asynchronous dependencies until workers finish; inspect callback
-  ownership, shutdown and cleanup. Do not weaken production semantics to make a
-  fixture pass or suppress leaks instead of diagnosing them.
 - Record actual commands, source/configuration identity, outcomes and first
   failure boundaries. A successful CLI help, import, build or local smoke test
   cannot be reported as successful inference or distributed qualification.
 - On failure, distinguish source, build/link, runtime, harness and resource
   boundaries. Revise the affected check before retrying; do not silently change
   model, resource limits, timeout or workload to manufacture a passing result.
-- Use the bundled `speckit-code-design` for detailed design/task review,
-  `ndnsf-minindn-experiment` for MiniNDN script work, `itiger-ndnsf-ops` for
-  authorized SIF/Tiger work, and `review` for explicitly requested diff reviews.
-  Detailed skills supplement these self-contained rules; unavailable local
-  Spec Kit entrypoints or evidence must be reported, not fabricated.
+
+### Review and completion
+
+- Pin the scope and baseline before reviewing: use the requested branch's
+  merge-base for a branch comparison, `HEAD` or the requested base for pending
+  worktree changes, and the fixed Base for the NDNSF paper. A recorded pre-edit
+  snapshot isolates changes made during the current task; it does not cover
+  earlier pending work. Include relevant staged, unstaged and new files, as well
+  as deletions; a committed-only diff can omit pending work.
+- For each coherent change, check its necessity, fit with project ownership and
+  context, supporting source/evidence, and whether a smaller change suffices.
+  Apply the affected engineering and manuscript rules in this file. Distinguish
+  confirmed defects, conditional risks and unverified claims.
+- Review-only requests leave files unchanged. When correction is authorized,
+  fix supported findings in the maintained source and recheck the affected
+  diff. Keep the review within the task, without a new reporting process.
+- Before completion, inspect the final diff for unrelated changes and report
+  what changed, actual verification performed and material remaining limits.
+  Do not claim build, runtime, experiment or publication readiness from static
+  inspection alone. Commit and push only when requested.
 
 ## NDNSF-DI experiment storage
 
@@ -268,46 +309,78 @@ and current explicit user decisions still take precedence.
   Keep compiler processes under the invoking user in an isolated resource group.
   Preserve `WAFLOCK` when using an existing configured build directory.
   When available, `scripts/build-safe.sh build --jobs=2` implements this policy.
-  This optional launcher
-  runs compiler processes as the invoking user in a separate systemd service
-  with a default 6.5 GiB memory limit and a startup check for 2 GiB desktop
-  headroom. Kernel OOM events within this service stop the build instead of
-  selecting VS Code as their victim. The measured standalone
-  ServiceProvider sanitizer compile exceeded the initial 6 GiB limit.
 - Keep the Waf semaphore that compiles source units of at least 128 KiB
   exclusively, including `ServiceUser.cpp` and `ServiceProvider.cpp`;
-  smaller units retain two-way parallel compilation. Do not raise the memory limit or job count during an
-  editor instability investigation without measuring available headroom.
+  smaller units retain two-way parallel compilation. Do not raise the memory
+  limit or job count during an editor instability investigation without
+  measuring available headroom.
 - The safe-build helper may be local-only. If absent, arrange an equivalent
   bounded Waf invocation using available OS resource controls before compiling;
   no particular helper file is mandatory. Do not silently fall back to an
   unrestricted parallel build. Reading or editing source needs no build launcher.
 
-<!-- SPEC_KIT_PLAN_START -->
-Active implementation plan is at specs/207-ndnsf-contribution-evidence/plan.md.
-<!-- SPEC_KIT_PLAN_END -->
-
 ## Git boundary for documentation and specs
 
-- Treat `docs/` and `specs/` directories as local-only material, with one user-authorized exception: `docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/`. Its paper source, bibliography, and figure assets may be tracked in Git. Generated manuscript PDFs and compilation intermediates remain ignored.
-- Preserve the ignore rules for all other documentation and specs. Do not broaden the paper-source exception or force-add unrelated files.
-- Put durable implementation changes in source code and tests. Keep planning and Spec Kit artifacts in the local `specs/` tree.
+- `docs/` and `specs/` are durable local material. Being ignored or untracked
+  does not make them disposable: preserve them during cleanup, branch changes
+  and experiment resets. Delete their contents only with explicit authorization
+  for those paths; never use blanket `git clean` on the checkout.
+- The sole documentation tracking exception is
+  `docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/`.
+  Its paper source, bibliography and figure assets may be tracked. Generated
+  manuscript PDFs and compilation intermediates remain ignored.
+- Keep paper build tools, measurement code and unused source assets in the
+  ignored sibling `NDNSF_Local/`, outside the manuscript source directory.
+- Preserve other documentation and Spec ignore rules; do not broaden this
+  exception or force-add unrelated files. Keep local Codex state and scratch out
+  of commits; this tracked `AGENTS.md` and bundled `skills/` are repository files.
+- Put durable implementation changes in source and tests. Keep planning and
+  Spec Kit artifacts in the local `specs/` tree.
+
+## Manuscript evidence and revision
+
+- Make the smallest change that explains the mechanism, contribution, method,
+  result or necessary limitation. Preserve correct baseline text and organization;
+  do not rewrite for style alone. Keep debugging history, task progress and
+  internal acceptance instructions out of scientific prose.
+- Verify external claims against the original paper's relevant passage, figure
+  or experiment; use official primary documentation for software/protocol
+  claims when appropriate. A citation marker, abstract-only access or another
+  paper's paraphrase does not substantiate details absent from that source.
+  Match the actor, mechanism, conditions and scope; distinguish a proposed
+  design from implemented or evaluated capability. Record the source location
+  in the existing review or response. If unavailable, report the gap and narrow
+  or remove unsupported claims; never imply the source was checked.
+- Trace implementation claims to source and measured results to original run
+  records and analysis. Separate demonstrated results from inference; attribute
+  a gain to one mechanism only when the comparison controls other material
+  differences. Otherwise describe the combined effect and its limits. Preserve
+  negative results and distinguish a baseline's capability from its tested setup.
+- For authorized revisions, first check affected prose for concrete actors,
+  defined terminology, clear quantities and logical transitions; then review
+  necessity, technical accuracy and evidence. A language pass must preserve
+  numbers, equations, citation keys, protocol terminology and evidence strength.
+  Evidence-backed factual corrections are permitted within the requested scope;
+  keep prose, figures, captions, abstract and conclusion consistent. The user's
+  requested concision takes precedence over fixed paragraph-count preferences.
+  Keep these passes within the existing revision, without a separate report
+  process. They do not replace citation, experiment or submission checks.
 
 ## NDNSF paper source and compilation
 
-- For authorized manuscript revisions, use the installed `academic-humanizer`
-  skill for the language pass, followed by `review` for necessity, technical
-  accuracy and evidence. Apply it to affected passages within the same revision;
-  do not create a separate report or rewrite unchanged prose solely for style.
-  Preserve numbers, equations, citation keys, protocol terminology and evidence
-  strength. The user's requested concision takes precedence over a skill's fixed
-  paragraph-count preference. This language pass does not replace experiment,
-  citation or submission-readiness checks. Installed source:
-  `AIScientists-Dev/academic-humanizer`, commit
-  `94b88b23703bed7df507acae7d6d5876209a0cdf` (version 0.3.3).
-
-- The NDNSF paper source copied from Overleaf is maintained in `docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/`. Its entry point is `NDNSF.tex`, chapter files are in `sections/`, and the bibliography is `sections/references.bib`. Preserve relative figure and bibliography paths; do not create a competing source tree or edit generated PDFs directly.
-- This is the user's older manuscript, distinct from the dissertation proposal in `docs/PAPER/proposal-defense/`. Do not silently substitute newer implementation claims. Compilation-only requests do not authorize manuscript revisions.
+- The NDNSF paper source is maintained in
+  `docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/`.
+  Its entry point is `NDNSF.tex`, chapter files are in `sections/`, and the
+  bibliography is `sections/references.bib`. Preserve relative figure and
+  bibliography paths; do not create a competing source tree or edit PDFs directly.
+- Keep this directory self-contained for Overleaf upload, retaining its supplied
+  `bibtex/` template files and all active source, bibliography and figure inputs.
+  Verify upload packages from a fresh extraction without Base, local tools or
+  prior compilation outputs; these must not be required to build the clean paper.
+- This manuscript is distinct from the dissertation proposal in
+  `docs/PAPER/proposal-defense/`. Do not import claims from another document or
+  newer implementation without checking their applicability and evidence.
+  Compilation-only requests do not authorize manuscript revisions.
 - Use `latexmk` with pdfLaTeX (IEEEtran and BibTeX), running from the source directory. From the repository root:
 
   ```bash
@@ -315,27 +388,42 @@ Active implementation plan is at specs/207-ndnsf-contribution-evidence/plan.md.
   latexmk -pdf -interaction=nonstopmode -halt-on-error -outdir=../.overleaf-build NDNSF.tex
   ```
 
-- Keep auxiliary files in `.overleaf-build/` beside the source directory. After successful compilation, inspect `../.overleaf-build/NDNSF.log` for errors and unresolved citations/references, and check the PDF with `pdfinfo`.
-- Publish the verified build as `docs/PAPER/named-data-network-service-framework-paper/NDNSF.pdf`, by copying `../.overleaf-build/NDNSF.pdf` to `../NDNSF.pdf` from the source directory. Replace only the known generated deliverable, never an unrelated/user-supplied PDF or a good output with a failed/stale build. Preserve an existing destination of uncertain provenance.
-- For content/layout changes, render and inspect affected pages as well. Track the authorized paper source and figure assets under the Git exception above; keep generated outputs local-only.
+- Keep auxiliary files in `.overleaf-build/` beside the source directory. After
+  successful compilation, inspect `../.overleaf-build/NDNSF.log` for errors and
+  unresolved citations/references, and check the PDF with `pdfinfo`.
+- From the source directory, publish the verified build by copying
+  `../.overleaf-build/NDNSF.pdf` to `../NDNSF.pdf`. Replace only the known generated
+  deliverable, never an unrelated/user-supplied PDF or a good output with a
+  failed/stale build. Preserve an existing destination of uncertain provenance.
 
 ### Fixed baseline and marked comparison
 
-- Keep `docs/PAPER/named-data-network-service-framework-paper/NDNSF_Base/` as the fixed, read-only comparison baseline supplied by the user. Do not edit, replace, or regenerate its sources unless the user explicitly requests a baseline change. It remains local-only, outside the Git source exception.
-- Make all manuscript revisions in `docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/`, never in the baseline or generated comparison TeX.
-- Preserve the contribution heading `Reusable Identity Credentials with Stable Trust Rules` when that contribution is introduced; do not rename it to “One unified Credential.” This heading does not waive the need to substantiate security claims.
+- Keep `docs/PAPER/named-data-network-service-framework-paper/NDNSF_Base/` as the
+  fixed, read-only baseline supplied by the user. Do not edit, replace or
+  regenerate its sources unless explicitly requested. It remains local-only.
+- Use Base as the starting point for necessity review: retain its wording and
+  organization wherever they remain accurate and sufficient. In the revised
+  manuscript, retain the teacher's abstract from Base, changing only words needed
+  to correct a supported factual error or material ambiguity. Do not omit
+  necessary mechanism details or evidence limits merely to reduce the diff.
+- Make revisions only in the maintained paper source directory, never in the
+  baseline or generated comparison TeX.
+- Preserve the contribution heading
+  `Reusable Identity Credentials with Stable Trust Rules` when that contribution
+  is introduced; do not rename it to “One unified Credential.” This heading does
+  not waive the need to substantiate security claims.
 - After authorized manuscript revisions, build the clean PDF with the direct
   `latexmk` command above and the comparison PDF against the supplied baseline.
   When present, the following convenience script performs both builds:
 
   ```bash
-  bash docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/build-paper.sh
+  bash docs/PAPER/named-data-network-service-framework-paper/NDNSF_Local/tools/build-paper.sh
   ```
 
 - The comparison procedure expands the manuscript's `\input` files and runs
-  `latexdiff` against `NDNSF_Base/NDNSF.tex`. Available `make-comparison.py` and
-  `diff-preamble.tex` files implement this procedure but do not define additional
-  agent rules. Changed tables are preserved as whole old/new tables rather than
+  `latexdiff` against `NDNSF_Base/NDNSF.tex`. Local `make-comparison.py` and
+  `diff-preamble.tex` files in `NDNSF_Local/tools/` implement this procedure but
+  do not define additional agent rules. Changed tables are preserved as whole old/new tables rather than
   mixing incompatible column layouts. Additions are yellow (RGB 210,165,0 for
   readability on white); deletions are red (RGB 210,0,0). Unchanged text retains
   its normal appearance. Keep the original font/size, with no strikeout,
@@ -344,16 +432,29 @@ Active implementation plan is at specs/207-ndnsf-contribution-evidence/plan.md.
   with available LaTeX tools. If manuscript sources or the user-supplied baseline
   are absent, report the missing task input; do not invent or fetch a replacement
   baseline. None of these manuscript files is required for unrelated code work.
-- Deliver `NDNSF.pdf` (clean revised paper) and `NDNSF_comparison.pdf` (marked comparison) directly in `docs/PAPER/named-data-network-service-framework-paper/`. Build intermediates stay in `.overleaf-build/` and `.comparison-build/`, respectively. These outputs are local-only and must not be staged.
-- Inspect changed pages for rendering errors before claiming review completion. Text diff markup is not a complete audit of changed figure binaries, bibliography database contents, or preamble/layout changes; inspect and report those separately. If baseline and revised manuscript are identical, the comparison legitimately has no colored changes. Never invent edits to demonstrate markup.
+- Deliver `NDNSF.pdf` (clean paper) and `NDNSF_comparison.pdf` (marked comparison)
+  directly in `docs/PAPER/named-data-network-service-framework-paper/`. Keep build
+  intermediates in `.overleaf-build/` and `.comparison-build/`, respectively.
+  These outputs are local-only and must not be staged.
+- Render and inspect changed pages before claiming review completion. Text diff
+  markup does not audit changed figure binaries, bibliography database contents
+  or preamble/layout changes; inspect and report those separately. An unchanged
+  manuscript legitimately produces no colored diff. Never invent edits to show
+  markup.
 
 ## CodeGraph
 
-In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the repo root), reach for it BEFORE grep/find or reading files when you need to understand or locate code:
+When a `.codegraph/` directory exists at the repository root, use CodeGraph
+before text search or file reads to locate or understand code:
 
-- **MCP tools** (when available): `codegraph_explore` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them. `codegraph_node` returns one symbol's source + callers, or reads a whole file with line numbers. If the tools are listed but deferred, load them by name via tool search.
-- **Shell** (always works): `codegraph explore "<symbol names or question>"` and `codegraph node <symbol-or-file>` print the same output.
-- If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.
+- **MCP tools** (when available): `codegraph_explore` returns relevant source and
+  call paths; `codegraph_node` returns a symbol and its callers or a whole file.
+  Load listed deferred tools by name via tool search.
+- **Shell** (if installed): `codegraph explore "<symbol names or question>"` and
+  `codegraph node <symbol-or-file>` provide the corresponding exploration.
+- If indexed tools are unavailable or fail, state the limitation and continue
+  with source inspection and `rg`; do not block the task or rebuild the index.
+- Without `.codegraph/`, skip CodeGraph. Indexing is the user's decision.
 
 ## Transient capacity and service failures
 

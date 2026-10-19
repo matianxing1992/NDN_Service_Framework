@@ -2,11 +2,11 @@
   "algorithmId": "mvcnn-onnx-maxpool/v1",
   "artifact": {
     "digest": "sha256:14ec256fbc84e1c6d9d0cf593ca47ce151c641c5b3280535ca4dcbedd1a4c317",
-    "path": "/home/tianxing/NDN/ndn-service-framework/NDNSF-UAV-APP/models/mvcnn_vehicle_cpu.onnx"
+    "path": "mvcnn_vehicle_cpu.onnx"
   },
   "checkpoint": {
     "digest": "sha256:6acdbf2c34c7a2cd2cc6f7c76d3ced2fcd4e99f71e3907131dbbc113bb25b279",
-    "path": "/home/tianxing/NDN/ndn-service-framework/NDNSF-UAV-APP/models/mvcnn_vehicle_cpu.pt"
+    "path": "mvcnn_vehicle_cpu.pt"
   },
   "classMap": [
     "car",

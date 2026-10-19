@@ -9,7 +9,7 @@
       "sourcePolicy": "sealed-archive"
     },
     "ndn-svs": {
-      "pathHint": "/home/tianxing/NDN/ndn-svs",
+      "pathHint": "--ndn-svs",
       "url": "https://github.com/matianxing1992/ndn-svs.git",
       "baseRevision": "6bb34545b4f89f1f6c265a68c18f1a40ade413eb"
     },

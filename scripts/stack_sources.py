@@ -121,10 +121,7 @@ def fingerprint(data, name, prefix):
               'build_recipe_revision': source['build_recipe_revision'],
               'source_helper': digest(__file__), 'upstream': upstream,
               'library_realpath': str(library.resolve()), 'library_sha256': digest(library)}
-    if name == 'ndn-cxx':
-        patch = Path(__file__).resolve().parents[1] / 'tools/ndn-cxx/ims-lower-bound.patch'
-        result['patches'] = {'ims-lower-bound.patch': digest(patch)}
-    elif name == 'ndn-svs':
+    if name == 'ndn-svs':
         patch = Path(__file__).resolve().parents[1] / 'tools/ndn-svs/publication-latency.patch'
         result['patches'] = {'publication-latency.patch': digest(patch)}
     return result

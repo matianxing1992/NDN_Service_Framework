@@ -100,6 +100,86 @@ struct InvocationNamesOracle
     pending.ackDecryptsInFlight = 1;
     user.m_pendingCalls.emplace(id, std::move(pending));
   }
+  static void seedCollaborationStatuses(ServiceUser& user, const ndn::Name& id,
+                                        const ndn::Name& first, const ndn::Name& second)
+  {
+    ServiceUser::PendingCall pending;
+    pending.isCollaboration = true;
+    pending.serviceName = ndn::Name("/spec205/service");
+    pending.expectedResponseProviders = {first, second};
+    pending.selectionDigestsByProvider[first.toUri()] = "first-digest";
+    SelectionExecutionStatus rejected;
+    rejected.providerName = first;
+    rejected.serviceName = pending.serviceName;
+    rejected.requestId = id;
+    rejected.selectionDigest = "first-digest";
+    rejected.state = SelectionExecutionState::Rejected;
+    rejected.message = "first provider rejected";
+    pending.selectionStatusesByProvider[first.toUri()] = rejected;
+    user.m_pendingCalls.emplace(id, std::move(pending));
+  }
+  static void recordCollaborationStatus(ServiceUser& user, const ndn::Name& id,
+                                        const ndn::Name& provider,
+                                        SelectionExecutionState state)
+  {
+    SelectionExecutionStatus status;
+    status.providerName = provider;
+    status.serviceName = ndn::Name("/spec205/service");
+    status.requestId = id;
+    status.selectionDigest = "second-digest";
+    status.state = state;
+    user.m_pendingCalls.at(id).selectionStatusesByProvider[provider.toUri()] = status;
+  }
+  static size_t uniqueSelectedAckCount(ServiceUser& user)
+  {
+    ServiceUser::PendingCall pending;
+    ServiceUser::StoredAck first;
+    first.providerName = ndn::Name("/provider/a");
+    first.serviceName = ndn::Name("/spec205/service");
+    first.requestId = ndn::Name("/spec215/request");
+    auto second = first;
+    second.providerName = ndn::Name("/provider/b");
+    user.addCustomSelectedAck(pending, first);
+    user.addCustomSelectedAck(pending, first);
+    user.addCustomSelectedAck(pending, second);
+    return pending.customSelectedAcks.size();
+  }
+  static bool throwingSelectorsFailClosed(ServiceUser& user)
+  {
+    ServiceUser::PendingCall byCandidate;
+    byCandidate.ackCandidatesHandler = [](const auto&)
+        -> std::vector<AckSelectionCandidate> {
+      throw std::runtime_error("candidate selector failed");
+    };
+    const bool candidateSelected = user.evaluateCustomAckSelection(byCandidate);
+
+    ServiceUser::PendingCall byMessage;
+    byMessage.acksHandler = [](const auto&)
+        -> std::vector<RequestAckMessage> {
+      throw std::runtime_error("ACK selector failed");
+    };
+    const bool messageSelected = user.evaluateCustomAckSelection(byMessage);
+    return !candidateSelected && byCandidate.timedOut &&
+           byCandidate.customSelectedAcks.empty() &&
+           !messageSelected && byMessage.timedOut &&
+           byMessage.customSelectedAcks.empty();
+  }
+  static bool failedSelectorIsNotReentered(ServiceUser& user)
+  {
+    const ndn::Name id("/spec215/throwing-selector");
+    ServiceUser::PendingCall pending;
+    int invocations = 0;
+    pending.ackCandidatesHandler = [&invocations](const auto&)
+        -> std::vector<AckSelectionCandidate> {
+      ++invocations;
+      throw std::runtime_error("candidate selector failed");
+    };
+    user.m_pendingCalls.emplace(id, std::move(pending));
+    const bool first = user.evaluateAckSelection(id);
+    const bool repeated = user.evaluateAckSelection(id);
+    return !first && !repeated && invocations == 1 &&
+           user.m_pendingCalls.at(id).timedOut;
+  }
   static void validator(ServiceUser& user, std::shared_ptr<MessageValidator> validator)
   { user.validator = std::move(validator); }
   static void validator(ServiceProvider& provider, std::shared_ptr<MessageValidator> validator)
@@ -317,6 +397,46 @@ struct PlaintextAckScope
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec205SecurityProfile)
+
+BOOST_AUTO_TEST_CASE(CollaborationSnapshotIncludesUnreportedSelectedProvider)
+{
+  ProfileFixture f;
+  ServiceUser user(ServiceUser::LocalMockTag{}, f.face, ndn::Name("/spec205/group"),
+                   f.profile.certificate, f.profile.certificate, f.profile.certificate,
+                   f.schema->path());
+  const ndn::Name id("/spec215/request"), first("/provider/a"), second("/provider/b");
+  InvocationNamesOracle::seedCollaborationStatuses(user, id, first, second);
+  auto snapshot = user.GetCollaborationStatusSnapshot(id);
+  BOOST_REQUIRE_EQUAL(snapshot.size(), 2);
+  BOOST_CHECK(snapshot[0].state == SelectionExecutionState::Rejected);
+  BOOST_CHECK(snapshot[1].state == SelectionExecutionState::Unknown);
+  BOOST_CHECK(snapshot[1].providerName.equals(second));
+
+  InvocationNamesOracle::recordCollaborationStatus(user, id, second,
+                                                    SelectionExecutionState::Running);
+  snapshot = user.GetCollaborationStatusSnapshot(id);
+  BOOST_REQUIRE_EQUAL(snapshot.size(), 2);
+  BOOST_CHECK(snapshot[1].state == SelectionExecutionState::Running);
+}
+
+BOOST_AUTO_TEST_CASE(CustomAckSelectionDeduplicatesProviderTuple)
+{
+  ProfileFixture f;
+  ServiceUser user(ServiceUser::LocalMockTag{}, f.face, ndn::Name("/spec205/group"),
+                   f.profile.certificate, f.profile.certificate, f.profile.certificate,
+                   f.schema->path());
+  BOOST_CHECK_EQUAL(InvocationNamesOracle::uniqueSelectedAckCount(user), 2);
+}
+
+BOOST_AUTO_TEST_CASE(ApplicationAckSelectorExceptionsFailClosed)
+{
+  ProfileFixture f;
+  ServiceUser user(ServiceUser::LocalMockTag{}, f.face, ndn::Name("/spec205/group"),
+                   f.profile.certificate, f.profile.certificate, f.profile.certificate,
+                   f.schema->path());
+  BOOST_CHECK(InvocationNamesOracle::throwingSelectorsFailClosed(user));
+  BOOST_CHECK(InvocationNamesOracle::failedSelectorIsNotReentered(user));
+}
 
 BOOST_FIXTURE_TEST_CASE(BoundedHybridDecryptDoesNotWaitForApplicationWorker, ProfileFixture)
 {
@@ -1786,16 +1906,16 @@ BOOST_AUTO_TEST_CASE(EncapsulatedThrowingCallbacksDoNotRestartValidation)
   invalid.setContent(ndn::span<const uint8_t>(changed.data(), changed.size()));
   size_t successes = 0, failures = 0, unexpected = 0;
   boost::asio::post(f.face.getIoContext(), [&] {
-    BOOST_CHECK_THROW(adapter->validate(*valid, [&](const auto&) {
+    adapter->validate(*valid, [&](const auto&) {
       ++successes;
       throw std::runtime_error("success callback");
-    }, [&](const auto&, const auto&) { ++unexpected; }), std::runtime_error);
-    BOOST_CHECK_THROW(adapter->validate(invalid, [&](const auto&) { ++unexpected; },
+    }, [&](const auto&, const auto&) { ++unexpected; });
+    adapter->validate(invalid, [&](const auto&) { ++unexpected; },
       [&](const auto&, const auto& error) {
         BOOST_CHECK_EQUAL(error.getCode(), ndn::security::ValidationError::INVALID_SIGNATURE);
         ++failures;
         throw std::runtime_error("failure callback");
-      }), std::runtime_error);
+      });
   });
   f.pump();
   BOOST_CHECK_EQUAL(successes, 1);

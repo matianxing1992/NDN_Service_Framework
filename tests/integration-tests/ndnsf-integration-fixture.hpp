@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -226,6 +227,7 @@ private:
 
 private:
   BootstrapProfile m_profile;
+  std::filesystem::path m_fixtureTrustSchema;
   EnvironmentStatus m_status = EnvironmentStatus::New;
   EnvironmentSnapshot m_snapshot;
   std::string m_failureReason;

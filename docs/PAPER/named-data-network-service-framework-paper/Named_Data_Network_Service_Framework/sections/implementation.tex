@@ -1,18 +1,13 @@
 %TODO: cite the correct code
-\label{sec:impl}
-NDNSF was implemented using \texttt{ndn-cxx}~\cite{ndn-cxx}, NDN-SVS~\cite{ndnsvs-github}, and NAC-ABE~\cite{dulal2023nac-abe}.
+NDNSF was implemented using \texttt{ndn-cxx}~\cite{ndn-cxx}, NDN-SVS~\cite{ndnsvs-github}, and NAC-ABE~\cite{dulal2023nac-abe}. It also includes a configurable NDNSD integration for auxiliary service advertisements~\cite{dulal2022ndnsd}; protected provider discovery uses NDNSF's Request--ACK exchange.
 
-NDNSF validates certificate chains against fixed trust anchors, checks certificate validity periods, and enforces configured application trust rules. Cached certificate validation expires with the validated chain.
+For NAC-ABE, we introduced key caching so cache hits avoid fetching and decrypting the same key again. For NDN-SVS, publications whose encoded Data size is within a configurable limit can be embedded directly in Sync Interest Application Parameters, avoiding a separate publication fetch. We also added regular-expression-based subscriptions to NDN-SVS to filter message types and Request service names; receivers then check the recipient, service and invocation bindings.
 
-For NAC-ABE, cached keys avoid repeated retrieval and decryption. Small publications can also be carried directly in Sync Interest Application Parameters, avoiding a separate publication fetch. Regular-expression subscriptions filter message types and Request service names; receivers then check the recipient, service and invocation bindings.
+NDNSF prepares SVS publications synchronously by default; NDN-SVS also supports an optional worker for asynchronous preparation. Network operations remain on the NDN Face event loop. The evaluation does not isolate the contributions of individual optimizations.
 
-Peers can reference immutable, producer-signed security profiles by exact Data name under the Producers' prefixes. Receivers fetch and validate uncached profiles, reuse their encryption certificates and capabilities within certificate validity, and retain authorization and request-binding checks for each invocation.
+NDNSF validates certificate chains against fixed trust anchors, checks certificate validity periods, and enforces configured application trust rules. Peers can reference immutable, producer-signed security profiles by exact Data name to reuse encryption certificates within their validity periods. Receivers fetch and validate uncached profiles and retain authorization and request-binding checks for each invocation.
 
-SVS byte-publication preparation is synchronous by default; optional bounded workers can prepare publications asynchronously. Network operations remain on the Face event loop. The evaluation measures the combined invocation path rather than each optimization separately.
-
-Request-scoped protection is enabled by default for Controller-managed calls. With custom capability settings, input and result isolation depends on retaining request-scoped protection.
-
-A two-provider MiniNDN functional experiment verified protected nonempty input delivery and results for both selected providers; in a separate call, a nonselected provider did not obtain decrypted input or usable Selection keys. The performance experiments below select one provider per invocation.
+A two-provider MiniNDN functional experiment verified protected nonempty input delivery and correct results for both selected providers. The performance experiments below select one provider per invocation.
 
 %NDNSF was implemented using ndn-cxx~\cite{ndn-cxx}, NDN-SVS~\cite{ndnsvs-github}, and NAC-ABE~\cite{dulal2023nac-abe}. During development, we observed that the baseline NAC-ABE and NDN-SVS implementations did not adequately meet performance expectations, and we therefore introduced several optimizations.
 

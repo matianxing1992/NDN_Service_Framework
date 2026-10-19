@@ -62,6 +62,7 @@ CONTAINER_GLOBAL_DEPENDENCY_PREFIXES = (
 HOST_BOOST_INCLUDE_DIR = '/usr/include'
 HOST_BOOST_LIBRARY_DIR = '/usr/lib/x86_64-linux-gnu'
 HOST_BOOST_VERSION = 107100
+HOST_BOOST_SONAME = '1.71.0'
 HOST_DEPENDENCY_IDENTITY_FILE = (
     '/usr/local/share/ndnsf/global-dependency-identity.json')
 HOST_DEPENDENCY_LIBRARIES = (
@@ -157,7 +158,7 @@ def _validate_boost_libraries(conf, library_dir, libraries):
             conf.fatal(
                 f'Boost library escapes the pinned system directory: '
                 f'{link_path} -> {resolved}')
-        expected_soname = f'libboost_{library}.so.1.71.0'
+        expected_soname = f'libboost_{library}.so.{HOST_BOOST_SONAME}'
         result = subprocess.run(
             ['/usr/bin/readelf', '-d', resolved],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -388,6 +389,24 @@ def options(opt):
 
 
 def configure(conf):
+    if os.environ.get('NDNSF_CONTAINER_BUILD') != '1':
+        import runpy
+        with open('/etc/os-release', encoding='utf-8') as release:
+            values = dict(line.rstrip().split('=', 1) for line in release
+                          if '=' in line and not line.startswith('#'))
+        version = values.get('VERSION_ID', '').strip('"')
+        if values.get('ID', '').strip('"') != 'ubuntu':
+            conf.fatal('Supported host profiles: Ubuntu 20.04 or 26.04 x86-64')
+        profile = runpy.run_path(os.path.join(conf.path.abspath(), 'scripts',
+                                             'host_profile.py'))['select_profile']
+        try:
+            selected = profile(version)
+        except ValueError as error:
+            conf.fatal(str(error))
+        global HOST_BOOST_INCLUDE_DIR, HOST_BOOST_LIBRARY_DIR
+        global HOST_BOOST_VERSION, HOST_BOOST_SONAME
+        (HOST_BOOST_INCLUDE_DIR, HOST_BOOST_LIBRARY_DIR,
+         HOST_BOOST_VERSION, HOST_BOOST_SONAME) = selected
     # Report missing SDKs together before receipt/ABI validation stops at the
     # first error. This is read-only; dependencies own their installation.
     import runpy
@@ -759,7 +778,7 @@ void check(const ndn::InMemoryStorage& storage, const ndn::Name& name) {
             msg='Checking ndn-cxx indexed IMS lowerBound API'):
         conf.fatal(
             'ndn-cxx must provide InMemoryStorage::lowerBound. Rebuild/install ndn-cxx '
-            'with tools/ndn-cxx/ims-lower-bound.patch using install_ndnsf_stack.sh, '
+            'from the pinned matianxing1992/ndn-cxx fork using install_ndnsf_stack.sh, '
             'then configure NDNSF again.')
 
     # A layered application may link against staged builder inputs, but its
@@ -861,7 +880,8 @@ void check(const ndn::InMemoryStorage& storage, const ndn::Name& name) {
                     getattr(conf.env, key, []) or [], key)
 
     boost_include_dir, boost_library_dir = _validate_boost_selection(conf)
-    boost_libs = ['system', 'filesystem']
+    boost_libs = (['system', 'filesystem'] if HOST_BOOST_VERSION == 107100
+                  else ['filesystem'])
     if conf.env.WITH_TESTS:
         boost_libs.append('unit_test_framework')
 

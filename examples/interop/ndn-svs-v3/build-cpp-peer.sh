@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-NDN_SVS_SOURCE=${NDN_SVS_SOURCE:-/home/tianxing/NDN/ndn-svs}
+NDN_SVS_SOURCE=${NDN_SVS_SOURCE:?Set NDN_SVS_SOURCE to the ndn-svs checkout}
 OUTPUT=${1:-$ROOT/build/svs3-peer}
 
 test -f "$NDN_SVS_SOURCE/ndn-svs/svsync.hpp"

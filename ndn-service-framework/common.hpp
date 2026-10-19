@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <thread>
+#include <utility>
 #include <stdexcept>
 #include <atomic>
 #include <condition_variable>
@@ -623,12 +624,13 @@ namespace ndn_service_framework{
             successCb = [owner, this, admittedSuccess, failureCb](const ndn::Data& validated) {
                 if (!acceptValidatedInvocationSegmentSigner(validated)) {
                     ++m_failureCount;
-                    if (failureCb) failureCb(validated, ndn::security::ValidationError(
+                    dispatchValidationCallback("segment signer rejection", failureCb,
+                        validated, ndn::security::ValidationError(
                         ndn::security::ValidationError::POLICY_ERROR,
                         "invocation segment signer conflict or binding capacity exhausted"));
                     return;
                 }
-                if (admittedSuccess) admittedSuccess(validated);
+                dispatchValidationCallback("validated Data", admittedSuccess, validated);
             };
             const auto sigType = data.getSignatureType();
             if ((sigType != ndn::tlv::SignatureSha256WithRsa &&
@@ -641,9 +643,7 @@ namespace ndn_service_framework{
                               << data.getName()
                               << " reason=" << error);
                 ++m_failureCount;
-                if (failureCb) {
-                    failureCb(data, error);
-                }
+                dispatchValidationCallback("malformed Data", failureCb, data, error);
                 return;
             }
             // Validation may complete only after one or more network
@@ -652,7 +652,8 @@ namespace ndn_service_framework{
             // makes them dangle as soon as this function returns.
             if (!owner) {
                 ++m_failureCount;
-                if (failureCb) failureCb(data, ndn::security::ValidationError(
+                dispatchValidationCallback("missing validator owner", failureCb,
+                    data, ndn::security::ValidationError(
                     ndn::security::ValidationError::IMPLEMENTATION_ERROR,
                     "network Data validation requires a shared MessageValidator owner"));
                 return;
@@ -666,9 +667,8 @@ namespace ndn_service_framework{
                     NDN_LOG_DEBUG(
                       "MessageValidator Data validated through configured validator "
                       "name=" << validatedData.getName());
-                    if (success) {
-                        success(validatedData);
-                    }
+                    owner->dispatchValidationCallback(
+                        "validated Data", success, validatedData);
                 },
                 [owner, failure = std::move(ownedFailureCb)](
                     const ndn::Data& failedData,
@@ -678,9 +678,8 @@ namespace ndn_service_framework{
                                   << failedData.getName()
                                   << " reason=" << error);
                     ++owner->m_failureCount;
-                    if (failure) {
-                        failure(failedData, error);
-                    }
+                    owner->dispatchValidationCallback(
+                        "rejected Data", failure, failedData, error);
                 });
         }
 
@@ -698,11 +697,32 @@ namespace ndn_service_framework{
             // application admission. Piggybacked publications and retrieved
             // application Data must both pass the encapsulated Data validator
             // before delivery; accepting this Interest does not admit them.
-            successCb(interest);
+            dispatchValidationCallback("validated Interest", successCb, interest);
         }
 
     private:
         friend class EncapsulatedMessageValidator;
+
+        template<typename Callback, typename... Args>
+        void
+        dispatchValidationCallback(const char* kind, const Callback& callback,
+                                   Args&&... args)
+        {
+            if (!callback) {
+                return;
+            }
+            try {
+                callback(std::forward<Args>(args)...);
+            }
+            catch (const std::exception& error) {
+                NDN_LOG_ERROR("MessageValidator callback failed kind=" << kind
+                              << " reason=" << error.what());
+            }
+            catch (...) {
+                NDN_LOG_ERROR("MessageValidator callback failed kind=" << kind
+                              << " reason=unknown exception");
+            }
+        }
 
         void validateEncapsulatedData(
           const ndn::Data& data,
@@ -733,7 +753,8 @@ namespace ndn_service_framework{
             const auto owner = weak_from_this().lock();
             if (!owner) {
                 ++m_failureCount;
-                if (failureCb) failureCb(data, ndn::security::ValidationError(
+                dispatchValidationCallback("missing validator owner", failureCb,
+                    data, ndn::security::ValidationError(
                     ndn::security::ValidationError::IMPLEMENTATION_ERROR,
                     "configured Data validation requires a shared MessageValidator owner"));
                 return;
@@ -744,17 +765,15 @@ namespace ndn_service_framework{
               data,
               [owner, success = std::move(ownedSuccessCb)](
                 const ndn::Data& validatedData) {
-                  if (success) {
-                      success(validatedData);
-                  }
+                  owner->dispatchValidationCallback(
+                      "validated Data", success, validatedData);
               },
               [owner, failure = std::move(ownedFailureCb)](
                 const ndn::Data& failedData,
                 const ndn::security::ValidationError& error) {
                   ++owner->m_failureCount;
-                  if (failure) {
-                      failure(failedData, error);
-                  }
+                  owner->dispatchValidationCallback(
+                      "rejected Data", failure, failedData, error);
               });
         }
 

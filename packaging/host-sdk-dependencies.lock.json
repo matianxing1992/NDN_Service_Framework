@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "onnxRuntimeCpp": {
+    "version": "1.26.0",
+    "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-linux-x64-1.26.0.tgz",
+    "sha256": "1254da24fb389cf39dc0ff3451ab48301740ffbfcbaf646849df92f80ee92c57",
+    "bytes": 8590023,
+    "installPrefix": "/opt/onnxruntime-1.26.0"
+  },
+  "onnxFullProto": {
+    "version": "1.17.0",
+    "url": "https://github.com/onnx/onnx.git",
+    "ref": "v1.17.0",
+    "commit": "b8baa8446686496da4cc8fda09f2b6fe65c2a02c",
+    "installPrefix": "/opt/onnx-1.17.0"
+  },
+  "tokenizerBridge": {
+    "crate": "NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge",
+    "rustMinimum": "1.90",
+    "rustBundleVersion": "1.90.0",
+    "rustBundleUrl": "https://static.rust-lang.org/dist/rust-1.90.0-x86_64-unknown-linux-gnu.tar.xz",
+    "rustBundleSha256": "bff8974f2d3ee6c0e6ac926b533f65bbdd3697d2c2b925bdae5f45b9eed10a67",
+    "installPath": "/usr/local/lib/libndnsf_tokenizer_bridge.a"
+  }
+}

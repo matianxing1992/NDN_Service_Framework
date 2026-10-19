@@ -259,8 +259,6 @@ def main() -> None:
             str(REPO / "NDNSF-DistributedInference"),
             str(REPO / "pythonWrapper"),
             str(PY_DIR),
-            "/home/tianxing/.local/lib/python3.8/site-packages",
-            "/usr/local/lib/python3.8/dist-packages",
             "/usr/lib/python3/dist-packages",
             os.environ.get("PYTHONPATH", ""),
         ])

@@ -177,6 +177,8 @@ main(int argc, char** argv)
       argc, argv, "--response-max-attempts", 4);
     const bool responseRetry = hasFlag(argc, argv, "--response-retry");
     const std::string strategyName = getOption(argc, argv, "--strategy", "first-responding");
+    const std::string trustSchema = getOption(argc, argv, "--trust-schema",
+                                              "examples/trust-schema.conf");
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     std::shared_ptr<const ndn_service_framework::AckSelectionPolicy> selectionStrategy =
       ndn_service_framework::strategy::FirstResponding;
@@ -207,7 +209,7 @@ main(int argc, char** argv)
     }
 
     ndn_service_framework::ServiceUser user(
-      face, GROUP_PREFIX, userCert, controllerCert, "examples/trust-schema.conf");
+      face, GROUP_PREFIX, userCert, controllerCert, trustSchema);
     user.init();
     user.setPerformanceMode(true);
     user.setUseTokens(true);

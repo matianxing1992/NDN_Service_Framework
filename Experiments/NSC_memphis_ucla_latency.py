@@ -44,6 +44,7 @@ def run():
     parser.add_argument("--duration-s", type=float, default=10.0)
     parser.add_argument("--warmup-s", type=float, default=5.0)
     parser.add_argument("--request-deadline-ms", type=int, default=5000)
+    parser.add_argument("--attempt-timeout-ms", type=int, default=200)
     parser.add_argument("--failure-probability", type=float, default=0.0)
     parser.add_argument("--epoch-ms", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=100)
@@ -116,7 +117,7 @@ def run():
             consumer_cmd = (
                 f"{nsc_dir / 'consumer'} /muas/{args.client_node} /muas/{args.server_node} "
                 f"/FlightControl /ManualControl {interval_ms} {count} {run_id} {warmup_count}"
-                f" {args.request_deadline_ms}"
+                f" {args.request_deadline_ms} {args.attempt_timeout_ms}"
             )
             info(f"Running NSC rate={rate_label} rps count={count} warmup_count={warmup_count} interval_ms={interval_ms}\n")
             with client_log.open("w") as out:
@@ -152,6 +153,7 @@ def run():
             "duration_s": args.duration_s,
             "warmup_s": args.warmup_s,
             "request_deadline_ms": args.request_deadline_ms,
+            "attempt_timeout_ms": args.attempt_timeout_ms,
             "failure_probability": args.failure_probability,
             "epoch_ms": args.epoch_ms,
             "seed": args.seed,

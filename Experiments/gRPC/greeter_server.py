@@ -55,7 +55,8 @@ class Greeter(helloworld_pb2_grpc.GreeterServicer):
     def __init__(self, delay_ms=0, quiet=False, failure_probability=0.0,
                  epoch_ms=10000, seed=100, provider_id="provider",
                  service_error_code=None, busy_changes=None, origin_path=None,
-                 records_path=None, task_busy=False):
+                 records_path=None, task_busy=False,
+                 max_attempt_deadline_ms=2000):
         self.delay_s = max(0, delay_ms) / 1000.0
         self.quiet = quiet
         self.failure_probability = max(0.0, min(1.0, failure_probability))
@@ -66,6 +67,9 @@ class Greeter(helloworld_pb2_grpc.GreeterServicer):
         self.busy_changes = busy_changes or []
         self.origin_path = origin_path
         self.task_busy = task_busy
+        if max_attempt_deadline_ms <= 0:
+            raise ValueError("max attempt deadline must be positive")
+        self.max_attempt_deadline_ns = max_attempt_deadline_ms * 1000000
         self.started_at = time.monotonic()
         self._counter_lock = threading.Lock()
         self._handler_executions = 0
@@ -135,7 +139,8 @@ class Greeter(helloworld_pb2_grpc.GreeterServicer):
             if not deadline.isdecimal() or len(deadline) > 20:
                 return grpc.StatusCode.INVALID_ARGUMENT, "invalid attempt deadline"
             now_ns = time.monotonic_ns()
-            if int(deadline) <= now_ns or int(deadline) - now_ns > 2000000000:
+            if (int(deadline) <= now_ns or
+                    int(deadline) - now_ns > self.max_attempt_deadline_ns):
                 return grpc.StatusCode.DEADLINE_EXCEEDED, "attempt no longer eligible"
         if not context.is_active():
             return grpc.StatusCode.DEADLINE_EXCEEDED, "cancelled attempt"
@@ -371,7 +376,7 @@ def build_server(bind="0.0.0.0:50051", delay_ms=0, workers=32, quiet=False,
                  provider_id="provider", service_error_code=None,
                  busy_trace=None, origin_path=None,
                  tls_ca=None, tls_cert=None, tls_key=None, records_path=None,
-                 task_busy=False):
+                 task_busy=False, max_attempt_deadline_ms=2000):
     """Build but do not start a server; exposed for focused local tests."""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=workers))
     if (busy_trace is None) != (origin_path is None):
@@ -391,7 +396,8 @@ def build_server(bind="0.0.0.0:50051", delay_ms=0, workers=32, quiet=False,
     busy_changes = load_busy_trace(busy_trace, provider_id) if busy_trace else None
     greeter = Greeter(
         delay_ms, quiet, failure_probability, epoch_ms, seed, provider_id,
-        service_error_code, busy_changes, origin_path, records_path, task_busy)
+        service_error_code, busy_changes, origin_path, records_path, task_busy,
+        max_attempt_deadline_ms)
     helloworld_pb2_grpc.add_GreeterServicer_to_server(greeter, server)
     add_baseline_control_to_server(greeter, server)
     if tls_ca is None:
@@ -423,6 +429,7 @@ def serve():
     parser.add_argument("--tls-cert")
     parser.add_argument("--tls-key")
     parser.add_argument("--records", help="provider-owned JSONL handler records")
+    parser.add_argument("--max-attempt-deadline-ms", type=int, default=2000)
     args = parser.parse_args()
 
     # 读取证书文件
@@ -456,6 +463,7 @@ def serve():
         tls_key=args.tls_key,
         records_path=args.records,
         task_busy=args.task_busy,
+        max_attempt_deadline_ms=args.max_attempt_deadline_ms,
     )
     server.start()
     print(f"GRPC_SERVER_READY bind={args.bind} delay_ms={args.delay_ms} "

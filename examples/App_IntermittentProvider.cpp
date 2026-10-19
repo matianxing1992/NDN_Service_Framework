@@ -223,6 +223,8 @@ main(int argc, char** argv)
     const auto seed = static_cast<uint32_t>(
       parseIntOption(argc, argv, "--seed", 1000 + static_cast<int>(providerId[0])));
     const std::string availabilityFile = getOption(argc, argv, "--availability-file", "");
+    const std::string trustSchema = getOption(argc, argv, "--trust-schema",
+                                              "examples/trust-schema.conf");
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
 
     ndn::Face face;
@@ -244,7 +246,7 @@ main(int argc, char** argv)
       failureProbability, epochMs, rejectMs, seed, availabilityFile);
 
     ndn_service_framework::ServiceProvider provider(
-      face, GROUP_PREFIX, providerCert, controllerCert, "examples/trust-schema.conf");
+      face, GROUP_PREFIX, providerCert, controllerCert, trustSchema);
     provider.setPerformanceMode(true);
     provider.setUseTokens(true);
     provider.setHandlerThreads(static_cast<size_t>(std::max(0, handlerThreads)));

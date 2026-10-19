@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON:-python3}"
-JOBS="${NDNSF_BUILD_JOBS:-4}"
+JOBS="${NDNSF_BUILD_JOBS:-2}"
 WAF_CONFIGURE_ARGS=()
 QWEN_MININDN=0
 RUN_WAF_CONFIGURE=auto
@@ -69,6 +69,8 @@ NDNSD_REPO_URL="${NDNSD_REPO_URL:-https://github.com/matianxing1992/NDNSD.git}"
 NDNSVS_REPO_URL="${NDNSVS_REPO_URL:-https://github.com/matianxing1992/ndn-svs.git}"
 NACABE_REPO_URL="${NACABE_REPO_URL:-https://github.com/matianxing1992/NAC-ABE.git}"
 OPENABE_REPO_URL="${OPENABE_REPO_URL:-https://github.com/matianxing1992/openabe.git}"
+NFD_REPO_URL="https://github.com/named-data/NFD.git"
+NFD_COMMIT="2b43d675e3fba37b5362fab0001ba542bb07b43b"
 
 # Mini-NDN v0.7.0's 2024-08 release map is the compatibility set used by the
 # official installer. Keep full commit IDs here so this profile never follows
@@ -120,7 +122,7 @@ Options:
   --legacy-build-dir PATH  Validate/remove a pre-manifest build dir with --uninstall.
   --configure              Always run ./waf configure.
   --no-configure           Unsupported; configure is required for every install.
-  --jobs N                 Build parallelism (default: NDNSF_BUILD_JOBS or 4).
+  --jobs N                 Build parallelism (default: NDNSF_BUILD_JOBS or 2).
   NDNSF_TMPDIR=PATH        Temporary files (default: BUILD_DIR/tmp).
   --with-examples          Pass --with-examples to Waf configure.
   --with-tests             Pass --with-tests to Waf configure.
@@ -138,11 +140,12 @@ Notes:
     and never guesses about reused or unrecorded paths.
   - Compatible global dependencies are probed and reused individually; missing
     ones use locked sources. Source trees must match their URL/commit and be clean.
+  - The default stack also installs NFD 24.07 from a fixed commit when missing;
+    start it with nfd-start after installation.
   - --with-yolo-minindn installs Mini-NDN, python-ndn, CPU-only YOLO dependencies,
     and the hash-checked yolo26n.pt model; run ndnsf-yolo-minindn for inference.
-  - Supports Ubuntu 20.04/26.04 x86-64. Boost must be a matching pair (1.71 on
-    20.04; 1.71+ on 26.04). ONNX Runtime 1.26+, full-protobuf ONNX, and the Rust
-    tokenizer archive must already exist in the declared global SDK locations.
+  - Supports Ubuntu 20.04/26.04 x86-64. Boost must be the matching system pair
+    (1.71 on 20.04; 1.90 on 26.04). Missing SDKs and NFD use pinned inputs.
   - OpenABE is installed before NAC-ABE when needed. Waf/Python builds use the
     installed global NDNSF closure, never a checkout or per-run runtime path.
   - Options after -- are forwarded to Waf configure. --no-system-install is
@@ -318,7 +321,10 @@ if (( FORCE_DEPENDENCIES && NO_DEPENDENCIES_REQUESTED )); then
   echo '--force-dependencies cannot be combined with --no-dependencies' >&2
   exit 2
 fi
-[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo '--jobs must be a positive integer' >&2; exit 2; }
+[[ "$JOBS" == 1 || "$JOBS" == 2 || "$JOBS" == 4 ]] || {
+  echo '--jobs must be 1, 2 or explicit 4 for a bounded host build' >&2
+  exit 2
+}
 [[ "$REUSE_BUILD_DIR" == 0 || "$REUSE_BUILD_DIR" == 1 ]] || {
   echo 'NDNSF_REUSE_BUILD_DIR must be 0 or 1' >&2
   exit 2
@@ -347,6 +353,11 @@ PYTHON_BIN="$(realpath -s -- "$PYTHON_BIN")"
 run() {
   echo "+ $*"
   "$@"
+}
+
+run_bounded() {
+  echo "+ bounded build: $*"
+  bash "$ROOT/scripts/build-safe.sh" run -- "$@"
 }
 
 sudo_run() {
@@ -1108,7 +1119,7 @@ pip_install() (
   trap 'rm -rf -- "$wheel_dir"' EXIT
   stage_python_wheel_sources "$wheel_dir/source-tree" "$@"
   # Compile bindings as the caller, then install wheels into system Python.
-  run env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+  run_bounded env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
     -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
     -u CPLUS_INCLUDE_PATH -u LDSHARED -u PKG_CONFIG_LIBDIR \
     -u PYTHONPATH -u PYTHONHOME \
@@ -1143,7 +1154,7 @@ require_host_profile() {
   # Resolve symlink-based venvs to the actual system invocation path as well.
   PYTHON_BIN=/usr/bin/python3
   HOST_UBUNTU_VERSION="$VERSION_ID"
-  select_global_boost || true
+  select_global_boost
 }
 
 check_waf_inventory() {
@@ -1165,7 +1176,7 @@ run_waf_clean() {
   fi
   # The top-level configure/build sees only canonical global pkg-config roots;
   # this includes NDN-CXX's valid /usr/local/lib64 installation.
-  env \
+  run_bounded env \
     -u PKG_CONFIG_LIBDIR \
     -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
     -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH \
@@ -1241,7 +1252,7 @@ require_system_toolchain() {
 }
 
 has_global_boost() {
-  local version_line
+  local version_line library path resolved soname
   [[ -n "$BOOST_INCLUDE_DIR" && -n "$BOOST_LIBRARY_DIR" && -n "$BOOST_VERSION_NUMBER" ]] || return 1
   if [[ ! -f "$BOOST_INCLUDE_DIR/boost/version.hpp" ]]; then
     return 1
@@ -1251,17 +1262,20 @@ has_global_boost() {
   if [[ "$version_line" != "$BOOST_VERSION_NUMBER" ]]; then
     return 1
   fi
-  for library in libboost_system.so libboost_filesystem.so libboost_unit_test_framework.so; do
-    local path="$BOOST_LIBRARY_DIR/$library"
+  local libraries=(libboost_filesystem.so libboost_unit_test_framework.so)
+  if [[ "$BOOST_VERSION_NUMBER" == 107100 ]]; then
+    libraries+=(libboost_system.so)
+  fi
+  for library in "${libraries[@]}"; do
+    path="$BOOST_LIBRARY_DIR/$library"
     if [[ ! -e "$path" ]]; then
       return 1
     fi
-    local resolved
     resolved="$(/usr/bin/readlink -f "$path" 2>/dev/null || true)"
     if [[ "$resolved" != "$BOOST_LIBRARY_DIR/"* ]]; then
       return 1
     fi
-    local soname="${library}.${BOOST_VERSION_STRING}"
+    soname="${library}.${BOOST_VERSION_STRING}"
     if ! /usr/bin/readelf -d "$resolved" 2>/dev/null |
         /usr/bin/grep -Fq "Library soname: [$soname]"; then
       return 1
@@ -1698,8 +1712,12 @@ require_global_external_closure() {
   probe_configured_openssl_api
   require_global_boost
   require_global_pkg "libndn-cxx" "$MIN_NDNCXX_VERSION" "libndn-cxx.so"
+  if ! has_global_nfd; then
+    echo 'Compatible NFD/nfdc runtime is missing under /usr/local/bin' >&2
+    return 1
+  fi
   if ! has_ndncxx_ims_lower_bound; then
-    echo 'Installed ndn-cxx lacks InMemoryStorage::lowerBound; rebuild with tools/ndn-cxx/ims-lower-bound.patch via this installer.' >&2
+    echo 'Installed ndn-cxx lacks InMemoryStorage::lowerBound; rebuild from the pinned ndn-cxx fork via this installer.' >&2
     return 1
   fi
   require_global_pkg "ndnsd" "$MIN_NDNSD_VERSION" "libndnsd.so"
@@ -1714,6 +1732,11 @@ require_global_external_closure() {
   require_global_file "$GLOBAL_ONNX_PREFIX/include/onnx/shape_inference/implementation.h"
   verify_openabe_runtime_closure
   require_global_dependency_identity
+}
+
+has_global_nfd() {
+  [[ -x /usr/local/bin/nfd && -x /usr/local/bin/nfdc ]] &&
+    [[ "$(/usr/local/bin/nfd --version 2>/dev/null)" == 24.07* ]]
 }
 
 native_digest_receipt() {
@@ -1882,10 +1905,6 @@ install_common_system_packages() {
     fi
     if ! has_global_boost; then
       packages+=(libboost-all-dev)
-    fi
-    if [[ ! -f "$GLOBAL_LIBRARY_DIR/libndnsf_tokenizer_bridge.a" ]]; then
-      command -v rustc >/dev/null 2>&1 || packages+=(rustc)
-      command -v cargo >/dev/null 2>&1 || packages+=(cargo)
     fi
     if [[ "$INSTALL_TEST_PACKAGES" == "1" ]]; then
       packages+=(libgtest-dev)
@@ -2078,6 +2097,27 @@ print(value)
 PY
 }
 
+validate_host_sdk_lock() {
+  local key
+  [[ -f "$ROOT/packaging/host-sdk-dependencies.lock.json" ]] || {
+    echo 'Missing pinned host SDK lock: packaging/host-sdk-dependencies.lock.json' >&2
+    return 1
+  }
+  for key in \
+    onnxRuntimeCpp.version onnxRuntimeCpp.url onnxRuntimeCpp.sha256 \
+    onnxRuntimeCpp.bytes onnxRuntimeCpp.installPrefix \
+    onnxFullProto.version onnxFullProto.url onnxFullProto.ref \
+    onnxFullProto.commit onnxFullProto.installPrefix \
+    tokenizerBridge.crate tokenizerBridge.rustMinimum \
+    tokenizerBridge.rustBundleVersion tokenizerBridge.rustBundleUrl \
+    tokenizerBridge.rustBundleSha256 tokenizerBridge.installPath; do
+    host_sdk_lock_field "$key" >/dev/null || {
+      echo "Invalid pinned host SDK lock field: $key" >&2
+      return 1
+    }
+  done
+}
+
 record_source_receipt() {
   local name="$1" stage
   stage="$(mktemp -d "$BUILD_DIR/receipt-stage.XXXXXXXX")"
@@ -2114,7 +2154,7 @@ build_openabe_dependency() {
   dir="$(ensure_source_tree "openabe" "$OPENABE_REPO_URL" "$source_base" | tail -n 1)"
   mkdir -p -- "$install_stage"
   echo "==> Building OpenABE from the dependency source tree"
-  run bash -e -s -- "$dir" "$SYSTEM_PATH" "$JOBS" <<'OPENABE_BUILD'
+  run_bounded bash -e -s -- "$dir" "$SYSTEM_PATH" "$JOBS" <<'OPENABE_BUILD'
     cd "$1"
     . ./env
     unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR CFLAGS CXXFLAGS CPPFLAGS LDFLAGS \
@@ -2169,15 +2209,24 @@ build_waf_dependency() {
   local install_stage="$BUILD_DIR/install-staging/$name"
   local -a waf_env
 
-  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum"; then
+  if [[ "$name" == NFD ]]; then
+    if [[ "$FORCE_DEPENDENCIES" != "1" ]] && has_global_nfd; then
+      echo '==> Compatible NFD already installed; skipping'
+      return
+    fi
+  elif [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum"; then
     if [[ "$name" != "ndn-cxx" ]] || has_ndncxx_ims_lower_bound >/dev/null 2>&1; then
       echo "==> $name already installed ($pkg); skipping"
       return
     fi
-    echo '==> Installed ndn-cxx lacks InMemoryStorage::lowerBound; rebuilding with the maintained patch'
+    echo '==> Installed ndn-cxx lacks InMemoryStorage::lowerBound; rebuilding from the pinned fork'
   fi
 
-  dir="$(ensure_source_tree "$name" "$url" | tail -n 1)"
+  if [[ "$name" == NFD ]]; then
+    dir="$(ensure_fixed_source_tree NFD "$url" "$NFD_COMMIT" | tail -n 1)"
+  else
+    dir="$(ensure_source_tree "$name" "$url" | tail -n 1)"
+  fi
   mkdir -p -- "$install_stage"
   echo "==> Building dependency $name"
   # Match Mini-NDN's per-project Waf lifecycle: finish one dependency before
@@ -2195,7 +2244,6 @@ build_waf_dependency() {
   (
     cd "$dir"
     case "$name" in
-      ndn-cxx) dependency_patch="$ROOT/tools/ndn-cxx/ims-lower-bound.patch" ;;
       ndn-svs) dependency_patch="$ROOT/tools/ndn-svs/publication-latency.patch" ;;
       *) dependency_patch='' ;;
     esac
@@ -2217,14 +2265,21 @@ build_waf_dependency() {
     fi
     run "${waf_env[@]}" "$PYTHON_BIN" ./waf distclean
     run "${waf_env[@]}" "$PYTHON_BIN" ./waf configure "--prefix=$GLOBAL_DEPENDENCY_PREFIX"
-    run "${waf_env[@]}" "$PYTHON_BIN" ./waf "-j$JOBS"
+    run_bounded "${waf_env[@]}" "$PYTHON_BIN" ./waf "-j$JOBS"
     echo "==> Installing dependency $name"
     run "${waf_env[@]}" "$PYTHON_BIN" ./waf install "--destdir=$install_stage"
   )
+  if [[ "$name" == NFD && ! -e /usr/local/etc/ndn/nfd.conf && \
+        -f "$install_stage/usr/local/etc/ndn/nfd.conf.sample" ]]; then
+    cp -p -- "$install_stage/usr/local/etc/ndn/nfd.conf.sample" \
+      "$install_stage/usr/local/etc/ndn/nfd.conf"
+  fi
   install_manifest_tree "$install_stage/usr/local" "$GLOBAL_DEPENDENCY_PREFIX" "$name"
   rm -rf -- "$install_stage"
   sudo_run ldconfig
-  record_source_receipt "$name"
+  if [[ "$name" != NFD ]]; then
+    record_source_receipt "$name"
+  fi
 }
 
 preserve_existing_stage_targets() {
@@ -2280,7 +2335,7 @@ build_fixed_minindn_waf_dependency() {
     run "${waf_env[@]}" "$PYTHON_BIN" ./waf --out="$build_out" distclean
     run "${waf_env[@]}" "$PYTHON_BIN" ./waf --out="$build_out" configure \
       "--prefix=$GLOBAL_DEPENDENCY_PREFIX"
-    run "${waf_env[@]}" "$PYTHON_BIN" ./waf --out="$build_out" "-j$JOBS"
+    run_bounded "${waf_env[@]}" "$PYTHON_BIN" ./waf --out="$build_out" "-j$JOBS"
     run "${waf_env[@]}" "$PYTHON_BIN" ./waf --out="$build_out" install \
       "--destdir=$stage_root"
     run "${waf_env[@]}" "$PYTHON_BIN" ./waf --out="$build_out" distclean
@@ -2306,7 +2361,7 @@ build_fixed_minindn_infoedit() {
     "$MININDN_INFOEDIT_COMMIT" | tail -n 1)"
   mkdir -p -- "$BUILD_DIR/install-staging"
   stage_root="$(mktemp -d "$BUILD_DIR/install-staging/minindn-infoedit.XXXXXXXX")"
-  run env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+  run_bounded env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
     CC=/usr/bin/gcc CXX=/usr/bin/g++ PATH="$SYSTEM_PATH" \
     make -C "$dir" -j"$JOBS"
   run env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
@@ -2376,7 +2431,7 @@ ensure_minindn_boost_iostreams() {
   (
     cd "$build/source"
     run env CC=/usr/bin/gcc CXX=/usr/bin/g++ ./bootstrap.sh --with-libraries=iostreams
-    run ./b2 --build-dir="$build/build" --stagedir="$build/stage" --with-iostreams \
+    run_bounded ./b2 --build-dir="$build/build" --stagedir="$build/stage" --with-iostreams \
       toolset=gcc link=shared runtime-link=shared threading=multi --layout=system "-j$JOBS" stage
   )
   lib="$build/stage/lib/$soname"
@@ -2699,7 +2754,7 @@ build_cmake_dependency() {
   mkdir -p -- "$install_stage"
   echo "==> Building dependency $name"
   if [[ "$name" == "NAC-ABE" && -n "$OPENABE_PREFIX" && -f "$OPENABE_PREFIX/lib/libopenabe.so" ]]; then
-    run bash -e -c "cd \"\$1\" && env \
+    run_bounded bash -e -c "cd \"\$1\" && env \
       -u PKG_CONFIG_LIBDIR -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
       PKG_CONFIG_PATH='$GLOBAL_PKG_CONFIG_PATH' \
       PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
@@ -2728,7 +2783,7 @@ build_cmake_dependency() {
         AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
         cmake --build \"\$2\" --parallel '$JOBS'" _ "$dir" "$build_dir"
   else
-    run bash -e -c "cd \"\$1\" && env \
+    run_bounded bash -e -c "cd \"\$1\" && env \
       -u PKG_CONFIG_PATH -u CMAKE_PREFIX_PATH -u CMAKE_INCLUDE_PATH -u CMAKE_LIBRARY_PATH \
       -u CMAKE_FRAMEWORK_PATH -u CMAKE_APPBUNDLE_PATH -u CXXFLAGS \
       -u CFLAGS -u CPPFLAGS -u LDFLAGS -u LD_LIBRARY_PATH \
@@ -2795,6 +2850,8 @@ install_host_sdk_prerequisites() {
   local ort_version ort_url ort_sha ort_bytes ort_prefix
   local onnx_version onnx_url onnx_ref onnx_commit onnx_prefix
   local crate rust_minimum bridge_path workspace archive extracted pc_file
+  local rust_bundle_version rust_bundle_url rust_bundle_sha rust_toolchain
+  local cargo_bin rustc_bin
   local stage build_dir actual_commit rust_version bridge_stage
   # Reusing a complete installed SDK needs no download metadata. Keep the
   # pinned lock mandatory whenever any SDK must actually be installed.
@@ -2814,6 +2871,9 @@ install_host_sdk_prerequisites() {
   onnx_prefix="$(host_sdk_lock_field onnxFullProto.installPrefix)"
   crate="$(host_sdk_lock_field tokenizerBridge.crate)"
   rust_minimum="$(host_sdk_lock_field tokenizerBridge.rustMinimum)"
+  rust_bundle_version="$(host_sdk_lock_field tokenizerBridge.rustBundleVersion)"
+  rust_bundle_url="$(host_sdk_lock_field tokenizerBridge.rustBundleUrl)"
+  rust_bundle_sha="$(host_sdk_lock_field tokenizerBridge.rustBundleSha256)"
   bridge_path="$(host_sdk_lock_field tokenizerBridge.installPath)"
   workspace="$BUILD_DIR/host-sdk-work"
   mkdir -p -- "$workspace"
@@ -2894,7 +2954,7 @@ install_host_sdk_prerequisites() {
         -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_ONNX_PYTHON=OFF \
         -DONNX_BUILD_TESTS=OFF -DONNX_GEN_PB_TYPE_STUBS=OFF \
         -DONNX_USE_LITE_PROTO=OFF
-    run cmake --build "$build_dir" --parallel "$JOBS"
+    run_bounded cmake --build "$build_dir" --parallel "$JOBS"
     run cmake --install "$build_dir" --prefix "$install_stage"
     local staged_config="$install_stage/lib/cmake/ONNX/ONNXConfigVersion.cmake"
     [[ -f "$staged_config" && -f "$install_stage/include/onnx/checker.h" && \
@@ -2916,18 +2976,39 @@ install_host_sdk_prerequisites() {
       echo "Existing tokenizer bridge archive is incompatible; refusing to overwrite: $bridge_path" >&2
       return 1
     fi
-    command -v cargo >/dev/null && command -v rustc >/dev/null || {
-      echo "Rust/Cargo are required to build the locked tokenizer bridge" >&2
-      return 1
-    }
-    rust_version="$(rustc --version | /usr/bin/awk '{print $2}')"
-    if [[ "$(printf '%s\n' "$rust_minimum" "$rust_version" | /usr/bin/sort -V | /usr/bin/head -n 1)" != "$rust_minimum" ]]; then
-      echo "Rust $rust_version is older than the tokenizer bridge requirement $rust_minimum" >&2
-      return 1
+    cargo_bin="$(command -v cargo || true)"
+    rustc_bin="$(command -v rustc || true)"
+    rust_version=""
+    if [[ -n "$cargo_bin" && -n "$rustc_bin" ]]; then
+      rust_version="$("$rustc_bin" --version | /usr/bin/awk '{print $2}')"
     fi
-    run env CARGO_HOME="$workspace/cargo-home" \
+    if [[ -z "$rust_version" || \
+        "$(printf '%s\n' "$rust_minimum" "$rust_version" | /usr/bin/sort -V | /usr/bin/head -n 1)" != "$rust_minimum" ]]; then
+      rust_toolchain="$workspace/rust-$rust_bundle_version"
+      if [[ ! -x "$rust_toolchain/bin/rustc" || ! -x "$rust_toolchain/bin/cargo" ]]; then
+        archive="$workspace/rust-$rust_bundle_version-x86_64-unknown-linux-gnu.tar.xz"
+        extracted="$workspace/rust-$rust_bundle_version-extracted"
+        run wget -O "$archive" "$rust_bundle_url"
+        printf '%s  %s\n' "$rust_bundle_sha" "$archive" | /usr/bin/sha256sum --check --status || {
+          echo 'Rust bundle SHA-256 does not match the host SDK lock' >&2
+          return 1
+        }
+        mkdir -p -- "$extracted" "$rust_toolchain"
+        run tar -xJf "$archive" --strip-components=1 -C "$extracted"
+        run "$extracted/install.sh" --prefix="$rust_toolchain" --disable-ldconfig
+        rm -rf -- "$archive" "$extracted"
+      fi
+      rustc_bin="$rust_toolchain/bin/rustc"
+      cargo_bin="$rust_toolchain/bin/cargo"
+      rust_version="$("$rustc_bin" --version | /usr/bin/awk '{print $2}')"
+      [[ "$rust_version" == "$rust_bundle_version" ]] || {
+        echo "Locked Rust bundle version mismatch: $rust_version" >&2
+        return 1
+      }
+    fi
+    run_bounded env CARGO_HOME="$workspace/cargo-home" \
       CARGO_TARGET_DIR="$workspace/cargo-target" \
-      PATH="$SYSTEM_PATH" cargo build --locked --release \
+      RUSTC="$rustc_bin" PATH="$SYSTEM_PATH" "$cargo_bin" build --locked --release \
         --manifest-path "$ROOT/$crate/Cargo.toml"
     archive="$workspace/cargo-target/release/libndnsf_tokenizer_bridge.a"
     [[ -f "$archive" ]] || {
@@ -2968,6 +3049,7 @@ install_external_dependencies() {
   fi
   require_global_boost
   build_waf_dependency "ndn-cxx" "libndn-cxx" "$NDNCXX_REPO_URL" "$MIN_NDNCXX_VERSION"
+  build_waf_dependency "NFD" "" "$NFD_REPO_URL" ""
   build_waf_dependency "ndn-svs" "libndn-svs" "$NDNSVS_REPO_URL" "$MIN_NDNSVS_VERSION"
   build_waf_dependency "NDNSD" "ndnsd" "$NDNSD_REPO_URL" "$MIN_NDNSD_VERSION"
   build_openabe_dependency
@@ -2979,7 +3061,7 @@ install_external_dependencies() {
 
 check_qwen_minindn_prerequisites() {
   local tool missing=0
-  for tool in nfd nfdc ndnsec mn; do
+  for tool in mn; do
     if ! PATH="$SYSTEM_PATH:/usr/local/bin" command -v "$tool" >/dev/null; then
       echo "Qwen MiniNDN prerequisite missing: $tool (install the owning project first)" >&2
       missing=1
@@ -2990,6 +3072,17 @@ check_qwen_minindn_prerequisites() {
     echo 'Qwen MiniNDN requires MiniNDN and its Python dependencies installed for the system Python.' >&2
     missing=1
   fi
+  (( missing == 0 ))
+}
+
+check_qwen_nfd_prerequisites() {
+  local tool missing=0
+  for tool in nfd nfdc ndnsec; do
+    if ! PATH="$SYSTEM_PATH:/usr/local/bin" command -v "$tool" >/dev/null; then
+      echo "Qwen MiniNDN prerequisite missing after NFD installation: $tool" >&2
+      missing=1
+    fi
+  done
   (( missing == 0 ))
 }
 
@@ -3020,12 +3113,18 @@ if (( UNINSTALL_STACK )); then
   exit $?
 fi
 
+if (( ! CONFIGURE_ONLY && ! CHECK_DEPENDENCIES )) && [[ "$INSTALL_DEPENDENCIES" != 0 ]]; then
+  # Validate the pinned source before apt or any other system mutation.
+  validate_host_sdk_lock
+fi
+
 if (( PLAN_ONLY )); then
   if (( CONFIGURE_ONLY )); then
     echo "Mode: configure-only; OS package installation=$INSTALL_SYSTEM_PACKAGES"
   else
     echo "Mode: stack; source installation=$INSTALL_DEPENDENCIES; deps-only=$DEPS_ONLY; check-only=$CHECK_DEPENDENCIES"
     "$PYTHON_BIN" "$SOURCE_HELPER" plan --lock "$LOCK_FILE"
+    echo "NFD: $NFD_REPO_URL commit=$NFD_COMMIT (fixed runtime source)"
     echo "Install prefix: $GLOBAL_DEPENDENCY_PREFIX; source directory: $DEPS_DIR"
   fi
   echo 'The full install reuses or installs the host SDKs pinned in packaging/host-sdk-dependencies.lock.json.'
@@ -3128,6 +3227,10 @@ else
   check_waf_inventory
 fi
 
+if (( QWEN_MININDN )); then
+  check_qwen_nfd_prerequisites
+fi
+
 if (( INSTALL_YOLO_MININDN )); then
   install_yolo_minindn_profile
 fi
@@ -3162,7 +3265,7 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
   echo "==> Installing C++ libraries and headers"
   local_install_stage="$BUILD_DIR/install-staging/ndnsf/usr/local"
   mkdir -p -- "$local_install_stage"
-  run env \
+  run_bounded env \
     -u PKG_CONFIG_LIBDIR \
     -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
     -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH \

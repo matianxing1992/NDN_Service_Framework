@@ -9,7 +9,7 @@ repository or its unit-test build.
 cd examples/interop/ndn-svs-v3/ndnts
 npm ci --ignore-scripts
 cd ..
-NDN_SVS_SOURCE=/home/tianxing/NDN/ndn-svs ./build-cpp-peer.sh
+NDN_SVS_SOURCE=/path/to/ndn-svs ./build-cpp-peer.sh
 OUTPUT_DIR=/tmp/ndnsf-svs-v3-standalone ./run-standalone.sh
 ```
 

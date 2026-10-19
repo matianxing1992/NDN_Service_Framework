@@ -1,7 +1,8 @@
 // Extract declared interface surfaces; this is syntax inventory, not ABI analysis.
 const fs = require('fs');
 const path = require('path');
-const base = process.env.NDNSF_TREE_SITTER_ROOT || '/home/tianxing/.codegraph/versions/v1.0.1/lib/node_modules';
+const base = process.env.NDNSF_TREE_SITTER_ROOT;
+if (!base) throw new Error('Set NDNSF_TREE_SITTER_ROOT to the tree-sitter package root');
 const {Parser, Language} = require(path.join(base, 'web-tree-sitter/tree-sitter.cjs'));
 (async () => {
   await Parser.init();

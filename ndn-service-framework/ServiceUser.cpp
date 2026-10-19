@@ -3472,9 +3472,39 @@ namespace ndn_service_framework
         if (pending == m_pendingCalls.end() || !pending->second.isCollaboration) {
             return output;
         }
-        output.reserve(pending->second.selectionStatusesByProvider.size());
-        for (const auto& item : pending->second.selectionStatusesByProvider) {
+        const auto& call = pending->second;
+        output.reserve(call.selectionStatusesByProvider.size() +
+                       call.collaborationCommittedParticipants.size());
+        for (const auto& item : call.selectionStatusesByProvider) {
             output.push_back(item.second);
+        }
+        const auto addUnknown = [&output, &call, &requestId](const ndn::Name& provider) {
+            const auto uri = provider.toUri();
+            if (call.selectionStatusesByProvider.count(uri) != 0 ||
+                std::any_of(output.begin(), output.end(),
+                            [&provider](const SelectionExecutionStatus& status) {
+                                return status.providerName.equals(provider);
+                            })) {
+                return;
+            }
+            SelectionExecutionStatus unknown;
+            unknown.providerName = provider;
+            unknown.serviceName = call.serviceName;
+            unknown.requestId = requestId;
+            const auto digest = call.selectionDigestsByProvider.find(uri);
+            if (digest != call.selectionDigestsByProvider.end()) {
+                unknown.selectionDigest = digest->second;
+            }
+            output.push_back(std::move(unknown));
+        };
+        for (const auto& participant : call.collaborationCommittedParticipants) {
+            addUnknown(participant.provider);
+        }
+        for (const auto& provider : call.expectedResponseProviders) {
+            addUnknown(provider);
+        }
+        for (const auto& item : call.selectionDigestsByProvider) {
+            addUnknown(ndn::Name(item.first));
         }
         std::sort(output.begin(), output.end(),
                   [](const SelectionExecutionStatus& left,
@@ -12915,6 +12945,13 @@ namespace ndn_service_framework
             return false;
         }
 
+        // A failed application selector is terminal for this local attempt.
+        // Keep its original request deadline for the timeout callback, but
+        // never invoke the selector again on a late ACK.
+        if (pendingCall->second.timedOut) {
+            return false;
+        }
+
         if (pendingCall->second.providerSelected ||
             !pendingCall->second.selectedProvider.empty()) {
             NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_SKIPPED_ALREADY_SELECTED timestamp_us="
@@ -13322,6 +13359,21 @@ namespace ndn_service_framework
                               assignmentPayload;
     }
 
+    void ServiceUser::addCustomSelectedAck(PendingCall& pendingCall,
+                                           const StoredAck& storedAck)
+    {
+        const auto alreadySelected = std::any_of(
+            pendingCall.customSelectedAcks.begin(), pendingCall.customSelectedAcks.end(),
+            [&storedAck](const StoredAck& selected) {
+                return selected.providerName.equals(storedAck.providerName) &&
+                       selected.serviceName.equals(storedAck.serviceName) &&
+                       selected.requestId.equals(storedAck.requestId);
+            });
+        if (!alreadySelected) {
+            pendingCall.customSelectedAcks.push_back(storedAck);
+        }
+    }
+
     bool ServiceUser::evaluateCustomAckSelection(PendingCall& pendingCall)
     {
         // Only newly externalized objects belong to this local transaction.
@@ -13350,11 +13402,26 @@ namespace ndn_service_framework
                 candidates.push_back(makeAckSelectionCandidate(storedAck));
             }
 
-            const auto selectedParticipants =
-                pendingCall.collaborationDeferred ?
-                pendingCall.collaborationCommittedParticipants :
-                pendingCall.collaborationPlan.participantSelector->select(
-                    candidates, pendingCall.collaborationPlan.roles);
+            std::vector<SelectedParticipant> selectedParticipants;
+            if (pendingCall.collaborationDeferred) {
+                selectedParticipants = pendingCall.collaborationCommittedParticipants;
+            }
+            else {
+                try {
+                    selectedParticipants = pendingCall.collaborationPlan.participantSelector->select(
+                        candidates, pendingCall.collaborationPlan.roles);
+                }
+                catch (const std::exception& error) {
+                    NDN_LOG_ERROR("Application participant selector failed: " << error.what());
+                    pendingCall.timedOut = true;
+                    return false;
+                }
+                catch (...) {
+                    NDN_LOG_ERROR("Application participant selector failed");
+                    pendingCall.timedOut = true;
+                    return false;
+                }
+            }
             std::map<std::string, std::vector<ndn::Buffer>>
                 assignmentsByProvider;
             std::string validationError;
@@ -13385,7 +13452,7 @@ namespace ndn_service_framework
                         continue;
                     }
 
-                    pendingCall.customSelectedAcks.push_back(storedAck);
+                    addCustomSelectedAck(pendingCall, storedAck);
                     addUniqueName(pendingCall.successfulAckProviders, storedAck.providerName);
                     addUniqueName(pendingCall.expectedResponseProviders, storedAck.providerName);
                     if (pendingCall.selectedProvider.empty()) {
@@ -13539,7 +13606,20 @@ namespace ndn_service_framework
                 candidates.push_back(makeAckSelectionCandidate(storedAck));
             }
 
-            const auto selectedCandidates = pendingCall.ackCandidatesHandler(candidates);
+            std::vector<AckSelectionCandidate> selectedCandidates;
+            try {
+                selectedCandidates = pendingCall.ackCandidatesHandler(candidates);
+            }
+            catch (const std::exception& error) {
+                NDN_LOG_ERROR("Application ACK candidate selector failed: " << error.what());
+                pendingCall.timedOut = true;
+                return false;
+            }
+            catch (...) {
+                NDN_LOG_ERROR("Application ACK candidate selector failed");
+                pendingCall.timedOut = true;
+                return false;
+            }
             for (const auto& selectedCandidate : selectedCandidates) {
                 for (const auto& storedAck : pendingCall.requestAcks) {
                     if (!storedAck.providerName.equals(selectedCandidate.providerName) ||
@@ -13555,7 +13635,7 @@ namespace ndn_service_framework
                         break;
                     }
 
-                    pendingCall.customSelectedAcks.push_back(storedAck);
+                    addCustomSelectedAck(pendingCall, storedAck);
                     addUniqueName(pendingCall.successfulAckProviders, storedAck.providerName);
                     addUniqueName(pendingCall.expectedResponseProviders, storedAck.providerName);
                     if (pendingCall.selectedProvider.empty()) {
@@ -13571,14 +13651,27 @@ namespace ndn_service_framework
                 ackMessages.push_back(storedAck.message);
             }
 
-            const auto selectedMessages = pendingCall.acksHandler(ackMessages);
+            std::vector<RequestAckMessage> selectedMessages;
+            try {
+                selectedMessages = pendingCall.acksHandler(ackMessages);
+            }
+            catch (const std::exception& error) {
+                NDN_LOG_ERROR("Application ACK selector failed: " << error.what());
+                pendingCall.timedOut = true;
+                return false;
+            }
+            catch (...) {
+                NDN_LOG_ERROR("Application ACK selector failed");
+                pendingCall.timedOut = true;
+                return false;
+            }
             for (const auto& selectedMessage : selectedMessages) {
                 const auto* storedAck = findStoredAck(pendingCall, selectedMessage);
                 if (storedAck == nullptr || !storedAck->message.getStatus()) {
                     continue;
                 }
 
-                pendingCall.customSelectedAcks.push_back(*storedAck);
+                addCustomSelectedAck(pendingCall, *storedAck);
                 addUniqueName(pendingCall.successfulAckProviders, storedAck->providerName);
                 addUniqueName(pendingCall.expectedResponseProviders, storedAck->providerName);
                 if (pendingCall.selectedProvider.empty()) {

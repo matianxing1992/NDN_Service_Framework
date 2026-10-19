@@ -4,9 +4,61 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <ndn-cxx/util/io.hpp>
+#include <sstream>
 #include <thread>
+#include <unistd.h>
 
 namespace ndn_service_framework::test {
+
+namespace {
+
+std::string
+fixedTrustSchemaForTest(ndn::security::KeyChain& keyChain)
+{
+  struct Files {
+    ~Files()
+    {
+      for (const auto& path : paths) {
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
+      }
+    }
+    std::vector<std::filesystem::path> paths;
+  };
+  static Files files;
+  auto pattern = (std::filesystem::temp_directory_path() /
+                  "ndnsf-targeted-trust-XXXXXX").string();
+  std::vector<char> path(pattern.begin(), pattern.end());
+  path.push_back('\0');
+  const int fd = ::mkstemp(path.data());
+  if (fd < 0) {
+    throw std::runtime_error("cannot create targeted fixture trust schema");
+  }
+  ::close(fd);
+  std::ofstream schema(path.data());
+  schema << "rule { id fixture for data checker { type hierarchical "
+            "sig-type rsa-sha256 } }\n";
+  for (const auto& identity : keyChain.getPib().getIdentities()) {
+    std::ostringstream encoded;
+    ndn::io::save(identity.getDefaultKey().getDefaultCertificate(), encoded);
+    auto base64 = encoded.str();
+    base64.erase(std::remove(base64.begin(), base64.end(), '\n'), base64.end());
+    schema << "trust-anchor { type base64 base64-string \""
+           << base64 << "\" }\n";
+  }
+  schema.close();
+  if (!schema) {
+    std::filesystem::remove(path.data());
+    throw std::runtime_error("cannot write targeted fixture trust schema");
+  }
+  files.paths.emplace_back(path.data());
+  return path.data();
+}
+
+} // namespace
 
 BOOST_AUTO_TEST_SUITE(GenericDynamicApi)
 BOOST_AUTO_TEST_SUITE(TargetedInvocation)
@@ -19,7 +71,7 @@ BOOST_AUTO_TEST_CASE(SelectionGatedInputFailsBeforeTargetedPublication)
   auto userCert = makeRsaIdentity(keyChain, ndn::Name("/user/a"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/aa"));
   LocalServiceUser user(face, ndn::Name("/group"), userCert, aaCert,
-                        "examples/trust-any.conf");
+                        fixedTrustSchemaForTest(keyChain));
   RequestCapabilities capabilities;
   capabilities.setField("SelectionGatedInputV1", "required");
   RequestMessage request;
@@ -58,7 +110,7 @@ BOOST_AUTO_TEST_CASE(RequestServiceTargetedBootstrapsBeforeFastPath)
                         ndn::Name("/test/group"),
                         userCert,
                         aaCert,
-                        "examples/trust-any.conf");
+                        fixedTrustSchemaForTest(keyChain));
 
   const ndn::Name providerName("/test/provider/drone-a");
   const ndn::Name serviceName("/UAV/MAVLink/Execute");
@@ -177,7 +229,7 @@ BOOST_AUTO_TEST_CASE(RevokedUserCannotConsumeTargetedTokenOrStartRefill)
                         ndn::Name("/test/group/targeted-revoked"),
                         userCert,
                         aaCert,
-                        "examples/trust-any.conf");
+                        fixedTrustSchemaForTest(keyChain));
   user.applyPermissionResponse(
     makePermissionResponse(userName, tlv::UserPermission, providerName, serviceName));
 
@@ -240,7 +292,7 @@ BOOST_AUTO_TEST_CASE(ControllerVersionChangeEvictsOnlyAffectedUserTargetedPool)
                         ndn::Name("/test/group/targeted-version"),
                         userCert,
                         aaCert,
-                        "examples/trust-any.conf");
+                        fixedTrustSchemaForTest(keyChain));
   PermissionResponse permissions;
   permissions.setTargetIdentity(userName.toUri());
   permissions.setPermissionKind(tlv::UserPermission);
@@ -320,7 +372,7 @@ BOOST_AUTO_TEST_CASE(RevokedProviderCannotConsumeTargetedTokenOrExecuteHandler)
                                 ndn::Name("/test/group/targeted-provider"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName, tlv::ProviderPermission,
                            providerName, serviceName));
@@ -407,7 +459,7 @@ BOOST_AUTO_TEST_CASE(ControllerVersionChangeEvictsOnlyAffectedProviderTargetedTo
                                 ndn::Name("/test/group/targeted-version-provider"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   PermissionResponse permissions;
   permissions.setTargetIdentity(providerName.toUri());
   permissions.setPermissionKind(tlv::ProviderPermission);
@@ -482,7 +534,7 @@ BOOST_AUTO_TEST_CASE(TargetedPoolProactivelyRefillsOnceAtLowWatermark)
                         ndn::Name("/test/group/refill"),
                         userCert,
                         aaCert,
-                        "examples/trust-any.conf");
+                        fixedTrustSchemaForTest(keyChain));
   const ndn::Name providerName("/test/provider/refill");
   const ndn::Name serviceName("/Repo/Adaptive");
   user.applyPermissionResponse(
@@ -609,7 +661,7 @@ BOOST_AUTO_TEST_CASE(TargetedEmptyPoolCoalescesBootstrapAndUsesNormalFallback)
                         ndn::Name("/test/group/coalesce"),
                         userCert,
                         aaCert,
-                        "examples/trust-any.conf");
+                        fixedTrustSchemaForTest(keyChain));
   user.applyPermissionResponse(
     makePermissionResponse(userName,
                            tlv::UserPermission,
@@ -654,7 +706,7 @@ BOOST_AUTO_TEST_CASE(RequestServiceTargetedRequiresUserPermission)
                         ndn::Name("/test/group"),
                         userCert,
                         aaCert,
-                        "examples/trust-any.conf");
+                        fixedTrustSchemaForTest(keyChain));
 
   bool published = false;
   user.setRequestPublisher(
@@ -709,7 +761,7 @@ BOOST_AUTO_TEST_CASE(TargetedBootstrapExecutesAndReturnsTokenBatch)
                                 ndn::Name("/test/group"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -763,7 +815,7 @@ BOOST_AUTO_TEST_CASE(TargetedBootstrapUsesConfiguredBoundedTokenBatch)
                                 ndn::Name("/test/group-configured"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -812,7 +864,7 @@ BOOST_AUTO_TEST_CASE(TargetedBootstrapHonorsAdaptiveBatchHintWithinProviderBound
                                 ndn::Name("/test/group-hint"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -862,7 +914,7 @@ BOOST_AUTO_TEST_CASE(TargetedUserStoresFullAdvertised256PairBatch)
                         ndn::Name("/test/group/256"),
                         userCert,
                         aaCert,
-                        "examples/trust-any.conf");
+                        fixedTrustSchemaForTest(keyChain));
   user.applyPermissionResponse(
     makePermissionResponse(userName,
                            tlv::UserPermission,
@@ -905,7 +957,7 @@ BOOST_AUTO_TEST_CASE(TargetedServiceConsumesCachedTokenForFastPath)
                                 ndn::Name("/test/group"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -969,7 +1021,7 @@ BOOST_AUTO_TEST_CASE(NormalAndTargetedRegistrationsCoexistForSameService)
                                 ndn::Name("/test/group"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -1059,7 +1111,7 @@ BOOST_AUTO_TEST_CASE(ExplicitNormalAndTargetedInvocationModeRegistersBothPaths)
                                 ndn::Name("/test/group"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -1129,7 +1181,7 @@ BOOST_AUTO_TEST_CASE(TargetedProviderRequiresPermissionAndUserToken)
                                 ndn::Name("/test/group"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
 
   size_t handlerCalls = 0;
   provider.addTargetedService(
@@ -1191,7 +1243,7 @@ BOOST_AUTO_TEST_CASE(TargetedUserAcceptsOnlyExpectedProviderAndUserToken)
                         ndn::Name("/test/group"),
                         userCert,
                         aaCert,
-                        "examples/trust-any.conf");
+                        fixedTrustSchemaForTest(keyChain));
   user.applyPermissionResponse(
     makePermissionResponse(requesterName,
                            tlv::UserPermission,
@@ -1242,7 +1294,7 @@ BOOST_AUTO_TEST_CASE(TargetedRequestRequiresTargetedProviderService)
                                 ndn::Name("/test/group"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -1286,7 +1338,7 @@ BOOST_AUTO_TEST_CASE(NormalRequestDoesNotExecuteTargetedOnlyService)
                                 ndn::Name("/test/group"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -1325,7 +1377,7 @@ BOOST_AUTO_TEST_CASE(TargetedRequestForOtherProviderDoesNotExecute)
                                 ndn::Name("/test/group"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -1368,7 +1420,7 @@ BOOST_AUTO_TEST_CASE(ReplayedTargetedRuntimeRequestExecutesOnce)
                                 ndn::Name("/test/group"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -1423,7 +1475,7 @@ BOOST_AUTO_TEST_CASE(TargetedTokenFailuresNeverInvokeRegisteredHandler)
                                 ndn::Name("/test/group-token-negative"),
                                 providerCert,
                                 aaCert,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -1500,7 +1552,7 @@ BOOST_AUTO_TEST_CASE(ProtectedTargetedTokenConsumptionChecksLifetimeAndRegistrat
   auto certificate = makeRsaIdentity(keyChain, providerName);
   auto aa = makeRsaIdentity(keyChain, ndn::Name("/aa/protected"));
   LocalServiceProvider provider(face, ndn::Name("/group/protected"), certificate, aa,
-                                "examples/trust-any.conf");
+                                fixedTrustSchemaForTest(keyChain));
   auto handler = [] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
                     const ndn::Name&, const RequestMessage&, ServiceProvider::AsyncTargetedCompletion) {};
   auto registration = provider.addScopedTargetedService(service, handler);
@@ -1563,7 +1615,7 @@ BOOST_AUTO_TEST_CASE(TargetedDeadlineStartsBeforePublicationReturns)
                         ndn::Name("/test/group-deadline-publish"),
                         userCert,
                         aaCert,
-                        "examples/trust-any.conf");
+                        fixedTrustSchemaForTest(keyChain));
   user.applyPermissionResponse(
     makePermissionResponse(requesterName,
                            tlv::UserPermission,
@@ -1616,7 +1668,7 @@ BOOST_AUTO_TEST_CASE(TargetedDeadlineIncludesAdmissionQueueDelay)
                         ndn::Name("/test/group-deadline-admission"),
                         userCert,
                         aaCert,
-                        "examples/trust-any.conf");
+                        fixedTrustSchemaForTest(keyChain));
   user.applyPermissionResponse(
     makePermissionResponse(requesterName,
                            tlv::UserPermission,
@@ -1688,7 +1740,7 @@ BOOST_AUTO_TEST_CASE(TargetedResponseAndTimeoutHaveExactlyOneTerminalCallback)
                         ndn::Name("/test/group-deadline-race"),
                         userCert,
                         aaCert,
-                        "examples/trust-any.conf");
+                        fixedTrustSchemaForTest(keyChain));
   user.applyPermissionResponse(
     makePermissionResponse(requesterName,
                            tlv::UserPermission,

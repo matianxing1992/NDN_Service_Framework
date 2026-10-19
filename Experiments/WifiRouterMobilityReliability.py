@@ -1271,6 +1271,8 @@ def build_wifi_topology(ap_range, seed):
 
 def app_env(output_dir, session_base):
     env = perf.app_env(output_dir, session_base, make_perf_args())
+    env["NDNSF_CONTROLLER_GENERATION_STATE"] = str(
+        Path(output_dir) / "controller-generation.state")
     # The mobility harness may run an isolated NDNSF build against an isolated
     # NDN-SVS installation.  Keep the selected framework and SVS runtime ahead
     # of the repository's default build so a campaign cannot silently mix ABI
@@ -1330,6 +1332,7 @@ def run_ndnsf(ndn, output_dir, args):
     gate_thread = None
     nodes = all_app_nodes(ndn)
     session_base = int(time.time()) + os.getpid()
+    trust_schema = perf.write_fixed_root_trust_schema(output_dir)
     def provider_argv(index, node_name):
         provider_id = chr(ord("A") + index)
         fault_provider = str(getattr(
@@ -1345,6 +1348,7 @@ def run_ndnsf(ndn, output_dir, args):
                     getattr(args, "ndnsf_standby_ack_delay_ms", 0))
         return [
             "--provider-id", provider_id,
+            "--trust-schema", str(trust_schema),
             "--failure-probability", "0",
             "--availability-file", str(
                 output_dir / "availability" / f"{node_name}.state"),
@@ -1368,9 +1372,9 @@ def run_ndnsf(ndn, output_dir, args):
                 packet_capture_commands[node_name] = capture_command
             time.sleep(0.5)
         env = app_env(output_dir, session_base)
-        controller_args = []
+        controller_args = ["--trust-schema", str(trust_schema)]
         if ACTIVE_PROFILE in {"four-provider-single-ap", "four-provider-multi-ap"}:
-            controller_args = ["--policy-file", str(write_mobility_policy(output_dir))]
+            controller_args.extend(["--policy-file", str(write_mobility_policy(output_dir))])
         controller_command = perf.managed_cmd(APP_CONTROLLER, controller_args)
         controller, lf, lp = start_process(
             ndn.net["memphis"], "ndnsf-controller",
@@ -1403,6 +1407,7 @@ def run_ndnsf(ndn, output_dir, args):
         client_launch_offset_s = wait_for_traffic_phase(gate_epoch, 0.0)
         measurement_start_target = gate_epoch + args.traffic_start_delay_s
         user_argv = [
+            "--trust-schema", str(trust_schema),
             "--rate-rps", str(args.rate_rps),
             "--duration-ms", str(args.duration_s * 1000),
             "--ack-timeout-ms", str(args.ack_timeout_ms),
@@ -1625,6 +1630,7 @@ def run_grpc(ndn, output_dir, args):
                 f"{perf.shell_quote(GRPC_DIR / 'greeter_server.py')} "
                 f"--bind 0.0.0.0:50051 --provider-id {node_name} "
                 f"--delay-ms {args.processing_delay_ms} "
+                f"--max-attempt-deadline-ms {args.timeout_ms} "
                 f"--workers {service_workers} --quiet")
             server, lf, lp = start_process(
                 ndn.net[node_name], f"grpc-server-{node_name}",
@@ -1665,8 +1671,13 @@ def run_grpc(ndn, output_dir, args):
             f"--measurement-start-tolerance-s {TRAFFIC_PHASE_TOLERANCE_S} "
             f"--warmup-s 0 --quiet{smoke_flag}")
         if len(selected_providers) == 1:
-            client_command += " --single-provider"
-        if (not args.grpc_no_health_routing and
+            # A fixed Provider may be offline when the common trace begins.
+            # Start the measured workload and let its requests record failures.
+            client_command += (
+                " --single-provider --disable-health-routing"
+                " --prewarm-timeout-s 0.2"
+                " --max-reconnect-backoff-ms 1000")
+        elif (not args.grpc_no_health_routing and
                 args.trace_profile != "single-active-handoff"):
             client_command += " --require-all-prewarmed"
         elif args.grpc_no_health_routing:
@@ -2000,6 +2011,8 @@ def campaign_artifacts(systems):
         ])
     if "ndnsf" in systems:
         paths.extend([
+            ("source", REPO_ROOT / "Experiments/NDNSF_NewAPI_Minindn_Perf.py"),
+            ("source", REPO_ROOT / "examples/trust-schema.conf"),
             ("binary", APP_CONTROLLER),
             ("binary", APP_PROVIDER),
             ("binary", APP_USER),

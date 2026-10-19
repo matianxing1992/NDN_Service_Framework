@@ -243,11 +243,13 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--app-build-id")
-    parser.add_argument("--ndn-svs", default="/home/tianxing/NDN/ndn-svs")
+    parser.add_argument("--ndn-svs", help="Path to the ndn-svs source checkout for app/all builds")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.jobs < 1 or args.jobs > 4:
         raise SystemExit("BUILD_JOBS_OUT_OF_RANGE")
+    if args.target in ("app", "all") and not args.ndn_svs:
+        parser.error("--ndn-svs is required for app/all builds")
     workspace = Path(__file__).resolve().parents[5]
     output = Path(args.output).resolve()
     if output.exists() and any(output.iterdir()):

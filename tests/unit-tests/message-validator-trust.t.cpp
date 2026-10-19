@@ -260,6 +260,51 @@ struct Fixture
 
 BOOST_AUTO_TEST_SUITE(MessageValidatorFixedRoot)
 
+BOOST_AUTO_TEST_CASE(SvsGroupAcceptsRootSignedActorsButRejectsOtherRoles)
+{
+  Fixture fixture;
+  auto& keys = fixture.keys;
+  const auto root = keys.createIdentity(ndn::Name("/example/hello"), ndn::RsaKeyParams(2048));
+  const auto user = keys.createIdentity(ndn::Name("/example/hello/user"), ndn::RsaKeyParams(2048));
+  const auto provider = keys.createIdentity(ndn::Name("/example/hello/provider/A"),
+                                            ndn::RsaKeyParams(2048));
+  const auto other = keys.createIdentity(ndn::Name("/example/hello/other"),
+                                         ndn::RsaKeyParams(2048));
+  const auto rootCert = root.getDefaultKey().getDefaultCertificate();
+  const auto signActor = [&](const ndn::security::pib::Identity& identity) {
+    auto cert = keys.makeCertificate(identity.getDefaultKey(),
+                                    ndn::security::signingByCertificate(rootCert));
+    keys.addCertificate(identity.getDefaultKey(), cert);
+    keys.setDefaultCertificate(identity.getDefaultKey(), cert);
+    return cert;
+  };
+  const auto userCert = signActor(user);
+  const auto providerCert = signActor(provider);
+  const auto otherCert = signActor(other);
+
+  const auto schema = fixture.isolation.directory() / "svs-trust.conf";
+  const auto source = std::filesystem::read_symlink("/proc/self/exe").parent_path()
+                        .parent_path() / "examples/trust-schema.conf";
+  std::filesystem::copy_file(source, schema);
+  ndn::io::save(rootCert, (fixture.isolation.directory() / "root.cert").string());
+  auto validator = std::make_shared<MessageValidator>(schema.string(), std::nullopt,
+                                                     &fixture.face);
+  const auto makeGroupData = [&](const ndn::security::Certificate& cert) {
+    ndn::Data data("/example/hello/group/v=3");
+    data.setContent("sync");
+    keys.sign(data, ndn::security::signingByCertificate(cert));
+    return data;
+  };
+  BOOST_CHECK_EQUAL(validate(fixture.face, *validator, makeGroupData(userCert),
+                             {userCert, rootCert}).success, 1U);
+  BOOST_CHECK_EQUAL(validate(fixture.face, *validator, makeGroupData(providerCert),
+                             {providerCert, rootCert}).success, 1U);
+  const auto rejected = validate(fixture.face, *validator, makeGroupData(otherCert),
+                                 {otherCert, rootCert});
+  BOOST_CHECK_EQUAL(rejected.success, 0U);
+  BOOST_CHECK_EQUAL(rejected.failure, 1U);
+}
+
 BOOST_AUTO_TEST_CASE(ValidChainAndRepeatedDataUseTheConfiguredRoot)
 {
   Fixture fixture;

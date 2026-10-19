@@ -33,7 +33,7 @@ nominal profile is used by default; paired negative profiles are
 `pts-disorder`, `camera-mismatch`, and `disabled-ego-motion`:
 
 ```bash
-sudo -E env PYTHONPATH=/home/tianxing/.local/lib/python3.8/site-packages \
+sudo -E env PYTHONPATH="$(python3 -m site --user-site)" \
   python3 Experiments/UAV/run_multicamera_tracking_demo.py \
   --source /path/to/spec191-assets --model /path/to/3UAVs.pt \
   --license local-test-accepted --output-dir /tmp/spec191-motion-negative \
@@ -130,7 +130,7 @@ command-reconciliation markers. It never falls back to the mock backend.
 For example:
 
 ```bash
-sudo -n env PX4_SITL_ROOT=/home/tianxing/PX4-Autopilot \
+sudo -n env PX4_SITL_ROOT=/path/to/PX4-Autopilot \
   NDNSF_UAV_FLIGHT_CONTROLLER=udp \
   NDNSF-UAV-APP/tools/run_uav_collaboration_probe.sh <output-directory>
 ```

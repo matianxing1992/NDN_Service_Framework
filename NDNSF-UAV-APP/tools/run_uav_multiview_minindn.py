@@ -12,6 +12,7 @@ bytes never occur in the request, ACK, selection, or response payloads.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -359,6 +360,12 @@ def run_real(output: Path, scenario: str, selected_provider: str,
         return report
     if selected_provider not in PROVIDERS:
         raise ValueError("selected provider must be one of %s" % (PROVIDERS,))
+    ndn_spec = importlib.util.find_spec("ndn")
+    if ndn_spec is None or not ndn_spec.submodule_search_locations:
+        report["status"] = "preflight-failed"
+        report["reason"] = "python-ndn is unavailable to the selected Python interpreter"
+        return report
+    python_site = str(Path(next(iter(ndn_spec.submodule_search_locations))).parent)
 
     job_path, job = _write_job(output, scenario, late_delay_ms)
     processes: List[Tuple[str, Any, Any]] = []
@@ -385,12 +392,9 @@ def run_real(output: Path, scenario: str, selected_provider: str,
             node = ndn.net[node_name]
             log_path = output / (process_name + ".log")
             log = log_path.open("wb")
-            python_site = "/home/tianxing/.local/lib/python3.8/site-packages"
             env = {
-                # The privileged launcher uses /usr/bin/python3.  python-ndn
-                # is installed in the project user's site directory, which
-                # is not visible to root; pass that exact site path into each
-                # MiniNDN namespace instead of depending on host PYTHONPATH.
+                # Preserve the selected interpreter's actual package path in
+                # the MiniNDN namespace, including a non-default site install.
                 "PYTHONPATH": str(TOOL.parent) + os.pathsep + python_site,
                 "NDNSF_TIMELINE_TRACE_SAMPLE_RATE": "1",
                 "PYTHONUNBUFFERED": "1",

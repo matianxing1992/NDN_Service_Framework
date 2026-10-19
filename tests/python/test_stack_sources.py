@@ -78,8 +78,7 @@ def test_receipts_invalidate_changed_upstream_and_library(tmp_path):
     cxx_receipt = json.loads(
         (tmp_path / 'share/ndnsf/source-receipts/ndn-cxx.json').read_text())
     assert cxx_receipt['source']['commit'] == data['sources']['ndn-cxx']['commit']
-    assert cxx_receipt['patches'] == {
-        'ims-lower-bound.patch': sources.digest(ROOT / 'tools/ndn-cxx/ims-lower-bound.patch')}
+    assert 'patches' not in cxx_receipt  # IMS API is included in the pinned fork commit.
     svs_receipt = json.loads(
         (tmp_path / 'share/ndnsf/source-receipts/ndn-svs.json').read_text())
     assert svs_receipt['patches'] == {
@@ -109,7 +108,6 @@ def test_downstream_receipt_accepts_compatible_upstream_without_source_receipt(t
 
 
 @pytest.mark.parametrize('name,patch_name', [
-    ('ndn-cxx', 'ims-lower-bound.patch'),
     ('ndn-svs', 'publication-latency.patch'),
 ])
 def test_dependency_patch_change_invalidates_receipt(tmp_path, monkeypatch, name, patch_name):

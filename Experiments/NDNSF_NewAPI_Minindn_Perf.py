@@ -1518,6 +1518,21 @@ def initialize_example_keychains(ndn, args, output_dir):
             record["provider_id"], record["cert_name"], record["cert_file"]))
 
 
+def write_fixed_root_trust_schema(output_dir):
+    """Bind the existing example rules to this run's generated root certificate."""
+    security_dir = Path(output_dir) / "security"
+    root_cert = security_dir / "root.cert"
+    template = REPO_ROOT / "examples" / "trust-schema.conf"
+    if not root_cert.is_file():
+        raise RuntimeError("run root certificate is missing")
+    content = template.read_bytes()
+    if content.count(b'file-name "root.cert"') != 1:
+        raise RuntimeError("example trust schema must pin one local root.cert")
+    destination = security_dir / "trust-schema.conf"
+    destination.write_bytes(content)
+    return destination
+
+
 def certificate_name_from_file(cert_path):
     raw = base64.b64decode("".join(
         line.strip()
@@ -4938,8 +4953,9 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         print("NDNSF_NewAPI_Minindn_Perf failed: {}".format(e), file=sys.stderr)
-        try:
-            Minindn.cleanUp()
-        except Exception:
-            pass
+        if "--dry-run" not in sys.argv[1:]:
+            try:
+                Minindn.cleanUp()
+            except Exception:
+                pass
         sys.exit(1)

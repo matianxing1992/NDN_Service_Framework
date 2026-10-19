@@ -213,8 +213,7 @@ resolveVideoSource(int argc, char** argv, const Fields& config)
 
   for (const auto& fallback : {
          std::string("videos/drone.mp4"),
-         std::string("NDNSF-UAV-APP/videos/drone.mp4"),
-         std::string("/home/tianxing/NDN/ndn-service-framework/NDNSF-UAV-APP/videos/drone.mp4")
+         std::string("NDNSF-UAV-APP/videos/drone.mp4")
        }) {
     if (fileExists(fallback)) {
       std::cout << "DRONE_CAMERA_SOURCE_AUTO selected=" << fallback

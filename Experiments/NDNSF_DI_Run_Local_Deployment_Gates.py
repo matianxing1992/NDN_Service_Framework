@@ -47,6 +47,8 @@ except ImportError:
     )
 
 REPO = Path(__file__).resolve().parents[1]
+MININDN_SOURCE = Path(os.environ.get(
+    "NDNSF_MININDN_SOURCE", str(REPO.parent / "mini-ndn"))).resolve()
 SOURCE_FILES = (
     "Experiments/NDNSF_DI_Run_Local_Deployment_Gates.py",
     "Experiments/NDNSF_DI_Prepare_Spec165_Workload.py",
@@ -953,7 +955,7 @@ def container_command(
         "-v",
         f"{model_repo}:/models/repo:ro",
         "-v",
-        "/home/tianxing/NDN/mini-ndn:/opt/mini-ndn:ro",
+        f"{MININDN_SOURCE}:/opt/mini-ndn:ro",
         "-w",
         "/workspace",
         "-e",

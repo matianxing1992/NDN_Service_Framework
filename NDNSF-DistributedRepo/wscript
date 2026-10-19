@@ -63,7 +63,7 @@ def build(bld):
               cxxflags=['-fPIC'],
               includes=['include', '..'],
               use='ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
-              install_path=None)
+              install_path='${LIBDIR}')
 
     if 'spec201-repo-python-binding' in (bld.targets or '').split(','):
         import sysconfig

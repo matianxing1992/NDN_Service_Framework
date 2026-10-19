@@ -217,6 +217,7 @@ class ThreeProviderFailoverClient:
         parallel: bool = False,
         quiet: bool = False,
         allow_single_provider: bool = False,
+        max_reconnect_backoff_ms: int = 0,
         tls_ca: str | None = None,
         tls_cert: str | None = None,
         tls_key: str | None = None,
@@ -247,6 +248,11 @@ class ThreeProviderFailoverClient:
         self.prewarm_timeout_s = prewarm_timeout_s
         self.parallel = bool(parallel)
         self.allow_single_provider = bool(allow_single_provider)
+        if max_reconnect_backoff_ms < 0:
+            raise ValueError("max_reconnect_backoff_ms cannot be negative")
+        self.channel_options = CHANNEL_OPTIONS + (
+            (("grpc.max_reconnect_backoff_ms", max_reconnect_backoff_ms),)
+            if max_reconnect_backoff_ms else ())
         self.quiet = quiet
         self.tls_credentials = (grpc.ssl_channel_credentials(
             root_certificates=Path(tls_ca).read_bytes(),
@@ -262,11 +268,12 @@ class ThreeProviderFailoverClient:
 
     def _make_endpoint(self, target: TargetSpec) -> Endpoint:
         if self.tls_credentials is None:
-            channel = grpc.aio.insecure_channel(target.address, options=CHANNEL_OPTIONS)
+            channel = grpc.aio.insecure_channel(
+                target.address, options=self.channel_options)
         else:
             channel = grpc.aio.secure_channel(
                 target.address, self.tls_credentials,
-                options=CHANNEL_OPTIONS +
+                options=self.channel_options +
                 (("grpc.ssl_target_name_override", target.provider_id),))
         stub = helloworld_pb2_grpc.GreeterStub(channel)
         health = channel.unary_unary(
@@ -939,6 +946,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-timeout-s", type=float, default=0.2)
     parser.add_argument("--health-stale-s", type=float, default=0.4)
     parser.add_argument("--prewarm-timeout-s", type=float, default=2.0)
+    parser.add_argument("--max-reconnect-backoff-ms", type=int, default=0)
     parser.add_argument("--measurement-start-delay-s", type=float, default=0.0)
     parser.add_argument("--measurement-start-monotonic-s", type=float, default=0.0)
     parser.add_argument("--measurement-start-tolerance-s", type=float, default=0.0)
@@ -982,6 +990,7 @@ async def run_stats_from_args(args: argparse.Namespace) -> dict[str, Any]:
         parallel=False,
         quiet=True,
         allow_single_provider=args.single_provider,
+        max_reconnect_backoff_ms=args.max_reconnect_backoff_ms,
         tls_ca=args.tls_ca, tls_cert=args.tls_cert, tls_key=args.tls_key,
     )
     try:
@@ -1034,6 +1043,7 @@ async def run_from_args(args: argparse.Namespace) -> tuple[Metrics, str]:
         parallel=args.parallel,
         quiet=args.quiet,
         allow_single_provider=args.single_provider,
+        max_reconnect_backoff_ms=args.max_reconnect_backoff_ms,
         tls_ca=args.tls_ca, tls_cert=args.tls_cert, tls_key=args.tls_key,
     )
     try:

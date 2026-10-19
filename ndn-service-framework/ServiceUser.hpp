@@ -1782,6 +1782,9 @@ namespace ndn_service_framework{
             bool selectLateAckAfterAckTimeout(PendingCall& pendingCall,
                                               const StoredAck& storedAck);
 
+            static void addCustomSelectedAck(PendingCall& pendingCall,
+                                             const StoredAck& storedAck);
+
             bool evaluateCustomAckSelection(PendingCall& pendingCall);
 
             ndn::Buffer externalizeLargeCollaborationAssignment(

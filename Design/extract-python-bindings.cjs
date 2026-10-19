@@ -1,6 +1,7 @@
 // Preserve pybind11 declarations without loading the native extension.
 const fs=require('fs'),path=require('path');
-const base=process.env.NDNSF_TREE_SITTER_ROOT||'/home/tianxing/.codegraph/versions/v1.0.1/lib/node_modules';
+const base=process.env.NDNSF_TREE_SITTER_ROOT;
+if(!base)throw new Error('Set NDNSF_TREE_SITTER_ROOT to the tree-sitter package root');
 const {Parser,Language}=require(path.join(base,'web-tree-sitter/tree-sitter.cjs'));
 (async()=>{
  await Parser.init();const p=new Parser();p.setLanguage(await Language.load(path.join(base,'tree-sitter-wasms/out/tree-sitter-cpp.wasm')));

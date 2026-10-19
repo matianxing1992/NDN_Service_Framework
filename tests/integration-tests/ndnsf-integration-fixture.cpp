@@ -7,14 +7,18 @@
 
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/util/io.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <vector>
+#include <unistd.h>
 
 namespace ndn_service_framework::test {
 namespace {
@@ -179,6 +183,16 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   , m_keyChain(std::make_unique<ndn::KeyChain>(
       "pib-memory:spec170-fixture", "tpm-memory:spec170-fixture"))
 {
+  struct ConstructorTrustFileGuard {
+    std::filesystem::path path;
+    ~ConstructorTrustFileGuard()
+    {
+      if (!path.empty()) {
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
+      }
+    }
+  } trustFileGuard;
   ndn::DummyClientFace::Options faceOptions;
   faceOptions.enablePacketLogging = true;
   faceOptions.enableRegistrationReply = true;
@@ -192,6 +206,46 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   const auto userCert = makeIdentity(*m_keyChain, m_profile.userIdentity);
   const auto providerCert = makeIdentity(*m_keyChain, m_profile.providerIdentity);
   const auto aaCert = makeIdentity(*m_keyChain, m_profile.attributeAuthority);
+  std::vector<ndn::security::Certificate> extraProviderCerts;
+  for (size_t index = 1; index < std::max<size_t>(1, m_profile.providerCount); ++index) {
+    extraProviderCerts.push_back(makeIdentity(
+        *m_keyChain, indexedName(m_profile.providerIdentity, index)));
+  }
+  if (m_profile.trustSchemaPath == "examples/trust-any.conf") {
+    auto pattern = (std::filesystem::temp_directory_path() /
+                    "ndnsf-core-fixture-trust-XXXXXX").string();
+    std::vector<char> path(pattern.begin(), pattern.end());
+    path.push_back('\0');
+    const int fd = ::mkstemp(path.data());
+    if (fd < 0) {
+      throw std::runtime_error("cannot create fixed fixture trust schema");
+    }
+    ::close(fd);
+    m_fixtureTrustSchema = path.data();
+    trustFileGuard.path = m_fixtureTrustSchema;
+    std::ofstream schema(m_fixtureTrustSchema);
+    schema << "rule { id fixture for data checker { type hierarchical "
+              "sig-type rsa-sha256 } }\n";
+    const auto addRoot = [&schema](const ndn::security::Certificate& cert) {
+      std::ostringstream encoded;
+      ndn::io::save(cert, encoded);
+      auto base64 = encoded.str();
+      base64.erase(std::remove(base64.begin(), base64.end(), '\n'), base64.end());
+      schema << "trust-anchor { type base64 base64-string \""
+             << base64 << "\" }\n";
+    };
+    addRoot(userCert);
+    addRoot(providerCert);
+    addRoot(aaCert);
+    for (const auto& cert : extraProviderCerts) {
+      addRoot(cert);
+    }
+    schema.close();
+    if (!schema) {
+      throw std::runtime_error("cannot write fixed fixture trust schema");
+    }
+    m_profile.trustSchemaPath = m_fixtureTrustSchema.string();
+  }
   m_userSecurityOptions = std::make_unique<ndn::svs::SecurityOptions>(
       makeSecurityOptions(*m_keyChain, userCert, m_profile, *m_userFace));
   m_providerSecurityOptions = std::make_unique<ndn::svs::SecurityOptions>(
@@ -305,7 +359,7 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
     auto face = std::make_unique<ndn::DummyClientFace>(
         *providerIo, *m_keyChain, faceOptions);
     const auto identity = indexedName(m_profile.providerIdentity, index);
-    const auto certificate = makeIdentity(*m_keyChain, identity);
+    const auto& certificate = extraProviderCerts.at(index - 1);
     m_extraProviderSecurityOptions.push_back(
         std::make_unique<ndn::svs::SecurityOptions>(
             makeSecurityOptions(*m_keyChain, certificate, m_profile, *face)));
@@ -400,9 +454,16 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
               }));
     }
   }
+  trustFileGuard.path.clear();
 }
 
-NdnsfIntegrationEnvironment::~NdnsfIntegrationEnvironment() = default;
+NdnsfIntegrationEnvironment::~NdnsfIntegrationEnvironment()
+{
+  if (!m_fixtureTrustSchema.empty()) {
+    std::error_code ignored;
+    std::filesystem::remove(m_fixtureTrustSchema, ignored);
+  }
+}
 
 ndn::Name
 NdnsfIntegrationEnvironment::attributeAuthorityPublicParametersName() const

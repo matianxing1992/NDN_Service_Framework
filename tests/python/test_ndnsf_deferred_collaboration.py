@@ -7,6 +7,7 @@ from ndnsf.service import (
     CollaborationAckClosed,
     CollaborationInvocation,
     CollaborationRole,
+    ServiceResponse,
     ServiceUser,
     _CollaborationInvocationState,
 )
@@ -145,6 +146,34 @@ class DeferredCollaborationContractTest(unittest.TestCase):
         with self.assertRaisesRegex(
                 TimeoutError, "terminal rejection: provider boot epoch mismatch"):
             handle.result(timeout_ms=5000)
+        self.assertEqual(handle._state.timeout_reason, "")
+
+    def test_one_rejection_does_not_hide_unreported_selected_provider(self):
+        native = _NativeCommitFixture()
+        native.status_snapshots = [
+            {"state": "Rejected", "message": "first rejected"},
+            {"state": "Unknown", "message": ""},
+        ]
+        handle = invocation(native, fail_fast=True)
+        with self.assertRaisesRegex(TimeoutError, "local wait"):
+            handle.result(timeout_ms=10)
+        self.assertEqual(handle._state.timeout_reason, "")
+
+    def test_response_arriving_during_status_query_wins(self):
+        native = _NativeCommitFixture()
+        native.status_snapshots = [{"state": "Rejected", "message": "stale status"}]
+        handle = invocation(native, fail_fast=True)
+        response = ServiceResponse(status=True, payload=b"ready")
+        original = native.get_collaboration_status_snapshot
+
+        def get_status(request_id, timeout_ms):
+            result = original(request_id, timeout_ms)
+            handle._state.set_response(response)
+            return result
+
+        native.get_collaboration_status_snapshot = get_status
+        self.assertEqual(handle.result(timeout_ms=100), response)
+        self.assertEqual(handle._state.timeout_reason, "")
 
     def test_default_di_is_deferred_and_preplanned_is_compatibility_only(self):
         placement = (

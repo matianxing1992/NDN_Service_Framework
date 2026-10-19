@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CPP=${CPP_PEER:-$ROOT/build/svs3-peer}
 NDNTS=${NDNTS_PEER:-$ROOT/ndnts/svs3-peer.ts}
-NODE=${NODE_BIN:-/home/tianxing/.local/node-v22.23.1/bin/node}
-NDN_SVS_SOURCE=${NDN_SVS_SOURCE:-/home/tianxing/NDN/ndn-svs}
+NODE=${NODE_BIN:-$(command -v node || true)}
+NDN_SVS_SOURCE=${NDN_SVS_SOURCE:?Set NDN_SVS_SOURCE to the ndn-svs checkout}
 PREFIX=${SYNC_PREFIX:-/ndn/ndnsf/svs-v3-interop}
 COUNT=${PUBLISH_COUNT:-5}
 OUT=${OUTPUT_DIR:-/tmp/ndnsf-svs-v3-interop}

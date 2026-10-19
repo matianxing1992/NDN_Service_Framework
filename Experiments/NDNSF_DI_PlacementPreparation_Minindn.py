@@ -29,8 +29,10 @@ sys.path.insert(0, str(REPO / "NDNSF-DistributedInference"))
 TOPOLOGY = REPO / "Experiments" / "Topology" / "AI_Lab.conf"
 MODEL_REPO = "Qwen/Qwen3-0.6B"
 MODEL_REVISION = "e6de91484c29aa9480d55605af694f39b081c455"
+MODEL_CACHE_ROOT = Path(os.environ.get(
+    "NDNSF_SPEC163_HF_CACHE", str(Path.home() / ".cache/ndnsf-spec163-hf"))).resolve()
 MODEL_SNAPSHOT = (
-    Path("/home/tianxing/.cache/ndnsf-spec163-hf/hub")
+    MODEL_CACHE_ROOT / "hub"
     / "models--Qwen--Qwen3-0.6B" / "snapshots" / MODEL_REVISION
 )
 RUNTIME_IMAGE = "ndnsf-di:spec162-qwen36-runtime-aedbff59-20260728b"
@@ -1010,8 +1012,7 @@ def run_generation_container(output: Path) -> None:
         "-e", "HOME=/run/ndnsf-di",
         "--entrypoint", "/opt/venv/bin/python",
         "-v", f"{REPO}:/workspace:ro",
-        "-v", ("/home/tianxing/.cache/ndnsf-spec163-hf:"
-               "/home/tianxing/.cache/ndnsf-spec163-hf:ro"),
+        "-v", f"{MODEL_CACHE_ROOT}:{MODEL_CACHE_ROOT}:ro",
         "-v", f"{output}:/evidence:rw",
         RUNTIME_IMAGE,
         "/workspace/Experiments/NDNSF_DI_PlacementPreparation_Minindn.py",

@@ -44,6 +44,9 @@ def make_perf_args(args):
         user_node=args.user_node,
         controller_node=args.controller_node,
         serve_provider_certs=False,
+        performance_mode=False,
+        workload_mode="open-loop",
+        rate_rps=args.rate_rps,
         debug_ack=False,
         timeline_trace=False,
         dk_bootstrap_check=False,
@@ -97,10 +100,13 @@ def start_process(node, name, binary, argv, output_dir, session_base, perf_args)
     log_path = output_dir / f"{name}.log"
     log(f"Starting {name} on {node.name} -> {log_path}")
     log_file = log_path.open("wb")
+    env = perf.app_env(output_dir, session_base, perf_args)
+    env["NDNSF_CONTROLLER_GENERATION_STATE"] = str(
+        output_dir / "controller-generation.state")
     process = getPopen(
         node,
         perf.managed_cmd(binary, argv),
-        envDict=perf.app_env(output_dir, session_base, perf_args),
+        envDict=env,
         shell=True,
         stdout=log_file,
         stderr=subprocess.STDOUT,
@@ -143,12 +149,13 @@ def run_one(args, probability, run_dir):
         perf.advertise_nlsr_prefixes(ndn, perf_args)
         time.sleep(args.nlsr_settle_seconds)
         perf.initialize_example_keychains(ndn, perf_args, run_dir)
+        trust_schema = perf.write_fixed_root_trust_schema(run_dir)
 
         controller_proc, controller_file, controller_log = start_process(
             ndn.net[args.controller_node],
             "controller",
             APP_CONTROLLER,
-            [],
+            ["--trust-schema", str(trust_schema)],
             run_dir,
             session_base,
             perf_args,
@@ -168,6 +175,7 @@ def run_one(args, probability, run_dir):
                 APP_PROVIDER,
                 [
                     "--provider-id", provider_id,
+                    "--trust-schema", str(trust_schema),
                     "--failure-probability", str(probability),
                     "--epoch-ms", str(args.epoch_ms),
                     "--reject-ms", str(args.reject_ms),
@@ -190,6 +198,7 @@ def run_one(args, probability, run_dir):
             "user",
             APP_USER,
             [
+                "--trust-schema", str(trust_schema),
                 "--rate-rps", str(args.rate_rps),
                 "--duration-ms", str(args.duration_s * 1000),
                 "--ack-timeout-ms", str(args.ack_timeout_ms),

@@ -56,30 +56,24 @@ NDNSF.
 
 ## 2. Installation
 
-The host installer is the top-level stack script. It currently targets the
-Ubuntu x86-64 system Boost 1.71 closure; it is not a generic installer for
-arbitrary distributions or SIF images. Before running it, install the global
-ONNX Runtime SDK (1.26+), ONNX full-protobuf headers and `libonnx.a` /
-`libonnx_proto.a`, and `libndnsf_tokenizer_bridge.a`. The script checks these
-prerequisites but does not build them. Dependency repositories are reused as-is
-or cloned at their default branch: this does not pin a reproducible source
-baseline or establish API compatibility merely from package version numbers.
-
-Use a Python virtual environment for the bindings, retaining access to the
-chosen interpreter; privileged C++ installation is handled separately:
+The host installer targets Ubuntu 20.04 and 26.04 x86-64 with the system Python.
+It checks installed dependencies and builds missing NDN libraries from the
+source lock, NFD from a fixed commit, and host SDKs from the SDK lock. Running a
+service also needs application-specific configuration:
 
 ```bash
-python3 -m venv .venv
 sudo -v
-./install_ndnsf_stack.sh --python "$PWD/.venv/bin/python" --jobs 4
+./install_ndnsf_stack.sh --python /usr/bin/python3 --jobs 2
+nfd-start
+nfdc status
 ```
 
 It installs the stack in dependency order:
 
 1. Install default build/runtime OS packages needed by the NDNSF stack.
 2. Check external dependencies with `pkg-config`.
-3. Clone, build, and install missing dependencies:
-   `ndn-cxx`, `NDNSD`, `ndn-svs`, `OpenABE`, and `NAC-ABE`.
+3. Build and install missing pinned dependencies:
+   `ndn-cxx`, `NFD`, `NDNSD`, `ndn-svs`, `OpenABE`, and `NAC-ABE`.
 4. Build the NDNSF-owned C++ core, Repo/DI modules, examples, and native tests
    with the repository `waf`; external dependencies build through their own
    upstream entrypoints.
@@ -91,33 +85,33 @@ It installs the stack in dependency order:
 The default OS package set is intended to build and run:
 
 ```text
-ndn-cxx, NDNSD, ndn-svs, OpenABE, NAC-ABE, and NDNSF
+ndn-cxx, NFD, NDNSD, ndn-svs, OpenABE, NAC-ABE, and NDNSF
 ```
 
 Additional optional package groups can be enabled when needed:
 
 ```bash
 # Extra packages commonly used by tests and documentation.
-sudo ./install_ndnsf_stack.sh --with-system-tests-deps
+./install_ndnsf_stack.sh --with-system-tests-deps
 
 # Extra packages commonly used by MiniNDN/Mininet experiments.
-sudo ./install_ndnsf_stack.sh --with-minindn-deps
+./install_ndnsf_stack.sh --with-minindn-deps
 
 # Extra packages commonly used when building NFD/NLSR from source.
-sudo ./install_ndnsf_stack.sh --with-nfd-nlsr-deps
+./install_ndnsf_stack.sh --with-nfd-nlsr-deps
 ```
 
 `apt-get install` is idempotent, so already installed packages are skipped by
 the package manager. Use `--no-system-packages` to skip apt entirely. The default
 packages include Protobuf and gtkmm, which the current Waf configuration
 requires even when optional NFD/NLSR package installation is not requested.
-`--jobs N` (or `NDNSF_BUILD_JOBS`) controls build parallelism, defaulting to four.
+`--jobs N` (or `NDNSF_BUILD_JOBS`) controls build parallelism, defaulting to two.
 
 By default, dependency source trees are reused or cloned under `dependencies/` next to `install_ndnsf_stack.sh`. The directory is created automatically if it does not
 exist. Use `--deps-dir` to choose a different source directory:
 
 ```bash
-sudo ./install_ndnsf_stack.sh --deps-dir ./dependencies
+./install_ndnsf_stack.sh --deps-dir ./dependencies
 ```
 
 If the dependencies are already installed and you only want to rebuild NDNSF:
