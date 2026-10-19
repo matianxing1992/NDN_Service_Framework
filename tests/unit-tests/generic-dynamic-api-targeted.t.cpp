@@ -1460,6 +1460,7 @@ BOOST_AUTO_TEST_CASE(ReplayedTargetedRuntimeRequestExecutesOnce)
                                                 requestId,
                                                 encoded);
 
+  face.processEvents(ndn::time::milliseconds(10));
   BOOST_CHECK_EQUAL(handlerCalls, 1);
 }
 

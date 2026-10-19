@@ -250,7 +250,7 @@ std::optional<uint64_t> controlNonceExpiry(const ndn::Name& controller,
         const auto suffix = name.getSubName(prefix.size());
         PolicyStatusName result;
         if (suffix.size() >= 3 &&
-            suffix[-3].toUri() == POLICY_STATUS_MARKER) {
+            suffix[-3] == ndn::name::Component(POLICY_STATUS_MARKER)) {
             const auto serviceSize = suffix.size() - 3;
             if (serviceSize == 0) {
                 return std::nullopt;
