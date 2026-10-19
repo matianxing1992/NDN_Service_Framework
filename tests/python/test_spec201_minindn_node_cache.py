@@ -54,13 +54,14 @@ def test_replica_children_use_their_node_transport_and_home(tmp_path, monkeypatc
                      children=[], owned=[], getPopen=get_popen)
     monkeypatch.setenv('HOME', '/launcher/home')
     monkeypatch.setenv('NDN_CLIENT_TRANSPORT', 'unix:///wrong/socket')
+    monkeypatch.setenv('LD_LIBRARY_PATH', '/launcher/old-sdk')
     exec(compile(ast.Module(body=[launch], type_ignores=[]), '<replica-launch>', 'exec'), namespace)
     try:
         for name in ['r1', 'r2', 'user']:
             namespace['launch'](SimpleNamespace(name=name), name, ['oracle'])
         for name, environment in captured:
             assert environment['NDN_CLIENT_TRANSPORT'] == 'unix:///run/nfd/' + name + '.sock'
-            assert environment['LD_LIBRARY_PATH'] == '/usr/local/lib'
+            assert environment['LD_LIBRARY_PATH'] == ''
             assert 'HOME' not in environment
     finally:
         for stream in streams:

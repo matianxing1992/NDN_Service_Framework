@@ -14,13 +14,16 @@ def configure(conf):
     conf.env.INCLUDES += [conf.path.find_dir('../../NDNSF-DistributedInference/cpp/vendor').abspath()]
     conf.check_cfg(package='libndn-service-framework libndn-cxx libndn-svs libnac-abe ndnsd',
                    args='--cflags --libs', uselib_store='NDNSF', mandatory=True)
+    conf.env.NDNSF_NAC_LIBDIR = conf.cmd_and_log(
+        ['/usr/bin/pkg-config', '--variable=libdir', 'libnac-abe']).strip()
     conf.check_cxx(header_name='nlohmann/json.hpp', mandatory=True)
 
 def build(bld):
     for role in ('consumer', 'producer'):
         bld.program(target='spec203-nsc-' + role, source='../NDN_NSC/' + role + '.cpp',
-                    use='NDNSF', lib=['pthread'], install_path='${BINDIR}', rpath=['/usr/local/lib'])
+                    use='NDNSF', lib=['pthread'], install_path='${BINDIR}',
+                    rpath=[bld.env.NDNSF_NAC_LIBDIR, '/usr/local/lib'])
     for role in ('requester', 'provider', 'probe'):
         bld.program(target='spec203-sim-' + role, source=role + '.cpp',
                     use='NDNSF', lib=['pthread'], install_path='${BINDIR}',
-                    rpath=['/usr/local/lib'])
+                    rpath=[bld.env.NDNSF_NAC_LIBDIR, '/usr/local/lib'])

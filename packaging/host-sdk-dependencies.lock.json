@@ -16,10 +16,11 @@
   },
   "tokenizerBridge": {
     "crate": "NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge",
-    "rustMinimum": "1.90",
+    "rustMinimum": "1.90.0",
     "rustBundleVersion": "1.90.0",
     "rustBundleUrl": "https://static.rust-lang.org/dist/rust-1.90.0-x86_64-unknown-linux-gnu.tar.xz",
     "rustBundleSha256": "bff8974f2d3ee6c0e6ac926b533f65bbdd3697d2c2b925bdae5f45b9eed10a67",
     "installPath": "/usr/local/lib/libndnsf_tokenizer_bridge.a"
-  }
+  },
+  "qualification": "Official ONNX Runtime release metadata, ONNX v1.17.0 git tag, and the repository tokenizer bridge Cargo.toml"
 }

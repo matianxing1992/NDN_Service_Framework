@@ -16,9 +16,11 @@ class FixedUavParticipantSelection final
 {
 public:
   FixedUavParticipantSelection(std::vector<ndn::Name> sourceProviders,
-                               ndn::Name computeProvider)
+                               ndn::Name computeProvider,
+                               ndn::Name calibrationProvider)
     : m_sourceProviders(std::move(sourceProviders))
     , m_computeProvider(std::move(computeProvider))
+    , m_calibrationProvider(std::move(calibrationProvider))
   {
   }
 
@@ -55,11 +57,13 @@ private:
     if (role == "Camera-UAV2") return m_sourceProviders[1];
     if (role == "Camera-UAV3") return m_sourceProviders[2];
     if (role == "Tracking-Compute") return m_computeProvider;
+    if (role == "Calibration-Provider") return m_calibrationProvider;
     return ndn::Name();
   }
 
   std::vector<ndn::Name> m_sourceProviders;
   ndn::Name m_computeProvider;
+  ndn::Name m_calibrationProvider;
 };
 
 ndn::Buffer textBuffer(const std::string& text)
@@ -73,7 +77,8 @@ ndn_service_framework::CollaborationPlan
 UavTrackingCoordinator::makePlan(const std::vector<ndn::Name>& sourceProviders,
                                  const ndn::Name& computeProvider,
                                  const ndn::Buffer& assignmentPayload,
-                                 int ackCollectionTimeMs, int timeoutMs)
+                                 int ackCollectionTimeMs, int timeoutMs,
+                                 ndn::Name calibrationProvider)
 {
   if (sourceProviders.size() != 3 || computeProvider.empty() ||
       ackCollectionTimeMs <= 0 || timeoutMs <= ackCollectionTimeMs) {
@@ -84,6 +89,10 @@ UavTrackingCoordinator::makePlan(const std::vector<ndn::Name>& sourceProviders,
     if (provider.empty() || provider == computeProvider || !uniqueSources.insert(provider).second) {
       throw std::invalid_argument("Spec191 requires three distinct source providers");
     }
+  }
+  if (!calibrationProvider.empty() &&
+      (calibrationProvider == computeProvider || uniqueSources.count(calibrationProvider) != 0)) {
+    throw std::invalid_argument("calibration provider must be distinct from source and compute providers");
   }
   ndn_service_framework::CollaborationPlan plan;
   plan.ackCollectionTimeMs = ackCollectionTimeMs;
@@ -108,25 +117,55 @@ UavTrackingCoordinator::makePlan(const std::vector<ndn::Name>& sourceProviders,
   compute.maxProviders = 1;
   compute.terminalResponseOwner = true;
   plan.roles.push_back(std::move(compute));
-  plan.keyScopes.push_back({"uav-tracking-input", {"Camera-UAV1", "Camera-UAV2", "Camera-UAV3", "Tracking-Compute"}});
+
+  if (!calibrationProvider.empty()) {
+    ndn_service_framework::CollaborationRoleSpec calibration;
+    calibration.role = "Calibration-Provider";
+    calibration.service = SERVICE_TRACKING_WINDOW;
+    calibration.appRequirement = textBuffer(
+      "role=calibration-provider;provider=" + calibrationProvider.toUri());
+    calibration.assignmentPayload = assignmentPayload;
+    calibration.minProviders = 1;
+    calibration.maxProviders = 1;
+    calibration.terminalResponseOwner = false;
+    plan.roles.push_back(std::move(calibration));
+  }
+
+  std::vector<std::string> inputRoles{
+    "Camera-UAV1", "Camera-UAV2", "Camera-UAV3", "Tracking-Compute"};
+  std::vector<std::string> observationRoles = inputRoles;
+  if (!calibrationProvider.empty()) {
+    observationRoles.push_back("Calibration-Provider");
+  }
+  plan.keyScopes.push_back({TRACKING_INPUT_KEY_SCOPE,
+                            inputRoles});
+  plan.keyScopes.push_back({"uav-tracking-observation", observationRoles});
   // The compute role publishes the encrypted, segmented recognition result
   // under its producer-owned name.  Keep this output key separate from the
   // input scope so only the role that emits the result receives the publish
   // capability for this invocation.
   plan.keyScopes.push_back({"uav-tracking-result", {"Tracking-Compute"}});
   plan.dependencies.push_back({{"Camera-UAV1", "Camera-UAV2", "Camera-UAV3"},
-                               {"Tracking-Compute"}, "uav-tracking-input",
+                               {"Tracking-Compute"}, TRACKING_INPUT_KEY_SCOPE,
                                ndn::Name("/example/uav/tracking"), true});
+  plan.dependencies.push_back({{"Camera-UAV1", "Camera-UAV2", "Camera-UAV3"},
+                               {"Tracking-Compute"}, "uav-tracking-observation",
+                               ndn::Name("/example/uav/observation"), true});
+  if (!calibrationProvider.empty()) {
+    plan.dependencies.push_back({{"Calibration-Provider"}, {"Tracking-Compute"},
+                                 "uav-tracking-observation",
+                                 ndn::Name("/example/uav/observation"), true});
+  }
   plan.sharedAssignmentMetadata = assignmentPayload;
   plan.participantSelector = std::make_shared<FixedUavParticipantSelection>(
-    sourceProviders, computeProvider);
+    sourceProviders, computeProvider, calibrationProvider);
   return plan;
 }
 
 bool
 UavTrackingCoordinator::hasRequiredParticipants(
   const std::vector<ndn_service_framework::SelectedParticipant>& selected,
-  std::string* reason)
+  std::string* reason, bool calibrationProviderRequired)
 {
   std::set<std::string> roles;
   std::set<ndn::Name> providers;
@@ -134,10 +173,13 @@ UavTrackingCoordinator::hasRequiredParticipants(
     roles.insert(participant.role);
     providers.insert(participant.provider);
   }
-  const std::set<std::string> expected{
+  std::set<std::string> expected{
     "Camera-UAV1", "Camera-UAV2", "Camera-UAV3", "Tracking-Compute"};
-  if (roles != expected || providers.size() != 4) {
-    if (reason) *reason = "selection must contain three camera roles and one compute role";
+  if (calibrationProviderRequired || roles.count("Calibration-Provider") != 0) {
+    expected.insert("Calibration-Provider");
+  }
+  if (roles != expected || providers.size() != expected.size()) {
+    if (reason) *reason = "selection must contain three camera roles, one compute role, and at most one calibration provider";
     return false;
   }
   return true;
@@ -159,7 +201,11 @@ UavTrackingCoordinator::begin(
     (const ndn_service_framework::CollaborationAckClosure& closure) mutable {
       const auto selected = plan.participantSelector->select(closure.candidates, plan.roles);
       std::string reason;
-      if (!hasRequiredParticipants(selected, &reason)) {
+      const bool calibrationProviderRequired = std::any_of(
+        plan.roles.begin(), plan.roles.end(), [] (const auto& role) {
+          return role.role == "Calibration-Provider";
+        });
+      if (!hasRequiredParticipants(selected, &reason, calibrationProviderRequired)) {
         if (callbacks.onFailure) callbacks.onFailure(reason);
         return;
       }

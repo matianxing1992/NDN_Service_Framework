@@ -30,6 +30,11 @@ inline const ndn::Name SERVICE_INCIDENT_ANALYZE("/UAV/Incident/Analyze");
 inline const ndn::Name SERVICE_TRACKING_SOURCE("/UAV/Tracking/SourceWindow");
 inline const ndn::Name SERVICE_TRACKING_COMPUTE("/UAV/Tracking/ComputeWindow");
 inline const ndn::Name SERVICE_TRACKING_WINDOW("/UAV/Tracking/Window");
+inline constexpr const char* TRACKING_INPUT_KEY_SCOPE = "uav-tracking-input";
+inline constexpr const char* TRACKING_CANCEL_SCHEMA = "uav-tracking-cancel-v1";
+inline const ndn::Name TRACKING_CANCEL_TOPIC("/UAV/Tracking/Cancel");
+inline constexpr const char* TRACKING_CANCEL_ACK_SCHEMA = "uav-tracking-cancel-ack-v1";
+inline const ndn::Name TRACKING_CANCEL_ACK_TOPIC("/UAV/Tracking/Cancel/Ack");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_LEASE("/UAV/GS/OperatorAuthority/Lease");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_REVOCATION("/UAV/GS/OperatorAuthority/Revocation");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_AUDIT("/UAV/GS/OperatorAuthority/Audit");
@@ -72,6 +77,25 @@ makeUavEvidenceName(const ndn::Name& producerIdentity,
                     const std::string& incidentId,
                     const std::string& evidenceId,
                     uint64_t version);
+
+ndn::Name
+makeUavObservationDataName(const ndn::Name& producerIdentity,
+                           const std::string& cameraId,
+                           uint64_t epoch, uint64_t sequence,
+                           const std::string& category, uint64_t version);
+
+ndn::Name
+makeUavCalibrationDataName(const ndn::Name& producerIdentity,
+                           const std::string& cameraId,
+                           uint64_t revision, uint64_t version);
+
+ndn::Name
+makeUavGroundDataName(const ndn::Name& producerIdentity,
+                      uint64_t revision, uint64_t version);
+
+ndn::Name
+makeUavClockDataName(const ndn::Name& producerIdentity,
+                     uint64_t revision, uint64_t version);
 
 ndn::Name
 makeUavReportName(const ndn::Name& producerIdentity,

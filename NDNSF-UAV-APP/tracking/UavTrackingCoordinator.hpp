@@ -25,12 +25,14 @@ public:
            const ndn::Name& computeProvider,
            const ndn::Buffer& assignmentPayload,
            int ackCollectionTimeMs = 1000,
-           int timeoutMs = 30000);
+           int timeoutMs = 30000,
+           ndn::Name calibrationProvider = ndn::Name());
 
   static bool
   hasRequiredParticipants(
     const std::vector<ndn_service_framework::SelectedParticipant>& selected,
-    std::string* reason = nullptr);
+    std::string* reason = nullptr,
+    bool calibrationProviderRequired = false);
 
   /**
    * Start the Core collaboration lifecycle. The callback is invoked only

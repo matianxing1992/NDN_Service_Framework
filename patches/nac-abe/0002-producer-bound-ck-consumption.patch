@@ -1,0 +1,263 @@
+--- a/src/consumer.hpp
++++ b/src/consumer.hpp
+@@ -64,8 +64,10 @@
+   /** Start deferred public-parameter fetching. Repeated calls are harmless. */
+   void start();
+ 
+-  /** Cancel all fetches and suppress their callbacks. Call on the Face thread;
+-   * destruction must follow this stop on the same serialized Face context. */
++  /** Cancel all fetches and suppress legacy consumption callbacks.
++   * Producer-bound operations still report their owned cancellation failure.
++   * Call on the Face thread; destruction must follow this stop on the same
++   * serialized Face context. */
+   void stop() noexcept;
+ 
+   /**
+@@ -85,7 +87,7 @@
+ 
+   /**
+    * Invalidate DKEY/CK/public-parameter material and cancel old consumptions.
+-   * Canceled operations invoke neither success nor error callbacks. Applications
++   * Legacy canceled operations invoke neither success nor error callbacks. Applications
+    * retain ownership of cancellation/timeout notification. Calling this from a
+    * consumption callback also cancels the remaining old-generation waiters.
+    * Invoke this and other Consumer methods on the owning Face's event thread.
+@@ -154,6 +156,23 @@
+    * @brief Set the maximum number of retries for fetching data packets.
+    * @param maxRetries The maximum number of retries.
+   */
++  /** Consume with producer-bound CK authorization on this Consumer's Face.
++   * Bypasses legacy CK caches and in-flight coalescing; reuses the current DKEY.
++   * authorizeCk runs only after ordinary trust validation for every CK segment.
++   * current must remain true through completion. Exactly one terminal callback
++   * is queued, including asynchronous cancellation after clearCache/stop.
++   * Delivery requires the Face executor to be serviced; executor destruction
++   * discards queued handlers. Callbacks must own their dependencies and may
++   * outlive this Consumer. No application callback runs inside stop/destruction.
++   */
++  void
++  consumeWithCkAuthorization(const Name& dataName, const Block& cipher,
++                             const Name& expectedProducer,
++                             const std::function<bool(const Data&)>& authorizeCk,
++                             const std::function<bool()>& current,
++                             const ConsumptionCallback& success,
++                             const ErrorCallback& failure);
++
+   void
+   setMaxRetries(int maxRetries);
+ 
+--- a/src/consumer.cpp
++++ b/src/consumer.cpp
+@@ -20,7 +20,11 @@
+ 
+ #include "consumer.hpp"
+ 
++#include <boost/asio/io_context.hpp>
+ #include <boost/asio/post.hpp>
++#include <boost/scope_exit.hpp>
++#include <ndn-cxx/util/scheduler.hpp>
++#include <limits>
+ #include "attribute-authority.hpp"
+ #include "algo/abe-support.hpp"
+ #include "ndn-crypto/data-enc-dec.hpp"
+@@ -355,6 +359,200 @@
+     return;
+   }
+   decryptContent(dataName, dataBlock, consumptionCb, errorCallback);
++}
++
++void
++Consumer::consumeWithCkAuthorization(const Name& dataName, const Block& content,
++                                     const Name& producer,
++                                     const std::function<bool(const Data&)>& authorize,
++                                     const std::function<bool()>& current,
++                                     const ConsumptionCallback& success,
++                                     const ErrorCallback& failure)
++{
++  // All state transitions run on the owning Face. No legacy CK cache or
++  // coalescing entry may satisfy this operation, even for an identical locator.
++  struct Operation : std::enable_shared_from_this<Operation> {
++    explicit Operation(boost::asio::io_context& context) : io(context), scheduler(context) {}
++    boost::asio::io_context& io;
++    ndn::Scheduler scheduler;
++    ndn::scheduler::EventId guard;
++    std::weak_ptr<SegmentFetcher> fetcher;
++    std::function<bool()> valid;
++    std::function<void()> retire;
++    ConsumptionCallback success;
++    ErrorCallback failure;
++    bool terminal = false;
++
++    void finish(const Buffer* result, const std::string& error)
++    {
++      if (terminal)
++        return;
++      terminal = true;
++      guard.cancel();
++      // Never stop/destroy a SegmentFetcher inside one of its own signals.
++      auto weakFetcher = fetcher;
++      boost::asio::post(io, [weakFetcher] {
++        if (auto f = weakFetcher.lock())
++          f->stop();
++      });
++      auto onSuccess = std::move(success);
++      auto onFailure = std::move(failure);
++      auto isCurrent = std::move(valid);
++      auto plain = result ? std::make_shared<Buffer>(*result) : nullptr;
++      retire();
++      // Registry release can run inside Consumer::stop()/destruction. Never
++      // invoke application code from the tracked-handle deleter or map clear.
++      // The owning terminal handler has no Consumer lifetime dependency.
++      boost::asio::post(io, [onSuccess, onFailure, isCurrent, plain, error] {
++        if (!plain) {
++          onFailure(error);
++          return;
++        }
++        bool accepted = false;
++        try { accepted = isCurrent(); } catch (...) {}
++        if (accepted)
++          onSuccess(*plain);
++        else
++          onFailure("Producer-bound CK operation canceled before delivery");
++      });
++    }
++
++    bool check()
++    {
++      if (terminal)
++        return false;
++      try {
++        if (valid())
++          return true;
++      }
++      catch (...) {
++      }
++      finish(nullptr, "Producer-bound CK operation canceled or invalidated");
++      return false;
++    }
++
++    void poll()
++    {
++      std::weak_ptr<Operation> weakSelf = shared_from_this();
++      guard = scheduler.schedule(ndn::time::milliseconds(20), [weakSelf] {
++        auto self = weakSelf.lock();
++        if (!self)
++          return;
++        // Scheduler uses its own state after this callback returns. Retain the
++        // operation until a later Face turn, including exception exits.
++        BOOST_SCOPE_EXIT_ALL(self) {
++          boost::asio::post(self->io, [self] {});
++        };
++        if (self->check())
++          self->poll();
++      });
++    }
++  };
++
++  const auto enabled = m_callbacksEnabled;
++  const auto generation = m_cacheGeneration;
++  auto op = std::make_shared<Operation>(m_face.getIoContext());
++  op->success = success;
++  op->failure = failure;
++  op->retire = [] {};
++  op->valid = [this, enabled, generation, current] {
++    // Test the owned lifetime token before dereferencing the Consumer.
++    return enabled->load(std::memory_order_acquire) &&
++           generation == m_cacheGeneration && !m_stopped && current && current();
++  };
++  if (!op->check())
++    return;
++  if (!authorize || producer.empty() || !readyForDecryption()) {
++    op->finish(nullptr, "Missing CK authorization, producer, public params or DKEY");
++    return;
++  }
++
++  try {
++    content.parse();
++    Name ckBase(content.get(tlv::Name));
++    // CK/<canonical uint32 decimal>/ENC-BY/<single generic policy component>.
++    if (!producer.isPrefixOf(ckBase) || ckBase.size() != producer.size() + 4 ||
++        ckBase[producer.size()] != name::Component("CK") ||
++        ckBase[producer.size() + 2] != name::Component("ENC-BY") ||
++        ckBase[producer.size() + 1].type() != tlv::GenericNameComponent ||
++        ckBase[-1].type() != tlv::GenericNameComponent || ckBase[-1].value_size() == 0)
++      throw std::runtime_error("CK locator is outside the authorized producer namespace");
++    const auto& idComponent = ckBase[producer.size() + 1];
++    std::string id(reinterpret_cast<const char*>(idComponent.value()), idComponent.value_size());
++    uint64_t numeric = 0;
++    if (id.empty() || id.size() > 10 || (id.size() > 1 && id[0] == '0'))
++      throw std::runtime_error("Noncanonical CK identifier");
++    for (const auto c : id) {
++      if (c < '0' || c > '9')
++        throw std::runtime_error("Nondecimal CK identifier");
++      numeric = numeric * 10 + static_cast<unsigned>(c - '0');
++    }
++    if (numeric > std::numeric_limits<uint32_t>::max())
++      throw std::runtime_error("CK identifier exceeds uint32");
++
++    auto cipher = std::make_shared<algo::CipherText>();
++    const auto encrypted = content.get(TLV_EncryptedContent);
++    cipher->m_content = Buffer(encrypted.value(), encrypted.value_size());
++    cipher->m_plainTextSize = readNonNegativeInteger(content.get(TLV_PlainTextSize));
++    Interest interest(ckBase);
++    interest.setCanBePrefix(true);
++    interest.setInterestLifetime(ndn::time::milliseconds(m_defaultTimeout));
++    SegmentFetcher::Options options;
++    options.probeLatestVersion = false;
++    auto fetcher = SegmentFetcher::start(m_face, interest, m_validator, options);
++    op->fetcher = fetcher;
++    // Reuse the Consumer's explicit fetch ownership without changing its ABI.
++    // The tracked handle owns this operation, but the operation holds only a
++    // weak original-fetcher pointer. stop() clearing the registry cancels the
++    // guard even when the Face loop stops; the owned terminal callback is
++    // queued for the next serviced Face turn, never invoked from map clear.
++    auto trackedFetcher = std::shared_ptr<SegmentFetcher>(fetcher.get(),
++      [fetcher, op](SegmentFetcher*) {
++        try { op->finish(nullptr, "Producer-bound CK owner stopped"); }
++        catch (...) { } // Shared-owner release must not throw.
++      });
++    const auto fetcherId = retainFetcher(std::move(trackedFetcher));
++    op->retire = [this, enabled, fetcherId] {
++      if (enabled->load(std::memory_order_acquire))
++        retireFetcher(fetcherId);
++    };
++    fetcher->afterSegmentValidated.connect([op, ckBase, authorize](const Data& data) {
++      if (!op->check())
++        return;
++      try {
++        const auto& n = data.getName();
++        if (n.size() != ckBase.size() + 1 || !ckBase.isPrefixOf(n) ||
++            !n[-1].isSegment() || n[-1] != name::Component::fromSegment(n[-1].toSegment()) ||
++            !authorize(data))
++          throw std::runtime_error("CK segment producer authorization failed");
++      }
++      catch (const std::exception& e) {
++        op->finish(nullptr, e.what());
++      }
++    });
++    fetcher->onError.connect([op](uint32_t, const std::string& message) {
++      op->finish(nullptr, "Producer-bound CK fetch failed: " + message);
++    });
++    fetcher->onComplete.connect([this, op, cipher, ckBase](ConstBufferPtr bytes) {
++      if (!op->check())
++        return;
++      try {
++        onCkeyData(ckBase, Block(bytes), cipher,
++          [op](const Buffer& result) {
++            if (op->check())
++              op->finish(&result, "");
++          },
++          [op](const std::string& error) { op->finish(nullptr, error); });
++      }
++      catch (const std::exception& e) {
++        op->finish(nullptr, e.what());
++      }
++    });
++    op->poll();
++  }
++  catch (const std::exception& e) {
++    op->finish(nullptr, e.what());
++  }
+ }
+ 
+ void

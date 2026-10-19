@@ -18,6 +18,11 @@ struct PublishedFrame
   /** Complete source bytes retained for the Core segmented publication call. */
   ndn::Buffer payload;
   std::vector<ndn::Buffer> segments;
+  /** Source-signed, exact-name sidecar binding geometry and pose to payload. */
+  ndn::Name observationName;
+  ndn::Buffer observationPayload;
+  std::string observationDigest;
+  std::vector<ObservationDataObject> observationObjects;
 };
 
 class UavTrackingEvidenceStore

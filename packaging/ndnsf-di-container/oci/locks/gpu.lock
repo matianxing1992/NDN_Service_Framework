@@ -31,7 +31,7 @@
     "python3-dev", "python3-pip", "python3-venv", "zlib1g"
   ],
   "sourceRepositories": {
-    "ndn-cxx": {"url": "https://github.com/matianxing1992/ndn-cxx.git", "revision": "8296fc9462c7ef9635b7c45468c067fd39514e31"},
+    "ndn-cxx": {"url": "https://github.com/matianxing1992/ndn-cxx.git", "revision": "1204b7528986bea82651f3fa9088c165667cd598"},
     "NFD": {"url": "https://github.com/matianxing1992/NFD.git", "revision": "2b43d675e3fba37b5362fab0001ba542bb07b43b"},
     "NDNSD": {"url": "https://github.com/matianxing1992/NDNSD.git", "revision": "25f7ad9d2f8848c10025e71358e3dafd62c348c0"},
     "ndn-svs": {"url": "https://github.com/matianxing1992/ndn-svs.git", "revision": "060811333de68b9674e45522222a14d4e047bf28"},

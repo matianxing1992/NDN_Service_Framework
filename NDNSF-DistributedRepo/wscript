@@ -86,7 +86,7 @@ def build(bld):
                 source=['src/RepoPacketServerMain.cpp'],
                 includes=['include', '..'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
-                rpath=[bld.bldnode.abspath()],
+                rpath=[bld.env.LIBDIR],
                 install_path='${BINDIR}')
     bld.program(name='DistributedRepoServer',
                 target='DistributedRepoServer',
@@ -122,8 +122,8 @@ def build(bld):
                 source=['examples/DistributedRepoExactPacketTest.cpp'],
                 includes=['include', '..'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
-                rpath=[bld.bldnode.abspath()],
-                install_path=None)
+                rpath=[bld.env.LIBDIR],
+                install_path='${BINDIR}' if bld.env.INSTALL_EXPERIMENT_FIXTURES else None)
 
     bld.program(name='DistributedRepoHaTest',
                 target='DistributedRepoHaTest',

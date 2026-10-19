@@ -160,6 +160,15 @@ void fetchHybridMessageKeyWrapper(
   std::function<void(const ndn::Name&, const ndn::Block&)> success,
   std::function<void(const std::string&)> failure);
 
+/** Producer-bound retrieval with an operation lifetime fence. Cancellation
+ * stops pending wrapper Interests and reports failure exactly once. */
+void fetchHybridMessageKeyWrapper(
+  ndn::Face& face, ndn::security::Validator& validator, const ndn::Name& expectedLocator,
+  std::function<bool(const ndn::Data&)> authorizeProducer,
+  std::function<void(const ndn::Name&, const ndn::Block&)> success,
+  std::function<void(const std::string&)> failure,
+  std::function<bool()> current);
+
 /** Apply the wrapper admission above, then existing NAC decryption on the Face. */
 void consumeHybridMessageKeyWrapper(
   ndn::Face& face, ndn::security::Validator& validator, ndn::nacabe::Consumer& consumer,

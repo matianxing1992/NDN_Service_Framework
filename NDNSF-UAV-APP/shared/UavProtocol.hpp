@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "UavDigest.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/Stream.hpp"
 

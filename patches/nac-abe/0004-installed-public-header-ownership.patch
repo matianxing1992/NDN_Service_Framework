@@ -1,0 +1,55 @@
+--- a/src/algo/public-params.hpp
++++ b/src/algo/public-params.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_ALGO_PUBLIC_PARAMS_HPP
+ #define NAC_ABE_ALGO_PUBLIC_PARAMS_HPP
+ 
+-#include "common.hpp"
++#include "../common.hpp"
+ 
+ namespace ndn {
+ namespace nacabe {
+--- a/src/algo/master-key.hpp
++++ b/src/algo/master-key.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_ALGO_MASTER_KEY_HPP
+ #define NAC_ABE_ALGO_MASTER_KEY_HPP
+ 
+-#include "common.hpp"
++#include "../common.hpp"
+ 
+ namespace ndn {
+ namespace nacabe {
+--- a/src/algo/private-key.hpp
++++ b/src/algo/private-key.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_ALGO_PRIVATE_KEY_HPP
+ #define NAC_ABE_ALGO_PRIVATE_KEY_HPP
+ 
+-#include "common.hpp"
++#include "../common.hpp"
+ 
+ namespace ndn {
+ namespace nacabe {
+--- a/src/algo/content-key.hpp
++++ b/src/algo/content-key.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_ALGO_CONTENT_KEY_HPP
+ #define NAC_ABE_ALGO_CONTENT_KEY_HPP
+ 
+-#include "common.hpp"
++#include "../common.hpp"
+ 
+ namespace ndn {
+ namespace nacabe {
+--- a/src/ndn-crypto/data-enc-dec.hpp
++++ b/src/ndn-crypto/data-enc-dec.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_DATA_ENC_DEC_HPP
+ #define NAC_DATA_ENC_DEC_HPP
+ 
+-#include "common.hpp"
++#include "../common.hpp"
+ 
+ namespace ndn {
+ namespace nacabe {

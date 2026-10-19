@@ -42,5 +42,5 @@ def test_candidate_cli_sets_installed_loader_before_validation(tmp_path, monkeyp
         '--blueprint', str(blueprint), '--candidate', str(candidate),
         '--sha256', 'fixture-digest'])
     namespace['main']()
-    assert observed == ([('freeze', '/usr/local/lib')] if operation == 'freeze' else []) + [
-        ('check', '/usr/local/lib')]
+    assert observed == ([('freeze', '')] if operation == 'freeze' else []) + [
+        ('check', '')]

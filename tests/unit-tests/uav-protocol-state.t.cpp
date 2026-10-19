@@ -192,6 +192,17 @@ makeMissionState(const std::string& phase)
 
 BOOST_AUTO_TEST_SUITE(UavProtocolState)
 
+BOOST_AUTO_TEST_CASE(Sha256TextUsesCanonicalLowercaseHex)
+{
+  const std::string uppercase(64, 'A');
+  const std::string lowercase(64, 'a');
+  BOOST_CHECK_EQUAL(ndnsf::examples::uav::canonicalSha256Hex(uppercase), lowercase);
+  BOOST_CHECK_EQUAL(ndnsf::examples::uav::canonicalSha256Digest(uppercase),
+                    "sha256:" + lowercase);
+  BOOST_CHECK_THROW(ndnsf::examples::uav::canonicalSha256Hex("not-a-digest"),
+                    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(UavVideoLegacyPipelineIsBoundedAndByteEquivalent)
 {
   LegacyPipeVideoPipeline pipeline(true);

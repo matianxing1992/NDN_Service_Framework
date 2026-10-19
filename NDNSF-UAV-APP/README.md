@@ -19,6 +19,103 @@ real three-window desktop criterion. The demo uses the pinned local videos and
 CPU model, sends frames and results through validated NDNSF Named Data, and
 does not claim tracking accuracy or real-flight readiness.
 
+### Spec210 metric observation and source adapters
+
+Spec210 adds source-time-aligned, per-camera vehicle speed, true-north course,
+and horizontal/slant range to that same runner. The default profile
+`configs/uav_observation_demo.json` supplies explicitly simulated local-frame
+camera geometry at 5 Hz; every result remains marked unvalidated, and the
+synthetic pose must not be presented as a flight measurement. The v1
+motion-fixture path remains explicit through `--motion-profile` or
+`--motion-fixture`.
+
+The default assumes all three drones hover: each `velocityWmps` is `(0,0,0)`
+with a fixed camera position and attitude. Future slow drift can use the same
+configuration field or actual poses supplied through the existing observation API.
+These assumptions do not describe the reference video's real flight; outputs
+remain `simulated / illustrative / unvalidated`. Existing motion and uncertainty
+gates apply, so stationary or insufficiently observed tracks show unknown course.
+
+Use `--observation-mode simulated` for the default demo, `replay` to change only
+the delivery schedule while retaining source timestamps, or `live-push` to
+feed bounded per-window pipes. With `source.kind=video-reference`, the live
+reference adapter decodes selected frames on demand using the video PTS; it
+does not pre-render JSONL event files. This exercises the push path but does
+not represent a real sensor. The worker writes each result as JSON and an
+adjacent `motion-measurements-<sequence>.csv` under
+`private/compute/worker/annotated/`; the CSV comes from the same frame-bound
+measurements and leaves unavailable values blank.
+
+The UI displays speed in km/h; JSON/CSV retain m/s. It labels the geometry and
+the approximate bounding-box ground contact (`anchorApproximation=true`).
+Simulation/replay age uses a backpressured logical playback clock, which pauses
+between verified input admissions; it does not measure wall-clock processing
+latency. The age uncertainty interval must lie entirely above 1000 ms to show
+`stale`, or entirely at/below 1000 ms to show `fresh`; otherwise it is unknown.
+The maintained runner scopes replay to the current profile/source generation,
+so a reused output directory cannot present a prior run as fresh.
+
+Measured live age stays unknown until a synchronized current-source clock is
+available. The installed `display_clock.ClockSample.parse` accepts `identity`,
+`clockBinding`, `currentTimeUs`, `uncertaintyUs`, `sampledAtSteadyUs`, `rate`
+(finite, 0–4), and `basis` (`source` for measured live input). Both timestamps
+must use the same mapped capture domain; `sampledAtSteadyUs` uses the renderer
+host's monotonic clock. Supply samples as `{cameraId: ClockSample}` through
+`ComputeRenderer(clock_provider=...)`, or attach the same sample record as
+`DisplayFrame.ageClock` in the local JSON API. Missing/failed clocks show
+unknown, while later valid samples can recover. Legacy v1 estimates are
+displayed explicitly as `legacy estimate / unqualified`.
+Legacy speeds require an explicit `(cameraId, globalId)` binding; old anonymous
+or duplicate estimates show unknown rather than borrowing another camera's value.
+
+To connect a real adapter, use an observation profile with
+`acquisitionKind: "measured"`, `source.kind: "external-fd"`, and
+`accuracyQualification: "unvalidated"`, then select `--observation-mode live-push`.
+Pass the adapter executable with `--external-source-adapter`. The runner starts
+one supervised adapter process per camera and waits for the exact stdout line
+`UAV_OBSERVATION_SOURCE_ADAPTER_READY` before starting camera nodes. Emit this
+marker after initialization but before opening a FIFO operation that may block.
+The runner creates one bounded FIFO per camera and window and does not launch
+the video-reference pusher. The adapter writes ordered `uav-source-event-v2`
+JSONL records to the supplied window FIFOs and honors pipe backpressure. It can emit the same calibration,
+ground, pose, and frame records through the Python
+`observation_source.write_event` API or native `StreamObservationSource`; the
+frame event carries the exact image bytes and capture-time binding. The source
+must supply real clock alignment, camera calibration, ENU pose/attitude, and
+ground geometry. Missing or invalid inputs keep detection available while
+setting affected metric fields to unknown. Until measured parameters and error
+budgets are qualified, output remains unvalidated.
+
+A producer can explicitly declare missing captures with `write_event(stream, "gap", payload)`
+or native `IObservationSink::submitGap(FrameGap)`. The closed payload contains
+`schema: "uav-frame-gap-v2"`, the full seven-field source `identity`, inclusive
+`firstSequence`/`lastSequence` (1..2^63-1), and `reason` (`CAPTURE_DROPPED` or
+`QUEUE_FULL`). Pass integers to the Python writer; its wire encoding uses decimal
+strings. A gap carries no image or fabricated timestamp. Surviving frames keep
+their original sequence and capture time. Native `frameGaps()` returns an owned
+snapshot of at most128 records and must be called on the source executor.
+A requested lost key fails explicitly with `FRAME_GAP`, logged as `SOURCE_FRAME_GAP`;
+this per-window demo can terminate rather than substitute another image. Queue
+rejection alone never declares a loss: replay producers retain and retry the
+same frame after backpressure. JSONL has no admission acknowledgement, so send
+a gap instead of a deliberately omitted frame; it cannot recover a frame event
+that already failed admission.
+
+To exercise a live generation cutover without restarting the distributed
+processes, repeat `--source-switch-after-window N`. `N` is the one-based count
+of completed windows; the next window receives new per-camera source IDs and
+the next source epoch. For example, `--window-count 5
+--source-switch-after-window 2` switches before `window-2`. The runner writes
+one `uav-source-generations-v1` manifest for the run. Source, compute, and
+GroundStation validate every request and result against that manifest, and the
+worker clears tracker and motion history at the cutover. An external adapter
+receives the manifest as `--source-generations PATH`. When a cutover is requested,
+it must load the manifest and include
+`generation-manifest-sha256=sha256:<64 lowercase hex digits>` in its
+`UAV_OBSERVATION_SOURCE_ADAPTER_READY` marker; without a cutover, the base READY
+marker is sufficient. This demonstrates generation isolation; it does not
+qualify physical sensor accuracy.
+
 The same entrypoint generates deterministic motion input when Spec191 is run:
 the Python fixture supplies per-camera GPS-like telemetry and canonical
 `groundSpeedMmps`, while the compute-side worker estimates vehicle speed from

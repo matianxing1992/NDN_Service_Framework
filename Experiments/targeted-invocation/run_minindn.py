@@ -57,7 +57,7 @@ def candidate_identity(policy=None, trust=None, tls=None, seed=None):
     library_hashes = {}
     for binary in binaries:
         closure = subprocess.check_output(['ldd', binary], text=True,
-                                         env=dict(os.environ, LD_LIBRARY_PATH='/usr/local/lib'))
+                                         env=dict(os.environ, LD_LIBRARY_PATH=''))
         if 'not found' in closure or str(REPO) in closure:
             raise RuntimeError('invalid installed closure')
         for word in closure.split():
@@ -496,7 +496,7 @@ def run_cell(args, parser):
     manifest['config_sha256'] = {path.name: digest(path) for path in [policy, trust]}
     manifest['inherited_ndnsf_environment'] = {key: value for key, value in os.environ.items()
                                               if key.startswith(('NDNSF_', 'NDN_'))}
-    loader_env = dict(os.environ, LD_LIBRARY_PATH='/usr/local/lib')
+    loader_env = dict(os.environ, LD_LIBRARY_PATH='')
     manifest['installed_closure'] = {}
     manifest['loaded_library_sha256'] = {}
     for binary in binaries:
@@ -531,7 +531,7 @@ def run_cell(args, parser):
         if args.actor_log_level is not None:
             log_config += ':ndn_svs.*=' + log_level
         env = {'NDN_LOG': log_config,
-               'LD_LIBRARY_PATH': '/usr/local/lib',
+               'LD_LIBRARY_PATH': '',
                'NDNSF_CONFIG': str(Path(node.params['params']['homeDir']) / 'ndnsf.conf')}
         if args.wired_rate_rps:
             # Size publication concurrency for the offered open-loop workload.

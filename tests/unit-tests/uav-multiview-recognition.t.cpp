@@ -5,7 +5,10 @@
 
 #include <ndn-cxx/util/sha256.hpp>
 
+#include <limits>
 #include <set>
+#include <utility>
+#include <vector>
 
 namespace ndn_service_framework::test {
 namespace {
@@ -157,6 +160,67 @@ BOOST_AUTO_TEST_CASE(ProviderOutputNamesAreContextBound)
   BOOST_CHECK(isUavProviderMultiViewDataName(provider, result, "RESULT", "mission", "job"));
   BOOST_CHECK(isUavProviderMultiViewDataName(provider, annotation, "ANNOTATION", "mission", "job"));
   BOOST_CHECK(!isUavProviderMultiViewDataName(ndn::Name("/other"), result, "RESULT", "mission", "job"));
+}
+
+BOOST_AUTO_TEST_CASE(ProviderOutputNamesKeepBinaryNumbersSeparateFromEndpointText)
+{
+  const ndn::Name provider("/provider/gpu");
+  std::vector<uint64_t> attempts;
+  for (uint64_t attempt = 1; attempt <= 100; ++attempt) attempts.push_back(attempt);
+  for (uint64_t attempt : {uint64_t(0x13a), uint64_t(0x3a00), uint64_t(65536),
+                           std::numeric_limits<uint64_t>::max()}) attempts.push_back(attempt);
+  for (const auto attempt : attempts) {
+    for (uint64_t version : {uint64_t(1), uint64_t(58)}) {
+      const auto result = makeUavMultiViewResultName(provider, "mission", "job", attempt, version);
+      const auto annotation = makeUavMultiViewAnnotationName(
+        provider, "mission", "job", attempt, "view-1", version);
+      BOOST_CHECK(isUavProviderMultiViewDataName(provider, result, "RESULT", "mission", "job"));
+      BOOST_CHECK(isUavProviderMultiViewDataName(provider, annotation, "ANNOTATION", "mission", "job"));
+    }
+  }
+  const ndn::Name binaryColon("/provider/gpu/UAV/MULTIVIEW/MISSION/mission/JOB/job/RESULT/%3A/v=1");
+  BOOST_CHECK(binaryColon == makeUavMultiViewResultName(provider, "mission", "job", 58, 1));
+  BOOST_CHECK(isUavProviderMultiViewDataName(provider, binaryColon, "RESULT", "mission", "job"));
+
+  for (const auto& kind : {std::string("RESULT"), std::string("ANNOTATION")}) {
+    const auto valid = kind == "RESULT" ?
+      makeUavMultiViewResultName(provider, "mission", "job", 58, 1) :
+      makeUavMultiViewAnnotationName(provider, "mission", "job", 58, "view-1", 1);
+    for (const auto& invalid : {ndn::name::Component("not-number"),
+                               ndn::name::Component("%00%01%02"),
+                               ndn::name::Component("%00%3A"),
+                               ndn::name::Component::fromNumber(0),
+                               ndn::name::Component::fromSequenceNumber(58),
+                               ndn::name::Component("http%3A%2F%2F127.0.0.1")}) {
+      auto changed = valid.getPrefix(-2);
+      changed.append(invalid).append(valid[-1]);
+      BOOST_CHECK(!isUavProviderMultiViewDataName(provider, changed, kind, "mission", "job"));
+    }
+    for (const auto& invalid : {ndn::name::Component::fromVersion(0),
+                               ndn::name::Component::fromNumber(1),
+                               ndn::name::Component(std::to_string(ndn::tlv::VersionNameComponent) + "=%00%01"),
+                               ndn::name::Component(std::to_string(ndn::tlv::VersionNameComponent) + "=%00%01%02"),
+                               ndn::name::Component("not-version")}) {
+      auto changed = valid.getPrefix(-1);
+      changed.append(invalid);
+      BOOST_CHECK(!isUavProviderMultiViewDataName(provider, changed, kind, "mission", "job"));
+    }
+    BOOST_CHECK(!isUavProviderMultiViewDataName(provider, provider, kind, "mission", "job"));
+    for (const auto& ids : {std::pair<std::string, std::string>("socket", "job"),
+                            std::pair<std::string, std::string>("mission", "socket")}) {
+      const auto named = kind == "RESULT" ?
+        makeUavMultiViewResultName(provider, ids.first, ids.second, 58, 1) :
+        makeUavMultiViewAnnotationName(provider, ids.first, ids.second, 58, "view-1", 1);
+      BOOST_CHECK(!isUavProviderMultiViewDataName(provider, named, kind, ids.first, ids.second));
+    }
+    const ndn::Name endpointProvider("/provider/socket");
+    const auto endpointName = kind == "RESULT" ?
+      makeUavMultiViewResultName(endpointProvider, "mission", "job", 58, 1) :
+      makeUavMultiViewAnnotationName(endpointProvider, "mission", "job", 58, "view-1", 1);
+    BOOST_CHECK(!isUavProviderMultiViewDataName(endpointProvider, endpointName, kind, "mission", "job"));
+  }
+  const auto endpointView = makeUavMultiViewAnnotationName(provider, "mission", "job", 58, "socket", 1);
+  BOOST_CHECK(!isUavProviderMultiViewDataName(provider, endpointView, "ANNOTATION", "mission", "job"));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "upstreamCommit": "5ed23e68520fb9c4ef747c51d6d18c915ff88fc4",
+  "patches": [
+    {
+      "file": "0001-consumer-producer-lifecycle.patch",
+      "sha256": "ddb537bd60542648a1781e65d01e3fc0976fd1358ccb0355fcfc3f997e9006ff"
+    },
+    {
+      "file": "0002-producer-bound-ck-consumption.patch",
+      "sha256": "0984543ccf4510d9ece51108fe75c0bc1ecf8caaa4f39b88a3e72acb247da87b"
+    },
+    {
+      "file": "0003-producer-bound-ck-tests.patch",
+      "sha256": "2025225225f6f16e356da03e318fa02b78bdee510a70185852c93353ddef8703"
+    },
+    {
+      "file": "0004-installed-public-header-ownership.patch",
+      "sha256": "ac60f52def0e8401c5e0e229918ae099a4a08418dc8c6a112cb8a8299c968f65"
+    },
+    {
+      "file": "0005-kp-ck-attribute-wire-encoding.patch",
+      "sha256": "52e3d2e2a7f47dd13fd9c5e349cc290ec6f9c1eacbee6aeb30ce195222a74865"
+    }
+  ]
+}

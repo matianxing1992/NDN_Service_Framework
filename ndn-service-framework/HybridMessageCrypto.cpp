@@ -3,6 +3,10 @@
 #include "ProducerDataNaming.hpp"
 #include <ndn-cxx/util/segmenter.hpp>
 #include <ndn-cxx/util/segment-fetcher.hpp>
+#include <ndn-cxx/util/scheduler.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/scope_exit.hpp>
 #include <nac-abe/consumer.hpp>
 
 #include <iomanip>
@@ -526,7 +530,39 @@ fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validato
   std::function<void(const ndn::Name&, const ndn::Block&)> success,
   std::function<void(const std::string&)> failure)
 {
-    struct State {
+    fetchHybridMessageKeyWrapper(face, validator, locator, std::move(authorizeProducer),
+      std::move(success), std::move(failure), {});
+}
+
+void
+fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validator,
+  const ndn::Name& locator,
+  std::function<bool(const ndn::Data&)> authorizeProducer,
+  std::function<void(const ndn::Name&, const ndn::Block&)> success,
+  std::function<void(const std::string&)> failure,
+  std::function<bool()> current)
+{
+    struct State : std::enable_shared_from_this<State> {
+        boost::asio::io_context* io = nullptr;
+        std::unique_ptr<ndn::Scheduler> scheduler;
+        ndn::scheduler::EventId guard;
+        std::function<bool()> current;
+        std::function<void(const std::string&)> reject;
+        void poll() {
+            std::weak_ptr<State> weakSelf = shared_from_this();
+            guard = scheduler->schedule(ndn::time::milliseconds(20), [weakSelf] {
+                auto self = weakSelf.lock();
+                if (!self) return;
+                BOOST_SCOPE_EXIT_ALL(self) {
+                    boost::asio::post(*self->io, [self] {});
+                };
+                if (self->done) return;
+                bool valid = false;
+                try { valid = self->current(); } catch (...) {}
+                if (!valid) self->reject("hybrid key wrapper operation canceled");
+                else self->poll();
+            });
+        }
         bool done = false;
         ndn::Name object;
         ndn::name::Component commitment;
@@ -535,6 +571,16 @@ fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validato
         std::size_t bytes = 0;
         std::weak_ptr<ndn::SegmentFetcher> fetcher;
     };
+    if (current) {
+        bool valid = false;
+        try { valid = current(); } catch (...) {}
+        if (!valid) {
+            boost::asio::post(face.getIoContext(), [failure] {
+                if (failure) failure("hybrid key wrapper operation canceled");
+            });
+            return;
+        }
+    }
     checkNamingNameSize(locator);
     auto state = std::make_shared<State>();
     ndn::Interest interest(locator);
@@ -545,19 +591,39 @@ fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validato
     options.flowControlWindow = 16;
     auto fetcher = ndn::SegmentFetcher::start(face, interest, validator, options);
     state->fetcher = fetcher;
-    const auto reject = [state, failure, &face](const std::string& reason) {
-        if (state->done) return;
-        state->done = true;
-        if (auto owner = state->fetcher.lock()) owner->stop();
-        // stop posts its self release. This acknowledgement runs after that
-        // release, so any Interests created by the remainder of the installed
-        // fetcher's current signal stack are cancelled by destruction first.
-        boost::asio::post(face.getIoContext(), [state, failure, reason] {
-            if (failure) failure(reason);
+    std::weak_ptr<State> weakState = state;
+    state->reject = [weakState, failure, &face](const std::string& reason) {
+        auto active = weakState.lock();
+        if (!active || active->done) return;
+        active->done = true;
+        active->guard.cancel();
+        auto weakFetcher = active->fetcher;
+        // Leave the emitting signal before stopping it. Acknowledge after the
+        // fetcher's posted self-release has canceled any remaining Interests.
+        boost::asio::post(face.getIoContext(), [weakFetcher, failure, reason, &face] {
+            if (auto f = weakFetcher.lock()) f->stop();
+            boost::asio::post(face.getIoContext(), [failure, reason] {
+                if (failure) failure(reason);
+            });
         });
     };
+    const auto reject = [state](const std::string& reason) { state->reject(reason); };
+    if (current) {
+        state->current = std::move(current);
+        state->io = &face.getIoContext();
+        state->scheduler = std::make_unique<ndn::Scheduler>(*state->io);
+        bool valid = false;
+        try { valid = state->current(); } catch (...) {}
+        if (!valid) { state->reject("hybrid key wrapper operation canceled"); return; }
+        state->poll();
+    }
     fetcher->afterSegmentValidated.connect([state, locator, authorizeProducer, reject](const ndn::Data& packet) {
         if (state->done) return;
+        if (state->current) {
+            bool valid = false;
+            try { valid = state->current(); } catch (...) {}
+            if (!valid) { state->reject("hybrid key wrapper operation canceled"); return; }
+        }
         bool authorized = false;
         try { authorized = authorizeProducer && authorizeProducer(packet); }
         catch (const std::exception&) { }
@@ -600,6 +666,11 @@ fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validato
     });
     fetcher->onComplete.connect([state, success, reject](ndn::ConstBufferPtr cipher) {
         if (state->done) return;
+        if (state->current) {
+            bool valid = false;
+            try { valid = state->current(); } catch (...) {}
+            if (!valid) { state->reject("hybrid key wrapper operation canceled"); return; }
+        }
         std::optional<ndn::Block> block;
         try {
             if (!cipher || cipher->empty() || cipher->size() > 65536 || state->object.empty() ||
@@ -615,6 +686,7 @@ fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validato
         }
         catch (const std::exception&) { reject("hybrid key wrapper is not a valid NAC Block"); return; }
         state->done = true;
+        state->guard.cancel();
         if (success) success(state->object, *block);
     });
     fetcher->onError.connect([reject](uint32_t, const std::string& reason) {

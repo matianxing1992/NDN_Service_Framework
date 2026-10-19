@@ -1,0 +1,727 @@
+diff --git a/src/consumer.cpp b/src/consumer.cpp
+index a9a25df..0ba2756 100644
+--- a/src/consumer.cpp
++++ b/src/consumer.cpp
+@@ -19,6 +19,8 @@
+  */
+ 
+ #include "consumer.hpp"
++
++#include <boost/asio/post.hpp>
+ #include "attribute-authority.hpp"
+ #include "algo/abe-support.hpp"
+ #include "ndn-crypto/data-enc-dec.hpp"
+@@ -43,6 +45,17 @@ Consumer::Consumer(Face& face, KeyChain& keyChain,
+                    const security::Certificate& identityCert,
+                    const security::Certificate& attrAuthorityCertificate,
+                    Interest publicParamInterestTemplate)
++  : Consumer(face, keyChain, validator, identityCert, attrAuthorityCertificate,
++             std::move(publicParamInterestTemplate), true)
++{
++}
++
++Consumer::Consumer(Face& face, KeyChain& keyChain,
++                   security::Validator& validator,
++                   const security::Certificate& identityCert,
++                   const security::Certificate& attrAuthorityCertificate,
++                   Interest publicParamInterestTemplate,
++                   bool startImmediately)
+   : m_cert(identityCert)
+   , m_face(face)
+   , m_keyChain(keyChain)
+@@ -51,12 +64,88 @@ Consumer::Consumer(Face& face, KeyChain& keyChain,
+   , m_paramFetcher(m_face, m_validator, m_attrAuthorityPrefix, m_trustConfig, publicParamInterestTemplate)
+ {
+   m_trustConfig.addOrUpdateCertificate(attrAuthorityCertificate);
+-  m_paramFetcher.fetchPublicParams();
++  if (startImmediately)
++    start();
++}
++
++Consumer::~Consumer()
++{
++  stop();
++}
++
++void
++Consumer::start()
++{
++  if (m_stopped)
++    NDN_THROW(std::logic_error("Consumer cannot be restarted after stop"));
++  if (m_started)
++    return;
++  m_started = true;
++  try {
++    m_paramFetcher.fetchPublicParams();
++  }
++  catch (...) {
++    m_started = false;
++    throw;
++  }
++}
++
++void
++Consumer::stop() noexcept
++{
++  if (m_stopped)
++    return;
++  m_stopped = true;
++  m_callbacksEnabled->store(false, std::memory_order_release);
++  ++m_cacheGeneration;
++  ++m_dkeyGeneration;
++  m_dkeyFetchInFlight = false;
++  m_dkeyFetchPending = false;
++  m_pendingCallbacks.clear();
++  m_ckInterestsSent.clear();
++  m_paramFetcher.stop();
++  for (auto& item : m_segmentFetchers) {
++    if (item.second)
++      item.second->stop();
++  }
++  m_segmentFetchers.clear();
++  for (auto& item : m_ckEncAesCache)
++    std::fill(item.second.begin(), item.second.end(), 0);
++  m_ckEncAesCache.clear();
++  std::fill(m_keyCache.m_prv.begin(), m_keyCache.m_prv.end(), '\0');
++  m_keyCache.m_prv.clear();
++}
++
++uint64_t
++Consumer::retainFetcher(std::shared_ptr<SegmentFetcher> fetcher)
++{
++  const auto id = ++m_nextFetcherId;
++  m_segmentFetchers.emplace(id, std::move(fetcher));
++  return id;
++}
++
++void
++Consumer::retireFetcher(uint64_t id) noexcept
++{
++  const auto callbacksEnabled = m_callbacksEnabled;
++  try {
++    boost::asio::post(m_face.getIoContext(), [this, callbacksEnabled, id] {
++      if (!callbacksEnabled->load(std::memory_order_acquire))
++        return;
++      m_segmentFetchers.erase(id);
++    });
++  }
++  catch (...) {
++    // Retaining a completed fetcher until stop is safe; destroying it from
++    // its own signal callback could invalidate the emitter while it is active.
++  }
+ }
+ 
+ void
+ Consumer::obtainDecryptionKey()
+ {
++  if (m_stopped)
++    return;
+   if (m_dkeyFetchInFlight) {
+     m_dkeyFetchPending = true;
+     NDN_LOG_DEBUG(m_cert.getIdentity()
+@@ -91,7 +180,12 @@ Consumer::obtainDecryptionKey()
+   fetcher->afterSegmentValidated.connect([](Data seg) {
+     NDN_LOG_DEBUG("Validated " << seg.getName());
+   });
+-  fetcher->onComplete.connect([this, generation] (ConstBufferPtr contentBuffer) {
++  const auto fetcherId = retainFetcher(fetcher);
++  const auto callbacksEnabled = m_callbacksEnabled;
++  fetcher->onComplete.connect([this, callbacksEnabled, fetcherId, generation] (ConstBufferPtr contentBuffer) {
++    if (!callbacksEnabled->load(std::memory_order_acquire))
++      return;
++    retireFetcher(fetcherId);
+     const bool generationChanged = generation != m_dkeyGeneration;
+     if (generationChanged) {
+       NDN_LOG_WARN("Ignoring stale DKEY fetch after cache invalidation");
+@@ -120,8 +214,11 @@ Consumer::obtainDecryptionKey()
+     if (followUp)
+       obtainDecryptionKey();
+   });
+-  fetcher->onError.connect([this, generation] (uint32_t errorCode,
+-                                                const std::string& errorMsg) {
++  fetcher->onError.connect([this, callbacksEnabled, fetcherId, generation] (uint32_t errorCode,
++                                                                            const std::string& errorMsg) {
++    if (!callbacksEnabled->load(std::memory_order_acquire))
++      return;
++    retireFetcher(fetcherId);
+     NDN_LOG_ERROR("Error occurs in segment fetching: " << errorMsg);
+     const bool followUp = generation != m_dkeyGeneration && m_dkeyFetchPending;
+     m_dkeyFetchInFlight = false;
+@@ -134,6 +231,8 @@ Consumer::obtainDecryptionKey()
+ void
+ Consumer::refreshDecryptionKey()
+ {
++  if (m_stopped)
++    return;
+   // A grant-only policy replacement keeps the ABE pair unchanged, so the
+   // ordinary cache generation cannot fence an older DKEY fetch.  Advance a
+   // DKEY-only generation and let obtainDecryptionKey() coalesce with any
+@@ -163,6 +262,8 @@ Consumer::clearCache(const Name& expectedPublicParamsName,
+ bool
+ Consumer::readyForDecryption()
+ {
++  if (m_stopped)
++    return false;
+   // check if public params and private key are ready
+   if (m_paramFetcher.getPublicParams().m_pub == "") {
+     NDN_LOG_INFO("Public parameters doesn't exist");
+@@ -192,6 +293,10 @@ Consumer::consume(const Interest& dataInterest,
+                   const ConsumptionCallback& consumptionCb,
+                   const ErrorCallback& errorCallback)
+ {
++  if (m_stopped) {
++    errorCallback("Consumer is stopped");
++    return;
++  }
+   // ready for decryption
+   if (!readyForDecryption()) {
+     errorCallback("Public params or private decryption key doesn't exist");
+@@ -204,10 +309,16 @@ Consumer::consume(const Interest& dataInterest,
+   fetchOptions.probeLatestVersion = false; // Disable MustBeFresh flag
+   const auto generation = m_cacheGeneration;
+   auto fetcher = SegmentFetcher::start(m_face, dataInterest, m_validator, fetchOptions);
++  const auto fetcherId = retainFetcher(fetcher);
++  const auto callbacksEnabled = m_callbacksEnabled;
+   fetcher->afterSegmentValidated.connect([](Data seg) {
+     NDN_LOG_DEBUG("Validated " << seg.getName());
+   });
+-  fetcher->onComplete.connect([=](ConstBufferPtr contentBuffer) {
++  fetcher->onComplete.connect([this, callbacksEnabled, fetcherId, generation, dataInterest,
++                               consumptionCb, errorCallback](ConstBufferPtr contentBuffer) {
++    if (!callbacksEnabled->load(std::memory_order_acquire))
++      return;
++    retireFetcher(fetcherId);
+     if (generation != m_cacheGeneration) {
+       NDN_LOG_WARN("Ignoring stale content fetch after cache invalidation");
+       return;
+@@ -217,7 +328,11 @@ Consumer::consume(const Interest& dataInterest,
+     NDN_LOG_DEBUG("SegmentFetcher completed with total fetched size of " << contentBuffer->size() << " baseName=" << baseName);
+     decryptContent(baseName, Block(contentBuffer), consumptionCb, errorCallback);
+   });
+-  fetcher->onError.connect([=](uint32_t errorCode, const std::string& errorMsg) {
++  fetcher->onError.connect([this, callbacksEnabled, fetcherId, generation,
++                            errorCallback](uint32_t errorCode, const std::string& errorMsg) {
++    if (!callbacksEnabled->load(std::memory_order_acquire))
++      return;
++    retireFetcher(fetcherId);
+     if (generation != m_cacheGeneration)
+       return;
+     NDN_LOG_ERROR("Data fetch error: " << errorMsg);
+@@ -231,6 +346,10 @@ Consumer::consume(const Name &dataName,
+                   const ConsumptionCallback &consumptionCb,
+                   const ErrorCallback &errorCallback)
+ {
++  if (m_stopped) {
++    errorCallback("Consumer is stopped");
++    return;
++  }
+   if (!readyForDecryption()) {
+     errorCallback("Public params or private decryption key doesn't exist");
+     return;
+@@ -310,10 +429,16 @@ Consumer::decryptContent(const Name& dataObjName,
+   ckOptions.probeLatestVersion = false; // Disable MustBeFresh flag
+   const auto generation = m_cacheGeneration;
+   auto ckFetcher = SegmentFetcher::start(m_face, ckInterest, m_validator, ckOptions);
++  const auto fetcherId = retainFetcher(ckFetcher);
++  const auto callbacksEnabled = m_callbacksEnabled;
+   ckFetcher->afterSegmentValidated.connect([](Data seg) {
+     NDN_LOG_DEBUG("Validated CK seg " << seg.getName());
+   });
+-  ckFetcher->onComplete.connect([=](ConstBufferPtr contentBuffer) {
++  ckFetcher->onComplete.connect([this, callbacksEnabled, fetcherId, generation, ckKey,
++                                 errorCallback, successCallBack](ConstBufferPtr contentBuffer) {
++    if (!callbacksEnabled->load(std::memory_order_acquire))
++      return;
++    retireFetcher(fetcherId);
+     if (generation != m_cacheGeneration) {
+       NDN_LOG_WARN("Ignoring stale CK fetch after cache invalidation");
+       return;
+@@ -344,7 +469,11 @@ Consumer::decryptContent(const Name& dataObjName,
+       }
+     }
+   });
+-  ckFetcher->onError.connect([=](uint32_t errorCode, const std::string& errorMsg) {
++  ckFetcher->onError.connect([this, callbacksEnabled, fetcherId, generation, ckKey]
++                             (uint32_t errorCode, const std::string& errorMsg) {
++    if (!callbacksEnabled->load(std::memory_order_acquire))
++      return;
++    retireFetcher(fetcherId);
+     if (generation != m_cacheGeneration)
+       return;
+     NDN_LOG_ERROR("CK fetch error: " << errorMsg);
+@@ -398,36 +527,5 @@ Consumer::onCkeyData(const Name& ckObjName, const Block& content,
+   }
+ }
+ 
+-void
+-Consumer::handleNack(const Interest& interest, const lp::Nack& nack,
+-                     const ErrorCallback& errorCallback, std::string message)
+-{
+-  std::stringstream nackMessage;
+-  nackMessage << message << nack.getReason();
+-  errorCallback(nackMessage.str());
+-}
+-
+-void
+-Consumer::handleTimeout(const Interest& interest, int nRetrials,
+-                        const DataCallback& dataCallback, const ErrorCallback& errorCallback,
+-                        std::string nackMessage, std::string timeoutMessage)
+-{
+-  if (nRetrials > 0) {
+-    NDN_LOG_INFO("Timeout for: " << interest << ", retrying");
+-    Interest interestRetry(interest);
+-    int factor = static_cast<int>(std::pow(2, m_maxRetries + 1 - nRetrials));
+-    interestRetry.setCanBePrefix(true);
+-    interestRetry.setInterestLifetime(ndn::time::milliseconds(m_defaultTimeout*factor));
+-    interestRetry.refreshNonce();
+-    m_face.expressInterest(interestRetry, dataCallback,
+-                           std::bind(&Consumer::handleNack, this, _1, _2, errorCallback, nackMessage),
+-                           std::bind(&Consumer::handleTimeout, this, _1, nRetrials - 1,
+-                                     dataCallback, errorCallback, nackMessage, timeoutMessage));
+-  }
+-  else {
+-    errorCallback(timeoutMessage);
+-  }
+-}
+-
+ } // namespace nacabe
+ } // namespace ndn
+diff --git a/src/consumer.hpp b/src/consumer.hpp
+index a40a304..cfeb77d 100644
+--- a/src/consumer.hpp
++++ b/src/consumer.hpp
+@@ -28,6 +28,11 @@
+ #include "algo/cipher-text.hpp"
+ #include "param-fetcher.hpp"
+ 
++#include <atomic>
++#include <map>
++#include <memory>
++#include <ndn-cxx/util/segment-fetcher.hpp>
++
+ namespace ndn {
+ namespace nacabe {
+ 
+@@ -45,6 +50,24 @@ public:
+            const security::Certificate& attrAuthorityCertificate,
+            Interest publicParamInterestTemplate = ParamFetcher::getDefaultInterestTemplate());
+ 
++  /** Deferred-bootstrap overload for owners that must finish construction
++   * before any public-parameter Interest can be expressed. */
++  Consumer(Face& face, KeyChain& keyChain,
++           security::Validator& validator,
++           const security::Certificate& identityCert,
++           const security::Certificate& attrAuthorityCertificate,
++           Interest publicParamInterestTemplate,
++           bool startImmediately);
++
++  ~Consumer();
++
++  /** Start deferred public-parameter fetching. Repeated calls are harmless. */
++  void start();
++
++  /** Cancel all fetches and suppress their callbacks. Call on the Face thread;
++   * destruction must follow this stop on the same serialized Face context. */
++  void stop() noexcept;
++
+   /**
+    * @brief Obtain attributes (DKEY) from the attribute authority.
+    *
+@@ -155,16 +178,10 @@ private:
+              const ConsumptionCallback& successCallBack,
+              const ErrorCallback& errorCallback);
+ 
+-  void
+-  handleNack(const Interest& interest, const lp::Nack& nack,
+-             const ErrorCallback& errorCallback, std::string message);
+-
+-  void
+-  handleTimeout(const Interest& interest, int nRetrials,
+-                const DataCallback& dataCallback, const ErrorCallback& errorCallback,
+-                std::string nackMessage, std::string timeoutMessage);
+-
+ private:
++  uint64_t retainFetcher(std::shared_ptr<SegmentFetcher> fetcher);
++  void retireFetcher(uint64_t id) noexcept;
++
+   security::Certificate m_cert;
+   Face& m_face;
+   KeyChain& m_keyChain;
+@@ -193,6 +210,13 @@ private:
+   bool m_dkeyFetchInFlight = false;
+   bool m_dkeyFetchPending = false;
+ 
++  std::shared_ptr<std::atomic_bool> m_callbacksEnabled =
++    std::make_shared<std::atomic_bool>(true);
++  std::map<uint64_t, std::shared_ptr<SegmentFetcher>> m_segmentFetchers;
++  uint64_t m_nextFetcherId = 0;
++  bool m_started = false;
++  bool m_stopped = false;
++
+   int m_maxRetries = 3;
+   int m_defaultTimeout = 200;
+ 
+diff --git a/src/param-fetcher.cpp b/src/param-fetcher.cpp
+index 54e4ef9..f82b213 100644
+--- a/src/param-fetcher.cpp
++++ b/src/param-fetcher.cpp
+@@ -39,6 +39,11 @@ ParamFetcher::ParamFetcher(Face& face, security::Validator& validator,
+ {
+ }
+ 
++ParamFetcher::~ParamFetcher()
++{
++  stop();
++}
++
+ void
+ ParamFetcher::fetchPublicParams()
+ {
+@@ -49,17 +54,33 @@ void
+ ParamFetcher::fetchPublicParams(const Name& expectedDataName,
+                                 const std::string& expectedDigest)
+ {
++  if (m_stopped)
++    return;
+   m_expectedDataName = expectedDataName;
+   m_expectedDigest = expectedDigest;
+   m_retryCount = 0;
+   fetchPublicParamsForGeneration(++m_fetchGeneration);
+ }
+ 
++void
++ParamFetcher::stop() noexcept
++{
++  if (m_stopped)
++    return;
++  m_stopped = true;
++  m_callbacksEnabled->store(false, std::memory_order_release);
++  ++m_fetchGeneration;
++  m_retryCount = 0;
++  m_pendingInterest.cancel();
++}
++
+ void
+ ParamFetcher::fetchPublicParamsForGeneration(uint64_t generation)
+ {
+   if (generation != m_fetchGeneration)
+     return;
++  if (m_stopped)
++    return;
+ 
+   if (m_retryCount >= MAX_RETRIES) {
+     throw std::runtime_error("Failed to fetch public parameters after multiple attempts.");
+@@ -87,21 +108,31 @@ ParamFetcher::fetchPublicParamsForGeneration(uint64_t generation)
+ 
+   NDN_LOG_INFO("Request public parameters (attempt " << m_retryCount << "): " << interest.getName());
+ 
+-  m_face.expressInterest(
++  const auto callbacksEnabled = m_callbacksEnabled;
++  m_pendingInterest = m_face.expressInterest(
+     interest,
+-    [this, expectedDataName, expectedDigest, generation](const Interest&, const Data& data) {
++    [this, callbacksEnabled, expectedDataName, expectedDigest, generation](const Interest&, const Data& data) {
++      if (!callbacksEnabled->load(std::memory_order_acquire))
++        return;
++      m_pendingInterest.release();
+       if (generation != m_fetchGeneration)
+         return;
+       m_retryCount = 0;
+       onAttributePubParams(data, expectedDataName, expectedDigest, generation);
+     },
+-    [this, generation](const Interest&, const lp::Nack&) {
++    [this, callbacksEnabled, generation](const Interest&, const lp::Nack&) {
++      if (!callbacksEnabled->load(std::memory_order_acquire))
++        return;
++      m_pendingInterest.release();
+       if (generation != m_fetchGeneration)
+         return;
+       NDN_LOG_WARN("Received NACK, retrying...");
+       fetchPublicParamsForGeneration(generation);
+     },
+-    [this, generation](const Interest&) {
++    [this, callbacksEnabled, generation](const Interest&) {
++      if (!callbacksEnabled->load(std::memory_order_acquire))
++        return;
++      m_pendingInterest.release();
+       if (generation != m_fetchGeneration)
+         return;
+       NDN_LOG_WARN("Timeout, retrying...");
+@@ -113,7 +144,10 @@ void
+ ParamFetcher::clearCache(const Name& expectedDataName,
+                          const std::string& expectedDigest)
+ {
++  if (m_stopped)
++    return;
+   ++m_fetchGeneration;
++  m_pendingInterest.cancel();
+   m_retryCount = 0;
+   m_abeType.clear();
+   m_pubParamsCache = algo::PublicParams();
+@@ -131,6 +165,9 @@ ParamFetcher::onAttributePubParams(const Data& pubParamData,
+                                    const std::string& expectedDigest,
+                                    uint64_t generation)
+ {
++  if (m_stopped || generation != m_fetchGeneration)
++    return;
++
+   NDN_LOG_INFO("[onAttributePubParams()] Get public parameters");
+ 
+   if (!expectedDataName.empty() && pubParamData.getName() != expectedDataName) {
+@@ -139,8 +176,11 @@ ParamFetcher::onAttributePubParams(const Data& pubParamData,
+     return;
+   }
+ 
++  const auto callbacksEnabled = m_callbacksEnabled;
+   m_validator.validate(pubParamData,
+-    [this, expectedDigest, generation] (const Data& data) {
++    [this, callbacksEnabled, expectedDigest, generation] (const Data& data) {
++      if (!callbacksEnabled->load(std::memory_order_acquire))
++        return;
+       if (generation != m_fetchGeneration)
+         return;
+       NDN_LOG_INFO("Public parameters conforms to trust schema");
+@@ -173,7 +213,9 @@ ParamFetcher::onAttributePubParams(const Data& pubParamData,
+       m_publicParamsDataName = name;
+       m_publicParamsDigest = publicParamsDigest;
+     },
+-    [this, generation] (auto&&, const ndn::security::ValidationError& error) {
++    [this, callbacksEnabled, generation] (auto&&, const ndn::security::ValidationError& error) {
++      if (!callbacksEnabled->load(std::memory_order_acquire))
++        return;
+       if (generation != m_fetchGeneration)
+         return;
+       NDN_THROW(std::runtime_error("Fetched public parameters cannot be authenticated: " + error.getInfo()));
+diff --git a/src/param-fetcher.hpp b/src/param-fetcher.hpp
+index a22be00..be23916 100644
+--- a/src/param-fetcher.hpp
++++ b/src/param-fetcher.hpp
+@@ -25,6 +25,9 @@
+ #include "algo/public-params.hpp"
+ #include "trust-config.hpp"
+ 
++#include <atomic>
++#include <memory>
++
+ namespace ndn {
+ namespace nacabe {
+ 
+@@ -38,6 +41,8 @@ public:
+                const Name& attrAuthorityPrefix, const TrustConfig& trustConfig,
+                Interest interestTemplate = getDefaultInterestTemplate());
+ 
++  ~ParamFetcher();
++
+   void
+   fetchPublicParams();
+ 
+@@ -45,6 +50,9 @@ public:
+   fetchPublicParams(const Name& expectedDataName,
+                     const std::string& expectedDigest = {});
+ 
++  /** Cancel the active Interest and fence pending validation callbacks. */
++  void stop() noexcept;
++
+   /** Invalidate the cached public parameters after a global ABE rekey. */
+   void
+   clearCache(const Name& expectedDataName = {},
+@@ -103,6 +111,10 @@ PUBLIC_WITH_TESTS_ELSE_PRIVATE:
+   Name m_expectedDataName;
+   std::string m_expectedDigest;
+   Interest m_interestTemplate;
++  ScopedPendingInterestHandle m_pendingInterest;
++  std::shared_ptr<std::atomic_bool> m_callbacksEnabled =
++    std::make_shared<std::atomic_bool>(true);
++  bool m_stopped = false;
+ };
+ 
+ } // namespace nacabe
+diff --git a/src/producer.cpp b/src/producer.cpp
+index 8e39f01..ad89fd7 100644
+--- a/src/producer.cpp
++++ b/src/producer.cpp
+@@ -38,6 +38,17 @@ Producer::Producer(Face& face, KeyChain& keyChain,
+                    const security::Certificate& identityCert,
+                    const security::Certificate& attrAuthorityCertificate,
+                    Interest publicParamInterestTemplate)
++  : Producer(face, keyChain, validator, identityCert, attrAuthorityCertificate,
++             std::move(publicParamInterestTemplate), true)
++{
++}
++
++Producer::Producer(Face& face, KeyChain& keyChain,
++                   security::Validator& validator,
++                   const security::Certificate& identityCert,
++                   const security::Certificate& attrAuthorityCertificate,
++                   Interest publicParamInterestTemplate,
++                   bool startImmediately)
+   : m_cert(identityCert)
+   , m_face(face)
+   , m_validator(validator)
+@@ -46,8 +57,9 @@ Producer::Producer(Face& face, KeyChain& keyChain,
+   , m_paramFetcher(m_face, validator, m_attrAuthorityPrefix, m_trustConfig, publicParamInterestTemplate)
+ {
+   m_trustConfig.addOrUpdateCertificate(attrAuthorityCertificate);
+-  m_paramFetcher.fetchPublicParams();
+   replyTemplate.setFreshnessPeriod(5_s);
++  if (startImmediately)
++    start();
+ }
+ 
+ Producer::Producer(Face& face, KeyChain& keyChain, 
+@@ -56,28 +68,80 @@ Producer::Producer(Face& face, KeyChain& keyChain,
+                    const security::Certificate& attrAuthorityCertificate,
+                    const security::Certificate& dataOwnerCertificate,
+                    Interest publicParamInterestTemplate)
+-  : Producer(face, keyChain, m_validator, identityCert, attrAuthorityCertificate, publicParamInterestTemplate)
++  : Producer(face, keyChain, m_validator, identityCert, attrAuthorityCertificate,
++             dataOwnerCertificate, std::move(publicParamInterestTemplate), true)
++{
++}
++
++Producer::Producer(Face& face, KeyChain& keyChain,
++                   security::Validator& validator,
++                   const security::Certificate& identityCert,
++                   const security::Certificate& attrAuthorityCertificate,
++                   const security::Certificate& dataOwnerCertificate,
++                   Interest publicParamInterestTemplate,
++                   bool startImmediately)
++  : Producer(face, keyChain, validator, identityCert, attrAuthorityCertificate,
++             std::move(publicParamInterestTemplate), false)
+ {
+   m_dataOwnerKeyName = dataOwnerCertificate.getKeyName();
+   m_trustConfig.addOrUpdateCertificate(dataOwnerCertificate);
++  if (startImmediately)
++    start();
++}
+ 
+-  // prefix registration
+-  m_registeredPrefix = m_face.setInterestFilter(Name(m_cert.getIdentity()).append(SET_POLICY),
+-    [this] (auto&&, const auto& interest) {
+-      onPolicyInterest(interest);
+-    },
+-    [] (auto&&...) {
+-      NDN_THROW(std::runtime_error("Cannot register the prefix to the local NFD"));
+-    });
+-  NDN_LOG_DEBUG("Set prefix:" << m_cert.getIdentity());
++Producer::~Producer()
++{
++  stop();
+ }
+ 
+-Producer::~Producer() = default;
++void
++Producer::start()
++{
++  if (m_stopped)
++    NDN_THROW(std::logic_error("Producer cannot be restarted after stop"));
++  if (m_started)
++    return;
++  m_started = true;
++  try {
++    if (!m_dataOwnerKeyName.empty()) {
++      const auto callbacksEnabled = m_callbacksEnabled;
++      m_registeredPrefix = m_face.setInterestFilter(
++        Name(m_cert.getIdentity()).append(SET_POLICY),
++        [this, callbacksEnabled] (auto&&, const auto& interest) {
++          if (callbacksEnabled->load(std::memory_order_acquire))
++            onPolicyInterest(interest);
++        },
++        [] (auto&&...) {
++          NDN_THROW(std::runtime_error("Cannot register the prefix to the local NFD"));
++        });
++      NDN_LOG_DEBUG("Set prefix:" << m_cert.getIdentity());
++    }
++    m_paramFetcher.fetchPublicParams();
++  }
++  catch (...) {
++    m_registeredPrefix.cancel();
++    m_started = false;
++    throw;
++  }
++}
++
++void
++Producer::stop() noexcept
++{
++  if (m_stopped)
++    return;
++  m_stopped = true;
++  m_callbacksEnabled->store(false, std::memory_order_release);
++  m_paramFetcher.stop();
++  m_registeredPrefix.cancel();
++}
+ 
+ void
+ Producer::refreshPublicParameters(const Name& expectedPublicParamsName,
+                                   const std::string& expectedPublicParamsDigest)
+ {
++  if (m_stopped)
++    return;
+   m_paramFetcher.clearCache(expectedPublicParamsName, expectedPublicParamsDigest);
+   m_paramFetcher.fetchPublicParams(expectedPublicParamsName, expectedPublicParamsDigest);
+ }
+diff --git a/src/producer.hpp b/src/producer.hpp
+index ef33190..03b04dd 100644
+--- a/src/producer.hpp
++++ b/src/producer.hpp
+@@ -22,6 +22,8 @@
+ #define NAC_ABE_PRODUCER_HPP
+ 
+ #include <utility>
++#include <atomic>
++#include <memory>
+ 
+ #include "algo/cipher-text.hpp"
+ #include "algo/content-key.hpp"
+@@ -49,6 +51,14 @@ public:
+            const security::Certificate& attrAuthorityCertificate,
+            Interest publicParamInterestTemplate = ParamFetcher::getDefaultInterestTemplate());
+ 
++  /** Deferred-bootstrap overload used by transactional owners. */
++  Producer(Face& face, KeyChain& keyChain,
++           security::Validator& validator,
++           const security::Certificate& identityCert,
++           const security::Certificate& attrAuthorityCertificate,
++           Interest publicParamInterestTemplate,
++           bool startImmediately);
++
+   /**
+    * @brief Initialize a producer. Use when a data owner is defined.
+    */
+@@ -59,9 +69,24 @@ public:
+            const security::Certificate& dataOwnerCertificate,
+            Interest publicParamInterestTemplate = ParamFetcher::getDefaultInterestTemplate());
+ 
++  /** Deferred data-owner overload used by transactional owners. */
++  Producer(Face& face, KeyChain& keyChain,
++           security::Validator& validator,
++           const security::Certificate& identityCert,
++           const security::Certificate& attrAuthorityCertificate,
++           const security::Certificate& dataOwnerCertificate,
++           Interest publicParamInterestTemplate,
++           bool startImmediately);
++
+   virtual
+   ~Producer();
+ 
++  /** Start deferred public-parameter fetching and optional prefix registration. */
++  void start();
++
++  /** Cancel public-parameter fetching and the policy Interest prefix. */
++  void stop() noexcept;
++
+   /** Refresh public parameters, optionally requiring an exact status-bound
+    * Data name and content digest. */
+   void
+@@ -210,6 +235,10 @@ private:
+   Name m_dataOwnerKeyName;
+   TrustConfig m_trustConfig;
+   ScopedRegisteredPrefixHandle m_registeredPrefix;
++  std::shared_ptr<std::atomic_bool> m_callbacksEnabled =
++    std::make_shared<std::atomic_bool>(true);
++  bool m_started = false;
++  bool m_stopped = false;
+ 
+ PUBLIC_WITH_TESTS_ELSE_PRIVATE:
+   std::vector<PolicyTuple> m_policies; // for CP-ABE

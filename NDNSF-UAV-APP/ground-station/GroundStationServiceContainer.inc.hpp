@@ -200,6 +200,61 @@ public:
     return m_containerReady.load();
   }
 
+  bool
+  waitForRequestBootstrap(const ndn::Name& provider,
+                          const ndn::Name& service,
+                          std::chrono::milliseconds timeout)
+  {
+    if (!m_user || provider.empty() || service.empty() || timeout <= 0ms) {
+      return false;
+    }
+
+    struct ProbeState
+    {
+      std::mutex mutex;
+      std::condition_variable changed;
+      bool complete = false;
+      bool ready = false;
+      std::exception_ptr error;
+    };
+
+    auto* user = m_user.get();
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      auto probe = std::make_shared<ProbeState>();
+      boost::asio::post(m_face.getIoContext(), [user, probe, provider, service] {
+        try {
+          probe->ready = user->isRequestBootstrapReady(
+            service, std::vector<ndn::Name>{provider});
+        }
+        catch (...) {
+          probe->error = std::current_exception();
+        }
+        {
+          std::lock_guard<std::mutex> guard(probe->mutex);
+          probe->complete = true;
+        }
+        probe->changed.notify_one();
+      });
+
+      std::unique_lock<std::mutex> lock(probe->mutex);
+      const auto pollDeadline = std::min(
+        deadline, std::chrono::steady_clock::now() + 100ms);
+      probe->changed.wait_until(lock, pollDeadline, [&probe] {
+        return probe->complete;
+      });
+      if (probe->complete) {
+        if (probe->error) {
+          std::rethrow_exception(probe->error);
+        }
+        if (probe->ready) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   ndn_service_framework::ServiceContainer&
   ndnsfContainer()
   {
@@ -2159,6 +2214,14 @@ public:
       return std::max<int64_t>(1, left.count());
     };
 
+    const auto videoProvider = droneIdentity(m_config, targetDroneId());
+    const auto videoService = droneVideoControlService(m_config, targetDroneId());
+    if (!waitForRequestBootstrap(videoProvider, videoService,
+                                 std::min(timeout, std::chrono::seconds(15)))) {
+      publishStatus("SPEC176_SITL_RESULT ok=false reason=request-bootstrap-timeout");
+      return false;
+    }
+
     publishStatus("SPEC176_SITL_STAGE stage=stream-start");
     startVideo();
     const auto streamDeadline = std::min(
@@ -3780,6 +3843,12 @@ public:
     const std::string missionId = "spec176-minindn-mission";
     const auto producer = droneIdentity(m_config, "A");
     const auto campaignDeadline = std::chrono::steady_clock::now() + timeout;
+    const auto videoService = droneVideoControlService(m_config, "A");
+    if (!waitForRequestBootstrap(producer, videoService,
+                                 std::min(timeout, std::chrono::seconds(15)))) {
+      publishStatus("SPEC176_INCIDENT_TEST_RESULT ok=false reason=request-bootstrap-timeout");
+      return false;
+    }
     bool reuse = false;
     if (reuseMissionSession) {
       std::lock_guard<std::mutex> guard(m_missionSessionMutex);

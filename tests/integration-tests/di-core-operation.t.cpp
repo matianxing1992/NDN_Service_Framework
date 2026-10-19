@@ -5,10 +5,16 @@
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
+#include <ndn-cxx/util/io.hpp>
+
 #include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace ndnsf::di::tests {
@@ -82,14 +88,49 @@ struct ClientFixture
   std::shared_ptr<CoreDelegationAdapter> adapter =
     std::make_shared<CoreDelegationAdapter>();
   NativeModelRef model;
+  std::filesystem::path trustDirectory;
 
   ClientFixture()
   {
     using namespace ndn_service_framework::test;
     const auto cert = makeRsaIdentity(keyChain, ndn::Name("/spec185/user"));
     const auto aa = makeRsaIdentity(keyChain, ndn::Name("/spec185/aa"));
+    auto pattern = (std::filesystem::temp_directory_path() /
+                    "ndnsf-spec185-client-trust-XXXXXX").string();
+    std::vector<char> directoryName(pattern.begin(), pattern.end());
+    directoryName.push_back('\0');
+    const char* directory = ::mkdtemp(directoryName.data());
+    if (directory == nullptr)
+      throw std::runtime_error("cannot create isolated Spec185 test trust directory");
+    trustDirectory = directory;
+    ndn::io::save(cert, (trustDirectory / "user.cert").string());
+    ndn::io::save(aa, (trustDirectory / "aa.cert").string());
+    const auto schemaPath = trustDirectory / "trust.conf";
+    std::ofstream schema(schemaPath);
+    schema << R"SCHEMA(rule
+{
+  id "Spec185 isolated test data"
+  for data
+  filter { type name regex ^<>*$ }
+  checker { type customized sig-type rsa-sha256 key-locator { type name regex ^<>*$ } }
+}
+rule
+{
+  id "Spec185 isolated test interests"
+  for interest
+  filter { type name regex ^<>*$ }
+  checker { type customized sig-type rsa-sha256 key-locator { type name regex ^<>*$ } }
+}
+trust-anchor { type file file-name "user.cert" }
+trust-anchor { type file file-name "aa.cert" }
+)SCHEMA";
+    schema.close();
+    if (!schema) {
+      std::filesystem::remove_all(trustDirectory);
+      throw std::runtime_error("cannot write isolated Spec185 test trust schema");
+    }
     user = std::make_shared<LocalServiceUser>(face, ndn::Name("/spec185"), cert, aa,
-                                               "examples/trust-any.conf");
+                                               schemaPath.string());
     adapters->registerAdapter(adapter);
     adapters->freeze();
     model.modelName = "spec185-model";
@@ -102,6 +143,14 @@ struct ClientFixture
     model.adapterVersion = adapter->adapterVersion();
     model.adapter = fixture::modelAdapter(model.adapterId, model.adapterVersion,
                                            model.modelFormat, model.precision);
+  }
+
+  ~ClientFixture()
+  {
+    if (!trustDirectory.empty()) {
+      std::error_code ignored;
+      std::filesystem::remove_all(trustDirectory, ignored);
+    }
   }
 };
 

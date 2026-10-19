@@ -64,6 +64,37 @@ def _model_record(path: Path) -> dict[str, Any]:
             "digest": digest_file(path)}
 
 
+def validate_live_source_model(model: Path, license_text: str) -> dict[str, Any]:
+    """Freeze the detector artifact for an FD-fed source without requiring MP4s."""
+    if not license_text.strip():
+        raise ArtifactError("a non-empty license acceptance record is required")
+    model_record = _model_record(model.resolve())
+    digest = hashlib.sha256(json.dumps(
+        {"model": model_record, "license": license_text.strip()},
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return {
+        "schema": "spec191-uav-artifact-passport/v1",
+        "mode": "live-source-model-only",
+        "licenseAcceptance": license_text.strip(),
+        "model": model_record,
+        "candidateDigest": "sha256:" + digest,
+        "scientificAccuracyClaimAllowed": False,
+    }
+
+
+def validate_video_reference_assets(source: Path, model: Path,
+                                   license_text: str) -> dict[str, Any]:
+    """Freeze video-reference inputs used by the live-push adapter."""
+    passport = validate_real_assets(source, model, license_text)
+    passport["mode"] = "video-reference-simulated"
+    digest = hashlib.sha256(json.dumps(
+        {"mode": passport["mode"], "videos": passport["videos"],
+         "model": passport["model"], "license": passport["licenseAcceptance"]},
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    passport["candidateDigest"] = "sha256:" + digest
+    return passport
+
+
 def validate_real_assets(source: Path, model: Path, license_text: str) -> dict[str, Any]:
     source = source.resolve()
     if not source.is_dir():

@@ -46,14 +46,15 @@ def limit_compile_memory_concurrency(generator):
                 task._ndnsf_large_compile = True
             task.semaphore = compile_slots
 
-# Host builds consume one installed dependency closure.  The host ONNX Runtime
-# SDK is deliberately installed under /opt because it is a versioned system
-# SDK; all other host NDNSF dependencies use /usr or /usr/local.  Container
-# builds may use their declared SDK roots only after the image sets the explicit
-# NDNSF_CONTAINER_BUILD marker.  Checkout, /tmp, .codex-tmp and build-work
+# Host builds consume one installed dependency closure. The versioned ONNX
+# Runtime and full-protobuf ONNX SDKs use declared roots under /opt; other host
+# NDNSF dependencies use /usr or /usr/local. Container builds may use their
+# declared SDK roots only after the image sets the explicit
+# NDNSF_CONTAINER_BUILD marker. Checkout, /tmp and build-work
 # prefixes are never valid dependency inputs.
 HOST_GLOBAL_DEPENDENCY_PREFIXES = (
-    '/usr', '/usr/local', '/opt/onnxruntime', '/opt/onnxruntime-1.26.0')
+    '/usr', '/usr/local', '/opt/onnxruntime', '/opt/onnxruntime-1.26.0',
+    '/opt/onnx-1.17.0')
 CONTAINER_GLOBAL_DEPENDENCY_PREFIXES = (
     '/opt/ndn-base', '/opt/onnx', '/opt/ndnsf-stage', '/opt/ndnsf-di')
 # The development host has one supported Boost pair.  Keep this explicit so
@@ -85,8 +86,8 @@ def _require_global_dependency_prefix(path, owner):
         allowed = ', '.join(roots)
         raise RuntimeError(
             f'{owner} must use an installed global dependency root; '
-            f'rejected {resolved}. Install it under /usr/local or the '
-            'declared container SDK root instead of using a temporary '
+            f'rejected {resolved}. Install it under /usr, /usr/local, or a '
+            'declared host/container SDK root instead of using a temporary '
             f'checkout prefix (allowed roots: {allowed})')
     return resolved
 
@@ -202,15 +203,20 @@ def _validate_global_dependency_identity(conf):
             allowed_paths = (
                 '/opt/onnxruntime/lib/libonnxruntime.so',
                 '/opt/onnxruntime-1.26.0/lib/libonnxruntime.so')
+            allowed_roots = ('/opt/onnxruntime', '/opt/onnxruntime-1.26.0')
+        elif name == 'libnac-abe.so':
+            nac_prefix = _require_global_dependency_prefix(
+                conf.options.nac_abe_prefix, 'NAC-ABE')
+            allowed_paths = (os.path.join(nac_prefix, 'lib', name),)
+            allowed_roots = (nac_prefix,)
         else:
             allowed_paths = (f'/usr/local/lib/{name}',)
+            allowed_roots = ('/usr/local',)
         if path not in allowed_paths:
             conf.fatal(
                 f'Global dependency identity path is outside the canonical '
                 f'root for {name}: {path}')
         actual_realpath = os.path.realpath(path)
-        allowed_roots = ('/opt/onnxruntime', '/opt/onnxruntime-1.26.0') \
-            if name == 'libonnxruntime.so' else ('/usr/local',)
         if not any(actual_realpath == root or
                    actual_realpath.startswith(root + os.sep)
                    for root in allowed_roots):
@@ -749,15 +755,16 @@ int main() {
         conf.env.INCLUDES_NDN_CXX = nac_includes + [
             path for path in list(conf.env.INCLUDES_NDN_CXX or [])
             if path not in nac_includes]
-        conf.env.LIBPATH_NDN_CXX = nac_libpaths + [
-            path for path in list(conf.env.LIBPATH_NDN_CXX or [])
-            if path not in nac_libpaths]
         nac_libdir = os.path.realpath(os.path.join(nac_abe_prefix, 'lib'))
         nac_rpath = f'-Wl,-rpath,{nac_libdir}'
         # /usr/local is the installed host loader root and is already in the
         # loader cache. Keep it out of build-tree RPATH ordering; an explicit
         # non-installed NAC-ABE prefix still needs its own runtime path.
         if nac_libdir != os.path.realpath(conf.env.LIBDIR):
+            # Waf emits static search paths before dynamic paths; GNU ld
+            # applies both to NAC lookup, so keep the SDK ahead in each list.
+            for key in ('LIBPATH', 'STLIBPATH'):
+                conf.env.prepend_value(key, [nac_libdir])
             conf.env.LINKFLAGS = [nac_rpath] + [
                 flag for flag in list(conf.env.LINKFLAGS or []) if flag != nac_rpath]
         else:
@@ -777,9 +784,22 @@ void check(const ndn::InMemoryStorage& storage, const ndn::Name& name) {
             features='cxx', use='NDN_CXX', mandatory=False,
             msg='Checking ndn-cxx indexed IMS lowerBound API'):
         conf.fatal(
-            'ndn-cxx must provide InMemoryStorage::lowerBound. Rebuild/install ndn-cxx '
-            'from the pinned matianxing1992/ndn-cxx fork using install_ndnsf_stack.sh, '
+            'ndn-cxx must provide InMemoryStorage::lowerBound. Rebuild/install from the '
+            'locked ndn-cxx source using install_ndnsf_stack.sh --ndn-cxx-only, '
             'then configure NDNSF again.')
+
+    # T009 uses per-operation CK authorization. A version-0.1 pkg-config
+    # match or a new header paired with an old library cannot supply it.
+    conf.check_cxx(
+        msg='Checking installed NAC-ABE producer-bound CK API',
+        fragment='''
+#include <nac-abe/consumer.hpp>
+using Consumer = ndn::nacabe::Consumer;
+using RequiredApi = decltype(&Consumer::consumeWithCkAuthorization);
+RequiredApi volatile requiredApi = &Consumer::consumeWithCkAuthorization;
+int main() { return requiredApi == nullptr; }
+''',
+        features='cxx cxxprogram', use='NAC-ABE NDN_CXX', mandatory=True)
 
     # A layered application may link against staged builder inputs, but its
     # published ELF objects must resolve only through their APP-relative path
@@ -954,7 +974,7 @@ def build(bld):
         bld.program(
             target='uav-video-pipeline-probe',
             source='NDNSF-UAV-APP/tools/uav_video_pipeline_probe.cpp',
-            use='GSTREAMER GMODULE FFI PCRE DL', install_path=None)
+            use='GSTREAMER GMODULE FFI PCRE DL', install_path='${BINDIR}')
 
     libndn_service_framework = dict(
         target='ndn-service-framework',

@@ -83,6 +83,16 @@ namespace ndn_service_framework{
         std::string errorMessage;
     };
 
+    class ImmutableProtectedPublicationStore;
+
+    struct ImmutableProtectedDataResult
+    {
+        bool success = false;
+        ndn::Name dataName;
+        std::string contentSha256;
+        std::string errorMessage;
+    };
+
     /** Native-only measurements for one collaboration object transfer. */
     struct CollaborationTransferMetrics
     {
@@ -513,6 +523,28 @@ namespace ndn_service_framework{
                 std::optional<ndn::Buffer> fetchEncryptedLargeDataCurrent(
                     const ndn::Name& dataName,
                     std::chrono::steady_clock::time_point deadline);
+                /** Fetch a producer-owned immutable service-protected object.
+                 * Exact typed-version name, all segment/key signer checks and
+                 * the current-work fence are mandatory; no legacy fallback.
+                 * Call only from a request-handler worker, never the Face loop.
+                 */
+                std::optional<ndn::Buffer> fetchImmutableProtectedDataCurrent(
+                    const ndn::Name& exactName, const ndn::Name& expectedProducer,
+                    std::chrono::steady_clock::time_point deadline);
+                /** Publish/reuse a static fact under the actual provider prefix.
+                 * Core appends a typed version and retains original protected
+                 * packets for the actor lifetime. Same-revision changed bytes
+                 * fail; current service authorization/work authority are required.
+                 * Worker-only: this synchronous API never blocks the Face loop.
+                 */
+                ImmutableProtectedDataResult publishImmutableProtectedData(
+                    const ndn::Name& semanticPrefix, const ndn::Buffer& payload);
+                /** Revoke this dispatch's current-work authority from any
+                 * thread. Current-bound transfers stop; the caller still owns
+                 * the application-level failure/terminal response. */
+                bool revokeCurrentWorkAuthority() noexcept;
+                /** Query whether this dispatch still authorizes new work commits. */
+                bool hasCurrentWorkAuthority() const noexcept;
                 void fail(const std::string& reason);
 
                 void publish(KeyScope keyScope,
@@ -577,6 +609,23 @@ namespace ndn_service_framework{
                                                       int timeoutMs,
                                                       std::size_t expectedSegments,
                                                       CollaborationTransferMetrics* metrics);
+                /** Fetch a segmented collaboration object only when every
+                 * validated Data segment is signed by the expected producer
+                 * identity or one of its explicitly configured delegates. */
+                std::optional<ndn::Buffer> fetchLargeFromProducer(
+                    const ndn::Name& dataName,
+                    KeyScope keyScope,
+                    const ndn::Name& expectedProducer,
+                    int timeoutMs,
+                    std::size_t expectedSegments = 0,
+                    CollaborationTransferMetrics* metrics = nullptr);
+                /** Fetch under this dispatch's original authority and deadline.
+                 * An authority change cancels the active segmented transfer. */
+                std::optional<ndn::Buffer> fetchLargeFromProducerCurrent(
+                    const ndn::Name& dataName,
+                    KeyScope keyScope,
+                    const ndn::Name& expectedProducer,
+                    int timeoutMs);
                 /**
                  * Publish request-scoped NDNSF_DATA_V1 segments through the
                  * SVSPubSub data path.  Each pair contains the complete
@@ -725,6 +774,13 @@ namespace ndn_service_framework{
                                                        int timeoutMs);
                 void reportOperationStatus(ServiceOperationStatus status);
                 void publishFinalResponse(const ndn::Buffer& payload);
+                /**
+                 * Publish a terminal unary failure while preserving an
+                 * application payload for the requester callback. Streamed
+                 * collaborations must use failStream() instead.
+                 */
+                void publishFinalFailureResponse(const ndn::Buffer& payload,
+                                                 const std::string& errorInfo);
 
                 /** Streamed DI bridge over the already-selected collaboration.
                  * These methods are valid only when the original Request carried
@@ -749,6 +805,11 @@ namespace ndn_service_framework{
 
             private:
                 friend class ndnsf::di::NdnsfCollaborationDependencyIo;
+                std::optional<ndn::Buffer> fetchProtectedDataCurrent(
+                    const ndn::Name& dataName, const ndn::Name& expectedProducer,
+                    std::chrono::steady_clock::time_point deadline);
+                std::function<bool()> currentWorkPredicate(
+                    std::chrono::steady_clock::time_point deadline) const;
                 // Retain the complete signed batch before any serving side effect.
                 bool publishOwnedExactData(KeyScope keyScope,
                     const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
@@ -764,6 +825,10 @@ namespace ndn_service_framework{
                 ndn::Name m_requestId;
                 RequestMessage m_requestMessage;
                 CollaborationAssignment m_assignment;
+                std::shared_ptr<std::atomic<bool>> m_workAuthorityRevoked =
+                    std::make_shared<std::atomic<bool>>(false);
+                std::shared_ptr<std::mutex> m_workAuthorityCommitMutex =
+                    std::make_shared<std::mutex>();
                 bool m_streamTerminal = false;
             };
 
@@ -898,6 +963,13 @@ namespace ndn_service_framework{
             void cacheHybridReceiveKeyForTest(const std::string& keyId,
                                               const std::string& epochId,
                                               const ndn::Buffer& key);
+            /** Deterministic publication boundaries for native race tests.
+             * Configure only while the fixture is idle; hooks hold no authority
+             * or controller lock and are empty in normal operation. */
+            void setImmutablePublicationHooksForTest(
+                std::function<void()> queued,
+                std::function<void(const ndn::Name&)> beforeCommit,
+                std::function<void(const ndn::Name&)> afterCommit);
 
             /**
              * Prime one LocalMock outbound epoch and return the matching key to
@@ -1899,6 +1971,21 @@ namespace ndn_service_framework{
                 const ndn::Name& encryptedDataName, const std::string& serviceName,
                 std::chrono::steady_clock::time_point deadline,
                 std::function<bool()> current, DataNameReadMode readMode);
+            LargeDataFetchResult fetchAndDecryptLargeDataUntil(
+                const ndn::Name& encryptedDataName, const std::string& serviceName,
+                std::chrono::steady_clock::time_point deadline,
+                std::function<bool()> current, DataNameReadMode readMode,
+                const ndn::Name& expectedProducer);
+            struct ImmutablePublicationOperation
+            {
+                std::shared_ptr<std::mutex> authorityMutex;
+                std::shared_ptr<const ImmutableProtectedDataResult> committed;
+                bool abandoned = false; // protected by authorityMutex
+            };
+            ImmutableProtectedDataResult publishImmutableProtectedDataOnFace(
+                const ndn::Name& service, const ndn::Name& semanticPrefix,
+                const ndn::Buffer& payload, const std::function<bool()>& current,
+                const std::shared_ptr<ImmutablePublicationOperation>& operation);
 
             void cleanupPendingRequestState(const ndn::Name& pendingKey,
                                             bool preserveReplayTombstone = false);
@@ -2159,7 +2246,9 @@ namespace ndn_service_framework{
                 const ndn::Name& dataName,
                 int timeoutMs,
                 std::size_t expectedSegments,
-                CollaborationTransferMetrics* metrics);
+                CollaborationTransferMetrics* metrics,
+                ndn::Name expectedProducer = {},
+                std::function<bool()> current = {});
             bool publishCollaborationDataV1Segments(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
@@ -2269,7 +2358,9 @@ namespace ndn_service_framework{
                 const ndn::Name& requestId,
                 const RequestMessage& requestMessage,
                 const ndn::Buffer& payload,
-                const std::string& selectionDigest);
+                const std::string& selectionDigest,
+                bool status,
+                const std::string& errorInfo);
             void onCollaborationDataMessage(
                 const ndn::svs::SVSPubSub::SubscriptionData& subscription);
             void deliverCollaborationData(const CollaborationData& data);
@@ -2483,6 +2574,11 @@ namespace ndn_service_framework{
             const uint64_t m_processStartedAtUs = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count());
+            // Face-executor-owned original protected packets; never request-owned.
+            std::unique_ptr<ImmutableProtectedPublicationStore> m_immutableProtectedPublications;
+            std::function<void()> m_testImmutablePublicationQueued;
+            std::function<void(const ndn::Name&)> m_testBeforeImmutablePublicationCommit;
+            std::function<void(const ndn::Name&)> m_testAfterImmutablePublicationCommit;
             size_t m_requiredKeyEpoch = 0;
             uint64_t m_policyGracePeriodMs = 0;
             HybridMessageCrypto m_hybridMessageCrypto;

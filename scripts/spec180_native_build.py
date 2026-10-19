@@ -101,7 +101,7 @@ CONFIG_FILES = ("config.hpp", "c4che/_cache.py", "c4che/build.config.py")
 SETUP_TOOLCHAIN_ROOT = Path("/usr/bin")
 SETUP_FLAG_NAMES = ("CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS")
 GLOBAL_DEPENDENCY_ROOTS = ("/usr", "/usr/local", "/opt/onnxruntime",
-                           "/opt/onnxruntime-1.26.0")
+                           "/opt/onnxruntime-1.26.0", "/opt/onnx-1.17.0")
 # Host bindings and native consumers must load the installed NDNSF libraries.
 # The Waf build tree is a compilation output, never a runtime dependency root.
 GLOBAL_NATIVE_LIBRARY_DIR = Path("/usr/local/lib")

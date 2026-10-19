@@ -5821,7 +5821,7 @@ def main() -> None:
     parser.add_argument("--native-python-package", default="",
                         help="installed ndnsf Python package directory; defaults to this interpreter's site-packages/ndnsf")
     parser.add_argument("--native-library-path", default="",
-                        help="native candidate shared-library directory; defaults to /usr/local/lib")
+                        help="optional shared-library override; defaults to installed RPATH selection")
     parser.add_argument("--spec201-candidate", type=Path,
                         help="frozen shared YOLO/Qwen naming qualification bundle")
     parser.add_argument("--spec201-candidate-sha256", default="")
@@ -5970,8 +5970,8 @@ def main() -> None:
     naming_candidate = None
     if args_cli.native_providers:
         native_library_path = str(Path(args_cli.native_library_path).expanduser().resolve(strict=True)) \
-            if args_cli.native_library_path else "/usr/local/lib"
-        if not Path(native_library_path).is_dir() or ":" in native_library_path:
+            if args_cli.native_library_path else ""
+        if native_library_path and (not Path(native_library_path).is_dir() or ":" in native_library_path):
             raise SystemExit("--native-library-path requires one shared-library directory")
         os.environ["LD_LIBRARY_PATH"] = native_library_path
         if args_cli.spec201_candidate is None:
@@ -6017,7 +6017,7 @@ def main() -> None:
             stats_path.unlink()
         except FileNotFoundError:
             pass
-    native_library_path = "/usr/local/lib"
+    native_library_path = ""
     if args_cli.native_library_path:
         if not args_cli.native_providers:
             raise SystemExit("--native-library-path requires --native-providers")

@@ -26,6 +26,11 @@ def prepared_mvcnn_arguments(directory):
     _owner, manifest = _prepare_local_subject()
     artifact = manifest["artifact"]
     path = Path(artifact["path"])
+    if not path.is_absolute():
+        path = Path(_owner.name) / path
+    checkpoint = Path(manifest["checkpoint"]["path"])
+    if not checkpoint.is_absolute():
+        checkpoint = Path(_owner.name) / checkpoint
     digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     assert digest == artifact["digest"], "prepared MVCNN artifact drift"
     assert manifest["onnxChecker"] == "passed"
@@ -36,7 +41,7 @@ def prepared_mvcnn_arguments(directory):
     assert profile["source_revision"] == manifest["sourceRevision"]
     profile.update(model_digest=digest, model_artifact=str(path),
                    checkpoint_digest=manifest["checkpoint"]["digest"],
-                   checkpoint_artifact=manifest["checkpoint"]["path"])
+                   checkpoint_artifact=str(checkpoint))
     registry_path = Path(directory) / "prepared-model-registry.json"
     registry_path.write_text(json.dumps(registry))
     return ["--model-registry", str(registry_path),

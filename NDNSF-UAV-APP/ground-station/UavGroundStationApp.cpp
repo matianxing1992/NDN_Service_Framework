@@ -41,6 +41,7 @@
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <fcntl.h>
 #include <fstream>
 #include <iomanip>

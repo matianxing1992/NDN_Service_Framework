@@ -19,10 +19,10 @@ def main():
     parser.add_argument('--candidate', type=Path, required=True)
     parser.add_argument('--sha256', default='')
     args = parser.parse_args()
-    # Freeze and check the same installed-library paths used by MiniNDN
-    # launchers, rather than the build RPATH selected by an ambient loader.
+    # Freeze the installed RPATH selection used by MiniNDN launchers, without
+    # shadowing a versioned SDK with the older default dependency prefix.
     # The validator still checks every resolved library path and digest.
-    os.environ['LD_LIBRARY_PATH'] = '/usr/local/lib'
+    os.environ['LD_LIBRARY_PATH'] = ''
     if args.operation == 'freeze':
         if args.blueprint is None:
             parser.error('--blueprint is required for freeze')

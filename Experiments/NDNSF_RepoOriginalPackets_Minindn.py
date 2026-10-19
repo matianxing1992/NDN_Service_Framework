@@ -41,6 +41,8 @@ def main():
     args = parser.parse_args()
     if args.timeout_s <= 0:
         parser.error("timeout must be positive")
+    # Validate and run with the same installed RPATH dependency selection.
+    os.environ["LD_LIBRARY_PATH"] = ""
     candidate = validate_spec201_candidate(args.spec201_candidate,
         args.spec201_candidate_sha256, [args.oracle_binary, args.server_binary],
         selected_profile=("replica-smoke" if args.smoke_test else "replica", vars(args)))
@@ -87,7 +89,7 @@ def main():
         path = output / (label + ".log")
         stream = path.open("wb")
         streams.append(stream)
-        node_env = dict(os.environ, LD_LIBRARY_PATH="/usr/local/lib",
+        node_env = dict(os.environ, LD_LIBRARY_PATH="",
                         NDN_CLIENT_TRANSPORT="unix:///run/nfd/" + node.name + ".sock")
         # getPopen supplies the node HOME; the launcher HOME must not replace it.
         node_env.pop("HOME", None)

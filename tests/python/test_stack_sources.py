@@ -31,6 +31,119 @@ def repository(tmp_path):
     return path
 
 
+@pytest.fixture
+def patched_source(repository, tmp_path, monkeypatch):
+    root = tmp_path / 'patch-repository'
+    directory = root / 'patches'
+    directory.mkdir(parents=True)
+    entries = []
+    for index, (before, after) in enumerate((('original', 'middle'), ('middle', 'final')), 1):
+        patch = directory / f'{index}.patch'
+        patch.write_text('diff --git a/tracked.txt b/tracked.txt\n'
+                         '--- a/tracked.txt\n+++ b/tracked.txt\n'
+                         f'@@ -1 +1 @@\n-{before}\n+{after}\n')
+        entries.append({'file': patch.name, 'sha256': sources.digest(patch)})
+    series = directory / 'series.json'
+    series.write_text(json.dumps({'schema': 1, 'upstreamCommit': git(repository, 'rev-parse', 'HEAD'),
+                                  'patches': entries}))
+    source = {'url': str(repository), 'commit': git(repository, 'rev-parse', 'HEAD'),
+              'patch_series': {'path': 'patches/series.json', 'sha256': sources.digest(series)},
+              'requires': ['ndn-cxx', 'openabe'], 'build_recipe_revision': 2}
+    monkeypatch.setattr(sources, 'REPOSITORY', root)
+    return source, root
+
+
+@pytest.mark.parametrize('name', ['NAC-ABE', 'openabe'])
+def test_materialize_applies_ordered_patches_without_changing_checkout(patched_source, tmp_path, name):
+    source, _ = patched_source
+    checkout = sources.prepare(source, name, tmp_path / 'deps')
+    application = tmp_path / 'application'
+    application.mkdir()
+    git(application, 'init')
+    (application / 'user.txt').write_text('untouched\n')
+    # The materialization is deliberately inside an unrelated application Git
+    # tree, where unbounded Git discovery previously selected the wrong root.
+    target = sources.materialize(source, name, checkout, application / 'build')
+    assert (target / 'tracked.txt').read_text() == 'final\n'
+    assert (checkout / 'tracked.txt').read_text() == 'original\n'
+    assert git(checkout, 'status', '--porcelain') == ''
+    assert (application / 'user.txt').read_text() == 'untouched\n'
+    assert not (application / 'tracked.txt').exists()
+
+
+def test_materialize_refuses_dirty_checkout_without_cleanup(patched_source, tmp_path):
+    source, _ = patched_source
+    checkout = sources.prepare(source, 'NAC-ABE', tmp_path / 'deps')
+    (checkout / 'tracked.txt').write_text('user edits\n')
+    with pytest.raises(ValueError, match='dirty source'):
+        sources.materialize(source, 'NAC-ABE', checkout, tmp_path / 'build')
+    assert (checkout / 'tracked.txt').read_text() == 'user edits\n'
+    assert not (tmp_path / 'build').exists()
+
+
+@pytest.mark.parametrize('corruption', ['series', 'patch', 'upstream', 'duplicate', 'escape'])
+def test_patch_identity_corruption_is_rejected(patched_source, corruption):
+    source, root = patched_source
+    series = root / 'patches/series.json'
+    data = json.loads(series.read_text())
+    if corruption == 'series':
+        series.write_text(series.read_text() + '\n')
+    elif corruption == 'patch':
+        (root / 'patches/1.patch').write_text('tampered\n')
+    else:
+        if corruption == 'upstream':
+            data['upstreamCommit'] = 'a' * 40
+        elif corruption == 'duplicate':
+            data['patches'].append(data['patches'][0])
+        else:
+            data['patches'][0]['file'] = '../outside.patch'
+        series.write_text(json.dumps(data))
+        source['patch_series']['sha256'] = sources.digest(series)
+    with pytest.raises(ValueError):
+        sources.patch_series(source)
+
+
+def test_wrong_patch_order_preserves_failed_diagnostic_tree(patched_source, tmp_path):
+    source, root = patched_source
+    series = root / 'patches/series.json'
+    data = json.loads(series.read_text())
+    data['patches'].reverse()
+    series.write_text(json.dumps(data))
+    source['patch_series']['sha256'] = sources.digest(series)
+    checkout = sources.prepare(source, 'NAC-ABE', tmp_path / 'deps')
+    with pytest.raises(ValueError, match='diagnostic tree preserved'):
+        sources.materialize(source, 'NAC-ABE', checkout, tmp_path / 'build')
+    assert len(list((tmp_path / 'build').glob('NAC-ABE-patched-*'))) == 1
+    assert git(checkout, 'status', '--porcelain') == ''
+    assert (checkout / 'tracked.txt').read_text() == 'original\n'
+
+
+def test_parallel_sdk_receipt_binds_distinct_upstream_and_patch_identity(patched_source, tmp_path):
+    source, root = patched_source
+    data = {'sources': {'NAC-ABE': source}}
+    upstream = tmp_path / 'global'
+    (upstream / 'lib').mkdir(parents=True)
+    for name in source['requires']:
+        (upstream / 'lib' / sources.LIBRARIES[name]).write_bytes(name.encode())
+    sdk = sources.sdk_prefix(data, 'NAC-ABE', upstream)
+    assert sdk != upstream
+    (sdk / 'lib').mkdir(parents=True)
+    library = sdk / 'lib/libnac-abe.so'
+    library.write_bytes(b'new-nac-api')
+    assert sources.receipt(data, 'NAC-ABE', sdk, record=True, upstream_prefix=upstream)
+    assert sources.receipt(data, 'NAC-ABE', sdk, upstream_prefix=upstream)
+    (upstream / 'lib/libopenabe.so').write_bytes(b'changed upstream')
+    assert not sources.receipt(data, 'NAC-ABE', sdk, upstream_prefix=upstream)
+    sources.receipt(data, 'NAC-ABE', sdk, record=True, upstream_prefix=upstream)
+    library.write_bytes(b'changed target')
+    assert not sources.receipt(data, 'NAC-ABE', sdk, upstream_prefix=upstream)
+    series = root / 'patches/series.json'
+    series.write_text(series.read_text() + '\n')
+    source['patch_series']['sha256'] = sources.digest(series)
+    assert sources.sdk_prefix(data, 'NAC-ABE', upstream) != sdk
+    assert not sources.receipt(data, 'NAC-ABE', sdk, upstream_prefix=upstream)
+
+
 def test_prepare_pins_commit_and_preserves_dirty_tree(repository, tmp_path):
     sha = git(repository, 'rev-parse', 'HEAD')
     source = {'url': str(repository), 'commit': sha}
@@ -133,12 +246,26 @@ def test_dependency_patch_change_invalidates_receipt(tmp_path, monkeypatch, name
 
 def test_different_pin_invalidates_receipt(tmp_path):
     data = sources.load_lock(LOCK)
+    # This case isolates ordinary source-pin receipt invalidation. The locked
+    # patched-source mismatch is a separate, earlier fail-closed boundary.
+    data['sources']['openabe'].pop('patch_series')
     (tmp_path / 'lib').mkdir()
     (tmp_path / 'lib/libopenabe.so').write_bytes(b'library')
     sources.receipt(data, 'openabe', tmp_path, record=True)
     changed = copy.deepcopy(data)
     changed['sources']['openabe']['commit'] = 'a' * 40
     assert not sources.receipt(changed, 'openabe', tmp_path)
+
+
+def test_patched_pin_mismatch_rejected_before_receipt_comparison(tmp_path):
+    data = sources.load_lock(LOCK)
+    (tmp_path / 'lib').mkdir()
+    (tmp_path / 'lib/libopenabe.so').write_bytes(b'library')
+    assert sources.receipt(data, 'openabe', tmp_path, record=True)
+    changed = copy.deepcopy(data)
+    changed['sources']['openabe']['commit'] = 'a' * 40
+    with pytest.raises(ValueError, match='schema/upstream commit differs'):
+        sources.receipt(changed, 'openabe', tmp_path)
 
 
 def test_build_recipe_revision_invalidates_receipt(tmp_path):
@@ -202,3 +329,18 @@ def test_unsupported_prerequisite_graph_rejected(tmp_path):
     path.write_text(json.dumps(data))
     with pytest.raises(ValueError, match='unsupported native prerequisite graph'):
         sources.load_lock(path)
+
+
+def test_host_lock_binds_openabe_final_reference_patch():
+    data = sources.load_lock(LOCK)
+    source = data['sources']['openabe']
+    assert source['commit'] == 'cb2a18c2d2845a03ed502df4b77f596b55e48ebd'
+    assert source['build_recipe_revision'] == 2
+    assert source['patch_series']['path'] == 'patches/openabe/series.json'
+    patches = sources.patch_series(source)
+    assert [name for name, _ in patches] == [
+        '0001-final-reference-release.patch',
+        '0002-aes-block-output-and-nist-vector.patch',
+    ]
+    assert b'src/tools/zprng.cpp' in patches[1][1]
+    assert b'src/test_libopenabe.cpp' in patches[1][1]

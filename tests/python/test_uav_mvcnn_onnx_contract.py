@@ -10,10 +10,9 @@ import onnx
 import onnxruntime as ort
 import torch
 
+from uav_mvcnn_inputs import _prepare_local_subject
 
 ROOT = Path(__file__).resolve().parents[2]
-MODEL = ROOT / "NDNSF-UAV-APP/models/mvcnn_vehicle_cpu.onnx"
-CHECKPOINT = ROOT / "NDNSF-UAV-APP/models/mvcnn_vehicle_cpu.pt"
 REGISTRY = ROOT / "NDNSF-UAV-APP/configs/uav_multiview_models.json"
 TOOLS = ROOT / "NDNSF-UAV-APP/tools"
 sys.path.insert(0, str(TOOLS))
@@ -22,15 +21,21 @@ from prepare_mvcnn_artifact import render  # noqa: E402
 
 
 class MvcnnOnnxContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        owner, manifest = _prepare_local_subject()
+        cls.model = Path(owner.name) / manifest["artifact"]["path"]
+        cls.checkpoint = Path(owner.name) / manifest["checkpoint"]["path"]
+
     def test_graph_has_explicit_joint_inputs_and_outputs(self) -> None:
-        onnx.checker.check_model(str(MODEL))
-        session = ort.InferenceSession(str(MODEL), providers=["CPUExecutionProvider"])
+        onnx.checker.check_model(str(self.model))
+        session = ort.InferenceSession(str(self.model), providers=["CPUExecutionProvider"])
         self.assertEqual(session.get_providers(), ["CPUExecutionProvider"])
         self.assertEqual({value.name for value in session.get_inputs()}, {"images", "viewMask"})
         self.assertEqual({value.name for value in session.get_outputs()}, {"logits", "pooledFeatures"})
 
     def test_masked_slots_do_not_change_joint_representation(self) -> None:
-        session = ort.InferenceSession(str(MODEL), providers=["CPUExecutionProvider"])
+        session = ort.InferenceSession(str(self.model), providers=["CPUExecutionProvider"])
         rng = np.random.default_rng(178)
         images = rng.random((1, 6, 3, 224, 224), dtype=np.float32)
         mask = np.array([[True, True, False, False, False, False]], dtype=np.bool_)
@@ -42,7 +47,7 @@ class MvcnnOnnxContractTest(unittest.TestCase):
         np.testing.assert_allclose(first[1], second[1], rtol=1e-5, atol=1e-6)
 
     def test_valid_view_permutation_is_equivalent(self) -> None:
-        session = ort.InferenceSession(str(MODEL), providers=["CPUExecutionProvider"])
+        session = ort.InferenceSession(str(self.model), providers=["CPUExecutionProvider"])
         rng = np.random.default_rng(179)
         images = rng.random((1, 6, 3, 224, 224), dtype=np.float32)
         mask = np.array([[True, True, True, True, False, False]], dtype=np.bool_)
@@ -54,7 +59,7 @@ class MvcnnOnnxContractTest(unittest.TestCase):
         np.testing.assert_allclose(first[1], second[1], rtol=1e-5, atol=1e-6)
 
     def test_native_checkpoint_and_onnx_outputs_match(self) -> None:
-        checkpoint = torch.load(CHECKPOINT, map_location="cpu", weights_only=True)
+        checkpoint = torch.load(self.checkpoint, map_location="cpu", weights_only=True)
         native = make_model(class_count=3, feature_dim=32)
         native.load_state_dict(checkpoint["state_dict"])
         native.eval()
@@ -66,7 +71,7 @@ class MvcnnOnnxContractTest(unittest.TestCase):
         mask = torch.ones((1, 6), dtype=torch.bool)
         with torch.no_grad():
             native_logits, native_pooled = native(native_images, mask)
-        session = ort.InferenceSession(str(MODEL), providers=["CPUExecutionProvider"])
+        session = ort.InferenceSession(str(self.model), providers=["CPUExecutionProvider"])
         exported_logits, exported_pooled = session.run(
             ["logits", "pooledFeatures"],
             {"images": native_images.numpy(), "viewMask": mask.numpy()})

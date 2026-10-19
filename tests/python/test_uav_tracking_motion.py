@@ -123,6 +123,10 @@ def test_worker_preserves_motion_metadata_without_copying_oracle(tmp_path: Path)
     assert next_result["motion"]["estimates"]
     assert all(item["status"] == "ok" for item in next_result["motion"]["estimates"])
     assert all(item["vehicleSpeedMmps"] == 0 for item in next_result["motion"]["estimates"])
+    assert {item["cameraId"] for item in next_result["motion"]["estimates"]} == {"UAV1", "UAV2", "UAV3"}
+    for item in next_result["motion"]["estimates"]:
+        frame = next(frame for frame in next_result["frames"] if frame["cameraId"] == item["cameraId"])
+        assert item["globalId"] in {track["globalId"] for track in frame["tracks"]}
     summary = summarize_motion_result(result)
     assert summary["status"] == "unknown"
     assert summary["oracle"]["provenance"] == "simulated-input"
