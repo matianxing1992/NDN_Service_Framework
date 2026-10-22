@@ -49,6 +49,15 @@ public:
           const std::shared_ptr<ProtectedRuntime>& protectedRuntime,
           const std::shared_ptr<NativeModelRunner>& runner);
 
+  /** Bind immutable publication metadata for one admitted invocation.
+   * The callback owns the request runtime, independently of the shared cache,
+   * and acquires current residency authority on every publication. */
+  NativeProviderHandlerConfig::BoundRunnerReusePublisher
+  bindPublisher(const NativeSelectionProjectionV3& projection,
+                const std::string& providerIdentity,
+                const std::string& providerBootId,
+                const std::shared_ptr<ProtectedRuntime>& protectedRuntime);
+
   NativeProviderResidencyOwnerResultV4 queryPlacementResidencyV4(
     const std::vector<NativeJson>& candidateArtifacts,
     const std::string& processEpoch,

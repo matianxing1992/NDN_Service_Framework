@@ -245,8 +245,10 @@ NativeOnnxWorkerLocation
 providerAssemblyWorker()
 {
   std::vector<std::string> candidates;
-  if (const auto* dir = std::getenv("NDNSF_SPEC182_BIN_DIR"); dir && *dir)
+  if (const auto* dir = std::getenv("NDNSF_SPEC182_BIN_DIR"); dir && *dir) {
+    candidates.emplace_back(std::string(dir) + "/di-native-assembly-worker");
     candidates.emplace_back(std::string(dir) + "/DI_NativeOnnxAssemblyWorker");
+  }
   candidates.emplace_back("build-nac182/DI_NativeOnnxAssemblyWorker");
   candidates.emplace_back("build/DI_NativeOnnxAssemblyWorker");
   candidates.emplace_back("build-spec185-b0c-normal/DI_NativeOnnxAssemblyWorker");
@@ -1851,6 +1853,9 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheScansStableRootAndVerifiesFileDiges
            static_cast<std::streamsize>(modelBytes.size()));
   std::ofstream(roleDirectory / "manifest.json")
     << "{\"assembledModelDigest\":\"" << modelDigest
+    << "\",\"modelName\":\"" << projection.plan.modelName
+    << "\",\"modelDigest\":\"" << zeroDigest('4')
+    << "\",\"canonicalSourceDigest\":\"" << zeroDigest('3')
     << "\",\"recipeDigest\":\"" << projection.assembly.recipeDigest
     << "\",\"modelManifestDigest\":\"" << projection.assembly.modelManifestDigest
     << "\",\"graphDigest\":\"" << projection.assembly.graphDigest
@@ -1885,10 +1890,94 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheScansStableRootAndVerifiesFileDiges
                     "canonical-root-post-selection-cache");
   BOOST_CHECK_EQUAL(progressPhase, "CACHE_HIT");
 
+  auto republished = projection;
+  NativeJson currentRoot = {
+    {"schema", "ndnsf-di-canonical-model-manifest-v1"}, {"state", "ACTIVE"},
+    {"modelName", projection.plan.modelName}, {"modelIdentityDigest", zeroDigest('4')},
+    {"artifactProfileDigest", projection.assembly.artifactProfileDigest},
+    {"metadata", {{"canonicalSourceDigest", zeroDigest('3')}, {"canonicalSourceBytes", 128}}}};
+  auto rootWire = nativeCanonicalJson(currentRoot);
+  NativeCanonicalOnnxFetchers cacheFetchers;
+  cacheFetchers.getArtifact = [&] (const ndn::Name& name) -> std::optional<ndn::Buffer> {
+    if (name != ndn::Name(republished.canonicalArtifactName))
+      return std::nullopt;
+    return ndn::Buffer(rootWire.data(), rootWire.size());
+  };
+  republished.assembly.modelManifestDigest = nativePlanningDigest(rootWire);
+  republished.assembly.recipeDigest = nativePlanningDigest(
+    canonicalNativeOnnxRecipeJson(republished.assembly));
+  BOOST_REQUIRE_NE(republished.assembly.recipeDigest, projection.assembly.recipeDigest);
+  BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(republished, options));
+  const auto rebound = tryLoadNativeCanonicalOnnxRoleFromCache(
+    cacheFetchers, republished, options);
+  BOOST_REQUIRE(rebound);
+  BOOST_CHECK_EQUAL(rebound->path, loaded->path);
+  BOOST_CHECK_EQUAL(rebound->metadata.at("recipeDigest"), republished.assembly.recipeDigest);
+  BOOST_CHECK_EQUAL(rebound->metadata.at("modelManifestDigest"),
+                    republished.assembly.modelManifestDigest);
+  BOOST_CHECK_EQUAL(rebound->metadata.at("assembledModelDigest"), modelDigest);
+
+  auto changedNodes = republished;
+  changedNodes.assembly.nodeIndices.pop_back();
+  changedNodes.assembly.recipeDigest = nativePlanningDigest(
+    canonicalNativeOnnxRecipeJson(changedNodes.assembly));
+  BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, changedNodes, options));
+  auto changedInputs = republished;
+  changedInputs.assembly.expectedInputs.front().name = "foreign_input";
+  changedInputs.assembly.recipeDigest = nativePlanningDigest(
+    canonicalNativeOnnxRecipeJson(changedInputs.assembly));
+  BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, changedInputs, options));
+  auto changedProfile = republished;
+  changedProfile.assembly.artifactProfileDigest = zeroDigest('1');
+  auto newRoot = currentRoot;
+  newRoot["artifactProfileDigest"] = changedProfile.assembly.artifactProfileDigest;
+  rootWire = nativeCanonicalJson(newRoot);
+  changedProfile.assembly.modelManifestDigest = nativePlanningDigest(rootWire);
+  changedProfile.assembly.recipeDigest = nativePlanningDigest(
+    canonicalNativeOnnxRecipeJson(changedProfile.assembly));
+  BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, changedProfile, options));
+  const auto checkRoot = [&] (const NativeJson& root) {
+    rootWire = nativeCanonicalJson(root);
+    auto bound = republished;
+    bound.assembly.modelManifestDigest = nativePlanningDigest(rootWire);
+    bound.assembly.recipeDigest = nativePlanningDigest(
+      canonicalNativeOnnxRecipeJson(bound.assembly));
+    return tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, bound, options);
+  };
+  newRoot = currentRoot;
+  newRoot["state"] = "RETIRED";
+  BOOST_CHECK_THROW(checkRoot(newRoot), std::runtime_error);
+  newRoot = currentRoot;
+  newRoot["artifactProfileDigest"] = zeroDigest('1');
+  BOOST_CHECK_THROW(checkRoot(newRoot), std::runtime_error);
+  newRoot = currentRoot;
+  newRoot["metadata"]["canonicalSourceBytes"] = 0;
+  BOOST_CHECK_THROW(checkRoot(newRoot), std::runtime_error);
+  newRoot = currentRoot;
+  newRoot["modelIdentityDigest"] = zeroDigest('5');
+  BOOST_CHECK(!checkRoot(newRoot));
+  newRoot = currentRoot;
+  newRoot["metadata"]["canonicalSourceDigest"] = zeroDigest('6');
+  BOOST_CHECK(!checkRoot(newRoot));
+  BOOST_CHECK_THROW(
+    tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, republished, options),
+    std::runtime_error);
+  BOOST_REQUIRE(checkRoot(currentRoot));
+  BOOST_CHECK(std::filesystem::exists(roleDirectory));
+
   std::ofstream(roleDirectory / "model.onnx", std::ios::binary | std::ios::trunc)
     << "tampered";
+  options.verifyCachedArtifactDigest = false;
+  BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, republished, options));
+  BOOST_CHECK(std::filesystem::exists(roleDirectory));
+  options.verifyCachedArtifactDigest = true;
   BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(projection, options));
   BOOST_CHECK(!std::filesystem::exists(roleDirectory));
+  const auto partialDirectory = roleDirectory.parent_path() / "partial-publication";
+  std::filesystem::create_directories(partialDirectory);
+  std::ofstream(partialDirectory / "manifest.json") << "{unfinished";
+  BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, republished, options));
+  BOOST_CHECK(std::filesystem::exists(partialDirectory));
   std::filesystem::remove_all(root, cleanupError);
 }
 
@@ -1927,8 +2016,10 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthoriza
     };
 
     std::istringstream projectionInput(readText(root / "projection.json"));
-    const auto childProjection = nativeSelectionProjectionV3FromJson(
+    auto childProjection = nativeSelectionProjectionV3FromJson(
       projectionInput, "/LLM/Pipeline/Stage/0");
+    // Production obtains this name from the authenticated assignment envelope.
+    childProjection.canonicalArtifactName = readText(root / "assigned-artifact");
     const auto providerBootId = readText(root / "provider-boot-id");
     const auto now = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1973,8 +2064,15 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthoriza
     options.providerIdentity = childProjection.provider;
     options.roleAssemblySpecDigest = readText(root / "role-assembly-spec-digest");
     options.protectedRuntime = runtime;
+    NativeCanonicalOnnxFetchers cacheFetchers;
+    cacheFetchers.getArtifact = [&] (const ndn::Name& name) -> std::optional<ndn::Buffer> {
+      if (name != ndn::Name(childProjection.canonicalArtifactName))
+        return std::nullopt;
+      const auto wire = readText(root / "root.json");
+      return ndn::Buffer(wire.data(), wire.size());
+    };
     const auto hot = tryLoadNativeCanonicalOnnxRoleFromCache(
-      childProjection, options, readText(root / "source-name"),
+      cacheFetchers, childProjection, options, readText(root / "source-name"),
       readText(root / "source-digest"));
     BOOST_REQUIRE(hot);
     BOOST_REQUIRE(!hot->path.empty());
@@ -1986,7 +2084,24 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthoriza
     const auto plaintext = providerAssemblyRead(hot->path);
     BOOST_CHECK_EQUAL(providerAssemblyDigest(plaintext),
                       hot->metadata.at("assembledModelDigest"));
+    BOOST_CHECK_EQUAL(hot->metadata.at("modelManifestDigest"),
+                      childProjection.assemblyContract().modelManifestDigest);
+    BOOST_CHECK_EQUAL(hot->metadata.at("recipeDigest"),
+                      childProjection.assemblyContract().recipeDigest);
+    auto expiredProjection = childProjection;
+    expiredProjection.deadlineMs = 1;
+    BOOST_CHECK_THROW(
+      tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, expiredProjection, options),
+      std::runtime_error);
+    options.shouldCancel = [] { return true; };
+    BOOST_CHECK_THROW(
+      tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, childProjection, options),
+      std::runtime_error);
+    options.shouldCancel = {};
     runtime->complete();
+    BOOST_CHECK_THROW(
+      tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, childProjection, options),
+      std::runtime_error);
     std::ofstream(root / "child-success")
       << providerBootId << "\n" << childProjection.grantDigest << "\n"
       << hot->metadata.at("assembledModelDigest") << "\n";
@@ -2168,14 +2283,26 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthoriza
   auto childProjection = projection;
   childProjection.requestId = "/spec190/provider/protected/exec-child";
   childProjection.dataflow.requestId = childProjection.requestId;
+  childProjection.canonicalArtifactName = rootName.toUri() + "/republished";
+  auto republishedRoot = NativeJson::parse(rootText);
+  republishedRoot["metadata"]["canonicalSourceDataName"] =
+    sourceName.toUri() + "/republished";
+  childProjection.assembly.modelManifestDigest =
+    nativePlanningDigest(nativeCanonicalJson(republishedRoot));
+  childProjection.assembly.recipeDigest = nativePlanningDigest(
+    canonicalNativeOnnxRecipeJson(childProjection.assembly));
+  childProjection.selectedRole = childProjection.assembly;
   const auto childNow = static_cast<std::uint64_t>(
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
   childProjection.deadlineMs = childNow + 60'000;
   auto childGrantRequest = grantRequest;
   childGrantRequest.requestId = childProjection.requestId;
+  childGrantRequest.modelManifestDigest = childProjection.assembly.modelManifestDigest;
   childGrantRequest.issuedAtMs = 1;
-  const auto childGrant = NativeArtifactGrantIssuer(issuerConfig).issue(
+  auto childIssuerConfig = issuerConfig;
+  childIssuerConfig.allowedModelManifests = {childProjection.assembly.modelManifestDigest};
+  const auto childGrant = NativeArtifactGrantIssuer(childIssuerConfig).issue(
     childGrantRequest.sign(*requesterPrivate), childNow, childNow + 60'000);
   childProjection.grantName = childGrant.grantName;
   childProjection.grantDigest = childGrant.grantDigest;
@@ -2197,6 +2324,8 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthoriza
   };
   writeText(execRoot / "projection.json",
             nativeSelectionProjectionV3ToJson(childProjection));
+  writeText(execRoot / "root.json", nativeCanonicalJson(republishedRoot));
+  writeText(execRoot / "assigned-artifact", childProjection.canonicalArtifactName);
   writeText(execRoot / "provider-boot-id", "spec190-protected-boot-after-exec");
   writeText(execRoot / "cache-dir", cacheDir);
   writeText(execRoot / "role-assembly-spec-digest", roleAssemblySpecDigest);
@@ -2228,7 +2357,7 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthoriza
       BOOST_FAIL("waitpid failed for protected assembled exec child");
   }
   BOOST_REQUIRE(WIFEXITED(status));
-  BOOST_CHECK_EQUAL(WEXITSTATUS(status), 0);
+  BOOST_REQUIRE_EQUAL(WEXITSTATUS(status), 0);
   BOOST_CHECK(std::filesystem::is_regular_file(execRoot / "child-success"));
   std::filesystem::remove_all(execRoot, cleanupError);
   std::filesystem::remove_all(cacheDir, cleanupError);

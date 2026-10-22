@@ -1495,6 +1495,71 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   const std::string& canonicalSourceName,
   const std::string& canonicalSourceDigest)
 {
+  return tryLoadNativeCanonicalOnnxRoleFromCache(
+    NativeCanonicalOnnxFetchers{}, projection, options, canonicalSourceName,
+    canonicalSourceDigest);
+}
+
+std::optional<NativeModelRunnerSpec>
+tryLoadNativeCanonicalOnnxRoleFromCache(
+  ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options,
+  const std::string& canonicalSourceName,
+  const std::string& canonicalSourceDigest)
+{
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [&ctx] (const ndn::Name& name) {
+    return ctx.getArtifact(name);
+  };
+  auto effective = options;
+  effective.shouldCancel = [&ctx, configured = options.shouldCancel] {
+    return (configured && configured()) || (ctx.isStreamed() && ctx.streamCancelled());
+  };
+  return tryLoadNativeCanonicalOnnxRoleFromCache(
+    fetchers, projection, effective, canonicalSourceName, canonicalSourceDigest);
+}
+
+namespace {
+
+void
+validateCanonicalRootPayload(const std::optional<ndn::Buffer>& payload,
+                             const NativeSelectionProjectionV3& projection)
+{
+  const auto& recipe = projection.assemblyContract();
+  if (!payload || payload->empty() || payload->size() > recipe.maxSourceBytes ||
+      payload->size() > MaxAssemblyMetadataBytes ||
+      payload->size() > recipe.maxAssembledBytes)
+    throw std::runtime_error("DI_CANONICAL_ROOT_UNAVAILABLE");
+  if (sha256Hex(*payload) != recipe.modelManifestDigest)
+    throw std::runtime_error("DI_CANONICAL_ROOT_DIGEST_MISMATCH");
+  validateBoundedMaterialJson(*payload, "DI_CANONICAL_ROOT_SCHEMA_MISMATCH");
+}
+
+void
+validateCanonicalRootHeader(const boost::property_tree::ptree& root,
+                            const NativeSelectionProjectionV3& projection,
+                            bool cacheCompatibilityMode = false)
+{
+  if (!cacheCompatibilityMode &&
+      (root.get<std::string>("schema", "") != "ndnsf-di-canonical-model-manifest-v1" ||
+       root.get<std::string>("state", "") != "ACTIVE"))
+    throw std::runtime_error("DI_CANONICAL_ROOT_SCHEMA_MISMATCH");
+  if (root.get<std::string>("artifactProfileDigest", "") !=
+      projection.assemblyContract().artifactProfileDigest)
+    throw std::runtime_error("DI_CANONICAL_ROOT_PROFILE_MISMATCH");
+}
+
+} // namespace
+
+std::optional<NativeModelRunnerSpec>
+tryLoadNativeCanonicalOnnxRoleFromCache(
+  const NativeCanonicalOnnxFetchers& fetchers,
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options,
+  const std::string& canonicalSourceName,
+  const std::string& canonicalSourceDigest)
+{
   if (options.cacheDir.empty() || options.providerIdentity.empty())
     return std::nullopt;
   const bool protectedRole = projection.assemblyContract().protectionEpoch != "plaintext-v1";
@@ -1548,9 +1613,83 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
          : projection.assemblyContract().recipeDigest.substr(7));
   }
   std::error_code error;
-  if (!std::filesystem::is_directory(directory, error) || error)
-    return std::nullopt;
+  bool reboundPublication = false;
+  auto cachedRecipeDigest = projection.assemblyContract().recipeDigest;
+  auto cachedManifestDigest = projection.assemblyContract().modelManifestDigest;
+  if (!std::filesystem::is_directory(directory, error) || error) {
+    // A publication certificate also contains retrieval references. Prove the
+    // complete assembly recipe unchanged before reusing a different certificate.
+    const auto& currentRecipe = projection.assemblyContract();
+    if (nativePlanningDigest(canonicalNativeOnnxRecipeJson(currentRecipe)) !=
+        currentRecipe.recipeDigest || !fetchers.getArtifact ||
+        !options.cacheCompatibilitySourceDir.empty() ||
+        projection.canonicalArtifactName.empty())
+      return std::nullopt;
+    const auto rootPayload = fetchers.getArtifact(ndn::Name(projection.canonicalArtifactName));
+    validateCanonicalRootPayload(rootPayload, projection);
+    std::istringstream rootInput(std::string(rootPayload->begin(), rootPayload->end()));
+    boost::property_tree::ptree currentRoot;
+    boost::property_tree::read_json(rootInput, currentRoot);
+    validateCanonicalRootHeader(currentRoot, projection);
+    requireActiveAssembly(options, projection.deadlineMs);
+    const auto sourceMetadata = currentRoot.get_child_optional("metadata");
+    const auto currentSourceDigest = sourceMetadata
+      ? firstString(*sourceMetadata, {"canonicalSourceDigest", "canonical_source_digest",
+                                      "sourceDigest", "source_digest"}) : std::string{};
+    if (currentSourceDigest.empty() || !sourceMetadata ||
+        firstUint64(*sourceMetadata, {"canonicalSourceBytes", "canonical_source_bytes",
+                                     "sourceBytes", "source_bytes"}) == 0)
+      throw std::runtime_error("DI_CANONICAL_SOURCE_METADATA_MISSING");
+    const auto modelName = currentRoot.get<std::string>("modelName", projection.plan.modelName);
+    const auto modelDigest = currentRoot.get<std::string>("modelIdentityDigest", "");
+    if (modelName.empty() || modelDigest.empty())
+      throw std::runtime_error("DI_CANONICAL_ROOT_MODEL_IDENTITY_MISSING");
+    const auto plaintextRoleRoot = cacheRoot / "assembled" / safeRole(
+      currentRecipe.selectedRole);
+    constexpr std::size_t MAX_PUBLICATION_REUSE_CANDIDATES = 128;
+    std::size_t inspected = 0;
+    error.clear();
+    std::filesystem::directory_iterator entry(plaintextRoleRoot, error);
+    const std::filesystem::directory_iterator end;
+    for (; !error && entry != end && inspected < MAX_PUBLICATION_REUSE_CANDIDATES;
+         entry.increment(error), ++inspected) {
+      requireActiveAssembly(options, projection.deadlineMs);
+      try {
+        const auto candidate = entry->path();
+        requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, candidate);
+        const auto manifestPath = candidate / "manifest.json";
+        requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, manifestPath);
+        const auto manifest = readJson(manifestPath);
+        const auto previousRoot = firstString(manifest, {"modelManifestDigest"});
+        const auto previousRecipe = firstString(manifest, {"recipeDigest"});
+        if (!isSha256Digest(previousRoot) || !isSha256Digest(previousRecipe) ||
+            firstString(manifest, {"modelName"}) != modelName ||
+            firstString(manifest, {"modelDigest"}) != modelDigest ||
+            firstString(manifest, {"canonicalSourceDigest"}) != currentSourceDigest ||
+            candidate.filename() != previousRecipe.substr(7))
+          continue;
+        auto equivalentRecipe = currentRecipe;
+        equivalentRecipe.modelManifestDigest = previousRoot;
+        if (nativePlanningDigest(canonicalNativeOnnxRecipeJson(equivalentRecipe)) !=
+            previousRecipe)
+          continue;
+        directory = candidate;
+        persistentPlaintextArtifact = protectedRole;
+        cachedRecipeDigest = previousRecipe;
+        cachedManifestDigest = previousRoot;
+        reboundPublication = true;
+        break;
+      }
+      catch (const std::exception&) {
+        // Unrelated or partial cache entries cannot authorize reuse.
+      }
+    }
+    if (!reboundPublication)
+      return std::nullopt;
+  }
   const auto discardCorruptEntry = [&] (const std::filesystem::path& entry) {
+    if (reboundPublication)
+      return;
     std::error_code cleanupError;
     withNativeArtifactDirectoryFinalization(entry.string(), [&] {
       std::filesystem::remove_all(entry, cleanupError);
@@ -1574,8 +1713,8 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
       requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, ciphertextDigestPath);
     const auto manifest = readJson(manifestPath);
     const auto assembledDigest = firstString(manifest, {"assembledModelDigest"});
-    if (firstString(manifest, {"recipeDigest"}) != projection.assemblyContract().recipeDigest ||
-        firstString(manifest, {"modelManifestDigest"}) != projection.assemblyContract().modelManifestDigest ||
+    if (firstString(manifest, {"recipeDigest"}) != cachedRecipeDigest ||
+        firstString(manifest, {"modelManifestDigest"}) != cachedManifestDigest ||
         firstString(manifest, {"artifactProfileDigest"}) != projection.assemblyContract().artifactProfileDigest ||
         firstString(manifest, {"graphDigest"}) != projection.assemblyContract().graphDigest ||
         firstString(manifest, {"canonicalInitializerDigest"}) !=
@@ -1595,7 +1734,8 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
          firstString(manifest, {"keyReferenceDigest"}) !=
            keyReferenceDigest) ||
         !isSha256Digest(assembledDigest) ||
-        ((!protectedRole || persistentPlaintextArtifact) && options.verifyCachedArtifactDigest &&
+        ((!protectedRole || persistentPlaintextArtifact) &&
+          (options.verifyCachedArtifactDigest || reboundPublication) &&
           sha256File(modelPath, projection.assemblyContract().maxAssembledBytes) != assembledDigest)) {
       discardCorruptEntry(directory);
       return std::nullopt;
@@ -2156,17 +2296,7 @@ prepareNativeCanonicalOnnxRole(
     logMaterialFetch("root", rootName,
                      rootPayload && !rootPayload->empty() ? "returned" : "empty",
                      &rootPayload, projection.assemblyContract().modelManifestDigest);
-    if (!rootPayload || rootPayload->empty() || rootPayload->size() >
-        projection.assemblyContract().maxSourceBytes ||
-        rootPayload->size() > MaxAssemblyMetadataBytes ||
-        rootPayload->size() > projection.assemblyContract().maxAssembledBytes) {
-      throw std::runtime_error("DI_CANONICAL_ROOT_UNAVAILABLE");
-    }
-    if (sha256Hex(std::vector<std::uint8_t>(rootPayload->begin(), rootPayload->end())) !=
-        projection.assemblyContract().modelManifestDigest) {
-      throw std::runtime_error("DI_CANONICAL_ROOT_DIGEST_MISMATCH");
-    }
-    validateBoundedMaterialJson(*rootPayload, "DI_CANONICAL_ROOT_SCHEMA_MISMATCH");
+    validateCanonicalRootPayload(rootPayload, projection);
     rootPayloadBytes = rootPayload->size();
     logMaterialFetch("root", rootName, "verified", &rootPayload,
                      projection.assemblyContract().modelManifestDigest);
@@ -2237,16 +2367,9 @@ prepareNativeCanonicalOnnxRole(
       });
       root = readJson(rootFile, projection.assemblyContract().maxSourceBytes);
       rootPayload.reset();
-      if (root.get<std::string>("schema", "") !=
-            "ndnsf-di-canonical-model-manifest-v1" ||
-          root.get<std::string>("state", "") != "ACTIVE") {
-        throw std::runtime_error("DI_CANONICAL_ROOT_SCHEMA_MISMATCH");
-      }
     }
+    validateCanonicalRootHeader(root, projection, cacheCompatibilityMode);
     const auto rootProfile = root.get<std::string>("artifactProfileDigest", "");
-    if (rootProfile != projection.assemblyContract().artifactProfileDigest) {
-      throw std::runtime_error("DI_CANONICAL_ROOT_PROFILE_MISMATCH");
-    }
     const auto metadata = root.get_child_optional("metadata");
     const auto sourceName = metadata
       ? firstString(*metadata, {"canonicalSourceDataName", "canonical_source_data_name",

@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRunnerReuseCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include <ndn-cxx/name.hpp>
 
@@ -126,6 +127,38 @@ residentIdentity(const ProtectedRuntimeBindingV1& binding,
   identity.fencingToken = binding.fencingToken;
   identity.revocationSequence = binding.revocationSequence;
   return identity;
+}
+
+NativeSelectionProjectionV3
+reuseProjection(const ProtectedRuntimeBindingV1& binding,
+                const ProtectedResidentIdentityV1& identity)
+{
+  NativeSelectionProjectionV3 projection;
+  projection.provider = binding.provider;
+  projection.requestId = binding.requestId;
+  projection.attempt = binding.attempt;
+  projection.planCoreDigest = binding.planCoreDigest;
+  projection.planDigest = binding.planDigest;
+  projection.securityPolicySnapshotDigest = binding.securityPolicySnapshotDigest;
+  projection.grantDigest = binding.grantDigest;
+  projection.canonicalArtifactName = "/model/resident-cache-test";
+  projection.executionRole.roleId = binding.role;
+  auto& role = projection.assembly;
+  role.role = role.selectedRole = binding.role;
+  role.modelManifestDigest = identity.modelManifestDigest;
+  role.graphDigest = identity.graphDigest;
+  role.canonicalInitializerDigest = identity.initializerDigest;
+  role.artifactDigest = identity.artifactDigest;
+  role.recipeDigest = identity.recipeDigest;
+  role.backend = identity.backend;
+  role.backendAbi = identity.backendAbi;
+  role.protectionEpoch = binding.protectionEpoch;
+  projection.selectedRole = role;
+  projection.dataflow.role = binding.role;
+  projection.dataflow.requestId = binding.requestId;
+  projection.dataflow.attempt = binding.attempt;
+  projection.dataflow.planDigest = binding.planDigest;
+  return projection;
 }
 
 class NoDependencyIo final : public DependencyIo
@@ -784,5 +817,111 @@ BOOST_FIXTURE_TEST_CASE(ProtectedResidentAuthorityRejectsExpiredOrSubstitutedBin
                     std::runtime_error);
   BOOST_CHECK_EQUAL(authority.counters().activeUses, 0U);
   BOOST_CHECK_EQUAL(authority.counters().residentEntries, 0U);
+}
+
+BOOST_FIXTURE_TEST_CASE(BoundRunnerPublisherChecksCurrentAuthorityBeforeCacheHit,
+                        BoundGrantFixture)
+{
+  const auto authorityKey = edKey('a');
+  const auto requesterKey = edKey('b');
+  const auto providerKey = edKey('c');
+  NativeGrantIssuerConfig policy;
+  policy.authorityIdentity = "/authority";
+  policy.requesterIdentity = "/requester";
+  policy.protectionEpoch = binding.protectionEpoch;
+  policy.keyId = "reuse-test-key";
+  policy.authorityPrivateKey = authorityKey;
+  policy.requesterPublicKey = publicKey(requesterKey);
+  policy.allowedModelManifests = {config.modelManifestDigest};
+  policy.recipientPublicKeys = {{binding.provider, publicKey(providerKey)}};
+  policy.contentKey = [] (const auto&, const auto&) {
+    return std::vector<std::uint8_t>(32, 7);
+  };
+  NativeArtifactGrantIssuer issuer(policy);
+  now = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  NativeSignedGrantRequest request;
+  request.providerIdentity = binding.provider;
+  request.requesterIdentity = policy.requesterIdentity;
+  request.requestId = binding.requestId;
+  request.attempt = binding.attempt;
+  request.planCoreDigest = binding.planCoreDigest;
+  request.grantViewDigest = "sha256:" + std::string(64, 'd');
+  request.modelManifestDigest = config.modelManifestDigest;
+  request.protectionEpoch = binding.protectionEpoch;
+  request.issuedAtMs = now;
+  const auto grant = issuer.issue(request.sign(*requesterKey), now, now + 60000);
+  binding.grantName = grant.grantName;
+  binding.grantDigest = grant.grantDigest;
+  binding.expiresAtMs = now + 50000;
+  config.authorityIdentity = policy.authorityIdentity;
+  config.authorityPublicKeyRaw = publicBytes(authorityKey);
+  config.recipientKey.material = std::string(32, 'c');
+  wire = grant.wireJson;
+
+  auto runtime = std::make_shared<ProtectedRuntime>(binding, config);
+  runtime->verifyGrant(binding, now);
+  const auto identity = residentIdentity(binding, config.modelManifestDigest);
+  const auto projection = reuseProjection(binding, identity);
+  auto authority = std::make_shared<ProtectedResidentAuthority>();
+  NativeProviderRunnerReuseCache cache(1);
+  cache.setAuthority(authority);
+  auto publish = cache.bindPublisher(projection, binding.provider, binding.providerBootId, runtime);
+  auto runner = makeNativeModelRunner([] (const RoleExecutionContext&) {
+    return std::map<std::string, TensorBundle>{};
+  });
+  publish(runner);
+  publish(runner);
+  BOOST_CHECK_EQUAL(authority->counters().activeUses, 1U);
+  authority->retire(identity);
+  BOOST_CHECK_EXCEPTION(publish(runner), std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("identity is retired") != std::string::npos;
+    });
+  cache.clear();
+  BOOST_CHECK(authority->drain(std::chrono::milliseconds(100)));
+  const std::weak_ptr<ProtectedRuntime> requestRuntime = runtime;
+  runtime.reset();
+  BOOST_CHECK(!requestRuntime.expired());
+  publish = {};
+  BOOST_CHECK(requestRuntime.expired());
+
+  auto expiringBinding = binding;
+  const auto currentTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  expiringBinding.expiresAtMs = currentTime + 1000;
+  auto expiringRuntime = std::make_shared<ProtectedRuntime>(expiringBinding, config);
+  expiringRuntime->verifyGrant(expiringBinding, currentTime);
+  auto expiryAuthority = std::make_shared<ProtectedResidentAuthority>();
+  NativeProviderRunnerReuseCache expiryCache(1);
+  expiryCache.setAuthority(expiryAuthority);
+  auto expires = expiryCache.bindPublisher(reuseProjection(expiringBinding, identity),
+    binding.provider, binding.providerBootId, expiringRuntime);
+  expires(runner);
+  BOOST_CHECK_EQUAL(expiryAuthority->counters().activeUses, 1U);
+  std::this_thread::sleep_until(std::chrono::system_clock::time_point(
+    std::chrono::milliseconds(expiringBinding.expiresAtMs)));
+  BOOST_CHECK_THROW(expires(runner), std::runtime_error);
+  expiryCache.clear();
+  BOOST_CHECK(expiryAuthority->drain(std::chrono::milliseconds(100)));
+}
+
+BOOST_FIXTURE_TEST_CASE(BoundRunnerPublisherRejectsExpiredGrantAfterBinding,
+                        BoundGrantFixture)
+{
+  auto runtime = std::make_shared<ProtectedRuntime>(binding, config);
+  runtime->verifyGrant(binding, now);
+  const auto identity = residentIdentity(binding, config.modelManifestDigest);
+  auto authority = std::make_shared<ProtectedResidentAuthority>();
+  NativeProviderRunnerReuseCache cache(1);
+  cache.setAuthority(authority);
+  auto publish = cache.bindPublisher(reuseProjection(binding, identity),
+                                    binding.provider, binding.providerBootId, runtime);
+  auto runner = makeNativeModelRunner([] (const RoleExecutionContext&) {
+    return std::map<std::string, TensorBundle>{};
+  });
+  BOOST_CHECK_THROW(publish(runner), std::runtime_error);
+  BOOST_CHECK_EQUAL(authority->counters().residentEntries, 0U);
+  BOOST_CHECK_EQUAL(authority->counters().activeUses, 0U);
 }
 }

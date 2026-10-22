@@ -2140,6 +2140,13 @@ main(int argc, char** argv)
                 runnerReuseCache->publish(
                   projection, providerName, providerBootId, protectedRuntime, runner);
               };
+            config.runnerReusePublisherFactory =
+              [runnerReuseCache, providerName = options.providerName, providerBootId](
+                const NativeSelectionProjectionV3& projection,
+                const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
+                return runnerReuseCache->bindPublisher(
+                  projection, providerName, providerBootId, protectedRuntime);
+              };
             installNativeProtectedGrantFactory(config);
             config.planDigest = sha256File(options.planPath);
             if (const auto* mutation = std::getenv("SPEC180_YN_MUTATION")) {
@@ -2278,7 +2285,7 @@ main(int argc, char** argv)
                       logProviderPreparationProgress(projection, "CACHE_LOOKUP_BEGIN",
                                                      "recipe-addressed");
                       if (const auto cached = tryLoadNativeCanonicalOnnxRoleFromCache(
-                            projection, jobOptions)) {
+                            ctx, projection, jobOptions)) {
                         built = *cached;
                         diskCacheHit->store(true, std::memory_order_relaxed);
                         logProviderPreparationProgress(projection, "CACHE_LOOKUP_HIT",
@@ -2354,7 +2361,7 @@ main(int argc, char** argv)
                         "current-grant-ciphertext");
                     }
                     else if (const auto rebound = tryLoadNativeCanonicalOnnxRoleFromCache(
-                          projection, assemblyOptions)) {
+                          ctx, projection, assemblyOptions)) {
                       spec = *rebound;
                       logProviderPreparationProgress(
                         projection, "CACHE_TEMPLATE_REBIND", "current-grant-ciphertext");

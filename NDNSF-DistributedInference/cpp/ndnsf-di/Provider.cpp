@@ -12,6 +12,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRunnerReuseCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
@@ -73,12 +74,10 @@ struct ProviderConfig::Impl
 
 namespace {
 
-class ProviderRunnerReuseCache;
-
 std::shared_ptr<ProtectedResidentAuthority>
 makeProtectedResidentAuthority(
   const std::shared_ptr<OnnxRuntimeSessionCache>& sessionCache,
-  const std::shared_ptr<ProviderRunnerReuseCache>& runnerCache);
+  const std::shared_ptr<NativeProviderRunnerReuseCache>& runnerCache);
 
 void
 reportArtifactCleanupFailure(const char* phase) noexcept
@@ -424,395 +423,14 @@ struct ProviderMetrics
 
 std::uint64_t providerNowMs();
 
-std::string
-providerRunnerReuseKey(const NativeSelectionProjectionV3& projection,
-                       const std::string& providerIdentity,
-                       const std::string& providerBootId,
-                       const std::shared_ptr<ProtectedRuntime>& protectedRuntime)
-{
-  std::ostringstream canonical;
-  const auto frame = [&canonical] (const std::string& value) {
-    canonical << value.size() << ':' << value;
-  };
-  const auto frameUint = [&frame] (std::uint64_t value) {
-    frame(std::to_string(value));
-  };
-  const auto frameStrings = [&frame, &frameUint] (const std::vector<std::string>& values) {
-    frameUint(values.size());
-    for (const auto& value : values)
-      frame(value);
-  };
-  const auto frameTensors = [&frame, &frameUint] (
-    const std::vector<NativeAssemblyTensorContractV3>& tensors) {
-    frameUint(tensors.size());
-    for (const auto& tensor : tensors) {
-      frame(tensor.name);
-      frame(tensor.dtype);
-      frameUint(tensor.shape.size());
-      for (const auto& dimension : tensor.shape) {
-        if (std::holds_alternative<std::int64_t>(dimension)) {
-          frame("i");
-          frame(std::to_string(std::get<std::int64_t>(dimension)));
-        }
-        else {
-          frame("s");
-          frame(std::get<std::string>(dimension));
-        }
-      }
-    }
-  };
-  const auto& role = projection.assemblyContract();
-  canonical << "ndnsf-di-live-runner-v2";
-  frame(projection.provider.empty() ? providerIdentity : projection.provider);
-  frame(providerBootId);
-  frame(projection.canonicalArtifactName);
-  // Plan, grant and policy digests are request-scoped admission material.  A
-  // new Selection must still validate them, but they must not defeat reuse of
-  // the same already-loaded model contract on the next conversation turn.
-  // ProtectedResidentAuthority revalidates the current binding separately.
-  frame(role.role);
-  frame(role.selectedRole);
-  frameUint(role.rank);
-  frameUint(role.layerBegin);
-  frameUint(role.layerEnd);
-  frame(role.backend);
-  frameStrings(role.deviceSet);
-  frame(role.artifactDigest);
-  frame(role.recipeDigest);
-  frame(role.roleKind);
-  frame(role.adapterId);
-  frame(role.adapterVersion);
-  frame(role.modelManifestDigest);
-  frame(role.artifactProfileDigest);
-  frame(role.graphDigest);
-  frame(role.canonicalInitializerDigest);
-  frame(role.adapterDescriptorDigest);
-  frame(role.assemblerDescriptorDigest);
-  frame(role.backendAbi);
-  frameUint(role.nodeIndices.size());
-  for (const auto index : role.nodeIndices)
-    frameUint(index);
-  frameTensors(role.expectedInputs);
-  frameTensors(role.expectedOutputs);
-  // The served Provider cache is separate from the standalone executable's
-  // cache. A live runner also captures this Selection's output scopes and
-  // bundle tensor names, so reuse is safe only when that binding is unchanged.
-  frame(projection.dataflow.terminalResponseOwner ? "terminal-output" : "role-output");
-  const auto roleSpec = roleSpecFromSelectionProjectionV3(projection, {});
-  frameUint(roleSpec.outputs.size());
-  for (const auto& output : roleSpec.outputs) {
-    frame(output.scope);
-    frameStrings(output.bundleTensorNames);
-  }
-  frame(role.materializedRole ? "true" : "false");
-  frame(role.precision);
-  frame(role.quantization);
-  frame(role.layout);
-  frame(role.padding);
-  frame(role.protectionEpoch);
-  frame(role.mergeKind);
-  frame(role.postprocessIdentity);
-  frame(role.postprocessOutputName);
-  frame(std::to_string(role.postprocessConfidenceThreshold));
-  frame(role.postprocessSort);
-  frameUint(role.maxSourceBytes);
-  frameUint(role.maxAssembledBytes);
-  frameUint(role.maxNodes);
-  const auto& generation = projection.generationContract;
-  frame(generation.enabled ? "true" : "false");
-  frame(generation.tokenInputName);
-  frameStrings(generation.stateInputNames);
-  frameStrings(generation.stateOutputNames);
-  frame(generation.stateSuccessorMap);
-  frame(generation.positionInputPolicy);
-  frame(generation.attentionMaskInputName);
-  frame(generation.positionIdsInputName);
-  frame(generation.cachePositionInputName);
-  // EOS, tokenizer, sampling, generation id, committed prefix and stream
-  // stride are per-request decode controls.  They are consumed by the
-  // execution context, not by ONNX session construction, so they must not
-  // split the model runner cache.
-  frame(protectedRuntime ? "protected" : "plaintext");
-  return canonical.str();
-}
-
-std::string
-providerRunnerReuseKeyDigest(const std::string& key)
-{
-  return sha256TensorBytes(std::vector<std::uint8_t>(key.begin(), key.end()));
-}
-
-std::optional<ProtectedResidentIdentityV1>
-providerProtectedResidentIdentity(
-  const NativeSelectionProjectionV3& projection,
-  const std::string& providerIdentity,
-  const std::string& providerBootId,
-  const std::shared_ptr<ProtectedRuntime>& protectedRuntime)
-{
-  if (!protectedRuntime || projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS")
-    return std::nullopt;
-  ProtectedResidentIdentityV1 identity;
-  identity.provider = projection.provider.empty() ? providerIdentity : projection.provider;
-  identity.providerBootId = providerBootId;
-  identity.role = projection.assemblyContract().selectedRole;
-  identity.modelManifestDigest = projection.assemblyContract().modelManifestDigest;
-  identity.graphDigest = projection.assemblyContract().graphDigest;
-  identity.initializerDigest = projection.assemblyContract().canonicalInitializerDigest;
-  identity.artifactDigest = projection.assemblyContract().artifactDigest;
-  identity.recipeDigest = projection.assemblyContract().recipeDigest;
-  identity.backend = projection.assemblyContract().backend;
-  identity.backendAbi = projection.assemblyContract().backendAbi;
-  identity.protectionEpoch = projection.selectedRoleContract().protectionEpoch;
-  identity.planCoreDigest = projection.planCoreDigest;
-  identity.planDigest = projection.planDigest;
-  identity.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
-  identity.grantDigest = projection.grantDigest;
-  identity.fencingToken = protectedRuntime->binding().fencingToken;
-  identity.revocationSequence = protectedRuntime->binding().revocationSequence;
-  return identity;
-}
-
-class LeasedNativeModelRunner final : public NativeModelRunner
-{
-public:
-  LeasedNativeModelRunner(std::shared_ptr<NativeModelRunner> inner,
-                          std::shared_ptr<const void> lifetime)
-    : m_inner(std::move(inner))
-    , m_lifetime(std::move(lifetime))
-  {
-    if (!m_inner)
-      throw std::invalid_argument("live runner lease requires an inner runner");
-  }
-
-  std::map<std::string, TensorBundle>
-  run(const RoleExecutionContext& context) final
-  {
-    return m_inner->run(context);
-  }
-
-  std::optional<std::map<std::string, TensorBundle>>
-  runStreamed(const RoleExecutionContext& context) final
-  {
-    return m_inner->runStreamed(context);
-  }
-
-  const std::optional<ExecutionEvidence>&
-  executionEvidence() const final
-  {
-    return m_inner->executionEvidence();
-  }
-
-  std::optional<ExecutionEvidence>
-  executionEvidenceSnapshot() const final
-  {
-    return m_inner->executionEvidenceSnapshot();
-  }
-
-  std::optional<NativeRuntimeMetrics>
-  runtimeMetricsSnapshot() const final
-  {
-    return m_inner->runtimeMetricsSnapshot();
-  }
-
-  bool supportsOpaqueStateHandles() const final
-  {
-    return m_inner->supportsOpaqueStateHandles();
-  }
-
-  std::optional<NativeOpaqueStateHandleV1>
-  stateHandleSnapshot(const std::string& sessionId) const final
-  {
-    return m_inner->stateHandleSnapshot(sessionId);
-  }
-
-  void releaseSessionState(const std::string& sessionId) final
-  {
-    m_inner->releaseSessionState(sessionId);
-  }
-
-  bool supportsConversationStateTransfer() const final
-  {
-    return m_inner->supportsConversationStateTransfer();
-  }
-
-  std::optional<NativeConversationStateHandleV1>
-  promoteSessionStateToConversation(const std::string& sessionId,
-                                    const std::string& conversationKey) final
-  {
-    return m_inner->promoteSessionStateToConversation(sessionId, conversationKey);
-  }
-
-  bool restoreConversationState(const NativeConversationStateHandleV1& state,
-                                const std::string& sessionId) final
-  {
-    return m_inner->restoreConversationState(state, sessionId);
-  }
-
-  bool pauseConversationStateToHost(const NativeConversationStateHandleV1& state) final
-  {
-    return m_inner->pauseConversationStateToHost(state);
-  }
-
-  std::future<bool>
-  prefetchConversationStateToGpu(const NativeConversationStateHandleV1& state) final
-  {
-    return m_inner->prefetchConversationStateToGpu(state);
-  }
-
-  bool cancelConversationStatePrefetch(const NativeConversationStateHandleV1& state) final
-  {
-    return m_inner->cancelConversationStatePrefetch(state);
-  }
-
-  bool releaseConversationState(const NativeConversationStateHandleV1& state) final
-  {
-    return m_inner->releaseConversationState(state);
-  }
-
-private:
-  std::shared_ptr<NativeModelRunner> m_inner;
-  std::shared_ptr<const void> m_lifetime;
-};
-
-class ProviderRunnerReuseCache final
-{
-public:
-  explicit ProviderRunnerReuseCache(std::size_t maxEntries = 8)
-    : m_maxEntries(std::max<std::size_t>(1, maxEntries))
-  {
-  }
-
-  std::shared_ptr<NativeModelRunner>
-  lookup(const NativeSelectionProjectionV3& projection,
-         const std::string& providerIdentity,
-         const std::string& providerBootId,
-         const std::shared_ptr<ProtectedRuntime>& protectedRuntime)
-  {
-    const auto key = providerRunnerReuseKey(
-      projection, providerIdentity, providerBootId, protectedRuntime);
-    std::shared_ptr<NativeModelRunner> runner;
-    {
-      std::lock_guard<std::mutex> lock(m_mutex);
-      const auto found = m_entries.find(key);
-      if (found == m_entries.end())
-        return {};
-      found->second.lastUse = ++m_sequence;
-      runner = found->second.runner;
-    }
-    if (const auto identity = providerProtectedResidentIdentity(
-          projection, providerIdentity, providerBootId, protectedRuntime)) {
-      const auto authority = m_authority.lock();
-      if (!authority)
-        return {};
-      auto use = authority->acquire(*identity, *protectedRuntime, providerNowMs());
-      auto lease = std::make_shared<ProtectedResidentAuthority::Use>(std::move(use));
-      return std::make_shared<LeasedNativeModelRunner>(
-        std::move(runner), std::move(lease));
-    }
-    return runner;
-  }
-
-  void
-  publish(const NativeSelectionProjectionV3& projection,
-          const std::string& providerIdentity,
-          const std::string& providerBootId,
-          const std::shared_ptr<ProtectedRuntime>& protectedRuntime,
-          const std::shared_ptr<NativeModelRunner>& runner)
-  {
-    if (!runner)
-      return;
-    const auto key = providerRunnerReuseKey(
-      projection, providerIdentity, providerBootId, protectedRuntime);
-    const auto keyDigest = providerRunnerReuseKeyDigest(key);
-    const auto protectedIdentity = providerProtectedResidentIdentity(
-      projection, providerIdentity, providerBootId, protectedRuntime);
-    std::shared_ptr<const void> residentLease;
-    std::string protectedIdentityKey;
-    if (protectedIdentity) {
-      const auto authority = m_authority.lock();
-      if (!authority)
-        return;
-      auto use = authority->acquire(
-        *protectedIdentity, *protectedRuntime, providerNowMs());
-      protectedIdentityKey = use.identity();
-      residentLease = std::make_shared<ProtectedResidentAuthority::Use>(
-        std::move(use));
-    }
-    std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_entries.count(key) != 0)
-      return;
-    while (m_entries.size() >= m_maxEntries) {
-      auto victim = m_entries.begin();
-      for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
-        if (it->second.lastUse < victim->second.lastUse)
-          victim = it;
-      }
-      m_entries.erase(victim);
-    }
-    m_entries.emplace(key, Entry{
-      runner,
-      std::move(protectedIdentityKey),
-      std::move(residentLease),
-      ++m_sequence});
-    logRuntimeEvidence(
-      std::string("NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_PUBLISHED") +
-      " requestId=" + projection.requestId +
-      " provider=" + (projection.provider.empty() ? providerIdentity : projection.provider) +
-      " role=" + projection.assemblyContract().selectedRole + " keyDigest=" + keyDigest +
-      " detail=live-runner");
-  }
-
-  void
-  setAuthority(const std::shared_ptr<ProtectedResidentAuthority>& authority) noexcept
-  {
-    m_authority = authority;
-  }
-
-  void
-  evictProtectedIdentity(const std::string& protectedIdentity) noexcept
-  {
-    if (protectedIdentity.empty())
-      return;
-    std::lock_guard<std::mutex> lock(m_mutex);
-    for (auto it = m_entries.begin(); it != m_entries.end();) {
-      if (it->second.protectedIdentity == protectedIdentity)
-        it = m_entries.erase(it);
-      else
-        ++it;
-    }
-  }
-
-  void
-  clear() noexcept
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_entries.clear();
-  }
-
-private:
-  struct Entry
-  {
-    std::shared_ptr<NativeModelRunner> runner;
-    std::string protectedIdentity;
-    std::shared_ptr<const void> residentLease;
-    std::uint64_t lastUse = 0;
-  };
-
-  const std::size_t m_maxEntries;
-  std::mutex m_mutex;
-  std::uint64_t m_sequence = 0;
-  std::map<std::string, Entry> m_entries;
-  std::weak_ptr<ProtectedResidentAuthority> m_authority;
-};
-
 std::shared_ptr<ProtectedResidentAuthority>
 makeProtectedResidentAuthority(
   const std::shared_ptr<OnnxRuntimeSessionCache>& sessionCache,
-  const std::shared_ptr<ProviderRunnerReuseCache>& runnerCache)
+  const std::shared_ptr<NativeProviderRunnerReuseCache>& runnerCache)
 {
   auto authority = std::make_shared<ProtectedResidentAuthority>();
   const std::weak_ptr<OnnxRuntimeSessionCache> weakSessionCache(sessionCache);
-  const std::weak_ptr<ProviderRunnerReuseCache> weakRunnerCache(runnerCache);
+  const std::weak_ptr<NativeProviderRunnerReuseCache> weakRunnerCache(runnerCache);
   authority->setRetireCallback([weakSessionCache, weakRunnerCache] (const std::string& identity) {
     if (const auto cache = weakSessionCache.lock()) {
       cache->evict(identity);
@@ -1145,7 +763,7 @@ struct Provider::State
   std::shared_ptr<ProviderArtifactCache> artifactCache;
   std::shared_ptr<OnnxRuntimeSessionCache> sessionCache;
   std::shared_ptr<NativeProtectedPlaintextCache> protectedPlaintextCache;
-  std::shared_ptr<ProviderRunnerReuseCache> runnerReuseCache;
+  std::shared_ptr<NativeProviderRunnerReuseCache> runnerReuseCache;
   std::shared_ptr<ProtectedResidentAuthority> protectedResidentAuthority;
   std::shared_ptr<const ProviderConfig::Impl> config;
   std::shared_ptr<ndn::Face> face;
@@ -1530,7 +1148,7 @@ Provider Provider::fromConfig(const ProviderConfig& config)
   state->sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
   state->protectedPlaintextCache = std::make_shared<NativeProtectedPlaintextCache>(
     config.m_impl->artifactCacheDir, config.m_impl->maxArtifactEntries);
-  state->runnerReuseCache = std::make_shared<ProviderRunnerReuseCache>(
+  state->runnerReuseCache = std::make_shared<NativeProviderRunnerReuseCache>(
     config.m_impl->maxArtifactEntries);
   state->protectedResidentAuthority =
     makeProtectedResidentAuthority(state->sessionCache, state->runnerReuseCache);
@@ -1625,7 +1243,7 @@ Provider Provider::fromServiceProviderForTest(
   state->sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
   state->protectedPlaintextCache = std::make_shared<NativeProtectedPlaintextCache>(
     config.m_impl->artifactCacheDir, config.m_impl->maxArtifactEntries);
-  state->runnerReuseCache = std::make_shared<ProviderRunnerReuseCache>(
+  state->runnerReuseCache = std::make_shared<NativeProviderRunnerReuseCache>(
     config.m_impl->maxArtifactEntries);
   state->protectedResidentAuthority =
     makeProtectedResidentAuthority(state->sessionCache, state->runnerReuseCache);
@@ -2143,6 +1761,33 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                        error.what());
       }
     };
+  nativeConfig.runnerReusePublisherFactory =
+    [runnerReuseCache, providerIdentity, providerBootId] (
+      const NativeSelectionProjectionV3& projection,
+      const std::shared_ptr<ProtectedRuntime>& protectedRuntime)
+      -> NativeProviderHandlerConfig::BoundRunnerReusePublisher {
+      if (!runnerReuseCache || projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS")
+        return {};
+      try {
+        auto publish = runnerReuseCache->bindPublisher(
+          projection, providerIdentity, providerBootId, protectedRuntime);
+        return [publish = std::move(publish)] (
+          const std::shared_ptr<NativeModelRunner>& runner) {
+          try {
+            publish(runner);
+          }
+          catch (const std::exception& error) {
+            logRuntimeWarn(std::string("NDNSF_DI_RUNNER_REUSE_PUBLISH_FAILED reason=") +
+                           error.what());
+          }
+        };
+      }
+      catch (const std::exception& error) {
+        logRuntimeWarn(std::string("NDNSF_DI_RUNNER_REUSE_PUBLISH_FAILED reason=") +
+                       error.what());
+        return {};
+      }
+    };
   nativeConfig.runnerPreparationFactory =
     [cacheDir = config->artifactCacheDir.string(), providerIdentity,
      workerLocation, providerBootId, assemblyTimeout = config->assemblyJobTimeout,
@@ -2226,7 +1871,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
               logProviderPreparationProgress(projection, "CACHE_LOOKUP_BEGIN",
                                              "recipe-addressed");
               if (const auto cached = tryLoadNativeCanonicalOnnxRoleFromCache(
-                    projection, options, sourceIdentity.first, sourceIdentity.second)) {
+                    ctx, projection, options, sourceIdentity.first, sourceIdentity.second)) {
                 built = *cached;
                 diskCacheHit->store(true, std::memory_order_relaxed);
                 logProviderPreparationProgress(projection, "CACHE_LOOKUP_HIT",
@@ -2338,7 +1983,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 "current-grant-ciphertext");
             }
             else if (const auto rebound = tryLoadNativeCanonicalOnnxRoleFromCache(
-                  projection, options, sourceIdentity.first, sourceIdentity.second)) {
+                  ctx, projection, options, sourceIdentity.first, sourceIdentity.second)) {
               spec = *rebound;
               logProviderPreparationProgress(
                 projection, "CACHE_TEMPLATE_REBIND", "current-grant-ciphertext");

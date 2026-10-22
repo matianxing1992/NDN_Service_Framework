@@ -748,6 +748,21 @@ namespace ndn_service_framework{
                     std::function<void(std::exception_ptr)> onFirstReadStarted,
                     ExactDataFetchPhase phase,
                     std::function<bool()> onValidatedData = {});
+                /**
+                 * Fetch ordered results with at most maxOutstanding unfinished names.
+                 * Zero retains unlimited dispatch. The first-read callback follows
+                 * initial-window dispatch; replacements require validated Data.
+                 */
+                ExactDataFetchOperation startSignedExactDataBatch(
+                    KeyScope keyScope,
+                    const std::vector<ndn::Name>& dataNames,
+                    const ndn::Name& expectedProducer,
+                    int timeoutMs,
+                    std::function<bool()> shouldCancel,
+                    std::function<void(std::exception_ptr)> onFirstReadStarted,
+                    ExactDataFetchPhase phase,
+                    std::function<bool()> onValidatedData,
+                    std::size_t maxOutstanding);
                 void subscribe(KeyScope keyScope,
                                Topic topicPrefix,
                                std::function<void(const CollaborationData&)> onData);
@@ -2351,7 +2366,8 @@ namespace ndn_service_framework{
                 std::function<bool()> shouldCancel,
                 std::function<void(std::exception_ptr)> onFirstReadStarted,
                 ExactDataFetchPhase phase,
-                std::function<bool()> onValidatedData);
+                std::function<bool()> onValidatedData,
+                std::size_t maxOutstanding = 0);
             void publishCollaborationFinalResponse(
                 const ndn::Name& requesterName,
                 const ndn::Name& serviceName,

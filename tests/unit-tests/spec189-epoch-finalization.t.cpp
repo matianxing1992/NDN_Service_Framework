@@ -7,6 +7,7 @@
 #include <cstring>
 #include <future>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace ndnsf::di::test {
@@ -24,14 +25,19 @@ class EpochIo final : public DependencyIo
 public:
   std::future<TensorBundle> prefetchInput(const std::string&, const DependencyEdge& edge) override
   {
-    std::promise<TensorBundle> promise;
-    auto future = promise.get_future();
-    std::unique_lock<std::mutex> lock(mutex);
-    fetchedEdges.push_back(edge);
-    if (!changed.wait_for(lock, std::chrono::seconds(5), [&] { return objects.count(edge.plannedDataName); }))
-      promise.set_exception(std::make_exception_ptr(std::runtime_error("epoch fixture fetch timeout")));
-    else promise.set_value(objects.at(edge.plannedDataName));
-    return future;
+    // The coordinator queues the next read before publishing feedback. Its
+    // future owns this bounded wait while the shared IO outlives the workers.
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      fetchedEdges.push_back(edge);
+    }
+    return std::async(std::launch::async, [this, name = edge.plannedDataName] {
+      std::unique_lock<std::mutex> lock(mutex);
+      if (!changed.wait_for(lock, std::chrono::seconds(5), [&] { return objects.count(name); })) {
+        throw std::runtime_error("epoch fixture fetch timeout");
+      }
+      return objects.at(name);
+    });
   }
   void publishOutput(const std::string&, const DependencyEdge& edge, const TensorBundle& bundle) override
   {
@@ -159,13 +165,6 @@ BOOST_AUTO_TEST_CASE(Spec189TwoRoleFinalizationCarriesRealActivation)
     config.stateIdentityTemplate = identity; config.positionPolicyDigest = identity.positionDigest;
     config.samplingDigest = hash('1'); config.stateInputNames = {"kv_in"}; config.stateOutputNames = {"kv_out"};
     config.prepareRunner = [&, stage, runner] { ++preparations[stage]; return runner; };
-    if (stage == 0 && failure == 3) {
-      // Remove the staged candidate after execution but before coordinator
-      // commit. This exercises the production commit-failure path directly.
-      config.resultObserver = [&runtime](const RoleSpec& role, const ProviderRoleResult&) {
-        if (role.inferenceEpoch == 1) runtime.releaseDecodeState("session", role.role);
-      };
-    }
     if (stage == 0)
       config.initialInputs = {{"prompt", makeEncodedTensorBundle("prompt", {
         {"input_ids", TensorElementType::Int64, {1, 1}, raw<std::int64_t>({7})}})}};
@@ -173,7 +172,19 @@ BOOST_AUTO_TEST_CASE(Spec189TwoRoleFinalizationCarriesRealActivation)
     return config;
   };
   auto a = configure(0, first), b = configure(1, last);
-  auto firstRun = std::async(std::launch::async, [a = std::move(a)]() mutable { return runNativeEpochCoordinator(std::move(a)); });
+  auto firstRun = std::async(std::launch::async, [&, a = std::move(a)]() mutable {
+    if (failure == 3) {
+      // Finalization observers run after commit. Inject at the coordinator's
+      // existing guard after its second joined model result, before commit.
+      // Worker guards must neither read the call counter nor release state.
+      a.executionGuard = [&, owner = std::this_thread::get_id()] {
+        if (std::this_thread::get_id() == owner && calls[0] == 2) {
+          first.releaseDecodeState("session", "/Stage/0");
+        }
+      };
+    }
+    return runNativeEpochCoordinator(std::move(a));
+  });
   auto lastRun = std::async(std::launch::async, [b = std::move(b)]() mutable { return runNativeEpochCoordinator(std::move(b)); });
   std::optional<NativeEpochCoordinatorResult> firstResult, lastResult;
   std::array<std::string, 2> errors;

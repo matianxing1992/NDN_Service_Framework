@@ -303,8 +303,29 @@ ProtectedRuntime::withContentKey(
   const std::function<void(const std::vector<std::uint8_t>&)>& consume)
 {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (!authorizedStateLocked() || nowMs >= m_grantExpiresAtMs || !consume ||
-      (m_grantConfig && m_grantConfig->shouldCancel && m_grantConfig->shouldCancel())) {
+  const bool authorized = authorizedStateLocked();
+  const bool expired = nowMs >= m_grantExpiresAtMs;
+  const bool checkCancellation = authorized && !expired && consume &&
+    m_grantConfig && m_grantConfig->shouldCancel;
+  const bool cancelled = checkCancellation && m_grantConfig->shouldCancel();
+  if (!authorized || expired || !consume || cancelled) {
+    try {
+      std::ostringstream rejected;
+      rejected << "NDNSF_DI_CONTENT_KEY_LEASE_REJECTED"
+               << " requestId=" << m_binding.requestId
+               << " provider=" << m_binding.provider
+               << " runtimeState=" << static_cast<int>(m_state)
+               << " reason=" << (!authorized ? "UNAUTHORIZED_STATE" :
+                                  expired ? "GRANT_EXPIRED" :
+                                  !consume ? "MISSING_CONSUMER" : "REQUEST_CANCELLED")
+               << " nowMs=" << nowMs
+               << " grantExpiresAtMs=" << m_grantExpiresAtMs
+               << " bindingExpiresAtMs=" << m_binding.expiresAtMs;
+      logRuntimeEvidence(rejected.str());
+    }
+    catch (...) {
+      // Diagnostics must not prevent rejection and key zeroization.
+    }
     m_terminalReason = "DI_PROTECTED_GRANT_REJECTED: content key lease is unavailable or expired";
     drainLocked();
     throw std::runtime_error(m_terminalReason);

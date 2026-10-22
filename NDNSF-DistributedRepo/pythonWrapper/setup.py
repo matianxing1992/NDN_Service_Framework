@@ -221,11 +221,15 @@ def validate_native_library_digests(dirs: list[str]) -> None:
             raise RuntimeError("NDNSF global library digest mismatch: " + name)
 
 
-def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[str]]:
+def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
     validate_pkg_config_environment()
     try:
-        output = subprocess.check_output(
-            ["pkg-config", "--cflags", "--libs", *packages],
+        compile_output = subprocess.check_output(
+            ["pkg-config", "--cflags", *packages],
+            text=True,
+        )
+        link_output = subprocess.check_output(
+            ["pkg-config", "--libs", *packages],
             text=True,
         )
     except (OSError, subprocess.CalledProcessError) as error:
@@ -235,17 +239,21 @@ def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[st
     include_dirs: list[str] = []
     library_dirs: list[str] = []
     libraries: list[str] = []
+    extra_compile_args: list[str] = []
     extra_link_args: list[str] = []
-    for token in shlex.split(output):
+    for token in shlex.split(compile_output):
         if token.startswith("-I"):
             include_dirs.append(token[2:])
-        elif token.startswith("-L"):
+        else:
+            extra_compile_args.append(token)
+    for token in shlex.split(link_output):
+        if token.startswith("-L"):
             library_dirs.append(token[2:])
         elif token.startswith("-l"):
             libraries.append(token[2:])
         else:
             extra_link_args.append(token)
-    return include_dirs, library_dirs, libraries, extra_link_args
+    return include_dirs, library_dirs, libraries, extra_compile_args, extra_link_args
 
 
 def build_extension() -> Extension:
@@ -282,7 +290,7 @@ def build_extension() -> Extension:
     # RepoClient's public headers include ServiceUser, whose public surface in
     # turn includes NDN-SVS headers.  Ask pkg-config for both transitive public
     # dependencies instead of relying on an image-specific include path.
-    include_dirs, library_dirs, libraries, extra_link_args = pkg_config(
+    include_dirs, library_dirs, libraries, extra_compile_args, extra_link_args = pkg_config(
         "libndn-cxx",
         *([] if source else ["libndn-svs"]),
         "libnac-abe",
@@ -349,7 +357,7 @@ def build_extension() -> Extension:
         library_dirs=library_dirs,
         libraries=["ndn-service-framework", "sqlite3", *libraries],
         extra_objects=extra_objects,
-        extra_compile_args=["-std=c++17"],
+        extra_compile_args=["-std=c++17", *extra_compile_args],
         extra_link_args=extra_link_args,
         language="c++",
     )

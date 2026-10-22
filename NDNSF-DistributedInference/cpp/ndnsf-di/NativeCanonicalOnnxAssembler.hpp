@@ -216,15 +216,33 @@ withNativeArtifactDirectoryFinalization(const std::string& directory,
  * recipeDigest (the authenticated model/layer/node/backend contract), while
  * manifest.json records the post-assembly model SHA-256. Both identities are
  * checked before a hit is returned. Missing, stale, or corrupt entries return
- * nullopt and leave the normal fetch/assembly path available. Protected
- * entries retain only authenticated ciphertext under a key-reference-bound
- * stable directory; the current grant/Selection still authorizes each hit and
- * Provider binds the current grant and obtains a lease from the process-local
- * plaintext cache; the lease, rather than the immutable template, owns the
- * plaintext lifetime.
+ * nullopt and leave the normal fetch/assembly path available. This overload
+ * accepts only the exact recipe; cross-publication reuse requires the current
+ * root-admission ports below. Protected entries may use the stable verified
+ * plaintext artifact or a key-reference-bound ciphertext descriptor. The current
+ * grant/Selection authorizes each hit; process-local plaintext leases retain
+ * their existing ownership and release rules.
  */
 std::optional<NativeModelRunnerSpec>
 tryLoadNativeCanonicalOnnxRoleFromCache(
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options,
+  const std::string& canonicalSourceName = {},
+  const std::string& canonicalSourceDigest = {});
+
+/** Reuse across publications only after admitting the current root through these ports. */
+std::optional<NativeModelRunnerSpec>
+tryLoadNativeCanonicalOnnxRoleFromCache(
+  const NativeCanonicalOnnxFetchers& fetchers,
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options,
+  const std::string& canonicalSourceName = {},
+  const std::string& canonicalSourceDigest = {});
+
+/** Bind current-root admission to the production CollaborationContext. */
+std::optional<NativeModelRunnerSpec>
+tryLoadNativeCanonicalOnnxRoleFromCache(
+  ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
   const NativeSelectionProjectionV3& projection,
   const NativeCanonicalOnnxAssemblerOptions& options,
   const std::string& canonicalSourceName = {},

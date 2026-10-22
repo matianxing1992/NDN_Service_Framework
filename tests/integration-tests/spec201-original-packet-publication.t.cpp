@@ -235,7 +235,7 @@ BOOST_AUTO_TEST_CASE(WorkerPublicationMeasuresOwnerDispatchAndPreservesOriginalP
    if (durable) {
     ndnsf_distributed_repo::StorageCapability capability;
     capability.repoNode = "/spec201/worker-repo";
-    capability.freeBytes = 128U << 20;
+    capability.freeBytes = 256U << 20;
     auto repo = std::make_shared<ndnsf_distributed_repo::RepoCore>(capability,
       ndnsf_distributed_repo::makeFilesystemRepoStore((root / "repo").string(), 1U << 20, 1U << 20));
     durableStore = std::make_shared<ndnsf_distributed_repo::RepoEncryptedLargeDataStore>(repo);
@@ -318,7 +318,9 @@ BOOST_AUTO_TEST_CASE(WorkerPublicationMeasuresOwnerDispatchAndPreservesOriginalP
     };
     measureLookup(2);
     std::vector<std::uint8_t> seed(1U << 20, 0x44);
-    for (unsigned i = 0; i < 16; ++i) {
+    std::string firstPublicationIdentity;
+    // Keep one Core/Repo instance past the observed 122-object catalog failure.
+    for (unsigned i = 0; i < 160; ++i) {
       seed.front() = static_cast<std::uint8_t>(i);
       LargeDataPublishOptions options;
       options.retention = EncryptedLargeDataRetention::Durable;
@@ -329,7 +331,14 @@ BOOST_AUTO_TEST_CASE(WorkerPublicationMeasuresOwnerDispatchAndPreservesOriginalP
         user.prepareServiceRequest(service.toUri()), seed, "catalog",
         ndn::time::milliseconds(1000), true, options);
       BOOST_REQUIRE_MESSAGE(result.success, result.errorMessage);
-      if (i == 7 || i == 15) measureLookup(i + 3);
+      if (i == 0) {
+        firstPublicationIdentity = result.publicationIdentity;
+        BOOST_REQUIRE(!firstPublicationIdentity.empty());
+      }
+      if (i == 7 || i == 15 || i == 121 || i == 159) {
+        measureLookup(i + 3);
+        BOOST_REQUIRE(durableStore->lookupDurable(firstPublicationIdentity));
+      }
     }
   }
   }

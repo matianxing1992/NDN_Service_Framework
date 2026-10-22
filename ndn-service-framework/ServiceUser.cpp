@@ -12,12 +12,14 @@
 #include <openssl/rand.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -40,6 +42,7 @@
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/validator-null.hpp>
 #include <ndn-cxx/security/transform/public-key.hpp>
+#include <ndn-cxx/util/scope.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
 namespace ndn_service_framework
@@ -6857,19 +6860,113 @@ namespace ndn_service_framework
         bool retainWhileLeased, const std::function<void()>& requireActive,
         const LargeDataPublishOptions& options, bool marshalIo)
     {
-        const auto onIo = [this, marshalIo](std::function<void()> work) {
+        LargeDataPublishResult result;
+        enum PublicationPhase : std::size_t {
+          TOTAL, DURABLE_LOOKUP, KEY_STATE, KEY_WRAP, ENCRYPT, MANIFEST,
+          ORIGINAL_PACKETS, STORE_COMMIT, KEY_REFERENCE, IO_DISPATCH_WAIT,
+          IO_CALLBACK_WORK, PHASE_COUNT
+        };
+        struct PublicationSample
+        {
+          std::uint64_t durationUs = 0;
+          std::uint64_t cpuUs = 0;
+          std::uint64_t calls = 0;
+          bool cpuAvailable = true;
+        };
+        const bool measurePublication = phaseTimingEnvEnabled();
+        const bool publicationCallerOnIo = measurePublication && isOnIoThread();
+        static std::atomic<std::uint64_t> publicationSequence{0};
+        const auto publicationCall = measurePublication
+          ? publicationSequence.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
+        std::array<PublicationSample, PHASE_COUNT> samples{};
+        const auto threadCpu = []() -> std::optional<std::uint64_t> {
+#ifdef CLOCK_THREAD_CPUTIME_ID
+          timespec value{};
+          if (::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) == 0 && value.tv_sec >= 0 &&
+              value.tv_nsec >= 0 && value.tv_nsec < 1000000000L &&
+              static_cast<std::uint64_t>(value.tv_sec) <=
+                std::numeric_limits<std::uint64_t>::max() / 1000000)
+            return static_cast<std::uint64_t>(value.tv_sec) * 1000000 + value.tv_nsec / 1000;
+#endif
+          return std::nullopt;
+        };
+        const auto measure = [&](PublicationPhase phase) {
+          const auto started = measurePublication ? timelineSteadyMicroseconds() : 0;
+          const auto cpuStarted = measurePublication ? threadCpu() : std::nullopt;
+          return ndn::make_scope_exit([&, phase, started, cpuStarted] {
+            if (!measurePublication) return;
+            const auto cpuEnded = threadCpu();
+            auto& sample = samples[phase];
+            sample.durationUs += timelineSteadyMicroseconds() - started;
+            ++sample.calls;
+            if (cpuStarted && cpuEnded && *cpuEnded >= *cpuStarted)
+              sample.cpuUs += *cpuEnded - *cpuStarted;
+            else
+              sample.cpuAvailable = false;
+          });
+        };
+        const auto measureCall = [&](PublicationPhase phase, auto&& work) -> decltype(auto) {
+          auto timing = measure(phase);
+          return work();
+        };
+        // Aggregate per object, never per packet. The synchronous I/O handoff
+        // below drains its callback before these stack-owned measurements end.
+        auto reportPublication = ndn::make_scope_exit([&] {
+          if (!measurePublication) return;
+          try {
+            constexpr std::array<const char*, PHASE_COUNT> names = {
+              "total", "durable_lookup_reuse", "key_state", "key_wrap", "encrypt",
+              "manifest", "original_packets", "store_commit", "key_reference",
+              "io_dispatch_wait", "io_callback_work"};
+            for (std::size_t i = 0; i < samples.size(); ++i) {
+              const auto& sample = samples[i];
+              if (sample.calls == 0) continue;
+              logPhaseTiming("user-publication", "publicationMeasure", ctx.requestId,
+                {{"publicationCall", std::to_string(publicationCall)},
+                 {"step", names[i]}, {"calls", std::to_string(sample.calls)},
+                 {"duration_us", std::to_string(sample.durationUs)},
+                 {"measured_thread_cpu_us", sample.cpuAvailable
+                    ? std::to_string(sample.cpuUs) : "NA"},
+                 {"cpu_scope", i == IO_DISPATCH_WAIT ? "unavailable" :
+                    i == IO_CALLBACK_WORK ? (marshalIo && !publicationCallerOnIo
+                      ? "face_callback" : "caller_callback") : "caller"},
+                 {"marshal_io", marshalIo ? "1" : "0"},
+                 {"caller_on_io", publicationCallerOnIo ? "1" : "0"},
+                 {"plaintextBytes", std::to_string(plaintext.size())},
+                 {"success", result.success ? "1" : "0"},
+                 {"durable", options.retention == EncryptedLargeDataRetention::Durable ? "1" : "0"}});
+            }
+          }
+          catch (...) {
+            // Observation must not replace a publication result or exception.
+          }
+        });
+        auto totalPublication = measure(TOTAL);
+        const auto onIo = [this, marshalIo, &measure, &samples, measurePublication]
+                          (std::function<void()> work) {
             if (!marshalIo || isOnIoThread()) {
+                auto callbackTiming = measure(IO_CALLBACK_WORK);
                 work();
                 return;
             }
-            auto task = std::make_shared<std::packaged_task<void()>>(std::move(work));
+            const auto queuedAt = measurePublication ? timelineSteadyMicroseconds() : 0;
+            auto task = std::make_shared<std::packaged_task<void()>>(
+              [&, work = std::move(work), queuedAt] {
+                if (measurePublication) {
+                  auto& sample = samples[IO_DISPATCH_WAIT];
+                  sample.durationUs += timelineSteadyMicroseconds() - queuedAt;
+                  ++sample.calls;
+                  sample.cpuAvailable = false;
+                }
+                auto callbackTiming = measure(IO_CALLBACK_WORK);
+                work();
+              });
             auto completed = task->get_future();
             postToIo([task] { (*task)(); });
             // Never abandon a callback capturing local state. The caller's
             // owner/drain barrier keeps I/O alive until this call settles.
             completed.get();
         };
-        LargeDataPublishResult result;
         try { ProtectedBlobManifest::validateSuffix(options.manifestSuffix); }
         catch (const std::exception& error) { result.errorMessage = error.what(); return result; }
         if (ctx.serviceName.empty()) {
@@ -7008,6 +7105,7 @@ namespace ndn_service_framework
             bool migrateLegacyReference = false;
             bool repairReferenceFromRepo = false;
             if (durable) {
+                auto lookupTiming = measure(DURABLE_LOOKUP);
                 const auto referenceVersionMatches = [&]() {
                     if (!durableReference) {
                         return false;
@@ -7283,14 +7381,14 @@ namespace ndn_service_framework
             }
 
             HybridMessageKey key;
-            onIo([&] {
+            measureCall(KEY_STATE, [&] { onIo([&] {
                 if (!m_largeDataKeyReleaseState) {
                     m_largeDataKeyReleaseState = std::make_shared<LargeDataKeyReleaseState>();
                     m_largeDataKeyReleaseState->crypto = &m_hybridMessageCrypto;
                 }
                 key = m_hybridMessageCrypto.getOrCreateSendKey(
                     ctx.serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
-            });
+            }); });
             wrappedKeyId = key.keyId;
             const auto keyReferenceText = key.keyId + "|" + key.epochId + "|" +
                 ctx.serviceName.toUri(ndn::name::UriFormat::CANONICAL) + "|" + accessAttribute;
@@ -7358,7 +7456,7 @@ namespace ndn_service_framework
             envelope.setMessageType(messageType);
             envelope.setNonce(blobIdentity.nonce);
 
-            onIo([&] {
+            measureCall(KEY_WRAP, [&] { onIo([&] {
             if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
                 std::tie(wrappedContentData, wrappedCkData) =
                     (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(key.keyName,
@@ -7401,7 +7499,7 @@ namespace ndn_service_framework
                 if (m_hybridMessageCrypto.getWrappedSendPackets(key.keyId, wrappedContentData, wrappedCkData))
                     serveDataWithIMS(wrappedContentData, wrappedCkData);
             }
-            });
+            }); });
             wrappedKeyReferenceHeld = true;
 
             const std::string adText = encryptedDataName.toUri(ndn::name::UriFormat::CANONICAL) + "|" +
@@ -7520,10 +7618,12 @@ namespace ndn_service_framework
                 }
                 try {
                     size_t encodedBytes = 0;
-                    filePath = streamEncryptLargeDataEnvelope(
+                    filePath = measureCall(ENCRYPT, [&] {
+                      return streamEncryptLargeDataEnvelope(
                         key.key, ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
                         ndn::span<const uint8_t>(ad.data(), ad.size()), envelope,
                         encryptedDataName, encodedBytes, requireActive);
+                    });
                     const std::string manifestText =
                         std::string("version=1\n") +
                         "name=" + encryptedDataName.toUri() + "\n" +
@@ -7545,9 +7645,12 @@ namespace ndn_service_framework
                     publication->maxSegmentBytes = maxSegmentBytes;
                     publication->freshness = freshness;
                     publication->windowCapacity = largeDataWindowSegments();
-                    publication->manifestPacket = prepareManifest(encodedBytes);
+                    publication->manifestPacket = measureCall(MANIFEST, [&] {
+                      return prepareManifest(encodedBytes);
+                    });
                     publication->reservedBytes = reservation;
                     if (rangeStore && !durable) {
+                        auto commitTiming = measure(STORE_COMMIT);
                             publication->rangeSource = rangeStore->commitFile(
                                 encryptedDataName.toUri(), filePath, encodedBytes, requireActive);
                         if (!publication->rangeSource ||
@@ -7562,7 +7665,8 @@ namespace ndn_service_framework
                         if (!publication->stream)
                             throw std::runtime_error("cannot open committed large-data wire file");
                     }
-                    publication->originalPackets = detail::OriginalPacketFile::create(
+                    publication->originalPackets = measureCall(ORIGINAL_PACKETS, [&] {
+                      return detail::OriginalPacketFile::create(
                         directory, encryptedDataName, segmentCount, packetStorageBudget,
                         [&](std::uint64_t segment) {
                             if (requireActive) requireActive();
@@ -7578,7 +7682,9 @@ namespace ndn_service_framework
                             const auto& wire = data.wireEncode();
                             return std::vector<std::uint8_t>(wire.begin(), wire.end());
                         }, requireActive);
+                    });
                     if (durable) {
+                        auto commitTiming = measure(STORE_COMMIT);
                         EncryptedLargeDataCommitOptions commitOptions;
                         commitOptions.retention = options.retention;
                         commitOptions.publicationIdentity = result.publicationIdentity;
@@ -7793,7 +7899,9 @@ namespace ndn_service_framework
                             encryptedDataName.toUri(),
                             result.manifestName.toUri(ndn::name::UriFormat::CANONICAL),
                             "original-packet-set"};
-                        if (!persistDurableKeyReference(identity, keyReference)) {
+                        if (!measureCall(KEY_REFERENCE, [&] {
+                              return persistDurableKeyReference(identity, keyReference);
+                            })) {
                             throw std::runtime_error(
                                 "DURABLE_KEY_REFERENCE_STORE_UNAVAILABLE");
                         }

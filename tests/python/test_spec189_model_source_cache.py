@@ -106,6 +106,34 @@ def test_external_encrypted_repository_does_not_clean_live_owner(tmp_path: Path)
     assert (resolved / "payload").exists()
 
 
+def test_stale_external_repository_cleanup_refusal_preserves_lease(tmp_path, monkeypatch):
+    module = load_module()
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    external = tmp_path / "external" / "encrypted-repo"
+    external.mkdir(parents=True)
+    payload = external / "payload"
+    payload.write_bytes(b"interrupted run evidence")
+    lease = external.parent / (external.name + module.ENCRYPTED_REPOSITORY_LEASE)
+    lease.write_text(json.dumps({
+        "schema": "ndnsf-di-encrypted-repo-lease-v1",
+        "pid": module.os.getpid() + 1000000,
+        "runRoot": str(run_root.resolve()),
+    }))
+    original_lease = lease.read_bytes()
+    monkeypatch.setattr(module.time, "time", lambda: lease.stat().st_mtime +
+                        module.ENCRYPTED_REPOSITORY_STALE_AFTER_S + 1)
+
+    def dead_owner(pid, signal):
+        raise ProcessLookupError(module.errno.ESRCH, "no such process")
+
+    monkeypatch.setattr(module.os, "kill", dead_owner)
+    with pytest.raises(RuntimeError, match="ENCRYPTED_REPOSITORY_PATH_NOT_EMPTY"):
+        module.resolve_encrypted_repository_path(run_root, external)
+    assert payload.read_bytes() == b"interrupted run evidence"
+    assert lease.read_bytes() == original_lease
+
+
 def test_fixed_workspace_cleans_only_disposable_dirs(tmp_path: Path):
     module = load_module()
     work_root = tmp_path / "fixed-workspace"

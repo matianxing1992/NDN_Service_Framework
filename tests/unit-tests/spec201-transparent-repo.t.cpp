@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <atomic>
 #include <chrono>
+#include <ctime>
 
 namespace {
 using namespace ndnsf_distributed_repo;
@@ -113,7 +114,8 @@ struct PacketSet
   ndn_service_framework::ProtectedBlobManifest manifest;
   ndn_service_framework::EncryptedLargeDataCommitOptions options;
   std::vector<std::pair<ndn::Name, std::vector<uint8_t>>> packets;
-  explicit PacketSet(const std::string& producer = "/actual/packet-set-producer")
+  explicit PacketSet(const std::string& producer = "/actual/packet-set-producer",
+                     uint64_t segments = 5)
   {
     using namespace ndn_service_framework;
     manifest.producer = ndn::Name(producer);
@@ -124,10 +126,10 @@ struct PacketSet
     semantics.modelIdentity = std::string(64, 'b');
     manifest.contentName = semantics;
     manifest.plaintextDigest.assign(32, 0x2a);
-    manifest.plaintextBytes = 19000;
-    manifest.envelopeBytes = 20000;
+    manifest.plaintextBytes = segments * 4000 - 1000;
+    manifest.envelopeBytes = segments * 4000;
     manifest.segmentBytes = 4000;
-    manifest.segmentCount = 5;
+    manifest.segmentCount = segments;
     manifest.representationSpec = "{\"encoding\":\"test\",\"segmentBytes\":4000}";
     manifest.protectionSpec = "{\"epoch\":\"1\",\"keyReference\":\"test\"}";
     manifest.authorizationScope = "/SERVICE/test";
@@ -145,14 +147,14 @@ struct PacketSet
     const auto append = [&](const ndn::Name& name, const std::vector<uint8_t>& payload, bool segment) {
       ndn::Data data(name);
       data.setContent(payload);
-      if (segment) data.setFinalBlock(ndn::name::Component::fromSegment(4));
+      if (segment) data.setFinalBlock(ndn::name::Component::fromSegment(segments - 1));
       keys.sign(data, ndn::security::signingWithSha256());
       const auto& wire = data.wireEncode();
       packets.emplace_back(name, std::vector<uint8_t>(wire.begin(), wire.end()));
     };
     const auto payload = manifest.encode();
     append(manifest.getName(), payload, false);
-    for (uint64_t i = 0; i < 5; ++i)
+    for (uint64_t i = 0; i < segments; ++i)
       append(ndn::Name(manifest.dataPrefix).appendSegment(i), std::vector<uint8_t>(4000, uint8_t(i)), true);
     options.retention = EncryptedLargeDataRetention::Durable;
     options.packetStorageFormat = "original-packet-set";
@@ -933,6 +935,62 @@ BOOST_AUTO_TEST_CASE(NodeInsertCommitsCompleteOriginalSetOrNothing)
   badWire.back().back() ^= 1;
   BOOST_CHECK_EQUAL(node.insertWirePackets(reference, badWire).state, "FAILED");
   for (const auto& item : set.packets) BOOST_CHECK(node.getDataPacket(item.first.toUri()) == item.second);
+}
+
+BOOST_AUTO_TEST_CASE(RepeatedPacketSourceReadsKeepCurrentMetadataGuards)
+{
+  Fixture fixture;
+  PacketSet set("/actual/repeated-packet-producer", 128);
+  auto repo = std::make_shared<RepoCore>(fixture.capability(), fixture.store("repeated"));
+  RepoEncryptedLargeDataStore backend(repo);
+  size_t cursor = 0;
+  const auto next = [&]() -> std::optional<std::pair<ndn::Name, std::vector<uint8_t>>> {
+    if (cursor == set.packets.size()) return std::nullopt;
+    return set.packets[cursor++];
+  };
+  auto source = backend.commitOriginalDataPackets(set.manifest.getName(), set.options, next);
+  bool matches = true;
+  uint64_t bytes = 0;
+  const auto started = std::chrono::steady_clock::now();
+  const auto cpuStarted = std::clock();
+  for (unsigned pass = 0; pass < 3; ++pass) {
+    for (const auto& expected : set.packets) {
+      const auto wire = source->readOriginalDataPacket(expected.first);
+      matches = (wire == expected.second) && matches;
+      bytes += wire.size();
+    }
+  }
+  const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+    std::chrono::steady_clock::now() - started).count();
+  const auto cpu = 1000000.0 * (std::clock() - cpuStarted) / CLOCKS_PER_SEC;
+  BOOST_CHECK(matches);
+  BOOST_CHECK_EQUAL(bytes, 3 * set.options.packetWireBytes);
+  BOOST_TEST_MESSAGE("REPEATED_ORIGINAL_PACKET_READS packets=" << 3 * set.packets.size()
+                     << " wall_us=" << elapsed << " cpu_us=" << cpu);
+
+  const auto original = repo->list().front();
+  auto changed = original;
+  ++changed.generation;
+  const auto sidecar = std::filesystem::directory_iterator(
+    fixture.root / "repeated/manifests")->path();
+  const auto originalTime = std::filesystem::last_write_time(sidecar);
+  const auto rewrite = [&](const std::string& encoded) {
+    std::ofstream stream(sidecar, std::ios::binary | std::ios::trunc);
+    stream << encoded;
+    stream.close();
+    std::filesystem::last_write_time(sidecar, originalTime);
+  };
+  BOOST_REQUIRE_EQUAL(original.toJson().size(), changed.toJson().size());
+  rewrite(changed.toJson());
+  BOOST_CHECK_EXCEPTION(source->readOriginalDataPacket(set.packets.back().first),
+    std::runtime_error, [](const auto& error) {
+      return std::string(error.what()) == "repo-publication-identity-mismatch";
+    });
+  rewrite("{invalid json");
+  BOOST_CHECK_THROW(source->readOriginalDataPacket(set.packets.back().first), std::exception);
+  rewrite(original.toJson());
+  BOOST_CHECK(source->readOriginalDataPacket(set.packets.back().first) ==
+              set.packets.back().second);
 }
 
 BOOST_AUTO_TEST_CASE(FileSourceReplaysOriginalWireAcrossMutationAndRestart)

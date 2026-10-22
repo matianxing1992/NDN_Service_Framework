@@ -6659,6 +6659,24 @@ namespace ndn_service_framework
             std::move(onValidatedData));
     }
 
+    ServiceProvider::ExactDataFetchOperation
+    ServiceProvider::CollaborationContext::startSignedExactDataBatch(
+        KeyScope keyScope,
+        const std::vector<ndn::Name>& dataNames,
+        const ndn::Name& expectedProducer,
+        int timeoutMs,
+        std::function<bool()> shouldCancel,
+        std::function<void(std::exception_ptr)> onFirstReadStarted,
+        ExactDataFetchPhase phase,
+        std::function<bool()> onValidatedData,
+        std::size_t maxOutstanding)
+    {
+        return m_provider.startCollaborationSignedExactDataBatch(
+            m_requestId, keyScope, dataNames, expectedProducer, timeoutMs,
+            std::move(shouldCancel), std::move(onFirstReadStarted), phase,
+            std::move(onValidatedData), maxOutstanding);
+    }
+
     void ServiceProvider::CollaborationContext::subscribe(
         KeyScope keyScope,
         Topic topicPrefix,
@@ -11389,10 +11407,16 @@ namespace ndn_service_framework
         prepared.reserve(objects.size());
         std::unique_lock<std::mutex> immutableLock(_cache_mutex);
         std::map<ndn::Name, const ndn::Buffer*> requestedContent;
-        for (const auto& object : objects) requestedContent.emplace(object.first, &object.second);
+        // Name lookup ignores freshness and also sees same-name wire variants.
+        // A miss proves absence; hits still need the complete conflict scan.
+        for (const auto& object : objects) {
+          if (m_IMS.find(object.first)) {
+            requestedContent.emplace(object.first, &object.second);
+          }
+        }
         std::map<ndn::Name, const ndn::Data*> existingOriginals;
         // Installed IMS begin() dereferences its first entry even when empty.
-        if (m_IMS.size() != 0) for (const auto& existing : m_IMS) {
+        if (!requestedContent.empty()) for (const auto& existing : m_IMS) {
             const auto requested = requestedContent.find(existing.getName());
             if (requested == requestedContent.end()) continue;
             const auto& content = existing.getContent();
@@ -11686,7 +11710,8 @@ namespace ndn_service_framework
         std::function<bool()> shouldCancel,
         std::function<void(std::exception_ptr)> onFirstReadStarted,
         ExactDataFetchPhase phase,
-        std::function<bool()> onValidatedData)
+        std::function<bool()> onValidatedData,
+        std::size_t maxOutstanding)
     {
         auto operation = std::make_shared<ExactDataFetchOperation::Impl>();
         operation->deadline = std::chrono::steady_clock::now() +
@@ -11749,10 +11774,15 @@ namespace ndn_service_framework
             std::vector<ExactFetchSlot> slots;
             std::vector<ndn::Buffer> content;
             std::size_t remaining;
+            std::size_t nextToIssue = 0;
+            std::size_t initialWindowSize = 0;
             std::string error;
             std::chrono::steady_clock::time_point deadline;
         };
         auto state = std::make_shared<ExactFetchState>(dataNames.size());
+        state->initialWindowSize = maxOutstanding == 0 ? dataNames.size() :
+            std::min(maxOutstanding, dataNames.size());
+        state->nextToIssue = state->initialWindowSize;
         state->deadline = operation->deadline;
         operation->result = state->result.get_future();
         const int interestLifetimeMs = std::max(
@@ -11788,7 +11818,8 @@ namespace ndn_service_framework
                 pending.cancel();
             });
         };
-        auto finishSlot = [state, reportFirstRead, cancelPending,
+        std::weak_ptr<ExactDataFetchOperation::Impl> weakOperation = operation;
+        auto finishSlot = [this, state, reportFirstRead, cancelPending, weakOperation,
                            requestId, keyScope, firstName = dataNames.front()]
                       (std::size_t index, ndn::Buffer content, std::string error) {
             std::exception_ptr firstReadError;
@@ -11799,6 +11830,7 @@ namespace ndn_service_framework
             std::vector<ndn::ScopedPendingInterestHandle> pending;
             std::optional<ExactDataBatchResult> result;
             bool completed = false;
+            std::size_t nextIndex = state->slots.size();
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
                 if (state->completed.load()) {
@@ -11816,6 +11848,9 @@ namespace ndn_service_framework
                     state->content[index] = std::move(content);
                     slot.completed.store(true);
                     completed = --state->remaining == 0;
+                    if (!completed && state->nextToIssue < state->slots.size()) {
+                        nextIndex = state->nextToIssue++;
+                    }
                 }
                 if (completed) {
                     if (state->error.empty() && std::all_of(
@@ -11860,6 +11895,22 @@ namespace ndn_service_framework
             if (completed) {
                 reportFirstRead(std::move(firstReadError));
                 state->result.set_value(std::move(result));
+            }
+            else if (nextIndex < state->slots.size()) {
+                // Reuse the existing Face-owned expressions. A completed,
+                // validated slot releases one credit, without a batch barrier.
+                try {
+                    boost::asio::post(m_face.getIoContext(), [weakOperation, nextIndex] {
+                        if (const auto owner = weakOperation.lock()) {
+                            (*owner->expressions[nextIndex])();
+                        }
+                    });
+                }
+                catch (...) {
+                    if (const auto owner = weakOperation.lock()) {
+                        owner->abort("exact Data refill dispatch failed");
+                    }
+                }
             }
         };
         // The returned operation owns callbacks until completion/cancellation.
@@ -12090,7 +12141,7 @@ namespace ndn_service_framework
                                           << " attempt=" << attempt
                                           << " lifetimeMs=" << issuedLifetimeMs);
                             if (attempt == 1 && state->issuedBarriers.fetch_add(
-                                    1, std::memory_order_relaxed) + 1 == state->slots.size()) {
+                                    1, std::memory_order_relaxed) + 1 == state->initialWindowSize) {
                                 reportFirstRead(nullptr);
                             }
                         });
@@ -12122,13 +12173,14 @@ namespace ndn_service_framework
             });
         };
         operation->cancelPoll = std::move(cancelPoll);
-        std::weak_ptr<ExactDataFetchOperation::Impl> weakOperation = operation;
         try {
             boost::asio::post(m_face.getIoContext(),
                 [this, operation, weakOperation, state, finishSlot, reportFirstRead] {
                     try {
                         if (state->completed.load()) return;
-                        for (const auto& express : operation->expressions) (*express)();
+                        for (std::size_t index = 0; index < state->initialWindowSize; ++index) {
+                            (*operation->expressions[index])();
+                        }
                         (*operation->cancelPoll)();
                         const auto remaining = std::max<std::int64_t>(0,
                             std::chrono::duration_cast<std::chrono::milliseconds>(

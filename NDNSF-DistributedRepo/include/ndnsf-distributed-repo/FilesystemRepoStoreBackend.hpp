@@ -90,6 +90,8 @@ private:
                                          const std::string& wireSha256) const;
   RepoObjectManifest readManifest(const std::string& objectName) const;
   RepoObjectManifest readManifestUnlocked(const std::string& objectName) const;
+  RepoObjectManifest
+  parseManifestCachedUnlocked(const std::string& key, std::string encoded) const;
   void writeManifest(const RepoObjectManifest& manifest) const;
   bool isDigestReferencedUnlocked(const std::string& digest,
                                   const std::string& exceptObjectName) const;
@@ -107,7 +109,7 @@ private:
   mutable std::unordered_map<std::string, Reservation> m_reservations;
   mutable uint64_t m_reservedBytes = 0;
   mutable std::atomic<uint64_t> m_fullCopyFallbacks{0};
-  // Cache parsing only; every catalog scan still reads current sidecar bytes.
+  // Cache parsing only; every metadata lookup still reads current sidecar bytes.
   mutable std::unordered_map<std::string, CachedManifest> m_catalogParseCache;
   mutable size_t m_catalogEncodedBytes = 0;
 };

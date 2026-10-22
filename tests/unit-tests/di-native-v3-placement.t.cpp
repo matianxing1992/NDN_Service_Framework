@@ -29,6 +29,7 @@
 #include <ndn-svs/security-options.hpp>
 #include <ndn-svs/svspubsub.hpp>
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "tests/integration-tests/isolated-test-trust.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
 #include <thread>
 #include <atomic>
@@ -2165,6 +2166,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
   };
   struct BootstrapOwners {
     // Reverse member destruction keeps KeyChain alive through Face teardown.
+    test::IsolatedTestTrust trust;
     ndn::security::KeyChain keyChain{"pib-memory:", "tpm-memory:"};
     ndn::DummyClientFace face{keyChain};
   };
@@ -2172,13 +2174,15 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
   const std::weak_ptr<BootstrapOwners> weakOwners = owners;
   auto& keyChain = owners->keyChain;
   auto& face = owners->face;
-  const auto requesterCert = test::makeRsaIdentity(keyChain, ndn::Name("/requester"));
-  const auto authorityCert = test::makeRsaIdentity(keyChain, ndn::Name("/authority"));
+  const auto requesterCert = owners->trust.createTestIdentityCertificate(
+    keyChain, ndn::Name("/requester"));
+  const auto authorityCert = owners->trust.createTestIdentityCertificate(
+    keyChain, ndn::Name("/authority"));
   // A derived member dies before the ServiceUser base destructor. Keep both
   // external bootstrap resources in the control-block deleter instead: they
   // survive delete (including base teardown), even on a late worker release.
   auto user = std::shared_ptr<User>(new User(face, ndn::Name("/client"),
-    requesterCert, authorityCert, "examples/trust-any.conf"),
+    requesterCert, authorityCert, owners->trust.schemaPath()),
     [owners](User* value) mutable {
       delete value;
       // Weak User references may retain its control block after delete.

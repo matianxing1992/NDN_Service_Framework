@@ -95,6 +95,11 @@ struct NativeProviderHandlerConfig
     const NativeSelectionProjectionV3&,
     const std::shared_ptr<ProtectedRuntime>&,
     const std::shared_ptr<NativeModelRunner>&)>;
+  using BoundRunnerReusePublisher = std::function<void(
+    const std::shared_ptr<NativeModelRunner>&)>;
+  using RunnerReusePublisherFactory = std::function<BoundRunnerReusePublisher(
+    const NativeSelectionProjectionV3&,
+    const std::shared_ptr<ProtectedRuntime>&)>;
   using ProtectedRuntimeFactory = std::function<std::shared_ptr<ProtectedRuntime>(
     ndn_service_framework::ServiceProvider::CollaborationContext&,
     const NativeSelectionProjectionV3&,
@@ -129,6 +134,9 @@ struct NativeProviderHandlerConfig
   // a runner carrying partial request state.
   RunnerReuseLookup runnerReuseLookup;
   RunnerReusePublisher runnerReusePublisher;
+  // An epoch invocation prepares immutable publication metadata once. The
+  // returned request-owned callback must still check current residency authority.
+  RunnerReusePublisherFactory runnerReusePublisherFactory;
   // Provider-owned gate for protected resident sessions.  The handler never
   // stores request content keys in this owner; it only receives a per-request
   // Use token through the prepared runner spec.

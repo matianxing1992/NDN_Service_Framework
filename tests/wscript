@@ -222,7 +222,7 @@ def build(bld):
     framework_includes += [os.path.join(path, 'nac-abe')
                            for path in getattr(bld.env, 'INCLUDES_NAC_ABE', [])
                            if os.path.isdir(os.path.join(path, 'nac-abe'))]
-    framework_use = 'NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL DL TOKENIZER_BRIDGE'
+    framework_use = 'NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB DL TOKENIZER_BRIDGE'
 
     # Link a clean external-style consumer against the installable DI library
     # boundary.  The program performs no network work; it only proves that the

@@ -3462,19 +3462,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               // Cross-role feedback is a signed C04 endpoint in the role
               // factory. Only an exact same-role loop remains local control
               // carried by the sealed plan and served by LocalDependencyIo.
+              if (!projection.generationContract.enabled || projection.plan.roles.size() != 1) {
+                return projected;
+              }
               const auto control = roleSpecFor(
                 projection.plan, projection.executionRole.roleId,
                 projection.requestId, assignmentForCoordinator, "",
                 sequence);
               for (const auto& edge : control.inputs) {
-                if (projection.generationContract.enabled && projection.plan.roles.size() == 1 &&
-                    edge.operationKind == "TOKEN_FEEDBACK" &&
+                if (edge.operationKind == "TOKEN_FEEDBACK" &&
                     edge.producerRole == edge.consumerRole)
                   projected.inputs.push_back(edge);
               }
               for (const auto& edge : control.outputs) {
-                if (projection.generationContract.enabled && projection.plan.roles.size() == 1 &&
-                    edge.operationKind == "TOKEN_FEEDBACK" &&
+                if (edge.operationKind == "TOKEN_FEEDBACK" &&
                     edge.producerRole == edge.consumerRole)
                   projected.outputs.push_back(edge);
               }
@@ -3535,16 +3536,34 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           };
         }
         coordinatorConfig.eventSink = std::move(eventSink);
+        std::optional<NativeProviderHandlerConfig::BoundRunnerReusePublisher>
+          boundRunnerReusePublisher;
         coordinatorConfig.resultObserver =
           [&] (const RoleSpec& executedRole, const ProviderRoleResult& result) {
             if (result.executionEvidence && config.executionEvidenceObserver &&
                 *config.executionEvidenceObserver) {
               (*config.executionEvidenceObserver)(*result.executionEvidence);
             }
-            if (result.runner && selectionProjection &&
-                config.runnerReusePublisher) {
-              config.runnerReusePublisher(
-                *selectionProjection, protectedRuntime, result.runner);
+            if (result.runner && selectionProjection) {
+              if (config.runnerReusePublisherFactory) {
+                if (!boundRunnerReusePublisher) {
+                  const auto bindingTiming = detail::nativePhaseStarted();
+                  boundRunnerReusePublisher = config.runnerReusePublisherFactory(
+                    *selectionProjection, protectedRuntime);
+                  detail::logNativeWorkPhase(stageRequestId, "epoch_runner_reuse_bind",
+                                            bindingTiming, role, executedRole.attemptEpoch);
+                }
+                if (*boundRunnerReusePublisher) {
+                  const auto publicationTiming = detail::nativePhaseStarted();
+                  (*boundRunnerReusePublisher)(result.runner);
+                  detail::logNativeWorkPhase(stageRequestId, "epoch_runner_reuse_publish",
+                                            publicationTiming, role, executedRole.attemptEpoch);
+                }
+              }
+              else if (config.runnerReusePublisher) {
+                config.runnerReusePublisher(
+                  *selectionProjection, protectedRuntime, result.runner);
+              }
             }
             logProviderTiming(ctx.sessionId(), executedRole.role, result,
                               submittedSteady, submittedEpoch);

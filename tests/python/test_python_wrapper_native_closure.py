@@ -13,6 +13,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def pkg_config_result(setup_path, includes, directories, libraries, link_args):
+    if "NDNSF-DistributedRepo" in setup_path.parts:
+        return includes, directories, libraries, [], link_args
+    return includes, directories, libraries, link_args
+
+
 @pytest.fixture(autouse=True)
 def isolated_build_environment(monkeypatch):
     for name in ("NDNSF_LIBRARY_DIR", "NDNSF_NAC_ABE_PREFIX",
@@ -62,8 +68,8 @@ def test_explicit_nac_prefix_prevents_mixed_headers_and_library(monkeypatch, tmp
         assert not captured
         return
     build = namespace["build_extension"]
-    monkeypatch.setitem(build.__globals__, "pkg_config", lambda *args: (
-        ["/stale/include"], ["/stale/lib"], ["nac-abe", "ndn-cxx"], []))
+    monkeypatch.setitem(build.__globals__, "pkg_config", lambda *args: pkg_config_result(
+        setup_path, ["/stale/include"], ["/stale/lib"], ["nac-abe", "ndn-cxx"], []))
     extension = build()
     assert extension.include_dirs[0] == str(prefix / "include")
     assert extension.library_dirs[0] == str(prefix / "lib")
@@ -79,13 +85,13 @@ def test_historical_local_ndn_cxx_pkg_config_is_rejected(monkeypatch, setup_path
     namespace = runpy.run_path(str(setup_path), run_name="__main__")
     local = ROOT / ".local-boost171" / "lib"
     if bad_kind == "library":
-        pkg_config = lambda *args: ([str(local / "include")], [str(local)],
+        pkg_config = lambda *args: pkg_config_result(setup_path, [str(local / "include")], [str(local)],
                                      ["ndn-cxx"], [])
     elif bad_kind == "rpath":
-        pkg_config = lambda *args: (["/usr/local/include"], ["/usr/local/lib"],
+        pkg_config = lambda *args: pkg_config_result(setup_path, ["/usr/local/include"], ["/usr/local/lib"],
                                      ["ndn-cxx"], [f"-Wl,-rpath,{local}"])
     else:
-        pkg_config = lambda *args: (["/tmp/ndnsf/include"], ["/usr/local/lib"],
+        pkg_config = lambda *args: pkg_config_result(setup_path, ["/tmp/ndnsf/include"], ["/usr/local/lib"],
                                      ["ndn-cxx"], [])
     namespace["build_extension"].__globals__["pkg_config"] = pkg_config
     expected = ("resolved to undeclared dependency root"
@@ -130,8 +136,8 @@ def test_historical_local_symlink_rpath_is_rejected(monkeypatch, tmp_path, setup
     namespace = runpy.run_path(str(setup_path), run_name="__main__")
     alias = tmp_path / "ndn-cxx-alias"
     alias.symlink_to(ROOT / ".local-boost171")
-    namespace["build_extension"].__globals__["pkg_config"] = lambda *args: (
-        ["/usr/local/include"], ["/usr/local/lib"], ["ndn-cxx"],
+    namespace["build_extension"].__globals__["pkg_config"] = lambda *args: pkg_config_result(
+        setup_path, ["/usr/local/include"], ["/usr/local/lib"], ["ndn-cxx"],
         [f"-Wl,-rpath,{alias / 'lib'}"])
     with pytest.raises(RuntimeError, match="resolved to retired"):
         namespace["build_extension"]()
@@ -217,6 +223,27 @@ def test_host_pkg_config_libdir_rejects_temp_root(monkeypatch, tmp_path, setup_p
     monkeypatch.setenv("PKG_CONFIG_LIBDIR", str(pkgconfig))
     with pytest.raises(RuntimeError, match="undeclared dependency root"):
         namespace["pkg_config"]("libndn-cxx")
+
+
+def test_repo_pkg_config_preserves_compile_and_link_flags(monkeypatch):
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    namespace = runpy.run_path(str(ROOT / "NDNSF-DistributedRepo/pythonWrapper/setup.py"))
+    calls = []
+
+    def query(command, **kwargs):
+        calls.append(command)
+        if "--cflags" in command:
+            return "-I/usr/local/include -DBOOST_LOG_DYN_LINK -pthread"
+        return "-L/usr/local/lib -lndn-cxx -lboost_log -pthread"
+
+    monkeypatch.setattr(namespace["subprocess"], "check_output", query)
+    extension = namespace["build_extension"]()
+    assert "-DBOOST_LOG_DYN_LINK" in extension.extra_compile_args
+    assert "-DBOOST_LOG_DYN_LINK" not in extension.extra_link_args
+    assert "-pthread" in extension.extra_compile_args
+    assert "-pthread" in extension.extra_link_args
+    assert "boost_log" in extension.libraries
+    assert all(not ("--cflags" in command and "--libs" in command) for command in calls)
 
 
 @pytest.mark.parametrize("candidate", [os.pathsep, os.pathsep * 2])

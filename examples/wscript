@@ -577,7 +577,7 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL ZLIB DL TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
@@ -592,7 +592,7 @@ def build(bld):
                 # Native catalog/preparation code references the canonical
                 # ONNX graph/recipe helpers and ServiceUser publication APIs;
                 # link the same candidate framework closure as the ONNX smoke.
-                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL ndn-service-framework TOKENIZER_BRIDGE',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL ZLIB DL ndn-service-framework TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
@@ -604,7 +604,7 @@ def build(bld):
                         di_native_message_crypto_sources +
                         di_native_onnx_assembly_sources),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL ndn-service-framework TOKENIZER_BRIDGE',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL ZLIB DL ndn-service-framework TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
@@ -623,7 +623,7 @@ def build(bld):
                 # The shared ONNX assembly TU (compiled below) binds the
                 # Provider-owned CollaborationContext overload, whose symbols
                 # live in the framework library; link it like the test targets.
-                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL ndn-service-framework TOKENIZER_BRIDGE',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL ZLIB DL ndn-service-framework TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
                 # Keep the smoke executable bound to the framework library
                 # produced by this build tree (and to the matching installed
@@ -686,7 +686,7 @@ def build(bld):
                         ])),
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL ZLIB DL TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread', '-DNDNSF_DI_EXPERIMENT_FAULTS=1'],
                 linkflags=['-pthread'],
                 install_path='${BINDIR}' if bld.env.INSTALL_EXPERIMENT_FIXTURES else None)
@@ -701,7 +701,7 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL ndn-service-framework TOKENIZER_BRIDGE',
+                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL ZLIB DL ndn-service-framework TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)

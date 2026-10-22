@@ -840,6 +840,8 @@ int main() { return requiredApi == nullptr; }
 
     conf.check_cfg(package='openssl', args=['--cflags', '--libs'], uselib_store='OPENSSL',
                    pkg_config_path=pkg_config_path)
+    conf.check_cfg(package='zlib', args=['--cflags', '--libs'], uselib_store='ZLIB',
+                   pkg_config_path=pkg_config_path)
     
     conf.check_cfg(package='ndnsd', args=['--cflags', '--libs'], uselib_store='NDNSD',
                    pkg_config_path=pkg_config_path)
@@ -1038,7 +1040,7 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp') + \
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp') + \
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
-    di_library_use = 'ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL DL'
+    di_library_use = 'ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB DL'
     if bld.env.HAVE_ONNXRUNTIME_CPP:
         di_library_use += ' ONNXRUNTIME'
     if bld.env.enable_shared:

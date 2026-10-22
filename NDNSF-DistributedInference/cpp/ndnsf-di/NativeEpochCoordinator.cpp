@@ -1400,6 +1400,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       detail::logNativeWorkPhase(config.requestId, "epoch_sample_token",
                                 samplingTiming, config.role,
                                 config.attemptEpoch);
+      const auto textTiming = detail::nativePhaseStarted();
       const auto candidateTokenIds = [&] {
         auto value = generated;
         value.push_back(token);
@@ -1442,6 +1443,8 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         }
         textDelta = stableCandidateText.substr(generatedText.size());
       }
+      detail::logNativeWorkPhase(config.requestId, "epoch_decode_text",
+                                textTiming, config.role, config.attemptEpoch);
       if (replayingCommittedPrefix) {
         ++result.prefixTokensRecomputed;
       }
@@ -1450,6 +1453,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       // identical to the input edge that the upstream role will fetch on its
       // next epoch.  Publishing the current projection would create a
       // one-epoch operation/name mismatch under a streaming stride.
+      const auto feedbackTiming = detail::nativePhaseStarted();
       const auto nextRole = executableRoleForEpoch(config, epoch + 1);
       const auto feedbackEdge = std::find_if(
         nextRole.outputs.begin(), nextRole.outputs.end(), [] (const auto& edge) {
@@ -1488,22 +1492,30 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           config.samplingDigest, textDelta);
         event.assign(eventWire.begin(), eventWire.end());
       }
+      detail::logNativeWorkPhase(config.requestId, "epoch_prepare_feedback",
+                                feedbackTiming, config.role, config.attemptEpoch);
       if ((!terminal || config.checkpointFinalize) &&
           epoch < config.maxEpochs) {
         // Start cancellable exact fetches only after all token, stop, feedback,
         // and event construction succeeded, but before synchronous event
         // publication. The next role projection fixes the exact Data names.
         throwIfStopped(config);
+        const auto prefetchTiming = detail::nativePhaseStarted();
         nextInputPrefetch.emplace(
           config.io, nextRole, std::map<std::string, TensorBundle>{});
         beginInputPrefetch(config, *nextInputPrefetch);
         waitForFirstReadStart(config, *nextInputPrefetch);
+        detail::logNativeWorkPhase(config.requestId, "epoch_prefetch_first_read",
+                                  prefetchTiming, config.role, config.attemptEpoch);
       }
       if (!replayingCommittedPrefix) {
         throwIfStopped(config);
+        const auto eventTiming = detail::nativePhaseStarted();
         if (config.eventSink && !config.eventSink(std::move(event))) {
           throw std::runtime_error("native epoch token event admission was rejected");
         }
+        detail::logNativeWorkPhase(config.requestId, "epoch_event_admission",
+                                  eventTiming, config.role, config.attemptEpoch);
         if (config.eventSink) {
           ++result.eventsPublished;
         }
@@ -1520,13 +1532,19 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       }
 
       throwIfStopped(config);
+      const auto feedbackPublishTiming = detail::nativePhaseStarted();
       config.io->publishOutput(config.sessionId, *feedbackEdge, feedbackBundle);
+      detail::logNativeWorkPhase(config.requestId, "epoch_publish_feedback",
+                                feedbackPublishTiming, config.role, config.attemptEpoch);
       throwIfStopped(config);
+      const auto stateCommitTiming = detail::nativePhaseStarted();
       if (executable.deferStateCommit &&
           !config.runtime.commitDecodeStateTransition(
             config.sessionId, executable)) {
         throw std::runtime_error("PROVIDER_DECODE_STATE_COMMIT_FAILED");
       }
+      detail::logNativeWorkPhase(config.requestId, "epoch_commit_state",
+                                stateCommitTiming, config.role, config.attemptEpoch);
       if (executable.candidateDecodeStateIdentity) {
         committedStateIdentity = executable.candidateDecodeStateIdentity;
         result.finalizedRole = executable;

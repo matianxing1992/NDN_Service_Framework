@@ -533,8 +533,6 @@ FilesystemRepoStoreBackend::listManifests() const
   std::lock_guard<std::mutex> lock(m_mutex);
   std::vector<RepoObjectManifest> manifests;
   const fs::path directory = fs::path(m_rootPath) / "manifests";
-  constexpr size_t maxEncodedBytes = 64U * 1024U * 1024U;
-  constexpr size_t maxEntries = 4096;
   std::set<std::string> present;
   for (const auto& entry : fs::directory_iterator(directory)) {
     if (!entry.is_regular_file() || entry.path().extension() != ".json") {
@@ -542,34 +540,7 @@ FilesystemRepoStoreBackend::listManifests() const
     }
     const auto key = entry.path().filename().string();
     present.insert(key);
-    auto encoded = readText(entry.path());
-    auto found = m_catalogParseCache.find(key);
-    if (found != m_catalogParseCache.end() && found->second.encoded == encoded) {
-      manifests.push_back(found->second.parsed);
-      continue;
-    }
-    if (found != m_catalogParseCache.end()) {
-      m_catalogEncodedBytes -= found->second.encoded.size();
-      m_catalogParseCache.erase(found);
-    }
-    {
-      std::lock_guard<std::mutex> hooksLock(g_ioHooksMutex);
-      if (g_ioHooks.catalogParse) g_ioHooks.catalogParse();
-    }
-    auto parsed = parseManifestJson(encoded);
-    while (!m_catalogParseCache.empty() &&
-           (m_catalogParseCache.size() >= maxEntries ||
-            encoded.size() > maxEncodedBytes - m_catalogEncodedBytes)) {
-      auto victim = m_catalogParseCache.begin();
-      m_catalogEncodedBytes -= victim->second.encoded.size();
-      m_catalogParseCache.erase(victim);
-    }
-    if (encoded.size() <= maxEncodedBytes) {
-      const auto bytes = encoded.size();
-      m_catalogParseCache.emplace(key, CachedManifest{std::move(encoded), parsed});
-      m_catalogEncodedBytes += bytes;
-    }
-    manifests.push_back(std::move(parsed));
+    manifests.push_back(parseManifestCachedUnlocked(key, readText(entry.path())));
   }
   for (auto cached = m_catalogParseCache.begin(); cached != m_catalogParseCache.end();) {
     if (!present.count(cached->first)) {
@@ -1103,11 +1074,44 @@ FilesystemRepoStoreBackend::readManifestUnlocked(const std::string& objectName) 
   if (!fs::exists(path)) {
     throw std::out_of_range("repo-object-not-found: " + objectName);
   }
-  auto manifest = parseManifestJson(readText(path));
+  auto manifest = parseManifestCachedUnlocked(path.filename().string(), readText(path));
   if (manifest.objectName != objectName) {
     throw std::runtime_error("repo-file-metadata-key-mismatch");
   }
   return manifest;
+}
+
+RepoObjectManifest
+FilesystemRepoStoreBackend::parseManifestCachedUnlocked(const std::string& key,
+                                                        std::string encoded) const
+{
+  constexpr size_t maxEncodedBytes = 64U * 1024U * 1024U;
+  constexpr size_t maxEntries = 4096;
+  auto found = m_catalogParseCache.find(key);
+  if (found != m_catalogParseCache.end() && found->second.encoded == encoded)
+    return found->second.parsed;
+  if (found != m_catalogParseCache.end()) {
+    m_catalogEncodedBytes -= found->second.encoded.size();
+    m_catalogParseCache.erase(found);
+  }
+  {
+    std::lock_guard<std::mutex> hooksLock(g_ioHooksMutex);
+    if (g_ioHooks.catalogParse) g_ioHooks.catalogParse();
+  }
+  auto parsed = parseManifestJson(encoded);
+  while (!m_catalogParseCache.empty() &&
+         (m_catalogParseCache.size() >= maxEntries ||
+          encoded.size() > maxEncodedBytes - m_catalogEncodedBytes)) {
+    auto victim = m_catalogParseCache.begin();
+    m_catalogEncodedBytes -= victim->second.encoded.size();
+    m_catalogParseCache.erase(victim);
+  }
+  if (encoded.size() <= maxEncodedBytes) {
+    const auto bytes = encoded.size();
+    m_catalogParseCache.emplace(key, CachedManifest{std::move(encoded), parsed});
+    m_catalogEncodedBytes += bytes;
+  }
+  return parsed;
 }
 
 void

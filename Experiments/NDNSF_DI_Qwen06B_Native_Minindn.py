@@ -640,7 +640,9 @@ def resolve_encrypted_repository_path(run_root: Path, requested: Path | None) ->
                         owner_root != run_root.resolve() or owner_live or
                         lease_age < ENCRYPTED_REPOSITORY_STALE_AFTER_S):
                     raise RuntimeError("ENCRYPTED_REPOSITORY_PATH_BUSY")
-                cleanup_encrypted_repository(path, run_root, require_lease=True)
+                if not cleanup_encrypted_repository(path, run_root, require_lease=True):
+                    raise RuntimeError("ENCRYPTED_REPOSITORY_PATH_NOT_EMPTY")
+                path.mkdir(parents=True, exist_ok=False)
             except (OSError, ValueError, KeyError, json.JSONDecodeError):
                 raise RuntimeError("ENCRYPTED_REPOSITORY_PATH_NOT_EMPTY")
         elif lease.exists():
@@ -2333,7 +2335,7 @@ def main(argv=None, *, _supervised=False) -> int:
     certs = {identity: Path(path) for identity, path in credentials["certs"].items()}
     from native_probe_validation_links import render_anchored_probe_validation_schema
     anchored_schema = render_anchored_probe_validation_schema(
-        APP_ROOT, [certs[identity] for identity in sorted(certs)])
+        APP_ROOT, [certs[identity] for identity in sorted(certs)], sync_prefix=GROUP)
     if anchored_schema != Path(credentials["schema"]).read_text():
         raise RuntimeError("SPEC201_QWEN_CREDENTIAL_SCHEMA_MISMATCH")
     (run_root / "trust-schema.conf").write_text(anchored_schema)
@@ -2676,10 +2678,8 @@ def main(argv=None, *, _supervised=False) -> int:
         # manually interrupted MiniNDN run and would poison later candidates.
         authority_env["NDNSF_CONTROLLER_GENERATION_STATE"] = str(
             run_root / "controller-generation.state")
-        # App_ServiceController keeps the maintained trust-schema default as a
-        # repository-relative path.  MiniNDN launches commands from a host
-        # namespace working directory, so make that dependency explicit while
-        # keeping all generated run artifacts absolute and portable.
+        # The Controller uses the same pinned experiment anchors as every actor;
+        # the example default requires a separately provisioned root certificate.
         revoke_trigger_path = run_root / "controller-revoke.trigger" \
             if args.revoke_after_first_round else None
         controller_revoke_args = ""
@@ -2690,6 +2690,7 @@ def main(argv=None, *, _supervised=False) -> int:
         controller_cmd = (f"cd {shlex.quote(str(ROOT))} && exec "
                           f"{shlex.quote(str(args.controller_binary.expanduser().resolve()))} "
                           f"--controller-prefix {shlex.quote(CONTROLLER)} --policy-file {shlex.quote(str(policy))} "
+                          f"--trust-schema {shlex.quote(str(run_root / 'trust-schema.conf'))} "
                           f"--ensure-identities {shlex.quote(AUTHORITY + ',' + ','.join(provider_names) + ',' + USER)} "
                           f"--no-serve-certificates{controller_revoke_args} "
                           f"--run-for-ms {runtime_budgets['authority_run_ms']}")

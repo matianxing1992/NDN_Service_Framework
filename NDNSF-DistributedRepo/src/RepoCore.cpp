@@ -2,6 +2,7 @@
 
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
+#include <ndn-cxx/util/logger.hpp>
 #include <ndn-cxx/util/random.hpp>
 
 #include <algorithm>
@@ -16,6 +17,8 @@
 #include <map>
 
 namespace ndnsf_distributed_repo {
+
+NDN_LOG_INIT(ndnsf_distributed_repo.RepoCore);
 
 namespace {
 
@@ -818,7 +821,9 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
   const std::set<std::string> incomingNames(manifest.packetNames.begin(), manifest.packetNames.end());
   std::set<std::string> indexedPacketNames;
   std::map<std::string, std::string> catalogMetadata;
+  size_t catalogEntries = 0;
   for (const auto& stored : m_store->listManifests()) {
+    ++catalogEntries;
     catalogMetadata.emplace(stored.objectName, stored.toJson());
     if (stored.objectType == "ndn-data-wire") {
       // Legacy rows may use ALTERNATE URI spelling for the same typed Name.
@@ -833,12 +838,79 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
   const auto requireCurrentCatalog = [&] {
     if (requireActive) requireActive();
     const auto current = m_store->listManifests();
-    if (current.size() != catalogMetadata.size())
+    const auto rejectCatalog = [&] (const char* kind, const std::string* affected = nullptr,
+                                   const std::string* before = nullptr,
+                                   const std::string* after = nullptr) {
+      try {
+        const auto safePrefix = [] (const std::string& value, size_t limit) {
+          auto result = value.substr(0, limit);
+          for (auto& character : result) {
+            const auto byte = static_cast<unsigned char>(character);
+            if (byte <= 32 || byte >= 127) character = '?';
+          }
+          return result;
+        };
+        std::set<std::string> observedNames;
+        for (const auto& stored : current) {
+          const bool unique = observedNames.insert(stored.objectName).second;
+          if (!affected && (!unique || !catalogMetadata.count(stored.objectName)))
+            affected = &stored.objectName;
+        }
+        if (!affected) {
+          for (const auto& [name, metadata] : catalogMetadata) {
+            if (!observedNames.count(name)) {
+              affected = &name;
+              break;
+            }
+          }
+        }
+        size_t difference = 0;
+        std::string field = "unknown";
+        if (before && after) {
+          const auto mismatch = std::mismatch(before->begin(), before->end(),
+                                              after->begin(), after->end());
+          difference = static_cast<size_t>(mismatch.first - before->begin());
+          const auto end = before->rfind("\":", difference);
+          if (end != std::string::npos && end != 0) {
+            const auto start = before->rfind('"', end - 1);
+            if (start != std::string::npos && end - start <= 65) {
+              const auto candidate = before->substr(start + 1, end - start - 1);
+              const bool safe = !candidate.empty() && std::all_of(
+                candidate.begin(), candidate.end(), [] (char character) {
+                  return (character >= 'A' && character <= 'Z') ||
+                         (character >= 'a' && character <= 'z') ||
+                         (character >= '0' && character <= '9') || character == '_';
+                });
+              if (safe) field = candidate;
+            }
+          }
+        }
+        NDN_LOG_WARN("NDNSF_REPO_ORIGINAL_CATALOG_REJECTED kind=" << kind
+                     << " snapshotEntries=" << catalogEntries
+                     << " expectedUnique=" << catalogMetadata.size()
+                     << " observedEntries=" << current.size()
+                     << " observedUnique=" << observedNames.size()
+                     << " incomingPrefix=" << safePrefix(manifest.objectName, 160)
+                     << " affectedPrefix=" << (affected ? safePrefix(*affected, 160) : "none")
+                     << " inputFile=" << safePrefix(file.string(), 240)
+                     << " field=" << field << " firstDifference=" << difference
+                     << " expectedBytes=" << (before ? before->size() : 0)
+                     << " observedBytes=" << (after ? after->size() : 0));
+      }
+      catch (...) {
+        // Diagnostics cannot bypass the original catalog admission failure.
+      }
       throw std::runtime_error("repo-original-packet-catalog-changed");
+    };
+    if (current.size() != catalogMetadata.size())
+      rejectCatalog("ENTRY_COUNT");
     for (const auto& stored : current) {
       const auto previous = catalogMetadata.find(stored.objectName);
-      if (previous == catalogMetadata.end() || previous->second != stored.toJson())
-        throw std::runtime_error("repo-original-packet-catalog-changed");
+      if (previous == catalogMetadata.end())
+        rejectCatalog("OBJECT_NAME", &stored.objectName);
+      const auto metadata = stored.toJson();
+      if (previous->second != metadata)
+        rejectCatalog("METADATA", &stored.objectName, &previous->second, &metadata);
     }
   };
   for (size_t i = 0; i < manifest.packetNames.size(); ++i) {

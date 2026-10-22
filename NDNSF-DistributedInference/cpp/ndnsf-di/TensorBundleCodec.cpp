@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+#include <zlib.h>
 
 namespace ndnsf::di {
 namespace {
@@ -24,6 +25,23 @@ constexpr std::size_t MAX_MANIFEST_SEGMENTS = 1U << 20;
 constexpr std::size_t MAX_MANIFEST_WIRE_BYTES = 64U << 20;
 constexpr std::size_t MAX_LINEAGE_STRING_BYTES = 4096;
 constexpr std::size_t MAX_LINEAGE_WIRE_BYTES = 64U * 1024U;
+constexpr std::size_t MAX_PACKED_TENSOR_BYTES = 64U * 1024U * 1024U;
+constexpr std::size_t MIN_PACKING_INPUT_BYTES = 256;
+constexpr std::size_t MIN_PACKING_SAVINGS_BYTES = 64;
+
+const std::string&
+packedTensorBundleMagic()
+{
+  static const std::string magic = "NDITBZ01";
+  return magic;
+}
+
+bool
+hasMagic(const std::vector<std::uint8_t>& payload, const std::string& magic)
+{
+  return payload.size() >= magic.size() &&
+         std::memcmp(payload.data(), magic.data(), magic.size()) == 0;
+}
 
 const std::string&
 tensorBundleMagic()
@@ -170,10 +188,11 @@ isSha256Digest(const std::string& value)
 }
 
 const std::string&
-contextCompactManifestMagic()
+contextCompactManifestMagic(bool packed = false)
 {
   static const std::string magic = "TensorObjectManifestV1ContextCompact";
-  return magic;
+  static const std::string packedMagic = "TensorObjectManifestV1ContextCompactPacked";
+  return packed ? packedMagic : magic;
 }
 
 std::array<std::uint8_t, 32>
@@ -376,6 +395,10 @@ sha256TensorBytes(const std::vector<std::uint8_t>& bytes)
 void
 TensorObjectManifestV1::validate() const
 {
+  if (unpackedBytes != 0 &&
+      (unpackedBytes > MAX_PACKED_TENSOR_BYTES || unpackedBytes <= totalBytes)) {
+    throw std::invalid_argument("invalid TensorObjectManifestV1 packed bounds");
+  }
   if (totalBytes == 0 || segmentSize == 0 || segmentCount == 0 ||
       segmentSize > totalBytes || segmentCount > MAX_MANIFEST_SEGMENTS ||
       segmentCount != 1 + (totalBytes - 1) / segmentSize) {
@@ -443,7 +466,8 @@ TensorObjectManifestV1::signingBytes() const
     throw std::logic_error("tensor manifest context is not restored");
   }
   std::vector<std::uint8_t> output;
-  const std::string marker = "TensorObjectManifestV1";
+  const std::string marker = unpackedBytes == 0 ?
+    "TensorObjectManifestV1" : "TensorObjectManifestV1Packed";
   appendString(output, marker);
   appendString(output, capabilityDigest);
   appendString(output, epochKeyId);
@@ -474,6 +498,9 @@ TensorObjectManifestV1::signingBytes() const
   appendScalar<std::uint64_t>(output, hardDeadlineMs);
   appendString(output, endpointDigest);
   appendString(output, manifestContractDigest);
+  if (unpackedBytes != 0) {
+    appendScalar<std::uint64_t>(output, unpackedBytes);
+  }
   return output;
 }
 
@@ -541,7 +568,7 @@ encodeTensorObjectManifestContextCompact(
   }
   manifest.validate();
   std::vector<std::uint8_t> output;
-  appendString(output, contextCompactManifestMagic());
+  appendString(output, contextCompactManifestMagic(manifest.unpackedBytes != 0));
   appendCompactDigestValue(output, manifest.contentDigest);
   appendScalar<std::uint64_t>(output, manifest.totalBytes);
   appendScalar<std::uint64_t>(output, manifest.segmentSize);
@@ -555,6 +582,9 @@ encodeTensorObjectManifestContextCompact(
   appendCompactDigestValue(output, sha256TensorBytes(digestCommitmentInput));
   appendScalar<std::uint64_t>(output, manifest.createdAtMs);
   appendSizedBytes(output, manifest.producerSignature);
+  if (manifest.unpackedBytes != 0) {
+    appendScalar<std::uint64_t>(output, manifest.unpackedBytes);
+  }
   if (output.size() > MAX_MANIFEST_WIRE_BYTES) {
     throw std::invalid_argument(
       "TensorObjectManifestV1 context-compact wire exceeds bound");
@@ -570,7 +600,8 @@ decodeTensorObjectManifest(const std::vector<std::uint8_t>& wire)
   }
   std::size_t offset = 0;
   const auto marker = readString(wire, offset);
-  const bool contextCompact = marker == contextCompactManifestMagic();
+  const bool packedContext = marker == contextCompactManifestMagic(true);
+  const bool contextCompact = marker == contextCompactManifestMagic() || packedContext;
   if (contextCompact) {
     TensorObjectManifestV1 value;
     value.compactContextRequired = true;
@@ -581,6 +612,11 @@ decodeTensorObjectManifest(const std::vector<std::uint8_t>& wire)
     value.compactSegmentDigestCommitment = readCompactDigestValue(wire, offset);
     value.createdAtMs = readScalar<std::uint64_t>(wire, offset);
     value.producerSignature = readSizedBytes(wire, offset, 1U << 20);
+    if (packedContext) {
+      value.unpackedBytes = readScalar<std::uint64_t>(wire, offset);
+      if (value.unpackedBytes == 0)
+        throw std::invalid_argument("packed tensor manifest has no expansion size");
+    }
     if (offset != wire.size()) {
       throw std::invalid_argument(
         "TensorObjectManifestV1 has trailing context-compact bytes");
@@ -588,7 +624,8 @@ decodeTensorObjectManifest(const std::vector<std::uint8_t>& wire)
     value.validate();
     return value;
   }
-  if (marker != "TensorObjectManifestV1") {
+  const bool packed = marker == "TensorObjectManifestV1Packed";
+  if (marker != "TensorObjectManifestV1" && !packed) {
     throw std::invalid_argument("invalid TensorObjectManifestV1 marker");
   }
   TensorObjectManifestV1 value;
@@ -621,6 +658,11 @@ decodeTensorObjectManifest(const std::vector<std::uint8_t>& wire)
   value.hardDeadlineMs = readScalar<std::uint64_t>(wire, offset);
   value.endpointDigest = readString(wire, offset);
   value.manifestContractDigest = readString(wire, offset);
+  if (packed) {
+    value.unpackedBytes = readScalar<std::uint64_t>(wire, offset);
+    if (value.unpackedBytes == 0)
+      throw std::invalid_argument("packed tensor manifest has no expansion size");
+  }
   value.producerSignature = readSizedBytes(wire, offset, 1U << 20);
   value.objectManifestDigest = readString(wire, offset);
   if (offset != wire.size()) {
@@ -705,9 +747,62 @@ validateNamedTensor(const NamedTensor& tensor)
 bool
 isEncodedTensorBundle(const std::vector<std::uint8_t>& payload)
 {
-  const auto& magic = tensorBundleMagic();
-  return payload.size() >= magic.size() &&
-         std::memcmp(payload.data(), magic.data(), magic.size()) == 0;
+  return hasMagic(payload, tensorBundleMagic());
+}
+
+std::optional<std::vector<std::uint8_t>>
+tryPackTensorBundleForTransport(const std::vector<std::uint8_t>& payload)
+{
+  if (!hasMagic(payload, tensorBundleMagic()) || payload.size() < MIN_PACKING_INPUT_BYTES ||
+      payload.size() > MAX_PACKED_TENSOR_BYTES) {
+    return std::nullopt;
+  }
+  const auto& magic = packedTensorBundleMagic();
+  const auto headerBytes = magic.size() + sizeof(std::uint64_t);
+  std::vector<std::uint8_t> packed(magic.begin(), magic.end());
+  appendScalar<std::uint64_t>(packed, payload.size());
+  // Bound the destination by the required saving rather than allocating
+  // compressBound() bytes for a representation we would immediately discard.
+  packed.resize(payload.size() - MIN_PACKING_SAVINGS_BYTES);
+  uLongf packedBytes = packed.size() - headerBytes;
+  const auto result = compress2(packed.data() + headerBytes, &packedBytes,
+                                payload.data(), payload.size(), Z_BEST_SPEED);
+  if (result == Z_BUF_ERROR) {
+    return std::nullopt;
+  }
+  if (result != Z_OK) {
+    throw std::runtime_error("tensor bundle packing failed");
+  }
+  packed.resize(headerBytes + packedBytes);
+  return packed;
+}
+
+std::vector<std::uint8_t>
+unpackTensorBundleFromTransport(const std::vector<std::uint8_t>& payload,
+                               std::size_t maxExpansionBytes)
+{
+  const auto& magic = packedTensorBundleMagic();
+  if (!hasMagic(payload, magic)) {
+    return payload;
+  }
+  std::size_t offset = magic.size();
+  const auto rawBytes = readScalar<std::uint64_t>(payload, offset);
+  if (rawBytes < tensorBundleMagic().size() + sizeof(std::uint32_t) ||
+      rawBytes > MAX_PACKED_TENSOR_BYTES || rawBytes > maxExpansionBytes ||
+      payload.size() > MAX_PACKED_TENSOR_BYTES ||
+      offset == payload.size()) {
+    throw std::invalid_argument("packed tensor bundle size exceeds bounds");
+  }
+  std::vector<std::uint8_t> raw(static_cast<std::size_t>(rawBytes));
+  uLongf decodedBytes = raw.size();
+  uLong encodedBytes = payload.size() - offset;
+  const auto result = uncompress2(raw.data(), &decodedBytes,
+                                  payload.data() + offset, &encodedBytes);
+  if (result != Z_OK || decodedBytes != rawBytes ||
+      encodedBytes != payload.size() - offset || !hasMagic(raw, tensorBundleMagic())) {
+    throw std::invalid_argument("packed tensor bundle is corrupt or non-canonical");
+  }
+  return raw;
 }
 
 std::vector<std::uint8_t>

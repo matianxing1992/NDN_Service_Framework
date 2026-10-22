@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRunnerReuseCache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
@@ -1598,7 +1599,13 @@ BOOST_AUTO_TEST_CASE(RunnerReuseRequiresMatchingOutputBinding)
     }
   };
 
-  const auto makeProjection = [] (const std::string& requestId,
+  const auto sealEndpoint = [] (NativeTensorEndpointV3& endpoint) {
+    auto identity = nativeEndpointJson(endpoint);
+    identity.erase("endpoint_digest");
+    identity.erase("consumer_role");
+    endpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+  };
+  const auto makeProjection = [&sealEndpoint] (const std::string& requestId,
                                   const std::string& planDigest,
                                   const std::string& outputScope) {
     NativeSelectionProjectionV3 projection;
@@ -1634,11 +1641,19 @@ BOOST_AUTO_TEST_CASE(RunnerReuseRequiresMatchingOutputBinding)
     output.sourceKind = "ROLE";
     output.producerRole = projection.dataflow.role;
     output.consumerRole = "decoder";
+    output.consumerRoles = {output.consumerRole};
     output.tensorId = "activation";
     output.bundleTensorNames = {"hidden"};
     output.tensorDigest = "sha256:" + std::string(64, '4');
+    output.layoutDigest = "sha256:" + std::string(64, '5');
+    output.targetLayoutDigest = output.layoutDigest;
+    output.manifestDigest = "sha256:" + std::string(64, '6');
+    output.endpointDigest = "sha256:" + std::string(64, '7');
     output.segmentCount = 1;
     output.securityProfile = "NDNSF_DATA_V1";
+    output.noProgressDeadlineMs = 5000;
+    output.hardDeadlineMs = 10000;
+    sealEndpoint(output);
     projection.dataflow.mayPublish.push_back(std::move(output));
     return projection;
   };
@@ -1665,6 +1680,7 @@ BOOST_AUTO_TEST_CASE(RunnerReuseRequiresMatchingOutputBinding)
   BOOST_CHECK(genericCache.lookup(changedOutput, "/provider/a", "boot-a", {}) == runner);
   auto differentContract = changedOutput;
   differentContract.dataflow.mayPublish.front().bundleTensorNames = {"other"};
+  sealEndpoint(differentContract.dataflow.mayPublish.front());
   BOOST_CHECK(!genericCache.lookup(differentContract, "/provider/a", "boot-a", {}));
   differentContract = changedOutput;
   differentContract.assembly.backend = "onnxruntime-cuda";
@@ -1676,6 +1692,58 @@ BOOST_AUTO_TEST_CASE(RunnerReuseRequiresMatchingOutputBinding)
   differentContract.canonicalArtifactName = "/model/other";
   BOOST_CHECK(!genericCache.lookup(differentContract, "/provider/a", "boot-a", {}));
   BOOST_CHECK(!genericCache.lookup(changedOutput, "/provider/a", "boot-b", {}));
+
+  NativeProviderRunnerReuseCache boundCache(1);
+  auto mutableProjection = first;
+  auto bound = boundCache.bindPublisher(mutableProjection, "/provider/a", "boot-a", {});
+  mutableProjection.dataflow.mayPublish.front().groupId = "mutated-after-bind";
+  sealEndpoint(mutableProjection.dataflow.mayPublish.front());
+  bound(runner);
+  BOOST_CHECK(boundCache.lookup(first, "/provider/a", "boot-a", {}) == runner);
+  BOOST_CHECK(!boundCache.lookup(mutableProjection, "/provider/a", "boot-a", {}));
+  boundCache.publish(changedOutput, "/provider/a", "boot-a", {}, runner);
+  BOOST_CHECK(!boundCache.lookup(first, "/provider/a", "boot-a", {}));
+  bound(runner);
+  BOOST_CHECK(boundCache.lookup(first, "/provider/a", "boot-a", {}) == runner);
+  boundCache.clear();
+  bound(runner);
+  BOOST_CHECK(boundCache.lookup(first, "/provider/a", "boot-a", {}) == runner);
+  auto invalid = first;
+  invalid.dataflow.requestId = "/wrong/request";
+  BOOST_CHECK_THROW(boundCache.bindPublisher(invalid, "/provider/a", "boot-a", {}),
+                    std::invalid_argument);
+
+  auto streaming = first;
+  streaming.generationContract.enabled = true;
+  streaming.generationContract.maxGeneratedTokens = 128;
+  streaming.generationContract.streamingOperationStride = 1;
+  streaming.dataflow.mayPublish.clear();
+  for (std::uint64_t epoch = 0; epoch <= 128; ++epoch) {
+    auto endpoint = first.dataflow.mayPublish.front();
+    endpoint.round = epoch;
+    endpoint.namingOperationStride = 1;
+    sealEndpoint(endpoint);
+    streaming.dataflow.mayPublish.push_back(std::move(endpoint));
+  }
+  NativeProviderRunnerReuseCache repeatedCache(1);
+  const auto begin = std::chrono::steady_clock::now();
+  auto repeated = repeatedCache.bindPublisher(streaming, "/provider/a", "boot-a", {});
+  const auto prepared = std::chrono::steady_clock::now();
+  for (std::size_t epoch = 0; epoch < 128; ++epoch)
+    repeated(runner);
+  const auto boundDone = std::chrono::steady_clock::now();
+  NativeProviderRunnerReuseCache oneShotCache(1);
+  for (std::size_t epoch = 0; epoch < 128; ++epoch)
+    oneShotCache.publish(streaming, "/provider/a", "boot-a", {}, runner);
+  const auto directDone = std::chrono::steady_clock::now();
+  BOOST_CHECK(repeatedCache.lookup(streaming, "/provider/a", "boot-a", {}) == runner);
+  BOOST_CHECK(oneShotCache.lookup(streaming, "/provider/a", "boot-a", {}) == runner);
+  const auto micros = [] (const auto& elapsed) {
+    return std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+  };
+  BOOST_TEST_MESSAGE("SPEC216_RUNNER_REUSE_BENCH bind_us=" << micros(prepared - begin)
+    << " bound_publish_128_us=" << micros(boundDone - prepared)
+    << " direct_publish_128_us=" << micros(directDone - boundDone));
 }
 
 BOOST_AUTO_TEST_CASE(RoleContractRunnerOutputsKeepModelAndStateMetadata)

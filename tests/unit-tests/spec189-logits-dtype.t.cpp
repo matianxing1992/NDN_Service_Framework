@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -133,28 +134,29 @@ void requireToken(const Observations& result, std::int64_t token)
   BOOST_CHECK(result.final.find("\"tokenIds\":[" + std::to_string(token) + "]") != std::string::npos);
 }
 
-// Self-feedback is published before the next epoch fetch. Never block a worker
-// waiting for another producer: a missing exact name fails immediately.
+// Prefetch may precede feedback publication. Return promptly and bound the
+// owned future's wait; synchronous readiness would prevent the publication.
 class RunnerReuseIo final : public DependencyIo {
 public:
   std::future<TensorBundle> prefetchInput(const std::string&, const DependencyEdge& edge) override
   {
-    std::promise<TensorBundle> promise;
-    auto future = promise.get_future();
-    std::lock_guard<std::mutex> lock(mutex);
-    const auto found = objects.find(edge.plannedDataName);
-    if (found == objects.end())
-      promise.set_exception(std::make_exception_ptr(std::runtime_error("missing fixture feedback")));
-    else promise.set_value(found->second);
-    return future;
+    return std::async(std::launch::async, [this, name = edge.plannedDataName] {
+      std::unique_lock<std::mutex> lock(mutex);
+      if (!changed.wait_for(lock, std::chrono::seconds(5), [&] { return objects.count(name); })) {
+        throw std::runtime_error("missing fixture feedback");
+      }
+      return objects.at(name);
+    });
   }
   void publishOutput(const std::string&, const DependencyEdge& edge, const TensorBundle& bundle) override
   {
     std::lock_guard<std::mutex> lock(mutex);
     if (!objects.emplace(edge.plannedDataName, bundle).second)
       throw std::runtime_error("duplicate fixture feedback");
+    changed.notify_all();
   }
   std::mutex mutex;
+  std::condition_variable changed;
   std::map<std::string, TensorBundle> objects;
 };
 } // namespace

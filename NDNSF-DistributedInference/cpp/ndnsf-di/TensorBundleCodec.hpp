@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -73,6 +74,9 @@ struct TensorObjectManifestV1
   std::string tensorDigest;
   std::string contentDigest;
   std::uint64_t totalBytes = 0;
+  /** Zero retains raw payload semantics; nonzero authenticates packed tensor
+   *  encoding and the exact expansion size in the manifest signature/digest. */
+  std::uint64_t unpackedBytes = 0;
   std::uint64_t segmentSize = 0;
   std::uint64_t segmentCount = 0;
   std::vector<std::string> orderedSegmentDigests;
@@ -133,6 +137,22 @@ validateNamedTensor(const NamedTensor& tensor);
 
 bool
 isEncodedTensorBundle(const std::vector<std::uint8_t>& payload);
+
+/** Return a packed NDITB001 alternative only when it saves at least 64 bytes.
+ *  Small, opaque, already packed and >64 MiB inputs return no alternative.
+ *  Local tensor encoders and encoded-size budgets continue to use NDITB001.
+ */
+std::optional<std::vector<std::uint8_t>>
+tryPackTensorBundleForTransport(const std::vector<std::uint8_t>& payload);
+
+/** Restore packed tensor wire, bounded to 64 MiB; other representations pass through.
+ *  Reject corrupt, truncated, trailing, nested and oversized packed representations.
+ *  Network callers must authenticate the complete object and its explicit
+ *  manifest packing declaration first, then supply the signed expansion bound.
+ */
+std::vector<std::uint8_t>
+unpackTensorBundleFromTransport(const std::vector<std::uint8_t>& payload,
+                               std::size_t maxExpansionBytes = 64U * 1024U * 1024U);
 
 std::vector<std::uint8_t>
 float32Payload(std::initializer_list<float> values);

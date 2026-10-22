@@ -41,6 +41,13 @@ jsonQuote(const std::string& value)
   std::string encoded;
   encoded.reserve(value.size() + 2);
   encoded.push_back('"');
+  if (value.find('\\') == std::string::npos && value.find('"') == std::string::npos &&
+      value.find('\n') == std::string::npos && value.find('\r') == std::string::npos &&
+      value.find('\t') == std::string::npos) {
+    encoded.append(value);
+    encoded.push_back('"');
+    return encoded;
+  }
   for (char ch : value) {
     switch (ch) {
     case '\\':

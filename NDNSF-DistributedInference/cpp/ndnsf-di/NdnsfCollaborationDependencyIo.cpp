@@ -29,6 +29,9 @@ namespace {
 using CollaborationTransferMetrics =
   ndn_service_framework::CollaborationTransferMetrics;
 
+// Keep published Interest bursts bounded independently of the object byte budget.
+constexpr std::uint64_t MAX_OUTSTANDING_PUBLISHED_SEGMENTS = 8;
+
 bool
 isCanonicalYoloMergeInput(const DependencyEdge& edge)
 {
@@ -302,7 +305,8 @@ logDependencyObject(const std::string& sessionId,
                     const DependencyEdge& edge,
                     const char* direction,
                     std::size_t payloadBytes,
-                    const char* status)
+                    const char* status,
+                    std::size_t encodedPayloadBytes = 0)
 {
   if (!dependencyObjectTraceEnabled()) {
     return;
@@ -315,6 +319,8 @@ logDependencyObject(const std::string& sessionId,
          << " consumer=" << edge.consumerRole
          << " direction=" << direction
          << " payload_bytes=" << payloadBytes
+         << " encoded_payload_bytes=" << (encodedPayloadBytes == 0 ?
+                                             payloadBytes : encodedPayloadBytes)
          << " planned_name=" << (edge.plannedDataName.empty() ? "none" : edge.plannedDataName)
          << " status=" << status;
   logRuntimeEvidence(record.str());
@@ -767,6 +773,8 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
             manifest.segmentCount > operation.maxSegments ||
             manifest.totalBytes > operation.maxBytes ||
             manifest.totalBytes > capability.maxInflightBytes ||
+            manifest.unpackedBytes > operation.maxBytes ||
+            manifest.unpackedBytes > capability.maxInflightBytes ||
             manifest.segmentSize > ndn::MAX_NDN_PACKET_SIZE ||
             manifest.endpointDigest != edge.endpointDigest ||
             manifest.manifestContractDigest != edge.manifestContractDigest ||
@@ -880,13 +888,14 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
                 std::chrono::milliseconds(noProgressMs)).time_since_epoch().count(),
                 std::memory_order_release);
               return true;
-            }));
+            }, MAX_OUTSTANDING_PUBLISHED_SEGMENTS));
           batchWires.clear();
           batchOffset = 0;
-          maximumBatchSize = std::max(maximumBatchSize, names.size());
+          maximumBatchSize = std::max(maximumBatchSize,
+            std::min<std::size_t>(names.size(), MAX_OUTSTANDING_PUBLISHED_SEGMENTS));
           ++batchCalls;
         };
-        // Queue all available remaining names before waiting for segment0.
+        // Queue the rolling window before waiting for segment0.
         // Core owns the asynchronous handlers; this edge already has a worker.
         const auto firstBatchIndex = (speculativeFirstStarted ||
           (!speculativeWholeUsed && inlineFirstReceived)) ? 1U : 0U;
@@ -1184,14 +1193,23 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           throw std::runtime_error(
             "TensorObjectManifestV1 reconstructed content mismatch");
         }
+        // Authenticate the complete encoded object before allocating its
+        // bounded expansion. Local consumers retain the original tensor wire.
+        if (manifest.unpackedBytes != 0) {
+          bundle.payload = unpackTensorBundleFromTransport(bundle.payload, manifest.unpackedBytes);
+          if (bundle.payload.size() != manifest.unpackedBytes ||
+              !isEncodedTensorBundle(bundle.payload)) {
+            throw std::invalid_argument("packed tensor bundle does not match signed expansion");
+          }
+        }
         bundle.expectedSegments = manifest.segmentCount;
-        bundle.expectedBytes = manifest.totalBytes;
+        bundle.expectedBytes = bundle.payload.size();
         attachTransferObservation(edge, bundle, "receive", transportMetrics);
         validateCanonicalYoloMergeInput(edge, bundle);
         detail::logNativeWorkPhase(edge.requestId, "tensor_reconstruct_validate",
                                   reconstructTiming, edge.consumerRole);
         logDependencyObject(sessionId, edge, "fetch-exact-ndn",
-                            bundle.payload.size(), "ok");
+                            bundle.payload.size(), "ok", manifest.totalBytes);
         logDependencyStageMarker("complete", sessionId, edge,
                                  m_ctx.localProvider().toUri());
         return bundle;
@@ -1296,12 +1314,19 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
     constexpr std::size_t MAX_ORIGINAL_BYTES = 64U * 1024U * 1024U;
     if (edge.declaredByV3 && bundle.payload.size() > MAX_ORIGINAL_BYTES)
       throw std::length_error("tensor publication exceeds original cache capacity");
+    if (bundle.payload.size() > operation.maxBytes ||
+        bundle.payload.size() > capability.maxInflightBytes) {
+      throw std::length_error("tensor publication exceeds signed raw byte budget");
+    }
+    const auto packed = tryPackTensorBundleForTransport(bundle.payload);
+    const auto& packedPayload = packed ? *packed : bundle.payload;
+    const auto unpackedBytes = packed ? bundle.payload.size() : 0;
     const auto chunkSize = std::max<std::size_t>(1, m_maxSegmentSize);
     std::vector<std::vector<std::uint8_t>> chunks;
-    for (std::size_t offset = 0; offset < bundle.payload.size(); offset += chunkSize) {
-      const auto count = std::min(chunkSize, bundle.payload.size() - offset);
-      chunks.emplace_back(bundle.payload.begin() + static_cast<std::ptrdiff_t>(offset),
-                          bundle.payload.begin() + static_cast<std::ptrdiff_t>(offset + count));
+    for (std::size_t offset = 0; offset < packedPayload.size(); offset += chunkSize) {
+      const auto count = std::min(chunkSize, packedPayload.size() - offset);
+      chunks.emplace_back(packedPayload.begin() + static_cast<std::ptrdiff_t>(offset),
+                          packedPayload.begin() + static_cast<std::ptrdiff_t>(offset + count));
     }
     if (chunks.empty()) {
       throw std::invalid_argument("NDNSF_DATA_V1 cannot publish an empty tensor bundle");
@@ -1345,6 +1370,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         {"bundle_tensor_names", edge.bundleTensorNames},
         {"no_progress_ms", edge.noProgressDeadlineMs}, {"hard_deadline_ms", edge.hardDeadlineMs},
         {"bundle_name", bundle.name}, {"payload_digest", sha256TensorBytes(bundle.payload)},
+        {"unpacked_bytes", unpackedBytes},
         {"expected_bytes", bundle.expectedBytes}, {"expected_segments", bundle.expectedSegments}});
       std::unique_lock<std::mutex> originalLock(m_tensorPublicationMutex);
       const ndn::Name objectName(edge.plannedDataName);
@@ -1433,8 +1459,9 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       manifest.targetLayoutDigest = edge.collectiveTargetLayoutDigest;
       manifest.tensorId = edge.tensors.empty() ? edge.scope : edge.tensors.front();
       manifest.tensorDigest = edge.tensorDigest;
-      manifest.contentDigest = sha256TensorBytes(bundle.payload);
-      manifest.totalBytes = bundle.payload.size();
+      manifest.contentDigest = sha256TensorBytes(packedPayload);
+      manifest.totalBytes = packedPayload.size();
+      manifest.unpackedBytes = unpackedBytes;
       manifest.segmentSize = 0;
       manifest.segmentCount = encodedSegments.size();
       for (std::size_t index = 0; index < encodedSegments.size(); ++index) {
@@ -1504,7 +1531,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
           "NDNSF_DATA_V1 group deadline or cancellation after publication");
       }
       logDependencyObject(sessionId, edge, "publish-exact-ndn",
-                          bundle.payload.size(), "ok");
+                          bundle.payload.size(), "ok", packedPayload.size());
       return;
     }
     throw std::invalid_argument("C04 tensor endpoint is required for network publication");

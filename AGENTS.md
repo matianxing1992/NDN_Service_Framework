@@ -197,6 +197,13 @@ approval again or hide an exception in a special-case branch.
     count. Never simplify by removing approved behavior, security checks,
     cancellation/cleanup, necessary observability or required tests. Apply this
     check to the affected diff within its existing review; add no separate gate.
+    Keep fixes and performance optimization within NDNSF-owned components,
+    including NDNSF-DI. Do not modify external libraries or dependencies such as
+    NFD, ndn-cxx or ONNX Runtime unless strictly necessary for the requested
+    outcome. Before proposing an external change, establish the need from source
+    or measured evidence, explain why supported APIs/configuration and changes
+    within NDNSF cannot suffice, and state the affected scope and compatibility
+    impact. Follow the exception approval rule above before implementing it.
 
 ## Optional skills and installation
 
@@ -294,6 +301,35 @@ approval again or hide an exception in a special-case branch.
   reuses one locked workspace; explicit `--run-root` is durable evidence.
   YOLO's default result/cache paths are stable; use a fixed `--results-dir`
   for disposable retries and archive required results separately.
+- Finish each experiment, including failed or interrupted runs, by archiving
+  its report, statistics and the measurement data needed to recompute and audit
+  its results inside this repository's existing `results/` or active feature's
+  `specs/` evidence directory. Retain commands, source/configuration identity,
+  outcomes, relevant logs and the first failure boundary. Preserve necessary
+  per-sample data; aggregate statistics alone are insufficient when they cannot
+  substantiate the reported result. Include a detailed timing table for every
+  experiment and each request/round, including failed or interrupted attempts.
+  Separate launch/material preparation, first request and subsequent requests;
+  state timing boundaries and denominators, wall time, available CPU time,
+  counts and evidence sources. Keep an additive end-to-end partition separate
+  from overlapping/nested step measurements; do not label all non-ONNX time or
+  wall-minus-CPU as network time. Mark missing measurements and the first
+  failure explicitly. Compare matched conditions and use the measured breakdown
+  to select the next optimization before changing code or running another trial.
+  Store readable tables and recomputable structured data with the run report.
+  Do not copy whole temporary run trees into
+  the archive merely to relocate their disk consumption.
+- After verifying that the archive is complete and readable and the run's
+  processes have stopped, remove that run's disposable artifacts using an
+  explicit path allowlist: generated model exports, staging/transport copies,
+  temporary Repo stores, scratch build/install trees and other reproducible
+  intermediate files that are no longer required. This is the normal experiment
+  closeout, not permission for blanket cleanup of `/var/tmp` or old runs of
+  uncertain ownership. Preserve source models, shared caches, active workspaces,
+  mounted trees and archived evidence. If an artifact is needed to investigate
+  a failure, retain only the necessary subset and record its path, size and
+  reason in the run report. Record what was archived, removed or retained;
+  an external run directory is not permanent evidence storage by default.
 - Do not place bulk build objects, install snapshots or model data in
   `/dev/shm`. Its capacity is also needed by VS Code/Chromium. Reuse disk
   workspaces for these operations, including failed retries. Never purge
