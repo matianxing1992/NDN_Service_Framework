@@ -624,6 +624,15 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Native warm evidence aggregation/readiness, including an opt-in copy probe.
+    bld.program(target='../spec216-warm-evidence', name='spec216-warm-evidence',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/spec216-warm-evidence.t.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
+                cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Exercise the real shared logging sink without model or network fixtures.
     bld.program(target='../spec189-evidence-lines', name='spec189-evidence-lines',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
