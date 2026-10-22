@@ -760,21 +760,21 @@ lastLogits(const std::map<std::string, TensorBundle>& outputs)
   // the activation bundle.  Do not select the first encoded scope by map
   // order: the state scope sorts before ordinary response scopes and does not
   // contain logits.  The logits tensor is the stable content contract here.
-  std::vector<NamedTensor> tensors;
-  const NamedTensor* logits = nullptr;
+  std::vector<NamedTensorView> tensors;
+  const NamedTensorView* logits = nullptr;
   for (const auto& item : outputs) {
     if (!isEncodedTensorBundle(item.second.payload)) {
       continue;
     }
-    tensors = decodeTensorBundle(item.second.payload);
-    try {
-      // Retain the decoded owner while reading only the final row. Copying
-      // this member would duplicate every prefill row just for sampling.
-      logits = &findTensor(tensors, "logits");
+    tensors = decodeTensorBundleViews(item.second.payload);
+    const auto found = std::find_if(tensors.begin(), tensors.end(), [] (const auto& tensor) {
+      return tensor.name == "logits";
+    });
+    if (found != tensors.end()) {
+      // outputs owns the immutable bytes throughout this call. Keep view
+      // metadata alive, without copying the unused prefill payload rows.
+      logits = &*found;
       break;
-    }
-    catch (const std::out_of_range&) {
-      continue;
     }
   }
   if (!logits) {

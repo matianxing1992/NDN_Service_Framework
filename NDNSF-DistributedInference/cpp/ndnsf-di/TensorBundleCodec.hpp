@@ -3,6 +3,8 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 
+#include <ndn-cxx/util/span.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -29,6 +31,15 @@ struct NamedTensor
   TensorElementType elementType = TensorElementType::Float32;
   std::vector<std::int64_t> shape;
   std::vector<std::uint8_t> payload;
+};
+
+/** Metadata owns its storage; payload borrows an unchanged encoded buffer. */
+struct NamedTensorView
+{
+  std::string name;
+  TensorElementType elementType = TensorElementType::Float32;
+  std::vector<std::int64_t> shape;
+  ndn::span<const std::uint8_t> payload;
 };
 
 /** Layout bytes known without allocating tensor data; not content authority. */
@@ -167,6 +178,20 @@ encodeTensorBundle(const std::vector<NamedTensor>& tensors);
 
 std::vector<NamedTensor>
 decodeTensorBundle(const std::vector<std::uint8_t>& payload);
+
+/**
+ * Validate the complete bundle without copying tensor payloads.
+ * The source buffer must outlive all views and remain unmoved and unmodified.
+ * This is codec validation only, not signature or execution admission.
+ */
+std::vector<NamedTensorView>
+decodeTensorBundleViews(const std::vector<std::uint8_t>& payload);
+
+std::vector<NamedTensorView>
+decodeTensorBundleViews(std::vector<std::uint8_t>&&) = delete;
+
+std::vector<NamedTensorView>
+decodeTensorBundleViews(const std::vector<std::uint8_t>&&) = delete;
 
 const NamedTensor&
 findTensor(const std::vector<NamedTensor>& tensors, const std::string& name);

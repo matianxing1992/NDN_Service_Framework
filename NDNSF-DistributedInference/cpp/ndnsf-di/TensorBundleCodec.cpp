@@ -713,17 +713,20 @@ tensorPayloadBytes(const TensorBundle& bundle)
   return tensorPayloadBytes(decodeTensorBundle(bundle.payload));
 }
 
+namespace {
+
 void
-validateNamedTensor(const NamedTensor& tensor)
+validateTensorMetadata(const std::string& name, TensorElementType elementType,
+                       const std::vector<std::int64_t>& shape, std::size_t payloadBytes)
 {
-  if (tensor.name.empty() || tensor.name.size() > MAX_TENSOR_NAME_BYTES) {
+  if (name.empty() || name.size() > MAX_TENSOR_NAME_BYTES) {
     throw std::invalid_argument("tensor bundle tensor name has invalid size");
   }
-  if (tensor.shape.size() > MAX_TENSOR_RANK) {
+  if (shape.size() > MAX_TENSOR_RANK) {
     throw std::invalid_argument("tensor bundle tensor rank exceeds limit");
   }
   std::uint64_t elements = 1;
-  for (const auto dim : tensor.shape) {
+  for (const auto dim : shape) {
     if (dim < 0 || static_cast<std::uint64_t>(dim) > MAX_TENSOR_DIMENSION) {
       throw std::invalid_argument("tensor bundle tensor dimension must be bounded and non-negative");
     }
@@ -734,14 +737,22 @@ validateNamedTensor(const NamedTensor& tensor)
     elements *= value;
   }
   const auto elementBytes = static_cast<std::uint64_t>(
-    tensorElementByteSize(tensor.elementType));
+    tensorElementByteSize(elementType));
   if (elements > MAX_TENSOR_PAYLOAD_BYTES / elementBytes) {
     throw std::invalid_argument("tensor bundle tensor payload exceeds limit");
   }
   const auto expectedBytes = elements * elementBytes;
-  if (tensor.payload.size() != expectedBytes) {
+  if (payloadBytes != expectedBytes) {
     throw std::invalid_argument("tensor bundle tensor payload size does not match dtype and shape");
   }
+}
+
+} // namespace
+
+void
+validateNamedTensor(const NamedTensor& tensor)
+{
+  validateTensorMetadata(tensor.name, tensor.elementType, tensor.shape, tensor.payload.size());
 }
 
 bool
@@ -887,8 +898,11 @@ encodeTensorBundle(const std::vector<NamedTensor>& tensors)
   return output;
 }
 
-std::vector<NamedTensor>
-decodeTensorBundle(const std::vector<std::uint8_t>& payload)
+namespace {
+
+template<typename Tensor>
+std::vector<Tensor>
+decodeTensorBundleImpl(const std::vector<std::uint8_t>& payload)
 {
   const auto& magic = tensorBundleMagic();
   if (!isEncodedTensorBundle(payload)) {
@@ -899,7 +913,7 @@ decodeTensorBundle(const std::vector<std::uint8_t>& payload)
   if (count > MAX_TENSOR_COUNT) {
     throw std::invalid_argument("tensor bundle tensor count exceeds limit");
   }
-  std::vector<NamedTensor> tensors;
+  std::vector<Tensor> tensors;
   tensors.reserve(count);
   for (std::uint32_t i = 0; i < count; ++i) {
     const auto nameSize = readScalar<std::uint32_t>(payload, offset);
@@ -907,7 +921,7 @@ decodeTensorBundle(const std::vector<std::uint8_t>& payload)
       throw std::invalid_argument("tensor bundle tensor name has invalid size");
     }
     auto nameBytes = readBytes(payload, offset, nameSize);
-    NamedTensor tensor;
+    Tensor tensor;
     tensor.name.assign(nameBytes.begin(), nameBytes.end());
     tensor.elementType = static_cast<TensorElementType>(
       readScalar<std::uint32_t>(payload, offset));
@@ -924,14 +938,38 @@ decodeTensorBundle(const std::vector<std::uint8_t>& payload)
         payloadSize > std::numeric_limits<std::size_t>::max()) {
       throw std::invalid_argument("tensor bundle tensor payload exceeds limit");
     }
-    tensor.payload = readBytes(payload, offset, static_cast<std::size_t>(payloadSize));
-    validateNamedTensor(tensor);
+    if constexpr (std::is_same_v<Tensor, NamedTensor>) {
+      tensor.payload = readBytes(payload, offset, static_cast<std::size_t>(payloadSize));
+    }
+    else {
+      if (offset > payload.size() || payloadSize > payload.size() - offset) {
+        throw std::invalid_argument("truncated tensor bundle bytes");
+      }
+      tensor.payload = ndn::span<const std::uint8_t>(
+        payload.data() + offset, static_cast<std::size_t>(payloadSize));
+      offset += static_cast<std::size_t>(payloadSize);
+    }
+    validateTensorMetadata(tensor.name, tensor.elementType, tensor.shape, tensor.payload.size());
     tensors.push_back(std::move(tensor));
   }
   if (offset != payload.size()) {
     throw std::invalid_argument("tensor bundle has trailing bytes");
   }
   return tensors;
+}
+
+} // namespace
+
+std::vector<NamedTensor>
+decodeTensorBundle(const std::vector<std::uint8_t>& payload)
+{
+  return decodeTensorBundleImpl<NamedTensor>(payload);
+}
+
+std::vector<NamedTensorView>
+decodeTensorBundleViews(const std::vector<std::uint8_t>& payload)
+{
+  return decodeTensorBundleImpl<NamedTensorView>(payload);
 }
 
 const NamedTensor&

@@ -356,6 +356,106 @@ BOOST_AUTO_TEST_CASE(Spec216GreedyLargeVocabularyPreservesFirstMaximum)
   }
 }
 
+BOOST_AUTO_TEST_CASE(Spec216GreedyPrefillVocabularyUsesFinalRow)
+{
+  constexpr std::size_t VOCABULARY = 151936;
+  const float maximum = 42.0F;
+  for (const std::size_t rows : {1U, 351U, 531U}) {
+    NamedTensor logits{"logits", TensorElementType::Float32,
+      {1, static_cast<std::int64_t>(rows), static_cast<std::int64_t>(VOCABULARY)},
+      std::vector<std::uint8_t>(rows * VOCABULARY * sizeof(float))};
+    for (const auto index : {rows * VOCABULARY - 2, rows * VOCABULARY - 1}) {
+      std::memcpy(logits.payload.data() + index * sizeof(float), &maximum, sizeof(float));
+    }
+    for (unsigned repetition = 0; repetition != 4; ++repetition) {
+      BOOST_TEST_CONTEXT("prefill rows=" << rows << " repetition=" << repetition) {
+        requireToken(sample(logits), static_cast<std::int64_t>(VOCABULARY - 2));
+      }
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(Spec216TensorBundleViewsValidateCompleteWire)
+{
+  // Independent NDITB001 fixture: one float32 tensor named x with shape [1].
+  const std::vector<std::uint8_t> wire = {
+    'N', 'D', 'I', 'T', 'B', '0', '0', '1',
+    1, 0, 0, 0, 1, 0, 0, 0, 'x', 1, 0, 0, 0, 1, 0, 0, 0,
+    1, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0x3f};
+  const auto views = decodeTensorBundleViews(wire);
+  BOOST_REQUIRE_EQUAL(views.size(), 1);
+  const auto& view = views.front();
+  BOOST_CHECK_EQUAL(view.name, "x");
+  BOOST_CHECK(view.elementType == TensorElementType::Float32);
+  BOOST_REQUIRE_EQUAL(view.shape.size(), 1);
+  BOOST_CHECK_EQUAL(view.shape.front(), 1);
+  BOOST_REQUIRE_EQUAL(view.payload.size(), 4);
+  BOOST_CHECK(view.payload.data() == wire.data() + 41);
+  BOOST_CHECK_EQUAL_COLLECTIONS(view.payload.begin(), view.payload.end(),
+                                wire.begin() + 41, wire.end());
+  const auto owning = decodeTensorBundle(std::vector<std::uint8_t>(wire));
+  BOOST_REQUIRE_EQUAL(owning.size(), 1);
+  BOOST_CHECK(owning.front().payload.data() != view.payload.data());
+  BOOST_CHECK_EQUAL_COLLECTIONS(owning.front().payload.begin(), owning.front().payload.end(),
+                                view.payload.begin(), view.payload.end());
+
+  const auto rejects = [] (const std::vector<std::uint8_t>& input) {
+    BOOST_CHECK_THROW(decodeTensorBundle(input), std::invalid_argument);
+    BOOST_CHECK_THROW(decodeTensorBundleViews(input), std::invalid_argument);
+  };
+  for (std::size_t size = 0; size < wire.size(); ++size) {
+    BOOST_TEST_CONTEXT("truncated prefix bytes=" << size) {
+      rejects(std::vector<std::uint8_t>(wire.begin(), wire.begin() + size));
+    }
+  }
+  for (const auto field : {8U, 12U, 17U, 21U, 32U, 33U}) {
+    auto malformed = wire;
+    // Invalid count257, empty name, unsupported dtype, rank17, negative
+    // dimension, or a declared uint64 payload far beyond the codec bound.
+    if (field == 8) malformed[9] = 1;
+    else if (field == 12) malformed[field] = 0;
+    else if (field == 17) malformed[field] = 99;
+    else if (field == 21) malformed[field] = 17;
+    else if (field == 32) malformed[field] = 0x80;
+    else std::fill(malformed.begin() + 33, malformed.begin() + 41, 0xff);
+    BOOST_TEST_CONTEXT("invalid field offset=" << field) {
+      rejects(malformed);
+    }
+  }
+  auto trailing = wire;
+  trailing.push_back(0);
+  rejects(trailing);
+  auto laterMalformed = wire;
+  laterMalformed[8] = 2;
+  laterMalformed.insert(laterMalformed.end(), wire.begin() + 12, wire.end());
+  laterMalformed.pop_back();
+  rejects(laterMalformed);
+  auto empty = std::vector<std::uint8_t>(wire.begin(), wire.begin() + 12);
+  empty[8] = 0;
+  BOOST_CHECK(decodeTensorBundle(empty).empty());
+  BOOST_CHECK(decodeTensorBundleViews(empty).empty());
+  auto zeroLength = wire;
+  zeroLength[25] = 0;
+  zeroLength[33] = 0;
+  zeroLength.resize(41);
+  const auto zeroViews = decodeTensorBundleViews(zeroLength);
+  BOOST_REQUIRE_EQUAL(zeroViews.size(), 1);
+  BOOST_CHECK(zeroViews.front().payload.empty());
+
+  NamedTensor ranked{"ranked", TensorElementType::Float32, std::vector<std::int64_t>(16, 1),
+                     float32Payload({1.0F})};
+  const auto rankedWire = encodeTensorBundle({ranked});
+  const auto rankedViews = decodeTensorBundleViews(rankedWire);
+  BOOST_REQUIRE_EQUAL(rankedViews.size(), 1);
+  BOOST_CHECK_EQUAL(rankedViews.front().shape.size(), 16);
+  std::vector<NamedTensor> members;
+  for (unsigned index = 0; index != 256; ++index) {
+    members.push_back({"empty-" + std::to_string(index), TensorElementType::UInt8, {0}, {}});
+  }
+  const auto maximumCountWire = encodeTensorBundle(members);
+  BOOST_CHECK_EQUAL(decodeTensorBundleViews(maximumCountWire).size(), 256);
+}
+
 BOOST_AUTO_TEST_CASE(Spec189LogitsHalfBoundaryValues)
 {
   requireToken(sample({"logits", TensorElementType::Float16, {1, 4},
