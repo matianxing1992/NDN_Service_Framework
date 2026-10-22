@@ -336,6 +336,26 @@ BOOST_AUTO_TEST_CASE(Spec189LogitsHalfAndFloatUseLastTimestep)
   }
 }
 
+BOOST_AUTO_TEST_CASE(Spec216GreedyLargeVocabularyPreservesFirstMaximum)
+{
+  // Match the current Qwen vocabulary scale without loading a backend. The
+  // coordinator's own sampling phase timer isolates the production sampler
+  // from fixture setup, worker scheduling, feedback and teardown.
+  constexpr std::size_t VOCABULARY = 151936;
+  std::vector<float> values(VOCABULARY, -1.0F);
+  values[VOCABULARY - 2] = 42.0F;
+  values[VOCABULARY - 1] = 42.0F;
+  NamedTensor logits{"logits", TensorElementType::Float32,
+    {1, static_cast<std::int64_t>(VOCABULARY)},
+    std::vector<std::uint8_t>(values.size() * sizeof(float))};
+  std::memcpy(logits.payload.data(), values.data(), logits.payload.size());
+  for (unsigned repetition = 0; repetition != 16; ++repetition) {
+    BOOST_TEST_CONTEXT("large-vocabulary sampling repetition=" << repetition) {
+      requireToken(sample(logits), static_cast<std::int64_t>(VOCABULARY - 2));
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(Spec189LogitsHalfBoundaryValues)
 {
   requireToken(sample({"logits", TensorElementType::Float16, {1, 4},

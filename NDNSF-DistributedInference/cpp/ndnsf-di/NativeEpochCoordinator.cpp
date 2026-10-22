@@ -855,6 +855,10 @@ sampleToken(const std::map<std::string, TensorBundle>& outputs,
         config.samplingTemperature > 5.0)) {
     throw std::invalid_argument("invalid native sampling contract");
   }
+  if (config.samplingMode == "Greedy" && config.samplingRepetitionPenalty == 1.0) {
+    return static_cast<std::int64_t>(std::distance(
+      inputLogits.begin(), std::max_element(inputLogits.begin(), inputLogits.end())));
+  }
   // Preserve the exact transported float32 values, then apply the reference
   // sampler's double-precision arithmetic without rounding penalties to float.
   std::vector<double> logits(inputLogits.begin(), inputLogits.end());
