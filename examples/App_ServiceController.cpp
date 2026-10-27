@@ -156,7 +156,7 @@ main(int argc, char** argv)
 
     auto controllerCert = getOrCreateIdentity(keyChain, controllerPrefix);
     keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(controllerPrefix));
-    if (bootstrapTokenFile.empty()) {
+    if (bootstrapTokenFile.empty() && !hasFlag(argc, argv, "--no-demo-identities")) {
       getOrCreateIdentity(keyChain, PROVIDER_IDENTITY);
       getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("A"));
       getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("B"));

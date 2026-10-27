@@ -112,6 +112,7 @@ BOOST_AUTO_TEST_CASE(Spec189TwoRoleFinalizationCarriesRealActivation)
     spec.backend = "test-finalization"; spec.path = "/fixture/no-file";
     spec.metadata = {{"evidence.modelDigest", identity.modelDigest},
       {"evidence.planDigest", hash('0')}, {"evidence.providerName", identity.providerIdentity},
+      {"evidence.artifactDigest", hash('3')}, {"evidence.createdAtMs", "1"},
       {"evidence.providerBootId", identity.providerBootId}, {"state.securityEpoch", "1"},
       {"state.generationId", identity.generationId}, {"state.schemaDigest", identity.stateSchemaDigest}};
     auto runner = makeNativeModelRunner([&, stage](const RoleExecutionContext& context) {
@@ -136,7 +137,7 @@ BOOST_AUTO_TEST_CASE(Spec189TwoRoleFinalizationCarriesRealActivation)
         tensors.push_back({"hidden", TensorElementType::Int64, {1}, raw<std::int64_t>({static_cast<std::int64_t>(call + 1)})});
       else tensors.push_back({"logits", TensorElementType::Float32, {1, 2}, raw<float>({0, 1})});
       return std::map<std::string, TensorBundle>{{"activation", makeEncodedTensorBundle("activation", tensors)}};
-    });
+    }, executionEvidenceFromRunnerSpec(spec, RunnerKind::WiringOnly, "fixture", "cpu", "cpu0"));
     runtime.registerRunner(spec, runner);
     NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
     config.sessionId = "session"; config.requestId = "request"; config.role = spec.role;
@@ -174,11 +175,12 @@ BOOST_AUTO_TEST_CASE(Spec189TwoRoleFinalizationCarriesRealActivation)
   auto a = configure(0, first), b = configure(1, last);
   auto firstRun = std::async(std::launch::async, [&, a = std::move(a)]() mutable {
     if (failure == 3) {
-      // Finalization observers run after commit. Inject at the coordinator's
-      // existing guard after its second joined model result, before commit.
-      // Worker guards must neither read the call counter nor release state.
+      // Select the staged transition, not merely its owner's thread: runtime
+      // state admission can also run there before staging. Worker guards must
+      // neither read the call counter nor release state.
       a.executionGuard = [&, owner = std::this_thread::get_id()] {
-        if (std::this_thread::get_id() == owner && calls[0] == 2) {
+        if (std::this_thread::get_id() == owner && calls[0] == 2 &&
+            first.decodeStateSnapshot().candidates == 1) {
           first.releaseDecodeState("session", "/Stage/0");
         }
       };
@@ -221,6 +223,19 @@ BOOST_AUTO_TEST_CASE(Spec189TwoRoleFinalizationCarriesRealActivation)
   BOOST_REQUIRE_MESSAGE(lastResult, errors[1]);
   const auto& aResult = *firstResult;
   const auto& bResult = *lastResult;
+  BOOST_REQUIRE(bResult.finalExecutionEvidence);
+  BOOST_CHECK_EQUAL(bResult.finalExecutionEvidence->requestId, "request");
+  BOOST_CHECK_EQUAL(bResult.finalExecutionEvidence->providerName, "/provider/1");
+  BOOST_CHECK_EQUAL(bResult.finalExecutionEvidence->attemptEpoch, 1U);
+  BOOST_CHECK(!bResult.finalExecutionEvidence->realCompute);
+  if (failure != 7) {
+    BOOST_REQUIRE(aResult.finalExecutionEvidence);
+    BOOST_CHECK_EQUAL(aResult.finalExecutionEvidence->providerName, "/provider/0");
+    BOOST_CHECK_EQUAL(aResult.finalExecutionEvidence->requestId, "request");
+  }
+  else {
+    BOOST_CHECK(!aResult.finalExecutionEvidence);
+  }
   BOOST_CHECK_EQUAL(events, 1);
   // Both coordinators have joined: no IO writer can race these observations.
   for (const auto* edges : {&io->fetchedEdges, &io->publishedEdges}) {

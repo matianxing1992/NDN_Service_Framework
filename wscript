@@ -188,6 +188,8 @@ def _validate_global_dependency_identity(conf):
     if receipt.get('schema') != 1 or not isinstance(libraries, dict):
         conf.fatal(f'Invalid global dependency identity receipt: {receipt_path}')
     for name in HOST_DEPENDENCY_LIBRARIES:
+        if name == 'libonnxruntime.so' and 'di' not in conf.env.NDNSF_COMPONENTS:
+            continue
         entry = libraries.get(name)
         if not isinstance(entry, dict):
             conf.fatal(f'Global dependency identity is missing {name}: {receipt_path}')
@@ -369,6 +371,8 @@ def options(opt):
 
     optgrp.add_option('--with-examples', action='store_true', default=False,
                       help='Build examples')
+    optgrp.add_option('--components', default='all',
+                      help='Native component closure: all, core, repo or di (default: all)')
     optgrp.add_option('--with-tests', action='store_true', default=False,
                       help='Build unit tests')
     optgrp.add_option('--install-experiment-fixtures', action='store_true', default=False,
@@ -418,9 +422,17 @@ def configure(conf):
     import runpy
     inventory = runpy.run_path(os.path.join(conf.path.abspath(), 'scripts',
                                            'configure_dependencies.py'))
+    try:
+        selected_components = inventory['resolve_components'](conf.options.components)
+    except ValueError as error:
+        conf.fatal(str(error))
+    conf.env.NDNSF_COMPONENTS = list(selected_components)
+    if conf.options.components != 'all' and (conf.options.with_examples or
+            conf.options.with_tests or conf.options.install_experiment_fixtures):
+        conf.fatal('Historical examples/tests/fixtures require --components=all')
     missing, optional = inventory['check_dependencies'](
         nac_prefix=conf.options.nac_abe_prefix,
-        onnx_prefix=conf.options.onnx_prefix)
+        onnx_prefix=conf.options.onnx_prefix, components=conf.options.components)
     for warning in optional:
         Logs.warn(warning)
     if missing:
@@ -452,11 +464,17 @@ def configure(conf):
     # in-tree tests and examples. ``gnu_dirs`` adds the install libdir to the
     # global RPATH when the prefix is /usr/local; that makes a freshly linked
     # selector load an older same-SONAME library from /usr/local before its
-    # own build-tree target. The installed global libdir is already in the
-    # host loader cache, while target-local ``rpath`` entries remain explicit.
-    installed_lib_rpath = f'-Wl,-rpath,{os.path.realpath(conf.env.LIBDIR)}'
+    # own build-tree target. /usr/local/lib remains a host loader root when
+    # this build installs into another prefix. Target-local paths stay explicit.
+    installed_runtime_libdirs = {
+        os.path.realpath(conf.env.LIBDIR),
+        os.path.realpath('/usr/local/lib'),
+    }
+    installed_lib_rpaths = {
+        f'-Wl,-rpath,{path}' for path in installed_runtime_libdirs
+    }
     conf.env.LINKFLAGS = [flag for flag in list(conf.env.LINKFLAGS or [])
-                          if flag != installed_lib_rpath]
+                          if flag not in installed_lib_rpaths]
 
     # GCC otherwise searches for ld through the build-time PATH even when CXX
     # is an absolute path.  A Linuxbrew directory ahead of /usr/bin can then
@@ -600,25 +618,26 @@ def configure(conf):
         pkg_config_paths.insert(0, nac_pc)
     # Spec 182 unified the DI ONNX world on the official 1.17 full-protobuf
     # build (ONNX_USE_LITE_PROTO=OFF).  The vendored lite trio is gone, so the
-    # onnx adapter sources always need these headers and archives; fail early
+    # selected ONNX adapter sources need these headers and archives; fail early
     # from the installed global root instead of letting every later target die
     # on a missing header.
-    onnx_prefix = _require_global_dependency_prefix(
-        conf.options.onnx_prefix, 'ONNX')
-    onnx_checker = os.path.join(onnx_prefix, 'include', 'onnx', 'checker.h')
-    onnx_shape_inference = os.path.join(
-        onnx_prefix, 'include', 'onnx', 'shape_inference', 'implementation.h')
-    onnx_lib = os.path.join(onnx_prefix, 'lib', 'libonnx.a')
-    onnx_proto_lib = os.path.join(onnx_prefix, 'lib', 'libonnx_proto.a')
-    for onnx_required in [onnx_checker, onnx_shape_inference,
-                          onnx_lib, onnx_proto_lib]:
-        if not os.path.isfile(onnx_required):
-            conf.fatal(f'Installed ONNX file is missing: {onnx_required}')
-    conf.env.INCLUDES_ONNX = [os.path.join(onnx_prefix, 'include')]
-    conf.env.LIBPATH_ONNX = [os.path.join(onnx_prefix, 'lib')]
-    conf.env.LIB_ONNX = ['onnx', 'onnx_proto']
-    conf.env.CXXFLAGS_ONNX = ['-DONNX_ML=1', '-DONNX_NAMESPACE=onnx']
-    conf.msg('ONNX full-protobuf prefix', onnx_prefix)
+    if 'di' in selected_components:
+        onnx_prefix = _require_global_dependency_prefix(
+            conf.options.onnx_prefix, 'ONNX')
+        onnx_checker = os.path.join(onnx_prefix, 'include', 'onnx', 'checker.h')
+        onnx_shape_inference = os.path.join(
+            onnx_prefix, 'include', 'onnx', 'shape_inference', 'implementation.h')
+        onnx_lib = os.path.join(onnx_prefix, 'lib', 'libonnx.a')
+        onnx_proto_lib = os.path.join(onnx_prefix, 'lib', 'libonnx_proto.a')
+        for onnx_required in [onnx_checker, onnx_shape_inference,
+                              onnx_lib, onnx_proto_lib]:
+            if not os.path.isfile(onnx_required):
+                conf.fatal(f'Installed ONNX file is missing: {onnx_required}')
+        conf.env.INCLUDES_ONNX = [os.path.join(onnx_prefix, 'include')]
+        conf.env.LIBPATH_ONNX = [os.path.join(onnx_prefix, 'lib')]
+        conf.env.LIB_ONNX = ['onnx', 'onnx_proto']
+        conf.env.CXXFLAGS_ONNX = ['-DONNX_ML=1', '-DONNX_NAMESPACE=onnx']
+        conf.msg('ONNX full-protobuf prefix', onnx_prefix)
     pkg_config_path = os.pathsep.join(pkg_config_paths)
 
     conf.check_cfg(package='libndn-cxx', args=['libndn-cxx >= 0.8.0', '--cflags', '--libs'],
@@ -697,7 +716,7 @@ def configure(conf):
     # libdir is already in ld.so.cache; retain explicit non-system SVS paths.
     svs_rpaths = [
         f'-Wl,-rpath,{path}' for path in list(conf.env.LIBPATH_NDN_SVS or [])
-        if path != conf.env.LIBDIR
+        if os.path.realpath(path) not in installed_runtime_libdirs
     ]
     conf.env.LINKFLAGS = svs_rpaths + [
         flag for flag in list(conf.env.LINKFLAGS or [])
@@ -760,7 +779,7 @@ int main() {
         # /usr/local is the installed host loader root and is already in the
         # loader cache. Keep it out of build-tree RPATH ordering; an explicit
         # non-installed NAC-ABE prefix still needs its own runtime path.
-        if nac_libdir != os.path.realpath(conf.env.LIBDIR):
+        if nac_libdir not in installed_runtime_libdirs:
             # Waf emits static search paths before dynamic paths; GNU ld
             # applies both to NAC lookup, so keep the SDK ahead in each list.
             for key in ('LIBPATH', 'STLIBPATH'):
@@ -773,20 +792,16 @@ int main() {
         conf.env.NDNSF_NAC_ABE_PREFIX = nac_abe_prefix
         conf.msg('Installed NAC-ABE prefix', nac_abe_prefix)
 
-    if not conf.check_cxx(
-            fragment='''
-#include <ndn-cxx/ims/in-memory-storage.hpp>
+    conf.check_cxx(
+        msg='Checking portable IMS full-name range API',
+        fragment='''
+#include "ndn-service-framework/detail/in-memory-storage-range.hpp"
 void check(const ndn::InMemoryStorage& storage, const ndn::Name& name) {
-  ndn::InMemoryStorage::const_iterator entry = storage.lowerBound(name);
+  auto entry = ndn_service_framework::detail::imsLowerBound(storage, name);
   (void)entry;
 }
 ''',
-            features='cxx', use='NDN_CXX', mandatory=False,
-            msg='Checking ndn-cxx indexed IMS lowerBound API'):
-        conf.fatal(
-            'ndn-cxx must provide InMemoryStorage::lowerBound. Rebuild/install from the '
-            'locked ndn-cxx source using install_ndnsf_stack.sh --ndn-cxx-only, '
-            'then configure NDNSF again.')
+        includes=[conf.srcnode.abspath()], features='cxx', use='NDN_CXX', mandatory=True)
 
     # T009 uses per-operation CK authorization. A version-0.1 pkg-config
     # match or a new header paired with an old library cannot supply it.
@@ -824,10 +839,14 @@ int main() { return requiredApi == nullptr; }
             conf.fatal(
                 'A container $ORIGIN runtime RPATH must also name the declared '
                 '/opt/ndn-base SDK root')
-        reject_non_global_paths(runtime_paths, 'NDNSF_RUNTIME_RPATH',
+        # The selected NDNSF output directory is not an external SDK input.
+        # Admit only that exact directory here; dependency checks stay global.
+        runtime_libdir = os.path.realpath(Utils.subst_vars('${LIBDIR}', conf.env))
+        dependency_runtime_paths = [path for path in runtime_paths if path != runtime_libdir]
+        reject_non_global_paths(dependency_runtime_paths, 'NDNSF_RUNTIME_RPATH',
                                 allow_origin=bool(origin_paths))
         reject_non_global_link_flags(
-            [f'-Wl,-rpath,{path}' for path in runtime_paths],
+            [f'-Wl,-rpath,{path}' for path in dependency_runtime_paths],
             'NDNSF_RUNTIME_RPATH', allow_origin=True)
         existing_linkflags = [
             flag for flag in list(conf.env.LINKFLAGS or [])
@@ -856,35 +875,40 @@ int main() { return requiredApi == nullptr; }
     #        args=['--cflags', '--libs'])
     
     # gtkmm-3.0
-    conf.check_cfg(package="gtkmm-3.0", uselib_store="gtkmm", 
-            args=['--cflags', '--libs'], pkg_config_path=pkg_config_path)
+    if 'uav' in selected_components:
+        conf.check_cfg(package="gtkmm-3.0", uselib_store="gtkmm",
+                args=['--cflags', '--libs'], pkg_config_path=pkg_config_path)
 
-    conf.check_cfg(package='onnxruntime',
-                   args=['onnxruntime >= 1.26.0', '--cflags', '--libs'],
-                   uselib_store='ONNXRUNTIME', mandatory=True,
-                   pkg_config_path=pkg_config_path)
-    conf.env.HAVE_ONNXRUNTIME_CPP = bool(
-        conf.env.CXXFLAGS_ONNXRUNTIME or
-        conf.env.INCLUDES_ONNXRUNTIME or
-        conf.env.LIB_ONNXRUNTIME or
-        conf.env.LIBPATH_ONNXRUNTIME)
+    conf.env.HAVE_ONNXRUNTIME_CPP = False
+    if 'di' in selected_components:
+        conf.check_cfg(package='onnxruntime',
+                       args=['onnxruntime >= 1.20.0', '--cflags', '--libs'],
+                       uselib_store='ONNXRUNTIME', mandatory=True,
+                       pkg_config_path=pkg_config_path)
+        conf.env.HAVE_ONNXRUNTIME_CPP = bool(
+            conf.env.CXXFLAGS_ONNXRUNTIME or
+            conf.env.INCLUDES_ONNXRUNTIME or
+            conf.env.LIB_ONNXRUNTIME or
+            conf.env.LIBPATH_ONNXRUNTIME)
 
-    conf.check_cfg(package='gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0',
-                   args=['--cflags', '--libs'], uselib_store='GSTREAMER',
-                   mandatory=False, pkg_config_path=pkg_config_path)
-    # Debian's GStreamer .pc files expose GLib/GObject as direct libraries,
-    # while the linker used in this environment does not automatically close
-    # their gmodule/libffi/PCRE dependency chain. Keep these optional so a
-    # minimal host can still configure, but make the transitive closure
-    # explicit for the unit-test executable when the libraries are present.
-    for library, store in [('gmodule-2.0', 'GMODULE'),
-                           ('ffi', 'FFI'),
-                           ('pcre', 'PCRE')]:
-        conf.check(features='cxx cxxprogram', lib=[library],
-                   uselib_store=store, mandatory=False)
-    conf.env.HAVE_GSTREAMER = bool(
-        conf.env.CXXFLAGS_GSTREAMER or conf.env.INCLUDES_GSTREAMER or
-        conf.env.LIB_GSTREAMER or conf.env.LIBPATH_GSTREAMER)
+    conf.env.HAVE_GSTREAMER = False
+    if 'uav' in selected_components:
+        conf.check_cfg(package='gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0',
+                       args=['--cflags', '--libs'], uselib_store='GSTREAMER',
+                       mandatory=False, pkg_config_path=pkg_config_path)
+        # Debian's GStreamer .pc files expose GLib/GObject as direct libraries,
+        # while the linker used in this environment does not automatically close
+        # their gmodule/libffi/PCRE dependency chain. Keep these optional so a
+        # minimal host can still configure, but make the transitive closure
+        # explicit for the unit-test executable when the libraries are present.
+        for library, store in [('gmodule-2.0', 'GMODULE'),
+                               ('ffi', 'FFI'),
+                               ('pcre', 'PCRE')]:
+            conf.check(features='cxx cxxprogram', lib=[library],
+                       uselib_store=store, mandatory=False)
+        conf.env.HAVE_GSTREAMER = bool(
+            conf.env.CXXFLAGS_GSTREAMER or conf.env.INCLUDES_GSTREAMER or
+            conf.env.LIB_GSTREAMER or conf.env.LIBPATH_GSTREAMER)
 
     # Every dependency-discovery result must remain inside the installed host
     # closure.  Checking only the three primary NDNSF libraries is insufficient:
@@ -939,7 +963,8 @@ int main() { return requiredApi == nullptr; }
     # system has a different version of the ndn-svs library installed.
     conf.env.prepend_value('STLIBPATH', ['.'])
 
-    _ensure_tokenizer_bridge(conf)
+    if 'di' in conf.env.NDNSF_COMPONENTS:
+        _ensure_tokenizer_bridge(conf)
 
     # Metadata and file presence do not establish header/library compatibility.
     for label, use, fragment in [
@@ -949,6 +974,8 @@ int main() { return requiredApi == nullptr; }
         ('ONNX full protobuf', 'ONNX PROTOBUF', '#include <onnx/onnx_pb.h>\nint main(){onnx::ModelProto m; return m.ByteSizeLong() != 0;}'),
         ('ONNX Runtime', 'ONNXRUNTIME', '#include <onnxruntime_c_api.h>\nint main(){return OrtGetApiBase()->GetApi(ORT_API_VERSION) == nullptr;}'),
     ]:
+        if label in ('ONNX full protobuf', 'ONNX Runtime') and 'di' not in selected_components:
+            continue
         conf.check(features='cxx cxxprogram', fragment=fragment, use=use,
                    mandatory=True, msg='Checking ' + label + ' compile/link closure')
 
@@ -969,10 +996,15 @@ int main() { return requiredApi == nullptr; }
     # or conf.define_cond().  Everything that was added directly to conf.env.DEFINES
     # will not appear in the config header, but will instead be passed directly to the
     # compiler on the command line.
+    conf.define('NDNSF_DI_INSTALLED_WORKER', os.path.join(
+        Utils.subst_vars(conf.env.LIBEXECDIR, conf.env),
+        'ndnsf-di', 'DI_NativeOnnxAssemblyWorker'))
     conf.write_config_header('config.hpp')
 
 def build(bld):
-    if bld.env.HAVE_GSTREAMER:
+    if not bld.env.NDNSF_COMPONENTS:
+        bld.fatal('Reconfigure with --components before building or installing this source')
+    if 'uav' in bld.env.NDNSF_COMPONENTS and bld.env.HAVE_GSTREAMER:
         bld.program(
             target='uav-video-pipeline-probe',
             source='NDNSF-UAV-APP/tools/uav_video_pipeline_probe.cpp',
@@ -999,78 +1031,80 @@ def build(bld):
     if bld.env.WITH_TESTS:
         bld.recurse('tests')
 
-    # Spec 111 ownership targets. These object groups keep the mechanism Core
-    # and optional model adapters physically distinct without changing the
-    # existing executable/link ABI during the compatibility window.
-    di_core_sources = bld.path.ant_glob(
-        'NDNSF-DistributedInference/cpp/ndnsf-di/*.cpp',
-        excl=[
-            'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
-            'NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.cpp',
-        ])
-    bld.objects(target='ndnsf-di-core-objects', source=di_core_sources,
-                includes=['.', 'ndn-service-framework'],
-                use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL',
-                cxxflags=['-fPIC'])
-    bld.objects(
-        target='ndnsf-di-adapter-onnx-objects',
-        source=bld.path.ant_glob(
-            'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp'),
-        includes=['.', 'ndn-service-framework',
-                  'NDNSF-DistributedInference/cpp/adapters/onnx'],
-        use='NDN_CXX BOOST PROTOBUF ONNX ONNXRUNTIME', cxxflags=['-fPIC'])
-    bld.objects(
-        target='ndnsf-di-adapter-yolo-objects',
-        source=bld.path.ant_glob(
-            'NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp'),
-        includes=['.', 'ndn-service-framework'],
-        use='NDN_CXX BOOST', cxxflags=['-fPIC'])
-    bld.objects(
-        target='ndnsf-di-adapter-qwen-objects',
-        source=bld.path.ant_glob(
-            'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp'),
-        includes=['.', 'ndn-service-framework'],
-        use='BOOST', cxxflags=['-fPIC'])
+    if 'di' in bld.env.NDNSF_COMPONENTS:
+        # Spec 111 ownership targets. These object groups keep the mechanism Core
+        # and optional model adapters physically distinct without changing the
+        # existing executable/link ABI during the compatibility window.
+        di_core_sources = bld.path.ant_glob(
+            'NDNSF-DistributedInference/cpp/ndnsf-di/*.cpp',
+            excl=[
+                'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.cpp',
+            ])
+        bld.objects(target='ndnsf-di-core-objects', source=di_core_sources,
+                    includes=['.', 'ndn-service-framework'],
+                    use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL',
+                    cxxflags=['-fPIC'])
+        bld.objects(
+            target='ndnsf-di-adapter-onnx-objects',
+            source=bld.path.ant_glob(
+                'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp'),
+            includes=['.', 'ndn-service-framework',
+                      'NDNSF-DistributedInference/cpp/adapters/onnx'],
+            use='NDN_CXX BOOST PROTOBUF ONNX ONNXRUNTIME', cxxflags=['-fPIC'])
+        bld.objects(
+            target='ndnsf-di-adapter-yolo-objects',
+            source=bld.path.ant_glob(
+                'NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp'),
+            includes=['.', 'ndn-service-framework'],
+            use='NDN_CXX BOOST', cxxflags=['-fPIC'])
+        bld.objects(
+            target='ndnsf-di-adapter-qwen-objects',
+            source=bld.path.ant_glob(
+                'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp'),
+            includes=['.', 'ndn-service-framework'],
+            use='BOOST', cxxflags=['-fPIC'])
 
-    # One installable native DI library is the link boundary for C++
-    # consumers and the optional Python binding.  Keep the source closure
-    # identical to the object groups above; adapters remain model-specific
-    # while the shared library owns no Python runtime.
-    di_library_sources = di_core_sources + bld.path.ant_glob(
-        'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp') + \
-        bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp') + \
-        bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
-    di_library_use = 'ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB DL'
-    if bld.env.HAVE_ONNXRUNTIME_CPP:
-        di_library_use += ' ONNXRUNTIME'
-    if bld.env.enable_shared:
-        # The pinned Rust tokenizer engine links into the installed DI shared
-        # library (spec182 T007-A frozen production integration).
-        di_shlib_use = di_library_use + ' TOKENIZER_BRIDGE'
-        bld.shlib(name='ndnsf-distributed-inference',
-                  target='ndnsf-distributed-inference',
-                  source=di_library_sources,
-                  use=di_shlib_use,
-                  includes=['.', 'ndn-service-framework',
-                            'NDNSF-DistributedInference/cpp/adapters/onnx'],
-                  export_includes=['.', 'ndn-service-framework',
-                                   'NDNSF-DistributedInference/cpp'],
-                  install_path='${LIBDIR}',
-                  linkflags=['-Wl,-rpath,$ORIGIN'])
-    if bld.env.enable_static:
-        bld.stlib(name='ndnsf-distributed-inference-static'
-                  if bld.env.enable_shared else 'ndnsf-distributed-inference',
-                  target='ndnsf-distributed-inference-static'
-                  if bld.env.enable_shared else 'ndnsf-distributed-inference',
-                  source=di_library_sources,
-                  use=di_library_use,
-                  includes=['.', 'ndn-service-framework',
-                            'NDNSF-DistributedInference/cpp/adapters/onnx'],
-                  export_includes=['.', 'ndn-service-framework',
-                                   'NDNSF-DistributedInference/cpp'],
-                  install_path='${LIBDIR}')
+        # One installable native DI library is the link boundary for C++
+        # consumers and the optional Python binding.  Keep the source closure
+        # identical to the object groups above; adapters remain model-specific
+        # while the shared library owns no Python runtime.
+        di_library_sources = di_core_sources + bld.path.ant_glob(
+            'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp') + \
+            bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp') + \
+            bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
+        di_library_use = 'ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB DL'
+        if bld.env.HAVE_ONNXRUNTIME_CPP:
+            di_library_use += ' ONNXRUNTIME'
+        if bld.env.enable_shared:
+            # The pinned Rust tokenizer engine links into the installed DI shared
+            # library (spec182 T007-A frozen production integration).
+            di_shlib_use = di_library_use + ' TOKENIZER_BRIDGE'
+            bld.shlib(name='ndnsf-distributed-inference',
+                      target='ndnsf-distributed-inference',
+                      source=di_library_sources,
+                      use=di_shlib_use,
+                      includes=['.', 'ndn-service-framework',
+                                'NDNSF-DistributedInference/cpp/adapters/onnx'],
+                      export_includes=['.', 'ndn-service-framework',
+                                       'NDNSF-DistributedInference/cpp'],
+                      install_path='${LIBDIR}',
+                      linkflags=['-Wl,-rpath,$ORIGIN'])
+        if bld.env.enable_static:
+            bld.stlib(name='ndnsf-distributed-inference-static'
+                      if bld.env.enable_shared else 'ndnsf-distributed-inference',
+                      target='ndnsf-distributed-inference-static'
+                      if bld.env.enable_shared else 'ndnsf-distributed-inference',
+                      source=di_library_sources,
+                      use=di_library_use,
+                      includes=['.', 'ndn-service-framework',
+                                'NDNSF-DistributedInference/cpp/adapters/onnx'],
+                      export_includes=['.', 'ndn-service-framework',
+                                       'NDNSF-DistributedInference/cpp'],
+                      install_path='${LIBDIR}')
 
-    bld.recurse('NDNSF-DistributedRepo')
+    if 'repo' in bld.env.NDNSF_COMPONENTS:
+        bld.recurse('NDNSF-DistributedRepo')
 
     bld.recurse('examples')
 
@@ -1080,55 +1114,58 @@ def build(bld):
     bld.install_files('${INCLUDEDIR}/ndn-service-framework',
                       bld.path.find_resource('config.hpp'))
 
-    # Preserve the pre-existing Native* compatibility installation until the
-    # T011 caller matrix proves which entries can be retired.  The three new
-    # umbrellas below are the stable application/provider/extension boundary;
-    # the legacy glob remains explicitly classified as compatibility in
-    # contracts/api-exposure.json during this migration window.
-    di_installed_headers = [
-        'NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/provider.hpp',
-        'NDNSF-DistributedInference/cpp/ndnsf-di/extensions.hpp',
-    ]
-    bld.install_files(
-        '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/ndnsf-di',
-        [bld.path.find_resource(header) for header in di_installed_headers])
-    # Stable short include names for external C++ applications. The nested
-    # historical path remains installed for compatibility.
-    bld.install_files(
-        '${INCLUDEDIR}/ndnsf-di',
-        [bld.path.find_resource('ndnsf-di/api.hpp'),
-         bld.path.find_resource('ndnsf-di/provider.hpp')])
-    bld.install_files(
-        '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/ndnsf-di',
-        bld.path.ant_glob(
-            'NDNSF-DistributedInference/cpp/ndnsf-di/*.hpp',
-            excl=[
-                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp',
-                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp',
-                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.hpp',
-                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp',
-                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp',
-                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp',
-                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp',
-                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp',
-                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp',
-                'NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp',
-                'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp',
-                'NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp',
-            ]))
-    bld.install_files(
-        '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/onnx',
-        bld.path.ant_glob(
-            'NDNSF-DistributedInference/cpp/adapters/onnx/*.hpp',
-            excl=['NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp']))
-    bld.install_files(
-        '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/yolo',
-        bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.hpp'))
-    bld.install_files(
-        '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/qwen',
-        bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.hpp'))
+    if 'di' in bld.env.NDNSF_COMPONENTS:
+        # Preserve the pre-existing Native* compatibility installation until the
+        # T011 caller matrix proves which entries can be retired.  The three new
+        # umbrellas below are the stable application/provider/extension boundary;
+        # the legacy glob remains explicitly classified as compatibility in
+        # contracts/api-exposure.json during this migration window.
+        di_installed_headers = [
+            'NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp',
+            'NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp',
+            'NDNSF-DistributedInference/cpp/ndnsf-di/provider.hpp',
+            'NDNSF-DistributedInference/cpp/ndnsf-di/extensions.hpp',
+        ]
+        bld.install_files(
+            '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/ndnsf-di',
+            [bld.path.find_resource(header) for header in di_installed_headers])
+        # Stable short include names for external C++ applications. The nested
+        # historical path remains installed for compatibility.
+        bld.install_files(
+            '${INCLUDEDIR}/ndnsf-di',
+            [bld.path.find_resource('ndnsf-di/api.hpp'),
+             bld.path.find_resource('ndnsf-di/provider.hpp')])
+        bld.install_files(
+            '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/ndnsf-di',
+            bld.path.ant_glob(
+                'NDNSF-DistributedInference/cpp/ndnsf-di/*.hpp',
+                excl=[
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp',
+                ]))
+        bld.install_files(
+            '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/vendor/nlohmann',
+            bld.path.find_resource('NDNSF-DistributedInference/cpp/vendor/nlohmann/json.hpp'))
+        bld.install_files(
+            '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/onnx',
+            bld.path.ant_glob(
+                'NDNSF-DistributedInference/cpp/adapters/onnx/*.hpp',
+                excl=['NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp']))
+        bld.install_files(
+            '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/yolo',
+            bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.hpp'))
+        bld.install_files(
+            '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/qwen',
+            bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.hpp'))
 
     # Export the same external header closure used by the native targets so a
     # standalone installed consumer can compile every public header without
@@ -1148,11 +1185,12 @@ def build(bld):
                 package_include_flags.extend(['-isystem', include_path])
     package_extra_includes = ' '.join(package_include_flags)
 
-    bld(features='subst',
-        source='NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in',
-        target='ndnsf-distributed-inference.pc',
-        install_path='${LIBDIR}/pkgconfig',
-        VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes)
+    if 'di' in bld.env.NDNSF_COMPONENTS:
+        bld(features='subst',
+            source='NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in',
+            target='ndnsf-distributed-inference.pc',
+            install_path='${LIBDIR}/pkgconfig',
+            VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes)
 
     bld(features='subst',
         source='libndn-service-framework.pc.in',

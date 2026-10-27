@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
 #include "ndn-service-framework/NetworkProbeRate.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
@@ -483,6 +484,67 @@ private:
 };
 }
 BOOST_AUTO_TEST_SUITE(Spec182V3Placement)
+
+BOOST_AUTO_TEST_CASE(ProductionGpuOfferFeedsAdmissionAndMemoryConstrainedPlacement)
+{
+  const auto fixture = oracle();
+  const auto sample = std::find_if(fixture.at("seal_cases").begin(),
+    fixture.at("seal_cases").end(), [] (const auto& row) { return row.at("name") == "cpu"; });
+  BOOST_REQUIRE(sample != fixture.at("seal_cases").end());
+  Input input(fixture, *sample);
+  BOOST_REQUIRE(!input.offers.empty());
+  const auto previous = input.offers.front().observation();
+  NativeProviderOfferV3Config config;
+  config.provider = previous.provider;
+  config.service = previous.service;
+  config.bootEpoch = previous.bootEpoch;
+  config.signerKeyId = previous.signerKeyId;
+  config.acceptedRoles = {input.roles.front().role};
+  config.backends = {"onnxruntime-cuda"};
+  config.devices = {"cuda:0"};
+  config.signDigest = [] (const std::string&) { return "fixture-signature-pending"; };
+  const auto request = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-request-envelope-v2"}, {"placementProfile", "DI_PLACEMENT_V3"},
+    {"request_id", input.context.requestId}, {"service", input.context.serviceName},
+    {"attempt", input.context.attempt}, {"plan_deadline_ms", input.context.deadlineMs},
+    {"model_identity_hash", input.context.modelDigest}, {"graphDigest", input.context.graphDigest}});
+  NativeOfferAdmission admission(fixture.at("policy").dump(),
+    {{fixture.at("key_id").get<std::string>(), fixture.at("public_pem").get<std::string>()}},
+    fixture.at("candidate"));
+  for (const auto freeMemory : {4096U, 512U}) {
+    config.observeResources = [freeMemory] (std::uint64_t nowMs) {
+      NativeDeviceResourceObservationV3 row;
+      row.device = "cuda:0";
+      row.totalMemoryMb = 24576;
+      row.freeMemoryMb = freeMemory;
+      row.capturedAtMs = nowMs;
+      return std::vector<NativeDeviceResourceObservationV3>{row};
+    };
+    const auto issued = issueNativeProviderOfferV3(
+      std::vector<std::uint8_t>(request.begin(), request.end()), config, 200);
+    BOOST_REQUIRE(issued);
+    BOOST_REQUIRE(issued->status);
+    // Retain the fixture's real Ed25519 admission key and controlled Core evidence.
+    const auto wire = resignOfferAcceptingRole(issued->payload, input.roles.front().role);
+    auto ack = input.acks.front();
+    ndn::Buffer payload(wire.begin(), wire.end());
+    ack.ack.setPayload(payload, payload.size());
+    const auto admitted = admission.verify(ack, input.context, 200);
+    std::vector<NativeAdmittedOfferV3> offers{admitted};
+    if (freeMemory == 4096) {
+      const auto selected = NativePreSplitFirstPlacement().proposeRoles(
+        input.context, input.ackDigest, input.roles, offers, 200);
+      BOOST_REQUIRE_EQUAL(selected.roles.size(), 1);
+      BOOST_CHECK_EQUAL(selected.roles.front().backend, "onnxruntime-cuda");
+      BOOST_REQUIRE_EQUAL(selected.roles.front().deviceSet.size(), 1);
+      BOOST_CHECK_EQUAL(selected.roles.front().deviceSet.front(), "cuda:0");
+    }
+    else {
+      BOOST_CHECK_THROW(NativePreSplitFirstPlacement().proposeRoles(
+        input.context, input.ackDigest, input.roles, offers, 200), NativeNoFeasiblePlacement);
+    }
+  }
+}
 
 BOOST_AUTO_TEST_CASE(AssemblyValidationRetainsEncodingAndLocaleChecks)
 {

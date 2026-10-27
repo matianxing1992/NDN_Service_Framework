@@ -12,7 +12,7 @@ from setuptools import Extension, find_packages, setup
 
 ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = Path(__file__).resolve().parent
-HOST_NATIVE_LIBRARY_DIR = Path("/usr/local/lib")
+REQUIRED_NATIVE_LIBRARIES = ("libndn-service-framework.so", "libndnsf-distributed-repo.a")
 HISTORICAL_LOCAL_PREFIX = (ROOT / ".local-boost171").resolve()
 HOST_GLOBAL_DEPENDENCY_ROOTS = tuple(
     Path(value).resolve()
@@ -29,10 +29,27 @@ CONTAINER_GLOBAL_DEPENDENCY_ROOTS = tuple(
 )
 
 
+def runtime_prefix() -> Path:
+    """Resolve the explicitly declared host NDNSF destination, not its SDKs."""
+    raw = os.environ.get("NDNSF_RUNTIME_PREFIX", "/usr/local")
+    prefix = Path(raw)
+    if (not prefix.is_absolute() or prefix == Path("/") or
+            any(char.isspace() or char in "\x00:,$" or
+                char in ("'", '"', chr(92), '#') for char in raw) or ".." in prefix.parts or
+            prefix.resolve() != prefix or (prefix.exists() and not prefix.is_dir())):
+        raise RuntimeError("invalid NDNSF_RUNTIME_PREFIX: " + raw)
+    for forbidden in (ROOT, Path("/dev"), Path("/proc"), Path("/sys")):
+        if prefix == forbidden or forbidden in prefix.parents:
+            raise RuntimeError("unsafe NDNSF_RUNTIME_PREFIX: " + raw)
+    return prefix
+
+
 def dependency_roots() -> tuple[Path, ...]:
     roots = list(HOST_GLOBAL_DEPENDENCY_ROOTS)
     if os.environ.get("NDNSF_CONTAINER_BUILD") == "1":
         roots.extend(CONTAINER_GLOBAL_DEPENDENCY_ROOTS)
+    else:
+        roots.append(runtime_prefix())
     return tuple(roots)
 
 
@@ -170,7 +187,7 @@ def native_library_dirs() -> list[str]:
     if not values:
         values = [str(Path("/opt/ndnsf-stage/lib") if
                   os.environ.get("NDNSF_CONTAINER_BUILD") == "1"
-                  else HOST_NATIVE_LIBRARY_DIR)]
+                  else runtime_prefix() / "lib")]
     dirs = [str(Path(value).expanduser().resolve()) for value in values]
     reject_historical_local_paths(dirs, "NDNSF_LIBRARY_DIR")
     reject_non_global_dependency_paths(dirs, "NDNSF_LIBRARY_DIR")
@@ -179,14 +196,14 @@ def native_library_dirs() -> list[str]:
             "NDNSF_LIBRARY_DIR must name one installed global library root; "
             "do not combine checkout or per-run prefixes")
     if os.environ.get("NDNSF_CONTAINER_BUILD") != "1" \
-            and Path(dirs[0]) != HOST_NATIVE_LIBRARY_DIR:
+            and Path(dirs[0]) != runtime_prefix() / "lib":
         raise RuntimeError(
-            "NDNSF_LIBRARY_DIR must be the canonical host install root "
-            f"{HOST_NATIVE_LIBRARY_DIR}; do not select another global root")
+            "NDNSF_LIBRARY_DIR must match the declared host runtime root "
+            f"{runtime_prefix() / 'lib'}")
     directory = Path(dirs[0])
     if not directory.is_dir():
         raise RuntimeError("NDNSF_LIBRARY_DIR does not exist: " + str(directory))
-    required = ("libndn-service-framework.so", "libndnsf-distributed-inference.so")
+    required = REQUIRED_NATIVE_LIBRARIES
     missing = [name for name in required if not (directory / name).exists()]
     if missing:
         raise RuntimeError(
@@ -214,7 +231,7 @@ def validate_native_library_digests(dirs: list[str]) -> None:
         raise RuntimeError("NDNSF_GLOBAL_NATIVE_DIGESTS is invalid JSON") from error
     if not isinstance(expected, dict):
         raise RuntimeError("NDNSF_GLOBAL_NATIVE_DIGESTS must be an object")
-    for name in ("libndn-service-framework.so", "libndnsf-distributed-inference.so"):
+    for name in REQUIRED_NATIVE_LIBRARIES:
         path = Path(dirs[0]) / name
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if expected.get(name) != digest:
@@ -225,11 +242,11 @@ def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[st
     validate_pkg_config_environment()
     try:
         compile_output = subprocess.check_output(
-            ["pkg-config", "--cflags", *packages],
+            ["pkg-config", "--define-prefix", "--cflags", *packages],
             text=True,
         )
         link_output = subprocess.check_output(
-            ["pkg-config", "--libs", *packages],
+            ["pkg-config", "--define-prefix", "--libs", *packages],
             text=True,
         )
     except (OSError, subprocess.CalledProcessError) as error:
@@ -291,6 +308,7 @@ def build_extension() -> Extension:
     # turn includes NDN-SVS headers.  Ask pkg-config for both transitive public
     # dependencies instead of relying on an image-specific include path.
     include_dirs, library_dirs, libraries, extra_compile_args, extra_link_args = pkg_config(
+        "libndn-service-framework",
         "libndn-cxx",
         *([] if source else ["libndn-svs"]),
         "libnac-abe",
@@ -303,6 +321,8 @@ def build_extension() -> Extension:
 
     candidate_dirs = native_library_dirs()
     validate_native_library_digests(candidate_dirs)
+    repo_archive = str(Path(candidate_dirs[0]) / "libndnsf-distributed-repo.a")
+    extra_objects.append(repo_archive)
     for path in candidate_dirs:
         library_dirs.insert(0, path)
         extra_link_args.append(f"-Wl,-rpath,{path}")
@@ -332,31 +352,16 @@ def build_extension() -> Extension:
         sources=[
             "src/py_repoclient/_py_repoclient.cpp",
             "src/py_repoclient/artifact_repository_bindings.cpp",
-            "../src/ArtifactManifest.cpp",
-            "../src/ArtifactRepositoryApi.cpp",
-            "../src/ArtifactTransfer.cpp",
-            "../src/ArtifactTypes.cpp",
-            "../src/backends/FilesystemArtifactStore.cpp",
-            "../src/backends/FilesystemRepoStoreBackend.cpp",
-            "../src/RepoClient.cpp",
-            "../src/RepoCore.cpp",
-            "../src/RepoNode.cpp",
-            "../src/RepoPacketServer.cpp",
-            "../src/RepoProtocol.cpp",
-            "../src/RepoStoreBackend.cpp",
-            "../src/RepoTypes.cpp",
         ],
         include_dirs=[
             *explicit_includes,
             pybind11.get_include(),
-            str(ROOT),
-            str(ROOT / "NDNSF-DistributedRepo/include"),
-            str(ROOT / "ndn-service-framework"),
             *include_dirs,
         ],
         library_dirs=library_dirs,
-        libraries=["ndn-service-framework", "sqlite3", *libraries],
+        libraries=["sqlite3", *libraries],
         extra_objects=extra_objects,
+        depends=[repo_archive],
         extra_compile_args=["-std=c++17", *extra_compile_args],
         extra_link_args=extra_link_args,
         language="c++",

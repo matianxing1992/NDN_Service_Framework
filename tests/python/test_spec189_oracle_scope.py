@@ -97,3 +97,38 @@ def test_oracle_cannot_accept_wrong_scope_or_failed_process(monkeypatch, tmp_pat
     monkeypatch.setattr(module.subprocess, "run", run)
     with pytest.raises(RuntimeError, match="SPEC189_CPP_ORACLE_FAIL"):
         module.run_cpp_oracle(Path("/installed/oracle"), tmp_path, cache, 30)
+
+
+@pytest.mark.parametrize("marker,status", [
+    ("SPEC189_CPP_QUIET_PERFORMANCE_PASS", 0),
+    ("SPEC189_CPP_ORACLE_PASS", 0),
+    ("SPEC189_CPP_QUIET_PERFORMANCE_PASS", 1),
+])
+def test_quiet_oracle_scope_is_explicit(monkeypatch, tmp_path, marker, status):
+    module = load_module()
+    def run(arguments, **kwargs):
+        assert arguments == ["/installed/oracle", "--quiet-performance", "--require-multi-token",
+                             "--rounds", "3", "--run-root", str(tmp_path)]
+        kwargs["stdout"].write(marker + " {}\n")
+        return SimpleNamespace(returncode=status)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    if marker == "SPEC189_CPP_QUIET_PERFORMANCE_PASS" and status == 0:
+        result = module.run_cpp_oracle(Path("/installed/oracle"), tmp_path, False, 30,
+                                       True, 3, quiet_performance=True)
+        assert result["scope"] == "quiet-performance"
+        assert result["status"] == "QUIET_PERFORMANCE_PASS"
+        assert result["fullPathQualification"] == "NOT_RUN"
+    else:
+        with pytest.raises(RuntimeError, match="SPEC189_CPP_ORACLE_FAIL"):
+            module.run_cpp_oracle(Path("/installed/oracle"), tmp_path, False, 30,
+                                   True, 3, quiet_performance=True)
+
+
+@pytest.mark.parametrize("diagnostic", ["--cache-compatibility-mode", "--negative-parent",
+                                        "--revoke-after-first-round", "--requester-driver-binary=/driver"])
+def test_diagnostic_recipes_require_explicit_debug_logging(diagnostic, capsys):
+    module = load_module()
+    with pytest.raises(SystemExit) as error:
+        module.main(["--stage-manifest=/unused/stages", "--node-mapping=/unused/nodes", diagnostic])
+    assert error.value.code == 2
+    assert "diagnostics require --debug-logging" in capsys.readouterr().err

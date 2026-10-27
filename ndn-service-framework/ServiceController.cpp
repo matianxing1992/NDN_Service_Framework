@@ -305,6 +305,12 @@ ServiceController::getControllerVersion() const
   return m_controllerVersion;
 }
 
+bool
+ServiceController::hasGenerationWriter() const
+{
+  return m_generationReady && m_generationStore && m_generationStore->ownsWriter();
+}
+
 std::string
 ServiceController::certificateDigest(const ndn::security::Certificate& certificate)
 {
@@ -520,7 +526,7 @@ ServiceController::isIdentityOrCertificateRevoked(
 void
 ServiceController::advanceAuthorizationEpoch()
 {
-  if (!m_generationReady || !m_generationStore)
+  if (!hasGenerationWriter())
     throw std::runtime_error("Controller generation is not ready");
   m_controllerVersion = m_generationStore->advanceEpoch(m_revocations);
   m_policyEpoch = static_cast<size_t>(m_controllerVersion.controllerEpoch);
@@ -532,7 +538,7 @@ ServiceController::advanceAuthorizationEpoch()
 bool
 ServiceController::revoke(const RevocationTarget& target)
 {
-  if (!m_generationReady || !target.isValid())
+  if (!hasGenerationWriter() || !target.isValid())
     return false;
   const bool recovering = m_abeRotationPending;
   // Reconcile before the duplicate-target check: callers retry the operation
@@ -608,7 +614,7 @@ ServiceController::grant(const ndn::Name& identity,
   target.targetIdentity = identity;
   target.serviceName = serviceName;
   target.authorizationAttribute = authorizationAttribute;
-  if (!target.isValid() || !m_generationReady)
+  if (!target.isValid() || !hasGenerationWriter())
     return false;
   // A grant following a failed withdrawal is not grant-only until the
   // withdrawal's rotation has completed. Never erase its target or issue a
@@ -728,7 +734,7 @@ ServiceController::grant(const ndn::Name& identity,
     // complete policy.  NAC-ABE generates its replacement DKEY lazily on the
     // target identity's next fetch; no global rotation or unaffected-identity
     // fan-out is performed.  Register the granted identity's certificate with
-    // the Attribute Authority when the Controller keychain already knows it,
+    // the Attribute Authority when the Controller keychain or public anchors know it,
     // so the AA can serve the identity's lazy DKEY fetch without a network
     // certificate lookup; fall back to the name-only policy when no local
     // certificate exists yet.
@@ -738,10 +744,7 @@ ServiceController::grant(const ndn::Name& identity,
       std::list<std::string> attributes(effective.begin(), effective.end());
       const auto policy = boost::algorithm::join(attributes, " OR ");
       try {
-        const auto cert = m_keyChain.getPib()
-                            .getIdentity(identity)
-                            .getDefaultKey()
-                            .getDefaultCertificate();
+        const auto cert = getTargetIdentityCertificate(identity);
         m_aa.addNewPolicy(cert, policy);
       }
       catch (const std::exception&) {
@@ -836,6 +839,8 @@ ServiceController::resetStartCancellation() noexcept
 
 void ServiceController::start()
 {
+  if (!hasGenerationWriter())
+    throw std::runtime_error("ServiceController generation writer is unavailable");
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   if (m_startCancelled.load(std::memory_order_acquire)) {
     throw std::runtime_error(
@@ -928,6 +933,8 @@ void ServiceController::start()
         "ServiceController AttributeAuthority PUBPARAMS readiness timeout");
     }
     if (state->ready && m_registrationState->pending == 0) {
+      if (!hasGenerationWriter())
+        throw std::runtime_error("ServiceController generation writer was lost during readiness");
       return;
     }
     if (!state->ready && !state->inFlight && now >= nextAttempt) {
@@ -1085,6 +1092,15 @@ void ServiceController::addAttributesForUsersAccordingToServicePolicy()
     }
     catch (const std::exception&) {
       // Preserve the identity-only policy fallback below.
+    }
+    try {
+      // Explicit public anchors also let NAC-ABE encrypt DKEYs when the
+      // recipient's private identity belongs exclusively to another process.
+      m_aa.addNewPolicy(getTargetIdentityCertificate(ndn::Name(identity)), abePolicy);
+      continue;
+    }
+    catch (const std::exception&) {
+      // A name-only policy still permits the existing validated network lookup.
     }
     m_aa.addNewPolicy(ndn::Name(identity), abePolicy);
     NDN_LOG_INFO("Add ABE policy (fallback): " << abePolicy
@@ -1450,10 +1466,22 @@ ServiceController::getTargetIdentityCertificate(const ndn::Name& targetIdentity)
     return getRsaEncryptionCertificateOrThrow(m_keyChain, issued->second);
   }
 
-  auto cert = m_keyChain.getPib()
-                .getIdentity(targetIdentity)
-                .getDefaultKey()
-                .getDefaultCertificate();
+  ndn::security::Certificate cert;
+  try {
+    cert = m_keyChain.getPib().getIdentity(targetIdentity)
+             .getDefaultKey().getDefaultCertificate();
+  }
+  catch (const ndn::security::pib::Pib::Error&) {
+    const auto* anchor = m_validator.getTrustAnchors().find(ndn::Name(targetIdentity).append("KEY"));
+    if (anchor == nullptr || anchor->getIdentity() != targetIdentity || !anchor->isValid() ||
+        getCertificateKeyType(*anchor) != ndn::KeyType::RSA) {
+      throw std::runtime_error("No valid RSA recipient certificate for " +
+                               targetIdentity.toUri(ndn::name::UriFormat::CANONICAL));
+    }
+    // Copy the public certificate before another anchor lookup can invalidate it.
+    // Trust in this key does not grant any service permission.
+    return *anchor;
+  }
   if (!cert.isValid()) {
     throw std::runtime_error("Target identity certificate is not currently valid: " +
                              cert.getName().toUri(ndn::name::UriFormat::CANONICAL));
@@ -1662,6 +1690,7 @@ ServiceController::encryptForCertificate(const ndn::security::Certificate& cert,
 void ServiceController::onServiceAccessInterest(const ndn::InterestFilter&,
                                                const ndn::Interest& interest)
 {
+  if (!hasGenerationWriter()) return;
   // <controller>/NDNSF/SERVICEACCESS/<user>
   if (!admitControlQuery(interest, "SERVICEACCESS")) return;
   const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
@@ -1673,6 +1702,7 @@ void ServiceController::onServiceAccessInterest(const ndn::InterestFilter&,
     interest,
     // validated
     [this, userName](const ndn::Interest& validatedInterest) {
+      if (!hasGenerationWriter()) return;
       ndn::Name signerIdentity;
       ndn::security::Certificate signerCert;
       try {
@@ -1737,6 +1767,7 @@ void ServiceController::onServiceAccessInterest(const ndn::InterestFilter&,
 void ServiceController::onServiceProvisionInterest(const ndn::InterestFilter&,
                                                   const ndn::Interest& interest)
 {
+  if (!hasGenerationWriter()) return;
   // <controller>/NDNSF/SERVICEPROVISION/<provider>
   if (!admitControlQuery(interest, "SERVICEPROVISION")) return;
   const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
@@ -1747,6 +1778,7 @@ void ServiceController::onServiceProvisionInterest(const ndn::InterestFilter&,
     interest,
     // validated
     [this, providerName](const ndn::Interest& validatedInterest) {
+      if (!hasGenerationWriter()) return;
       ndn::Name signerIdentity;
       ndn::security::Certificate signerCert;
       try {
@@ -1813,14 +1845,13 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
   const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
   if (!query || query->subject.empty() || !query->service.empty() || query->generation != 0) return;
   const ndn::Name targetIdentity = query->subject;
-  if (serveOriginalControlReply(interest)) return;
-
-  if (!m_generationReady) {
+  if (!hasGenerationWriter()) {
     NDN_LOG_ERROR("[PERMISSIONS/USER] Refusing protected issuance because "
                   "Controller generation is unavailable target="
                   << targetIdentity);
     return;
   }
+  if (serveOriginalControlReply(interest)) return;
 
   EncryptedPermissionResponse encryptedResponse;
   try {
@@ -1863,14 +1894,13 @@ void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&
   const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
   if (!query || query->subject.empty() || !query->service.empty() || query->generation != 0) return;
   const ndn::Name targetIdentity = query->subject;
-  if (serveOriginalControlReply(interest)) return;
-
-  if (!m_generationReady) {
+  if (!hasGenerationWriter()) {
     NDN_LOG_ERROR("[PERMISSIONS/PROVIDER] Refusing protected issuance because "
                   "Controller generation is unavailable target="
                   << targetIdentity);
     return;
   }
+  if (serveOriginalControlReply(interest)) return;
 
   EncryptedPermissionResponse encryptedResponse;
   try {
@@ -1909,6 +1939,7 @@ void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&
 void ServiceController::onPolicyManifestInterest(const ndn::InterestFilter&,
                                                  const ndn::Interest& interest)
 {
+  if (!hasGenerationWriter()) return;
   if (!admitControlQuery(interest, "POLICY-MANIFEST")) return;
   const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
   if (!query || !query->subject.empty() || !query->service.empty() || query->generation != 0) return;
@@ -1934,7 +1965,7 @@ void
 ServiceController::onPolicyStatusInterest(const ndn::InterestFilter&,
                                           const ndn::Interest& interest)
 {
-  if (!m_generationReady || !admitControlQuery(interest, "POLICY-STATUS")) return;
+  if (!hasGenerationWriter() || !admitControlQuery(interest, "POLICY-STATUS")) return;
   const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
   if (!query || !query->subject.empty() || query->service.empty()) return;
   const auto serviceName = query->service;
@@ -1973,6 +2004,7 @@ void
 ServiceController::onCertificateBootstrapInterest(const ndn::InterestFilter&,
                                                   const ndn::Interest& interest)
 {
+  if (!hasGenerationWriter()) return;
   if (!admitControlQuery(interest, "CERTBOOTSTRAP")) return;
   if (serveOriginalControlReply(interest)) return;
   std::string targetUri;

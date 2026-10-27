@@ -12,6 +12,16 @@
 #include <openssl/sha.h>
 
 #include <filesystem>
+#include <cerrno>
+#include <cstddef>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <iterator>
+#include <sys/prctl.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <utility>
 #include <unistd.h>
 
 namespace ndnsf::di {
@@ -126,6 +136,82 @@ BOOST_AUTO_TEST_CASE(LegacyCheckpointAndTranscriptWireParity)
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(Spec182ConversationJournal)
+BOOST_AUTO_TEST_CASE(ProvisionedDirectoriesNeedNoPermissionMutation)
+{
+  for (const auto modes : {std::pair<mode_t, mode_t>{0700, 0700}, {0750, 0700},
+                           {0700, 0750}, {01700, 0700}}) {
+    char directory[] = "/tmp/spec217-journal-permissions-XXXXXX";
+    BOOST_REQUIRE(::mkdtemp(directory) != nullptr);
+    struct Cleanup {
+      std::filesystem::path root;
+      ~Cleanup() { std::error_code ec; std::filesystem::remove_all(root, ec); }
+    } cleanup{directory};
+    const auto identity = std::filesystem::path(directory) / "fixture-owner";
+    const auto sibling = std::filesystem::path(directory) / "other-owner";
+    std::filesystem::create_directory(identity);
+    std::filesystem::create_directory(sibling);
+    const auto siblingFile = sibling / "journal.jsonl";
+    { std::ofstream output(siblingFile); output << "other identity journal"; }
+    struct stat before{};
+    BOOST_REQUIRE(::stat(siblingFile.c_str(), &before) == 0);
+    BOOST_REQUIRE(::chmod(directory, modes.first) == 0);
+    BOOST_REQUIRE(::chmod(identity.c_str(), modes.second) == 0);
+    NativeConversationJournalConfig config{directory, "fixture-owner",
+      {{"fixture-key", std::vector<std::uint8_t>(32, 7)}}, 64 * 1024, true};
+    const auto child = ::fork();
+    BOOST_REQUIRE(child >= 0);
+    if (child == 0) {
+      // Deny directory chmod variants; file fchmod stays available.
+      sock_filter instructions[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+#ifdef __NR_chmod
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_chmod, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EROFS),
+#endif
+#ifdef __NR_fchmodat
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_fchmodat, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EROFS),
+#endif
+#ifdef __NR_fchmodat2
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_fchmodat2, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EROFS),
+#endif
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
+      };
+      sock_fprog program{static_cast<unsigned short>(sizeof(instructions) /
+                                                    sizeof(instructions[0])), instructions};
+      if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
+          ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) != 0) {
+        ::_exit(90);
+      }
+      bool opened = false;
+      try { NativeConversationJournal journal(config); opened = true; }
+      catch (const std::runtime_error&) {}
+      const bool expected = modes.first == 0700 && modes.second == 0700;
+      ::_exit(opened == expected ? 0 : 91);
+    }
+    int status = 0;
+    pid_t waited;
+    do { waited = ::waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    BOOST_REQUIRE_EQUAL(waited, child);
+    BOOST_REQUIRE(WIFEXITED(status));
+    BOOST_CHECK_EQUAL(WEXITSTATUS(status), 0);
+    // Without denial, existing wrong permissions must still be repaired.
+    { NativeConversationJournal journal(config); }
+    struct stat rootInfo{}, identityInfo{}, after{};
+    BOOST_REQUIRE(::stat(directory, &rootInfo) == 0);
+    BOOST_REQUIRE(::stat(identity.c_str(), &identityInfo) == 0);
+    BOOST_CHECK_EQUAL(rootInfo.st_mode & 07777, 0700);
+    BOOST_CHECK_EQUAL(identityInfo.st_mode & 07777, 0700);
+    BOOST_REQUIRE(::stat(siblingFile.c_str(), &after) == 0);
+    BOOST_CHECK_EQUAL(before.st_dev, after.st_dev);
+    BOOST_CHECK_EQUAL(before.st_ino, after.st_ino);
+    std::ifstream input(siblingFile);
+    BOOST_CHECK_EQUAL(std::string(std::istreambuf_iterator<char>(input), {}),
+                      "other identity journal");
+  }
+}
+
 BOOST_AUTO_TEST_CASE(LegacyReadNativeAppendAndWriterLease)
 {
   std::ifstream input("tests/fixtures/spec182/conversation-oracle.json");

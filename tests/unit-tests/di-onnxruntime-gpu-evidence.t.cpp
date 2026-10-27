@@ -1,12 +1,16 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 
+#include <boost/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 #include <ndn-cxx/util/logging.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -18,11 +22,62 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace ndnsf::di::tests {
 
 namespace {
+
+class TimingSnapshotRunner final : public NativeModelRunner
+{
+public:
+  explicit TimingSnapshotRunner(bool stale) : m_stale(stale) {}
+
+  std::map<std::string, TensorBundle>
+  run(const RoleExecutionContext& context) override
+  {
+    NativeBackendExecutionTiming timing;
+    auto identity = std::make_shared<NativeBackendExecutionIdentity>();
+    identity->requestId = m_stale ? "/another/request" : context.requestId;
+    identity->sessionId = context.sessionId;
+    identity->role = context.role;
+    identity->providerBootId = context.providerBootId;
+    identity->attemptEpoch = context.attemptEpoch;
+    timing.identity = std::move(identity);
+    timing.inferenceEpoch = context.inferenceEpoch;
+    timing.completed = true;
+    m_metrics.lastBackendExecution = std::move(timing);
+    m_metrics.activationOutputBytes = 123;
+    return {{"output", TensorBundle{"output", {42}}}};
+  }
+
+  std::optional<NativeRuntimeMetrics>
+  runtimeMetricsSnapshot() const override
+  {
+    return m_metrics;
+  }
+
+private:
+  bool m_stale;
+  NativeRuntimeMetrics m_metrics;
+};
+
+class NoTimingDependencyIo final : public DependencyIo
+{
+public:
+  std::future<TensorBundle>
+  prefetchInput(const std::string&, const DependencyEdge&) override
+  {
+    throw std::runtime_error("timing fixture has no dependency inputs");
+  }
+
+  void
+  publishOutput(const std::string&, const DependencyEdge&, const TensorBundle&) override
+  {
+    throw std::runtime_error("timing fixture has no dependency outputs");
+  }
+};
 
 struct ScopedRunnerTimingCapture
 {
@@ -275,9 +330,23 @@ BOOST_AUTO_TEST_CASE(OrtProfileRecordsEveryModelNodeProviderAndGpuUuid)
   ExecutionEvidence evidence;
   applyOnnxRuntimeProviderProfile(evidence, path.string(), "/LLM/Stage/0", false,
                                   "GPU-test-uuid");
-  BOOST_REQUIRE_EQUAL(evidence.nodeProviderAssignments.size(), 2);
-  BOOST_CHECK_EQUAL(evidence.nodeProviderAssignments.front().provider,
+  BOOST_REQUIRE_EQUAL(evidence.getNodeProviderAssignments().size(), 2);
+  BOOST_CHECK_EQUAL(evidence.getNodeProviderAssignments().front().provider,
                     "CUDAExecutionProvider");
+  BOOST_CHECK_EQUAL(evidence.gpuUuid, "GPU-test-uuid");
+  BOOST_CHECK(!evidence.cpuFallbackUsed);
+  const auto retained = evidence;
+  evidence.runnerKind = RunnerKind::OnnxRuntimeCuda;
+  std::ofstream(path) << R"json([
+    {"cat":"Node","name":"New_0_kernel_time","args":{"provider":"CUDAExecutionProvider"}},
+    {"cat":"Node","name":"New_1_kernel_time","args":{"provider":"CPUExecutionProvider"}}
+  ])json";
+  BOOST_CHECK_THROW(applyOnnxRuntimeProviderProfile(
+    evidence, path.string(), "/LLM/Stage/0", true, "GPU-rejected"), std::runtime_error);
+  BOOST_REQUIRE_EQUAL(evidence.getNodeProviderAssignments().size(), 2);
+  BOOST_CHECK_EQUAL(evidence.getNodeProviderAssignments().front().nodeName, "MatMul_0_kernel_time");
+  BOOST_CHECK_EQUAL(evidence.getNodeProviderAssignments().back().nodeName, "Add_1_kernel_time");
+  BOOST_CHECK_EQUAL(retained.getNodeProviderAssignments().front().nodeName, "MatMul_0_kernel_time");
   BOOST_CHECK_EQUAL(evidence.gpuUuid, "GPU-test-uuid");
   BOOST_CHECK(!evidence.cpuFallbackUsed);
   std::filesystem::remove(path);
@@ -363,6 +432,148 @@ BOOST_AUTO_TEST_CASE(StatefulTinyOnnxRunsTwoRolesWithPersistentState)
   BOOST_CHECK_EQUAL(stage1Metrics->stateHostToDeviceBytes, 0U);
 }
 
+BOOST_AUTO_TEST_CASE(BackendExecutionStatisticsWorkWithDiagnosticsDisabled)
+{
+  static_assert(std::is_nothrow_copy_constructible<NativeBackendExecutionTiming>::value,
+                "backend timing snapshot copies must not allocate");
+  ScopedRunnerTimingCapture capture;
+  const char* previous = std::getenv("NDNSF_DI_RUNTIME_TIMING");
+  const bool hadRuntimeTiming = previous != nullptr;
+  const std::string previousRuntimeTiming = previous ? previous : "";
+  BOOST_SCOPE_EXIT(&hadRuntimeTiming, &previousRuntimeTiming) {
+    if (hadRuntimeTiming) ::setenv("NDNSF_DI_RUNTIME_TIMING", previousRuntimeTiming.c_str(), 1);
+    else ::unsetenv("NDNSF_DI_RUNTIME_TIMING");
+    ndn::util::Logging::setLevel("*=WARN");
+  } BOOST_SCOPE_EXIT_END
+  BOOST_REQUIRE_EQUAL(::setenv("NDNSF_PHASE_TIMING", "0", 1), 0);
+  BOOST_REQUIRE_EQUAL(::setenv("NDNSF_DI_RUNTIME_TIMING", "0", 1), 0);
+  ndn::util::Logging::setLevel("*=NONE");
+  const auto fixture = findSpec175Fixture();
+  BOOST_REQUIRE(!fixture.empty());
+  OnnxRuntimeModelRunner runner(makeStatefulSpec(
+    fixture / "role-1.onnx", "/LLM/Pipeline/Stage/1"));
+  RoleExecutionContext context;
+  context.requestId = "/quiet/request-a";
+  context.sessionId = "quiet-session-a";
+  context.role = "/LLM/Pipeline/Stage/1";
+  context.providerBootId = "quiet-boot";
+  context.attemptEpoch = 1;
+  context.inputsByScope = {
+    {"attention_kv_in", makeZeroState("attention_kv_in")},
+    {"recurrent_state_in", makeZeroState("recurrent_state_in")},
+    {"convolution_state_in", makeZeroState("convolution_state_in")}};
+  const auto setToken = [&] (float token) {
+    std::vector<float> hidden{token, 1, 0, 0, 0, 0, 0, 0};
+    std::vector<std::uint8_t> bytes(hidden.size() * sizeof(float));
+    std::memcpy(bytes.data(), hidden.data(), bytes.size());
+    context.inputsByScope["hidden_in"] = makeEncodedTensorBundle(
+      "hidden_in", {NamedTensor{"hidden_in", TensorElementType::Float32,
+                                {1, 1, 8}, std::move(bytes)}});
+  };
+  const auto now = [] {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  };
+  setToken(3);
+  const auto before = now();
+  const auto outputs = decodeOutput(runner.run(context));
+  const auto after = now();
+  BOOST_CHECK_EQUAL(findTensor(outputs, "logits").payload.size(), 32U * sizeof(float));
+  const auto firstMetrics = runner.runtimeMetricsSnapshot();
+  BOOST_REQUIRE(firstMetrics && firstMetrics->lastBackendExecution);
+  const auto first = *firstMetrics->lastBackendExecution;
+  BOOST_CHECK(first.matches(context));
+  BOOST_CHECK(first.completed);
+  BOOST_CHECK_GE(first.startedSteadyNs, before);
+  BOOST_CHECK_GE(first.finishedSteadyNs, first.startedSteadyNs);
+  BOOST_CHECK_LE(first.finishedSteadyNs, after);
+  BOOST_CHECK_GE(first.startedProcessCpuNs, -1);
+  BOOST_CHECK_GE(first.finishedProcessCpuNs, -1);
+  BOOST_CHECK_GE(first.startedThreadCpuNs, -1);
+  BOOST_CHECK_GE(first.finishedThreadCpuNs, -1);
+  if (first.startedProcessCpuNs >= 0 && first.finishedProcessCpuNs >= 0)
+    BOOST_CHECK_GE(first.finishedProcessCpuNs, first.startedProcessCpuNs);
+  if (first.startedThreadCpuNs >= 0 && first.finishedThreadCpuNs >= 0)
+    BOOST_CHECK_GE(first.finishedThreadCpuNs, first.startedThreadCpuNs);
+#if defined(CLOCK_THREAD_CPUTIME_ID) || defined(CLOCK_PROCESS_CPUTIME_ID)
+  BOOST_CHECK_EQUAL(detail::nativeClockCpuTimeNs(static_cast<clockid_t>(-1)), -1);
+#endif
+  auto mismatch = context;
+  mismatch.requestId += "-other";
+  BOOST_CHECK(!first.matches(mismatch));
+  mismatch = context;
+  mismatch.sessionId += "-other";
+  BOOST_CHECK(!first.matches(mismatch));
+  mismatch = context;
+  mismatch.role += "-other";
+  BOOST_CHECK(!first.matches(mismatch));
+  mismatch = context;
+  mismatch.providerBootId += "-other";
+  BOOST_CHECK(!first.matches(mismatch));
+  mismatch = context;
+  ++mismatch.attemptEpoch;
+  BOOST_CHECK(!first.matches(mismatch));
+  mismatch = context;
+  ++mismatch.inferenceEpoch;
+  BOOST_CHECK(!first.matches(mismatch));
+
+  context.requestId = "/quiet/request-b";
+  context.sessionId = "quiet-session-b";
+  context.attemptEpoch = 2;
+  context.inferenceEpoch = 7;
+  BOOST_REQUIRE_NO_THROW(runner.run(context));
+  const auto secondMetrics = runner.runtimeMetricsSnapshot();
+  BOOST_REQUIRE(secondMetrics && secondMetrics->lastBackendExecution);
+  BOOST_CHECK(secondMetrics->lastBackendExecution->matches(context));
+  BOOST_CHECK(secondMetrics->lastBackendExecution->completed);
+  BOOST_CHECK_GE(secondMetrics->lastBackendExecution->startedSteadyNs, first.finishedSteadyNs);
+  BOOST_CHECK_EQUAL(first.identity->requestId, "/quiet/request-a");
+  BOOST_CHECK(first.identity != secondMetrics->lastBackendExecution->identity);
+
+  // The fixture's real Gather rejects this index inside ORT, after admission.
+  setToken(1000000);
+  BOOST_CHECK_THROW(runner.run(context), std::exception);
+  const auto failedMetrics = runner.runtimeMetricsSnapshot();
+  BOOST_REQUIRE(failedMetrics && failedMetrics->lastBackendExecution);
+  BOOST_CHECK(failedMetrics->lastBackendExecution->matches(context));
+  BOOST_CHECK(!failedMetrics->lastBackendExecution->completed);
+  BOOST_CHECK_GE(failedMetrics->lastBackendExecution->finishedSteadyNs,
+                 failedMetrics->lastBackendExecution->startedSteadyNs);
+  setToken(4);
+  BOOST_REQUIRE_NO_THROW(runner.run(context));
+  const auto recovered = runner.runtimeMetricsSnapshot();
+  BOOST_REQUIRE(recovered && recovered->lastBackendExecution);
+  BOOST_CHECK(recovered->lastBackendExecution->completed);
+  BOOST_CHECK(recovered->lastBackendExecution->matches(context));
+  BOOST_CHECK(recovered->lastBackendExecution->identity ==
+              secondMetrics->lastBackendExecution->identity);
+  ndn::util::Logging::flush();
+  BOOST_CHECK(capture.output.str().empty());
+}
+
+BOOST_AUTO_TEST_CASE(WorkerDiscardsStaleAndCachedBackendTimingOnly)
+{
+  for (bool stale : {false, true}) {
+    NativeProviderRuntime runtime(1);
+    const std::string roleName = "/Statistics/Role";
+    runtime.registerRunner(roleName, std::make_shared<TimingSnapshotRunner>(stale));
+    auto io = std::make_shared<NoTimingDependencyIo>();
+    const RoleSpec role(roleName, {}, {}, "/worker/request", 3);
+    const auto first = runtime.executeRoleAsync("statistics-session", role, io).get();
+    BOOST_REQUIRE(first.runtimeMetrics);
+    BOOST_CHECK_EQUAL(first.outputsByScope.at("output").payload.at(0), 42);
+    BOOST_CHECK_EQUAL(first.runtimeMetrics->activationOutputBytes, 123);
+    BOOST_CHECK(!first.exactForwardCacheHit);
+    BOOST_CHECK_EQUAL(first.runtimeMetrics->lastBackendExecution.has_value(), !stale);
+    const auto cached = runtime.executeRoleAsync("statistics-session", role, io).get();
+    BOOST_REQUIRE(cached.runtimeMetrics);
+    BOOST_CHECK(cached.exactForwardCacheHit);
+    BOOST_CHECK(!cached.runtimeMetrics->lastBackendExecution);
+    BOOST_CHECK_EQUAL(cached.runtimeMetrics->activationOutputBytes, 123);
+    BOOST_CHECK_EQUAL(cached.outputsByScope.at("output").payload.at(0), 42);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(StatefulTinyOnnxCpuStreamingRetainsResidentState)
 {
   ScopedRunnerTimingCapture timing;
@@ -383,12 +594,21 @@ BOOST_AUTO_TEST_CASE(StatefulTinyOnnxCpuStreamingRetainsResidentState)
   context.sessionId = "spec190-cpu-resident-state";
   context.role = "/LLM/Pipeline/Stage/0";
   context.streamingStateExecution = true;
+  std::shared_ptr<const NativeBackendExecutionIdentity> timingIdentity;
   for (std::uint64_t epoch = 0; epoch < 3; ++epoch) {
     context.inferenceEpoch = epoch;
     context.inputsByScope.clear();
     context.inputsByScope.emplace(
       "input_ids", makeInputIds(static_cast<std::int64_t>(3 + epoch)));
     const auto outputs = runner.run(context);
+    const auto metrics = runner.runtimeMetricsSnapshot();
+    BOOST_REQUIRE(metrics && metrics->lastBackendExecution);
+    BOOST_CHECK(metrics->lastBackendExecution->matches(context));
+    BOOST_CHECK(metrics->lastBackendExecution->completed);
+    if (!timingIdentity) timingIdentity = metrics->lastBackendExecution->identity;
+    BOOST_CHECK(timingIdentity == metrics->lastBackendExecution->identity);
+    BOOST_CHECK_GE(metrics->lastBackendExecution->finishedSteadyNs,
+                   metrics->lastBackendExecution->startedSteadyNs);
     const auto tensors = decodeOutput(outputs);
     BOOST_REQUIRE_NO_THROW(findTensor(tensors, "hidden_out"));
     BOOST_CHECK_THROW(findTensor(tensors, "attention_kv_out"), std::out_of_range);

@@ -31,7 +31,11 @@ def test_build_only_record_cannot_be_released(tmp_path, without_legacy, resume):
     text = (SCRIPTS.parent / 'templates/development-runtime.def.in').read_text()
     for key, value in {'@BUNDLE@': str(tmp_path), '@BASE_SIF@': str(base),
                        '@RELEASE@': 'unit-build-only', '@SEAL_DIGEST@': seal['sealDigest'],
-                       '@NATIVE_DIGEST@': 'sha256:' + 'b' * 64}.items():
+                       '@NATIVE_DIGEST@': 'sha256:' + 'b' * 64,
+                       '@BASE_DIGEST@': 'sha256:' + 'c' * 64,
+                       '@BASE_SDK_DIGEST@': 'sha256:' + 'd' * 64,
+                       '@LOCK_DIGEST@': 'sha256:' + 'e' * 64,
+                       '@RUNTIME_PROFILE@': 'di-runtime'}.items():
         text = text.replace(key, value)
     definition = tmp_path / 'candidate.def'
     definition.write_text(text)
@@ -46,6 +50,7 @@ elif sys.argv[1] == 'exec':
         assert '--no-mount' in sys.argv
         assert 'home,cwd,hostfs,bind-paths' in sys.argv
 elif sys.argv[1] == 'build':
+    assert sys.argv[sys.argv.index('--mksquashfs-args') + 1] == '-processors 2 -mem 2G'
     source = pathlib.Path(sys.argv[-1])
     if source.is_dir():
         assert '--fakeroot' in sys.argv  # Preserve container users and private directories.
@@ -81,18 +86,18 @@ else: sys.exit(97)
     if resume:
         rootfs = tmp_path / 'final-rootfs'
         (rootfs / '.singularity.d').mkdir(parents=True)
-        (rootfs / 'opt/ndnsf-di/replay').mkdir(parents=True)
+        (rootfs / 'opt/ndnsf-di/current/manifest').mkdir(parents=True)
         shutil.copyfile(definition, rootfs / '.singularity.d/Singularity')
-        shutil.copyfile(source, rootfs / 'opt/ndnsf-di/replay/source-seal.json')
+        shutil.copyfile(source, rootfs / 'opt/ndnsf-di/current/manifest/source-seal.json')
         args += ['--resume-final-rootfs', str(rootfs)]
         (rootfs / '.singularity.d/Singularity').write_text('wrong definition')
         rejected = subprocess.run(args + ['--build-only'], text=True, capture_output=True)
         assert rejected.returncode != 0 and not sif.exists() and not record.exists()
         shutil.copyfile(definition, rootfs / '.singularity.d/Singularity')
-        (rootfs / 'opt/ndnsf-di/replay/source-seal.json').write_text('{}')
+        (rootfs / 'opt/ndnsf-di/current/manifest/source-seal.json').write_text('{}')
         rejected = subprocess.run(args + ['--build-only'], text=True, capture_output=True)
         assert rejected.returncode != 0 and not sif.exists() and not record.exists()
-        shutil.copyfile(source, rootfs / 'opt/ndnsf-di/replay/source-seal.json')
+        shutil.copyfile(source, rootfs / 'opt/ndnsf-di/current/manifest/source-seal.json')
     # The ordinary release path still requires a host gate.
     rejected = subprocess.run(args, text=True, capture_output=True)
     assert rejected.returncode != 0 and not sif.exists() and not record.exists()
@@ -100,6 +105,7 @@ else: sys.exit(97)
     assert result.returncode == 0, result.stdout + result.stderr
     value = json.loads(record.read_text())
     assert value['status'] == 'BUILT_UNQUALIFIED'
+    assert value['buildInput']['mksquashfsArgs'] == '-processors 2 -mem 2G'
     if resume:
         assert value['buildInput']['method'] == 'local-apptainer-definition-final-rootfs-resume'
     assert value['tigerAction'] == 'NOT_AUTHORIZED'

@@ -9,6 +9,7 @@
 #include <ndn-cxx/util/io.hpp>
 #include <ndn-svs/security-options.hpp>
 #include <ndn-svs/svspubsub.hpp>
+#include <algorithm>
 #include <filesystem>
 #include <cstring>
 #include <fstream>
@@ -1631,6 +1632,158 @@ BOOST_AUTO_TEST_CASE(RealCorePublicationUsesAtomicRepoBackendAndRestoresOriginal
     BOOST_CHECK(repo->getDataPacket(reused.manifestName.toUri()) == rootWire);
     BOOST_CHECK(repo->getDataPacket(ndn::Name(reused.dataPrefix).appendSegment(0).toUri()) == firstWire);
     BOOST_CHECK_EQUAL(repo->list().size(), 1U);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(DurableReferenceCapacityRetiresOnlyObsoleteServiceVersions)
+{
+  for (const std::string mode : {"retire", "same-full", "stale-owner", "write-fail"}) {
+    BOOST_TEST_CONTEXT(mode) {
+      const auto root = fs::temp_directory_path() /
+        ("spec217-reference-capacity-" + std::to_string(::getpid()) + "-" + mode);
+      fs::create_directories(root);
+      struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code error; fs::remove_all(path, error); }
+      } cleanup{root};
+      const auto spool = (root / "spool").string();
+      const auto references = (root / "references").string();
+      ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+      ScopedEnvironmentValue keyDir("NDNSF_DURABLE_KEY_REFERENCE_DIR", references.c_str());
+      ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+      ndn::DummyClientFace face(keys);
+      const auto actor = makeRsaIdentity(keys, ndn::Name("/spec217/reference-owner"));
+      const auto authority = makeRsaIdentity(keys, ndn::Name("/spec217/reference-authority"));
+      IsolatedTestTrust trust{actor, authority};
+      const ndn::Name service("/spec217/reference-model");
+      auto store = std::make_shared<PacketStore>(root / "store");
+      const std::vector<std::uint8_t> payload(40000, 0x37);
+      const auto publish = [&] (std::uint64_t epoch, const std::string& label) {
+        LocalServiceUser user(face, ndn::Name("/spec217/references"), actor,
+                              authority, trust.schemaPath());
+        user.useSigningKeyChainForSigningOnlyForTest(keys);
+        user.attachLocalMockPubSubForTest(pubsub(face, keys));
+        user.setEncryptedLargeDataRangeStore(store);
+        user.init();
+        face.processEvents(ndn::time::milliseconds(1));
+        const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<
+          std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+        PolicyStatusData status;
+        status.setServiceName(service);
+        status.setControllerVersion(ControllerVersion{2170, epoch});
+        status.setValidity(now - 1000, now + 60000);
+        status.setPolicyDigest(keyReferenceDigest("policy"));
+        status.setControllerCertificate(ndn::Name("/controller/spec217"));
+        BOOST_REQUIRE(user.installControllerStatus(status));
+        user.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+        LargeDataPublishOptions options;
+        options.retention = EncryptedLargeDataRetention::Durable;
+        options.publicationIdentity = keyReferenceDigest(label);
+        options.contentName = materialContent(label);
+        options.manifestSuffix = materialManifestSuffix(label);
+        return user.publishEncryptedLargeData(user.prepareServiceRequest(service.toUri()),
+          payload, label, ndn::time::milliseconds(1000), true, options);
+      };
+      const auto seed = publish(1, "reference-seed");
+      BOOST_REQUIRE_MESSAGE(seed.success, seed.errorMessage);
+      const auto original = store->lookupDurable(seed.publicationIdentity, {});
+      BOOST_REQUIRE(original);
+      const auto originalWire = original->source->readOriginalDataPacket(seed.manifestName);
+      fs::path table;
+      for (const auto& entry : fs::directory_iterator(references)) {
+        if (entry.path().extension() == ".dkr") {
+          BOOST_REQUIRE(table.empty());
+          table = entry.path();
+        }
+      }
+      BOOST_REQUIRE(!table.empty());
+      const auto read = [] (const fs::path& path) {
+        std::ifstream input(path, std::ios::binary);
+        return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(input)), {});
+      };
+      const auto bytes = read(table);
+      constexpr std::size_t header = sizeof("NDNSF-DURABLE-LARGE-KEYREF-V3") - 1;
+      std::size_t offset = header + sizeof(std::uint64_t);
+      std::vector<std::vector<std::uint8_t>> fields;
+      for (unsigned i = 0; i < 14; ++i) {
+        const auto begin = offset;
+        BOOST_REQUIRE(offset + sizeof(std::uint64_t) <= bytes.size());
+        std::uint64_t size = 0;
+        std::memcpy(&size, bytes.data() + offset, sizeof(size));
+        offset += sizeof(size);
+        if (i < 4 || i > 6) {
+          BOOST_REQUIRE(size <= bytes.size() - offset);
+          offset += size;
+        }
+        fields.emplace_back(bytes.begin() + begin, bytes.begin() + offset);
+      }
+      BOOST_REQUIRE_EQUAL(offset, bytes.size());
+      const auto integer = [] (std::uint64_t value) {
+        const auto* first = reinterpret_cast<const std::uint8_t*>(&value);
+        return std::vector<std::uint8_t>(first, first + sizeof(value));
+      };
+      const auto string = [&] (const std::string& value) {
+        auto result = integer(value.size());
+        result.insert(result.end(), value.begin(), value.end());
+        return result;
+      };
+      const auto count = mode == "stale-owner" ? 2U : 4096U;
+      std::vector<std::uint8_t> seeded(bytes.begin(), bytes.begin() + header);
+      const auto countBytes = integer(count);
+      seeded.insert(seeded.end(), countBytes.begin(), countBytes.end());
+      std::vector<std::uint8_t> preserved;
+      for (unsigned i = 0; i < count; ++i) {
+        auto record = fields;
+        record[0] = string(keyReferenceDigest("historical-" + std::to_string(i)));
+        if (mode == "stale-owner" && i == count - 1) {
+          record[5] = integer(3);
+        }
+        if ((mode == "retire" || mode == "write-fail") && i >= count - 3) {
+          if (i == count - 3) {
+            record[5] = integer(0);
+            record[6] = integer(0);
+            record[12] = string("");
+            record[13] = string("legacy-reference-v2");
+          }
+          else if (i == count - 2) {
+            record[1] = string(ndn::Name("/spec217/other-model").toUri(
+              ndn::name::UriFormat::CANONICAL));
+          }
+          else {
+            record[5] = integer(2);
+          }
+          for (const auto& part : record)
+            preserved.insert(preserved.end(), part.begin(), part.end());
+        }
+        for (const auto& part : record)
+          seeded.insert(seeded.end(), part.begin(), part.end());
+      }
+      {
+        std::ofstream output(table, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(seeded.data()), seeded.size());
+        output.close();
+        BOOST_REQUIRE(output.good());
+      }
+      if (mode == "write-fail")
+        fs::create_directory(table.string() + ".tmp." + std::to_string(::getpid()));
+      const auto result = publish(mode == "same-full" ? 1 : 2, "reference-current");
+      const auto observed = read(table);
+      if (mode == "retire") {
+        BOOST_REQUIRE_MESSAGE(result.success, result.errorMessage);
+        std::uint64_t actualCount = 0;
+        BOOST_REQUIRE(observed.size() >= header + sizeof(actualCount) + preserved.size());
+        std::memcpy(&actualCount, observed.data() + header, sizeof(actualCount));
+        BOOST_CHECK_EQUAL(actualCount, 4U);
+        BOOST_CHECK(std::equal(preserved.begin(), preserved.end(),
+                              observed.begin() + header + sizeof(actualCount)));
+      }
+      else {
+        BOOST_CHECK(!result.success);
+        BOOST_CHECK_EQUAL(result.errorMessage, "DURABLE_KEY_REFERENCE_STORE_UNAVAILABLE");
+        BOOST_CHECK(observed == seeded);
+      }
+      BOOST_CHECK(original->source->readOriginalDataPacket(seed.manifestName) == originalWire);
+    }
   }
 }
 

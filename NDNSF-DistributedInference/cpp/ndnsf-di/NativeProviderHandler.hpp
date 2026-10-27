@@ -78,6 +78,37 @@ private:
   std::size_t m_reorderedCount = 0;
 };
 
+/** Request-local observations; the completion API has returned before delivery. */
+struct NativeRequestStatistics
+{
+  std::string requestId;
+  std::string planDigest;
+  std::string provider;
+  std::string providerBootId;
+  std::string role;
+  std::string failureReason;
+  std::string admittedModelDigest;
+  std::string admittedArtifactDigest;
+  std::uint64_t attemptEpoch = 0;
+  std::int64_t startedSteadyNs = 0;
+  std::int64_t finishedSteadyNs = 0;
+  std::int64_t startedProcessCpuNs = -1;
+  std::int64_t finishedProcessCpuNs = -1;
+  bool completionAdmitted = false;
+  bool stoppedByUpstream = false;
+  bool hasEpochStatistics = false;
+  std::size_t epochsExecuted = 0;
+  std::size_t eventsPublished = 0;
+  std::size_t prefixTokensRecomputed = 0;
+  std::vector<NativeEpochCoordinatorResult::RuntimeMetricsObservation> runtimeMetrics;
+  std::vector<NativeEpochCoordinatorResult::CacheObservation> cacheObservations;
+  std::optional<ExecutionEvidence> finalExecutionEvidence;
+};
+
+/** Render metadata only, preserving missing clocks and per-call identities. */
+std::string
+nativeRequestStatisticsToJson(const NativeRequestStatistics& statistics);
+
 struct NativeProviderHandlerConfig
 {
   using ProviderGroupCoordinatorFactory = std::function<
@@ -250,6 +281,11 @@ struct NativeProviderHandlerConfig
   std::shared_ptr<EpochCoordinatorCompletionObserver>
     epochCoordinatorCompletionObserver;
   std::shared_ptr<NativeFailureObserver> nativeFailureObserver;
+  // Synchronous observation after handler completion/failure cleanup, including
+  // conversation promotion waits. The reference is borrowed until return.
+  // Exceptions are ignored; observers must not own the runtime or authorize work.
+  std::shared_ptr<std::function<void(const NativeRequestStatistics&)>>
+    requestStatisticsObserver;
 };
 
 struct NativeProviderTimeoutBudget

@@ -15,49 +15,7 @@ import time
 from runtime.baseline import (BIN, PYTHON, Processes, bundle_files, configure_routes,
                               container_command, container_env, digest, native_trust_rejection,
                               nfd_config, wait_json, write_json)
-
-
-def run_finite_application(name, argv, log_path, cleanup, seconds=60,
-                           allowed_exits=(0,), env=None):
-    """Wait for an owned application and record cleanup of its entire group.
-
-    A finite application's expected exit is not a premature service death.
-    Descendants surviving that exit must be killed and prevent qualification.
-    Timeout, cancellation, and unexpected exits retain their original failure.
-    """
-    with Path(log_path).open("wb") as log:
-        proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
-                                start_new_session=True, env=env)
-        forced = False
-        try:
-            rc = proc.wait(timeout=seconds)
-        finally:
-            try:
-                if proc.poll() is None:
-                    # Let Apptainer forward TERM before removing its mounts.
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        forced = True
-                        os.killpg(proc.pid, signal.SIGKILL)
-                        proc.wait(timeout=5)
-                # Waiting for the leader does not wait for its descendants.
-                # This check also covers successful and permitted abort exits.
-                try:
-                    os.killpg(proc.pid, 0)
-                    os.killpg(proc.pid, signal.SIGKILL)
-                    forced = True
-                except ProcessLookupError:
-                    pass
-            finally:
-                cleanup.append({"name": name, "kind": "finite", "pid": proc.pid,
-                                "exitCode": proc.poll(), "forced": forced,
-                                "reaped": proc.poll() is not None,
-                                "exitedBeforeCleanup": False})
-        if rc not in allowed_exits:
-            raise RuntimeError("APP_EXIT:" + name + ":" + str(rc))
-        return rc
+from runtime.processes import run_finite_application
 
 
 def execute(run_path: Path, rank: int) -> int:

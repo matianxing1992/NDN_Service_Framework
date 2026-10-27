@@ -2,6 +2,7 @@
 """Prepare and verify the stable dependency base inside its container."""
 import argparse
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,10 @@ MANIFEST = BASE / 'manifest'
 APP_LIBS = ('libndn-service-framework', 'libndnsf-distributed-inference',
             'libndn-svs', 'libndnsd', 'libnac-abe', 'libopenabe', 'librelic', 'librelic_ec')
 APP_PACKAGES = ('ndnsf', 'py_repoclient', 'ndnsf_di', 'ndnsf_distributed_inference')
+APP_DISTRIBUTIONS = APP_PACKAGES + (
+    'ndnsf_di_core', 'ndnsf_di_sdk', 'ndnsf_di_planner', 'ndnsf_di_app', 'ndnsf_di_ops')
+APP_COMMANDS = ('ndnsf-di', 'ndnsf-di-policy')
+FRAMEWORK_HEADERS = ('ndn-service-framework', 'NDNSF-DistributedInference', 'ndnsf-di')
 NUMPY_LIBS = {'libopenblas64_p-r0-0cf96a72.3.23.dev.so',
               'libgfortran-040039e1.so.5.0.0', 'libquadmath-96973f99.so.0.0.0'}
 
@@ -109,6 +114,121 @@ def ensure_toolchain():
     remove(Path('/var/lib/apt/lists'))
 
 
+def framework_header_paths(prefixes=None):
+    if prefixes is None:
+        prefixes = (LEGACY, Path('/usr/local'), BASE)
+    return [prefix / 'include' / name for prefix in prefixes for name in FRAMEWORK_HEADERS]
+
+
+def verify_framework_headers(prefixes=None):
+    for path in framework_header_paths(prefixes):
+        require(not path.exists() and not path.is_symlink(),
+                'APPLICATION_HEADERS_IN_BASE:' + str(path))
+
+
+def clean_application_paths(sdk, paths, error_prefix):
+    """Inventory an explicit application allowlist before removing any entry."""
+    artifacts = [Path(name) for name in sdk['artifacts']]
+    rows = []
+    for root in paths:
+        require(root.parent.resolve() == root.parent, error_prefix + '_PARENT_SYMLINK:' + str(root))
+        require(not any(p == root or root in p.parents or p in root.parents for p in artifacts),
+                error_prefix + '_OWNED_BY_SDK:' + str(root))
+        if not root.exists() and not root.is_symlink():
+            continue
+        entries = (root,) if root.is_symlink() else itertools.chain((root,), root.rglob('*'))
+        for path in entries:
+            require(len(rows) < 10000, error_prefix + '_INVENTORY_OVER_BOUND')
+            row = {'path': str(path)}
+            if path.is_symlink():
+                row['link'] = os.readlink(path)
+            elif path.is_file():
+                row.update(bytes=path.stat().st_size, sha256=digest(path))
+            else:
+                require(path.is_dir(), error_prefix + '_SPECIAL_FILE:' + str(path))
+                row['directory'] = True
+            rows.append(row)
+    # Every SDK conflict is checked before the first removal.
+    for path in paths:
+        remove(path)
+    return rows
+
+
+def clean_framework_headers(sdk, prefixes=None):
+    """Remove only framework headers, refusing anything owned by the dependency SDK."""
+    rows = clean_application_paths(sdk, framework_header_paths(prefixes), 'BASE_HEADER')
+    verify_framework_headers(prefixes)
+    return rows
+
+
+def application_metadata_paths(site):
+    require(site.resolve() == site, 'BASE_METADATA_SITE_SYMLINK')
+    paths = set()
+    for package in APP_DISTRIBUTIONS:
+        for stem in {package, package.replace('_', '-')}:
+            paths.add(site / (stem + '.egg-info'))
+            for suffix in ('dist-info', 'egg-info'):
+                for path in site.glob(stem + '-*.' + suffix):
+                    require(len(paths) < 10000, 'BASE_METADATA_INVENTORY_OVER_BOUND')
+                    paths.add(path)
+    # Adapter wheels share the application distribution namespace. Discover
+    # that family instead of limiting purity checks to today's owner list.
+    for path in site.glob('*'):
+        if not path.name.lower().endswith(('.dist-info', '.egg-info')):
+            continue
+        normalized = re.sub(r'[-_.]+', '-', path.name).lower()
+        if normalized.startswith('ndnsf-di-'):
+            require(len(paths) < 10000, 'BASE_METADATA_INVENTORY_OVER_BOUND')
+            paths.add(path)
+    # These console commands belong to NDNSF wheels, not the dependency SDK.
+    paths.update(site.parents[2] / 'bin' / name for name in APP_COMMANDS)
+    return sorted(paths)
+
+
+def verify_application_metadata(site):
+    for path in application_metadata_paths(site):
+        require(not path.exists() and not path.is_symlink(),
+                'APPLICATION_METADATA_IN_BASE:' + str(path))
+
+
+def clean_application_metadata(sdk, site):
+    rows = clean_application_paths(sdk, application_metadata_paths(site), 'BASE_METADATA')
+    verify_application_metadata(site)
+    return rows
+
+
+def repair_application_content(scope, receipt_name, clean):
+    require(Path('/.singularity.d').is_dir() and os.geteuid() == 0,
+            'BASE_CONTAINER_ROOT_REQUIRED')
+    manifest = MANIFEST / 'dependency-sdk.json'
+    original = manifest.read_bytes()
+    verifier = MANIFEST / 'dependency-sdk.py'
+    subprocess.run(['/usr/bin/python3', str(verifier), 'verify'], check=True)
+    rows = clean(json.loads(original))
+    receipt = {'scope': scope, 'status': 'REMOVED_UNVERIFIED',
+               'removed': rows, 'dependencySdkSha256': hashlib.sha256(original).hexdigest()}
+    receipt_path = MANIFEST / (receipt_name + '.json')
+    receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+    shutil.copy2(__file__, MANIFEST / 'base-runtime.py')
+    subprocess.run(['/usr/bin/python3', str(verifier), 'verify'], check=True)
+    require(manifest.read_bytes() == original, 'BASE_SDK_MANIFEST_CHANGED')
+    verify()
+    receipt['status'] = 'VERIFIED'
+    receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+
+
+def repair_application_metadata():
+    site = Path(sysconfig.get_path('purelib'))
+    require(str(site) == '/opt/venv/lib/python3.10/site-packages', 'BASE_PYTHON_PREFIX')
+    repair_application_content('APPLICATION_PYTHON_METADATA_ONLY', 'application-metadata-repair',
+                               lambda sdk: clean_application_metadata(sdk, site))
+
+
+def repair_framework_headers():
+    repair_application_content('FRAMEWORK_HEADERS_ONLY', 'framework-header-repair',
+                               clean_framework_headers)
+
+
 def prepare(lock_path, wheels):
     require(Path('/.singularity.d').is_dir() and os.geteuid() == 0,
             'BASE_CONTAINER_ROOT_REQUIRED')
@@ -170,18 +290,16 @@ def prepare(lock_path, wheels):
             for pattern in (stem + '.so*', stem + '.a'):
                 for path in (prefix / 'lib').glob(pattern):
                     remove(path)
-        for name in ('ndn-service-framework', 'ndnsf-di', 'ndn-svs', 'ndnsd', 'nac-abe'):
+        for name in (*FRAMEWORK_HEADERS, 'ndn-svs', 'ndnsd', 'nac-abe'):
             remove(prefix / 'include' / name)
         for name in ('libndn-service-framework', 'ndnsf-distributed-inference',
                      'libndn-svs', 'ndnsd', 'libnac-abe'):
             remove(prefix / 'lib/pkgconfig' / (name + '.pc'))
     for package in APP_PACKAGES:
         remove(site / package)
-        for pattern in (package + '-*.dist-info', package + '-*.egg-info'):
-            for path in site.glob(pattern):
-                remove(path)
         for path in site.glob(package + '.*'):
             remove(path)
+    clean_application_metadata({'artifacts': {}}, site)
     for prefix in (LEGACY, Path('/usr/local'), BASE):
         for pattern in ('di-native-*', 'App_ServiceController*', 'ndnsf-di-*'):
             for path in (prefix / 'bin').glob(pattern):
@@ -219,7 +337,9 @@ def prepare(lock_path, wheels):
 
 
 def verify():
+    verify_framework_headers()
     site = Path(sysconfig.get_path('purelib'))
+    verify_application_metadata(site)
     lock = json.loads((MANIFEST / 'base-runtime.lock.json').read_text())
     require(list(sys.version_info[:2]) == lock['python'], 'BASE_PYTHON_ABI')
     verify_numpy_files(site, json.loads((MANIFEST / 'numpy-private-libraries.json').read_text()))
@@ -257,12 +377,17 @@ def verify():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('prepare', 'verify'))
+    parser.add_argument('action', choices=('prepare', 'verify', 'repair-framework-headers',
+                                          'repair-application-metadata'))
     parser.add_argument('--lock', type=Path)
     parser.add_argument('--wheels', type=Path)
     args = parser.parse_args()
     if args.action == 'prepare':
         require(args.lock is not None and args.wheels is not None, 'BASE_INPUTS_REQUIRED')
         prepare(args.lock, args.wheels)
+    elif args.action == 'repair-framework-headers':
+        repair_framework_headers()
+    elif args.action == 'repair-application-metadata':
+        repair_application_metadata()
     else:
         verify()

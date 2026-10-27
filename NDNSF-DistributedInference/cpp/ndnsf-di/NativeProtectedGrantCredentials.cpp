@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
+#include <ndn-cxx/name.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <openssl/evp.h>
 #include <openssl/ec.h>
@@ -125,9 +126,23 @@ NativeProtectedGrantConfig credentials(const std::string& provider,
   }
   out.authorityPublicKeyRaw = rawPublicKey(pem);
   const auto mapping = json(readBounded(env("SPEC181_PROVIDER_RECIPIENT_KEY_MAP")));
+  const ndn::Name providerName(provider);
   std::string recipientPath;
+  bool matched = false;
   for (const auto& entry : mapping) {
-    if (entry.first == provider) recipientPath = entry.second.get_value<std::string>();
+    ndn::Name recipientName;
+    try {
+      recipientName = ndn::Name(entry.first);
+    }
+    catch (const std::exception&) {
+      throw reject("provider recipient identity is not an NDN Name");
+    }
+    if (recipientName != providerName)
+      continue;
+    if (matched)
+      throw reject("provider recipient identity has duplicate configured keys");
+    matched = true;
+    recipientPath = entry.second.get_value<std::string>();
   }
   if (recipientPath.empty()) throw reject("provider recipient identity has no configured key");
   auto secret = readBounded(recipientPath, true);

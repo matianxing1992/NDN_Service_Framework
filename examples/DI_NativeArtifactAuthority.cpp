@@ -1,13 +1,16 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/deployment-readiness.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
+#include "ndn-service-framework/controller-certificate.hpp"
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/util/io.hpp>
+#include <ndn-cxx/util/random.hpp>
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -80,13 +83,8 @@ getOrCreateIdentity(ndn::security::KeyChain& keyChain, const ndn::Name& identity
 ndn::security::Certificate
 loadControllerCertificate(const ndn::Name& controller, ndn::security::KeyChain& keyChain)
 {
-  if (const char* path = std::getenv("NDNSF_CONTROLLER_CERT_FILE"); path != nullptr && *path != '\0') {
-    auto cert = ndn::io::load<ndn::security::Certificate>(path);
-    if (cert == nullptr || !cert->isValid() || cert->getIdentity() != controller)
-      throw std::runtime_error("authority controller certificate is invalid");
-    return *cert;
-  }
-  return getOrCreateIdentity(keyChain, controller);
+  return ndn_service_framework::loadControllerCertificate(
+    keyChain, controller, std::getenv("NDNSF_CONTROLLER_CERT_FILE"));
 }
 
 std::uint64_t
@@ -257,6 +255,8 @@ main(int argc, char** argv)
     std::cout << "NATIVE_GRANT_AUTHORITY_PERMISSION_READY service=" << service << std::endl;
     std::cout << "NATIVE_GRANT_AUTHORITY_READY identity=" << identity
               << " service=" << service << std::endl;
+    detail::emitDeploymentReadiness(identity,
+      identity + "@" + std::to_string(ndn::random::generateWord64()));
     const auto runForMs = root.value("run_for_ms", static_cast<std::uint64_t>(0));
     const auto deadline = runForMs == 0 ? std::chrono::steady_clock::time_point::max() :
       std::chrono::steady_clock::now() + std::chrono::milliseconds(runForMs);

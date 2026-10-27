@@ -1,8 +1,41 @@
-# NDNSF-DI Local MiniNDN Operator Runbook
+# NDNSF-DI Native Role Deployment
 
-This package operates a digest-bound Spec 107 local CPU/ONNX MiniNDN candidate. It is not
-a physical-production release: GPU hosts, physical networking, real production
-identities, and cross-host acceptance are exclusively owned by Spec 106.
+After installing the current runtime and provisioning credentials, manage a local
+deployment with the installed command:
+
+```bash
+ndnsf-di cluster check --config deployment.json
+ndnsf-di cluster up --config deployment.json
+ndnsf-di cluster status --config deployment.json
+ndnsf-di cluster down --config deployment.json
+```
+
+The JSON configuration selects roles, installed prefix, identities, NFD, devices,
+native inputs and storage. Check does not launch actors. Up manages owned processes;
+down preserves credentials, models, cache and Repo Data. COMPLETE records native
+Requester exit and owned-group cleanup; result/oracle and distributed qualification
+remain separate. Unverified external actors are reported explicitly.
+
+These optional systemd units run individual native roles. Provision each role's
+own PIB/TPM in its stable HOME before starting it; units run ndnsf-identity-check
+first and do not provision or copy private identities. Controller/Provider homes
+are under /var/lib/ndnsf-di/identities/; Repo homes are under
+/var/lib/ndnsf-repo/identities/. Include the installed identity checker and selected
+roles in the release. Required environment files may override HOME and
+NDNSF_DI_IDENTITY, consistently with native arguments and writable paths.
+
+Provider units do not start a local Controller implicitly. Start its target
+explicitly when owned here. Consumers need NDNSF_CONTROLLER_CERT_FILE; Providers
+also need the grant registry/recipient/offer files shown in their example env file.
+Repo runs DistributedRepoServer. Actors share the host temporary namespace so
+configured NFD Unix sockets remain visible; native trust and authorization still
+apply. Diagnostic logging defaults to disabled. Staging validates unit syntax and
+reversible file operations only, not native readiness or inference.
+
+## Historical Spec107 Helper Notes
+
+The remaining sections describe the legacy MiniNDN helper and its original command
+interface. They are retained for compatibility, not required by cluster deployment.
 
 ## 1. Identity and configuration
 
@@ -43,6 +76,8 @@ packaging/ndnsf-di-systemd/create-release.sh \
   --output /tmp/ndnsf-di-r1 --release-id spec107-r1 \
   --artifact build/examples/di-native-provider:bin/di-native-provider \
   --artifact build/examples/App_ServiceController:bin/App_ServiceController \
+  --artifact build/examples/ndnsf-identity-check:bin/ndnsf-identity-check \
+  --artifact build/NDNSF-DistributedRepo/DistributedRepoServer:bin/DistributedRepoServer \
   --artifact examples/ndnsf-di-qwen-pilot.model.json:share/model-manifest.json
 sudo packaging/ndnsf-di-systemd/install.sh --release /tmp/ndnsf-di-r1
 ```

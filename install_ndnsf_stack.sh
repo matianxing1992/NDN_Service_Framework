@@ -38,6 +38,9 @@ SOURCE_HELPER="$ROOT/scripts/stack_sources.py"
 GLOBAL_DEPENDENCY_PREFIX="/usr/local"
 OPENABE_PREFIX="$GLOBAL_DEPENDENCY_PREFIX"
 GLOBAL_LIBRARY_DIR="$GLOBAL_DEPENDENCY_PREFIX/lib"
+RUNTIME_PREFIX="/usr/local"
+RUNTIME_LIBRARY_DIR="$RUNTIME_PREFIX/lib"
+NATIVE_COMPONENT_PROFILE=all
 SYSTEM_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 PKG_CONFIG_BIN="/usr/bin/pkg-config"
 GLOBAL_PKG_CONFIG_PATH=""
@@ -45,7 +48,7 @@ NAC_SDK_PREFIX=""
 # Host SDKs may have a versioned global prefix, but they must still be
 # installed outside the repository and visible to every consumer.  ONNX
 # Runtime is the only NDNSF dependency currently using such a versioned SDK;
-# all NDN/NDNSF outputs remain in /usr/local.
+# NDN dependency defaults remain in /usr/local; NDNSF has its own runtime prefix.
 GLOBAL_SDK_ROOTS=("/usr" "/usr/local" "/opt/onnxruntime" "/opt/onnxruntime-1.26.0" "/opt/onnx-1.17.0" "/opt/ndn-base")
 GLOBAL_ONNX_PREFIX="/opt/onnx-1.17.0"
 BOOST_INCLUDE_DIR=""
@@ -135,11 +138,13 @@ Options:
   --no-user                Use system Python (default).
   --no-editable            Install wheels, not source-tree links (default).
   --python PATH            Python executable (default: python3 or $PYTHON).
+  --prefix PATH            Native NDNSF installation prefix (default: /usr/local).
+  --components PROFILE     all (default), core, repo or di, including dependencies.
   -h, --help               Show this help.
 
 Notes:
   - Files, replaced-file backups, sources, and added APT packages are recorded in
-    /usr/local/share/ndnsf/stack-install-manifest.json; uninstall restores backups
+    PREFIX/share/ndnsf/stack-install-manifest.json; uninstall restores backups
     and never guesses about reused or unrecorded paths.
   - Compatible global dependencies are probed and reused individually; missing
     ones use locked sources. Source trees must match their URL/commit and be clean.
@@ -274,6 +279,16 @@ while [[ $# -gt 0 ]]; do
       INSTALL_EDITABLE=0
       shift
       ;;
+    --components)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--components requires a profile' >&2; exit 2; }
+      NATIVE_COMPONENT_PROFILE="$2"
+      shift 2
+      ;;
+    --prefix)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--prefix requires an absolute path' >&2; exit 2; }
+      RUNTIME_PREFIX="$2"
+      shift 2
+      ;;
     --python)
       [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--python requires an executable' >&2; exit 2; }
       PYTHON_BIN="$2"
@@ -362,6 +377,57 @@ DEPS_DIR="$(realpath -m -- "$DEPS_DIR")"
 LOCK_FILE="$(realpath -m -- "$LOCK_FILE")"
 PYTHON_BIN="$(command -v -- "$PYTHON_BIN")" || { echo 'Python executable not found' >&2; exit 2; }
 PYTHON_BIN="$(realpath -s -- "$PYTHON_BIN")"
+RUNTIME_PREFIX="$("$PYTHON_BIN" - "$RUNTIME_PREFIX" "$ROOT" "${WAF_CONFIGURE_ARGS[@]}" <<'PY'
+from pathlib import Path
+import sys
+
+raw, source, *options = sys.argv[1:]
+prefix = Path(raw)
+if (not prefix.is_absolute() or prefix == Path('/') or
+        any(char.isspace() or char in '\x00:,$' or
+            char in ("'", '"', chr(92), '#') for char in raw) or '..' in prefix.parts or
+        prefix.resolve() != prefix or (prefix.exists() and not prefix.is_dir())):
+    raise SystemExit('invalid NDNSF runtime prefix: ' + raw)
+for forbidden in (Path(source).resolve(), Path('/dev'), Path('/proc'), Path('/sys')):
+    if prefix == forbidden or forbidden in prefix.parents:
+        raise SystemExit('unsafe NDNSF runtime prefix: ' + raw)
+directory_options = {'--prefix', '--exec-prefix', '--bindir', '--sbindir', '--libdir',
+                     '--libexecdir', '--includedir', '--datarootdir', '--datadir',
+                     '--sysconfdir', '--sharedstatedir', '--localstatedir', '--mandir'}
+for option in options:
+    if option.split('=', 1)[0] in directory_options:
+        raise SystemExit('installer owns runtime directories; use --prefix before --')
+print(prefix)
+PY
+)" || exit 2
+RUNTIME_LIBRARY_DIR="$RUNTIME_PREFIX/lib"
+INSTALL_MANIFEST="$RUNTIME_PREFIX/share/ndnsf/stack-install-manifest.json"
+component_closure="$("$PYTHON_BIN" - "$ROOT/scripts/configure_dependencies.py" "$NATIVE_COMPONENT_PROFILE" <<'PY'
+import runpy
+import sys
+try:
+    print(','.join(runpy.run_path(sys.argv[1])['resolve_components'](sys.argv[2])))
+except ValueError as error:
+    raise SystemExit(str(error))
+PY
+)" || exit 2
+NDNSF_INSTALL_DI=0 NDNSF_INSTALL_REPO=0 NDNSF_INSTALL_UAV=0
+case ",$component_closure," in *,di,*) NDNSF_INSTALL_DI=1 ;; esac
+case ",$component_closure," in *,repo,*) NDNSF_INSTALL_REPO=1 ;; esac
+case ",$component_closure," in *,uav,*) NDNSF_INSTALL_UAV=1 ;; esac
+for component_arg in "${WAF_CONFIGURE_ARGS[@]}"; do
+  case "$component_arg" in
+    --components|--components=*) echo 'Use installer --components before --' >&2; exit 2 ;;
+    --with-tests|--with-examples|--install-experiment-fixtures)
+      [[ "$NATIVE_COMPONENT_PROFILE" == all ]] || {
+        echo 'Historical examples/tests/fixtures require --components all' >&2; exit 2;
+      } ;;
+  esac
+done
+if [[ "$NATIVE_COMPONENT_PROFILE" != all ]] && (( QWEN_MININDN || INSTALL_YOLO_MININDN )); then
+  echo 'Legacy MiniNDN profiles require --components all' >&2
+  exit 2
+fi
 
 run() {
   echo "+ $*"
@@ -410,6 +476,8 @@ from urllib.parse import unquote, urlparse
 
 SCHEMA = 1
 MANAGED_PREFIXES = (Path("/usr/local"), Path("/opt/onnxruntime-1.26.0"), Path("/opt/onnx-1.17.0"))
+if os.environ.get("NDNSF_RUNTIME_PREFIX"):
+    MANAGED_PREFIXES += (Path(os.environ["NDNSF_RUNTIME_PREFIX"]).resolve(),)
 
 
 def file_state(path: Path) -> dict[str, object] | None:
@@ -939,9 +1007,9 @@ manifest_tool() {
     shift
   fi
   if (( privileged )); then
-    consumer=(sudo_run "$PYTHON_BIN" - "$@")
+    consumer=(sudo_run env "NDNSF_RUNTIME_PREFIX=$RUNTIME_PREFIX" "$PYTHON_BIN" - "$@")
   else
-    consumer=("$PYTHON_BIN" - "$@")
+    consumer=(env "NDNSF_RUNTIME_PREFIX=$RUNTIME_PREFIX" "$PYTHON_BIN" - "$@")
   fi
   manifest_source | "${consumer[@]}" || pipeline_status=("${PIPESTATUS[@]}")
   if ((${#pipeline_status[@]})); then
@@ -968,6 +1036,10 @@ record_source_checkout() {
 }
 
 uninstall_stack() {
+  if [[ -n "$LEGACY_BUILD_DIR" && "$RUNTIME_PREFIX" != /usr/local ]]; then
+    echo 'Legacy uninstall is supported only for the original /usr/local installation' >&2
+    return 2
+  fi
   if [[ -f "$INSTALL_MANIFEST" ]]; then
     echo "==> Uninstalling the recorded NDNSF stack from $INSTALL_MANIFEST"
     manifest_tool --privileged uninstall --manifest "$INSTALL_MANIFEST"
@@ -1067,8 +1139,27 @@ stage_python_wheel_sources() {
       --include='/NDNSF-DistributedRepo/include/***'
       --include='/NDNSF-DistributedRepo/src/***'
       --include='/NDNSF-DistributedInference/'
+      --include='/NDNSF-DistributedInference/ndnsf_di_launcher.py'
       --include='/NDNSF-DistributedInference/cpp/***'
       --include='/NDNSF-DistributedInference/ndnsf_distributed_inference/***'
+      --include='/packaging/' --include='/packaging/ndnsf-di-container/'
+      --include='/packaging/ndnsf-di-container/lib/'
+      --include='/packaging/ndnsf-di-container/lib/allocation_topology.py'
+      --include='/packaging/ndnsf-di-container/lib/adapters/'
+      --include='/packaging/ndnsf-di-container/lib/adapters/__init__.py'
+      --include='/packaging/ndnsf-di-container/lib/adapters/base.py'
+      --include='/packaging/ndnsf-di-container/lib/adapters/slurm_apptainer.py'
+      --include='/Experiments/' --include='/Experiments/TigerCluster/'
+      --include='/Experiments/TigerCluster/adapters/'
+      --include='/Experiments/TigerCluster/adapters/slurm-apptainer/'
+      --include='/Experiments/TigerCluster/adapters/slurm-apptainer/scripts/'
+      --include='/Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-allocation-topology.sh'
+      --include='/Experiments/TigerCluster/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh'
+      --include='/Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-container.sh'
+      --include='/Experiments/TigerCluster/adapters/slurm-apptainer/scripts/stage-sif.sh'
+      --include='/Experiments/TigerCluster/adapters/slurm-apptainer/scripts/validate-local-sif-build-record.py'
+      --include='/Experiments/TigerCluster/runtime/'
+      --include='/Experiments/TigerCluster/runtime/processes.py'
     )
     for package in "$@"; do
       case "$package" in
@@ -1139,8 +1230,10 @@ pip_install() (
     -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
     -u CPLUS_INCLUDE_PATH -u LDSHARED -u PKG_CONFIG_LIBDIR \
     -u PYTHONPATH -u PYTHONHOME \
-    PATH="$SYSTEM_PATH" PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
+    PATH="$SYSTEM_PATH" PKG_CONFIG_PATH="$RUNTIME_LIBRARY_DIR/pkgconfig:$GLOBAL_PKG_CONFIG_PATH" \
+    NDNSF_RUNTIME_PREFIX="$RUNTIME_PREFIX" \
     NDNSF_NAC_ABE_PREFIX="$NAC_SDK_PREFIX" \
+    NDNSF_GLOBAL_NATIVE_DIGESTS="$NDNSF_GLOBAL_NATIVE_DIGESTS" \
     CC=/usr/bin/gcc CXX=/usr/bin/g++ PYTHONNOUSERSITE=1 \
     "$PYTHON_BIN" -m pip --isolated wheel --wheel-dir "$wheel_dir" \
     "${PYTHON_WHEEL_INPUTS[@]}"
@@ -1179,7 +1272,18 @@ check_waf_inventory() {
   env -u PKG_CONFIG_LIBDIR -u NDNSF_TOKENIZER_BRIDGE_ARCHIVE \
     PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
     PATH="$SYSTEM_PATH" "$PYTHON_BIN" "$ROOT/scripts/configure_dependencies.py" \
-    "$@" --onnx-prefix "$GLOBAL_ONNX_PREFIX" --nac-abe-prefix "$NAC_SDK_PREFIX"
+    "$@" --onnx-prefix "$GLOBAL_ONNX_PREFIX" --nac-abe-prefix "$NAC_SDK_PREFIX" \
+    --components "$NATIVE_COMPONENT_PROFILE"
+}
+
+native_runtime_rpath() {
+  local paths="$RUNTIME_LIBRARY_DIR" directory
+  for directory in "${NAC_SDK_PREFIX:+$NAC_SDK_PREFIX/lib}" "$GLOBAL_LIBRARY_DIR"; do
+    if [[ -n "$directory" && ":$paths:" != *":$directory:"* ]]; then
+      paths+=":$directory"
+    fi
+  done
+  printf '%s' "$paths"
 }
 
 run_waf_clean() {
@@ -1197,10 +1301,9 @@ run_waf_clean() {
     ndncxx_source_tree="$(ensure_source_tree "ndn-cxx" "$NDNCXX_REPO_URL")"
   fi
   if [[ "${waf_args[0]:-}" == "configure" ]]; then
-    # Waf defaults LIBDIR to lib64 on this Ubuntu host.  The global Python
-    # bindings and dependency-identity receipt use the canonical /usr/local/lib
-    # root, so keep the NDNSF libraries and pkg-config files there as well.
-    waf_args+=("--libdir=$GLOBAL_LIBRARY_DIR")
+    # Keep native outputs separate from the external SDK search roots.
+    waf_args+=("--prefix=$RUNTIME_PREFIX" "--libdir=$RUNTIME_LIBRARY_DIR"
+      "--components=$NATIVE_COMPONENT_PROFILE")
     [[ -z "$NAC_SDK_PREFIX" ]] || waf_args+=("--nac-abe-prefix=$NAC_SDK_PREFIX")
   fi
   # The top-level configure/build sees only canonical global pkg-config roots;
@@ -1218,7 +1321,8 @@ run_waf_clean() {
     CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
     AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
     NM=/usr/bin/nm STRIP=/usr/bin/strip \
-    NDNSF_LIBRARY_DIR="$GLOBAL_LIBRARY_DIR" \
+    NDNSF_LIBRARY_DIR="$RUNTIME_LIBRARY_DIR" \
+    NDNSF_RUNTIME_RPATH="$(native_runtime_rpath)" \
     NDNSF_NDN_CXX_SOURCE_TREE="$ndncxx_source_tree" \
     "$PYTHON_BIN" ./waf --out="$BUILD_DIR" --onnx-prefix="$GLOBAL_ONNX_PREFIX" "${waf_args[@]}"
 }
@@ -1482,14 +1586,17 @@ global_dependency_identity_receipt() {
   ndnsd_libdir="$(pkg_config --variable=libdir ndnsd 2>/dev/null || true)"
   ndnsvs_libdir="$(pkg_config --variable=libdir libndn-svs 2>/dev/null || true)"
   nacabe_libdir="$(pkg_config --variable=libdir libnac-abe 2>/dev/null || true)"
-  onnx_libdir="$(pkg_config --variable=libdir onnxruntime 2>/dev/null || true)"
+  onnx_libdir=""
+  if (( NDNSF_INSTALL_DI )); then
+    onnx_libdir="$(pkg_config --variable=libdir onnxruntime 2>/dev/null || true)"
+  fi
   if [[ -z "$ndncxx_libdir" || -z "$ndnsd_libdir" || -z "$ndnsvs_libdir" || \
-        -z "$nacabe_libdir" || -z "$onnx_libdir" ]]; then
+        -z "$nacabe_libdir" ]] || { (( NDNSF_INSTALL_DI )) && [[ -z "$onnx_libdir" ]]; }; then
     echo "Cannot determine a global dependency library directory" >&2
     return 1
   fi
   "$PYTHON_BIN" - "$ndncxx_libdir" "$ndnsd_libdir" "$ndnsvs_libdir" \
-    "$nacabe_libdir" "$GLOBAL_LIBRARY_DIR" "$onnx_libdir" <<'PY'
+    "$nacabe_libdir" "$GLOBAL_LIBRARY_DIR" "$onnx_libdir" "$NDNSF_INSTALL_DI" "$GLOBAL_IDENTITY_FILE" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -1508,7 +1615,15 @@ paths = {
     "libopenabe.so": openabe_root / "libopenabe.so",
     "libonnxruntime.so": onnx_root / "libonnxruntime.so",
 }
+if sys.argv[7] == '0':
+    paths.pop('libonnxruntime.so')
 entries = {}
+try:
+    prior = json.loads(pathlib.Path(sys.argv[8]).read_text(encoding='utf-8'))
+    if isinstance(prior, dict) and prior.get('schema') == 1 and isinstance(prior.get('libraries'), dict):
+        entries.update(prior['libraries'])
+except (OSError, ValueError):
+    pass
 for name, path in paths.items():
     if not path.is_file():
         raise SystemExit(f"missing global dependency library: {path}")
@@ -1548,9 +1663,12 @@ require_global_dependency_identity() {
   ndnsd_libdir="$(pkg_config --variable=libdir ndnsd 2>/dev/null || true)"
   ndnsvs_libdir="$(pkg_config --variable=libdir libndn-svs 2>/dev/null || true)"
   nacabe_libdir="$(pkg_config --variable=libdir libnac-abe 2>/dev/null || true)"
-  onnx_libdir="$(pkg_config --variable=libdir onnxruntime 2>/dev/null || true)"
+  onnx_libdir=""
+  if (( NDNSF_INSTALL_DI )); then
+    onnx_libdir="$(pkg_config --variable=libdir onnxruntime 2>/dev/null || true)"
+  fi
   "$PYTHON_BIN" - "$GLOBAL_IDENTITY_FILE" "$ndncxx_libdir" "$ndnsd_libdir" \
-    "$ndnsvs_libdir" "$nacabe_libdir" "$GLOBAL_LIBRARY_DIR" "$onnx_libdir" <<'PY'
+    "$ndnsvs_libdir" "$nacabe_libdir" "$GLOBAL_LIBRARY_DIR" "$onnx_libdir" "$NDNSF_INSTALL_DI" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -1577,6 +1695,8 @@ expected_paths = {
     "libonnxruntime.so": onnx_root / "libonnxruntime.so",
 }
 for name, path in expected_paths.items():
+    if name == 'libonnxruntime.so' and sys.argv[8] == '0':
+        continue
     entry = receipt["libraries"].get(name)
     if not isinstance(entry, dict):
         raise SystemExit(f"identity receipt missing {name}")
@@ -1800,13 +1920,15 @@ require_global_external_closure() {
   require_global_pkg "libnac-abe" "$MIN_NACABE_VERSION" "libnac-abe.so"
   "$PYTHON_BIN" "$SOURCE_HELPER" check-runtime --lock "$LOCK_FILE" --name NAC-ABE \
     --prefix "$NAC_SDK_PREFIX" --runtime-object "$(global_pkg_library_path ndnsd libndnsd.so)"
-  require_global_sdk_pkg "onnxruntime" "1.26.0" "libonnxruntime.so"
   require_global_file "$GLOBAL_LIBRARY_DIR/libopenabe.so"
-  require_global_file "$GLOBAL_ONNX_PREFIX/lib/libonnx.a"
-  require_global_file "$GLOBAL_ONNX_PREFIX/lib/libonnx_proto.a"
-  require_global_file "$GLOBAL_LIBRARY_DIR/libndnsf_tokenizer_bridge.a"
-  require_global_file "$GLOBAL_ONNX_PREFIX/include/onnx/checker.h"
-  require_global_file "$GLOBAL_ONNX_PREFIX/include/onnx/shape_inference/implementation.h"
+  if (( NDNSF_INSTALL_DI )); then
+    require_global_sdk_pkg "onnxruntime" "1.20.0" "libonnxruntime.so"
+    require_global_file "$GLOBAL_ONNX_PREFIX/lib/libonnx.a"
+    require_global_file "$GLOBAL_ONNX_PREFIX/lib/libonnx_proto.a"
+    require_global_file "$GLOBAL_LIBRARY_DIR/libndnsf_tokenizer_bridge.a"
+    require_global_file "$GLOBAL_ONNX_PREFIX/include/onnx/checker.h"
+    require_global_file "$GLOBAL_ONNX_PREFIX/include/onnx/shape_inference/implementation.h"
+  fi
   verify_openabe_runtime_closure
   require_global_dependency_identity
 }
@@ -1817,14 +1939,15 @@ has_global_nfd() {
 }
 
 native_digest_receipt() {
-  "$PYTHON_BIN" - "$GLOBAL_LIBRARY_DIR" <<'PY'
+  "$PYTHON_BIN" - "$RUNTIME_LIBRARY_DIR" <<'PY'
 import hashlib
 import json
 import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
-names = ("libndn-service-framework.so", "libndnsf-distributed-inference.so")
+names = ("libndn-service-framework.so", "libndnsf-distributed-inference.so",
+         "libndnsf-distributed-repo.a")
 paths = [root / name for name in names]
 missing = [str(path) for path in paths if not path.is_file()]
 if missing:
@@ -1974,11 +2097,13 @@ install_common_system_packages() {
       autoconf automake libtool m4 bison flex ninja-build \
       libgmp-dev libssl-dev \
       libsqlite3-dev libpcap-dev libsodium-dev zlib1g-dev \
-      liblog4cxx-dev sqlite3 libprotobuf-dev protobuf-compiler libgtkmm-3.0-dev \
-      libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libffi-dev
+      liblog4cxx-dev sqlite3 libprotobuf-dev protobuf-compiler
     )
-    if [[ "$HOST_UBUNTU_VERSION" == "20.04" ]]; then
-      packages+=(libpcre3-dev)
+    if (( NDNSF_INSTALL_UAV )); then
+      packages+=(libgtkmm-3.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libffi-dev)
+      if [[ "$HOST_UBUNTU_VERSION" == "20.04" ]]; then
+        packages+=(libpcre3-dev)
+      fi
     fi
     if ! has_global_boost; then
       packages+=(libboost-all-dev)
@@ -2495,14 +2620,6 @@ check_minindn_ndn_base() {
 
 ensure_minindn_boost_iostreams() {
   local version="$BOOST_VERSION_STRING" sha soname dir lib build archive
-  case "$version" in
-    1.71.0) sha=d73a8da01e8bf8c7eda40b4c84915071a8c8a0df4a6734537ddde4a8580524ee ;;
-    1.85.0) sha=7009fe1faa1697476bdc7027703a2badb84e849b7b0baad5086b087b971f8617 ;;
-    *)
-      echo "No pinned Boost $version archive; refusing to mix Boost versions" >&2
-      return 1
-      ;;
-  esac
   soname="libboost_iostreams.so.$version"
   for dir in "$BOOST_LIBRARY_DIR" "$GLOBAL_LIBRARY_DIR"; do
     lib="$dir/libboost_iostreams.so"
@@ -2513,6 +2630,16 @@ ensure_minindn_boost_iostreams() {
       return 0
     fi
   done
+  # A source archive pin is needed only when the matching installed library
+  # is absent. System Boost (including 1.90) remains owned by its OS profile.
+  case "$version" in
+    1.71.0) sha=d73a8da01e8bf8c7eda40b4c84915071a8c8a0df4a6734537ddde4a8580524ee ;;
+    1.85.0) sha=7009fe1faa1697476bdc7027703a2badb84e849b7b0baad5086b087b971f8617 ;;
+    *)
+      echo "No pinned Boost $version archive; refusing to mix Boost versions" >&2
+      return 1
+      ;;
+  esac
   build="$(mktemp -d "$BUILD_DIR/boost-iostreams-$version.XXXXXXXX")"
   archive="$build/boost_${version//./_}.tar.bz2"
   mkdir -p "$build/source" "$build/stage" "$build/install/usr/local/lib"
@@ -2940,7 +3067,7 @@ build_cmake_dependency() {
 }
 
 has_onnxruntime_sdk() {
-  has_global_sdk_pkg onnxruntime 1.26.0 libonnxruntime.so || return 1
+  has_global_sdk_pkg onnxruntime 1.20.0 libonnxruntime.so || return 1
   local includedir
   includedir="$(pkg_config --variable=includedir onnxruntime 2>/dev/null)" || return 1
   [[ -f "$includedir/onnxruntime_c_api.h" && -f "$includedir/onnxruntime_cxx_api.h" ]]
@@ -2968,6 +3095,7 @@ has_global_tokenizer_bridge() {
 }
 
 install_host_sdk_prerequisites() {
+  (( NDNSF_INSTALL_DI )) || return 0
   local ort_version ort_url ort_sha ort_bytes ort_prefix
   local onnx_version onnx_url onnx_ref onnx_commit onnx_prefix
   local crate rust_minimum bridge_path workspace archive extracted pc_file
@@ -3153,16 +3281,18 @@ install_external_dependencies() {
   echo "==> Checking external NDN dependencies"
   echo "==> Dependency source directory: $DEPS_DIR"
   # SDKs are prepared from the dedicated version/hash lock before this gate.
-  check_waf_inventory --sdk-only
-  require_global_sdk_pkg "onnxruntime" "1.26.0" "libonnxruntime.so"
-  require_global_file "$GLOBAL_ONNX_PREFIX/lib/libonnx.a"
-  require_global_file "$GLOBAL_ONNX_PREFIX/lib/libonnx_proto.a"
-  require_global_file "$GLOBAL_LIBRARY_DIR/libndnsf_tokenizer_bridge.a"
-  require_global_file "$GLOBAL_ONNX_PREFIX/include/onnx/checker.h"
-  require_global_file "$GLOBAL_ONNX_PREFIX/include/onnx/shape_inference/implementation.h"
+  if (( NDNSF_INSTALL_DI )); then
+    check_waf_inventory --sdk-only
+    require_global_sdk_pkg "onnxruntime" "1.20.0" "libonnxruntime.so"
+    require_global_file "$GLOBAL_ONNX_PREFIX/lib/libonnx.a"
+    require_global_file "$GLOBAL_ONNX_PREFIX/lib/libonnx_proto.a"
+    require_global_file "$GLOBAL_LIBRARY_DIR/libndnsf_tokenizer_bridge.a"
+    require_global_file "$GLOBAL_ONNX_PREFIX/include/onnx/checker.h"
+    require_global_file "$GLOBAL_ONNX_PREFIX/include/onnx/shape_inference/implementation.h"
+  fi
   probe_configured_openssl_api
   if [[ -f "$GLOBAL_IDENTITY_FILE" ]] && ! has_global_dependency_identity; then
-    if ! has_global_onnx_identity; then
+    if (( NDNSF_INSTALL_DI )) && ! has_global_onnx_identity; then
       echo "Global ONNX Runtime identity changed; this installer cannot rebuild ONNX Runtime. Reinstall the canonical global SDK and refresh the identity receipt before continuing." >&2
       exit 1
     fi
@@ -3211,8 +3341,8 @@ check_qwen_installed_programs() {
   local program
   for program in bin/App_ServiceController bin/DI_NativeArtifactAuthority bin/DI_NativeRequester \
       bin/di-native-provider libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker bin/spec190-multiturn-oracle; do
-    [[ -f "$GLOBAL_DEPENDENCY_PREFIX/$program" && -x "$GLOBAL_DEPENDENCY_PREFIX/$program" ]] || {
-      echo "Missing installed Qwen executable: $GLOBAL_DEPENDENCY_PREFIX/$program" >&2
+    [[ -f "$RUNTIME_PREFIX/$program" && -x "$RUNTIME_PREFIX/$program" ]] || {
+      echo "Missing installed Qwen executable: $RUNTIME_PREFIX/$program" >&2
       return 1
     }
   done
@@ -3234,12 +3364,14 @@ if (( UNINSTALL_STACK )); then
   exit $?
 fi
 
-if (( ! CONFIGURE_ONLY && ! CHECK_DEPENDENCIES )) && [[ "$INSTALL_DEPENDENCIES" != 0 ]]; then
+if (( NDNSF_INSTALL_DI && ! CONFIGURE_ONLY && ! CHECK_DEPENDENCIES )) && [[ "$INSTALL_DEPENDENCIES" != 0 ]]; then
   # Validate the pinned source before apt or any other system mutation.
   validate_host_sdk_lock
 fi
 
 if (( PLAN_ONLY )); then
+  echo "NDNSF native destination: $RUNTIME_PREFIX (libraries: $RUNTIME_LIBRARY_DIR)"
+  echo "NDNSF components: $NATIVE_COMPONENT_PROFILE ($component_closure)"
   if (( CONFIGURE_ONLY )); then
     echo "Mode: configure-only; OS package installation=$INSTALL_SYSTEM_PACKAGES"
   else
@@ -3248,8 +3380,12 @@ if (( PLAN_ONLY )); then
     echo "NFD: $NFD_REPO_URL commit=$NFD_COMMIT (fixed runtime source)"
     echo "Install prefix: $GLOBAL_DEPENDENCY_PREFIX; source directory: $DEPS_DIR"
   fi
-  echo 'The full install reuses or installs the host SDKs pinned in packaging/host-sdk-dependencies.lock.json.'
-  echo 'Configure-only mode requires ONNX Runtime 1.26+, ONNX 1.17 full-protobuf, and the tokenizer bridge to be present.'
+  if (( NDNSF_INSTALL_DI )); then
+    echo 'The full install reuses or installs the host SDKs pinned in packaging/host-sdk-dependencies.lock.json.'
+    echo 'Configure-only mode requires ONNX Runtime 1.20+, ONNX 1.17 full-protobuf, and the tokenizer bridge to be present.'
+  else
+    echo 'Selected Core/Repo roles require their NDN SDKs; no model or GUI SDK is selected.'
+  fi
   echo 'MiniNDN/NFD/NLSR dependency flags and their source-build scope:'
   if (( INSTALL_MININDN_PACKAGES )); then
     echo '  Mini-NDN profile: Mininet/OVS and Python prerequisites; NFD/ndn-cxx are reused.'
@@ -3407,7 +3543,7 @@ run_waf_clean -j"$JOBS"
 
 if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
   echo "==> Installing C++ libraries and headers"
-  local_install_stage="$BUILD_DIR/install-staging/ndnsf/usr/local"
+  local_install_stage="$BUILD_DIR/install-staging/ndnsf$RUNTIME_PREFIX"
   mkdir -p -- "$local_install_stage"
   run_bounded env \
     -u PKG_CONFIG_LIBDIR \
@@ -3423,29 +3559,59 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
     NM=/usr/bin/nm STRIP=/usr/bin/strip \
     NDNSF_SKIP_DEV_PIP_INSTALL=1 \
     PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
-    NDNSF_LIBRARY_DIR="$GLOBAL_LIBRARY_DIR" \
+    NDNSF_LIBRARY_DIR="$RUNTIME_LIBRARY_DIR" \
+    NDNSF_RUNTIME_RPATH="$(native_runtime_rpath)" \
     "$PYTHON_BIN" ./waf --out="$BUILD_DIR" --onnx-prefix="$GLOBAL_ONNX_PREFIX" \
     install "--destdir=$BUILD_DIR/install-staging/ndnsf" -j"$JOBS"
-  install_manifest_tree "$local_install_stage" "$GLOBAL_DEPENDENCY_PREFIX" ndnsf-native
+  install_manifest_tree "$local_install_stage" "$RUNTIME_PREFIX" ndnsf-native
   rm -rf -- "$BUILD_DIR/install-staging/ndnsf"
   sudo_run /sbin/ldconfig
-  require_global_file "$GLOBAL_LIBRARY_DIR/libndn-service-framework.so"
-  require_global_file "$GLOBAL_LIBRARY_DIR/libndnsf-distributed-inference.so"
-  native_runtime_targets=("$GLOBAL_LIBRARY_DIR/libndn-service-framework.so"
-    "$GLOBAL_LIBRARY_DIR/libndnsf-distributed-inference.so")
-  if [[ -f "$GLOBAL_DEPENDENCY_PREFIX/bin/UavTrackingNode" ]]; then
-    native_runtime_targets+=("$GLOBAL_DEPENDENCY_PREFIX/bin/UavTrackingNode")
+  selected_native_libraries=(libndn-service-framework.so)
+  (( ! NDNSF_INSTALL_DI )) || selected_native_libraries+=(libndnsf-distributed-inference.so)
+  (( ! NDNSF_INSTALL_REPO )) || selected_native_libraries+=(libndnsf-distributed-repo.a)
+  for native_library in "${selected_native_libraries[@]}"; do
+    [[ -f "$RUNTIME_LIBRARY_DIR/$native_library" ]] || {
+      echo "Installed runtime library missing: $RUNTIME_LIBRARY_DIR/$native_library" >&2; exit 1;
+    }
+  done
+  native_runtime_targets=("$RUNTIME_LIBRARY_DIR/libndn-service-framework.so")
+  native_runtime_programs=("$RUNTIME_PREFIX/bin/App_ServiceController"
+    "$RUNTIME_PREFIX/bin/ndnsf-identity-check")
+  if (( NDNSF_INSTALL_DI )); then
+    native_runtime_targets+=("$RUNTIME_LIBRARY_DIR/libndnsf-distributed-inference.so")
+    native_runtime_programs+=("$RUNTIME_PREFIX/bin/DI_NativeRequester" "$RUNTIME_PREFIX/bin/DI_NativeArtifactAuthority"
+      "$RUNTIME_PREFIX/bin/spec190-multiturn-oracle"
+      "$RUNTIME_PREFIX/bin/di-native-provider"
+      "$RUNTIME_PREFIX/libexec/ndnsf-di/ndnsf-di-device-query"
+      "$RUNTIME_PREFIX/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker")
+  fi
+  if (( NDNSF_INSTALL_REPO )); then
+    native_runtime_programs+=("$RUNTIME_PREFIX/bin/NDNSF_RepoPacketServer"
+      "$RUNTIME_PREFIX/bin/DistributedRepoServer")
+  fi
+  if (( NDNSF_INSTALL_UAV )) && [[ -f "$RUNTIME_PREFIX/bin/UavTrackingNode" ]]; then
+    native_runtime_targets+=("$RUNTIME_PREFIX/bin/UavTrackingNode")
   fi
   "$PYTHON_BIN" "$SOURCE_HELPER" check-runtime --lock "$LOCK_FILE" --name NAC-ABE \
     --prefix "$NAC_SDK_PREFIX" --require-nac --runtime-object "${native_runtime_targets[@]}"
+  # Programs such as the assembly worker or transparent packet server need
+  # no NAC dependency. Any NAC they do load must still match the selected SDK.
+  "$PYTHON_BIN" "$SOURCE_HELPER" check-runtime --lock "$LOCK_FILE" --name NAC-ABE \
+    --prefix "$NAC_SDK_PREFIX" --runtime-object "${native_runtime_programs[@]}"
 else
   echo "==> Skipping system C++ install"
   echo "==> Build-only mode stops before Python bindings because the global Core/DI install is required" >&2
   exit 2
 fi
 
+if (( ! NDNSF_INSTALL_DI )); then
+  echo "==> Selected native roles installed; DI bindings and CLI are not selected"
+  exit 0
+fi
+
 echo "==> Installing ndnsf Python wrapper"
-export NDNSF_LIBRARY_DIR="$GLOBAL_LIBRARY_DIR"
+export NDNSF_LIBRARY_DIR="$RUNTIME_LIBRARY_DIR"
+export NDNSF_RUNTIME_PREFIX="$RUNTIME_PREFIX"
 NDNSF_GLOBAL_NATIVE_DIGESTS="$(native_digest_receipt)"
 export NDNSF_GLOBAL_NATIVE_DIGESTS
 unset NDNSF_RUNTIME_RPATH NDNSF_NDN_SVS_SOURCE_TREE NDNSF_NDN_SVS_BUILD_TREE

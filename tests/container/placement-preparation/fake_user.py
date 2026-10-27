@@ -179,8 +179,7 @@ def build_dynamic_plan(
     return decision, graph, candidate
 
 
-def main() -> int:
-    user = ServiceUser()
+def run_request(user: ServiceUser) -> int:
     now_ms = int(time.time() * 1000)
     deadline_ms = now_ms + 25_000
     # NDNSF V2 appends request-id as exactly one Name component.
@@ -341,6 +340,16 @@ def main() -> int:
         "SPEC163_SECURE_DEFERRED_LIFECYCLE_OK",
         request=request_id, response=response.payload.decode())
     return 0
+
+
+def main() -> int:
+    user = ServiceUser()
+    try:
+        return run_request(user)
+    finally:
+        # Stop while Python callbacks can still acquire the interpreter lock.
+        # Interpreter-exit destruction is too late to own a background Face.
+        user.stop()
 
 
 if __name__ == "__main__":

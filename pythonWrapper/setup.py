@@ -12,7 +12,6 @@ from setuptools import Extension, find_packages, setup
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = ROOT
-HOST_NATIVE_LIBRARY_DIR = Path("/usr/local/lib")
 HISTORICAL_LOCAL_PREFIX = (REPOSITORY_ROOT / ".local-boost171").resolve()
 HOST_GLOBAL_DEPENDENCY_ROOTS = tuple(
     Path(value).resolve()
@@ -29,10 +28,27 @@ CONTAINER_GLOBAL_DEPENDENCY_ROOTS = tuple(
 )
 
 
+def runtime_prefix() -> Path:
+    """Resolve the explicitly declared host NDNSF destination, not its SDKs."""
+    raw = os.environ.get("NDNSF_RUNTIME_PREFIX", "/usr/local")
+    prefix = Path(raw)
+    if (not prefix.is_absolute() or prefix == Path("/") or
+            any(char.isspace() or char in "\x00:,$" or
+                char in ("'", '"', chr(92), '#') for char in raw) or ".." in prefix.parts or
+            prefix.resolve() != prefix or (prefix.exists() and not prefix.is_dir())):
+        raise RuntimeError("invalid NDNSF_RUNTIME_PREFIX: " + raw)
+    for forbidden in (ROOT, Path("/dev"), Path("/proc"), Path("/sys")):
+        if prefix == forbidden or forbidden in prefix.parents:
+            raise RuntimeError("unsafe NDNSF_RUNTIME_PREFIX: " + raw)
+    return prefix
+
+
 def dependency_roots() -> tuple[Path, ...]:
     roots = list(HOST_GLOBAL_DEPENDENCY_ROOTS)
     if os.environ.get("NDNSF_CONTAINER_BUILD") == "1":
         roots.extend(CONTAINER_GLOBAL_DEPENDENCY_ROOTS)
+    else:
+        roots.append(runtime_prefix())
     return tuple(roots)
 
 
@@ -172,7 +188,7 @@ def native_library_dirs() -> list[str]:
     if not values:
         values = [str(Path("/opt/ndnsf-stage/lib") if
                   os.environ.get("NDNSF_CONTAINER_BUILD") == "1"
-                  else HOST_NATIVE_LIBRARY_DIR)]
+                  else runtime_prefix() / "lib")]
     dirs = [str(Path(value).expanduser().resolve()) for value in values]
     reject_historical_local_paths(dirs, "NDNSF_LIBRARY_DIR")
     reject_non_global_dependency_paths(dirs, "NDNSF_LIBRARY_DIR")
@@ -181,10 +197,10 @@ def native_library_dirs() -> list[str]:
             "NDNSF_LIBRARY_DIR must name one installed global library root; "
             "do not combine checkout or per-run prefixes")
     if os.environ.get("NDNSF_CONTAINER_BUILD") != "1" \
-            and Path(dirs[0]) != HOST_NATIVE_LIBRARY_DIR:
+            and Path(dirs[0]) != runtime_prefix() / "lib":
         raise RuntimeError(
-            "NDNSF_LIBRARY_DIR must be the canonical host install root "
-            f"{HOST_NATIVE_LIBRARY_DIR}; do not select another global root")
+            "NDNSF_LIBRARY_DIR must match the declared host runtime root "
+            f"{runtime_prefix() / 'lib'}")
     directory = Path(dirs[0])
     if not directory.is_dir():
         raise RuntimeError("NDNSF_LIBRARY_DIR does not exist: " + str(directory))

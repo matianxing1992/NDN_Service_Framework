@@ -9,21 +9,26 @@ StartLimitBurst=3
 Type=simple
 User=ndnsf-di
 Group=ndnsf-di
-EnvironmentFile=-/etc/ndnsf-di/controller.env
-ExecStart=/opt/ndnsf-di/current/bin/App_ServiceController ${NDNSF_DI_CONTROLLER_ARGS}
+Environment=HOME=/var/lib/ndnsf-di/identities/controller
+Environment=NDNSF_DI_IDENTITY=/ndnsf/di/controller
+Environment=NDN_CLIENT_PIB=pib-sqlite3: NDN_CLIENT_TPM=tpm-file:
+Environment=NDN_LOG=*=NONE
+EnvironmentFile=/etc/ndnsf-di/controller.env
+ExecStartPre=/opt/ndnsf-di/current/bin/ndnsf-identity-check ${HOME} ${NDNSF_DI_IDENTITY}
+ExecStart=/opt/ndnsf-di/current/bin/App_ServiceController $NDNSF_DI_CONTROLLER_ARGS
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=60s
 TimeoutStopSec=20s
 KillSignal=SIGTERM
 NoNewPrivileges=true
-PrivateTmp=true
+PrivateTmp=false
 ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
-ReadWritePaths=/run/ndnsf-di /var/log/ndnsf-di
+ReadWritePaths=/run/ndnsf-di /var/lib/ndnsf-di/identities /var/log/ndnsf-di
 
 [Install]
 WantedBy=ndnsf-di-controller.target

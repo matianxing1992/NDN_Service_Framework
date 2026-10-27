@@ -2,6 +2,7 @@
 #include "detail/TargetedRequestRouting.hpp"
 #include "detail/ProtectedTargetedRequest.hpp"
 #include "detail/OriginalPacketFile.hpp"
+#include "detail/in-memory-storage-range.hpp"
 #include "ProducerDataNaming.hpp"
 #include "ProtectedBlobManifest.hpp"
 #include <future>
@@ -988,12 +989,42 @@ namespace ndn_service_framework
                     records.clear();
                     valid = true;
                 }
-                if (!valid || records.size() >= DURABLE_KEY_REFERENCE_MAX_RECORDS) {
+                if (!valid) {
+                    return false;
+                }
+                const ndn::Name service(record.serviceName);
+                const ControllerVersion incomingVersion{
+                    record.controllerGenerationTimestamp, record.policyEpoch};
+                // Another owner may have committed a newer service version.
+                // Never refill its retired generation through a stale write.
+                if (std::any_of(records.begin(), records.end(), [&] (const auto& candidate) {
+                        const ControllerVersion candidateVersion{
+                            candidate.controllerGenerationTimestamp, candidate.policyEpoch};
+                        return ndn::Name(candidate.serviceName) == service &&
+                            candidateVersion.compare(incomingVersion) > 0;
+                    })) {
+                    return false;
+                }
+                if (record.controllerGenerationTimestamp != 0) {
+                    // First status after restart does not trigger asynchronous
+                    // retirement. Commit reference retirement with insertion;
+                    // original Repo Data and legacy references remain intact.
+                    records.erase(std::remove_if(records.begin(), records.end(),
+                        [&] (const auto& candidate) {
+                            const ControllerVersion candidateVersion{
+                                candidate.controllerGenerationTimestamp, candidate.policyEpoch};
+                            return candidate.packetStorageFormat == "original-packet-set" &&
+                                candidate.controllerGenerationTimestamp != 0 &&
+                                ndn::Name(candidate.serviceName) == service &&
+                                candidateVersion.compare(incomingVersion) < 0;
+                        }), records.end());
+                }
+                if (records.size() >= DURABLE_KEY_REFERENCE_MAX_RECORDS) {
                     auto existing = std::find_if(records.begin(), records.end(),
                         [&record] (const auto& candidate) {
                             return candidate.publicationIdentity == record.publicationIdentity;
                         });
-                    if (!valid || existing == records.end()) {
+                    if (existing == records.end()) {
                         return false;
                     }
                 }
@@ -8435,7 +8466,7 @@ namespace ndn_service_framework
         std::shared_ptr<const ndn::Data> original;
         {
             std::lock_guard<std::mutex> lock(_cache_mutex);
-            for (auto entry = m_IMS.lowerBound(dataName);
+            for (auto entry = detail::imsLowerBound(m_IMS, dataName);
                  entry != m_IMS.end() && dataName.isPrefixOf(entry->getFullName()); ++entry) {
                 const auto& stored = *entry;
                 if (stored.getName() != dataName) continue;
@@ -16730,8 +16761,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
         std::lock_guard<std::mutex> lock(_cache_mutex);
         for (const auto& [name, original] : originals) {
-          // Check every digest variant through the existing IMS name index.
-          for (auto entry = m_IMS.lowerBound(name);
+          // Check every full-name digest variant before accepting an original.
+          for (auto entry = detail::imsLowerBound(m_IMS, name);
                entry != m_IMS.end() && name.isPrefixOf(entry->getFullName()); ++entry) {
             const auto& existing = *entry;
             if (existing.getName() == name && existing.wireEncode() != original->wireEncode()) {

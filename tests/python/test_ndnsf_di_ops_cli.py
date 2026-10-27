@@ -3,7 +3,10 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -16,6 +19,31 @@ from ndnsf_distributed_inference.ops.cli import definition_from_json, main
 
 
 class OpsCliTest(unittest.TestCase):
+    def test_help_does_not_import_application_or_native_runtime(self):
+        package_root = Path(__file__).resolve().parents[2] / "NDNSF-DistributedInference"
+        code = """
+import importlib.abc
+import sys
+
+class RejectRuntime(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if (fullname.startswith('ndnsf_distributed_inference.app_sdk') or
+                fullname in {'ndnsf', '_ndnsf'}):
+            raise AssertionError('unexpected runtime import: ' + fullname)
+
+sys.meta_path.insert(0, RejectRuntime())
+from ndnsf_distributed_inference.ops.cli import main
+main(['--help'])
+"""
+        with tempfile.TemporaryDirectory() as root:
+            result = subprocess.run(
+                [sys.executable, "-c", code], cwd=root,
+                env={**os.environ, "PYTHONPATH": str(package_root)},
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage: ndnsf-di", result.stdout)
+
     def test_validate_resolve_apply_status_delegate_to_app(self):
         with tempfile.TemporaryDirectory(dir=Path.home()) as root:
             definition=Path(root)/"deployment.json"

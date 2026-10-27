@@ -52,6 +52,250 @@ def test_jobs_environment_and_override():
     assert shell(DEFINITIONS + '\nprintf "%s" "$JOBS"', "--jobs", "1", env=env).stdout == "1"
 
 
+@pytest.mark.parametrize("version", ["1.71.0", "1.85.0", "1.90.0"])
+def test_minindn_reuses_matching_installed_boost_without_source_pin(tmp_path, version):
+    library = tmp_path / "boost"
+    library.mkdir()
+    soname = "libboost_iostreams.so." + version
+    (library / soname).write_bytes(b"fixture")
+    (library / "libboost_iostreams.so").symlink_to(soname)
+    result = shell(DEFINITIONS + '''
+BOOST_VERSION_STRING="$TEST_BOOST_VERSION"
+BOOST_LIBRARY_DIR="$TEST_BOOST_LIBRARY"
+GLOBAL_LIBRARY_DIR="$TEST_BOOST_LIBRARY"
+readelf() { printf ' Library soname: [libboost_iostreams.so.%s]\\n' "$BOOST_VERSION_STRING"; }
+run() { echo UNEXPECTED_SOURCE_BUILD >&2; return 99; }
+ensure_minindn_boost_iostreams
+''', env=dict(os.environ, TEST_BOOST_VERSION=version, TEST_BOOST_LIBRARY=str(library)))
+    assert result.returncode == 0, result.stderr
+    assert "Reusing Boost " + version in result.stdout
+    assert "UNEXPECTED_SOURCE_BUILD" not in result.stderr
+
+
+def test_minindn_missing_unpinned_boost_refuses_source_download(tmp_path):
+    result = shell(DEFINITIONS + '''
+BOOST_VERSION_STRING=1.90.0
+BOOST_LIBRARY_DIR="$TEST_BOOST_LIBRARY"
+GLOBAL_LIBRARY_DIR="$TEST_BOOST_LIBRARY"
+run() { echo UNEXPECTED_SOURCE_BUILD >&2; return 99; }
+ensure_minindn_boost_iostreams
+''', env=dict(os.environ, TEST_BOOST_LIBRARY=str(tmp_path)))
+    assert result.returncode != 0
+    assert "No pinned Boost 1.90.0 archive" in result.stderr
+    assert "UNEXPECTED_SOURCE_BUILD" not in result.stderr
+
+
+def test_minindn_installed_boost_with_wrong_soname_is_rejected(tmp_path):
+    soname = "libboost_iostreams.so.1.90.0"
+    (tmp_path / soname).write_bytes(b"fixture")
+    (tmp_path / "libboost_iostreams.so").symlink_to(soname)
+    result = shell(DEFINITIONS + '''
+BOOST_VERSION_STRING=1.90.0
+BOOST_LIBRARY_DIR="$TEST_BOOST_LIBRARY"
+GLOBAL_LIBRARY_DIR="$TEST_BOOST_LIBRARY"
+readelf() { echo ' Library soname: [libboost_iostreams.so.1.85.0]'; }
+ensure_minindn_boost_iostreams
+''', env=dict(os.environ, TEST_BOOST_LIBRARY=str(tmp_path)))
+    assert result.returncode != 0
+    assert "Reusing Boost" not in result.stdout
+
+
+def test_native_prefix_drives_waf_and_receipt(tmp_path):
+    prefix = tmp_path / "runtime"
+    library = prefix / "lib"
+    library.mkdir(parents=True)
+    names = ("libndn-service-framework.so", "libndnsf-distributed-inference.so",
+             "libndnsf-distributed-repo.a")
+    for name in names:
+        (library / name).write_bytes(name.encode())
+    result = shell(DEFINITIONS + '''
+refresh_global_pkg_config_path() { GLOBAL_PKG_CONFIG_PATH=/usr/local/lib/pkgconfig; }
+run_bounded() { printf '%s\\n' "$@"; }
+run_waf_clean configure
+native_digest_receipt
+printf 'LEDGER=%s\\n' "$INSTALL_MANIFEST"
+''', "--prefix", str(prefix))
+    assert result.returncode == 0, result.stderr
+    assert "--prefix=" + str(prefix) in result.stdout.splitlines()
+    assert "--libdir=" + str(library) in result.stdout.splitlines()
+    assert "NDNSF_LIBRARY_DIR=" + str(library) in result.stdout.splitlines()
+    assert ("NDNSF_RUNTIME_RPATH=" + str(library) + ":/usr/local/lib"
+            in result.stdout.splitlines())
+    import hashlib
+    import json
+    receipt = next(json.loads(line) for line in result.stdout.splitlines() if line.startswith('{'))
+    assert receipt == {name: hashlib.sha256(name.encode()).hexdigest() for name in names}
+    assert "LEDGER=" + str(prefix / "share/ndnsf/stack-install-manifest.json") in result.stdout
+
+
+def test_installed_runtime_rpath_orders_release_before_sdk_and_deduplicates():
+    result = shell(DEFINITIONS + '''
+NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture
+native_runtime_rpath
+''', '--prefix', '/opt/ndnsf-fixture')
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ('/opt/ndnsf-fixture/lib:'
+                             '/usr/local/ndnsf-sdk/nac-abe/fixture/lib:/usr/local/lib')
+    default = shell(DEFINITIONS + '''
+NAC_SDK_PREFIX=/usr/local
+native_runtime_rpath
+''')
+    assert default.returncode == 0, default.stderr
+    assert default.stdout == '/usr/local/lib'
+
+
+@pytest.mark.parametrize("profile,di,repo,uav", [
+    ("all", 1, 1, 1), ("core", 0, 0, 0), ("repo", 0, 1, 0), ("di", 1, 1, 0),
+])
+def test_components_drive_installer_and_waf(profile, di, repo, uav):
+    result = shell(DEFINITIONS + '''
+printf 'SELECTED=%s,%s,%s\\n' "$NDNSF_INSTALL_DI" "$NDNSF_INSTALL_REPO" "$NDNSF_INSTALL_UAV"
+refresh_global_pkg_config_path() { :; }
+run_bounded() { printf '%s\\n' "$@"; }
+run_waf_clean configure
+''', "--components", profile)
+    assert result.returncode == 0, result.stderr
+    assert f"SELECTED={di},{repo},{uav}" in result.stdout
+    assert "--components=" + profile in result.stdout.splitlines()
+
+
+@pytest.mark.parametrize("args", [
+    ["--components", "unknown"], ["--components", "core", "--with-tests"],
+    ["--components", "di", "--with-examples"],
+    ["--components", "repo", "--with-qwen-minindn"],
+    ["--", "--components=core"],
+])
+def test_invalid_component_combination_stops_before_mutation(args):
+    result = shell(SCRIPT.read_text(), "--plan", *args)
+    assert result.returncode == 2
+    assert not result.stdout
+
+
+def test_core_does_not_probe_or_download_model_sdk():
+    result = shell(DEFINITIONS + '''
+has_onnxruntime_sdk() { echo UNEXPECTED_MODEL_PROBE; exit 99; }
+install_host_sdk_prerequisites
+''', "--components", "core")
+    assert result.returncode == 0, result.stderr
+    assert not result.stdout
+
+
+@pytest.mark.parametrize("already_installed", [False, True])
+def test_di_os_packages_exclude_gui(already_installed):
+    result = shell(DEFINITIONS + '''
+sudo_run() { printf 'SUDO:%s\\n' "$*"; }
+dpkg-query() { [[ "$NDNSF_TEST_INSTALLED" == 1 ]] && printf 'install ok installed'; }
+has_global_boost() { return 0; }
+select_global_boost() { return 0; }
+install_common_system_packages
+''', "--components", "di", env=dict(os.environ, NDNSF_TEST_INSTALLED=str(int(already_installed))))
+    assert result.returncode == 0, result.stderr
+    if already_installed:
+        assert "SUDO:" not in result.stdout
+    else:
+        assert "protobuf-compiler" in result.stdout
+    assert "gtkmm" not in result.stdout
+    assert "gstreamer" not in result.stdout
+
+
+@pytest.mark.parametrize("profile", ["core", "repo", "di", "all"])
+def test_main_checks_model_sdk_lock_only_when_selected(profile):
+    stubs = '''
+validate_host_sdk_lock() { echo UNAVAILABLE_MODEL_SDK_LOCK >&2; return 91; }
+'''
+    result = shell(DEFINITIONS + stubs + '\ncd "$ROOT"\n' + MAIN,
+                   "--source", "--plan", "--components", profile)
+    if profile in ("core", "repo"):
+        assert result.returncode == 0, result.stderr
+        assert "UNAVAILABLE_MODEL_SDK_LOCK" not in result.stderr
+        assert "ONNX Runtime" not in result.stdout
+    else:
+        assert result.returncode == 91
+        assert "UNAVAILABLE_MODEL_SDK_LOCK" in result.stderr
+
+
+@pytest.mark.parametrize("prior", [None, [], {"schema": 1, "libraries": {
+    "libonnxruntime.so": {"unselected": "preserve exactly"}}}])
+def test_core_receipt_refresh_preserves_only_valid_prior_metadata(tmp_path, prior):
+    import hashlib
+    import json
+    import shutil
+    library = tmp_path / "lib"
+    library.mkdir()
+    names = ("libndn-cxx.so", "libndnsd.so", "libndn-svs.so", "libnac-abe.so", "libopenabe.so")
+    for name in names:
+        shutil.copyfile("/usr/bin/true", library / name)
+    receipt = tmp_path / "prior.json"
+    receipt.write_text(json.dumps(prior))
+    result = shell(DEFINITIONS + '''
+GLOBAL_LIBRARY_DIR="$NDNSF_TEST_LIBDIR"
+GLOBAL_IDENTITY_FILE="$NDNSF_TEST_RECEIPT"
+pkg_config() {
+  [[ "$*" != *onnxruntime* ]] || { touch "$NDNSF_TEST_MODEL_QUERY"; return 91; }
+  printf '%s' "$NDNSF_TEST_LIBDIR"
+}
+global_dependency_identity_receipt
+''', "--components", "core", env=dict(os.environ, NDNSF_TEST_LIBDIR=str(library),
+                                       NDNSF_TEST_RECEIPT=str(receipt),
+                                       NDNSF_TEST_MODEL_QUERY=str(tmp_path / "model-query")))
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "model-query").exists()
+    actual = json.loads(result.stdout)
+    assert actual["schema"] == 1
+    for name in names:
+        assert actual["libraries"][name]["sha256"] == hashlib.sha256((library / name).read_bytes()).hexdigest()
+    if isinstance(prior, dict):
+        assert actual["libraries"]["libonnxruntime.so"] == prior["libraries"]["libonnxruntime.so"]
+    else:
+        assert set(actual["libraries"]) == set(names)
+
+
+@pytest.mark.parametrize("args", [
+    ["--prefix", "relative"], ["--prefix", "/"], ["--prefix", "/dev/shm/runtime"],
+    ["--prefix", str(ROOT / "runtime")], ["--", "--prefix=/opt/other"],
+    ["--", "--libdir", "/opt/other/lib"],
+    ["--prefix", "/opt/ndnsf runtime"], ["--prefix", "/opt/ndnsf\truntime"],
+    ["--prefix", "/opt/ndnsf,runtime"],
+    ["--prefix", "/opt/ndnsf'"], ["--prefix", '/opt/ndnsf"'],
+    ["--prefix", "/opt/ndnsf\\runtime"], ["--prefix", "/opt/ndnsf#runtime"],
+])
+def test_bad_runtime_destination_stops_before_mutation(args):
+    result = shell(SCRIPT.read_text(), "--plan", *args)
+    assert result.returncode == 2
+    assert "NDNSF stack install root" not in result.stdout
+    assert not result.stdout
+
+
+def test_custom_prefix_manifest_restores_only_owned_files(tmp_path):
+    prefix = tmp_path / "runtime"
+    stage = tmp_path / "stage"
+    (stage / "bin").mkdir(parents=True)
+    (stage / "bin/service").write_text("new")
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin/service").write_text("prior")
+    persistent = prefix / "repo/packet"
+    persistent.parent.mkdir()
+    persistent.write_text("preserved")
+    result = shell(DEFINITIONS + '''
+sudo_run() { "$@"; }
+install_manifest_tree "$NDNSF_TEST_STAGE" "$RUNTIME_PREFIX" ndnsf-native
+test "$(cat "$RUNTIME_PREFIX/bin/service")" = new
+manifest_tool uninstall --manifest "$INSTALL_MANIFEST"
+''', "--prefix", str(prefix), env=dict(os.environ, NDNSF_TEST_STAGE=str(stage)))
+    assert result.returncode == 0, result.stderr
+    assert (prefix / "bin/service").read_text() == "prior"
+    assert persistent.read_text() == "preserved"
+
+
+def test_runtime_prefix_cannot_be_an_existing_file(tmp_path):
+    prefix = tmp_path / "file"
+    prefix.write_text("preserved")
+    result = shell(SCRIPT.read_text(), "--plan", "--prefix", str(prefix))
+    assert result.returncode == 2
+    assert not result.stdout
+    assert prefix.read_text() == "preserved"
+
+
 def test_python_wheel_staging_excludes_runtime_and_build_artifacts(tmp_path):
     assert os.geteuid() != 0, "run this permission oracle without root"
     source = tmp_path / "source"
@@ -65,7 +309,17 @@ def test_python_wheel_staging_excludes_runtime_and_build_artifacts(tmp_path):
         "NDNSF-DistributedRepo/include/repo.hpp",
         "NDNSF-DistributedRepo/src/repo.cpp",
         "NDNSF-DistributedInference/cpp/probe.cpp",
+        "NDNSF-DistributedInference/ndnsf_di_launcher.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/compatibility/manifest.json",
+        "packaging/ndnsf-di-container/lib/allocation_topology.py",
+        "packaging/ndnsf-di-container/lib/adapters/__init__.py",
+        "packaging/ndnsf-di-container/lib/adapters/base.py",
+        "packaging/ndnsf-di-container/lib/adapters/slurm_apptainer.py",
+        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-allocation-topology.sh",
+        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh",
+        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-container.sh",
+        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/stage-sif.sh",
+        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/validate-local-sif-build-record.py",
         "pythonWrapper/ndnsf/py.typed", "pythonWrapper/src/ndnsf/_ndnsf.cpp",
         "extra/nested/package/assets/weights.bin",
     ]
@@ -81,6 +335,9 @@ def test_python_wheel_staging_excludes_runtime_and_build_artifacts(tmp_path):
         "pythonWrapper/ndnsf/cache.pyo",
         "unrequested-model.onnx", "other-experiment/weights.bin",
         "extra/unrequested/weights.bin",
+        "packaging/ndnsf-di-container/lib/unrequested-private.json",
+        "packaging/ndnsf-di-container/lib/adapters/docker_compose.py",
+        "packaging/ndnsf-di-container/jobs/private/credentials.key",
     ]
     for name in packages:
         retained.extend((name + "/setup.py", name + "/package_source.py"))
@@ -213,7 +470,7 @@ install_common_system_packages
 
 
 def test_qwen_program_check_rejects_missing_binary(tmp_path):
-    result = shell(DEFINITIONS + '\nGLOBAL_DEPENDENCY_PREFIX=' + repr(str(tmp_path)) + '\ncheck_qwen_installed_programs')
+    result = shell(DEFINITIONS + '\nRUNTIME_PREFIX=' + repr(str(tmp_path)) + '\ncheck_qwen_installed_programs')
     assert result.returncode != 0
     assert "Missing installed Qwen executable" in result.stderr
 
@@ -225,7 +482,7 @@ def test_qwen_program_check_does_not_claim_inference(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("#!/bin/sh\nexit 0\n")
         path.chmod(0o755)
-    result = shell(DEFINITIONS + '\nGLOBAL_DEPENDENCY_PREFIX=' + repr(str(tmp_path)) + '\ncheck_qwen_installed_programs')
+    result = shell(DEFINITIONS + '\nRUNTIME_PREFIX=' + repr(str(tmp_path)) + '\ncheck_qwen_installed_programs')
     assert result.returncode == 0, result.stderr
     assert "NOT an inference PASS" in result.stdout
 
@@ -245,7 +502,7 @@ def test_qwen_program_check_rejects_executable_directory(tmp_path):
         path.write_text("#!/bin/sh\nexit 0\n")
         path.chmod(0o755)
     result = shell(
-        DEFINITIONS + '\nGLOBAL_DEPENDENCY_PREFIX=' + repr(str(tmp_path))
+        DEFINITIONS + '\nRUNTIME_PREFIX=' + repr(str(tmp_path))
         + '\ncheck_qwen_installed_programs'
     )
     assert result.returncode != 0
@@ -644,6 +901,7 @@ check_waf_inventory() { echo MISSING_GTK >&2; return 37; }
 def test_pip_builds_wheels_then_privileged_noneditable_install():
     result = shell(DEFINITIONS + '''
 NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture
+NDNSF_GLOBAL_NATIVE_DIGESTS='{"fixture":"digest"}'
 stage_python_wheel_sources() { shift; PYTHON_WHEEL_INPUTS=("$@"); }
 run() { printf 'BUILD:%s\\n' "$*"; touch "$wheel_dir/test.whl"; }
 sudo_run() { printf 'INSTALL:%s\\n' "$*"; }
@@ -652,6 +910,7 @@ pip_install /example/package
     assert result.returncode == 0, result.stderr
     assert '--isolated wheel --wheel-dir' in result.stdout
     assert 'NDNSF_NAC_ABE_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture' in result.stdout
+    assert 'NDNSF_GLOBAL_NATIVE_DIGESTS={"fixture":"digest"}' in result.stdout
     install = next(shlex.split(line[len('INSTALL:'):])
                    for line in result.stdout.splitlines()
                    if line.startswith('INSTALL:') and '-m pip --isolated install ' in line)
@@ -659,6 +918,33 @@ pip_install /example/package
     assert not {'--user', '--editable', '-e'} & set(install)
     assert any(token.endswith('/test.whl') for token in install)
     assert result.stdout.index('BUILD:') < result.stdout.index('INSTALL:')
+
+
+def test_pip_build_receives_native_identity_in_clean_child_environment(tmp_path):
+    python = tmp_path / "wheel-builder"
+    python.write_text('''#!/usr/bin/python3
+import os, pathlib, sys
+assert os.environ['NDNSF_GLOBAL_NATIVE_DIGESTS'] == '{"fixture":"exact-native-identity"}'
+assert os.environ['NDNSF_RUNTIME_PREFIX'] == '/opt/ndnsf-fixture'
+assert os.environ['NDNSF_NAC_ABE_PREFIX'] == '/usr/local/ndnsf-sdk/nac-abe/fixture'
+assert 'NDNSF_TEST_UNFORWARDED' not in os.environ
+pathlib.Path(sys.argv[sys.argv.index('--wheel-dir') + 1], 'test.whl').touch()
+print('CLEAN_WHEEL_NATIVE_IDENTITY_OK')
+''')
+    python.chmod(0o755)
+    code = DEFINITIONS + '\nPYTHON_BIN=' + shlex.quote(str(python)) + '''
+NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture
+export NDNSF_GLOBAL_NATIVE_DIGESTS='{"fixture":"exact-native-identity"}'
+export NDNSF_TEST_UNFORWARDED=must-not-leak
+stage_python_wheel_sources() { shift; PYTHON_WHEEL_INPUTS=("$@"); }
+run_bounded() { /usr/bin/env -i PATH=/usr/bin:/bin "$@"; }
+manifest_tool() { :; }
+sudo_run() { :; }
+pip_install /example/package
+'''
+    result = shell(code, '--prefix', '/opt/ndnsf-fixture')
+    assert result.returncode == 0, result.stderr
+    assert 'CLEAN_WHEEL_NATIVE_IDENTITY_OK' in result.stdout
 
 
 def test_host_profile_normalizes_symlink_venv_interpreter(tmp_path):

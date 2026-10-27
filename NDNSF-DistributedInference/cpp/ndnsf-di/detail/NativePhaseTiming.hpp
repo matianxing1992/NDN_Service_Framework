@@ -16,16 +16,34 @@ struct NativePhaseTiming {
   std::int64_t threadCpuNs = -1;
 };
 
-inline std::int64_t nativeThreadCpuTimeNs() noexcept
+#if defined(CLOCK_THREAD_CPUTIME_ID) || defined(CLOCK_PROCESS_CPUTIME_ID)
+inline std::int64_t nativeClockCpuTimeNs(clockid_t clock) noexcept
 {
-#ifdef CLOCK_THREAD_CPUTIME_ID
   timespec value{};
-  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) == 0 &&
+  if (clock_gettime(clock, &value) == 0 &&
       value.tv_sec >= 0 && value.tv_nsec >= 0 && value.tv_nsec < 1000000000L &&
       value.tv_sec <= (std::numeric_limits<std::int64_t>::max() - value.tv_nsec) / 1000000000LL)
     return static_cast<std::int64_t>(value.tv_sec) * 1000000000LL + value.tv_nsec;
-#endif
   return -1;
+}
+#endif
+
+inline std::int64_t nativeThreadCpuTimeNs() noexcept
+{
+#ifdef CLOCK_THREAD_CPUTIME_ID
+  return nativeClockCpuTimeNs(CLOCK_THREAD_CPUTIME_ID);
+#else
+  return -1;
+#endif
+}
+
+inline std::int64_t nativeProcessCpuTimeNs() noexcept
+{
+#ifdef CLOCK_PROCESS_CPUTIME_ID
+  return nativeClockCpuTimeNs(CLOCK_PROCESS_CPUTIME_ID);
+#else
+  return -1;
+#endif
 }
 
 inline NativePhaseTiming nativePhaseStarted() noexcept

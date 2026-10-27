@@ -23,14 +23,15 @@ def pkg_config_result(setup_path, includes, directories, libraries, link_args):
 def isolated_build_environment(monkeypatch):
     for name in ("NDNSF_LIBRARY_DIR", "NDNSF_NAC_ABE_PREFIX",
                  "NDNSF_NDN_SVS_SOURCE_TREE", "NDNSF_NDN_SVS_BUILD_TREE",
-                 "NDNSF_RUNTIME_RPATH", "NDNSF_CONTAINER_BUILD"):
+                 "NDNSF_RUNTIME_RPATH", "NDNSF_CONTAINER_BUILD", "NDNSF_RUNTIME_PREFIX"):
         monkeypatch.delenv(name, raising=False)
     native_libs = {
         name: hashlib.sha256((Path("/usr/local/lib") / name).read_bytes()).hexdigest()
-        for name in ("libndn-service-framework.so", "libndnsf-distributed-inference.so")
+        for name in ("libndn-service-framework.so", "libndnsf-distributed-inference.so",
+                     "libndnsf-distributed-repo.a")
         if (Path("/usr/local/lib") / name).is_file()
     }
-    if len(native_libs) == 2:
+    if len(native_libs) == 3:
         monkeypatch.setenv("NDNSF_GLOBAL_NATIVE_DIGESTS",
                           json.dumps(native_libs, sort_keys=True))
     else:
@@ -40,6 +41,57 @@ def isolated_build_environment(monkeypatch):
 @pytest.fixture(params=["pythonWrapper/setup.py", "NDNSF-DistributedRepo/pythonWrapper/setup.py"])
 def setup_path(request):
     return ROOT / request.param
+
+
+def test_declared_runtime_prefix_requires_matching_native_receipt(monkeypatch, tmp_path, setup_path):
+    prefix = tmp_path / "runtime"
+    library = prefix / "lib"
+    library.mkdir(parents=True)
+    names = ("libndn-service-framework.so", "libndnsf-distributed-inference.so",
+             "libndnsf-distributed-repo.a")
+    for name in names:
+        (library / name).write_bytes(name.encode())
+    receipt = {name: hashlib.sha256(name.encode()).hexdigest() for name in names}
+    monkeypatch.setenv("NDNSF_RUNTIME_PREFIX", str(prefix))
+    monkeypatch.setenv("NDNSF_LIBRARY_DIR", str(library))
+    monkeypatch.setenv("NDNSF_GLOBAL_NATIVE_DIGESTS", json.dumps(receipt))
+    captured = {}
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: captured.update(kwargs))
+    namespace = runpy.run_path(str(setup_path))
+    extension, = captured["ext_modules"]
+    assert str(library) in extension.library_dirs
+    assert "-Wl,-rpath," + str(library) in extension.extra_link_args
+    reject = namespace["reject_non_global_dependency_paths"]
+    reject([str(prefix / "include")], "runtime SDK")
+    with pytest.raises(RuntimeError, match="undeclared dependency root"):
+        reject([str(tmp_path / "other/include")], "unselected SDK")
+    (library / "libndn-service-framework.so").write_bytes(b"replaced")
+    with pytest.raises(RuntimeError, match="digest mismatch"):
+        namespace["build_extension"]()
+    monkeypatch.setenv("NDNSF_LIBRARY_DIR", "/usr/local/lib")
+    with pytest.raises(RuntimeError, match="must match the declared host runtime root"):
+        namespace["native_library_dirs"]()
+
+
+@pytest.mark.parametrize("bad", ["relative", "/", "/dev/shm/runtime",
+                                 "/opt/ndnsf runtime", "/opt/ndnsf\truntime",
+                                 "/opt/ndnsf,runtime", "/opt/ndnsf'", '/opt/ndnsf"',
+                                 "/opt/ndnsf\\runtime", "/opt/ndnsf#runtime"])
+def test_invalid_runtime_prefix_rejected(monkeypatch, setup_path, bad):
+    monkeypatch.setenv("NDNSF_RUNTIME_PREFIX", bad)
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    with pytest.raises(RuntimeError, match="NDNSF_RUNTIME_PREFIX"):
+        runpy.run_path(str(setup_path))
+
+
+def test_runtime_prefix_cannot_be_an_existing_file(monkeypatch, tmp_path, setup_path):
+    prefix = tmp_path / "file"
+    prefix.write_text("preserved")
+    monkeypatch.setenv("NDNSF_RUNTIME_PREFIX", str(prefix))
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    with pytest.raises(RuntimeError, match="invalid NDNSF_RUNTIME_PREFIX"):
+        runpy.run_path(str(setup_path))
+    assert prefix.read_text() == "preserved"
 
 
 @pytest.mark.parametrize("missing", [None, "include/nac-abe/consumer.hpp", "lib/libnac-abe.so"])
@@ -276,25 +328,23 @@ def test_global_native_symlink_target_cannot_escape_root(
         monkeypatch, tmp_path, setup_path):
     outside = tmp_path / "outside.so"
     outside.write_bytes(b"outside")
-    root = tmp_path / "global"
-    root.mkdir()
+    root = tmp_path / "runtime/lib"
+    root.mkdir(parents=True)
     (root / "libndn-service-framework.so").symlink_to(outside)
     (root / "libndnsf-distributed-inference.so").write_bytes(b"di")
+    (root / "libndnsf-distributed-repo.a").write_bytes(b"repo")
     monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
-    monkeypatch.setenv("NDNSF_LIBRARY_DIR", "/usr/local/lib")
-    namespace = runpy.run_path(str(setup_path), run_name="__main__")
-    namespace["HOST_NATIVE_LIBRARY_DIR"] = root
-    namespace["dependency_roots"] = lambda: (root,)
+    monkeypatch.setenv("NDNSF_RUNTIME_PREFIX", str(root.parent))
     monkeypatch.setenv("NDNSF_LIBRARY_DIR", str(root))
     with pytest.raises(RuntimeError, match="resolved to undeclared dependency root"):
-        namespace["native_library_dirs"]()
+        runpy.run_path(str(setup_path), run_name="__main__")
 
 
 def test_host_native_library_dir_cannot_select_another_system_root(
         monkeypatch, setup_path):
     monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
     monkeypatch.setenv("NDNSF_LIBRARY_DIR", "/usr/lib")
-    with pytest.raises(RuntimeError, match="canonical host install root"):
+    with pytest.raises(RuntimeError, match="declared host runtime root"):
         runpy.run_path(str(setup_path), run_name="__main__")
 
 

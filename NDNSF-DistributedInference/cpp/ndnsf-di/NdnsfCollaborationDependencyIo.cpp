@@ -214,8 +214,12 @@ operationForEdge(const GroupCapabilityV1& capability,
 bool
 dependencyObjectTraceEnabled()
 {
-  return std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr ||
-         std::getenv("NDNSF_DI_DEPENDENCY_OBJECT_TRACE") != nullptr;
+  const auto enabled = [] (const char* key) {
+    const auto* value = std::getenv(key);
+    return value != nullptr && *value != '\0' && *value != '0';
+  };
+  return enabled("NDNSF_DI_RUNTIME_TIMING") ||
+         enabled("NDNSF_DI_DEPENDENCY_OBJECT_TRACE");
 }
 
 std::uint64_t
@@ -364,7 +368,8 @@ NdnsfCollaborationDependencyIo::NdnsfCollaborationDependencyIo(
   std::size_t maxSegmentSize,
   int freshnessMs,
   std::shared_ptr<ProviderGroupCoordinator> groupCoordinator,
-  std::shared_ptr<ProtectedRuntime> protectedRuntime)
+  std::shared_ptr<ProtectedRuntime> protectedRuntime,
+  std::size_t prefetchWorkerCount)
   : m_ctx(ctx)
   , m_fetchTimeoutMs(fetchTimeoutMs)
   , m_maxSegmentSize(maxSegmentSize)
@@ -372,6 +377,19 @@ NdnsfCollaborationDependencyIo::NdnsfCollaborationDependencyIo(
   , m_groupCoordinator(std::move(groupCoordinator))
   , m_protectedRuntime(std::move(protectedRuntime))
 {
+  if (prefetchWorkerCount != 0) {
+    m_prefetchWorkers = std::make_unique<ndn_service_framework::BoundedWorkerPool>(
+      "DI dependency prefetch", prefetchWorkerCount);
+    m_prefetchWorkers->setThreadCount(prefetchWorkerCount);
+  }
+}
+
+NdnsfCollaborationDependencyIo::~NdnsfCollaborationDependencyIo()
+{
+  if (m_prefetchWorkers) {
+    cancelPendingPrefetches();
+    drainPendingPrefetches();
+  }
 }
 
 std::future<TensorBundle>
@@ -414,9 +432,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
     catch (...) {
     }
   };
-  auto result = std::async(std::launch::async,
-                           [this, sessionId, edge, cancelled,
-                            reportFirstRead] {
+  auto fetch = [this, sessionId, edge, cancelled, reportFirstRead] {
    try {
     if (cancelled->load(std::memory_order_acquire)) {
       throw std::runtime_error("dependency prefetch was cancelled");
@@ -1260,7 +1276,34 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
      reportFirstRead(std::current_exception());
      throw;
    }
-  });
+  };
+  if (!m_prefetchWorkers) {
+    auto result = std::async(std::launch::async, std::move(fetch));
+    return {std::move(result), std::move(firstReadStarted)};
+  }
+  auto resultPromise = std::make_shared<std::promise<TensorBundle>>();
+  auto result = resultPromise->get_future();
+  try {
+    const bool accepted = m_prefetchWorkers->post(
+      [fetch = std::move(fetch), resultPromise, reportFirstRead] () mutable {
+        try {
+          resultPromise->set_value(fetch());
+        }
+        catch (...) {
+          const auto error = std::current_exception();
+          reportFirstRead(error);
+          resultPromise->set_exception(error);
+        }
+      });
+    if (!accepted) {
+      throw std::runtime_error("dependency prefetch worker queue is full or stopped");
+    }
+  }
+  catch (...) {
+    const auto error = std::current_exception();
+    reportFirstRead(error);
+    resultPromise->set_exception(error);
+  }
   return {std::move(result), std::move(firstReadStarted)};
 }
 
@@ -1278,6 +1321,14 @@ NdnsfCollaborationDependencyIo::cancelPendingPrefetches() noexcept
 {
   m_pendingPrefetchCancelled->store(true, std::memory_order_release);
   // Existing exact-fetch cancellation polling owns the Face handles.
+}
+
+void
+NdnsfCollaborationDependencyIo::drainPendingPrefetches() noexcept
+{
+  if (m_prefetchWorkers) {
+    m_prefetchWorkers->shutdown();
+  }
 }
 
 void

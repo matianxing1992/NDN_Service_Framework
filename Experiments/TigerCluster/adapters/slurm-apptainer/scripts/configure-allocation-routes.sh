@@ -1,6 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+if [[ ${1:-} == --deployment ]]; then
+  [[ ${3:-} == --control-python && ${4:-} == /* && -x ${4:-} ]] || {
+    echo DEPLOYMENT_CONTROL_PYTHON_REQUIRED >&2; exit 2;
+  }
+  deployment=$2; control_python=$4; shift 4
+  exec "$control_python" -I -m ndnsf_distributed_inference.ops.allocation \
+    --deployment "$deployment" --routes-only "$@"
+fi
+
 usage() { echo "usage: $0 --process-map FILE --evidence DIR" >&2; exit 2; }
 process_map= evidence=
 while (($#)); do

@@ -478,6 +478,9 @@ namespace ndn_service_framework{
                 std::map<CollaborationRole, ndn::Name> roleProviders;
                 ndn::Buffer artifactPayload;
                 std::string selectionDigest;
+                // Core sets this only after validating the Selection's event
+                // key grant. It is runtime authority, never assignment wire.
+                bool ownsStreamTerminal = false;
                 // Runtime-only dispatch authority; never decoded from the
                 // opaque assignment or serialized to the network.
                 std::chrono::steady_clock::time_point workDeadline =
@@ -791,8 +794,9 @@ namespace ndn_service_framework{
                 void publishFinalResponse(const ndn::Buffer& payload);
                 /**
                  * Publish a terminal unary failure while preserving an
-                 * application payload for the requester callback. Streamed
-                 * collaborations must use failStream() instead.
+                 * application payload for the requester callback. Selected
+                 * nonterminal stream roles may report failures here; the
+                 * stream terminal owner must use failStream() instead.
                  */
                 void publishFinalFailureResponse(const ndn::Buffer& payload,
                                                  const std::string& errorInfo);

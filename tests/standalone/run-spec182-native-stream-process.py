@@ -157,7 +157,7 @@ for dirname,_ in provider_dirs:
 # input bundle
 payload=struct.pack('<q',3); outb=b'NDITB001'+struct.pack('<I',1)+struct.pack('<I',9)+b'input_ids'+struct.pack('<I',3)+struct.pack('<I',2)+struct.pack('<q',1)+struct.pack('<q',1)+struct.pack('<Q',len(payload))+payload;(run_root/'requester/input.bin').write_bytes(outb)
 # launch env
-base=os.environ.copy(); base.update({'NDN_CLIENT_TRANSPORT':'unix://'+str(nfd_socket),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin','NDNSF_CONTROLLER_GENERATION_STATE':str(run_root/'shared/controller-generation.state'),'NDN_LOG':'ndn_service_framework.*=TRACE','NDNSF_DI_RUNTIME_TIMING':'1'})
+base=os.environ.copy(); base.update({'NDN_CLIENT_TRANSPORT':'unix://'+str(nfd_socket),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin','NDNSF_CONTROLLER_GENERATION_STATE':str(run_root/'shared/controller-generation.state'),'NDN_LOG':'ndn_service_framework.*=TRACE:ndnsf.di.NativeRequester=WARN','NDNSF_DI_RUNTIME_TIMING':'1'})
 def launch(cmd,env,name):
  p=b.run(cmd,env,run_root/(name+'.log'),wait=False)
  (run_root/(name+'.pid')).write_text(str(p.pid)+'\n')

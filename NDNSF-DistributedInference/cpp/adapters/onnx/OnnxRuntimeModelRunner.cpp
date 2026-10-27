@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/CudaDeviceIdentity.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
@@ -19,6 +20,68 @@
 
 namespace ndnsf::di {
 namespace {
+
+class ScopedBackendExecutionTiming
+{
+public:
+  ScopedBackendExecutionTiming(NativeRuntimeMetrics& metrics,
+                               const RoleExecutionContext& context) noexcept
+  {
+    try {
+      if (!metrics.lastBackendExecution) metrics.lastBackendExecution.emplace();
+      auto& timing = *metrics.lastBackendExecution;
+      if (!timing.identity || !timing.identity->matches(context)) {
+        auto identity = std::make_shared<NativeBackendExecutionIdentity>();
+        identity->requestId = context.requestId;
+        identity->sessionId = context.sessionId;
+        identity->role = context.role;
+        identity->providerBootId = context.providerBootId;
+        identity->attemptEpoch = context.attemptEpoch;
+        timing.identity = std::move(identity);
+      }
+      timing.inferenceEpoch = context.inferenceEpoch;
+      timing.completed = false;
+      timing.finishedSteadyNs = 0;
+      timing.finishedProcessCpuNs = -1;
+      timing.finishedThreadCpuNs = -1;
+      timing.startedProcessCpuNs = detail::nativeProcessCpuTimeNs();
+      timing.startedThreadCpuNs = detail::nativeThreadCpuTimeNs();
+      timing.startedSteadyNs = steadyTimeNs();
+      m_timing = &timing;
+    }
+    catch (...) {
+      // A diagnostic identity allocation must not replace backend execution.
+      metrics.lastBackendExecution.reset();
+    }
+  }
+
+  ~ScopedBackendExecutionTiming()
+  {
+    if (m_timing == nullptr) return;
+    m_timing->finishedSteadyNs = steadyTimeNs();
+    m_timing->finishedThreadCpuNs = detail::nativeThreadCpuTimeNs();
+    m_timing->finishedProcessCpuNs = detail::nativeProcessCpuTimeNs();
+  }
+
+  void
+  complete() noexcept
+  {
+    if (m_timing != nullptr) m_timing->completed = true;
+  }
+
+  ScopedBackendExecutionTiming(const ScopedBackendExecutionTiming&) = delete;
+  ScopedBackendExecutionTiming& operator=(const ScopedBackendExecutionTiming&) = delete;
+
+private:
+  static std::int64_t
+  steadyTimeNs() noexcept
+  {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+
+  NativeBackendExecutionTiming* m_timing = nullptr;
+};
 
 std::string
 runnerMetadataValue(const NativeModelRunnerSpec& spec,
@@ -1271,7 +1334,10 @@ OnnxRuntimeModelRunner::warmup()
     const std::string inputName(name.get());
     auto typeInfo = m_impl->session.GetInputTypeInfo(index);
     auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
-    const auto symbolicDimensions = tensorInfo.GetSymbolicDimensions();
+    std::vector<const char*> symbolicDimensions(tensorInfo.GetDimensionsCount());
+    if (!symbolicDimensions.empty()) {
+      tensorInfo.GetSymbolicDimensions(symbolicDimensions.data(), symbolicDimensions.size());
+    }
     std::vector<std::string> symbolicDimensionNames;
     symbolicDimensionNames.reserve(symbolicDimensions.size());
     for (const auto* symbolic : symbolicDimensions) {
@@ -1458,7 +1524,10 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     const auto& inputName = inputNames[i];
     auto typeInfo = m_impl->session.GetInputTypeInfo(i);
     auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
-    const auto symbolicDimensions = tensorInfo.GetSymbolicDimensions();
+    std::vector<const char*> symbolicDimensions(tensorInfo.GetDimensionsCount());
+    if (!symbolicDimensions.empty()) {
+      tensorInfo.GetSymbolicDimensions(symbolicDimensions.data(), symbolicDimensions.size());
+    }
     std::vector<std::string> symbolicDimensionNames;
     symbolicDimensionNames.reserve(symbolicDimensions.size());
     for (const auto* symbolic : symbolicDimensions) {
@@ -1691,10 +1760,14 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     }
     logRuntimePhase("di-provider", "ortRunBegin", effectiveContext.requestId,
                     phaseAttempt, phaseFields);
-    m_impl->session.Run(Ort::RunOptions{nullptr}, *ioBinding);
-    // The engine interval ends only when device outputs are ready. Leaving
-    // synchronization outside it misattributes inference wait to DI work.
-    ioBinding->SynchronizeOutputs();
+    {
+      ScopedBackendExecutionTiming timing(m_impl->runtimeMetrics, effectiveContext);
+      m_impl->session.Run(Ort::RunOptions{nullptr}, *ioBinding);
+      // The engine interval ends only when device outputs are ready. Leaving
+      // synchronization outside it misattributes inference wait to DI work.
+      ioBinding->SynchronizeOutputs();
+      timing.complete();
+    }
     logRuntimePhase("di-provider", "ortRunEnd", effectiveContext.requestId,
                     phaseAttempt, phaseFields);
     outputs = ioBinding->GetOutputValues();
@@ -1707,13 +1780,17 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     }
     logRuntimePhase("di-provider", "ortRunBegin", effectiveContext.requestId,
                     phaseAttempt, phaseFields);
-    outputs = m_impl->session.Run(
-      Ort::RunOptions{nullptr},
-      inputNamePtrs.data(),
-      inputValues.data(),
-      inputValues.size(),
-      outputNamePtrs.data(),
-      outputNamePtrs.size());
+    {
+      ScopedBackendExecutionTiming timing(m_impl->runtimeMetrics, effectiveContext);
+      outputs = m_impl->session.Run(
+        Ort::RunOptions{nullptr},
+        inputNamePtrs.data(),
+        inputValues.data(),
+        inputValues.size(),
+        outputNamePtrs.data(),
+        outputNamePtrs.size());
+      timing.complete();
+    }
     logRuntimePhase("di-provider", "ortRunEnd", effectiveContext.requestId,
                     phaseAttempt, phaseFields);
   }
@@ -2046,7 +2123,10 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
     auto typeInfo = m_impl->session.GetInputTypeInfo(inputIndex);
     auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
     const auto elementType = fromOnnxElementType(tensorInfo.GetElementType());
-    const auto symbolicDimensions = tensorInfo.GetSymbolicDimensions();
+    std::vector<const char*> symbolicDimensions(tensorInfo.GetDimensionsCount());
+    if (!symbolicDimensions.empty()) {
+      tensorInfo.GetSymbolicDimensions(symbolicDimensions.data(), symbolicDimensions.size());
+    }
     std::vector<std::string> symbolicDimensionNames;
     symbolicDimensionNames.reserve(symbolicDimensions.size());
     for (const auto* symbolic : symbolicDimensions) {

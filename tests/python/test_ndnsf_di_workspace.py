@@ -67,6 +67,29 @@ class WorkspaceTests(unittest.TestCase):
             with MODULE.workspace(pathlib.Path('/dev/shm'), 'build'):
                 pass
 
+    def test_memory_filesystems_preserve_existing_work(self):
+        with tempfile.TemporaryDirectory() as private:
+            root = pathlib.Path(private) / 'slots'
+            with MODULE.workspace(root, 'build') as (work, _):
+                (work / 'keep').write_text('retained')
+            original = pathlib.Path.read_text
+            for filesystem in ('rootfs', 'ramfs', 'tmpfs'):
+                def read(path, *args, **kwargs):
+                    if path == pathlib.Path('/proc/self/mountinfo'):
+                        return f'1 0 0:1 / / rw - {filesystem} none rw\n'
+                    return original(path, *args, **kwargs)
+                with self.subTest(filesystem=filesystem), mock.patch.object(pathlib.Path, 'read_text', read):
+                    with self.assertRaisesRegex(ValueError, 'WORKSPACE_REQUIRES_DISK_NOT_'):
+                        with MODULE.workspace(root, 'build'):
+                            pass
+                self.assertEqual((work / 'keep').read_text(), 'retained')
+
+    def test_specific_disk_mount_overrides_memory_root(self):
+        mountinfo = ('1 0 0:1 / / rw - rootfs rootfs rw\n'
+                     '2 1 8:1 / /tmp rw - xfs /dev/test rw\n')
+        with mock.patch.object(pathlib.Path, 'read_text', return_value=mountinfo):
+            MODULE.reject_memory_filesystem(pathlib.Path('/tmp/private/work'))
+
     def test_orphaned_process_blocks_reset_after_parent_lease_closes(self):
         with tempfile.TemporaryDirectory() as private:
             root = pathlib.Path(private) / 'slots'
@@ -88,7 +111,8 @@ class WorkspaceTests(unittest.TestCase):
             root = pathlib.Path(private) / 'slots'
             with MODULE.workspace(root, 'build') as (work, _):
                 (work / 'keep').write_text('mounted')
-            mountinfo = f'99 1 8:5 / {work}/nested rw - ext4 /dev/test rw\n'
+            mountinfo = ('1 0 8:5 / / rw - ext4 /dev/test rw\n'
+                         f'99 1 8:5 / {work}/nested rw - ext4 /dev/test rw\n')
             original = pathlib.Path.read_text
             def read(path, *args, **kwargs):
                 if path == pathlib.Path('/proc/self/mountinfo'):

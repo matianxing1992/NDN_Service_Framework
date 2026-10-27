@@ -14,6 +14,7 @@
 #include "ndn-service-framework/OperationRuntime.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/common.hpp"
+#include "ndn-service-framework/controller-certificate.hpp"
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
@@ -2111,10 +2112,10 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
     }
     const auto requesterIdentity = coreOwner->keyChain->createIdentity(
       ndn::Name(primary.requesterIdentity), ndn::RsaKeyParams(2048));
-    const auto authorityIdentity = coreOwner->keyChain->createIdentity(
-      ndn::Name(primary.coreAuthorityIdentity), ndn::RsaKeyParams(2048));
     coreOwner->requesterCertificate = requesterIdentity.getDefaultKey().getDefaultCertificate();
-    coreOwner->authorityCertificate = authorityIdentity.getDefaultKey().getDefaultCertificate();
+    coreOwner->authorityCertificate = ndn_service_framework::loadControllerCertificate(
+      *coreOwner->keyChain, ndn::Name(primary.coreAuthorityIdentity),
+      std::getenv("NDNSF_CONTROLLER_CERT_FILE"));
     coreOwner->requesterPrivateKey = primary.requesterPrivateKey;
     coreOwner->authorityPublicKey = primary.authorityPublicKey;
   }

@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 #include <cstdlib>
 #include <unistd.h>
 
@@ -146,6 +147,50 @@ void ExecutionEvidence::validate() const
   }
 }
 
+const ExecutionEvidence::NodeProviderAssignments&
+ExecutionEvidence::getNodeProviderAssignments() const noexcept
+{
+  static const NodeProviderAssignments empty;
+  return m_nodeProviderAssignments ? *m_nodeProviderAssignments : empty;
+}
+
+void
+ExecutionEvidence::setNodeProviderAssignments(const NodeProviderAssignments& assignments)
+{
+  if (assignments.empty()) {
+    m_nodeProviderAssignments.reset();
+    return;
+  }
+  auto replacement = std::make_shared<const NodeProviderAssignments>(assignments);
+  m_nodeProviderAssignments.swap(replacement);
+}
+
+void
+ExecutionEvidence::concatenateNodeProviderAssignments(
+  const std::vector<std::reference_wrapper<const NodeProviderAssignments>>& groups)
+{
+  NodeProviderAssignments combined;
+  std::size_t total = 0;
+  for (const auto& group : groups) {
+    const auto count = group.get().size();
+    if (count > combined.max_size() - total) {
+      throw std::length_error("execution evidence node inventory exceeds vector capacity");
+    }
+    total += count;
+  }
+  if (total == 0) {
+    m_nodeProviderAssignments.reset();
+    return;
+  }
+  combined.reserve(total);
+  for (const auto& group : groups) {
+    const auto& assignments = group.get();
+    combined.insert(combined.end(), assignments.begin(), assignments.end());
+  }
+  auto replacement = std::make_shared<const NodeProviderAssignments>(std::move(combined));
+  m_nodeProviderAssignments.swap(replacement);
+}
+
 void bindExecutionObservation(ExecutionEvidence& evidence,
                               const std::string& requestId,
                               std::uint64_t attemptEpoch, bool cacheHit)
@@ -184,7 +229,7 @@ std::string executionEvidenceToJson(const ExecutionEvidence& evidence)
   root.add_child("artifactDigests", artifacts);
   root.add_child("roles", stringArray(evidence.roles));
   ptree assignments;
-  for (const auto& value : evidence.nodeProviderAssignments) {
+  for (const auto& value : evidence.getNodeProviderAssignments()) {
     ptree item;
     item.put("role", value.role);
     item.put("nodeName", value.nodeName);
@@ -239,14 +284,16 @@ ExecutionEvidence executionEvidenceFromJson(const std::string& json)
   }
   evidence.roles = readStringArray(root, "roles");
   if (const auto assignments = root.get_child_optional("nodeProviderAssignments")) {
+    ExecutionEvidence::NodeProviderAssignments values;
     for (const auto& item : assignments.get()) {
-      evidence.nodeProviderAssignments.push_back({
+      values.push_back({
         item.second.get<std::string>("role", ""),
         item.second.get<std::string>("nodeName", ""),
         item.second.get<std::string>("provider", ""),
         item.second.get<bool>("modelNode", true),
       });
     }
+    evidence.setNodeProviderAssignments(values);
   }
   evidence.cpuFallbackUsed = root.get<bool>("cpuFallbackUsed", false);
   evidence.loadCompleted = root.get<bool>("loadCompleted", false);
@@ -304,7 +351,7 @@ applyOnnxRuntimeProviderProfile(ExecutionEvidence& evidence,
   if (assignments.empty()) {
     throw std::runtime_error("ONNX Runtime provider profile contains no model-node assignments");
   }
-  evidence.nodeProviderAssignments = std::move(assignments);
+  evidence.setNodeProviderAssignments(assignments);
   evidence.cpuFallbackUsed = cpuFallbackUsed;
   evidence.gpuUuid = gpuUuid;
   if (!gpuUuid.empty()) {

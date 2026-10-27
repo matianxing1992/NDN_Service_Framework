@@ -284,6 +284,16 @@ struct NativeOnnxWorkerLocation
 };
 
 /**
+ * Resolve the configured installed worker, or the authoritative absolute
+ * NDNSF_DI_WORKER_BINARY override, and capture its streamed SHA256 identity.
+ * Never search the working directory or a checkout. An absent default returns
+ * an empty location; invalid files and invalid overrides throw
+ * DI_NATIVE_ONNX_WORKER_PREFLIGHT. Spawn revalidates the captured identity.
+ */
+NativeOnnxWorkerLocation
+resolveNativeOnnxWorkerLocation();
+
+/**
  * Register the process-global fixed worker location (test identities must be
  * registered before any spawn; production provider registers its installed
  * binary once at startup).  Preflight failure (unreadable/empty path or an

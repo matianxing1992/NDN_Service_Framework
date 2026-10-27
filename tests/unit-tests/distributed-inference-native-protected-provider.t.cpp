@@ -172,6 +172,33 @@ BOOST_FIXTURE_TEST_CASE(NativeProtectedCredentialsRejectUnknownProvider, NativeC
                     std::runtime_error);
 }
 
+BOOST_FIXTURE_TEST_CASE(NativeProtectedCredentialsMatchNameAcrossUriFormats, NativeCredentialFixture)
+{
+  writeRecipient(EVP_PKEY_ED25519);
+  for (const auto& mapName : {"/test/provider", "/8=test/8=provider"}) {
+    boost::property_tree::ptree mapping, path;
+    path.put_value((root / "recipient.pem").string());
+    mapping.push_back({mapName, path});
+    boost::property_tree::write_json((root / "recipients.json").string(), mapping);
+    for (const auto& queryName : {"/test/provider", "/8=test/8=provider"}) {
+      const auto config = loadNativeProtectedGrantConfig(queryName, "YOLO26n", "protected-v1");
+      BOOST_CHECK(config.recipientKey.kind == NativeRecipientKey::Kind::Ed25519Seed);
+      BOOST_CHECK_EQUAL(config.recipientKey.material.size(), 32);
+    }
+  }
+}
+
+BOOST_FIXTURE_TEST_CASE(NativeProtectedCredentialsRejectDuplicateNameAliases, NativeCredentialFixture)
+{
+  writeRecipient(EVP_PKEY_ED25519);
+  boost::property_tree::ptree mapping, path;
+  path.put_value((root / "recipient.pem").string());
+  mapping.push_back({"/test/provider", path});
+  mapping.push_back({"/8=test/8=provider", path});
+  boost::property_tree::write_json((root / "recipients.json").string(), mapping);
+  BOOST_CHECK_THROW(load(), std::runtime_error);
+}
+
 BOOST_AUTO_TEST_CASE(NativeProtectedRegistryFamilyMatchesOperatorModelNamespace)
 {
   BOOST_CHECK_EQUAL(nativeProtectedModelFamily("/Model/YOLO26n"), "YOLO26n");

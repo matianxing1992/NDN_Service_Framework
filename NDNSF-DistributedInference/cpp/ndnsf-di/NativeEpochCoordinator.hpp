@@ -167,6 +167,9 @@ struct NativeEpochCoordinatorResult
   std::optional<RoleSpec> finalizedRole;
   std::vector<CacheObservation> cacheObservations;
   std::vector<RuntimeMetricsObservation> runtimeMetrics;
+  // The final successful native call's existing observation, never a warmup
+  // or a claim reconstructed from the assigned device. Owned once per request.
+  std::optional<ExecutionEvidence> finalExecutionEvidence;
 };
 
 NativeEpochCoordinatorResult

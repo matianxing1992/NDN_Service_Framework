@@ -1,38 +1,5 @@
 top = '..'
 
-import os
-import subprocess
-import sys
-
-
-def _install_py_repoclient(bld):
-    if bld.cmd != 'install':
-        return
-    repo_root = bld.path.find_dir('NDNSF-DistributedRepo')
-    wrapper = repo_root.find_dir('pythonWrapper') if repo_root is not None else None
-    if wrapper is None:
-        return
-    # Development convenience only: an editable pip install into the caller's
-    # Python environment must never fail a staged-prefix install (its setup.py
-    # links against the current Waf build dir, which is config-specific).
-    # Skip it explicitly with NDNSF_SKIP_DEV_PIP_INSTALL=1.
-    if os.environ.get('NDNSF_SKIP_DEV_PIP_INSTALL') == '1':
-        bld.to_log('Skipping dev pip install of pythonWrapper '
-                   '(NDNSF_SKIP_DEV_PIP_INSTALL=1)\n')
-        return
-    bld.to_log('Installing py_repoclient with pip\n')
-    try:
-        subprocess.check_call([
-            sys.executable,
-            '-m',
-            'pip',
-            'install',
-            '-e',
-            wrapper.abspath(),
-        ])
-    except subprocess.CalledProcessError as error:
-        bld.to_log('Dev pip install of pythonWrapper failed (rc=%s); '
-                   'continuing staged install\n' % error.returncode)
 
 
 def build(bld):
@@ -91,6 +58,7 @@ def build(bld):
     bld.program(name='DistributedRepoServer',
                 target='DistributedRepoServer',
                 source=['apps/DistributedRepoServer.cpp'],
+                rpath=[bld.env.LIBDIR],
                 includes=['include', '..'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
                 install_path='${BINDIR}')
@@ -101,7 +69,6 @@ def build(bld):
                 includes=['include', '..'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
                 install_path=None)
-
     bld.program(name='DistributedRepoSmoke',
                 target='DistributedRepoSmoke',
                 source=['examples/DistributedRepoSmoke.cpp'],
@@ -152,5 +119,3 @@ def build(bld):
                 includes=['include', '..'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
                 install_path=None)
-
-    bld.add_post_fun(_install_py_repoclient)

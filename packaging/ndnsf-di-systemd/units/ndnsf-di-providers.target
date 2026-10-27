@@ -1,7 +1,7 @@
 [Unit]
 Description=NDNSF-DI provider target
-After=ndnsf-di-controller.target
-Requires=ndnsf-di-controller.target
+After=network-online.target nfd.service
+Requires=nfd.service
 
 [Install]
 WantedBy=multi-user.target

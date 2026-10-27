@@ -1,6 +1,8 @@
 #include "tests/boost-test.hpp"
 #include "ndn-service-framework/common.hpp"
 
+#include <boost/asio/post.hpp>
+
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/validity-period.hpp>
@@ -143,7 +145,23 @@ writeSchema(const IsolatedPib& isolation, const ndn::security::Certificate& root
   id "certificate chain"
   for data
   filter { type name regex ^<>+<KEY|8=KEY><><><>$ }
-  checker { type hierarchical sig-type rsa-sha256 }
+  checker
+  {
+    type customized
+    sig-type rsa-sha256
+    key-locator
+    {
+      type name
+      hyper-relation
+      {
+        k-regex ^(<>*)<KEY|8=KEY><>{1,3}$
+        k-expand \\1
+        h-relation is-prefix-of
+        p-regex ^(<>*)$
+        p-expand \\1
+      }
+    }
+  }
 }
 rule
 {
@@ -319,6 +337,88 @@ BOOST_AUTO_TEST_CASE(ValidChainAndRepeatedDataUseTheConfiguredRoot)
     BOOST_CHECK_EQUAL(result.success, 1U);
     BOOST_CHECK_EQUAL(result.failure, 0U);
   }
+}
+
+BOOST_AUTO_TEST_CASE(FaceOwnedCachedValidationRetainsSecurityAndGeneralDeferral)
+{
+  Fixture fixture;
+  const auto chain = makeChain(fixture.keys);
+  const auto schema = writeSchema(fixture.isolation, chain.root);
+  auto validator = std::make_shared<MessageValidator>(schema.string(), std::nullopt,
+                                                     &fixture.face);
+  auto valid = makeData(fixture.keys, chain.actor);
+  const auto warmed = validate(fixture.face, *validator, valid,
+                               {chain.actor, chain.ca, chain.root});
+  BOOST_REQUIRE_EQUAL(warmed.success, 1U);
+  const auto interestsBefore = fixture.face.sentInterests.size();
+  auto tampered = valid;
+  tampered.setContent("changed-after-signing");
+  auto wrongNamespace = makeData(fixture.keys, chain.actor, ndn::Name("/foreign/NDNSF/STATUS"));
+  auto packets = std::make_shared<std::vector<ndn::Data>>(
+    std::initializer_list<ndn::Data>{valid, tampered, wrongNamespace});
+  struct ProbeState
+  {
+    std::size_t success = 0;
+    std::size_t failure = 0;
+    std::size_t inlineCallbacks = 0;
+    std::size_t generalSuccess = 0;
+    std::size_t generalFailure = 0;
+    bool faceOwned = false;
+    bool generalDeferred = false;
+    bool returned = false;
+  };
+  auto state = std::make_shared<ProbeState>();
+  boost::asio::post(fixture.io,
+    [state, validator, packets, executor = fixture.io.get_executor()] {
+      state->faceOwned = executor.running_in_this_thread();
+      for (const auto& packet : *packets) {
+        const auto before = state->success + state->failure;
+        validator->validateDataOnFace(packet,
+          [state] (const ndn::Data&) { ++state->success; },
+          [state] (const ndn::Data&, const ndn::security::ValidationError&) {
+            ++state->failure;
+          });
+        state->inlineCallbacks += state->success + state->failure - before;
+      }
+      validator->validate(packets->front(),
+        [state] (const ndn::Data&) { ++state->generalSuccess; },
+        [state] (const ndn::Data&, const ndn::security::ValidationError&) {
+          ++state->generalFailure;
+        });
+      state->generalDeferred = state->generalSuccess + state->generalFailure == 0;
+      state->returned = true;
+    });
+  for (int attempt = 0; attempt < 250 &&
+       (!state->returned || state->generalSuccess + state->generalFailure == 0); ++attempt) {
+    fixture.face.processEvents(ndn::time::milliseconds(2));
+  }
+  BOOST_REQUIRE(state->returned);
+  BOOST_CHECK(state->faceOwned);
+  BOOST_CHECK_EQUAL(state->inlineCallbacks, 3U);
+  BOOST_CHECK_EQUAL(state->success, 1U);
+  BOOST_CHECK_EQUAL(state->failure, 2U);
+  BOOST_CHECK(state->generalDeferred);
+  BOOST_CHECK_EQUAL(state->generalSuccess, 1U);
+  BOOST_CHECK_EQUAL(state->generalFailure, 0U);
+  BOOST_CHECK_EQUAL(fixture.face.sentInterests.size(), interestsBefore);
+}
+
+BOOST_AUTO_TEST_CASE(CertificateHierarchyRejectsSigningAnAncestor)
+{
+  Fixture fixture;
+  const auto chain = makeChain(fixture.keys);
+  const auto schema = writeSchema(fixture.isolation, chain.root);
+  auto validator = std::make_shared<MessageValidator>(schema.string(), std::nullopt,
+                                                     &fixture.face);
+  const auto ca = fixture.keys.getPib().getIdentity(ndn::Name(CA));
+  ndn::security::MakeCertificateOptions options;
+  options.issuerId = ndn::name::Component("child-issued");
+  const auto invalidCa = fixture.keys.makeCertificate(ca.getDefaultKey(),
+    ndn::security::signingByCertificate(chain.actor), options);
+  const auto result = validate(fixture.face, *validator, invalidCa,
+                               {chain.actor, chain.ca, chain.root});
+  BOOST_CHECK_EQUAL(result.success, 0U);
+  BOOST_CHECK_EQUAL(result.failure, 1U);
 }
 
 BOOST_AUTO_TEST_CASE(UnknownRootInLocalPibIsRejected)

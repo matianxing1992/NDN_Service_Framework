@@ -1,15 +1,19 @@
 #include "ndnsf-distributed-repo/PersistentRepoServerConfig.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
+#include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndn-service-framework/controller-certificate.hpp"
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -62,14 +66,13 @@ main(int argc, char* argv[])
     auto providerIdentity = keyChain.getPib().getIdentity(config.providerIdentity);
     keyChain.setDefaultIdentity(providerIdentity);
     const auto providerCert = getDefaultCertificate(keyChain, config.providerIdentity);
-    const auto authorityCert = getDefaultCertificate(keyChain, config.authorityIdentity);
+    const auto authorityCert = ndn_service_framework::loadControllerCertificate(
+      keyChain, config.authorityIdentity, std::getenv("NDNSF_CONTROLLER_CERT_FILE"));
 
     std::filesystem::create_directories(config.databasePath.parent_path());
     ndnsf_distributed_repo::StorageCapability capability;
     capability.repoNode = config.repoNode;
     capability.repoMode = "persistent";
-    capability.freeBytes =
-      std::filesystem::space(config.databasePath.parent_path()).available;
     capability.failureDomain = config.failureDomain;
 
     const auto repoStoreRoot = config.databasePath.string() + ".store";
@@ -79,6 +82,11 @@ main(int argc, char* argv[])
         config.largeObjectThresholdBytes,
         config.repoNode + "|" + config.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE)),
       config.memoryCacheBytes, "filesystem", config.largeObjectThresholdBytes);
+    // Filesystem availability already excludes the persistent store's bytes.
+    // RepoCore accepts total capacity as freeBytes + usedBytes on startup.
+    capability.usedBytes = repoStore->usedBytes();
+    capability.freeBytes =
+      std::filesystem::space(config.databasePath.parent_path()).available;
 
     ndn_service_framework::CertificatePublisher certificatePublisher(
       face, keyChain, providerCert.getName());
@@ -113,6 +121,26 @@ main(int argc, char* argv[])
     std::cout << "Persistent Repo serving " << repo->servicePrefix()
               << " as " << config.repoNode << " using "
               << repoStoreRoot << std::endl;
+    if (std::getenv("NDNSF_DEPLOYMENT_BOOT_ID") != nullptr) {
+      // The manager's fresh owned log binds this marker to its PID/launch.
+      // Construction alone does not prove Controller permission or NAC readiness.
+      const auto ready = [&] {
+        return provider.isRequestDecryptionReady() &&
+          provider.hasProviderPermissionForService(
+            ndnsf_distributed_repo::makeRepoServiceName(config.servicePrefix, "STORE")) &&
+          provider.hasProviderPermissionForService(
+            ndnsf_distributed_repo::makeRepoServiceName(config.servicePrefix, "FETCH")) &&
+          provider.hasProviderPermissionForService(
+            ndnsf_distributed_repo::makeRepoServiceName(config.servicePrefix, "STATUS"));
+      };
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+      while (!ready() && std::chrono::steady_clock::now() < deadline)
+        face.processEvents(ndn::time::milliseconds(20));
+      if (!ready())
+        throw std::runtime_error("Repo permission/decryption readiness deadline exceeded");
+      std::cout << "NDNSF_REPO_READY identity="
+                << config.providerIdentity.toUri(ndn::name::UriFormat::CANONICAL) << std::endl;
+    }
     face.processEvents();
     return 0;
   }

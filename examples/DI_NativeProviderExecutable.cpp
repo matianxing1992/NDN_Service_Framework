@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/deployment-readiness.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/execution-evidence-aggregation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp"
@@ -21,14 +22,18 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRunnerReuseCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/cuda-device-memory.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/runtime-logging.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/statistics-file.hpp"
 
 #include "ndn-service-framework/CertificateBootstrap.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndn-service-framework/controller-certificate.hpp"
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
@@ -190,30 +195,6 @@ providerExecutableArtifactKey(const NativeSelectionProjectionV3& projection,
     projection.provider.empty() ? providerIdentity : projection.provider};
 }
 
-std::string
-formatExecutionEvidenceUpdateSummary(const ExecutionEvidence& evidence)
-{
-  std::ostringstream record;
-  record << "NDNSF_DI_EXECUTION_EVIDENCE_UPDATE"
-         << " provider=" << evidence.providerName
-         << " evidenceEpoch=" << evidence.evidenceEpoch
-         << " runnerKind=" << toString(evidence.runnerKind)
-         << " realCompute=" << (evidence.realCompute ? "true" : "false")
-         << " loadCompleted=" << (evidence.loadCompleted ? "true" : "false")
-         << " warmupCompleted=" << (evidence.warmupCompleted ? "true" : "false")
-         << " executionCompleted=" << (evidence.executionCompleted ? "true" : "false")
-         << " exactForwardCacheHit=" << (evidence.exactForwardCacheHit ? "true" : "false")
-         << " roles=" << evidence.roles.size()
-         << " artifacts=" << evidence.artifactDigests.size()
-         << " nodeProviderAssignments=" << evidence.nodeProviderAssignments.size()
-         << " requestId=" << evidence.requestId
-         << " attemptEpoch=" << evidence.attemptEpoch
-         << " profileCaptured=" << (!evidence.providerProfilePath.empty() ? "true" : "false")
-         << " profileRequestId=" << evidence.profileRequestId
-         << " profileAttemptEpoch=" << evidence.profileAttemptEpoch;
-  return record.str();
-}
-
 void
 requestShutdown(int)
 {
@@ -255,6 +236,7 @@ struct Options
   // outside the Selection wire contract and bound to the authenticated
   // tokenizer digest only after Selection.
   std::string tokenizerJson;
+  std::string statisticsFile;
   std::string repoServiceName = "/NDNSF/DistributedRepo";
   int repoFetchTimeoutMs = 30000;
   // This is the complete post-Selection material-fetch plus native-worker
@@ -338,51 +320,6 @@ sha256File(const std::string& path)
     return static_cast<char>(std::tolower(ch));
   });
   return "sha256:" + hex;
-}
-
-// OA02 worker location for post-Selection ONNX assembly.  The provider pins
-// path AND content hash: every spawn re-probes the file and a mismatch fails
-// the request before any fetch.  Resolution honors NDNSF_DI_WORKER_BINARY,
-// then the invocation-directory siblings that a staged install produces.
-// Returns an empty path when no worker is present (the request then fails
-// deterministically with DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING).
-NativeOnnxWorkerLocation
-resolveWorkerLocation()
-{
-  std::vector<std::string> candidates;
-  const char* pinned = std::getenv("NDNSF_DI_WORKER_BINARY");
-  if (pinned != nullptr && *pinned != '\0') {
-    candidates.push_back(pinned);
-  }
-  std::array<char, 4096> selfPath{};
-  const auto linkCount = ::readlink("/proc/self/exe", selfPath.data(),
-                                    selfPath.size() - 1);
-  if (linkCount > 0) {
-    selfPath[linkCount] = '\0';
-    const std::string invocationDir =
-      std::filesystem::path(selfPath.data()).parent_path().string();
-    candidates.push_back(invocationDir + "/DI_NativeOnnxAssemblyWorker");
-    candidates.push_back(
-      (std::filesystem::path(invocationDir).parent_path() /
-       "DI_NativeOnnxAssemblyWorker").string());
-  }
-  candidates.push_back("build-nac182/DI_NativeOnnxAssemblyWorker");
-  candidates.push_back("build/DI_NativeOnnxAssemblyWorker");
-  for (const auto& path : candidates) {
-    std::error_code error;
-    if (std::filesystem::is_regular_file(path, error) && !error) {
-      try {
-        return NativeOnnxWorkerLocation{path, sha256File(path)};
-      }
-      catch (const std::exception&) {
-        return NativeOnnxWorkerLocation{path, ""};
-      }
-    }
-  }
-  logRuntimeWarn("DI_NativeProviderExecutable: no DI_NativeOnnxAssemblyWorker "
-                 "found; onnx post-Selection requests will fail with "
-                 "DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING");
-  return {};
 }
 
 ndn::Buffer
@@ -854,22 +791,8 @@ ndn::security::Certificate
 loadControllerCertificate(const ndn::Name& controller,
                           ndn::KeyChain& keyChain)
 {
-  if (const char* certPath = std::getenv("NDNSF_CONTROLLER_CERT_FILE");
-      certPath != nullptr && *certPath != '\0') {
-    auto cert = ndn::io::load<ndn::security::Certificate>(certPath);
-    if (cert == nullptr || !cert->isValid()) {
-      throw std::runtime_error(
-        "NDNSF_CONTROLLER_CERT_FILE is not a valid certificate: " +
-        std::string(certPath));
-    }
-    if (cert->getIdentity() != controller) {
-      throw std::runtime_error(
-        "NDNSF_CONTROLLER_CERT_FILE identity " + cert->getIdentity().toUri() +
-        " does not match controller " + controller.toUri());
-    }
-    return *cert;
-  }
-  return getOrCreateIdentity(keyChain, controller);
+  return ndn_service_framework::loadControllerCertificate(
+    keyChain, controller, std::getenv("NDNSF_CONTROLLER_CERT_FILE"));
 }
 
 Options
@@ -923,6 +846,9 @@ parseArgs(int argc, char** argv)
     }
     else if (arg == "--tokenizer-json") {
       options.tokenizerJson = readValue();
+    }
+    else if (arg == "--statistics-file") {
+      options.statisticsFile = readValue();
     }
     else if (arg == "--repo-service") {
       options.repoServiceName = readValue();
@@ -1302,6 +1228,7 @@ printUsage(const char* program)
     << "[--artifact-cache-dir <dir>] [--repo-service <service>] "
     << "[--cache-compatibility-source-dir <verified-cache-dir>] "
     << "[--tokenizer-json <path>] "
+    << "[--statistics-file <jsonl-path>] "
     << "[--repo-fetch-timeout-ms <ms>] [--assembly-timeout-ms <ms>] "
     << "[--conversation-retention-ms <1..3600000>] "
     << "[--repo-ack-timeout-ms <ms>] "
@@ -1326,6 +1253,10 @@ main(int argc, char** argv)
     std::signal(SIGINT, requestShutdown);
     std::signal(SIGTERM, requestShutdown);
     auto options = parseArgs(argc, argv);
+    ndnsf::di::detail::configureSynchronousLogging(std::clog);
+    std::shared_ptr<ndnsf::di::detail::StatisticsFile> statisticsOutput;
+    if (!options.statisticsFile.empty())
+      statisticsOutput = std::make_shared<ndnsf::di::detail::StatisticsFile>(options.statisticsFile);
     const auto staleAfter = std::chrono::milliseconds(std::max<std::int64_t>(
       10 * 60 * 1000,
       static_cast<std::int64_t>(options.assemblyTimeoutMs) + 60 * 1000));
@@ -1603,6 +1534,28 @@ main(int argc, char** argv)
       auto executionEvidenceObserver = std::make_shared<
         std::function<void(const ExecutionEvidence&)>>();
       telemetryCollector->start();
+      if (nativeOfferConfig) {
+        const std::weak_ptr<NativeProviderTelemetryCollector> weakTelemetry = telemetryCollector;
+        nativeOfferConfig->observeResources =
+          [weakTelemetry, devices = options.offerDevices] (std::uint64_t nowMs) {
+            const auto telemetry = weakTelemetry.lock();
+            if (!telemetry) throw std::runtime_error("GPU_RESOURCE_OWNER_CLOSED");
+            const auto snapshot = telemetry->snapshot();
+            std::vector<NativeDeviceResourceObservationV3> resources;
+            for (const auto& device : devices) {
+              if (device.rfind("cuda:", 0) != 0)
+                throw std::runtime_error("GPU_RESOURCE_DEVICE_INVALID");
+              const auto text = device.substr(5);
+              std::size_t consumed = 0;
+              const auto ordinal = std::stoi(text, &consumed);
+              if (consumed != text.size() || std::to_string(ordinal) != text)
+                throw std::runtime_error("GPU_RESOURCE_DEVICE_INVALID");
+              resources.push_back(queryCudaDeviceMemory(ordinal, nowMs,
+                std::max<std::uint64_t>(1, snapshot.sequence), snapshot.capacity.activeWorkerCount));
+            }
+            return resources;
+          };
+      }
       provisioningState->setTelemetrySnapshotProvider(
         [telemetryCollector] { return telemetryCollector->snapshot(); });
       if (options.enableAdmissionLease) {
@@ -1852,11 +1805,10 @@ main(int argc, char** argv)
             telemetryCollector->recordStageServiceTime(duration);
           };
           telemetryCollector->refresh();
-          auto executionEvidenceByRole = std::make_shared<
-            std::map<std::string, ExecutionEvidence>>();
+          std::map<std::string, ExecutionEvidence> executionEvidenceByRole;
           for (const auto& item : runtime.executionEvidence) {
             for (const auto& role : item.roles) {
-              (*executionEvidenceByRole)[role] = item;
+              executionEvidenceByRole[role] = item;
             }
           }
           if (!runtime.executionEvidence.empty()) {
@@ -1882,25 +1834,19 @@ main(int argc, char** argv)
               logRuntimeEvidence(record.str());
             }
           }
-          provisioningState->setExecutionEvidenceByRole(*executionEvidenceByRole);
+          provisioningState->setExecutionEvidenceByRole(std::move(executionEvidenceByRole));
           auto executionEvidenceMutex = std::make_shared<std::mutex>();
           auto fullObservationLogged = std::make_shared<bool>(false);
           auto lastObservedProfilePath = std::make_shared<std::string>();
           auto lastObservedProfileRequestId = std::make_shared<std::string>();
           auto lastObservedExecutionCompleted = std::make_shared<bool>(false);
           *executionEvidenceObserver =
-            [executionEvidenceByRole, executionEvidenceMutex, provisioningState,
+            [executionEvidenceMutex, provisioningState,
              fullObservationLogged, lastObservedProfilePath,
              lastObservedProfileRequestId, lastObservedExecutionCompleted]
             (const ExecutionEvidence& observed) {
               std::lock_guard<std::mutex> lock(*executionEvidenceMutex);
-              for (const auto& role : observed.roles) {
-                (*executionEvidenceByRole)[role] = observed;
-              }
-              auto aggregate = aggregateExecutionEvidence(*executionEvidenceByRole);
-              const auto summary = formatExecutionEvidenceUpdateSummary(aggregate);
-              provisioningState->setExecutionEvidence(std::move(aggregate));
-              provisioningState->setExecutionEvidenceByRole(*executionEvidenceByRole);
+              const auto summary = provisioningState->updateExecutionEvidence(observed);
               logRuntimeEvidence(summary);
               const bool fullObservationChanged =
                 !*fullObservationLogged ||
@@ -1928,6 +1874,7 @@ main(int argc, char** argv)
       auto provisionFailed = std::make_shared<std::atomic<bool>>(false);
       auto runLimitReached = std::make_shared<std::atomic<bool>>(false);
       auto provisioningDone = std::make_shared<std::atomic<bool>>(false);
+      auto servicePrerequisitesReady = std::make_shared<std::atomic<bool>>(false);
       auto serveCompletedMutex = std::make_shared<std::mutex>();
       auto serveCompletedCv = std::make_shared<std::condition_variable>();
       auto provisioningDoneMutex = std::make_shared<std::mutex>();
@@ -1950,6 +1897,7 @@ main(int argc, char** argv)
       };
       auto installTask =
         [options,
+         statisticsOutput,
          tensorSegmentBytes,
          plan,
          specs,
@@ -1969,6 +1917,7 @@ main(int argc, char** argv)
          stageServiceTimeObserver,
          executionEvidenceObserver,
          provider,
+         servicePrerequisitesReady,
          providerHost,
          nativeService,
          registrationOut = &nativeRegistration,
@@ -2116,7 +2065,7 @@ main(int argc, char** argv)
             const auto assemblyProviderIdentity = options.providerName;
             // Pinned OA02 worker (path + content hash): every post-Selection
             // assembly spawns this binary and re-probes its hash first.
-            const auto assemblyWorkerLocation = resolveWorkerLocation();
+            const auto assemblyWorkerLocation = resolveNativeOnnxWorkerLocation();
             config.runnerPreparationFactory =
               [assemblyCacheDir,
                cacheCompatibilitySourceDir = options.cacheCompatibilitySourceDir,
@@ -2407,6 +2356,19 @@ main(int argc, char** argv)
             config.kvStateStore->setProviderBootId(providerBootId);
             config.stageServiceTimeObserver = stageServiceTimeObserver;
             config.executionEvidenceObserver = executionEvidenceObserver;
+            if (statisticsOutput) {
+              config.requestStatisticsObserver = std::make_shared<
+                std::function<void(const NativeRequestStatistics&)>>(
+                  [statisticsOutput] (const NativeRequestStatistics& statistics) {
+                    try {
+                      statisticsOutput->write(nativeRequestStatisticsToJson(statistics));
+                    }
+                    catch (...) {
+                      std::cerr << "NATIVE_STATISTICS_WRITE_FAILED\n";
+                      throw;
+                    }
+                  });
+            }
             installNativeProviderGroupCoordinatorFactory(
               config, options.providerName, providerCert.getName().toUri(),
               &keyChain);
@@ -2435,13 +2397,12 @@ main(int argc, char** argv)
             const auto permissionDeadline =
               std::chrono::steady_clock::now() +
               std::chrono::milliseconds(options.permissionWaitMs);
-            while (!provider->hasProviderPermissionForService(
-                     ndn::Name(options.serviceName))) {
+            while (!servicePrerequisitesReady->load(std::memory_order_acquire)) {
               if (runLimitReached->load(std::memory_order_acquire)) {
                 {
                   std::ostringstream record;
                   record << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_WAIT_CANCELLED"
-                           << " reason=run-limit";
+                           << " reason=runtime-stopping";
                   logRuntimeEvidence(record.str());
                 }
                 signalProvisioningDone();
@@ -2449,7 +2410,7 @@ main(int argc, char** argv)
               }
               if (std::chrono::steady_clock::now() >= permissionDeadline) {
                 throw std::runtime_error(
-                  "provider permission not installed for " + options.serviceName);
+                  "provider permission or request decryption not ready for " + options.serviceName);
               }
               std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
@@ -2474,6 +2435,7 @@ main(int argc, char** argv)
             provisioningState->markReady(
               "native runtime ready; role assembly deferred until Selection");
             provider->updateNdnsdMeta("runtimeStatus", "ready");
+            ndnsf::di::detail::emitDeploymentReadiness(options.providerName, providerBootId);
             {
               std::ostringstream record;
               record << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"
@@ -2585,6 +2547,16 @@ main(int argc, char** argv)
         logRuntimeEvidence(record.str());
       }
       const auto serveStartedAt = std::chrono::steady_clock::now();
+      if (statisticsOutput) {
+        try {
+          statisticsOutput->write(NativeJson{
+            {"schema", "ndnsf-di-native-request-statistics-v1"}, {"type", "serve-ready"},
+            {"provider", options.providerName}, {"providerBootId", providerBootId}}.dump());
+        }
+        catch (...) {
+          std::cerr << "NATIVE_STATISTICS_WRITE_FAILED\n";
+        }
+      }
       while (!provisionFailed->load(std::memory_order_acquire) &&
              g_shutdownRequested == 0) {
         if (options.runForMs &&
@@ -2604,6 +2576,12 @@ main(int argc, char** argv)
           // failure. An unbounded processEvents() would leave a failed Provider
           // looking alive until another network event arrived.
           face.processEvents(ndn::time::milliseconds(100));
+          // NAC readiness reads Face-owned state; publish only the result to the installer.
+          if (!servicePrerequisitesReady->load(std::memory_order_relaxed) &&
+              provider->hasProviderPermissionForService(ndn::Name(options.serviceName)) &&
+              provider->isRequestDecryptionReady()) {
+            servicePrerequisitesReady->store(true, std::memory_order_release);
+          }
         }
         catch (const std::exception& exc) {
           {
@@ -2619,6 +2597,7 @@ main(int argc, char** argv)
       if (g_shutdownRequested != 0) {
         logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_SHUTDOWN_REQUESTED");
       }
+      runLimitReached->store(true, std::memory_order_release);
       provider->stopNdnsdPeriodicPublish();
       networkProbeRegistration.close();
       face.shutdown();

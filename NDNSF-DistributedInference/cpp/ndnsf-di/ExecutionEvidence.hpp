@@ -2,7 +2,9 @@
 #define NDNSF_DISTRIBUTED_INFERENCE_EXECUTION_EVIDENCE_HPP
 
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -35,6 +37,8 @@ struct ExecutionEvidence
     bool modelNode = true;
   };
 
+  using NodeProviderAssignments = std::vector<NodeProviderAssignment>;
+
   std::string schema = "ndnsf-di-execution-evidence-v1";
   std::string providerName;
   std::string providerBootId;
@@ -52,7 +56,6 @@ struct ExecutionEvidence
   std::string planDigest;
   std::map<std::string, std::string> artifactDigests;
   std::vector<std::string> roles;
-  std::vector<NodeProviderAssignment> nodeProviderAssignments;
   bool cpuFallbackUsed = false;
   bool loadCompleted = false;
   bool warmupCompleted = false;
@@ -73,6 +76,30 @@ struct ExecutionEvidence
   std::uint64_t profileAttemptEpoch = 0;
 
   void validate() const;
+
+  /**
+   * Borrow the immutable inventory. The reference requires an owning observation
+   * to retain this inventory; replacement or destruction of its last owner can
+   * invalidate it. Default and moved-from observations have an empty inventory.
+   */
+  const NodeProviderAssignments&
+  getNodeProviderAssignments() const noexcept;
+
+  /** Copy caller storage, including rvalues, without changing older snapshots. */
+  void
+  setNodeProviderAssignments(const NodeProviderAssignments& assignments);
+
+  /**
+   * Copy groups once in their supplied order, preserving duplicate rows/groups.
+   * Input references are borrowed only during this call. Publish the complete
+   * replacement after construction succeeds; retain no mutable builder aliases.
+   */
+  void
+  concatenateNodeProviderAssignments(
+    const std::vector<std::reference_wrapper<const NodeProviderAssignments>>& groups);
+
+private:
+  std::shared_ptr<const NodeProviderAssignments> m_nodeProviderAssignments;
 };
 
 void bindExecutionObservation(ExecutionEvidence& evidence,

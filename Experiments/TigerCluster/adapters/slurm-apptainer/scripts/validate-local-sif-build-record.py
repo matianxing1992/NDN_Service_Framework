@@ -42,7 +42,8 @@ def _record_digest(record: dict[str, Any]) -> str:
 
 
 def validate(record_path: Path | str, sif_path: Path | str,
-             expected_sha256: str, *, verify_sif_hash: bool = True) -> dict[str, Any]:
+             expected_sha256: str, *, verify_sif_hash: bool = True,
+             purpose: str = 'qualification') -> dict[str, Any]:
     record_file = Path(record_path).resolve()
     sif = Path(sif_path).resolve()
     if not DIGEST.fullmatch(expected_sha256):
@@ -59,7 +60,10 @@ def validate(record_path: Path | str, sif_path: Path | str,
         _fail("SPEC170_BUILD_RECORD_INVALID")
     if record.get("schemaVersion") != RECORD_SCHEMA:
         _fail("SPEC170_BUILD_RECORD_SCHEMA_MISMATCH")
-    if record.get("status") != "PASS":
+    if purpose not in ('qualification', 'deployment'):
+        _fail("SPEC170_BUILD_RECORD_PURPOSE_INVALID")
+    if record.get("status") != "PASS" and not (
+            purpose == 'deployment' and record.get("status") == 'BUILT_UNQUALIFIED'):
         _fail("SPEC170_BUILD_RECORD_NOT_PASS")
     if record.get("recordDigest") != _record_digest(record):
         _fail("SPEC170_BUILD_RECORD_DIGEST_MISMATCH")
@@ -71,6 +75,8 @@ def validate(record_path: Path | str, sif_path: Path | str,
     boundary = record.get("containerNativeBuild")
     if not isinstance(boundary, dict):
         _fail("SPEC170_BUILD_RECORD_BOUNDARY_MISSING")
+    if record.get('status') == 'BUILT_UNQUALIFIED' and boundary.get('runtimeLayout') != 'installed-v1':
+        _fail("SPEC170_BUILD_RECORD_BUILD_ONLY_LAYOUT_INVALID")
     required_boundary = {
         "status": "PASS",
         "schemaVersion": BOUNDARY_SCHEMA,
@@ -111,6 +117,8 @@ def validate(record_path: Path | str, sif_path: Path | str,
         "sifSha256": actual,
         "schemaVersion": RECORD_SCHEMA,
         "containerNativeBuild": True,
+        "purpose": purpose,
+        "recordStatus": record['status'],
     }
 
 
@@ -119,6 +127,8 @@ def main() -> int:
     parser.add_argument("--record", required=True, type=Path)
     parser.add_argument("--sif", required=True, type=Path)
     parser.add_argument("--expected-sha256", required=True)
+    parser.add_argument('--purpose', choices=('qualification', 'deployment'),
+                        default='qualification')
     parser.add_argument(
         "--metadata-only",
         action="store_true",
@@ -134,6 +144,7 @@ def main() -> int:
             args.sif,
             args.expected_sha256,
             verify_sif_hash=not args.metadata_only,
+            purpose=args.purpose,
         ),
                           sort_keys=True, separators=(",", ":")))
     except BuildRecordError as error:

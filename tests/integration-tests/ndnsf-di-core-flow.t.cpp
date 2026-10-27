@@ -297,7 +297,11 @@ makeNativeIngressTestRunnerFactory(
       return makeNativeModelRunner(
         [role = spec.role, observedRolesMutex, observedRoles,
          observedInputs, observedOutputs,
-         suppressBackboneOutput] (const RoleExecutionContext& context) {
+         suppressBackboneOutput, failure = metadata("test.failure")] (
+            const RoleExecutionContext& context) {
+          if (!failure.empty()) {
+            throw std::runtime_error(failure);
+          }
           auto payloadText = [] (const TensorBundle& bundle) {
             return std::string(bundle.payload.begin(), bundle.payload.end());
           };
@@ -598,6 +602,10 @@ makeHybrid212RunnerFactory(
 
 struct NativeIngressCaseResult
 {
+  std::size_t responseCallbacks = 0;
+  std::size_t pendingUserCalls = 0;
+  std::size_t pendingProviderRequests = 0;
+  std::string responseError;
   bool requestObserved = false;
   bool assignmentFetchCompleted = false;
   bool handlerEntered = false;
@@ -615,6 +623,14 @@ enum class NativeIngressReferenceCase
   Missing,
   SizeMismatch,
   Malformed,
+};
+
+enum class NativeIngressFailureCase
+{
+  None,
+  DeviceMismatch,
+  ExecutionThrows,
+  MissingFinalPayload,
 };
 
 class ScopedNativeIngressFetchTimeout
@@ -662,7 +678,8 @@ private:
 NativeIngressCaseResult
 runNativeIngressCase(
   bool mismatch,
-  NativeIngressReferenceCase referenceCase = NativeIngressReferenceCase::Inline)
+  NativeIngressReferenceCase referenceCase = NativeIngressReferenceCase::Inline,
+  NativeIngressFailureCase failureCase = NativeIngressFailureCase::None)
 {
   ScopedNativeIngressFetchTimeout fetchTimeout(
     referenceCase == NativeIngressReferenceCase::Missing);
@@ -687,6 +704,12 @@ runNativeIngressCase(
   environment.user().setUseTokens(false);
   environment.provider().setUseTokens(false);
 
+  const auto responseKey = environment.provider().prepareHybridSendKeyForTest(
+    serviceName, "RESPONSE");
+  environment.user().cacheHybridReceiveKeyForTest(
+    responseKey.keyId, responseKey.epochId, responseKey.key);
+  environment.provider().markHybridResponseKeyWrappedForTest(serviceName);
+
   NativeExecutionPlan plan;
   plan.serviceName = serviceName.toUri();
   plan.modelName = "integration-test-model";
@@ -709,6 +732,9 @@ runNativeIngressCase(
   // does not claim that this local process has a GPU; Tiger supplies that
   // separate real-ORT/CUDA validation gate.
   runnerSpec.metadata["test.deviceId"] = "0";
+  if (failureCase == NativeIngressFailureCase::ExecutionThrows) {
+    runnerSpec.metadata["test.failure"] = "SPEC217_NATIVE_EXECUTION_FAILURE";
+  }
 
   auto observedInputMutex = std::make_shared<std::mutex>();
   auto observedInputs = std::make_shared<
@@ -726,6 +752,9 @@ runNativeIngressCase(
   handlerConfig.fetchTimeoutMs = 1000;
   handlerConfig.maxSegmentSize = 64;
   handlerConfig.freshnessMs = 60000;
+  if (failureCase == NativeIngressFailureCase::MissingFinalPayload) {
+    handlerConfig.finalResponseScope = "missing-final-response";
+  }
 
   auto nativeRuntime = makeNativeProviderCollaborationRuntime(
     std::move(handlerConfig));
@@ -891,9 +920,8 @@ runNativeIngressCase(
         ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
     });
 
-  // The deterministic fixture delivers ACK/Response blocks through the same
-  // in-process SVS producer boundary used by the older production-ingress
-  // gates.  Selection itself remains an encrypted production publication.
+  // Deliver the deterministic ACK at the controlled fixture boundary.
+  // Responses use production encryption, decryption and callback dispatch.
   environment.userPubSub().subscribeToProducer(
     environment.profile().providerNode,
     [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
@@ -904,27 +932,6 @@ runNativeIngressCase(
           environment.user().handleRequestAckByName(publication.name, ackBlock);
         }
         return;
-      }
-      if (const auto parsedResponse = parseResponseNameV2(publication.name)) {
-        if (parsedResponse->serviceName.equals(serviceName) &&
-            parsedResponse->requestId.equals(requestId)) {
-          // The LocalMock fixture deliberately bypasses NAC-ABE wrapping for
-          // the deterministic ACK above.  Exercise the real post-Selection
-          // response dispatch boundary with the same decoded payload shape,
-          // while the separate NAC regressions cover response decryption.
-          ResponseMessage responseMessage;
-          responseMessage.setStatus(true);
-          const std::string responseText = "native-response:/role";
-          ndn::Buffer responsePayload(
-              reinterpret_cast<const uint8_t*>(responseText.data()),
-              responseText.size());
-          responseMessage.setPayload(
-              responsePayload,
-              responseText.size());
-          result.responseReceived =
-            environment.user().handleDecryptedResponseByName(
-              publication.name, responseMessage) || result.responseReceived;
-        }
       }
     },
     true);
@@ -966,6 +973,8 @@ runNativeIngressCase(
     3000,
     [&] (const ndn::Name&) { result.timedOut = true; },
     [&] (const ResponseMessage& response) {
+      ++result.responseCallbacks;
+      result.responseError = response.getErrorInfo();
       result.responseReceived = response.getStatus();
     },
     tlv::FirstResponding,
@@ -1003,16 +1012,8 @@ runNativeIngressCase(
         result.statusFailed = true;
         result.statusMessage = status->message;
       }
-      else if (status &&
-               status->state == SelectionExecutionState::Completed) {
-        // The provider lifecycle is the authoritative local boundary for
-        // final Response publication.  The LocalMock NAC-ABE fixture may not
-        // decrypt that publication on the user side, which is covered by the
-        // dedicated authorization regressions.
-        result.responseReceived = true;
-      }
     }
-    return result.responseReceived || result.statusFailed || result.timedOut;
+    return result.responseCallbacks != 0 || result.timedOut;
   });
   {
     std::lock_guard<std::mutex> lock(*observedInputMutex);
@@ -1023,10 +1024,40 @@ runNativeIngressCase(
         inputIt->second == inputText;
     }
   }
+  result.pendingUserCalls = environment.user().getPendingCallCount();
+  result.pendingProviderRequests =
+    environment.provider().getPendingRequestCountForTesting();
   return result;
 }
 
 BOOST_AUTO_TEST_SUITE(Spec170NativePostSelection)
+
+BOOST_AUTO_TEST_CASE(Spec217MissingTerminalPublisherCannotBecomeUnaryResponse)
+{
+  test::NdnsfIntegrationEnvironment environment(test::BootstrapProfile{});
+  environment.bootstrap();
+  RequestMessage request;
+  StreamRequestOptions options;
+  options.generationId.fill(0x17);
+  options.streamEpoch = 1;
+  options.eventKeyCommitment.fill(0x17);
+  options.deadlineEpochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count() + 60000;
+  request.setStreamRequestOptions(options);
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.service = environment.profile().serviceName;
+  assignment.role = "/terminal";
+  assignment.ownsStreamTerminal = true;
+  ServiceProvider::CollaborationContext context(
+    environment.provider(), environment.user().getName(),
+    ndn::Name("/spec217-missing-terminal-publisher"), request, assignment);
+  BOOST_CHECK(!context.isStreamed());
+  BOOST_CHECK(!context.failStream(StreamedInvocationErrorCode::ProviderFailure,
+                                  "SPEC217_TERMINAL_PUBLISHER_REMOVED"));
+  BOOST_CHECK_THROW(context.publishFinalFailureResponse(
+    {}, "SPEC217_TERMINAL_PUBLISHER_REMOVED"), std::logic_error);
+  BOOST_CHECK_THROW(context.publishFinalResponse({}), std::logic_error);
+}
 
 /**
  * Native post-Selection production gate.  Unlike the older structural D2a
@@ -1109,6 +1140,11 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRejectsMalformedNativeRepositoryEnvelope)
 BOOST_AUTO_TEST_CASE(ProductionIngressReportsNativeDeviceMismatch)
 {
   const auto result = runNativeIngressCase(true);
+  BOOST_TEST_MESSAGE("device mismatch: handler=" << result.handlerEntered
+                    << " assignmentFetch=" << result.assignmentFetchCompleted
+                    << " responseError=" << result.responseError
+                    << " status=" << result.statusMessage
+                    << " timedOut=" << result.timedOut);
   BOOST_CHECK(result.requestObserved);
   BOOST_CHECK(result.assignmentFetchCompleted);
   BOOST_CHECK(result.handlerEntered);
@@ -1117,8 +1153,35 @@ BOOST_AUTO_TEST_CASE(ProductionIngressReportsNativeDeviceMismatch)
   BOOST_CHECK(!result.responseReceived);
 }
 
+BOOST_AUTO_TEST_CASE(Spec217NativeUnaryRejectionTerminatesRequester)
+{
+  for (const auto failureCase : {NativeIngressFailureCase::DeviceMismatch,
+                                 NativeIngressFailureCase::ExecutionThrows,
+                                 NativeIngressFailureCase::MissingFinalPayload}) {
+    BOOST_TEST_CONTEXT(static_cast<int>(failureCase)) {
+      const auto result = runNativeIngressCase(
+        failureCase == NativeIngressFailureCase::DeviceMismatch,
+        NativeIngressReferenceCase::Inline, failureCase);
+      BOOST_REQUIRE(result.handlerEntered);
+      BOOST_REQUIRE(!result.timedOut);
+      BOOST_REQUIRE_EQUAL(result.responseCallbacks, 1U);
+      BOOST_CHECK(!result.responseReceived);
+      const auto expected = failureCase == NativeIngressFailureCase::DeviceMismatch
+        ? "DI_RUNTIME_DEVICE_MISMATCH"
+        : failureCase == NativeIngressFailureCase::ExecutionThrows
+          ? "SPEC217_NATIVE_EXECUTION_FAILURE" : "DI_FINAL_RESPONSE_MISSING";
+      BOOST_CHECK_EQUAL(result.responseError, expected);
+      BOOST_CHECK_EQUAL(result.pendingUserCalls, 0U);
+      BOOST_CHECK_EQUAL(result.pendingProviderRequests, 0U);
+    }
+  }
+}
+
 struct NativeMultiRoleIngressCaseResult
 {
+  std::size_t responseCallbacks = 0;
+  bool responseSucceeded = false;
+  std::string responseError;
   bool requestObserved = false;
   bool selectionPublished = false;
   bool assignmentFetchCompleted = false;
@@ -1163,6 +1226,10 @@ runNativeMultiRoleIngressCase(bool suppressBackboneOutput = false)
 
   environment.user().setUseTokens(false);
   environment.provider().setUseTokens(false);
+  const auto responseKey = environment.provider().prepareHybridSendKeyForTest(
+    serviceName, "RESPONSE");
+  environment.user().cacheHybridReceiveKeyForTest(
+    responseKey.keyId, responseKey.epochId, responseKey.key);
 
   NativeExecutionPlan plan;
   plan.serviceName = serviceName.toUri();
@@ -1337,9 +1404,7 @@ runNativeMultiRoleIngressCase(bool suppressBackboneOutput = false)
         ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
     });
 
-  // Observe the Provider's actual encrypted Response publication.  We do not
-  // fabricate a decrypted Response; publication is the production boundary
-  // that the previous tests failed to assert.
+  // Observe publication as well as the Requester's actual decrypted callback.
   auto observeResponse = [&] (
       const ndn::svs::SVSPubSub::SubscriptionData& publication) {
     const auto parsed = parseResponseNameV2(publication.name);
@@ -1409,7 +1474,11 @@ runNativeMultiRoleIngressCase(bool suppressBackboneOutput = false)
       }),
     3000,
     [&] (const ndn::Name&) { result.timedOut = true; },
-    [&] (const ResponseMessage&) {},
+    [&] (const ResponseMessage& response) {
+      ++result.responseCallbacks;
+      result.responseSucceeded = response.getStatus();
+      result.responseError = response.getErrorInfo();
+    },
     tlv::FirstResponding,
     requestId);
   BOOST_REQUIRE_EQUAL(returnedRequestId, requestId);
@@ -1440,7 +1509,7 @@ runNativeMultiRoleIngressCase(bool suppressBackboneOutput = false)
         result.statusMessage = status->message;
       }
     }
-    return result.responsePublished || result.statusFailed || result.timedOut;
+    return result.responseCallbacks != 0 || result.timedOut;
   });
   {
     std::lock_guard<std::mutex> lock(*observedRolesMutex);
@@ -1466,6 +1535,8 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRunsNativeFourRoleTwoDeviceAssignmentReque
   BOOST_CHECK(result.assignmentFetchCompleted);
   BOOST_CHECK(result.handlerEntered);
   BOOST_CHECK(result.responsePublished);
+  BOOST_CHECK_EQUAL(result.responseCallbacks, 1U);
+  BOOST_CHECK(result.responseSucceeded);
   BOOST_CHECK(!result.statusFailed);
   BOOST_CHECK(!result.timedOut);
   BOOST_CHECK_EQUAL(result.runnerRoles.size(), 4U);
@@ -1504,7 +1575,11 @@ BOOST_AUTO_TEST_CASE(MissingBackboneOutputFailsBeforeGlobalRequestTimeout)
   BOOST_CHECK(result.selectionPublished);
   BOOST_CHECK(result.assignmentFetchCompleted);
   BOOST_CHECK(result.handlerEntered);
-  BOOST_CHECK(!result.responsePublished);
+  BOOST_CHECK(result.responsePublished);
+  BOOST_CHECK_EQUAL(result.responseCallbacks, 1U);
+  BOOST_CHECK(!result.responseSucceeded);
+  BOOST_CHECK_EQUAL(result.responseError,
+                    "runner did not publish output scope: backbone-to-head0");
   BOOST_CHECK(result.statusFailed);
   BOOST_CHECK(!result.timedOut);
   BOOST_CHECK_EQUAL(
@@ -5541,6 +5616,7 @@ struct Spec175NativeTinyStreamResult
   std::size_t unselectedProviderExecutions = 0;
   std::size_t providerCoordinatorCompletions = 0;
   std::size_t providerFailures = 0;
+  std::size_t streamErrorCallbacks = 0;
   std::vector<SelectionExecutionStatus> coreDeadlineFailures;
   bool permutedRoleProviderMap = false;
   std::vector<std::string> events;
@@ -5550,6 +5626,7 @@ struct Spec175NativeTinyStreamResult
   StreamedInvocationErrorCode errorCode = StreamedInvocationErrorCode::EventTimeout;
   ndn::Name errorRequestId;
   ndn::Name errorProviderName;
+  ndn::Name injectedFailureProviderName;
   uint64_t errorExpectedCursor = 0;
   test::PacketBridgeStats bridgeStats;
   std::size_t retentionSuppressions = 0;
@@ -5563,6 +5640,8 @@ struct Spec175NativeTinyStreamResult
   std::size_t callbackConcurrencyHighWater = 0;
   std::vector<ProviderDecodeStateSnapshot> decodeStateSnapshots;
   std::vector<NativeEpochCoordinatorResult::CacheObservation> cacheObservations;
+  std::vector<NativeRequestStatistics> requestStatistics;
+  bool requestStatisticsBeforeEpochCompletion = false;
   std::vector<std::int64_t> fullPrefixControlTokens;
   std::vector<std::size_t> fullPrefixControlInputExtents;
   std::size_t conversationReceipts = 0;
@@ -5589,6 +5668,8 @@ enum class Spec175NativeTinyFault
   SlowConsumerCapacityOne,
   ProviderUnavailableAfterEvent3,
   ProviderUnavailableAfterEvent3WithReplacement,
+  NativeFirstRoleFailure,
+  NativeFinalRoleFailure,
 };
 
 enum class Spec190NativeConversationFault
@@ -5734,8 +5815,15 @@ struct Spec175TinyFullPrefixControlResult
 Spec175TinyFullPrefixControlResult
 runSpec175TinyFullPrefixControl(const NativeModelRunnerSpec& spec);
 
+enum class RequestStatisticsFault
+{
+  NONE,
+  OBSERVER,
+  EXECUTION,
+};
+
 Spec175NativeTinyStreamResult
-runSpec175NativeTinyOneRoleCase()
+runSpec175NativeTinyOneRoleCase(RequestStatisticsFault statisticsFault = RequestStatisticsFault::NONE)
 {
   Spec175NativeTinyStreamResult result;
 #ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
@@ -5938,15 +6026,32 @@ runSpec175NativeTinyOneRoleCase()
   auto cacheObservations = std::make_shared<
     std::vector<NativeEpochCoordinatorResult::CacheObservation>>();
   auto cacheObservationMutex = std::make_shared<std::mutex>();
+  auto requestStatistics = std::make_shared<std::vector<NativeRequestStatistics>>();
+  auto statisticsBeforeEpoch = std::make_shared<std::atomic<bool>>(false);
+  auto epochCompleted = std::make_shared<std::atomic<bool>>(false);
   handlerConfig.epochCoordinatorCompletionObserver =
     std::make_shared<NativeProviderHandlerConfig::EpochCoordinatorCompletionObserver>(
-      [cacheObservations, cacheObservationMutex] (
+      [cacheObservations, cacheObservationMutex, epochCompleted] (
           const std::string&, const NativeEpochCoordinatorResult& coordinated) {
         std::lock_guard<std::mutex> lock(*cacheObservationMutex);
         *cacheObservations = coordinated.cacheObservations;
+        epochCompleted->store(true, std::memory_order_release);
+      });
+  handlerConfig.requestStatisticsObserver = std::make_shared<
+    std::function<void(const NativeRequestStatistics&)>>(
+      [requestStatistics, cacheObservationMutex, statisticsBeforeEpoch,
+       epochCompleted, statisticsFault] (const NativeRequestStatistics& statistics) {
+        if (!epochCompleted->load(std::memory_order_acquire))
+          statisticsBeforeEpoch->store(true, std::memory_order_relaxed);
+        {
+          std::lock_guard<std::mutex> lock(*cacheObservationMutex);
+          requestStatistics->push_back(statistics);
+        }
+        if (statisticsFault == RequestStatisticsFault::OBSERVER)
+          throw std::runtime_error("intentional request statistics observer failure");
       });
   handlerConfig.groupCoordinatorFactory =
-    [providerName = providerName.toUri(), planDigest] (
+    [providerName = providerName.toUri(), planDigest, statisticsFault] (
         ServiceProvider::CollaborationContext& context,
         const std::map<std::string, std::string>& fields) {
       const auto field = fields.find("groupCapabilityV1");
@@ -5964,6 +6069,8 @@ runSpec175NativeTinyOneRoleCase()
       auto coordinator = std::make_shared<ProviderGroupCoordinator>(
         std::move(options));
       coordinator->installCapability(std::move(decoded), {}, true);
+      if (statisticsFault == RequestStatisticsFault::EXECUTION)
+        throw std::runtime_error("intentional native execution failure");
       return coordinator;
     };
   auto nativeRuntime = makeNativeProviderCollaborationRuntime(
@@ -6121,8 +6228,11 @@ runSpec175NativeTinyOneRoleCase()
   }
 
   const auto terminal = [&] {
-    return result.completed || result.failed || result.timedOut ||
-      nativeFailure->load(std::memory_order_acquire);
+    if (result.timedOut || (result.failed && !result.planCommitted)) return true;
+    if (!result.completed && !result.failed && !nativeFailure->load(std::memory_order_acquire))
+      return false;
+    std::lock_guard<std::mutex> lock(*cacheObservationMutex);
+    return !requestStatistics->empty();
   };
   for (int round = 0; round < 16 && !terminal(); ++round) {
     environment.pumpUntil(terminal);
@@ -6136,7 +6246,10 @@ runSpec175NativeTinyOneRoleCase()
   {
     std::lock_guard<std::mutex> lock(*cacheObservationMutex);
     result.cacheObservations = *cacheObservations;
+    result.requestStatistics = *requestStatistics;
   }
+  result.requestStatisticsBeforeEpochCompletion =
+    statisticsBeforeEpoch->load(std::memory_order_relaxed);
   const auto fullPrefix = runSpec175TinyFullPrefixControl(runnerSpec);
   result.fullPrefixControlTokens = fullPrefix.tokens;
   result.fullPrefixControlInputExtents = fullPrefix.inputExtents;
@@ -6837,6 +6950,15 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       [&, localProvider = environment.provider(index).getName().toUri()] (
           ServiceProvider::CollaborationContext& context,
           const std::map<std::string, std::string>& fields) {
+        const bool failFirst = caseOptions.fault ==
+          Spec175NativeTinyFault::NativeFirstRoleFailure;
+        const bool failFinal = caseOptions.fault ==
+          Spec175NativeTinyFault::NativeFinalRoleFailure;
+        if ((failFirst && context.role() == roles.front()) ||
+            (failFinal && context.role() == roles.back())) {
+          result.injectedFailureProviderName = context.localProvider();
+          throw std::runtime_error("SPEC217_NATIVE_COORDINATOR_FAILURE");
+        }
         const auto field = fields.find("groupCapabilityV1");
         if (field == fields.end()) {
           throw std::runtime_error(
@@ -7541,6 +7663,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       trace("initial-complete");
     },
     [&] (const StreamedInvocationError& error) {
+      ++result.streamErrorCallbacks;
       trace("initial-error code=" +
             std::to_string(static_cast<int>(error.code)) +
             " cursor=" + std::to_string(error.expectedCursor) +
@@ -9579,6 +9702,29 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
   BOOST_REQUIRE(!result.failed);
   BOOST_REQUIRE(!result.timedOut);
   BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.requestStatistics.size(), 1U);
+  BOOST_CHECK(!result.requestStatisticsBeforeEpochCompletion);
+  const auto& statistics = result.requestStatistics.front();
+  BOOST_CHECK(statistics.completionAdmitted);
+  BOOST_CHECK(statistics.hasEpochStatistics);
+  BOOST_CHECK(statistics.failureReason.empty());
+  BOOST_CHECK_EQUAL(statistics.epochsExecuted, 8U);
+  BOOST_CHECK_EQUAL(statistics.eventsPublished, 8U);
+  BOOST_REQUIRE_EQUAL(statistics.runtimeMetrics.size(), 8U);
+  BOOST_CHECK_EQUAL(statistics.cacheObservations.size(), 8U);
+  BOOST_CHECK_EQUAL(statistics.provider, result.ackProvider);
+  BOOST_CHECK_GE(statistics.finishedSteadyNs, statistics.startedSteadyNs);
+  for (const auto& observation : statistics.runtimeMetrics) {
+    BOOST_REQUIRE(observation.metrics.lastBackendExecution);
+    const auto& timing = *observation.metrics.lastBackendExecution;
+    BOOST_REQUIRE(timing.identity);
+    BOOST_CHECK(timing.completed);
+    BOOST_CHECK_EQUAL(timing.identity->requestId, statistics.requestId);
+    BOOST_CHECK_EQUAL(timing.identity->role, statistics.role);
+    BOOST_CHECK_EQUAL(timing.identity->attemptEpoch, statistics.attemptEpoch);
+    BOOST_CHECK_GE(timing.startedSteadyNs, statistics.startedSteadyNs);
+    BOOST_CHECK_LE(timing.finishedSteadyNs, statistics.finishedSteadyNs);
+  }
   BOOST_REQUIRE_EQUAL(result.events.size(), 8U);
   BOOST_REQUIRE_EQUAL(result.decodeStateSnapshots.size(), 1U);
   const auto& state = result.decodeStateSnapshots.front();
@@ -9642,6 +9788,35 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI01OneProvider)
                                 cachedTokens.begin(), cachedTokens.end());
   BOOST_CHECK(result.fullPrefixControlInputExtents ==
               std::vector<std::size_t>({1, 2, 3, 4, 5, 6, 7, 8}));
+}
+
+BOOST_AUTO_TEST_CASE(Spec216RequestStatisticsObserverFailureDoesNotChangeInference)
+{
+  const auto result = runSpec175NativeTinyOneRoleCase(RequestStatisticsFault::OBSERVER);
+  BOOST_REQUIRE(result.completed);
+  BOOST_CHECK(!result.failed);
+  BOOST_CHECK(!result.timedOut);
+  BOOST_REQUIRE_EQUAL(result.requestStatistics.size(), 1U);
+  BOOST_CHECK(result.requestStatistics.front().completionAdmitted);
+  BOOST_CHECK(!result.requestStatisticsBeforeEpochCompletion);
+  BOOST_CHECK_EQUAL(result.events.size(), 8U);
+}
+
+BOOST_AUTO_TEST_CASE(Spec216FailedNativeRequestRetainsStatistics)
+{
+  const auto result = runSpec175NativeTinyOneRoleCase(RequestStatisticsFault::EXECUTION);
+  BOOST_CHECK(!result.completed);
+  BOOST_CHECK(result.failed);
+  BOOST_CHECK(!result.timedOut);
+  BOOST_REQUIRE_EQUAL(result.requestStatistics.size(), 1U);
+  const auto& statistics = result.requestStatistics.front();
+  BOOST_CHECK(!statistics.completionAdmitted);
+  BOOST_CHECK(!statistics.hasEpochStatistics);
+  BOOST_CHECK(statistics.runtimeMetrics.empty());
+  BOOST_CHECK_EQUAL(statistics.failureReason, "intentional native execution failure");
+  BOOST_CHECK(!statistics.requestId.empty());
+  BOOST_CHECK(!statistics.planDigest.empty());
+  BOOST_CHECK_GE(statistics.finishedSteadyNs, statistics.startedSteadyNs);
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI02TwoProviderEpochCoordinator)
@@ -9795,6 +9970,36 @@ BOOST_AUTO_TEST_CASE(Spec175DataV1ExactDependencySurvivesSuppressedSvsUpdates)
   BOOST_REQUIRE(!result.timedOut);
   BOOST_REQUIRE(result.completed);
   BOOST_REQUIRE_EQUAL(result.events.size(), 8U);
+}
+
+BOOST_AUTO_TEST_CASE(Spec217NativeRoleFailureTerminatesRequesterStream)
+{
+  for (const auto fault : {Spec175NativeTinyFault::NativeFirstRoleFailure,
+                           Spec175NativeTinyFault::NativeFinalRoleFailure}) {
+    BOOST_TEST_CONTEXT(static_cast<int>(fault)) {
+      const auto caseId = "spec217-native-failure-" +
+        std::to_string(static_cast<int>(fault));
+      const auto result = runSpec175NativeTinyTwoProviderCase(
+        caseId, fault);
+      BOOST_REQUIRE(result.ackClosed);
+      BOOST_REQUIRE(result.planCommitted);
+      BOOST_REQUIRE(!result.completed);
+      BOOST_REQUIRE(!result.timedOut);
+      BOOST_REQUIRE(!result.cancelled);
+      // Failure observers also populate result.failed. Only the real Core
+      // error callback proves that the requester received a terminal failure.
+      BOOST_REQUIRE_EQUAL(result.streamErrorCallbacks, 1U);
+      BOOST_CHECK(result.errorCode == StreamedInvocationErrorCode::ProviderFailure);
+      BOOST_CHECK(result.error.find("SPEC217_NATIVE_COORDINATOR_FAILURE") !=
+                  std::string::npos);
+      BOOST_CHECK(result.errorRequestId == ndn::Name("/spec175-native-tiny-" + caseId));
+      BOOST_REQUIRE(!result.injectedFailureProviderName.empty());
+      BOOST_CHECK(result.errorProviderName == result.injectedFailureProviderName);
+      BOOST_CHECK(result.events.empty());
+      BOOST_CHECK(result.finalPayload.empty());
+      BOOST_CHECK_GE(result.providerFailures, 1U);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI06RetriesFirstLostEventFive)

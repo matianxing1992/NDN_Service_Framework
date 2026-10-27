@@ -21,7 +21,6 @@ setup(
     entry_points={
         "console_scripts": [
             "ndnsf-di-policy=ndnsf_distributed_inference.policy:main",
-            "ndnsf-di=ndnsf_distributed_inference.ops.cli:main",
         ],
     },
 )

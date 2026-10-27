@@ -19,14 +19,40 @@ SEAL_DIGEST_BASIS = "path-independent-content-v1"
 FILES = (
     "waf",
     "wscript",
+    "install_ndnsf_stack.sh",
+    "configure.sh",
+    "scripts/build-safe.sh",
+    "scripts/host_profile.py",
+    "scripts/configure_dependencies.py",
+    "scripts/stack_sources.py",
+    "packaging/host-dependencies.lock.json",
+    "packaging/host-sdk-dependencies.lock.json",
+    "packaging/ndnsf-di-container/lib/allocation_topology.py",
+    "packaging/ndnsf-di-container/lib/adapters/__init__.py",
+    "packaging/ndnsf-di-container/lib/adapters/base.py",
+    "packaging/ndnsf-di-container/lib/adapters/slurm_apptainer.py",
+    "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-allocation-topology.sh",
+    "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/configure-allocation-routes.sh",
+    "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-container.sh",
+    "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/stage-sif.sh",
+    "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/validate-local-sif-build-record.py",
+    "Experiments/TigerCluster/runtime/processes.py",
+    "patches/nac-abe",
+    "patches/openabe",
+    "tools/ndn-svs/publication-latency.patch",
     "libndn-service-framework.pc.in",
     ".waf-tools",
     "ndn-service-framework",
+    "ndnsf-di/api.hpp",
+    "ndnsf-di/provider.hpp",
     "NDNSF-DistributedInference/cpp",
     "NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in",
     "NDNSF-DistributedInference/ndnsf_distributed_inference",
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/ops/deployment_config.py",
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/ops/cluster.py",
     "NDNSF-DistributedInference/packaging/python",
     "NDNSF-DistributedInference/setup.py",
+    "NDNSF-DistributedInference/ndnsf_di_launcher.py",
     "pythonWrapper/setup.py",
     "pythonWrapper/pyproject.toml",
     "pythonWrapper/README.md",
@@ -34,6 +60,8 @@ FILES = (
     "pythonWrapper/src",
     "NDNSF-DistributedRepo/pythonWrapper",
     "NDNSF-DistributedRepo/src",
+    "NDNSF-DistributedRepo/apps",
+    "NDNSF-DistributedRepo/examples",
     "NDNSF-UAV-APP/tools/uav_video_pipeline_probe.cpp",
     "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py",
     "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
@@ -45,8 +73,6 @@ FILES = (
     "examples/trust-schema.conf",
     "examples/python/NDNSF-DistributedInference/llm_pipeline",
     "examples/python/NDNSF-DistributedInference/yolo_2x2",
-    "specs/162-itiger-qwen36-generation/jobs/run-repo-node.py",
-    "specs/162-itiger-qwen36-generation/jobs/register-qwen36-repo.py",
     "tools/ndnsf-di/spec107_artifacts.py",
     "tools/ndnsf-di/spec107_fault_controller.py",
     "tools/ndnsf-di/spec107_identity.py",
@@ -58,9 +84,15 @@ FILES = (
     "tests/fixtures/spec175/tiny-causal-lm-v1",
     "packaging/ndnsf-di-container/jobs/spec175/replay-exact-sif.py",
     "packaging/ndnsf-di-container/jobs/spec180",
+    # Keep canonical jobs when re-exporting an unpacked tree whose legacy
+    # compatibility directories have been materialized as ordinary files.
+    "Experiments/TigerCluster/jobs/spec175/replay-exact-sif.py",
+    "Experiments/TigerCluster/jobs/spec175/workload.json",
+    "Experiments/TigerCluster/jobs/spec180",
     "examples/wscript",
     "examples/App_ServiceController.cpp",
     "examples/DI_NativeArtifactAuthority.cpp",
+    "examples/device-query.cpp",
     "NDNSF-DistributedRepo/include",
     "packaging/ndnsf-di-container/jobs/spec175/workload.json",
     "scripts/build_spec175_workload.py",
@@ -89,8 +121,8 @@ NAC_ABE_FILES = (
     "examples",
 )
 NDNSD_FILES = ("waf", "wscript", "ndnsd.pc.in", "logger.hpp", "ndnsd", ".waf-tools")
-EXCLUDED_DIRS = {"build", "__pycache__", "node_modules"}
-EXCLUDED_SUFFIXES = {".so", ".a", ".o", ".pyc", ".pyo"}
+EXCLUDED_DIRS = {"build", "target", "dist", ".git", "__pycache__", "node_modules"}
+EXCLUDED_SUFFIXES = {".so", ".a", ".o", ".pyc", ".pyo", ".whl", ".rlib", ".rmeta"}
 
 
 def digest(path: Path) -> str:
@@ -117,9 +149,19 @@ def selected_files(workspace: Path) -> list[Path]:
             if candidate.suffix in EXCLUDED_SUFFIXES:
                 continue
             selected.add(rel)
-    for candidate in (workspace / "examples").glob("DI_Native*"):
-        if candidate.is_file() and candidate.suffix not in EXCLUDED_SUFFIXES:
-            selected.add(candidate.relative_to(workspace))
+    # Include the source/header and Python launch inputs of existing Waf
+    # targets, without copying UAV results, model exports or credentials.
+    for directory, recursive in ((workspace / "examples", False),
+                                 (workspace / "NDNSF-UAV-APP", True)):
+        candidates = directory.rglob("*") if recursive else directory.glob("*")
+        for candidate in candidates:
+            if (candidate.is_symlink() or not candidate.is_file() or
+                    candidate.suffix not in {".cpp", ".h", ".hpp", ".py"}):
+                continue
+            rel = candidate.relative_to(workspace)
+            if any(part in EXCLUDED_DIRS or part.endswith(".egg-info") for part in rel.parts):
+                continue
+            selected.add(rel)
     # Waf loads every bld.recurse() file while constructing the target graph,
     # even when --targets selects only a subset. Seal that graph recursively so
     # a missing child wscript cannot survive until the container build.

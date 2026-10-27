@@ -364,6 +364,23 @@ public:
   bool
   hasRunner(const std::string& role) const;
 
+  /**
+   * Execute through the bounded worker and complete state admission on this caller.
+   *
+   * The caller must be an owned execution thread able to block, not a Face event
+   * loop. An empty preparation callback selects the registered runner path.
+   * State validation, commit, rollback and exceptions match the asynchronous APIs.
+   */
+  ProviderRoleResult
+  executeRole(
+    std::string sessionId,
+    RoleSpec role,
+    std::shared_ptr<DependencyIo> io,
+    ProviderRoleWorker::NativeRunnerPreparation prepareRunner = {},
+    std::map<std::string, TensorBundle> initialInputsByScope = {},
+    RoleExecutionContext::StreamEventSink eventSink = {},
+    std::function<void()> executionGuard = {});
+
   std::future<ProviderRoleResult>
   executeRoleAsync(std::string sessionId,
                    RoleSpec role,
@@ -474,7 +491,8 @@ private:
     ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
     std::map<std::string, TensorBundle> initialInputsByScope,
     RoleExecutionContext::StreamEventSink eventSink,
-    std::function<void()> executionGuard);
+    std::function<void()> executionGuard,
+    std::launch stateCompletionPolicy);
 
   std::shared_ptr<NativeModelRunner>
   findRunner(const std::string& role) const;

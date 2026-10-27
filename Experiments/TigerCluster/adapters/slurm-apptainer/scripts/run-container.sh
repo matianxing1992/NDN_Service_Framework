@@ -1,12 +1,26 @@
 #!/bin/sh
 set -eu
 
-sif=''; sif_sha=''; build_record=''; project=''; scratch=''; identity=''; release=''; models=''; artifacts=''; evidence=''; gpu_count=''
+# The installed normalized caller owns role-specific paths; legacy invocations
+# below retain their original Spec110/170 layout and admission defaults.
+control_python=python3
+if [ "${1:-}" = '--control-python' ]; then
+  control_python=$2; shift 2
+  case "$control_python" in /*) ;; *) echo DEPLOYMENT_CONTROL_PYTHON_REQUIRED >&2; exit 2 ;; esac
+  [ -x "$control_python" ] || { echo DEPLOYMENT_CONTROL_PYTHON_REQUIRED >&2; exit 2; }
+  [ "${1:-}" = '--deployment' ] || { echo DEPLOYMENT_ARGUMENT_REQUIRED >&2; exit 2; }
+fi
+if [ "${1:-}" = '--deployment' ]; then
+  exec "$control_python" -I -m ndnsf_distributed_inference.ops.container "$@"
+fi
+
+sif=''; sif_sha=''; build_record=''; build_record_purpose='qualification'; project=''; scratch=''; identity=''; release=''; models=''; artifacts=''; evidence=''; gpu_count=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --sif) sif=$2; shift 2 ;;
     --sif-sha256) sif_sha=$2; shift 2 ;;
     --build-record) build_record=$2; shift 2 ;;
+    --build-record-purpose) build_record_purpose=$2; shift 2 ;;
     --project) project=$2; shift 2 ;;
     --scratch) scratch=$2; shift 2 ;;
     --identity) identity=$2; shift 2 ;;
@@ -29,6 +43,11 @@ case "$gpu_count" in
 esac
 [ "$#" -gt 0 ] || { echo WORKLOAD_REQUIRED >&2; exit 2; }
 [ -f "$sif" ] || { echo SIF_MISSING >&2; exit 4; }
+case "$build_record_purpose" in
+  qualification) ;;
+  deployment) [ -n "$build_record" ] || { echo APPTAINER_BUILD_RECORD_REQUIRED >&2; exit 4; } ;;
+  *) echo APPTAINER_BUILD_RECORD_PURPOSE_INVALID >&2; exit 4 ;;
+esac
 release=${release:-$project/releases}
 models=${models:-$project/models}
 artifacts=${artifacts:-$project/artifacts}
@@ -53,8 +72,8 @@ if [ -n "$build_record" ]; then
   # even considered.  Validate the immutable record and source size first;
   # the staged node-local copy is hashed below immediately before execution.
   python3 "$build_record_validator" --record "$build_record" --sif "$sif" \
-    --expected-sha256 "$sif_sha" --metadata-only
-  echo "SPEC170_BUILD_RECORD_METADATA_PASS record=$build_record sif=$sif_sha" >&2
+    --expected-sha256 "$sif_sha" --metadata-only --purpose "$build_record_purpose"
+  echo "SPEC170_BUILD_RECORD_METADATA_PASS record=$build_record sif=$sif_sha purpose=$build_record_purpose" >&2
 fi
 
 python3 - "$project" "$release" "$models" "$artifacts" "$identity" "$evidence" "$scratch" "$SLURM_JOB_ID" <<'PY'
@@ -84,27 +103,6 @@ if (not scratch_input.is_absolute() or '..' in scratch_input.parts or
 if not scratch_path.is_dir():raise SystemExit('APPTAINER_SCRATCH_MISSING')
 PY
 
-# Hashing a multi-gigabyte SIF directly on project storage can exceed a short
-# Slurm preflight window. Stage it to node-local storage and retain one
-# verified copy per immutable digest. A job-specific scratch path alone would
-# force every D0/D1/D2 case on the same node to copy the same 4+ GB image again.
-sif_cache_key=${sif_sha#sha256:}
-case "$sif_cache_key" in
-  ''|*[!0-9a-fA-F]*) echo SIF_DIGEST_INVALID >&2; exit 4 ;;
-esac
-sif_cache_root="${NDNSF_SIF_CACHE_DIR:-/tmp/ndnsf-di-sif-cache}"
-# The digest is immutable, but a shared cache parent is still writable by
-# other cluster users on many /tmp configurations. Scope the cache below the
-# numeric uid and make that directory private before opening the lock; this
-# prevents another user from planting a stage.lock symlink or replacing a
-# partially staged image for this job.
-sif_cache_user_root="$sif_cache_root/u$(id -u)"
-mkdir -p "$sif_cache_user_root"
-chmod 700 "$sif_cache_user_root"
-sif_cache_dir="$sif_cache_user_root/$sif_cache_key"
-mkdir -p "$sif_cache_dir"
-chmod 700 "$sif_cache_dir"
-local_sif="$sif_cache_dir/runtime.sif"
 if [ -n "$build_record" ]; then
   # The metadata-only validator deliberately does not stat the shared SIF.
   # Reuse the immutable byte count from the record for cache admission; the
@@ -119,38 +117,8 @@ PY
 else
   source_sif_bytes=$(stat -Lc '%s' "$sif")
 fi
-command -v flock >/dev/null 2>&1 || { echo SIF_CACHE_FLOCK_MISSING >&2; exit 4; }
-exec 9>"$sif_cache_dir/stage.lock"
-flock 9
-# A previous cancelled copy is never a candidate.  The digest-scoped lock
-# makes this cleanup safe even when several jobs request the same SIF.
-find "$sif_cache_dir" -maxdepth 1 -type f -name 'runtime.sif.tmp.*' -delete
-if [ "$sif" != "$local_sif" ]; then
-  if [ ! -f "$local_sif" ] || [ "$(stat -c '%s' "$local_sif" 2>/dev/null || echo 0)" -ne "$source_sif_bytes" ]; then
-    printf 'SIF_STAGE_START source=%s target=%s bytes=%s\n' "$sif" "$local_sif" "$source_sif_bytes" >&2
-    tmp_sif="$sif_cache_dir/runtime.sif.tmp.$$"
-    rm -f "$tmp_sif"
-    cp --reflink=auto "$sif" "$tmp_sif"
-    mv -f "$tmp_sif" "$local_sif"
-    printf 'SIF_STAGE_COMPLETE target=%s bytes=%s\n' "$local_sif" "$(stat -c '%s' "$local_sif")" >&2
-  fi
-else
-  local_sif="$sif"
-fi
-actual=sha256:$(sha256sum "$local_sif" | cut -d' ' -f1)
-if [ "$actual" != "$sif_sha" ] && [ "$sif" != "$local_sif" ]; then
-  # A same-sized but corrupt cache entry must not poison every later job.
-  printf 'SIF_CACHE_REPAIR source=%s target=%s observed=%s expected=%s\n' \
-    "$sif" "$local_sif" "$actual" "$sif_sha" >&2
-  rm -f "$local_sif"
-  tmp_sif="$sif_cache_dir/runtime.sif.tmp.$$"
-  cp --reflink=auto "$sif" "$tmp_sif"
-  mv -f "$tmp_sif" "$local_sif"
-  actual=sha256:$(sha256sum "$local_sif" | cut -d' ' -f1)
-fi
-flock -u 9
-[ "$actual" = "$sif_sha" ] || { echo SIF_DIGEST_MISMATCH >&2; exit 4; }
-printf 'SIF_STAGE_VERIFY_PASS source=%s staged=%s digest=%s\n' "$sif" "$local_sif" "$actual" >&2
+scripts_dir=$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)
+local_sif=$(sh "$scripts_dir/stage-sif.sh" "$sif" "$sif_sha" "$source_sif_bytes")
 
 # GPU runs use the literal `apptainer exec --cleanenv --nv` shape; CPU runs
 # intentionally omit --nv so no host GPU libraries are injected.

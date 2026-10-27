@@ -2,6 +2,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/runtime-logging.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/statistics-file.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
@@ -12,6 +15,8 @@
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <boost/scope_exit.hpp>
+#include <ndn-cxx/util/logger.hpp>
 
 #include <algorithm>
 #include <csignal>
@@ -20,6 +25,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <new>
 #include <cmath>
 #include <optional>
 #include <sstream>
@@ -29,6 +35,14 @@
 #include <vector>
 
 namespace {
+
+NDN_LOG_INIT(ndnsf.di.NativeRequester);
+
+bool
+diagnosticOutputEnabled()
+{
+  return ndn_cxx_getLogger().isLevelEnabled(ndn::util::LogLevel::WARN);
+}
 
 using namespace ndnsf::di;
 using boost::property_tree::ptree;
@@ -271,8 +285,9 @@ validateStreamOracle(const ptree& root, const Result& result, std::size_t observ
     if (final.get<std::string>("schema", {}) != "NDNSF-DI-FINAL-V1" ||
         integerArray(final, "tokenIds") != expected || observed != expected.size())
       throw std::runtime_error("final sequence mismatch");
-    std::cout << "NATIVE_STREAM_ORACLE_PASS tokens=" << expected.size()
-              << " events=" << observed << '\n';
+    if (diagnosticOutputEnabled())
+      std::cout << "NATIVE_STREAM_ORACLE_PASS tokens=" << expected.size()
+                << " events=" << observed << '\n';
   }
   catch (const std::exception& error) {
     const std::string message = error.what();
@@ -490,8 +505,9 @@ public:
       if (bytes.size() != size || nativePlanningDigest(bytes.data(), bytes.size()) != digest)
         throw std::runtime_error("native Repo source fetch failed content verification");
       checkDeadline();
-      std::cout << "NATIVE_REPO_SOURCE_API label=" << label << " bytes=" << size
-                << " deduplicated=" << existing.has_value() << std::endl;
+      if (diagnosticOutputEnabled())
+        std::cout << "NATIVE_REPO_SOURCE_API label=" << label << " bytes=" << size
+                  << " deduplicated=" << existing.has_value() << std::endl;
       return bytes;
     };
     NativeCanonicalSource result;
@@ -527,6 +543,7 @@ run(int argc, char** argv)
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "Usage: DI_NativeRequester --config FILE [--input FILE --output FILE]\n"
                  "Config schema: ndnsf-di-native-requester-v1\n"
+                 "Optional statistics_file writes one JSONL timing row per turn.\n"
                  "A config with a turns array runs every turn in one native Conversation.\n"
                  "The request is routed through Runtime -> User::prepare -> User::request.\n";
     return 0;
@@ -540,11 +557,17 @@ run(int argc, char** argv)
   }
 
   const auto configPath = std::filesystem::absolute(argv[2]).lexically_normal();
+  detail::configureSynchronousLogging(std::clog);
   const auto base = configPath.parent_path();
   const auto config = readJson(configPath);
   if (config.get<std::string>("schema", {}) != "ndnsf-di-native-requester-v1")
     throw std::invalid_argument("unsupported requester configuration schema");
   const auto& request = config.get_child("request");
+  std::shared_ptr<ndnsf::di::detail::StatisticsFile> statisticsOutput;
+  if (const auto path = config.get_optional<std::string>("statistics_file"))
+    statisticsOutput = std::make_shared<ndnsf::di::detail::StatisticsFile>(
+      relativeTo(base, *path).string());
+  bool statisticsWriteFailed = false;
   const auto turns = readTurnSpecs(
     config, base,
     legacyArgs ? std::optional<std::filesystem::path>(
@@ -618,7 +641,8 @@ run(int argc, char** argv)
       const auto sourceNamespace = compatibility->get<std::string>("source_namespace", {});
       runtimeConfig.repositoryArtifactPublisher =
         std::make_shared<CacheCompatibilityArtifactPublisher>(sourceNamespace);
-      std::cout << "NDNSF_DI_CACHE_COMPATIBILITY_REQUESTER enabled=true "
+      if (diagnosticOutputEnabled())
+        std::cout << "NDNSF_DI_CACHE_COMPATIBILITY_REQUESTER enabled=true "
                    "protectedPublication=skipped" << std::endl;
     }
   }
@@ -660,7 +684,8 @@ run(int argc, char** argv)
   std::shared_ptr<const PlacementStrategy> requestPlacementStrategy;
   if (!requestPlacementStrategyId.empty()) {
     requestPlacementStrategy = runtime->placementStrategy(requestPlacementStrategyId);
-    std::cout << "NATIVE_REQUEST_PLACEMENT strategy="
+    if (diagnosticOutputEnabled())
+      std::cout << "NATIVE_REQUEST_PLACEMENT strategy="
               << requestPlacementStrategyId << std::endl;
   }
   auto user = runtime->user();
@@ -678,17 +703,19 @@ run(int argc, char** argv)
   }
   else if (!fixedPlacementStrategyId.empty()) {
     options.placement = runtime->placementStrategy(fixedPlacementStrategyId);
-    std::cout << "NATIVE_FIXED_PLACEMENT strategy=" << fixedPlacementStrategyId << std::endl;
+    if (diagnosticOutputEnabled())
+      std::cout << "NATIVE_FIXED_PLACEMENT strategy=" << fixedPlacementStrategyId << std::endl;
   }
   if (options.timeout.count() <= 0 || options.ackTimeout.count() <= 0 ||
       options.ackTimeout >= options.timeout) {
     throw std::invalid_argument(
       "request ACK window must be positive and smaller than the request deadline");
   }
-  std::cout << "SPEC190_ACK_WINDOW_NATIVE {\"ackTimeoutMs\":"
-            << options.ackTimeout.count()
-            << ",\"requestTimeoutMs\":" << options.timeout.count()
-            << "}" << std::endl;
+  if (diagnosticOutputEnabled())
+    std::cout << "SPEC190_ACK_WINDOW_NATIVE {\"ackTimeoutMs\":"
+              << options.ackTimeout.count()
+              << ",\"requestTimeoutMs\":" << options.timeout.count()
+              << "}" << std::endl;
 
   const auto generationMode = request.get<std::string>("generation_mode", "TOKEN_DIAGNOSTIC");
   const bool streaming = generationMode == "TOKEN_STREAMING" ||
@@ -729,7 +756,8 @@ run(int argc, char** argv)
 
   std::signal(SIGINT, onSignal);
   std::signal(SIGTERM, onSignal);
-  std::cout << "NATIVE_REQUEST_ROUTE=Runtime.open->User.prepare->User.request\n";
+  if (diagnosticOutputEnabled())
+    std::cout << "NATIVE_REQUEST_ROUTE=Runtime.open->User.prepare->User.request\n";
 
   std::optional<Conversation> conversation;
   if (const auto conversationConfig = config.get_child_optional("conversation")) {
@@ -775,6 +803,40 @@ run(int argc, char** argv)
   if (const auto oracle = config.get_child_optional("stream_oracle"))
     streamExpected = integerArray(*oracle, "token_ids");
   for (std::size_t turnIndex = 0; turnIndex < turns.size(); ++turnIndex) {
+    Result result;
+    std::string statisticsRequestId;
+    bool statisticsCompleted = false;
+    std::size_t observedEvents = 0;
+    bool terminalSeen = false;
+    bool checkpointWritten = false;
+    const auto statisticsStartedCpu = statisticsOutput
+      ? ndnsf::di::detail::nativeProcessCpuTimeNs() : -1;
+    const auto statisticsStarted = statisticsOutput
+      ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count() : 0;
+    BOOST_SCOPE_EXIT_ALL(&) {
+      if (statisticsOutput) {
+        try {
+          const auto finished = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+          const auto finishedCpu = ndnsf::di::detail::nativeProcessCpuTimeNs();
+          statisticsOutput->write(NativeJson{
+            {"schema", "ndnsf-di-native-requester-statistics-v1"}, {"type", "request"},
+            {"turn", turnIndex}, {"requestId", statisticsRequestId},
+            {"planDigest", result.planDigest}, {"completed", statisticsCompleted},
+            {"streaming", streaming}, {"observedEvents", observedEvents},
+            {"terminalSeen", terminalSeen}, {"checkpointWritten", checkpointWritten},
+            {"startedSteadyNs", statisticsStarted}, {"finishedSteadyNs", finished},
+            {"startedProcessCpuNs", statisticsStartedCpu < 0
+              ? NativeJson(nullptr) : NativeJson(statisticsStartedCpu)},
+            {"finishedProcessCpuNs", finishedCpu < 0
+              ? NativeJson(nullptr) : NativeJson(finishedCpu)}}.dump());
+        }
+        catch (...) {
+          statisticsWriteFailed = true;
+        }
+      }
+    };
     const auto& turn = turns[turnIndex];
     const auto payload = readBytes(turn.input, MAX_NATIVE_INPUT_BYTES);
     const auto optionsBytes = turn.options.empty()
@@ -782,17 +844,24 @@ run(int argc, char** argv)
     RequestHandle handle = conversation
       ? conversation->request(Input::inlineBytes(payload, optionsBytes), options)
       : user.request(prepared, Input::inlineBytes(payload, optionsBytes), options);
-    std::cout << "NATIVE_CONVERSATION_TURN_START index=" << turnIndex
-              << " request=" << handle.id() << std::endl;
+    if (statisticsOutput) {
+      try {
+        statisticsRequestId = handle.id();
+      }
+      catch (const std::bad_alloc&) {
+        statisticsWriteFailed = true;
+      }
+    }
+    if (diagnosticOutputEnabled())
+      std::cout << "NATIVE_CONVERSATION_TURN_START index=" << turnIndex
+                << " request=" << handle.id() << std::endl;
 
-    std::size_t observedEvents = 0;
-    bool terminalSeen = false;
-    Result result;
     if (streaming) {
       auto reader = handle.events();
       bool livePendingReported = false;
-      std::cout << "NATIVE_STREAM_READER_OPENED index=" << turnIndex
-                << " request=" << handle.id() << std::endl;
+      if (diagnosticOutputEnabled())
+        std::cout << "NATIVE_STREAM_READER_OPENED index=" << turnIndex
+                  << " request=" << handle.id() << std::endl;
       while (!terminalSeen) {
         if (interrupted) {
           handle.cancel();
@@ -807,7 +876,8 @@ run(int argc, char** argv)
         const auto wait = std::min(remaining, std::chrono::milliseconds(100));
         if (!livePendingReported && observedEvents == 0 &&
             handle.status() == RequestStatus::Pending) {
-          std::cout << "NATIVE_STREAM_LIVE_PENDING index=" << turnIndex
+          if (diagnosticOutputEnabled())
+            std::cout << "NATIVE_STREAM_LIVE_PENDING index=" << turnIndex
                     << " request=" << handle.id() << std::endl;
           livePendingReported = true;
         }
@@ -840,7 +910,8 @@ run(int argc, char** argv)
         }
         if (event->terminal) {
           terminalSeen = true;
-          std::cout << "NATIVE_STREAM_TERMINAL index=" << turnIndex
+          if (diagnosticOutputEnabled())
+            std::cout << "NATIVE_STREAM_TERMINAL index=" << turnIndex
                     << " request=" << handle.id() << std::endl;
           break;
         }
@@ -864,26 +935,29 @@ run(int argc, char** argv)
         // marker follows actual text output from the requester executable and
         // its flush boundary, with a distinct execution role.
         std::cout.flush();
-        if (firstEvent) {
+        if (firstEvent && diagnosticOutputEnabled()) {
           std::cout << "NATIVE_STREAM_FIRST_EVENT index=" << turnIndex
                     << " request=" << handle.id() << std::endl;
           std::cout << "NATIVE_STREAM_FIRST_EVENT_STATUS="
                     << (firstEventPending ? "PENDING" : "TERMINAL")
                     << " index=" << turnIndex << " request=" << handle.id() << std::endl;
         }
-        logRuntimePhase(
-          "di-cli", "tokenEmitted", handle.id(), "request",
-          {{"executionRole", "cli-output"},
-           {"conversationId", "none"},
-           {"tokenIndex", std::to_string(observedEvents)}});
+        if (diagnosticOutputEnabled()) {
+          logRuntimePhase(
+            "di-cli", "tokenEmitted", handle.id(), "request",
+            {{"executionRole", "cli-output"},
+             {"conversationId", "none"},
+             {"tokenIndex", std::to_string(observedEvents)}});
+        }
         waitForTestStreamBarrier(config, base, turnIndex, observedEvents);
       }
       auto completionWait = reader.remainingTimeout();
       if (completionWait.count() <= 0)
         completionWait = std::chrono::milliseconds(100);
       result = handle.result(completionWait);
-      std::cout << "NATIVE_STREAM_EVENTS index=" << turnIndex
-                << " NATIVE_STREAM_EVENTS=" << observedEvents << '\n';
+      if (diagnosticOutputEnabled())
+        std::cout << "NATIVE_STREAM_EVENTS index=" << turnIndex
+                  << " NATIVE_STREAM_EVENTS=" << observedEvents << '\n';
     }
     else {
       result = handle.result();
@@ -898,8 +972,9 @@ run(int argc, char** argv)
       if (tensor.empty() || expected.empty() || !std::isfinite(tolerance) || tolerance < 0.0 ||
           !result.matchesFloat32Tensor(tensor, expected, tolerance))
         throw std::runtime_error("NATIVE_NUMERICAL_ORACLE_FAILED: tensor value mismatch");
-      std::cout << "NATIVE_NUMERICAL_ORACLE_PASS tensor=" << tensor
-                << " values=" << expected.size() << '\n';
+      if (diagnosticOutputEnabled())
+        std::cout << "NATIVE_NUMERICAL_ORACLE_PASS tensor=" << tensor
+                  << " values=" << expected.size() << '\n';
     }
     if (conversation) {
       if (const auto conversationConfig = config.get_child_optional("conversation")) {
@@ -911,21 +986,28 @@ run(int argc, char** argv)
           path = relativeTo(base, *configured);
         if (path) {
           writeCheckpoint(*conversation, *path);
-          std::cout << "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN index="
-                    << turnIndex << '\n';
+          checkpointWritten = true;
+          if (diagnosticOutputEnabled())
+            std::cout << "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN index="
+                      << turnIndex << '\n';
         }
       }
     }
     writeResult(result, turn.output);
-    std::cout << "NATIVE_CONVERSATION_TURN_COMPLETE index=" << turnIndex
-              << " request=" << handle.id() << " plan=" << result.planDigest << '\n';
-    std::cout << "NATIVE_REQUEST_SUCCEEDED request=" << handle.id()
-              << " plan=" << result.planDigest << '\n';
+    if (diagnosticOutputEnabled()) {
+      std::cout << "NATIVE_CONVERSATION_TURN_COMPLETE index=" << turnIndex
+                << " request=" << handle.id() << " plan=" << result.planDigest << '\n';
+      std::cout << "NATIVE_REQUEST_SUCCEEDED request=" << handle.id()
+                << " plan=" << result.planDigest << '\n';
+    }
+    statisticsCompleted = true;
   }
-  if (turns.size() > 1)
+  if (turns.size() > 1 && diagnosticOutputEnabled())
     std::cout << "NATIVE_CONVERSATION_TURNS_SUCCEEDED count=" << turns.size() << '\n';
   runtime->close();
   (void)runtime->drain(std::chrono::seconds(5));
+  if (statisticsWriteFailed)
+    throw std::runtime_error("NATIVE_STATISTICS_WRITE_FAILED");
   return 0;
 }
 

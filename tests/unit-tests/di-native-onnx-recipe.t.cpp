@@ -51,11 +51,13 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace ndnsf::di {
@@ -721,6 +723,102 @@ checkNothingActivated(const std::filesystem::path& cacheDir,
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec182OnnxWorkerProtocol)
+
+namespace {
+
+class WorkerDiscoveryFixture
+{
+public:
+  WorkerDiscoveryFixture()
+    : m_cwd(std::filesystem::current_path())
+  {
+    if (const char* value = std::getenv("NDNSF_DI_WORKER_BINARY")) {
+      m_override = value;
+    }
+    auto pattern = (std::filesystem::temp_directory_path() / "spec217-worker-XXXXXX").string();
+    if (mkdtemp(pattern.data()) == nullptr) {
+      throw std::runtime_error("cannot create worker discovery fixture");
+    }
+    root = pattern;
+    unsetenv("NDNSF_DI_WORKER_BINARY");
+  }
+
+  ~WorkerDiscoveryFixture()
+  {
+    std::error_code ignored;
+    std::filesystem::current_path(m_cwd, ignored);
+    if (m_override) setenv("NDNSF_DI_WORKER_BINARY", m_override->c_str(), 1);
+    else unsetenv("NDNSF_DI_WORKER_BINARY");
+    std::filesystem::remove_all(root, ignored);
+  }
+
+  std::filesystem::path
+  writeWorker(const std::string& name, const std::string& content = "worker fixture")
+  {
+    const auto path = root / name;
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary);
+    output << content;
+    output.close();
+    if (!output) throw std::runtime_error("cannot write worker fixture");
+    std::filesystem::permissions(path, std::filesystem::perms::owner_all);
+    return path;
+  }
+
+  std::filesystem::path root;
+
+private:
+  std::filesystem::path m_cwd;
+  std::optional<std::string> m_override;
+};
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(InstalledWorkerOverrideCapturesActualBytes)
+{
+  WorkerDiscoveryFixture fixture;
+  const std::string content = "explicit worker bytes";
+  const auto path = fixture.writeWorker("explicit worker", content);
+  BOOST_REQUIRE_EQUAL(setenv("NDNSF_DI_WORKER_BINARY", path.c_str(), 1), 0);
+  const auto resolved = resolveNativeOnnxWorkerLocation();
+  BOOST_CHECK_EQUAL(resolved.path, path.string());
+  BOOST_CHECK_EQUAL(resolved.sha256,
+                    sha256HexOf(std::vector<std::uint8_t>(content.begin(), content.end())));
+}
+
+BOOST_AUTO_TEST_CASE(InstalledWorkerInvalidOverrideNeverFallsBack)
+{
+  WorkerDiscoveryFixture fixture;
+  const auto empty = fixture.writeWorker("empty", "");
+  const auto nonExecutable = fixture.writeWorker("not-executable");
+  std::filesystem::permissions(nonExecutable, std::filesystem::perms::owner_read);
+  const auto oversized = fixture.writeWorker("oversized");
+  std::filesystem::resize_file(oversized, 256ULL * 1024 * 1024 + 1);
+  const auto fifo = fixture.root / "fifo";
+  BOOST_REQUIRE_EQUAL(mkfifo(fifo.c_str(), 0600), 0);
+  for (const auto& path : {fixture.root / "missing", fixture.root, empty,
+                           nonExecutable, oversized, fifo, std::filesystem::path("relative")}) {
+    BOOST_REQUIRE_EQUAL(setenv("NDNSF_DI_WORKER_BINARY", path.c_str(), 1), 0);
+    BOOST_CHECK_EXCEPTION(resolveNativeOnnxWorkerLocation(), std::runtime_error,
+      [] (const std::runtime_error& error) {
+        return std::string(error.what()) == "DI_NATIVE_ONNX_WORKER_PREFLIGHT";
+      });
+  }
+}
+
+BOOST_AUTO_TEST_CASE(InstalledWorkerIgnoresCheckoutAndWorkingDirectory)
+{
+  WorkerDiscoveryFixture fixture;
+  const auto expected = resolveNativeOnnxWorkerLocation();
+  fixture.writeWorker("build/DI_NativeOnnxAssemblyWorker");
+  fixture.writeWorker("build-nac182/DI_NativeOnnxAssemblyWorker");
+  fixture.writeWorker("DI_NativeOnnxAssemblyWorker");
+  std::filesystem::current_path(fixture.root);
+  const auto actual = resolveNativeOnnxWorkerLocation();
+  BOOST_CHECK_EQUAL(actual.path, expected.path);
+  BOOST_CHECK_EQUAL(actual.sha256, expected.sha256);
+  if (!actual.path.empty()) BOOST_CHECK(std::filesystem::path(actual.path).is_absolute());
+}
 
 // ---------------------------------------------------------------------------
 // Pure frame parsing and decoder state.

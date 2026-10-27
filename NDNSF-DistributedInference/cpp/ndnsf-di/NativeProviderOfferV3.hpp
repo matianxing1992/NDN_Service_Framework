@@ -1,5 +1,7 @@
 #pragma once
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeObservedOfferV3.hpp"
+
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -19,6 +21,10 @@ struct NativeProviderOfferV3Config
   std::vector<std::string> devices;
   bool canProvision = true;
   bool hasModel = false;
+  // Required for GPU offers: one native memory observation per visible device,
+  // captured no more than two seconds ago. Called once; the same immutable
+  // snapshot is signed and emitted. Missing/invalid samples yield a negative ACK.
+  std::function<std::vector<NativeDeviceResourceObservationV3>(std::uint64_t)> observeResources;
   std::function<std::string(const std::string&)> signDigest;
 };
 

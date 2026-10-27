@@ -695,7 +695,8 @@ ProviderRoleWorker::enqueueReady(WorkItem item)
     }
     m_queue.push_back(std::move(item));
   }
-  if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+  if (const auto* timing = std::getenv("NDNSF_DI_RUNTIME_TIMING");
+      timing != nullptr && *timing != '\0' && *timing != '0') {
     logRuntimeTrace("NDNSF_DI_WORKER event=enqueue_ready");
   }
   m_cv.notify_one();
@@ -1021,7 +1022,8 @@ ProviderRoleResult
 ProviderRoleWorker::runReadyRole(const WorkItem& item)
 {
   if (item.executionGuard) item.executionGuard();
-  if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+  if (const auto* timing = std::getenv("NDNSF_DI_RUNTIME_TIMING");
+      timing != nullptr && *timing != '\0' && *timing != '0') {
     logRuntimeTrace("NDNSF_DI_WORKER event=run_ready role=" + item.role.role);
   }
   if (item.collective.has_value()) {
@@ -1209,6 +1211,12 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
                              result.exactForwardCacheHit);
   }
   result.runtimeMetrics = runner->runtimeMetricsSnapshot();
+  if (result.runtimeMetrics && result.runtimeMetrics->lastBackendExecution &&
+      (result.exactForwardCacheHit || !result.runtimeMetrics->lastBackendExecution->matches(ctx))) {
+    // Another serialized caller may have advanced a shared runner's snapshot.
+    // A cached result did not run the backend either. Never charge either call.
+    result.runtimeMetrics->lastBackendExecution.reset();
+  }
   if (item.role.streamingStateExecution &&
       !result.runnerSupportsOpaqueStateHandles) {
     // Capture the state successor before the dependency publication loop

@@ -1,316 +1,372 @@
+from waflib import Utils
+
 top = '..'
 
 def build(bld):
+    runtime_libdir = Utils.subst_vars('${LIBDIR}', bld.env)
+    bld.program(name='ndnsf-identity-check',
+                target='ndnsf-identity-check',
+                source=['identity-check.cpp'],
+                use='NDN_CXX',
+                install_path='${BINDIR}')
     bld.program(name='App_ServiceController',
                 target='App_ServiceController',
                 source=['App_ServiceController.cpp'],
+                rpath=[runtime_libdir],
                 includes=['..'],
                 use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path='${BINDIR}')
 
-    bld.program(name='App_Provider',
-                target='App_Provider',
-                source=['App_Provider.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+    if 'uav' in bld.env.NDNSF_COMPONENTS:
+        bld.program(name='App_Provider',
+                    target='App_Provider',
+                    source=['App_Provider.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='App_User',
-                target='App_User',
-                source=['App_User.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='App_User',
+                    target='App_User',
+                    source=['App_User.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='LiveStreamProvider',
-                target='LiveStreamProvider',
-                source=['LiveStreamProvider.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='LiveStreamProvider',
+                    target='LiveStreamProvider',
+                    source=['LiveStreamProvider.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='LiveStreamConsumer',
-                target='LiveStreamConsumer',
-                source=['LiveStreamConsumer.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='LiveStreamConsumer',
+                    target='LiveStreamConsumer',
+                    source=['LiveStreamConsumer.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='StreamFacadeProvider',
-                target='StreamFacadeProvider',
-                source=['StreamFacadeProvider.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='StreamFacadeProvider',
+                    target='StreamFacadeProvider',
+                    source=['StreamFacadeProvider.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='StreamFacadeConsumer',
-                target='StreamFacadeConsumer',
-                source=['StreamFacadeConsumer.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='StreamFacadeConsumer',
+                    target='StreamFacadeConsumer',
+                    source=['StreamFacadeConsumer.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='App_CertificateBootstrapTamper',
-                target='App_CertificateBootstrapTamper',
-                source=['App_CertificateBootstrapTamper.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='App_CertificateBootstrapTamper',
+                    target='App_CertificateBootstrapTamper',
+                    source=['App_CertificateBootstrapTamper.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='App_TextToImageProvider',
-                target='App_TextToImageProvider',
-                source=['App_TextToImageProvider.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='App_TextToImageProvider',
+                    target='App_TextToImageProvider',
+                    source=['App_TextToImageProvider.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='App_TextToImageUser',
-                target='App_TextToImageUser',
-                source=['App_TextToImageUser.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='App_TextToImageUser',
+                    target='App_TextToImageUser',
+                    source=['App_TextToImageUser.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='App_SvsLatency',
-                target='App_SvsLatency',
-                source=['App_SvsLatency.cpp'],
-                includes=['..'],
-                use='NDN_CXX NDN_SVS BOOST DL',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='App_SvsLatency',
+                    target='App_SvsLatency',
+                    source=['App_SvsLatency.cpp'],
+                    includes=['..'],
+                    use='NDN_CXX NDN_SVS BOOST DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='CryptoMicrobench',
-                target='CryptoMicrobench',
-                source=['CryptoMicrobench.cpp'],
-                includes=['..'],
-                use='NDN_CXX BOOST DL',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='CryptoMicrobench',
+                    target='CryptoMicrobench',
+                    source=['CryptoMicrobench.cpp'],
+                    includes=['..'],
+                    use='NDN_CXX BOOST DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='App_IntermittentProvider',
-                target='App_IntermittentProvider',
-                source=['App_IntermittentProvider.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='App_IntermittentProvider',
+                    target='App_IntermittentProvider',
+                    source=['App_IntermittentProvider.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='App_IntermittentUser',
-                target='App_IntermittentUser',
-                source=['App_IntermittentUser.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='App_IntermittentUser',
+                    target='App_IntermittentUser',
+                    source=['App_IntermittentUser.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='AI_DistributedCollaborationProvider',
-                target='AI_DistributedCollaborationProvider',
-                source=['AI_DistributedCollaborationProvider.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='AI_DistributedCollaborationProvider',
+                    target='AI_DistributedCollaborationProvider',
+                    source=['AI_DistributedCollaborationProvider.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='AI_User',
-                target='AI_User',
-                source=['AI_User.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='AI_User',
+                    target='AI_User',
+                    source=['AI_User.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='Payment_CollaborationProvider',
-                target='Payment_CollaborationProvider',
-                source=['Payment_CollaborationProvider.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='Payment_CollaborationProvider',
+                    target='Payment_CollaborationProvider',
+                    source=['Payment_CollaborationProvider.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='Payment_User',
-                target='Payment_User',
-                source=['Payment_User.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='Payment_User',
+                    target='Payment_User',
+                    source=['Payment_User.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    # GCC 9 intermittently ICEs in the rtl-cmpelim pass on these intentionally
-    # large application translation units.  This pass is not needed for
-    # correctness; disable only that pass, only for GCC, and retain all other
-    # configured optimization and warning flags.
-    uav_cxxflags = ['-Wno-error=extra-semi', '-g0']
-    if bld.env.CXX_NAME == 'gcc':
-        uav_cxxflags.append('-fdisable-rtl-cmpelim')
+        # GCC 9 intermittently ICEs in the rtl-cmpelim pass on these intentionally
+        # large application translation units.  This pass is not needed for
+        # correctness; disable only that pass, only for GCC, and retain all other
+        # configured optimization and warning flags.
+    if 'uav' in bld.env.NDNSF_COMPONENTS:
+        uav_cxxflags = ['-Wno-error=extra-semi', '-g0']
+        if bld.env.CXX_NAME == 'gcc':
+            uav_cxxflags.append('-fdisable-rtl-cmpelim')
 
-    bld.program(name='UavDroneApp',
-                target='UavDroneApp',
-                source=[
-                    '../NDNSF-UAV-APP/drone/UavDroneApp.cpp',
-                    '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
-                    '../NDNSF-UAV-APP/shared/UavMissionSession.cpp',
-                    '../NDNSF-UAV-APP/shared/UavDetectorProvider.cpp',
-                    '../NDNSF-UAV-APP/shared/UavMultiViewRecognition.cpp',
-                    '../NDNSF-UAV-APP/shared/UavCollaborationPolicy.cpp',
-                    '../NDNSF-UAV-APP/shared/UavDiagnostics.cpp',
-                    '../NDNSF-UAV-APP/drone/UavCollaborationParticipant.cpp',
-                    '../NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.cpp',
-                    '../NDNSF-UAV-APP/shared/UavVideoPipeline.cpp',
-                    '../NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
-                ],
-                includes=['..', '../NDNSF-UAV-APP/shared', '../NDNSF-DistributedRepo/include'],
-                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm sqlite3 GSTREAMER',
-                cxxflags=uav_cxxflags,
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path='${BINDIR}')
+        bld.program(name='UavDroneApp',
+                    target='UavDroneApp',
+                    source=[
+                        '../NDNSF-UAV-APP/drone/UavDroneApp.cpp',
+                        '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                        '../NDNSF-UAV-APP/shared/UavMissionSession.cpp',
+                        '../NDNSF-UAV-APP/shared/UavDetectorProvider.cpp',
+                        '../NDNSF-UAV-APP/shared/UavMultiViewRecognition.cpp',
+                        '../NDNSF-UAV-APP/shared/UavCollaborationPolicy.cpp',
+                        '../NDNSF-UAV-APP/shared/UavDiagnostics.cpp',
+                        '../NDNSF-UAV-APP/drone/UavCollaborationParticipant.cpp',
+                        '../NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.cpp',
+                        '../NDNSF-UAV-APP/shared/UavVideoPipeline.cpp',
+                        '../NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
+                    ],
+                    includes=['..', '../NDNSF-UAV-APP/shared', '../NDNSF-DistributedRepo/include'],
+                    use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm sqlite3 GSTREAMER',
+                    cxxflags=uav_cxxflags,
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path='${BINDIR}')
 
-    bld.program(name='UavGroundStationApp',
-                target='UavGroundStationApp',
-                source=[
-                    '../NDNSF-UAV-APP/ground-station/UavGroundStationApp.cpp',
-                    '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
-                    '../NDNSF-UAV-APP/shared/UavMissionSession.cpp',
-                    '../NDNSF-UAV-APP/shared/UavDetectorProvider.cpp',
-                    '../NDNSF-UAV-APP/shared/UavMultiViewRecognition.cpp',
-                    '../NDNSF-UAV-APP/shared/UavCollaborationPolicy.cpp',
-                    '../NDNSF-UAV-APP/shared/UavDiagnostics.cpp',
-                    '../NDNSF-UAV-APP/drone/UavCollaborationParticipant.cpp',
-                    '../NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.cpp',
-                    '../NDNSF-UAV-APP/shared/UavVideoPipeline.cpp',
-                    '../NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
-                ],
-                includes=['..', '../NDNSF-UAV-APP/shared'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm GSTREAMER',
-                cxxflags=uav_cxxflags,
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path='${BINDIR}')
+        bld.program(name='UavGroundStationApp',
+                    target='UavGroundStationApp',
+                    source=[
+                        '../NDNSF-UAV-APP/ground-station/UavGroundStationApp.cpp',
+                        '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                        '../NDNSF-UAV-APP/shared/UavMissionSession.cpp',
+                        '../NDNSF-UAV-APP/shared/UavDetectorProvider.cpp',
+                        '../NDNSF-UAV-APP/shared/UavMultiViewRecognition.cpp',
+                        '../NDNSF-UAV-APP/shared/UavCollaborationPolicy.cpp',
+                        '../NDNSF-UAV-APP/shared/UavDiagnostics.cpp',
+                        '../NDNSF-UAV-APP/drone/UavCollaborationParticipant.cpp',
+                        '../NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.cpp',
+                        '../NDNSF-UAV-APP/shared/UavVideoPipeline.cpp',
+                        '../NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
+                    ],
+                    includes=['..', '../NDNSF-UAV-APP/shared'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm GSTREAMER',
+                    cxxflags=uav_cxxflags,
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path='${BINDIR}')
 
-    bld.program(name='UavSensorStreamNode',
-                target='UavSensorStreamNode',
-                source=[
-                    '../NDNSF-UAV-APP/tools/uav_sensor_stream_node.cpp',
-                    '../NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
-                ],
-                includes=['..', '../NDNSF-UAV-APP/shared'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path='${BINDIR}')
+        bld.program(name='UavSensorStreamNode',
+                    target='UavSensorStreamNode',
+                    source=[
+                        '../NDNSF-UAV-APP/tools/uav_sensor_stream_node.cpp',
+                        '../NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
+                    ],
+                    includes=['..', '../NDNSF-UAV-APP/shared'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path='${BINDIR}')
 
-    # Spec191 native source/compute process.  Video decoding and real CPU
-    # tracking remain in the bounded Python worker; this binary owns only the
-    # NDNSF Provider boundary and never opens the compute node's source files.
-    bld.program(name='UavTrackingNode',
-                target='UavTrackingNode',
-                source=[
-                    '../NDNSF-UAV-APP/tracking/UavTrackingNode.cpp',
-                    '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
-                    '../NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp',
-                    '../NDNSF-UAV-APP/shared/UavObservationSource.cpp',
-                    '../NDNSF-UAV-APP/shared/UavObservationStream.cpp',
-                    '../NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp',
-                    '../NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp',
-                    '../NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp',
-                    '../NDNSF-UAV-APP/shared/UavSourceGeneration.cpp',
-                ],
-                includes=['..', '../NDNSF-UAV-APP/shared'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path='${BINDIR}')
+        # Spec191 native source/compute process.  Video decoding and real CPU
+        # tracking remain in the bounded Python worker; this binary owns only the
+        # NDNSF Provider boundary and never opens the compute node's source files.
+        bld.program(name='UavTrackingNode',
+                    target='UavTrackingNode',
+                    source=[
+                        '../NDNSF-UAV-APP/tracking/UavTrackingNode.cpp',
+                        '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                        '../NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp',
+                        '../NDNSF-UAV-APP/shared/UavObservationSource.cpp',
+                        '../NDNSF-UAV-APP/shared/UavObservationStream.cpp',
+                        '../NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp',
+                        '../NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp',
+                        '../NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp',
+                        '../NDNSF-UAV-APP/shared/UavSourceGeneration.cpp',
+                    ],
+                    includes=['..', '../NDNSF-UAV-APP/shared'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path='${BINDIR}')
 
-    # Spec191's Python worker and display runner are installed beside the
-    # native tracking applications.  MiniNDN must never import either one
-    # from this checkout or from the build tree.
-    bld.install_files(
-        '${LIBEXECDIR}/ndnsf-uav/tracking',
-        [bld.path.parent.find_node(path) for path in [
-            'NDNSF-UAV-APP/tracking/observation_source.py',
-            'NDNSF-UAV-APP/tracking/observation_schema.py',
-            'NDNSF-UAV-APP/tracking/tracking_worker.py',
-            'NDNSF-UAV-APP/tracking/tracking_display.py',
-            'NDNSF-UAV-APP/tracking/display_clock.py',
-            'NDNSF-UAV-APP/tracking/motion_estimator.py',
-            'NDNSF-UAV-APP/tracking/motion_schema.py',
-        ]])
-    bld.install_files('${INCLUDEDIR}/ndnsf/uav', [
-        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavObservationSource.hpp')])
+        # Spec191's Python worker and display runner are installed beside the
+        # native tracking applications.  MiniNDN must never import either one
+        # from this checkout or from the build tree.
+        bld.install_files(
+            '${LIBEXECDIR}/ndnsf-uav/tracking',
+            [bld.path.parent.find_node(path) for path in [
+                'NDNSF-UAV-APP/tracking/observation_source.py',
+                'NDNSF-UAV-APP/tracking/observation_schema.py',
+                'NDNSF-UAV-APP/tracking/tracking_worker.py',
+                'NDNSF-UAV-APP/tracking/tracking_display.py',
+                'NDNSF-UAV-APP/tracking/display_clock.py',
+                'NDNSF-UAV-APP/tracking/motion_estimator.py',
+                'NDNSF-UAV-APP/tracking/motion_schema.py',
+            ]])
+        bld.install_files('${INCLUDEDIR}/ndnsf/uav', [
+            bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavObservationSource.hpp')])
 
-    bld.program(name='UavTrackingGroundStation',
-                target='UavTrackingGroundStation',
-                source=[
-                    '../NDNSF-UAV-APP/tracking/UavTrackingGroundStation.cpp',
-                    '../NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp',
-                    '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
-                    '../NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp',
-                    '../NDNSF-UAV-APP/shared/UavSourceGeneration.cpp',
-                ],
-                includes=['..', '../NDNSF-UAV-APP/shared',
-                          '../NDNSF-UAV-APP/tracking'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path='${BINDIR}')
+        bld.program(name='UavTrackingGroundStation',
+                    target='UavTrackingGroundStation',
+                    source=[
+                        '../NDNSF-UAV-APP/tracking/UavTrackingGroundStation.cpp',
+                        '../NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp',
+                        '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                        '../NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp',
+                        '../NDNSF-UAV-APP/shared/UavSourceGeneration.cpp',
+                    ],
+                    includes=['..', '../NDNSF-UAV-APP/shared',
+                              '../NDNSF-UAV-APP/tracking'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path='${BINDIR}')
 
-    bld.program(name='App_WifiMobilityProvider',
-                target='App_WifiMobilityProvider',
-                source=['App_IntermittentProvider.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='App_WifiMobilityProvider',
+                    target='App_WifiMobilityProvider',
+                    source=['App_IntermittentProvider.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    bld.program(name='App_WifiMobilityUser',
-                target='App_WifiMobilityUser',
-                source=['App_IntermittentUser.cpp'],
-                includes=['..'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+        bld.program(name='App_WifiMobilityUser',
+                    target='App_WifiMobilityUser',
+                    source=['App_IntermittentUser.cpp'],
+                    includes=['..'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path=None)
 
-    # Bounded native assembly worker (spec182 T006-C / OA03): the fixed
-    # installed binary that runNativeOnnxAssemblyWorker spawns for every cold
-    # certified assembly.  Built unconditionally (with the UAV/App binaries,
-    # before the examples gate) because the Spec182OnnxWorkerProtocol
-    # subprocess cases and the L0 install evidence resolve the same binary
-    # from a --with-tests tree.  It carries only the certified-assembly
-    # chain TU (OA04 in NativeOnnxRecipeAssembler.cpp) and the worker
-    # protocol TU; no provider runtime, no ProtectedRuntime secrets, and no
-    # path-command entry surface: stdout is protocol bytes only and main()
-    # only dispatches into the worker entry.
-    bld.program(name='di-native-assembly-worker',
-                target='../DI_NativeOnnxAssemblyWorker',
-                source=(["DI_NativeOnnxAssemblyWorker.cpp"] +
-                        bld.path.parent.ant_glob([
-                            'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
-                            'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp',
-                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.cpp',
-                            'NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp',
-                        ])),
-                includes=['..', '../ndn-service-framework',
-                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL',
-                cxxflags=['-fPIC', '-pthread', '-ffunction-sections', '-fdata-sections'],
-                linkflags=['-pthread', '-Wl,--gc-sections'],
-                install_path='${LIBEXECDIR}/ndnsf-di')
+    if 'di' in bld.env.NDNSF_COMPONENTS:
+        bld.program(name='ndnsf-di-device-query',
+                    target='../ndnsf-di-device-query',
+                    source=['device-query.cpp'],
+                    includes=['..'],
+                    use='BOOST DL',
+                    install_path='${LIBEXECDIR}/ndnsf-di')
+
+        # Bounded native assembly worker (spec182 T006-C / OA03): the fixed
+        # installed binary that runNativeOnnxAssemblyWorker spawns for every cold
+        # certified assembly.  Built unconditionally (with the UAV/App binaries,
+        # before the examples gate) because the Spec182OnnxWorkerProtocol
+        # subprocess cases and the L0 install evidence resolve the same binary
+        # from a --with-tests tree.  It carries only the certified-assembly
+        # chain TU (OA04 in NativeOnnxRecipeAssembler.cpp) and the worker
+        # protocol TU; no provider runtime, no ProtectedRuntime secrets, and no
+        # path-command entry surface: stdout is protocol bytes only and main()
+        # only dispatches into the worker entry.
+        bld.program(name='di-native-assembly-worker',
+                    target='../DI_NativeOnnxAssemblyWorker',
+                    source=(["DI_NativeOnnxAssemblyWorker.cpp"] +
+                            bld.path.parent.ant_glob([
+                                'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
+                                'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp',
+                                'NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.cpp',
+                                'NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp',
+                            ])),
+                    includes=['..', '../ndn-service-framework',
+                              '../NDNSF-DistributedInference/cpp/adapters/onnx'],
+                    use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL DL',
+                    cxxflags=['-fPIC', '-pthread', '-ffunction-sections', '-fdata-sections'],
+                    linkflags=['-pthread', '-Wl,--gc-sections'],
+                    install_path='${LIBEXECDIR}/ndnsf-di')
+
+        # Installed DI roles are production programs, independent of example builds.
+        bld.program(name='DI_NativeRequester',
+                    target='DI_NativeRequester',
+                    source=['DI_NativeRequester.cpp'],
+                    rpath=[runtime_libdir],
+                    includes=['..', '../NDNSF-DistributedRepo/include'],
+                    use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path='${BINDIR}')
+
+        bld.program(name='DI_NativeArtifactAuthority',
+                    target='DI_NativeArtifactAuthority',
+                    source=['DI_NativeArtifactAuthority.cpp'],
+                    rpath=[runtime_libdir],
+                    includes=['..'],
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path='${BINDIR}')
+
+        bld.program(name='di-native-provider',
+                    target='di-native-provider',
+                    source=["DI_NativeProviderExecutable.cpp"],
+                    rpath=[runtime_libdir],
+                    includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include',
+                              '../NDNSF-DistributedInference/cpp/adapters/onnx'],
+                    use='ndnsf-distributed-inference ndn-service-framework BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
+                    cxxflags=['-fPIC', '-pthread'],
+                    # Provide the standalone Provider with the same staged-library
+                    # lookup fallback as the requester and native smoke targets.
+                    # The packaging gate still has to verify every transitive
+                    # dependency; this flag alone does not make host-bound
+                    # NAC-ABE/SVS/NDNSD paths relocatable.
+                    linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
+                    install_path='${BINDIR}')
+
+        # Native qualification is part of the installed DI closure.
+        bld.program(name='spec190-multiturn-oracle',
+                    target='spec190-multiturn-oracle',
+                    source=['Spec189TwoProviderOracle.cpp'],
+                    rpath=[runtime_libdir],
+                    includes=['..', '../NDNSF-DistributedRepo/include'],
+                    use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path='${BINDIR}')
 
     if not bld.env.WITH_EXAMPLES:
         return
-
-    bld.program(name='DI_NativeRequester',
-                target='DI_NativeRequester',
-                source=['DI_NativeRequester.cpp'],
-                includes=['..', '../NDNSF-DistributedRepo/include'],
-                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path='${BINDIR}')
 
     bld.program(name='DI_NetworkProbeCalibration',
                 target='DI_NetworkProbeCalibration',
@@ -333,30 +389,11 @@ def build(bld):
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
                     install_path='${BINDIR}')
 
-    bld.program(name='DI_NativeArtifactAuthority',
-                target='DI_NativeArtifactAuthority',
-                source=['DI_NativeArtifactAuthority.cpp'],
-                includes=['..'],
-                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path='${BINDIR}')
-
     # Spec189 full-path C++ oracle.  The MiniNDN runner supplies process logs;
     # this selector owns the product assertion over the native provider stages
     # and links the same canonical-JSON boundary as the DI production path.
     bld.program(name='spec189-two-provider-oracle',
                 target='spec189-two-provider-oracle',
-                source=['Spec189TwoProviderOracle.cpp'],
-                includes=['..', '../NDNSF-DistributedRepo/include'],
-                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path='${BINDIR}')
-
-    # Spec190 reuses the same production C++ oracle rules with a distinct
-    # installed identity. Keep the Spec189 target for compatibility while
-    # making the candidate/experiment boundary explicit for Spec190.
-    bld.program(name='spec190-multiturn-oracle',
-                target='spec190-multiturn-oracle',
                 source=['Spec189TwoProviderOracle.cpp'],
                 includes=['..', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
@@ -381,6 +418,8 @@ def build(bld):
                 target='spec189-cli-oracle-tests',
                 source=[bld.path.parent.find_node('tests/fixtures/spec189/cli-oracle.cpp')],
                 includes=['..'],
+                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
     di_native_session_sources = bld.path.parent.ant_glob([
@@ -630,21 +669,6 @@ def build(bld):
                 # lib/ sibling) instead of silently loading /usr/local.
                 linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
-
-    bld.program(name='di-native-provider',
-                target='di-native-provider',
-                source=["DI_NativeProviderExecutable.cpp"],
-                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include',
-                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='ndnsf-distributed-inference ndn-service-framework BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
-                cxxflags=['-fPIC', '-pthread'],
-                # Provide the standalone Provider with the same staged-library
-                # lookup fallback as the requester and native smoke targets.
-                # The packaging gate still has to verify every transitive
-                # dependency; this flag alone does not make host-bound
-                # NAC-ABE/SVS/NDNSD paths relocatable.
-                linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
-                install_path='${BINDIR}')
 
     bld.program(name='di-native-fault-provider',
                 target='di-native-fault-provider',

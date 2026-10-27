@@ -7,6 +7,8 @@ import importlib.util
 from pathlib import Path
 import re
 import subprocess
+import stat
+import shutil
 
 import pytest
 
@@ -15,11 +17,70 @@ ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE = ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/templates/development-runtime.def.in"
 
 
+@pytest.mark.parametrize('paths,accepted', [
+    ('$ORIGIN/../lib:/opt/ndnsf-di/current/lib:/opt/ndn-base/lib', True),
+    ('$ORIGIN:/opt/ndn-base/lib', True),
+    ('/src/ndnsf/build', False),
+    ('/src', False),
+    ('/opt/ndnsf-stage/lib', False),
+    ('/opt/ndnsf-di/current/lib-old', False),
+    ('/opt/ndnsf-di/current/other', False),
+    ('/opt/ndnsf-di/current/lib/../other', False),
+    ('/opt/ndnsf-di/current-other/lib', False),
+    ('/opt/ndnsf-di//current/lib', False),
+    ('/opt/ndnsf-di/current/./lib', False),
+])
+def test_native_elf_guard_accepts_only_exact_final_runtime_prefix(tmp_path, paths, accepted):
+    patcher = shutil.which('patchelf')
+    if not patcher:
+        pytest.skip('ELF fixture requires the container packaging patchelf tool')
+    native = tmp_path / 'native-fixture'
+    shutil.copyfile('/bin/true', native)
+    subprocess.run([patcher, '--set-rpath', paths, str(native)], check=True,
+                   capture_output=True, text=True)
+    observed = subprocess.check_output(['/usr/bin/readelf', '-d', str(native)], text=True)
+    assert paths in observed
+    text = TEMPLATE.read_text()
+    marker = "<<'NDNSF_ELF_PATHS'\n"
+    if marker in text:
+        guard = text.split(marker, 1)[1].split('\nNDNSF_ELF_PATHS', 1)[0]
+        command = ['python3', '-c', guard, str(native)]
+    else:
+        # Exercise the existing guard unchanged for the regression RED.
+        body = re.search(r'    for native_path in \\\n.*?; do\n(.*?)\n    done',
+                         text, re.DOTALL).group(1)
+        command = ['bash', '-c', 'native_path=$1\n' + body, 'fixture', str(native)]
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert (result.returncode == 0) is accepted, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('name', ['ndnsf-di-ops', 'NDNSF__DI...SDK', 'ndnsf',
+                                 'ndnsf_distributed_inference', 'py_repoclient',
+                                 'onnxruntime-gpu', 'setuptools'])
+def test_base_metadata_rejected_before_native_compilation(name):
+    from types import SimpleNamespace
+    text = TEMPLATE.read_text().split("    /opt/venv/bin/python - <<'PY'\n", 1)[1]
+    text = text.split('\nPY', 1)[0]
+    loop = next(node for node in ast.parse(text).body if isinstance(node, ast.For)
+                and isinstance(node.target, ast.Name) and node.target.id == 'distribution')
+    namespace = {'importlib': SimpleNamespace(metadata=SimpleNamespace(
+        distributions=lambda: [SimpleNamespace(metadata={'Name': name})])), 're': re}
+    code = compile(ast.Module(body=[loop], type_ignores=[]), '<base-purity>', 'exec')
+    if name in ('onnxruntime-gpu', 'setuptools'):
+        exec(code, namespace)
+    else:
+        with pytest.raises(AssertionError, match='BASE_CONTAINS_NDNSF_METADATA'):
+            exec(code, namespace)
+    assert TEMPLATE.read_text().index('BASE_CONTAINS_NDNSF_METADATA') < \
+        TEMPLATE.read_text().index('./waf configure')
+
+
 def test_installed_di_headers_reject_stale_missing_and_extra(tmp_path):
     text = TEMPLATE.read_text().split("cat > /opt/ndnsf-stage/manifest/verify-native.py <<'PY'\n", 1)[1].split('\nPY', 1)[0]
     tree = ast.parse(text)
     function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'verify_di_headers')
-    namespace = {'Path': Path, 'json': json, 'hashlib': hashlib, 'os': os}
+    namespace = {'Path': Path, 'json': json, 'hashlib': hashlib, 'os': os,
+                 'profile': 'di-runtime'}
     exec(compile(ast.Module(body=[function], type_ignores=[]), '<header-verifier>', 'exec'), namespace)
     verify = namespace['verify_di_headers']
     base, replay = tmp_path / 'base', tmp_path / 'replay'
@@ -32,6 +93,10 @@ def test_installed_di_headers_reject_stale_missing_and_extra(tmp_path):
     # Private source headers must not be exported merely because they exist.
     (source / 'private.hpp').write_text('internal implementation')
     (base / 'manifest').mkdir()
+    (base / 'manifest/source-seal.json').write_text(json.dumps({'files': [
+        {'path': 'NDNSF-DistributedInference/cpp/' + name,
+         'sha256': 'sha256:' + hashlib.sha256((source / name).read_bytes()).hexdigest()}
+        for name in ('api.hpp', 'tokenizer-abi.h')]}))
     (base / 'manifest/waf-install.json').write_text(json.dumps({
         'include/NDNSF-DistributedInference/cpp/' + name: {
             'sha256': hashlib.sha256((source / name).read_bytes()).hexdigest()}
@@ -104,6 +169,52 @@ def test_ndnsd_prefix_check_survives_system_include_filter(tmp_path):
     assert 'pkg-config --variable=includedir "$package"' in text
     assert 'pkg-config --cflags-only-I ndnsd' not in text
 
+
+@pytest.mark.parametrize('mutation,error', [
+    ('none', None), ('source', 'CHANGED'), ('metadata', 'CHANGED'),
+    ('missing', 'MISSING'), ('mode', 'MODE'), ('symlink', 'SYMLINK'),
+    ('escape', 'PATH_ESCAPE'),
+])
+def test_owned_python_payload_rejects_tampering_without_scanning_base(tmp_path, mutation, error):
+    text = TEMPLATE.read_text().split("cat > /opt/ndnsf-stage/manifest/verify-native.py <<'PY'\n", 1)[1].split('\nPY', 1)[0]
+    functions = [node for node in ast.parse(text).body if isinstance(node, ast.FunctionDef)
+                 and node.name in ('digest', 'python_payload', 'verify_python_payload')]
+    namespace = {'Path': Path, 'hashlib': hashlib, 'stat': stat}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), '<python-payload>', 'exec'), namespace)
+    stage = tmp_path / 'stage'
+    (stage / 'ndnsf_distributed_inference/ops').mkdir(parents=True)
+    module = stage / 'ndnsf_distributed_inference/ops/cluster.py'
+    module.write_text('owned source')
+    (stage / 'ndnsf_di_ops.dist-info').mkdir()
+    metadata = stage / 'ndnsf_di_ops.dist-info/METADATA'
+    metadata.write_text('Name: ndnsf-di-ops\n')
+    rows = namespace['python_payload'](stage)
+    site = tmp_path / 'venv'
+    import shutil
+    shutil.copytree(stage, site)
+    # Unrelated base packages remain outside this repository-owned inventory.
+    (site / 'base_dependency.py').write_text('base-owned')
+    assert 'base_dependency.py' not in rows
+    relative = module.relative_to(stage)
+    if mutation == 'source':
+        (site / relative).write_text('changed source')
+    elif mutation == 'metadata':
+        (site / metadata.relative_to(stage)).write_text('changed metadata')
+    elif mutation == 'missing':
+        (site / relative).unlink()
+    elif mutation == 'mode':
+        (site / relative).chmod(0o700)
+    elif mutation == 'symlink':
+        (site / relative).unlink()
+        (site / relative).symlink_to(module)
+    elif mutation == 'escape':
+        rows['../outside.py'] = dict(next(iter(rows.values())))
+    if error:
+        with pytest.raises(AssertionError, match='PYTHON_PAYLOAD_' + error):
+            namespace['verify_python_payload'](site, rows)
+    else:
+        namespace['verify_python_payload'](site, rows)
+
 spec = importlib.util.spec_from_file_location(
     "portable_template_boundary", ROOT / "packaging/ndnsf-di-container/lib/spec170_sif_build_boundary.py")
 boundary = importlib.util.module_from_spec(spec)
@@ -122,6 +233,10 @@ def render(tmp_path):
               "@BASE_SIF@": str(tmp_path / "base.sif"),
               "@SEAL_DIGEST@": "sha256:" + "a" * 64,
               "@NATIVE_DIGEST@": "sha256:" + "b" * 64,
+              "@BASE_DIGEST@": "sha256:" + "c" * 64,
+              "@BASE_SDK_DIGEST@": "sha256:" + "d" * 64,
+              "@LOCK_DIGEST@": "sha256:" + "e" * 64,
+              "@RUNTIME_PROFILE@": "di-runtime",
               "@RELEASE@": "unit-static-only"}
     assert set(re.findall(r"@[A-Z_]+@", text)) == set(values)
     for key, value in values.items():
@@ -160,9 +275,10 @@ def test_explicit_core_directory_rejects_dependency_only_base(tmp_path):
 
 
 @pytest.mark.parametrize('old,new,reason', [
-    ('./waf install -j4 -v --destdir=/opt/ndnsf-waf-dest', './waf -j4', 'WAF_INSTALL_CONTRACT_MISSING'),
+    ('./waf install -j2 -v --destdir=/opt/ndnsf-waf-dest', './waf -j2', 'WAF_INSTALL_CONTRACT_MISSING'),
     ('NDNSF_SKIP_DEV_PIP_INSTALL=1', 'NDNSF_SKIP_DEV_PIP_INSTALL=0', 'WAF_INSTALL_CONTRACT_MISSING'),
     ('--with-tests', '', 'WAF_INSTALL_CONTRACT_MISSING'),
+    (',ndnsf-distributed-repo,', ',', 'WAF_INSTALL_CONTRACT_MISSING'),
     ('%files from builder\n    /opt/ndnsf-stage /opt/ndnsf-candidate', '%files from builder', 'WAF_INSTALL_TRANSFER_MISSING'),
     ('cp -a /opt/ndnsf-candidate/. /opt/ndnsf-di/current/', ':', 'WAF_INSTALL_FINAL_COPY_MISSING'),
 ])
@@ -185,6 +301,8 @@ def test_waf_payload_replaces_production_copy_list():
         assert stale not in text
     assert 'cp -a /opt/ndnsf-candidate/. /opt/ndnsf-di/current/' in text
     assert 'di-native-assembly-worker' in text
+    assert "('deviceQuery', base / 'libexec/ndnsf-di/ndnsf-di-device-query'" in text
+    assert '/opt/ndnsf-stage/libexec/ndnsf-di/ndnsf-di-device-query' in text
     assert '$ORIGIN/../../lib:/opt/ndn-base/lib' in text
     assert 'NDNSF_DI_WORKER_BINARY=/opt/ndnsf-di/current/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker' in text
     # Optional test fixtures now share the same Waf install boundary.

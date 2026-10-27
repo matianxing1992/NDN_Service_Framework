@@ -739,11 +739,17 @@ semantics are unchanged.
 
 ## Python Binding
 
-Install the native extension with:
+From the checkout root, install the native stack and Python wheels with:
 
 ```bash
-python3 -m pip install -e NDNSF-DistributedRepo/pythonWrapper
+./install_ndnsf_stack.sh
 ```
+
+Waf installs the C++ targets, public headers and Repo archive; it does not run
+pip. The installer builds the binding wheel from its two binding files and
+links the same Waf archive. Standalone wheel builds require the matching
+installed Core pkg-config metadata, Repo archive and native-library digest
+receipt; a source checkout does not replace that SDK.
 
 The `py_repoclient` package projects C++ artifact configs, values, results, and
 methods. It converts `Path` arguments and maps native fetch errors. It does not

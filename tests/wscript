@@ -5,6 +5,38 @@ top = '..'
 import os
 
 def build(bld):
+    offer_source = bld.srcnode.find_node(
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp')
+    bld.program(target='../spec217-provider-offer-tests', name='spec217-provider-offer-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/native-provider-offer-gpu.t.cpp'),
+                        offer_source],
+                includes=['..'], use='BOOST OPENSSL DL',
+                cxxflags=['-std=c++17', '-O0', '-g0'], install_path=None)
+    for name, library, version in (('cuda', 'cudart', '12'), ('driver', 'cuda', '1'),
+                                   ('nvml', 'nvidia-ml', '1')):
+        bld.shlib(name='spec217-' + name + '-query-fixture',
+                  target='../spec217-gpu-fixtures/' + library, vnum=version,
+                  source=['fixtures/spec217-gpu-query.cpp'], install_path=None)
+    bld.program(target='../spec217-device-query-tests', name='spec217-device-query-tests',
+                source=['main.cpp', 'unit-tests/spec217-device-query.t.cpp'],
+                includes=['..'], use='BOOST', cxxflags=['-std=c++17', '-O0', '-g0'],
+                install_path=None)
+    bld.program(target='../spec217-credentials-tests', name='spec217-credentials-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/spec217-controller-certificate.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX BOOST OPENSSL',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+    bld.program(target='../spec217-identity-tests', name='spec217-identity-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/spec217-identity-check.t.cpp'),
+                        bld.path.find_node('unit-tests/spec217-deployment-readiness.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX BOOST OPENSSL',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
     bld.program(target='../message-validator-trust-tests',
                 name='message-validator-trust-tests',
                 source=[bld.path.find_node('main.cpp'),
@@ -636,10 +668,11 @@ def build(bld):
     # Exercise the real shared logging sink without model or network fixtures.
     bld.program(target='../spec189-evidence-lines', name='spec189-evidence-lines',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec189-evidence-lines.t.cpp'),
-                        bld.path.parent.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp')],
-                includes=framework_includes, use='NDN_CXX BOOST',
-                cxxflags=['-fPIC', '-O0', '-g0'], install_path=None)
+                        bld.path.find_node('unit-tests/spec189-evidence-lines.t.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
+                cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Spec190 phase timing parser and canonical evidence record.  The test
     # uses the production native timing sink and does not substitute a Python

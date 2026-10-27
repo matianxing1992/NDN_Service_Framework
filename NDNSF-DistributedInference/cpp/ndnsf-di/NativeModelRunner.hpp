@@ -37,8 +37,48 @@ struct NativeModelRunnerSpec
   std::optional<NativeProviderResidencyIdentityV4> residencyIdentity;
 };
 
+/** Immutable binding shared by observations from the same request and role. */
+struct NativeBackendExecutionIdentity
+{
+  std::string requestId;
+  std::string sessionId;
+  std::string role;
+  std::string providerBootId;
+  std::uint64_t attemptEpoch = 0;
+
+  bool
+  matches(const RoleExecutionContext& context) const noexcept
+  {
+    return requestId == context.requestId && sessionId == context.sessionId &&
+           role == context.role && providerBootId == context.providerBootId &&
+           attemptEpoch == context.attemptEpoch;
+  }
+};
+
+/** One backend call; negative CPU counters mean that clock is unavailable. */
+struct NativeBackendExecutionTiming
+{
+  // Snapshot copies share immutable identity without allocating new strings.
+  std::shared_ptr<const NativeBackendExecutionIdentity> identity;
+  std::uint64_t inferenceEpoch = 0;
+  std::int64_t startedSteadyNs = 0;
+  std::int64_t finishedSteadyNs = 0;
+  std::int64_t startedProcessCpuNs = -1;
+  std::int64_t finishedProcessCpuNs = -1;
+  std::int64_t startedThreadCpuNs = -1;
+  std::int64_t finishedThreadCpuNs = -1;
+  // Run and any required output synchronization completed, not the request.
+  bool completed = false;
+
+  bool
+  matches(const RoleExecutionContext& context) const noexcept
+  {
+    return identity && identity->matches(context) && inferenceEpoch == context.inferenceEpoch;
+  }
+};
+
 /**
- * Runtime transfer/state counters owned by a model adapter.
+ * Runtime transfer/state counters and latest backend call owned by an adapter.
  *
  * The counters deliberately distinguish model state movement from ordinary
  * activation/control I/O.  They are metadata-only evidence; no tensor bytes
@@ -57,6 +97,10 @@ struct NativeRuntimeMetrics
   std::uint64_t stateInputMisses = 0;
   std::uint64_t stateRecomputes = 0;
   std::uint64_t stateReleases = 0;
+  // Unlike the counters above, this is one call rather than a cumulative total.
+  // Consumers must check its context: a shared runner may have advanced between
+  // run() returning and runtimeMetricsSnapshot(). It is not a streamed-loop sum.
+  std::optional<NativeBackendExecutionTiming> lastBackendExecution;
 };
 
 /**

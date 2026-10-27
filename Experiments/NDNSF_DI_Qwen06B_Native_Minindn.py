@@ -640,7 +640,7 @@ def resolve_encrypted_repository_path(run_root: Path, requested: Path | None) ->
                         owner_root != run_root.resolve() or owner_live or
                         lease_age < ENCRYPTED_REPOSITORY_STALE_AFTER_S):
                     raise RuntimeError("ENCRYPTED_REPOSITORY_PATH_BUSY")
-                if not cleanup_encrypted_repository(path, run_root, require_lease=True):
+                if not cleanup_encrypted_repository(path, run_root, stale_owner_pid=owner_pid):
                     raise RuntimeError("ENCRYPTED_REPOSITORY_PATH_NOT_EMPTY")
                 path.mkdir(parents=True, exist_ok=False)
             except (OSError, ValueError, KeyError, json.JSONDecodeError):
@@ -660,31 +660,45 @@ def resolve_encrypted_repository_path(run_root: Path, requested: Path | None) ->
     return path
 
 
-def cleanup_encrypted_repository(path: Path, run_root: Path,
-                                 require_lease: bool = False) -> bool:
+def cleanup_encrypted_repository(path: Path, run_root: Path, *,
+                                 stale_owner_pid: int | None = None) -> bool:
     """Remove only this run's encrypted Repo payloads, preserving evidence.
 
     ``run_root`` itself is never removed.  An external directory is eligible
     only when its sibling lease belongs to this run; this prevents a failed
     launcher from cleaning another run's ciphertext or the system-wide source
     cache.  The operation is idempotent so an atexit callback and ``finally``
-    can safely cover the same failure.
+    can safely cover the same failure. Stale recovery additionally requires the
+    same recorded owner, a dead PID and the existing minimum lease age.
     """
     path = path.expanduser().resolve()
     run_root = run_root.expanduser().resolve()
     default = (run_root / "requester/encrypted-repo").resolve()
     if path == default:
-        eligible = True
+        eligible = stale_owner_pid is None
     else:
         lease = path.parent / (path.name + ENCRYPTED_REPOSITORY_LEASE)
         try:
             metadata = json.loads(lease.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            return False
-        eligible = (metadata.get("schema") == "ndnsf-di-encrypted-repo-lease-v1" and
-                    Path(metadata.get("runRoot", "")).resolve() == run_root and
-                    int(metadata.get("pid", -1)) == os.getpid())
-        if require_lease and not eligible:
+            if not isinstance(metadata, dict):
+                return False
+            expected_pid = os.getpid() if stale_owner_pid is None else stale_owner_pid
+            eligible = (metadata.get("schema") == "ndnsf-di-encrypted-repo-lease-v1" and
+                        Path(metadata.get("runRoot", "")).resolve() == run_root and
+                        int(metadata.get("pid", -1)) == expected_pid)
+            if eligible and stale_owner_pid is not None:
+                if (stale_owner_pid <= 0 or
+                        time.time() - lease.stat().st_mtime < ENCRYPTED_REPOSITORY_STALE_AFTER_S):
+                    return False
+                try:
+                    os.kill(stale_owner_pid, 0)
+                except ProcessLookupError:
+                    pass
+                except OSError:
+                    return False
+                else:
+                    return False
+        except (OSError, UnicodeError, ValueError, TypeError):
             return False
     if not eligible or not path.is_dir():
         return False
@@ -1035,7 +1049,20 @@ def policy_text(provider_names: list[str], stage_roles: list[str],
             + "\n  /NDNSF/Network/Probe/v1\n  /HELLO }\n }\n}\n")
 
 
+DIAGNOSTIC_ENVIRONMENT = (
+    "NDNSF_STREAM_GRANT_DIAGNOSTIC", "NDNSF_DI_PROTECTED_DATAFLOW_DIAGNOSTIC",
+    "NDNSF_DI_DEPENDENCY_OBJECT_TRACE", "NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE",
+    "NDNSF_COLLAB_LARGE_FETCH_TIMING", "NDNSF_COLLAB_AUTH_TRACE",
+    "NDNSF_SELECTION_STATUS_TRACE", "SPEC175_TRACE", "NDNSF_PHASE_TIMING",
+    "NDNSF_CONTROL_TIMING", "NDNSF_HYBRID_CRYPTO_TIMING", "NDNSF_TIMELINE_TRACE",
+    "NDNSF_TIMELINE_TRACE_SAMPLE_RATE", "NDNSF_STREAM_PACKET_TIMELINE_TRACE",
+    "NDNSF_DI_RUNTIME_TIMING",
+    "NDNSF_SPEC192_SELECTED_REQUEST_TRACE",
+)
+
+
 def env_for(home: Path, node: str, *,
+            debug_logging: bool = False,
             require_snapshot_evidence: bool = False,
             requester_publication_root: Path | None = None,
             artifact_cache_root: Path | None = None) -> dict[str, str]:
@@ -1048,43 +1075,16 @@ def env_for(home: Path, node: str, *,
         # MiniNDN nodes share the host filesystem: keep the node's app cache
         # outside disposable homes so rebuilding the topology reuses its files.
         env["NDNSF_ARTIFACT_CACHE_DIR"] = str(artifact_cache_root / "ndn" / node)
-    # Required RuntimeEvidence stage/terminal records use WARN. Without a
-    # default, the failure monitor cannot see native request failures.
-    env["NDN_LOG"] = os.environ.get("NDNSF_NDN_LOG") or "*=WARN"
-    stream_diagnostic = os.environ.get("NDNSF_STREAM_GRANT_DIAGNOSTIC", "")
-    if stream_diagnostic:
-        env["NDNSF_STREAM_GRANT_DIAGNOSTIC"] = stream_diagnostic
-    protected_dataflow_diagnostic = os.environ.get(
-        "NDNSF_DI_PROTECTED_DATAFLOW_DIAGNOSTIC", "")
-    if protected_dataflow_diagnostic:
-        env["NDNSF_DI_PROTECTED_DATAFLOW_DIAGNOSTIC"] = protected_dataflow_diagnostic
-    # Native planner timing includes the grant lease acquire/hit boundary and
-    # the V4 snapshot freshness record. A qualification run must not let a
-    # host override suppress that record; other diagnostic runs may opt out.
-    env["NDNSF_DI_RUNTIME_TIMING"] = os.environ.get("NDNSF_DI_RUNTIME_TIMING", "1")
-    if require_snapshot_evidence:
-        env["NDNSF_DI_RUNTIME_TIMING"] = "1"
-    dependency_trace = os.environ.get("NDNSF_DI_DEPENDENCY_OBJECT_TRACE", "")
-    if dependency_trace:
-        env["NDNSF_DI_DEPENDENCY_OBJECT_TRACE"] = dependency_trace
-    # Keep provider-side large-data/assignment diagnostics explicit and
-    # run-scoped.  These are observation controls only; they must reach every
-    # MiniNDN process through the maintained launcher instead of relying on a
-    # host environment leak.
-    for key in ("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE",
-                "NDNSF_COLLAB_LARGE_FETCH_TIMING",
-                "NDNSF_COLLAB_AUTH_TRACE",
-                "NDNSF_SELECTION_STATUS_TRACE",
-                "SPEC175_TRACE",
-                "NDNSF_PHASE_TIMING",
-                "NDNSF_CONTROL_TIMING",
-                "NDNSF_HYBRID_CRYPTO_TIMING",
-                "NDNSF_TIMELINE_TRACE",
-                "NDNSF_TIMELINE_TRACE_SAMPLE_RATE",
-                "NDNSF_STREAM_PACKET_TIMELINE_TRACE"):
-        value = os.environ.get(key, "")
-        if value:
-            env[key] = value
+    env["NDN_LOG"] = (os.environ.get("NDNSF_NDN_LOG") or "*=WARN") if debug_logging else "*=NONE"
+    if debug_logging:
+        for key in DIAGNOSTIC_ENVIRONMENT:
+            value = os.environ.get(key, "")
+            if value:
+                env[key] = value
+        env["NDNSF_DI_RUNTIME_TIMING"] = os.environ.get("NDNSF_DI_RUNTIME_TIMING", "1")
+        if require_snapshot_evidence:
+            env["NDNSF_DI_RUNTIME_TIMING"] = "1"
+        env["NDNSF_PHASE_TIMING"] = os.environ.get("NDNSF_PHASE_TIMING", "1")
     # This controls the request/Selection object carrier, independently of
     # collaboration tensor windows and observation-only diagnostics above.
     request_fetch_window = os.environ.get("NDNSF_REQUEST_LARGE_FETCH_INIT_CWND") or "16"
@@ -1099,10 +1099,6 @@ def env_for(home: Path, node: str, *,
     for key, default in (("NDNSF_SVS_MAX_APP_PARAMS_BYTES", "6144"),
                          ("NDNSF_SVS_MAX_PIGGYDATA_BYTES", "5120")):
         env[key] = os.environ.get(key) or default
-    # The launcher consumes NDNSF_PHASE_TIMING records for the per-stage
-    # evidence table.  Keep timing collection enabled for every normal run;
-    # an explicit host value still permits a diagnostic caller to disable it.
-    env["NDNSF_PHASE_TIMING"] = os.environ.get("NDNSF_PHASE_TIMING", "1")
     if requester_publication_root is not None:
         env["NDNSF_REQUEST_LARGE_DATA_DIR"] = str(requester_publication_root.resolve())
     return env
@@ -1110,6 +1106,11 @@ def env_for(home: Path, node: str, *,
 
 def env_command(env: dict[str, str], command: str) -> str:
     return "env " + " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items()) + " " + command
+
+
+def diagnostic_command(command: str, debug_logging: bool) -> str:
+    """MiniNDN merges host env; unset only known observation controls in quiet mode."""
+    return command if debug_logging else "unset " + " ".join(DIAGNOSTIC_ENVIRONMENT) + "; " + command
 
 
 def mini_ndn_node_app_plan(topology_nodes: set[str], controller_node: str,
@@ -1209,8 +1210,49 @@ def purge_minindn_large_data_cache(nodes, run_root: Path,
           flush=True)
 
 
+def read_statistics_rows(path: Path) -> list[dict]:
+    """Collect bounded complete JSONL rows; C++ owns semantic admission checks."""
+    if not path.exists():
+        return []
+    with path.open("rb") as stream:
+        content = stream.read((64 << 20) + 1)
+    if len(content) > 64 << 20:
+        raise RuntimeError(f"native statistics exceed collection limit: {path}")
+    lines = content.split(b"\n")[:-1]
+    if len(lines) > MAX_QWEN_ROUNDS + 1:
+        raise RuntimeError(f"too many native statistics rows: {path}")
+    rows = [json.loads(line) for line in lines]
+    if any(not isinstance(row, dict) for row in rows):
+        raise RuntimeError(f"native statistics row is not an object: {path}")
+    return rows
+
+
+def check_provider_statistics(process, path: Path) -> list[dict]:
+    if process.poll() is not None:
+        raise RuntimeError(f"Provider exited {process.returncode}: {path}")
+    rows = read_statistics_rows(path)
+    for row in rows:
+        if row.get("type") == "request" and (
+                row.get("completionAdmitted") is False or row.get("failureReason") is not None):
+            raise RuntimeError(f"Provider native request failed: {path}: {row.get('failureReason')}")
+    return rows
+
+
+def wait_for_provider_statistics(process, path: Path, requests: int, timeout: float) -> list[dict]:
+    """Observe registration/finalization receipts, not model provisioning readiness."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rows = check_provider_statistics(process, path)
+        if (any(row.get("type") == "serve-ready" for row in rows) and
+                sum(row.get("type") == "request" for row in rows) >= requests):
+            return rows
+        time.sleep(0.2)
+    raise RuntimeError(f"timeout waiting for Provider statistics: {path}")
+
+
 def wait_for_native_round(process, request_log: Path,
-                          provider_logs: list[Path], timeout: float) -> str:
+                          provider_logs: list[Path], timeout: float, *,
+                          providers: list[tuple] | None = None) -> str:
     """Wait for a request while aborting promptly after Provider failure.
 
     A requester can remain alive while the selected Provider has already
@@ -1228,6 +1270,8 @@ def wait_for_native_round(process, request_log: Path,
         if failure:
             raise RuntimeError(
                 f"native request aborted after Provider terminal failure: {failure}")
+        for provider, statistics in providers or []:
+            check_provider_statistics(provider, statistics)
         if returncode is not None:
             return text
         time.sleep(0.2)
@@ -1299,9 +1343,14 @@ def validate_native_output(path: Path) -> dict:
 
 
 def run_cpp_oracle(binary: Path, run_root: Path, cache_compatibility: bool,
-                   timeout: float, require_multi_token: bool = False, rounds: int = 1) -> dict:
+                   timeout: float, require_multi_token: bool = False, rounds: int = 1,
+                   *, quiet_performance: bool = False) -> dict:
     """Keep the explicit cache diagnostic distinct from full-path evidence."""
     arguments = [str(binary)]
+    if quiet_performance:
+        if cache_compatibility:
+            raise ValueError("quiet performance cannot use cache diagnostic scope")
+        arguments.append("--quiet-performance")
     if cache_compatibility:
         arguments.append("--cache-compatibility")
     if require_multi_token:
@@ -1309,7 +1358,8 @@ def run_cpp_oracle(binary: Path, run_root: Path, cache_compatibility: bool,
     if rounds != 1:
         arguments.extend(["--rounds", str(rounds)])
     arguments.extend(["--run-root", str(run_root)])
-    marker = ("SPEC189_CPP_CACHE_DIAGNOSTIC_PASS" if cache_compatibility
+    marker = ("SPEC189_CPP_QUIET_PERFORMANCE_PASS" if quiet_performance else
+              "SPEC189_CPP_CACHE_DIAGNOSTIC_PASS" if cache_compatibility
               else "SPEC189_CPP_ORACLE_PASS")
     log = run_root / "spec189-cpp-oracle.log"
     with log.open("w") as handle:
@@ -1320,6 +1370,10 @@ def run_cpp_oracle(binary: Path, run_root: Path, cache_compatibility: bool,
     if (result.returncode != 0 or
             not any(line.startswith(marker + " ") for line in output.splitlines())):
         raise RuntimeError(f"SPEC189_CPP_ORACLE_FAIL rc={result.returncode}: {log}")
+    if quiet_performance:
+        return {"binary": str(binary), "log": str(log), "returncode": result.returncode,
+                "scope": "quiet-performance", "status": "QUIET_PERFORMANCE_PASS",
+                "fullPathQualification": "NOT_RUN"}
     return {"binary": str(binary), "log": str(log), "returncode": result.returncode,
             "scope": "cache-compatible-execution" if cache_compatibility else "full-path",
             "status": "CACHE_DIAGNOSTIC_PASS" if cache_compatibility else "PASS"}
@@ -1820,6 +1874,8 @@ def main(argv=None, *, _supervised=False) -> int:
         "--delta-token-ids", default="",
         help="comma-separated continuation token IDs; defaults to the pinned chat-template fixture")
     parser.add_argument("--negative-parent", action="store_true")
+    parser.add_argument("--debug-logging", action="store_true",
+                        help="enable diagnostic logs and the full-path diagnostic oracle")
     parser.add_argument(
         "--revoke-after-first-round", action="store_true",
         help="after one successful resident round, revoke the user and require the continuation to fail closed")
@@ -1833,6 +1889,9 @@ def main(argv=None, *, _supervised=False) -> int:
         "--direct-start", action="store_true",
         help="start MiniNDN in this process; the caller owns host resource supervision")
     args = parser.parse_args(argv)
+    if not args.debug_logging and (args.cache_compatibility_mode or args.negative_parent or
+                                   args.revoke_after_first_round or args.requester_driver_binary):
+        parser.error("cache/negative-parent/revocation/parent-pipe diagnostics require --debug-logging")
     if args.spec201_candidate is None:
         raise RuntimeError("SPEC201_CANDIDATE_REQUIRED")
     naming_candidate = validate_spec201_candidate(
@@ -2360,7 +2419,7 @@ def main(argv=None, *, _supervised=False) -> int:
             (home / "tpm/ndnsec-key-file" / (hashlib.sha256(bytes(key_name)).hexdigest() + ".privkey")).unlink(missing_ok=True)
     for node, home in homes.items():
         default_identity = next(identity for owner, identity in identities if owner == node)
-        prefix = env_command(env_for(home, node), "ndnsec")
+        prefix = env_command(env_for(home, node, debug_logging=args.debug_logging), "ndnsec")
         subprocess.run(prefix + f" set-default -n {shlex.quote(default_identity)}",
                        shell=True, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # Find each provider's actual signing key prefix for NativeOfferAdmission.
@@ -2473,6 +2532,7 @@ def main(argv=None, *, _supervised=False) -> int:
         atexit.register(encrypted_repository_cleanup)
     requester_cfg = {
         "schema": "ndnsf-di-native-requester-v1",
+        "statistics_file": str(run_root / "requester-statistics.jsonl"),
         "catalog": {**catalog, "source": {**catalog["source"], "file": source_path.name,
                                              **({"initializer_file": initializer_path.name}
                                                 if initializer_path else {})}},
@@ -2636,6 +2696,7 @@ def main(argv=None, *, _supervised=False) -> int:
         json.dumps(node_app_plan, indent=2, sort_keys=True) + "\n")
     processes = []
     provider_logs = []
+    provider_statistics = []
     ndn_started = False
     cache_purge_completed = False
     try:
@@ -2667,11 +2728,13 @@ def main(argv=None, *, _supervised=False) -> int:
         def start(node_name: str, label: str, command: str, env: dict[str, str]):
             log = run_root / f"{label}.log"
             handle = log.open("wb")
-            proc = getPopen(ndn.net[node_name], command, envDict=env, shell=True,
+            proc = getPopen(ndn.net[node_name], diagnostic_command(command, args.debug_logging),
+                            envDict=env, shell=True,
                             stdout=handle, stderr=subprocess.STDOUT)
             processes.append((proc, handle, log))
             return proc, log
         authority_env = env_for(homes[args.controller_node], args.controller_node,
+                                debug_logging=args.debug_logging,
                                 artifact_cache_root=artifact_cache_root)
         # Bind Controller's fenced generation store to this immutable run.
         # The default global /tmp path can retain a stale writer lock after a
@@ -2702,7 +2765,7 @@ def main(argv=None, *, _supervised=False) -> int:
         # Controller::start() can finish its reciprocal probe.
         wait_for_marker(controller_proc, controller_log, ("ServiceController started",), args.startup_timeout_s)
         time.sleep(0.5)
-        authority_cmd = (f"{shlex.quote(str(authority_binary))} "
+        authority_cmd = (f"exec {shlex.quote(str(authority_binary))} "
                          f"--config {shlex.quote(str(authority_dir / 'authority.json'))}")
         authority_proc, authority_log = start(args.controller_node, "authority", authority_cmd, authority_env)
         wait_for_marker(authority_proc, authority_log, ("NATIVE_GRANT_AUTHORITY_READY",), args.startup_timeout_s)
@@ -2710,11 +2773,14 @@ def main(argv=None, *, _supervised=False) -> int:
             provider = provider_names[index]; directory = provider_dirs[index]
             provider_roles = provider_role_argument(
                 stages[index]["role"], args.provider_role_mode)
-            env = env_for(homes[node], node, artifact_cache_root=artifact_cache_root)
+            env = env_for(homes[node], node, artifact_cache_root=artifact_cache_root,
+                          debug_logging=args.debug_logging)
             env.update({"SPEC181_GRANT_AUTHORITY_PUBLIC_KEY": str(directory / "authority-public.pem"),
                         "SPEC181_PROVIDER_RECIPIENT_KEY_MAP": str(directory / "recipient-key-map.json"),
                         "NDNSF_DI_WORKER_BINARY": str(assembly_worker_binary)})
-            command = (f"{shlex.quote(str(provider_binary))} --plan {shlex.quote(str(directory / 'plan.json'))} "
+            statistics_path = run_root / f"provider-{index}-statistics.jsonl"
+            command = (f"exec {shlex.quote(str(provider_binary))} --statistics-file {shlex.quote(str(statistics_path))} "
+                       f"--plan {shlex.quote(str(directory / 'plan.json'))} "
                        f"--manifest {shlex.quote(str(directory / 'manifest.json'))} --service {shlex.quote(SERVICE)} "
                        f"--provider {shlex.quote(provider)} --group {shlex.quote(GROUP)} --controller {shlex.quote(CONTROLLER)} "
                        f"--trust-schema {shlex.quote(str(directory / 'trust-schema.conf'))} --roles {shlex.quote(provider_roles)} "
@@ -2731,9 +2797,11 @@ def main(argv=None, *, _supervised=False) -> int:
                         if args.cache_compatibility_mode else ""))
             proc, log = start(node, f"provider-{index}", command, env)
             provider_logs.append(log)
-            wait_for_marker(proc, log, ("NDNSF_DI_NATIVE_PROVIDER_READY", "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"), args.startup_timeout_s)
+            provider_statistics.append((proc, statistics_path))
+            wait_for_provider_statistics(proc, statistics_path, 0, args.startup_timeout_s)
         requester_env = env_for(
             homes[args.user_node], args.user_node,
+            debug_logging=args.debug_logging,
             requester_publication_root=artifact_cache_root / "ndn" / args.user_node / "requester-publications",
             artifact_cache_root=artifact_cache_root,
             require_snapshot_evidence=(
@@ -2757,10 +2825,10 @@ def main(argv=None, *, _supervised=False) -> int:
                 # parent/pipe case so unrelated fixture requirements cannot
                 # turn a live MiniNDN run into an aggregate-test result.
                 driver_cmd = (
-                    f"{shlex.quote(str(requester_driver_binary))} "
+                    f"exec {shlex.quote(str(requester_driver_binary))} "
                     "--run_test=Spec190LiveTurns/ParentPipeReadsLiveEventsBeforeTerminal")
                 return driver_cmd, launch_env
-            return (f"{shlex.quote(str(requester_binary))} --config "
+            return (f"exec {shlex.quote(str(requester_binary))} --config "
                     f"{shlex.quote(str(config_path))}"), launch_env
 
         revocation_record = None
@@ -2930,7 +2998,7 @@ def main(argv=None, *, _supervised=False) -> int:
                 },
                 "residentRunnerWasWarmBeforeRevoke": resident_session_bound,
             }
-        else:
+        elif args.debug_logging:
             first_text = wait_for_native_round(
                 first_proc, first_log, provider_logs,
                 max(0.0, round_deadline - time.monotonic()))
@@ -2970,8 +3038,38 @@ def main(argv=None, *, _supervised=False) -> int:
                                       "phaseTiming": phase_timing_summary(
                                           turn_texts[round_index], turn_request_id),
                                       **output_summary})
+        else:
+            wait_for_native_round(
+                first_proc, first_log, provider_logs,
+                max(0.0, round_deadline - time.monotonic()), providers=provider_statistics)
+            if first_proc.returncode != 0:
+                raise RuntimeError(f"native Qwen turns failed: {first_log}")
+            for provider, statistics_path in provider_statistics:
+                wait_for_provider_statistics(
+                    provider, statistics_path, args.rounds,
+                    max(0.0, round_deadline - time.monotonic()))
+            requester_rows = read_statistics_rows(run_root / "requester-statistics.jsonl")
+            if len(requester_rows) != args.rounds:
+                raise RuntimeError("native requester statistics count mismatch")
+            requester_measurement = {"source": "requester-statistics.jsonl",
+                                     "diagnosticPhaseTiming": "NOT_COLLECTED"}
+            provider_measurement = {
+                str(path): {"statistics": str(statistics_path),
+                            "diagnosticPhaseTiming": "NOT_COLLECTED"}
+                for path, (_, statistics_path) in zip(provider_logs, provider_statistics)}
+            round_records = []
+            for round_index, statistics in enumerate(requester_rows):
+                output_path = requester_dir / f"output-{round_index}.bin"
+                round_records.append({"round": round_index, "returncode": first_proc.returncode,
+                                      "requestId": statistics.get("requestId"),
+                                      "statistics": "requester-statistics.jsonl",
+                                      "output": str(output_path),
+                                      "providerFinalization": "NATIVE_STATISTICS_COLLECTED",
+                                      "phaseTiming": "NOT_COLLECTED",
+                                      **validate_native_output(output_path)})
         if args.negative_parent:
             cfg = json.loads((requester_dir / "config.json").read_text())
+            cfg["statistics_file"] = str(run_root / "requester-negative-statistics.jsonl")
             cfg["conversation"]["turn"]["parent_checkpoint_digest"] = "sha256:" + "0" * 64
             bad = requester_dir / "config-negative.json"; bad.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n")
             negative_cmd, negative_env = requester_launch(bad)
@@ -2987,7 +3085,7 @@ def main(argv=None, *, _supervised=False) -> int:
             oracle_record = run_cpp_oracle(oracle_binary, run_root,
                                           args.cache_compatibility_mode,
                                           max(30.0, args.startup_timeout_s), args.require_multi_token,
-                                          args.rounds)
+                                          args.rounds, quiet_performance=not args.debug_logging)
         # Keep authenticated material available for every continuation turn.
         # The large-data CS is purged only after the final Provider barrier and
         # the native oracle, never when the first runner becomes ready.
@@ -3000,6 +3098,9 @@ def main(argv=None, *, _supervised=False) -> int:
                   "largeDataImsLimit": large_data_ims,
                   "largeDataDirectory": requester_env["NDNSF_REQUEST_LARGE_DATA_DIR"],
                   "runtimeBudgets": runtime_budgets,
+                  "debugLogging": args.debug_logging,
+                  "statisticsFiles": ["requester-statistics.jsonl", *[
+                      path.name for _, path in provider_statistics]],
                   "rounds": round_records,
                   "requesterPhaseTiming": requester_measurement,
                   "providerMeasurement": provider_measurement,
@@ -3009,7 +3110,7 @@ def main(argv=None, *, _supervised=False) -> int:
                              else oracle_record["status"])}
         if revocation_record is not None:
             record["revocation"] = revocation_record
-        if args.cache_compatibility_mode:
+        if args.cache_compatibility_mode or not args.debug_logging:
             record["fullPathQualification"] = "NOT_RUN"
         (run_root / "run-record.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
         print(f"NDNSF_DI_{MODEL_FAMILY.upper()}_NATIVE_MININDN_{record['status']} " + json.dumps(record, sort_keys=True))

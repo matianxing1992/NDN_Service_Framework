@@ -6,6 +6,7 @@
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/utils.hpp"
+#include "ndn-service-framework/detail/in-memory-storage-range.hpp"
 #include <ndn-cxx/ims/in-memory-storage-fifo.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
 #include <ndn-cxx/util/io.hpp>
@@ -515,7 +516,7 @@ BOOST_FIXTURE_TEST_CASE(ImsLowerBoundPreservesFullNameRange, ProfileFixture)
     ndn::InMemoryStorageFifo cache(32);
     const ndn::InMemoryStorage& storage = cache;
     const ndn::Name name("/range/item");
-    BOOST_CHECK(storage.lowerBound(name) == storage.end());
+    BOOST_CHECK(detail::imsLowerBound(storage, name) == storage.end());
     const auto makePacket = [&](const ndn::Name& packetName, uint8_t value) {
       auto packet = std::make_shared<ndn::Data>(packetName);
       packet->setContent(ndn::Buffer{value});
@@ -540,8 +541,9 @@ BOOST_FIXTURE_TEST_CASE(ImsLowerBoundPreservesFullNameRange, ProfileFixture)
     queries.insert(queries.end(), {ndn::Name(), name, ndn::Name(name).append("absent"),
                                    typedChild, ndn::Name(fullNames.back()).append("after")});
     for (const auto& query : queries) {
-      const auto expected = std::lower_bound(fullNames.begin(), fullNames.end(), query);
-      const auto found = storage.lowerBound(query);
+      const auto expected = std::find_if(fullNames.begin(), fullNames.end(),
+        [&query] (const ndn::Name& fullName) { return !(fullName < query); });
+      const auto found = detail::imsLowerBound(storage, query);
       if (expected == fullNames.end()) {
         BOOST_CHECK(found == storage.end());
       }
@@ -551,7 +553,7 @@ BOOST_FIXTURE_TEST_CASE(ImsLowerBoundPreservesFullNameRange, ProfileFixture)
       }
     }
     size_t exact = 0, descendants = 0;
-    for (auto entry = storage.lowerBound(name);
+    for (auto entry = detail::imsLowerBound(storage, name);
          entry != storage.end() && name.isPrefixOf(entry->getFullName()); ++entry) {
       ++descendants;
       if (entry->getName() == name) ++exact;

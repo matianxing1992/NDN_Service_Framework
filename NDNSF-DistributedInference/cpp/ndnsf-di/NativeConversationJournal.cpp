@@ -47,7 +47,9 @@ void ensureDirectory(const std::filesystem::path& path)
   struct stat value{};
   require(::lstat(path.c_str(), &value) == 0 && S_ISDIR(value.st_mode) &&
           value.st_uid == ::geteuid(), "conversation journal directory ownership invalid");
-  require(::chmod(path.c_str(), 0700) == 0, "conversation journal permissions failed");
+  if ((value.st_mode & 07777) != 0700) {
+    require(::chmod(path.c_str(), 0700) == 0, "conversation journal permissions failed");
+  }
   if (created) syncDirectory(path.parent_path());
 }
 

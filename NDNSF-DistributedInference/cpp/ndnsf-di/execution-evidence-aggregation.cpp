@@ -59,9 +59,6 @@ aggregateEvidence(const EvidenceReferences& items)
     seedGpuUuids(item);
     aggregate.roles.insert(aggregate.roles.end(), item.roles.begin(), item.roles.end());
     aggregate.artifactDigests.insert(item.artifactDigests.begin(), item.artifactDigests.end());
-    aggregate.nodeProviderAssignments.insert(
-      aggregate.nodeProviderAssignments.end(),
-      item.nodeProviderAssignments.begin(), item.nodeProviderAssignments.end());
     if (aggregate.providerProfilePath.empty()) {
       aggregate.providerProfilePath = item.providerProfilePath;
     }
@@ -82,6 +79,12 @@ aggregateEvidence(const EvidenceReferences& items)
   aggregate.roles.erase(std::unique(aggregate.roles.begin(), aggregate.roles.end()),
                         aggregate.roles.end());
   if (items.size() > 1) {
+    std::vector<std::reference_wrapper<const ExecutionEvidence::NodeProviderAssignments>> groups;
+    groups.reserve(items.size());
+    for (const auto& item : items) {
+      groups.emplace_back(item.get().getNodeProviderAssignments());
+    }
+    aggregate.concatenateNodeProviderAssignments(groups);
     // Mixed readiness observations cannot claim one request's execution.
     aggregate.executionCompleted = false;
     aggregate.exactForwardCacheHit = false;
@@ -112,6 +115,12 @@ aggregateExecutionEvidence(const std::map<std::string, ExecutionEvidence>& items
   references.reserve(items.size());
   for (const auto& item : items) references.emplace_back(item.second);
   return aggregateEvidence(references);
+}
+
+ExecutionEvidence
+aggregateExecutionEvidence(const EvidenceReferences& items)
+{
+  return aggregateEvidence(items);
 }
 
 } // namespace ndnsf::di::detail

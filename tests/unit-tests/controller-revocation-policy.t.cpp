@@ -8,10 +8,14 @@
 
 #include <chrono>
 #include <array>
+#include <cerrno>
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <poll.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace ndn_service_framework::test {
@@ -961,6 +965,145 @@ BOOST_AUTO_TEST_CASE(GenerationStoreRejectsInvalidWriterAndStartInputs)
 
   std::filesystem::remove(path);
   std::filesystem::remove(path.string() + ".lock");
+}
+
+BOOST_AUTO_TEST_CASE(GenerationKernelLeaseRecoversAfterAbruptProcessExit)
+{
+  const auto path = std::filesystem::temp_directory_path() /
+      ("ndnsf-controller-kernel-lease-" + std::to_string(::getpid()) + ".bin");
+  std::filesystem::remove(path);
+  std::filesystem::remove(path.string() + ".lock");
+  struct Child
+  {
+    pid_t pid = -1;
+    int descriptors[2] = {-1, -1};
+    ~Child()
+    {
+      if (pid > 0) {
+        ::kill(pid, SIGKILL);
+        while (::waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {}
+      }
+      for (const int fd : descriptors) {
+        if (fd >= 0) ::close(fd);
+      }
+    }
+  } child;
+  BOOST_REQUIRE_EQUAL(::pipe(child.descriptors), 0);
+  // Fork before either process holds a lease: the child must acquire its own fd.
+  child.pid = ::fork();
+  BOOST_REQUIRE(child.pid >= 0);
+  if (child.pid == 0) {
+    ::signal(SIGTERM, SIG_DFL);
+    try {
+      ControllerGenerationStore store(path);
+      if (!store.acquireWriter("child")) ::_exit(2);
+      store.startGeneration(1000, {identityRevocation("/user/alice")});
+      const char ready = 'R';
+      if (::write(child.descriptors[1], &ready, 1) != 1) ::_exit(3);
+      for (;;) ::pause();
+    }
+    catch (...) {
+      ::_exit(4);
+    }
+  }
+  ::close(child.descriptors[1]);
+  child.descriptors[1] = -1;
+  pollfd readiness{child.descriptors[0], POLLIN, 0};
+  BOOST_REQUIRE_EQUAL(::poll(&readiness, 1, 2000), 1);
+  char ready = 0;
+  BOOST_REQUIRE_EQUAL(::read(child.descriptors[0], &ready, 1), 1);
+  BOOST_REQUIRE_EQUAL(ready, 'R');
+  ControllerGenerationStore contender(path);
+  BOOST_CHECK(!contender.acquireWriter("parent"));
+  BOOST_REQUIRE_EQUAL(::kill(child.pid, SIGTERM), 0);
+  int status = 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  pid_t reaped = 0;
+  while (std::chrono::steady_clock::now() < deadline) {
+    reaped = ::waitpid(child.pid, &status, WNOHANG);
+    if (reaped != 0) break;
+    ::usleep(1000);
+  }
+  BOOST_REQUIRE_EQUAL(reaped, child.pid);
+  child.pid = -1;
+  BOOST_REQUIRE(WIFSIGNALED(status));
+  BOOST_CHECK_EQUAL(WTERMSIG(status), SIGTERM);
+  BOOST_REQUIRE(contender.acquireWriter("parent"));
+  const auto revocations = contender.loadRevocations();
+  BOOST_REQUIRE_EQUAL(revocations.size(), 1U);
+  BOOST_CHECK(revocations.front().targetIdentity == ndn::Name("/user/alice"));
+  BOOST_CHECK(contender.startGeneration(900, revocations).controllerGenerationTimestamp > 1000);
+  contender.releaseWriter();
+  BOOST_CHECK(std::filesystem::exists(path.string() + ".lock"));
+  std::filesystem::remove(path);
+  std::filesystem::remove(path.string() + ".lock");
+}
+
+BOOST_AUTO_TEST_CASE(GenerationKernelLeaseRejectsUnsafeAndLegacyFiles)
+{
+  const auto path = std::filesystem::temp_directory_path() /
+      ("ndnsf-controller-unsafe-lease-" + std::to_string(::getpid()) + ".bin");
+  const auto lock = std::filesystem::path(path.string() + ".lock");
+  const auto alias = std::filesystem::path(path.string() + ".alias");
+  std::filesystem::remove(lock);
+  std::filesystem::remove(alias);
+  {
+    std::ofstream legacy(lock);
+    legacy << "legacy-owner\n1\n";
+  }
+  std::filesystem::permissions(lock, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+  ControllerGenerationStore store(path);
+  BOOST_CHECK(!store.acquireWriter("new-owner"));
+  {
+    std::ofstream empty(lock, std::ios::trunc);
+  }
+  BOOST_CHECK(!store.acquireWriter("new-owner"));
+  {
+    std::ofstream oversized(lock, std::ios::trunc);
+    oversized << std::string(16385, 'x');
+  }
+  BOOST_CHECK(!store.acquireWriter("new-owner"));
+  std::filesystem::remove(lock);
+  std::filesystem::create_symlink(alias, lock);
+  BOOST_CHECK(!store.acquireWriter("new-owner"));
+  BOOST_CHECK(!std::filesystem::exists(alias));
+  std::filesystem::remove(lock);
+  BOOST_REQUIRE(store.acquireWriter("new-owner"));
+  store.releaseWriter();
+  std::filesystem::create_hard_link(lock, alias);
+  BOOST_CHECK(!store.acquireWriter("new-owner"));
+  std::filesystem::remove(alias);
+  std::filesystem::permissions(lock, std::filesystem::perms::others_write,
+                               std::filesystem::perm_options::add);
+  BOOST_CHECK(!store.acquireWriter("new-owner"));
+  std::filesystem::remove(lock);
+}
+
+BOOST_AUTO_TEST_CASE(GenerationKernelLeaseRejectsReplacedInode)
+{
+  const auto path = std::filesystem::temp_directory_path() /
+      ("ndnsf-controller-replaced-lease-" + std::to_string(::getpid()) + ".bin");
+  const auto lock = std::filesystem::path(path.string() + ".lock");
+  const auto oldLock = std::filesystem::path(path.string() + ".old-lock");
+  std::filesystem::remove(path);
+  std::filesystem::remove(lock);
+  std::filesystem::remove(oldLock);
+  ControllerGenerationStore first(path);
+  BOOST_REQUIRE(first.acquireWriter("first"));
+  first.startGeneration(1000);
+  std::filesystem::rename(lock, oldLock);
+  ControllerGenerationStore replacement(path);
+  BOOST_REQUIRE(replacement.acquireWriter("replacement"));
+  BOOST_CHECK(!first.ownsWriter());
+  BOOST_CHECK_THROW(first.advanceEpoch(), std::runtime_error);
+  first.releaseWriter();
+  BOOST_CHECK(replacement.ownsWriter());
+  BOOST_CHECK(replacement.advanceEpoch().isValid());
+  replacement.releaseWriter();
+  std::filesystem::remove(path);
+  std::filesystem::remove(lock);
+  std::filesystem::remove(oldLock);
 }
 
 BOOST_AUTO_TEST_CASE(GenerationPersistsRevocationsAcrossRestart)

@@ -320,6 +320,8 @@ if [ "$bootstrap" = localimage ]; then
 fi
 
 echo "LOCAL_SIF_BUILD_START definition=$definition output=$sif apptainer=$local_version binary=$apptainer_bin"
+# Bound packing queues independently of the build cgroup and host RAM size.
+mksquashfs_args='-processors 2 -mem 2G'
 # Retain failed container work for diagnosis and an evidence-bound continuation.
 if [ -n "$resume_final_rootfs" ]; then
   # Only final packing may resume; the original two-stage definition and source
@@ -327,15 +329,17 @@ if [ -n "$resume_final_rootfs" ]; then
   [ -d "$resume_final_rootfs" ] && [ ! -L "$resume_final_rootfs" ] || exit 4
   resume_final_rootfs=$(readlink -f "$resume_final_rootfs")
   cmp "$definition" "$resume_final_rootfs/.singularity.d/Singularity"
-  cmp "$source_seal" "$resume_final_rootfs/opt/ndnsf-di/replay/source-seal.json"
+  cmp "$source_seal" "$resume_final_rootfs/opt/ndnsf-di/current/manifest/source-seal.json"
   "$apptainer_bin" exec --cleanenv --containall --writable-tmpfs --no-mount home,cwd,hostfs,bind-paths "$resume_final_rootfs" \
     /usr/bin/env LD_LIBRARY_PATH=/opt/ndn-base/lib:/opt/onnxruntime/lib \
     /opt/venv/bin/python /opt/ndn-base/manifest/dependency-sdk.py verify
   "$apptainer_bin" exec --cleanenv --containall --writable-tmpfs --no-mount home,cwd,hostfs,bind-paths "$resume_final_rootfs" \
     /opt/venv/bin/python /opt/ndnsf-di/current/manifest/verify-native.py final
-  "$apptainer_bin" build --fakeroot --no-cleanup --force "$partial" "$resume_final_rootfs"
+  "$apptainer_bin" build --fakeroot --no-cleanup --force \
+    --mksquashfs-args "$mksquashfs_args" "$partial" "$resume_final_rootfs"
 else
-  "$apptainer_bin" build --no-cleanup --force "$partial" "$definition"
+  "$apptainer_bin" build --no-cleanup --force \
+    --mksquashfs-args "$mksquashfs_args" "$partial" "$definition"
 fi
 [ -s "$partial" ] || { echo LOCAL_SIF_EMPTY >&2; exit 4; }
 inspect_json=$("$apptainer_bin" inspect --json "$partial")
@@ -418,7 +422,7 @@ python3 - "$record_partial" "$definition" "$definition_sha256" "$source_seal" \
   "$base_sif" "$base_sif_sha256" "$base_sif_bytes" "$ndnsf_labels_json" \
   "$apptainer_bin" "$apptainer_sha256" "$boundary_json" \
   "$source_validation_json" "$host_gate_json" "$spec175_input_preflight_json" \
-  "$spec175_preflight_json" "$build_only" "$resume_final_rootfs" <<'PY'
+  "$spec175_preflight_json" "$build_only" "$resume_final_rootfs" "$mksquashfs_args" <<'PY'
 import hashlib
 import json
 import os
@@ -429,10 +433,11 @@ import sys
  base_sif, base_sif_sha, base_sif_bytes, labels_json,
  apptainer_bin, apptainer_sha, boundary_json, source_validation_json,
  host_gate_json, spec175_input_preflight_json,
- spec175_preflight_json, build_only, resume_final_rootfs) = sys.argv[1:]
+ spec175_preflight_json, build_only, resume_final_rootfs, mksquashfs_args) = sys.argv[1:]
 build_input = {
     "definition": {"path": definition, "sha256": "sha256:" + definition_sha},
     "method": "local-apptainer-definition",
+    "mksquashfsArgs": mksquashfs_args,
 }
 if base_sif:
     build_input["baseSif"] = {

@@ -18,6 +18,37 @@ class TopologyError(ValueError):
     pass
 
 
+def deployment_management_commands(config, node_id):
+    """Native nfdc argv for one normalized node; no Slurm or inference decisions."""
+    nodes = {node['id']: node for node in config['nodes']}
+    node = nodes[node_id]
+    owned = node['nfd']['mode'] == 'managed'
+    commands = [{'argv': ['status', 'show']}]
+    group = config['network']['group']
+    if owned:
+        commands.append({'argv': ['strategy', 'set', 'prefix', group,
+                                 'strategy', '/localhost/nfd/strategy/multicast']})
+    commands.append({'argv': ['strategy', 'list'], 'check': 'strategy', 'prefix': group})
+    for route in config['network']['routes']:
+        if route['from'] != node_id:
+            continue
+        if not owned:
+            raise TopologyError('external NFD routes cannot be modified by this deployment')
+        destination = nodes[route['to']]['nfd']
+        address = ipaddress.IPv4Address(destination['address'])
+        uri = 'udp4://' + str(address) + ':' + str(destination['port'])
+        commands.extend([
+            {'argv': ['face', 'create', 'remote', uri, 'persistency', 'permanent']},
+            {'argv': ['route', 'add', 'prefix', route['prefix'], 'nexthop', uri, 'cost', '10']},
+            {'argv': ['face', 'list', 'remote', uri], 'check': 'face', 'remote': uri},
+            {'argv': ['route', 'show', 'prefix', route['prefix']], 'check': 'route',
+             'prefix': route['prefix'], 'remote': uri},
+        ])
+    if len(commands) > 512:
+        raise TopologyError('node management command count exceeds bounded owner capacity')
+    return commands
+
+
 DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_./:@+=,-]+$")
 PROCESS_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -503,8 +534,8 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
             '  cp -a "$identity_source/." "$runtime_home/"',
             '  test -f "$runtime_home/.ndn/pib.db" || { echo SPEC110_IDENTITY_PIB_MISSING >&2; exit 8; }',
             '  test -e "$runtime_home/.ndn/ndnsec-key-file" || { echo SPEC110_IDENTITY_TPM_MISSING >&2; exit 8; }',
-            '  export NDN_CLIENT_PIB="pib-sqlite3:$runtime_home/.ndn/pib.db"',
-            '  export NDN_CLIENT_TPM="tpm-file:$runtime_home/.ndn/ndnsec-key-file"',
+            '  export NDN_CLIENT_PIB="pib-sqlite3:$runtime_home/.ndn"',
+            '  export NDN_CLIENT_TPM="tpm-file:"',
             'fi',
             'printf \'SPEC110_PROCESS_HOME_READY process=%s kind=%s source=%s home=%s\\n\' ' +
             f"{shlex.quote(process_id)} {shlex.quote(kind)} \"$identity_source\" \"$HOME\" >&2",
@@ -523,6 +554,12 @@ def render_process_launcher(process: Mapping[str, Any], scratch: Path | str,
             '  [[ "$observed_gpu_uuids" == "$expected_gpu_uuid" ]] || { echo SPEC110_GPU_UUID_MISMATCH >&2; exit 8; }',
             '  printf \'SPEC110_GPU_UUID_READY process=%s uuid=%s\\n\' ' +
             f"{shlex.quote(process_id)} \"$expected_gpu_uuid\" >&2",
+            'fi',
+        ]
+    if kind != "nfd":
+        lines += [
+            'if [[ -d "$runtime_home/.ndn" ]]; then',
+            '  ndnsf-identity-check "$runtime_home"',
             'fi',
         ]
     lines += [

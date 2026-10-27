@@ -1,7 +1,13 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <filesystem>
+#include <array>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -94,7 +100,9 @@ int main(int argc, char** argv)
         const int fd = open(output.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
         if (fd < 0 || dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) _exit(126);
         close(fd);
-        std::vector<std::string> arguments{argv[1], "--run-root", directory};
+        std::vector<std::string> arguments{argv[1]};
+        if (std::find(options.begin(), options.end(), "--deployment-state") == options.end())
+          arguments.insert(arguments.end(), {"--run-root", directory});
         arguments.insert(arguments.end(), options.begin(), options.end());
         std::vector<char*> pointers;
         for (auto& argument : arguments) pointers.push_back(argument.data());
@@ -103,28 +111,53 @@ int main(int argc, char** argv)
         _exit(127);
       }
       int status = 0;
-      if (waitpid(child, &status, 0) != child || !WIFEXITED(status))
+      if (waitpid(child, &status, 0) != child)
         throw std::runtime_error("oracle did not exit normally");
       std::ifstream in(output); std::ostringstream content; content << in.rdbuf();
       const auto text = content.str();
+      if (!WIFEXITED(status) || text.find("AddressSanitizer") != std::string::npos ||
+          text.find("LeakSanitizer") != std::string::npos ||
+          text.find("UndefinedBehaviorSanitizer") != std::string::npos ||
+          text.find("runtime error:") != std::string::npos)
+        throw std::runtime_error("oracle crash/sanitizer report case=" +
+                                 std::to_string(cases + 1) + ": " + text);
       const bool cache = std::find(options.begin(), options.end(), "--cache-compatibility") != options.end();
-      if (cache && (text.find("SPEC189_CPP_ORACLE_PASS") != std::string::npos ||
+      const bool quiet = std::find(options.begin(), options.end(), "--quiet-performance") != options.end();
+      const bool deployment = std::find(options.begin(), options.end(), "--deployment-state") != options.end();
+      if ((cache || quiet || deployment) && (text.find("SPEC189_CPP_ORACLE_PASS") != std::string::npos ||
                     text.find("SPEC189_CPP_PLACEMENT_PASS") != std::string::npos))
         throw std::runtime_error("cache diagnostic emitted qualification PASS: " + text);
       if (reason.empty()) {
-        const auto marker = cache ? "SPEC189_CPP_CACHE_DIAGNOSTIC_PASS" : "SPEC189_CPP_ORACLE_PASS";
+        const auto marker = deployment ? "SPEC217_CPP_DEPLOYMENT_EXECUTION_PASS"
+          : quiet ? "SPEC189_CPP_QUIET_PERFORMANCE_PASS"
+          : cache ? "SPEC189_CPP_CACHE_DIAGNOSTIC_PASS" : "SPEC189_CPP_ORACLE_PASS";
         if (WEXITSTATUS(status) != 0 || text.find(marker) == std::string::npos)
-          throw std::runtime_error("positive CLI fixture rejected: " + text);
+          throw std::runtime_error("positive CLI fixture rejected case=" +
+                                   std::to_string(cases + 1) + ": " + text);
         if (cache && (text.find("\"scope\":\"cache-compatible-execution\"") == std::string::npos ||
                       text.find("\"materialFetch\":\"NOT_EVALUATED\"") == std::string::npos ||
                       text.find("\"fullPathQualification\":\"NOT_RUN\"") == std::string::npos))
           throw std::runtime_error("cache diagnostic scope missing: " + text);
+        if (quiet && (text.find("\"scope\":\"quiet-performance\"") == std::string::npos ||
+                      text.find("\"fullPathQualification\":\"NOT_RUN\"") == std::string::npos ||
+                      text.find("\"grantAudit\":\"NOT_EVALUATED\"") == std::string::npos ||
+                      text.find("\"placementAudit\":\"NOT_EVALUATED\"") == std::string::npos ||
+                      text.find("\"restoreAudit\":\"NOT_EVALUATED\"") == std::string::npos ||
+                      text.find("\"materialFetch\":\"NOT_EVALUATED\"") == std::string::npos))
+          throw std::runtime_error("quiet performance scope missing: " + text);
+        if (deployment && (text.find("\"scope\":\"deployment-quiet-execution\"") == std::string::npos ||
+                           text.find("\"fullPathQualification\":\"NOT_RUN\"") == std::string::npos ||
+                           text.find("\"checkpointAuthentication\":\"NOT_EVALUATED\"") == std::string::npos))
+          throw std::runtime_error("deployment execution scope missing: " + text);
       }
       else if (WEXITSTATUS(status) != expectedFailure ||
                text.find(expectedFailure == 2 ? "usage:" : "reason=" + reason) == std::string::npos ||
                text.find("SPEC189_CPP_ORACLE_PASS") != std::string::npos ||
-               text.find("SPEC189_CPP_CACHE_DIAGNOSTIC_PASS") != std::string::npos) {
-        throw std::runtime_error("negative CLI fixture mismatch: " + text);
+               text.find("SPEC189_CPP_CACHE_DIAGNOSTIC_PASS") != std::string::npos ||
+               text.find("SPEC189_CPP_QUIET_PERFORMANCE_PASS") != std::string::npos ||
+               text.find("SPEC217_CPP_DEPLOYMENT_EXECUTION_PASS") != std::string::npos) {
+        throw std::runtime_error("negative CLI fixture mismatch case=" +
+                                 std::to_string(cases + 1) + " expected=" + reason + ": " + text);
       }
       ++cases;
     };
@@ -412,6 +445,631 @@ int main(int argc, char** argv)
     check(logs.first, replaceAll(logs.second,
       "NDNSF_DI_PROVIDER_MATERIAL_FETCH requestId=request-2", "OLD_MATERIAL requestId=request-2"),
       "incomplete-material-sequence", {"--rounds", "3"});
+    // These fixed counterexamples use the production provider serializer;
+    // they prove measurement parsing, not authentication or inference.
+    const auto quietFixture = [&](unsigned rounds = 3, bool missingCpu = false) {
+      chain(rounds, true);
+      std::string requesterRows;
+      std::array<std::string, 2> providerRows;
+      for (unsigned p = 0; p < 2; ++p) {
+        providerRows[p] = NativeJson{
+          {"schema", "ndnsf-di-native-request-statistics-v1"}, {"type", "serve-ready"},
+          {"provider", "/example/ndnsf-qwen06b/provider-" + std::to_string(p)},
+          {"providerBootId", "boot-" + std::to_string(p)}}.dump() + '\n';
+      }
+      for (unsigned round = 0; round < rounds; ++round) {
+        const std::string request = "request-" + std::to_string(round);
+        const std::string plan = "plan-" + std::to_string(round);
+        const std::int64_t offset = round * 10000;
+        requesterRows += NativeJson{
+          {"schema", "ndnsf-di-native-requester-statistics-v1"}, {"type", "request"},
+          {"turn", round}, {"requestId", request}, {"planDigest", plan},
+          {"completed", true}, {"streaming", true}, {"observedEvents", 3},
+          {"terminalSeen", true}, {"checkpointWritten", true},
+          {"startedSteadyNs", offset + 100}, {"finishedSteadyNs", offset + 9000},
+          {"startedProcessCpuNs", nullptr}, {"finishedProcessCpuNs", nullptr}}.dump() + '\n';
+        write(root / ("requester-" + std::to_string(round) + ".log"), "");
+        for (unsigned p = 0; p < 2; ++p) {
+          ndnsf::di::NativeRequestStatistics statistics;
+          statistics.requestId = request;
+          statistics.planDigest = plan;
+          statistics.provider = "/example/ndnsf-qwen06b/provider-" + std::to_string(p);
+          statistics.providerBootId = "boot-" + std::to_string(p);
+          statistics.role = "role" + std::to_string(p);
+          statistics.attemptEpoch = 1;
+          statistics.startedSteadyNs = offset + 200;
+          statistics.finishedSteadyNs = offset + 8000;
+          statistics.startedProcessCpuNs = missingCpu ? -1 : 100;
+          statistics.finishedProcessCpuNs = missingCpu ? -1 : 7000;
+          statistics.completionAdmitted = true;
+          statistics.hasEpochStatistics = true;
+          statistics.epochsExecuted = 4;
+          statistics.eventsPublished = p == 1 ? 3 : 0;
+          auto identity = std::make_shared<ndnsf::di::NativeBackendExecutionIdentity>();
+          identity->requestId = request;
+          identity->sessionId = request;
+          identity->role = statistics.role;
+          identity->providerBootId = statistics.providerBootId;
+          identity->attemptEpoch = 1;
+          for (unsigned epoch = 0; epoch < 4; ++epoch) {
+            ndnsf::di::NativeBackendExecutionTiming timing;
+            timing.identity = identity;
+            timing.inferenceEpoch = epoch;
+            timing.startedSteadyNs = offset + 1000 + epoch * 1000;
+            timing.finishedSteadyNs = timing.startedSteadyNs + 500;
+            timing.startedProcessCpuNs = missingCpu ? std::int64_t{-1} : 400 + epoch * 200;
+            timing.finishedProcessCpuNs = missingCpu ? -1 : timing.startedProcessCpuNs + 100;
+            timing.startedThreadCpuNs = missingCpu ? -1 : 30;
+            timing.finishedThreadCpuNs = missingCpu ? -1 : 60;
+            timing.completed = true;
+            ndnsf::di::NativeRuntimeMetrics metrics;
+            metrics.lastBackendExecution = timing;
+            statistics.runtimeMetrics.push_back({statistics.role, epoch, metrics});
+            ndnsf::di::NativeEpochCoordinatorResult::CacheObservation cache;
+            cache.inferenceEpoch = epoch;
+            cache.actualNewInputExtent = 1;
+            cache.representedPrefixTokenCount = epoch + 1;
+            cache.prefixWorkAvoided = epoch;
+            statistics.cacheObservations.push_back(cache);
+          }
+          providerRows[p] += ndnsf::di::nativeRequestStatisticsToJson(statistics) + '\n';
+        }
+      }
+      write(root / "requester-statistics.jsonl", requesterRows);
+      for (unsigned p = 0; p < 2; ++p)
+        write(root / ("provider-" + std::to_string(p) + "-statistics.jsonl"), providerRows[p]);
+    };
+    const std::vector<std::string> quiet{"--quiet-performance", "--rounds", "3",
+                                        "--require-multi-token"};
+    const auto badStatistics = [&](const std::string& file, unsigned row,
+                                  const std::string& reason,
+                                  const std::function<void(NativeJson&)>& change) {
+      quietFixture();
+      std::ifstream input(root / file);
+      std::string line, result;
+      unsigned index = 0;
+      while (std::getline(input, line)) {
+        auto value = NativeJson::parse(line);
+        if (index++ == row) change(value);
+        result += value.dump() + '\n';
+      }
+      input.close();
+      write(root / file, result);
+      check("", "", reason, quiet);
+    };
+    quietFixture();
+    check("", "", "", quiet);
+    quietFixture(3, true);
+    check("", "", "", quiet);
+    quietFixture(1);
+    check("", "", "", {"--quiet-performance", "--require-multi-token"});
+    badStatistics("requester-statistics.jsonl", 2, "statistics-incomplete-request",
+      [](NativeJson& j) { j["completed"] = false; });
+    for (const auto* field : {"terminalSeen", "checkpointWritten", "streaming"}) {
+      badStatistics("requester-statistics.jsonl", 1, "stream-statistics-mismatch",
+        [=](NativeJson& j) { j[field] = false; });
+    }
+    badStatistics("requester-statistics.jsonl", 1, "stream-statistics-mismatch",
+      [](NativeJson& j) { j["observedEvents"] = 2; });
+    for (const auto* field : {"requestId", "providerBootId", "planDigest"}) {
+      badStatistics("provider-0-statistics.jsonl", 2, "statistics-binding",
+        [=](NativeJson& j) { j[field] = "stale"; });
+    }
+    badStatistics("provider-0-statistics.jsonl", 2, "statistics-incomplete-request",
+      [](NativeJson& j) { j["failureReason"] = "failed"; });
+    badStatistics("provider-0-statistics.jsonl", 2, "statistics-epoch-count",
+      [](NativeJson& j) { j["runtimeMetrics"].erase(0); });
+    badStatistics("provider-0-statistics.jsonl", 2, "statistics-generation-coverage",
+      [](NativeJson& j) {
+        j["runtimeMetrics"].erase(j["runtimeMetrics"].size() - 1);
+        j["cacheObservations"].erase(j["cacheObservations"].size() - 1);
+        j["epochsExecuted"] = 3;
+      });
+    badStatistics("provider-0-statistics.jsonl", 2, "statistics-backend-window",
+      [](NativeJson& j) {
+        for (auto& observation : j["runtimeMetrics"]) {
+          observation["lastBackendExecution"]["startedProcessCpuNs"] = 400;
+          observation["lastBackendExecution"]["finishedProcessCpuNs"] = 6000;
+        }
+      });
+    badStatistics("provider-0-statistics.jsonl", 2, "statistics-missing-backend",
+      [](NativeJson& j) { j["runtimeMetrics"][0]["lastBackendExecution"] = nullptr; });
+    for (const auto* field : {"requestId", "role", "providerBootId", "sessionId"}) {
+      badStatistics("provider-0-statistics.jsonl", 2, "statistics-backend-binding",
+        [=](NativeJson& j) { j["runtimeMetrics"][1]["lastBackendExecution"][field] = "stale"; });
+    }
+    badStatistics("provider-0-statistics.jsonl", 2, "statistics-backend-binding",
+      [](NativeJson& j) { j["runtimeMetrics"][0]["lastBackendExecution"]["completed"] = false; });
+    badStatistics("provider-0-statistics.jsonl", 2, "statistics-backend-binding",
+      [](NativeJson& j) { j["runtimeMetrics"][0]["lastBackendExecution"]["attemptEpoch"] = 2; });
+    badStatistics("provider-0-statistics.jsonl", 2, "statistics-clock-order",
+      [](NativeJson& j) { j["finishedSteadyNs"] = 0; });
+    badStatistics("provider-0-statistics.jsonl", 2, "invalid-integer",
+      [](NativeJson& j) { j["finishedProcessCpuNs"] = nullptr; });
+    badStatistics("provider-0-statistics.jsonl", 2, "statistics-backend-window",
+      [](NativeJson& j) { j["runtimeMetrics"][0]["lastBackendExecution"]["finishedSteadyNs"] = 999999; });
+    badStatistics("provider-0-statistics.jsonl", 2, "invalid-integer",
+      [](NativeJson& j) { j["startedSteadyNs"] = 123.5; });
+    badStatistics("requester-statistics.jsonl", 1, "statistics-request-window",
+      [](NativeJson& j) { j["startedSteadyNs"] = 16000; });
+    badStatistics("provider-1-statistics.jsonl", 2, "statistics-event-count",
+      [](NativeJson& j) { j["eventsPublished"] = 2; });
+    for (const auto& item : std::vector<std::pair<std::string, std::string>>{
+           {"{}", "statistics-truncated-row"}, {"{broken}\n", "statistics-json"},
+           {"{\"schema\":1,\"schema\":2}\n", "statistics-json"}}) {
+      quietFixture();
+      write(root / "provider-0-statistics.jsonl", item.first);
+      check("", "", item.second, quiet);
+    }
+    quietFixture();
+    mutate("conversation-state-2.json", [](NativeJson& j) { j["prefixTokenCount"] = 12; });
+    check("", "", "checkpoint-prefix-mismatch", quiet);
+    quietFixture();
+    mutate("output-2.bin", [](NativeJson& j) { j["finishReason"] = "wrong"; });
+    check("", "", "invalid-stop-reason", quiet);
+    quietFixture();
+    for (const auto* file : {"requester-statistics.jsonl", "provider-0-statistics.jsonl",
+                              "provider-1-statistics.jsonl"}) {
+      std::ifstream input(root / file);
+      std::ostringstream text;
+      text << input.rdbuf();
+      input.close();
+      write(root / file, replaceAll(text.str(), "request-1", "request-0"));
+    }
+    check("", "", "duplicate-request-id", quiet);
+    quietFixture();
+    check("", "", "usage", {"--quiet-performance", "--cache-compatibility"}, 2);
+    const auto readJsonFile = [&](const std::filesystem::path& path) {
+      std::ifstream input(path);
+      NativeJson value;
+      input >> value;
+      return value;
+    };
+    const auto deploymentFixture = [&](bool explicitStatistics = false,
+                                        const std::string& requesterId = "requester") {
+      quietFixture(2);
+      NativeJson turns = NativeJson::array();
+      std::vector<std::int64_t> prefix;
+      NativeJson requesterConfig;
+      for (unsigned round = 0; round < 2; ++round) {
+        const auto suffix = round ? "-1" : "";
+        const auto legacy = readJsonFile(root / "requester" /
+          (std::string("config") + suffix + ".json"));
+        if (round == 0) requesterConfig = legacy;
+        NativeJson turn;
+        for (const auto& item : std::vector<std::pair<std::string, std::string>>{
+               {"options_file", std::string("options") + suffix + ".json"},
+               {"output_file", "output-" + std::to_string(round) + ".bin"},
+               {"checkpoint_output_file", std::string("conversation-state") + suffix + ".json"}})
+          turn[item.first] = (root / "requester" / item.second).string();
+        turn["input_file"] = (root / ("input-" + std::to_string(round) + ".bin")).string();
+        ndnsf::di::NamedTensor input;
+        input.name = "input_ids";
+        input.elementType = ndnsf::di::TensorElementType::Int64;
+        input.shape = {1, 1};
+        input.payload.assign(8, 0);
+        input.payload[0] = 10 + round;
+        const auto wire = ndnsf::di::encodeTensorBundle({input});
+        write(turn.at("input_file").get<std::string>(), std::string(wire.begin(), wire.end()));
+        prefix.push_back(10 + round);
+        const auto output = readJsonFile(turn.at("output_file").get<std::string>());
+        for (const auto& token : output.at("tokenIds")) prefix.push_back(token.get<std::int64_t>());
+        auto checkpoint = readJsonFile(turn.at("checkpoint_output_file").get<std::string>());
+        checkpoint["logicalPrefixDigest"] = ndnsf::di::nativeConversationPrefixDigest(prefix);
+        checkpoint["prefixTokenCount"] = prefix.size();
+        checkpoint["planRoleMapDigest"] = ndnsf::di::nativePlanningDigest(
+          ndnsf::di::nativeCanonicalJson(NativeJson::array({
+            NativeJson::array({"role0", "/example/ndnsf-qwen06b/provider-0"}),
+            NativeJson::array({"role1", "/example/ndnsf-qwen06b/provider-1"})})));
+        checkpoint["issuedAtMs"] = 1;
+        checkpoint["expiresAtMs"] = 100000;
+        checkpoint.erase("signature");
+        checkpoint.erase("checkpointDigest");
+        checkpoint["checkpointDigest"] = ndnsf::di::nativePlanningDigest(
+          ndnsf::di::nativeConversationCanonicalJson(checkpoint));
+        checkpoint["signature"] = std::string(64, 'a');
+        write(turn.at("checkpoint_output_file").get<std::string>(), checkpoint.dump());
+        turns.push_back(turn);
+      }
+      requesterConfig["turns"] = turns;
+      requesterConfig["request"]["generation_mode"] = "TOKEN_STREAMING";
+      requesterConfig["fixed_placement"]["role_providers"] = {
+        {"role0", "/example/ndnsf-qwen06b/provider-0"},
+        {"role1", "/example/ndnsf-qwen06b/provider-1"}};
+      const auto requesterStatisticsPath = root /
+        (explicitStatistics ? "custom-requester-statistics.jsonl" : requesterId + "-statistics.jsonl");
+      if (explicitStatistics)
+        requesterConfig["statistics_file"] = requesterStatisticsPath.string();
+      const auto requesterIdentity = requesterConfig.at("conversation").at("owner").at("requester_identity");
+      NativeJson config{{"deployment_id", "fixture"}, {"requester", requesterConfig},
+        {"platform", {{"kind", "host"}}}, {"nodes", NativeJson::array({{{"id", "local"}}})},
+        {"actors", NativeJson::array({
+          {{"id", requesterId}, {"kind", "requester"}, {"identity", requesterIdentity}},
+          {{"id", "provider-0"}, {"kind", "provider"},
+            {"identity", "/example/ndnsf-qwen06b/provider-0"}},
+          {{"id", "provider-1"}, {"kind", "provider"},
+            {"identity", "/example/ndnsf-qwen06b/provider-1"}}})}};
+      if (explicitStatistics) {
+        std::filesystem::copy_file(root / "requester-statistics.jsonl", requesterStatisticsPath,
+          std::filesystem::copy_options::overwrite_existing);
+        for (unsigned p = 0; p < 2; ++p) {
+          const auto name = "provider-" + std::to_string(p) + "-statistics.jsonl";
+          const auto custom = root / ("custom-" + name);
+          std::filesystem::copy_file(root / name, custom,
+            std::filesystem::copy_options::overwrite_existing);
+          config["actors"][p + 1]["parameters"]["statistics-file"] = custom.string();
+        }
+      }
+      else if (requesterId != "requester") {
+        std::filesystem::copy_file(root / "requester-statistics.jsonl", requesterStatisticsPath,
+          std::filesystem::copy_options::overwrite_existing);
+      }
+      const auto digest = ndnsf::di::nativePlanningDigest(
+        ndnsf::di::nativeCanonicalJson(config)).substr(7);
+      write(root / "configuration.json", config.dump());
+      requesterConfig["statistics_file"] = requesterStatisticsPath.string();
+      write(root / (requesterId + ".json"), requesterConfig.dump());
+      NativeJson state{{"schema", "ndnsf-di-host-operation-v1"}, {"deployment_id", "fixture"},
+        {"boot_id", "fixture-boot"}, {"configuration_sha256", digest},
+        {"evidence_root", root.string()}, {"status", "STOPPED"}, {"needs_closeout", false},
+        {"external_references", NativeJson::array()},
+        {"requester", {{"completion", "EXITED"}, {"exit_code", 0}}},
+        {"cleanup", NativeJson::array()}, {"launches", NativeJson::array()}};
+      for (const auto& actor : config.at("actors")) {
+        const auto id = actor.at("id");
+        NativeJson bindings{{"NDNSF_DEPLOYMENT_ACTOR_ID", id},
+          {"NDNSF_DEPLOYMENT_BOOT_ID", "fixture-boot"},
+          {"NDNSF_DEPLOYMENT_CONFIG_SHA256", digest}};
+        state["launches"].push_back({{"id", id}, {"bindings", bindings},
+          {"proof", {{"bindings", bindings}}}});
+        state["cleanup"].push_back({{"id", id}, {"status", "ZERO"}, {"forced", false}});
+      }
+      write(root / "deployment-state.json", state.dump());
+    };
+    const std::vector<std::string> deployment{
+      "--deployment-state", (root / "deployment-state.json").string(), "--require-multi-token"};
+    deploymentFixture();
+    check("", "", "", deployment);
+    deploymentFixture(true);
+    check("", "", "", deployment);
+    deploymentFixture(false, "client");
+    check("", "", "", deployment);
+    const auto mutateDeployment = [&](const std::string& name, const std::string& reason,
+                                      const std::function<void(NativeJson&)>& change) {
+      deploymentFixture();
+      auto value = readJsonFile(root / name);
+      change(value);
+      write(root / name, value.dump());
+      check("", "", reason, deployment);
+    };
+    mutateDeployment("deployment-state.json", "deployment-cleanup", [](NativeJson& j) {
+      j["cleanup"][0]["status"] = "UNKNOWN";
+    });
+    mutateDeployment("deployment-state.json", "deployment-cleanup", [](NativeJson& j) {
+      j["cleanup"][0]["forced"] = true;
+    });
+    mutateDeployment("deployment-state.json", "deployment-requester-exit", [](NativeJson& j) {
+      j["requester"]["exit_code"] = 1;
+    });
+    mutateDeployment("deployment-state.json", "deployment-process-binding", [](NativeJson& j) {
+      j["launches"][0]["proof"]["bindings"]["NDNSF_DEPLOYMENT_BOOT_ID"] = "old";
+    });
+    mutateDeployment("configuration.json", "deployment-state-or-configuration", [](NativeJson& j) {
+      j["deployment_id"] = "other";
+    });
+    mutateDeployment("requester/conversation-state-1.json", "deployment-checkpoint-binding", [](NativeJson& j) {
+      j["contextEpoch"] = 1;
+    });
+    mutateDeployment("requester/conversation-state-1.json", "deployment-checkpoint-binding", [](NativeJson& j) {
+      j["logicalPrefixDigest"] = "wrong";
+    });
+    mutateDeployment("requester/conversation-state-1.json", "deployment-checkpoint-digest", [](NativeJson& j) {
+      j["checkpointDigest"] = "wrong";
+    });
+    deploymentFixture();
+    for (const auto* name : {"conversation-state.json", "conversation-state-1.json"}) {
+      auto checkpoint = readJsonFile(root / "requester" / name);
+      checkpoint["planRoleMapDigest"] = "sha256:" + std::string(64, 'd');
+      checkpoint.erase("checkpointDigest");
+      checkpoint.erase("signature");
+      checkpoint["checkpointDigest"] = ndnsf::di::nativePlanningDigest(
+        ndnsf::di::nativeConversationCanonicalJson(checkpoint));
+      checkpoint["signature"] = std::string(64, 'a');
+      write(root / "requester" / name, checkpoint.dump());
+    }
+    check("", "", "deployment-checkpoint-binding", deployment);
+    deploymentFixture();
+    write(root / "requester-statistics.jsonl", "");
+    check("", "", "statistics-request-count", deployment);
+    deploymentFixture();
+    std::ifstream statistics(root / "requester-statistics.jsonl");
+    std::string firstRow, secondRow;
+    std::getline(statistics, firstRow);
+    std::getline(statistics, secondRow);
+    auto incomplete = NativeJson::parse(secondRow);
+    incomplete["observedEvents"] = 2;
+    statistics.close();
+    write(root / "requester-statistics.jsonl", firstRow + '\n' + incomplete.dump() + '\n');
+    check("", "", "stream-statistics-mismatch", deployment);
+
+    // Original receipt/parser fixtures only. These records do not claim that
+    // this host has Slurm, a container, or a CUDA device.
+    const auto privateJson = [&](const std::filesystem::path& path, const NativeJson& value) {
+      std::filesystem::create_directories(path.parent_path());
+      write(path, value.dump());
+      std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                       std::filesystem::perms::owner_write);
+    };
+    const auto slurmFixture = [&](bool gpu = true,
+                                  NativeJson selectors = NativeJson::array({"3"})) {
+      deploymentFixture();
+      auto config = readJsonFile(root / "configuration.json");
+      config["platform"] = {{"kind", "slurm-apptainer"},
+        {"build_record", (root / "build-record.json").string()},
+        {"sif_sha256", "sha256:" + std::string(64, 'a')},
+        {"slurm", {{"gpu", {{"count", gpu ? 1 : 0}}}}}};
+      config["release"] = {{"prefix", (root / "installed").string()},
+        {"manifest", (root / "release.json").string()}};
+      privateJson(root / "release.json", {{"fixture", "native-ledger"}});
+      std::ifstream manifestInput(root / "release.json");
+      std::ostringstream manifestBytes;
+      manifestBytes << manifestInput.rdbuf();
+      const auto release = ndnsf::di::nativePlanningDigest(manifestBytes.str()).substr(7);
+      NativeJson record{{"schemaVersion", "ndnsf-local-sif-build-v3"},
+        {"status", "BUILT_UNQUALIFIED"},
+        {"sif", {{"sha256", config["platform"]["sif_sha256"]}, {"bytes", 1}}}};
+      record["recordDigest"] = ndnsf::di::nativePlanningDigest(ndnsf::di::nativeCanonicalJson(record));
+      privateJson(root / "build-record.json", record);
+      config["nodes"] = NativeJson::array({
+        {{"id", "a"}, {"host", "node-a"}, {"nfd", {{"mode", "managed"}}}},
+        {{"id", "b"}, {"host", "node-b"}, {"nfd", {{"mode", "managed"}}}}});
+      for (auto& actor : config["actors"]) {
+        actor["external"] = false;
+        actor["node"] = actor["id"] == "provider-1" ? "b" : "a";
+        actor["resources"] = {{"gpu_devices", gpu && actor["kind"] == "provider"
+          ? selectors : NativeJson::array()}};
+      }
+      const auto digest = ndnsf::di::nativePlanningDigest(ndnsf::di::nativeCanonicalJson(config)).substr(7);
+      privateJson(root / "configuration.json", config);
+      const auto binding = NativeJson{{"boot_id", "fixture-boot"}, {"configuration_sha256", digest},
+        {"release_sha256", release}, {"job_id", "12345"}};
+      unsigned serial = 100;
+      const auto groups = [&](const std::string& id) {
+        const auto pid = ++serial;
+        NativeJson env{{"NDNSF_DEPLOYMENT_ACTOR_ID", id},
+          {"NDNSF_DEPLOYMENT_BOOT_ID", "fixture-boot"},
+          {"NDNSF_DEPLOYMENT_CONFIG_SHA256", digest}};
+        return NativeJson{{"launches", NativeJson::array({{
+          {"id", id}, {"bindings", env}, {"proof", {{"pid", pid}, {"pgid", pid},
+            {"uid", ::getuid()}, {"start_ticks", pid + 1000}, {"exe", "/controlled/native"},
+            {"bindings", env}}}}})},
+          {"cleanup", NativeJson::array({{{"id", id}, {"status", "ZERO"}, {"forced", false}}})}};
+      };
+      auto allocation = binding;
+      allocation.update(groups("supervisor-step"));
+      allocation.update({{"schema", "ndnsf-di-host-operation-v1"}, {"deployment_id", "fixture"},
+        {"status", "STOPPED"}, {"execution", "COMPLETE"}, {"failure", nullptr},
+        {"evidence_root", (root / "supervisor/fixture").string()},
+        {"external_references", NativeJson::array()}, {"roles", NativeJson::array()},
+        {"gpu_allocations", NativeJson::object()}});
+      std::map<std::string, NativeJson> pools;
+      for (const auto& node : config["nodes"]) {
+        const auto id = node["id"].get<std::string>();
+        for (const auto* kind : {"nfd", "nfdc"})
+          allocation["roles"].push_back({{"id", std::string(kind) + "." + id},
+            {"kind", kind}, {"node", id}});
+        auto audit = binding;
+        audit.update({{"schema", "ndnsf-di-host-node-audit-v1"}, {"node_id", id},
+          {"host", node["host"]}, {"status", "ZERO"}, {"cleanup_scope", "HOST_UID_JOB"},
+          {"processes", NativeJson::array()}, {"errors", NativeJson::array()},
+          {"auditor_cgroup", "0::/slurm/job_12345/step_99"}, {"auditor_step_id", "99"}});
+        privateJson(root / "nodes" / id / "host-audit-final.json", audit);
+        if (!gpu) continue;
+        const auto uuid = "GPU-" + std::string(8, id == "a" ? '1' : '2') + "-1111-1111-1111-111111111111";
+        auto pool = binding;
+        pool.update({{"schema", "ndnsf-di-gpu-allocation-v1"}, {"node_id", id},
+          {"host", node["host"]}, {"visibility", "0"},
+          {"devices", NativeJson::array({{{"physical_id", "3"}, {"uuid", uuid}}})}});
+        auto probe = binding;
+        probe.update({{"schema", "ndnsf-di-gpu-probe-v1"}, {"event", "NDNSF_DI_GPU_PROBE"},
+          {"role_id", "gpu-probe." + id}, {"step_id", "3"}, {"step_gpus", "9"},
+          {"host", node["host"]}, {"visibility", "0"}, {"device_order", "PCI_BUS_ID"},
+          {"visible_uuids", NativeJson::array({uuid})}, {"inventory", pool["devices"]}});
+        pool["native_probe"] = probe;
+        pools[id] = pool;
+        allocation["gpu_allocations"][id] = pool;
+        privateJson(root / "nodes" / id / "gpu-allocation.json", pool);
+      }
+      for (const auto& actor : config["actors"]) allocation["roles"].push_back(actor);
+      std::map<std::string, NativeJson> receipts;
+      for (const auto& role : allocation["roles"]) {
+        const auto id = role["id"].get<std::string>();
+        const auto node = role["node"].get<std::string>();
+        const auto kind = role["kind"].get<std::string>();
+        auto receipt = binding;
+        receipt.update(groups(id));
+        const auto proof = receipt["launches"][0]["proof"];
+        receipt.update({{"schema", "ndnsf-di-node-role-v1"}, {"role_id", id},
+          {"role_kind", kind}, {"node_id", node}, {"host", "node-" + node},
+          {"status", "STOPPED"}, {"cleanup_scope", "PID_NAMESPACE"}, {"failure", nullptr},
+          {"execution", kind == "requester" || kind == "nfdc" ? "COMPLETE" : "SERVICE_STOPPED"},
+          {"exit_code", 0}, {"step_id", "3"}, {"pid_namespace", "pid:[" + id + "]"}});
+        if (gpu && kind == "provider") {
+          auto admission = pools.at(node);
+          admission["native_probe"]["role_id"] = "management-0";
+          receipt["gpu_admission"] = admission;
+          receipt["gpu_visibility"] = "0";
+          auto query = groups("management-0");
+          query["launches"][0]["argv"] = NativeJson::array({
+            (root / "installed/libexec/ndnsf-di/ndnsf-di-device-query").string(), "--count", "1"});
+          query["launches"][0]["exit_code"] = 0;
+          receipt["launches"].push_back(query["launches"][0]);
+          receipt["cleanup"].push_back(query["cleanup"][0]);
+        }
+        receipts[id] = receipt;
+        const auto path = kind == "nfd" || kind == "nfdc"
+          ? root / "nodes" / node / kind / "receipt.json" : root / "actors" / id / "receipt.json";
+        privateJson(path, receipt);
+        auto observed = binding;
+        auto hostProof = proof;
+        hostProof["pid"] = proof["pid"].get<unsigned>() + 10000;
+        hostProof["nspid"] = NativeJson::array({hostProof["pid"], proof["pid"]});
+        hostProof["pid_namespace"] = receipt["pid_namespace"];
+        hostProof["cgroup"] = "0::/slurm/job_12345/step_3";
+        observed.update({{"schema", "ndnsf-di-host-node-audit-v1"}, {"node_id", node},
+          {"role_id", id}, {"host", "node-" + node}, {"status", "OBSERVED"},
+          {"native_process", hostProof}});
+        privateJson(root / "nodes" / node / ("host-audit-" + id + ".json"), observed);
+      }
+      const auto requesterRoot = root / "actors/requester/runtime/fixture";
+      std::filesystem::create_directories(requesterRoot);
+      auto requesterConfig = readJsonFile(root / "requester.json");
+      requesterConfig["statistics_file"] = (requesterRoot / "requester-statistics.jsonl").string();
+      privateJson(requesterRoot / "requester.json", requesterConfig);
+      std::filesystem::copy_file(root / "requester-statistics.jsonl", requesterRoot / "requester-statistics.jsonl",
+        std::filesystem::copy_options::overwrite_existing);
+      for (unsigned providerIndex = 0; providerIndex != 2; ++providerIndex) {
+        const auto id = "provider-" + std::to_string(providerIndex);
+        const auto output = root / "actors" / id / "runtime/fixture" / (id + "-statistics.jsonl");
+        std::filesystem::create_directories(output.parent_path());
+        std::ifstream input(root / (id + "-statistics.jsonl"));
+        std::string line, records, firstRequest;
+        std::uint64_t firstAttempt = 0;
+        while (std::getline(input, line)) {
+          auto row = NativeJson::parse(line);
+          if (row["type"] == "request") {
+            if (firstRequest.empty()) {
+              firstRequest = row["requestId"].get<std::string>();
+              firstAttempt = row["attemptEpoch"].get<std::uint64_t>();
+            }
+            // The second host deliberately has a different monotonic origin.
+            if (providerIndex == 1) {
+              for (const auto* key : {"startedSteadyNs", "finishedSteadyNs"})
+                row[key] = row[key].get<std::int64_t>() + 1000000000;
+              for (auto& item : row["runtimeMetrics"])
+                for (const auto* key : {"startedSteadyNs", "finishedSteadyNs"})
+                  item["lastBackendExecution"][key] =
+                    item["lastBackendExecution"][key].get<std::int64_t>() + 1000000000;
+            }
+            if (gpu) {
+              row["admittedModelDigest"] = "sha256:model";
+              row["admittedArtifactDigest"] = "sha256:artifact";
+              ndnsf::di::ExecutionEvidence evidence;
+              evidence.providerName = row["provider"];
+              evidence.providerBootId = row["providerBootId"];
+              evidence.runnerKind = ndnsf::di::RunnerKind::OnnxRuntimeCuda;
+              evidence.realCompute = true; evidence.deviceKind = "cuda"; evidence.deviceId = "0";
+              evidence.runtimeVersion = "fixture-ort"; evidence.createdAtMs = 1;
+              evidence.modelDigest = "sha256:model"; evidence.planDigest = row["planDigest"];
+              evidence.roles = {row["role"].get<std::string>()};
+              evidence.artifactDigests[evidence.roles.front()] = "sha256:artifact";
+              evidence.loadCompleted = true; evidence.warmupCompleted = true;
+              evidence.gpuUuid = receipts.at(id)["gpu_admission"]["devices"][0]["uuid"];
+              evidence.gpuUuids = {evidence.gpuUuid}; evidence.cudaVisibleDevices = "0";
+              evidence.gpuIdentitySource = "cuda-runtime-pci+driver-uuid";
+              evidence.processId = receipts.at(id)["launches"][0]["proof"]["pid"];
+              evidence.requestId = row["requestId"]; evidence.attemptEpoch = row["attemptEpoch"];
+              evidence.executionCompleted = true; evidence.providerProfilePath = "/controlled/profile";
+              evidence.profileRequestId = firstRequest; evidence.profileAttemptEpoch = firstAttempt;
+              evidence.setNodeProviderAssignments({{evidence.roles.front(), "projection_kernel_time",
+                                                    "CUDAExecutionProvider", true}});
+              row["finalExecutionEvidence"] = NativeJson::parse(ndnsf::di::executionEvidenceToJson(evidence));
+            }
+          }
+          records += row.dump() + '\n';
+        }
+        write(output, records);
+      }
+      NativeJson reference{{"boot_id", "fixture-boot"}, {"configuration_sha256", digest},
+        {"release_sha256", release}, {"job_id", "12345"}, {"owner_uid", ::getuid()}};
+      auto operation = binding;
+      operation.update({{"schema", "ndnsf-di-slurm-operation-v1"}, {"deployment_id", "fixture"},
+        {"evidence_root", root.string()}, {"job_reference", reference}, {"scheduler", {
+          {"reference", reference}, {"terminal", true}, {"status", "TERMINAL"},
+          {"state", "COMPLETED"}, {"exit_code", "0:0"}}}});
+      privateJson(root / "operation.json", operation);
+      privateJson(root / "allocation.json", allocation);
+    };
+    const std::vector<std::string> slurmGpu{
+      "--deployment-state", (root / "allocation.json").string(),
+      "--require-multi-token", "--require-distributed-gpu"};
+    slurmFixture();
+    check("", "", "", slurmGpu);
+    slurmFixture(true, NativeJson::array({"allocated:0"}));
+    check("", "", "", slurmGpu);
+    for (const auto* selector : {"allocated:1", "allocated:64", "allocated:00",
+                                  "allocated:-1", "allocated:", "allocated:0x0"}) {
+      slurmFixture(true, NativeJson::array({selector}));
+      check("", "", "deployment-gpu-selector", slurmGpu);
+    }
+    slurmFixture(true, NativeJson::array({"allocated:0", "3"}));
+    check("", "", "deployment-gpu-selector", slurmGpu);
+    slurmFixture(false);
+    check("", "", "", {"--deployment-state", (root / "allocation.json").string(), "--require-multi-token"});
+    check("", "", "deployment-distributed-gpu-required", slurmGpu);
+    const auto badSlurm = [&](const std::string& path, const std::string& reason,
+                              const std::function<void(NativeJson&)>& mutate) {
+      slurmFixture();
+      auto value = readJsonFile(root / path);
+      mutate(value); privateJson(root / path, value);
+      check("", "", reason, slurmGpu);
+    };
+    badSlurm("operation.json", "deployment-scheduler-binding", [](auto& j) { j["job_reference"]["job_id"] = "999"; });
+    badSlurm("build-record.json", "deployment-image-binding", [](auto& j) { j["sif"]["sha256"] = "wrong"; });
+    badSlurm("allocation.json", "deployment-role-coverage", [](auto& j) { j["roles"].erase(0); });
+    badSlurm("nodes/b/host-audit-final.json", "deployment-node-cleanup", [](auto& j) { j["processes"] = {1}; });
+    badSlurm("nodes/b/host-audit-final.json", "deployment-node-binding", [](auto& j) { j["boot_id"] = "wrong"; });
+    badSlurm("actors/provider-1/receipt.json", "deployment-cleanup", [](auto& j) { j["cleanup"][0]["forced"] = true; });
+    badSlurm("actors/provider-1/receipt.json", "deployment-role-terminal", [](auto& j) { j["execution"] = "FAILED"; });
+    badSlurm("nodes/b/host-audit-provider-1.json", "deployment-native-host-proof", [](auto& j) {
+      j["native_process"]["pid_namespace"] = "wrong";
+    });
+    badSlurm("actors/provider-1/receipt.json", "deployment-gpu-probe-binding", [](auto& j) {
+      j["gpu_admission"]["native_probe"]["job_id"] = "wrong";
+    });
+    const auto badGpuStatistics = [&](const std::string& reason, const std::function<void(NativeJson&)>& mutate) {
+      slurmFixture();
+      const auto path = root / "actors/provider-1/runtime/fixture/provider-1-statistics.jsonl";
+      std::ifstream input(path); std::string line, records;
+      bool changed = false;
+      while (std::getline(input, line)) {
+        auto value = NativeJson::parse(line);
+        if (!changed && value["type"] == "request") { mutate(value); changed = true; }
+        records += value.dump() + '\n';
+      }
+      input.close(); write(path, records);
+      check("", "", reason, slurmGpu);
+    };
+    badGpuStatistics("deployment-gpu-execution-missing", [](auto& j) { j.erase("finalExecutionEvidence"); });
+    for (const auto* key : {"gpuUuid", "requestId", "providerBootId", "planDigest"})
+      badGpuStatistics("deployment-gpu-execution-binding", [=](auto& j) { j["finalExecutionEvidence"][key] = "wrong"; });
+    badGpuStatistics("deployment-gpu-execution-binding", [](auto& j) {
+      j["finalExecutionEvidence"]["cpuFallbackUsed"] = "true";
+    });
+    badGpuStatistics("deployment-gpu-kernel-proof", [](auto& j) {
+      j["finalExecutionEvidence"]["profileRequestId"] = "unbound-profile";
+    });
+    badGpuStatistics("deployment-gpu-kernel-provider", [](auto& j) {
+      j["finalExecutionEvidence"]["nodeProviderAssignments"][0]["provider"] = "CPUExecutionProvider";
+    });
+    for (bool wrongModel : {false, true}) {
+      slurmFixture();
+      const auto path = root / "actors/provider-1/runtime/fixture/provider-1-statistics.jsonl";
+      std::ifstream input(path); std::string line, records;
+      while (std::getline(input, line)) {
+        auto value = NativeJson::parse(line);
+        if (value["type"] == "request") {
+          if (wrongModel) value["finalExecutionEvidence"]["modelDigest"] = "sha256:consistently-wrong";
+          else value["finalExecutionEvidence"]["artifactDigests"]["role1"] = "sha256:consistently-wrong";
+        }
+        records += value.dump() + '\n';
+      }
+      input.close(); write(path, records);
+      check("", "", "deployment-gpu-model-binding", slurmGpu);
+    }
+    slurmFixture();
+    std::filesystem::remove(root / "nodes/b/host-audit-final.json");
+    check("", "", "deployment-private-evidence", slurmGpu);
     std::cout << "Spec189 CLI oracle: " << cases << " cases passed\n";
     return 0;
   }

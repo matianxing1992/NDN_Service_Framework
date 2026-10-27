@@ -17,7 +17,10 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
+#include <ctime>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <future>
 #include <ndn-cxx/util/signal/scoped-connection.hpp>
@@ -26,6 +29,17 @@
 #include <optional>
 #include <random>
 #include <set>
+
+namespace ndnsf::di {
+struct PrefetchWorkerOracle
+{
+  static bool
+  post(NdnsfCollaborationDependencyIo& io, std::function<void()> task)
+  {
+    return io.m_prefetchWorkers && io.m_prefetchWorkers->post(std::move(task));
+  }
+};
+} // namespace ndnsf::di
 
 namespace ndn_service_framework::test {
 struct TensorOriginalOracle
@@ -203,7 +217,9 @@ probeCancelledSourcePending(ndn::DummyClientFace& face, ndn::KeyChain& keyChain,
 }
 
 void
-runTransfer(const std::string& mode, bool enableSpeculation = true)
+runTransfer(const std::string& mode, bool enableSpeculation = true,
+            std::size_t repeatedFetches = 0, std::size_t prefetchWorkerCount = 0,
+            bool checkpointFinalize = false)
 {
   const bool inlineDelivery = mode.rfind("inline", 0) == 0;
   const bool windowCancellation = mode == "inline-window-cancel";
@@ -248,6 +264,9 @@ runTransfer(const std::string& mode, bool enableSpeculation = true)
   std::mutex manifestNameMutex;
   std::string expectedManifestUri;
   std::map<ndn::Name, ndn::Interest> issuedSourceInterests;
+  std::size_t sourceInterestTransmissions = 0;
+  bool holdManifestInterests = false;
+  std::vector<ndn::Interest> heldManifestInterests;
   auto forwardInterest = consumerFace.onSendInterest.connect(
       [&] (const ndn::Interest& interest) {
         bool isExpectedManifest = false;
@@ -256,11 +275,17 @@ runTransfer(const std::string& mode, bool enableSpeculation = true)
           isExpectedManifest = !expectedManifestUri.empty() &&
             interest.getName() == ndn::Name(expectedManifestUri);
           if (!expectedManifestUri.empty() &&
-              ndn::Name(expectedManifestUri).getPrefix(-1).isPrefixOf(interest.getName()))
+              ndn::Name(expectedManifestUri).getPrefix(-1).isPrefixOf(interest.getName())) {
             issuedSourceInterests.insert_or_assign(interest.getName(), interest);
+            ++sourceInterestTransmissions;
+          }
         }
         if (isExpectedManifest) {
           ++manifestInterests;
+          if (holdManifestInterests) {
+            heldManifestInterests.push_back(interest);
+            return;
+          }
         }
         if (mode == "prefetch-renewals" &&
             (isExpectedManifest || (interest.getName().size() >= 2 && interest.getName().get(-2) == ndn::name::Component("DATA") && interest.getName().get(-1).isSegment()))) {
@@ -582,7 +607,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true)
   NdnsfCollaborationDependencyIo producerIo(
       producerContext, 5000, chunkSize, 60000, producerCoordinator);
   NdnsfCollaborationDependencyIo consumerIo(
-      consumerContext, 5000, chunkSize, 60000, consumerCoordinator);
+      consumerContext, 5000, chunkSize, 60000, consumerCoordinator,
+      nullptr, prefetchWorkerCount);
   cancelWindowFetch = [&consumerIo] { consumerIo.cancelPendingPrefetches(); };
   if (mode == "inline-packed-publish-bounds" || mode == "inline-packed-publish-inflight") {
     const auto rawBudget = mode == "inline-packed-publish-bounds" ?
@@ -750,7 +776,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true)
     NativeProviderAssignment assignment;
     assignment.providerByRole[roleName] = consumerContext.localProvider().toUri();
     auto coordinatorIo = std::make_shared<NdnsfCollaborationDependencyIo>(
-      consumerContext, 5000, chunkSize, 60000, consumerCoordinator);
+      consumerContext, 5000, chunkSize, 60000, consumerCoordinator,
+      nullptr, prefetchWorkerCount);
     NativeEpochCoordinatorConfig config{
       runtime, plan, assignment, coordinatorIo};
     config.sessionId = "session-v3-coordinator";
@@ -801,7 +828,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true)
       return role;
     };
     config.terminalRole = true;
-    config.maxEpochs = 2;
+    config.maxEpochs = checkpointFinalize ? 1 : 2;
+    config.checkpointFinalize = checkpointFinalize;
     NamedTensor tokenIds;
     tokenIds.name = "input_ids";
     tokenIds.elementType = TensorElementType::Int64;
@@ -818,7 +846,6 @@ runTransfer(const std::string& mode, bool enableSpeculation = true)
         std::memory_order_release);
       return false;
     };
-    const auto pendingInterestsBefore = consumerFace.getNPendingInterests();
     auto pending = std::async(std::launch::async, [&config] {
       return runNativeEpochCoordinator(std::move(config));
     });
@@ -834,20 +861,222 @@ runTransfer(const std::string& mode, bool enableSpeculation = true)
     }
     BOOST_CHECK_EQUAL(error,
                       "native epoch token event admission was rejected");
+    if (prefetchWorkerCount != 0) {
+      BOOST_CHECK(!ndnsf::di::PrefetchWorkerOracle::post(*coordinatorIo, [] {}));
+    }
     BOOST_CHECK_GE(manifestInterests.load(std::memory_order_acquire), 1U);
     BOOST_CHECK_GE(interestCountAtEvent.load(std::memory_order_acquire), 1U);
+    BOOST_REQUIRE(!issuedSourceInterests.empty());
+    const auto sourceTransmissionsAtCompletion = sourceInterestTransmissions;
     const auto cancelDeadline = std::chrono::steady_clock::now() +
                                 std::chrono::milliseconds(100);
-    // Drain all fixture Faces: unrelated bootstrap/control replies also need
-    // their peers pumped. Keep the original deadline and exact leak assertion.
+    // SVS/control reads can change the Face-wide pending count. Drain the
+    // original budget, then check only this fetch's source Interests.
     environment.pumpUntil([&] {
-      return consumerFace.getNPendingInterests() == pendingInterestsBefore ||
-        std::chrono::steady_clock::now() >= cancelDeadline;
+      return std::chrono::steady_clock::now() >= cancelDeadline;
     });
-    const auto observedPending = consumerFace.getNPendingInterests();
     probeCancelledSourcePending(consumerFace, environment.keyChain(),
                                 profile.providerIdentity, issuedSourceInterests);
-    BOOST_CHECK_EQUAL(observedPending, pendingInterestsBefore);
+    BOOST_CHECK_EQUAL(sourceInterestTransmissions, sourceTransmissionsAtCompletion);
+    return;
+  }
+
+  if (mode == "inline-pool-drain" || mode == "inline-pool-destroy") {
+    auto owner = std::make_unique<NdnsfCollaborationDependencyIo>(
+      consumerContext, 5000, chunkSize, 60000, consumerCoordinator, nullptr, 1);
+    // The release promise must die before the joining future on exceptions.
+    std::future<void> draining;
+    std::promise<void> release;
+    auto gate = release.get_future().share();
+    auto result = std::make_shared<std::promise<void>>();
+    auto ready = result->get_future();
+    BOOST_REQUIRE(ndnsf::di::PrefetchWorkerOracle::post(*owner, [gate, result] {
+      result->set_value();
+      gate.wait();
+    }));
+    ready.get();
+    auto entering = std::make_shared<std::promise<void>>();
+    auto entered = entering->get_future();
+    if (mode == "inline-pool-destroy") {
+      draining = std::async(std::launch::async,
+        [&owner, entering] {
+          entering->set_value();
+          owner.reset();
+        });
+    }
+    else {
+      draining = std::async(std::launch::async, [&owner, entering] {
+        entering->set_value();
+        owner->drainPendingPrefetches();
+      });
+    }
+    entered.get();
+    const auto beforeRelease = draining.wait_for(50ms);
+    release.set_value();
+    draining.get();
+    BOOST_CHECK(beforeRelease == std::future_status::timeout);
+    return;
+  }
+
+  if (mode == "inline-pool-validation") {
+    auto rejectedEdge = edge;
+    rejectedEdge.endpointDigest = sha('9');
+    auto operation = consumerIo.prefetchInputWithFirstReadBarrier("session-v3", rejectedEdge);
+    environment.pumpUntil([&] {
+      return operation.result.wait_for(0ms) == std::future_status::ready &&
+        operation.firstReadStarted.wait_for(0ms) == std::future_status::ready;
+    });
+    BOOST_CHECK_THROW(operation.result.get(), std::invalid_argument);
+    BOOST_CHECK_THROW(operation.firstReadStarted.get(), std::invalid_argument);
+    BOOST_CHECK_EQUAL(manifestInterests.load(), 0U);
+    BOOST_CHECK_EQUAL(segmentInterests, 0U);
+    return;
+  }
+
+  if (mode == "inline-pool-multi" || mode == "inline-pool-cancel") {
+    holdManifestInterests = true;
+    std::vector<PromptCancellableDependencyIo::PrefetchOperation> pending;
+    const auto allReady = [&] {
+      return std::all_of(pending.begin(), pending.end(), [] (const auto& operation) {
+        return operation.result.wait_for(0ms) == std::future_status::ready;
+      });
+    };
+    try {
+      // Both blocked reads must register before any producer reply is released.
+      pending.push_back(consumerIo.prefetchInputWithFirstReadBarrier("session-v3", edge));
+      pending.push_back(consumerIo.prefetchInputWithFirstReadBarrier("session-v3", edge));
+      environment.pumpUntil([&] {
+        return !heldManifestInterests.empty() &&
+          pending[0].firstReadStarted.wait_for(0ms) == std::future_status::ready &&
+          pending[1].firstReadStarted.wait_for(0ms) == std::future_status::ready;
+      });
+      pending[0].firstReadStarted.get();
+      pending[1].firstReadStarted.get();
+      BOOST_REQUIRE(pending[0].result.wait_for(0ms) != std::future_status::ready);
+      BOOST_REQUIRE(pending[1].result.wait_for(0ms) != std::future_status::ready);
+      if (mode == "inline-pool-cancel") {
+        // Two running tasks plus two queued tasks fill the invocation bound.
+        pending.push_back(consumerIo.prefetchInputWithFirstReadBarrier("session-v3", edge));
+        pending.push_back(consumerIo.prefetchInputWithFirstReadBarrier("session-v3", edge));
+        auto rejected = consumerIo.prefetchInputWithFirstReadBarrier("session-v3", edge);
+        BOOST_REQUIRE(rejected.result.wait_for(0ms) == std::future_status::ready);
+        BOOST_REQUIRE(rejected.firstReadStarted.wait_for(0ms) == std::future_status::ready);
+        BOOST_CHECK_THROW(rejected.result.get(), std::runtime_error);
+        BOOST_CHECK_THROW(rejected.firstReadStarted.get(), std::runtime_error);
+        consumerIo.cancelPendingPrefetches();
+        environment.pumpUntil(allReady);
+        consumerIo.drainPendingPrefetches();
+        for (auto& operation : pending) {
+          BOOST_CHECK_THROW(operation.result.get(), std::runtime_error);
+        }
+        BOOST_CHECK_THROW(pending[2].firstReadStarted.get(), std::runtime_error);
+        BOOST_CHECK_THROW(pending[3].firstReadStarted.get(), std::runtime_error);
+        auto stopped = consumerIo.prefetchInputWithFirstReadBarrier("session-v3", edge);
+        BOOST_CHECK_THROW(stopped.result.get(), std::runtime_error);
+        BOOST_CHECK_THROW(stopped.firstReadStarted.get(), std::runtime_error);
+        probeCancelledSourcePending(consumerFace, environment.keyChain(),
+                                    producer.getName(), issuedSourceInterests);
+      }
+      else {
+        holdManifestInterests = false;
+        for (const auto& interest : heldManifestInterests) {
+          producerFace.receive(interest);
+        }
+        heldManifestInterests.clear();
+        environment.pumpUntil(allReady);
+        for (auto& operation : pending) {
+          BOOST_REQUIRE(operation.result.get().payload == original.payload);
+        }
+      }
+    }
+    catch (...) {
+      consumerIo.cancelPendingPrefetches();
+      environment.pumpUntil([&] {
+        return std::all_of(pending.begin(), pending.end(), [] (const auto& operation) {
+          return !operation.result.valid() ||
+            operation.result.wait_for(0ms) == std::future_status::ready;
+        });
+      });
+      consumerIo.drainPendingPrefetches();
+      throw;
+    }
+    return;
+  }
+
+  if (repeatedFetches != 0) {
+    const auto taskIds = [] {
+      std::set<std::string> result;
+      for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
+        result.insert(entry.path().filename().string());
+      }
+      return result;
+    };
+    auto warmup = consumerIo.prefetchInput("session-v3", edge);
+    environment.pumpUntil([&] { return warmup.wait_for(0ms) == std::future_status::ready; });
+    BOOST_REQUIRE(warmup.get().payload == original.payload);
+    std::vector<std::size_t> newTaskCounts;
+    std::set<std::string> newTasks;
+    const auto cpuBegin = std::clock();
+    const auto wallBegin = std::chrono::steady_clock::now();
+    for (std::size_t iteration = 0; iteration < repeatedFetches; ++iteration) {
+      const auto before = taskIds();
+      holdManifestInterests = true;
+      auto operation = consumerIo.prefetchInputWithFirstReadBarrier("session-v3", edge);
+      try {
+        environment.pumpUntil([&] {
+          return !heldManifestInterests.empty() &&
+            operation.firstReadStarted.wait_for(0ms) == std::future_status::ready;
+        });
+        operation.firstReadStarted.get();
+        BOOST_REQUIRE_EQUAL(heldManifestInterests.size(), 1U);
+        std::size_t added = 0;
+        for (const auto& task : taskIds()) {
+          if (before.count(task) == 0) {
+            ++added;
+            newTasks.insert(task);
+          }
+        }
+        newTaskCounts.push_back(added);
+        if (prefetchWorkerCount != 0) {
+          BOOST_CHECK_EQUAL(added, 0U);
+        }
+        holdManifestInterests = false;
+        for (const auto& interest : heldManifestInterests) {
+          producerFace.receive(interest);
+        }
+        heldManifestInterests.clear();
+        environment.pumpUntil([&] {
+          return operation.result.wait_for(0ms) == std::future_status::ready;
+        });
+        BOOST_REQUIRE(operation.result.get().payload == original.payload);
+      }
+      catch (...) {
+        holdManifestInterests = false;
+        consumerIo.cancelPendingPrefetches();
+        environment.pumpUntil([&] {
+          return !operation.result.valid() ||
+            operation.result.wait_for(0ms) == std::future_status::ready;
+        });
+        throw;
+      }
+    }
+    const auto cpuEnd = std::clock();
+    const auto wallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - wallBegin).count();
+    BOOST_REQUIRE(cpuBegin != static_cast<std::clock_t>(-1));
+    BOOST_REQUIRE(cpuEnd >= cpuBegin);
+    BOOST_REQUIRE_EQUAL(newTaskCounts.size(), repeatedFetches);
+    std::cout << "NDNSF_DI_PREFETCH_REUSE_PROBE {\"fetches\":" << repeatedFetches
+              << ",\"new_task_ids\":" << newTasks.size()
+              << ",\"wall_ns\":" << wallNs
+              << ",\"process_cpu_ticks\":" << (cpuEnd - cpuBegin)
+              << ",\"clocks_per_second\":" << CLOCKS_PER_SEC
+              << ",\"new_tasks_per_fetch\":[";
+    for (std::size_t index = 0; index < newTaskCounts.size(); ++index) {
+      if (index != 0) std::cout << ',';
+      std::cout << newTaskCounts[index];
+    }
+    std::cout << "]}" << std::endl;
     return;
   }
 
@@ -1111,6 +1340,44 @@ runTransfer(const std::string& mode, bool enableSpeculation = true)
 }
 
 BOOST_AUTO_TEST_CASE(LargeTensorUsesBoundedSignedPackets) { runTransfer(""); }
+BOOST_AUTO_TEST_CASE(RepeatedExactPrefetchThreadAndCpuProbe)
+{
+  if (std::getenv("NDNSF_DI_PREFETCH_REUSE_PROBE") == nullptr) return;
+  runTransfer("inline-single", true, 129);
+}
+BOOST_AUTO_TEST_CASE(RepeatedPooledExactPrefetchThreadAndCpuProbe)
+{
+  if (std::getenv("NDNSF_DI_PREFETCH_REUSE_PROBE") == nullptr) return;
+  runTransfer("inline-single", true, 129, 1);
+}
+BOOST_AUTO_TEST_CASE(PooledInputsRegisterBothReadsBeforeProducerReply)
+{
+  runTransfer("inline-pool-multi", true, 0, 2);
+}
+BOOST_AUTO_TEST_CASE(PooledActiveAndQueuedCancellationRejectsFurtherPosts)
+{
+  runTransfer("inline-pool-cancel", true, 0, 2);
+}
+BOOST_AUTO_TEST_CASE(PooledFetchPreservesValidationException)
+{
+  runTransfer("inline-pool-validation", true, 0, 1);
+}
+BOOST_AUTO_TEST_CASE(PooledDrainWaitsForTaskExitAfterResultReady)
+{
+  runTransfer("inline-pool-drain", true, 0, 1);
+}
+BOOST_AUTO_TEST_CASE(PooledDestructionWaitsForTaskExitAfterResultReady)
+{
+  runTransfer("inline-pool-destroy", true, 0, 1);
+}
+BOOST_AUTO_TEST_CASE(PooledCoordinatorAbandonmentCancelsAndDrains)
+{
+  runTransfer("cancel", true, 0, 1);
+}
+BOOST_AUTO_TEST_CASE(PooledFinalizePrefetchAbandonmentCancelsAndDrains)
+{
+  runTransfer("cancel", true, 0, 1, true);
+}
 BOOST_AUTO_TEST_CASE(ExactTensorRetryReusesOriginalSignedPacketsAndRejectsConflicts) { runTransfer("reuse"); }
 BOOST_AUTO_TEST_CASE(TensorOriginalQuotaRejectsBeforePacketsAndLeavesEndpointReusable) { runTransfer("quota"); }
 BOOST_AUTO_TEST_CASE(InlineManifestDeliversSingleSegmentWithoutSegmentInterest) { runTransfer("inline-single"); }

@@ -11,12 +11,14 @@ Stage: builder
     @BUNDLE@/source/workspace.tar /build-input/workspace.tar
     @BUNDLE@/source/source-seal.json /build-input/source-seal.json
     @BUNDLE@/native/native-inputs.json /build-input/native/native-inputs.json
+    @BUNDLE@/dependency-lock.json /build-input/dependency-lock.json
 
 %post
     set -eu
     unset PYTHONOPTIMIZE PYTHONHOME PYTHONPATH
     export NDNSF_CONTAINER_BUILD=1
     export NDNSF_RUNTIME_LAYOUT=installed-v1
+    export NDNSF_RUNTIME_PROFILE=@RUNTIME_PROFILE@
     export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/venv/bin:/opt/ndnsf-di/current/bin
     export CC=/usr/bin/gcc
     export CXX=/usr/bin/g++
@@ -34,10 +36,20 @@ Stage: builder
     for owned in /opt/ndnsf-di/current/lib/libndn-service-framework.so* /opt/ndnsf-di/current/lib/libndnsf-distributed-inference.so* /opt/ndnsf-di/current/include/ndn-service-framework /opt/ndnsf-di/current/include/NDNSF-DistributedInference /opt/ndnsf-di/current/libexec/ndnsf-di /opt/ndnsf-di/current/bin/App_ServiceController /opt/ndnsf-di/current/bin/di-native-* /opt/ndnsf-di/replay /opt/ndnsf-app; do
         if [ -e "$owned" ] || [ -L "$owned" ]; then echo BASE_CONTAINS_NDNSF >&2; exit 1; fi
     done
+    for owned in /opt/venv/bin/ndnsf-di /opt/venv/bin/ndnsf-di-policy; do
+        if [ -e "$owned" ] || [ -L "$owned" ]; then echo BASE_CONTAINS_NDNSF_COMMAND >&2; exit 1; fi
+    done
     /opt/venv/bin/python - <<'PY'
+import importlib.metadata
 import importlib.util
+import re
 for name in ('ndnsf', 'py_repoclient', 'ndnsf_distributed_inference'):
     assert importlib.util.find_spec(name) is None, 'BASE_CONTAINS_NDNSF:' + name
+for distribution in importlib.metadata.distributions():
+    name = re.sub(r'[-_.]+', '-', distribution.metadata['Name']).lower()
+    assert name not in ('ndnsf', 'py-repoclient', 'ndnsf-di',
+                        'ndnsf-distributed-inference') and not name.startswith('ndnsf-di-'), \
+        'BASE_CONTAINS_NDNSF_METADATA:' + name
 PY
     rm -rf /src/ndnsf /opt/ndnsf-stage /opt/ndnsf-candidate
     install -d /src/ndnsf /opt/ndnsf-stage/bin /opt/ndnsf-stage/include /opt/ndnsf-stage/lib/pkgconfig /opt/ndnsf-stage/python /opt/ndnsf-stage/manifest /opt/ndnsf-stage/replay/repo /opt/ndnsf-build-work/pkgconfig /opt/ndnsf-build-work/python
@@ -63,8 +75,18 @@ for name, dependency in canonical.get('dependencies', {}).items():
     dependency['archive']['path'] = '<archive:' + name + '>'
 assert 'sha256:' + hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode()).hexdigest() == '@SEAL_DIGEST@', 'SOURCE_SEAL_CONTENT_MISMATCH'
 base_sdk = json.loads(Path('/opt/ndn-base/manifest/dependency-sdk.json').read_text())
-for name, archive in [('ndnSvs', 'ndn-svs.tar'), ('nacAbe', 'nacAbe.tar'), ('ndnSd', 'ndnSd.tar')]:
-    assert seal['dependencies'][name]['archive']['sha256'] == 'sha256:' + base_sdk['inputs']['files']['source/' + archive], 'BASE_DEPENDENCY_IDENTITY_MISMATCH:' + name
+lock_path = Path('/build-input/dependency-lock.json')
+assert 'sha256:' + hashlib.sha256(lock_path.read_bytes()).hexdigest() == '@LOCK_DIGEST@', 'DEPENDENCY_LOCK_CHANGED'
+lock = json.loads(lock_path.read_text())
+assert lock['baseSif']['sha256'] == '@BASE_DIGEST@', 'BASE_IDENTITY_MISMATCH'
+if '@RUNTIME_PROFILE@' == 'di-runtime':
+    assert lock['schema'] == 'ndnsf-development-lock-v2', 'RUNTIME_LOCK_SCHEMA'
+    assert not seal.get('dependencies', {}), 'RUNTIME_EXTERNAL_SOURCE_UNEXPECTED'
+    assert 'sha256:' + hashlib.sha256(Path('/opt/ndn-base/manifest/dependency-sdk.json').read_bytes()).hexdigest() == '@BASE_SDK_DIGEST@', 'BASE_SDK_IDENTITY_MISMATCH'
+else:
+    assert '@RUNTIME_PROFILE@' == 'di-development-with-explicit-fixtures', 'RUNTIME_PROFILE'
+    for name, archive in [('ndnSvs', 'ndn-svs.tar'), ('nacAbe', 'nacAbe.tar'), ('ndnSd', 'ndnSd.tar')]:
+        assert seal['dependencies'][name]['archive']['sha256'] == 'sha256:' + base_sdk['inputs']['files']['source/' + archive], 'BASE_DEPENDENCY_IDENTITY_MISMATCH:' + name
 for name, row in [('workspace.tar', seal['archive'])]:
     h = hashlib.sha256()
     with Path('/build-input', name).open('rb') as stream:
@@ -106,7 +128,8 @@ PY
     export LD_LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib
     export PKG_CONFIG_PATH=/opt/ndnsf-stage/lib/pkgconfig:/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
     export NDNSF_RUNTIME_RPATH='$ORIGIN/../lib:$ORIGIN/../../lib:/opt/ndn-base/lib'
-    for package in libndn-cxx libndn-svs libnac-abe ndnsd openssl protobuf gtkmm-3.0 onnxruntime; do pkg-config --exists "$package"; done
+    for package in libndn-cxx libndn-svs libnac-abe ndnsd openssl protobuf onnxruntime; do pkg-config --exists "$package"; done
+    if [ "$NDNSF_RUNTIME_PROFILE" != di-runtime ]; then pkg-config --exists gtkmm-3.0; fi
     test -x /usr/bin/c++
     test -x /usr/bin/protoc
     test -f /usr/include/boost/version.hpp
@@ -117,7 +140,9 @@ import subprocess
 from pathlib import Path
 
 packages = ['libndn-cxx', 'libndn-svs', 'libnac-abe', 'ndnsd',
-            'openssl', 'protobuf', 'gtkmm-3.0', 'onnxruntime']
+            'openssl', 'protobuf', 'onnxruntime']
+if os.environ['NDNSF_RUNTIME_PROFILE'] != 'di-runtime':
+    packages.append('gtkmm-3.0')
 body = {
     'schemaVersion': 'spec170-container-configure-closure-v1',
     'status': 'PASS',
@@ -134,7 +159,12 @@ Path('/opt/ndnsf-stage/manifest/container-configure-closure.json').write_text(
     json.dumps(body, indent=2, sort_keys=True) + '\n', encoding='utf-8')
 PY
     cd /src/ndnsf
-    ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --libexecdir=/opt/ndnsf-di/current/libexec --with-examples --with-tests --install-experiment-fixtures --disable-local-dependency-prefix --allow-container-runtime-rpath \
+    if [ "$NDNSF_RUNTIME_PROFILE" = di-runtime ]; then
+      set -- --components=di
+    else
+      set -- --with-examples --with-tests --install-experiment-fixtures
+    fi
+    ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --libexecdir=/opt/ndnsf-di/current/libexec "$@" --disable-local-dependency-prefix --allow-container-runtime-rpath \
       --onnx-prefix=/opt/onnx \
       --nac-abe-prefix=/opt/ndn-base \
       --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
@@ -145,8 +175,13 @@ PY
     export NDNSF_SKIP_DEV_PIP_INSTALL=1
     export NDNSF_WAF_INSTALL_PAYLOAD=1
     rm -rf /opt/ndnsf-waf-dest
-    ./waf install -j4 -v --destdir=/opt/ndnsf-waf-dest --targets=ndn-service-framework,ndnsf-distributed-inference,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,DI_NativeArtifactAuthority,di-native-provider,di-native-assembly-worker,di-native-fault-provider,spec187-yolo-minindn
+    if [ "$NDNSF_RUNTIME_PROFILE" = di-runtime ]; then
+      ./waf install -j2 -v --destdir=/opt/ndnsf-waf-dest
+    else
+      ./waf install -j2 -v --destdir=/opt/ndnsf-waf-dest --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-repo,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,ndnsf-identity-check,DI_NativeRequester,DI_NativeArtifactAuthority,DistributedRepoServer,NDNSF_RepoPacketServer,spec190-multiturn-oracle,di-native-provider,di-native-assembly-worker,ndnsf-di-device-query,di-native-fault-provider,spec187-yolo-minindn
+    fi
     test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker
+    test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/libexec/ndnsf-di/ndnsf-di-device-query
     install -d /opt/ndnsf-stage/waf-install
     cp -a /opt/ndnsf-waf-dest/opt/ndnsf-di/current/. /opt/ndnsf-stage/waf-install/
     cp -a /opt/ndnsf-stage/waf-install/. /opt/ndnsf-stage/
@@ -183,19 +218,29 @@ PY
     export NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib
     export NDNSF_RUNTIME_RPATH='/opt/ndnsf-di/current/lib:/opt/ndn-base/lib'
 
-    PKG_CONFIG_PATH=/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig \
+    PKG_CONFIG_PATH=/opt/ndnsf-stage/lib/pkgconfig:/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig \
     PYTHONPATH=/opt/ndnsf-build-work/python CPLUS_INCLUDE_PATH=/opt/ndnsf-stage/include:/opt/ndn-base/include \
     NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib NDNSF_RUNTIME_RPATH='/opt/ndnsf-di/current/lib:/opt/ndn-base/lib' \
     /opt/venv/bin/pip install --no-index --no-deps --no-build-isolation --target=/opt/ndnsf-stage/python /src/ndnsf/pythonWrapper
-    PKG_CONFIG_PATH=/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig \
+    PKG_CONFIG_PATH=/opt/ndnsf-stage/lib/pkgconfig:/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig \
     PYTHONPATH=/opt/ndnsf-build-work/python CPLUS_INCLUDE_PATH=/opt/ndnsf-stage/include:/opt/ndn-base/include \
     NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib NDNSF_RUNTIME_RPATH='/opt/ndnsf-di/current/lib:/opt/ndn-base/lib' \
     /opt/venv/bin/pip install --no-index --no-deps --no-build-isolation --target=/opt/ndnsf-stage/python /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper
     rm -rf /src/ndnsf/pythonWrapper/build /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper/build
-    cp -a /src/ndnsf/NDNSF-DistributedInference/ndnsf_distributed_inference /opt/ndnsf-stage/python/
+    /opt/venv/bin/pip install --no-index --no-deps --no-build-isolation --target=/opt/ndnsf-stage/python \
+      /src/ndnsf/NDNSF-DistributedInference/packaging/python/core \
+      /src/ndnsf/NDNSF-DistributedInference/packaging/python/sdk \
+      /src/ndnsf/NDNSF-DistributedInference/packaging/python/planner \
+      /src/ndnsf/NDNSF-DistributedInference/packaging/python/app \
+      /src/ndnsf/NDNSF-DistributedInference/packaging/python/ops \
+      /src/ndnsf/NDNSF-DistributedInference/packaging/python/compat
+    install -m 0755 /opt/ndnsf-stage/python/bin/ndnsf-di /opt/ndnsf-stage/bin/ndnsf-di
+    cp /build-input/source-seal.json /opt/ndnsf-stage/manifest/source-seal.json
+    cp /build-input/dependency-lock.json /opt/ndnsf-stage/manifest/dependency-lock.json
     # The Spec180 replay repo mirrors the sealed source for the exact-SIF
     # runner and its maintained YOLO application.  Host checkout paths are
     # never referenced by in-image child commands.
+    if [ "$NDNSF_RUNTIME_PROFILE" != di-runtime ]; then
     install -d \
       /opt/ndnsf-stage/replay/repo/NDNSF-DistributedRepo \
       /opt/ndnsf-stage/replay/repo/tools \
@@ -217,6 +262,7 @@ PY
     # replay driver binds the candidate inputs at run time.
     rm -rf /opt/ndnsf-stage/replay/repo/.codex-tmp
     chmod 0755 /opt/ndnsf-stage/replay/repo/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py
+    fi
 
     cat > /opt/ndnsf-stage/manifest/verify-native.py <<'PY'
 import hashlib
@@ -230,6 +276,7 @@ import re
 import subprocess
 import sys
 import sysconfig
+import stat
 
 mode = sys.argv[1]
 assert mode in ('builder', 'final'), 'NATIVE_CHECK_MODE'
@@ -237,6 +284,7 @@ assert platform.machine() == 'x86_64', 'BASE_ARCHITECTURE_REQUIRES_X86_64'
 assert sys.version_info[:2] == (3, 10), 'PYTHON_ABI_REQUIRES_3_10'
 assert sysconfig.get_paths()['purelib'] == '/opt/venv/lib/python3.10/site-packages', 'PYTHON_PREFIX_MISMATCH'
 base = Path('/opt/ndnsf-stage' if mode == 'builder' else '/opt/ndnsf-di/current')
+profile = '@RUNTIME_PROFILE@'
 def verify_di_headers(base, replay):
     relative = Path('NDNSF-DistributedInference/cpp')
     source = replay / relative
@@ -248,10 +296,15 @@ def verify_di_headers(base, replay):
                 if name.startswith(prefix) and Path(name).suffix in suffixes}
     actual = {p.relative_to(installed): hashlib.sha256(p.read_bytes()).hexdigest() for p in installed.rglob('*')
               if p.is_file() and p.suffix in suffixes}
-    if not expected or actual != expected or any(
+    seal = json.loads((base / 'manifest/source-seal.json').read_text())
+    source_hashes = {row['path']: row['sha256'] for row in seal['files']}
+    if not expected or actual != expected or any(source_hashes.get(
+            (relative / name).as_posix()) != 'sha256:' + value for name, value in expected.items()):
+        raise RuntimeError('DI_INSTALLED_HEADERS_MISMATCH')
+    if profile != 'di-runtime' and any(
             not (source / name).is_file() or hashlib.sha256((source / name).read_bytes()).hexdigest() != value
             for name, value in expected.items()):
-        raise RuntimeError('DI_INSTALLED_HEADERS_MISMATCH')
+        raise RuntimeError('DI_REPLAY_HEADERS_MISMATCH')
 
 verify_di_headers(base, Path('/opt/ndnsf-stage/replay/repo' if mode == 'builder' else '/opt/ndnsf-di/replay/repo'))
 site = Path('/opt/ndnsf-stage/python' if mode == 'builder' else sysconfig.get_paths()['purelib'])
@@ -263,6 +316,32 @@ def digest(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             h.update(chunk)
     return 'sha256:' + h.hexdigest()
+
+
+def python_payload(site):
+    # The staging site contains only the just-built repository distributions.
+    # Never inventory the dependency base's whole venv in the final stage.
+    rows = {}
+    for path in sorted(site.rglob('*')):
+        if '__pycache__' in path.parts or path.suffix == '.pyc':
+            continue
+        assert not path.is_symlink(), 'PYTHON_PAYLOAD_SYMLINK'
+        if path.is_file():
+            rows[path.relative_to(site).as_posix()] = {
+                'sha256': digest(path), 'mode': stat.S_IMODE(path.stat().st_mode)}
+    assert rows, 'PYTHON_PAYLOAD_EMPTY'
+    return rows
+
+
+def verify_python_payload(site, rows):
+    assert rows, 'PYTHON_PAYLOAD_EMPTY'
+    for relative, expected in rows.items():
+        path = site / relative
+        assert not Path(relative).is_absolute() and '..' not in Path(relative).parts, 'PYTHON_PAYLOAD_PATH_ESCAPE'
+        assert site.resolve() in path.resolve().parents and not path.is_symlink(), 'PYTHON_PAYLOAD_SYMLINK'
+        assert path.is_file(), 'PYTHON_PAYLOAD_MISSING:' + relative
+        assert digest(path) == expected['sha256'], 'PYTHON_PAYLOAD_CHANGED:' + relative
+        assert stat.S_IMODE(path.stat().st_mode) == expected['mode'], 'PYTHON_PAYLOAD_MODE:' + relative
 
 # All installed files cross the builder/final boundary, including libexec,
 # linker symlinks and header aliases absent from the legacy compatibility list.
@@ -293,11 +372,18 @@ for package, stem in [('ndnsf', '_ndnsf'), ('py_repoclient', '_py_repoclient')]:
 
 runtime = Path('/opt/ndnsf-di/current')
 artifacts = [('provider', base / 'bin/di-native-provider', runtime / 'bin/di-native-provider'),
-             ('faultProvider', base / 'bin/di-native-fault-provider', runtime / 'bin/di-native-fault-provider'),
              ('controller', base / 'bin/App_ServiceController', runtime / 'bin/App_ServiceController'),
              ('artifactAuthority', base / 'bin/DI_NativeArtifactAuthority', runtime / 'bin/DI_NativeArtifactAuthority'),
              ('assemblyWorker', base / 'libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker', runtime / 'libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker'),
-             ('spec187Selector', base / 'bin/spec187-yolo-minindn', runtime / 'bin/spec187-yolo-minindn')]
+             ('deviceQuery', base / 'libexec/ndnsf-di/ndnsf-di-device-query', runtime / 'libexec/ndnsf-di/ndnsf-di-device-query'),
+             ('requester', base / 'bin/DI_NativeRequester', runtime / 'bin/DI_NativeRequester'),
+             ('repo', base / 'bin/DistributedRepoServer', runtime / 'bin/DistributedRepoServer'),
+             ('packetRepo', base / 'bin/NDNSF_RepoPacketServer', runtime / 'bin/NDNSF_RepoPacketServer'),
+             ('identity', base / 'bin/ndnsf-identity-check', runtime / 'bin/ndnsf-identity-check'),
+             ('oracle', base / 'bin/spec190-multiturn-oracle', runtime / 'bin/spec190-multiturn-oracle')]
+if profile != 'di-runtime':
+    artifacts += [('faultProvider', base / 'bin/di-native-fault-provider', runtime / 'bin/di-native-fault-provider'),
+                  ('spec187Selector', base / 'bin/spec187-yolo-minindn', runtime / 'bin/spec187-yolo-minindn')]
 for name, file in [('framework', 'libndn-service-framework.so.0.1.0'),
                    ('distributedInference', 'libndnsf-distributed-inference.so')]:
     artifacts.append((name, base / 'lib' / file, runtime / 'lib' / file))
@@ -346,6 +432,12 @@ rows = [{'name': name, 'builderPath': str(path), 'runtimePath': str(destination)
          'bytes': path.stat().st_size, 'sha256': digest(path), **closure(path)}
         for name, path, destination in artifacts]
 if mode == 'builder':
+    repository_packages = {name: importlib.metadata.version(name) for name in (
+        'ndnsf', 'py-repoclient', 'ndnsf-di-core', 'ndnsf-di-sdk', 'ndnsf-di-planner',
+        'ndnsf-di-app', 'ndnsf-di-ops', 'ndnsf-distributed-inference')}
+    owners = [(dist.metadata['Name'], entry.value) for dist in importlib.metadata.distributions()
+              for entry in dist.entry_points if entry.group == 'console_scripts' and entry.name == 'ndnsf-di']
+    assert owners == [('ndnsf-di-ops', 'ndnsf_di_launcher:main')], 'CLI_OWNER_MISMATCH'
     python_packages = {name: importlib.metadata.version(name)
                        for name in ('python-ndn', 'tokenizers', 'onnx', 'numpy')}
     ort_distributions = {}
@@ -373,7 +465,10 @@ if mode == 'builder':
     body = {'schemaVersion': 'spec170-container-native-build-v1', 'status': 'PASS',
             'buildBoundary': 'container-runtime-in-sif',
             'runtimeLayout': 'installed-v1',
-            'runtimeProfile': 'di-development-with-explicit-fixtures',
+            'runtimeProfile': profile,
+            'dependencyLockSha256': digest(base / 'manifest/dependency-lock.json'),
+            'baseSifSha256': '@BASE_DIGEST@',
+            'baseSdkSha256': digest('/opt/ndn-base/manifest/dependency-sdk.json'),
             'sourceSealSha256': digest('/build-input/source-seal.json'),
             'configureClosureSha256': digest(base / 'manifest/container-configure-closure.json'),
             'wafInstallSha256': digest(base / 'manifest/waf-install.json'),
@@ -384,12 +479,17 @@ if mode == 'builder':
             'linker': subprocess.check_output(['/usr/bin/ld', '--version'], text=True).splitlines()[0],
             'glibc': platform.libc_ver(), 'runtimeAptPackages': apt_packages,
             'pythonPackages': python_packages,
+            'repositoryPythonPackages': repository_packages,
+            'repositoryPythonFiles': python_payload(site),
             'artifacts': rows}
 else:
     body = json.loads(manifest_path.read_text())
     assert body['buildBoundary'] == 'container-runtime-in-sif', 'FINAL_BUILD_BOUNDARY_MISMATCH'
     assert body['python']['soabi'] == sysconfig.get_config_var('SOABI'), 'FINAL_SOABI_MISMATCH'
     assert body['pythonPackages'] == {name: importlib.metadata.version(name) for name in body['pythonPackages']}, 'FINAL_PYTHON_PACKAGES_CHANGED'
+    assert body['repositoryPythonPackages'] == {name: importlib.metadata.version(name)
+        for name in body['repositoryPythonPackages']}, 'FINAL_REPOSITORY_PACKAGES_CHANGED'
+    verify_python_payload(site, body['repositoryPythonFiles'])
     expected = {row['name']: row for row in body['artifacts']}
     assert len(expected) == len(rows) == len(body['artifacts']), 'FINAL_ARTIFACT_SET_MISMATCH'
     assert set(expected) == {row['name'] for row in rows}, 'FINAL_ARTIFACT_SET_MISMATCH'
@@ -398,39 +498,89 @@ else:
         assert (row['sha256'], row['bytes'], row['runtimePath'], row['dependencies']) == (before['sha256'], before['bytes'], before['runtimePath'], before['dependencies']), 'FINAL_ARTIFACT_OR_CLOSURE_MISMATCH:' + row['name']
         before['finalSha256'] = row['sha256']
         before['finalLdd'] = row['ldd']
-    assert digest('/opt/ndnsf-di/replay/source-seal.json') == body['sourceSealSha256'], 'FINAL_SOURCE_SEAL_CHANGED'
+    assert digest(base / 'manifest/source-seal.json') == body['sourceSealSha256'], 'FINAL_SOURCE_SEAL_CHANGED'
+    assert digest(base / 'manifest/dependency-lock.json') == body['dependencyLockSha256'], 'FINAL_DEPENDENCY_LOCK_CHANGED'
+    assert digest('/opt/ndn-base/manifest/dependency-sdk.json') == body['baseSdkSha256'], 'FINAL_BASE_SDK_CHANGED'
+    assert body['runtimeProfile'] == profile, 'FINAL_RUNTIME_PROFILE_CHANGED'
     assert digest(base / 'manifest/container-configure-closure.json') == body['configureClosureSha256'], 'FINAL_CONFIGURE_CLOSURE_CHANGED'
     assert digest(base / 'manifest/waf-install.json') == body['wafInstallSha256'], 'FINAL_WAF_INSTALL_RECEIPT_CHANGED'
     body['finalVerification'] = 'PASS'
     body['finalPython'] = {'executable': sys.executable, 'version': platform.python_version(),
                            'soabi': sysconfig.get_config_var('SOABI')}
 manifest_path.write_text(json.dumps(body, indent=2, sort_keys=True) + '\n')
+if mode == 'final':
+    import stat
+    entries = {}
+    # Bind the installed runtime, Python packages and generated console entry to
+    # this image's actual payload, using the existing deployment ledger schema.
+    for root in [base]:
+        for path in sorted(root.rglob('*')):
+            if path == base / 'share/ndnsf/stack-install-manifest.json':
+                continue
+            if path.is_symlink():
+                installed = {'kind': 'symlink', 'target': os.readlink(str(path))}
+            elif path.is_file() and path.suffix != '.pyc':
+                installed = {'kind': 'file', 'sha256': digest(path).split(':', 1)[1],
+                             'mode': stat.S_IMODE(path.stat().st_mode)}
+            else:
+                continue
+            entries[str(path)] = {'installed': installed}
+    for relative, row in body['repositoryPythonFiles'].items():
+        entries[str(site / relative)] = {'installed': {
+            'kind': 'file', 'sha256': row['sha256'].split(':', 1)[1], 'mode': row['mode']}}
+    receipt = base / 'share/ndnsf/stack-install-manifest.json'
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(json.dumps({'schema': 1, 'files': entries,
+        'sourceSealSha256': body['sourceSealSha256'],
+        'containerNativeBuildSha256': digest(manifest_path),
+        'baseSifSha256': body['baseSifSha256'], 'baseSdkSha256': body['baseSdkSha256']},
+        indent=2, sort_keys=True) + '\n')
 PY
     PYTHONPATH=/opt/ndnsf-stage/python /opt/venv/bin/python /opt/ndnsf-stage/manifest/verify-native.py builder
 
-    # Executables/DSOs use installed relative paths; source/staging paths
-    # must not survive packaging. Bindings use the declared final prefix.
-    for native_path in \
+    # The fixed final LIBDIR is valid; source/staging and other paths under
+    # the application prefix must not survive packaging.
+    python3 - \
         /opt/ndnsf-stage/bin/di-native-provider \
-        /opt/ndnsf-stage/bin/di-native-fault-provider \
         /opt/ndnsf-stage/bin/App_ServiceController \
         /opt/ndnsf-stage/bin/DI_NativeArtifactAuthority \
-        /opt/ndnsf-stage/bin/spec187-yolo-minindn \
+        /opt/ndnsf-stage/bin/DI_NativeRequester \
+        /opt/ndnsf-stage/bin/DistributedRepoServer \
+        /opt/ndnsf-stage/bin/ndnsf-identity-check \
         /opt/ndnsf-stage/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker \
-        /opt/ndnsf-stage/lib/libndnsf-distributed-inference.so; do
-      if /usr/bin/readelf -d "$native_path" | grep -E '/opt/ndnsf-di/current|/opt/ndnsf-stage|/src/'; then
-        exit 1
-      fi
-    done
+        /opt/ndnsf-stage/libexec/ndnsf-di/ndnsf-di-device-query \
+        /opt/ndnsf-stage/lib/libndnsf-distributed-inference.so <<'NDNSF_ELF_PATHS'
+import posixpath
+import re
+import subprocess
+import sys
 
-    PYTHONPATH=/opt/ndnsf-stage/python /opt/venv/bin/python -c 'import ndnsf._ndnsf, ndnsf_distributed_inference, py_repoclient, ndn, tokenizers, onnx, numpy, onnxruntime; import ndnsf_distributed_inference.native_assembly_helper, ndnsf_distributed_inference.native_token_decode_helper'
+for native_path in sys.argv[1:]:
+    dynamic = subprocess.check_output(['/usr/bin/readelf', '-d', native_path], text=True)
+    for line in dynamic.splitlines():
+        if '(RPATH)' not in line and '(RUNPATH)' not in line:
+            continue
+        match = re.search(r'\[(.*)\]', line)
+        if match is None:
+            raise SystemExit('NATIVE_RUNTIME_PATH_PARSE_FAILED:' + native_path)
+        for component in match.group(1).split(':'):
+            if component == '/opt/ndnsf-di/current/lib':
+                continue
+            normalized = posixpath.normpath(component)
+            if any(prefix in candidate
+                   for prefix in ('/opt/ndnsf-di/current', '/opt/ndnsf-stage', '/src')
+                   for candidate in (component, normalized)):
+                raise SystemExit('NATIVE_RUNTIME_PATH_FORBIDDEN:' + native_path + ':' + component)
+NDNSF_ELF_PATHS
+
+    PYTHONPATH=/opt/ndnsf-stage/python /opt/venv/bin/python -c 'import ndnsf._ndnsf, ndnsf_distributed_inference.ops.cli, py_repoclient, ndn, tokenizers, onnx, numpy, onnxruntime'
     if ldd /opt/ndnsf-stage/bin/di-native-provider | grep -q 'not found'; then
       exit 1
     fi
     if ldd /opt/ndnsf-stage/bin/DI_NativeArtifactAuthority | grep -q 'not found'; then
       exit 1
     fi
-    if ldd /opt/ndnsf-stage/bin/spec187-yolo-minindn | grep -q 'not found'; then
+    if ldd /opt/ndnsf-stage/bin/DI_NativeRequester | grep -q 'not found'; then
       exit 1
     fi
     extension_path=$(find /opt/ndnsf-stage/python/ndnsf -maxdepth 1 -name '_ndnsf*.so' -type f)
@@ -438,8 +588,13 @@ PY
       exit 1
     fi
     # The Spec180 maintained application must import inside the builder.
+    if [ "$NDNSF_RUNTIME_PROFILE" != di-runtime ]; then
+    PYTHONPATH=/opt/ndnsf-stage/replay/repo/NDNSF-DistributedInference:/opt/ndnsf-stage/python \
+      /opt/venv/bin/python -c 'import ndnsf_distributed_inference.native_assembly_helper, ndnsf_distributed_inference.native_token_decode_helper'
     PYTHONPATH=/opt/ndnsf-stage/python:/opt/ndnsf-stage/replay/repo/examples/python/NDNSF-DistributedInference/yolo_2x2 \
       /opt/venv/bin/python -c 'import yolo_2x2_lib'
+    fi
+    PYTHONPATH=/opt/ndnsf-stage/python /opt/venv/bin/python /opt/ndnsf-stage/bin/ndnsf-di --help
 
     unset TMPDIR
     rm -rf /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /build-input /opt/ndnsf-build-work
@@ -454,6 +609,7 @@ Stage: final
 %post
     set -eu
     unset PYTHONOPTIMIZE PYTHONHOME PYTHONPATH
+    export NDNSF_RUNTIME_PROFILE=@RUNTIME_PROFILE@
     /opt/venv/bin/python /opt/ndn-base/manifest/dependency-sdk.py verify
     /opt/venv/bin/python - <<'PY'
 import json
@@ -476,7 +632,11 @@ PY
     install -d /opt/ndnsf-di/current /opt/ndnsf-di /opt/venv/lib/python3.10/site-packages
     cp -a /opt/ndnsf-candidate/. /opt/ndnsf-di/current/
     cp -a /opt/ndnsf-di/current/python/. /opt/venv/lib/python3.10/site-packages/
-    mv /opt/ndnsf-di/current/replay /opt/ndnsf-di/replay
+    if [ "$NDNSF_RUNTIME_PROFILE" != di-runtime ]; then
+      mv /opt/ndnsf-di/current/replay /opt/ndnsf-di/replay
+    else
+      rm -rf /opt/ndnsf-di/current/replay
+    fi
     rm -rf /opt/ndnsf-di/current/python
     # Do not change the base SDK or uninstall base-owned Python packages.
     /opt/venv/bin/python /opt/ndn-base/manifest/dependency-sdk.py verify
@@ -499,22 +659,27 @@ NDNSF_ENV
 
     /opt/venv/bin/python /opt/ndnsf-di/current/manifest/verify-native.py final
 
-    PYTHONNOUSERSITE=1 /opt/venv/bin/python -c 'import ndnsf._ndnsf, ndnsf_distributed_inference, py_repoclient, ndn, tokenizers, onnx, numpy, onnxruntime; import ndnsf_distributed_inference.native_assembly_helper, ndnsf_distributed_inference.native_token_decode_helper'
-    test -x /opt/ndnsf-di/replay/repo/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py
-    test -f /opt/ndnsf-di/replay/source-seal.json
+    PYTHONNOUSERSITE=1 /opt/venv/bin/python -c 'import ndnsf._ndnsf, ndnsf_distributed_inference.ops.cli, py_repoclient, ndn, tokenizers, onnx, numpy, onnxruntime'
+    /opt/venv/bin/python /opt/ndnsf-di/current/bin/ndnsf-di --help
+    if [ "$NDNSF_RUNTIME_PROFILE" != di-runtime ]; then
+      PYTHONPATH=/opt/ndnsf-di/replay/repo/NDNSF-DistributedInference \
+        /opt/venv/bin/python -c 'import ndnsf_distributed_inference.native_assembly_helper, ndnsf_distributed_inference.native_token_decode_helper'
+      test -x /opt/ndnsf-di/replay/repo/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py
+      test -f /opt/ndnsf-di/replay/source-seal.json
+    fi
     for command in nfd nfdc ndnsec; do
       command -v "$command"
     done
     if ldd /opt/ndnsf-di/current/bin/di-native-provider | grep -q 'not found'; then
       exit 1
     fi
-    if ldd /opt/ndnsf-di/current/bin/di-native-fault-provider | grep -q 'not found'; then
+    if ldd /opt/ndnsf-di/current/bin/DI_NativeRequester | grep -q 'not found'; then
       exit 1
     fi
     if ldd /opt/ndnsf-di/current/bin/DI_NativeArtifactAuthority | grep -q 'not found'; then
       exit 1
     fi
-    if ldd /opt/ndnsf-di/current/bin/spec187-yolo-minindn | grep -q 'not found'; then
+    if ldd /opt/ndnsf-di/current/bin/DistributedRepoServer | grep -q 'not found'; then
       exit 1
     fi
     if ldd "$extension_path" | grep -q 'not found'; then
@@ -535,3 +700,5 @@ NDNSF_ENV
     org.ndnsf.di.native-build-manifest /opt/ndnsf-di/current/manifest/container-native-build.json
     org.ndnsf.di.release @RELEASE@
     org.ndnsf.di.source-seal @SEAL_DIGEST@
+    org.ndnsf.di.runtime-profile @RUNTIME_PROFILE@
+    org.ndnsf.di.dependency-lock @LOCK_DIGEST@

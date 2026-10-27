@@ -129,7 +129,11 @@ def _validate_installed_runtime(definition, text, builder, final):
     required = (
         "NDNSF_RUNTIME_LAYOUT=installed-v1", "NDNSF_CONTAINER_BUILD=1",
         "NDNSF_SKIP_DEV_PIP_INSTALL=1", "NDNSF_WAF_INSTALL_PAYLOAD=1",
-        "./waf install -j4 -v --destdir=/opt/ndnsf-waf-dest",
+        "./waf install -j2 -v --destdir=/opt/ndnsf-waf-dest",
+        'if [ "$NDNSF_RUNTIME_PROFILE" = di-runtime ]; then\n'
+        '      ./waf install -j2 -v --destdir=/opt/ndnsf-waf-dest\n'
+        '    else',
+        ",ndnsf-distributed-repo,",
         "--with-tests", "--install-experiment-fixtures",
         "--libexecdir=/opt/ndnsf-di/current/libexec", "di-native-assembly-worker",
         "cp -a /opt/ndnsf-waf-dest/opt/ndnsf-di/current/. /opt/ndnsf-stage/waf-install/",
@@ -146,6 +150,11 @@ def _validate_installed_runtime(definition, text, builder, final):
         "FINAL_ARTIFACT_OR_CLOSURE_MISMATCH",
         "container-configure-closure.json", "container-native-build.json",
         "verify-native.py builder",
+        "--components=di", "NDNSF_RUNTIME_PROFILE=", "DEPENDENCY_LOCK_CHANGED",
+        "BASE_SDK_IDENTITY_MISMATCH", "manifest/source-seal.json",
+        "packaging/python/core", "packaging/python/sdk", "packaging/python/planner",
+        "packaging/python/app", "packaging/python/ops", "packaging/python/compat",
+        "stack-install-manifest.json", "DI_NativeRequester", "DistributedRepoServer",
     )
     if any(marker not in post for marker in required):
         _fail("WRONG_BUILD_BOUNDARY_WAF_INSTALL_CONTRACT_MISSING")

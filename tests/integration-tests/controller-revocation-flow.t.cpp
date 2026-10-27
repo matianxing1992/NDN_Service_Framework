@@ -16,6 +16,8 @@
 #include <nac-abe/algo/abe-support.hpp>
 
 #include <ndn-cxx/security/key-params.hpp>
+#include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/validity-period.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/security/validator-config.hpp>
 #include <ndn-cxx/util/io.hpp>
@@ -43,6 +45,40 @@ namespace ndn_service_framework {
 
 struct ServiceControllerTestAccess
 {
+  static ndn::security::Certificate
+  recipientCertificate(ServiceController& controller, const ndn::Name& identity)
+  {
+    return controller.getTargetIdentityCertificate(identity);
+  }
+
+  static bool
+  hasRecipientPrivateKey(ServiceController& controller, const ndn::Name& key)
+  {
+    return controller.m_keyChain.getTpm().hasKey(key);
+  }
+
+  static size_t
+  identityCount(const ServiceController& controller)
+  {
+    return controller.m_keyChain.getPib().getIdentities().size();
+  }
+
+  static void
+  installRecipientCertificate(ServiceController& controller,
+                              const ndn::security::Certificate& certificate)
+  {
+    const auto key = controller.m_keyChain.getPib().getIdentity(certificate.getIdentity())
+        .getKey(certificate.getKeyName());
+    controller.m_keyChain.addCertificate(key, certificate);
+    controller.m_keyChain.setDefaultCertificate(key, certificate);
+  }
+
+  static void
+  requestDkey(ServiceController& controller, const ndn::Interest& interest)
+  {
+    controller.m_aa.onDecryptionKeyRequest(interest);
+  }
+
   static size_t
   originalReplyCount(const ServiceController& controller)
   {
@@ -347,6 +383,56 @@ namespace {
 
 constexpr const char* SERVICE = "/ObjectDetection/YOLOv8";
 
+struct PortableRecipientFixture
+{
+  std::filesystem::path root = test::trust_detail::makeTestTrustDirectory();
+  ndn::Name subject = ndn::Name("/spec217/recipient").append(root.filename().string());
+  ndn::KeyChain localKeys;
+  ndn::KeyChain remoteKeys{"pib-memory:", "tpm-memory:"};
+  ndn::DummyClientFace face{localKeys};
+  ndn::ValidatorConfig validator{face};
+  std::unique_ptr<ServiceController> controller;
+  std::optional<std::string> previousState;
+
+  PortableRecipientFixture()
+  {
+    if (const auto* value = ::getenv("NDNSF_CONTROLLER_GENERATION_STATE"))
+      previousState = value;
+    ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", (root / "generation").c_str(), 1);
+    const auto certificate = localKeys.createIdentity(
+        ndn::Name(subject).append("controller"), ndn::RsaKeyParams(2048))
+        .getDefaultKey().getDefaultCertificate();
+    std::ofstream policy(root / "policy");
+    policy << "provider-policies\n{\n provider-policy\n {\n  for "
+           << ndn::Name(subject).append("provider").toUri()
+           << "\n  allow\n  {\n   /HELLO\n  }\n }\n}\n"
+           << "user-policies\n{\n user-policy\n {\n  for "
+           << subject.toUri()
+           << "\n  allow\n  {\n   /HELLO\n  }\n }\n}\n";
+    policy.close();
+    controller = std::make_unique<ServiceController>(face, certificate, validator,
+                                                    (root / "policy").string());
+  }
+
+  ~PortableRecipientFixture()
+  {
+    controller.reset();
+    if (previousState)
+      ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", previousState->c_str(), 1);
+    else
+      ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  }
+
+  void
+  anchor(const ndn::security::Certificate& certificate)
+  {
+    validator.loadAnchor(certificate.getName().toUri(),
+                         ndn::security::Certificate(certificate));
+  }
+};
+
 PolicyStatusData
 statusFor(const ControllerVersion& version,
           const std::vector<RevocationTarget>& revocations = {})
@@ -490,6 +576,166 @@ struct TerminalLedger
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(ControllerRevocationFlow)
+
+BOOST_FIXTURE_TEST_CASE(PortableRecipientPublicAnchorSupportsPermissionAndDkey,
+                       PortableRecipientFixture)
+{
+  const auto certificate = remoteKeys.createIdentity(subject, ndn::RsaKeyParams(2048))
+      .getDefaultKey().getDefaultCertificate();
+  const auto identities = ServiceControllerTestAccess::identityCount(*controller);
+  BOOST_CHECK_THROW(localKeys.getPib().getIdentity(subject), ndn::security::pib::Pib::Error);
+  anchor(certificate);
+  const auto actual = ServiceControllerTestAccess::recipientCertificate(*controller, subject);
+  BOOST_CHECK(actual.wireEncode() == certificate.wireEncode());
+  BOOST_CHECK(!ServiceControllerTestAccess::hasRecipientPrivateKey(*controller,
+                                                                  certificate.getKeyName()));
+  ServiceControllerTestAccess::refreshAbeIdentityPolicies(*controller);
+  face.sentData.clear();
+  const auto dkey = ServiceControllerTestAccess::dkeyInterestPrefix(
+      ndn::Name(subject).append("controller"), certificate);
+  ServiceControllerTestAccess::requestDkey(*controller, ndn::Interest(dkey));
+  face.processEvents(ndn::time::milliseconds(1));
+  BOOST_REQUIRE(!face.sentData.empty());
+  BOOST_CHECK(dkey.isPrefixOf(face.sentData.back().getName()));
+  BOOST_CHECK_NE(face.sentData.back().getContent().value_size(), 0U);
+  controller->setControllerPrefix(ndn::Name(subject).append("controller"));
+  ServiceControllerTestAccess::registerHandlersForDummyFace(*controller);
+  const auto parameters = encodeControlQueryParameters({subject, ndn::Name(), 0, 0});
+  ndn::Interest query(makeControlRpcName(ndn::Name(subject).append("controller"),
+      "USER-PERMISSIONS", parameters, makeControlQueryNonce()));
+  query.setApplicationParameters(parameters);
+  query.setCanBePrefix(false);
+  face.sentData.clear();
+  ServiceControllerTestAccess::userPermissionsInterest(*controller, query);
+  face.processEvents(ndn::time::milliseconds(1));
+  BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+  const auto& content = face.sentData.back().getContent();
+  auto [decoded, block] = ndn::Block::fromBuffer(
+      ndn::span<const uint8_t>(content.value(), content.value_size()));
+  BOOST_REQUIRE(decoded);
+  EncryptedPermissionResponse encrypted;
+  BOOST_REQUIRE(encrypted.WireDecode(block));
+  const auto permission = decryptPermissionResponseWithKeyChain(encrypted, remoteKeys);
+  BOOST_CHECK(ndn::Name(permission.getTargetIdentity()) == subject);
+  BOOST_CHECK_EQUAL(permission.getEntries().size(), 1U);
+  BOOST_CHECK_EQUAL(ServiceControllerTestAccess::identityCount(*controller), identities);
+  BOOST_CHECK_THROW(localKeys.getPib().getIdentity(subject), ndn::security::pib::Pib::Error);
+  const auto stranger = ndn::Name(subject).append("stranger");
+  anchor(remoteKeys.createIdentity(stranger, ndn::RsaKeyParams(2048))
+      .getDefaultKey().getDefaultCertificate());
+  BOOST_CHECK(ServiceControllerTestAccess::userPermissions(*controller, stranger)
+      .getEntries().empty());
+}
+
+BOOST_FIXTURE_TEST_CASE(PortableRecipientRejectsMissingExpiredEcAndWrongIdentity,
+                       PortableRecipientFixture)
+{
+  BOOST_CHECK_THROW(ServiceControllerTestAccess::recipientCertificate(*controller, subject),
+                    std::exception);
+  const auto child = ndn::Name(subject).append("KEY").append("child");
+  anchor(remoteKeys.createIdentity(child, ndn::RsaKeyParams(2048))
+      .getDefaultKey().getDefaultCertificate());
+  BOOST_CHECK_THROW(ServiceControllerTestAccess::recipientCertificate(*controller, subject),
+                    std::exception);
+  const auto ecIdentity = ndn::Name(subject).append("ec");
+  anchor(remoteKeys.createIdentity(ecIdentity, ndn::EcKeyParams())
+      .getDefaultKey().getDefaultCertificate());
+  BOOST_CHECK_THROW(ServiceControllerTestAccess::recipientCertificate(*controller, ecIdentity),
+                    std::exception);
+  const auto expiredIdentity = ndn::Name(subject).append("expired");
+  const auto key = remoteKeys.createIdentity(expiredIdentity,
+      ndn::RsaKeyParams(2048)).getDefaultKey();
+  auto expired = key.getDefaultCertificate();
+  auto info = expired.getSignatureInfo();
+  const auto now = ndn::time::system_clock::now();
+  info.setValidityPeriod(ndn::security::ValidityPeriod(now - ndn::time::hours(2),
+                                                     now - ndn::time::hours(1)));
+  auto signing = ndn::security::signingByKey(key);
+  signing.setSignatureInfo(info);
+  remoteKeys.sign(expired, signing);
+  BOOST_REQUIRE(!expired.isValid());
+  anchor(expired);
+  BOOST_CHECK_THROW(ServiceControllerTestAccess::recipientCertificate(*controller, expiredIdentity),
+                    std::exception);
+  BOOST_CHECK_THROW(localKeys.getPib().getIdentity(subject), ndn::security::pib::Pib::Error);
+  BOOST_CHECK(!ServiceControllerTestAccess::hasRecipientPrivateKey(*controller, key.getName()));
+}
+
+BOOST_FIXTURE_TEST_CASE(PortableRecipientPreservesPibPrecedenceAndRejectsExpiredPib,
+                       PortableRecipientFixture)
+{
+  const auto key = localKeys.createIdentity(subject, ndn::RsaKeyParams(2048)).getDefaultKey();
+  const auto certificate = key.getDefaultCertificate();
+  const auto other = remoteKeys.createIdentity(subject, ndn::RsaKeyParams(2048))
+      .getDefaultKey().getDefaultCertificate();
+  anchor(other);
+  BOOST_CHECK(ServiceControllerTestAccess::recipientCertificate(*controller, subject)
+      .wireEncode() == certificate.wireEncode());
+  auto expired = certificate;
+  expired.setName(ndn::Name(key.getName()).append("expired").appendVersion(1));
+  auto info = expired.getSignatureInfo();
+  const auto now = ndn::time::system_clock::now();
+  info.setValidityPeriod(ndn::security::ValidityPeriod(now - ndn::time::hours(2),
+                                                     now - ndn::time::hours(1)));
+  auto signing = ndn::security::signingByKey(key);
+  signing.setSignatureInfo(info);
+  localKeys.sign(expired, signing);
+  ServiceControllerTestAccess::installRecipientCertificate(*controller, expired);
+  BOOST_CHECK_THROW(ServiceControllerTestAccess::recipientCertificate(*controller, subject),
+                    std::exception);
+}
+
+BOOST_FIXTURE_TEST_CASE(PortableRecipientDoesNotSelectPastFirstEcAnchor,
+                       PortableRecipientFixture)
+{
+  const auto identity = remoteKeys.createIdentity(subject,
+      ndn::EcKeyParams(ndn::name::Component("a")));
+  const auto ec = identity.getDefaultKey().getDefaultCertificate();
+  const auto rsa = remoteKeys.createKey(identity,
+      ndn::RsaKeyParams(ndn::name::Component("z"), 2048)).getDefaultCertificate();
+  BOOST_REQUIRE(ec.getName() < rsa.getName());
+  anchor(ec);
+  anchor(rsa);
+  // The public anchor API returns the first prefix match, not a key-type selector.
+  BOOST_CHECK_THROW(ServiceControllerTestAccess::recipientCertificate(*controller, subject),
+                    std::exception);
+}
+
+BOOST_FIXTURE_TEST_CASE(PortableRecipientLostWriterRejectsReadinessAndProtectedIssuance,
+                       PortableRecipientFixture)
+{
+  anchor(remoteKeys.createIdentity(subject, ndn::RsaKeyParams(2048))
+      .getDefaultKey().getDefaultCertificate());
+  controller->setControllerPrefix(ndn::Name(subject).append("controller"));
+  ServiceControllerTestAccess::registerHandlersForDummyFace(*controller);
+  const auto parameters = encodeControlQueryParameters({subject, ndn::Name(), 0, 0});
+  ndn::Interest query(makeControlRpcName(ndn::Name(subject).append("controller"),
+      "USER-PERMISSIONS", parameters, makeControlQueryNonce()));
+  query.setApplicationParameters(parameters);
+  face.sentData.clear();
+  ServiceControllerTestAccess::userPermissionsInterest(*controller, query);
+  face.processEvents(ndn::time::milliseconds(1));
+  BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+  {
+    std::ofstream replaced(root / "generation.lock", std::ios::trunc);
+    replaced << "replacement\n999999\n";
+  }
+  BOOST_CHECK_EXCEPTION(controller->start(), std::runtime_error,
+      [] (const std::runtime_error& error) {
+        return std::string(error.what()).find("generation writer") != std::string::npos;
+      });
+  face.sentData.clear();
+  ServiceControllerTestAccess::policyStatusInterest(*controller,
+      ServiceControllerTestAccess::statusQuery(ndn::Name(subject).append("controller"),
+                                               ndn::Name("/HELLO")));
+  face.processEvents(ndn::time::milliseconds(1));
+  BOOST_CHECK(face.sentData.empty());
+  BOOST_CHECK(controller->getPolicyStatus(ndn::Name("/HELLO"))
+      .getControllerVersion().isValid());
+  ServiceControllerTestAccess::userPermissionsInterest(*controller, query);
+  face.processEvents(ndn::time::milliseconds(1));
+  BOOST_CHECK(face.sentData.empty());
+}
 
 BOOST_AUTO_TEST_CASE(PolicyStatusOriginalReplyCapacityExpiresWithoutRenamingOldReplies)
 {

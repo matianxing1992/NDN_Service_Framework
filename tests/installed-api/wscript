@@ -1,0 +1,183 @@
+"""Build the private worker fixture against installed production libraries only."""
+from pathlib import Path
+from waflib import Context
+
+ONNX_DEFINES = ['ONNX_ML=1', 'ONNX_NAMESPACE=onnx']
+
+
+def options(opt):
+    opt.load('compiler_cxx')
+    opt.add_option('--onnx-prefix', default='', help='Declared full-protobuf ONNX SDK')
+
+
+def configure(conf):
+    conf.load('compiler_cxx')
+    runtime = Path(conf.options.prefix).resolve()
+    if not (runtime / 'include/ndn-service-framework/controller-certificate.hpp').is_file():
+        conf.fatal('Install the public Controller certificate header before this check')
+    onnx = Path(conf.options.onnx_prefix)
+    if not onnx.is_absolute():
+        conf.fatal('Pass the installed ONNX SDK with --onnx-prefix')
+    conf.check_cfg(package='ndnsf-distributed-inference',
+                   args='--cflags --libs', uselib_store='NDNSF', mandatory=True)
+    conf.check_cfg(package='libndn-service-framework',
+                   args='--cflags --libs', uselib_store='CORE', mandatory=True)
+    for package in ('ndnsf-distributed-inference', 'libndn-service-framework'):
+        actual = conf.cmd_and_log(['pkg-config', '--variable=libdir', package]).strip()
+        if Path(actual).resolve() != runtime / 'lib':
+            conf.fatal('Installed library prefix mismatch: ' + package + ':' + actual)
+    conf.check_cxx(lib=['onnx', 'onnx_proto', 'protobuf'],
+                   includes=[str(onnx / 'include')], libpath=[str(onnx / 'lib')],
+                   defines=ONNX_DEFINES,
+                   fragment='#include <onnx/onnx_pb.h>\n'
+                            'int main() { onnx::ModelProto model; return model.ir_version(); }',
+                   uselib_store='ONNX', mandatory=True)
+    conf.check_cxx(lib='boost_unit_test_framework', uselib_store='BOOST_TEST', mandatory=True)
+    conf.check_cfg(package='openssl', args='--cflags --libs',
+                   uselib_store='OPENSSL', mandatory=True)
+    conf.check_cfg(package='libnac-abe', args='--cflags --libs',
+                   uselib_store='NAC', mandatory=True)
+    # Core's pkg-config closure also adds /usr/local/lib. Keep the selected
+    # NAC SDK ahead of that directory when a consumer directly calls NAC APIs.
+    nac_libdir = conf.cmd_and_log(['pkg-config', '--variable=libdir', 'libnac-abe']).strip()
+    if not Path(nac_libdir).is_absolute():
+        conf.fatal('Selected NAC SDK must declare an absolute library directory')
+    conf.env.prepend_value('LIBPATH', [nac_libdir])
+    conf.env.NAC_LIBDIR = nac_libdir
+    conf.check_cfg(package='sqlite3', args='--cflags --libs',
+                   uselib_store='SQLITE', mandatory=True)
+    if not (runtime / 'lib/libndnsf-distributed-repo.a').is_file():
+        conf.fatal('Selected installed Repo archive is missing')
+    conf.check_cxx(lib='ndnsf-distributed-repo', libpath=[str(runtime / 'lib')],
+                   uselib_store='REPO', mandatory=True)
+    conf.env.RUNTIME_PREFIX = str(runtime)
+    conf.env.ONNX_PREFIX = str(onnx)
+
+
+def build(bld):
+    runtime = Path(bld.env.RUNTIME_PREFIX)
+    source_root = bld.path.parent.parent.abspath()
+    # Reuse the production scheduler: the core-flow fixture is a large C++
+    # translation unit and must compile exclusively under the host budget.
+    Context.load_module(str(Path(source_root) / 'wscript'))
+    bld.program(target='installed-deployment-oracle',
+                source='../../examples/Spec189TwoProviderOracle.cpp',
+                includes=[str(runtime / 'include'), source_root,
+                          str(Path(source_root) / 'examples')],
+                use='REPO NDNSF CORE OPENSSL SQLITE',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib'), str(bld.env.NAC_LIBDIR)], install_path=None)
+    bld.program(target='installed-oracle-fixture',
+                source='../fixtures/spec189/cli-oracle.cpp',
+                includes=[str(runtime / 'include'), source_root],
+                use='NDNSF CORE OPENSSL',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib'), str(bld.env.NAC_LIBDIR)], install_path=None)
+    bld.program(target='installed-worker-consumer', source='installed-worker-consumer.cpp',
+                includes=[str(runtime / 'include'), source_root],
+                use='NDNSF ONNX BOOST_TEST OPENSSL',
+                defines=ONNX_DEFINES,
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib'), str(Path(bld.env.ONNX_PREFIX) / 'lib')],
+                install_path=None)
+    bld.program(target='installed-credentials-consumer',
+                source=['installed-credentials-consumer.cpp',
+                        '../unit-tests/spec217-controller-certificate.t.cpp'],
+                includes=[str(runtime / 'include'), source_root],
+                use='CORE BOOST_TEST',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib')], install_path=None)
+    bld.program(target='installed-runtime-consumer',
+                source=['installed-runtime-consumer.cpp', '../unit-tests/di-runtime.t.cpp'],
+                includes=[str(runtime / 'include'), source_root],
+                use='REPO NDNSF BOOST_TEST OPENSSL SQLITE',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib')], install_path=None)
+    bld.program(target='installed-repo-catalog-probe',
+                source='installed-repo-catalog-probe.cpp',
+                includes=[str(runtime / 'include')],
+                use='REPO NDNSF CORE OPENSSL SQLITE',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib')], install_path=None)
+    bld.program(target='installed-repo-catalog-consumer',
+                source=['installed-credentials-consumer.cpp',
+                        '../unit-tests/spec201-transparent-repo.t.cpp'],
+                includes=[str(runtime / 'include'), source_root + '/NDNSF-DistributedRepo/include',
+                          source_root],
+                use='REPO NDNSF CORE BOOST_TEST OPENSSL SQLITE',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib')], install_path=None)
+    bld.program(target='installed-original-packet-consumer',
+                source=['installed-credentials-consumer.cpp',
+                        '../integration-tests/spec201-original-packet-publication.t.cpp'],
+                includes=[str(runtime / 'include'), source_root],
+                use='REPO NDNSF CORE BOOST_TEST OPENSSL SQLITE',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib')], install_path=None)
+    bld.program(target='installed-core-flow-consumer',
+                source=['installed-credentials-consumer.cpp',
+                        '../integration-tests/ndnsf-di-core-flow.t.cpp',
+                        '../integration-tests/ndnsf-integration-fixture.cpp'],
+                includes=[str(runtime / 'include'), source_root],
+                use='REPO NDNSF CORE ONNX NAC BOOST_TEST OPENSSL SQLITE',
+                defines=ONNX_DEFINES + ['NDNSF_DI_ENABLE_ONNXRUNTIME_CPP=1', 'HAVE_TESTS'],
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib'), bld.env.NAC_LIBDIR,
+                       str(Path(bld.env.ONNX_PREFIX) / 'lib')],
+                install_path=None)
+    bld.program(target='installed-repo-packet-cost-probe',
+                source='installed-repo-packet-cost-probe.cpp',
+                includes=[str(runtime / 'include')], use='REPO NDNSF CORE OPENSSL SQLITE',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib')], install_path=None)
+    bld.program(target='installed-material-plan-probe',
+                source='installed-material-plan-probe.cpp',
+                includes=[str(runtime / 'include')], use='NDNSF CORE ONNX OPENSSL',
+                defines=ONNX_DEFINES, cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib'), str(Path(bld.env.ONNX_PREFIX) / 'lib')],
+                install_path=None)
+    bld.program(target='installed-ack-probe', source='installed-ack-probe.cpp',
+                includes=[str(runtime / 'include'), source_root], use='NDNSF CORE OPENSSL',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib')], install_path=None)
+    bld.program(target='installed-identity-consumer',
+                source=['installed-identity-consumer.cpp',
+                        '../unit-tests/spec217-identity-check.t.cpp',
+                        '../unit-tests/spec217-deployment-readiness.t.cpp'],
+                includes=[str(runtime / 'include'), source_root],
+                use='CORE BOOST_TEST OPENSSL',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib')], install_path=None)
+    # Focus the current production loader before reinstalling the full runtime.
+    # This is source behavior with installed dependencies, not installed delivery.
+    bld.program(target='native-grant-source-tests',
+                source=['installed-credentials-consumer.cpp',
+                        '../unit-tests/distributed-inference-native-protected-provider.t.cpp',
+                        '../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantCredentials.cpp'],
+                includes=[source_root, str(runtime / 'include')],
+                use='NDNSF CORE BOOST_TEST OPENSSL',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib')], install_path=None)
+    # The installed cohort must resolve the loader from its shared library.
+    bld.program(target='installed-grant-consumer',
+                source=['installed-credentials-consumer.cpp',
+                        '../unit-tests/distributed-inference-native-protected-provider.t.cpp'],
+                includes=[str(runtime / 'include'), source_root],
+                use='NDNSF CORE BOOST_TEST OPENSSL',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib')], install_path=None)
+    for target, controller_source in (('native-controller-source-tests', True),
+                                      ('installed-controller-consumer', False)):
+        sources = ['installed-credentials-consumer.cpp',
+                   '../unit-tests/controller-revocation-policy.t.cpp',
+                   '../integration-tests/controller-revocation-flow.t.cpp']
+        if controller_source:
+            sources.append('../../ndn-service-framework/ServiceController.cpp')
+            sources.append('../../ndn-service-framework/ControllerGenerationStore.cpp')
+        headers = [source_root, str(runtime / 'include')] if controller_source else \
+                  [str(runtime / 'include'), source_root]
+        bld.program(target=target, source=sources,
+                    includes=headers,
+                    use='CORE NAC BOOST_TEST OPENSSL', defines=['HAVE_TESTS=1'],
+                    cxxflags=['-std=c++17', '-O0', '-g0'],
+                    rpath=[str(runtime / 'lib'), bld.env.NAC_LIBDIR], install_path=None)

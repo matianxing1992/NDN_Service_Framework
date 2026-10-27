@@ -20,12 +20,28 @@ DEFAULT_ROOT = Path(f"/var/tmp/ndnsf-di-workspaces-{os.geteuid()}")
 MARKER = "ndnsf-di-disposable-workspace-v1\n"
 
 
+def mount_entries():
+    for line in Path("/proc/self/mountinfo").read_text().splitlines():
+        fields = line.split()
+        mount = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)),
+                       fields[4])
+        yield Path(mount), fields[fields.index('-') + 1]
+
+
+def reject_memory_filesystem(path):
+    """Reject known RAM-backed filesystems even outside /dev/shm."""
+    ancestors = [(point, filesystem) for point, filesystem in mount_entries()
+                 if point == path or point in path.parents]
+    if not ancestors:
+        raise RuntimeError('WORKSPACE_FILESYSTEM_UNRESOLVED:' + str(path))
+    _, filesystem = max(ancestors, key=lambda row: len(row[0].parts))
+    if filesystem in ('rootfs', 'ramfs', 'tmpfs'):
+        raise ValueError('WORKSPACE_REQUIRES_DISK_NOT_' + filesystem.upper())
+
+
 def reject_mounts(path):
     """Reject nested mounts, including same-device bind mounts, before reset."""
-    for line in Path("/proc/self/mountinfo").read_text().splitlines():
-        mount = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)),
-                       line.split()[4])
-        point = Path(mount)
+    for point, _ in mount_entries():
         if point == path or path in point.parents:
             raise RuntimeError(f"WORKSPACE_CONTAINS_MOUNT:{point}")
 
@@ -75,6 +91,7 @@ def workspace(root, name):
     if root == Path('/dev/shm') or Path('/dev/shm') in root.parents:
         raise ValueError("WORKSPACE_REQUIRES_DISK_NOT_DEV_SHM")
     private_directory(root)
+    reject_memory_filesystem(root)
     slot = root / name
     private_directory(slot)
     fd = os.open(slot / '.active.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)

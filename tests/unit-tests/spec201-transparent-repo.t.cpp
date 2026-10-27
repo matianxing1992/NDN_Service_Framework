@@ -176,6 +176,41 @@ struct PacketSet
 
 BOOST_AUTO_TEST_SUITE(Spec201TransparentRepo)
 
+BOOST_AUTO_TEST_CASE(PersistentStartupCountsAvailableBytesOnce)
+{
+  Fixture fixture;
+  const std::vector<uint8_t> original(64, 0x31);
+  {
+    auto capability = fixture.capability();
+    capability.freeBytes = 160;
+    RepoCore initial(capability, fixture.store("capacity"));
+    initial.put("/capacity/original", original);
+  }
+  auto store = fixture.store("capacity");
+  auto capability = fixture.capability();
+  capability.freeBytes = 96;
+  capability.usedBytes = store->usedBytes();
+  BOOST_REQUIRE_EQUAL(capability.usedBytes, 64);
+  RepoCore reopened(capability, store);
+  const auto snapshot = reopened.handleCapability();
+  BOOST_CHECK_EQUAL(std::string(snapshot.begin(), snapshot.end()), capability.toJson());
+  BOOST_CHECK(reopened.get("/capacity/original") == original);
+
+  RepoObjectManifest oversized;
+  oversized.objectName = "/capacity/oversized";
+  oversized.size = 97;
+  oversized.sha256 = std::string(64, '1');
+  BOOST_CHECK_THROW(reopened.putRange(oversized, {0, 1}, {0x32}), std::runtime_error);
+  BOOST_CHECK(!reopened.has(oversized.objectName));
+  reopened.put("/capacity/exact", std::vector<uint8_t>(96, 0x32));
+  capability.freeBytes = 0;
+  capability.usedBytes = 160;
+  const auto full = reopened.handleCapability();
+  BOOST_CHECK_EQUAL(std::string(full.begin(), full.end()), capability.toJson());
+  BOOST_CHECK_THROW(reopened.put("/capacity/overflow", {0x33}), std::runtime_error);
+  BOOST_CHECK(reopened.get("/capacity/original") == original);
+}
+
 BOOST_AUTO_TEST_CASE(PacketIdentitySurvivesUriAliasesTwoReplicasAndRestart)
 {
   Fixture fixture;

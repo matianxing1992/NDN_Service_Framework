@@ -1,0 +1,22 @@
+Bootstrap: localimage
+From: @BASE_SIF@
+
+%files
+    @INPUT@/base-runtime.py /build-input/header-repair/base-runtime.py
+
+%post
+    set -eu
+    unset PYTHONHOME PYTHONPATH PYTHONOPTIMIZE
+    export PATH=/opt/ndn-base/bin:/opt/venv/bin:/usr/bin:/bin:/usr/sbin:/sbin
+    export LD_LIBRARY_PATH=/opt/ndn-base/lib:/opt/onnxruntime/lib
+    export PKG_CONFIG_PATH=/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
+    /opt/venv/bin/python /build-input/header-repair/base-runtime.py @REPAIR_ACTION@
+    rm -rf /build-input/header-repair
+
+%test
+    export LD_LIBRARY_PATH=/opt/ndn-base/lib:/opt/onnxruntime/lib
+    /opt/venv/bin/python /opt/ndn-base/manifest/base-runtime.py verify
+    /usr/bin/python3 /opt/ndn-base/manifest/dependency-sdk.py verify
+
+%runscript
+    exec /usr/bin/python3 /opt/ndn-base/manifest/dependency-sdk.py verify

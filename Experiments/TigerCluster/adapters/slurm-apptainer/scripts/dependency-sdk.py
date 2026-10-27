@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Complete and verify external dependencies in an existing base container."""
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -9,9 +10,17 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 
 BASE = Path('/opt/ndn-base')
 MANIFEST = BASE / 'manifest/dependency-sdk.json'
+TOKENIZER_ARCHIVE = BASE / 'lib/libndnsf_tokenizer_bridge.a'
+TOKENIZER_PROVENANCE = BASE / 'manifest/tokenizer-bridge'
+NAC_PROVENANCE = BASE / 'manifest/nac-abe'
+NAC_SUITES = ('TestProducerBoundCk', 'TestConsumerRevocation', 'TestConsumer', 'TestProducer')
+TOKENIZER_SYMBOLS = frozenset('ndi_token_create ndi_token_encode ndi_token_decode '
+                              'ndi_token_decode_stable ndi_token_free ndi_token_destroy'.split())
 
 
 def digest(path):
@@ -28,6 +37,323 @@ def run(*args, **kwargs):
 
 def check(*args, **kwargs):
     subprocess.run(list(args), check=True, **kwargs)
+
+
+def nac_contract(inputs, repository, archive_sha):
+    """Validate the sealed host lock/patch stack against the original SDK source."""
+    inputs = Path(inputs)
+    frozen = json.loads((inputs / 'inputs.json').read_text())
+    required = {'upstream.tar', 'project/scripts/stack_sources.py',
+                'project/packaging/host-dependencies.lock.json',
+                'project/patches/nac-abe/series.json', 'project/patches/openabe/series.json'}
+    if (not required.issubset(frozen['files']) or any(
+            name not in required and not (
+                name.startswith(('project/patches/nac-abe/', 'project/patches/openabe/')) and
+                name.endswith('.patch'))
+            for name in frozen['files'])):
+        raise ValueError('SDK_NAC_INPUT_SET')
+    for name, expected in frozen['files'].items():
+        relative = Path(name)
+        if relative.is_absolute() or '..' in relative.parts or str(relative) != name:
+            raise ValueError('SDK_NAC_INPUT_PATH')
+        path = inputs / relative
+        if (any(p.is_symlink() for p in (path, *path.parents)) or
+                not path.is_file() or digest(path) != expected):
+            raise ValueError('SDK_NAC_INPUT_CHANGED:' + name)
+    if frozen['files'].get('upstream.tar') != archive_sha:
+        raise ValueError('SDK_NAC_ARCHIVE_BINDING')
+    project = inputs / 'project'
+    module = importlib.util.spec_from_file_location('nac_stack_sources',
+                                                   project / 'scripts/stack_sources.py')
+    helper = importlib.util.module_from_spec(module)
+    exec(compile(Path(module.origin).read_bytes(), module.origin, 'exec'), helper.__dict__)
+    # Preserve the existing full lock validation, including OpenABE patch
+    # metadata. Only the NAC source is rebuilt by this completion.
+    lock = helper.load_lock(project / 'packaging/host-dependencies.lock.json')
+    source = lock['sources']['NAC-ABE']
+    if (source['commit'] != repository['revision'] or
+            source['url'] != repository.get('url', source['url'])):
+        raise ValueError('SDK_NAC_UPSTREAM_BINDING')
+    patches = helper.patch_series(source, project)
+    series = source['patch_series']['path']
+    names = {'upstream.tar', 'project/scripts/stack_sources.py',
+             'project/packaging/host-dependencies.lock.json', 'project/' + series}
+    names.update('project/' + str(Path(series).parent / name) for name, _ in patches)
+    openabe = lock['sources']['openabe']
+    names.add('project/' + openabe['patch_series']['path'])
+    names.update('project/' + str(Path(openabe['patch_series']['path']).parent / name)
+                 for name, _ in helper.patch_series(openabe, project))
+    if set(frozen['files']) != names:
+        raise ValueError('SDK_NAC_INPUT_SET')
+    return frozen, helper, source, patches
+
+
+def nac_owned(name):
+    relative = Path(name)
+    return (not relative.is_absolute() and '..' not in relative.parts and
+            (str(relative).startswith('include/nac-abe/') or
+             str(relative) in ('lib/libnac-abe.so', 'lib/pkgconfig/libnac-abe.pc')))
+
+
+def nac_native_tests(executable, prefix, schema):
+    """Exercise existing native crypto/admission cases against the selected library."""
+    prefix = Path(prefix)
+    env = dict(os.environ)
+    env.pop('LD_PRELOAD', None)
+    env['LD_LIBRARY_PATH'] = str(prefix / 'lib') + ':' + str(BASE / 'lib')
+    report = run('/usr/bin/ldd', '-r', str(executable), env=env)
+    selected = re.search(r'libnac-abe\.so\s+=>\s+(\S+)', report)
+    if ('not found' in report or 'undefined symbol:' in report or not selected or
+            Path(selected.group(1)).resolve() != (prefix / 'lib/libnac-abe.so').resolve()):
+        raise ValueError('SDK_NAC_TEST_LIBRARY_ORIGIN')
+    with tempfile.TemporaryDirectory(prefix='nac-native-tests-') as temporary:
+        shutil.copy2(schema, Path(temporary) / 'trust-schema.conf')
+        env['HOME'] = temporary
+        for suite in NAC_SUITES:
+            check(str(executable), '--run_test=' + suite, '--report_level=detailed',
+                  '--log_level=test_suite', '--color_output=no', cwd=temporary, env=env,
+                  timeout=180)
+
+
+def patched_nac_source(inputs, work, patches):
+    """Apply admitted patches in private scratch using the existing container tool."""
+    work = Path(work)
+    source_root = work / 'source'
+    source_root.mkdir()
+    with tarfile.open(Path(inputs) / 'upstream.tar') as archive:
+        seen = set()
+        for member in archive:
+            name = Path(member.name)
+            if (name.is_absolute() or '..' in name.parts or member.name in seen or
+                    not (member.isfile() or member.isdir())):
+                raise ValueError('SDK_NAC_SOURCE_MEMBER')
+            seen.add(member.name)
+        archive.extractall(source_root)
+    patch_root = work / 'patches'
+    patch_root.mkdir()
+    for name, content in patches:
+        patch = patch_root / name
+        patch.write_bytes(content)
+        for dry_run in (True, False):
+            arguments = ['--batch', '--forward', '--fuzz=0', '--no-backup-if-mismatch',
+                         '-p1', '--input=' + str(patch)]
+            if dry_run:
+                arguments.append('--dry-run')
+            check('/usr/bin/patch', *arguments, cwd=source_root)
+    return source_root
+
+
+def build_nac(inputs, work, repository, archive_sha):
+    """Build the existing patch stack once, with a private staged install."""
+    frozen, helper, source, patches = nac_contract(inputs, repository, archive_sha)
+    work = Path(work)
+    source_root = patched_nac_source(inputs, work, patches)
+    build = work / 'build'
+    check('/usr/bin/cmake', '-S', str(source_root), '-B', str(build),
+          '-DCMAKE_BUILD_TYPE=Release', '-DHAVE_TESTS=ON', '-DBUILD_EXAMPLES=OFF',
+          '-DCMAKE_CXX_COMPILER=/usr/bin/g++',
+          '-DCMAKE_CXX_FLAGS=-B/usr/bin -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES',
+          '-DCMAKE_INSTALL_PREFIX=' + str(BASE), '-DCMAKE_INSTALL_LIBDIR=lib',
+          '-DCMAKE_PREFIX_PATH=' + str(BASE), '-DCMAKE_LIBRARY_PATH=' + str(BASE / 'lib'),
+          '-DCMAKE_INSTALL_RPATH=$ORIGIN', '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON',
+          '-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF')
+    check('/usr/bin/cmake', '--build', str(build), '--parallel', '2')
+    stage = work / 'stage'
+    check('/usr/bin/cmake', '--install', str(build), '--prefix', str(stage))
+    names = set()
+    for entry in (build / 'install_manifest.txt').read_text().splitlines():
+        path = Path(entry)
+        name = str(path.relative_to(stage))
+        if (not nac_owned(name) or path.is_symlink() or not path.is_file() or
+                path.resolve() != path):
+            raise ValueError('SDK_NAC_INSTALL_OWNERSHIP:' + name)
+        names.add(name)
+    observed = {str(path.relative_to(stage)) for path in stage.rglob('*') if path.is_file()}
+    if names != observed or 'lib/libnac-abe.so' not in names:
+        raise ValueError('SDK_NAC_INSTALL_MANIFEST')
+    executable = build / 'tests/unit-tests'
+    schema = source_root / 'tests/unit-tests/trust-schema.conf'
+    nac_native_tests(executable, stage, schema)
+    return stage, names, executable, schema, frozen, source
+
+
+def install_nac(stage, names, executable, schema, inputs, frozen, source):
+    """Install only staged manifest outputs and their explicit verification evidence."""
+    for name in sorted(names):
+        destination = BASE / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(stage / name, destination)
+    shutil.copytree(inputs, NAC_PROVENANCE)
+    shutil.copy2(executable, NAC_PROVENANCE / 'unit-tests')
+    shutil.copy2(schema, NAC_PROVENANCE / 'trust-schema.conf')
+    # The base declares this library directory before the SDK populates it.
+    # Refresh its cache so indirect Relic dependencies also resolve without
+    # LD_LIBRARY_PATH; retain the strict installed API/runtime probe below.
+    check('/sbin/ldconfig', '-X')
+    helper_path = NAC_PROVENANCE / 'project/scripts/stack_sources.py'
+    module = importlib.util.spec_from_file_location('installed_nac_stack', helper_path)
+    helper = importlib.util.module_from_spec(module)
+    exec(compile(helper_path.read_bytes(), str(helper_path), 'exec'), helper.__dict__)
+    helper.probe_nac_api(BASE)
+    nac_native_tests(NAC_PROVENANCE / 'unit-tests', BASE, NAC_PROVENANCE / 'trust-schema.conf')
+    return {'upstreamCommit': source['commit'],
+            'patchSeriesSha256': source['patch_series']['sha256'],
+            'hostDependencyLockSha256': frozen['files']['project/packaging/host-dependencies.lock.json'],
+            'sourceFiles': {name[len('project/'):]: 'sha256:' + sha
+                            for name, sha in frozen['files'].items() if name.startswith('project/')},
+            'installedFiles': {str(BASE / name): digest(BASE / name) for name in sorted(names)},
+            'abi': 'VERIFIED', 'nativeTests': 'PASS', 'nativeSuites': list(NAC_SUITES)}
+
+
+def complete_nac(inputs=Path('/build-input/nac')):
+    """Complete the existing SDK using exactly the already-locked NAC patch stack."""
+    if os.geteuid() != 0 or not Path('/.singularity.d').is_dir():
+        raise ValueError('SDK_CONTAINER_REQUIRED')
+    original = MANIFEST.read_bytes()
+    body = json.loads(original)
+    frozen = json.loads((Path(inputs) / 'inputs.json').read_text())
+    if frozen['baseSdkSha256'] != 'sha256:' + hashlib.sha256(original).hexdigest():
+        raise ValueError('SDK_NAC_PARENT_MANIFEST')
+    if NAC_PROVENANCE.exists() or 'nacAbePatchClosure' in body:
+        raise ValueError('SDK_NAC_OUTPUT_EXISTS')
+    verify()
+    with tempfile.TemporaryDirectory(prefix='nac-sdk-build-') as temporary:
+        stage, names, executable, schema, frozen, source = build_nac(
+            inputs, temporary, body['inputs']['repositories']['nacAbe'],
+            body['inputs']['files']['source/nacAbe.tar'])
+        for name, expected in body['artifacts'].items():
+            if digest(name) != expected:
+                raise ValueError('SDK_NAC_UNRELATED_BUILD_DRIFT:' + name)
+            relative = Path(name).relative_to(BASE) if BASE in Path(name).parents else None
+            if relative and nac_owned(str(relative)) and str(relative) not in names:
+                raise ValueError('SDK_NAC_OUTPUT_REMOVAL_UNSUPPORTED:' + name)
+        if (MANIFEST.read_bytes() != original or
+                run('/usr/bin/dpkg-query', '-W', '-f=${Package}=${Version}\n') != body['packages']):
+            raise ValueError('SDK_NAC_PARENT_CHANGED')
+        closure = install_nac(stage, names, executable, schema, inputs, frozen, source)
+    for name, expected in body['artifacts'].items():
+        if name not in closure['installedFiles'] and digest(name) != expected:
+            raise ValueError('SDK_NAC_UNRELATED_INSTALL_DRIFT:' + name)
+    if run('/usr/bin/dpkg-query', '-W', '-f=${Package}=${Version}\n') != body['packages']:
+        raise ValueError('SDK_NAC_PACKAGES_CHANGED')
+    artifacts = dict(body['artifacts'])
+    artifacts.update(closure['installedFiles'])
+    for path in NAC_PROVENANCE.rglob('*'):
+        if path.is_file():
+            artifacts[str(path)] = digest(path)
+    shutil.copy2(__file__, BASE / 'manifest/dependency-sdk.py')
+    artifacts[str(BASE / 'manifest/dependency-sdk.py')] = digest(BASE / 'manifest/dependency-sdk.py')
+    body.update(artifacts=artifacts, nacAbePatchClosure=closure)
+    MANIFEST.write_text(json.dumps(body, indent=2) + '\n')
+    verify()
+    (BASE / 'manifest/nac-abe-completion.json').write_text(json.dumps({
+        'status': 'PASS', 'parentSdkSha256': hashlib.sha256(original).hexdigest(),
+        'nacOwnedOutputs': sorted(closure['installedFiles']),
+        'nativeTests': 'PASS', 'nativeSuites': list(NAC_SUITES)}, indent=2) + '\n')
+
+
+def verify_tokenizer(archive, provenance):
+    """Link production ABI callers against this exact archive and frozen vectors."""
+    with Path(archive).open('rb') as stream:
+        if stream.read(8) != b'!<arch>\n':
+            raise ValueError('SDK_TOKENIZER_ARCHIVE_FORMAT')
+    symbols = {line.split()[-1] for line in run(
+        '/usr/bin/nm', '-g', '--defined-only', str(archive)).splitlines() if line.split()}
+    if not TOKENIZER_SYMBOLS.issubset(symbols):
+        raise ValueError('SDK_TOKENIZER_SYMBOLS')
+    provenance = Path(provenance)
+    with tempfile.TemporaryDirectory(prefix='tokenizer-probe-') as temporary:
+        for source, vector in [('probe.cpp', 'vectors.json'),
+                               ('stable-probe.cpp', 'stable-vectors.json')]:
+            executable = Path(temporary) / Path(source).stem
+            check('/usr/bin/g++', '-B/usr/bin', '-std=c++17',
+                  str(provenance / 'probes' / source), '-I' + str(provenance / 'crate'),
+                  str(archive), '-ldl', '-lpthread', '-lm', '-lrt', '-lutil',
+                  '-o', str(executable))
+            check(str(executable), str(provenance / 'probes' / vector))
+
+
+def complete_tokenizer(inputs=Path('/build-input/tokenizer')):
+    """Extend a verified SDK with its missing offline tokenizer static library only."""
+    if os.geteuid() != 0 or not Path('/.singularity.d').is_dir():
+        raise ValueError('SDK_CONTAINER_REQUIRED')
+    original = MANIFEST.read_bytes()
+    body = json.loads(original)
+    inputs = Path(inputs)
+    frozen = json.loads((inputs / 'inputs.json').read_text())
+    if 'sha256:' + hashlib.sha256(original).hexdigest() != frozen['baseSdkSha256']:
+        raise ValueError('SDK_TOKENIZER_PARENT_MANIFEST')
+    names = {'crate/Cargo.toml', 'crate/Cargo.lock', 'crate/src/lib.rs',
+             'crate/tokenizer-abi.h', 'native-inputs.json', 'probes/probe.cpp',
+             'probes/stable-probe.cpp', 'probes/vectors.json', 'probes/stable-vectors.json'}
+    if set(frozen['files']) != names:
+        raise ValueError('SDK_TOKENIZER_INPUT_SET')
+    for name, expected in frozen['files'].items():
+        path = inputs / name
+        if path.is_symlink() or not path.is_file() or digest(path) != expected:
+            raise ValueError('SDK_TOKENIZER_INPUT_CHANGED:' + name)
+    native = json.loads((inputs / 'native-inputs.json').read_text())
+    if (body['inputs']['files']['native/native-inputs.json'] !=
+            frozen['files']['native-inputs.json'] or native['rustVersion'] != '1.90.0'):
+        raise ValueError('SDK_TOKENIZER_NATIVE_BINDING')
+    for name in ('Cargo.toml', 'Cargo.lock'):
+        if native['crate'][name] != 'sha256:' + frozen['files']['crate/' + name]:
+            raise ValueError('SDK_TOKENIZER_CRATE_BINDING:' + name)
+    if TOKENIZER_ARCHIVE.exists() or TOKENIZER_ARCHIVE.is_symlink() or TOKENIZER_PROVENANCE.exists():
+        raise ValueError('SDK_TOKENIZER_OUTPUT_EXISTS')
+    # Validate the existing SDK before compiling anything. Its historical
+    # manifest does not claim that a tokenizer archive exists.
+    verify()
+    rustc = run('/opt/rust/bin/rustc', '--version').strip()
+    cargo = run('/opt/rust/bin/cargo', '--version').strip()
+    if rustc.split()[1] != '1.90.0' or cargo.split()[1] != '1.90.0':
+        raise ValueError('SDK_TOKENIZER_TOOLCHAIN')
+    with tempfile.TemporaryDirectory(prefix='tokenizer-build-') as temporary:
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(('CARGO_', 'RUST', 'CC_', 'CXX_', 'LD_'))}
+        env.update(PATH='/opt/rust/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+                   CARGO_HOME='/opt/cargo-home', RUSTC='/opt/rust/bin/rustc',
+                   CARGO_NET_OFFLINE='true', CC='/usr/bin/gcc', CXX='/usr/bin/g++',
+                   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER='/usr/bin/gcc')
+        check('/opt/rust/bin/cargo', 'build', '--offline', '--locked', '--release',
+              '--jobs', '2', '--manifest-path', str(inputs / 'crate/Cargo.toml'),
+              '--target-dir', temporary, env=env)
+        archive = Path(temporary) / 'release/libndnsf_tokenizer_bridge.a'
+        verify_tokenizer(archive, inputs)
+        # Recheck all declared sources and original SDK artifacts before
+        # installing new outputs. No pre-existing SDK artifact is replaced.
+        for name, expected in frozen['files'].items():
+            if digest(inputs / name) != expected:
+                raise ValueError('SDK_TOKENIZER_INPUT_CHANGED:' + name)
+        for name, expected in body['artifacts'].items():
+            if digest(name) != expected:
+                raise ValueError('SDK_ARTIFACT_CHANGED:' + name)
+        if (MANIFEST.read_bytes() != original or
+                run('/usr/bin/dpkg-query', '-W', '-f=${Package}=${Version}\n') != body['packages']):
+            raise ValueError('SDK_TOKENIZER_PARENT_CHANGED')
+        added = [TOKENIZER_ARCHIVE, BASE / 'manifest/dependency-sdk.py',
+                 BASE / 'manifest/tokenizer-bridge-completion.json']
+        added += [TOKENIZER_PROVENANCE / name for name in sorted(names)]
+        if any(str(p) in body['artifacts'] for p in added):
+            raise ValueError('SDK_TOKENIZER_ARTIFACT_CONFLICT')
+        TOKENIZER_ARCHIVE.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(archive, TOKENIZER_ARCHIVE)
+    for name in sorted(names):
+        target = TOKENIZER_PROVENANCE / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(inputs / name, target)
+    shutil.copy2(__file__, BASE / 'manifest/dependency-sdk.py')
+    receipt = {'status': 'VERIFIED', 'scope': 'TOKENIZER_BRIDGE_COMPLETION',
+               'parentSdkSha256': hashlib.sha256(original).hexdigest(),
+               'sourceSealDigest': frozen['sourceSealDigest'], 'inputs': frozen['files'],
+               'archiveSha256': digest(TOKENIZER_ARCHIVE), 'rustc': rustc, 'cargo': cargo,
+               'abiSymbols': sorted(TOKENIZER_SYMBOLS), 'nativeProbes': 'PASS'}
+    (BASE / 'manifest/tokenizer-bridge-completion.json').write_text(
+        json.dumps(receipt, indent=2) + '\n')
+    body['tokenizerBridge'] = receipt
+    body['artifacts'].update({str(p): digest(p) for p in added})
+    MANIFEST.write_text(json.dumps(body, indent=2) + '\n')
+    verify()
 
 
 def prepare():
@@ -60,7 +386,7 @@ def prepare():
             shutil.copy2(path, BASE / 'lib' / path.name)
     sources = BASE / 'sdk/sources'
     sources.mkdir(parents=True, exist_ok=True)
-    for name, archive in [('onnx', 'native/onnx.tar'), ('nac-abe', 'source/nacAbe.tar'),
+    for name, archive in [('onnx', 'native/onnx.tar'),
                           ('ndn-svs', 'source/ndn-svs.tar'), ('ndn-sd', 'source/ndnSd.tar')]:
         dest = sources / name
         dest.mkdir()
@@ -86,14 +412,11 @@ def prepare():
           '-DONNX_GEN_PB_TYPE_STUBS=OFF')
     check('/usr/bin/cmake', '--build', '/tmp/sdk-onnx-build', '--parallel', '4')
     check('/usr/bin/cmake', '--install', '/tmp/sdk-onnx-build')
-    check('/usr/bin/cmake', '-S', str(sources / 'nac-abe'), '-B', '/tmp/sdk-nac-build',
-          '-DCMAKE_BUILD_TYPE=Release', '-DHAVE_TESTS=OFF', '-DBUILD_EXAMPLES=OFF',
-          '-DCMAKE_CXX_COMPILER=/usr/bin/g++', '-DCMAKE_CXX_FLAGS=' + env['CXXFLAGS'],
-          '-DCMAKE_INSTALL_PREFIX=/opt/ndn-base', '-DCMAKE_INSTALL_LIBDIR=lib',
-          '-DCMAKE_PREFIX_PATH=/opt/ndn-base', '-DCMAKE_LIBRARY_PATH=/opt/ndn-base/lib',
-          '-DCMAKE_INSTALL_RPATH=$ORIGIN', '-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF')
-    check('/usr/bin/cmake', '--build', '/tmp/sdk-nac-build', '--parallel', '4')
-    check('/usr/bin/cmake', '--install', '/tmp/sdk-nac-build')
+    with tempfile.TemporaryDirectory(prefix='nac-sdk-build-') as temporary:
+        stage, names, executable, schema, frozen, source = build_nac(
+            inputs / 'nac', temporary, expected['repositories']['nacAbe'],
+            expected['files']['source/nacAbe.tar'])
+        nac_info = install_nac(stage, names, executable, schema, inputs / 'nac', frozen, source)
     env.update(CXX='/usr/bin/g++ -B/usr/bin', CPPFLAGS='-I/opt/ndn-base/include',
                LINKFLAGS='-L/opt/ndn-base/lib -Wl,-rpath,$ORIGIN',
                LDFLAGS='-B/usr/bin -L/opt/ndn-base/lib -Wl,-rpath,$ORIGIN')
@@ -107,20 +430,20 @@ def prepare():
         assert run('pkg-config', '--variable=includedir', package).strip() == '/opt/ndn-base/include'
         assert run('pkg-config', '--variable=libdir', package).strip() == '/opt/ndn-base/lib'
     # Preserve the exact SVS source/build pair for NDNSF's ABI preflight.
-    for name in ['onnx', 'nac-abe', 'ndn-sd']:
+    for name in ['onnx', 'ndn-sd']:
         shutil.rmtree(sources / name)
-    for path in ['/tmp/sdk-onnx-build', '/tmp/sdk-nac-build', '/var/lib/apt/lists']:
+    for path in ['/tmp/sdk-onnx-build', '/var/lib/apt/lists']:
         shutil.rmtree(path)
     shutil.copy2(__file__, BASE / 'manifest/dependency-sdk.py')
     artifacts = {}
-    for directory in [BASE / 'lib', BASE / 'include', BASE / 'sdk/sources', Path('/opt/onnx'),
+    for directory in [BASE / 'lib', BASE / 'include', BASE / 'sdk/sources', NAC_PROVENANCE, Path('/opt/onnx'),
                       Path('/opt/rust'), Path('/opt/cargo-vendor'), Path('/opt/cargo-home')]:
         for path in directory.rglob('*'):
             if path.is_file():
                 artifacts[str(path)] = digest(path)
     MANIFEST.write_text(json.dumps({'schema': 'ndnsf-base-sdk-v1', 'inputs': expected,
         'artifacts': artifacts, 'packages': run('/usr/bin/dpkg-query', '-W', '-f=${Package}=${Version}\n'),
-        'status': 'BUILT_NOT_TESTED'}, indent=2) + '\n')
+        'status': 'BUILT_NOT_TESTED', 'nacAbePatchClosure': nac_info}, indent=2) + '\n')
     verify()
 
 
@@ -130,6 +453,34 @@ def verify():
     assert run('/usr/bin/dpkg-query', '-W', '-f=${Package}=${Version}\n') == body['packages'], 'SDK_PACKAGES_CHANGED'
     for name, value in body['artifacts'].items():
         assert digest(name) == value, 'SDK_ARTIFACT_CHANGED:' + name
+    if 'tokenizerBridge' in body:
+        assert digest(TOKENIZER_ARCHIVE) == body['tokenizerBridge']['archiveSha256'], 'SDK_TOKENIZER_CHANGED'
+        verify_tokenizer(TOKENIZER_ARCHIVE, TOKENIZER_PROVENANCE)
+    if 'nacAbePatchClosure' in body:
+        info = body['nacAbePatchClosure']
+        frozen, helper, source, _ = nac_contract(
+            NAC_PROVENANCE, body['inputs']['repositories']['nacAbe'],
+            body['inputs']['files']['source/nacAbe.tar'])
+        if (info['abi'] != 'VERIFIED' or info['nativeTests'] != 'PASS' or
+                info['nativeSuites'] != list(NAC_SUITES) or
+                info['upstreamCommit'] != source['commit'] or
+                info['patchSeriesSha256'] != source['patch_series']['sha256'] or
+                info['hostDependencyLockSha256'] !=
+                frozen['files']['project/packaging/host-dependencies.lock.json'] or
+                info['sourceFiles'] != {name[len('project/'):]: 'sha256:' + sha
+                                        for name, sha in frozen['files'].items()
+                                        if name.startswith('project/')}):
+            raise ValueError('SDK_NAC_RECEIPT')
+        if (not info['installedFiles'] or str(BASE / 'lib/libnac-abe.so') not in info['installedFiles'] or
+                any(not nac_owned(str(Path(name).relative_to(BASE))) or
+                    body['artifacts'].get(name) != sha
+                    for name, sha in info['installedFiles'].items())):
+            raise ValueError('SDK_NAC_INSTALLED_SET')
+        for name, expected in info['installedFiles'].items():
+            if digest(name) != expected:
+                raise ValueError('SDK_NAC_INSTALLED_ARTIFACT_CHANGED:' + name)
+        helper.probe_nac_api(BASE)
+        nac_native_tests(NAC_PROVENANCE / 'unit-tests', BASE, NAC_PROVENANCE / 'trust-schema.conf')
     for name in ['libnac-abe.so', 'libndn-svs.so.0.1.0', 'libndnsd.so.0.1.0',
                  'libopenabe.so', 'librelic.so', 'librelic_ec.so']:
         result = run('/usr/bin/ldd', '-r', str(BASE / 'lib' / name))
@@ -203,5 +554,9 @@ if __name__ == '__main__':
         prepare()
     elif sys.argv[1:] == ['verify']:
         verify()
+    elif sys.argv[1:] == ['complete-tokenizer']:
+        complete_tokenizer()
+    elif sys.argv[1:] == ['complete-nac']:
+        complete_nac()
     else:
-        raise SystemExit('usage: dependency-sdk.py prepare|verify')
+        raise SystemExit('usage: dependency-sdk.py prepare|verify|complete-tokenizer|complete-nac')

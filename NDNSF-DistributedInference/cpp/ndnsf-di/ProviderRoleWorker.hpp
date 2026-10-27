@@ -166,6 +166,15 @@ public:
 
   virtual void
   cancelPendingPrefetches() noexcept = 0;
+
+  /** Join reusable prefetch workers from their owner after cancellation.
+   *  The owner serializes drain calls and keeps Face/context dependencies alive.
+   *  Implementations using async futures retain their existing future drain.
+   */
+  virtual void
+  drainPendingPrefetches() noexcept
+  {
+  }
 };
 
 // Preserve the authenticated transfer lineage before the coordinator removes

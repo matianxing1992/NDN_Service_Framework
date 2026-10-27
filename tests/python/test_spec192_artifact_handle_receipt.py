@@ -27,10 +27,10 @@ FIXTURE = b"spec192 native Python binding fixture"
 
 def fixture_reference() -> ArtifactReference:
     return ArtifactReference(
-        "/app/model/v1",
+        "/app/provider/model/v1",
         hashlib.sha256(FIXTURE).hexdigest(),
         len(FIXTURE),
-        "/app/manifest/v1",
+        "/app/provider/manifest/v1",
         "/app/provider",
         "epoch-1",
     )
@@ -44,22 +44,32 @@ class Spec192ArtifactBindingTest(unittest.TestCase):
             destination = root / "result.bin"
             source.write_bytes(FIXTURE)
             reference = fixture_reference()
+            # Publication returns canonical NDN Name text, while callers may
+            # supply the equivalent alternate representation for lookup/fetch.
+            expected_reference = reference.canonicalized().to_json()
             api = ArtifactRepositoryApi.make_in_app(
                 durable_root=root / "repo",
                 owner_id="/app/test-owner",
             )
 
+            foreign_reference = ArtifactReference(
+                "/foreign/model/v1", reference.content_digest, len(FIXTURE),
+                "/foreign/manifest/v1", "/app/provider", "epoch-1",
+            )
+            with self.assertRaisesRegex(ValueError, "complete publisher namespace"):
+                api.publish_file(source, foreign_reference)
+
             published = api.publish_file(source, reference)
-            self.assertEqual(published.reference.to_json(), reference.to_json())
+            self.assertEqual(published.reference.to_json(), expected_reference)
             self.assertIsNotNone(published.handle)
             self.assertIsNotNone(published.receipt)
-            self.assertEqual(published.receipt.reference.to_json(), reference.to_json())
+            self.assertEqual(published.receipt.reference.to_json(), expected_reference)
 
             reopened_receipt = api.get_receipt(published.receipt.receipt_id)
             local_commit = api.lookup_local_commit(reference)
             self.assertEqual(reopened_receipt.to_json(), published.receipt.to_json())
             self.assertIsNotNone(local_commit)
-            self.assertEqual(local_commit.reference.to_json(), reference.to_json())
+            self.assertEqual(local_commit.reference.to_json(), expected_reference)
 
             restored_handle = type(published.handle).from_json(
                 published.handle.to_json()

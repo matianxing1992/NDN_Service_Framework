@@ -1,0 +1,23 @@
+Bootstrap: localimage
+From: @BASE_SIF@
+
+%files
+    @INPUT@/nac /build-input/nac
+    @INPUT@/dependency-sdk.py /build-input/dependency-sdk.py
+
+%post
+    set -eu
+    unset PYTHONHOME PYTHONPATH PYTHONOPTIMIZE
+    export PATH=/opt/ndn-base/bin:/opt/venv/bin:/usr/bin:/bin:/usr/sbin:/sbin
+    export LD_LIBRARY_PATH=/opt/ndn-base/lib:/opt/onnxruntime/lib
+    export PKG_CONFIG_PATH=/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
+    /usr/bin/python3 /build-input/dependency-sdk.py complete-nac
+    rm -rf /build-input/nac /build-input/dependency-sdk.py
+
+%test
+    export LD_LIBRARY_PATH=/opt/ndn-base/lib:/opt/onnxruntime/lib
+    /opt/venv/bin/python /opt/ndn-base/manifest/base-runtime.py verify
+    /usr/bin/python3 /opt/ndn-base/manifest/dependency-sdk.py verify
+
+%runscript
+    exec /usr/bin/python3 /opt/ndn-base/manifest/dependency-sdk.py verify

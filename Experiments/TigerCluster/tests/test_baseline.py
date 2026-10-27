@@ -11,9 +11,8 @@ import time
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("tiger_baseline_test_module", ROOT / "runtime/baseline.py")
-baseline = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(baseline)
+sys.path.insert(0, str(ROOT))
+from runtime import baseline
 
 
 @pytest.mark.parametrize("key,value", [
@@ -90,7 +89,7 @@ def test_valid_results_require_real_distinct_nodes_and_local_is_not_cluster():
 
 
 @pytest.mark.parametrize("mutation", ["exit", "missing", "signature-timeout", "wrong-payload", "identity",
-                                     "cleanup", "denied-executed", "private", "fake-pass"])
+                                     "cleanup", "cleanup-error", "denied-executed", "private", "fake-pass"])
 def test_collector_rejects_false_green(mutation):
     run, nodes = fixture_records()
     exit_code = 0
@@ -100,6 +99,7 @@ def test_collector_rejects_false_green(mutation):
     elif mutation == "wrong-payload": nodes[0]["cases"]["service-echo"]["payload"] = "ECHO:wrong"
     elif mutation == "identity": nodes[1]["sifSha256"] = "d" * 64
     elif mutation == "cleanup": nodes[1]["cleanup"][0]["forced"] = True
+    elif mutation == "cleanup-error": nodes[1]["cleanup"][0]["error"] = "audit unreadable"
     elif mutation == "denied-executed": nodes[0]["cases"]["permission-rejection"]["providerCalls"].append("MUST_NOT_EXECUTE")
     elif mutation == "private": run["privateRemoved"] = False
     elif mutation == "fake-pass": nodes[0]["cases"] = {key: {"status": "PASS"} for key in nodes[0]["cases"]}

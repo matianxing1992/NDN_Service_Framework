@@ -1322,6 +1322,22 @@ NativeProviderRuntime::hasRunner(const std::string& role) const
   return m_runners.find(role) != m_runners.end();
 }
 
+ProviderRoleResult
+NativeProviderRuntime::executeRole(
+  std::string sessionId,
+  RoleSpec role,
+  std::shared_ptr<DependencyIo> io,
+  ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
+  std::map<std::string, TensorBundle> initialInputsByScope,
+  RoleExecutionContext::StreamEventSink eventSink,
+  std::function<void()> executionGuard)
+{
+  return executeRoleAsyncImpl(std::move(sessionId), std::move(role),
+                              std::move(io), nullptr, std::move(prepareRunner),
+                              std::move(initialInputsByScope), std::move(eventSink),
+                              std::move(executionGuard), std::launch::deferred).get();
+}
+
 std::future<ProviderRoleResult>
 NativeProviderRuntime::executeRoleAsync(std::string sessionId,
                                         RoleSpec role,
@@ -1333,7 +1349,8 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
   return executeRoleAsyncImpl(std::move(sessionId), std::move(role),
                               std::move(io), nullptr, {},
                               std::move(initialInputsByScope),
-                              std::move(eventSink), std::move(executionGuard));
+                              std::move(eventSink), std::move(executionGuard),
+                              std::launch::async);
 }
 
 std::future<ProviderRoleResult>
@@ -1354,7 +1371,8 @@ NativeProviderRuntime::executePreparedRoleAsync(
                               std::move(io), nullptr,
                               std::move(prepareRunner),
                               std::move(initialInputsByScope),
-                              std::move(eventSink), std::move(executionGuard));
+                              std::move(eventSink), std::move(executionGuard),
+                              std::launch::async);
 }
 
 std::future<std::shared_ptr<NativeModelRunner>>
@@ -1375,7 +1393,8 @@ NativeProviderRuntime::executeRoleAsyncImpl(
   ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
   std::map<std::string, TensorBundle> initialInputsByScope,
   RoleExecutionContext::StreamEventSink eventSink,
-  std::function<void()> executionGuard)
+  std::function<void()> executionGuard,
+  std::launch stateCompletionPolicy)
 {
   if (executionGuard) executionGuard();
   const auto timelineRequestId = role.requestId.empty()
@@ -1576,7 +1595,7 @@ NativeProviderRuntime::executeRoleAsyncImpl(
     return workerFuture;
   }
   return std::async(
-    std::launch::async,
+    stateCompletionPolicy,
     [this, role = std::move(role), stateSessionId = sessionId,
      binding = std::move(*stateBinding),
      predecessor = std::move(predecessorBinding),

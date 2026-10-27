@@ -14,6 +14,9 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <ndn-cxx/security/key-chain.hpp>
+#include <ndn-cxx/util/io.hpp>
+
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 
@@ -98,15 +101,25 @@ public:
           "}\n"
           "trust-anchor\n"
           "{\n"
-          "  type any\n"
+          "  type file\n"
+          "  file-name \"" + (m_root / "controller.cert").string() + "\"\n"
           "}\n");
     writeEd25519KeyPair(m_root / "requester.pem", m_root / "requester-public.pem");
     writeEd25519KeyPair(m_root / "authority.pem", m_root / "authority-public.pem");
     writeEd25519KeyPair(m_root / "offer.pem", m_root / "offer-public.pem");
+    ndn::KeyChain controllerKeys("pib-memory:", "tpm-memory:");
+    const auto controllerCertificate = controllerKeys.createIdentity(ndn::Name("/aa"))
+                                         .getDefaultKey().getDefaultCertificate();
+    const auto controllerPath = (m_root / "controller.cert").string();
+    ndn::io::save(controllerCertificate, controllerPath);
+    m_controllerEnvironment =
+      std::make_unique<ndn_service_framework::test::ScopedEnvironmentValue>(
+        "NDNSF_CONTROLLER_CERT_FILE", controllerPath.c_str());
   }
 
   ~TempRuntimeConfig()
   {
+    m_controllerEnvironment.reset();
     std::error_code error;
     std::filesystem::remove_all(m_root, error);
   }
@@ -274,11 +287,36 @@ private:
 
   inline static std::atomic<unsigned> s_sequence{0};
   std::filesystem::path m_root;
+  std::unique_ptr<ndn_service_framework::test::ScopedEnvironmentValue> m_controllerEnvironment;
 };
 
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec185Runtime)
+
+BOOST_AUTO_TEST_CASE(MissingControllerCertificateDoesNotMintForeignIdentity)
+{
+  TempRuntimeConfig files;
+  const auto configPath = files.makeConfig("requester.json");
+  const auto directory = configPath.parent_path() / "identity";
+  std::filesystem::create_directory(directory);
+  const auto pib = "pib-sqlite3:" + directory.string();
+  const auto tpm = "tpm-file:" + directory.string();
+  ndn_service_framework::test::ScopedEnvironmentValue pibEnvironment("NDN_CLIENT_PIB", pib.c_str());
+  ndn_service_framework::test::ScopedEnvironmentValue tpmEnvironment("NDN_CLIENT_TPM", tpm.c_str());
+  const auto missing = (configPath.parent_path() / "missing-controller.cert").string();
+  ndn_service_framework::test::ScopedEnvironmentValue certificateEnvironment(
+    "NDNSF_CONTROLLER_CERT_FILE", missing.c_str());
+  RuntimeConfig config;
+  config.nativeConfigPath = configPath.string();
+  BOOST_CHECK_EXCEPTION(Runtime::open(config), DiError, [] (const DiError& error) {
+    return error.code() == "INVALID_RUNTIME_CONFIGURATION" && error.boundary() == "identity";
+  });
+  ndn::KeyChain audit(pib, tpm, false);
+  BOOST_CHECK_NO_THROW(audit.getPib().getIdentity(ndn::Name("/user")));
+  BOOST_CHECK_THROW(audit.getPib().getIdentity(ndn::Name("/aa")), ndn::security::pib::Pib::Error);
+  BOOST_CHECK_EQUAL(audit.getPib().getIdentities().size(), 1U);
+}
 
 BOOST_AUTO_TEST_CASE(ValidPinnedConfigurationOpensAndDefersModelSource)
 {

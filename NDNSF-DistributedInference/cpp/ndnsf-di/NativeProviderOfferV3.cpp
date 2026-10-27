@@ -18,6 +18,7 @@ namespace {
 constexpr const char* REQUEST_SCHEMA = "ndnsf-di-request-envelope-v2";
 constexpr const char* PLACEMENT_PROFILE = "DI_PLACEMENT_V3";
 constexpr const char* PLACEMENT_PROFILE_V4 = "DI_PLACEMENT_V4";
+constexpr std::uint64_t MAX_GPU_RESOURCE_AGE_MS = 2000;
 constexpr const char* UNBOUND_GRAPH_DIGEST =
   "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -119,6 +120,7 @@ reject(const std::string& reason)
 
 std::string
 canonicalOffer(const NativeProviderOfferV3Config& config,
+               const std::vector<NativeDeviceResourceObservationV3>& resources,
                const std::string& requestId,
                std::uint64_t attempt,
                const std::string& modelDigest,
@@ -151,7 +153,19 @@ canonicalOffer(const NativeProviderOfferV3Config& config,
          << ",\"queue_depth\":0"
          << ",\"request_id\":" << quote(requestId)
          << ",\"residency\":[]"
-         << ",\"resources\":[]"
+         << ",\"resources\":[";
+  for (std::size_t i = 0; i < resources.size(); ++i) {
+    const auto& resource = resources[i];
+    if (i != 0) output << ',';
+    output << "{\"active_requests\":" << resource.activeRequests
+           << ",\"captured_at_ms\":" << resource.capturedAtMs
+           << ",\"device\":" << quote(resource.device)
+           << ",\"free_memory_mb\":" << resource.freeMemoryMb
+           << ",\"resource_sequence\":" << resource.resourceSequence
+           << ",\"topology_digest\":" << quote(resource.topologyDigest)
+           << ",\"total_memory_mb\":" << resource.totalMemoryMb << '}';
+  }
+  output << ']'
          << ",\"rtt_ms\":0.0"
          << ",\"schema\":\"DI_PLACEMENT_V3\""
          << ",\"schema_version\":3"
@@ -220,8 +234,37 @@ issueNativeProviderOfferV3(const std::vector<std::uint8_t>& requestPayload,
     graphDigest = UNBOUND_GRAPH_DIGEST;
   }
 
+  std::vector<NativeDeviceResourceObservationV3> resources;
+  const bool gpu = std::any_of(config.devices.begin(), config.devices.end(),
+    [] (const std::string& device) { return device.rfind("cuda:", 0) == 0; }) ||
+    std::any_of(config.backends.begin(), config.backends.end(),
+    [] (const std::string& backend) { return backend.find("cuda") != std::string::npos; });
+  if (gpu) {
+    try {
+      if (!config.observeResources || config.devices.empty())
+        return reject("DI_V3_GPU_RESOURCE_UNAVAILABLE");
+      resources = config.observeResources(nowMs);
+      std::set<std::string> seen;
+      for (const auto& resource : resources) {
+        if (resource.device.rfind("cuda:", 0) != 0 ||
+            std::find(config.devices.begin(), config.devices.end(), resource.device) ==
+              config.devices.end() || !seen.insert(resource.device).second ||
+            resource.totalMemoryMb == 0 || resource.freeMemoryMb > resource.totalMemoryMb ||
+            resource.resourceSequence == 0 || resource.capturedAtMs == 0 ||
+            resource.capturedAtMs > nowMs ||
+            nowMs - resource.capturedAtMs > MAX_GPU_RESOURCE_AGE_MS)
+          return reject("DI_V3_GPU_RESOURCE_UNAVAILABLE");
+      }
+      if (seen.size() != config.devices.size())
+        return reject("DI_V3_GPU_RESOURCE_UNAVAILABLE");
+    }
+    catch (const std::exception&) {
+      return reject("DI_V3_GPU_RESOURCE_UNAVAILABLE");
+    }
+  }
   const auto unsignedOffer = canonicalOffer(
-    config, requestId, attempt, modelDigest, graphDigest, nowMs, deadlineMs, std::nullopt);
+    config, resources, requestId, attempt, modelDigest, graphDigest, nowMs, deadlineMs,
+    std::nullopt);
   const auto signature = config.signDigest(sha256Digest(unsignedOffer));
   if (signature.empty()) {
     throw std::runtime_error("native V3 Provider offer signer returned no signature");
@@ -230,7 +273,7 @@ issueNativeProviderOfferV3(const std::vector<std::uint8_t>& requestPayload,
   result.status = true;
   result.message = "DI_PLACEMENT_V3_OFFER";
   result.payload = canonicalOffer(
-    config, requestId, attempt, modelDigest, graphDigest, nowMs, deadlineMs, signature);
+    config, resources, requestId, attempt, modelDigest, graphDigest, nowMs, deadlineMs, signature);
   result.pendingStateTtlMs = deadlineMs - nowMs;
   return result;
 }

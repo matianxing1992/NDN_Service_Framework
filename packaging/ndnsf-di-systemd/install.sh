@@ -27,6 +27,18 @@ destination="$prefix/releases/$release_id"
 mkdir -p "$prefix/releases" "$root/etc/ndnsf-di" "$root/var/lib/ndnsf-di/cache" "$root/var/log/ndnsf-di"
 # Authoritative Repo state is deliberately outside the release tree and is never copied or removed.
 mkdir -p "$root/var/lib/ndnsf-repo"
+for identities in "$root/var/lib/ndnsf-di/identities" "$root/var/lib/ndnsf-repo/identities"; do
+  if [ -L "$identities" ]; then
+    echo "identity base must not be a symlink: $identities" >&2; exit 1
+  fi
+  if [ -e "$identities" ]; then
+    [ -d "$identities" ] && [ "$(stat -c %a -- "$identities")" = 700 ] || {
+      echo "existing identity base must be a private directory: $identities" >&2; exit 1;
+    }
+  else
+    mkdir -m 0700 "$identities"
+  fi
+done
 if [ -z "$root" ]; then
   for account in ndnsf-di ndnsf-di-repo; do
     if ! getent passwd "$account" >/dev/null 2>&1; then
@@ -34,8 +46,10 @@ if [ -z "$root" ]; then
         --user-group "$account"
     fi
   done
-  chown ndnsf-di:ndnsf-di /var/lib/ndnsf-di/cache /var/log/ndnsf-di
-  chown ndnsf-di-repo:ndnsf-di-repo /var/lib/ndnsf-repo
+  chown -h ndnsf-di:ndnsf-di /var/lib/ndnsf-di/cache /var/log/ndnsf-di
+  chown -h ndnsf-di-repo:ndnsf-di-repo /var/lib/ndnsf-repo
+  chown -h ndnsf-di:ndnsf-di /var/lib/ndnsf-di/identities
+  chown -h ndnsf-di-repo:ndnsf-di-repo /var/lib/ndnsf-repo/identities
 else
   printf '%s\n' ndnsf-di ndnsf-di-repo > "$root/etc/ndnsf-di/service-accounts.required"
 fi

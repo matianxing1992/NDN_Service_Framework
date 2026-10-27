@@ -17,6 +17,8 @@
 
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
+#include "config.hpp"
+
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
 
@@ -71,7 +73,7 @@ hexDigest(const std::vector<std::uint8_t>& bytes)
 }
 
 std::string
-hexDigestOfFile(int fd)
+hexDigestOfFile(int fd, std::uint64_t maxBytes = std::numeric_limits<std::uint64_t>::max())
 {
   SHA256_CTX context;
   SHA256_Init(&context);
@@ -83,6 +85,8 @@ hexDigestOfFile(int fd)
       if (errno == EINTR) continue;
       return {};
     }
+    if (static_cast<std::uint64_t>(got) > maxBytes) return {};
+    maxBytes -= static_cast<std::uint64_t>(got);
     SHA256_Update(&context, buffer, static_cast<std::size_t>(got));
   }
   unsigned char hash[SHA256_DIGEST_LENGTH];
@@ -1742,6 +1746,32 @@ public:
 };
 
 } // namespace
+
+NativeOnnxWorkerLocation
+resolveNativeOnnxWorkerLocation()
+{
+  constexpr std::uint64_t MAX_WORKER_BYTES = 256ULL * 1024 * 1024;
+  const char* overridePath = std::getenv("NDNSF_DI_WORKER_BINARY");
+  const bool explicitPath = overridePath != nullptr && *overridePath != '\0';
+  const std::filesystem::path path = explicitPath ? overridePath : NDNSF_DI_INSTALLED_WORKER;
+  if (!path.is_absolute()) workerFail("WORKER_PREFLIGHT");
+
+  // O_NONBLOCK also prevents an invalid FIFO override from blocking startup.
+  ScopedFd file(open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK));
+  if (file.get() < 0) {
+    if (!explicitPath && errno == ENOENT) return {};
+    workerFail("WORKER_PREFLIGHT");
+  }
+  struct stat status{};
+  if (fstat(file.get(), &status) != 0 || !S_ISREG(status.st_mode) ||
+      status.st_size <= 0 || static_cast<std::uint64_t>(status.st_size) > MAX_WORKER_BYTES ||
+      access(path.c_str(), X_OK) != 0) {
+    workerFail("WORKER_PREFLIGHT");
+  }
+  const auto digest = hexDigestOfFile(file.get(), MAX_WORKER_BYTES);
+  if (digest.empty()) workerFail("WORKER_PREFLIGHT");
+  return {path.string(), digest};
+}
 
 void
 registerNativeOnnxWorkerLocation(const NativeOnnxWorkerLocation& location)

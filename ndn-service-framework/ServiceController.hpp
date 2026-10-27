@@ -121,6 +121,7 @@ private:
   void registerInterestHandlers();
   void onPolicyStatusInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
   bool initializeControllerGeneration();
+  bool hasGenerationWriter() const;
   static std::string certificateDigest(const ndn::security::Certificate& certificate);
   bool isIdentityOrCertificateRevoked(const ndn::Name& identity,
                                       const std::string& certificateDigest) const;

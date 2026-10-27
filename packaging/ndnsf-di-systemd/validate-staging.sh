@@ -26,13 +26,29 @@ uninstall="$repo/packaging/ndnsf-di-systemd/uninstall.sh"
 common_artifacts="--artifact /bin/true:bin/App_ServiceController
 --artifact /bin/true:bin/di-native-provider
 --artifact /bin/true:bin/ndnsf-di
---artifact /bin/true:bin/ndn-repo-ng
+--artifact /bin/true:bin/ndnsf-identity-check
+--artifact /bin/true:bin/DistributedRepoServer
 --artifact $repo/examples/ndnsf-di-qwen-pilot.model.json:share/model-manifest.json"
 
 # shellcheck disable=SC2086
 "$create" --output "$work/release-n" --release-id spec107-staging-n $common_artifacts
 # shellcheck disable=SC2086
 "$create" --output "$work/release-n1" --release-id spec107-staging-n1 $common_artifacts
+mkdir -p "$work/reject-symlink/var/lib/ndnsf-repo" "$work/retained-identity-target"
+printf '%s\n' retained-private-fixture > "$work/retained-identity-target/key.fixture"
+ln -s "$work/retained-identity-target" "$work/reject-symlink/var/lib/ndnsf-repo/identities"
+if "$install" --release "$work/release-n" --root "$work/reject-symlink" > "$work/reject-symlink.log" 2>&1; then
+  echo "installer accepted a symlink identity base" >&2; exit 1
+fi
+grep -q 'identity base must not be a symlink' "$work/reject-symlink.log"
+grep -qx retained-private-fixture "$work/retained-identity-target/key.fixture"
+mkdir -p "$work/reject-permissions/var/lib/ndnsf-repo/identities"
+chmod 0755 "$work/reject-permissions/var/lib/ndnsf-repo/identities"
+if "$install" --release "$work/release-n" --root "$work/reject-permissions" > "$work/reject-permissions.log" 2>&1; then
+  echo "installer accepted nonprivate existing identities" >&2; exit 1
+fi
+grep -q 'existing identity base must be a private directory' "$work/reject-permissions.log"
+[ "$(stat -c %a "$work/reject-permissions/var/lib/ndnsf-repo/identities")" = 755 ]
 "$install" --release "$work/release-n" --root "$work/root"
 printf '%s\n' authoritative-repo-sentinel > "$work/root/var/lib/ndnsf-repo/catalog.sentinel"
 repo_before=$(sha256sum "$work/root/var/lib/ndnsf-repo/catalog.sentinel")
@@ -56,7 +72,7 @@ mkdir -p "$work/verify-units"
 cp "$repo/packaging/ndnsf-di-systemd/staging/nfd.service" "$work/verify-units/nfd.service"
 cp "$repo/packaging/ndnsf-di-systemd/units/"*.target "$work/verify-units/"
 for unit in "$repo/packaging/ndnsf-di-systemd/units/"*.service; do
-  sed 's#^ExecStart=.*#ExecStart=/bin/true#' "$unit" > "$work/verify-units/$(basename "$unit")"
+  sed -E 's#^(ExecStart(Pre)?)=.*#\1=/bin/true#' "$unit" > "$work/verify-units/$(basename "$unit")"
 done
 SYSTEMD_UNIT_PATH="$work/verify-units:/usr/lib/systemd/system:/lib/systemd/system" \
   systemd-analyze verify "$work/verify-units/"*.service "$work/verify-units/"*.target
@@ -66,13 +82,26 @@ import sys
 from pathlib import Path
 text = "\n".join(p.read_text() for p in Path(sys.argv[1]).glob("*.service"))
 required = [
-    "NoNewPrivileges=true", "PrivateTmp=true", "ProtectSystem=strict",
+    "NoNewPrivileges=true", "ProtectSystem=strict",
     "ProtectHome=true", "ProtectKernelTunables=true", "ProtectControlGroups=true",
     "RestrictSUIDSGID=true", "Restart=on-failure", "TimeoutStopSec=",
 ]
 missing = [item for item in required if item not in text]
 if missing:
     raise SystemExit("missing hardening directives: " + ", ".join(missing))
+for name in ("ndnsf-di-controller.service", "ndnsf-di-provider@.service", "ndnsf-di-repo@.service"):
+    actor = (Path(sys.argv[1]) / name).read_text()
+    for required_actor in ("PrivateTmp=false", "ExecStartPre=", "bin/ndnsf-identity-check",
+                           "Environment=HOME=/var/lib/", "NDNSF_DI_IDENTITY", "NDN_LOG=*=NONE"):
+        if required_actor not in actor:
+            raise SystemExit("invalid actor lifecycle configuration: " + name + ":" + required_actor)
+repo = (Path(sys.argv[1]) / "ndnsf-di-repo@.service").read_text()
+if "bin/DistributedRepoServer" not in repo or "ndn-repo-ng" in repo:
+    raise SystemExit("Repo unit must use current native Repo")
+for name in ("ndnsf-di-provider@.service", "ndnsf-di-providers.target"):
+    for line in (Path(sys.argv[1]) / name).read_text().splitlines():
+        if line.startswith("Requires=") and "ndnsf-di-controller" in line:
+            raise SystemExit("Provider must not require a local Controller")
 print("STATIC_SECURITY_PASS directives=" + str(len(required)))
 PY
 grep -qx ndnsf-di "$work/root/etc/ndnsf-di/service-accounts.required"

@@ -12,8 +12,8 @@ from pathlib import Path, PurePosixPath
 
 SCHEMA = "spec170-local-sif-source-v1"
 SEAL_DIGEST_BASIS = "path-independent-content-v1"
-EXCLUDED_DIRS = {"build", "__pycache__", "node_modules"}
-EXCLUDED_SUFFIXES = {".so", ".a", ".o", ".pyc", ".pyo"}
+EXCLUDED_DIRS = {"build", "target", "dist", ".git", "__pycache__", "node_modules"}
+EXCLUDED_SUFFIXES = {".so", ".a", ".o", ".pyc", ".pyo", ".whl", ".rlib", ".rmeta"}
 
 
 class ValidationError(RuntimeError):

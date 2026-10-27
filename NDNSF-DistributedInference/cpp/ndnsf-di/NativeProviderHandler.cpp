@@ -20,10 +20,12 @@
 #include <atomic>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <boost/scope_exit.hpp>
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <exception>
 #include <future>
 #include <filesystem>
 #include <iomanip>
@@ -2136,6 +2138,75 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                     completedLocalPlan);
       activatedLeaseId.clear();
     };
+    std::optional<std::string> reportedFailure;
+    const auto failInvocation = [&] (const std::string& reason) {
+      if (reportedFailure) {
+        return;
+      }
+      // A local selection status does not terminate the requester's stream
+      // or unary invocation. Reuse Core's selected-request terminal owner.
+      reportedFailure = reason;
+      try {
+        ctx.fail(reason);
+        if (request.hasStreamRequestOptions() && ctx.assignment().ownsStreamTerminal) {
+          ctx.failStream(ndn_service_framework::StreamedInvocationErrorCode::ProviderFailure,
+                         reason);
+        }
+        else {
+          ctx.publishFinalFailureResponse({}, reason);
+        }
+      }
+      catch (const std::exception& error) {
+        // Keep the original execution failure and its cleanup authoritative.
+        // Never bypass a stream terminal fence with a unary response retry.
+        logRuntimeError(std::string("NDNSF_DI_FAILURE_NOTIFICATION_REJECTED reason=") +
+                        reason + " notification=" + error.what());
+      }
+    };
+    std::optional<NativeRequestStatistics> requestStatistics;
+    const auto statisticsObserver = config.requestStatisticsObserver;
+    std::exception_ptr statisticsError;
+    if (statisticsObserver && *statisticsObserver) {
+      requestStatistics.emplace();
+      requestStatistics->startedProcessCpuNs = detail::nativeProcessCpuTimeNs();
+      requestStatistics->startedSteadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+    BOOST_SCOPE_EXIT_ALL(&) {
+      if (requestStatistics) {
+        try {
+          auto& statistics = *requestStatistics;
+          statistics.finishedSteadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+          statistics.finishedProcessCpuNs = detail::nativeProcessCpuTimeNs();
+          statistics.requestId = stageRequestId.empty() ? ctx.sessionId() : stageRequestId;
+          statistics.planDigest = stagePlanDigest;
+          statistics.provider = ctx.localProvider().toUri();
+          statistics.providerBootId = config.providerBootId;
+          statistics.role = ctx.role();
+          statistics.attemptEpoch = stageAttemptEpoch.empty() ? 0 : std::stoull(stageAttemptEpoch);
+          statistics.stoppedByUpstream = executionStopped;
+          if (statisticsError) {
+            try {
+              std::rethrow_exception(statisticsError);
+            }
+            catch (const std::exception& error) {
+              statistics.failureReason = error.what();
+            }
+            catch (...) {
+              statistics.failureReason = "non-standard exception";
+            }
+          }
+          else if (reportedFailure) {
+            statistics.failureReason = *reportedFailure;
+          }
+          (*statisticsObserver)(statistics);
+        }
+        catch (...) {
+          // Missing statistics cannot change an admitted response or cleanup.
+        }
+      }
+    };
     try {
       logRuntimePhase("di-provider", "nativeHandlerEntered", ctx.sessionId(), {},
         {{"executionRole", "provider-admission"},
@@ -2164,6 +2235,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       const auto control = applyNativeProviderExecutionControl(
         controlFields, state->attemptAuthority);
       if (control.recognized) {
+        requestStatistics.reset();
         std::ostringstream record;
         record << "NDNSF_DI_EXECUTION_ATTEMPT"
                << " decision=" << (control.status ? "control-applied" : "control-rejected")
@@ -2286,23 +2358,23 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       if (selectionGenerationOptions &&
           (!selectionProjection || !selectionProjection->generationContract.enabled ||
            selectionProjection->requestContractDigest.empty())) {
-        ctx.fail("DI_SELECTION_GENERATION_OPTIONS_REQUIRED");
+        failInvocation("DI_SELECTION_GENERATION_OPTIONS_REQUIRED");
         return;
       }
       if (selectionProjection) {
         if (selectionProjection->provider != ctx.localProvider().toUri()) {
-          ctx.fail("DI_SELECTION_PROVIDER_MISMATCH");
+          failInvocation("DI_SELECTION_PROVIDER_MISMATCH");
           return;
         }
         if (selectionProjection->requestId != ctx.sessionId()) {
-          ctx.fail("DI_SELECTION_REQUEST_MISMATCH");
+          failInvocation("DI_SELECTION_REQUEST_MISMATCH");
           return;
         }
         if (!selectionProjection->requestContractDigest.empty()) {
           if (!nativeRequestContractDigestMatches(
                 selectionProjection->requestContractDigest,
                 request.getPayload())) {
-            ctx.fail("DI_SELECTION_REQUEST_CONTRACT_MISMATCH");
+            failInvocation("DI_SELECTION_REQUEST_CONTRACT_MISMATCH");
             return;
           }
         }
@@ -2312,18 +2384,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
              !nativeGenerationIdMatchesStreamOptions(
                selectionProjection->generationContract.generationId,
                request.getStreamRequestOptions().generationId))) {
-          ctx.fail("DI_SELECTION_GENERATION_MISMATCH");
+          failInvocation("DI_SELECTION_GENERATION_MISMATCH");
           return;
         }
         if (!config.runnerPreparationFactory &&
             (!config.allowPreassembledV3Compatibility ||
              selectionProjection->selectedRoleContract().protectionEpoch != "plaintext-v1")) {
-          ctx.fail("DI_PROVIDER_ASSEMBLY_FACTORY_MISSING");
+          failInvocation("DI_PROVIDER_ASSEMBLY_FACTORY_MISSING");
           return;
         }
         if (config.runnerPreparationFactory &&
             ctx.assignment().assignedArtifact.empty()) {
-          ctx.fail("DI_PROVIDER_ASSEMBLY_ROOT_MISSING");
+          failInvocation("DI_PROVIDER_ASSEMBLY_ROOT_MISSING");
           return;
         }
         if (!ctx.assignment().assignedArtifact.empty()) {
@@ -2413,7 +2485,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       if (selectionProjection &&
           selectionProjection->selectedRoleContract().protectionEpoch != "plaintext-v1") {
         if (!config.protectedRuntimeFactory) {
-          ctx.fail("DI_PROTECTED_RUNTIME_FACTORY_MISSING");
+          failInvocation("DI_PROTECTED_RUNTIME_FACTORY_MISSING");
           return;
         }
         logProviderBoundaryStdout("PROTECTED_RUNTIME_FACTORY_BEGIN", stageRequestId,
@@ -2434,7 +2506,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             protectedRuntime->state() != ProtectedRuntimeState::GrantVerified) {
           // Preparation requires a newly verified grant, not a drained runtime
           // or a binding-only consistency result.
-          ctx.fail("DI_PROTECTED_GRANT_UNAVAILABLE");
+          failInvocation("DI_PROTECTED_GRANT_UNAVAILABLE");
           return;
         }
         const auto fencingToken = nativeProtectedFencingToken(
@@ -2454,7 +2526,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                            config.providerBootId));
           }
           protectedRuntime->cancel(*error);
-          ctx.fail(*error);
+          failInvocation(*error);
           return;
         }
         logProviderBoundaryStdout("PROTECTED_BINDING_VALIDATE_DONE", stageRequestId,
@@ -2474,14 +2546,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       }
       logProviderBoundaryStdout("POST_PROTECTED_GRANT_DONE", stageRequestId,
                                 ctx.localProvider().toUri(), role);
-      std::shared_ptr<DependencyIo> io =
-        std::make_shared<NdnsfCollaborationDependencyIo>(
-        ctx,
-        timeoutBudget.dependencyFetchMs,
-        config.maxSegmentSize,
-        config.freshnessMs,
-        groupCoordinator,
-        protectedRuntime);
+      const auto makeNetworkIo = [&] (std::size_t prefetchWorkerCount) {
+        return std::make_shared<NdnsfCollaborationDependencyIo>(
+          ctx, timeoutBudget.dependencyFetchMs, config.maxSegmentSize,
+          config.freshnessMs, groupCoordinator, protectedRuntime, prefetchWorkerCount);
+      };
+      std::shared_ptr<DependencyIo> io;
       const auto assignmentExecutionPolicy = nativeProviderFieldValue(
         assignmentFields, {"executionPolicy"});
       const bool legacyPolicy =
@@ -2489,7 +2559,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       if ((!assignmentExecutionPolicy.empty() &&
            assignmentExecutionPolicy != config.executionPolicy) ||
           (legacyPolicy && assignmentExecutionPolicy != config.executionPolicy)) {
-        ctx.fail("DI_EXECUTION_POLICY_MISMATCH");
+        failInvocation("DI_EXECUTION_POLICY_MISMATCH");
         return;
       }
       std::optional<ExecutionAttemptKey> executionAttempt;
@@ -2508,7 +2578,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                  << " reason=" << binding.reason
                  << " role=" << role;
           logRuntimeWarn(record.str());
-          ctx.fail(binding.reason);
+          failInvocation(binding.reason);
           return;
         }
         executionAttempt = std::move(binding.attempt);
@@ -2531,7 +2601,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         if (leaseId.empty() || providerEpoch.empty() || transactionId.empty() ||
             planDigest.empty() || bindingProofText.empty() ||
             config.executionLeaseTargetService.empty()) {
-          ctx.fail("LEASE_BINDING_MISMATCH");
+          failInvocation("LEASE_BINDING_MISMATCH");
           return;
         }
         ndn_service_framework::ExecutionLeaseBinding binding;
@@ -2554,7 +2624,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           if (activationDigest.empty() || activationMembers.empty() ||
               activationLocalMember.empty() ||
               activationMembers.find(activationLocalMember) == std::string::npos) {
-            ctx.fail("DI_EXECUTION_ACTIVATION_BINDING_MISMATCH");
+            failInvocation("DI_EXECUTION_ACTIVATION_BINDING_MISMATCH");
             return;
           }
         }
@@ -2568,7 +2638,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           now,
           now + std::max<uint64_t>(1, config.executionLeaseHardDeadlineMs));
         if (!activated.status) {
-          ctx.fail(activated.reasonCode);
+          failInvocation(activated.reasonCode);
           return;
         }
         logProviderBoundaryStdout("LEASE_ACTIVATION_DONE", stageRequestId,
@@ -2584,7 +2654,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           }
           catch (const std::exception&) {
             completeExecutionLease();
-            ctx.fail("LEASE_BINDING_MISMATCH");
+            failInvocation("LEASE_BINDING_MISMATCH");
             return;
           }
         }
@@ -2605,13 +2675,13 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           logRuntimeWarn(record.str());
         }
         completeExecutionLease();
-        ctx.fail(*bindingError);
+        failInvocation(*bindingError);
         return;
       }
       if (selectionProjection) {
         if (const auto ownershipError = validateFixedProviderOwnership(*selectionProjection, groupCoordinator)) {
           completeExecutionLease();
-          ctx.fail(*ownershipError);
+          failInvocation(*ownershipError);
           return;
         }
       }
@@ -2670,19 +2740,19 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           selectionProjection->conversationTurnBinding->serviceName !=
             ctx.assignment().service.toUri()) {
         completeExecutionLease();
-        ctx.fail("CONVERSATION_SERVICE_BINDING_MISMATCH");
+        failInvocation("CONVERSATION_SERVICE_BINDING_MISMATCH");
         return;
       }
       if (selectionProjection &&
           selectionProjection->conversationStateReference) {
         if (config.conversationStateKeyScope.empty()) {
           completeExecutionLease();
-          ctx.fail("PROVIDER_CONVERSATION_READY_SCOPE_MISSING");
+          failInvocation("PROVIDER_CONVERSATION_READY_SCOPE_MISSING");
           return;
         }
         if (selectionProjection->generationContract.generationId.empty()) {
           completeExecutionLease();
-          ctx.fail("PROVIDER_CONVERSATION_GENERATION_ID_MISSING");
+          failInvocation("PROVIDER_CONVERSATION_GENERATION_ID_MISSING");
           return;
         }
         const auto lookupNowMs = static_cast<std::uint64_t>(
@@ -2691,7 +2761,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           *selectionProjection->conversationStateReference, lookupNowMs);
         if (!resolved) {
           completeExecutionLease();
-          ctx.fail("PROVIDER_CONVERSATION_STATE_MISSING");
+          failInvocation("PROVIDER_CONVERSATION_STATE_MISSING");
           return;
         }
         roleSpec.conversationStateBinding = std::move(*resolved);
@@ -2930,14 +3000,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             });
           if (evidence == state->executionEvidence.end()) {
             completeExecutionLease();
-            ctx.fail("DI_RUNTIME_EVIDENCE_MISSING");
+            failInvocation("DI_RUNTIME_EVIDENCE_MISSING");
             return;
           }
           const auto readinessError = validateNativeProviderRuntimeReadiness(
             *evidence, role, expectedBackend, expectedDevice, expectedArtifact);
           if (readinessError) {
             completeExecutionLease();
-            ctx.fail(*readinessError);
+            failInvocation(*readinessError);
             return;
           }
           // Preassembled compatibility is READY before queue execution because
@@ -2996,7 +3066,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           !localMember.empty() && !activationMembers.empty();
         if (activationBound && activationMembers.count(localMember) == 0) {
           completeExecutionLease();
-          ctx.fail("DI_READINESS_ACTIVATION_MEMBER_MISMATCH");
+          failInvocation("DI_READINESS_ACTIVATION_MEMBER_MISMATCH");
           return;
         }
         std::set<std::string> declaredRoles;
@@ -3115,20 +3185,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 nativeProviderFieldValue(fields, {"adapter"}).empty() ||
                 nativeProviderFieldValue(fields, {"artifactDigest"}).empty()) {
               completeExecutionLease();
-              ctx.fail("DI_READINESS_BINDING_MISMATCH");
+              failInvocation("DI_READINESS_BINDING_MISMATCH");
               return;
             }
             const auto roleOwner = observedRoleProviders.find(itemRole);
             if (roleOwner != observedRoleProviders.end() &&
                 roleOwner->second != providerText) {
               completeExecutionLease();
-              ctx.fail("DI_READINESS_ROLE_CONFLICT");
+              failInvocation("DI_READINESS_ROLE_CONFLICT");
               return;
             }
             const auto previous = observed.find(memberId);
             if (previous != observed.end() && previous->second != payload) {
               completeExecutionLease();
-              ctx.fail("DI_READINESS_REPLAY_CONFLICT");
+              failInvocation("DI_READINESS_REPLAY_CONFLICT");
               return;
             }
             observedRoleProviders[itemRole] = providerText;
@@ -3140,7 +3210,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         }
         if (observed.size() != expectedReadinessCount) {
           completeExecutionLease();
-          ctx.fail("DI_READINESS_BARRIER_TIMEOUT");
+          failInvocation("DI_READINESS_BARRIER_TIMEOUT");
           return;
         }
         std::ostringstream record;
@@ -3172,13 +3242,13 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       if (!kvMode.empty()) {
         if (prepareRunner) {
           completeExecutionLease();
-          ctx.fail("KV_STATE_POST_SELECTION_PREPARATION_UNSUPPORTED");
+          failInvocation("KV_STATE_POST_SELECTION_PREPARATION_UNSUPPORTED");
           return;
         }
         const auto* runnerSpec = runnerSpecForRole(state->runnerSpecs, role);
         if (runnerSpec == nullptr || !config.kvStateStore) {
           completeExecutionLease();
-          ctx.fail("KV_STATE_UNAVAILABLE");
+          failInvocation("KV_STATE_UNAVAILABLE");
           return;
         }
         try {
@@ -3192,7 +3262,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         }
         catch (const std::exception&) {
           completeExecutionLease();
-          ctx.fail("KV_BINDING_MISMATCH");
+          failInvocation("KV_BINDING_MISMATCH");
           return;
         }
         if (kvMode == "cache-hit" || kvMode == "delta-only") {
@@ -3207,15 +3277,28 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           logRuntimeInfo(record.str());
           if (!cachedKvState) {
             completeExecutionLease();
-            ctx.fail(kvMode == "delta-only" ?
+            failInvocation(kvMode == "delta-only" ?
                        "CACHE_MISS_FULL_CONTEXT_REQUIRED" : "KV_STATE_UNAVAILABLE");
             return;
           }
         }
         else if (kvMode != "full-context") {
           completeExecutionLease();
-          ctx.fail("KV_BINDING_MISMATCH");
+          failInvocation("KV_BINDING_MISMATCH");
           return;
+        }
+      }
+      if (requestStatistics && selectionProjection) {
+        try {
+          const auto& admitted = selectionProjection->assemblyContract();
+          requestStatistics->admittedModelDigest = admitted.modelManifestDigest.empty()
+            ? selectionProjection->planDigest : admitted.modelManifestDigest;
+          requestStatistics->admittedArtifactDigest = admitted.artifactDigest;
+        }
+        catch (...) {
+          // Missing measurements must not replace native execution/admission.
+          requestStatistics->admittedModelDigest.clear();
+          requestStatistics->admittedArtifactDigest.clear();
         }
       }
       const bool needsRoleScopedPreparation =
@@ -3263,7 +3346,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               throw;
             }
             completeExecutionLease();
-            ctx.fail("DI_INPUT_FETCH_ROLE_MISMATCH");
+            failInvocation("DI_INPUT_FETCH_ROLE_MISMATCH");
             std::ostringstream record;
             record << "SPEC180_YN_NEGATIVE_RESULT status=PASS"
                     << " subcase=Y-N-I"
@@ -3279,7 +3362,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             return;
           }
           completeExecutionLease();
-          ctx.fail("DI_INPUT_FETCH_ROLE_MISMATCH_ACCEPTED");
+          failInvocation("DI_INPUT_FETCH_ROLE_MISMATCH_ACCEPTED");
           return;
         }
       }
@@ -3299,7 +3382,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           const auto requestInput = initialInputs.find("request-input");
           if (requestInput == initialInputs.end()) {
             completeExecutionLease();
-            ctx.fail("DI_INPUT_FETCH_ROLE_MISMATCH");
+            failInvocation("DI_INPUT_FETCH_ROLE_MISMATCH");
             return;
           }
           // Remove the authenticated source alias before installing the
@@ -3353,7 +3436,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         }
         catch (const std::exception&) {
           completeExecutionLease();
-          ctx.fail("KV_STATE_UNAVAILABLE");
+          failInvocation("KV_STATE_UNAVAILABLE");
           return;
         }
       }
@@ -3429,6 +3512,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           request.hasStreamRequestOptions()
             ? request.getStreamRequestOptions().attemptEpoch
             : 1;
+        if (!io) {
+          // Use the admitted role before epoch-specific input pruning. Every
+          // blocked input needs a worker to register its first real read.
+          io = makeNetworkIo(roleSpec.inputs.size());
+        }
         NativeEpochCoordinatorConfig coordinatorConfig{
           state->runtime, executionPlan, assignment, io};
         coordinatorConfig.sessionId = executionSessionId;
@@ -3577,7 +3665,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           };
         logProviderBoundaryStdout("EPOCH_COORDINATOR_BEGIN", stageRequestId,
                                   ctx.localProvider().toUri(), role);
-        const auto coordinated = runNativeEpochCoordinator(
+        auto coordinated = runNativeEpochCoordinator(
           std::move(coordinatorConfig));
         logProviderBoundaryStdout("EPOCH_COORDINATOR_DONE", stageRequestId,
                                   ctx.localProvider().toUri(), role);
@@ -3594,6 +3682,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           coordinated.eventsPublished, std::memory_order_relaxed);
         finalPayload = coordinated.finalPayload;
         executionStopped = coordinated.stoppedByUpstream;
+        if (requestStatistics) {
+          requestStatistics->hasEpochStatistics = true;
+          requestStatistics->epochsExecuted = coordinated.epochsExecuted;
+          requestStatistics->eventsPublished = coordinated.eventsPublished;
+          requestStatistics->prefixTokensRecomputed = coordinated.prefixTokensRecomputed;
+          requestStatistics->runtimeMetrics = std::move(coordinated.runtimeMetrics);
+          requestStatistics->cacheObservations = std::move(coordinated.cacheObservations);
+          requestStatistics->finalExecutionEvidence = std::move(coordinated.finalExecutionEvidence);
+        }
         if (selectionProjection->conversationTurnBinding) {
           if (!coordinated.finalizedRole ||
               !coordinated.finalizedRole->candidateDecodeStateIdentity) {
@@ -3981,6 +4078,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           [] (const RoleSpec& lhs, const RoleSpec& rhs) {
             return !lhs.inputs.empty() && rhs.inputs.empty();
           });
+        if (!io) {
+          io = makeNetworkIo(0);
+        }
         std::vector<std::pair<RoleSpec, std::future<ProviderRoleResult>>> localRoles;
         for (auto& localRoleSpec : localRoleSpecs) {
           auto roleInputs = localRoleSpec.inputs.empty()
@@ -4059,14 +4159,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               }
               catch (const std::exception&) {
                 completeExecutionLease();
-                ctx.fail("KV_BINDING_MISMATCH");
+                failInvocation("KV_BINDING_MISMATCH");
                 return;
               }
             }
             if (kvOutput != result.outputsByScope.end() &&
                 !config.kvStateStore->put(std::move(storedBinding), kvOutput->second)) {
               completeExecutionLease();
-              ctx.fail("KV_STATE_CAPACITY_EXCEEDED");
+              failInvocation("KV_STATE_CAPACITY_EXCEEDED");
               return;
             }
             if (kvOutput != result.outputsByScope.end()) {
@@ -4116,6 +4216,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                << " attemptEpoch=" << executionAttempt->attemptEpoch;
         logRuntimeWarn(record.str());
         completeExecutionLease();
+        // A stale, cancelled or already-terminal attempt cannot claim another
+        // requester terminal response.
         ctx.fail("DI_ATTEMPT_DUPLICATE_TERMINAL");
         return;
       }
@@ -4191,6 +4293,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                    stageAttemptEpoch);
           }
         }
+        if (requestStatistics) requestStatistics->completionAdmitted = true;
       }
       else {
         if (terminalRole) {
@@ -4210,7 +4313,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                    "DI_FINAL_RESPONSE_MISSING",
                                    stageAttemptEpoch);
           }
-          ctx.fail("DI_FINAL_RESPONSE_MISSING");
+          failInvocation("DI_FINAL_RESPONSE_MISSING");
         }
         else {
           // A non-terminal pipeline role has completed its selected work but
@@ -4229,10 +4332,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                    stageAttemptEpoch);
           }
           ctx.completeRole();
+          if (requestStatistics) requestStatistics->completionAdmitted = true;
         }
       }
     }
 	    catch (const std::exception& exc) {
+        if (requestStatistics) statisticsError = std::current_exception();
 	      if (conversationPromotionStaged && !conversationPromotionCommitted &&
 	          rollbackConversationPromotion) {
 	        rollbackConversationPromotion();
@@ -4267,7 +4372,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                stagePlanDigest, "failed", exc.what(),
                                stageAttemptEpoch);
 	      }
-	      ctx.fail(exc.what());
+      failInvocation(exc.what());
 	    }
 	  };
   return runtime;

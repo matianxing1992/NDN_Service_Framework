@@ -16,6 +16,28 @@ WAF_RUNTIME = next(ROOT.glob(".waf3-*"))
 sys.path.insert(0, str(WAF_RUNTIME))
 
 
+@pytest.mark.parametrize("components,missing", [(["core"], False), (["core", "repo"], False),
+                                               (["core", "repo", "di"], True)])
+def test_dependency_identity_checks_only_selected_model_sdk(tmp_path, monkeypatch, components, missing):
+    validate = runpy.run_path(str(ROOT / "wscript"))["_validate_global_dependency_identity"]
+    namespace = validate.__globals__
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(json.dumps({"schema": 1, "libraries": {}}))
+    monkeypatch.delenv("NDNSF_CONTAINER_BUILD", raising=False)
+    monkeypatch.setitem(namespace, "HOST_DEPENDENCY_IDENTITY_FILE", str(receipt))
+    monkeypatch.setitem(namespace, "HOST_DEPENDENCY_LIBRARIES", ("libonnxruntime.so",))
+
+    def fatal(message):
+        raise RuntimeError(message)
+
+    conf = SimpleNamespace(env=SimpleNamespace(NDNSF_COMPONENTS=components), fatal=fatal)
+    if missing:
+        with pytest.raises(RuntimeError, match="missing libonnxruntime"):
+            validate(conf)
+    else:
+        validate(conf)
+
+
 @pytest.mark.parametrize("lld_compatible", [True, False])
 def test_lld_is_selected_only_when_project_link_flags_are_supported(
     monkeypatch, lld_compatible

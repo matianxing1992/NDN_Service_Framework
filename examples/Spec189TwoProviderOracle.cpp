@@ -6,7 +6,11 @@
 // sequence, and rejects a generic requester timeout as a successful result.
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
@@ -14,6 +18,7 @@
 #include "Spec189ProviderStageOracle.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -21,12 +26,15 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <optional>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace {
@@ -301,8 +309,9 @@ validateProvider(const std::filesystem::path& path,
 
 void validatePlacementOnly(const std::filesystem::path& root, bool cacheCompatibility,
                            bool emitPass);
-NativeJson validateMultiTokenOutput(const std::filesystem::path& root, unsigned round,
-                                    bool requireMultiToken);
+NativeJson validateMultiTokenOutput(const std::filesystem::path& root, unsigned round = 0,
+                                    bool requireMultiToken = true,
+                                    const NativeJson* requesterStatistics = nullptr);
 
 void
 validateRevocationFailure(const std::filesystem::path& root)
@@ -636,24 +645,18 @@ validatePlacementOnly(const std::filesystem::path& root, bool cacheCompatibility
             << '\n';
 }
 
-ndnsf::di::NativeJson
-validateMultiTokenOutput(const std::filesystem::path& root, unsigned round = 0,
-                         bool requireMultiToken = true)
+NativeJson
+validateGenerationOutput(const NativeJson& request, const NativeJson& options,
+                         const NativeJson& output, bool requireMultiToken,
+                         const NativeJson* requesterStatistics)
 {
   using ndnsf::di::NativeJson;
   const auto fail = [](const std::string& reason) {
     throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=GENERATION reason=" + reason);
   };
-  const auto config = readJson(root / "requester" / roundJson("config", round));
-  const auto& request = config.at("request");
-  // Qualify only the launcher's per-round, non-replacement recipe.
-  // Reject a different options source instead of silently inspecting unused data.
-  if (request.value("options_file", "") != roundJson("options", round) ||
-      (request.contains("allow_replacement") && request.at("allow_replacement") != false) ||
+  if ((request.contains("allow_replacement") && request.at("allow_replacement") != false) ||
       (request.contains("max_replacements") && request.at("max_replacements") != 0))
     fail("unsupported-request-config");
-  const auto options = readJson(root / "requester" / roundJson("options", round));
-  const auto output = readJson(root / "requester" / ("output-" + std::to_string(round) + ".bin"));
   const auto validToken = [](const NativeJson& value) {
     return value.is_number_integer() &&
       (value.is_number_unsigned() ? value.get<std::uint64_t>() <= INT64_MAX : value.get<std::int64_t>() >= 0);
@@ -693,20 +696,748 @@ validateMultiTokenOutput(const std::filesystem::path& root, unsigned round = 0,
   if (!((reason == "eos" && hint == "EOS" && ended) ||
         (reason == "max_tokens" && hint == "MAX_TOKENS" && !ended && tokens.size() == maximum)))
     fail("invalid-stop-reason");
-  const auto requester = readFile(root / ("requester-" + std::to_string(round) + ".log"));
-  const auto eventRecords = recordsContaining(requester, "NATIVE_STREAM_EVENTS=");
-  if (eventRecords.size() != 1) fail("stream-count-missing-or-duplicate");
-  const auto count = field(eventRecords.front(), "NATIVE_STREAM_EVENTS");
-  if (count.empty() || count.find_first_not_of("0123456789") != std::string::npos ||
-      std::stoull(count) != tokens.size()) fail("stream-count-mismatch");
-  if (recordsContaining(requester, "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN").size() != 1)
-    fail("checkpoint-missing-or-duplicate");
+  if (requesterStatistics) {
+    if (requesterStatistics->at("streaming") != true ||
+        requesterStatistics->at("terminalSeen") != true ||
+        requesterStatistics->at("checkpointWritten") != true ||
+        nonnegativeInteger(requesterStatistics->at("observedEvents")) != tokens.size())
+      fail("stream-statistics-mismatch");
+  }
   return NativeJson{{"generatedTokens", tokens.size()}, {"maxNewTokens", maximum},
                     {"finishReason", reason}};
 }
 
+NativeJson
+validateMultiTokenOutput(const std::filesystem::path& root, unsigned round,
+                         bool requireMultiToken, const NativeJson* requesterStatistics)
+{
+  const auto config = readJson(root / "requester" / roundJson("config", round));
+  const auto& request = config.at("request");
+  if (request.value("options_file", "") != roundJson("options", round))
+    chainFailure("unsupported-request-config");
+  const auto result = validateGenerationOutput(request,
+    readJson(root / "requester" / roundJson("options", round)),
+    readJson(root / "requester" / ("output-" + std::to_string(round) + ".bin")),
+    requireMultiToken, requesterStatistics);
+  if (!requesterStatistics) {
+    const auto requester = readFile(root / ("requester-" + std::to_string(round) + ".log"));
+    const auto eventRecords = recordsContaining(requester, "NATIVE_STREAM_EVENTS=");
+    if (eventRecords.size() != 1) chainFailure("stream-count-missing-or-duplicate");
+    const auto count = field(eventRecords.front(), "NATIVE_STREAM_EVENTS");
+    if (count.empty() || count.find_first_not_of("0123456789") != std::string::npos ||
+        std::stoull(count) != result.at("generatedTokens").get<std::size_t>())
+      chainFailure("stream-count-mismatch");
+    if (recordsContaining(requester, "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN").size() != 1)
+      chainFailure("checkpoint-missing-or-duplicate");
+  }
+  return result;
+}
+
+struct StatisticsRows
+{
+  std::vector<NativeJson> requests;
+  std::string provider;
+  std::string boot;
+  std::string actor;
+  std::string host;
+};
+
+StatisticsRows
+readStatistics(const std::filesystem::path& path, const std::string& schema,
+               unsigned rounds, bool provider)
+{
+  if (!std::filesystem::is_regular_file(path) ||
+      std::filesystem::file_size(path) > 64U * 1024U * 1024U)
+    chainFailure("statistics-file-unavailable-or-oversize");
+  std::ifstream input(path);
+  StatisticsRows rows;
+  std::string line;
+  unsigned ready = 0;
+  while (std::getline(input, line)) {
+    if (input.eof()) chainFailure("statistics-truncated-row");
+    NativeJson row;
+    try {
+      row = ndnsf::di::nativeParseJson(line);
+    }
+    catch (const std::invalid_argument&) {
+      chainFailure("statistics-json");
+    }
+    if (!row.is_object() || row.value("schema", "") != schema)
+      chainFailure("statistics-schema");
+    if (provider && row.value("type", "") == "serve-ready") {
+      if (++ready != 1) chainFailure("statistics-ready-count");
+      rows.provider = row.at("provider").get<std::string>();
+      rows.boot = row.at("providerBootId").get<std::string>();
+      if (rows.provider.empty() || rows.boot.empty()) chainFailure("statistics-ready-binding");
+    }
+    else {
+      if (row.value("type", "") != "request" || rows.requests.size() >= rounds)
+        chainFailure("statistics-request-count");
+      rows.requests.push_back(row);
+    }
+  }
+  if (!input.eof() || rows.requests.size() != rounds || (provider && ready != 1))
+    chainFailure("statistics-request-count");
+  return rows;
+}
+
+using StatisticsInterval = std::pair<std::uint64_t, std::uint64_t>;
+
+std::optional<StatisticsInterval>
+statisticsInterval(const NativeJson& row, const char* begin, const char* end,
+                   bool allowMissing = false)
+{
+  if (allowMissing && row.at(begin).is_null() && row.at(end).is_null()) return std::nullopt;
+  const auto first = nonnegativeInteger(row.at(begin));
+  const auto last = nonnegativeInteger(row.at(end));
+  if (last < first || (!allowMissing && (first == 0 || first == last)))
+    chainFailure("statistics-clock-order");
+  return StatisticsInterval{first, last};
+}
+
+void
+validateProviderStatistics(const StatisticsRows& source, const NativeJson& row,
+                           const std::string& request, const std::string& plan,
+                           const std::string& expectedProvider)
+{
+  if (source.provider != expectedProvider || row.at("provider") != expectedProvider ||
+      row.at("providerBootId") != source.boot || row.at("requestId") != request ||
+      row.at("planDigest") != plan || row.at("role").get<std::string>().empty() ||
+      nonnegativeInteger(row.at("attemptEpoch")) == 0)
+    chainFailure("statistics-binding");
+  if (row.at("completionAdmitted") != true || !row.at("failureReason").is_null() ||
+      row.at("hasEpochStatistics") != true)
+    chainFailure("statistics-incomplete-request");
+  if (row.at("counterSemantics") != "cumulative-adapter-snapshots")
+    chainFailure("statistics-schema");
+  const auto wall = *statisticsInterval(row, "startedSteadyNs", "finishedSteadyNs");
+  const auto cpu = statisticsInterval(row, "startedProcessCpuNs", "finishedProcessCpuNs", true);
+  const auto count = nonnegativeInteger(row.at("epochsExecuted"));
+  const auto& metrics = row.at("runtimeMetrics");
+  const auto& cache = row.at("cacheObservations");
+  if (count == 0 || count > ndnsf::di::MAX_NATIVE_GENERATED_TOKENS + 32 ||
+      !metrics.is_array() || metrics.size() != count ||
+      !cache.is_array() || cache.size() != count)
+    chainFailure("statistics-epoch-count");
+  std::uint64_t previousEnd = wall.first;
+  std::optional<std::uint64_t> previousCpuEnd;
+  if (cpu) previousCpuEnd = cpu->first;
+  std::string session;
+  for (std::size_t epoch = 0; epoch < count; ++epoch) {
+    const auto& observation = metrics.at(epoch);
+    const auto& timing = observation.at("lastBackendExecution");
+    if (timing.is_null()) chainFailure("statistics-missing-backend");
+    if (observation.at("role") != row.at("role") ||
+        nonnegativeInteger(observation.at("inferenceEpoch")) != epoch ||
+        timing.at("requestId") != request || timing.at("role") != row.at("role") ||
+        timing.at("providerBootId") != source.boot ||
+        timing.at("attemptEpoch") != row.at("attemptEpoch") ||
+        nonnegativeInteger(timing.at("inferenceEpoch")) != epoch ||
+        timing.at("completed") != true ||
+        nonnegativeInteger(cache.at(epoch).at("inferenceEpoch")) != epoch)
+      chainFailure("statistics-backend-binding");
+    const auto currentSession = timing.at("sessionId").get<std::string>();
+    if (currentSession.empty() || (epoch && currentSession != session))
+      chainFailure("statistics-backend-binding");
+    session = currentSession;
+    const auto callWall = *statisticsInterval(timing, "startedSteadyNs", "finishedSteadyNs");
+    const auto callCpu = statisticsInterval(timing, "startedProcessCpuNs",
+                                             "finishedProcessCpuNs", true);
+    statisticsInterval(timing, "startedThreadCpuNs", "finishedThreadCpuNs", true);
+    if (callWall.first < previousEnd || callWall.second > wall.second ||
+        (cpu && callCpu && (callCpu->first < cpu->first || callCpu->second > cpu->second)) ||
+        (callCpu && previousCpuEnd && callCpu->first < *previousCpuEnd))
+      chainFailure("statistics-backend-window");
+    previousEnd = callWall.second;
+    if (callCpu) previousCpuEnd = callCpu->second;
+  }
+}
+
+NativeJson
+readPrivateJson(const std::filesystem::path& path)
+{
+  struct stat info{};
+  if (::lstat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode) ||
+      info.st_uid != ::getuid() || (info.st_mode & 0777) != 0600 ||
+      info.st_size > 64 * 1024 * 1024 ||
+      std::filesystem::canonical(path) != path.lexically_normal())
+    chainFailure("deployment-private-evidence");
+  return readJson(path);
+}
+
+std::string
+managementRoleId(const std::string& kind, const std::string& node)
+{
+  const auto value = kind + "." + node;
+  return value.size() <= 128 ? value : kind + "." + ndnsf::di::nativePlanningDigest(node).substr(7);
+}
+
+bool
+matchesHost(const std::string& configured, const std::string& observed)
+{
+  return configured == observed || configured == observed.substr(0, observed.find('.'));
+}
+
+bool
+matchesJob(const std::string& cgroup, const std::string& job, const std::string& step = "")
+{
+  if (job.empty() || job.find_first_not_of("0123456789") != std::string::npos ||
+      (!step.empty() && step.find_first_not_of("0123456789") != std::string::npos))
+    return false;
+  return std::regex_search(cgroup, std::regex("(?:^|/)job[_-]" + job + "(?:/|\\.)")) &&
+    (step.empty() || std::regex_search(cgroup,
+      std::regex("(?:^|/)step[_-]" + step + "(?:/|\\.|$)")));
+}
+
+std::set<std::string>
+validateDeploymentGroups(const NativeJson& state, const std::string& boot,
+                         const std::string& digest, bool strictIdentity)
+{
+  std::set<std::string> launched, cleaned;
+  for (const auto& launch : state.at("launches")) {
+    const auto id = launch.at("id").get<std::string>();
+    const auto& proof = launch.at("proof");
+    const auto& bindings = proof.at("bindings");
+    if (!launched.insert(id).second ||
+        bindings.at("NDNSF_DEPLOYMENT_ACTOR_ID") != id ||
+        bindings.at("NDNSF_DEPLOYMENT_BOOT_ID") != boot ||
+        bindings.at("NDNSF_DEPLOYMENT_CONFIG_SHA256") != digest ||
+        launch.at("bindings") != bindings)
+      chainFailure("deployment-process-binding");
+    if (strictIdentity && (nonnegativeInteger(proof.at("pid")) <= 1 ||
+        nonnegativeInteger(proof.at("uid")) != ::getuid() ||
+        nonnegativeInteger(proof.at("start_ticks")) == 0 ||
+        nonnegativeInteger(proof.at("pgid")) != nonnegativeInteger(proof.at("pid")) ||
+        !std::filesystem::path(proof.at("exe").get<std::string>()).is_absolute()))
+      chainFailure("deployment-process-identity");
+  }
+  for (const auto& item : state.at("cleanup")) {
+    if (item.at("status") != "ZERO" || item.at("forced") != false ||
+        !cleaned.insert(item.at("id").get<std::string>()).second)
+      chainFailure("deployment-cleanup");
+  }
+  if (launched.empty() || cleaned != launched)
+    chainFailure("deployment-cleanup-coverage");
+  return launched;
+}
+
+std::map<std::string, NativeJson>
+validateAllocation(const std::filesystem::path& root, const NativeJson& state,
+                   const NativeJson& config, const std::string& boot,
+                   const std::string& digest)
+{
+  const auto job = state.at("job_id").get<std::string>();
+  const auto release = state.at("release_sha256").get<std::string>();
+  if (state.at("execution") != "COMPLETE" ||
+      state.at("evidence_root") != (root / "supervisor" /
+        config.at("deployment_id").get<std::string>()).string() ||
+      ndnsf::di::nativePlanningDigest(readFile(config.at("release").at("manifest")
+        .get<std::string>())) != "sha256:" + release)
+    chainFailure("deployment-allocation-binding");
+  const auto operation = readPrivateJson(root / "operation.json");
+  const auto& reference = operation.at("job_reference");
+  const auto& scheduler = operation.at("scheduler");
+  if (operation.at("schema") != "ndnsf-di-slurm-operation-v1" ||
+      operation.at("deployment_id") != config.at("deployment_id") ||
+      operation.at("evidence_root") != root.string() ||
+      operation.at("boot_id") != boot || operation.at("configuration_sha256") != digest ||
+      reference.at("boot_id") != boot || reference.at("configuration_sha256") != digest ||
+      reference.at("release_sha256") != release || reference.at("job_id") != job ||
+      nonnegativeInteger(reference.at("owner_uid")) != ::getuid() ||
+      scheduler.at("reference") != reference || scheduler.at("terminal") != true ||
+      scheduler.at("status") != "TERMINAL" || scheduler.at("state") != "COMPLETED" ||
+      scheduler.at("exit_code") != "0:0")
+    chainFailure("deployment-scheduler-binding");
+  const auto record = readJson(config.at("platform").at("build_record").get<std::string>());
+  auto unsignedRecord = record;
+  unsignedRecord.erase("recordDigest");
+  if (record.at("schemaVersion") != "ndnsf-local-sif-build-v3" ||
+      (record.at("status") != "BUILT_UNQUALIFIED" && record.at("status") != "PASS") ||
+      nonnegativeInteger(record.at("sif").at("bytes")) == 0 ||
+      record.at("sif").at("sha256") != config.at("platform").at("sif_sha256") ||
+      record.at("recordDigest") != ndnsf::di::nativePlanningDigest(
+        ndnsf::di::nativeCanonicalJson(unsignedRecord)))
+    chainFailure("deployment-image-binding");
+
+  const auto checkBinding = [&] (const NativeJson& value) {
+    if (value.at("boot_id") != boot || value.at("configuration_sha256") != digest ||
+        value.at("release_sha256") != release || value.at("job_id") != job)
+      chainFailure("deployment-node-binding");
+  };
+  std::map<std::string, NativeJson> nodes, roles, receipts;
+  for (const auto& node : config.at("nodes")) {
+    const auto id = node.at("id").get<std::string>();
+    if (!nodes.emplace(id, node).second) chainFailure("deployment-node-coverage");
+    const auto audit = readPrivateJson(root / "nodes" / id / "host-audit-final.json");
+    checkBinding(audit);
+    if (audit.at("schema") != "ndnsf-di-host-node-audit-v1" || audit.at("node_id") != id ||
+        audit.at("status") != "ZERO" || audit.at("cleanup_scope") != "HOST_UID_JOB" ||
+        audit.at("processes") != NativeJson::array() || audit.at("errors") != NativeJson::array() ||
+        !matchesHost(node.at("host"), audit.at("host")) ||
+        !matchesJob(audit.at("auditor_cgroup"), job, audit.at("auditor_step_id")))
+      chainFailure("deployment-node-cleanup");
+    for (const auto* kind : {"nfd", "nfdc"}) {
+      if (std::string(kind) == "nfd" && node.at("nfd").at("mode") != "managed") continue;
+      const auto roleId = managementRoleId(kind, id);
+      if (!roles.emplace(roleId, NativeJson{{"id", roleId}, {"kind", kind}, {"node", id}}).second)
+        chainFailure("deployment-role-coverage");
+    }
+  }
+  for (const auto& actor : config.at("actors")) {
+    if (actor.at("external") != false ||
+        !roles.emplace(actor.at("id").get<std::string>(), actor).second)
+      chainFailure("deployment-external-actor-not-qualified");
+  }
+  std::set<std::string> seen;
+  for (const auto& role : state.at("roles")) {
+    const auto id = role.at("id").get<std::string>();
+    const auto expected = roles.find(id);
+    if (expected == roles.end() || !seen.insert(id).second ||
+        role.at("node") != expected->second.at("node") ||
+        role.at("kind") != expected->second.at("kind"))
+      chainFailure("deployment-role-coverage");
+  }
+  if (seen.size() != roles.size()) chainFailure("deployment-role-coverage");
+  for (const auto& [id, role] : roles) {
+    const auto node = role.at("node").get<std::string>();
+    const auto kind = role.at("kind").get<std::string>();
+    const auto path = kind == "nfd" || kind == "nfdc"
+      ? root / "nodes" / node / kind / "receipt.json"
+      : root / "actors" / id / "receipt.json";
+    const auto receipt = readPrivateJson(path);
+    checkBinding(receipt);
+    const bool finite = kind == "requester" || kind == "nfdc";
+    if (receipt.at("schema") != "ndnsf-di-node-role-v1" || receipt.at("role_id") != id ||
+        receipt.at("role_kind") != kind || receipt.at("node_id") != node ||
+        receipt.at("cleanup_scope") != "PID_NAMESPACE" || receipt.at("status") != "STOPPED" ||
+        !receipt.at("failure").is_null() ||
+        !matchesHost(nodes.at(node).at("host"), receipt.at("host")) ||
+        receipt.at("execution") != (finite ? "COMPLETE" : "SERVICE_STOPPED") ||
+        (finite && nonnegativeInteger(receipt.at("exit_code")) != 0))
+      chainFailure("deployment-role-terminal");
+    validateDeploymentGroups(receipt, boot, digest, true);
+    if (kind != "nfdc") {
+      const auto audit = readPrivateJson(root / "nodes" / node / ("host-audit-" + id + ".json"));
+      checkBinding(audit);
+      if (audit.at("schema") != "ndnsf-di-host-node-audit-v1" || audit.at("node_id") != node ||
+          audit.at("role_id") != id || audit.at("status") != "OBSERVED" ||
+          !matchesHost(nodes.at(node).at("host"), audit.at("host")))
+        chainFailure("deployment-native-host-binding");
+      const auto& proof = audit.at("native_process");
+      const auto launch = std::find_if(receipt.at("launches").begin(), receipt.at("launches").end(),
+        [&] (const auto& row) { return row.at("id") == id; });
+      if (launch == receipt.at("launches").end()) chainFailure("deployment-actor-not-launched");
+      const auto& native = launch->at("proof");
+      if (!proof.at("nspid").is_array() || proof.at("nspid").empty() ||
+          nonnegativeInteger(proof.at("pid")) <= 1 ||
+          nonnegativeInteger(proof.at("nspid").back()) != nonnegativeInteger(native.at("pid")) ||
+          nonnegativeInteger(proof.at("start_ticks")) != nonnegativeInteger(native.at("start_ticks")) ||
+          nonnegativeInteger(proof.at("uid")) != nonnegativeInteger(native.at("uid")) ||
+          proof.at("exe") != native.at("exe") ||
+          proof.at("bindings") != native.at("bindings") ||
+          proof.at("pid_namespace") != receipt.at("pid_namespace") ||
+          !matchesJob(proof.at("cgroup"), job, receipt.at("step_id")))
+        chainFailure("deployment-native-host-proof");
+    }
+    receipts.emplace(id, receipt);
+  }
+  return receipts;
+}
+
+std::vector<std::string>
+validateGpuAdmission(const std::filesystem::path& root, const NativeJson& state,
+                     const NativeJson& config, const NativeJson& actor,
+                     const NativeJson& receipt)
+{
+  const auto node = actor.at("node").get<std::string>();
+  const auto pool = readPrivateJson(root / "nodes" / node / "gpu-allocation.json");
+  if (pool != state.at("gpu_allocations").at(node))
+    chainFailure("deployment-gpu-pool-binding");
+  const auto nodeConfig = std::find_if(config.at("nodes").begin(), config.at("nodes").end(),
+    [&] (const auto& item) { return item.at("id") == node; });
+  if (nodeConfig == config.at("nodes").end()) chainFailure("deployment-gpu-node");
+  const auto check = [&] (const NativeJson& value, std::size_t expectedCount) {
+    const auto& probe = value.at("native_probe");
+    if (value.at("schema") != "ndnsf-di-gpu-allocation-v1" || value.at("node_id") != node ||
+        value.at("boot_id") != state.at("boot_id") ||
+        value.at("configuration_sha256") != state.at("configuration_sha256") ||
+        value.at("release_sha256") != state.at("release_sha256") ||
+        value.at("job_id") != state.at("job_id") ||
+        !matchesHost(nodeConfig->at("host"), value.at("host")) ||
+        probe.at("schema") != "ndnsf-di-gpu-probe-v1" ||
+        probe.at("event") != "NDNSF_DI_GPU_PROBE" || probe.at("device_order") != "PCI_BUS_ID" ||
+        probe.at("step_id").get<std::string>().empty() ||
+        probe.at("step_id").get<std::string>().find_first_not_of("0123456789") != std::string::npos ||
+        value.at("devices").size() != expectedCount ||
+        probe.at("visible_uuids").size() != expectedCount)
+      chainFailure("deployment-gpu-probe-binding");
+    for (const auto* key : {"boot_id", "configuration_sha256", "release_sha256", "job_id", "host", "visibility"}) {
+      if (probe.at(key) != value.at(key)) chainFailure("deployment-gpu-probe-binding");
+    }
+    std::vector<std::string> uuids;
+    std::set<std::string> physicalIds, identities;
+    for (const auto& item : value.at("devices")) {
+      const auto uuid = item.at("uuid").get<std::string>();
+      const auto physical = item.at("physical_id").get<std::string>();
+      if (!identities.insert(uuid).second || !physicalIds.insert(physical).second ||
+          uuid.compare(0, 4, "GPU-") != 0 || physical.empty() ||
+          physical.find_first_not_of("0123456789") != std::string::npos ||
+          probe.at("visible_uuids").at(uuids.size()) != uuid ||
+          std::count_if(probe.at("inventory").begin(), probe.at("inventory").end(),
+            [&] (const auto& row) { return row.at("physical_id") == physical && row.at("uuid") == uuid; }) != 1)
+        chainFailure("deployment-gpu-uuid-inventory");
+      uuids.push_back(uuid);
+    }
+    return uuids;
+  };
+  const auto count = nonnegativeInteger(config.at("platform").at("slurm").at("gpu").at("count"));
+  if (count == 0 || count > 64) chainFailure("deployment-gpu-count");
+  check(pool, count);
+  std::string fullVisibility;
+  for (std::uint64_t index = 0; index < count; ++index)
+    fullVisibility += (index ? "," : "") + std::to_string(index);
+  if (pool.at("visibility") != fullVisibility)
+    chainFailure("deployment-gpu-pool-binding");
+  if (pool.at("native_probe").at("role_id") != managementRoleId("gpu-probe", node))
+    chainFailure("deployment-gpu-pool-binding");
+  std::set<std::string> declared;
+  for (const auto& selector : actor.at("resources").at("gpu_devices")) {
+    const auto selected = selector.get<std::string>();
+    std::vector<std::string> matches;
+    if (selected.compare(0, 10, "allocated:") == 0) {
+      const auto index = selected.substr(10);
+      if (index.empty() || index.size() > 2 ||
+          (index.size() > 1 && index.front() == '0') ||
+          index.find_first_not_of("0123456789") != std::string::npos)
+        chainFailure("deployment-gpu-selector");
+      const auto slot = std::stoul(index);
+      if (slot >= count)
+        chainFailure("deployment-gpu-selector");
+      matches.push_back(pool.at("devices").at(slot).at("uuid").get<std::string>());
+    }
+    else {
+      for (const auto& item : pool.at("devices")) {
+        if (item.at("physical_id") == selected || item.at("uuid") == selected)
+          matches.push_back(item.at("uuid").get<std::string>());
+      }
+    }
+    if (matches.size() != 1 || !declared.insert(matches.front()).second)
+      chainFailure("deployment-gpu-selector");
+  }
+  const auto& admission = receipt.at("gpu_admission");
+  const auto selectedUuids = check(admission, declared.size());
+  const auto& probe = admission.at("native_probe");
+  const auto query = std::find_if(receipt.at("launches").begin(), receipt.at("launches").end(),
+    [&] (const auto& row) { return row.at("id") == probe.at("role_id"); });
+  const NativeJson command = NativeJson::array({
+    (std::filesystem::path(config.at("release").at("prefix").get<std::string>()) /
+      "libexec/ndnsf-di/ndnsf-di-device-query").string(), "--count", std::to_string(declared.size())});
+  if (std::set<std::string>(selectedUuids.begin(), selectedUuids.end()) != declared ||
+      probe.at("step_id") != receipt.at("step_id") ||
+      admission.at("visibility") != receipt.at("gpu_visibility") ||
+      query == receipt.at("launches").end() || query->at("argv") != command ||
+      nonnegativeInteger(query->at("exit_code")) != 0)
+    chainFailure("deployment-gpu-role-binding");
+  return selectedUuids;
+}
+
+void
+validateGpuExecution(const NativeJson& row, const StatisticsRows& source, unsigned round,
+                     const NativeJson& receipt, const std::vector<std::string>& admitted)
+{
+  if (!row.contains("finalExecutionEvidence") || row.at("finalExecutionEvidence").is_null())
+    chainFailure("deployment-gpu-execution-missing");
+  const auto evidence = ndnsf::di::executionEvidenceFromJson(row.at("finalExecutionEvidence").dump());
+  const auto device = evidence.deviceId;
+  if (device.empty() || device.size() > 2 || (device.size() > 1 && device.front() == '0') ||
+      device.find_first_not_of("0123456789") != std::string::npos)
+    chainFailure("deployment-gpu-logical-device");
+  const auto ordinal = std::stoul(device);
+  const auto role = row.at("role").get<std::string>();
+  const auto admittedModel = row.at("admittedModelDigest").get<std::string>();
+  const auto admittedArtifact = row.at("admittedArtifactDigest").get<std::string>();
+  const auto artifact = evidence.artifactDigests.find(role);
+  if (admittedModel.empty() || admittedArtifact.empty() || evidence.modelDigest != admittedModel ||
+      artifact == evidence.artifactDigests.end() || artifact->second != admittedArtifact)
+    chainFailure("deployment-gpu-model-binding");
+  const auto native = std::find_if(receipt.at("launches").begin(), receipt.at("launches").end(),
+    [&] (const auto& item) { return item.at("id") == source.actor; });
+  if (native == receipt.at("launches").end() || ordinal >= admitted.size() ||
+      evidence.runnerKind != ndnsf::di::RunnerKind::OnnxRuntimeCuda || !evidence.realCompute ||
+      evidence.deviceKind != "cuda" || evidence.cpuFallbackUsed || !evidence.loadCompleted ||
+      !evidence.warmupCompleted || !evidence.executionCompleted || evidence.exactForwardCacheHit ||
+      evidence.gpuIdentitySource != "cuda-runtime-pci+driver-uuid" ||
+      evidence.gpuUuid != admitted.at(ordinal) || evidence.gpuUuids != std::vector<std::string>{evidence.gpuUuid} ||
+      evidence.cudaVisibleDevices != receipt.at("gpu_visibility").get<std::string>() ||
+      evidence.processId != nonnegativeInteger(native->at("proof").at("pid")) ||
+      evidence.providerName != source.provider || evidence.providerBootId != source.boot ||
+      evidence.requestId != row.at("requestId").get<std::string>() ||
+      evidence.attemptEpoch != nonnegativeInteger(row.at("attemptEpoch")) ||
+      evidence.planDigest != row.at("planDigest").get<std::string>() ||
+      evidence.roles != std::vector<std::string>{role})
+    chainFailure("deployment-gpu-execution-binding");
+  bool profileBound = false;
+  for (unsigned index = 0; index <= round; ++index) {
+    if (source.requests.at(index).at("requestId") == evidence.profileRequestId &&
+        nonnegativeInteger(source.requests.at(index).at("attemptEpoch")) == evidence.profileAttemptEpoch)
+      profileBound = true;
+  }
+  unsigned kernels = 0;
+  for (const auto& node : evidence.getNodeProviderAssignments()) {
+    if (!node.modelNode) continue;
+    if (node.role != role || node.nodeName.empty() || node.provider != "CUDAExecutionProvider")
+      chainFailure("deployment-gpu-kernel-provider");
+    ++kernels;
+  }
+  if (!profileBound || evidence.providerProfilePath.empty() || kernels == 0)
+    chainFailure("deployment-gpu-kernel-proof");
+  if (round && !source.requests.front().at("finalExecutionEvidence").is_null()) {
+    const auto first = ndnsf::di::executionEvidenceFromJson(
+      source.requests.front().at("finalExecutionEvidence").dump());
+    if (first.modelDigest != evidence.modelDigest || first.artifactDigests != evidence.artifactDigests)
+      chainFailure("deployment-gpu-model-binding");
+  }
+}
+
+NativeJson
+validateDeployment(const std::filesystem::path& statePath, bool requireMultiToken,
+                   bool requireDistributedGpu = false)
+{
+  const auto state = readJson(statePath);
+  const bool slurm = state.contains("job_id");
+  const std::filesystem::path root = slurm ? statePath.parent_path()
+    : std::filesystem::path(state.at("evidence_root").get<std::string>());
+  const auto config = readJson(root / "configuration.json");
+  const auto boot = state.at("boot_id").get<std::string>();
+  const auto digest = state.at("configuration_sha256").get<std::string>();
+  if (state.at("schema") != "ndnsf-di-host-operation-v1" || boot.empty() ||
+      state.at("deployment_id") != config.at("deployment_id") ||
+      state.at("status") != "STOPPED" || (!slurm && state.value("needs_closeout", true)) ||
+      config.at("platform").at("kind") != (slurm ? "slurm-apptainer" : "host") ||
+      (!slurm && (config.at("nodes").size() != 1 || requireDistributedGpu)) ||
+      (state.contains("failure") && !state.at("failure").is_null()) ||
+      ndnsf::di::nativePlanningDigest(ndnsf::di::nativeCanonicalJson(config)) !=
+        "sha256:" + digest)
+    chainFailure("deployment-state-or-configuration");
+  auto launched = validateDeploymentGroups(state, boot, digest, slurm);
+  std::map<std::string, NativeJson> roleReceipts;
+  if (slurm) {
+    readPrivateJson(statePath);
+    readPrivateJson(root / "configuration.json");
+    roleReceipts = validateAllocation(root, state, config, boot, digest);
+    for (const auto& [id, receipt] : roleReceipts) launched.insert(id);
+  }
+  else {
+    const auto& terminal = state.at("requester");
+    if (terminal.at("completion") != "EXITED" ||
+        nonnegativeInteger(terminal.at("exit_code")) != 0)
+      chainFailure("deployment-requester-exit");
+  }
+  if (!state.at("external_references").empty())
+    chainFailure("deployment-external-actor-not-qualified");
+
+  std::string requesterId;
+  for (const auto& actor : config.at("actors")) {
+    if (actor.at("kind") != "requester") continue;
+    if (!requesterId.empty()) chainFailure("deployment-requester-count");
+    requesterId = actor.at("id").get<std::string>();
+  }
+  if (requesterId.empty()) chainFailure("deployment-requester-count");
+  const auto actorRoot = [&] (const std::string& id) {
+    return slurm ? root / "actors" / id / "runtime" /
+      config.at("deployment_id").get<std::string>() : root;
+  };
+  const auto requesterRoot = actorRoot(requesterId);
+  const auto requesterConfig = readJson(requesterRoot / (requesterId + ".json"));
+  const auto& turns = requesterConfig.at("turns");
+  const auto& conversation = requesterConfig.at("conversation");
+  const auto& owner = conversation.at("owner");
+  const auto& request = requesterConfig.at("request");
+  const auto& placement = requesterConfig.at("fixed_placement").at("role_providers");
+  NativeJson roleMap = NativeJson::array();
+  if (!placement.is_object() || placement.empty()) chainFailure("deployment-role-map");
+  for (auto item = placement.begin(); item != placement.end(); ++item)
+    roleMap.push_back(NativeJson::array({item.key(), item.value()}));
+  const auto roleMapDigest = ndnsf::di::nativePlanningDigest(
+    ndnsf::di::nativeCanonicalJson(roleMap));
+  auto boundRequester = requesterConfig;
+  const auto requesterStatisticsPath = requesterConfig.at("statistics_file").get<std::string>();
+  if (!config.at("requester").contains("statistics_file")) {
+    if (std::filesystem::path(requesterStatisticsPath) !=
+        requesterRoot / (requesterId + "-statistics.jsonl"))
+      chainFailure("deployment-statistics-path");
+    boundRequester.erase("statistics_file");
+  }
+  if (!turns.is_array() || turns.size() < 2 || turns.size() > 8 ||
+      conversation.at("turn").at("mode") != "FULL_CONTEXT" ||
+      request.at("generation_mode") != "TOKEN_STREAMING" ||
+      config.at("requester") != boundRequester)
+    chainFailure("deployment-turn-configuration");
+  const auto rounds = static_cast<unsigned>(turns.size());
+  const auto requester = readStatistics(requesterStatisticsPath,
+    "ndnsf-di-native-requester-statistics-v1", rounds, false);
+  std::vector<StatisticsRows> providers;
+  std::map<std::string, std::vector<std::string>> gpuUuids;
+  std::set<std::string> gpuNodes;
+  const auto requesterHost = slurm ? roleReceipts.at(requesterId).at("host").get<std::string>() : "";
+  std::set<std::string> identities;
+  unsigned requesters = 0;
+  for (const auto& actor : config.at("actors")) {
+    const auto id = actor.at("id").get<std::string>();
+    if (!launched.count(id)) chainFailure("deployment-actor-not-launched");
+    if (actor.at("kind") == "requester") {
+      ++requesters;
+      if (actor.at("identity") != owner.at("requester_identity"))
+        chainFailure("deployment-requester-identity");
+    }
+    if (actor.at("kind") != "provider") continue;
+    const auto identity = actor.at("identity").get<std::string>();
+    if (!identities.insert(identity).second) chainFailure("deployment-provider-identity");
+    const auto statisticsPath = actor.contains("parameters")
+      ? actor.at("parameters").value("statistics-file", (actorRoot(id) / (id + "-statistics.jsonl")).string())
+      : (actorRoot(id) / (id + "-statistics.jsonl")).string();
+    providers.push_back(readStatistics(statisticsPath,
+      "ndnsf-di-native-request-statistics-v1", rounds, true));
+    providers.back().actor = id;
+    if (slurm) {
+      providers.back().host = roleReceipts.at(id).at("host").get<std::string>();
+      if (!actor.at("resources").at("gpu_devices").empty()) {
+        gpuUuids.emplace(id, validateGpuAdmission(root, state, config, actor, roleReceipts.at(id)));
+        gpuNodes.insert(actor.at("node").get<std::string>());
+      }
+    }
+    if (providers.back().provider != identity)
+      chainFailure("deployment-provider-identity");
+  }
+  if (providers.size() < 2 || requesters != 1)
+    chainFailure("deployment-role-coverage");
+  if (requireDistributedGpu && gpuNodes.size() < 2)
+    chainFailure("deployment-distributed-gpu-required");
+
+  NativeJson results = NativeJson::array();
+  NativeJson initial;
+  std::vector<std::int64_t> prefix;
+  std::set<std::string> requests;
+  std::uint64_t previousFinish = 0;
+  for (unsigned round = 0; round < rounds; ++round) {
+    const auto& row = requester.requests.at(round);
+    const auto requestId = row.at("requestId").get<std::string>();
+    const auto plan = row.at("planDigest").get<std::string>();
+    if (nonnegativeInteger(row.at("turn")) != round || row.at("completed") != true || plan.empty() ||
+        requestId.empty() || !requests.insert(requestId).second)
+      chainFailure("deployment-request-incomplete");
+    const auto interval = *statisticsInterval(row, "startedSteadyNs", "finishedSteadyNs");
+    if (interval.first < previousFinish) chainFailure("deployment-turn-order");
+    previousFinish = interval.second;
+    const auto& turn = turns.at(round);
+    const auto output = readJson(turn.at("output_file").get<std::string>());
+    const auto generation = validateGenerationOutput(request,
+      readJson(turn.at("options_file").get<std::string>()), output,
+      requireMultiToken, &row);
+    const auto tokenTotal = generation.at("generatedTokens").get<std::uint64_t>();
+    const std::filesystem::path inputPath(turn.at("input_file").get<std::string>());
+    if (!std::filesystem::is_regular_file(inputPath) ||
+        std::filesystem::file_size(inputPath) > 16U * 1024U * 1024U)
+      chainFailure("deployment-input-bound");
+    const auto bytes = readFile(inputPath);
+    const auto tensors = ndnsf::di::decodeTensorBundle(
+      std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
+    unsigned inputTensors = 0;
+    for (const auto& tensor : tensors) {
+      if (tensor.name != "input_ids") continue;
+      ++inputTensors;
+      if (tensor.elementType != ndnsf::di::TensorElementType::Int64 ||
+          tensor.shape.size() != 2 || tensor.shape.front() != 1 ||
+          tensor.shape.back() <= 0 || tensor.payload.size() / 8 !=
+            static_cast<std::size_t>(tensor.shape.back()) || tensor.payload.size() % 8)
+        chainFailure("deployment-input-token-layout");
+      for (std::size_t offset = 0; offset < tensor.payload.size(); offset += 8) {
+        std::uint64_t token = 0;
+        for (unsigned byte = 0; byte < 8; ++byte)
+          token |= std::uint64_t(tensor.payload[offset + byte]) << (byte * 8);
+        if (token > INT64_MAX) chainFailure("deployment-input-token");
+        prefix.push_back(static_cast<std::int64_t>(token));
+      }
+    }
+    if (inputTensors != 1) chainFailure("deployment-input-token-count");
+    for (const auto& token : output.at("tokenIds")) prefix.push_back(token.get<std::int64_t>());
+    const auto checkpoint = readJson(turn.at("checkpoint_output_file").get<std::string>());
+    if (checkpoint.at("schema") != "ndnsf-di-conversation-checkpoint-v1" ||
+        nonnegativeInteger(checkpoint.at("version")) != 1 ||
+        nonnegativeInteger(checkpoint.at("contextEpoch")) != round + 1 ||
+        nonnegativeInteger(checkpoint.at("parentContextEpoch")) != round ||
+        nonnegativeInteger(checkpoint.at("prefixTokenCount")) != prefix.size() ||
+        checkpoint.at("logicalPrefixDigest") != ndnsf::di::nativeConversationPrefixDigest(prefix) ||
+        checkpoint.at("conversationId") != conversation.at("turn").at("conversation_id") ||
+        checkpoint.at("serviceName") != owner.at("service_name") ||
+        checkpoint.at("serviceName") != request.at("service") ||
+        checkpoint.at("requesterIdentity") != owner.at("requester_identity") ||
+        checkpoint.at("securityDomainDigest") != owner.at("security_domain_digest") ||
+        checkpoint.at("securityDomainDigest") != request.at("security_policy_digest") ||
+        checkpoint.at("planRoleMapDigest") != roleMapDigest ||
+        nonnegativeInteger(checkpoint.at("issuedAtMs")) >=
+          nonnegativeInteger(checkpoint.at("expiresAtMs")))
+      chainFailure("deployment-checkpoint-binding");
+    auto unsignedCheckpoint = checkpoint;
+    unsignedCheckpoint.erase("checkpointDigest");
+    unsignedCheckpoint.erase("signature");
+    if (checkpoint.at("checkpointDigest") != ndnsf::di::nativePlanningDigest(
+          ndnsf::di::nativeConversationCanonicalJson(unsignedCheckpoint)))
+      chainFailure("deployment-checkpoint-digest");
+    if (round == 0) initial = checkpoint;
+    for (const auto* key : {"modelContractDigest", "securityDomainDigest", "planRoleMapDigest"}) {
+      if (!checkpoint.at(key).is_string() || checkpoint.at(key).get<std::string>().empty() ||
+          checkpoint.at(key) != initial.at(key))
+        chainFailure("deployment-checkpoint-contract");
+    }
+    const auto& receipts = checkpoint.at("roleReceiptDigests");
+    std::set<std::string> roles;
+    unsigned publishers = 0;
+    std::optional<std::uint64_t> attempt;
+    for (const auto& provider : providers) {
+      const auto& observation = provider.requests.at(round);
+      validateProviderStatistics(provider, observation, requestId, plan, provider.provider);
+      const auto devices = gpuUuids.find(provider.actor);
+      if (devices != gpuUuids.end())
+        validateGpuExecution(observation, provider, round, roleReceipts.at(provider.actor), devices->second);
+      const auto role = observation.at("role").get<std::string>();
+      if (!roles.insert(role).second || !receipts.contains(role) ||
+          !placement.contains(role) || placement.at(role) != provider.provider ||
+          !receipts.at(role).is_string() || receipts.at(role).get<std::string>().empty() ||
+          nonnegativeInteger(observation.at("epochsExecuted")) != tokenTotal + 1)
+        chainFailure("deployment-checkpoint-role-coverage");
+      const auto currentAttempt = nonnegativeInteger(observation.at("attemptEpoch"));
+      if (attempt && *attempt != currentAttempt) chainFailure("deployment-attempt-binding");
+      attempt = currentAttempt;
+      const auto providerInterval = *statisticsInterval(
+        observation, "startedSteadyNs", "finishedSteadyNs");
+      if ((!slurm || matchesHost(requesterHost, provider.host)) &&
+          (providerInterval.first < interval.first || providerInterval.second > interval.second))
+        chainFailure("deployment-provider-request-window");
+      const auto events = nonnegativeInteger(observation.at("eventsPublished"));
+      if (events) {
+        ++publishers;
+        if (events != tokenTotal) chainFailure("deployment-stream-event-count");
+      }
+    }
+    if (publishers != 1 || !receipts.is_object() || receipts.size() != roles.size())
+      chainFailure("deployment-stream-role-coverage");
+    results.push_back({{"requestId", requestId}, {"planDigest", plan},
+      {"generatedTokens", tokenTotal}, {"contextEpoch", round + 1},
+      {"prefixTokens", prefix.size()}, {"finishReason", generation.at("finishReason")}});
+  }
+  return NativeJson{{"scope", "deployment-quiet-execution"}, {"bootId", boot},
+    {"platform", slurm ? "slurm-apptainer" : "single-host"},
+    {"gpuNodes", gpuNodes}, {"distributedGpu", requireDistributedGpu ? "VERIFIED" : "NOT_REQUIRED"},
+    {"configurationSha256", digest}, {"rounds", results}, {"cleanup", "ZERO_NONFORCED"},
+    {"materialFetch", "NOT_EVALUATED"}, {"grantAudit", "NOT_EVALUATED"},
+    {"placementAudit", "NOT_EVALUATED"}, {"restoreAudit", "NOT_EVALUATED"},
+    {"checkpointAuthentication", "NOT_EVALUATED"}, {"fullPathQualification", "NOT_RUN"}};
+}
+
 NativeJson validateRounds(const std::filesystem::path& root, unsigned rounds,
-                         bool cacheCompatibility, bool requireMultiToken)
+                         bool cacheCompatibility, bool requireMultiToken,
+                         bool quietPerformance = false)
 {
   std::set<std::string> requestIds;
   NativeJson receipt{{"schema", "spec189-cpp-oracle-v1"}, {"providers", 2},
@@ -714,48 +1445,107 @@ NativeJson validateRounds(const std::filesystem::path& root, unsigned rounds,
   NativeJson previous, initial;
   std::map<std::string, NativeJson> roleBindings;
   RoundEvidence view;
-  for (unsigned round = 0; round < rounds; ++round) {
-    const auto logPath = root / ("requester-" + std::to_string(round) + ".log");
-    if (!std::filesystem::is_regular_file(logPath)) chainFailure("missing-round-file");
-    const auto requester = readFile(logPath);
-    const auto successes = recordsContaining(requester, "NATIVE_REQUEST_SUCCEEDED");
-    if (successes.size() != 1) chainFailure("requester-not-success");
-    auto success = markerFields(successes.front(), "NATIVE_REQUEST_SUCCEEDED");
-    const auto requestId = success["request"], planDigest = success["plan"];
-    if (requestId.empty() || planDigest.empty()) chainFailure("requester-identity-missing");
-    if (!requestIds.insert(requestId).second) chainFailure("duplicate-request-id");
-    if (requester.find("NATIVE_REQUEST_FAILED") != std::string::npos ||
-        requester.find("NATIVE_REQUEST_STAGE_FAILED") != std::string::npos)
-      chainFailure("requester-failed");
-    const auto commits = recordsContaining(requester, "NDNSF_DI_NATIVE_SELECTION_COMMITTED");
-    if (commits.size() != 1) chainFailure("selection-commit-missing-or-duplicate");
-    auto commit = markerFields(commits.front(), "NDNSF_DI_NATIVE_SELECTION_COMMITTED");
-    if (commit["requestId"] != requestId || commit["planDigest"] != planDigest ||
-        commit["attemptEpoch"].empty()) chainFailure("identity-mismatch");
-    if (cacheCompatibility) validateCacheCompatibilityMode(root, round);
-    view.write("requester-0.log", requester);
-    for (unsigned provider = 0; provider < 2; ++provider) {
-      const auto name = "provider-" + std::to_string(provider) + ".log";
-      const auto scoped = scopeProvider(readFile(root / name), requestId);
-      const auto selections = recordsContaining(scoped, "NDNSF_DI_NATIVE_SELECTION_ACCEPTED");
-      if (selections.size() != 1) chainFailure("round-selection-missing-or-duplicate");
-      auto selected = markerFields(selections.front(), "NDNSF_DI_NATIVE_SELECTION_ACCEPTED");
-      if (selected["planDigest"] != planDigest || selected["attemptEpoch"] != commit["attemptEpoch"])
-        chainFailure("identity-mismatch");
-      view.write(name, scoped);
-    }
-    // All existing full-path material and authorization gates remain in force;
-    // suppress intermediate PASS so a bad later round cannot yield any PASS.
-    validatePlacementOnly(view.root, cacheCompatibility, false);
-    std::string observedRequest = requestId, observedPlan = planDigest;
-    bool terminal = false;
+  StatisticsRows requesterStatistics;
+  std::array<StatisticsRows, 2> providerStatistics;
+  if (quietPerformance) {
+    requesterStatistics = readStatistics(root / "requester-statistics.jsonl",
+      "ndnsf-di-native-requester-statistics-v1", rounds, false);
     for (unsigned provider = 0; provider < 2; ++provider)
-      validateProvider(view.root / ("provider-" + std::to_string(provider) + ".log"),
-        "/example/ndnsf-qwen06b/provider-" + std::to_string(provider),
-        observedRequest, observedPlan, terminal);
-    if (!terminal) chainFailure("tail-terminal-missing");
-
-    const auto generation = validateMultiTokenOutput(root, round, requireMultiToken);
+      providerStatistics[provider] = readStatistics(
+        root / ("provider-" + std::to_string(provider) + "-statistics.jsonl"),
+        "ndnsf-di-native-request-statistics-v1", rounds, true);
+  }
+  for (unsigned round = 0; round < rounds; ++round) {
+    std::string requestId, planDigest;
+    if (quietPerformance) {
+      const auto& requester = requesterStatistics.requests.at(round);
+      requestId = requester.at("requestId").get<std::string>();
+      planDigest = requester.at("planDigest").get<std::string>();
+      if (requestId.empty() || planDigest.empty() || requester.at("completed") != true)
+        chainFailure("statistics-incomplete-request");
+      if (!requestIds.insert(requestId).second) chainFailure("duplicate-request-id");
+      const auto requestWall = *statisticsInterval(requester,
+                                                   "startedSteadyNs", "finishedSteadyNs");
+      statisticsInterval(requester, "startedProcessCpuNs", "finishedProcessCpuNs", true);
+      for (unsigned provider = 0; provider < 2; ++provider) {
+        validateProviderStatistics(providerStatistics[provider],
+          providerStatistics[provider].requests.at(round), requestId, planDigest,
+          "/example/ndnsf-qwen06b/provider-" + std::to_string(provider));
+        const auto& metrics = providerStatistics[provider].requests.at(round).at("runtimeMetrics");
+        for (const auto& sample : metrics) {
+          const auto call = *statisticsInterval(sample.at("lastBackendExecution"),
+                                                "startedSteadyNs", "finishedSteadyNs");
+          if (call.first < requestWall.first || call.second > requestWall.second)
+            chainFailure("statistics-request-window");
+        }
+      }
+      if (providerStatistics[0].requests.at(round).at("role") ==
+            providerStatistics[1].requests.at(round).at("role") ||
+          providerStatistics[0].requests.at(round).at("attemptEpoch") !=
+            providerStatistics[1].requests.at(round).at("attemptEpoch"))
+        chainFailure("statistics-binding");
+    }
+    else {
+      const auto logPath = root / ("requester-" + std::to_string(round) + ".log");
+      if (!std::filesystem::is_regular_file(logPath)) chainFailure("missing-round-file");
+      const auto requester = readFile(logPath);
+      const auto successes = recordsContaining(requester, "NATIVE_REQUEST_SUCCEEDED");
+      if (successes.size() != 1) chainFailure("requester-not-success");
+      auto success = markerFields(successes.front(), "NATIVE_REQUEST_SUCCEEDED");
+      requestId = success["request"];
+      planDigest = success["plan"];
+      if (requestId.empty() || planDigest.empty()) chainFailure("requester-identity-missing");
+      if (!requestIds.insert(requestId).second) chainFailure("duplicate-request-id");
+      if (requester.find("NATIVE_REQUEST_FAILED") != std::string::npos ||
+          requester.find("NATIVE_REQUEST_STAGE_FAILED") != std::string::npos)
+        chainFailure("requester-failed");
+      const auto commits = recordsContaining(requester, "NDNSF_DI_NATIVE_SELECTION_COMMITTED");
+      if (commits.size() != 1) chainFailure("selection-commit-missing-or-duplicate");
+      auto commit = markerFields(commits.front(), "NDNSF_DI_NATIVE_SELECTION_COMMITTED");
+      if (commit["requestId"] != requestId || commit["planDigest"] != planDigest ||
+          commit["attemptEpoch"].empty()) chainFailure("identity-mismatch");
+      if (cacheCompatibility) validateCacheCompatibilityMode(root, round);
+      view.write("requester-0.log", requester);
+      for (unsigned provider = 0; provider < 2; ++provider) {
+        const auto name = "provider-" + std::to_string(provider) + ".log";
+        const auto scoped = scopeProvider(readFile(root / name), requestId);
+        const auto selections = recordsContaining(scoped, "NDNSF_DI_NATIVE_SELECTION_ACCEPTED");
+        if (selections.size() != 1) chainFailure("round-selection-missing-or-duplicate");
+        auto selected = markerFields(selections.front(), "NDNSF_DI_NATIVE_SELECTION_ACCEPTED");
+        if (selected["planDigest"] != planDigest || selected["attemptEpoch"] != commit["attemptEpoch"])
+          chainFailure("identity-mismatch");
+        view.write(name, scoped);
+      }
+      // All existing full-path material and authorization gates remain in force;
+      // suppress intermediate PASS so a bad later round cannot yield any PASS.
+      validatePlacementOnly(view.root, cacheCompatibility, false);
+      std::string observedRequest = requestId, observedPlan = planDigest;
+      bool terminal = false;
+      for (unsigned provider = 0; provider < 2; ++provider)
+        validateProvider(view.root / ("provider-" + std::to_string(provider) + ".log"),
+          "/example/ndnsf-qwen06b/provider-" + std::to_string(provider),
+          observedRequest, observedPlan, terminal);
+      if (!terminal) chainFailure("tail-terminal-missing");
+    }
+    const auto generation = validateMultiTokenOutput(root, round, requireMultiToken,
+      quietPerformance ? &requesterStatistics.requests.at(round) : nullptr);
+    if (quietPerformance) {
+      unsigned publishingProviders = 0;
+      for (const auto& provider : providerStatistics) {
+        const auto& observation = provider.requests.at(round);
+        // Conversation completion includes one state-only checkpoint pass.
+        if (nonnegativeInteger(observation.at("epochsExecuted")) !=
+              generation.at("generatedTokens").get<std::uint64_t>() + 1)
+          chainFailure("statistics-generation-coverage");
+        const auto events = nonnegativeInteger(observation.at("eventsPublished"));
+        if (events != 0) {
+          ++publishingProviders;
+          if (events != generation.at("generatedTokens"))
+            chainFailure("statistics-event-count");
+        }
+      }
+      if (publishingProviders != 1) chainFailure("statistics-event-count");
+    }
     const auto config = readJson(root / "requester" / roundJson("config", round));
     const auto checkpoint = readJson(root / "requester" / roundJson("conversation-state", round));
     const auto& conversation = config.at("conversation");
@@ -807,6 +1597,17 @@ NativeJson validateRounds(const std::filesystem::path& root, unsigned rounds,
     const auto& roleReceipts = checkpoint.at("roleReceiptDigests");
     if (!roleReceipts.is_object() || roleReceipts.size() != 2) chainFailure("checkpoint-roles-mismatch");
     for (unsigned provider = 0; provider < 2; ++provider) {
+      if (quietPerformance) {
+        const auto& observation = providerStatistics[provider].requests.at(round);
+        const auto role = observation.at("role").get<std::string>();
+        if (!roleReceipts.contains(role) || !roleReceipts.at(role).is_string() ||
+            roleReceipts.at(role).get<std::string>().empty())
+          chainFailure("checkpoint-roles-mismatch");
+        const auto owner = observation.at("provider").get<std::string>();
+        if (round && roleBindings.at(owner) != role) chainFailure("placement-binding-changed");
+        roleBindings[owner] = role;
+        continue;
+      }
       const auto path = view.root / ("provider-" + std::to_string(provider) + ".log");
       const auto text = readFile(path);
       const auto placement = validatePlacementProvider(path,
@@ -1030,26 +1831,36 @@ main(int argc, char** argv)
 {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "usage: " << argv[0]
-              << " [--placement-only | --cache-compatibility | --expect-revocation-failure] [--require-multi-token] [--rounds 1..8] --run-root DIRECTORY\n"
+              << " [--placement-only | --cache-compatibility | --expect-revocation-failure |"
+                 " --quiet-performance] [--require-multi-token] [--rounds 1..8]"
+                 " --run-root DIRECTORY\n"
+              << "       " << argv[0] << " --deployment-state FILE [--require-multi-token]"
+                 " [--require-distributed-gpu]\n"
               << "       " << argv[0] << " --repo-lifecycle --repo-root DIRECTORY\n";
     return 0;
   }
   bool placementOnly = false, cacheCompatibility = false, expectedRevocationFailure = false,
-       multiToken = false, repoLifecycle = false, invalidOptions = false;
+       multiToken = false, repoLifecycle = false, invalidOptions = false,
+       quietPerformance = false, distributedGpu = false;
   unsigned rounds = 1;
   bool roundsSeen = false;
   const char* runRootArg = nullptr;
   const char* repoRootArg = nullptr;
+  const char* deploymentStateArg = nullptr;
   for (int i = 1; i < argc; ++i) {
     const std::string option(argv[i]);
     if (option == "--placement-only" && !placementOnly) placementOnly = true;
     else if (option == "--cache-compatibility" && !cacheCompatibility) cacheCompatibility = true;
+    else if (option == "--quiet-performance" && !quietPerformance) quietPerformance = true;
     else if (option == "--expect-revocation-failure" && !expectedRevocationFailure)
       expectedRevocationFailure = true;
     else if (option == "--require-multi-token" && !multiToken) multiToken = true;
+    else if (option == "--require-distributed-gpu" && !distributedGpu) distributedGpu = true;
     else if (option == "--repo-lifecycle" && !repoLifecycle) repoLifecycle = true;
     else if (option == "--run-root" && !runRootArg && i + 1 < argc) runRootArg = argv[++i];
     else if (option == "--repo-root" && !repoRootArg && i + 1 < argc) repoRootArg = argv[++i];
+    else if (option == "--deployment-state" && !deploymentStateArg && i + 1 < argc)
+      deploymentStateArg = argv[++i];
     else if (option == "--rounds" && !roundsSeen && i + 1 < argc) {
       roundsSeen = true;
       const std::string count(argv[++i]);
@@ -1058,19 +1869,34 @@ main(int argc, char** argv)
     }
     else invalidOptions = true;
   }
-  if (invalidOptions ||
+  if (invalidOptions || (distributedGpu && !deploymentStateArg) ||
+      (deploymentStateArg && (repoLifecycle || repoRootArg || runRootArg || placementOnly ||
+        cacheCompatibility || expectedRevocationFailure || quietPerformance || roundsSeen)) ||
       (repoLifecycle && (repoRootArg == nullptr || runRootArg != nullptr ||
                          placementOnly || cacheCompatibility || expectedRevocationFailure ||
-                         multiToken || roundsSeen)) ||
-      (!repoLifecycle && (runRootArg == nullptr || repoRootArg != nullptr)) ||
+                         multiToken || roundsSeen || quietPerformance)) ||
+      (!repoLifecycle && !deploymentStateArg &&
+        (runRootArg == nullptr || repoRootArg != nullptr)) ||
       (placementOnly && (cacheCompatibility || expectedRevocationFailure || multiToken || rounds > 1)) ||
-      (expectedRevocationFailure && (placementOnly || cacheCompatibility || multiToken || roundsSeen))) {
+      (expectedRevocationFailure && (placementOnly || cacheCompatibility || multiToken || roundsSeen)) ||
+      (quietPerformance && (placementOnly || cacheCompatibility || expectedRevocationFailure))) {
     std::cerr << "usage: " << argv[0]
-              << " [--placement-only | --cache-compatibility | --expect-revocation-failure] [--require-multi-token] [--rounds 1..8] --run-root DIRECTORY\n"
+              << " [--placement-only | --cache-compatibility | --expect-revocation-failure |"
+                 " --quiet-performance] [--require-multi-token] [--rounds 1..8]"
+                 " --run-root DIRECTORY\n"
+              << "       " << argv[0] << " --deployment-state FILE [--require-multi-token]"
+                 " [--require-distributed-gpu]\n"
               << "       " << argv[0] << " --repo-lifecycle --repo-root DIRECTORY\n";
     return 2;
   }
   try {
+    if (deploymentStateArg) {
+      const auto receipt = validateDeployment(
+        std::filesystem::absolute(deploymentStateArg), multiToken, distributedGpu);
+      std::cout << "SPEC217_CPP_DEPLOYMENT_EXECUTION_PASS "
+                << ndnsf::di::nativeCanonicalJson(receipt) << '\n';
+      return 0;
+    }
     if (repoLifecycle) {
       validateRepoLifecycle(std::filesystem::absolute(repoRootArg));
       return 0;
@@ -1080,8 +1906,17 @@ main(int argc, char** argv)
       validateRevocationFailure(root);
       return 0;
     }
-    if (rounds > 1) {
-      auto receipt = validateRounds(root, rounds, cacheCompatibility, multiToken);
+    if (rounds > 1 || quietPerformance) {
+      auto receipt = validateRounds(root, rounds, cacheCompatibility, multiToken, quietPerformance);
+      if (quietPerformance) {
+        receipt["scope"] = "quiet-performance";
+        receipt["fullPathQualification"] = "NOT_RUN";
+        for (const auto* check : {"materialFetch", "grantAudit", "placementAudit", "restoreAudit"})
+          receipt[check] = "NOT_EVALUATED";
+        std::cout << "SPEC189_CPP_QUIET_PERFORMANCE_PASS "
+                  << ndnsf::di::nativeCanonicalJson(receipt) << '\n';
+        return 0;
+      }
       if (cacheCompatibility) {
         receipt["scope"] = "cache-compatible-execution";
         receipt["materialFetch"] = "NOT_EVALUATED";

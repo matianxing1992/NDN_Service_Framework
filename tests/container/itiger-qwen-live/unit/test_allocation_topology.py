@@ -68,7 +68,7 @@ class AllocationTopologyTest(unittest.TestCase):
 
     def test_process_launcher_rejects_workdir_state_overlap(self) -> None:
         process = load("single-node.json")["processes"][1]
-        with tempfile.TemporaryDirectory(prefix="ndnsf-di-") as raw:
+        with tempfile.TemporaryDirectory(prefix="ndnsf-di-", dir="/tmp") as raw:
             scratch = Path(raw)
             with self.assertRaisesRegex(topology.TopologyError, "TOPOLOGY_WORKDIR_SCRATCH_OVERLAP"):
                 topology.render_process_launcher(process, scratch, scratch / "bundle")
@@ -186,8 +186,8 @@ class AllocationTopologyTest(unittest.TestCase):
         rendered = topology.render_process_launcher(provider, "/tmp/ndnsf-di-job", workdir)
         self.assertIn("identity_source=/project/tma1/ndnsf-di/identities/c1/provider-0", rendered)
         self.assertIn('cp -a "$identity_source/." "$runtime_home/"', rendered)
-        self.assertIn('export NDN_CLIENT_PIB="pib-sqlite3:$runtime_home/.ndn/pib.db"', rendered)
-        self.assertIn('export NDN_CLIENT_TPM="tpm-file:$runtime_home/.ndn/ndnsec-key-file"', rendered)
+        self.assertIn('export NDN_CLIENT_PIB="pib-sqlite3:$runtime_home/.ndn"', rendered)
+        self.assertIn('export NDN_CLIENT_TPM="tpm-file:"', rendered)
         self.assertIn("unset NDN_CLIENT_PIB NDN_CLIENT_TPM", rendered)
         self.assertIn('cd "$runtime_workdir"', rendered)
         self.assertIn("export HOME=", rendered)
@@ -263,7 +263,7 @@ class AllocationTopologyTest(unittest.TestCase):
         value = load("single-node.json")
         provider = next(row for row in value["processes"] if row["kind"] == "provider")
         with tempfile.TemporaryDirectory(prefix="spec110-identity-root-") as root_dir, \
-             tempfile.TemporaryDirectory(prefix="ndnsf-di-") as scratch_dir, \
+             tempfile.TemporaryDirectory(prefix="ndnsf-di-", dir="/tmp") as scratch_dir, \
              tempfile.TemporaryDirectory(prefix="spec110-bin-") as bin_dir:
             root = Path(root_dir)
             real = root / "real"
@@ -313,7 +313,7 @@ class AllocationTopologyTest(unittest.TestCase):
         value = load("multi-node-tcp.json")
         provider = next(row for row in value["processes"] if row["kind"] == "provider")
         with tempfile.TemporaryDirectory(prefix="spec110-identity-") as source_dir, \
-             tempfile.TemporaryDirectory(prefix="ndnsf-di-") as scratch_dir, \
+             tempfile.TemporaryDirectory(prefix="ndnsf-di-", dir="/tmp") as scratch_dir, \
              tempfile.TemporaryDirectory(prefix="spec110-bin-") as bin_dir:
             source = Path(source_dir)
             provider["nfdSocket"] = str(Path(scratch_dir) / "nfd/1/nfd.sock")
@@ -370,7 +370,7 @@ class AllocationTopologyTest(unittest.TestCase):
         provider = next(row for row in value["processes"] if row["kind"] == "provider")
         original_source = provider["identityRef"]
         with tempfile.TemporaryDirectory(prefix="spec110-identity-") as source_dir, \
-             tempfile.TemporaryDirectory(prefix="ndnsf-di-") as scratch_dir, \
+             tempfile.TemporaryDirectory(prefix="ndnsf-di-", dir="/tmp") as scratch_dir, \
              tempfile.TemporaryDirectory(prefix="spec110-bin-") as bin_dir:
             source = Path(source_dir)
             provider["nfdSocket"] = str(Path(scratch_dir) / "nfd/0/nfd.sock")
@@ -379,6 +379,10 @@ class AllocationTopologyTest(unittest.TestCase):
             (source / ".ndn/ndnsec-key-file").mkdir()
             fake = Path(bin_dir) / "di-native-provider"
             observation = Path(scratch_dir) / "observation.txt"
+            # This test covers shell admission/order; native signing is a separate C++ fixture.
+            checker = Path(bin_dir) / "ndnsf-identity-check"
+            checker.write_text('#!/bin/sh\ntest -f "$1/.ndn/pib.db"\n')
+            checker.chmod(0o700)
             fake.write_text(
                 "#!/bin/sh\n"
                 "printf '%s\\n%s\\n%s\\n%s\\n' \"$HOME\" \"$NDN_CLIENT_PIB\" "
@@ -411,16 +415,24 @@ class AllocationTopologyTest(unittest.TestCase):
             home, pib, tpm, transport = observation.read_text().splitlines()
             expected_home = str(Path(scratch_dir) / "homes" / provider["processId"])
             self.assertEqual(expected_home, home)
-            self.assertEqual("pib-sqlite3:" + expected_home + "/.ndn/pib.db", pib)
-            self.assertEqual("tpm-file:" + expected_home + "/.ndn/ndnsec-key-file", tpm)
+            self.assertEqual("pib-sqlite3:" + expected_home + "/.ndn", pib)
+            self.assertEqual("tpm-file:", tpm)
             self.assertEqual("unix://" + provider["nfdSocket"], transport)
             self.assertEqual("source-pib", (Path(home) / ".ndn/pib.db").read_text())
+            observation.unlink()
+            checker.write_text("#!/bin/sh\nexit 1\n")
+            rejected = subprocess.run(
+                ["bash"], input=rendered, text=True, env=environment,
+                capture_output=True, check=False,
+            )
+            self.assertEqual(1, rejected.returncode)
+            self.assertFalse(observation.exists())
 
     def test_process_launcher_rejects_identity_symlink(self) -> None:
         value = load("multi-node-tcp.json")
         provider = next(row for row in value["processes"] if row["kind"] == "provider")
         with tempfile.TemporaryDirectory(prefix="spec110-identity-") as source_dir, \
-             tempfile.TemporaryDirectory(prefix="ndnsf-di-") as scratch_dir, \
+             tempfile.TemporaryDirectory(prefix="ndnsf-di-", dir="/tmp") as scratch_dir, \
              tempfile.TemporaryDirectory(prefix="spec110-bin-") as bin_dir:
             source = Path(source_dir)
             external = Path(source_dir).parent / "shared-pib"
@@ -453,7 +465,7 @@ class AllocationTopologyTest(unittest.TestCase):
         value = load("multi-node-tcp.json")
         provider = next(row for row in value["processes"] if row["kind"] == "provider")
         with tempfile.TemporaryDirectory(prefix="spec110-identity-") as source_dir, \
-             tempfile.TemporaryDirectory(prefix="ndnsf-di-") as scratch_dir, \
+             tempfile.TemporaryDirectory(prefix="ndnsf-di-", dir="/tmp") as scratch_dir, \
              tempfile.TemporaryDirectory(prefix="spec110-bin-") as bin_dir:
             source = Path(source_dir)
             provider["nfdSocket"] = str(Path(scratch_dir) / "nfd/1/nfd.sock")

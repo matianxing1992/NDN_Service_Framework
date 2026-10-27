@@ -9,15 +9,20 @@ StartLimitBurst=3
 Type=simple
 User=ndnsf-di-repo
 Group=ndnsf-di-repo
-EnvironmentFile=-/etc/ndnsf-di/repo-%i.env
-ExecStart=/opt/ndnsf-di/current/bin/ndn-repo-ng ${NDNSF_DI_REPO_ARGS}
+Environment=HOME=/var/lib/ndnsf-repo/identities/repo-%i
+Environment=NDNSF_DI_IDENTITY=/ndnsf/di/repo/%i
+Environment=NDN_CLIENT_PIB=pib-sqlite3: NDN_CLIENT_TPM=tpm-file:
+Environment=NDN_LOG=*=NONE
+EnvironmentFile=/etc/ndnsf-di/repo-%i.env
+ExecStartPre=/opt/ndnsf-di/current/bin/ndnsf-identity-check ${HOME} ${NDNSF_DI_IDENTITY}
+ExecStart=/opt/ndnsf-di/current/bin/DistributedRepoServer $NDNSF_DI_REPO_ARGS
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=60s
 TimeoutStopSec=30s
 KillSignal=SIGTERM
 NoNewPrivileges=true
-PrivateTmp=true
+PrivateTmp=false
 ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true

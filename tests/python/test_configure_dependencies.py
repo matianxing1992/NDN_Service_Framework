@@ -13,6 +13,39 @@ spec.loader.exec_module(inventory)
 
 
 class ConfigureDependenciesTest(unittest.TestCase):
+    def test_core_and_repo_inventory_do_not_require_model_or_gui_sdks(self):
+        for profile in ('core', 'repo'):
+            with self.subTest(profile=profile), \
+                 patch.object(inventory.shutil, 'which', return_value='/usr/bin/tool'), \
+                 patch.object(inventory.subprocess, 'run', return_value=Mock(returncode=0)) as run, \
+                 patch.object(inventory.Path, 'is_file', autospec=True,
+                              side_effect=lambda p: 'nac-abe' in str(p)):
+                self.assertEqual(inventory.check_dependencies(components=profile), ([], []))
+            queried = ' '.join(str(call.args) for call in run.call_args_list)
+            self.assertNotIn('onnx', queried)
+            self.assertNotIn('gtk', queried)
+            self.assertNotIn('gstreamer', queried)
+
+    def test_di_requires_model_sdk_but_not_gui(self):
+        with patch.object(inventory.shutil, 'which', return_value='/usr/bin/tool'), \
+             patch.object(inventory.subprocess, 'run', return_value=Mock(returncode=1)) as run, \
+             patch.object(inventory.Path, 'is_file', return_value=False):
+            errors, warnings = inventory.check_dependencies(components='di')
+        self.assertTrue(any('onnxruntime' in e for e in errors))
+        self.assertTrue(any('tokenizer_bridge' in e for e in errors))
+        self.assertFalse(any('gtk' in str(call.args) for call in run.call_args_list))
+        self.assertEqual(warnings, [])
+
+    def test_core_sdk_only_requires_no_model_tools(self):
+        with patch.object(inventory.shutil, 'which', return_value=None), \
+             patch.object(inventory.subprocess, 'run') as run:
+            self.assertEqual(inventory.check_dependencies(components='core', sdk_only=True), ([], []))
+        run.assert_not_called()
+
+    def test_unknown_component_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'components must be'):
+            inventory.check_dependencies(components='unknown')
+
     def test_aggregates_missing_metadata_and_files(self):
         with patch.object(inventory.shutil, 'which', return_value='/usr/bin/tool'), \
              patch.object(inventory.subprocess, 'run', return_value=Mock(returncode=1)), \
@@ -54,7 +87,8 @@ class ConfigureDependenciesTest(unittest.TestCase):
                                  '--', '--with-tests'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--with-tests', result.stdout)
-        self.assertIn('SDKs must already be installed', result.stdout)
+        self.assertIn('Configure-only mode requires ONNX Runtime', result.stdout)
+        self.assertIn('no apt, git fetch, builds, installation or Waf execution', result.stdout)
 
     def test_unknown_option_rejected(self):
         result = subprocess.run(['bash', str(ROOT / 'configure.sh'), '--bogus'],

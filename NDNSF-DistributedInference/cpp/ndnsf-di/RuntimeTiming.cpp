@@ -1,7 +1,14 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/runtime-logging.hpp"
 
 #include <ndn-cxx/util/logger.hpp>
+#include <ndn-cxx/util/logging.hpp>
+
+#include <boost/log/expressions.hpp>
+#include <boost/log/sinks/sync_frontend.hpp>
+#include <boost/log/sinks/text_ostream_backend.hpp>
+#include <boost/make_shared.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -11,6 +18,8 @@
 #include <cstdlib>
 #include <ctime>
 #include <exception>
+#include <iomanip>
+#include <ostream>
 #include <string_view>
 #include <limits>
 #include <map>
@@ -38,6 +47,7 @@ std::string singleLine(std::string record)
 
 void writeRuntimeEvidence(const std::string& record, bool measureMutex)
 {
+  if (!ndn_cxx_getLogger().isLevelEnabled(ndn::util::LogLevel::WARN)) return;
   const auto before = measureMutex ? std::chrono::steady_clock::now() :
                                    std::chrono::steady_clock::time_point{};
   std::lock_guard<std::mutex> lock(runtimeTimingOutputMutex());
@@ -64,11 +74,32 @@ logRuntimeEvidence(const std::string& record)
 void
 logRuntimeTrace(const std::string& record)
 {
+  if (!ndn_cxx_getLogger().isLevelEnabled(ndn::util::LogLevel::TRACE)) return;
   std::lock_guard<std::mutex> lock(runtimeTimingOutputMutex());
   NDN_LOG_TRACE(singleLine(record));
 }
 
 namespace detail {
+
+void
+configureSynchronousLogging(std::ostream& output)
+{
+  namespace sinks = boost::log::sinks;
+  namespace expr = boost::log::expressions;
+  auto backend = boost::make_shared<sinks::text_ostream_backend>();
+  backend->add_stream(boost::shared_ptr<std::ostream>(&output, [] (std::ostream*) {}));
+  backend->auto_flush(true);
+  auto destination = boost::make_shared<sinks::synchronous_sink<sinks::text_ostream_backend>>(
+    backend);
+  destination->set_formatter(expr::stream
+    << expr::attr<std::string>("Timestamp")
+    << " " << std::setw(5)
+    << expr::attr<ndn::util::LogLevel>(ndn::util::log::severity.get_name()) << ": "
+    << "[" << expr::attr<std::string>(ndn::util::log::module.get_name()) << "] "
+    << expr::smessage);
+  ndn::util::Logging::setDestination(std::move(destination));
+}
+
 FixedAssignmentWork& fixedAssignmentWork() noexcept
 {
   static thread_local FixedAssignmentWork work;
@@ -114,6 +145,7 @@ ScopedFixedAssignmentWork::~ScopedFixedAssignmentWork() noexcept
 void
 logRuntimeInfo(const std::string& record)
 {
+  if (!ndn_cxx_getLogger().isLevelEnabled(ndn::util::LogLevel::INFO)) return;
   std::lock_guard<std::mutex> lock(runtimeTimingOutputMutex());
   NDN_LOG_INFO(singleLine(record));
 }
@@ -121,6 +153,7 @@ logRuntimeInfo(const std::string& record)
 void
 logRuntimeWarn(const std::string& record)
 {
+  if (!ndn_cxx_getLogger().isLevelEnabled(ndn::util::LogLevel::WARN)) return;
   std::lock_guard<std::mutex> lock(runtimeTimingOutputMutex());
   NDN_LOG_WARN(singleLine(record));
 }
@@ -128,6 +161,7 @@ logRuntimeWarn(const std::string& record)
 void
 logRuntimeError(const std::string& record)
 {
+  if (!ndn_cxx_getLogger().isLevelEnabled(ndn::util::LogLevel::ERROR)) return;
   std::lock_guard<std::mutex> lock(runtimeTimingOutputMutex());
   NDN_LOG_ERROR(singleLine(record));
 }
@@ -555,6 +589,7 @@ logRuntimePhase(const std::string& role,
                 const std::string& attempt,
                 const std::vector<std::pair<std::string, std::string>>& fields)
 {
+  if (!ndn_cxx_getLogger().isLevelEnabled(ndn::util::LogLevel::WARN)) return;
   if (!phaseTimingEnabled() || role.empty() || phase.empty() || requestId.empty()) return;
   const auto steadyUs = std::chrono::duration_cast<std::chrono::microseconds>(
     std::chrono::steady_clock::now().time_since_epoch()).count();

@@ -11,4 +11,4 @@ class build_py(_build_py):
         target.parent.mkdir(parents=True, exist_ok=True)
         copyfile(source, target)
 
-setup(name="ndnsf-distributed-inference", version="0.111.0", package_dir={"":"src"}, packages=find_packages("src"), package_data={"ndnsf_distributed_inference.compatibility":["manifest.json"]}, cmdclass={"build_py":build_py}, install_requires=["ndnsf-di-core==0.111.0","ndnsf-di-sdk==0.111.0","ndnsf-di-app==0.111.0","ndnsf-di-planner==0.111.0","ndnsf-di-ops==0.111.0"], entry_points={"console_scripts":["ndnsf-di=ndnsf_distributed_inference.ops.cli:main"]})
+setup(name="ndnsf-distributed-inference", version="0.111.0", package_dir={"":"src"}, packages=find_packages("src"), package_data={"ndnsf_distributed_inference.compatibility":["manifest.json"]}, cmdclass={"build_py":build_py}, install_requires=["ndnsf-di-core==0.111.0","ndnsf-di-sdk==0.111.0","ndnsf-di-app==0.111.0","ndnsf-di-planner==0.111.0","ndnsf-di-ops==0.111.0"])

@@ -15,6 +15,8 @@ import signal
 import subprocess
 import time
 
+from runtime.processes import Processes, write_json
+
 
 PROFILE_FIELDS = {
     "schema", "profileId", "nodes", "cpusPerNode", "memory", "wallTime",
@@ -40,15 +42,6 @@ def digest(path: Path) -> str:
         for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-def write_json(path: Path, value: dict) -> None:
-    """Atomically publish a complete record on the shared filesystem."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-    os.replace(tmp, path)
 
 
 def load_profile(path: Path) -> dict:
@@ -131,62 +124,6 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
                     f"NDN_CLIENT_TPM=tpm-file:{role_home}/.ndn"]
     command += list(argv)
     return command
-
-
-class Processes:
-    """Own child process groups and their logs until close has reaped them."""
-    def __init__(self, log_dir: Path):
-        self.log_dir = log_dir
-        log_dir.mkdir(parents=True, exist_ok=True)
-        self.children = []
-
-    def start(self, name: str, argv: list[str], env: dict | None = None):
-        log = (self.log_dir / (name + ".log")).open("wb")
-        try:
-            child = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
-                                     start_new_session=True, env=env)
-        except BaseException:
-            log.close()
-            raise
-        self.children.append((name, child, log))
-        return child
-
-    def check(self):
-        for name, child, _ in self.children:
-            if child.poll() is not None:
-                raise RuntimeError(f"CHILD_EXIT:{name}:{child.returncode}")
-
-    def close(self) -> list[dict]:
-        result = []
-        for name, child, log in reversed(self.children):
-            before = child.poll()
-            forced = False
-            try:
-                # Let Apptainer forward TERM to its application before it
-                # unmounts FUSE. TERM of the whole group can tear down the
-                # mapped executable underneath the still-running application.
-                child.terminate()
-            except ProcessLookupError:
-                pass
-            try:
-                child.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                forced = True
-                os.killpg(child.pid, signal.SIGKILL)
-                child.wait(timeout=5)
-            # A child may exit while a grandchild survives in its group.
-            try:
-                os.killpg(child.pid, 0)
-                os.killpg(child.pid, signal.SIGKILL)
-                forced = True
-            except ProcessLookupError:
-                pass
-            log.close()
-            result.append({"name": name, "pid": child.pid, "exitCode": child.returncode,
-                           "exitedBeforeCleanup": before is not None, "forced": forced,
-                           "reaped": child.poll() is not None})
-        self.children.clear()
-        return result
 
 
 def wait_json(path: Path, seconds: int, children: Processes | None = None,
@@ -359,7 +296,7 @@ def collect(run: dict, nodes: list[dict], worker_exit: int) -> dict:
                 (boundary == "PERMISSION" and exit_code == 0 and termination == "NORMAL"))
             if rejection.get("nativeValidationFailure") is not True or not valid_rejection:
                 problems.append("NATIVE_TRUST_NEGATIVE_ORACLE")
-        if not node.get("cleanup") or any(not row.get("reaped") or row.get("forced") or
+        if not node.get("cleanup") or any(row.get("error") or not row.get("reaped") or row.get("forced") or
                 row.get("exitedBeforeCleanup") for row in node["cleanup"]):
             problems.append("CLEANUP")
     return {**run, "status": "FAIL" if problems else

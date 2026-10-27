@@ -4,9 +4,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ndnsf-di-ops"
 version = "0.111.0"
-dependencies = ["ndnsf-di-app==0.111.0"]
+dependencies = ["python-ndn>=0.3"]
+[project.optional-dependencies]
+app = ["ndnsf-di-app==0.111.0"]
 [project.scripts]
-ndnsf-di = "ndnsf_distributed_inference.ops.cli:main"
+ndnsf-di = "ndnsf_di_launcher:main"
+[tool.setuptools]
+py-modules = ["ndnsf_di_launcher"]
 [tool.setuptools.packages.find]
 where = ["../../.."]
 include = ["ndnsf_distributed_inference.ops*"]

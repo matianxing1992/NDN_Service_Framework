@@ -3,6 +3,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -20,6 +21,10 @@ aggregateExecutionEvidence(const std::vector<ExecutionEvidence>& items);
 
 ExecutionEvidence
 aggregateExecutionEvidence(const std::map<std::string, ExecutionEvidence>& items);
+
+ExecutionEvidence
+aggregateExecutionEvidence(
+  const std::vector<std::reference_wrapper<const ExecutionEvidence>>& items);
 
 } // namespace ndnsf::di::detail
 

@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 name = "ndnsf-di-core"
 version = "0.111.0"
 description = "Owner-neutral NDNSF-DI contracts and mechanisms"
+dependencies = ["cryptography>=2.8", "python-ndn"]
 [tool.setuptools.packages.find]
 where = ["../../.."]
 include = ["ndnsf_distributed_inference.core*"]

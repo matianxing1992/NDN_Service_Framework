@@ -1,17 +1,17 @@
 #ifndef NDNSF_DISTRIBUTED_INFERENCE_NATIVE_PROVIDER_READINESS_HPP
 #define NDNSF_DISTRIBUTED_INFERENCE_NATIVE_PROVIDER_READINESS_HPP
 
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
-#include <memory>
 #include <string>
 
 namespace ndnsf::di {
@@ -86,6 +86,12 @@ public:
   void setExecutionEvidenceByRole(
     std::map<std::string, ExecutionEvidence> evidenceByRole);
 
+  /** Replace observed roles and their aggregate atomically, returning the update log record.
+   *  Retained observations are immutable owned snapshots. Validation, allocation or aggregation
+   *  failure leaves both snapshots unchanged; input references never escape this call.
+   */
+  std::string updateExecutionEvidence(const ExecutionEvidence& observed);
+
   ndn_service_framework::ServiceProvider::AckDecision
   makeAckDecision(const std::string& rolesText,
                   const ndn::Name& providerName = ndn::Name(),
@@ -117,8 +123,8 @@ private:
   int64_t m_provisioningStartedMs = 0;
   CapacitySnapshotProvider m_capacitySnapshotProvider;
   TelemetrySnapshotProvider m_telemetrySnapshotProvider;
-  std::optional<ExecutionEvidence> m_executionEvidence;
-  std::map<std::string, ExecutionEvidence> m_executionEvidenceByRole;
+  std::shared_ptr<const ExecutionEvidence> m_executionEvidence;
+  std::map<std::string, std::shared_ptr<const ExecutionEvidence>> m_executionEvidenceByRole;
 };
 
 } // namespace ndnsf::di

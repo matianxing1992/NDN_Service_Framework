@@ -16,6 +16,8 @@
 
 namespace ndnsf::di {
 
+struct PrefetchWorkerOracle;
+
 class NdnsfCollaborationDependencyIo : public DependencyIo,
                                      public PromptCancellableDependencyIo
 {
@@ -26,7 +28,10 @@ public:
     std::size_t maxSegmentSize = 7000,
     int freshnessMs = 60000,
     std::shared_ptr<ProviderGroupCoordinator> groupCoordinator = nullptr,
-    std::shared_ptr<ProtectedRuntime> protectedRuntime = nullptr);
+    std::shared_ptr<ProtectedRuntime> protectedRuntime = nullptr,
+    std::size_t prefetchWorkerCount = 0);
+
+  ~NdnsfCollaborationDependencyIo() override;
 
   std::future<TensorBundle>
   prefetchInput(const std::string& sessionId, const DependencyEdge& edge) override;
@@ -42,6 +47,9 @@ public:
   void
   cancelPendingPrefetches() noexcept override;
 
+  void
+  drainPendingPrefetches() noexcept override;
+
   /**
    * Publish a role output under the deterministic Data name assigned by the
    * native execution plan.  This path intentionally does not publish a
@@ -54,6 +62,8 @@ public:
                 const TensorBundle& bundle) override;
 
 private:
+  friend struct PrefetchWorkerOracle;
+
   ndn_service_framework::ServiceProvider::CollaborationContext& m_ctx;
   int m_fetchTimeoutMs = 30000;
   std::size_t m_maxSegmentSize = 7000;
@@ -72,6 +82,8 @@ private:
   std::size_t m_tensorPublicationBytes = 0;
   std::shared_ptr<std::atomic<bool>> m_pendingPrefetchCancelled =
     std::make_shared<std::atomic<bool>>(false);
+  // Dedicated invocation workers must drain before the state above is released.
+  std::unique_ptr<ndn_service_framework::BoundedWorkerPool> m_prefetchWorkers;
 };
 
 } // namespace ndnsf::di

@@ -3436,6 +3436,12 @@ named defaults. `RunnerAdapterRegistry` remains independent. `APPDeployment`
 uses external `ArtifactReference` values and `APPClient` provides durable
 submit/reopen/wait/cancel/stream/result handles. The aggregate is compatibility-only.
 
+For host-only `ndnsf-di cluster` management, install `ndnsf-di-ops`; its normal
+dependency resolver installs the Name codec without App, native bindings or
+the compatibility aggregate. Install `ndnsf-di-ops[app]` when using the legacy
+App commands. The full-stack and compatibility installations already include App.
+These host packaging choices do not require rebuilding the runtime SIF.
+
 An exact-model request sets one candidate with `exact_semantics=True`; an
 alternative-model request supplies an operator-authorized bounded candidate
 set to `ModelVariantPolicy`. Applications construct one process-local

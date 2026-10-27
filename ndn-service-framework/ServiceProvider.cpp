@@ -3,11 +3,13 @@
 #include "PeerProbeNaming.hpp"
 #include "detail/TargetedRequestRouting.hpp"
 #include "detail/ProtectedTargetedRequest.hpp"
+#include "detail/in-memory-storage-range.hpp"
 #include "ProducerDataNaming.hpp"
 #include "ProtectedBlobManifest.hpp"
 #include "ImmutableProtectedPublicationStore.hpp"
 #include <ndn-cxx/security/pib/key.hpp>
 
+#include <boost/asio/dispatch.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 
@@ -6756,7 +6758,7 @@ namespace ndn_service_framework
         // so the End event and terminal Response share one lifecycle.  Keep
         // this fallback for legacy/native handlers that still call the unary
         // method, but never let that call silently bypass stream completion.
-        if (isStreamed()) {
+        if (m_requestMessage.hasStreamRequestOptions()) {
             if (!finishStream(payload, StreamFinishReason::ApplicationComplete)) {
                 throw std::logic_error("stream terminal was already claimed or fenced");
             }
@@ -6776,7 +6778,8 @@ namespace ndn_service_framework
         const ndn::Buffer& payload,
         const std::string& errorInfo)
     {
-        if (isStreamed()) {
+        if (isStreamed() ||
+            (m_requestMessage.hasStreamRequestOptions() && m_assignment.ownsStreamTerminal)) {
             throw std::logic_error(
                 "streamed collaborations must terminate through failStream()");
         }
@@ -9881,6 +9884,9 @@ namespace ndn_service_framework
                                         auto assignment = parseCollaborationAssignment(
                                             serviceName, assignmentPayloadCopy);
                                         assignment.selectionDigest = selectionDigest;
+                                        assignment.ownsStreamTerminal =
+                                            readyRequest.hasStreamRequestOptions() &&
+                                            selectionMessage.hasStreamEventKeyGrant();
                                         if (dispatchCollaborationExecutionAsync(
                                                 requesterName, providerName, serviceName,
                                                 requestId, readyRequest,
@@ -11809,11 +11815,11 @@ namespace ndn_service_framework
             }
         };
         auto cancelPending = [this](ndn::ScopedPendingInterestHandle pending) {
-            // Face's pending-interest table is owned by its io_context. Keep
-            // cancellation there even when the hard-waiting caller wins the
-            // race from a worker thread. A default-constructed scoped handle
-            // safely represents no pending operation.
-            boost::asio::post(m_face.getIoContext(),
+            // Consume the handle on Face's executor, without another queue hop
+            // when already there. The handle still posts PIT removal; it does
+            // not mutate the table or invoke application callbacks inline.
+            // Off-executor aborts retain the dispatch to Face.
+            boost::asio::dispatch(m_face.getIoContext(),
                               [pending = std::move(pending)]() mutable {
                 pending.cancel();
             });
@@ -12020,8 +12026,7 @@ namespace ndn_service_framework
                         }
                         state->wireBytes.fetch_add(data.wireEncode().size(),
                                                    std::memory_order_relaxed);
-                        validator->validate(
-                            data,
+                        auto onValidatedExactData =
                             [state, slot, finish, dataName, expectedProducer, requestId,
                              keyScope, onValidatedData]
                             (const ndn::Data& validated) {
@@ -12058,13 +12063,23 @@ namespace ndn_service_framework
                                               << " bytes=" << content.value_size());
                                 finish(ndn::Buffer(content.value_begin(),
                                                    content.value_end()), {});
-                            },
-                            [finish, dataName]
+                            };
+                        auto onRejectedExactData = [finish, dataName]
                             (const ndn::Data&,
                              const ndn::security::ValidationError& error) {
                                 finish({}, "exact Data signature validation failed for " +
                                            dataName.toUri() + ": " + error.getInfo());
-                            });
+                            };
+                        // Exact Data already arrives on the Face owner. Keep the
+                        // complete validator path without posting it back there.
+                        if (m_face.getIoContext().get_executor().running_in_this_thread()) {
+                            validator->validateDataOnFace(data,
+                                std::move(onValidatedExactData), std::move(onRejectedExactData));
+                        }
+                        else {
+                            validator->validate(data,
+                                std::move(onValidatedExactData), std::move(onRejectedExactData));
+                        }
                     },
                     [retry, attempt](const ndn::Interest&, const ndn::lp::Nack&) {
                         (*retry)("Nack", attempt);
@@ -17069,8 +17084,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         std::lock_guard<std::mutex> lock(_cache_mutex);
         for (const auto& [name, original] : originals) {
-          // Check every digest variant through the existing IMS name index.
-          for (auto entry = m_IMS.lowerBound(name);
+          // Check every full-name digest variant before accepting an original.
+          for (auto entry = detail::imsLowerBound(m_IMS, name);
                entry != m_IMS.end() && name.isPrefixOf(entry->getFullName()); ++entry) {
             const auto& existing = *entry;
             if (existing.getName() == name && existing.wireEncode() != original->wireEncode()) {
@@ -20807,6 +20822,9 @@ opaque_selection_committed:
                 for (const auto& rolePayload : rolePayloads) {
                     auto assignment =
                         parseCollaborationAssignment(serviceName, rolePayload);
+                    assignment.ownsStreamTerminal =
+                        selectedRequest.hasStreamRequestOptions() &&
+                        message.hasStreamEventKeyGrant();
                     // The Provider-entry projection is Core-owned metadata. It
                     // remains available even when the application registers an
                     // opaque Selection participant; the participant still sees

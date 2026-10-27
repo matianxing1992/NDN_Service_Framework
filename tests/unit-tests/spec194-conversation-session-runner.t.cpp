@@ -1,13 +1,22 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <ctime>
 #include <future>
+#include <iomanip>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace ndnsf::di::test {
 namespace {
@@ -35,7 +44,9 @@ makeIdentity(const std::string& requestId, const std::string& generationId,
   identity.layerEnd = 1;
   identity.prefixDigest = digest('8');
   identity.prefixTokenCount = prefixTokenCount;
-  identity.positionDigest = digest(stateEpoch == 0 ? '9' : '0');
+  std::ostringstream position;
+  position << "sha256:" << std::hex << std::setfill('0') << std::setw(64) << stateEpoch;
+  identity.positionDigest = position.str();
   identity.precision = "fp32";
   identity.layoutDigest = digest('a');
   identity.stateSchemaDigest = digest('b');
@@ -262,6 +273,48 @@ private:
   std::size_t m_runCount = 0;
 };
 
+struct ExecutionThreads
+{
+  std::mutex mutex;
+  std::thread::id backend;
+  std::thread::id lastGuard;
+};
+
+std::shared_ptr<NativeModelRunner>
+makeTensorStateRunner(std::shared_ptr<ExecutionThreads> threads = {})
+{
+  return makeNativeModelRunner([threads] (const RoleExecutionContext& context) {
+    if (threads) {
+      std::lock_guard<std::mutex> lock(threads->mutex);
+      threads->backend = std::this_thread::get_id();
+    }
+    if (context.inferenceEpoch > 0) {
+      const auto& prior = context.inputsByScope.at("__ndnsf_provider_decode_state");
+      const auto tensors = decodeTensorBundle(prior.payload);
+      const auto& tensor = findTensor(tensors, "past_key_values.0.key");
+      if (tensor.elementType != TensorElementType::Int64 ||
+          tensor.shape != std::vector<std::int64_t>{1} ||
+          tensor.payload.size() != sizeof(std::int64_t)) {
+        throw std::runtime_error("fixture predecessor tensor contract mismatch");
+      }
+      std::int64_t previous = 0;
+      std::memcpy(&previous, tensor.payload.data(), sizeof(previous));
+      if (previous != static_cast<std::int64_t>(context.inferenceEpoch)) {
+        throw std::runtime_error("fixture did not retain the committed predecessor");
+      }
+    }
+    const auto value = static_cast<std::int64_t>(context.inferenceEpoch + 1);
+    NamedTensor state;
+    state.name = "present.0.key";
+    state.elementType = TensorElementType::Int64;
+    state.shape = {1};
+    state.payload.resize(sizeof(value));
+    std::memcpy(state.payload.data(), &value, sizeof(value));
+    return std::map<std::string, TensorBundle>{
+      {"onnx-output-bundle", makeEncodedTensorBundle("state", {std::move(state)})}};
+  });
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(Spec194ConversationRestoreReusesRunnerAcrossDecodeEpochs)
@@ -312,6 +365,154 @@ BOOST_AUTO_TEST_CASE(Spec194ConversationRestoreReusesRunnerAcrossDecodeEpochs)
   BOOST_REQUIRE(runtime.commitDecodeStateTransition("session-2", decodeRole));
   BOOST_CHECK(runtime.releaseDecodeState("session-2", decodeRole.role));
   BOOST_CHECK(runtime.releaseConversationState(conversation));
+}
+
+BOOST_AUTO_TEST_CASE(Spec216StateCompletionUsesCallerAndPreservesAsyncReadiness)
+{
+  const auto caller = std::this_thread::get_id();
+  for (const bool prepared : {false, true}) {
+    auto threads = std::make_shared<ExecutionThreads>();
+    NativeProviderRuntime runtime(1);
+    auto io = std::make_shared<EmptyDependencyIo>();
+    auto runner = makeTensorStateRunner(threads);
+    const auto identity = makeIdentity("caller-request", "caller-generation", 0, 17);
+    auto role = makeRole(identity);
+    ProviderRoleWorker::NativeRunnerPreparation prepare;
+    if (prepared) {
+      prepare = [runner] { return runner; };
+    }
+    else {
+      NativeModelRunnerSpec spec;
+      spec.role = identity.roleName;
+      spec.metadata = {{"evidence.modelDigest", identity.modelDigest},
+                       {"evidence.planDigest", digest('f')},
+                       {"evidence.providerName", identity.providerIdentity},
+                       {"evidence.providerBootId", identity.providerBootId},
+                       {"state.securityEpoch", "7"},
+                       {"state.generationId", identity.generationId},
+                       {"state.schemaDigest", identity.stateSchemaDigest}};
+      runtime.registerRunner(std::move(spec), runner);
+    }
+    const auto guard = [threads] {
+      std::lock_guard<std::mutex> lock(threads->mutex);
+      threads->lastGuard = std::this_thread::get_id();
+    };
+    const auto result = runtime.executeRole(
+      "caller-session", role, io, prepare, {}, {}, guard);
+    BOOST_REQUIRE(result.providerDecodeState.has_value());
+    {
+      std::lock_guard<std::mutex> lock(threads->mutex);
+      BOOST_CHECK(threads->lastGuard == caller);
+      BOOST_CHECK(threads->backend != caller);
+      BOOST_CHECK(threads->backend != std::thread::id{});
+    }
+    BOOST_CHECK_EQUAL(runtime.decodeStateSnapshot().candidates, 1U);
+    BOOST_REQUIRE(runtime.commitDecodeStateTransition("caller-session", role));
+    BOOST_CHECK(runtime.releaseDecodeState("caller-session", role.role));
+  }
+
+  auto threads = std::make_shared<ExecutionThreads>();
+  NativeProviderRuntime runtime(1);
+  auto runner = makeTensorStateRunner(threads);
+  auto role = makeRole(makeIdentity("async-request", "async-generation", 0, 17));
+  role.deferStateCommit = false;
+  const auto guard = [threads] {
+    std::lock_guard<std::mutex> lock(threads->mutex);
+    threads->lastGuard = std::this_thread::get_id();
+  };
+  auto future = runtime.executePreparedRoleAsync(
+    "async-session", role, std::make_shared<EmptyDependencyIo>(),
+    [runner] { return runner; }, {}, {}, guard);
+  BOOST_REQUIRE(future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+  BOOST_CHECK_EQUAL(runtime.decodeStateSnapshot().commits, 1U);
+  {
+    std::lock_guard<std::mutex> lock(threads->mutex);
+    BOOST_CHECK(threads->lastGuard != caller);
+    BOOST_CHECK(threads->backend != caller);
+    BOOST_CHECK(threads->lastGuard != threads->backend);
+  }
+  BOOST_REQUIRE(future.get().providerDecodeState.has_value());
+  BOOST_CHECK(runtime.releaseDecodeState("async-session", role.role));
+}
+
+BOOST_AUTO_TEST_CASE(Spec216CallerCompletionRollsBackStagedCandidate)
+{
+  NativeProviderRuntime runtime(1);
+  auto io = std::make_shared<EmptyDependencyIo>();
+  auto runner = makeTensorStateRunner();
+  const auto initial = makeIdentity("rollback-request", "rollback-generation", 0, 17);
+  auto first = makeRole(initial);
+  first.deferStateCommit = false;
+  runtime.executeRole("rollback-session", first, io, [runner] { return runner; });
+  const auto next = makeIdentity("rollback-request", "rollback-generation", 1, 18);
+  auto role = makeRole(next, initial);
+  role.deferStateCommit = false;
+  const auto caller = std::this_thread::get_id();
+  bool rejectCommit = true;
+  const auto guard = [&] {
+    if (std::this_thread::get_id() == caller && rejectCommit &&
+        runtime.decodeStateSnapshot().candidates != 0) {
+      rejectCommit = false;
+      throw std::runtime_error("fixture rejects staged state before commit");
+    }
+  };
+  BOOST_CHECK_EXCEPTION(runtime.executeRole(
+    "rollback-session", role, io, {}, {}, {}, guard), std::runtime_error,
+    [] (const auto& error) {
+      return std::string(error.what()) == "fixture rejects staged state before commit";
+    });
+  BOOST_CHECK(!rejectCommit);
+  const auto rejected = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(rejected.candidates, 0U);
+  BOOST_CHECK_EQUAL(rejected.pinnedEntries, 0U);
+  BOOST_CHECK_EQUAL(rejected.entries, 1U);
+  BOOST_CHECK_EQUAL(rejected.commits, 1U);
+  BOOST_CHECK_EQUAL(rejected.rollbacks, 1U);
+  // The runner checks the original tensor value, independently of store counts.
+  BOOST_REQUIRE(runtime.executeRole("rollback-session", role, io).providerDecodeState.has_value());
+  BOOST_CHECK_EQUAL(runtime.decodeStateSnapshot().commits, 2U);
+  BOOST_CHECK(runtime.releaseDecodeState("rollback-session", role.role));
+}
+
+BOOST_AUTO_TEST_CASE(Spec216StateCompletionSchedulingProbe)
+{
+  constexpr std::size_t EPOCHS = 128;
+  for (unsigned repetition = 0; repetition < 3; ++repetition) {
+    for (const bool synchronous : {repetition % 2 == 0, repetition % 2 != 0}) {
+      NativeProviderRuntime runtime(1);
+      auto io = std::make_shared<EmptyDependencyIo>();
+      auto runner = makeTensorStateRunner();
+      std::optional<DecodeStateIdentityV1> predecessor;
+      const auto cpuStarted = std::clock();
+      const auto started = std::chrono::steady_clock::now();
+      for (std::size_t epoch = 0; epoch < EPOCHS; ++epoch) {
+        auto identity = makeIdentity("probe-request", "probe-generation", epoch, 17 + epoch);
+        auto role = makeRole(identity, predecessor);
+        role.deferStateCommit = false;
+        const auto prepare = [runner] { return runner; };
+        const auto result = synchronous
+          ? runtime.executeRole("probe-session", role, io, prepare)
+          : runtime.executePreparedRoleAsync("probe-session", role, io, prepare).get();
+        BOOST_REQUIRE(result.providerDecodeState.has_value());
+        predecessor = std::move(identity);
+      }
+      const auto wallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - started).count();
+      const auto cpuFinished = std::clock();
+      BOOST_REQUIRE(cpuStarted != std::clock_t(-1) && cpuFinished != std::clock_t(-1));
+      const auto state = runtime.decodeStateSnapshot();
+      BOOST_CHECK_EQUAL(state.commits, EPOCHS);
+      BOOST_CHECK_EQUAL(state.hits, EPOCHS - 1);
+      BOOST_CHECK_EQUAL(state.misses, 0U);
+      BOOST_CHECK_EQUAL(state.candidates, 0U);
+      BOOST_CHECK_EQUAL(state.pinnedEntries, 0U);
+      BOOST_TEST_MESSAGE("SPEC216_STATE_COMPLETION_SAMPLE repetition=" << repetition
+        << " synchronous=" << synchronous << " epochs=" << EPOCHS
+        << " wall_ns=" << wallNs << " process_cpu_ns="
+        << static_cast<std::uint64_t>((cpuFinished - cpuStarted) * (1e9 / CLOCKS_PER_SEC)));
+      BOOST_CHECK(runtime.releaseDecodeState("probe-session", predecessor->roleName));
+    }
+  }
 }
 
 } // namespace ndnsf::di::test

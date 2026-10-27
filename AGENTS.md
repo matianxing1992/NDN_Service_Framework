@@ -289,6 +289,12 @@ approval again or hide an exception in a special-case branch.
 
 ## NDNSF-DI experiment storage
 
+- Keep diagnostic logging disabled in normal execution; enable it explicitly
+  for debugging or a qualification check that requires diagnostic evidence.
+  Do not enable verbose or per-token logs implicitly for performance runs.
+  Preserve the minimum structured measurements needed for the timing analysis
+  separately from diagnostic logging. Report unavailable measurements explicitly;
+  disabling logs must not bypass functional, security or lifecycle checks.
 - Reuse a stable disk workspace per purpose rather than creating a fresh
   model-sized build/staging directory for every retry. When available, prefer
   `python3 scripts/ndnsf-di-workspace.py PURPOSE -- COMMAND {workspace}`;
@@ -305,9 +311,12 @@ approval again or hide an exception in a special-case branch.
   its report, statistics and the measurement data needed to recompute and audit
   its results inside this repository's existing `results/` or active feature's
   `specs/` evidence directory. Retain commands, source/configuration identity,
-  outcomes, relevant logs and the first failure boundary. Preserve necessary
-  per-sample data; aggregate statistics alone are insufficient when they cannot
-  substantiate the reported result. Include a detailed timing table for every
+  outcomes and the first failure boundary. Preserve readable summary tables
+  and structured aggregate statistics; after verifying these summaries, delete
+  raw experiment data and diagnostic logs unless a necessary subset is still
+  needed to investigate an unresolved failure. State which raw data was deleted
+  and which analyses the retained summaries support; do not claim that deleted
+  per-sample data remains available for recomputation. Include a detailed timing table for every
   experiment and each request/round, including failed or interrupted attempts.
   Separate launch/material preparation, first request and subsequent requests;
   state timing boundaries and denominators, wall time, available CPU time,
@@ -316,7 +325,7 @@ approval again or hide an exception in a special-case branch.
   wall-minus-CPU as network time. Mark missing measurements and the first
   failure explicitly. Compare matched conditions and use the measured breakdown
   to select the next optimization before changing code or running another trial.
-  Store readable tables and recomputable structured data with the run report.
+  Store readable tables and structured summary data with the run report.
   Do not copy whole temporary run trees into
   the archive merely to relocate their disk consumption.
 - After verifying that the archive is complete and readable and the run's
@@ -325,15 +334,17 @@ approval again or hide an exception in a special-case branch.
   temporary Repo stores, scratch build/install trees and other reproducible
   intermediate files that are no longer required. This is the normal experiment
   closeout, not permission for blanket cleanup of `/var/tmp` or old runs of
-  uncertain ownership. Preserve source models, shared caches, active workspaces,
-  mounted trees and archived evidence. If an artifact is needed to investigate
+  uncertain ownership. For each required model and shared-cache purpose, retain
+  only the latest usable version; remove superseded versions after confirming
+  that active deployments no longer reference them. Preserve active workspaces,
+  mounted trees and archived summaries. If an artifact is needed to investigate
   a failure, retain only the necessary subset and record its path, size and
   reason in the run report. Record what was archived, removed or retained;
   an external run directory is not permanent evidence storage by default.
 - Do not place bulk build objects, install snapshots or model data in
   `/dev/shm`. Its capacity is also needed by VS Code/Chromium. Reuse disk
   workspaces for these operations, including failed retries. Never purge
-  another active workspace, mounted trees, source models or evidence roots.
+  another active workspace, mounted trees, retained current models or evidence roots.
 - If the local workspace helper is unavailable, use an explicitly owned, stable
   disk scratch directory with exclusive access; keep source/cache/evidence
   outside it. Never replace this constraint with per-retry bulk staging in RAM.

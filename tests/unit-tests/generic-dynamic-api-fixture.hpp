@@ -42,7 +42,10 @@ public:
     if (const char* previous = std::getenv(name)) {
       m_previous = previous;
     }
-    ::setenv(name, value, 1);
+    if (value != nullptr)
+      ::setenv(name, value, 1);
+    else
+      ::unsetenv(name);
   }
 
   ~ScopedEnvironmentValue()

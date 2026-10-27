@@ -339,8 +339,9 @@ def test_v4_provider_env_forces_runtime_snapshot_evidence(monkeypatch, tmp_path:
         ROOT / "Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py")
     monkeypatch.setenv("NDNSF_DI_RUNTIME_TIMING", "0")
 
-    v4_env = module.env_for(tmp_path, "requester", require_snapshot_evidence=True)
-    diagnostic_env = module.env_for(tmp_path, "requester")
+    v4_env = module.env_for(tmp_path, "requester", require_snapshot_evidence=True,
+                            debug_logging=True)
+    diagnostic_env = module.env_for(tmp_path, "requester", debug_logging=True)
 
     assert v4_env["NDNSF_DI_RUNTIME_TIMING"] == "1"
     assert diagnostic_env["NDNSF_DI_RUNTIME_TIMING"] == "0"

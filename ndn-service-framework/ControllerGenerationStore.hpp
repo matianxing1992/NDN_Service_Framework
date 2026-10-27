@@ -49,6 +49,7 @@ private:
   std::filesystem::path m_lockPath;
   std::string m_owner;
   uint64_t m_fence = 0;
+  int m_lockFd = -1;
 };
 
 } // namespace ndn_service_framework

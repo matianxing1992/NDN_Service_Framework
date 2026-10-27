@@ -1,11 +1,15 @@
 #include "ControllerGenerationStore.hpp"
 
+#include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <fcntl.h>
 #include <fstream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <utility>
@@ -16,6 +20,31 @@ namespace {
 
 constexpr char STATE_MAGIC[] = "NDNSFCS2";
 constexpr size_t STATE_MAGIC_SIZE = sizeof(STATE_MAGIC) - 1;
+constexpr char LOCK_MAGIC[] = "NDNSF-FLOCK-1";
+constexpr size_t MAX_LEASE_BYTES = 16384;
+
+struct LeaseRecord
+{
+  std::string owner;
+  uint64_t fence = 0;
+};
+
+std::optional<LeaseRecord>
+readLease(int fd)
+{
+  std::array<char, MAX_LEASE_BYTES + 1> bytes;
+  const auto count = ::pread(fd, bytes.data(), bytes.size(), 0);
+  if (count <= 0 || static_cast<size_t>(count) > MAX_LEASE_BYTES)
+    return std::nullopt;
+  std::istringstream input(std::string(bytes.data(), static_cast<size_t>(count)));
+  std::string marker;
+  LeaseRecord record;
+  std::string trailing;
+  if (!std::getline(input, marker) || marker != LOCK_MAGIC ||
+      !(input >> record.owner >> record.fence) || record.fence == 0 || (input >> trailing))
+    return std::nullopt;
+  return record;
+}
 
 std::atomic<uint64_t> nextFence{1};
 
@@ -55,21 +84,39 @@ ControllerGenerationStore::~ControllerGenerationStore()
 bool
 ControllerGenerationStore::acquireWriter(const std::string& owner)
 {
-  if (owner.empty() || ownsWriter())
+  if (owner.empty() || owner.size() > MAX_LEASE_BYTES - 64 || m_lockFd >= 0 ||
+      owner.find_first_of("\r\n\t ") != std::string::npos)
     return false;
-  const int fd = ::open(m_lockPath.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+  int fd = ::open(m_lockPath.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+  const bool created = fd >= 0;
+  if (fd < 0 && errno == EEXIST)
+    fd = ::open(m_lockPath.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
   if (fd < 0)
     return false;
+  struct stat info{};
+  struct stat pathInfo{};
+  if (::flock(fd, LOCK_EX | LOCK_NB) != 0 || ::fstat(fd, &info) != 0 ||
+      ::lstat(m_lockPath.c_str(), &pathInfo) != 0 || !S_ISREG(info.st_mode) ||
+      info.st_uid != ::geteuid() || (info.st_mode & 0077) != 0 || info.st_nlink != 1 ||
+      info.st_dev != pathInfo.st_dev || info.st_ino != pathInfo.st_ino) {
+    ::close(fd);
+    return false;
+  }
+  if (!created && !readLease(fd)) {
+    // An older sentinel-only writer does not hold a kernel lock. Empty or
+    // unknown existing records also require explicit closed-owner migration.
+    ::close(fd);
+    return false;
+  }
+  m_lockFd = fd;
   m_owner = owner;
   m_fence = nextFence.fetch_add(1);
-  const auto contents = m_owner + "\n" + std::to_string(m_fence) + "\n";
-  const auto written = ::write(fd, contents.data(), contents.size());
-  ::fsync(fd);
-  ::close(fd);
-  if (written != static_cast<ssize_t>(contents.size())) {
-    std::filesystem::remove(m_lockPath);
-    m_owner.clear();
-    m_fence = 0;
+  const auto contents = std::string(LOCK_MAGIC) + "\n" + m_owner + "\n" +
+                        std::to_string(m_fence) + "\n";
+  if (::ftruncate(fd, 0) != 0 ||
+      ::pwrite(fd, contents.data(), contents.size(), 0) !=
+        static_cast<ssize_t>(contents.size()) || ::fsync(fd) != 0) {
+    releaseWriter();
     return false;
   }
   return true;
@@ -78,14 +125,17 @@ ControllerGenerationStore::acquireWriter(const std::string& owner)
 bool
 ControllerGenerationStore::ownsWriter() const
 {
-  if (m_owner.empty() || m_fence == 0)
+  if (m_owner.empty() || m_fence == 0 || m_lockFd < 0)
     return false;
-  std::ifstream lock(m_lockPath, std::ios::binary);
-  std::string owner;
-  uint64_t fence = 0;
-  if (!(lock >> owner >> fence))
+  struct stat info{};
+  struct stat pathInfo{};
+  if (::fstat(m_lockFd, &info) != 0 || ::lstat(m_lockPath.c_str(), &pathInfo) != 0 ||
+      !S_ISREG(pathInfo.st_mode) || info.st_uid != ::geteuid() ||
+      (info.st_mode & 0077) != 0 || info.st_nlink != 1 ||
+      info.st_dev != pathInfo.st_dev || info.st_ino != pathInfo.st_ino)
     return false;
-  return owner == m_owner && fence == m_fence;
+  const auto record = readLease(m_lockFd);
+  return record && record->owner == m_owner && record->fence == m_fence;
 }
 
 uint64_t
@@ -97,13 +147,11 @@ ControllerGenerationStore::fencingValue() const
 void
 ControllerGenerationStore::releaseWriter()
 {
-  if (!ownsWriter()) {
-    m_owner.clear();
-    m_fence = 0;
-    return;
-  }
-  std::error_code ec;
-  std::filesystem::remove(m_lockPath, ec);
+  // Keep the inode: unlinking lets another writer lock a new file while an
+  // existing contender still holds the old descriptor.
+  if (m_lockFd >= 0)
+    ::close(m_lockFd);
+  m_lockFd = -1;
   m_owner.clear();
   m_fence = 0;
 }

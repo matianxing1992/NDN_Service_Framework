@@ -344,42 +344,6 @@ std::shared_ptr<const NativeAdapterRegistry> emptyAdapters()
   return std::make_shared<const NativeAdapterRegistry>();
 }
 
-NativeOnnxWorkerLocation
-resolveWorkerLocation()
-{
-  std::vector<std::string> candidates;
-  if (const char* pinned = std::getenv("NDNSF_DI_WORKER_BINARY")) {
-    if (*pinned != '\0') candidates.emplace_back(pinned);
-  }
-  std::array<char, 4096> selfPath{};
-  const auto count = ::readlink("/proc/self/exe", selfPath.data(), selfPath.size() - 1);
-  if (count > 0) {
-    selfPath[static_cast<std::size_t>(count)] = '\0';
-    const auto dir = std::filesystem::path(selfPath.data()).parent_path();
-    candidates.push_back((dir / "DI_NativeOnnxAssemblyWorker").string());
-    candidates.push_back((dir.parent_path() / "DI_NativeOnnxAssemblyWorker").string());
-  }
-  candidates.emplace_back("build-nac182/DI_NativeOnnxAssemblyWorker");
-  candidates.emplace_back("build/DI_NativeOnnxAssemblyWorker");
-  for (const auto& candidate : candidates) {
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(candidate, ec) || ec)
-      continue;
-    std::ifstream input(candidate, std::ios::binary | std::ios::ate);
-    if (!input)
-      continue;
-    const auto size = input.tellg();
-    if (size <= 0 || static_cast<std::uint64_t>(size) > 256ULL * 1024ULL * 1024ULL)
-      continue;
-    input.seekg(0);
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-    if (!input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
-      continue;
-    return NativeOnnxWorkerLocation{candidate, sha256TensorBytes(bytes)};
-  }
-  return {};
-}
-
 std::string
 signAssemblyManifest(ndn::KeyChain& keyChain,
                      const ndn::security::Certificate& certificate,
@@ -1206,7 +1170,7 @@ Provider Provider::fromConfig(const ProviderConfig& config)
   state->adapters = emptyAdapters();
   state->nativeHost = std::make_shared<NativeInferenceProvider>(
     state->serviceProvider, state->adapters);
-  state->workerLocation = resolveWorkerLocation();
+  state->workerLocation = resolveNativeOnnxWorkerLocation();
   if (!state->config->manifestPath.empty()) {
     state->manifestDigest = fileDigest(state->config->manifestPath);
   }
@@ -1265,7 +1229,7 @@ Provider Provider::fromServiceProviderForTest(
   state->adapters = emptyAdapters();
   state->nativeHost = std::make_shared<NativeInferenceProvider>(
     state->serviceProvider, state->adapters);
-  state->workerLocation = resolveWorkerLocation();
+  state->workerLocation = resolveNativeOnnxWorkerLocation();
   if (!state->config->manifestPath.empty())
     state->manifestDigest = fileDigest(state->config->manifestPath);
   const auto started = std::chrono::duration_cast<std::chrono::milliseconds>(

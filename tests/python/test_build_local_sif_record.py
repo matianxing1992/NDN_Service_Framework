@@ -73,10 +73,20 @@ Stage: builder
 
 %post
     export NDNSF_CONTAINER_BUILD=1
+    export NDNSF_NAC_ABE_PREFIX=/opt/ndnsf-stage
+    export NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib
+    export NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib'
     ./waf --targets=di-native-provider
     /opt/venv/bin/pip install ./pythonWrapper
     touch /opt/ndnsf-stage/manifest/container-configure-closure.json
     touch /opt/ndnsf-stage/manifest/container-native-build.json
+    export APP_ELF_RUNTIME_CHECK=ndnsf-app-v2
+    for native_path in /opt/ndnsf-stage/bin/di-native-provider; do
+        /usr/bin/readelf -d "$native_path"
+    done
+    # The synthetic definition tests structural checks, never native execution.
+    # Its recorded verifier boundaries mirror the historical APP contract.
+    echo LINKED_LIBRARY_ORIGIN_MISMATCH UNDECLARED_HOST_LIBRARY
 
 Bootstrap: localimage
 From: {base}
@@ -85,6 +95,13 @@ Stage: final
 %files from builder
     /opt/ndnsf-stage/bin/di-native-provider /opt/ndnsf-di/current/bin/di-native-provider
     /opt/ndnsf-stage/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0
+    /opt/ndnsf-stage/lib/libndnsf-distributed-inference.so /opt/ndnsf-candidate/lib/libndnsf-distributed-inference.so
+    /opt/ndnsf-stage/lib/libndn-svs.so.0.1.0 /opt/ndnsf-candidate/lib/libndn-svs.so.0.1.0
+    /opt/ndnsf-stage/lib/libnac-abe.so /opt/ndnsf-candidate/lib/libnac-abe.so
+    /opt/ndnsf-stage/lib/libndnsd.so.0.1.0 /opt/ndnsf-candidate/lib/libndnsd.so.0.1.0
+    /opt/ndnsf-stage/lib/libopenabe.so /opt/ndnsf-candidate/lib/libopenabe.so
+    /opt/ndnsf-stage/lib/librelic.so /opt/ndnsf-candidate/lib/librelic.so
+    /opt/ndnsf-stage/lib/librelic_ec.so /opt/ndnsf-candidate/lib/librelic_ec.so
     /opt/ndnsf-stage/python /opt/venv/lib/python3.10/site-packages
     /opt/ndnsf-stage/manifest/container-native-build.json /opt/ndnsf-di/current/manifest/container-native-build.json
 
@@ -92,6 +109,7 @@ Stage: final
     export NDNSF_REPLACE_STALE_NATIVE=1
     rm -f /opt/ndnsf-di/current/bin/di-native-provider
     rm -f /opt/ndnsf-di/current/lib/libndn-service-framework.so*
+    rm -f /opt/ndnsf-di/current/lib/libndnsf-distributed-inference.so
     rm -f /opt/venv/lib/python3.10/site-packages/ndnsf/_ndnsf*.so
     for path in /opt/venv/lib/python3.10/site-packages/torch* \\
                 /opt/venv/lib/python3.10/site-packages/transformers* \\
@@ -100,6 +118,26 @@ Stage: final
     done
     find /opt/venv/lib/python3.10/site-packages/ndnsf -name '_ndnsf*.so'
     sha256sum -c /opt/ndnsf-di/current/manifest/container-native-build.json
+    test ! -e /opt/ndnsf-app
+    test ! -L /opt/ndnsf-app
+    install -d /opt/ndnsf-app/bin /opt/ndnsf-app/lib /opt/ndnsf-app/python
+    install -m 0755 /opt/ndnsf-candidate/lib/libndnsf-distributed-inference.so /opt/ndnsf-app/lib/
+    install -m 0755 /opt/ndnsf-candidate/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-app/lib/
+    install -m 0755 /opt/ndnsf-candidate/lib/libndn-svs.so.0.1.0 /opt/ndnsf-app/lib/
+    install -m 0755 /opt/ndnsf-candidate/lib/libnac-abe.so /opt/ndnsf-app/lib/
+    install -m 0755 /opt/ndnsf-candidate/lib/libndnsd.so.0.1.0 /opt/ndnsf-app/lib/
+    install -m 0755 /opt/ndnsf-candidate/lib/libopenabe.so /opt/ndnsf-app/lib/
+    install -m 0755 /opt/ndnsf-candidate/lib/librelic.so /opt/ndnsf-app/lib/
+    install -m 0755 /opt/ndnsf-candidate/lib/librelic_ec.so /opt/ndnsf-app/lib/
+    install -m 0755 /opt/ndnsf-candidate/bin/di-native-provider /opt/ndnsf-app/bin/di-native-provider
+    install -m 0755 /opt/ndnsf-candidate/bin/di-native-fault-provider /opt/ndnsf-app/bin/di-native-fault-provider
+    install -m 0755 /opt/ndnsf-candidate/bin/App_ServiceController /opt/ndnsf-app/bin/App_ServiceController
+    cp -aL /opt/ndnsf-candidate/python/. /opt/ndnsf-app/python/
+    cp -aL /opt/ndnsf-candidate/replay/. /opt/ndnsf-app/replay/
+    cp -aL /opt/ndnsf-candidate/replay/source-seal.json /opt/ndnsf-app/manifest/source-seal.json
+    touch /opt/ndnsf-app/manifest/app-runtime.lock.json
+    export APP_LAYOUT_VERIFY=ndnsf-app-v2
+    echo APP_NATIVE_LIBRARY_CLOSURE_MISMATCH
 
 %labels
     org.ndnsf.di.build-boundary container-runtime-in-sif
@@ -157,9 +195,12 @@ def test_localimage_base_is_hash_bound_in_build_record(tmp_path, host_gate):
     apptainer = tools / "apptainer"
     apptainer.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" = version ]; then echo 1.3.4; exit 0; fi\n"
+        "if [ \"$1\" = version ]; then echo 1.5.3; exit 0; fi\n"
         "if [ \"$1\" = build ]; then shift; "
-        "  [ \"$1\" = --force ] && shift; cp \"$2\" \"$1\"; exit 0; fi\n"
+        "  while [ \"$1\" = --force ] || [ \"$1\" = --no-cleanup ]; do shift; done; "
+        "[ \"$1\" = --mksquashfs-args ] && [ \"$2\" = '-processors 2 -mem 2G' ] || exit 96; "
+        "shift 2; "
+        "cp \"$2\" \"$1\" || exit $?; exit 0; fi\n"
         "if [ \"$1\" = inspect ]; then "
         "  echo '{\"data\":{\"attributes\":{\"labels\":{"
         "\"org.ndnsf.di.build-boundary\":\"container-runtime-in-sif\","
@@ -212,7 +253,7 @@ def test_localimage_base_is_hash_bound_in_build_record(tmp_path, host_gate):
             "--apptainer",
             str(apptainer),
             "--expected-apptainer",
-            "1.3.4-1.el9",
+            "1.5.3",
         ],
         cwd=ROOT,
         env=env,
@@ -244,7 +285,7 @@ def test_r13_style_host_binaries_are_rejected_before_apptainer_build(tmp_path, h
     apptainer.write_text(
         "#!/bin/sh\n"
         f"printf '%s\\n' \"$*\" >> {invocation_log}\n"
-        "if [ \"$1\" = version ]; then echo 1.3.4; exit 0; fi\n"
+        "if [ \"$1\" = version ]; then echo 1.5.3; exit 0; fi\n"
         "exit 97\n",
         encoding="utf-8",
     )
@@ -281,7 +322,7 @@ def test_r13_style_host_binaries_are_rejected_before_apptainer_build(tmp_path, h
             "--apptainer",
             str(apptainer),
             "--expected-apptainer",
-            "1.3.4-1.el9",
+            "1.5.3",
         ],
         cwd=ROOT,
         capture_output=True,
@@ -304,7 +345,7 @@ def test_final_definition_must_remove_functorch_residue(tmp_path, host_gate):
     apptainer.write_text(
         "#!/bin/sh\n"
         f"printf '%s\\n' \"$*\" >> {invocation_log}\n"
-        "if [ \"$1\" = version ]; then echo 1.3.4; exit 0; fi\n"
+        "if [ \"$1\" = version ]; then echo 1.5.3; exit 0; fi\n"
         "exit 97\n",
         encoding="utf-8",
     )
@@ -330,7 +371,7 @@ def test_final_definition_must_remove_functorch_residue(tmp_path, host_gate):
             "--record", str(tmp_path / "build-record.json"),
             "--source-seal", str(source_seal), "--host-gate-manifest", str(host_gate),
             "--apptainer", str(apptainer),
-            "--expected-apptainer", "1.3.4-1.el9",
+            "--expected-apptainer", "1.5.3",
         ],
         cwd=ROOT, capture_output=True, text=True,
     )
@@ -345,9 +386,12 @@ def test_declared_release_label_mismatch_rejects_candidate(tmp_path, host_gate):
     apptainer = tools / "apptainer"
     apptainer.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" = version ]; then echo 1.3.4; exit 0; fi\n"
+        "if [ \"$1\" = version ]; then echo 1.5.3; exit 0; fi\n"
         "if [ \"$1\" = build ]; then shift; "
-        "  [ \"$1\" = --force ] && shift; cp \"$2\" \"$1\"; exit 0; fi\n"
+        "  while [ \"$1\" = --force ] || [ \"$1\" = --no-cleanup ]; do shift; done; "
+        "[ \"$1\" = --mksquashfs-args ] && [ \"$2\" = '-processors 2 -mem 2G' ] || exit 96; "
+        "shift 2; "
+        "cp \"$2\" \"$1\" || exit $?; exit 0; fi\n"
         "if [ \"$1\" = inspect ]; then "
         "  echo '{\"data\":{\"attributes\":{\"labels\":{"
         "\"org.ndnsf.di.build-boundary\":\"container-runtime-in-sif\","
@@ -390,7 +434,7 @@ def test_declared_release_label_mismatch_rejects_candidate(tmp_path, host_gate):
             "--apptainer",
             str(apptainer),
             "--expected-apptainer",
-            "1.3.4-1.el9",
+            "1.5.3",
         ],
         cwd=ROOT,
         env=env,
@@ -412,7 +456,7 @@ def test_stale_declared_source_seal_label_is_rejected_before_build(tmp_path, hos
     apptainer.write_text(
         "#!/bin/sh\n"
         f"printf '%s\\n' \"$*\" >> {invocation_log}\n"
-        "if [ \"$1\" = version ]; then echo 1.3.4; exit 0; fi\n"
+        "if [ \"$1\" = version ]; then echo 1.5.3; exit 0; fi\n"
         "exit 97\n",
         encoding="utf-8",
     )
@@ -442,7 +486,7 @@ def test_stale_declared_source_seal_label_is_rejected_before_build(tmp_path, hos
             "--source-seal", str(source_seal),
             "--host-gate-manifest", str(host_gate),
             "--apptainer", str(apptainer),
-            "--expected-apptainer", "1.3.4-1.el9",
+            "--expected-apptainer", "1.5.3",
         ],
         cwd=ROOT,
         capture_output=True,
@@ -463,7 +507,7 @@ def test_spec175_strict_host_source_identity_rejects_stale_g3(tmp_path, host_gat
     apptainer.write_text(
         "#!/bin/sh\n"
         f"printf '%s\\n' \"$*\" >> {invocation_log}\n"
-        "if [ \"$1\" = version ]; then echo 1.3.4; exit 0; fi\n"
+        "if [ \"$1\" = version ]; then echo 1.5.3; exit 0; fi\n"
         "exit 97\n",
         encoding="utf-8",
     )
@@ -479,7 +523,7 @@ def test_spec175_strict_host_source_identity_rejects_stale_g3(tmp_path, host_gat
             "--source-seal", str(source_seal),
             "--host-gate-manifest", str(host_gate),
             "--strict-host-source-seal",
-            "--apptainer", str(apptainer), "--expected-apptainer", "1.3.4-1.el9",
+            "--apptainer", str(apptainer), "--expected-apptainer", "1.5.3",
         ],
         cwd=ROOT, capture_output=True, text=True,
     )
@@ -501,7 +545,7 @@ def test_host_gate_mismatch_still_rejects_before_build(tmp_path, host_gate, fiel
     apptainer = tmp_path / "apptainer"
     apptainer.write_text(
         "#!/bin/sh\n" + f"printf '%s\\n' \"$*\" >> {invocation_log}\n"
-        "if [ \"$1\" = version ]; then echo 1.3.4; exit 0; fi\nexit 97\n")
+        "if [ \"$1\" = version ]; then echo 1.5.3; exit 0; fi\nexit 97\n")
     apptainer.chmod(0o755)
     definition = tmp_path / "candidate.def"
     definition.write_text("Bootstrap: localimage\nFrom: /missing/base.sif\n")
@@ -511,7 +555,7 @@ def test_host_gate_mismatch_still_rejects_before_build(tmp_path, host_gate, fiel
         str(BUILD_LOCAL_SIF), "--definition", str(definition), "--sif", str(candidate),
         "--record", str(record), "--source-seal", str(source_seal),
         "--host-gate-manifest", str(host_gate), "--apptainer", str(apptainer),
-        "--expected-apptainer", "1.3.4-1.el9",
+        "--expected-apptainer", "1.5.3",
     ], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 4 and reason in result.stderr
     assert invocation_log.read_text().splitlines() == ["version"]

@@ -44,13 +44,13 @@ def test_native_environment_enables_required_evidence(monkeypatch, tmp_path,
     monkeypatch.delenv("NDNSF_NDN_LOG", raising=False)
     if configured is not None:
         monkeypatch.setenv("NDNSF_NDN_LOG", configured)
-    assert module.env_for(tmp_path, "ucla")["NDN_LOG"] == expected
+    assert module.env_for(tmp_path, "ucla", debug_logging=True)["NDN_LOG"] == expected
 
 
 def test_native_environment_collects_phase_timing_by_default(monkeypatch, tmp_path):
     module = load_native_module()
     monkeypatch.delenv("NDNSF_PHASE_TIMING", raising=False)
-    assert module.env_for(tmp_path, "ucla")["NDNSF_PHASE_TIMING"] == "1"
+    assert module.env_for(tmp_path, "ucla", debug_logging=True)["NDNSF_PHASE_TIMING"] == "1"
 
 
 def test_requester_publications_use_explicit_run_storage(monkeypatch, tmp_path):
@@ -67,19 +67,76 @@ def test_requester_publications_use_explicit_run_storage(monkeypatch, tmp_path):
 def test_native_environment_honors_explicit_phase_timing_override(monkeypatch, tmp_path):
     module = load_native_module()
     monkeypatch.setenv("NDNSF_PHASE_TIMING", "0")
-    assert module.env_for(tmp_path, "ucla")["NDNSF_PHASE_TIMING"] == "0"
+    assert module.env_for(tmp_path, "ucla", debug_logging=True)["NDNSF_PHASE_TIMING"] == "0"
 
 
 def test_native_environment_collects_planner_timing_by_default(monkeypatch, tmp_path):
     module = load_native_module()
     monkeypatch.delenv("NDNSF_DI_RUNTIME_TIMING", raising=False)
-    assert module.env_for(tmp_path, "ucla")["NDNSF_DI_RUNTIME_TIMING"] == "1"
+    assert module.env_for(tmp_path, "ucla", debug_logging=True)["NDNSF_DI_RUNTIME_TIMING"] == "1"
 
 
 def test_native_environment_honors_explicit_planner_timing_override(monkeypatch, tmp_path):
     module = load_native_module()
     monkeypatch.setenv("NDNSF_DI_RUNTIME_TIMING", "0")
-    assert module.env_for(tmp_path, "ucla")["NDNSF_DI_RUNTIME_TIMING"] == "0"
+    assert module.env_for(tmp_path, "ucla", debug_logging=True)["NDNSF_DI_RUNTIME_TIMING"] == "0"
+
+
+def test_quiet_environment_ignores_host_diagnostics_and_unsets_merged_env(monkeypatch, tmp_path):
+    module = load_native_module()
+    monkeypatch.setenv("NDNSF_NDN_LOG", "*=ALL")
+    monkeypatch.setenv("NDN_LOG", "*=ALL")
+    for key in module.DIAGNOSTIC_ENVIRONMENT:
+        monkeypatch.setenv(key, "1")
+    env = module.env_for(tmp_path, "ucla", require_snapshot_evidence=True)
+    assert env["NDN_LOG"] == "*=NONE"
+    assert not set(env).intersection(module.DIAGNOSTIC_ENVIRONMENT)
+    # Execute the actual shell wrapper against a contaminated environment.
+    result = module.subprocess.run(
+        module.diagnostic_command("/usr/bin/printenv", False), shell=True,
+        env={**module.os.environ, **env}, capture_output=True, text=True, check=True)
+    actual = dict(line.split("=", 1) for line in result.stdout.splitlines())
+    assert actual["NDN_LOG"] == "*=NONE"
+    assert not set(actual).intersection(module.DIAGNOSTIC_ENVIRONMENT)
+    assert module.diagnostic_command("original command", True) == "original command"
+
+
+def test_native_statistics_waits_for_a_complete_registration_receipt(monkeypatch, tmp_path):
+    module = load_native_module()
+    path = tmp_path / "statistics.jsonl"
+    process = SimpleNamespace(poll=lambda: None)
+    path.write_text('{"type":"serve-ready"}')
+    calls = []
+    def flush(_):
+        calls.append(True)
+        path.write_text('{"type":"serve-ready"}\n')
+    monkeypatch.setattr(module.time, "sleep", flush)
+    rows = module.wait_for_provider_statistics(process, path, 0, 1)
+    assert rows == [{"type": "serve-ready"}] and calls == [True]
+
+
+@pytest.mark.parametrize("failure", ["death", "native-failure", "malformed", "timeout"])
+def test_native_statistics_wait_cannot_accept_incomplete_or_failed_provider(tmp_path, failure):
+    module = load_native_module()
+    path = tmp_path / "statistics.jsonl"
+    process = SimpleNamespace(returncode=7, poll=lambda: 7 if failure == "death" else None)
+    content = '{"type":"serve-ready"}\n'
+    if failure == "native-failure":
+        content += '{"type":"request","completionAdmitted":false,"failureReason":"test-failure"}\n'
+    if failure == "malformed":
+        content = 'invalid\n'
+    path.write_text(content)
+    with pytest.raises((RuntimeError, ValueError)):
+        module.wait_for_provider_statistics(process, path, 1, 0.01)
+
+
+def test_quiet_wait_observes_provider_death_before_requester_exit(tmp_path):
+    module = load_native_module()
+    requester = SimpleNamespace(poll=lambda: None)
+    provider = SimpleNamespace(returncode=9, poll=lambda: 9)
+    with pytest.raises(RuntimeError, match="Provider exited 9"):
+        module.wait_for_native_round(requester, tmp_path / "requester.log", [], 1,
+                                     providers=[(provider, tmp_path / "statistics.jsonl")])
 
 
 def test_native_wait_aborts_on_prefixed_provider_terminal_record(tmp_path):
@@ -473,6 +530,66 @@ def test_native_encrypted_repository_path_cannot_be_inside_run_root(tmp_path: Pa
     run_root.mkdir()
     with pytest.raises(RuntimeError, match="ENCRYPTED_REPOSITORY_PATH_MUST_BE_OUTSIDE_RUN_ROOT"):
         module.resolve_encrypted_repository_path(run_root, run_root / "external")
+
+
+def test_native_encrypted_repository_reclaims_only_expired_dead_owner(monkeypatch, tmp_path):
+    module = load_native_module()
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    external = module.resolve_encrypted_repository_path(run_root, tmp_path / "encrypted")
+    (external / "old-payload").write_bytes(b"reproducible ciphertext")
+    source = tmp_path / "source-model"
+    source.write_bytes(b"immutable original")
+    lease = external.parent / (external.name + module.ENCRYPTED_REPOSITORY_LEASE)
+    metadata = json.loads(lease.read_text())
+    metadata["pid"] = 987654321
+    lease.write_text(json.dumps(metadata))
+    old = module.time.time() - module.ENCRYPTED_REPOSITORY_STALE_AFTER_S - 10
+    module.os.utime(lease, (old, old))
+
+    def dead_owner(pid, signal):
+        assert pid == metadata["pid"] and signal == 0
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(module.os, "kill", dead_owner)
+    assert module.resolve_encrypted_repository_path(run_root, external) == external
+    assert list(external.iterdir()) == []
+    assert json.loads(lease.read_text())["pid"] == module.os.getpid()
+    assert source.read_bytes() == b"immutable original"
+    assert module.cleanup_encrypted_repository(external, run_root)
+
+
+@pytest.mark.parametrize("guard", ["live", "denied", "fresh", "foreign-root", "changed-owner"])
+def test_native_stale_repository_cleanup_preserves_unowned_data(monkeypatch, tmp_path, guard):
+    module = load_native_module()
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    external = module.resolve_encrypted_repository_path(run_root, tmp_path / "encrypted")
+    payload = external / "payload"
+    payload.write_bytes(b"must survive")
+    lease = external.parent / (external.name + module.ENCRYPTED_REPOSITORY_LEASE)
+    metadata = json.loads(lease.read_text())
+    owner = 987654321
+    metadata["pid"] = owner + 1 if guard == "changed-owner" else owner
+    if guard == "foreign-root":
+        metadata["runRoot"] = str(tmp_path / "other-run")
+    lease.write_text(json.dumps(metadata))
+    if guard != "fresh":
+        old = module.time.time() - module.ENCRYPTED_REPOSITORY_STALE_AFTER_S - 10
+        module.os.utime(lease, (old, old))
+
+    def owner_probe(pid, signal):
+        assert pid == owner and signal == 0
+        if guard == "live":
+            return
+        if guard == "denied":
+            raise PermissionError()
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(module.os, "kill", owner_probe)
+    assert not module.cleanup_encrypted_repository(external, run_root, stale_owner_pid=owner)
+    assert payload.read_bytes() == b"must survive"
+    assert json.loads(lease.read_text()) == metadata
 
 
 def test_native_digest_gate_requires_expected_identity(tmp_path: Path):

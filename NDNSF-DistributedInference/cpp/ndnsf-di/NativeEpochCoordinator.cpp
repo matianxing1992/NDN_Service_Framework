@@ -310,9 +310,10 @@ struct PendingInputPrefetch
   ~PendingInputPrefetch()
   {
     if (cancelOnAbandon && cancellation) {
-      // Cancel first; pending async futures are destroyed next, while `io`
-      // and the optional capability remain alive until the final member is destroyed.
+      // Keep IO and its capability alive until reusable workers have exited.
+      // Async implementations retain their existing future-destructor drain.
       cancellation->cancelPendingPrefetches();
+      cancellation->drainPendingPrefetches();
     }
   }
 };
@@ -1279,18 +1280,10 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       [stopCheck = config.stopCheck, executionGuard = config.executionGuard] {
         throwIfStopped(stopCheck, executionGuard);
       };
-    std::future<ProviderRoleResult> roleFuture;
-    if (config.prepareRunner) {
-      roleFuture = config.runtime.executePreparedRoleAsync(
-        config.sessionId, executable, config.io, config.prepareRunner,
-        std::move(inputs), {}, stopGuard);
-    }
-    else {
-      roleFuture = config.runtime.executeRoleAsync(
-        config.sessionId, executable, config.io, std::move(inputs), {}, stopGuard);
-    }
-    traceEpoch("role_submitted", config.role, epoch);
-    auto roleResult = roleFuture.get();
+    traceEpoch("role_submit_begin", config.role, epoch);
+    auto roleResult = config.runtime.executeRole(
+      config.sessionId, executable, config.io, config.prepareRunner,
+      std::move(inputs), {}, stopGuard);
     traceEpoch("role_done", config.role, epoch);
     try {
       throwIfStopped(config);
@@ -1344,6 +1337,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         if (config.resultObserver) {
           config.resultObserver(executable, roleResult);
         }
+        result.finalExecutionEvidence = std::move(roleResult.executionEvidence);
         return result;
       }
 
@@ -1394,6 +1388,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           // A committed state-only finalization is successful completion,
           // not an upstream STOP. The ordinary terminal-control branches
           // retain their stoppedByUpstream result.
+          result.finalExecutionEvidence = std::move(roleResult.executionEvidence);
           return result;
         }
         continue;
@@ -1562,6 +1557,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           // before that state-only pass has committed the receipt state.
           continue;
         }
+        result.finalExecutionEvidence = std::move(roleResult.executionEvidence);
         return result;
       }
     }

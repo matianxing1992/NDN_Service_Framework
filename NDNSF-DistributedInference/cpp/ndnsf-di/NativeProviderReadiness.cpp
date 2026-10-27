@@ -1,7 +1,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp"
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/execution-evidence-aggregation.hpp"
 #include "ndn-service-framework/NegativeAckReason.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -13,9 +15,78 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace ndnsf::di {
 namespace {
+
+std::string
+formatExecutionEvidenceUpdateSummary(const ExecutionEvidence& evidence)
+{
+  std::ostringstream record;
+  record << "NDNSF_DI_EXECUTION_EVIDENCE_UPDATE"
+         << " provider=" << evidence.providerName
+         << " evidenceEpoch=" << evidence.evidenceEpoch
+         << " runnerKind=" << toString(evidence.runnerKind)
+         << " realCompute=" << (evidence.realCompute ? "true" : "false")
+         << " loadCompleted=" << (evidence.loadCompleted ? "true" : "false")
+         << " warmupCompleted=" << (evidence.warmupCompleted ? "true" : "false")
+         << " executionCompleted=" << (evidence.executionCompleted ? "true" : "false")
+         << " exactForwardCacheHit=" << (evidence.exactForwardCacheHit ? "true" : "false")
+         << " roles=" << evidence.roles.size()
+         << " artifacts=" << evidence.artifactDigests.size()
+         << " nodeProviderAssignments=" << evidence.getNodeProviderAssignments().size()
+         << " requestId=" << evidence.requestId
+         << " attemptEpoch=" << evidence.attemptEpoch
+         << " profileCaptured=" << (!evidence.providerProfilePath.empty() ? "true" : "false")
+         << " profileRequestId=" << evidence.profileRequestId
+         << " profileAttemptEpoch=" << evidence.profileAttemptEpoch;
+  return record.str();
+}
+
+bool
+hasSameExecutionEvidence(const ExecutionEvidence& left, const ExecutionEvidence& right)
+{
+  const auto& leftAssignments = left.getNodeProviderAssignments();
+  const auto& rightAssignments = right.getNodeProviderAssignments();
+  return left.schema == right.schema &&
+         left.providerName == right.providerName &&
+         left.providerBootId == right.providerBootId &&
+         left.evidenceEpoch == right.evidenceEpoch &&
+         left.runnerKind == right.runnerKind &&
+         left.realCompute == right.realCompute &&
+         left.deviceKind == right.deviceKind &&
+         left.deviceId == right.deviceId &&
+         left.deviceIds == right.deviceIds &&
+         left.runtimeVersion == right.runtimeVersion &&
+         left.modelDigest == right.modelDigest &&
+         left.planDigest == right.planDigest &&
+         left.artifactDigests == right.artifactDigests &&
+         left.roles == right.roles &&
+         left.cpuFallbackUsed == right.cpuFallbackUsed &&
+         left.loadCompleted == right.loadCompleted &&
+         left.warmupCompleted == right.warmupCompleted &&
+         left.gpuUuid == right.gpuUuid &&
+         left.gpuUuids == right.gpuUuids &&
+         left.providerProfilePath == right.providerProfilePath &&
+         left.createdAtMs == right.createdAtMs &&
+         left.processId == right.processId &&
+         left.cudaVisibleDevices == right.cudaVisibleDevices &&
+         left.gpuIdentitySource == right.gpuIdentitySource &&
+         left.requestId == right.requestId &&
+         left.attemptEpoch == right.attemptEpoch &&
+         left.executionCompleted == right.executionCompleted &&
+         left.exactForwardCacheHit == right.exactForwardCacheHit &&
+         left.profileRequestId == right.profileRequestId &&
+         left.profileAttemptEpoch == right.profileAttemptEpoch &&
+         (&leftAssignments == &rightAssignments ||
+          (leftAssignments.size() == rightAssignments.size() &&
+           std::equal(leftAssignments.begin(), leftAssignments.end(),
+                      rightAssignments.begin(), [] (const auto& a, const auto& b) {
+                        return a.role == b.role && a.nodeName == b.nodeName &&
+                               a.provider == b.provider && a.modelNode == b.modelNode;
+                      })));
+}
 
 ndn::Buffer
 toBuffer(const std::string& text)
@@ -197,7 +268,8 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
                                const ndn::Name& providerName,
                                const ndn::Name& serviceName,
                                const std::string& executionEvidenceJson,
-                               const std::map<std::string, ExecutionEvidence>&
+                               const std::map<std::string,
+                                              std::shared_ptr<const ExecutionEvidence>>&
                                  executionEvidenceByRole,
                                const NativeProviderTelemetrySnapshot* telemetry)
 {
@@ -374,7 +446,7 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
         json << ",";
       }
       first = false;
-      json << jsonString(item.first) << ":" << executionEvidenceToJson(item.second);
+      json << jsonString(item.first) << ":" << executionEvidenceToJson(*item.second);
     }
     json << "}";
   }
@@ -639,8 +711,9 @@ void
 NativeProviderReadinessState::setExecutionEvidence(ExecutionEvidence evidence)
 {
   evidence.validate();
+  auto snapshot = std::make_shared<const ExecutionEvidence>(std::move(evidence));
   std::lock_guard<std::mutex> lock(m_mutex);
-  m_executionEvidence = std::move(evidence);
+  m_executionEvidence.swap(snapshot);
 }
 
 void
@@ -650,8 +723,70 @@ NativeProviderReadinessState::setExecutionEvidenceByRole(
   for (const auto& item : evidenceByRole) {
     item.second.validate();
   }
+  std::map<std::string, std::shared_ptr<const ExecutionEvidence>> snapshots;
+  for (auto& item : evidenceByRole) {
+    snapshots.emplace(item.first,
+                      std::make_shared<const ExecutionEvidence>(std::move(item.second)));
+  }
   std::lock_guard<std::mutex> lock(m_mutex);
-  m_executionEvidenceByRole = std::move(evidenceByRole);
+  m_executionEvidenceByRole.swap(snapshots);
+}
+
+std::string
+NativeProviderReadinessState::updateExecutionEvidence(const ExecutionEvidence& observed)
+{
+  observed.validate();
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (observed.roles.size() == 1 && m_executionEvidenceByRole.size() == 1) {
+      const auto& previous = *m_executionEvidenceByRole.begin();
+      // Only an atomic canonical singleton update shares these owners.
+      // Independent legacy setters must still reconcile through aggregation.
+      if (previous.first == observed.roles.front() && previous.second &&
+          previous.second == m_executionEvidence &&
+          hasSameExecutionEvidence(observed, *previous.second)) {
+        return formatExecutionEvidenceUpdateSummary(*m_executionEvidence);
+      }
+    }
+  }
+  const auto observation = std::make_shared<const ExecutionEvidence>(observed);
+  const auto singleIdentifierUnchanged = [] (const std::vector<std::string>& ids,
+                                             const std::string& label) {
+    return (ids.empty() && label.empty()) ||
+           (ids.size() == 1 && !ids.front().empty() && ids.front() == label);
+  };
+  std::map<std::string, std::shared_ptr<const ExecutionEvidence>> nextByRole;
+  std::shared_ptr<const ExecutionEvidence> nextAggregate;
+  std::string summary;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    nextByRole = m_executionEvidenceByRole;
+    for (const auto& role : observed.roles) {
+      nextByRole[role] = observation;
+    }
+    // A singleton aggregate only normalizes roles and device/GPU identifiers.
+    // Share the immutable inventory only when those fields already match;
+    // every other representation retains the original aggregation path.
+    if (nextByRole.size() == 1 && observation->roles.size() == 1 &&
+        singleIdentifierUnchanged(observation->deviceIds, observation->deviceId) &&
+        singleIdentifierUnchanged(observation->gpuUuids, observation->gpuUuid)) {
+      nextAggregate = observation;
+    }
+    else {
+      std::vector<std::reference_wrapper<const ExecutionEvidence>> references;
+      references.reserve(nextByRole.size());
+      for (const auto& item : nextByRole) {
+        references.emplace_back(*item.second);
+      }
+      nextAggregate = std::make_shared<const ExecutionEvidence>(
+        detail::aggregateExecutionEvidence(references));
+    }
+    summary = formatExecutionEvidenceUpdateSummary(*nextAggregate);
+    // Both swaps are nonthrowing. Retired snapshots release outside the lock.
+    m_executionEvidence.swap(nextAggregate);
+    m_executionEvidenceByRole.swap(nextByRole);
+  }
+  return summary;
 }
 
 ndn_service_framework::ServiceProvider::AckDecision
@@ -678,8 +813,8 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
   CapacitySnapshotProvider capacitySnapshotProvider;
   TelemetrySnapshotProvider telemetrySnapshotProvider;
   std::optional<NativeProviderTelemetrySnapshot> telemetrySnapshot;
-  std::optional<ExecutionEvidence> executionEvidence;
-  std::map<std::string, ExecutionEvidence> executionEvidenceByRole;
+  std::shared_ptr<const ExecutionEvidence> executionEvidence;
+  std::map<std::string, std::shared_ptr<const ExecutionEvidence>> executionEvidenceByRole;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     ready = m_status == Status::Ready;
@@ -725,7 +860,7 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
     // Preserve the semantic checks performed by the discarded legacy evidence
     // formatter. The owning snapshot is also used if the factory declines.
     if (executionEvidence) executionEvidence->validate();
-    for (const auto& item : executionEvidenceByRole) item.second.validate();
+    for (const auto& item : executionEvidenceByRole) item.second->validate();
     if (auto replacement = acceptedPayload(decision)) return std::move(*replacement);
   }
   const auto capabilityReason = decision.status ? std::string() :
