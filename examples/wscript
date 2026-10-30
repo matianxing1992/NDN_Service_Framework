@@ -4,11 +4,6 @@ top = '..'
 
 def build(bld):
     runtime_libdir = Utils.subst_vars('${LIBDIR}', bld.env)
-    bld.program(name='ndnsf-identity-check',
-                target='ndnsf-identity-check',
-                source=['identity-check.cpp'],
-                use='NDN_CXX',
-                install_path='${BINDIR}')
     bld.program(name='App_ServiceController',
                 target='App_ServiceController',
                 source=['App_ServiceController.cpp'],
@@ -506,6 +501,7 @@ def build(bld):
         # source closure instead of relying on a shared-library transitive
         # symbol that those targets do not link.
         'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.cpp',
+        'NDNSF-DistributedInference/cpp/adapters/onnx/onnx-runtime-graph-metadata.cpp',
         # prepareNativeCanonicalOnnxRole activates through the OA02 worker
         # subprocess transport, which lives in this TU.
         'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp',

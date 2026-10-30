@@ -5,6 +5,7 @@
 #include "PolicyStatus.hpp"
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -20,6 +21,16 @@ public:
 
   ControllerGenerationStore(const ControllerGenerationStore&) = delete;
   ControllerGenerationStore& operator=(const ControllerGenerationStore&) = delete;
+
+  /** Acquire an identity-scoped default, preserving a proven legacy store in place. */
+  static std::unique_ptr<ControllerGenerationStore>
+  openDefault(const std::string& identity, const std::filesystem::path& legacyStatePath);
+
+  const std::filesystem::path&
+  statePath() const noexcept
+  {
+    return m_statePath;
+  }
 
   bool acquireWriter(const std::string& owner);
   bool ownsWriter() const;
@@ -41,6 +52,7 @@ private:
   };
 
   void requireWriter() const;
+  bool acquireWriterImpl(const std::string& owner, bool requireSameOwner);
   PersistedState loadState() const;
   void persist(const ControllerVersion& version,
                const std::vector<RevocationTarget>& revocations) const;

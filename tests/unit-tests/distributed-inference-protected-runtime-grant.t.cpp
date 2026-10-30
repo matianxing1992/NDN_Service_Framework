@@ -199,8 +199,10 @@ void checkWorkerFence(BoundGrantFixture& fixture, bool duringRun, bool cancelReq
       return runner;
     }, {}, {}, [&] { runtime.withContentKey(fixture.now, [] (const auto&) {}); });
   BOOST_REQUIRE(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
-  BOOST_CHECK_EXCEPTION(future.get(), std::runtime_error, [] (const std::runtime_error& error) {
-    return std::string(error.what()).find("DI_PROTECTED_GRANT_REJECTED") != std::string::npos;
+  BOOST_CHECK_EXCEPTION(future.get(), std::runtime_error, [&] (const std::runtime_error& error) {
+    const auto expected = cancelRequest ? "reason=REQUEST_CANCELLED" : "reason=GRANT_EXPIRED";
+    return std::string(error.what()).find("DI_PROTECTED_GRANT_REJECTED") != std::string::npos &&
+           std::string(error.what()).find(expected) != std::string::npos;
   });
   BOOST_CHECK_EQUAL(preparations, 1);
   BOOST_CHECK_EQUAL(executions, duringRun ? 1 : 0);
@@ -639,9 +641,35 @@ BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeCancellationBeforeConsumptionDrains, Bou
   runtime.verifyGrant(binding, now);
   runtime.registerHostPlaintextLease("model", [&] { cleaned = true; });
   cancelled = true;
-  BOOST_CHECK_THROW(runtime.withContentKey(now, [] (const auto&) {}), std::runtime_error);
+  BOOST_CHECK_EXCEPTION(runtime.withContentKey(now, [] (const auto&) {}), std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("reason=REQUEST_CANCELLED") != std::string::npos;
+    });
   BOOST_CHECK(cleaned);
   BOOST_CHECK(runtime.state() == ProtectedRuntimeState::Zeroized);
+}
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeLeaseFailuresRemainSpecificWithoutLogs, BoundGrantFixture)
+{
+  for (const auto& reason : {"UNAUTHORIZED_STATE", "GRANT_EXPIRED", "MISSING_CONSUMER"}) {
+    ProtectedRuntime runtime(binding, config);
+    runtime.verifyGrant(binding, now);
+    bool cleaned = false;
+    runtime.registerHostPlaintextLease("model", [&] { cleaned = true; });
+    if (std::string(reason) == "UNAUTHORIZED_STATE")
+      runtime.complete();
+    const auto at = std::string(reason) == "GRANT_EXPIRED" ? binding.expiresAtMs : now;
+    const std::function<void(const std::vector<std::uint8_t>&)> consume =
+      std::string(reason) == "MISSING_CONSUMER" ?
+        std::function<void(const std::vector<std::uint8_t>&)>{} :
+        [] (const auto&) { BOOST_FAIL("rejected lease exposed its key"); };
+    BOOST_CHECK_EXCEPTION(runtime.withContentKey(at, consume), std::runtime_error,
+      [&] (const std::runtime_error& error) {
+        return std::string(error.what()).find(std::string("reason=") + reason) != std::string::npos;
+      });
+    BOOST_CHECK(cleaned);
+    BOOST_CHECK(runtime.state() == ProtectedRuntimeState::Zeroized);
+  }
 }
 
 BOOST_FIXTURE_TEST_CASE(NativeProtectedStoreSealsAndAuthenticatesAllEntryKinds, BoundGrantFixture)

@@ -324,12 +324,16 @@ copySourceToStore(int sourceFd, const std::string& sourcePath,
     store.begin(payloadRef, LOCAL_GENERATION);
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(
       makeSha256Context(), EVP_MD_CTX_free);
-    std::array<uint8_t, COPY_CHUNK_BYTES> buffer{};
+    // Local import uses the existing store range bound to avoid a durable
+    // checkpoint and file reopen for every MiB on shared filesystems.
+    std::vector<uint8_t> buffer(static_cast<size_t>(
+      std::min<uint64_t>(MAX_STORE_RANGE_BYTES, reference.sizeBytes)));
     uint64_t offset = 0;
     while (offset < reference.sizeBytes) {
       requireFileDeadline(deadline);
       const auto amount = static_cast<size_t>(
-        std::min<uint64_t>(buffer.size(), reference.sizeBytes - offset));
+        std::min<uint64_t>(MAX_STORE_RANGE_BYTES, reference.sizeBytes - offset));
+      buffer.resize(amount);
       const auto count = ::pread(sourceFd, buffer.data(), amount,
                                  static_cast<off_t>(offset));
       if (count < 0) {
@@ -347,9 +351,9 @@ copySourceToStore(int sourceFd, const std::string& sourcePath,
         throw std::runtime_error(
           "repo-artifact-digest-failed: SHA-256 update failed");
       }
-      std::vector<uint8_t> bytes(buffer.begin(), buffer.begin() + countBytes);
+      buffer.resize(countBytes);
       const ArtifactByteRange range{offset, static_cast<uint64_t>(countBytes)};
-      store.writeRange(payloadRef, LOCAL_GENERATION, range, bytes);
+      store.writeRange(payloadRef, LOCAL_GENERATION, range, buffer);
       store.markVerified(payloadRef, LOCAL_GENERATION, range);
       offset += static_cast<uint64_t>(countBytes);
     }

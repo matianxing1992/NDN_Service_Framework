@@ -34,6 +34,25 @@ def load_native_module():
     return module
 
 
+@pytest.mark.parametrize('entry', ['local', 'native'])
+def test_deployment_execution_bypasses_historical_build_and_stage_inputs(monkeypatch, entry):
+    module = load_module() if entry == 'local' else load_native_module()
+    calls = []
+    def delegate(arguments):
+        calls.append(arguments)
+        return 7
+    monkeypatch.setitem(sys.modules, 'native_deployment_entrypoint',
+                        SimpleNamespace(run_deployment=delegate))
+    arguments = ['run', '--deployment', '/installed/deployment.json', '--verify']
+    if entry == 'local':
+        monkeypatch.setattr(sys, 'argv', [str(SCRIPT), *arguments])
+        monkeypatch.setattr(module, 'parse_args', lambda: pytest.fail('legacy profile parser entered'))
+        result = module.main()
+    else:
+        result = module.main(arguments)
+    assert result == 7 and calls == [arguments]
+
+
 @pytest.mark.parametrize("configured,expected", [
     (None, "*=WARN"), ("", "*=WARN"), ("*=ERROR:ndnsf.di.RuntimeEvidence=WARN",
                                            "*=ERROR:ndnsf.di.RuntimeEvidence=WARN"),
@@ -377,17 +396,33 @@ def test_model_layer_rejects_non_onnx_source(tmp_path: Path):
     assert result["reason"] == "MODEL_CANONICAL_SOURCE_NOT_ONNX"
 
 
-def test_model_layer_accepts_small_canonical_onnx_fixture():
+@pytest.fixture
+def canonical_onnx_source(tmp_path):
+    # This tests the offline file-summary adapter, not Qwen execution. Do not
+    # depend on an ignored model export left by another native test run.
+    import onnx
+    from onnx import TensorProto, helper
+    graph = helper.make_graph([helper.make_node('Identity', ['input'], ['output'])],
+        'canonical-source-fixture',
+        [helper.make_tensor_value_info('input', TensorProto.FLOAT, [1])],
+        [helper.make_tensor_value_info('output', TensorProto.FLOAT, [1])])
+    source = tmp_path / 'canonical-source.onnx'
+    onnx.save_model(helper.make_model(graph), source)
+    return source
+
+
+def test_model_layer_accepts_small_canonical_onnx_fixture(canonical_onnx_source):
     module = load_module()
     result = module.canonical_source_info(
-        ROOT / "tests/fixtures/spec182/qwen-native-config.onnx", None)
+        canonical_onnx_source, None)
     assert result["status"] == "PASS"
     assert result["nodeCount"] > 0
 
 
-def test_canonical_source_summary_cache_avoids_reparsing_same_content(monkeypatch, tmp_path):
+def test_canonical_source_summary_cache_avoids_reparsing_same_content(
+        monkeypatch, tmp_path, canonical_onnx_source):
     module = load_module()
-    source = ROOT / "tests/fixtures/spec182/qwen-native-config.onnx"
+    source = canonical_onnx_source
     cache_root = tmp_path / "cache"
     first = module.canonical_source_info(source, None, cache_root)
     assert first["status"] == "PASS"

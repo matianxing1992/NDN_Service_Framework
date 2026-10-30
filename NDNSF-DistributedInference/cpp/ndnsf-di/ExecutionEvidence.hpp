@@ -112,6 +112,18 @@ void applyOnnxRuntimeProviderProfile(ExecutionEvidence& evidence,
                                      bool cpuFallbackUsed,
                                      const std::string& gpuUuid = "");
 
+/** Admit graph-proven host metadata while requiring all model kernels on CUDA.
+ * Inventories must come from the adapter's actual graph inspection. Optional
+ * model nodes are proven no-ops that ORT may omit, never CPU exceptions.
+ */
+void applyOnnxRuntimeProviderProfile(
+  ExecutionEvidence& evidence, const std::string& profilePath, const std::string& role,
+  bool cpuFallbackUsed, const std::string& gpuUuid,
+  const std::map<std::string, std::string>& hostMetadataNodes,
+  const std::map<std::string, std::string>& modelNodes,
+  const std::map<std::string, std::string>& optionalModelNodes,
+  const std::map<std::string, std::string>& modelNodeAliases = {});
+
 std::string executionEvidenceToJson(const ExecutionEvidence& evidence);
 ExecutionEvidence executionEvidenceFromJson(const std::string& json);
 

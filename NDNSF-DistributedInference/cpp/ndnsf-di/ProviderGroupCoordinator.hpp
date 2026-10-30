@@ -65,6 +65,10 @@ struct GroupCapabilityV1
   void validate() const;
   ProviderGroupBytes canonicalBytes(bool includeDigest = false) const;
   GroupCapabilityV1 projectForProvider(const std::string& provider) const;
+
+private:
+  friend class ProviderGroupCoordinator;
+  ProviderGroupBytes encodeFields(bool includeDigest, bool compactOperations) const;
 };
 
 struct CollectiveOperationManifestV1
@@ -175,7 +179,10 @@ public:
   ProviderGroupBytes
   epochKeyForProvider(const std::string& provider) const;
 
-  /** Canonical bounded wire form carried inside a Provider assignment. */
+  /**
+   * Bounded assignment wire: V2 folds repeated operation runs when smaller.
+   * Both wire versions restore the same V1 canonical signed capability.
+   */
   static ProviderGroupBytes
   encodeCapability(const GroupCapabilityV1& capability);
 

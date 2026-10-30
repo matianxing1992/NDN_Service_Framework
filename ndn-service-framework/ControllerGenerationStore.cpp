@@ -1,5 +1,8 @@
 #include "ControllerGenerationStore.hpp"
 
+#include <ndn-cxx/name.hpp>
+#include <ndn-cxx/util/sha256.hpp>
+
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -49,10 +52,26 @@ readLease(int fd)
 std::atomic<uint64_t> nextFence{1};
 
 void
-writeU64(std::ostream& stream, uint64_t value)
+writeAll(int fd, const char* bytes, size_t size)
 {
-  for (int shift = 56; shift >= 0; shift -= 8)
-    stream.put(static_cast<char>((value >> shift) & 0xff));
+  size_t written = 0;
+  while (written < size) {
+    const auto count = ::write(fd, bytes + written, size - written);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      throw std::runtime_error("cannot write Controller generation state");
+    written += static_cast<size_t>(count);
+  }
+}
+
+void
+writeU64(int fd, uint64_t value)
+{
+  std::array<char, 8> bytes{};
+  for (size_t i = 0; i < bytes.size(); ++i)
+    bytes[i] = static_cast<char>((value >> (56 - 8 * i)) & 0xff);
+  writeAll(fd, bytes.data(), bytes.size());
 }
 
 uint64_t
@@ -81,8 +100,58 @@ ControllerGenerationStore::~ControllerGenerationStore()
   releaseWriter();
 }
 
+std::unique_ptr<ControllerGenerationStore>
+ControllerGenerationStore::openDefault(
+  const std::string& identity, const std::filesystem::path& legacyStatePath)
+{
+  const ndn::Name name(identity);
+  if (name.empty() || !legacyStatePath.is_absolute())
+    throw std::invalid_argument("Controller default store requires identity and absolute legacy path");
+  const auto owner = name.toUri(ndn::name::UriFormat::CANONICAL);
+  ndn::util::Sha256 hash;
+  hash << owner;
+  const auto currentPath = legacyStatePath.parent_path() /
+    ("ndnsf-controller-generation-" + std::to_string(::geteuid()) + "-" +
+     hash.toString() + ".state");
+  const auto present = [] (const std::filesystem::path& path) {
+    struct stat info{};
+    if (::lstat(path.c_str(), &info) == 0)
+      return true;
+    if (errno != ENOENT)
+      throw std::runtime_error("cannot inspect Controller generation state: " + path.string());
+    return false;
+  };
+  const bool legacyState = present(legacyStatePath);
+  const bool legacyLock = present(legacyStatePath.string() + ".lock");
+  const bool currentState = present(currentPath);
+  const bool currentLock = present(currentPath.string() + ".lock");
+  if (legacyState != legacyLock || currentState != currentLock ||
+      ((legacyState || legacyLock) && (currentState || currentLock))) {
+    throw std::runtime_error("ambiguous or incomplete Controller generation state");
+  }
+  const auto path = legacyState ? legacyStatePath : currentPath;
+  if (legacyState || currentState) {
+    struct stat info{};
+    if (::lstat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode) ||
+        info.st_uid != ::geteuid() || info.st_nlink != 1 || (info.st_mode & 0022) != 0) {
+      throw std::runtime_error("unsafe Controller generation state: " + path.string());
+    }
+  }
+  auto store = std::make_unique<ControllerGenerationStore>(path);
+  if (!store->acquireWriterImpl(owner, true))
+    throw std::runtime_error("Controller generation writer unavailable or identity differs: " +
+                             path.string());
+  return store;
+}
+
 bool
 ControllerGenerationStore::acquireWriter(const std::string& owner)
+{
+  return acquireWriterImpl(owner, false);
+}
+
+bool
+ControllerGenerationStore::acquireWriterImpl(const std::string& owner, bool requireSameOwner)
 {
   if (owner.empty() || owner.size() > MAX_LEASE_BYTES - 64 || m_lockFd >= 0 ||
       owner.find_first_of("\r\n\t ") != std::string::npos)
@@ -102,11 +171,24 @@ ControllerGenerationStore::acquireWriter(const std::string& owner)
     ::close(fd);
     return false;
   }
-  if (!created && !readLease(fd)) {
+  const auto previous = created ? std::optional<LeaseRecord>{} : readLease(fd);
+  if ((!created && !previous) ||
+      (requireSameOwner && ((!created && previous->owner != owner) ||
+                           (created && std::filesystem::exists(m_statePath))))) {
     // An older sentinel-only writer does not hold a kernel lock. Empty or
     // unknown existing records also require explicit closed-owner migration.
     ::close(fd);
     return false;
+  }
+  if (requireSameOwner) {
+    try {
+      // Validate under the old lease before replacing its owner/fence record.
+      loadState();
+    }
+    catch (...) {
+      ::close(fd);
+      return false;
+    }
   }
   m_lockFd = fd;
   m_owner = owner;
@@ -237,23 +319,32 @@ ControllerGenerationStore::persist(
   if (!version.isValid())
     throw std::invalid_argument("invalid Controller version");
   const auto temporary = m_statePath.string() + ".tmp." + std::to_string(m_fence);
-  {
-    std::ofstream state(temporary, std::ios::binary | std::ios::trunc);
-    if (!state)
-      throw std::runtime_error("cannot write Controller generation state");
-    state.write(STATE_MAGIC, STATE_MAGIC_SIZE);
-    writeU64(state, version.controllerGenerationTimestamp);
-    writeU64(state, version.controllerEpoch);
-    writeU64(state, revocations.size());
+  const int fd = ::open(temporary.c_str(),
+                        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (fd < 0)
+    throw std::runtime_error("cannot create private Controller generation state");
+  try {
+    writeAll(fd, STATE_MAGIC, STATE_MAGIC_SIZE);
+    writeU64(fd, version.controllerGenerationTimestamp);
+    writeU64(fd, version.controllerEpoch);
+    writeU64(fd, revocations.size());
     for (const auto& target : revocations) {
       const auto wire = target.wireEncode();
-      writeU64(state, wire.size());
-      state.write(reinterpret_cast<const char*>(wire.data()),
-                  static_cast<std::streamsize>(wire.size()));
+      writeU64(fd, wire.size());
+      writeAll(fd, reinterpret_cast<const char*>(wire.data()), wire.size());
     }
-    state.flush();
-    if (!state)
+    if (::fsync(fd) != 0)
       throw std::runtime_error("cannot flush Controller generation state");
+  }
+  catch (...) {
+    ::close(fd);
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    throw;
+  }
+  if (::close(fd) != 0) {
+    std::filesystem::remove(temporary);
+    throw std::runtime_error("cannot flush Controller generation state");
   }
   std::error_code ec;
   std::filesystem::rename(temporary, m_statePath, ec);

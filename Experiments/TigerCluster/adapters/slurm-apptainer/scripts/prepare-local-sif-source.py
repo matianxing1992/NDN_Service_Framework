@@ -104,6 +104,7 @@ FILES = (
     "tests/integration-tests/di-prepared-request.t.cpp",
     "tests/integration-tests/ndnsf-integration-fixture.cpp",
     "tests/fixtures/spec182/native-model-fixture.hpp",
+    "tests/fixtures/spec182/native-qwen-config.hpp",
 )
 NDN_SVS_FILES = (
     "waf",

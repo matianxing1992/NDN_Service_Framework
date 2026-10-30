@@ -1986,7 +1986,7 @@ NativePlannedRequest planNativeRequestImpl(
           source = runtime.fixedRoleAssignments->rememberSource(runtime.requesterIdentity,
             runtime.contract.serviceName, *fixed, std::move(published));
         }
-        const auto wire = nativeSelectionInvocationV1ToJson(invocation, *fixed, source.get());
+        const auto wire = nativeSelectionInvocationV2ToJson(invocation, *fixed, source.get());
         if (wire.size() > (4U << 20))
           throw std::invalid_argument("invocation exceeds external assignment wire limit");
         roleWires.emplace(role, std::vector<std::uint8_t>(wire.begin(), wire.end()));

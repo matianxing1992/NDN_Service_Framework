@@ -262,6 +262,14 @@ std::string nativeSelectionInvocationV1ToJson(
   const NativeFixedRoleAssignmentV1& fixedAssignment,
   const NativeFixedRoleSourceV1* source = nullptr);
 
+/** V2 transports repeated endpoint binding fields once; the fixed owner is unchanged. */
+std::string
+nativeSelectionInvocationV2ToJson(
+  const NativeSelectionProjectionV3& projection,
+  const NativeFixedRoleAssignmentV1& fixedAssignment,
+  const NativeFixedRoleSourceV1* source = nullptr);
+
+/** Decode V1 owner bindings from either supported invocation transport version. */
 NativeSelectionProjectionV3 nativeSelectionInvocationV1FromJson(
   std::istream& input, const std::string& selectedRole,
   const NativeFixedRoleAssignmentV1& fixedAssignment);

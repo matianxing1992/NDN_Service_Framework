@@ -1197,6 +1197,38 @@ enablesEmbedded(RepoDeploymentMode mode)
   return mode == RepoDeploymentMode::Embedded || mode == RepoDeploymentMode::Both;
 }
 
+bool
+RepoObjectManifest::hasSameMetadata(const RepoObjectManifest& other) const
+{
+  const auto acks = requiredWriteAcks == 0
+    ? ndnsf_distributed_repo::requiredWriteAcks(
+        replicationFactor, parseRepoWriteConsistency(writeConsistency))
+    : requiredWriteAcks;
+  const auto otherAcks = other.requiredWriteAcks == 0
+    ? ndnsf_distributed_repo::requiredWriteAcks(
+        other.replicationFactor, parseRepoWriteConsistency(other.writeConsistency))
+    : other.requiredWriteAcks;
+  const auto& confirmed = confirmedReplicaNodes.empty() ? replicaNodes : confirmedReplicaNodes;
+  const auto& otherConfirmed = other.confirmedReplicaNodes.empty()
+    ? other.replicaNodes : other.confirmedReplicaNodes;
+  return objectName == other.objectName && objectType == other.objectType &&
+    sha256 == other.sha256 && size == other.size && segmentCount == other.segmentCount &&
+    replicationFactor == other.replicationFactor && generation == other.generation &&
+    parentGeneration == other.parentGeneration && writeConsistency == other.writeConsistency &&
+    acks == otherAcks && operationId == other.operationId && lifecycleState == other.lifecycleState &&
+    dataReceiptId == other.dataReceiptId && dataReceiptRepoNode == other.dataReceiptRepoNode &&
+    dataReceiptProviderIdentity == other.dataReceiptProviderIdentity &&
+    dataReceiptCommittedAtMs == other.dataReceiptCommittedAtMs && policyEpoch == other.policyEpoch &&
+    publicationIdentity == other.publicationIdentity && protectionEpoch == other.protectionEpoch &&
+    keyReferenceId == other.keyReferenceId && keyReferenceVersion == other.keyReferenceVersion &&
+    ciphertextManifestDigest == other.ciphertextManifestDigest &&
+    servingLocator == other.servingLocator && contentDigest == other.contentDigest &&
+    plaintextSize == other.plaintextSize && replicaNodes == other.replicaNodes &&
+    confirmed == otherConfirmed && packetNames == other.packetNames &&
+    packetOffsets == other.packetOffsets && envelopeBytes == other.envelopeBytes &&
+    dataPrefix == other.dataPrefix;
+}
+
 std::string
 RepoObjectManifest::toJson() const
 {

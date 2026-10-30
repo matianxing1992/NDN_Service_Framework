@@ -198,6 +198,9 @@ private:
       const ndn_service_framework::PreparedServiceRequest&, const std::vector<std::uint8_t>&,
       const std::string&, const std::string&, const ndn_service_framework::PublishedContentName&,
       const NativeRequestControl&)> durablePublish;
+    // Production uses Core's service-scoped bootstrap predicate. Legacy
+    // controlled transports may omit it; they own their explicit fixture boundary.
+    std::function<bool(const NativeRequestControl&)> bootstrapReady;
   };
   NativeCanonicalArtifactPublisher(Transport transport, std::string serviceName,
     NativeCanonicalPublicationOptions options, SourcePort source);

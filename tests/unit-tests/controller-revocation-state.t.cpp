@@ -1,16 +1,50 @@
 #include "tests/boost-test.hpp"
 
+#include "ndn-service-framework/ControllerGenerationStore.hpp"
 #include "ndn-service-framework/PolicyRefreshCoordinator.hpp"
 #include "ndn-service-framework/RevocationState.hpp"
 #include "ndn-service-framework/utils.hpp"
 
 #include <cstdint>
 #include <array>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <memory>
 #include <string>
 #include <stdexcept>
 
+#include <ndn-cxx/util/random.hpp>
+
 namespace ndn_service_framework::test {
 namespace {
+
+struct DefaultGenerationFiles
+{
+  std::filesystem::path root = std::filesystem::temp_directory_path() /
+    ("spec217-default-generation-" + std::to_string(ndn::random::generateWord64()));
+  std::filesystem::path legacy = root / "legacy.state";
+
+  DefaultGenerationFiles()
+  {
+    if (!std::filesystem::create_directory(root))
+      throw std::runtime_error("default generation fixture already exists");
+    std::filesystem::permissions(root, std::filesystem::perms::owner_all);
+  }
+
+  ~DefaultGenerationFiles()
+  {
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  }
+};
+
+std::string
+readGenerationFile(const std::filesystem::path& path)
+{
+  std::ifstream input(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
 
 PolicyStatusData
 makeRefreshStatus(const ControllerVersion& version,
@@ -31,6 +65,117 @@ makeRefreshStatus(const ControllerVersion& version,
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(ControllerRevocationState)
+
+BOOST_AUTO_TEST_CASE(DefaultGenerationSeparatesIdentitiesAndPreservesRevocations)
+{
+  DefaultGenerationFiles files;
+  const auto first = ControllerGenerationStore::openDefault("/controller/a", files.legacy);
+  const auto second = ControllerGenerationStore::openDefault("/controller/b", files.legacy);
+  BOOST_CHECK(first->ownsWriter() && second->ownsWriter());
+  BOOST_CHECK(first->statePath() != second->statePath());
+  RevocationTarget revoked;
+  revoked.kind = RevocationKind::IDENTITY;
+  revoked.targetIdentity = ndn::Name("/revoked/user");
+  const auto version = first->startGeneration(1000, {revoked});
+  BOOST_CHECK(std::filesystem::status(first->statePath()).permissions() ==
+    (std::filesystem::perms::owner_read | std::filesystem::perms::owner_write));
+  second->startGeneration(1000);
+  const auto path = first->statePath();
+  first->releaseWriter();
+  const auto restarted = ControllerGenerationStore::openDefault(
+    "/8=controller/8=a", files.root / "another-policy.state");
+  BOOST_CHECK_EQUAL(restarted->statePath(), path);
+  const auto revocations = restarted->loadRevocations();
+  BOOST_REQUIRE_EQUAL(revocations.size(), 1U);
+  BOOST_CHECK(revocations[0].wireEncode() == revoked.wireEncode());
+  BOOST_CHECK(restarted->startGeneration(900, revocations).controllerGenerationTimestamp >
+              version.controllerGenerationTimestamp);
+}
+
+BOOST_AUTO_TEST_CASE(DefaultGenerationPreservesVerifiedLegacyInPlace)
+{
+  DefaultGenerationFiles files;
+  const auto owner = ndn::Name("/controller/a").toUri(ndn::name::UriFormat::CANONICAL);
+  ControllerVersion previous;
+  RevocationTarget revoked;
+  revoked.kind = RevocationKind::IDENTITY;
+  revoked.targetIdentity = ndn::Name("/revoked/legacy");
+  {
+    ControllerGenerationStore legacy(files.legacy);
+    BOOST_REQUIRE(legacy.acquireWriter(owner));
+    previous = legacy.startGeneration(1000, {revoked});
+  }
+  std::filesystem::permissions(files.legacy,
+    std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
+    std::filesystem::perms::group_read | std::filesystem::perms::others_read);
+  const auto current = ControllerGenerationStore::openDefault("/controller/a", files.legacy);
+  BOOST_CHECK_EQUAL(current->statePath(), files.legacy);
+  const auto revocations = current->loadRevocations();
+  BOOST_REQUIRE_EQUAL(revocations.size(), 1U);
+  BOOST_CHECK(revocations[0].wireEncode() == revoked.wireEncode());
+  BOOST_CHECK(current->startGeneration(900, revocations).controllerGenerationTimestamp >
+              previous.controllerGenerationTimestamp);
+}
+
+BOOST_AUTO_TEST_CASE(DefaultGenerationRejectsAmbiguousLegacyWithoutChangingItsBytes)
+{
+  for (const auto* mode : {"foreign", "corrupt-state", "corrupt-lock", "missing-state",
+                           "missing-lock", "active", "ambiguous", "symlink", "writable"}) {
+    DefaultGenerationFiles files;
+    std::unique_ptr<ControllerGenerationStore> current;
+    if (std::string(mode) == "ambiguous") {
+      current = ControllerGenerationStore::openDefault("/controller/a", files.legacy);
+      current->startGeneration(1000);
+      current.reset();
+    }
+    auto legacy = std::make_unique<ControllerGenerationStore>(files.legacy);
+    const auto owner = ndn::Name(std::string(mode) == "foreign" ?
+      "/controller/foreign" : "/controller/a").toUri(ndn::name::UriFormat::CANONICAL);
+    BOOST_REQUIRE(legacy->acquireWriter(owner));
+    legacy->startGeneration(1000);
+    if (std::string(mode) != "active")
+      legacy.reset();
+    const auto lock = std::filesystem::path(files.legacy.string() + ".lock");
+    if (std::string(mode) == "corrupt-state")
+      std::ofstream(files.legacy, std::ios::trunc) << "bad";
+    else if (std::string(mode) == "corrupt-lock")
+      std::ofstream(lock, std::ios::trunc) << "bad";
+    else if (std::string(mode) == "missing-state")
+      std::filesystem::remove(files.legacy);
+    else if (std::string(mode) == "missing-lock")
+      std::filesystem::remove(lock);
+    else if (std::string(mode) == "writable")
+      std::filesystem::permissions(files.legacy, std::filesystem::perms::group_write,
+                                   std::filesystem::perm_options::add);
+    else if (std::string(mode) == "symlink") {
+      std::filesystem::rename(files.legacy, files.root / "target");
+      std::filesystem::create_symlink(files.root / "target", files.legacy);
+    }
+    const auto stateBytes = readGenerationFile(files.legacy);
+    const auto lockBytes = readGenerationFile(lock);
+    BOOST_CHECK_THROW(ControllerGenerationStore::openDefault("/controller/a", files.legacy),
+                      std::runtime_error);
+    BOOST_CHECK_EQUAL(readGenerationFile(files.legacy), stateBytes);
+    BOOST_CHECK_EQUAL(readGenerationFile(lock), lockBytes);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(GenerationTemporarySymlinkCannotOverwriteAnotherFile)
+{
+  DefaultGenerationFiles files;
+  const auto store = ControllerGenerationStore::openDefault("/controller/a", files.legacy);
+  const auto target = files.root / "unrelated";
+  std::ofstream(target) << "preserved";
+  const auto temporary = store->statePath().string() + ".tmp." +
+    std::to_string(store->fencingValue());
+  std::filesystem::create_symlink(target, temporary);
+  BOOST_CHECK_THROW(store->startGeneration(1000), std::runtime_error);
+  BOOST_CHECK_EQUAL(readGenerationFile(target), "preserved");
+  BOOST_CHECK(!std::filesystem::exists(store->statePath()));
+  BOOST_CHECK(std::filesystem::is_symlink(temporary));
+  std::filesystem::remove(temporary);
+  BOOST_CHECK(store->startGeneration(1000).isValid());
+}
 
 BOOST_AUTO_TEST_CASE(PersistedUppercaseCertificateTargetMatchesCanonicalSubject)
 {

@@ -176,6 +176,112 @@ struct PacketSet
 
 BOOST_AUTO_TEST_SUITE(Spec201TransparentRepo)
 
+BOOST_AUTO_TEST_CASE(ManifestMetadataComparisonMatchesSerializedIdentity)
+{
+  RepoObjectManifest baseline;
+  baseline.replicationFactor = 3;
+  baseline.replicaNodes = {"replica-a", "replica-b"};
+  baseline.packetNames = {"/producer/escaped-\"name", "/producer/second"};
+  baseline.packetOffsets = {0, 12, 24};
+  BOOST_CHECK(baseline.hasSameMetadata(baseline));
+  const auto checkMutation = [&] (auto member, auto value) {
+    auto changed = baseline;
+    changed.*member = std::move(value);
+    BOOST_CHECK_NE(baseline.toJson(), changed.toJson());
+    BOOST_CHECK_EQUAL(baseline.hasSameMetadata(changed),
+                      baseline.toJson() == changed.toJson());
+    BOOST_CHECK_EQUAL(changed.hasSameMetadata(baseline),
+                      changed.toJson() == baseline.toJson());
+  };
+  for (auto member : {&RepoObjectManifest::objectName, &RepoObjectManifest::objectType,
+                     &RepoObjectManifest::sha256, &RepoObjectManifest::policyEpoch,
+                     &RepoObjectManifest::publicationIdentity, &RepoObjectManifest::protectionEpoch,
+                     &RepoObjectManifest::keyReferenceId, &RepoObjectManifest::keyReferenceVersion,
+                     &RepoObjectManifest::ciphertextManifestDigest, &RepoObjectManifest::servingLocator,
+                     &RepoObjectManifest::contentDigest, &RepoObjectManifest::operationId,
+                     &RepoObjectManifest::lifecycleState, &RepoObjectManifest::dataReceiptId,
+                     &RepoObjectManifest::dataReceiptRepoNode,
+                     &RepoObjectManifest::dataReceiptProviderIdentity, &RepoObjectManifest::dataPrefix}) {
+    checkMutation(member, std::string("different\"\\\nvalue"));
+  }
+  checkMutation(&RepoObjectManifest::writeConsistency, std::string("all"));
+  checkMutation(&RepoObjectManifest::size, uint64_t{42});
+  checkMutation(&RepoObjectManifest::segmentCount, uint32_t{2});
+  checkMutation(&RepoObjectManifest::replicationFactor, uint32_t{4});
+  checkMutation(&RepoObjectManifest::plaintextSize, uint64_t{42});
+  checkMutation(&RepoObjectManifest::generation, uint64_t{1});
+  checkMutation(&RepoObjectManifest::parentGeneration, int64_t{0});
+  checkMutation(&RepoObjectManifest::requiredWriteAcks, uint32_t{2});
+  checkMutation(&RepoObjectManifest::dataReceiptCommittedAtMs, uint64_t{42});
+  checkMutation(&RepoObjectManifest::envelopeBytes, uint64_t{42});
+  checkMutation(&RepoObjectManifest::replicaNodes, std::vector<std::string>{"replica-b", "replica-a"});
+  checkMutation(&RepoObjectManifest::confirmedReplicaNodes, std::vector<std::string>{"replica-a"});
+  checkMutation(&RepoObjectManifest::packetNames,
+                std::vector<std::string>{"/producer/second", "/producer/escaped-\"name"});
+  checkMutation(&RepoObjectManifest::packetOffsets, std::vector<uint64_t>{0, 13, 24});
+
+  auto explicitDefaults = baseline;
+  explicitDefaults.requiredWriteAcks = 3;
+  explicitDefaults.confirmedReplicaNodes = baseline.replicaNodes;
+  BOOST_CHECK_EQUAL(baseline.toJson(), explicitDefaults.toJson());
+  BOOST_CHECK(baseline.hasSameMetadata(explicitDefaults));
+  BOOST_CHECK(explicitDefaults.hasSameMetadata(baseline));
+  for (const auto& consistency : {"ONE", "QUORUM", "ALL"}) {
+    auto implicit = baseline;
+    implicit.writeConsistency = consistency;
+    auto explicitAcks = implicit;
+    explicitAcks.requiredWriteAcks = requiredWriteAcks(3, parseRepoWriteConsistency(consistency));
+    BOOST_CHECK_EQUAL(implicit.toJson(), explicitAcks.toJson());
+    BOOST_CHECK(implicit.hasSameMetadata(explicitAcks));
+    BOOST_CHECK(explicitAcks.hasSameMetadata(implicit));
+  }
+  auto invalid = baseline;
+  invalid.writeConsistency = "invalid";
+  BOOST_CHECK_THROW(invalid.toJson(), std::invalid_argument);
+  BOOST_CHECK_THROW(invalid.hasSameMetadata(baseline), std::invalid_argument);
+  BOOST_CHECK_THROW(baseline.hasSameMetadata(invalid), std::invalid_argument);
+  invalid = baseline;
+  invalid.replicationFactor = 0;
+  BOOST_CHECK_THROW(invalid.toJson(), std::invalid_argument);
+  BOOST_CHECK_THROW(invalid.hasSameMetadata(baseline), std::invalid_argument);
+  BOOST_CHECK_THROW(baseline.hasSameMetadata(invalid), std::invalid_argument);
+  invalid.requiredWriteAcks = 1;
+  BOOST_CHECK(invalid.hasSameMetadata(invalid));
+  BOOST_CHECK_EQUAL(invalid.toJson(), invalid.toJson());
+}
+
+BOOST_AUTO_TEST_CASE(ManifestMetadataComparisonLargePacketIndex)
+{
+  RepoObjectManifest manifest;
+  for (size_t i = 0; i < 4096; ++i) {
+    manifest.packetNames.push_back("/producer/" + std::string(128, 'x') + "/" + std::to_string(i));
+    manifest.packetOffsets.push_back(i * 4000);
+  }
+  manifest.packetOffsets.push_back(4096 * 4000);
+  auto same = manifest;
+  constexpr size_t iterations = 16;
+  size_t serializedMatches = 0;
+  size_t directMatches = 0;
+  const auto start = std::chrono::steady_clock::now();
+  for (size_t i = 0; i < iterations; ++i)
+    serializedMatches += manifest.toJson() == same.toJson();
+  const auto serializedEnd = std::chrono::steady_clock::now();
+  for (size_t i = 0; i < iterations; ++i)
+    directMatches += manifest.hasSameMetadata(same);
+  const auto directEnd = std::chrono::steady_clock::now();
+  BOOST_CHECK_EQUAL(serializedMatches, iterations);
+  BOOST_CHECK_EQUAL(directMatches, iterations);
+  same.packetNames.back() += "changed";
+  BOOST_CHECK(!manifest.hasSameMetadata(same));
+  same = manifest;
+  ++same.packetOffsets.back();
+  BOOST_CHECK(!manifest.hasSameMetadata(same));
+  BOOST_TEST_MESSAGE("METADATA_COMPARISON_SAMPLE packets=4096 iterations=" << iterations
+    << " serializedSeconds=" << std::chrono::duration<double>(serializedEnd - start).count()
+    << " directSeconds=" << std::chrono::duration<double>(directEnd - serializedEnd).count()
+    << " scope=helper-only-not-preparation");
+}
+
 BOOST_AUTO_TEST_CASE(PersistentStartupCountsAvailableBytesOnce)
 {
   Fixture fixture;

@@ -13,11 +13,44 @@
 #include <stdexcept>
 #include <cstdlib>
 #include <future>
+
+#ifdef __linux__
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 namespace ndnsf::di {
 namespace {
 
 constexpr const char* FEEDBACK_TENSOR = "__ndnsf_token_feedback_terminal";
 constexpr const char* EPOCH_TERMINAL_TENSOR = "__ndnsf_epoch_terminal";
+
+void
+logFeedbackBoundary(const NativeEpochCoordinatorConfig& config, std::size_t epoch,
+                    const DependencyEdge& edge, const char* boundary) noexcept
+{
+  const auto timing = detail::nativePhaseStarted();
+  if (!timing.enabled) {
+    return;
+  }
+  try {
+    std::ostringstream record;
+    record << "NDNSF_DI_FEEDBACK_BOUNDARY requestId=" << config.requestId
+           << " attempt=" << config.attemptEpoch << " role=" << config.role
+           << " epoch=" << epoch << " boundary=" << boundary
+           << " planned_name=" << edge.plannedDataName
+           << " manifest_name=" << edge.manifestDataName
+           << " steady_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(
+                timing.wall.time_since_epoch()).count();
+#ifdef __linux__
+    record << " tid=" << ::syscall(SYS_gettid);
+#endif
+    logRuntimeEvidence(record.str());
+  }
+  catch (...) {
+    // Timing evidence must not change token admission or publication outcomes.
+  }
+}
 
 class DecodeStateReleaseGuard
 {
@@ -1461,6 +1494,17 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       if (feedbackEdge == nextRole.outputs.end()) {
         throw std::runtime_error("terminal role is missing TOKEN_FEEDBACK output");
       }
+      detail::NativePhaseTiming prefetchTiming;
+      if ((!terminal || config.checkpointFinalize) && epoch < config.maxEpochs) {
+        // Register only cancellable reads while independent feedback/event
+        // construction runs. Abandonment cancels and drains these reads; no
+        // feedback or remote computation advances before event admission.
+        throwIfStopped(config);
+        prefetchTiming = detail::nativePhaseStarted();
+        nextInputPrefetch.emplace(
+          config.io, nextRole, std::map<std::string, TensorBundle>{});
+        beginInputPrefetch(config, *nextInputPrefetch);
+      }
       auto feedbackBundle = makeTokenFeedback(token, terminal);
       if (!terminal) {
         feedbackBundle = attachGenerationEpochLineage(
@@ -1493,16 +1537,11 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       }
       detail::logNativeWorkPhase(config.requestId, "epoch_prepare_feedback",
                                 feedbackTiming, config.role, config.attemptEpoch);
-      if ((!terminal || config.checkpointFinalize) &&
-          epoch < config.maxEpochs) {
-        // Start cancellable exact fetches only after all token, stop, feedback,
-        // and event construction succeeded, but before synchronous event
-        // publication. The next role projection fixes the exact Data names.
+      logFeedbackBoundary(config, epoch, *feedbackEdge, "ready");
+      if (nextInputPrefetch) {
+        // Preserve the first-read fence before synchronous event admission.
+        // Its interval includes the overlapped construction above.
         throwIfStopped(config);
-        const auto prefetchTiming = detail::nativePhaseStarted();
-        nextInputPrefetch.emplace(
-          config.io, nextRole, std::map<std::string, TensorBundle>{});
-        beginInputPrefetch(config, *nextInputPrefetch);
         waitForFirstReadStart(config, *nextInputPrefetch);
         detail::logNativeWorkPhase(config.requestId, "epoch_prefetch_first_read",
                                   prefetchTiming, config.role, config.attemptEpoch);
@@ -1532,7 +1571,9 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
 
       throwIfStopped(config);
       const auto feedbackPublishTiming = detail::nativePhaseStarted();
+      logFeedbackBoundary(config, epoch, *feedbackEdge, "publish_begin");
       config.io->publishOutput(config.sessionId, *feedbackEdge, feedbackBundle);
+      logFeedbackBoundary(config, epoch, *feedbackEdge, "publish_done");
       detail::logNativeWorkPhase(config.requestId, "epoch_publish_feedback",
                                 feedbackPublishTiming, config.role, config.attemptEpoch);
       throwIfStopped(config);

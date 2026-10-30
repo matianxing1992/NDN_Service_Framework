@@ -6,6 +6,7 @@ probe remote credentials. Native runtime admission remains authoritative.
 
 from __future__ import annotations
 
+import configparser
 import hashlib
 import json
 import os
@@ -152,12 +153,19 @@ def load_deployment(path):
         _fail("schema", "unsupported schema")
     _identifier(config["deployment_id"], "deployment_id")
     platform = _object(config["platform"], "platform", {
-        "kind", "sif", "sif_sha256", "build_record", "apptainer", "slurm"}, {"kind"})
-    local = platform["kind"] == "host"
-    if not isinstance(platform["kind"], str) or (not local and platform["kind"] != "slurm-apptainer"):
+        "kind", "sif", "sif_sha256", "build_record", "apptainer", "slurm",
+        "topology", "topology_sha256"}, {"kind"})
+    if not isinstance(platform["kind"], str) or platform["kind"] not in (
+            "host", "minindn", "slurm-apptainer"):
         _fail("platform.kind", "unsupported platform")
-    if local and platform.keys() != {"kind"}:
+    namespaced = platform["kind"] == "minindn"
+    local = platform["kind"] != "slurm-apptainer"
+    if platform["kind"] == "host" and platform.keys() != {"kind"}:
         _fail("platform", "host cannot declare container/scheduler inputs")
+    if namespaced and platform.keys() != {"kind", "topology", "topology_sha256"}:
+        _fail("platform", "minindn requires only kind, topology and topology_sha256")
+    if not local and platform.keys() & {"topology", "topology_sha256"}:
+        _fail("platform", "Slurm cannot declare MiniNDN inputs")
     read_paths = {source}
 
     def resolve(value, field, *, control=False, exists=False, directory=False):
@@ -178,6 +186,26 @@ def load_deployment(path):
         if exists and not directory:
             read_paths.add(candidate)
         return str(candidate)
+
+    topology_hosts = set()
+    if namespaced:
+        platform['topology'] = resolve(platform['topology'], 'platform.topology', exists=True)
+        expected = _string(platform['topology_sha256'], 'platform.topology_sha256')
+        if not DIGEST.fullmatch(expected) or 'sha256:' + _digest_file(
+                Path(platform['topology'])) != expected:
+            _fail('platform.topology_sha256', 'topology digest mismatch')
+        topology = configparser.ConfigParser(delimiters=' ', allow_no_value=True)
+        try:
+            topology.read(platform['topology'])
+            if not topology.has_section('links'):
+                _fail('platform.topology', 'missing links section')
+            for key in topology.options('nodes'):
+                host = _identifier(key.split(':', 1)[0], 'platform.topology.node')
+                if host in topology_hosts:
+                    _fail('platform.topology', 'duplicate host')
+                topology_hosts.add(host)
+        except (configparser.Error, UnicodeError) as error:
+            _fail('platform.topology', str(error))
 
     if not local:
         _object(platform, "platform", required={"sif", "sif_sha256", "build_record", "apptainer", "slurm"})
@@ -247,8 +275,13 @@ def load_deployment(path):
         if node_id in nodes:
             _fail("nodes", "duplicate node ID")
         _string(node["host"], "node.host")
-        if local and (node["host"] != "local" or nodes):
+        if platform['kind'] == 'host' and (node["host"] != "local" or nodes):
             _fail("nodes", "host platform requires one local node")
+        if namespaced:
+            _identifier(node['host'], 'node.host')
+            if node['host'] not in topology_hosts or any(
+                    node['host'] == previous['host'] for previous in nodes.values()):
+                _fail('node.host', 'expected a distinct declared topology host')
         _integer(node["cpus"], "node.cpus")
         devices = _array(node.setdefault("gpu_devices", []), "node.gpu_devices")
         for device in devices:
@@ -265,6 +298,9 @@ def load_deployment(path):
         if not isinstance(nfd["mode"], str) or nfd["mode"] not in {"managed", "external"}:
             _fail("node.nfd.mode", "expected managed or external")
         nfd["socket"] = resolve(nfd["socket"], "node.nfd.socket")
+        if namespaced and (nfd['mode'] != 'managed' or any(
+                nfd['socket'] == previous['nfd']['socket'] for previous in nodes.values())):
+            _fail('node.nfd', 'MiniNDN requires managed NFDs with distinct local sockets')
         _string(nfd["address"], "node.nfd.address")
         if _integer(nfd["port"], "node.nfd.port") > 65535:
             _fail("node.nfd.port", "port exceeds 65535")
@@ -273,6 +309,9 @@ def load_deployment(path):
             _fail("nodes", "duplicate NFD endpoint")
         nfd_endpoints.add(endpoint)
         nodes[node_id] = node
+
+    if namespaced and {node['host'] for node in nodes.values()} != topology_hosts:
+        _fail('nodes', 'declare every topology host, including forwarding-only hosts')
 
     actors = {}
     identities = set()
@@ -300,7 +339,7 @@ def load_deployment(path):
             actor["credential_home"] = resolve(actor["credential_home"], "actor.credential_home",
                                                 exists=True, directory=True)
             home = (actor["node"], actor["credential_home"])
-            if any(node == home[0] and
+            if any((local or node == home[0]) and
                    (Path(previous) == Path(home[1]) or
                     Path(previous) in Path(home[1]).parents or
                     Path(home[1]) in Path(previous).parents)
@@ -334,13 +373,23 @@ def load_deployment(path):
     if not by_kind["provider"] or len(by_kind["repo"]) > 1:
         _fail("actors", "requires providers and at most one Repo")
     for node_id, rows in reservations.items():
-        if sum(row["cpus"] for row in rows) > nodes[node_id]["cpus"] and not all(
+        forwarder_cpus = int(not local and nodes[node_id]['nfd']['mode'] == 'managed')
+        if forwarder_cpus + sum(row["cpus"] for row in rows) > nodes[node_id]["cpus"] and not all(
                 row["allow_sharing"] for row in rows):
-            _fail("actor.resources.cpus", "CPU overcommit requires explicit sharing by all actors")
+            _fail("actor.resources.cpus", "CPU overcommit requires explicit sharing by all actors; "
+                  "managed Slurm NFD reserves one CPU")
         for device in nodes[node_id]["gpu_devices"]:
             owners = [row for row in rows if device in row["gpu_devices"]]
             if len(owners) > 1 and not all(row["allow_sharing"] for row in owners):
                 _fail("actor.resources.gpu_devices", "shared device requires explicit sharing by all owners")
+    if namespaced:
+        rows = [row for group in reservations.values() for row in group]
+        devices = {device for row in rows for device in row['gpu_devices']}
+        for device in devices:
+            owners = [row for row in rows if device in row['gpu_devices']]
+            if len(owners) > 1 and not all(row['allow_sharing'] for row in owners):
+                _fail('actor.resources.gpu_devices',
+                      'MiniNDN shares one physical host; device sharing must be explicit')
 
     network = _object(config["network"], "network", {
         "group", "service", "artifact_service", "repo_service", "routes"},
@@ -393,6 +442,7 @@ def load_deployment(path):
 
 
 def _translate_native(config, by_kind, resolve):
+    local = config['platform']['kind'] != 'slurm-apptainer'
     network, security = config["network"], config["security"]
     controller = by_kind["controller"][0]["identity"]
     requester_identity = by_kind["requester"][0]["identity"]
@@ -407,7 +457,7 @@ def _translate_native(config, by_kind, resolve):
                 obj[key] = resolve(obj[key], location + "." + key, exists=exists, directory=directory)
                 if not exists:
                     target = Path(obj[key])
-                    if config["platform"]["kind"] == "host" and not directory and target.exists() and not target.is_file():
+                    if local and not directory and target.exists() and not target.is_file():
                         _fail(location + "." + key, "output must be a regular file path")
                     writes.append((obj[key], directory, location + "." + key))
 
@@ -458,12 +508,13 @@ def _translate_native(config, by_kind, resolve):
                 "artifact-cache-dir", "statistics-file", "allow-selection-generation-options",
                 "enable-admission-lease", "require-execution-lease", "execution-policy", "admission-lease-ttl-ms",
                 "grant-authority-public-key", "recipient-key-map", "repo-fetch-timeout-ms",
+                "assembly-timeout-ms",
                 "conversation-retention-ms"})
             grant_fields = {"grant-authority-public-key", "recipient-key-map"}
             if parameters.keys() & grant_fields and not grant_fields <= parameters.keys():
                 _fail("provider.parameters", "grant public hint and recipient key map are required together")
             paths(parameters, tuple(sorted(grant_fields)), "provider.parameters")
-            if grant_fields <= parameters.keys() and config["platform"]["kind"] == "host":
+            if grant_fields <= parameters.keys() and local:
                 hint = Path(parameters["grant-authority-public-key"])
                 resolve(str(hint.parent / "trust-root-registry-v1.json"),
                         "provider.grant.registry", exists=True)
@@ -474,13 +525,16 @@ def _translate_native(config, by_kind, resolve):
                 if key in parameters:
                     _boolean(parameters[key], "provider.parameters." + key)
             for key in ("permission-wait-ms", "workers", "handler-threads", "ack-threads",
-                        "admission-lease-ttl-ms", "repo-fetch-timeout-ms", "conversation-retention-ms"):
+                        "admission-lease-ttl-ms", "repo-fetch-timeout-ms", "conversation-retention-ms",
+                        "assembly-timeout-ms"):
                 if key in parameters:
                     _integer(parameters[key], "provider.parameters." + key)
             if parameters.get("repo-fetch-timeout-ms", 1) > 2147483647:
                 _fail("provider.parameters.repo-fetch-timeout-ms", "exceeds native signed int timeout")
             if parameters.get("conversation-retention-ms", 1) > 3600000:
                 _fail("provider.parameters.conversation-retention-ms", "exceeds native retention limit")
+            if parameters.get("assembly-timeout-ms", 1) > 3600000:
+                _fail("provider.parameters.assembly-timeout-ms", "exceeds native assembly limit")
             for key in ("roles", "offer-backend", "execution-policy"):
                 if key in parameters:
                     _string(parameters[key], "provider.parameters." + key)
@@ -558,7 +612,16 @@ def _translate_requester(requester, network, security, controller, requester_ide
             _fail("requester.request.security_policy_digest", "expected sha256 digest")
         bind(owner, {"security_domain_digest": digest}, "requester.conversation.owner", False)
         if "turn" in conversation:
-            paths(conversation["turn"], ("parent_state_file",), "requester.conversation.turn")
+            turn = _object(conversation["turn"], "requester.conversation.turn")
+            if "retention_deadline_ms" in turn and "retention_duration_ms" in turn:
+                _fail("requester.conversation.turn", "retention deadline and duration are mutually exclusive")
+            for key in ("retention_deadline_ms", "retention_duration_ms"):
+                if key in turn:
+                    value = _integer(turn[key], "requester.conversation.turn." + key)
+                    maximum = 3600000 if key == "retention_duration_ms" else 2**64 - 1
+                    if value > maximum:
+                        _fail("requester.conversation.turn." + key, "exceeds native retention limit")
+            paths(turn, ("parent_state_file",), "requester.conversation.turn")
         paths(conversation, ("checkpoint_output_file",), "requester.conversation", exists=False)
 
 

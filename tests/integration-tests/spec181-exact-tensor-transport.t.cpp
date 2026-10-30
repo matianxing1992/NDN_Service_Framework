@@ -29,6 +29,7 @@
 #include <optional>
 #include <random>
 #include <set>
+#include <zlib.h>
 
 namespace ndnsf::di {
 struct PrefetchWorkerOracle
@@ -44,6 +45,11 @@ struct PrefetchWorkerOracle
 namespace ndn_service_framework::test {
 struct TensorOriginalOracle
 {
+  static void remember(ServiceProvider& provider, const ndn::Interest& interest)
+  {
+    provider.rememberPendingImsInterest(interest);
+  }
+
   static std::size_t fillUnrelated(ServiceProvider& provider, ndn::KeyChain& keys,
                                    std::size_t count)
   {
@@ -107,7 +113,67 @@ namespace ndnsf::di::tests {
 using namespace ndn_service_framework;
 using namespace std::chrono_literals;
 
+// Construct historical wire independently of the disabled production encoder.
+static std::vector<std::uint8_t>
+makeLegacyPackedTensorBundle(const std::vector<std::uint8_t>& raw)
+{
+  std::vector<std::uint8_t> packed{'N', 'D', 'I', 'T', 'B', 'Z', '0', '1'};
+  for (unsigned int byte = 0; byte < 8; ++byte) {
+    packed.push_back((static_cast<std::uint64_t>(raw.size()) >> (8 * byte)) & 0xff);
+  }
+  uLongf size = compressBound(raw.size());
+  packed.resize(16 + size);
+  const auto result = compress2(packed.data() + 16, &size, raw.data(), raw.size(), Z_BEST_SPEED);
+  BOOST_REQUIRE_EQUAL(result, Z_OK);
+  packed.resize(16 + size);
+  return packed;
+}
+
 BOOST_AUTO_TEST_SUITE(Spec181ExactTensorTransport)
+
+BOOST_AUTO_TEST_CASE(WorkerPublicationReturnsBeforeFacePumpAndPreservesOriginal)
+{
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.providerCount = 1;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() ==
+                ndn_service_framework::test::EnvironmentStatus::Ready);
+  auto& provider = environment.provider(0);
+  auto& face = environment.providerFace(0);
+  const auto name = ndn::Name(provider.getName()).append("SPEC217").append("WORKER");
+  ndn::Interest interest(name);
+  interest.setCanBePrefix(false);
+  interest.setInterestLifetime(ndn::time::seconds(10));
+  ndn_service_framework::test::TensorOriginalOracle::remember(provider, interest);
+  std::vector<ndn::Data> sent;
+  ndn::signal::ScopedConnection connection = face.onSendData.connect([&] (const ndn::Data& data) {
+    if (data.getName() == name) sent.push_back(data);
+  });
+  auto published = std::async(std::launch::async, [&] {
+    const ndn::Buffer payload(5000, 0x52);
+    std::vector<std::shared_ptr<const ndn::Data>> originals;
+    if (!ndn_service_framework::test::TensorOriginalOracle::publish(
+          provider, name, payload, originals) || originals.size() != 1) {
+      throw std::runtime_error("worker publication failed");
+    }
+    const auto& wire = originals.front()->wireEncode();
+    return ndn::Buffer(wire.begin(), wire.end());
+  });
+  // No event-loop pump while the worker publishes and drops its input buffers.
+  const bool returnedWithoutPump = published.wait_for(1s) == std::future_status::ready;
+  BOOST_CHECK(returnedWithoutPump);
+  if (!returnedWithoutPump) {
+    environment.pumpUntil([&] { return published.wait_for(0ms) == std::future_status::ready; });
+  }
+  const auto expected = published.get();
+  BOOST_CHECK(sent.empty());
+  environment.pumpUntil([&] { return !sent.empty(); });
+  BOOST_REQUIRE_EQUAL(sent.size(), 1U);
+  const auto& actual = sent.front().wireEncode();
+  BOOST_CHECK_EQUAL_COLLECTIONS(actual.begin(), actual.end(), expected.begin(), expected.end());
+  BOOST_CHECK_EQUAL(sent.front().getContent().value_size(), 5000U);
+}
 
 BOOST_AUTO_TEST_CASE(OwnedExactPublicationCacheOccupancyProbe)
 {
@@ -361,8 +427,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
         auto framed = decodeTensorManifestWithFirstSegment(
           wire, ndn::MAX_NDN_PACKET_SIZE);
         BOOST_REQUIRE_GE(framed.first.size(), 8U);
-        // Change only the authenticated expansion size; keep ciphertext and
-        // the original inner Producer signature, then re-sign outer Data.
+        // Mutate the inner manifest while retaining its original Producer
+        // signature, then re-sign only the outer Data.
         framed.first[framed.first.size() - 8] ^= 1;
         const auto changed = encodeTensorManifestWithFirstSegment(
           framed.first, framed.second, ndn::MAX_NDN_PACKET_SIZE);
@@ -658,8 +724,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     BOOST_CHECK(uniquePackets.empty());
     // The failed reservation must leave this same endpoint publishable.
   }
-  const auto expectedSegments = compressed ? 1 :
-    1 + (original.payload.size() - 1) / chunkSize;
+  const auto expectedSegments = 1 + (original.payload.size() - 1) / chunkSize;
   if (prefetch) {
     edge.prefetchBundleBytes = original.payload.size();
     edge.prefetchSegmentBytes = chunkSize;
@@ -1178,7 +1243,13 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
       return std::string(error.what()).find("producer signature mismatch") != std::string::npos;
     });
     BOOST_CHECK_EQUAL(mutations, 1U);
-    BOOST_CHECK_EQUAL(segmentInterests, 0U);
+    // Raw multi-segment publication may already have issued bounded speculative
+    // reads. A bad Producer signature must still reject the complete object.
+    BOOST_CHECK_LE(segmentInterests, expectedSegments - 1);
+    for (const auto& name : requestedSegments) {
+      BOOST_CHECK(name == ndn::Name(tensorObjectSegmentName(endpoint, 1)) ||
+                  name == ndn::Name(tensorObjectSegmentName(endpoint, 2)));
+    }
     return;
   }
   if (mode == "packed-bounds") {
@@ -1219,7 +1290,17 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   }
   if (mode == "inline-compressed") {
     const auto firstWires = uniquePackets;
-    BOOST_CHECK_EQUAL(firstWires.size(), 1U);
+    const ndn::Data root(ndn::Block(std::make_shared<const ndn::Buffer>(
+      firstWires.at(ndn::Name(edge.manifestDataName)))));
+    const auto& content = root.getContent();
+    const auto framed = decodeTensorManifestWithFirstSegment(
+      {content.value_begin(), content.value_end()}, ndn::MAX_NDN_PACKET_SIZE);
+    const auto manifest = decodeTensorObjectManifest(framed.first);
+    BOOST_CHECK_EQUAL(manifest.unpackedBytes, 0U);
+    BOOST_CHECK_EQUAL(manifest.totalBytes, original.payload.size());
+    BOOST_CHECK_EQUAL(manifest.segmentCount, expectedSegments);
+    BOOST_CHECK_EQUAL(firstWires.size(), expectedSegments);
+    BOOST_CHECK_GT(segmentInterests, 0U);
     BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
     auto changed = original;
     changed.payload.back() ^= 1;
@@ -1308,7 +1389,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   if (expectInline) {
     BOOST_CHECK_EQUAL(requestedSegments.count(
       ndn::Name(tensorObjectSegmentName(endpoint, 0))), 0U);
-    if (mode == "inline-single" || mode == "inline-compressed")
+    if (mode == "inline-single")
       BOOST_CHECK_EQUAL(segmentInterests, 0U);
     if (mode == "inline-prefetch") {
       BOOST_CHECK_EQUAL(expectedSegments, 13U);
@@ -1381,7 +1462,7 @@ BOOST_AUTO_TEST_CASE(PooledFinalizePrefetchAbandonmentCancelsAndDrains)
 BOOST_AUTO_TEST_CASE(ExactTensorRetryReusesOriginalSignedPacketsAndRejectsConflicts) { runTransfer("reuse"); }
 BOOST_AUTO_TEST_CASE(TensorOriginalQuotaRejectsBeforePacketsAndLeavesEndpointReusable) { runTransfer("quota"); }
 BOOST_AUTO_TEST_CASE(InlineManifestDeliversSingleSegmentWithoutSegmentInterest) { runTransfer("inline-single"); }
-BOOST_AUTO_TEST_CASE(LosslessPackingReducesC04PacketsAndPreservesOriginalTensorWire)
+BOOST_AUTO_TEST_CASE(CompressibleTensorUsesRawSegmentsAndPreservesOriginalSignedPackets)
 {
   runTransfer("inline-compressed");
 }
@@ -1391,7 +1472,7 @@ BOOST_AUTO_TEST_CASE(AuthenticatedPackedPayloadRejectsOversizedExpansion)
   runTransfer("packed-bounds");
 }
 
-BOOST_AUTO_TEST_CASE(PackedExpansionSizeIsBoundByProducerSignature)
+BOOST_AUTO_TEST_CASE(RawTensorManifestIsBoundByProducerSignature)
 {
   runTransfer("inline-compressed-binding");
 }
@@ -1429,7 +1510,8 @@ BOOST_AUTO_TEST_CASE(PackedTensorCodecPreservesBitsAndRawCompatibility)
     {"mask", TensorElementType::Bool, {1, 8192}, std::vector<std::uint8_t>(8192, 0)},
     {"hidden", TensorElementType::Float32, {1, 4}, floatBits}};
   const auto raw = encodeTensorBundle(tensors);
-  const auto alternative = tryPackTensorBundleForTransport(raw);
+  BOOST_CHECK(!tryPackTensorBundleForTransport(raw).has_value());
+  const auto alternative = std::make_optional(makeLegacyPackedTensorBundle(raw));
   BOOST_REQUIRE(alternative.has_value());
   const auto& packed = *alternative;
   BOOST_REQUIRE_LE(packed.size() + 256, raw.size());
@@ -1450,7 +1532,8 @@ BOOST_AUTO_TEST_CASE(PackedTensorCodecPreservesBitsAndRawCompatibility)
   const auto smallCompressible = encodeTensorBundle({
     {"feedback", TensorElementType::UInt8, {512}, std::vector<std::uint8_t>(512, 0)}});
   BOOST_REQUIRE_LT(smallCompressible.size(), 1024U);
-  const auto smallPacked = tryPackTensorBundleForTransport(smallCompressible);
+  BOOST_CHECK(!tryPackTensorBundleForTransport(smallCompressible).has_value());
+  const auto smallPacked = std::make_optional(makeLegacyPackedTensorBundle(smallCompressible));
   BOOST_REQUIRE(smallPacked.has_value());
   BOOST_CHECK(unpackTensorBundleFromTransport(*smallPacked) == smallCompressible);
   std::mt19937 random(216);
@@ -1480,7 +1563,8 @@ BOOST_AUTO_TEST_CASE(PackedTensorCodecPreservesBitsAndRawCompatibility)
   const auto original = makeEncodedTensorBundle("activation", tensors);
   auto withLineage = attachGenerationEpochLineage(original, lineage);
   const auto originalWire = withLineage.payload;
-  const auto packedLineage = tryPackTensorBundleForTransport(originalWire);
+  BOOST_CHECK(!tryPackTensorBundleForTransport(originalWire).has_value());
+  const auto packedLineage = std::make_optional(makeLegacyPackedTensorBundle(originalWire));
   BOOST_REQUIRE(packedLineage.has_value());
   withLineage.payload = unpackTensorBundleFromTransport(*packedLineage);
   BOOST_CHECK(withLineage.payload == originalWire);
@@ -1493,7 +1577,7 @@ BOOST_AUTO_TEST_CASE(PackedTensorCodecRejectsCorruptionExpansionAndNestedFrames)
 {
   const auto raw = encodeTensorBundle({
     {"mask", TensorElementType::Bool, {8192}, std::vector<std::uint8_t>(8192, 0)}});
-  const auto alternative = tryPackTensorBundleForTransport(raw);
+  const auto alternative = std::make_optional(makeLegacyPackedTensorBundle(raw));
   BOOST_REQUIRE(alternative.has_value());
   const auto& packed = *alternative;
   BOOST_REQUIRE_LT(packed.size(), raw.size());

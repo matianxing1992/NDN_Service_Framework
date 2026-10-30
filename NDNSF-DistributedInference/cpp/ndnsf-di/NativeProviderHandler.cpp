@@ -73,7 +73,8 @@ decodeNativeProviderAssignment(const ndn::Buffer& payload,
     }
     const auto schema = root.get<std::string>("schema", "");
     const auto schemaVersion = root.get<int>("schema_version", 0);
-    const bool referenced = schema == "ndnsf-di-selection-invocation-v1" && schemaVersion == 1;
+    const bool referenced = (schema == "ndnsf-di-selection-invocation-v1" && schemaVersion == 1) ||
+      (schema == "ndnsf-di-selection-invocation-v2" && schemaVersion == 2);
     if (!referenced && (schema != "ndnsf-di-selection-v3" || schemaVersion != 3)) {
       throw std::invalid_argument(
         "V3 Selection projection schema mismatch: schema=" + schema +
@@ -2274,10 +2275,13 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       std::shared_ptr<const NativeFixedRoleAssignmentV1> referencedFixed;
       if (jsonAssignment) {
         const auto header = nativeParseJson(assignmentText);
-        if (header.value("schema", std::string{}) == "ndnsf-di-selection-invocation-v1") {
+        const auto invocationSchema = header.value("schema", std::string{});
+        const bool compactInvocation = invocationSchema == "ndnsf-di-selection-invocation-v2";
+        if (invocationSchema == "ndnsf-di-selection-invocation-v1" || compactInvocation) {
           validateNativeSelectionInvocationBindingShapeV1(header);
           const auto ref = header.at("fixed_role_ref").get<std::string>();
-          if (!header.at("schema_version").is_number_integer() || header.at("schema_version") != NativeJson(1) ||
+          if (!header.at("schema_version").is_number_integer() ||
+              header.at("schema_version") != NativeJson(compactInvocation ? 2 : 1) ||
               header.at("provider").get<std::string>() != ctx.localProvider().toUri() ||
               header.at("request_id").get<std::string>() != ctx.sessionId() ||
               !header.at("execution_role").is_object() || header.at("execution_role").size() != 1 ||

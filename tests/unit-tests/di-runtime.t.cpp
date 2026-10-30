@@ -607,9 +607,10 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   const auto findObjectWithSuffix = [&] (const char* suffix) {
     const std::string marker(suffix);
     for (const auto& manifest : beforeRepair) {
-      if (manifest.objectName.size() >= marker.size() &&
-          manifest.objectName.compare(manifest.objectName.size() - marker.size(),
-                                      marker.size(), marker) == 0)
+      const ndn::Name name(manifest.objectName);
+      const ndn::Name suffixName(marker);
+      if (name.size() >= suffixName.size() &&
+          name.getSubName(name.size() - suffixName.size()) == suffixName)
         return manifest.objectName;
     }
     return std::string{};
@@ -680,7 +681,8 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   const auto beforeMaterialRepair = repo->list();
   const auto materialName = [&] {
     for (const auto& manifest : beforeMaterialRepair) {
-      if (manifest.objectName.find("/materials/") != std::string::npos)
+      if (ndn::Name(manifest.objectName).toUri(ndn::name::UriFormat::ALTERNATE)
+            .find("/materials/") != std::string::npos)
         return manifest.objectName;
     }
     return std::string{};

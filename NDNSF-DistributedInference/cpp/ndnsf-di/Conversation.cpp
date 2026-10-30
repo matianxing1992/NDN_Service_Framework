@@ -92,12 +92,24 @@ std::uint64_t configuredRetentionDeadlineFromPackage(const PreparedModelPackage&
   const auto turn = conversation->find("turn");
   if (turn == conversation->end() || !turn->is_object())
     return 0;
-  if (!turn->contains("retention_deadline_ms"))
+  const bool hasDeadline = turn->contains("retention_deadline_ms");
+  const bool hasDuration = turn->contains("retention_duration_ms");
+  if (hasDeadline && hasDuration)
+    throw std::invalid_argument("conversation retention deadline and duration are mutually exclusive");
+  if (!hasDeadline && !hasDuration)
     return 0;
-  const auto deadline = turn->at("retention_deadline_ms").get<std::uint64_t>();
-  if (deadline == 0)
-    throw std::invalid_argument("conversation retention_deadline_ms must be positive");
-  return deadline;
+  const auto& value = turn->at(hasDuration ? "retention_duration_ms" : "retention_deadline_ms");
+  if (!value.is_number_integer() ||
+      (value.is_number_unsigned() ? value.get<std::uint64_t>() == 0
+                                 : value.get<std::int64_t>() <= 0))
+    throw std::invalid_argument("conversation retention must be a positive integer");
+  const auto milliseconds = value.get<std::uint64_t>();
+  if (!hasDuration)
+    return milliseconds;
+  const auto now = nowMs();
+  if (milliseconds > 3600000 || milliseconds > std::numeric_limits<std::uint64_t>::max() - now)
+    throw std::invalid_argument("conversation retention_duration_ms exceeds one hour or clock range");
+  return now + milliseconds;
 }
 
 } // namespace
@@ -366,6 +378,18 @@ Conversation PreparedModel::openConversationInternal(const ConversationOptions& 
     throw DiError("UNSUPPORTED_CAPABILITY", "local", "conversation",
                   "conversation requires an authenticated streaming model");
 
+  std::uint64_t configuredRetentionDeadline = 0;
+  try {
+    configuredRetentionDeadline = configuredRetentionDeadlineFromPackage(*m_package);
+  }
+  catch (const std::exception& error) {
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "conversation",
+                  std::string("verified conversation retention is invalid: ") + error.what());
+  }
+  if (configuredRetentionDeadline != 0 && configuredRetentionDeadline <= nowMs())
+    throw DiError("CONVERSATION_RETENTION_EXPIRED", "conversation", "open",
+                  "configured conversation retention deadline has expired");
+
   std::shared_ptr<NativeInferenceClient> client;
   try {
     client = m_clientFactory(m_package);
@@ -387,18 +411,6 @@ Conversation PreparedModel::openConversationInternal(const ConversationOptions& 
   if (tokenizer.empty())
     throw DiError("UNSUPPORTED_CAPABILITY", "local", "conversation",
                   "conversation requires a pinned tokenizer digest");
-
-  std::uint64_t configuredRetentionDeadline = 0;
-  try {
-    configuredRetentionDeadline = configuredRetentionDeadlineFromPackage(*m_package);
-  }
-  catch (const std::exception& error) {
-    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "conversation",
-                  std::string("verified conversation retention is invalid: ") + error.what());
-  }
-  if (configuredRetentionDeadline != 0 && configuredRetentionDeadline <= nowMs())
-    throw DiError("CONVERSATION_RETENTION_EXPIRED", "conversation", "open",
-                  "configured conversation retention deadline has expired");
 
   std::string id = options.conversationId;
   if (options.checkpoint) {

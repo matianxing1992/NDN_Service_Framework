@@ -135,12 +135,19 @@ def _snapshot(state, root=None):
         status = 'UNKNOWN'
     elif status == 'COMPLETE' and any(row['state'] != 'RUNNING' for row in services):
         status = 'DEGRADED'
+    if state.get('facility'):
+        if state['facility'].get('status') == 'UNKNOWN':
+            status = 'UNKNOWN'
+        elif status == 'STOPPED' and not state.get('failure') and state.get('execution') == 'COMPLETE':
+            status = 'COMPLETE'
     return {'schema': state['schema'], 'deployment_id': state['deployment_id'],
             'boot_id': state['boot_id'], 'status': status, 'processes': rows,
             'operation_stage': state['status'],
+            'execution': state.get('execution'), 'facility': state.get('facility'),
             'requester': state.get('requester'), 'evidence_root': state['evidence_root'],
             'external_references': state.get('external_references', []),
             'diagnostic_logging': state.get('diagnostic_logging', False),
+            'runtime_timing': state.get('runtime_timing', False),
             'failure': state.get('failure'), 'failure_boundary': state.get('failure_boundary'),
             'cleanup': state.get('cleanup')}
 
@@ -175,6 +182,11 @@ def _environment(home, socket, actor_id, state):
                NDNSF_DEPLOYMENT_CONFIG_SHA256=state['configuration_sha256'])
     if 'release_sha256' in state:
         env['NDNSF_DEPLOYMENT_RELEASE_SHA256'] = state['release_sha256']
+    if state.get('runtime_timing'):
+        env.update(NDNSF_DI_RUNTIME_TIMING='1', NDNSF_PHASE_TIMING='1')
+        if not state.get('diagnostic_logging'):
+            env['NDN_LOG'] = ('*=NONE:ndnsf.di.RuntimeEvidence=WARN:'
+                              'ndn_service_framework.TimelineTrace=WARN')
     return env
 
 
@@ -263,7 +275,8 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None):
     return argv, env
 
 
-def _spawn(state, root, actor_id, kind, argv, env, guard):
+def _spawn(state, root, actor_id, kind, argv, env, guard, *, launcher=None,
+           network_namespace=None):
     row = {'id': actor_id, 'kind': kind, 'argv': argv, 'expected_exe': str(Path(argv[0]).resolve()),
            'bindings': {key: env[key] for key in (
                'NDNSF_DEPLOYMENT_ACTOR_ID', 'NDNSF_DEPLOYMENT_BOOT_ID',
@@ -280,7 +293,7 @@ def _spawn(state, root, actor_id, kind, argv, env, guard):
             write_json(root / 'state.json', state)
             raise
         try:
-            child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log,
+            child = (launcher or subprocess.Popen)(argv, stdin=subprocess.DEVNULL, stdout=log,
                                      stderr=subprocess.STDOUT, env=env, start_new_session=True)
         except OSError:
             row['spawn_failed'] = True
@@ -301,6 +314,11 @@ def _spawn(state, root, actor_id, kind, argv, env, guard):
                     proof.get('bindings') == row['bindings'] and
                     owned_state(proof) in ('RUNNING', 'EXITED')):
                 row['proof'] = proof
+                if network_namespace is not None:
+                    actual = os.readlink('/proc/' + str(child.pid) + '/ns/net')
+                    if actual != network_namespace:
+                        raise ClusterError('native process network namespace mismatch: ' + actor_id)
+                    row['network_namespace'] = actual
                 write_json(root / 'state.json', state)
                 return child, row
             if time.monotonic() >= capture_deadline:
@@ -329,7 +347,7 @@ def _recover(row):
         row['proof'] = matches[0]
 
 
-def _close(state, root):
+def _close(state, root, facility=None):
     actor_ids = [row.get('id', 'UNKNOWN') for row in reversed(state['launches'])]
     previous = {row.get('id'): row for row in (state.get('cleanup') or [])
                 if isinstance(row, dict) and row.get('id') in actor_ids}
@@ -373,7 +391,13 @@ def _close(state, root):
             except OSError as error:
                 record.update(status='UNKNOWN', error=str(error))
         write_json(root / 'state.json', state)
-    state['status'] = 'STOPPED' if all(r['status'] == 'ZERO' for r in state['cleanup']) else 'UNKNOWN'
+    facility_closed = True
+    if state.get('facility'):
+        from .minindn import close_facility
+        facility_closed = (facility.close() if facility is not None
+                           else close_facility(state, root))
+    state['status'] = ('STOPPED' if facility_closed and all(
+        r['status'] == 'ZERO' for r in state['cleanup']) else 'UNKNOWN')
     write_json(root / 'state.json', state)
     return _snapshot(state, root)
 
@@ -430,12 +454,12 @@ def _nfd_config(socket, port):
             'rib { localhost_security { trust-anchor { type any } } }\n')
 
 
-def _configure_group_strategy(nfdc, env, config, directory, deadline, guard):
+def _configure_group_strategy(nfdc, env, config, directory, deadline, guard, *, node=None):
     """Configure our NFD's shared group; external forwarders are only inspected."""
     group = config['network']['group']
     multicast = '/localhost/nfd/strategy/multicast'
     commands = []
-    if config['nodes'][0]['nfd']['mode'] == 'managed':
+    if (node or config['nodes'][0])['nfd']['mode'] == 'managed':
         commands.append(['strategy', 'set', 'prefix', group, 'strategy', multicast])
     commands.append(['strategy', 'list'])
     records = []
@@ -512,13 +536,31 @@ def _check_budget(config):
     return used
 
 
+def _inspect_trust_resources(config, timeout):
+    from .trust_resources import admit_resources, inspect_resources
+
+    schema = config['security']['trust_schema']
+    command = [str(Path(config['release']['prefix']) / 'bin/ndnsf-identity-check'),
+               '--trust-resources', schema]
+    env = {key: value for key, value in os.environ.items() if key in ('LANG', 'LC_ALL', 'TZ')}
+    env.update(PATH='/usr/local/bin:/usr/bin:/bin', NDN_LOG='*=NONE')
+    resources, proof = inspect_resources(command, schema, env, timeout)
+    try:
+        admit_resources(config, resources)
+    except (RuntimeError, ValueError, OSError) as error:
+        error.trust_resource_proof = proof
+        raise
+    return proof
+
+
 def _host_preflight(config):
-    node = config['nodes'][0]
-    if node['cpus'] > len(os.sched_getaffinity(0)):
+    nodes = config['nodes']
+    if any(node['cpus'] > len(os.sched_getaffinity(0)) for node in nodes):
         raise ClusterError('configured node CPUs exceed this process allocation')
-    if not shutil.which('nfdc') or (node['nfd']['mode'] == 'managed' and not shutil.which('nfd')):
+    if not shutil.which('nfdc') or (any(node['nfd']['mode'] == 'managed' for node in nodes)
+                                  and not shutil.which('nfd')):
         raise ClusterError('required nfd/nfdc executable is unavailable')
-    if any(actor['id'] == 'nfd.' + node['id'] for actor in config['actors']):
+    if any(actor['id'] == 'nfd.' + node['id'] for actor in config['actors'] for node in nodes):
         raise ClusterError('actor ID conflicts with the managed NFD ID')
     for actor in config['actors']:
         if actor['external'] or actor['kind'] != 'provider':
@@ -528,13 +570,14 @@ def _host_preflight(config):
         if ('cuda' in actor['parameters'].get('offer-backend', '').lower() and
                 not actor['resources']['gpu_devices']):
             raise ClusterError('CUDA Provider has no declared GPU device')
-    if node['gpu_devices']:
+    configured_devices = {device for node in nodes for device in node['gpu_devices']}
+    if configured_devices:
         probe = subprocess.run(['nvidia-smi', '--query-gpu=index,uuid', '--format=csv,noheader'],
                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
         if probe.returncode:
             raise ClusterError('host GPU visibility probe failed')
         devices = {value.strip() for line in probe.stdout.splitlines() for value in line.split(',')}
-        if not set(node['gpu_devices']) <= devices:
+        if not configured_devices <= devices:
             raise ClusterError('configured host GPU device is unavailable')
     used = _check_budget(config)
     for key, value in config['storage'].items():
@@ -547,11 +590,49 @@ def _host_preflight(config):
             raise ClusterError('insufficient free capacity for the declared storage budget')
 
 
-def _up(source, root, timeout, debug=False):
+def _start_forwarder(config, node, state, root, directory, children, deadline, guard, spawn):
+    nfd = node['nfd']
+    home = root / ('nfd-' + node['id'])
+    _private_directory(home)
+    env = _environment(home, nfd['socket'], 'nfd.' + node['id'], state)
+    nfdc_env = _environment(root / ('nfdc-' + node['id']), nfd['socket'],
+                            'nfdc.' + node['id'], state)
+    _private_directory(Path(nfdc_env['HOME']))
+    row = None
+    if nfd['mode'] == 'managed':
+        if Path(nfd['socket']).exists():
+            raise ClusterError('managed NFD socket already exists; refusing to replace it')
+        Path(nfd['socket']).parent.mkdir(parents=True, exist_ok=True)
+        path = directory / 'nfd.conf'
+        path.write_text(_nfd_config(nfd['socket'], nfd['port']))
+        child, row = spawn('nfd.' + node['id'], 'nfd',
+                           [shutil.which('nfd'), '--config', str(path)], env, node['id'])
+        children.append(({'id': row['id'], 'kind': 'nfd'}, child, row))
+    nfdc = shutil.which('nfdc')
+    while True:
+        guard()
+        result = subprocess.run([nfdc, 'status', 'show'], env=nfdc_env,
+                                stdin=subprocess.DEVNULL, capture_output=True,
+                                timeout=min(5, max(0.01, deadline - time.monotonic())))
+        if result.returncode == 0:
+            (directory / 'nfd-status.txt').write_bytes(result.stdout)
+            if row is not None:
+                info = Path(nfd['socket']).lstat()
+                if not stat.S_ISSOCK(info.st_mode):
+                    raise ClusterError('managed NFD did not create its configured socket')
+                row['socket'] = {'path': nfd['socket'],
+                                 'identity': [info.st_dev, info.st_ino, info.st_mtime_ns]}
+                write_json(root / 'state.json', state)
+            break
+        time.sleep(0.1)
+    _configure_group_strategy(nfdc, nfdc_env, config, directory, deadline, guard, node=node)
+
+
+def _up(source, root, timeout, debug=False, timing=False):
     config = load_deployment(source)
-    if config['platform']['kind'] != 'host':
+    if config['platform']['kind'] == 'slurm-apptainer':
         from .slurm import up
-        return up(config, source, root, timeout, debug)
+        return up(config, source, root, timeout, debug, timing)
     _private_directory(root)
     with _lock(root):
         old = _read_state(root)
@@ -562,11 +643,17 @@ def _up(source, root, timeout, debug=False):
             # Acquiring this lock proves no previous up still owns it. A saved
             # nonterminal record is interrupted even when called in the same PID.
             return _snapshot(old)  # never resubmit a finite Requester
-        _host_preflight(config)
+        trust_proof = _inspect_trust_resources(config, timeout)
+        try:
+            _host_preflight(config)
+        except (RuntimeError, ValueError, OSError) as error:
+            error.trust_resource_proof = trust_proof
+            raise
         state = {'schema': 'ndnsf-di-host-operation-v1', 'deployment_id': config['deployment_id'],
                  'boot_id': uuid.uuid4().hex, 'configuration_sha256': digest,
                  'manager': process_identity(os.getpid()),
                  'diagnostic_logging': debug,
+                 'runtime_timing': timing,
                  'status': 'STARTING', 'launches': [], 'source': str(source)}
         state['external_references'] = [dict(id=a['id'], kind=a['kind'], identity=a['identity'],
                                               verification='NOT_PROBED')
@@ -574,6 +661,7 @@ def _up(source, root, timeout, debug=False):
         directory = Path(config['storage']['evidence_root']) / config['deployment_id'] / state['boot_id']
         _private_directory(directory)
         state['evidence_root'] = str(directory)
+        write_json(directory / 'trust-resources.json', trust_proof)
         write_json(root / 'state.json', state)
         write_json(directory / 'configuration.json', config)
         children = []
@@ -583,6 +671,7 @@ def _up(source, root, timeout, debug=False):
         request_start = None
         request_child = None
         request_actor = None
+        facility = None
 
         def guard():
             nonlocal last_budget
@@ -594,11 +683,18 @@ def _up(source, root, timeout, debug=False):
                 state['storage_bytes'] = _check_budget(config)
                 last_budget = time.monotonic()
         try:
-            node = config['nodes'][0]
-            nfd = node['nfd']
-            nfdc = shutil.which('nfdc')
-            if not nfdc:
-                raise ClusterError('nfdc executable is unavailable')
+            if config['platform']['kind'] == 'minindn':
+                from .minindn import MiniNdnFacility
+                facility = MiniNdnFacility(config, root, state, deadline)
+                facility.start(guard)
+
+            def spawn(actor_id, kind, argv, env, node_id):
+                if facility is None:
+                    return _spawn(state, root, actor_id, kind, argv, env, guard)
+                return _spawn(state, root, actor_id, kind, argv, env, guard,
+                              launcher=facility.launcher(node_id),
+                              network_namespace=facility.namespace(node_id))
+
             launches = []
             for actor in config['actors']:
                 if actor['external']:
@@ -614,43 +710,13 @@ def _up(source, root, timeout, debug=False):
                     raise ClusterError('IDENTITY_PREFLIGHT_FAILED:' + actor['id'])
                 guard()
                 launches.append((actor, argv, env))
-            nfd_env = _environment(root / 'nfd-home', nfd['socket'], 'nfd.' + node['id'], state)
-            # Native KeyChain initialization must not race the forwarder's fresh PIB.
-            nfdc_env = _environment(root / 'nfdc-home', nfd['socket'], 'nfdc.' + node['id'], state)
-            if nfd['mode'] == 'managed':
-                if Path(nfd['socket']).exists():
-                    raise ClusterError('managed NFD socket already exists; refusing to replace it')
-                executable = shutil.which('nfd')
-                if not executable:
-                    raise ClusterError('nfd executable is unavailable')
-                (root / 'nfd-home').mkdir(exist_ok=True, mode=0o700)
-                Path(nfd['socket']).parent.mkdir(parents=True, exist_ok=True)
-                path = directory / 'nfd.conf'
-                path.write_text(_nfd_config(nfd['socket'], nfd['port']))
-                child, row = _spawn(state, root, 'nfd.' + node['id'], 'nfd',
-                                    [executable, '--config', str(path)], nfd_env, guard)
-                children.append(({'id': row['id'], 'kind': 'nfd'}, child, row))
-            while True:
-                guard()
-                _check_running(children)
-                # A full report caches strategy/list before our strategy set.
-                result = subprocess.run([nfdc, 'status', 'show'], env=nfdc_env,
-                                        stdin=subprocess.DEVNULL, capture_output=True,
-                                        timeout=min(5, max(0.01, deadline - time.monotonic())))
-                if result.returncode == 0:
-                    (directory / 'nfd-status.txt').write_bytes(result.stdout)
-                    if nfd['mode'] == 'managed':
-                        info = Path(nfd['socket']).lstat()
-                        if not stat.S_ISSOCK(info.st_mode):
-                            raise ClusterError('managed NFD did not create its configured socket')
-                        children[0][2]['socket'] = {'path': nfd['socket'],
-                            'identity': [info.st_dev, info.st_ino, info.st_mtime_ns]}
-                        write_json(root / 'state.json', state)
-                    break
-                if time.monotonic() >= deadline:
-                    raise ClusterError('NFD_READINESS_TIMEOUT')
-                time.sleep(0.1)
-            _configure_group_strategy(nfdc, nfdc_env, config, directory, deadline, guard)
+            for node in config['nodes']:
+                node_directory = directory if facility is None else directory / ('nfd-' + node['id'])
+                node_directory.mkdir(exist_ok=True)
+                _start_forwarder(config, node, state, root, node_directory, children,
+                                 deadline, guard, spawn)
+            if facility is not None:
+                facility.routes(directory, guard)
             # Controller.start() proves its own PUBPARAMS path; NAC clients depend on it.
             for controller_phase in (True, False):
                 pending = []
@@ -658,7 +724,7 @@ def _up(source, root, timeout, debug=False):
                     if actor['kind'] == 'requester' or (actor['kind'] == 'controller') != controller_phase:
                         continue
                     guard()
-                    child, row = _spawn(state, root, actor['id'], actor['kind'], argv, env, guard)
+                    child, row = spawn(actor['id'], actor['kind'], argv, env, actor['node'])
                     children.append((actor, child, row))
                     pending.append((actor, child, row))
                 while pending:
@@ -685,7 +751,7 @@ def _up(source, root, timeout, debug=False):
                 request_actor = actor['id']
                 state['requester'] = {'exit_code': None, 'completion': 'RUNNING',
                                       'started_unix_seconds': time.time(), 'oracle': 'NOT_RUN'}
-                child, row = _spawn(state, root, actor['id'], actor['kind'], argv, env, guard)
+                child, row = spawn(actor['id'], actor['kind'], argv, env, actor['node'])
                 request_child = child
                 children.append((actor, child, row))
                 state['status'] = 'REQUEST_RUNNING'
@@ -708,10 +774,16 @@ def _up(source, root, timeout, debug=False):
                 r['verification'] == 'NOT_PROBED' for r in state['external_references']) else 'COMPLETE')
             state['storage_bytes'] = _check_budget(config)
             state['wall_seconds'] = time.monotonic() - started
+            if facility is not None:
+                state['execution'] = state['status']
+                _close(state, root, facility)
+                state['needs_closeout'] = state['status'] != 'STOPPED'
             write_json(root / 'state.json', state)
             write_json(directory / 'operation.json', state)
             return _snapshot(state, root)
         except BaseException as error:
+            if facility is not None:
+                state['execution'] = 'FAILED'
             state['failure'] = str(error)
             frames = deque(maxlen=8)
             trace = error.__traceback__
@@ -731,7 +803,7 @@ def _up(source, root, timeout, debug=False):
                     exit_code=request_child.poll() if request_child else None)
             handler = signal.signal(signal.SIGTERM, signal.SIG_IGN)
             try:
-                result = _close(state, root)
+                result = _close(state, root, facility) if facility else _close(state, root)
             finally:
                 signal.signal(signal.SIGTERM, handler)
             if request_start is not None:
@@ -747,19 +819,21 @@ def _up(source, root, timeout, debug=False):
             return result
 
 
-def run_cluster(action, path, timeout=1800, *, debug=False):
+def run_cluster(action, path, timeout=1800, *, debug=False, timing=False):
     """Run the host operation or inspect/close its persisted owned processes."""
     if type(timeout) not in (int, float) or not 0 < timeout <= 3600:
         raise ClusterError('timeout must be in (0,3600] seconds')
     if type(debug) is not bool or (debug and action != 'up'):
         raise ClusterError('debug must be a boolean and only applies to up')
+    if type(timing) is not bool or (timing and action != 'up'):
+        raise ClusterError('timing must be a boolean and only applies to up')
     source, root = _locator(path)
     if action == 'up':
         def terminate(signum, frame):
             raise KeyboardInterrupt('SIGTERM')
         handler = signal.signal(signal.SIGTERM, terminate)
         try:
-            return _up(source, root, timeout, debug)
+            return _up(source, root, timeout, debug, timing)
         finally:
             signal.signal(signal.SIGTERM, handler)
     if root.exists():

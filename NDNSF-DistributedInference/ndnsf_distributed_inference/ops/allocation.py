@@ -230,8 +230,15 @@ def audit_node(args, config):
 def step_arguments(config, role, gpu_allocation=None):
     node = next(node for node in config['nodes'] if node['id'] == role['node'])
     resources = role.get('resources', {'cpus': 1, 'gpu_devices': []})
+    resident = role['kind'] in ('nfd', 'nfdc', 'controller', 'artifact-authority',
+                                'requester', 'provider', 'repo')
+    # GPU steps must overlap, but their native processes need distinct CPU sets.
+    # Expose the node's allocated pool; the container owner binds its role before exec.
+    cpus = node['cpus'] if resident else resources['cpus']
     command = ['srun', '--overlap', '--exact', '--nodes=1', '--ntasks=1',
-               '--nodelist=' + node['host'], '--cpus-per-task=' + str(resources['cpus'])]
+               '--nodelist=' + node['host'], '--cpus-per-task=' + str(cpus)]
+    if resident:
+        command.append('--cpu-bind=threads')
     slots = _gpu_slots(role, gpu_allocation)
     if slots:
         # The container scopes declared UUIDs; Slurm/NVML mask numbering may differ.
@@ -256,6 +263,8 @@ def _bound_arguments(args, timeout):
                '--release-sha256', args.release_sha256, '--timeout', str(timeout)]
     if args.debug:
         command.append('--debug')
+    if getattr(args, 'timing', False):
+        command.append('--timing')
     return command
 
 
@@ -363,6 +372,20 @@ def run_allocation(args, config):
             command += _bound_arguments(args, remaining())
             command += (['--management', role['kind'], '--node', role['node']]
                         if role['kind'] in ('nfd', 'nfdc') else ['--actor', role['id']])
+            # Prime a positive NFS entry before the remote owner polls it.
+            # A newly created cancellation can otherwise remain negatively cached.
+            cancel_root = _receipt_path(args, role).parent / 'runtime' / config['deployment_id']
+            cluster._private_directory(cancel_root)
+            try:
+                descriptor = os.open(str(cancel_root / 'cancel.json'),
+                                     os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                _private_json(cancel_root / 'cancel.json')  # Preserve an existing cancellation.
+            else:
+                with os.fdopen(descriptor, 'w') as stream:
+                    json.dump({'boot_id': None}, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
             state['roles'].append(dict(role))
             child = launch(management_role_id('step', role['id']), role['kind'], command)
             role_children[role['id']] = child
@@ -603,6 +626,7 @@ def main(argv=None):
     parser.add_argument('--audit-target-job')
     parser.add_argument('--recovery-id')
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--timing', action='store_true')
     args = parser.parse_args(argv)
     if (not math.isfinite(args.timeout) or not 0 < args.timeout <= 3600 or
             not os.environ.get('SLURM_JOB_ID') or not os.environ.get('SLURM_JOB_NODELIST') or

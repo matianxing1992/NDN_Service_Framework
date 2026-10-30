@@ -196,6 +196,16 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
     "/spec190/lookup", 1, std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
   auto provider = std::make_unique<RepoSourceProvider>(fixture.repo);
   const auto committed = provider->publish("qwen", "/service", model, source, options, control);
+  BOOST_CHECK_EQUAL(committed.rootDataName,
+                   ndn::Name(committed.rootDataName).toUri(ndn::name::UriFormat::CANONICAL));
+  BOOST_CHECK(ndn::Name(options.artifactRoot).isPrefixOf(ndn::Name(committed.rootDataName)));
+  const ndn::Name expectedRoot(options.artifactRoot + "/prepared/" +
+    options.publicationIdentityDigest.substr(7) + "/manifest");
+  BOOST_CHECK(ndn::Name(committed.rootDataName) == expectedRoot);
+  for (const auto& manifest : fixture.repo->list()) {
+    BOOST_CHECK_EQUAL(manifest.objectName,
+                     ndn::Name(manifest.objectName).toUri(ndn::name::UriFormat::CANONICAL));
+  }
   BOOST_REQUIRE_EQUAL(provider->stats().publicationCalls, 1U);
 
   const auto hit = provider->lookupPrepared({
@@ -519,8 +529,9 @@ BOOST_AUTO_TEST_CASE(PublicationFailureDoesNotRemoveAnOlderCommittedReceipt)
   NativeCanonicalPublicationOptions changedOptions = options;
   changedOptions.artifactProfileDigest = changedCatalog["recipe"]["artifact_profile_digest"];
   changedOptions.publicationIdentityDigest = nativePlanningDigest(nativeCanonicalJson(changedCatalog));
-  const auto changedRoot = std::string("/spec190/di/artifacts/prepared/") +
-    changedOptions.publicationIdentityDigest.substr(7) + "/manifest";
+  const auto changedRoot = ndn::Name(std::string("/spec190/di/artifacts/prepared/") +
+    changedOptions.publicationIdentityDigest.substr(7) + "/manifest")
+      .toUri(ndn::name::UriFormat::CANONICAL);
 
   {
     RepoIoHookScope hooks;
@@ -605,6 +616,72 @@ BOOST_AUTO_TEST_CASE(ConcurrentLookupAndPublishObserveOneCommitBoundary)
     std::chrono::steady_clock::now() + std::chrono::seconds(10)});
   BOOST_REQUIRE(committed);
   BOOST_CHECK_EQUAL(provider->stats().publicationCalls, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(LegacyPreparedAliasesAreRejectedWithoutChangingStoredBytes)
+{
+  // Cover literal roots, partial child-only publications, mixed URI spelling,
+  // and a legacy alias alongside an already committed canonical publication.
+  for (unsigned scenario = 0; scenario < 4; ++scenario) {
+    BOOST_TEST_CONTEXT("legacy key scenario " << scenario) {
+      Fixture fixture;
+      NativeInspectedModel model;
+      model.descriptor = modelDescriptor();
+      NativeCanonicalSource source;
+      source.modelBytes = {0x21, 0x22, 0x23};
+      model.canonicalSourceDigest = nativePlanningDigest(
+        source.modelBytes.data(), source.modelBytes.size());
+      model.canonicalSourceBytes = source.modelBytes.size();
+      model.canonicalGraphDigest = digest("graph");
+      model.modelManifestDigest = digest("package");
+      const auto profile = digest("legacy-profile");
+      auto catalog = catalogFor(model.descriptor, profile);
+      catalog["source"]["digest"] = model.canonicalSourceDigest;
+      NativeCanonicalPublicationOptions options;
+      options.artifactRoot = "/spec190/di/artifacts";
+      options.packageManifestDigest = digest("package");
+      options.artifactProfileDigest = profile;
+      options.publicationIdentityDigest = nativeCanonicalPublicationIdentity(catalog);
+      const auto root = options.artifactRoot + "/prepared/" +
+        options.publicationIdentityDigest.substr(7);
+      const auto canonicalRoot = ndn::Name(root).toUri(ndn::name::UriFormat::CANONICAL);
+      RepoSourceProvider provider(fixture.repo);
+      NativeRequestControl control{
+        "/spec190/legacy", 1,
+        std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
+      if (scenario == 3)
+        provider.publish("qwen", "/service", model, source, options, control);
+      const auto legacyName = scenario == 0 ? root + "/manifest" :
+        scenario == 2 ? canonicalRoot + "/source" : root + "/source";
+      const std::vector<std::uint8_t> legacyBytes{0x91, 0x92, 0x93};
+      fixture.repo->put(legacyName, legacyBytes);
+      const auto before = fixture.repo->list();
+      const auto rejectsLegacy = [] (const RepositorySourceError& error) {
+        return error.code() == "PREPARATION_SOURCE_UNAVAILABLE" &&
+          std::string(error.what()).find("legacy noncanonical prepared key") !=
+            std::string::npos;
+      };
+      BOOST_CHECK_EXCEPTION(provider.lookupPrepared({
+        "qwen", "/service", nativeCanonicalJson(catalog), 1U << 20, control.deadline}),
+        RepositorySourceError, rejectsLegacy);
+      // An equivalent configured prefix must not evade the compatibility check.
+      options.artifactRoot = ndn::Name(options.artifactRoot)
+        .toUri(ndn::name::UriFormat::CANONICAL);
+      BOOST_CHECK_EXCEPTION(
+        provider.publish("qwen", "/service", model, source, options, control),
+        RepositorySourceError, rejectsLegacy);
+      const auto after = fixture.repo->list();
+      BOOST_REQUIRE_EQUAL(after.size(), before.size());
+      for (const auto& manifest : before) {
+        const auto current = fixture.repo->getManifest(manifest.objectName);
+        BOOST_CHECK_EQUAL(current.sha256, manifest.sha256);
+        BOOST_CHECK_EQUAL(current.size, manifest.size);
+      }
+      const auto retained = fixture.repo->getRange(legacyName, {0, legacyBytes.size()});
+      BOOST_CHECK_EQUAL_COLLECTIONS(retained.begin(), retained.end(),
+                                    legacyBytes.begin(), legacyBytes.end());
+    }
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

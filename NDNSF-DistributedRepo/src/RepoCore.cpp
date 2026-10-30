@@ -810,7 +810,7 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
     normalized.generation = previous.generation;
     if (manifest.publicationIdentity.empty() && previous.objectType == "original-packet-set")
       normalized.publicationIdentity = previous.publicationIdentity;
-    if (normalized.toJson() != previous.toJson())
+    if (!normalized.hasSameMetadata(previous))
       throw std::runtime_error("repo-data-wire-conflict");
     existing = previous;
   }
@@ -820,11 +820,11 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
   // are checked again before accepting reuse or publishing the new ranges.
   const std::set<std::string> incomingNames(manifest.packetNames.begin(), manifest.packetNames.end());
   std::set<std::string> indexedPacketNames;
-  std::map<std::string, std::string> catalogMetadata;
+  std::map<std::string, RepoObjectManifest> catalogMetadata;
   size_t catalogEntries = 0;
   for (const auto& stored : m_store->listManifests()) {
     ++catalogEntries;
-    catalogMetadata.emplace(stored.objectName, stored.toJson());
+    catalogMetadata.emplace(stored.objectName, stored);
     if (stored.objectType == "ndn-data-wire") {
       // Legacy rows may use ALTERNATE URI spelling for the same typed Name.
       const auto canonical = ndn::Name(stored.objectName).toUri(ndn::name::UriFormat::CANONICAL);
@@ -908,9 +908,11 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
       const auto previous = catalogMetadata.find(stored.objectName);
       if (previous == catalogMetadata.end())
         rejectCatalog("OBJECT_NAME", &stored.objectName);
-      const auto metadata = stored.toJson();
-      if (previous->second != metadata)
-        rejectCatalog("METADATA", &stored.objectName, &previous->second, &metadata);
+      if (!previous->second.hasSameMetadata(stored)) {
+        const auto before = previous->second.toJson();
+        const auto after = stored.toJson();
+        rejectCatalog("METADATA", &stored.objectName, &before, &after);
+      }
     }
   };
   for (size_t i = 0; i < manifest.packetNames.size(); ++i) {

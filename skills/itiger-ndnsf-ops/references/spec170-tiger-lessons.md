@@ -1,5 +1,9 @@
 # Spec170 TigerCluster Lessons
 
+Scope: historical Spec170 work. Its local-SIF route is not a restriction on
+other authorized build plans. For current installation, resource, quota and
+recovery decisions use [portable-deployment.md](portable-deployment.md).
+
 These are reusable operating rules distilled from the recent NDNSF-DI
 Spec170 qualification work. They describe development-candidate handling and
 must not be read as a release PASS. The repository's active Spec Kit ledger

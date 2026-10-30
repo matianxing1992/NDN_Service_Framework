@@ -4,6 +4,7 @@
 #define BOOST_BIND_NO_PLACEHOLDERS
 
 #include "ProducerSignerPolicy.hpp"
+#include "trust-schema-resources.hpp"
 
 #include <iostream>
 #include <functional>

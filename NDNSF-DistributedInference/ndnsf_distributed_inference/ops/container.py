@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 from . import cluster
 from .deployment_config import _digest_file, _name, _read_json, provider_recipient_map
+from .trust_resources import TrustResourceError, describe_failure
 
 
 SCRIPTS = Path(__file__).parent / '_container/adapters/slurm-apptainer/scripts'
@@ -268,7 +269,8 @@ def _prepare_repository_locks(paths):
             os.close(descriptor)
 
 
-def role_mounts(config, source, actor=None, *, node=None, management=None):
+def role_mounts(config, source, actor=None, *, node=None, management=None,
+                trust_resources=()):
     """Preserve absolute runtime paths while exposing only one role's inputs."""
     source = _canonical(source)
     node = node or next(item for item in config['nodes'] if item['id'] == actor['node'])
@@ -377,7 +379,7 @@ def role_mounts(config, source, actor=None, *, node=None, management=None):
             for key in ('input_file', 'options_file', 'output_file', 'checkpoint_output_file'):
                 if key in turn:
                     add(turn[key])
-        return role_id, home, evidence, mounts
+        return role_id, home, evidence, mounts, repository_locks
     if kind == 'nfd':
         add(Path(node['nfd']['socket']).parent, writable=True, directory=True)
     elif kind != 'gpu-probe':
@@ -386,11 +388,13 @@ def role_mounts(config, source, actor=None, *, node=None, management=None):
             raise cluster.ClusterError('CONTAINER_NFD_SOCKET_MISSING')
         mounts[endpoint] = 'ro'
     if management:
-        return role_id, home, evidence, mounts
+        return role_id, home, evidence, mounts, repository_locks
     if actor['resources']['gpu_devices']:
         add(source.parent / 'nodes' / node['id'] / 'gpu-allocation.json')
     for key in ('trust_schema', 'controller_certificate'):
         add(config['security'][key])
+    for path in trust_resources:
+        add(path)
     if kind == 'controller':
         add(config['security']['controller_policy'])
     elif kind == 'provider':
@@ -471,12 +475,18 @@ def role_mounts(config, source, actor=None, *, node=None, management=None):
         if any(mode == 'ro' and (_contains(target, path) or _contains(path, target))
                for path, mode in mounts.items()):
             raise cluster.ClusterError('CONTAINER_WRITABLE_INPUT_OVERLAP:' + str(target))
-    _prepare_repository_locks(repository_locks)
-    return role_id, home, evidence, mounts
+    return role_id, home, evidence, mounts, repository_locks
 
 
 def stage_image(config, args, evidence, home, role_id, endpoint):
     """Own the complete staging process group, including timeout/cancel cleanup."""
+    platform = config['platform']
+    validator = runpy.run_path(str(SCRIPTS / 'validate-local-sif-build-record.py'))
+    try:
+        validator['validate'](platform['build_record'], platform['sif'], platform['sif_sha256'],
+                              verify_sif_hash=False, purpose='deployment')
+    except validator['BuildRecordError'] as error:
+        raise cluster.ClusterError(str(error)) from error
     root = evidence / 'staging' / config['deployment_id']
     cluster._private_directory(root)
     with cluster._lock(root):
@@ -542,6 +552,31 @@ def _stage_owned(config, args, root, home, role_id, endpoint):
     return image
 
 
+def role_cpu_affinity(config, node, actor, management, available):
+    """Partition observed Linux CPUs; GPU overlap must not imply CPU overlap."""
+    if actor is None and management not in ('nfd', 'nfdc'):
+        return None
+    pool = sorted(available)
+    if len(pool) < node['cpus']:
+        raise cluster.ClusterError('CONTAINER_ALLOCATED_CPU_POOL_TOO_SMALL')
+    pool = pool[:node['cpus']]
+    residents = [item for item in config['actors']
+                 if not item['external'] and item['node'] == node['id']]
+    managed_nfd = node['nfd']['mode'] == 'managed'
+    total = int(managed_nfd) + sum(item['resources']['cpus'] for item in residents)
+    if total > len(pool) and not all(item['resources']['allow_sharing'] for item in residents):
+        raise cluster.ClusterError('CONTAINER_CPU_SHARING_NOT_AUTHORIZED')
+    if actor is None:
+        return {pool[0]}  # Finite nfdc shares its managed forwarder's reservation.
+    offset = int(managed_nfd)
+    for item in residents:
+        count = item['resources']['cpus']
+        if item['id'] == actor['id']:
+            return {pool[(offset + index) % len(pool)] for index in range(min(count, len(pool)))}
+        offset += count
+    raise cluster.ClusterError('CONTAINER_CPU_ROLE_NOT_FOUND')
+
+
 def execute(args):
     config = load_frozen(args.deployment, args.configuration_sha256, args.boot_id, args.release_sha256)
     oracle = args.management == 'oracle'
@@ -555,17 +590,56 @@ def execute(args):
     if node is None or (not oracle and node['host'] not in (
             socket.gethostname(), socket.gethostname().split('.')[0])):
         raise cluster.ClusterError('CONTAINER_ALLOCATION_NODE_MISMATCH')
-    role_id, home, evidence, mounts = role_mounts(config, args.deployment, actor,
-                                                 node=node, management=args.management)
+    role_id, home, evidence, mounts, repository_locks = role_mounts(
+        config, args.deployment, actor, node=node, management=args.management)
     large_data_mount = _large_data_mount(config, actor, evidence, mounts)
     target_plan = dict(mounts)
     if large_data_mount:
         target_plan[large_data_mount[1]] = 'rw'
     journal_mount = _journal_root_mount(config, actor, evidence, target_plan)
+    platform = config['platform']
+    probe = args.management == 'gpu-probe'
+    if probe and not 0 < platform['slurm']['gpu']['count'] <= 64:
+        raise cluster.ClusterError('CONTAINER_GPU_PROBE_COUNT_INVALID')
+    gpu = probe or actor is not None and bool(actor['resources']['gpu_devices'])
+    visibility = step_visibility({'resources': {'gpu_devices': [None] *
+        platform['slurm']['gpu']['count']}} if gpu else actor)
+    if gpu and actor is not None:
+        allocation = load_gpu_allocation(args.deployment.parent / 'nodes' / node_id /
+                                         'gpu-allocation.json', args, config, node)
+        slots = gpu_slots(actor, allocation)
+        visibility = ','.join(allocation['devices'][slot]['uuid'] for slot in slots)
+    image = None
+    trust_proof = None
+    if actor is not None:
+        from .trust_resources import admit_resources, inspect_resources
+
+        image = stage_image(config, args, evidence, home, role_id, node['nfd']['socket'])
+        schema = _canonical(config['security']['trust_schema'])
+        command = [platform['apptainer'], 'exec', '--cleanenv', '--containall', '--no-eval',
+                   '--no-mount', 'hostfs,bind-paths', '--no-home', '--pwd', '/tmp',
+                   '--bind', str(schema) + ':' + str(schema) + ':ro', image,
+                   str(Path(config['release']['prefix']) / 'bin/ndnsf-identity-check'),
+                   '--trust-resources', str(schema)]
+        host_env = {key: value for key, value in os.environ.items()
+                    if key in ('PATH', 'LANG', 'LC_ALL', 'TZ') or key.startswith('SLURM_')}
+        resources, trust_proof = inspect_resources(command, schema, host_env, args.timeout)
+        try:
+            present = admit_resources(config, resources)
+            role_id, home, evidence, mounts, repository_locks = role_mounts(
+                config, args.deployment, actor, node=node, trust_resources=present)
+        except (RuntimeError, ValueError, OSError) as error:
+            error.trust_resource_proof = trust_proof
+            raise
+        cluster.write_json(evidence / 'trust-resources.json', trust_proof)
+        large_data_mount = _large_data_mount(config, actor, evidence, mounts)
+        target_plan = dict(mounts)
+        if large_data_mount:
+            target_plan[large_data_mount[1]] = 'rw'
+        journal_mount = _journal_root_mount(config, actor, evidence, target_plan)
     workload = args.command
     if workload[:1] == ['--']:
         workload = workload[1:]
-    probe = args.management == 'gpu-probe'
     if oracle:
         if args.command not in ([], ['--']):
             raise cluster.ClusterError('CONTAINER_ORACLE_WORKLOAD_FIXED')
@@ -577,8 +651,6 @@ def execute(args):
         if len(gpu_nodes) >= 2:
             workload.append('--require-distributed-gpu')
     elif probe:
-        if not 0 < config['platform']['slurm']['gpu']['count'] <= 64:
-            raise cluster.ClusterError('CONTAINER_GPU_PROBE_COUNT_INVALID')
         workload = [str(Path(config['release']['prefix']) / 'libexec/ndnsf-di/ndnsf-di-device-query'),
                     '--count', str(config['platform']['slurm']['gpu']['count'])]
         if args.command not in ([], ['--']):
@@ -596,28 +668,16 @@ def execute(args):
             workload += ['--management', args.management, '--node', args.node]
         if args.debug:
             workload.append('--debug')
-    platform = config['platform']
-    gpu = probe or actor is not None and bool(actor['resources']['gpu_devices'])
-    visibility = step_visibility({'resources': {'gpu_devices': [None] *
-        config['platform']['slurm']['gpu']['count']}} if gpu else actor)
-    if gpu and actor is not None:
-        allocation = load_gpu_allocation(args.deployment.parent / 'nodes' / node_id /
-                                         'gpu-allocation.json', args, config, node)
-        slots = gpu_slots(actor, allocation)
-        # Narrow the job allocation by stable identity, retaining declared logical order.
-        # The native role independently verifies these UUIDs before launching its backend.
-        visibility = ','.join(allocation['devices'][slot]['uuid'] for slot in slots)
-    validator = runpy.run_path(str(SCRIPTS / 'validate-local-sif-build-record.py'))
-    try:
-        validator['validate'](platform['build_record'], platform['sif'], platform['sif_sha256'],
-                              verify_sif_hash=False, purpose='deployment')
-    except validator['BuildRecordError'] as error:
-        raise cluster.ClusterError(str(error)) from error
-    image = stage_image(config, args, evidence, home, role_id, node['nfd']['socket'])
+        if getattr(args, 'timing', False):
+            workload.append('--timing')
+    if image is None:
+        image = stage_image(config, args, evidence, home, role_id, node['nfd']['socket'])
+    _prepare_repository_locks(repository_locks)
     env = cluster._environment(home, node['nfd']['socket'], role_id,
                               {'boot_id': args.boot_id, 'configuration_sha256': args.configuration_sha256,
                                'release_sha256': args.release_sha256,
-                               'diagnostic_logging': args.debug})
+                                'diagnostic_logging': args.debug,
+                                'runtime_timing': getattr(args, 'timing', False)})
     # cleanenv retains the exact image's declared dependency PATH. Passing the
     # host-side generic PATH here would hide image-specific SDK/venv prefixes.
     env.pop('PATH')
@@ -663,6 +723,15 @@ def execute(args):
     host_env = {key: value for key, value in os.environ.items()
                 if key in ('PATH', 'LANG', 'LC_ALL', 'TZ', 'CUDA_VISIBLE_DEVICES') or
                 key.startswith('SLURM_')}
+    available = os.sched_getaffinity(0)
+    cpus = role_cpu_affinity(config, node, actor, args.management, available)
+    if cpus is not None:
+        os.sched_setaffinity(0, cpus)
+        if os.sched_getaffinity(0) != cpus:
+            raise cluster.ClusterError('CONTAINER_CPU_AFFINITY_MISMATCH')
+        cluster.write_json(evidence / 'cpu-affinity.json', dict(
+            boot_id=args.boot_id, configuration_sha256=args.configuration_sha256,
+            role_id=role_id, available_cpus=sorted(available), bound_cpus=sorted(cpus)))
     os.execvpe(command[0], command, host_env)
 
 
@@ -678,6 +747,7 @@ def main(argv=None):
     parser.add_argument('--node')
     parser.add_argument('--timeout', type=float, default=300)
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--timing', action='store_true')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if not math.isfinite(args.timeout) or args.timeout <= 0 or (args.management and not args.node):
@@ -689,8 +759,9 @@ def main(argv=None):
     try:
         try:
             execute(args)
-        except (cluster.ClusterError, ValueError, OSError, subprocess.SubprocessError, KeyboardInterrupt) as error:
-            parser.exit(1, str(error) + '\n')
+        except (cluster.ClusterError, TrustResourceError, ValueError, OSError,
+                subprocess.SubprocessError, KeyboardInterrupt) as error:
+            parser.exit(1, describe_failure(error) + '\n')
     finally:
         signal.signal(signal.SIGTERM, handler)
 

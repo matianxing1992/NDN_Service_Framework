@@ -1427,6 +1427,67 @@ BOOST_AUTO_TEST_CASE(LegacyAndMalformedReferencesUseActualCoreRestore)
   }
 }
 
+BOOST_AUTO_TEST_CASE(SmallTransientControlKeepsBoundedOriginalFilesWithoutRepoCommit)
+{
+  const auto root = fs::temp_directory_path() / ("transient-control-" + std::to_string(::getpid()));
+  fs::create_directories(root);
+  struct Cleanup {
+    fs::path path;
+    ~Cleanup() { std::error_code error; fs::remove_all(path, error); }
+  } cleanup{root};
+  const auto spool = (root / "spool").string();
+  ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keys);
+  const auto actor = makeRsaIdentity(keys, ndn::Name("/transient-control/user"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/transient-control/authority"));
+  ndn_service_framework::test::IsolatedTestTrust trust{actor, authority};
+  LocalServiceUser user(face, ndn::Name("/transient-control/raw"), actor, authority, trust.schemaPath());
+  user.useSigningKeyChainForSigningOnlyForTest(keys);
+  user.attachLocalMockPubSubForTest(pubsub(face, keys));
+  auto store = std::make_shared<RangeOnlyDurableStore>();
+  user.setEncryptedLargeDataRangeStore(store);
+  user.init();
+  face.processEvents(ndn::time::milliseconds(1));
+  const ndn::Name service("/transient-control/service");
+  user.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+  for (const std::size_t bytes : {60857U, 61578U}) {
+    const auto published = user.publishEncryptedLargeData(user.prepareServiceRequest(service.toUri()),
+      std::vector<std::uint8_t>(bytes, 42), "control", ndn::time::milliseconds(1000), true);
+    BOOST_REQUIRE_MESSAGE(published.success, published.errorMessage);
+    BOOST_REQUIRE(published.fileBacked);
+    BOOST_REQUIRE(published.servingLease);
+    BOOST_CHECK_EQUAL(store->commits, 0U);
+    const auto before = face.sentData.size();
+    face.receive(ndn::Interest(published.manifestName));
+    face.processEvents(ndn::time::milliseconds(1));
+    BOOST_REQUIRE_EQUAL(face.sentData.size(), before + 1);
+    const auto manifestPacket = face.sentData.back();
+    BOOST_CHECK(ndn::security::verifySignature(manifestPacket, actor));
+    const auto& content = manifestPacket.getContent();
+    const auto manifest = ProtectedBlobManifest::decode(
+      std::vector<std::uint8_t>(content.value(), content.value() + content.value_size()),
+      actor.getIdentity(), published.manifestName);
+    const auto segment = ndn::Name(manifest.dataPrefix).appendSegment(manifest.segmentCount - 1);
+    face.receive(ndn::Interest(segment));
+    face.processEvents(ndn::time::milliseconds(1));
+    BOOST_REQUIRE_EQUAL(face.sentData.size(), before + 2);
+    const auto packet = face.sentData.back();
+    BOOST_CHECK(ndn::security::verifySignature(packet, actor));
+    const auto wire = packet.wireEncode();
+    face.receive(ndn::Interest(segment));
+    face.processEvents(ndn::time::milliseconds(1));
+    BOOST_CHECK(face.sentData.back().wireEncode() == wire);
+    user.abortLargeDataPublications({published});
+    BOOST_CHECK_EQUAL(user.getLargeDataServingMetricsForTest().publicationCount, 0U);
+  }
+  const auto large = user.publishEncryptedLargeData(user.prepareServiceRequest(service.toUri()),
+    std::vector<std::uint8_t>(1U << 20, 42), "material", ndn::time::milliseconds(1000), true);
+  BOOST_CHECK(!large.success);
+  BOOST_CHECK_EQUAL(store->commits, 1U);
+  BOOST_CHECK_EQUAL(user.getLargeDataServingMetricsForTest().publicationCount, 0U);
+}
+
 BOOST_AUTO_TEST_CASE(RangeOnlyDurableBackendIsRejectedBeforeCommit)
 {
   ndn::KeyChain keys("pib-memory:", "tpm-memory:");

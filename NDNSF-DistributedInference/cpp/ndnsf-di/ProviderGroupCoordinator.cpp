@@ -290,6 +290,62 @@ requireNonEmpty(const std::string& value, const char* field)
   }
 }
 
+bool
+sameOperationParameters(const GroupOperationV1& a, const GroupOperationV1& b)
+{
+  return a.kind == b.kind && a.producerRanks == b.producerRanks &&
+    a.consumerRanks == b.consumerRanks && a.tensorLayoutDigest == b.tensorLayoutDigest &&
+    a.maxBytes == b.maxBytes && a.maxSegments == b.maxSegments;
+}
+
+void
+appendCapabilityOperations(Bytes& output, const std::vector<GroupOperationV1>& operations,
+                           bool compact)
+{
+  appendU64(output, operations.size());
+  std::vector<std::pair<std::size_t, std::size_t>> runs;
+  if (compact) {
+    for (std::size_t first = 0; first < operations.size();) {
+      std::size_t end = first + 1;
+      if (end < operations.size() &&
+          operations[end].operationIndex > operations[first].operationIndex &&
+          sameOperationParameters(operations[first], operations[end])) {
+        const auto stride = operations[end].operationIndex - operations[first].operationIndex;
+        ++end;
+        while (end < operations.size() &&
+               operations[end].operationIndex > operations[end - 1].operationIndex &&
+               operations[end].operationIndex - operations[end - 1].operationIndex == stride &&
+               sameOperationParameters(operations[first], operations[end])) {
+          ++end;
+        }
+      }
+      runs.emplace_back(first, end - first);
+      first = end;
+    }
+    appendU64(output, runs.size());
+  }
+  const auto append = [&](const GroupOperationV1& operation) {
+    appendU64(output, operation.operationIndex);
+    appendString(output, operation.kind);
+    appendStrings(output, operation.producerRanks);
+    appendStrings(output, operation.consumerRanks);
+    appendString(output, operation.tensorLayoutDigest);
+    appendU64(output, operation.maxBytes);
+    appendU64(output, operation.maxSegments);
+  };
+  if (compact) {
+    for (const auto& [first, count] : runs) {
+      appendU64(output, count);
+      appendU64(output, count > 1
+        ? operations[first + 1].operationIndex - operations[first].operationIndex : 0);
+      append(operations[first]);
+    }
+  }
+  else {
+    for (const auto& operation : operations) append(operation);
+  }
+}
+
 } // namespace
 
 void
@@ -372,8 +428,14 @@ GroupCapabilityV1::validate() const
 ProviderGroupBytes
 GroupCapabilityV1::canonicalBytes(bool includeDigest) const
 {
+  return encodeFields(includeDigest, false);
+}
+
+ProviderGroupBytes
+GroupCapabilityV1::encodeFields(bool includeDigest, bool compactOperations) const
+{
   Bytes output;
-  appendString(output, "GroupCapabilityV1");
+  appendString(output, compactOperations ? "GroupCapabilityV2" : "GroupCapabilityV1");
   appendString(output, requestId);
   appendString(output, attemptId);
   appendString(output, planDigest);
@@ -386,16 +448,7 @@ GroupCapabilityV1::canonicalBytes(bool includeDigest) const
     appendString(output, member.offerDigest);
     appendString(output, member.endpointPrefix);
   }
-  appendU64(output, permittedOperations.size());
-  for (const auto& operation : permittedOperations) {
-    appendU64(output, operation.operationIndex);
-    appendString(output, operation.kind);
-    appendStrings(output, operation.producerRanks);
-    appendStrings(output, operation.consumerRanks);
-    appendString(output, operation.tensorLayoutDigest);
-    appendU64(output, operation.maxBytes);
-    appendU64(output, operation.maxSegments);
-  }
+  appendCapabilityOperations(output, permittedOperations, compactOperations);
   appendU64(output, maxInflightBytes);
   appendU64(output, noProgressMs);
   appendU64(output, hardDeadlineMs);
@@ -744,13 +797,19 @@ ProviderGroupCoordinator::encodeCapability(const GroupCapabilityV1& capability)
     throw std::invalid_argument("capability digest mismatch");
   }
   auto wire = capability.canonicalBytes(true);
+  const auto expandedFieldsSize = wire.size();
+  if (expandedFieldsSize > (16U << 20))
+    throw std::invalid_argument("GroupCapabilityV1 expanded fields exceed bound");
+  auto compact = capability.encodeFields(true, true);
+  if (compact.size() < wire.size()) wire.swap(compact);
+  const auto fieldsSize = wire.size();
   appendU64(wire, capability.wrappedEpochKeyByProvider.size());
   for (const auto& entry : capability.wrappedEpochKeyByProvider) {
     appendString(wire, entry.first);
     appendBytes(wire, entry.second);
   }
   appendBytes(wire, capability.sealerSignature);
-  if (wire.size() > (16U << 20)) {
+  if (wire.size() > (16U << 20) || expandedFieldsSize + wire.size() - fieldsSize > (16U << 20)) {
     throw std::invalid_argument("GroupCapabilityV1 wire exceeds bound");
   }
   return wire;
@@ -763,7 +822,9 @@ ProviderGroupCoordinator::decodeCapability(const ProviderGroupBytes& wire)
     throw std::invalid_argument("GroupCapabilityV1 wire exceeds bound");
   }
   WireCursor cursor(wire);
-  if (cursor.readString() != "GroupCapabilityV1") {
+  const auto marker = cursor.readString();
+  const bool compact = marker == "GroupCapabilityV2";
+  if (!compact && marker != "GroupCapabilityV1") {
     throw std::invalid_argument("invalid GroupCapabilityV1 marker");
   }
 
@@ -792,9 +853,16 @@ ProviderGroupCoordinator::decodeCapability(const ProviderGroupBytes& wire)
   if (operationCount == 0 || operationCount > (1U << 20)) {
     throw std::invalid_argument("GroupCapabilityV1 operation count exceeds bound");
   }
-  capability.permittedOperations.reserve(
-    static_cast<std::size_t>(operationCount));
-  for (std::uint64_t index = 0; index < operationCount; ++index) {
+  const auto runCount = compact ? cursor.readU64() : operationCount;
+  if (runCount == 0 || runCount > operationCount)
+    throw std::invalid_argument("GroupCapability operation run count exceeds bound");
+  std::uint64_t operationBudget = 16U << 20;
+  for (std::uint64_t index = 0; index < runCount; ++index) {
+    const auto count = compact ? cursor.readU64() : 1;
+    const auto stride = compact ? cursor.readU64() : 0;
+    if (count == 0 || count > operationCount - capability.permittedOperations.size() ||
+        (count == 1 ? stride != 0 : stride == 0))
+      throw std::invalid_argument("invalid GroupCapability operation run");
     GroupOperationV1 operation;
     operation.operationIndex = cursor.readU64();
     operation.kind = cursor.readString();
@@ -819,8 +887,23 @@ ProviderGroupCoordinator::decodeCapability(const ProviderGroupBytes& wire)
     operation.tensorLayoutDigest = cursor.readString();
     operation.maxBytes = cursor.readU64();
     operation.maxSegments = cursor.readU64();
-    capability.permittedOperations.push_back(std::move(operation));
+    if (count > 1 && stride >
+        (std::numeric_limits<std::uint64_t>::max() - operation.operationIndex) / (count - 1))
+      throw std::invalid_argument("GroupCapability operation run overflows");
+    Bytes expanded;
+    appendCapabilityOperations(expanded, {operation}, false);
+    const auto bytesPerOperation = expanded.size() - sizeof(std::uint64_t);
+    if (bytesPerOperation > operationBudget / count)
+      throw std::invalid_argument("GroupCapability expanded operations exceed wire bound");
+    operationBudget -= bytesPerOperation * count;
+    for (std::uint64_t offset = 0; offset < count; ++offset) {
+      auto current = operation;
+      current.operationIndex += offset * stride;
+      capability.permittedOperations.push_back(std::move(current));
+    }
   }
+  if (capability.permittedOperations.size() != operationCount)
+    throw std::invalid_argument("GroupCapability expanded operation count mismatch");
 
   capability.maxInflightBytes = cursor.readU64();
   capability.noProgressMs = cursor.readU64();
@@ -858,7 +941,10 @@ ProviderGroupCoordinator::decodeCapability(const ProviderGroupBytes& wire)
     throw std::invalid_argument("trailing GroupCapabilityV1 bytes");
   }
   capability.validate();
-  if (capability.capabilityDigest != hex(capability.canonicalBytes(false))) {
+  const auto canonical = capability.canonicalBytes(false);
+  if (canonical.size() > (16U << 20))
+    throw std::invalid_argument("GroupCapability expanded fields exceed wire bound");
+  if (capability.capabilityDigest != hex(canonical)) {
     throw std::invalid_argument("capability digest mismatch");
   }
   return capability;

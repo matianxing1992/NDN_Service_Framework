@@ -430,9 +430,10 @@ public:
     const std::string& sessionId, const DependencyEdge& edge) override
   {
     auto result = prefetchInput(sessionId, edge);
-    std::promise<void> ready;
-    ready.set_value();
-    return {std::move(result), ready.get_future().share()};
+    if (firstReadImmediately) {
+      firstReadPromise.set_value();
+    }
+    return {std::move(result), firstReadPromise.get_future().share()};
   }
 
   void
@@ -457,8 +458,10 @@ public:
   std::atomic<std::size_t> prefetchCalls{0};
   std::atomic<std::size_t> cancelCalls{0};
   std::atomic<std::size_t> publicationCalls{0};
+  bool firstReadImmediately = true;
 
 private:
+  std::promise<void> firstReadPromise;
   std::mutex mutex;
   std::condition_variable cv;
   bool cancelled = false;
@@ -468,6 +471,7 @@ enum class NativeEpochPublicationFault
 {
   EventAdmission,
   PrefetchCancellation,
+  PrefetchBeforeFirstReadCancellation,
   FeedbackPublication,
   ActivationPublication,
 };
@@ -553,9 +557,13 @@ runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
   if (fault == NativeEpochPublicationFault::ActivationPublication) {
     assignment.providerByRole["/Consumer"] = "/provider/B";
   }
-  const auto cancellationIo = fault ==
-      NativeEpochPublicationFault::PrefetchCancellation
+  const auto cancellationIo =
+    (fault == NativeEpochPublicationFault::PrefetchCancellation ||
+     fault == NativeEpochPublicationFault::PrefetchBeforeFirstReadCancellation)
     ? std::make_shared<CancellationBlockingDependencyIo>() : nullptr;
+  if (fault == NativeEpochPublicationFault::PrefetchBeforeFirstReadCancellation) {
+    cancellationIo->firstReadImmediately = false;
+  }
   std::shared_ptr<DependencyIo> io = cancellationIo
     ? std::static_pointer_cast<DependencyIo>(cancellationIo)
     : std::static_pointer_cast<DependencyIo>(
@@ -577,8 +585,15 @@ runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
        {NamedTensor{"input_ids", TensorElementType::Int64, {1, 3},
                     rawTensorPayload<std::int64_t>({11, 12, 13})}})},
   };
-  config.maxEpochs = fault == NativeEpochPublicationFault::PrefetchCancellation
-    ? 2 : 1;
+  config.maxEpochs = cancellationIo ? 2 : 1;
+  if (fault == NativeEpochPublicationFault::PrefetchBeforeFirstReadCancellation) {
+    config.stopCheck = [cancellationIo] () -> std::optional<NativeEpochStopReason> {
+      if (cancellationIo->prefetchCalls.load() > 0) {
+        return NativeEpochStopReason::Cancelled;
+      }
+      return std::nullopt;
+    };
+  }
   config.tokenInputName = "input_ids";
   config.stateInputNames = {"attention_kv_in"};
   config.stateOutputNames = {"attention_kv_out"};
@@ -5550,6 +5565,23 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorCancelsAbandonedPrefetchBeforeFutureD
                     "native epoch token event admission was rejected");
   BOOST_CHECK_EQUAL(result.runnerCalls, 1U);
   BOOST_CHECK_EQUAL(result.eventCalls, 1U);
+  BOOST_CHECK_EQUAL(result.prefetchCalls, 1U);
+  BOOST_CHECK_EQUAL(result.cancelCalls, 1U);
+  BOOST_CHECK_EQUAL(result.publicationCalls, 0U);
+  BOOST_CHECK_EQUAL(result.state.commits, 0U);
+  BOOST_CHECK_EQUAL(result.state.rollbacks, 1U);
+  BOOST_CHECK_EQUAL(result.state.entries, 0U);
+  BOOST_CHECK_EQUAL(result.state.pinnedEntries, 0U);
+  BOOST_CHECK_EQUAL(result.state.candidates, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorCancelsPrefetchBeforeFirstRead)
+{
+  const auto result = runNativeEpochPublicationFailure(
+    NativeEpochPublicationFault::PrefetchBeforeFirstReadCancellation);
+  BOOST_CHECK_EQUAL(result.error, "ATTEMPT_CANCELLED");
+  BOOST_CHECK_EQUAL(result.runnerCalls, 1U);
+  BOOST_CHECK_EQUAL(result.eventCalls, 0U);
   BOOST_CHECK_EQUAL(result.prefetchCalls, 1U);
   BOOST_CHECK_EQUAL(result.cancelCalls, 1U);
   BOOST_CHECK_EQUAL(result.publicationCalls, 0U);

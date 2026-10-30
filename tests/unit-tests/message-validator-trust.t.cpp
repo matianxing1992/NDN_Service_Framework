@@ -278,6 +278,62 @@ struct Fixture
 
 BOOST_AUTO_TEST_SUITE(MessageValidatorFixedRoot)
 
+BOOST_AUTO_TEST_CASE(ResourceInspectionSharesFixedAnchorPathsAndOptionalSignerPolicy)
+{
+  Fixture fixture;
+  const auto chain = makeChain(fixture.keys);
+  const auto schema = writeSchema(fixture.isolation, chain.root);
+  std::ofstream(schema, std::ios::app) <<
+    "trust-anchor { type file file-name root.cert }\n";
+  const auto resources = enumerateTrustSchemaResources(schema.string());
+  BOOST_REQUIRE_EQUAL(resources.size(), 3U);
+  BOOST_CHECK_EQUAL(resources[0].path, schema.string());
+  BOOST_CHECK(resources[0].required);
+  BOOST_CHECK_EQUAL(resources[1].path, (schema.parent_path() / "root.cert").string());
+  BOOST_CHECK(resources[1].required);
+  BOOST_CHECK_EQUAL(resources[2].path, schema.string() + ".producer-signers");
+  BOOST_CHECK(!resources[2].required);
+  BOOST_CHECK(!std::filesystem::exists(resources[2].path));
+  BOOST_CHECK_NO_THROW(MessageValidator(schema.string(), std::nullopt, &fixture.face));
+  std::ofstream(resources[2].path) <<
+    "producer-signer { producer /delegated signer /trust-fixture/ca/actor }\n";
+  const auto withPolicy = enumerateTrustSchemaResources(schema.string());
+  BOOST_REQUIRE_EQUAL(withPolicy.size(), resources.size());
+  BOOST_CHECK_EQUAL(withPolicy[2].path, resources[2].path);
+  BOOST_CHECK(!withPolicy[2].required);
+  BOOST_CHECK_NO_THROW(MessageValidator(schema.string(), std::nullopt, &fixture.face));
+  std::filesystem::remove(resources[1].path);
+  BOOST_CHECK_EQUAL(enumerateTrustSchemaResources(schema.string()).size(), 3U);
+  BOOST_CHECK_THROW(MessageValidator(schema.string(), std::nullopt, &fixture.face),
+                    std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(ResourceInspectionRejectsUnsupportedMalformedAndOversizedSchemas)
+{
+  Fixture fixture;
+  const auto schema = fixture.isolation.directory() / "inspection.conf";
+  BOOST_CHECK_THROW(enumerateTrustSchemaResources(schema.string()), std::exception);
+  for (const auto* input : {"trust-anchor {", "rule { id no-anchor }",
+       "trust-anchor { type any }", "trust-anchor { type dir dir ./ }",
+       "trust-anchor { type file }",
+       "trust-anchor { type file file-name root.cert refresh 1s }",
+       "trust-anchor { type base64 }"}) {
+    std::ofstream(schema, std::ios::trunc) << input;
+    BOOST_CHECK_THROW(enumerateTrustSchemaResources(schema.string()), std::exception);
+  }
+  std::ofstream(schema, std::ios::trunc) << "trust-anchor { type base64 base64-string AA== }";
+  BOOST_CHECK_EQUAL(enumerateTrustSchemaResources(schema.string()).size(), 2U);
+  std::ofstream(schema, std::ios::trunc) <<
+    std::string(MAX_TRUST_SCHEMA_INSPECTION_BYTES + 1, ' ');
+  BOOST_CHECK_THROW(enumerateTrustSchemaResources(schema.string()), std::exception);
+  {
+    std::ofstream output(schema, std::ios::trunc);
+    for (size_t i = 0; i < MAX_TRUST_SCHEMA_RESOURCES; ++i)
+      output << "trust-anchor { type file file-name cert-" << i << " }\n";
+  }
+  BOOST_CHECK_THROW(enumerateTrustSchemaResources(schema.string()), std::exception);
+}
+
 BOOST_AUTO_TEST_CASE(SvsGroupAcceptsRootSignedActorsButRejectsOtherRoles)
 {
   Fixture fixture;
@@ -301,8 +357,7 @@ BOOST_AUTO_TEST_CASE(SvsGroupAcceptsRootSignedActorsButRejectsOtherRoles)
   const auto otherCert = signActor(other);
 
   const auto schema = fixture.isolation.directory() / "svs-trust.conf";
-  const auto source = std::filesystem::read_symlink("/proc/self/exe").parent_path()
-                        .parent_path() / "examples/trust-schema.conf";
+  const auto source = std::filesystem::path(NDNSF_TEST_SOURCE_DIR) / "examples/trust-schema.conf";
   std::filesystem::copy_file(source, schema);
   ndn::io::save(rootCert, (fixture.isolation.directory() / "root.cert").string());
   auto validator = std::make_shared<MessageValidator>(schema.string(), std::nullopt,

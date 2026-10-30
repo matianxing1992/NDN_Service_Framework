@@ -16,6 +16,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <thread>
 
 namespace ndnsf::di {
 struct NativeCanonicalArtifactPublisher::CacheState
@@ -121,14 +122,44 @@ void logPublicationPhase(const std::string& requestId, const char* phase,
 }
 
 template<typename Work>
-auto onCoreIo(const std::shared_ptr<ndn_service_framework::ServiceUser>& user, Work work)
+auto onCoreIo(const std::shared_ptr<ndn_service_framework::ServiceUser>& user, Work work,
+              const NativeRequestControl* control = nullptr)
   -> decltype(work())
 {
+  if (control) control->requireActive();
   if (user->isOnIoThread()) return work();
   auto task = std::make_shared<std::packaged_task<decltype(work())()>>(std::move(work));
   auto result = task->get_future();
   user->postToIo([task] { (*task)(); });
+  if (control) {
+    while (result.wait_until(std::min(control->deadline,
+             std::chrono::steady_clock::now() + std::chrono::milliseconds(10))) !=
+           std::future_status::ready) {
+      control->requireActive();
+    }
+    control->requireActive();
+  }
   return result.get();
+}
+
+void
+awaitPublicationBootstrap(
+  const std::function<bool(const NativeRequestControl&)>& ready,
+  const std::function<bool()>& isOnIoThread, const NativeRequestControl& control)
+{
+  if (!ready) return;
+  for (;;) {
+    control.requireActive();
+    if (ready(control)) {
+      control.requireActive();
+      return;
+    }
+    if (isOnIoThread())
+      throw std::logic_error("DI_NATIVE_PUBLICATION_BOOTSTRAP_ON_IO_THREAD");
+    control.requireActive();
+    std::this_thread::sleep_until(std::min(control.deadline,
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(20)));
+  }
 }
 
 bool digest(const std::string& value)
@@ -458,6 +489,15 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
         return user->publishEncryptedLargeData(
           request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD, true, publishOptions,
           [control] { control.requireActive(); });
+      },
+      [user, serviceName](const NativeRequestControl& control) {
+        return onCoreIo(user,
+          [weak = std::weak_ptr<ndn_service_framework::ServiceUser>(user),
+           serviceName, control] {
+            control.requireActive();
+            const auto owner = weak.lock();
+            return owner && owner->isRequestBootstrapReady(ndn::Name(serviceName));
+          }, &control);
       }}, serviceName,
       std::move(options), std::move(source))
 {
@@ -1147,6 +1187,7 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
     publishedResults.reserve(source->initializerBytes ? 3 : 2);
     try {
       active();
+      awaitPublicationBootstrap(transport.bootstrapReady, transport.isOnIoThread, control);
       const auto request = transport.begin();
       if (request.requestId.empty() || request.serviceName != ndn::Name(service))
         throw std::runtime_error("DI_NATIVE_PUBLICATION_REQUEST_MISMATCH");
@@ -1466,6 +1507,7 @@ NativeUncachedPublication NativeCanonicalArtifactPublisher::publishUncached(
     publishedResults.reserve(source->initializerBytes ? 3 : 2);
     try {
       active();
+      awaitPublicationBootstrap(transport.bootstrapReady, transport.isOnIoThread, control);
       const auto request = transport.begin();
       if (request.requestId.empty() || request.serviceName != ndn::Name(service))
         throw std::runtime_error("DI_NATIVE_PUBLICATION_REQUEST_MISMATCH");

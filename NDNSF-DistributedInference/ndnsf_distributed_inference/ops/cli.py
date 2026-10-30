@@ -38,6 +38,8 @@ def build_parser():
         if name == 'up':
             command.add_argument('--debug', action='store_true',
                                  help='enable NDN diagnostic logs for this boot')
+            command.add_argument('--timing', action='store_true',
+                                 help='enable native phase measurements for this boot')
     for name in ("validate","resolve","plan","apply","status","wait","rollback","drain","delete"):
         item=sub.add_parser(name); item.add_argument("target")
         if name in {"apply", "rollback", "drain", "delete"}:
@@ -84,9 +86,14 @@ def main(argv=None, *, deployment_factory=None, client_factory=None):
             else:
                 from .cluster import run_cluster
                 result = run_cluster(args.cluster_command, args.config, args.timeout,
-                                     debug=getattr(args, 'debug', False))
+                                     debug=getattr(args, 'debug', False),
+                                     timing=getattr(args, 'timing', False))
+        except KeyboardInterrupt as error:
+            from .trust_resources import describe_failure
+            parser.exit(130, describe_failure(error) + '\n')
         except (DeploymentConfigError, RuntimeError, OSError) as error:
-            parser.error(str(error))
+            from .trust_resources import describe_failure
+            parser.error(describe_failure(error))
         print(json.dumps(result, sort_keys=True))
         return 0 if (args.cluster_command != 'up' or not result.get('failure')) and result.get('status') in {
             'CONFIGURATION_CHECKED', 'COMPLETE', 'STOPPED', 'ABSENT', 'SERVICES_READY'} else 1

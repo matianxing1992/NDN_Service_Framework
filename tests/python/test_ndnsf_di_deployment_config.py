@@ -210,6 +210,433 @@ def write_config(root, config):
     return path
 
 
+def trust_resource_bytes(schema, extra=()):
+    rows = [(b'R', str(schema)), *extra, (b'O', str(schema) + '.producer-signers')]
+    return b'NDNSF_TRUST_RESOURCES_V1\0' + b''.join(
+        flag + b'\0' + path.encode() + b'\0' for flag, path in rows)
+
+
+@pytest.mark.parametrize('change', ['valid', 'version', 'truncated', 'flag', 'duplicate',
+                                  'missing-sidecar', 'extra-optional', 'trailing',
+                                  'bytes', 'records', 'relative'])
+def test_native_trust_resource_record_boundary(ops, tmp_path, change):
+    module = importlib.import_module('_spec217_ops.trust_resources')
+    schema = tmp_path / 'schema with spaces.conf'
+    raw = trust_resource_bytes(schema)
+    if change == 'version':
+        raw = raw.replace(b'V1', b'V2')
+    elif change == 'truncated':
+        raw = raw[:-1]
+    elif change == 'flag':
+        raw = raw.replace(b'\0R\0', b'\0X\0')
+    elif change == 'duplicate':
+        raw = trust_resource_bytes(schema, [(b'R', str(schema))])
+    elif change == 'missing-sidecar':
+        raw = b'NDNSF_TRUST_RESOURCES_V1\0R\0' + str(schema).encode() + b'\0'
+    elif change == 'extra-optional':
+        raw = trust_resource_bytes(schema, [(b'O', str(tmp_path / 'other'))])
+    elif change == 'trailing':
+        raw += b'diagnostic'
+    elif change == 'bytes':
+        raw = b'x' * (module.MAX_BYTES + 1)
+    elif change == 'records':
+        raw = trust_resource_bytes(schema, [(b'R', str(tmp_path / str(i)))
+                                            for i in range(module.MAX_RECORDS)])
+    elif change == 'relative':
+        raw = trust_resource_bytes(schema, [(b'R', 'relative.cert')])
+    if change == 'valid':
+        assert module.decode_resources(raw, schema) == {
+            str(schema): True, str(schema) + '.producer-signers': False}
+    else:
+        with pytest.raises(module.TrustResourceError):
+            module.decode_resources(raw, schema)
+
+
+@pytest.mark.parametrize('change', ['valid', 'diagnostic', 'overflow', 'timeout'])
+def test_trust_probe_separates_streams_and_reaps_actual_child(ops, tmp_path, change):
+    module = importlib.import_module('_spec217_ops.trust_resources')
+    schema = tmp_path / 'schema.conf'
+    raw = trust_resource_bytes(schema)
+    program = 'import sys,time; sys.stdout.buffer.write(bytes.fromhex(' + repr(raw.hex()) + '))'
+    if change == 'diagnostic':
+        program += '; sys.stderr.write("unexpected diagnostic")'
+    elif change == 'overflow':
+        program += '; sys.stdout.buffer.write(b"x" * 1048577)'
+    elif change == 'timeout':
+        program += '; sys.stdout.flush(); time.sleep(30)'
+    command = [sys.executable, '-c', program]
+    if change == 'valid':
+        records, proof = module.inspect_resources(command, schema, dict(os.environ), 2)
+        assert records[str(schema)] is True
+        assert proof['stderr_base64'] == ''
+    else:
+        with pytest.raises(module.TrustResourceError) as caught:
+            module.inspect_resources(command, schema, dict(os.environ), .1 if change == 'timeout' else 2)
+        proof = caught.value.proof
+        assert proof is not None
+    assert len(proof['cleanup']) == 1
+    child = proof['cleanup'][0]
+    assert child['reaped'] and not child['forced'] and child['error'] is None
+    with pytest.raises(ProcessLookupError):
+        os.kill(child['pid'], 0)
+
+
+@pytest.mark.parametrize('change', ['valid', 'missing', 'optional-output', 'other-provider-output',
+                                  'storage', 'credential', 'unreadable', 'symlink'])
+def test_trust_resources_protect_all_outputs_and_absent_candidates(ops, deployment, change):
+    parser, _ = ops
+    module = importlib.import_module('_spec217_ops.trust_resources')
+    root, raw = deployment
+    config = parser.load_deployment(write_config(root, raw))
+    schema = Path(config['security']['trust_schema'])
+    anchor = root / 'public-anchor.cert'
+    anchor.write_bytes(b'path-admission fixture; native certificate validation is separate')
+    sidecar = str(schema) + '.producer-signers'
+    records = {str(schema): True, str(anchor): True, sidecar: False}
+    if change == 'missing':
+        anchor.unlink()
+    elif change == 'optional-output':
+        config['requester']['turns'][0]['output_file'] = sidecar
+    elif change == 'other-provider-output':
+        next(a for a in config['actors'] if a['id'] == 'p1')['parameters']['statistics-file'] = sidecar
+    elif change == 'storage':
+        config['storage']['cache_root'] = str(root)
+    elif change == 'credential':
+        config['actors'][0]['credential_home'] = str(root)
+    elif change == 'unreadable':
+        if os.geteuid() == 0:
+            pytest.skip('root bypasses ordinary read permissions')
+        Path(sidecar).touch(mode=0)
+    elif change == 'symlink':
+        anchor.unlink()
+        anchor.symlink_to(schema)
+    before = copy.deepcopy(config)
+    try:
+        if change == 'valid':
+            assert module.admit_resources(config, records) == [schema, anchor]
+        else:
+            with pytest.raises(RuntimeError):
+                module.admit_resources(config, records)
+        assert config == before
+        assert not Path(sidecar).exists() or change == 'unreadable'
+    finally:
+        if change == 'unreadable':
+            Path(sidecar).chmod(0o600)
+
+
+@pytest.mark.parametrize('change', ['valid', 'requester-output', 'provider-output', 'missing'])
+def test_host_trust_admission_precedes_generated_files(ops, deployment, monkeypatch, change):
+    parser, _ = ops
+    root, raw = deployment
+    schema = root / 'trust.conf'
+    sidecar = str(schema) + '.producer-signers'
+    anchor = root / 'anchor.cert'
+    anchor.write_bytes(b'input preserved')
+    if change == 'requester-output':
+        raw['requester']['turns'][0]['output_file'] = sidecar
+    elif change == 'provider-output':
+        raw['actors'][-1]['parameters'] = {'statistics-file': sidecar}
+    elif change == 'missing':
+        anchor.unlink()
+    source = write_config(root, raw)
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    resources = importlib.import_module('_spec217_ops.trust_resources')
+    operation = root / 'state_root' / raw['deployment_id']
+    inspected = []
+
+    def native_boundary(command, selected_schema, env, timeout):
+        assert command[-2:] == ['--trust-resources', str(schema)]
+        assert selected_schema == str(schema) and timeout == 2
+        assert not (operation / 'state.json').exists()
+        inspected.append(command)
+        return {str(schema): True, str(anchor): True, sidecar: False}, {}
+
+    def stop_before_roles(_):
+        assert change == 'valid'
+        raise RuntimeError('CONTROLLED_HOST_PREFLIGHT_STOP')
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('generated role inputs must follow trust-resource admission')
+
+    monkeypatch.setattr(resources, 'inspect_resources', native_boundary)
+    monkeypatch.setattr(cluster, '_host_preflight', stop_before_roles)
+    monkeypatch.setattr(cluster, '_native_launch', forbidden)
+    with pytest.raises(RuntimeError, match='CONTROLLED_HOST_PREFLIGHT_STOP' if change == 'valid'
+                       else 'TRUST_RESOURCE_'):
+        cluster._up(source, operation, 2)
+    assert len(inspected) == 1 and not Path(sidecar).exists()
+    assert schema.read_bytes() == b'configuration path fixture\n'
+
+
+@pytest.mark.parametrize('change', ['framing', 'timeout', 'admission', 'cancel'])
+def test_host_cli_preserves_failed_native_probe_evidence(ops, deployment, capsys, monkeypatch, change):
+    _, cli = ops
+    root, config = deployment
+    schema = root / 'trust.conf'
+    sidecar = str(schema) + '.producer-signers'
+    if change == 'admission':
+        config['requester']['turns'][0]['output_file'] = sidecar
+    payload = b'broken' if change == 'framing' else trust_resource_bytes(schema)
+    program = '#!' + sys.executable + '\nimport sys,time\n'
+    program += ('time.sleep(30)\n' if change in ('timeout', 'cancel') else
+                'sys.stdout.buffer.write(bytes.fromhex(' + repr(payload.hex()) + '))\n')
+    executable = root / 'release/bin/ndnsf-identity-check'
+    executable.write_text(program)
+    ledger = root / 'installed.json'
+    rows = json.loads(ledger.read_text())
+    rows['files'][str(executable)]['installed']['sha256'] = hashlib.sha256(
+        executable.read_bytes()).hexdigest()
+    ledger.write_text(json.dumps(rows))
+    if change == 'cancel':
+        processes = importlib.import_module('_spec217_ops.processes')
+        launch = processes.subprocess.Popen
+
+        def cancel_after_owned_launch(*args, **kwargs):
+            child = launch(*args, **kwargs)
+            wait = child.wait
+            cancelled = False
+
+            def interrupted_wait(*args, **kwargs):
+                nonlocal cancelled
+                if not cancelled:
+                    cancelled = True
+                    raise KeyboardInterrupt('controlled cancellation after actual child launch')
+                return wait(*args, **kwargs)
+
+            child.wait = interrupted_wait
+            return child
+
+        monkeypatch.setattr(processes.subprocess, 'Popen', cancel_after_owned_launch)
+    with pytest.raises(SystemExit) as caught:
+        cli.main(['cluster', 'up', '--config', str(write_config(root, config)), '--timeout', '2'])
+    assert caught.value.code == (130 if change == 'cancel' else 2)
+    errors = capsys.readouterr().err
+    line = next(item for item in errors.splitlines() if item.startswith('NDNSF_TRUST_RESOURCE_FAILURE='))
+    proof = json.loads(line.split('=', 1)[1])
+    assert proof['command'][-2:] == ['--trust-resources', str(schema)]
+    assert proof['wall_seconds'] > 0 and len(proof['cleanup']) == 1
+    assert proof['cleanup'][0]['reaped'] and not proof['cleanup'][0]['forced']
+    assert 'stdout_base64' in proof and 'stderr_base64' in proof
+    assert not Path(sidecar).exists()
+    assert schema.read_bytes() == b'configuration path fixture\n'
+
+
+@pytest.fixture
+def minindn_deployment(deployment):
+    base, config = deployment
+    topology = base / 'topology.conf'
+    topology.write_text('[nodes]\na: _\nb: _\n[links]\na:b delay=5ms\n')
+    config['platform'] = dict(kind='minindn', topology=str(topology),
+                              topology_sha256='sha256:' + hashlib.sha256(topology.read_bytes()).hexdigest())
+    first = config['nodes'][0]
+    first.update(id='a', host='a')
+    second = copy.deepcopy(first)
+    second.update(id='b', host='b')
+    second['nfd']['socket'] = 'b.sock'
+    config['nodes'].append(second)
+    for actor in config['actors']:
+        actor['node'] = 'b' if actor['id'] == 'p1' else 'a'
+    return base, config
+
+
+@pytest.mark.parametrize('change', ['none', 'digest', 'missing-node', 'same-socket', 'same-home', 'external-nfd'])
+def test_minindn_configuration_is_local_and_topology_bound(ops, minindn_deployment, change):
+    parser, _ = ops
+    base, config = minindn_deployment
+    if change == 'digest':
+        config['platform']['topology_sha256'] = 'sha256:' + '0' * 64
+    elif change == 'missing-node':
+        config['nodes'][1]['host'] = 'c'
+    elif change == 'same-socket':
+        config['nodes'][1]['nfd']['socket'] = config['nodes'][0]['nfd']['socket']
+    elif change == 'same-home':
+        config['actors'][-1]['credential_home'] = config['actors'][0]['credential_home']
+    elif change == 'external-nfd':
+        config['nodes'][1]['nfd']['mode'] = 'external'
+    source = write_config(base, config)
+    if change == 'none':
+        result = parser.load_deployment(source)
+        assert result['platform']['kind'] == 'minindn'
+        assert len(result['nodes']) == 2
+        assert Path(result['release']['prefix']).is_absolute()
+    else:
+        with pytest.raises(ValueError):
+            parser.load_deployment(source)
+
+
+def test_minindn_uses_shared_native_translation(ops, minindn_deployment):
+    parser, _ = ops
+    base, config = minindn_deployment
+    module = importlib.import_module('_spec217_ops.cluster')
+    config = parser.load_deployment(write_config(base, config))
+    directory = base / 'rendered'
+    directory.mkdir()
+    state = dict(boot_id='a' * 32, configuration_sha256='b' * 64)
+    for actor in config['actors']:
+        if actor['kind'] == 'provider':
+            continue  # Provider key-map fixtures below cover their maintained translation.
+        argv, env = module._native_launch(config, actor, directory, state)
+        node = next(node for node in config['nodes'] if node['id'] == actor['node'])
+        assert Path(argv[0]).parent == Path(config['release']['prefix']) / 'bin'
+        assert env['NDN_CLIENT_TRANSPORT'] == 'unix://' + node['nfd']['socket']
+        assert env['NDN_LOG'] == '*=NONE'
+        assert 'PYTHONPATH' not in env
+
+
+def test_minindn_cleanup_rejects_foreign_operation_binding(ops, tmp_path):
+    module = importlib.import_module('_spec217_ops.minindn')
+    cluster = module.cluster
+    root = tmp_path / 'operation'
+    cluster._private_directory(root)
+    state = dict(boot_id='a' * 32, configuration_sha256='b' * 64,
+                 facility=dict(hosts=[], launches=[dict(id='namespace.a', expected_exe='/bin/bash',
+                     bindings={})], cleanup=[]))
+    assert module.close_facility(state, root) is False
+    assert state['facility']['status'] == 'UNKNOWN'
+    assert state['facility']['cleanup'][0]['status'] == 'UNKNOWN'
+
+
+def test_minindn_capture_retries_transient_proc_read(ops, tmp_path, monkeypatch):
+    module = importlib.import_module('_spec217_ops.minindn')
+    state = dict(boot_id='a' * 32, configuration_sha256='b' * 64)
+    root = tmp_path / 'capture'
+    module.cluster._private_directory(root)
+    facility = module.MiniNdnFacility(dict(nodes=[]), root, state, time.monotonic() + 5)
+    env = module.cluster._environment(root, '/unused.sock', 'namespace.test', state)
+    with local_management_child(env) as child:
+        actual = module.process_identity
+        calls = 0
+        def transient(pid):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise FileNotFoundError('controlled exec read race')
+            return actual(pid)
+        monkeypatch.setattr(module, 'process_identity', transient)
+        row = dict(id='namespace.test', expected_exe=str(Path(sys.executable).resolve()),
+                   bindings={key: env[key] for key in (
+                       'NDNSF_DEPLOYMENT_ACTOR_ID', 'NDNSF_DEPLOYMENT_BOOT_ID',
+                       'NDNSF_DEPLOYMENT_CONFIG_SHA256')})
+        facility._capture(row, child)
+        assert calls >= 2 and row['proof']['pid'] == child.pid
+        assert row['network_namespace'] == os.readlink('/proc/' + str(child.pid) + '/ns/net')
+
+
+def test_minindn_cleanup_preserves_first_forced_termination(ops, tmp_path):
+    module = importlib.import_module('_spec217_ops.minindn')
+    state = dict(boot_id='a' * 32, configuration_sha256='b' * 64)
+    root = tmp_path / 'cleanup'
+    module.cluster._private_directory(root)
+    env = module.cluster._environment(root, '/unused.sock', 'namespace.test', state)
+    with local_management_child(env) as child:
+        proof = module.process_identity(child.pid)
+        state['facility'] = dict(hosts=[], cleanup=[], launches=[dict(
+            id='namespace.test', expected_exe=proof['exe'], bindings=proof['bindings'], proof=proof,
+            termination=dict(forced=True, reaped=True, exitCode=-9))])
+        assert module.close_facility(state, root)
+        first = state['facility']['cleanup'][0]
+        assert first['forced'] is True and first['reaped'] is True
+        # A second no-survivor observation must retain the first intervention.
+        assert module.close_facility(state, root)
+        assert state['facility']['cleanup'][0]['forced'] is True
+
+
+def test_minindn_repeated_cleanup_does_not_stop_closed_network(ops, tmp_path):
+    from types import SimpleNamespace
+    module = importlib.import_module('_spec217_ops.minindn')
+    state = dict(boot_id='a' * 32, configuration_sha256='b' * 64)
+    root = tmp_path / 'cleanup'
+    module.cluster._private_directory(root)
+    env = module.cluster._environment(root, '/unused.sock', 'namespace.test', state)
+    stops = []
+
+    def stop():
+        stops.append(True)
+        if len(stops) > 1:
+            raise RuntimeError('network links already deleted')
+
+    network = SimpleNamespace(stop=stop)
+    with local_management_child(env) as child:
+        proof = module.process_identity(child.pid)
+        state['facility'] = dict(hosts=[], cleanup=[], launches=[dict(
+            id='namespace.test', expected_exe=proof['exe'], bindings=proof['bindings'],
+            proof=proof)])
+        assert module.close_facility(state, root, network)
+        assert module.close_facility(state, root, network)
+        assert len(stops) == 1
+        assert state['facility']['status'] == 'STOPPED'
+        assert state['facility']['cleanup'][0]['status'] == 'ZERO'
+        assert not state['facility']['cleanup'][0].get('forced')
+
+
+def test_minindn_multihop_routes_use_first_hop_port_and_reuse_faces(ops, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    module = importlib.import_module('_spec217_ops.minindn')
+    nodes = [dict(id=name, host=name, nfd=dict(socket='/unused-' + name, port=port))
+             for name, port in [('a', 6363), ('b', 6364), ('c', 6365)]]
+    config = dict(nodes=nodes, actors=[dict(node='c', identity='/provider/c', external=False)],
+                  network=dict(group='/group', routes=[]))
+    root = tmp_path / 'routes'
+    module.cluster._private_directory(root)
+    facility = module.MiniNdnFacility(config, root,
+        dict(boot_id='a' * 32, configuration_sha256='b' * 64), time.monotonic() + 20)
+    interfaces = {name: [] for name in ['a', 'b', 'c']}
+    for left, right, address_left, address_right in [
+            ('a', 'b', '10.0.0.1', '10.0.0.2'), ('b', 'c', '10.0.0.5', '10.0.0.6')]:
+        first = SimpleNamespace(node=SimpleNamespace(name=left), IP=lambda ip=address_left: ip,
+                                params=dict(delay='5ms'))
+        second = SimpleNamespace(node=SimpleNamespace(name=right), IP=lambda ip=address_right: ip,
+                                 params=dict(delay='5ms'))
+        first.link = second.link = SimpleNamespace(intf1=first, intf2=second)
+        interfaces[left].append(first)
+        interfaces[right].append(second)
+    facility.hosts = {name: SimpleNamespace(intfList=lambda name=name: interfaces[name])
+                      for name in interfaces}
+    calls = []
+    class Child:
+        returncode = 0
+        def communicate(self, **kwargs):
+            return b'face-created id=261\n', None
+        def poll(self):
+            return 0
+        def wait(self):
+            return 0
+    def launch(source):
+        def run(argv, **kwargs):
+            calls.append((source, argv))
+            return Child()
+        return run
+    monkeypatch.setattr(facility, 'launcher', launch)
+    facility.routes(root, lambda: None)
+    faces = [argv for source, argv in calls if source == 'a' and argv[1:3] == ['face', 'create']]
+    assert faces == [['nfdc', 'face', 'create', 'udp://10.0.0.2:6364', 'persistency', 'permanent']]
+    routes = [argv for source, argv in calls if source == 'a' and argv[1:3] == ['route', 'add']]
+    assert any(argv[3:5] == ['/provider/c', '261'] for argv in routes)
+    assert any(argv[3:5] == ['/provider/c/KEY', '261'] for argv in routes)
+
+
+def test_closed_minindn_does_not_reaudit_a_reused_namespace_inode(ops, tmp_path):
+    module = importlib.import_module('_spec217_ops.minindn')
+    state = dict(boot_id='a' * 32, configuration_sha256='b' * 64)
+    root = tmp_path / 'closed-facility'
+    module.cluster._private_directory(root)
+    env = module.cluster._environment(root, '/unused.sock', 'namespace.test', state)
+    with local_management_child(env) as child:
+        proof = module.process_identity(child.pid)
+        assert module.stop_owned(proof)['status'] == 'ZERO'
+        # Model the observed Linux inode reuse across completed topologies:
+        # the historical number now identifies a live unrelated namespace.
+        reused = os.readlink('/proc/self/ns/net')
+        state['facility'] = dict(status='STOPPED', hosts=[], failure=None,
+            namespace_survivors=[], remaining_interfaces=[],
+            cleanup=[dict(id='namespace.test', status='ZERO', forced=False)],
+            launches=[dict(id='namespace.test', expected_exe=proof['exe'],
+                           bindings=proof['bindings'], proof=proof, network_namespace=reused)])
+        assert module.close_facility(state, root)
+        assert state['facility']['status'] == 'STOPPED'
+        assert state['facility']['namespace_survivors'] == []
+
+
 @contextlib.contextmanager
 def local_management_child(env, ignore_term=False):
     setup = "import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); " if ignore_term else ""
@@ -372,6 +799,7 @@ def test_controller_readiness_precedes_dependent_launches(
         return state
 
     monkeypatch.setattr(cluster, '_host_preflight', lambda _: None)
+    monkeypatch.setattr(cluster, '_inspect_trust_resources', lambda *_: {})
     monkeypatch.setattr(cluster, '_check_budget', lambda _: 0)
     monkeypatch.setattr(cluster, '_native_launch', lambda *args: (['controlled-stub'], {}))
     monkeypatch.setattr(cluster, '_spawn', spawn)
@@ -635,8 +1063,9 @@ def test_cluster_ready_record_is_bound_to_the_real_child_boot_and_name(ops, depl
 
 
 @pytest.mark.parametrize('debug', (False, True))
+@pytest.mark.parametrize('timing', (False, True))
 def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
-        ops, deployment, monkeypatch, debug):
+        ops, deployment, monkeypatch, debug, timing):
     parser, _ = ops
     base, config = deployment
     (base / 'trust-root-registry-v1.json').write_text('{}')
@@ -644,27 +1073,34 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     config['actors'][-1]['parameters'] = {'grant-authority-public-key': 'key.pem',
         'recipient-key-map': 'recipients.json', 'enable-admission-lease': False,
         'allow-selection-generation-options': True, 'repo-fetch-timeout-ms': 900000,
-        'conversation-retention-ms': 3600000}
+        'conversation-retention-ms': 3600000, 'assembly-timeout-ms': 900000}
     path = write_config(base, config)
     native = parser.load_deployment(path)
     cluster = importlib.import_module('_spec217_ops.cluster')
     directory = base / 'native-inputs'
     directory.mkdir()
     state = {'boot_id': uuid.uuid4().hex, 'configuration_sha256': 'a' * 64,
-             'diagnostic_logging': debug}
+             'diagnostic_logging': debug, 'runtime_timing': timing}
     monkeypatch.setenv('PYTHONPATH', '/development/only')
     monkeypatch.setenv('LD_LIBRARY_PATH', '/development/libs')
     monkeypatch.setenv('NDN_LOG', '*=TRACE')
+    monkeypatch.setenv('NDNSF_DI_RUNTIME_TIMING', 'untrusted-shell-value')
+    monkeypatch.setenv('NDNSF_PHASE_TIMING', 'untrusted-shell-value')
     argv, env = cluster._native_launch(native, native['actors'][-1], directory, state)
     assert argv[0] == str(base / 'release/bin/di-native-provider')
     assert '--allow-selection-generation-options' in argv
     assert argv[argv.index('--repo-fetch-timeout-ms') + 1] == '900000'
     assert argv[argv.index('--conversation-retention-ms') + 1] == '3600000'
+    assert argv[argv.index('--assembly-timeout-ms') + 1] == '900000'
     assert '--enable-admission-lease' not in argv
     assert '--recipient-key-map' not in argv
     assert '--grant-authority-public-key' not in argv
     assert 'PYTHONPATH' not in env and 'LD_LIBRARY_PATH' not in env
-    assert env['NDN_LOG'] == ('*=DEBUG' if debug else '*=NONE')
+    assert env['NDN_LOG'] == ('*=DEBUG' if debug else (
+        '*=NONE:ndnsf.di.RuntimeEvidence=WARN:ndn_service_framework.TimelineTrace=WARN'
+        if timing else '*=NONE'))
+    for key in ('NDNSF_DI_RUNTIME_TIMING', 'NDNSF_PHASE_TIMING'):
+        assert env.get(key) == ('1' if timing else None)
     assert env['HOME'] == str(base / 'credentials/p1')
     assert env['NDN_CLIENT_TPM'] == 'tpm-file:'
     assert 'NDNSF_CONTROLLER_GENERATION_STATE' not in env
@@ -817,6 +1253,33 @@ def conversation_deployment(deployment):
         "owner": {"requester_identity": "/test/requester", "service_name": "/test/inference",
                   "security_domain_digest": "sha256:" + "a" * 64}}
     return root, config
+
+
+@pytest.mark.parametrize("turn", [{"retention_duration_ms": 3600000},
+                                 {"retention_deadline_ms": 2000000000000}])
+def test_conversation_retention_configuration_is_preserved(ops, conversation_deployment, turn):
+    parser, _ = ops
+    root, config = conversation_deployment
+    config["requester"]["conversation"]["turn"] = turn
+    path = write_config(root, config)
+    before = sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+    assert parser.load_deployment(path)["requester"]["conversation"]["turn"] == turn
+    assert sorted(str(p.relative_to(root)) for p in root.rglob("*")) == before
+
+
+@pytest.mark.parametrize("turn", [
+    {"retention_duration_ms": value} for value in (None, True, False, 0, -1, 1.5, "600000", 3600001)
+] + [{"retention_deadline_ms": value} for value in (None, True, 0, -1, 2**64)] + [
+    {"retention_duration_ms": 600000, "retention_deadline_ms": 2000000000000}])
+def test_conversation_invalid_retention_rejects_before_side_effects(ops, conversation_deployment, turn):
+    parser, _ = ops
+    root, config = conversation_deployment
+    config["requester"]["conversation"]["turn"] = turn
+    path = write_config(root, config)
+    before = sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+    with pytest.raises(parser.DeploymentConfigError):
+        parser.load_deployment(path)
+    assert sorted(str(p.relative_to(root)) for p in root.rglob("*")) == before
 
 
 def test_conversation_paths_are_relocated_without_creating_journal(ops, conversation_deployment, monkeypatch):
@@ -1191,6 +1654,13 @@ def node_container(ops, deployment):
     for key in ('sif', 'build_record'):
         config['platform'][key] = str(root / config['platform'][key])
     config['nodes'][0]['host'] = socket.gethostname()
+    # This fixture executes a real host child rather than a Slurm CPU allocation.
+    config['nodes'][0]['cpus'] = min(config['nodes'][0]['cpus'], len(os.sched_getaffinity(0)))
+    resident_cpus = 1 + sum(actor['resources']['cpus'] for actor in config['actors']
+                            if not actor['external'])
+    if resident_cpus > config['nodes'][0]['cpus']:
+        for actor in config['actors']:
+            actor['resources']['allow_sharing'] = True
     evidence = root / 'operation'
     evidence.mkdir(mode=0o700)
     frozen = evidence / 'configuration.json'
@@ -1204,11 +1674,19 @@ def node_container(ops, deployment):
     endpoint.bind(raw['nodes'][0]['nfd']['socket'])
     capture = root / 'captured.json'
     fake = root / 'apptainer'
-    fake.write_text('#!' + sys.executable + '\nimport json,os,sys\nfrom pathlib import Path\n'
+    trust_response = root / 'trust-resource-response.bin'
+    trust_response.write_bytes(trust_resource_bytes(config['security']['trust_schema']))
+    fake.write_text('#!' + sys.executable + '\nimport json,os,sys,time\nfrom pathlib import Path\n'
                     'args=sys.argv[1:]\n'
+                    'if "--trust-resources" in args:\n'
+                    ' data=Path(' + repr(str(trust_response)) + ').read_bytes()\n'
+                    ' if data==b"TIMEOUT": time.sleep(30)\n'
+                    ' sys.stdout.buffer.write(data)\n'
+                    ' raise SystemExit(0)\n'
                     'envfile=Path(args[args.index("--env-file")+1])\n'
                     'Path(' + repr(str(capture)) + ').write_text(json.dumps('
-                    '{"argv":args,"envfile":envfile.read_text(),"host_env":dict(os.environ)}))\n')
+                    '{"argv":args,"envfile":envfile.read_text(),"host_env":dict(os.environ),'
+                    '"cpu_affinity":sorted(os.sched_getaffinity(0))}))\n')
     fake.chmod(0o755)
     config['platform']['apptainer'] = str(fake)
     boot = 'b' * 32
@@ -1220,7 +1698,7 @@ def node_container(ops, deployment):
         return ['--deployment', str(frozen), '--boot-id', boot, '--configuration-sha256', digest,
                 '--release-sha256', hashlib.sha256(Path(config['release']['manifest']).read_bytes()).hexdigest()]
 
-    def run(*extra, environment=None, workload=('/bin/true',)):
+    def run(*extra, environment=None, workload=('/bin/true',), command_timeout=15):
         wrapper = container.SCRIPTS / 'run-container.sh'
         poison = root / 'poison/ndnsf_distributed_inference'
         poison.mkdir(parents=True, exist_ok=True)
@@ -1237,11 +1715,74 @@ def node_container(ops, deployment):
         if workload:
             command += ['--', *workload]
         return subprocess.run(command,
-                              env=env, capture_output=True, text=True, timeout=15)
+                              env=env, capture_output=True, text=True, timeout=command_timeout)
     try:
         yield config, container, frozen, capture, run
     finally:
         endpoint.close()
+
+
+def test_container_exec_inherits_its_role_cpu_partition(node_container):
+    config, container, frozen, capture, run = node_container
+    actor = next(item for item in config['actors'] if item['id'] == 'p0')
+    node = config['nodes'][0]
+    expected = container.role_cpu_affinity(config, node, actor, None, os.sched_getaffinity(0))
+    result = run('--actor', actor['id'])
+    assert result.returncode == 0, result.stderr
+    assert set(json.loads(capture.read_text())['cpu_affinity']) == expected
+    proof = json.loads((frozen.parent / 'actors/p0/cpu-affinity.json').read_text())
+    assert set(proof['bound_cpus']) == expected
+    assert proof['boot_id'] == 'b' * 32 and proof['role_id'] == 'p0'
+
+
+def test_actual_schema_probe_exposes_no_forwarder_credentials_or_gpu(node_container):
+    config, _, frozen, _, run = node_container
+    result = run('--actor', 'p0')
+    assert result.returncode == 0, result.stderr
+    proof = json.loads((frozen.parent / 'actors/p0/trust-resources.json').read_text())
+    command = proof['command']
+    assert '--no-home' in command and '--nv' not in command
+    assert command.count('--bind') == 1
+    schema = config['security']['trust_schema']
+    assert command[command.index('--bind') + 1] == schema + ':' + schema + ':ro'
+    assert config['nodes'][0]['nfd']['socket'] not in command
+    assert all(actor['credential_home'] not in command for actor in config['actors'])
+
+
+@pytest.mark.parametrize('foreign', [False, True])
+def test_actual_wrapper_mounts_native_enumerated_files_read_only(node_container, foreign):
+    config, _, frozen, capture, run = node_container
+    schema = Path(config['security']['trust_schema'])
+    anchor = frozen.parent.parent / 'public-anchor.cert'
+    anchor.write_bytes(b'explicit native-output fixture, not a certificate oracle')
+    if foreign:
+        anchor = Path(config['requester']['grant']['requester_private_key_file'])
+    (frozen.parent.parent / 'trust-resource-response.bin').write_bytes(
+        trust_resource_bytes(schema, [(b'R', str(anchor))]))
+    result = run('--actor', 'p0')
+    if foreign:
+        assert result.returncode != 0 and 'FOREIGN_CREDENTIAL_EXPOSURE' in result.stderr
+        assert 'NDNSF_TRUST_RESOURCE_FAILURE=' in result.stderr
+        assert not capture.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        argv = json.loads(capture.read_text())['argv']
+        assert str(anchor) + ':' + str(anchor) + ':ro' in argv
+        assert str(anchor.parent) + ':' + str(anchor.parent) + ':ro' not in argv
+
+
+@pytest.mark.parametrize('change', ['framing', 'timeout'])
+def test_container_cli_preserves_failed_trust_probe_evidence(node_container, change):
+    _, _, frozen, capture, run = node_container
+    (frozen.parent.parent / 'trust-resource-response.bin').write_bytes(
+        b'TIMEOUT' if change == 'timeout' else b'invalid native record')
+    result = run('--actor', 'p0', '--timeout', '5', command_timeout=25)
+    assert result.returncode != 0 and not capture.exists()
+    line = next(item for item in result.stderr.splitlines()
+                if item.startswith('NDNSF_TRUST_RESOURCE_FAILURE='))
+    proof = json.loads(line.split('=', 1)[1])
+    assert proof['cleanup'][0]['reaped'] and not proof['cleanup'][0]['forced']
+    assert proof['command'][-2] == '--trust-resources'
 
 
 def test_normalized_wrapper_scopes_actual_cpu_mounts_and_stages_exact_image(node_container):
@@ -1280,6 +1821,9 @@ def test_native_large_data_directory_uses_owned_budgeted_disk(node_container, ac
                     credential_home=str(home), parameters={})
         config['actors'].append(repo)
         config['network']['repo_service'] = '/test/repo-service'
+        # The extra real host child exceeds this fixture's six-CPU pool.
+        for actor in config['actors']:
+            actor['resources']['allow_sharing'] = True
     config['storage']['evidence_root'] = str(frozen.parent)
     result = run('--actor', actor_id)
     assert result.returncode == 0, result.stderr
@@ -1345,7 +1889,7 @@ def test_journal_parent_checks_new_large_data_target_before_staging(node_contain
     monkeypatch.setenv('SLURM_JOB_ID', '12345')
     monkeypatch.setattr(container, 'load_frozen', lambda *a: config)
     monkeypatch.setattr(container, 'role_mounts', lambda *a, **kw: (
-        'requester', home, evidence, mounts))
+        'requester', home, evidence, mounts, set()))
     monkeypatch.setattr(container, 'stage_image', lambda *a, **kw: pytest.fail('staging reached'))
     args = SimpleNamespace(deployment=frozen, configuration_sha256='a' * 64,
                            boot_id='b' * 32, release_sha256='c' * 64,
@@ -1367,8 +1911,18 @@ def test_requester_journal_mount_preserves_state_and_hides_other_identities(node
         path.write_bytes(b'original native journal bytes')
         path.chmod(0o600)
     original = [(path.stat().st_dev, path.stat().st_ino, path.read_bytes()) for path in files]
-    config['requester']['conversation'] = {'journal': {
-        'state_root': str(root), 'identity': 'requester', 'keys': []}}
+    key_file = root.parent / 'conversation.key'
+    key_file.write_bytes(b'k' * 32)
+    key_file.chmod(0o600)
+    digest = 'sha256:' + 'a' * 64
+    config['requester']['request']['security_policy_digest'] = digest
+    config['requester']['conversation'] = {
+        'schema': 'ndnsf-di-native-conversation-v1',
+        'journal': {'state_root': str(root), 'identity': 'requester',
+                    'keys': [{'id': 'active', 'file': str(key_file)}]},
+        'owner': {'requester_identity': config['requester']['core']['requester_identity'],
+                  'service_name': config['network']['service'],
+                  'security_domain_digest': digest}}
     result = run('--actor', 'requester')
     assert result.returncode == 0, result.stderr
     argv = json.loads(capture.read_text())['argv']
@@ -1538,6 +2092,7 @@ def test_node_staging_timeout_closes_real_shell_and_worker(node_container, monke
     config, container, frozen, _, _ = node_container
     helper_root = frozen.parent / 'controlled-helper'
     helper_root.mkdir(mode=0o700)
+    shutil.copy2(container.SCRIPTS / 'validate-local-sif-build-record.py', helper_root)
     pid_file = helper_root / 'worker.pid'
     (helper_root / 'stage-sif.sh').write_text(
         '#!/bin/sh\nsleep 60 &\nchild=$!\n'
@@ -1685,15 +2240,19 @@ def test_normalized_wrapper_cannot_start_an_external_forwarder(node_container):
     assert not capture.exists()
 
 
-def test_wrapper_default_enters_image_installed_native_owner(node_container):
+@pytest.mark.parametrize('timing', (False, True))
+def test_wrapper_default_enters_image_installed_native_owner(node_container, timing):
     config, _, _, capture, run = node_container
-    result = run('--actor', 'p0', workload=None)
+    result = run('--actor', 'p0', *(['--timing'] if timing else []), workload=None)
     assert result.returncode == 0, result.stderr
     item = json.loads(capture.read_text())
     argv = item['argv']
     entry = str(Path(config['release']['prefix']) / 'bin/ndnsf-di')
     assert entry in argv and argv[argv.index(entry) + 1] == '_node'
     assert 'PATH=' not in item['envfile']
+    assert ('--timing' in argv) is timing
+    assert ('NDNSF_DI_RUNTIME_TIMING=1\n' in item['envfile']) is timing
+    assert ('NDNSF_PHASE_TIMING=1\n' in item['envfile']) is timing
     ledger = config['release']['manifest']
     assert ledger + ':' + ledger + ':ro' in argv
 
@@ -1705,6 +2264,15 @@ def _role_args(config, frozen, actor='requester', management=None, timeout=1):
         release_sha256=hashlib.sha256(Path(config['release']['manifest']).read_bytes()).hexdigest(),
         actor=actor, management=management, node='local' if management else None,
         timeout=timeout, debug=False)
+
+
+@pytest.mark.parametrize('timing', (False, True))
+def test_allocation_preserves_explicit_timing_mode(node_container, timing):
+    config, _, frozen, _, _ = node_container
+    allocation = importlib.import_module('_spec217_ops.allocation')
+    args = _role_args(config, frozen)
+    args.timing = timing
+    assert ('--timing' in allocation._bound_arguments(args, 1)) is timing
 
 
 def _role_environment(monkeypatch, args, role_id):
@@ -1743,12 +2311,15 @@ def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_conta
                                'cancel-pre-ready', 'stale-cancel', 'malformed-cancel') else 'requester')
     assert run('--actor', actor_id).returncode == 0
     args = _role_args(config, frozen, actor=actor_id, timeout=0.4)
+    args.timing = mode == 'complete'
     _role_environment(monkeypatch, args, actor_id)
     original = container.cluster._native_launch
     spawned = []
 
     def launch(current, actor, directory, state, **kwargs):
         _, env = original(current, actor, directory, state, **kwargs)
+        assert state['runtime_timing'] is args.timing
+        assert env.get('NDNSF_DI_RUNTIME_TIMING') == ('1' if args.timing else None)
         record = {'event': 'NDNSF_DEPLOYMENT_READY', 'identity': actor['identity'],
                   'actor_id': actor['id'], 'boot_id': state['boot_id'],
                   'config_sha256': state['configuration_sha256'], 'native_boot_id': 'controlled-child'}
@@ -1789,6 +2360,7 @@ def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_conta
     monkeypatch.setattr(container.cluster, '_spawn', spawn)
     result = node.run_role(args)
     assert result['status'] == 'STOPPED'
+    assert result['runtime_timing'] is args.timing
     assert result['host_audit'] == 'UNKNOWN' and result['cleanup_scope'] == 'PID_NAMESPACE'
     assert result['pid_namespace'] == os.readlink('/proc/self/ns/pid')
     assert result['job_id'] == '12345' and result['step_id'] == '3'
@@ -1928,6 +2500,7 @@ def stop(signum,frame):
 signal.signal(signal.SIGTERM,stop)
 runtime=path.parent/'runtime'/payload['deployment_id']
 runtime.mkdir(parents=True,exist_ok=True,mode=0o700)
+cached_missing=mode=='negative-cache' and not (runtime/'cancel.json').exists()
 write(path,value); event(['role',role])
 if mode=='service-degraded' and kind=='controller':
  time.sleep(0.08); value.update(execution='FAILED',failure='native child failed during drain'); write(path,value)
@@ -1942,7 +2515,7 @@ if kind=='requester' and mode not in ('timeout','signal'):
  write(path,value); sys.exit(code)
 while True:
  marker=runtime/'cancel.json'
- if mode!='ignore-cancel' and marker.exists() and json.loads(marker.read_text()).get('boot_id')==base['boot_id']:
+ if mode!='ignore-cancel' and not cached_missing and marker.exists() and json.loads(marker.read_text()).get('boot_id')==base['boot_id']:
   stop(signal.SIGTERM,None)
  time.sleep(0.05)
 ''')
@@ -2001,7 +2574,7 @@ while True:
 
 @pytest.mark.parametrize('mode', ['complete', 'wrong-ready', 'service-fail', 'service-degraded',
                                  'requester-fail', 'audit-fail', 'timeout', 'signal', 'pre-entry-fail',
-                                 'ignore-cancel', 'pre-ready-cancel'])
+                                 'ignore-cancel', 'pre-ready-cancel', 'negative-cache'])
 def test_allocation_owner_orders_real_steps_and_keeps_failure_boundaries(
         allocation_facility, monkeypatch, mode):
     config, module, args, scenario, events, children = allocation_facility
@@ -2010,9 +2583,11 @@ def test_allocation_owner_orders_real_steps_and_keeps_failure_boundaries(
         args.timeout = 2
     if mode == 'ignore-cancel':
         monkeypatch.setattr(module, '_ROLE_STOP_GRACE_SECONDS', 0.1)
+    if mode == 'negative-cache':
+        monkeypatch.setattr(module, '_ROLE_STOP_GRACE_SECONDS', 1.0)
     result = module.run_allocation(args, config)
     rows = [json.loads(line) for line in events.read_text().splitlines()]
-    if mode == 'complete':
+    if mode in ('complete', 'negative-cache'):
         assert result['status'] == 'STOPPED' and result['execution'] == 'COMPLETE'
         assert result['failure'] is None and result['oracle'] == 'NOT_RUN'
         launches = [row[1] for row in rows if row[0] == 'role']
@@ -2049,6 +2624,32 @@ def test_allocation_owner_orders_real_steps_and_keeps_failure_boundaries(
     with pytest.raises(module.cluster.ClusterError, match='ALLOCATION_BOOT_ALREADY_ENTERED'):
         module.run_allocation(args, config)
     assert len(children) == count and target.read_bytes() == before
+
+
+@pytest.mark.parametrize('marker', ['cancelled', 'symlink', 'malformed'])
+def test_allocation_preserves_existing_cancellation_before_role_entry(allocation_facility, marker):
+    config, module, args, _, events, children = allocation_facility
+    role = module._roles(config)[0]
+    root = module._receipt_path(args, role).parent / 'runtime' / config['deployment_id']
+    module.cluster._private_directory(root)
+    target = root / 'cancel.json'
+    if marker == 'symlink':
+        original = root / 'original.json'
+        module.write_json(original, {'boot_id': args.boot_id})
+        target.symlink_to(original)
+    elif marker == 'malformed':
+        target.write_text('{')
+        target.chmod(0o600)
+    else:
+        module.write_json(target, {'boot_id': args.boot_id})
+    before = target.read_bytes()
+    result = module.run_allocation(args, config)
+    assert result['execution'] == 'FAILED' and result['failure']
+    assert target.read_bytes() == before
+    assert target.is_symlink() == (marker == 'symlink')
+    rows = [json.loads(line) for line in events.read_text().splitlines()]
+    assert ['role', 'requester'] not in rows
+    assert all(child.poll() is not None for child in children)
 
 
 def test_allocation_route_owner_reuses_finite_native_management(allocation_facility):
@@ -2116,6 +2717,50 @@ def test_allocation_maximum_actor_and_node_identifiers_remain_cleanup_owned(allo
     assert all(len(row['id']) <= 128 for row in result['launches'])
     assert all(item['status'] == 'ZERO' for item in result['cleanup'])
     assert all(child.poll() is not None for child in children)
+
+
+def test_resident_cpu_partition_uses_observed_ids_and_preserves_gpu_overlap(node_container):
+    config, container, _, _, _ = node_container
+    allocation = importlib.import_module('_spec217_ops.allocation')
+    node = config['nodes'][0]
+    residents = [actor for actor in config['actors'] if not actor['external']]
+    node['cpus'] = 1 + sum(actor['resources']['cpus'] for actor in residents)
+    observed = set(range(32, 32 + node['cpus']))
+    sets = [container.role_cpu_affinity(config, node, None, 'nfd', observed)]
+    for actor in residents:
+        sets.append(container.role_cpu_affinity(config, node, actor, None, observed))
+        step = allocation.step_arguments(config, actor)
+        assert '--overlap' in step and '--cpu-bind=threads' in step
+        assert '--cpus-per-task=' + str(node['cpus']) in step
+    assert set.union(*sets) == observed
+    assert sum(map(len, sets)) == len(observed)
+    assert container.role_cpu_affinity(config, node, None, 'nfdc', observed) == sets[0]
+    assert container.role_cpu_affinity(config, node, None, 'gpu-probe', observed) is None
+    with pytest.raises(container.cluster.ClusterError, match='CPU_POOL_TOO_SMALL'):
+        container.role_cpu_affinity(config, node, residents[0], None, {32})
+    node['cpus'] = 1
+    with pytest.raises(container.cluster.ClusterError, match='CPU_SHARING_NOT_AUTHORIZED'):
+        container.role_cpu_affinity(config, node, residents[0], None, {32})
+    for actor in residents:
+        actor['resources']['allow_sharing'] = True
+        actor['resources']['gpu_devices'] = ['allocated:0']
+    for actor in residents:
+        assert container.role_cpu_affinity(config, node, actor, None, {32}) == {32}
+        step = allocation.step_arguments(config, actor, {'devices': [{'uuid': 'GPU-aaaa-bbbb'}]})
+        assert '--overlap' in step and '--gpus-per-node=1' in step
+
+
+def test_slurm_cpu_budget_reserves_managed_forwarder(ops, deployment):
+    parser, _ = ops
+    root, config = deployment
+    config = _tiger_config(root, config)
+    node = config['nodes'][0]
+    node['cpus'] = sum(actor['resources']['cpus'] for actor in config['actors']
+                       if not actor.get('external', False))
+    with pytest.raises(parser.DeploymentConfigError, match='CPU overcommit'):
+        parser.load_deployment(write_config(root, config))
+    node['cpus'] += 1
+    parser.load_deployment(write_config(root, config))
 
 
 def test_allocation_step_gpu_reservation_does_not_infer_slurm_mask_numbers(node_container):
@@ -2630,7 +3275,8 @@ def test_installed_allocation_and_route_shell_dispatch_use_explicit_interpreter(
         assert missing.returncode == 2 and 'CONTROL_PYTHON_REQUIRED' in missing.stderr
 
 
-@pytest.mark.parametrize('readback', ['valid', 'wrong-face', 'wrong-prefix'])
+@pytest.mark.parametrize('readback', ['valid', 'wrong-face', 'wrong-prefix',
+                                    'eventual', 'always-missing', 'native-error'])
 def test_inner_management_checks_native_route_readback(node_container, monkeypatch, readback):
     config, container, frozen, _, run = node_container
     node_module = importlib.import_module('_spec217_ops.node')
@@ -2645,7 +3291,9 @@ def test_inner_management_checks_native_route_readback(node_container, monkeypat
     commands = []
     monkeypatch.setattr(node_module.shutil, 'which', lambda name: '/usr/bin/nfdc')
 
-    def finite(state, root, argv, env, guard):
+    route_reads = []
+
+    def finite(state, root, argv, env, guard, **options):
         commands.append(argv[1:])
         if argv[1:] == ['strategy', 'list']:
             return 'prefix=/test/group strategy=/localhost/nfd/strategy/multicast\n'
@@ -2653,19 +3301,64 @@ def test_inner_management_checks_native_route_readback(node_container, monkeypat
             uri = 'udp4://192.0.2.2:6363' if readback != 'wrong-face' else 'udp4://192.0.2.3:6363'
             return 'faceid=257 remote=' + uri + ' local=udp4://192.0.2.1:6363\n'
         if argv[1:3] == ['route', 'show']:
+            route_reads.append(argv)
+            if readback == 'native-error':
+                raise container.cluster.ClusterError('NATIVE_COMMAND_EXIT:7:/usr/bin/nfdc')
+            if readback == 'always-missing' or readback == 'eventual' and len(route_reads) < 3:
+                return 'Route not found\n'
             prefix = '/8=test/8=group' if readback != 'wrong-prefix' else '/test/other'
             return 'prefix=' + prefix + ' nexthop=257 origin=static cost=10\n'
         return ''
 
     monkeypatch.setattr(node_module, '_finite', finite)
+    if readback == 'always-missing':
+        monkeypatch.setattr(node_module.time, 'sleep', lambda seconds: None)
     result = node_module.run_role(args)
-    if readback == 'valid':
+    if readback in ('valid', 'eventual'):
         assert result['execution'] == 'COMPLETE' and result['readiness'] == 'MANAGEMENT_VERIFIED'
         assert ['route', 'add', 'prefix', '/test/group', 'nexthop', 'udp4://192.0.2.2:6363', 'cost', '10'] in commands
         assert ['route', 'show', 'prefix', '/test/group'] in commands
+        assert len(route_reads) == (3 if readback == 'eventual' else 1)
+        assert sum(command[:2] == ['route', 'add'] for command in commands) == 1
+    elif readback == 'always-missing':
+        assert result['execution'] == 'FAILED' and 'READBACK_TIMEOUT' in result['failure']
+        assert 1 < len(route_reads) <= 32
+    elif readback == 'native-error':
+        assert result['execution'] == 'FAILED' and 'NATIVE_COMMAND_EXIT:7' in result['failure']
+        assert len(route_reads) == 1
     else:
         assert result['execution'] == 'FAILED' and 'READBACK_MISSING' in result['failure']
     assert result['status'] == 'STOPPED' and result['host_audit'] == 'UNKNOWN'
+
+
+@pytest.mark.parametrize('code,message,allowed', [
+    (6, 'Route not found', True), (6, 'RIB dataset failed', True),
+    (7, 'Route not found', True), (6, 'Route not found', False), (0, 'ready', False)])
+def test_native_management_only_tolerates_explicit_route_not_found(
+        ops, tmp_path, code, message, allowed):
+    """Exercise real owned subprocesses; all other native failures remain fatal."""
+    node = importlib.import_module('_spec217_ops.node')
+    state = dict(schema='ndnsf-di-host-operation-v1', deployment_id='management-test',
+                 boot_id='b' * 32, configuration_sha256='c' * 64, launches=[])
+    root = tmp_path / 'management'
+    state['evidence_root'] = str(root)
+    node.cluster._private_directory(root)
+    environment = dict(os.environ, NDNSF_DEPLOYMENT_BOOT_ID=state['boot_id'],
+                       NDNSF_DEPLOYMENT_CONFIG_SHA256=state['configuration_sha256'])
+    argv = [sys.executable, '-c', 'import sys; print(sys.argv[1]); sys.exit(int(sys.argv[2]))',
+            message, str(code)]
+    try:
+        if code == 0 or code == 6 and message == 'Route not found' and allowed:
+            assert node._finite(state, root, argv, environment, lambda: None,
+                                allow_route_not_found=allowed).strip() == message
+        else:
+            with pytest.raises(node.cluster.ClusterError, match='NATIVE_COMMAND_EXIT'):
+                node._finite(state, root, argv, environment, lambda: None,
+                             allow_route_not_found=allowed)
+    finally:
+        closed = node.cluster._close(state, root)
+    assert closed['status'] == 'STOPPED'
+    assert all(row['status'] == 'ZERO' and not row['forced'] for row in closed['cleanup'])
 
 
 def test_tiger_submit_check_does_not_read_remote_credentials(ops, deployment):
@@ -2864,7 +3557,15 @@ def test_slurm_snapshot_consumes_bound_closeout_without_runtime_inputs(node_cont
                                   'unreadable', 'missing-owner', 'forced-owner', 'live',
                                   'existing-allocation', 'allocation-symlink', 'auditor-step',
                                   'missing-step', 'failed-owner', 'missing-exit', 'bool-exit',
-                                  'null-cgroup', 'numeric-cgroup'])
+                                  'null-cgroup', 'numeric-cgroup', 'failed-allocation',
+                                  'failed-wrong-job', 'failed-complete', 'failed-no-reason',
+                                  'failed-complete-no-reason', 'failed-complete-wrong-job',
+                                  'failed-complete-tampered',
+                                  'failed-tampered', 'failed-disappeared', 'failed-stopped',
+                                  'failed-running', 'failed-stopped-complete',
+                                  'failed-stopped-no-reason', 'interrupted-allocation',
+                                  'interrupted-stopped', 'interrupted-wrong-job',
+                                  'interrupted-no-reason'])
 def test_missing_allocation_requires_independent_bound_recovery(node_container, monkeypatch, change):
     """Admission fixtures only; runtime recovery is checked separately on Tiger."""
     config, container, frozen, _, _ = node_container
@@ -2939,18 +3640,61 @@ def test_missing_allocation_requires_independent_bound_recovery(node_container, 
         container.cluster.write_json(evidence / 'allocation.json', {})
     if change == 'allocation-symlink':
         (evidence / 'allocation.json').symlink_to(evidence / 'absent')
+    if change.startswith(('failed-', 'interrupted-')):
+        allocation = dict(schema='ndnsf-di-host-operation-v1', deployment_id=config['deployment_id'],
+            boot_id=args.boot_id, configuration_sha256=args.configuration_sha256,
+            release_sha256=args.release_sha256, job_id='12345',
+            evidence_root=str(evidence / 'supervisor' / config['deployment_id']),
+            status='UNKNOWN', execution='FAILED', failure='ALLOCATION_STEP_EXIT:route-config:1')
+        if change.startswith('interrupted-'):
+            allocation.update(execution='INTERRUPTED', failure='ALLOCATION_SIGTERM')
+        if change in ('failed-wrong-job', 'interrupted-wrong-job', 'failed-complete-wrong-job'):
+            allocation['job_id'] = '999'
+        if change.startswith('failed-complete'):
+            allocation.update(execution='COMPLETE', failure='ALLOCATION_FINAL_AUDIT_EXIT:node-1')
+        if change in ('failed-no-reason', 'interrupted-no-reason', 'failed-complete-no-reason'):
+            allocation['failure'] = ''
+        target = evidence / 'allocation.json'
+        container.cluster.write_json(target, allocation)
+        original = target.read_bytes()
+        state['recovery_allocation_sha256'] = hashlib.sha256(original).hexdigest()
+        if change in ('failed-tampered', 'failed-complete-tampered'):
+            allocation['failure'] += ':changed'
+            container.cluster.write_json(target, allocation)
+        if change == 'failed-disappeared':
+            target.unlink()
+        if (change.startswith('failed-stopped') or
+                change in ('failed-running', 'interrupted-stopped')):
+            allocation['status'] = 'RUNNING' if change == 'failed-running' else 'STOPPED'
+            if change == 'failed-stopped-complete':
+                allocation.update(execution='COMPLETE', failure='ALLOCATION_FINAL_AUDIT_EXIT:node-1')
+            if change == 'failed-stopped-no-reason':
+                allocation['failure'] = ''
+            container.cluster.write_json(target, allocation)
+            original = target.read_bytes()
+            state['recovery_allocation_sha256'] = hashlib.sha256(original).hexdigest()
     result = backend.snapshot(state, timeout=2)
-    if change == 'none':
-        assert result['actor_cleanup'] == 'ZERO' and result['status'] == 'FAILED', result
-        assert result['execution'] == 'FAILED' and result['failure'] == 'EDQUOT'
+    accepted = ('none', 'failed-allocation', 'failed-stopped', 'failed-complete',
+                'failed-stopped-complete',
+                'interrupted-allocation', 'interrupted-stopped')
+    if change in accepted:
+        expected_execution = 'INTERRUPTED' if change.startswith('interrupted-') else 'FAILED'
+        assert result['actor_cleanup'] == 'ZERO' and result['status'] == expected_execution, result
+        assert result['execution'] == expected_execution
+        assert result['failure'] == ('EDQUOT' if change == 'none' else allocation['failure'])
         assert result['oracle'] == 'NOT_RUN' and result['readiness'] == 'UNVERIFIED'
     else:
         assert result['actor_cleanup'] == 'UNVERIFIED' and result['status'] == 'UNKNOWN'
-    assert not (evidence / 'allocation.json').exists() or change == 'existing-allocation'
+    assert (not (evidence / 'allocation.json').exists() or change == 'existing-allocation' or
+            change.startswith(('failed-', 'interrupted-')))
+    if change in accepted and change != 'none':
+        assert (evidence / 'allocation.json').read_bytes() == original
 
 
 @pytest.mark.parametrize('outcome', ['zero', 'exit', 'stale', 'late-exit'])
-def test_down_runs_owned_audit_for_missing_allocation(node_container, monkeypatch, outcome):
+@pytest.mark.parametrize('failed_allocation', [None, 'UNKNOWN', 'STOPPED'])
+def test_down_runs_owned_audit_for_missing_allocation(node_container, monkeypatch, outcome,
+                                                     failed_allocation):
     """Real bounded child ownership, with fixture audit replies rather than Slurm."""
     config, container, frozen, _, _ = node_container
     container.cluster.write_json(frozen, config)
@@ -2964,6 +3708,15 @@ def test_down_runs_owned_audit_for_missing_allocation(node_container, monkeypatc
         job_reference=reference, failure='EDQUOT', needs_closeout=True, launches=[])
     scheduler = dict(reference=reference, terminal=True, status='TERMINAL',
                      state='FAILED', exit_code='1:0', live_verified=False)
+    original = None
+    if failed_allocation:
+        allocation = dict(schema='ndnsf-di-host-operation-v1', deployment_id=config['deployment_id'],
+            boot_id=args.boot_id, configuration_sha256=args.configuration_sha256,
+            release_sha256=args.release_sha256, job_id='12345',
+            evidence_root=str(frozen.parent / 'supervisor' / config['deployment_id']),
+            status=failed_allocation, execution='FAILED', failure='EDQUOT')
+        container.cluster.write_json(frozen.parent / 'allocation.json', allocation)
+        original = (frozen.parent / 'allocation.json').read_bytes()
 
     class Adapter:
         def deployment_status(self, ref, **kwargs):
@@ -3011,10 +3764,13 @@ if OUTCOME == 'late-exit': raise SystemExit(9)
     result = backend.run_slurm('down', frozen, operation, timeout=5)
     persisted = json.loads((operation / 'state.json').read_text())
     assert len(commands) == len(config['nodes']) == 1
-    assert '--gres=none' in commands[0] and '--immediate=15' in commands[0]
+    assert '--gres=none' in commands[0]
     assert commands[0][commands[0].index('--audit-target-job') + 1] == '12345'
     assert children and all(child.poll() is not None for child in children)
-    assert not (frozen.parent / 'allocation.json').exists()
+    if failed_allocation:
+        assert (frozen.parent / 'allocation.json').read_bytes() == original
+    else:
+        assert not (frozen.parent / 'allocation.json').exists()
     if outcome == 'zero':
         assert result['operation_stage'] == persisted['status'] == 'STOPPED', result
         assert result['status'] == 'FAILED' and result['actor_cleanup'] == 'ZERO'
@@ -3026,8 +3782,9 @@ if OUTCOME == 'late-exit': raise SystemExit(9)
 
 
 @pytest.mark.parametrize('lost_submit_reply', [False, True])
+@pytest.mark.parametrize('timing', (False, True))
 def test_installed_slurm_caller_persists_intent_and_never_resubmits(
-        ops, deployment, monkeypatch, lost_submit_reply):
+        ops, deployment, monkeypatch, lost_submit_reply, timing):
     parser, cli = ops
     root, config = deployment
     config = _tiger_config(root, config)
@@ -3051,6 +3808,8 @@ def test_installed_slurm_caller_persists_intent_and_never_resubmits(
             assert state['status'] == 'SUBMITTING' and reference['job_id'] is None
             assert hashlib.sha256(options['input'].encode()).hexdigest() == reference['script_sha256']
             assert '--deployment' in options['input']
+            assert ('--timing' in options['input']) is timing
+            assert state['runtime_timing'] is timing
             if lost_submit_reply:
                 raise subprocess.TimeoutExpired(command, options['timeout'])
             output = '42\n'
@@ -3065,7 +3824,7 @@ def test_installed_slurm_caller_persists_intent_and_never_resubmits(
             raise AssertionError('unexpected scheduler side effect: ' + str(command))
         return subprocess.CompletedProcess(command, 0, stdout=output, stderr='')
     monkeypatch.setattr(backend, 'SlurmApptainerAdapter', lambda: adapter_type(runner=runner))
-    first = manager.run_cluster('up', path, timeout=5)
+    first = manager.run_cluster('up', path, timeout=5, timing=timing)
     assert first['status'] == 'UNKNOWN'  # Scheduler completion cannot prove node cleanup/native success.
     assert first['job_reference']['job_id'] == '42'
     state = json.loads(state_path.read_text())
@@ -3104,6 +3863,9 @@ def test_installed_slurm_caller_persists_intent_and_never_resubmits(
     (lambda c: c["actors"][-1].update(parameters={"repo-fetch-timeout-ms": -1}), "expected integer"),
     (lambda c: c["actors"][-1].update(parameters={"repo-fetch-timeout-ms": True}), "expected integer"),
     (lambda c: c["actors"][-1].update(parameters={"repo-fetch-timeout-ms": 2147483648}), "native signed int"),
+    (lambda c: c["actors"][-1].update(parameters={"assembly-timeout-ms": 0}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"assembly-timeout-ms": True}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"assembly-timeout-ms": 3600001}), "native assembly limit"),
     (lambda c: c["actors"][-1].update(parameters={"conversation-retention-ms": 0}), "expected integer"),
     (lambda c: c["actors"][-1].update(parameters={"conversation-retention-ms": -1}), "expected integer"),
     (lambda c: c["actors"][-1].update(parameters={"conversation-retention-ms": True}), "expected integer"),

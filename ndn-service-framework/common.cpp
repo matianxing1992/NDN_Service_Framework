@@ -75,36 +75,25 @@ public:
     m_verifiedUntil = TimePoint::max();
     m_validator->resetAnchors();
     m_validator->resetVerifiedCertificates();
-    ndn::security::validator_config::ConfigSection config;
-    if (!input) throw std::runtime_error("Cannot open NDNSF trust schema: " + filename);
-    boost::property_tree::read_info(input, config);
+    auto config = trust_schema_detail::readTrustSchema(input, filename);
     std::vector<Certificate> roots;
     std::vector<ndn::security::ValidityPeriod> rootValidityPeriods;
-    const auto directory = std::filesystem::absolute(filename).parent_path();
     for (auto it = config.begin(); it != config.end();) {
       if (!boost::iequals(it->first, "trust-anchor")) {
         ++it;
         continue;
       }
       const auto& anchor = it->second;
-      const auto type = anchor.get<std::string>("type", "");
+      const auto file = trust_schema_detail::fixedAnchorFile(anchor, filename);
       std::shared_ptr<Certificate> certificate;
-      if (boost::iequals(type, "file")) {
+      if (file) {
         // Pin the bytes loaded here. A file refresh must not silently replace
         // the application's configured root while the validator is running.
-        if (anchor.get_optional<std::string>("refresh")) {
-          throw std::runtime_error("NDNSF requires a fixed trust-anchor file without refresh");
-        }
-        certificate = ndn::io::load<Certificate>(
-          (directory / anchor.get<std::string>("file-name")).string());
-      }
-      else if (boost::iequals(type, "base64")) {
-        std::istringstream input(anchor.get<std::string>("base64-string"));
-        certificate = ndn::io::load<Certificate>(input);
+        certificate = ndn::io::load<Certificate>(file->string());
       }
       else {
-        throw std::runtime_error("NDNSF requires fixed file/base64 trust anchors; type " +
-                                 type + " is not allowed");
+        std::istringstream input(anchor.get<std::string>("base64-string"));
+        certificate = ndn::io::load<Certificate>(input);
       }
       if (!certificate) {
         throw std::runtime_error("NDNSF trust anchor is missing, malformed, or outside validity");

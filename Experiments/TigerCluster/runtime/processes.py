@@ -1,6 +1,7 @@
 """Shared process ownership and bounded cleanup; no application protocol decisions."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -85,11 +86,15 @@ class Processes:
 
 
 def run_finite_application(name, argv, log_path, cleanup, seconds=60,
-                           allowed_exits=(0,), env=None):
-    """Wait for an owned application; retain its actual exit and bounded group cleanup."""
-    with Path(log_path).open('wb') as log:
-        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log,
-                                stderr=subprocess.STDOUT, start_new_session=True, env=env)
+                           allowed_exits=(0,), env=None, stdout=None):
+    """Own a finite group; optional caller-owned streams remain open after cleanup."""
+    log_context = (contextlib.nullcontext(log_path) if hasattr(log_path, 'write') else
+                   Path(log_path).open('wb'))
+    with log_context as log:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                                stdout=log if stdout is None else stdout,
+                                stderr=subprocess.STDOUT if stdout is None else log,
+                                start_new_session=True, env=env)
         forced = False
         primary_failure = False
         try:

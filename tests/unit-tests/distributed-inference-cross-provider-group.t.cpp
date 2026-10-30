@@ -213,6 +213,97 @@ BOOST_AUTO_TEST_CASE(BoundsAreValidatedBeforeAllocation)
     std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(RepeatedEpochCapabilityRetainsCanonicalAuthorityInCompactWire)
+{
+  for (const std::size_t epochs : {33U, 129U, 257U}) {
+    std::vector<GroupOperationV1> operations;
+    for (std::uint64_t direction = 0; direction < 2; ++direction) {
+      for (std::uint64_t epoch = 0; epoch < epochs; ++epoch) {
+        auto operation = makeGroupOperation();
+        operation.operationIndex = direction + epoch * 4;
+        if (direction != 0) {
+          operation.kind = "TOKEN_FEEDBACK";
+          operation.producerRanks = {"1"};
+          operation.consumerRanks = {"0"};
+        }
+        operations.push_back(std::move(operation));
+      }
+    }
+    ProviderGroupCoordinator producer(makeCoordinatorOptions());
+    const auto capability = producer.createCapability(
+      "/request/compact", "attempt-1", "sha256:plan", "group-1", 9,
+      {{"/provider/P0", 0, "offer-0", "/provider/P0/NDNSF-DI"},
+       {"/provider/P1", 1, "offer-1", "/provider/P1/NDNSF-DI"}},
+      std::move(operations), 32, 100, 500).projectForProvider("/provider/P0");
+    const auto wire = ProviderGroupCoordinator::encodeCapability(capability);
+    const std::string marker = "GroupCapabilityV2";
+    BOOST_REQUIRE_GT(wire.size(), 8 + marker.size());
+    BOOST_CHECK_EQUAL(std::string(wire.begin() + 8, wire.begin() + 8 + marker.size()), marker);
+    BOOST_CHECK_LT(wire.size() * 4, capability.canonicalBytes(true).size());
+    const auto decoded = ProviderGroupCoordinator::decodeCapability(wire);
+    BOOST_CHECK(decoded.canonicalBytes(true) == capability.canonicalBytes(true));
+    BOOST_CHECK(decoded.sealerSignature == capability.sealerSignature);
+    BOOST_CHECK_EQUAL(decoded.permittedOperations.size(), epochs * 2);
+    std::size_t cursor = 0;
+    const auto readWord = [&] {
+      BOOST_REQUIRE_LE(cursor + 8, wire.size());
+      std::uint64_t value = 0;
+      for (unsigned byte = 0; byte < 8; ++byte) value = (value << 8) | wire[cursor++];
+      return value;
+    };
+    const auto skipString = [&] {
+      const auto size = readWord();
+      BOOST_REQUIRE_LE(size, wire.size() - cursor);
+      cursor += size;
+    };
+    for (unsigned field = 0; field < 5; ++field) skipString();
+    readWord(); // epoch
+    const auto members = readWord();
+    for (std::uint64_t member = 0; member < members; ++member) {
+      skipString();
+      readWord();
+      skipString();
+      skipString();
+    }
+    const auto countOffset = cursor;
+    readWord(); // expanded operation count
+    readWord(); // run count
+    const auto firstRun = cursor;
+    const auto replaceWord = [](auto& bytes, std::size_t offset, std::uint64_t value) {
+      for (unsigned byte = 0; byte < 8; ++byte)
+        bytes.at(offset + byte) = static_cast<std::uint8_t>(value >> (56 - byte * 8));
+    };
+    for (const auto count : {std::uint64_t{0}, std::uint64_t{1} << 40}) {
+      auto malformed = wire;
+      replaceWord(malformed, firstRun, count);
+      BOOST_CHECK_THROW(ProviderGroupCoordinator::decodeCapability(malformed), std::invalid_argument);
+    }
+    auto malformed = wire;
+    replaceWord(malformed, firstRun + 8, 0);
+    BOOST_CHECK_THROW(ProviderGroupCoordinator::decodeCapability(malformed), std::invalid_argument);
+    malformed = wire;
+    replaceWord(malformed, firstRun + 16, UINT64_MAX);
+    BOOST_CHECK_THROW(ProviderGroupCoordinator::decodeCapability(malformed), std::invalid_argument);
+    malformed = wire;
+    replaceWord(malformed, countOffset, 1U << 20);
+    replaceWord(malformed, firstRun, 1U << 20);
+    BOOST_CHECK_THROW(ProviderGroupCoordinator::decodeCapability(malformed), std::invalid_argument);
+    ProviderGroupCoordinator consumer(makeCoordinatorOptions());
+    BOOST_CHECK_NO_THROW(consumer.installCapability(decoded, std::vector<uint8_t>(32, 0x5a), true));
+    auto tampered = decoded;
+    tampered.sealerSignature[0] ^= 1;
+    BOOST_CHECK_THROW(consumer.installCapability(tampered, std::vector<uint8_t>(32, 0x5a), true),
+                      std::runtime_error);
+    tampered = decoded;
+    tampered.requestId = "/request/replayed";
+    BOOST_CHECK_THROW(consumer.installCapability(tampered, std::vector<uint8_t>(32, 0x5a), true),
+                      std::runtime_error);
+    auto truncated = wire;
+    truncated.resize(truncated.size() / 2);
+    BOOST_CHECK_THROW(ProviderGroupCoordinator::decodeCapability(truncated), std::invalid_argument);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(CoordinatorSealsAndVerifiesBoundedOperation)
 {
   auto options = makeCoordinatorOptions();

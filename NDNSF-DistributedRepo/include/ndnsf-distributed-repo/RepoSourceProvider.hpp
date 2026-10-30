@@ -6,6 +6,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
+#include <ndn-cxx/name.hpp>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -120,13 +122,14 @@ public:
     const auto& publication = catalog.at("publication");
     const auto artifactRoot = publication.at("artifact_root").get<std::string>();
     const auto identity = ndnsf::di::nativeCanonicalPublicationIdentity(catalog);
-    const auto root = artifactRoot + "/prepared/" + identity.substr(7);
-    const auto rootName = root + "/manifest";
+    const auto root = canonicalName(artifactRoot + "/prepared/" + identity.substr(7));
+    const auto rootName = canonicalName(root + "/manifest");
     // Publish commits the root and its dependency objects under the same Repo
     // publication lock.  Lookup must take that lock as well, otherwise a
     // concurrent reader can observe a root before the referenced objects are
     // committed and incorrectly classify a valid publication as corrupt.
     auto repoPublicationLock = m_repo->acquirePublicationLock();
+    rejectLegacyPreparedKeys(root, request.deadline);
     if (!m_repo->has(rootName))
       return std::nullopt;
 
@@ -214,7 +217,7 @@ public:
       const auto expectedInitializerBytes = source.value(
         "initializer_bytes", metadata.value("canonicalInitializerBytes", std::uint64_t{0}));
       const auto expectedInitializerName = source.value("initializer_digest", std::string{}).empty()
-        ? std::string{} : root + "/initializer";
+        ? std::string{} : canonicalName(root + "/initializer");
       if (rootJson.value("schema", std::string{}) !=
             "ndnsf-di-canonical-model-manifest-v1")
         reject("root schema differs from the requested catalog");
@@ -233,7 +236,8 @@ public:
         reject("root model key differs from the requested catalog");
       if (metadata.value("serviceName", std::string{}) != request.serviceName)
         reject("root service name differs from the requested catalog");
-      if (metadata.value("canonicalSourceDataName", std::string{}) != root + "/source")
+      if (metadata.value("canonicalSourceDataName", std::string{}) !=
+          canonicalName(root + "/source"))
         reject("root canonical source name differs from the requested catalog");
       if (metadata.value("canonicalSourceDigest", std::string{}) != source.at("digest").get<std::string>())
         reject("root canonical source digest differs from the requested catalog");
@@ -294,7 +298,8 @@ public:
         }
       }
 
-      (void)checkObject(root + "/source", source.at("digest").get<std::string>(), expectedSourceBytes);
+      (void)checkObject(canonicalName(root + "/source"),
+                        source.at("digest").get<std::string>(), expectedSourceBytes);
       if (!expectedInitializerName.empty())
         (void)checkObject(expectedInitializerName, source.at("initializer_digest").get<std::string>(),
                           expectedInitializerBytes);
@@ -318,7 +323,7 @@ public:
       }
 
       ndnsf::di::NativePreparedCanonicalPublication receipt;
-      receipt.sourceDataName = root + "/source";
+      receipt.sourceDataName = canonicalName(root + "/source");
       receipt.initializerDataName = expectedInitializerName;
       receipt.rootDataName = rootName;
       receipt.canonicalManifestJson = manifestJson;
@@ -656,11 +661,13 @@ public:
         ndnsf::di::RepositorySourceError::Kind::Unavailable,
         "repository publication identity digest is invalid");
     const auto suffix = publicationIdentity.substr(7);
-    const auto root = options.artifactRoot + "/prepared/" + suffix;
-    const auto sourceName = root + "/source";
-    const auto initializerName = root + "/initializer";
-    const auto rootName = root + "/manifest";
-    const auto preparedMetadataName = root + "/prepared-metadata";
+    const auto root = canonicalName(options.artifactRoot + "/prepared/" + suffix);
+    rejectLegacyPreparedKeys(root, control.deadline);
+    control.requireActive();
+    const auto sourceName = canonicalName(root + "/source");
+    const auto initializerName = canonicalName(root + "/initializer");
+    const auto rootName = canonicalName(root + "/manifest");
+    const auto preparedMetadataName = canonicalName(root + "/prepared-metadata");
     ndnsf::di::NativeJson preparedMetadata = ndnsf::di::NativeJson::object();
     const auto preparedMetadataDigest = source.preparedMetadataJson.empty()
       ? std::string{} : ndnsf::di::nativePlanningDigest(source.preparedMetadataJson);
@@ -674,7 +681,7 @@ public:
           ndnsf::di::RepositorySourceError::Kind::Unavailable,
           "repository prepared metadata schema is unsupported");
     }
-    const auto materialManifestName = root + "/material-manifest";
+    const auto materialManifestName = canonicalName(root + "/material-manifest");
     std::vector<std::string> materialPayloadIds;
     std::vector<std::string> materialNames;
     std::vector<std::string> materialDigests;
@@ -684,7 +691,7 @@ public:
       materialDigests.reserve(source.materialManifest->payloads.size());
       for (const auto& payload : source.materialManifest->payloads) {
         materialPayloadIds.push_back(payload.payloadId);
-        materialNames.push_back(root + "/materials/" + payload.payloadId);
+        materialNames.push_back(canonicalName(root + "/materials/" + payload.payloadId));
         materialDigests.push_back(payload.digest);
       }
     }
@@ -734,8 +741,9 @@ public:
       receipt.artifactProfileDigest = options.artifactProfileDigest;
       receipt.layerManifestDigests = options.layerManifestDigests;
       for (const auto& layer : source.layerPayloads) {
-        const auto layerName = root + "/layers/" + std::to_string(layer.stageIndex) + "-" +
-          std::to_string(layer.layerBegin) + "-" + std::to_string(layer.layerEnd);
+        const auto layerName = canonicalName(root + "/layers/" +
+          std::to_string(layer.stageIndex) + "-" + std::to_string(layer.layerBegin) + "-" +
+          std::to_string(layer.layerEnd));
         receipt.layerDataNames.push_back(layerName);
       }
       receipt.rollbackOwned = false;
@@ -856,8 +864,9 @@ public:
           for (std::size_t i = 0; i < source.layerPayloads.size(); ++i) {
             const auto& layer = source.layerPayloads[i];
             const auto& reference = layerReferences.at(i);
-            const auto layerName = root + "/layers/" + std::to_string(layer.stageIndex) + "-" +
-              std::to_string(layer.layerBegin) + "-" + std::to_string(layer.layerEnd);
+            const auto layerName = canonicalName(root + "/layers/" +
+              std::to_string(layer.stageIndex) + "-" + std::to_string(layer.layerBegin) + "-" +
+              std::to_string(layer.layerEnd));
             if (reference.value("stageIndex", std::uint64_t{~0U}) != layer.stageIndex ||
                 reference.value("layerBegin", std::uint64_t{~0U}) != layer.layerBegin ||
                 reference.value("layerEnd", std::uint64_t{~0U}) != layer.layerEnd ||
@@ -1002,8 +1011,9 @@ public:
       std::vector<std::string> layerNames;
       layerNames.reserve(source.layerPayloads.size());
       for (const auto& layer : source.layerPayloads) {
-        const auto layerName = root + "/layers/" + std::to_string(layer.stageIndex) + "-" +
-          std::to_string(layer.layerBegin) + "-" + std::to_string(layer.layerEnd);
+        const auto layerName = canonicalName(root + "/layers/" +
+          std::to_string(layer.stageIndex) + "-" + std::to_string(layer.layerBegin) + "-" +
+          std::to_string(layer.layerEnd));
         putRanges(layerName, layer.bytes, "ndnsf-di-canonical-layer");
         layerNames.push_back(layerName);
       }
@@ -1308,6 +1318,40 @@ public:
   }
 
 private:
+  static std::string
+  canonicalName(const std::string& value)
+  {
+    return ndn::Name(value).toUri(ndn::name::UriFormat::CANONICAL);
+  }
+
+  void
+  rejectLegacyPreparedKeys(const std::string& root,
+                           std::chrono::steady_clock::time_point deadline) const
+  {
+    const ndn::Name prefix(root);
+    for (const auto& manifest : m_repo->list()) {
+      if (std::chrono::steady_clock::now() >= deadline) {
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Timeout,
+          "repository prepared key inspection deadline expired");
+      }
+      ndn::Name name;
+      try {
+        name = ndn::Name(manifest.objectName);
+      }
+      catch (const std::exception&) {
+        // Generic Repo objects need not have an NDN name. Leave them untouched.
+        continue;
+      }
+      if (prefix.isPrefixOf(name) &&
+          manifest.objectName != name.toUri(ndn::name::UriFormat::CANONICAL)) {
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "legacy noncanonical prepared key requires explicit migration");
+      }
+    }
+  }
+
   std::shared_ptr<RepoCore> m_repo;
   Fallback m_fallback;
   mutable std::atomic<std::size_t> m_lookups{0};

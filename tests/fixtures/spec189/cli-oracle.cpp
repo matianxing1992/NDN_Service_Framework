@@ -792,6 +792,98 @@ int main(int argc, char** argv)
     write(root / "requester-statistics.jsonl", firstRow + '\n' + incomplete.dump() + '\n');
     check("", "", "stream-statistics-mismatch", deployment);
 
+    // Synthetic namespace receipts exercise the native oracle only; they do
+    // not claim that this fixture created a topology or ran real inference.
+    const auto miniNdnFixture = [&] {
+      deploymentFixture();
+      auto config = readJsonFile(root / "configuration.json");
+      config["platform"] = {{"kind", "minindn"}};
+      config["nodes"] = NativeJson::array({{{"id", "a"}, {"host", "node-a"}},
+                                          {{"id", "b"}, {"host", "node-b"}}});
+      for (auto& actor : config["actors"])
+        actor["node"] = actor["id"] == "provider-1" ? "b" : "a";
+      const auto digest = ndnsf::di::nativePlanningDigest(
+        ndnsf::di::nativeCanonicalJson(config)).substr(7);
+      auto state = readJsonFile(root / "deployment-state.json");
+      state["configuration_sha256"] = digest;
+      state["execution"] = "COMPLETE";
+      const auto launch = [&] (const std::string& id, const std::string& space) {
+        NativeJson bindings{{"NDNSF_DEPLOYMENT_ACTOR_ID", id},
+          {"NDNSF_DEPLOYMENT_BOOT_ID", "fixture-boot"},
+          {"NDNSF_DEPLOYMENT_CONFIG_SHA256", digest}};
+        return NativeJson{{"id", id}, {"network_namespace", space}, {"bindings", bindings},
+          {"proof", {{"bindings", bindings}, {"pid", 42}, {"pgid", 42},
+            {"uid", ::getuid()}, {"start_ticks", 1}, {"exe", "/fixture/native"}}}};
+      };
+      state["launches"] = NativeJson::array();
+      state["cleanup"] = NativeJson::array();
+      for (const auto& actor : config["actors"]) {
+        const auto id = actor.at("id").get<std::string>();
+        state["launches"].push_back(launch(id, actor.at("node") == "a" ? "net:[101]" : "net:[102]"));
+        state["cleanup"].push_back({{"id", id}, {"status", "ZERO"}, {"forced", false}});
+      }
+      NativeJson facility{{"schema", "ndnsf-di-minindn-facility-v1"}, {"status", "STOPPED"},
+        {"failure", nullptr}, {"namespace_survivors", NativeJson::array()},
+        {"remaining_interfaces", NativeJson::array()}, {"nodes", NativeJson::object()},
+        {"launches", NativeJson::array()}, {"cleanup", NativeJson::array()}};
+      for (const std::string node : {"a", "b"}) {
+        const auto space = node == "a" ? "net:[101]" : "net:[102]";
+        const auto shell = "namespace.node-" + node;
+        facility["nodes"][node] = {{"host", "node-" + node}, {"shell", shell},
+                                   {"network_namespace", space}};
+        facility["launches"].push_back(launch(shell, space));
+        facility["cleanup"].push_back({{"id", shell}, {"status", "ZERO"}, {"forced", false}});
+        state["launches"].push_back(launch("nfd." + node, space));
+        state["cleanup"].push_back({{"id", "nfd." + node}, {"status", "ZERO"}, {"forced", false}});
+      }
+      state["facility"] = facility;
+      write(root / "configuration.json", config.dump());
+      write(root / "deployment-state.json", state.dump());
+    };
+    miniNdnFixture();
+    check("", "", "", deployment);
+    const auto badMiniNdn = [&](const std::string& reason,
+                                const std::function<void(NativeJson&)>& change) {
+      miniNdnFixture();
+      auto state = readJsonFile(root / "deployment-state.json");
+      change(state);
+      write(root / "deployment-state.json", state.dump());
+      check("", "", reason, deployment);
+    };
+    badMiniNdn("deployment-minindn-closeout", [](auto& j) {
+      j["facility"]["namespace_survivors"] = {42};
+    });
+    badMiniNdn("deployment-minindn-namespace", [](auto& j) {
+      j["facility"]["nodes"]["b"]["network_namespace"] = "net:[101]";
+    });
+    badMiniNdn("deployment-minindn-actor-namespace", [](auto& j) {
+      j["launches"][0]["network_namespace"] = "net:[999]";
+    });
+    badMiniNdn("deployment-cleanup", [](auto& j) {
+      j["facility"]["cleanup"][0]["forced"] = true;
+    });
+    miniNdnFixture();
+    {
+      auto config = readJsonFile(root / "configuration.json");
+      for (auto& actor : config["actors"])
+        actor["node"] = "a";
+      const auto digest = ndnsf::di::nativePlanningDigest(
+        ndnsf::di::nativeCanonicalJson(config)).substr(7);
+      auto state = readJsonFile(root / "deployment-state.json");
+      state["configuration_sha256"] = digest;
+      for (auto* rows : {&state["launches"], &state["facility"]["launches"]}) {
+        for (auto& launch : *rows) {
+          launch["bindings"]["NDNSF_DEPLOYMENT_CONFIG_SHA256"] = digest;
+          launch["proof"]["bindings"] = launch["bindings"];
+          if (launch["id"] == "provider-1")
+            launch["network_namespace"] = "net:[101]";
+        }
+      }
+      write(root / "configuration.json", config.dump());
+      write(root / "deployment-state.json", state.dump());
+      check("", "", "deployment-minindn-execution-not-distributed", deployment);
+    }
+
     // Original receipt/parser fixtures only. These records do not claim that
     // this host has Slurm, a container, or a CUDA device.
     const auto privateJson = [&](const std::filesystem::path& path, const NativeJson& value) {

@@ -1121,6 +1121,32 @@ BOOST_AUTO_TEST_CASE(NativeFixedTemplateReusesBaseEpochAcrossTokenBudgets)
   };
   const auto decoded = decode(wire);
   BOOST_REQUIRE_EQUAL(decoded.dataflow.mustFetch.size(), 5U);
+  for (const std::size_t budget : {32U, 128U, 256U}) {
+    const auto current = make(budget);
+    const auto expandedWire = nativeSelectionInvocationV1ToJson(current, *restored);
+    const auto compactWire = nativeSelectionInvocationV2ToJson(current, *restored);
+    BOOST_CHECK_LT(compactWire.size() * 2, expandedWire.size());
+    const auto compact = nativeParseJson(compactWire);
+    BOOST_CHECK_EQUAL(compact.at("schema").get<std::string>(), "ndnsf-di-selection-invocation-v2");
+    BOOST_REQUIRE(compact.at("dataflow").at("must_fetch").is_object());
+    const auto replay = decode(compact);
+    BOOST_CHECK_EQUAL(nativeSelectionInvocationV1ToJson(replay, *restored), expandedWire);
+    BOOST_CHECK_EQUAL(replay.fixedExecutionTemplateOwner.get(), restored->executionTemplate().get());
+    auto malformed = compact;
+    auto& bindings = malformed["dataflow"]["must_fetch"];
+    const auto field = bindings.at("common").begin();
+    bindings["entries"][0][field.key()] = field.value();
+    BOOST_CHECK_THROW(decode(malformed), std::invalid_argument);
+    malformed = compact;
+    malformed["dataflow"]["must_fetch"]["common"]["fixed_role_ref"] = fixed->digest();
+    BOOST_CHECK_THROW(validateNativeSelectionInvocationBindingShapeV1(malformed), std::invalid_argument);
+    malformed = compact;
+    malformed["dataflow"]["must_fetch"]["common"]["producer_namespace"] = std::string(1U << 20, 'x');
+    BOOST_CHECK_THROW(validateNativeSelectionInvocationBindingShapeV1(malformed), std::invalid_argument);
+    malformed = compact;
+    malformed["schema_version"] = 1;
+    BOOST_CHECK_THROW(decode(malformed), std::invalid_argument);
+  }
   BOOST_REQUIRE_EQUAL(decoded.dataflow.mayPublish.size(), 5U);
   for (std::size_t epoch = 0; epoch < 5; ++epoch) {
     BOOST_CHECK_EQUAL(decoded.dataflow.mustFetch[epoch].round, epoch);

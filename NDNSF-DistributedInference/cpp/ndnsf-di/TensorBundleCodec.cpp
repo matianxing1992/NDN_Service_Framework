@@ -26,8 +26,6 @@ constexpr std::size_t MAX_MANIFEST_WIRE_BYTES = 64U << 20;
 constexpr std::size_t MAX_LINEAGE_STRING_BYTES = 4096;
 constexpr std::size_t MAX_LINEAGE_WIRE_BYTES = 64U * 1024U;
 constexpr std::size_t MAX_PACKED_TENSOR_BYTES = 64U * 1024U * 1024U;
-constexpr std::size_t MIN_PACKING_INPUT_BYTES = 256;
-constexpr std::size_t MIN_PACKING_SAVINGS_BYTES = 64;
 
 const std::string&
 packedTensorBundleMagic()
@@ -762,30 +760,10 @@ isEncodedTensorBundle(const std::vector<std::uint8_t>& payload)
 }
 
 std::optional<std::vector<std::uint8_t>>
-tryPackTensorBundleForTransport(const std::vector<std::uint8_t>& payload)
+tryPackTensorBundleForTransport(const std::vector<std::uint8_t>&)
 {
-  if (!hasMagic(payload, tensorBundleMagic()) || payload.size() < MIN_PACKING_INPUT_BYTES ||
-      payload.size() > MAX_PACKED_TENSOR_BYTES) {
-    return std::nullopt;
-  }
-  const auto& magic = packedTensorBundleMagic();
-  const auto headerBytes = magic.size() + sizeof(std::uint64_t);
-  std::vector<std::uint8_t> packed(magic.begin(), magic.end());
-  appendScalar<std::uint64_t>(packed, payload.size());
-  // Bound the destination by the required saving rather than allocating
-  // compressBound() bytes for a representation we would immediately discard.
-  packed.resize(payload.size() - MIN_PACKING_SAVINGS_BYTES);
-  uLongf packedBytes = packed.size() - headerBytes;
-  const auto result = compress2(packed.data() + headerBytes, &packedBytes,
-                                payload.data(), payload.size(), Z_BEST_SPEED);
-  if (result == Z_BUF_ERROR) {
-    return std::nullopt;
-  }
-  if (result != Z_OK) {
-    throw std::runtime_error("tensor bundle packing failed");
-  }
-  packed.resize(headerBytes + packedBytes);
-  return packed;
+  // Preserve the public ABI for installed callers; new publications use raw wire.
+  return std::nullopt;
 }
 
 std::vector<std::uint8_t>

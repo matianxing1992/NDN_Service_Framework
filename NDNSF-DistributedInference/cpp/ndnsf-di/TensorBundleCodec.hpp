@@ -149,9 +149,8 @@ validateNamedTensor(const NamedTensor& tensor);
 bool
 isEncodedTensorBundle(const std::vector<std::uint8_t>& payload);
 
-/** Return a packed NDITB001 alternative only when it saves at least 64 bytes.
- *  Small, opaque, already packed and >64 MiB inputs return no alternative.
- *  Local tensor encoders and encoded-size budgets continue to use NDITB001.
+/** Compatibility entry point: always return no alternative; new transport is uncompressed.
+ *  Existing packed objects remain readable through unpackTensorBundleFromTransport().
  */
 std::optional<std::vector<std::uint8_t>>
 tryPackTensorBundleForTransport(const std::vector<std::uint8_t>& payload);

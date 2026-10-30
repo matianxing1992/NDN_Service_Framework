@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Run a real Qwen3-0.6B CPU native request through a MiniNDN topology.
 
+Current execution: ``run --deployment deployment.json --verify``. This delegates
+to the installed shared host/Tiger deployment owner. Explicit stage/model flags
+below retain the historical preparation, diagnostic and compatibility path.
+
 The Python process owns only topology, identities, files, and child-process
 lifecycle.  Request planning, grants, Provider admission, ONNX execution,
 streaming, and conversation checkpoints stay in the C++ executables.
@@ -402,11 +406,9 @@ def qwen_runtime_budgets(source_bytes: int, initializer_bytes: int,
         base_service_ms = 300000
     if ack_timeout_ms >= timeout_ms:
         raise ValueError("Qwen ACK window must be positive and smaller than the request deadline")
-    # The turn deadline is written before MiniNDN startup. It must cover the
-    # worst-case startup markers, one preparation window, every configured
-    # request round, and a bounded commit/cleanup margin. Provider and
-    # Authority lifetimes use the same envelope so they cannot exit midway
-    # through a later conversation round.
+    # Process lifetimes cover startup, preparation, all request rounds and
+    # bounded cleanup. C++ starts the separate conversation retention duration
+    # after preparation when opening the conversation.
     # The requester is one process now: pay the synchronous Runtime.open/freeze
     # and User.prepare cost once, then reserve one request deadline per turn.
     # Do not retain the old per-process timeout, which could kill a valid later
@@ -1782,6 +1784,10 @@ def wait_for_provider_round_barrier(request_text: str, provider_offsets: dict,
 
 
 def main(argv=None, *, _supervised=False) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if any(value == '--deployment' or value.startswith('--deployment=') for value in arguments):
+        from native_deployment_entrypoint import run_deployment
+        return run_deployment(arguments)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage-manifest", type=Path, required=True)
     parser.add_argument("--model-family", choices=("qwen", "llama"), default="qwen",
@@ -2607,7 +2613,7 @@ def main(argv=None, *, _supervised=False) -> int:
                                     **({"plan_role_map_digest": role_map_digest,
                                         "expected_roles": [stage["role"] for stage in stages]}
                                        if args.placement_strategy == "fixed" else {}),
-                                    "retention_deadline_ms": int(time.time() * 1000) + runtime_budgets["retention_ms"],
+                                    "retention_duration_ms": runtime_budgets["retention_ms"],
                                     "mode": "FULL_CONTEXT", "generation_id": "0123456789abcdef0123456789abcdef",
                                     "canonical_token_ids": input_ids},
                           "checkpoint_output_file": "conversation-state.json"},

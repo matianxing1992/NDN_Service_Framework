@@ -286,8 +286,26 @@ approval again or hide an exception in a special-case branch.
   what changed, actual verification performed and material remaining limits.
   Do not claim build, runtime, experiment or publication readiness from static
   inspection alone. Commit and push only when requested.
+- Keep an active goal running while builds or jobs run, resources are queued,
+  or a failed check can still be diagnosed or repaired. Intermediate success
+  does not complete the goal. Use blocked only for a repeated actual impasse
+  with no meaningful next action; report the concrete condition. If the host
+  goal state cannot be resumed through available tools, explain that limitation
+  without claiming it was restored, and continue authorized work in the turn.
 
 ## NDNSF-DI experiment storage
+
+- Current Qwen3-0.6B MiniNDN execution uses the same installed native Controller,
+  ArtifactAuthority, Repo, Provider and Requester applications and deployment
+  configuration schema as host/Tiger execution. Use `ndnsf-di cluster up --config
+  deployment.json`; MiniNDN requires root and `platform.kind=minindn`, an absolute
+  topology path and its `sha256:` digest. Declare every topology host in `nodes`,
+  distinct managed NFD sockets and separate credential homes per actor. Keep
+  Python limited to topology, configuration and process orchestration. The Qwen
+  experiment entry points accept `run --deployment deployment.json --verify`
+  to invoke this owner and its C++ first/warm oracle. Explicit historical
+  `--profile`/stage arguments retain compatibility experiments; their results
+  are not evidence for this shared deployment path.
 
 - Keep diagnostic logging disabled in normal execution; enable it explicitly
   for debugging or a qualification check that requires diagnostic evidence.
@@ -302,6 +320,11 @@ approval again or hide an exception in a special-case branch.
   Commands run inside that directory and receive `TMPDIR` and
   `NDNSF_DI_WORKSPACE`. Use absolute command/source paths. This bounds retained
   scratch history to the latest run per purpose, not a per-run byte quota.
+- Create host control environments from a resolved, stable base interpreter,
+  never another disposable environment. Verify interpreter links and `pyvenv.cfg`
+  before retiring older environments. Reuse the current validated environment
+  for unchanged control code; archive receipts rather than keeping every old
+  installed environment or duplicate source/build input.
 - Keep model sources, shared content-identity caches, and durable experiment
   logs/receipts outside scratch. Qwen's default `--fixed-work-root` already
   reuses one locked workspace; explicit `--run-root` is durable evidence.

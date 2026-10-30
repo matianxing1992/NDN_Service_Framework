@@ -22,6 +22,8 @@ from .processes import write_json
 
 
 _CANCEL_CHECK_INTERVAL = 1.0
+_ROUTE_READBACK_ATTEMPTS = 20
+_ROUTE_READBACK_INTERVAL = 0.1
 
 
 def _receipt(state, target):
@@ -29,14 +31,15 @@ def _receipt(state, target):
         'deployment_id', 'boot_id', 'configuration_sha256', 'release_sha256',
         'role_id', 'role_kind', 'node_id', 'host', 'job_id', 'step_id', 'pid_namespace',
         'status', 'readiness', 'execution', 'exit_code', 'failure', 'launches', 'cleanup',
-        'started_at', 'wall_seconds', 'gpu_visibility', 'logical_devices', 'gpu_admission')}
+        'started_at', 'wall_seconds', 'gpu_visibility', 'logical_devices', 'gpu_admission',
+        'runtime_timing')}
     payload.update(schema='ndnsf-di-node-role-v1', cleanup_scope='PID_NAMESPACE',
                    host_audit='UNKNOWN')
     write_json(target, payload)
     return payload
 
 
-def _finite(state, root, argv, env, guard):
+def _finite(state, root, argv, env, guard, *, allow_route_not_found=False):
     tag = 'management-' + str(len(state['launches']))
     owned_env = dict(env, NDNSF_DEPLOYMENT_ACTOR_ID=tag)
     child, row = cluster._spawn(state, root, tag, 'management', argv, owned_env, guard)
@@ -45,13 +48,15 @@ def _finite(state, root, argv, env, guard):
         time.sleep(0.05)
     row['exit_code'] = child.returncode
     write_json(root / 'state.json', state)
-    if child.returncode:
-        raise cluster.ClusterError('NATIVE_COMMAND_EXIT:' + str(child.returncode) + ':' + argv[0])
     with Path(row['log']).open('rb') as stream:
         data = stream.read(1024 * 1024 + 1)
     if len(data) > 1024 * 1024:
         raise cluster.ClusterError('NATIVE_MANAGEMENT_LOG_TOO_LARGE')
-    return data.decode('utf-8')
+    output = data.decode('utf-8')
+    missing = allow_route_not_found and child.returncode == 6 and output.strip() == 'Route not found'
+    if child.returncode and not missing:
+        raise cluster.ClusterError('NATIVE_COMMAND_EXIT:' + str(child.returncode) + ':' + argv[0])
+    return output
 
 
 def _identity(config, actor, state, root, env, guard):
@@ -65,8 +70,17 @@ def _management(config, node, state, root, env, guard):
         raise cluster.ClusterError('NATIVE_NFDC_UNAVAILABLE')
     faces = {}
     for command in deployment_management_commands(config, node['id']):
-        output = _finite(state, root, [executable, *command['argv']], env, guard)
         check = command.get('check')
+        for attempt in range(_ROUTE_READBACK_ATTEMPTS if check == 'route' else 1):
+            guard()
+            options = {'allow_route_not_found': True} if check == 'route' else {}
+            output = _finite(state, root, [executable, *command['argv']], env, guard, **options)
+            if check != 'route' or output.strip() != 'Route not found':
+                break
+            if attempt + 1 == _ROUTE_READBACK_ATTEMPTS:
+                raise cluster.ClusterError('NATIVE_ROUTE_READBACK_TIMEOUT')
+            guard()
+            time.sleep(_ROUTE_READBACK_INTERVAL)
         if check == 'strategy':
             cluster._require_group_multicast(output, command['prefix'])
         elif check in ('face', 'route'):
@@ -120,6 +134,7 @@ def run_role(args):
                  'pid_namespace': os.readlink('/proc/self/ns/pid'), 'status': 'STARTING',
                  'readiness': 'UNVERIFIED', 'execution': 'STARTING', 'exit_code': None,
                  'failure': None, 'launches': [], 'diagnostic_logging': args.debug,
+                 'runtime_timing': getattr(args, 'timing', False),
                  'started_at': time.time(), 'wall_seconds': 0}
         started = time.monotonic()
         deadline = started + args.timeout
@@ -277,6 +292,7 @@ def main(argv=None):
     parser.add_argument('--node')
     parser.add_argument('--timeout', type=float, required=True)
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--timing', action='store_true')
     args = parser.parse_args(argv)
     if not math.isfinite(args.timeout) or args.timeout <= 0 or (args.management and not args.node):
         parser.error('finite positive timeout and management node are required')

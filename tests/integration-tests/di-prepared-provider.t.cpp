@@ -221,6 +221,7 @@ struct ProviderRequestProbeState
   bool terminal = false;
   std::string failure;
   std::string providerFailure;
+  std::string responseFailure;
 };
 
 std::string
@@ -860,7 +861,7 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
         NativeFixedRoleSourceV1{publication.encryptedDataName.toUri(), nativePlanningDigest(sourceWire),
           sourceWire.size(), publication.servingLease});
     }
-    return nativeSelectionInvocationV1ToJson(projection, *fixed, source.get());
+    return nativeSelectionInvocationV2ToJson(projection, *fixed, source.get());
   };
   assignmentProjection = referenceAssignment(assignmentProjection);
 
@@ -1166,8 +1167,10 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
       },
       [probe] (const ndn_service_framework::ResponseMessage& response) {
         std::lock_guard<std::mutex> lock(probe->mutex);
-        if (!response.getStatus() && probe->failure.empty())
-          probe->failure = response.getErrorInfo();
+        if (!response.getStatus()) {
+          probe->responseFailure = response.getErrorInfo();
+          if (probe->failure.empty()) probe->failure = probe->responseFailure;
+        }
         probe->responseSeen = response.getStatus();
         probe->terminal = true;
       }, ndn_service_framework::tlv::FirstResponding, requestIdForCall);
@@ -1213,17 +1216,18 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
     }
     BOOST_CHECK_MESSAGE(!rejectionFailure.empty(), rejectionFailure);
     if (useFixedReferences && (mutation == 1 || mutation == 4 || mutation == 3 || mutation == 5 || mutation == 6 || mutation >= 7)) {
-      // The timeout callback can precede Face's queued status Interest.
-      // Pump the existing bounded loop until the independent oracle arrives.
+      // A prompt rejection Response ends the request before its scheduled
+      // status query. Otherwise retain the independent Core status oracle.
       environment.pumpUntil([&] {
         std::lock_guard<std::mutex> lock(probe->mutex);
-        return !probe->providerFailure.empty();
+        return !probe->providerFailure.empty() || !probe->responseFailure.empty();
       });
     }
     std::string providerFailure;
     {
       std::lock_guard<std::mutex> lock(probe->mutex);
-      providerFailure = probe->providerFailure;
+      providerFailure = probe->providerFailure.empty()
+        ? probe->responseFailure : probe->providerFailure;
     }
     if (mutation == 3) {
       BOOST_CHECK_MESSAGE(providerFailure.find("fixed invocation has expired before source lookup") != std::string::npos,

@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/CudaDeviceIdentity.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-runtime-graph-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
@@ -150,8 +151,10 @@ resolveOnnxRuntimeProviderSelection(const NativeModelRunnerSpec& spec,
 {
   auto requested = runnerMetadataValue(
     spec, {"executionProvider", "execution_provider", "device.kind", "deviceKind"});
+  const std::string backendProvider = spec.backend == "onnxruntime-cuda" ? "cuda" :
+    spec.backend == "onnxruntime-cpu" ? "cpu" : "";
   if (requested.empty()) {
-    requested = "cpu";
+    requested = backendProvider.empty() ? "cpu" : backendProvider;
   }
   std::transform(requested.begin(), requested.end(), requested.begin(), [] (unsigned char ch) {
     return static_cast<char>(std::tolower(ch));
@@ -160,6 +163,10 @@ resolveOnnxRuntimeProviderSelection(const NativeModelRunnerSpec& spec,
   if (requested == "cpuexecutionprovider") requested = "cpu";
   if (requested != "cuda" && requested != "cpu") {
     throw std::invalid_argument("unsupported ONNX Runtime execution provider: " + requested);
+  }
+  if (!backendProvider.empty() && requested != backendProvider) {
+    throw std::invalid_argument("ONNX Runtime execution provider conflicts with backend: " +
+                                spec.backend);
   }
 
   OnnxRuntimeProviderSelection result;
@@ -456,7 +463,8 @@ ortEnv()
 
 Ort::SessionOptions
 makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
-                   const NativeModelRunnerSpec& spec)
+                   const NativeModelRunnerSpec& spec,
+                   const detail::OnnxRuntimeGraphMetadata& graphMetadata)
 {
   Ort::SessionOptions options;
   options.SetIntraOpNumThreads(1);
@@ -477,15 +485,27 @@ makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
     options.EnableProfiling(profilePrefix.c_str());
   }
   if (selection.selectedProvider == "cuda") {
-    OrtCUDAProviderOptions cudaOptions{};
+    int deviceId;
     try {
-      cudaOptions.device_id = std::stoi(selection.deviceId);
+      deviceId = std::stoi(selection.deviceId);
     }
     catch (const std::exception&) {
       throw std::invalid_argument("invalid ONNX Runtime CUDA device ID: " + selection.deviceId);
     }
-    options.AppendExecutionProvider_CUDA(cudaOptions);
-    if (!runnerMetadataBool(spec, {"allowCpuFallback", "allow_cpu_fallback"})) {
+    // Match the portable FP32 graph's qualified numerical mode on CPU and CUDA.
+    // Use the stable V2 C API; older supported SDKs lack its C++ owner wrapper.
+    const auto& api = Ort::GetApi();
+    OrtCUDAProviderOptionsV2* rawOptions = nullptr;
+    Ort::ThrowOnError(api.CreateCUDAProviderOptions(&rawOptions));
+    std::unique_ptr<OrtCUDAProviderOptionsV2, decltype(api.ReleaseCUDAProviderOptions)>
+      cudaOptions(rawOptions, api.ReleaseCUDAProviderOptions);
+    const auto device = std::to_string(deviceId);
+    const char* keys[] = {"device_id", "use_tf32"};
+    const char* values[] = {device.c_str(), "0"};
+    Ort::ThrowOnError(api.UpdateCUDAProviderOptions(cudaOptions.get(), keys, values, 2));
+    options.AppendExecutionProvider_CUDA_V2(*cudaOptions);
+    if (!runnerMetadataBool(spec, {"allowCpuFallback", "allow_cpu_fallback"}) &&
+        graphMetadata.hostMetadataNodes.empty()) {
       options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
     }
   }
@@ -963,12 +983,21 @@ class OnnxRuntimeModelRunner::SharedSession
 public:
   explicit SharedSession(const NativeModelRunnerSpec& spec)
     : selection(resolveRuntimeProviderSelection(spec))
-    , sessionOptions(makeSessionOptions(selection, spec))
+    , graphMetadata(selection.selectedProvider == "cuda" &&
+                    spec.metadata.count("evidence.providerBootId") != 0 &&
+                    !runnerMetadataBool(spec, {"allowCpuFallback", "allow_cpu_fallback"}) &&
+                    !runnerMetadataValue(
+                      spec, {"providerProfilePrefix", "provider_profile_prefix"}).empty() ?
+                      detail::inspectOnnxRuntimeGraphMetadata(spec.path) :
+                      detail::OnnxRuntimeGraphMetadata{})
+    , sessionOptions(makeSessionOptions(selection, spec, graphMetadata))
     , session(ortEnv(), spec.path.c_str(), sessionOptions)
   {
+    detail::verifyOnnxRuntimeGraphMetadataSource(spec.path, graphMetadata);
   }
 
   OnnxRuntimeProviderSelection selection;
+  detail::OnnxRuntimeGraphMetadata graphMetadata;
   Ort::SessionOptions sessionOptions;
   Ort::Session session;
 };
@@ -1128,6 +1157,7 @@ public:
   std::optional<StatefulOnnxIoContractV1> statefulIo;
   std::optional<CausalPositionInputContractV1> causalPositionInputs;
   bool profilingEnabled = false;
+  bool profilingFailed = false;
   std::atomic<bool> profilingCaptured{false};
   mutable std::mutex profileMutex;
   // A stateful session keeps the state tensors in ORT-managed memory between
@@ -1436,6 +1466,8 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
   // Serialize transitions so concurrent requests cannot observe or replace
   // one another's recurrent state.
   std::unique_lock<std::mutex> executionLock(m_impl->executionMutex);
+  if (m_impl->profilingFailed)
+    throw std::runtime_error("ONNX Runtime provider profile was previously rejected");
   std::unique_lock<std::mutex> firstProfileRunLock;
   if (m_impl->profilingEnabled &&
       !m_impl->profilingCaptured.load(std::memory_order_acquire)) {
@@ -1797,9 +1829,14 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
   const auto runDone = std::chrono::steady_clock::now();
   const bool captureRequestProfile =
     !runnerMetadataBool(m_spec, {"profileAfterRequest"}) ||
-    (!ctx.requestId.empty() && ctx.attemptEpoch != 0);
+    (!ctx.requestId.empty() && ctx.attemptEpoch != 0) ||
+    (!m_impl->sharedSession->graphMetadata.hostMetadataNodes.empty() &&
+     m_evidence && m_evidence->warmupCompleted);
   if (m_impl->profilingEnabled && captureRequestProfile &&
       !m_impl->profilingCaptured.load(std::memory_order_relaxed) && m_evidence) {
+    // EndProfiling is terminal. A rejected or unreadable profile must not let
+    // a later call execute again without a usable admission record.
+    m_impl->profilingFailed = true;
     auto profile = m_impl->session.EndProfilingAllocated(allocator);
     const std::string profilePath(profile.get());
     applyOnnxRuntimeProviderProfile(
@@ -1807,10 +1844,15 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       profilePath,
       m_spec.role,
       m_impl->selection.usedCpuFallback,
-      m_evidence->gpuUuid);
+      m_evidence->gpuUuid,
+      m_impl->sharedSession->graphMetadata.hostMetadataNodes,
+      m_impl->sharedSession->graphMetadata.modelNodes,
+      m_impl->sharedSession->graphMetadata.optionalModelNodes,
+      m_impl->sharedSession->graphMetadata.modelNodeAliases);
     m_evidence->profileRequestId = ctx.requestId;
     m_evidence->profileAttemptEpoch = ctx.attemptEpoch;
     m_impl->profilingCaptured.store(true, std::memory_order_release);
+    m_impl->profilingFailed = false;
   }
   const auto executionDelayMs = metadataDoubleValue(
     m_spec,
@@ -2308,8 +2350,8 @@ registerOnnxRuntimeBackend(
     }
     return std::make_shared<OnnxRuntimeModelRunner>(spec, sessionCache);
   };
-  // Keep the public adapter backend names distinct from the internal
-  // execution-provider selection stored in runner metadata.
+  // Explicit CPU/CUDA backend names constrain provider selection. Generic
+  // onnxruntime retains the metadata-selected provider and legacy CPU default.
   factory.registerBackend("onnxruntime", creator);
   factory.registerBackend("onnxruntime-cpu", creator);
   factory.registerBackend("onnxruntime-cuda", creator);

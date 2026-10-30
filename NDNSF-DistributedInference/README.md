@@ -1,6 +1,43 @@
 # NDNSF-DistributedInference
 
+## Installed deployment timing
+
+Slurm resident steps expose the node's allocated CPU pool while retaining GPU
+resource overlap. Before starting Apptainer, the host owner assigns distinct
+Linux CPU sets to the managed NFD and owned actors in configuration order.
+Each actor receives its declared CPU count; managed NFD reserves one CPU and
+finite `nfdc` uses that reservation. CPU overcommit requires explicit sharing by
+all resident actors. `cpu-affinity.json` records the observed pool and selected
+set for each role. These host launcher changes do not require rebuilding an
+otherwise compatible SIF.
+
+Normal `ndnsf-di cluster up --config deployment.json` execution leaves diagnostic
+logging and native phase measurements disabled. For a bounded measurement run,
+use `ndnsf-di cluster up --config deployment.json --timing`. This enables the
+existing Core/DI phase clocks, tensor-delivery clocks and ONNX wrapper timings,
+with only the measurement logger components enabled. `--debug` independently
+enables verbose diagnostic logs. Both choices are recorded for the boot.
+
+For Slurm/Apptainer, the installed host tools and image-installed `ndnsf-di`
+must both support `--timing`; an older image rejects the option. Host shell
+timing variables are intentionally not inherited. Measurements can perturb
+latency, so compare an instrumented diagnosis separately from a quiet benchmark.
+Backend durations from separate hosts are cumulative service time; their sum
+does not establish a cross-host wall-time partition. Preserve per-request and
+per-epoch measurements when reporting delivery or scheduling overhead.
+
 ## Preferred user API (Spec 116)
+
+Native warm invocations retain their authenticated fixed-role reference.
+Invocation transport V2 writes common endpoint binding fields once, while
+generation-specific commitments remain in each entry. Providers expand the
+bounded representation before applying the existing V1 semantic checks. Group
+capability transport V2 similarly folds regular operation runs and restores the
+unchanged canonical signed capability before admission. Updated readers accept
+both old and new transports; emitting V2 requires updated Providers.
+Small transient Core control publications retain their bounded private files
+and original signed packets instead of adding a copy to the model Repo store.
+Durable publication and model-sized transient publication keep their Repo paths.
 
 New applications import only `ndnsf_distributed_inference.api`. The primary
 workflow is a request against signed Application intent; a separate deployment
@@ -104,6 +141,22 @@ Native hot-path migration layer
 The long-term goal is not to wrap a Python executor around NDNSF forever.
 Instead, Python should describe the service and submit inference jobs, while
 the providers execute dependency-driven inference through native C++ workers.
+
+For the installed `ndnsf-di cluster` path, size the preparation budget separately
+from inference. `requester.limits.bootstrap_ms` bounds native preparation
+(positive milliseconds, at most3600000); `requester.request.timeout_ms` bounds
+each inference request. Model bytes, packet counts, encryption and storage affect
+preparation time, so one fixed budget is not a latency estimate for every model.
+The CLI `--timeout` and Slurm `wallTime` must also cover startup, preparation,
+all requests and cleanup. Changing these inputs reuses the verified SIF.
+
+Use `requester.conversation.turn.retention_duration_ms` (1..3600000) to start
+retention when C++ opens the prepared conversation. This avoids spending the
+conversation horizon while queued or preparing a large model. Legacy absolute
+`retention_deadline_ms` remains supported; specify only one field. Warm requests
+and checkpoint restoration inherit the committed expiry; they do not renew it.
+Provider retention and authority grant limits still apply. Source implementation
+and runtime qualification are tracked separately in the active deployment evidence.
 
 Deployment status, operator commands and evidence boundaries are maintained in
 [`docs/NDNSF-DI-deployment-candidate.md`](../docs/NDNSF-DI-deployment-candidate.md).
@@ -364,6 +417,23 @@ for this boundary. It uses a fake backend and in-memory dependency I/O to run a
 ./waf build --targets=di-native-provider-session-smoke
 build/examples/di-native-provider-session-smoke
 ```
+
+Before preparing native partition contracts for an unfused ONNX export, normalize
+standard dense tensor-valued Constant operators into equivalent initializers:
+
+```bash
+python3 tools/ndnsf-di/normalize_onnx_constants.py /models/model.onnx /models/prepared.onnx
+```
+
+Use the new graph to regenerate model identity, catalog and role contracts. The
+command preserves tensor values and external weights, writes beside the source,
+and refuses an existing output. This keeps immutable shape constants in each
+consuming role's model material instead of treating them as activation inputs.
+The native runner still performs its execution warmup; this preparation step
+does not establish CUDA compatibility or distributed inference qualification.
+Check the actual extracted roles through native warmup and a real input before
+submitting a cluster trial. Whole-model numerical checks do not cover partition
+boundary input construction.
 
 `examples/DI_NativeOnnxRuntimeSmoke.cpp` is the corresponding real-backend
 smoke. It loads a small ONNX model, runs it through

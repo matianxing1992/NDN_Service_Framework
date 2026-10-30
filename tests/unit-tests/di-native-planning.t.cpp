@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "tests/fixtures/spec182/native-qwen-config.hpp"
 #include "tests/fixtures/spec182/native-candidate-json-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -176,10 +177,7 @@ BOOST_AUTO_TEST_CASE(SmolLm2LlamaLayerSplitProducesDynamicPastContract)
 
 BOOST_AUTO_TEST_CASE(SmolLm2LlamaCatalogRoutesToNativePlanner)
 {
-  std::ifstream sourceFile("../tests/fixtures/spec182/qwen-native-config.onnx", std::ios::binary);
-  BOOST_REQUIRE(sourceFile.good());
-  const std::string sourceText((std::istreambuf_iterator<char>(sourceFile)),
-                               std::istreambuf_iterator<char>());
+  const auto sourceText = fixture::makeQwenNativeConfigOnnxSource();
   const std::vector<std::uint8_t> sourceBytes(sourceText.begin(), sourceText.end());
   const auto graphDigest = digest("smollm2-catalog-graph");
   auto descriptor = model("llama", "SmolLM2-135M", graphDigest);

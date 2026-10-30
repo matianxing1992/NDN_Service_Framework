@@ -1,4 +1,7 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/spec182/native-qwen-config.hpp"
+
+#include <ndn-cxx/util/io.hpp>
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
@@ -745,10 +748,7 @@ public:
       std::chrono::steady_clock::now() + std::chrono::seconds(30), [] {},
       1 << 20, 1 << 20};
     if (qwenStreaming) {
-      std::ifstream qwenFile("tests/fixtures/spec182/qwen-native-config.onnx", std::ios::binary);
-      if (!qwenFile.good()) throw std::runtime_error("missing Qwen native config fixture");
-      const std::string qwenBytes((std::istreambuf_iterator<char>(qwenFile)),
-                                  std::istreambuf_iterator<char>());
+      const auto qwenBytes = fixture::makeQwenNativeConfigOnnxSource();
       source.modelBytes.assign(qwenBytes.begin(), qwenBytes.end());
       const auto sourceIdentity = canonicalOnnxSourceIdentity(source, control);
       const std::string role = "/LLM/Pipeline/Stage/0";
@@ -798,7 +798,7 @@ public:
           {"tensor_degrees", {1}}, {"input_ingress_role", role},
           {"result_egress_role", role}}},
         {"node_mapping", {{"embedding", {0}}, {"layer-00", {1}},
-          {"layer-01", {2}}, {"final-norm-head", {3, 4, 5, 6}}}},
+          {"layer-01", {2}}, {"final-norm-head", {3, 4, 5, 6, 7, 8, 9}}}},
         {"state_inputs", stateInputs}, {"state_outputs", stateOutputs}};
     }
     else {
@@ -1447,6 +1447,20 @@ struct Spec185PreparedModelTestAccess
   {
     return PreparedModel(model.m_package, model.m_receipt, model.m_lease,
                          std::move(factory));
+  }
+
+  static PreparedModel
+  withConversationTurn(const PreparedModel& model, const NativeJson& turn)
+  {
+    // Corrupted configuration probes only; these clones never execute inference.
+    auto registration = std::make_shared<FrozenPreparationRegistration>(*model.m_package->registration);
+    auto config = nativeParseJson(registration->configurationJson);
+    config["conversation"]["turn"] = turn;
+    registration->configurationJson = nativeCanonicalJson(config);
+    registration->configurationDigest = nativePlanningDigest(registration->configurationJson);
+    auto package = std::make_shared<PreparedModelPackage>(*model.m_package);
+    package->registration = std::move(registration);
+    return PreparedModel(package, model.m_receipt, model.m_lease, model.m_clientFactory);
   }
 };
 
@@ -3244,16 +3258,17 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
     std::ifstream input(fixture.configPath);
     input >> config;
     config["request"]["generation_defaults"]["generationId"] = std::string(32, '0');
+    config["conversation"]["turn"]["retention_duration_ms"] = 600000;
     std::ofstream output(fixture.configPath);
     output << nativeCanonicalJson(config);
   }
   ndn_service_framework::test::BootstrapProfile profile;
   profile.groupPrefix = ndn::Name("/group");
   profile.syncPrefix = ndn::Name("/ndnsf/spec185/t007/sync");
-  profile.userNode = ndn::Name("/ndnsf/spec185/t007/user");
-  profile.providerNode = ndn::Name("/ndnsf/spec185/t007/provider");
   profile.userIdentity = ndn::Name("/user");
   profile.providerIdentity = ndn::Name("/provider");
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
   profile.attributeAuthority = ndn::Name("/aa");
   profile.serviceName = ndn::Name("/Inference");
   profile.deferBridgeDelivery = true;
@@ -3294,6 +3309,20 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   auto earlyGrants = std::make_shared<NativeAuthenticatedGrantClient>(
     requesterName, earlyRequesterKey, "/aa", rawPublicKey(earlyAuthorityKey),
     "epoch-1", std::move(earlyIssue), std::move(earlyPublish));
+  const auto controllerCertificatePath = (fixture.root / "controller.cert").string();
+  ndn::io::save(environment.keyChain().getPib().getIdentity(profile.attributeAuthority)
+                  .getDefaultKey().getDefaultCertificate(), controllerCertificatePath);
+  ScopedEnvironmentValue controllerCertificateSetting(
+    "NDNSF_CONTROLLER_CERT_FILE", controllerCertificatePath.c_str());
+  {
+    NativeJson config;
+    std::ifstream input(fixture.configPath);
+    input >> config;
+    // Reuse the actual environment's fixed certificate anchors, never trust-any.
+    config["core"]["trust_schema_file"] = environment.profile().trustSchemaPath;
+    std::ofstream output(fixture.configPath);
+    output << nativeCanonicalJson(config);
+  }
   auto environmentUser = std::shared_ptr<ndn_service_framework::ServiceUser>(
     &environment.user(), [] (ndn_service_framework::ServiceUser*) {});
   auto runtime = Runtime::open(runtimeConfig(fixture));
@@ -3391,8 +3420,62 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
       const ndn_service_framework::RequestMessage&) {
       try {
         const auto assignment = context.assignment().assignmentPayload;
-        std::istringstream input(std::string(assignment.begin(), assignment.end()));
-        const auto projection = nativeSelectionProjectionV3FromJson(input, context.role());
+        const std::string assignmentText(assignment.begin(), assignment.end());
+        std::istringstream input(assignmentText);
+        const auto projection = [&] {
+          const auto header = nativeParseJson(assignmentText);
+          if (header.value("schema", std::string{}) != "ndnsf-di-selection-invocation-v1")
+            return nativeSelectionProjectionV3FromJson(input, context.role());
+          validateNativeSelectionInvocationBindingShapeV1(header);
+          const auto reference = header.at("fixed_role_ref").get<std::string>();
+          if (!header.at("schema_version").is_number_integer() ||
+              header.at("schema_version") != NativeJson(1) ||
+              header.at("provider") != context.localProvider().toUri() ||
+              header.at("request_id") != context.sessionId() ||
+              header.at("execution_role") != NativeJson{{"role_id", context.role()}} ||
+              !header.at("attempt").is_number_unsigned() ||
+              header.at("attempt").get<std::uint64_t>() == 0 ||
+              !header.at("deadline_ms").is_number_unsigned() ||
+              reference.size() != 71 || reference.compare(0, 7, "sha256:") != 0 ||
+              !std::all_of(reference.begin() + 7, reference.end(), [] (char ch) {
+                return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+              }) ||
+              header.contains("roles") || header.contains("assembly") ||
+              header.contains("assembly_same_as_role"))
+            throw std::runtime_error("Spec185 fixed invocation ingress differs");
+          const auto steadyNow = std::chrono::steady_clock::now();
+          const auto epochNow = static_cast<std::uint64_t>(std::chrono::duration_cast<
+            std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+          const auto expiry = header.at("deadline_ms").get<std::uint64_t>();
+          if (expiry <= epochNow || context.assignment().workDeadline <= steadyNow)
+            throw std::runtime_error("Spec185 fixed invocation expired");
+          const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            context.assignment().workDeadline - steadyNow).count();
+          const auto deadline = std::min(steadyNow + std::chrono::milliseconds(
+            std::min(expiry - epochNow, static_cast<std::uint64_t>(remaining))),
+            steadyNow + context.streamRemainingDeadline());
+          const auto& source = header.at("fixed_role_source");
+          if (!source.at("plaintext_size").is_number_unsigned())
+            throw std::runtime_error("Spec185 fixed source size is invalid");
+          const auto bytes = source.at("plaintext_size").get<std::uint64_t>();
+          if (bytes == 0 || bytes > (4U << 20))
+            throw std::runtime_error("Spec185 fixed source exceeds bound");
+          const auto name = source.at("data_name").get<std::string>();
+          const auto digest = source.at("plaintext_digest").get<std::string>();
+          nativeValidateFixedRoleSourceProducer({name, digest, bytes, {}},
+            context.requesterName().toUri(), context.role());
+          const auto data = context.fetchEncryptedLargeDataCurrent(ndn::Name(name), deadline);
+          if (!data || data->size() != bytes ||
+              nativePlanningDigest(data->data(), data->size()) != digest)
+            throw std::runtime_error("Spec185 fixed source commitment differs");
+          std::istringstream fixedInput(std::string(data->begin(), data->end()));
+          const auto fixed = nativeFixedRoleAssignmentV1FromJson(fixedInput);
+          if (fixed->digest() != reference ||
+              fixed->provider() != context.localProvider().toUri() ||
+              fixed->roleOwner()->selectedRole != context.role())
+            throw std::runtime_error("Spec185 fixed source owner differs");
+          return nativeSelectionInvocationV1FromJson(input, context.role(), *fixed);
+        }();
         if (!context.isStreamed() || !projection.conversationTurnBinding)
           throw std::runtime_error("Spec185 T007 conversation stream projection missing");
         const auto binding = *projection.conversationTurnBinding;
@@ -3530,7 +3613,28 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   environment.provider().cacheHybridReceiveKeyForTest(selectionKey.keyId, selectionKey.epochId, selectionKey.key);
   ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(runtime, environmentUser, grants, admission);
 
+  for (const auto& invalid : NativeJson::array({nullptr, true, false, 0, -1, 1.5,
+                                               "600000", 3600001})) {
+    const auto corrupted = ndnsf::di::Spec185PreparedModelTestAccess::withConversationTurn(
+      prepared, NativeJson{{"retention_duration_ms", invalid}});
+    BOOST_CHECK_EXCEPTION(corrupted.openConversation(), DiError,
+      [] (const DiError& error) { return error.code() == "INVALID_RUNTIME_CONFIGURATION"; });
+  }
+  const auto conflicting = ndnsf::di::Spec185PreparedModelTestAccess::withConversationTurn(
+    prepared, NativeJson{{"retention_duration_ms", 600000}, {"retention_deadline_ms", 1}});
+  BOOST_CHECK_EXCEPTION(conflicting.openConversation(), DiError,
+    [] (const DiError& error) { return error.code() == "INVALID_RUNTIME_CONFIGURATION"; });
+  const auto expired = ndnsf::di::Spec185PreparedModelTestAccess::withConversationTurn(
+    prepared, NativeJson{{"retention_deadline_ms", 1}});
+  BOOST_CHECK_EXCEPTION(expired.openConversation(), DiError,
+    [] (const DiError& error) { return error.code() == "CONVERSATION_RETENTION_EXPIRED"; });
+  const auto clockMs = [] {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  };
+  const auto beforeOpen = clockMs();
   auto conversation = prepared.openConversation();
+  const auto afterOpen = clockMs();
   RequestOptions options;
   // The three-turn recovery path includes a fresh authenticated preparation
   // and state promotion.  Keep a bounded margin between the request deadline
@@ -3607,6 +3711,10 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   auto second = conversation.request(Input::inlineBytes({0x04, 0x05, 0x06}), options);
   auto checkpoint = conversation.checkpoint();
   const auto checkpointBytes = checkpoint.bytes();
+  const auto firstExpiry = nativeParseJson(std::string(checkpointBytes.begin(), checkpointBytes.end()))
+                             .at("expiresAtMs").get<std::uint64_t>();
+  BOOST_CHECK_GE(firstExpiry, beforeOpen + 600000);
+  BOOST_CHECK_LE(firstExpiry, afterOpen + 600000);
   BOOST_REQUIRE(!checkpointBytes.empty());
   BOOST_CHECK_EQUAL(completedTurns->load(std::memory_order_relaxed), 1U);
   const auto exportPath = fixture.root / "checkpoint.json";
@@ -3635,6 +3743,8 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   BOOST_CHECK(ackCount->load(std::memory_order_relaxed) >= 2U);
   const auto secondCheckpoint = conversation.checkpoint();
   const auto secondCheckpointBytes = secondCheckpoint.bytes();
+  BOOST_CHECK_EQUAL(nativeParseJson(std::string(secondCheckpointBytes.begin(), secondCheckpointBytes.end()))
+                      .at("expiresAtMs").get<std::uint64_t>(), firstExpiry);
   const auto recoveryExportPath = fixture.root / "recovery-checkpoint.json";
   conversation.exportCheckpoint(recoveryExportPath);
   const auto failedExportPath = fixture.root / "failed-checkpoint.json";
@@ -3673,6 +3783,9 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   pumpUntilConversationResultReady(environment, thirdObservation, conversationTimeout);
   BOOST_CHECK(!thirdObservation->get().payload.empty());
   BOOST_CHECK_EQUAL(completedTurns->load(std::memory_order_relaxed), 3U);
+  const auto thirdCheckpointBytes = restored.checkpoint().bytes();
+  BOOST_CHECK_EQUAL(nativeParseJson(std::string(thirdCheckpointBytes.begin(), thirdCheckpointBytes.end()))
+                      .at("expiresAtMs").get<std::uint64_t>(), firstExpiry);
   restored.close();
   conversation.close();
   runtime->close();

@@ -1083,37 +1083,46 @@ namespace ndn_service_framework
         }
 
         void
-        putDataOnFaceEventLoop(
+        enqueueDataOnFace(
             ndn::Face& face,
-            std::vector<std::shared_ptr<const ndn::Data>> packets)
+            const std::vector<std::shared_ptr<const ndn::Data>>& packets)
         {
-            // Collaboration handlers may run on Provider workers.  Queue the
-            // entire batch on the Face owner and return without waiting: a
-            // synchronous fence deadlocks callers whose test/application
-            // thread is responsible for pumping this io_context.
+            // Face::put copies Data and posts its owned send callback. Calling
+            // it here avoids a second queue hop while preserving asynchronous
+            // transport ownership; callers keep the Face/context alive until
+            // their workers drain. No synchronous event-loop fence is needed.
             if (packets.empty()) {
                 return;
             }
+            const bool timingEnabled = isTruthyEnv("NDNSF_PENDING_IMS_TIMING");
+            const auto queuedAt = timingEnabled ? std::chrono::steady_clock::now() :
+                std::chrono::steady_clock::time_point{};
             try {
-                face.getIoContext().dispatch(
-                    [&face, packets = std::move(packets)] {
-                        try {
-                            for (const auto& packet : packets) {
-                                face.put(*packet);
-                            }
-                        }
-                        catch (const std::exception& error) {
-                            NDN_LOG_ERROR("Data publication on Provider Face event loop failed: "
-                                          << error.what());
-                        }
-                        catch (...) {
-                            NDN_LOG_ERROR("Data publication on Provider Face event loop failed: unknown error");
-                        }
-                    });
+                for (const auto& packet : packets) {
+                    const auto putStartedAt = timingEnabled ? std::chrono::steady_clock::now() :
+                        std::chrono::steady_clock::time_point{};
+                    face.put(*packet);
+                    if (timingEnabled) {
+                        const auto returnedAt = std::chrono::steady_clock::now();
+                        const auto nanos = [] (const auto& stamp) {
+                            return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                stamp.time_since_epoch()).count();
+                        };
+                        NDN_LOG_WARN("NDNSF_EXACT_DATA_DISPATCH mode=native-enqueue"
+                            << " name=" << packet->getName().toUri(ndn::name::UriFormat::CANONICAL)
+                            << " queued_steady_ns=" << nanos(queuedAt)
+                            << " started_steady_ns=" << nanos(queuedAt)
+                            << " put_started_steady_ns=" << nanos(putStartedAt)
+                            << " put_returned_steady_ns=" << nanos(returnedAt));
+                    }
+                }
             }
             catch (const std::exception& error) {
                 NDN_LOG_ERROR("Data publication could not be queued on Provider Face event loop: "
                               << error.what());
+            }
+            catch (...) {
+                NDN_LOG_ERROR("Data publication could not be queued on Provider Face: unknown error");
             }
         }
 
@@ -10536,7 +10545,7 @@ namespace ndn_service_framework
             for (const auto& data : segments) {
                 packets.push_back(data);
             }
-            putDataOnFaceEventLoop(m_face, std::move(packets));
+            enqueueDataOnFace(m_face, packets);
             if (fetchTimingEnabled) {
                 for (const auto& data : segments) {
                     NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
@@ -10842,7 +10851,7 @@ namespace ndn_service_framework
             for (const auto& data : segments) {
                 packets.push_back(data);
             }
-            putDataOnFaceEventLoop(m_face, std::move(packets));
+            enqueueDataOnFace(m_face, packets);
             if (fetchTimingEnabled) {
                 for (const auto& data : segments) {
                     NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
@@ -16909,7 +16918,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         if (m_pendingImsInterestCount == 0) {
             m_pendingImsInsertionOrder.clear();
         }
-        putDataOnFaceEventLoop(m_face, std::move(toSend));
+        enqueueDataOnFace(m_face, toSend);
     }
 
     void ServiceProvider::satisfyPendingImsInterestsLocked()
@@ -16969,7 +16978,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             }
         }
         m_pendingPrefixImsInterests = std::move(pendingPrefix);
-        putDataOnFaceEventLoop(m_face, std::move(toSend));
+        enqueueDataOnFace(m_face, toSend);
     }
 
     void ServiceProvider::insertDataIntoIMS(const ndn::Data& data)

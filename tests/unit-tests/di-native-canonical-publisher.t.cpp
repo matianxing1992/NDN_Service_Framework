@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "tests/integration-tests/isolated-test-trust.hpp"
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
@@ -173,6 +174,111 @@ struct TransportFixture
 }
 
 BOOST_AUTO_TEST_SUITE(Spec182CanonicalPublisher)
+BOOST_AUTO_TEST_CASE(DelayedBootstrapPrecedesPublicationAndDoesNotDelayCacheReuse)
+{
+  for (const bool prepareOnly : {true, false}) {
+    Input input;
+    TransportFixture io;
+    auto transport = io.transport();
+    std::atomic<bool> ready{false};
+    std::atomic<bool> admitted{false};
+    std::atomic<unsigned> probes{0};
+    std::promise<void> observed;
+    auto observation = observed.get_future();
+    transport.bootstrapReady = [&](const NativeRequestControl&) {
+      const bool value = ready.load();
+      if (value) admitted.store(true);
+      if (probes.fetch_add(1) == 0) observed.set_value();
+      return value;
+    };
+    const auto begin = transport.begin;
+    transport.begin = [&, begin] {
+      if (!admitted.load())
+        throw std::runtime_error("publication preceded accepted bootstrap readiness");
+      return begin();
+    };
+    auto publisher = NativeCanonicalPublisherTestAccess::create(
+      std::move(transport), input.options, input.resolver());
+    const auto publish = [&] {
+      if (prepareOnly) publisher.prepare(input.model, input.control);
+      else publisher(input.model, input.candidate, input.roles, input.control);
+    };
+    auto pending = std::async(std::launch::async, publish);
+    BOOST_CHECK(observation.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+    BOOST_CHECK(pending.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+    ready.store(true);
+    pending.get();
+    BOOST_CHECK_GE(probes.load(), 2U);
+    BOOST_CHECK_EQUAL(io.beginCalls, 1);
+    BOOST_CHECK(!io.payloads.empty());
+    const auto checked = probes.load();
+    ready.store(false);
+    publish();
+    BOOST_CHECK_EQUAL(probes.load(), checked);
+    BOOST_CHECK_EQUAL(io.beginCalls, 1);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(BootstrapCancellationCannotPublish)
+{
+  for (const bool prepareOnly : {true, false}) {
+    Input input;
+    TransportFixture io;
+    std::atomic<bool> cancelled{false};
+    input.control.cancelled = [&] { return cancelled.load(); };
+    auto transport = io.transport();
+    transport.bootstrapReady = [&](const NativeRequestControl&) {
+      cancelled.store(true);
+      return false;
+    };
+    auto publisher = NativeCanonicalPublisherTestAccess::create(
+      std::move(transport), input.options, input.resolver());
+    if (prepareOnly)
+      BOOST_CHECK_THROW(publisher.prepare(input.model, input.control), std::runtime_error);
+    else
+      BOOST_CHECK_THROW(publisher(input.model, input.candidate, input.roles, input.control),
+                        std::runtime_error);
+    BOOST_CHECK_EQUAL(io.beginCalls, 0);
+    BOOST_CHECK(io.payloads.empty());
+    BOOST_CHECK_EQUAL(io.abortedPublications, 0);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(BootstrapDeadlineCannotPublish)
+{
+  for (const bool prepareOnly : {true, false}) {
+    Input input;
+    TransportFixture io;
+    input.control.deadline = Clock::now() + std::chrono::milliseconds(50);
+    auto transport = io.transport();
+    transport.bootstrapReady = [](const NativeRequestControl&) { return false; };
+    auto publisher = NativeCanonicalPublisherTestAccess::create(
+      std::move(transport), input.options, input.resolver());
+    if (prepareOnly)
+      BOOST_CHECK_THROW(publisher.prepare(input.model, input.control), std::runtime_error);
+    else
+      BOOST_CHECK_THROW(publisher(input.model, input.candidate, input.roles, input.control),
+                        std::runtime_error);
+    BOOST_CHECK_EQUAL(io.beginCalls, 0);
+    BOOST_CHECK(io.payloads.empty());
+  }
+}
+
+BOOST_AUTO_TEST_CASE(BootstrapFailureCannotPublish)
+{
+  Input input;
+  TransportFixture io;
+  auto transport = io.transport();
+  transport.bootstrapReady = [](const NativeRequestControl&) -> bool {
+    throw std::runtime_error("controlled bootstrap failure");
+  };
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    std::move(transport), input.options, input.resolver());
+  BOOST_CHECK_THROW(publisher.prepare(input.model, input.control), std::runtime_error);
+  BOOST_CHECK_EQUAL(io.beginCalls, 0);
+  BOOST_CHECK(io.payloads.empty());
+}
+
 BOOST_AUTO_TEST_CASE(PublicationCarriesValidatedModelSemantics)
 {
   Input input(true); TransportFixture io;
@@ -1353,6 +1459,32 @@ BOOST_AUTO_TEST_CASE(CancellationAfterSourceSuppressesInitializerAndRoot)
   BOOST_CHECK_EQUAL(io.abortedPublications, 1U);
 }
 
+BOOST_AUTO_TEST_CASE(BootstrapCannotWaitPastDeadlineWhenCoreIoDoesNotProgress)
+{
+  using namespace ndn_service_framework::test;
+  Input input;
+  ndn::security::KeyChain keyChain{"pib-memory:", "tpm-memory:"};
+  ndn::DummyClientFace face{keyChain};
+  auto cert = makeRsaIdentity(keyChain, ndn::Name("/publisher-test/user"));
+  auto aa = makeRsaIdentity(keyChain, ndn::Name("/publisher-test/aa"));
+  IsolatedTestTrust trust{cert, aa};
+  auto user = std::make_shared<LocalServiceUser>(
+    face, ndn::Name("/publisher-test"), cert, aa, trust.schemaPath());
+  user->useSigningKeyChainForTest(keyChain);
+  user->prepareHybridSendKeyForTest(ndn::Name("/service"), "REQUEST-LARGE");
+  NativeCanonicalArtifactPublisher publisher(user, "/service", input.options, input.resolver());
+  input.control.deadline = Clock::now() + std::chrono::milliseconds(50);
+  auto pending = std::async(std::launch::async, [&] {
+    return publisher.prepare(input.model, input.control);
+  });
+  // Leave the posted Core readiness query queued until the preparation owner exits.
+  BOOST_REQUIRE(pending.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+  BOOST_CHECK_THROW(pending.get(), std::runtime_error);
+  face.getIoContext().restart();
+  face.getIoContext().poll();
+  BOOST_CHECK_EQUAL(user->getLargeDataServingMetricsForTest().publicationCount, 0U);
+}
+
 BOOST_AUTO_TEST_CASE(UsesRealCoreIoAndEncryptedPublicationWithLocalMockKey)
 {
   using namespace ndn_service_framework::test;
@@ -1361,7 +1493,9 @@ BOOST_AUTO_TEST_CASE(UsesRealCoreIoAndEncryptedPublicationWithLocalMockKey)
   ndn::DummyClientFace face{keyChain};
   auto cert = makeRsaIdentity(keyChain, ndn::Name("/publisher-test/user"));
   auto aa = makeRsaIdentity(keyChain, ndn::Name("/publisher-test/aa"));
-  auto user = std::make_shared<LocalServiceUser>(face, ndn::Name("/publisher-test"), cert, aa, "examples/trust-any.conf");
+  IsolatedTestTrust trust{cert, aa};
+  auto user = std::make_shared<LocalServiceUser>(
+    face, ndn::Name("/publisher-test"), cert, aa, trust.schemaPath());
   user->useSigningKeyChainForTest(keyChain);
   // Unit fixture only: seed Core's existing LocalMock wrapped-key state. The
   // actual publish API still encrypts, signs and stores its segmented envelope.

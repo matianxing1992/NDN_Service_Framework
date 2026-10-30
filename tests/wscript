@@ -39,6 +39,7 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
     bld.program(target='../message-validator-trust-tests',
                 name='message-validator-trust-tests',
+                defines=['NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/message-validator-trust.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
@@ -124,6 +125,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp'),
                         bld.path.find_node('integration-tests/controller-revocation-flow.t.cpp'),
                         bld.path.find_node('unit-tests/controller-revocation-state.t.cpp'),
+                        bld.path.find_node('unit-tests/controller-revocation-policy.t.cpp'),
                         bld.path.find_node('unit-tests/generic-dynamic-api-targeted.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-protected-runtime-grant.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedInference/cpp/ndnsf-di'],
@@ -470,11 +472,13 @@ def build(bld):
 
     # Spec190 T005 prepare-before-STORE durable receipt lookup.  This selector
     # keeps the Repo lookup identity and publication counter independent from
-    # the larger Runtime integration target.
+    # the larger Runtime integration target. Include the prepared object/ref
+    # corpus so adapter changes cover initializer, layer and material reuse.
     bld.program(target='../spec190-repo-lookup-reuse',
                 name='spec190-repo-lookup-reuse',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec190-repo-lookup-reuse.t.cpp')],
+                        bld.path.find_node('unit-tests/spec190-repo-lookup-reuse.t.cpp'),
+                        bld.path.find_node('unit-tests/spec189-repo-publication.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3 ONNXRUNTIME',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -1268,7 +1272,7 @@ def build(bld):
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/di-onnxruntime-gpu-evidence.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
-                use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
@@ -1332,7 +1336,8 @@ def build(bld):
                 # HAVE_TESTS.  The framework's generated config header does
                 # not propagate that macro into NAC-ABE's CMake-style public
                 # headers, so define it explicitly for the test executable.
-                defines=['HAVE_TESTS', 'NDNSF_PROBE_CALIBRATION_NO_MAIN'],
+                defines=['HAVE_TESTS', 'NDNSF_PROBE_CALIBRATION_NO_MAIN',
+                         'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
                 # GCC 9 can ICE during inlining while compiling the large UAV
                 # protocol and SVS translation units. Tests do not depend on
                 # optimization or debug info, so use a low-memory deterministic

@@ -1,6 +1,8 @@
-# Spec170 current local-SIF operating profile
+# Spec170 historical local-SIF operating profile
 
-Use this reference for the current NDNSF-DI release route (2026-08-19). The
+Use this reference only to recover the Spec170 route recorded on 2026-08-19.
+For current portable deployment, see [portable-deployment.md](portable-deployment.md).
+Its old image, local-only build route and acceptance gates are not current defaults. The
 repository's active Spec Kit files and the candidate build record remain the
 authority; this file is the recurring-incident shield.
 

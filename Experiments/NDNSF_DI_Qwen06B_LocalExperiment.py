@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Layered local experiment entry point for the native Qwen3-0.6B MiniNDN run.
+"""Qwen3-0.6B native experiment entry point.
+
+Current execution uses ``run --deployment CONFIG.json`` and the same installed
+native applications/configuration owner as Tiger. ``check``, ``status`` and
+``down`` accept the same deployment option. Explicit ``--profile`` commands
+below retain the historical preparation and compatibility workflow.
 
 The command mirrors the TigerCluster boundary without building a SIF:
 
@@ -1056,6 +1061,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    if any(value == '--deployment' or value.startswith('--deployment=') for value in sys.argv[1:]):
+        from native_deployment_entrypoint import run_deployment
+        return run_deployment(sys.argv[1:])
     args = parse_args()
     if args.action != "run":
         if args.rounds is None:

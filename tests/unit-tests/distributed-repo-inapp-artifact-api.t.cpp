@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace ndnsf_distributed_repo::test {
@@ -24,6 +25,9 @@ namespace fs = std::filesystem;
 constexpr char FIXTURE_BYTES[] = "spec192 durable artifact v1";
 constexpr char FIXTURE_SHA256[] =
   "24756d38ad4c7488d9d32776fd8533d2ceb790658d024a46f00ae0f945554d73";
+constexpr size_t BULK_SIZE = 16 * 1024 * 1024 + 17;
+constexpr char BULK_SHA256[] =
+  "a82c5b33ff36f3dd331415ac673a1c46a10b2059519aa77271998849a65facff";
 
 class TemporaryDirectory
 {
@@ -94,6 +98,17 @@ InAppRepoConfig
 makeConfig(const fs::path& root)
 {
   return InAppRepoConfig{root.string(), "spec192-test-owner", ArtifactLimits{}};
+}
+
+ArtifactReference
+bulkReference(size_t size, const std::string& digest)
+{
+  auto reference = fixtureReference();
+  reference.logicalName = "/app/provider/model/" + digest;
+  reference.rootManifestName = "/app/provider/manifest/" + digest;
+  reference.contentDigest = digest;
+  reference.sizeBytes = size;
+  return reference.canonicalized();
 }
 
 bool
@@ -306,6 +321,78 @@ BOOST_AUTO_TEST_CASE(PublishesReopensFetchesAndMatchesIndependentDiskOracle)
   BOOST_CHECK(sameReference(onDisk->reference, reference));
   BOOST_CHECK_EQUAL(
     readFile(payloadPath(root, reference)), FIXTURE_BYTES);
+}
+
+BOOST_AUTO_TEST_CASE(PublishesBulkFilesAroundStoreRangeBoundary)
+{
+  // Independent SHA-256 oracles for 'a' repeated size-1 times followed by 'z'.
+  const std::vector<std::pair<size_t, std::string>> cases{
+    {16 * 1024 * 1024 - 1, "4e45634cc23d2a5bed30a6e327af5ed176888dd7ead2145745e4580732750be7"},
+    {16 * 1024 * 1024, "6172f1d9d63674ceabf6913ed144524a8bacacd311a499e3c3030c3256663cd5"},
+    {BULK_SIZE, BULK_SHA256},
+  };
+  for (const auto& [size, digest] : cases) {
+    TemporaryDirectory temporary("bulk-boundary");
+    const auto root = temporary.path() / "repo";
+    const auto source = temporary.path() / "source.bin";
+    const auto destination = temporary.path() / "output.bin";
+    std::string bytes(size, 'a');
+    bytes.back() = 'z';
+    writeFile(source, bytes);
+    const auto reference = bulkReference(size, digest);
+    auto api = ArtifactRepositoryApi::makeInApp(makeConfig(root));
+    const auto published = api.publishFile(source.string(), reference);
+    BOOST_REQUIRE(published.receipt && published.receipt->localCommit);
+    const auto repeated = api.publishFile(source.string(), reference);
+    BOOST_REQUIRE(repeated.receipt && repeated.receipt->localCommit);
+    BOOST_CHECK(repeated.deduplicated);
+    BOOST_CHECK_EQUAL(published.receipt->localCommit->localCommitId,
+                      repeated.receipt->localCommit->localCommitId);
+    api.fetchFile(reference, destination.string());
+    BOOST_CHECK(readFile(destination) == bytes);
+    BOOST_CHECK(readFile(payloadPath(root, reference)) == bytes);
+    BOOST_REQUIRE(directCatalogLookup(root / "metadata.sqlite3", reference));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(BulkWrongDigestCannotCommitAndCanRetry)
+{
+  TemporaryDirectory temporary("bulk-digest");
+  const auto root = temporary.path() / "repo";
+  const auto source = temporary.path() / "source.bin";
+  std::string bytes(BULK_SIZE, 'a');
+  bytes.back() = 'z';
+  writeFile(source, bytes);
+  auto api = ArtifactRepositoryApi::makeInApp(makeConfig(root));
+  const auto wrong = bulkReference(BULK_SIZE, std::string(64, '0'));
+  BOOST_CHECK_THROW(api.publishFile(source.string(), wrong), std::runtime_error);
+  BOOST_CHECK(!api.lookupLocalCommit(wrong));
+  BOOST_CHECK(!directCatalogLookup(root / "metadata.sqlite3", wrong));
+  BOOST_CHECK(fs::is_empty(root / "staging"));
+  const auto correct = bulkReference(BULK_SIZE, BULK_SHA256);
+  BOOST_REQUIRE(api.publishFile(source.string(), correct).receipt);
+}
+
+BOOST_AUTO_TEST_CASE(BulkCheckpointSyncFailureLeavesNoCommitAndCanRetry)
+{
+  TemporaryDirectory temporary("bulk-checkpoint-sync");
+  const auto root = temporary.path() / "repo";
+  const auto source = temporary.path() / "source.bin";
+  std::string bytes(BULK_SIZE, 'a');
+  bytes.back() = 'z';
+  writeFile(source, bytes);
+  auto api = ArtifactRepositoryApi::makeInApp(makeConfig(root));
+  const auto reference = bulkReference(BULK_SIZE, BULK_SHA256);
+  const auto checkpoint = root / "staging" / (reference.contentDigest + ".1.part.ranges");
+  {
+    spec202_test::ScopedFault fault(checkpoint, spec202_test::Fault::SyncError);
+    BOOST_CHECK_THROW(api.publishFile(source.string(), reference), std::runtime_error);
+    BOOST_CHECK_EQUAL(fault.hits(), 1U);
+  }
+  BOOST_CHECK(!api.lookupLocalCommit(reference));
+  BOOST_CHECK(!directCatalogLookup(root / "metadata.sqlite3", reference));
+  BOOST_CHECK(fs::is_empty(root / "staging"));
+  BOOST_REQUIRE(api.publishFile(source.string(), reference).receipt);
 }
 
 BOOST_AUTO_TEST_CASE(FullReferenceIsTheCatalogKeyNotDigestAlone)

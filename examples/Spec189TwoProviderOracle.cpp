@@ -1199,6 +1199,67 @@ validateGpuExecution(const NativeJson& row, const StatisticsRows& source, unsign
   }
 }
 
+void
+validateMiniNdn(const NativeJson& state, const NativeJson& config,
+                const std::string& boot, const std::string& digest)
+{
+  const auto& facility = state.at("facility");
+  if (facility.at("schema") != "ndnsf-di-minindn-facility-v1" ||
+      facility.at("status") != "STOPPED" || state.at("execution") != "COMPLETE" ||
+      !facility.at("failure").is_null() || !facility.at("namespace_survivors").empty() ||
+      !facility.at("remaining_interfaces").empty() || config.at("nodes").size() < 2)
+    chainFailure("deployment-minindn-closeout");
+  const auto shells = validateDeploymentGroups(facility, boot, digest, true);
+  std::map<std::string, std::string> namespaces;
+  std::set<std::string> unique;
+  const auto namespaceFor = [&] (const std::string& id) {
+    const auto& node = facility.at("nodes").at(id);
+    const auto value = node.at("network_namespace").get<std::string>();
+    if (!std::regex_match(value, std::regex("net:\\[[0-9]+\\]")) ||
+        !shells.count(node.at("shell").get<std::string>()))
+      chainFailure("deployment-minindn-namespace");
+    return value;
+  };
+  for (const auto& node : config.at("nodes")) {
+    const auto id = node.at("id").get<std::string>();
+    const auto value = namespaceFor(id);
+    if (!unique.insert(value).second ||
+        facility.at("nodes").at(id).at("host") != node.at("host"))
+      chainFailure("deployment-minindn-namespace");
+    namespaces.emplace(id, value);
+    const auto shellId = facility.at("nodes").at(id).at("shell");
+    for (const auto& launch : facility.at("launches")) {
+      if (launch.at("id") == shellId && launch.at("network_namespace") != value)
+        chainFailure("deployment-minindn-namespace");
+    }
+  }
+  if (namespaces.size() != facility.at("nodes").size() || shells.size() != namespaces.size())
+    chainFailure("deployment-minindn-namespace");
+  std::map<std::string, std::string> expected;
+  std::set<std::string> participatingProviders, executionNamespaces;
+  for (const auto& provider : config.at("requester").at("fixed_placement").at("role_providers"))
+    participatingProviders.insert(provider.get<std::string>());
+  for (const auto& actor : config.at("actors")) {
+    if (actor.at("kind") == "provider" &&
+        participatingProviders.count(actor.at("identity").get<std::string>()))
+      executionNamespaces.insert(namespaces.at(actor.at("node").get<std::string>()));
+    expected.emplace(actor.at("id").get<std::string>(),
+                     namespaces.at(actor.at("node").get<std::string>()));
+  }
+  if (executionNamespaces.size() < 2)
+    chainFailure("deployment-minindn-execution-not-distributed");
+  for (const auto& [id, value] : namespaces)
+    expected.emplace("nfd." + id, value);
+  for (const auto& launch : state.at("launches")) {
+    const auto id = launch.at("id").get<std::string>();
+    if (!expected.count(id) || launch.at("network_namespace") != expected.at(id))
+      chainFailure("deployment-minindn-actor-namespace");
+    expected.erase(id);
+  }
+  if (!expected.empty())
+    chainFailure("deployment-minindn-actor-namespace");
+}
+
 NativeJson
 validateDeployment(const std::filesystem::path& statePath, bool requireMultiToken,
                    bool requireDistributedGpu = false)
@@ -1208,18 +1269,21 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   const std::filesystem::path root = slurm ? statePath.parent_path()
     : std::filesystem::path(state.at("evidence_root").get<std::string>());
   const auto config = readJson(root / "configuration.json");
+  const bool minindn = config.at("platform").at("kind") == "minindn";
   const auto boot = state.at("boot_id").get<std::string>();
   const auto digest = state.at("configuration_sha256").get<std::string>();
   if (state.at("schema") != "ndnsf-di-host-operation-v1" || boot.empty() ||
       state.at("deployment_id") != config.at("deployment_id") ||
       state.at("status") != "STOPPED" || (!slurm && state.value("needs_closeout", true)) ||
-      config.at("platform").at("kind") != (slurm ? "slurm-apptainer" : "host") ||
-      (!slurm && (config.at("nodes").size() != 1 || requireDistributedGpu)) ||
+      config.at("platform").at("kind") != (slurm ? "slurm-apptainer" : minindn ? "minindn" : "host") ||
+      (!slurm && ((!minindn && config.at("nodes").size() != 1) || requireDistributedGpu)) ||
       (state.contains("failure") && !state.at("failure").is_null()) ||
       ndnsf::di::nativePlanningDigest(ndnsf::di::nativeCanonicalJson(config)) !=
         "sha256:" + digest)
     chainFailure("deployment-state-or-configuration");
-  auto launched = validateDeploymentGroups(state, boot, digest, slurm);
+  auto launched = validateDeploymentGroups(state, boot, digest, slurm || minindn);
+  if (minindn)
+    validateMiniNdn(state, config, boot, digest);
   std::map<std::string, NativeJson> roleReceipts;
   if (slurm) {
     readPrivateJson(statePath);
@@ -1427,7 +1491,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       {"prefixTokens", prefix.size()}, {"finishReason", generation.at("finishReason")}});
   }
   return NativeJson{{"scope", "deployment-quiet-execution"}, {"bootId", boot},
-    {"platform", slurm ? "slurm-apptainer" : "single-host"},
+    {"platform", slurm ? "slurm-apptainer" : minindn ? "minindn" : "single-host"},
     {"gpuNodes", gpuNodes}, {"distributedGpu", requireDistributedGpu ? "VERIFIED" : "NOT_REQUIRED"},
     {"configurationSha256", digest}, {"rounds", results}, {"cleanup", "ZERO_NONFORCED"},
     {"materialFetch", "NOT_EVALUATED"}, {"grantAudit", "NOT_EVALUATED"},

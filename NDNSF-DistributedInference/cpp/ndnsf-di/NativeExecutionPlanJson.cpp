@@ -1,8 +1,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include <ndn-cxx/encoding/tlv.hpp>
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
@@ -2583,10 +2585,89 @@ NativeJson selectionInvocationFields(const NativeSelectionProjectionV3& value,
   }
   return root;
 }
+
+NativeJson compactEndpointBindings(const NativeJson& values)
+{
+  if (values.size() < 2) return values;
+  auto common = values.front();
+  for (const auto& value : values) {
+    for (auto field = common.begin(); field != common.end();) {
+      if (!value.contains(field.key()) || value.at(field.key()) != field.value())
+        field = common.erase(field);
+      else
+        ++field;
+    }
+  }
+  if (common.empty()) return values;
+  auto entries = values;
+  for (auto& entry : entries)
+    for (auto field = common.begin(); field != common.end(); ++field) entry.erase(field.key());
+  NativeJson compact{{"common", std::move(common)}, {"entries", std::move(entries)}};
+  return nativeCanonicalJson(compact).size() < nativeCanonicalJson(values).size()
+    ? compact : values;
+}
+
+NativeJson expandInvocationBindings(const NativeJson& value)
+{
+  if (value.value("schema", std::string{}) != "ndnsf-di-selection-invocation-v2" ||
+      !value.contains("schema_version") || !value.at("schema_version").is_number_integer() ||
+      value.at("schema_version") != NativeJson(2))
+    throw std::invalid_argument("invalid compact invocation transport version");
+  constexpr std::size_t MAX_BYTES = 4U << 20;
+  const auto encodedBytes = nativeCanonicalJson(value).size();
+  if (encodedBytes > MAX_BYTES)
+    throw std::invalid_argument("compact invocation exceeds wire bound");
+  auto expandedBytes = encodedBytes;
+  auto expanded = value;
+  for (const auto* key : {"may_publish", "must_fetch"}) {
+    auto& bindings = expanded.at("dataflow").at(key);
+    if (bindings.is_array()) continue;
+    requireOnlyBindingKeys(bindings, {"common", "entries"});
+    if (bindings.size() != 2 || !bindings.at("common").is_object() ||
+        !bindings.at("entries").is_array() || bindings.at("entries").empty())
+      throw std::invalid_argument("invalid compact endpoint bindings");
+    const auto& common = bindings.at("common");
+    if (common.empty()) throw std::invalid_argument("compact endpoint common fields are empty");
+    const auto commonBytes = nativeCanonicalJson(common).size() - 2;
+    const auto& originalEntries = bindings.at("entries");
+    std::size_t commas = 0;
+    for (const auto& entry : originalEntries) {
+      if (!entry.is_object()) throw std::invalid_argument("endpoint binding must be an object");
+      commas += !entry.empty();
+    }
+    expandedBytes -= nativeCanonicalJson(bindings).size();
+    const auto entriesBytes = nativeCanonicalJson(originalEntries).size();
+    if (entriesBytes > MAX_BYTES - expandedBytes || commas > MAX_BYTES - expandedBytes - entriesBytes)
+      throw std::invalid_argument("expanded endpoint bindings exceed wire bound");
+    expandedBytes += entriesBytes + commas;
+    if (originalEntries.size() > (MAX_BYTES - expandedBytes) / commonBytes)
+      throw std::invalid_argument("expanded endpoint bindings exceed wire bound");
+    expandedBytes += originalEntries.size() * commonBytes;
+    auto entries = originalEntries;
+    for (auto& entry : entries) {
+      if (!entry.is_object()) throw std::invalid_argument("endpoint binding must be an object");
+      for (auto field = common.begin(); field != common.end(); ++field) {
+        if (entry.contains(field.key()))
+          throw std::invalid_argument("compact endpoint binding repeats a common field");
+        entry[field.key()] = field.value();
+      }
+    }
+    bindings = std::move(entries);
+  }
+  expanded["schema"] = "ndnsf-di-selection-invocation-v1";
+  expanded["schema_version"] = 1;
+  if (nativeCanonicalJson(expanded).size() > MAX_BYTES)
+    throw std::invalid_argument("expanded invocation exceeds wire bound");
+  return expanded;
+}
 } // namespace
 
 void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
 {
+  if (value.value("schema", std::string{}) == "ndnsf-di-selection-invocation-v2") {
+    validateNativeSelectionInvocationBindingShapeV1(expandInvocationBindings(value));
+    return;
+  }
   const auto& dependencies = value.at("dependencies");
   if (!dependencies.is_array()) throw std::invalid_argument("invocation dependencies must be an array");
   for (const auto& binding : dependencies) {
@@ -2863,7 +2944,9 @@ ndn_service_framework::PublishedContentName nativeFixedRoleSourceContentName(
   return content;
 }
 
-std::string nativeSelectionInvocationV1ToJson(
+namespace {
+NativeJson
+makeSelectionInvocationValue(
   const NativeSelectionProjectionV3& projection,
   const NativeFixedRoleAssignmentV1& fixedAssignment,
   const NativeFixedRoleSourceV1* source)
@@ -2901,7 +2984,47 @@ std::string nativeSelectionInvocationV1ToJson(
   // No role expansion or typed role parse on this path.
   decodeSelectionProjectionV3(root, legacyTreeFromValue(root),
     projection.executionRole.roleId, nullptr, false, &fixedAssignment);
-  return nativeCanonicalJson(root);
+  return root;
+}
+} // namespace
+
+std::string nativeSelectionInvocationV1ToJson(
+  const NativeSelectionProjectionV3& projection,
+  const NativeFixedRoleAssignmentV1& fixedAssignment,
+  const NativeFixedRoleSourceV1* source)
+{
+  return nativeCanonicalJson(makeSelectionInvocationValue(projection, fixedAssignment, source));
+}
+
+std::string
+nativeSelectionInvocationV2ToJson(
+  const NativeSelectionProjectionV3& projection,
+  const NativeFixedRoleAssignmentV1& fixedAssignment,
+  const NativeFixedRoleSourceV1* source)
+{
+  auto root = makeSelectionInvocationValue(projection, fixedAssignment, source);
+  const bool measure = detail::nativePhaseStarted().enabled;
+  // Reject at the producer before publication if the reader's expanded bound
+  // would fail, even when the compact transport itself would fit.
+  const auto expandedBytes = nativeCanonicalJson(root).size();
+  if (expandedBytes > (4U << 20))
+    throw std::invalid_argument("expanded invocation exceeds wire bound");
+  const auto expandedDataflowBytes = measure ? nativeCanonicalJson(root.at("dataflow")).size() : 0;
+  for (const auto* key : {"may_publish", "must_fetch"})
+    root["dataflow"][key] = compactEndpointBindings(root.at("dataflow").at(key));
+  root["schema"] = "ndnsf-di-selection-invocation-v2";
+  root["schema_version"] = 2;
+  const auto wire = nativeCanonicalJson(root);
+  if (measure) {
+    logRuntimeEvidence("NDNSF_DI_INVOCATION_WIRE requestId=" + projection.requestId +
+      " role=" + projection.executionRole.roleId + " version=2 wire_bytes=" +
+      std::to_string(wire.size()) + " expanded_endpoint_wire_bytes=" +
+      std::to_string(expandedBytes) + " expanded_dataflow_bytes=" +
+      std::to_string(expandedDataflowBytes) + " compact_dataflow_bytes=" +
+      std::to_string(nativeCanonicalJson(root.at("dataflow")).size()) +
+      " group_capability_hex_bytes=" + std::to_string(projection.groupCapabilityV1.size()));
+  }
+  return wire;
 }
 
 NativeSelectionProjectionV3 nativeSelectionInvocationV1FromJson(
@@ -2909,7 +3032,9 @@ NativeSelectionProjectionV3 nativeSelectionInvocationV1FromJson(
   const NativeFixedRoleAssignmentV1& fixedAssignment)
 {
   const std::string wire{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
-  const auto root = nativeParseJson(wire);
+  auto root = nativeParseJson(wire);
+  if (root.value("schema", std::string{}) == "ndnsf-di-selection-invocation-v2")
+    root = expandInvocationBindings(root);
   return decodeSelectionProjectionV3(root, legacyTreeFromValue(root), selectedRole,
     nullptr, false, &fixedAssignment);
 }

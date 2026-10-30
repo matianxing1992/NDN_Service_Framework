@@ -1106,6 +1106,14 @@ def build(bld):
     if 'repo' in bld.env.NDNSF_COMPONENTS:
         bld.recurse('NDNSF-DistributedRepo')
 
+    # Share Core's task-generator scope so the common source gets a distinct object index.
+    bld.program(name='ndnsf-identity-check',
+                target='examples/ndnsf-identity-check',
+                source=['examples/identity-check.cpp',
+                        'ndn-service-framework/trust-schema-resources.cpp'],
+                includes=['.'],
+                use='NDN_CXX',
+                install_path='${BINDIR}')
     bld.recurse('examples')
 
     headers = bld.path.ant_glob('ndn-service-framework/**/*.hpp')

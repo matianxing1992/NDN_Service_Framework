@@ -175,6 +175,29 @@ def _allocation_result(state, result):
                         'INTERRUPTED' if value['execution'] == 'INTERRUPTED' else 'FAILED')
 
 
+def _failed_allocation(root, state, reference):
+    """Bind failed closeout without replacing the original computation record."""
+    from .allocation import _private_json
+
+    path = root / 'allocation.json'
+    if not path.exists() and not path.is_symlink():
+        return None, None, None
+    value = _private_json(path)
+    expected = dict(schema='ndnsf-di-host-operation-v1', deployment_id=state['deployment_id'],
+        boot_id=state['boot_id'], configuration_sha256=state['configuration_sha256'],
+        release_sha256=reference['release_sha256'], job_id=reference['job_id'],
+        evidence_root=str(root / 'supervisor' / state['deployment_id']))
+    if (any(value.get(key) != item for key, item in expected.items()) or
+            value.get('status') not in ('UNKNOWN', 'STOPPED') or
+            value.get('execution') not in ('FAILED', 'INTERRUPTED', 'COMPLETE') or
+            not isinstance(value.get('failure'), str) or not value['failure'].strip()):
+        raise cluster.ClusterError('SLURM_RECOVERY_ALLOCATION_NOT_FAILED')
+    # Completed computation with a closeout failure is still a failed deployment.
+    # Read-only cleanup recovery must never turn that record into inference PASS.
+    execution = 'FAILED' if value['execution'] == 'COMPLETE' else value['execution']
+    return hashlib.sha256(path.read_bytes()).hexdigest(), value['failure'], execution
+
+
 def _recovery_result(state, result):
     """Admit independent host cleanup without inventing a lost execution result."""
     from .allocation import _audit_id, _job_cgroup, _private_json
@@ -185,9 +208,9 @@ def _recovery_result(state, result):
         raise cluster.ClusterError('SLURM_RECOVERY_JOB_NOT_TERMINAL')
     reference = scheduler['reference']
     root, config, digest, boot = _result_configuration(state, reference)
-    allocation = root / 'allocation.json'
+    original_digest, original_failure, original_execution = _failed_allocation(root, state, reference)
     nonce = state.get('recovery_id')
-    if (allocation.exists() or allocation.is_symlink() or not isinstance(nonce, str) or
+    if (original_digest != state.get('recovery_allocation_sha256') or not isinstance(nonce, str) or
             not re.fullmatch('[0-9a-f]{32}', nonce)):
         raise cluster.ClusterError('SLURM_RECOVERY_NOT_ADMISSIBLE')
     for node in config['nodes']:
@@ -218,9 +241,10 @@ def _recovery_result(state, result):
                 not _job_cgroup(cgroup, auditor) or not step or
                 audit.get('auditor_step_id') != step[1]):
             raise cluster.ClusterError('SLURM_RECOVERY_NODE_BINDING:' + node['id'])
-    result.update(status='FAILED', execution='FAILED', actor_cleanup='ZERO', processes=[],
+    execution = original_execution or 'FAILED'
+    result.update(status=execution, execution=execution, actor_cleanup='ZERO', processes=[],
                   cleanup_scope='RECOVERED_HOST_UID_JOB',
-                  failure=state.get('failure') or 'ALLOCATION_RESULT_MISSING')
+                  failure=original_failure or state.get('failure') or 'ALLOCATION_RESULT_MISSING')
 
 
 def _recover_missing_closeout(state, operation_root, deadline):
@@ -233,14 +257,13 @@ def _recover_missing_closeout(state, operation_root, deadline):
         raise cluster.ClusterError('SLURM_RECOVERY_JOB_NOT_TERMINAL')
     reference = scheduler['reference']
     root, config, digest, boot = _result_configuration(state, reference)
-    allocation = root / 'allocation.json'
-    if allocation.exists() or allocation.is_symlink():
-        raise cluster.ClusterError('SLURM_RECOVERY_ALLOCATION_PRESENT')
+    original_digest, _, _ = _failed_allocation(root, state, reference)
     srun = shutil.which('srun')
     if not srun:
         raise cluster.ClusterError('SLURM_RECOVERY_SRUN_UNAVAILABLE')
     nonce = uuid.uuid4().hex
     state['recovery_id'] = nonce
+    state['recovery_allocation_sha256'] = original_digest
     _save(operation_root, state)
     for node in config['nodes']:
         owner_root = root / 'recovery' / nonce / node['id'] / config['deployment_id']
@@ -252,7 +275,7 @@ def _recover_missing_closeout(state, operation_root, deadline):
         command = [srun, '--job-name=ndnsf-audit-' + nonce[:12],
             '--partition=' + slurm['partition'], '--nodes=1', '--ntasks=1',
             '--cpus-per-task=1', '--mem=1G', '--gres=none', '--nodelist=' + node['host'],
-            '--immediate=15', '--time=00:02:00', '--chdir=/tmp', '--export=NONE']
+            '--time=00:02:00', '--chdir=/tmp', '--export=NONE']
         for option in ('account', 'qos'):
             if slurm.get(option):
                 command.append('--' + option + '=' + slurm[option])
@@ -336,7 +359,7 @@ def _remaining(deadline):
     return remaining
 
 
-def up(config, source, root, timeout, debug=False):
+def up(config, source, root, timeout, debug=False, timing=False):
     """Persist a single submission intent before allowing any scheduler side effect."""
     cluster._private_directory(root)
     with cluster._lock(root):
@@ -361,6 +384,8 @@ def up(config, source, root, timeout, debug=False):
         argv += ['--release-sha256', release_digest]
         if debug:
             argv.append('--debug')
+        if timing:
+            argv.append('--timing')
         script = directory / 'allocation.sbatch'
         with script.open('x') as stream:
             stream.write('#!/bin/bash\nset -euo pipefail\nexec ' + shlex.join(argv) + '\n')
@@ -373,7 +398,8 @@ def up(config, source, root, timeout, debug=False):
         state = dict(schema=SCHEMA, deployment_id=config['deployment_id'], boot_id=boot,
                      configuration_sha256=digest, evidence_root=str(directory), source=str(source),
                      status='SUBMITTING', launches=[], job_reference=reference,
-                     needs_closeout=True, diagnostic_logging=debug, failure=None)
+                     needs_closeout=True, diagnostic_logging=debug, runtime_timing=timing,
+                     failure=None)
         # This is the authoritative intent, including the exact script digest.
         # If sbatch accepted the job but its reply is lost, up must reconcile it.
         _save(root, state)
@@ -443,9 +469,8 @@ def run_slurm(action, source, root, timeout, debug=False):
                 state.update(status='AWAITING_NODE_AUDIT', needs_closeout=True)
                 _save(root, state)
                 closed = snapshot(state, timeout=min(30, _remaining(deadline)))
-                allocation = Path(state['evidence_root']) / 'allocation.json'
-                if (closed['actor_cleanup'] != 'ZERO' and not allocation.exists() and
-                        not allocation.is_symlink() and state.get('scheduler', {}).get('terminal') is True):
+                if (closed['actor_cleanup'] != 'ZERO' and
+                        state.get('scheduler', {}).get('terminal') is True):
                     try:
                         _recover_missing_closeout(state, root, deadline)
                     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:

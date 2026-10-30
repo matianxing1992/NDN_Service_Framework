@@ -2,10 +2,10 @@
 
 ## Scope
 
-Use this reference when planning, staging, executing, or validating Qwen model
-sizes for NDNSF-DI. Start with the Qwen2.5-Instruct family because the current
-NDNSF-DI pipeline already uses Qwen2.5-0.5B-Instruct. Treat later Qwen families
-as separate experiment identities.
+Use this reference for the historical Qwen2.5 scale study. Its model family,
+matrix and example paths are not defaults for current Qwen3 or portable
+deployment work. Follow the selected workload/model identities; use
+[portable-deployment.md](portable-deployment.md) for current deployment decisions.
 
 ## Durable layout
 

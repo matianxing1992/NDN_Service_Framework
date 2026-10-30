@@ -1206,6 +1206,9 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   if (item.executionGuard) item.executionGuard();
   result.executionEvidence = runner->executionEvidenceSnapshot();
   if (result.executionEvidence) {
+    if (item.role.generationLineage) {
+      result.executionEvidence->planDigest = item.role.generationLineage->planDigest;
+    }
     bindExecutionObservation(*result.executionEvidence,
                              item.role.requestId, item.role.attemptEpoch,
                              result.exactForwardCacheHit);

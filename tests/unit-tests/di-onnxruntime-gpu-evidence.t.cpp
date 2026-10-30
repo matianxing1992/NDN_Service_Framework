@@ -4,6 +4,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-runtime-graph-metadata.hpp"
+
+#include <onnx/onnx_pb.h>
 
 #include <boost/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
@@ -24,10 +27,73 @@
 #include <string>
 #include <type_traits>
 #include <vector>
+#include <unistd.h>
 
 namespace ndnsf::di::tests {
 
 namespace {
+
+struct GraphMetadataFixture
+{
+  std::filesystem::path directory = std::filesystem::temp_directory_path() /
+    ("ndnsf-graph-metadata-" + std::to_string(getpid()) + "-" +
+     std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+
+  GraphMetadataFixture() { std::filesystem::create_directory(directory); }
+  ~GraphMetadataFixture() { std::filesystem::remove_all(directory); }
+
+  std::string
+  write(const onnx::ModelProto& model) const
+  {
+    const auto path = directory / "model.onnx";
+    std::ofstream output(path, std::ios::binary);
+    if (!model.SerializeToOstream(&output)) throw std::runtime_error("cannot write fixture");
+    return path.string();
+  }
+
+  std::string
+  profile(const std::string& contents) const
+  {
+    const auto path = directory / "profile.json";
+    std::ofstream(path) << contents;
+    return path.string();
+  }
+};
+
+onnx::ModelProto
+makeShapeMetadataModel()
+{
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(18);
+  auto& graph = *model.mutable_graph();
+  auto addValue = [] (auto* value, const std::string& name) {
+    value->set_name(name);
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    tensor->mutable_shape()->add_dim()->set_dim_value(2);
+    tensor->mutable_shape()->add_dim()->set_dim_value(2);
+  };
+  addValue(graph.add_input(), "input");
+  addValue(graph.add_output(), "output");
+  auto* shape = graph.add_node();
+  shape->set_name("shape"); shape->set_op_type("Shape");
+  shape->add_input("input"); shape->add_output("dims");
+  auto* cast = graph.add_node();
+  cast->set_name("shape-cast"); cast->set_op_type("Cast");
+  cast->add_input("dims"); cast->add_output("shape-dims");
+  auto* to = cast->add_attribute();
+  to->set_name("to"); to->set_type(onnx::AttributeProto::INT);
+  to->set_i(onnx::TensorProto::INT64);
+  auto* reshape = graph.add_node();
+  reshape->set_name("reshape"); reshape->set_op_type("Reshape");
+  reshape->add_input("input"); reshape->add_input("shape-dims");
+  reshape->add_output("reshaped");
+  auto* identity = graph.add_node();
+  identity->set_name("identity"); identity->set_op_type("Identity");
+  identity->add_input("reshaped"); identity->add_output("output");
+  return model;
+}
 
 class TimingSnapshotRunner final : public NativeModelRunner
 {
@@ -207,6 +273,65 @@ makeCoordinatorMetadataSpec(const std::filesystem::path& path,
 
 BOOST_AUTO_TEST_SUITE(DiOnnxRuntimeGpuEvidence)
 
+BOOST_AUTO_TEST_CASE(ShapeConstantsMustRemainModelMaterialDuringWarmup)
+{
+  GraphMetadataFixture fixture;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(18);
+  auto& graph = *model.mutable_graph();
+  const auto addValue = [] (auto* value, const std::string& name,
+                            int type, const std::vector<int64_t>& shape) {
+    value->set_name(name);
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(type);
+    for (const auto dimension : shape)
+      tensor->mutable_shape()->add_dim()->set_dim_value(dimension);
+  };
+  addValue(graph.add_input(), "hidden", onnx::TensorProto::FLOAT, {1, 128});
+  addValue(graph.add_input(), "target", onnx::TensorProto::INT64, {4});
+  addValue(graph.add_output(), "output", onnx::TensorProto::FLOAT, {1, 1, 1, 128});
+  auto* reshape = graph.add_node();
+  reshape->set_name("boundary-reshape");
+  reshape->set_op_type("Reshape");
+  reshape->add_input("hidden");
+  reshape->add_input("target");
+  reshape->add_output("output");
+  NativeModelRunnerSpec spec;
+  spec.role = "/Warmup/Stage/1";
+  spec.backend = "onnxruntime-cpu";
+  spec.metadata["forceOutputBundle"] = "true";
+  spec.path = fixture.write(model);
+  // Reproduce the FP32 split failure independently of CUDA: shape-valid
+  // zero activation placeholders are not valid values for shape constants.
+  BOOST_CHECK_EXCEPTION(OnnxRuntimeModelRunner{spec}, std::exception,
+    [] (const std::exception& error) {
+      return std::string(error.what()).find(
+        "dimension with value zero exceeds") != std::string::npos;
+    });
+
+  graph.mutable_input()->RemoveLast();
+  auto* target = graph.add_initializer();
+  target->set_name("target");
+  target->set_data_type(onnx::TensorProto::INT64);
+  target->add_dims(4);
+  for (const auto dimension : {1, 1, -1, 128}) target->add_int64_data(dimension);
+  spec.path = fixture.write(model);
+  OnnxRuntimeModelRunner runner(spec);
+  RoleExecutionContext context;
+  context.sessionId = "normalized-shape-constant";
+  context.role = spec.role;
+  std::vector<float> values(128, 3.5f);
+  std::vector<std::uint8_t> payload(values.size() * sizeof(float));
+  std::memcpy(payload.data(), values.data(), payload.size());
+  context.inputsByScope.emplace("hidden", makeEncodedTensorBundle(
+    "hidden", {NamedTensor{"hidden", TensorElementType::Float32, {1, 128}, payload}}));
+  const auto output = decodeOutput(runner.run(context));
+  BOOST_REQUIRE_EQUAL(output.size(), 1);
+  BOOST_CHECK(output.front().shape == std::vector<int64_t>({1, 1, 1, 128}));
+  BOOST_CHECK(output.front().payload == payload);
+}
+
 BOOST_AUTO_TEST_CASE(CudaSelectionRejectsFallbackAndCpuOnlyAllocation)
 {
   NativeModelRunnerSpec spec;
@@ -220,6 +345,49 @@ BOOST_AUTO_TEST_CASE(CudaSelectionRejectsFallbackAndCpuOnlyAllocation)
   BOOST_CHECK_EQUAL(selected.selectedProvider, "cuda");
   BOOST_CHECK_EQUAL(selected.deviceId, "1");
   BOOST_CHECK(!selected.usedCpuFallback);
+}
+
+BOOST_AUTO_TEST_CASE(ExplicitBackendSelectsProviderWithoutDuplicateMetadata)
+{
+  NativeModelRunnerSpec spec;
+  spec.backend = "onnxruntime-cuda";
+  const std::vector<std::string> available{"CUDAExecutionProvider", "CPUExecutionProvider"};
+  const auto cuda = resolveOnnxRuntimeProviderSelection(spec, available);
+  BOOST_CHECK_EQUAL(cuda.requestedProvider, "cuda");
+  BOOST_CHECK_EQUAL(cuda.selectedProvider, "cuda");
+  BOOST_CHECK_EQUAL(cuda.deviceId, "0");
+  BOOST_CHECK(!cuda.usedCpuFallback);
+  BOOST_CHECK_THROW(resolveOnnxRuntimeProviderSelection(spec, {"CPUExecutionProvider"}),
+                    std::runtime_error);
+  spec.backend = "onnxruntime-cpu";
+  const auto cpu = resolveOnnxRuntimeProviderSelection(spec, available);
+  BOOST_CHECK_EQUAL(cpu.selectedProvider, "cpu");
+  BOOST_CHECK_EQUAL(cpu.deviceId, "cpu0");
+  BOOST_CHECK(!cpu.usedCpuFallback);
+}
+
+BOOST_AUTO_TEST_CASE(ExplicitBackendRejectsConflictingProviderMetadata)
+{
+  const std::vector<std::string> available{"CUDAExecutionProvider", "CPUExecutionProvider"};
+  for (const auto* key : {"executionProvider", "execution_provider", "device.kind", "deviceKind"}) {
+    NativeModelRunnerSpec spec;
+    spec.backend = "onnxruntime-cuda";
+    spec.metadata[key] = "CPUExecutionProvider";
+    BOOST_CHECK_THROW(resolveOnnxRuntimeProviderSelection(spec, available), std::invalid_argument);
+    spec.backend = "onnxruntime-cpu";
+    spec.metadata[key] = "CUDAExecutionProvider";
+    BOOST_CHECK_THROW(resolveOnnxRuntimeProviderSelection(spec, available), std::invalid_argument);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(GenericBackendRetainsMetadataSelectionAndCpuDefault)
+{
+  NativeModelRunnerSpec spec;
+  spec.backend = "onnxruntime";
+  const std::vector<std::string> available{"CUDAExecutionProvider", "CPUExecutionProvider"};
+  BOOST_CHECK_EQUAL(resolveOnnxRuntimeProviderSelection(spec, available).selectedProvider, "cpu");
+  spec.metadata["executionProvider"] = "CUDAExecutionProvider";
+  BOOST_CHECK_EQUAL(resolveOnnxRuntimeProviderSelection(spec, available).selectedProvider, "cuda");
 }
 
 BOOST_AUTO_TEST_CASE(StatefulDeviceOutputMapsToSuccessorInput)
@@ -350,6 +518,200 @@ BOOST_AUTO_TEST_CASE(OrtProfileRecordsEveryModelNodeProviderAndGpuUuid)
   BOOST_CHECK_EQUAL(evidence.gpuUuid, "GPU-test-uuid");
   BOOST_CHECK(!evidence.cpuFallbackUsed);
   std::filesystem::remove(path);
+}
+
+BOOST_AUTO_TEST_CASE(GraphMetadataComesFromStructuralUsesAndFailsClosed)
+{
+  GraphMetadataFixture fixture;
+  auto model = makeShapeMetadataModel();
+  auto inventory = detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model));
+  BOOST_REQUIRE_EQUAL(inventory.hostMetadataNodes.size(), 2);
+  BOOST_CHECK_EQUAL(inventory.hostMetadataNodes.at("shape"), "Shape");
+  BOOST_CHECK_EQUAL(inventory.hostMetadataNodes.at("shape-cast"), "Cast");
+  BOOST_REQUIRE_EQUAL(inventory.modelNodes.size(), 1);
+  BOOST_CHECK_EQUAL(inventory.modelNodes.at("reshape"), "Reshape");
+  BOOST_CHECK_EQUAL(inventory.optionalModelNodes.at("identity"), "Identity");
+  BOOST_CHECK_NO_THROW(detail::verifyOnnxRuntimeGraphMetadataSource(
+    (fixture.directory / "model.onnx").string(), inventory));
+  const auto original = inventory;
+
+  // A shape value exposed as application output is no longer private geometry.
+  auto* output = model.mutable_graph()->add_output();
+  output->set_name("dims");
+  output->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::INT64);
+  inventory = detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model));
+  BOOST_CHECK_THROW(detail::verifyOnnxRuntimeGraphMetadataSource(
+    (fixture.directory / "model.onnx").string(), original), std::runtime_error);
+  BOOST_CHECK(inventory.hostMetadataNodes.count("shape") == 0);
+  BOOST_CHECK(inventory.modelNodes.count("shape") == 1);
+
+  // Integer model inputs do not become host metadata based on dtype alone.
+  model = makeShapeMetadataModel();
+  model.mutable_graph()->mutable_input(0)->mutable_type()->mutable_tensor_type()->
+    set_elem_type(onnx::TensorProto::INT64);
+  auto* shape = model.mutable_graph()->mutable_node(0);
+  shape->set_op_type("Add"); shape->add_input("input");
+  inventory = detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model));
+  BOOST_CHECK(inventory.hostMetadataNodes.empty());
+
+  // A dimension can scale real position/token values without the dimension
+  // Gather becoming model data. The payload multiplication still needs CUDA.
+  model = makeShapeMetadataModel();
+  model.mutable_graph()->mutable_input(0)->mutable_type()->mutable_tensor_type()->
+    set_elem_type(onnx::TensorProto::INT64);
+  model.mutable_graph()->mutable_output(0)->mutable_type()->mutable_tensor_type()->
+    set_elem_type(onnx::TensorProto::INT64);
+  model.mutable_graph()->mutable_node(2)->set_op_type("Mul");
+  inventory = detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model));
+  BOOST_CHECK_EQUAL(inventory.hostMetadataNodes.at("shape"), "Shape");
+  BOOST_CHECK_EQUAL(inventory.hostMetadataNodes.at("shape-cast"), "Cast");
+  BOOST_CHECK_EQUAL(inventory.modelNodes.at("reshape"), "Mul");
+
+  model = makeShapeMetadataModel();
+  model.mutable_graph()->mutable_node(1)->set_name("shape");
+  BOOST_CHECK(detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model)).hostMetadataNodes.empty());
+  model = makeShapeMetadataModel();
+  auto* nested = model.mutable_graph()->mutable_node(0)->add_attribute();
+  nested->set_name("body"); nested->set_type(onnx::AttributeProto::GRAPH);
+  nested->mutable_g();
+  BOOST_CHECK(detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model)).hostMetadataNodes.empty());
+  std::ofstream(fixture.directory / "model.onnx", std::ios::binary) << "broken";
+  BOOST_CHECK(detail::inspectOnnxRuntimeGraphMetadata(
+    (fixture.directory / "model.onnx").string()).hostMetadataNodes.empty());
+}
+
+BOOST_AUTO_TEST_CASE(GraphProfileRequiresCudaModelCoverageAndBoundedMetadata)
+{
+  GraphMetadataFixture fixture;
+  const auto inventory = detail::inspectOnnxRuntimeGraphMetadata(
+    fixture.write(makeShapeMetadataModel()));
+  BOOST_REQUIRE(!inventory.hostMetadataNodes.empty());
+  const std::string shape = R"json({"cat":"Node","name":"shape_kernel_time","args":{
+    "provider":"CPUExecutionProvider","op_name":"Shape",
+    "input_type_shape":[{"float":[2,2]}],"output_type_shape":[{"int64":[2]}]}})json";
+  const std::string reshape = R"json({"cat":"Node","name":"reshape_kernel_time","args":{
+    "provider":"CUDAExecutionProvider","op_name":"Reshape"}})json";
+  ExecutionEvidence evidence;
+  evidence.runnerKind = RunnerKind::OnnxRuntimeCuda;
+  auto apply = [&] (const std::string& json) {
+    applyOnnxRuntimeProviderProfile(evidence, fixture.profile(json), "role", false, "GPU-one",
+      inventory.hostMetadataNodes, inventory.modelNodes, inventory.optionalModelNodes);
+  };
+  apply("[" + shape + "," + reshape + "]");
+  BOOST_REQUIRE_EQUAL(evidence.getNodeProviderAssignments().size(), 2);
+  BOOST_CHECK(!evidence.getNodeProviderAssignments().front().modelNode);
+  BOOST_CHECK(evidence.getNodeProviderAssignments().back().modelNode);
+  BOOST_CHECK_EQUAL(evidence.gpuUuid, "GPU-one");
+  BOOST_CHECK_THROW(apply("[" + shape + "]"), std::runtime_error);
+  BOOST_CHECK_THROW(apply("[" + reshape + R"json(,
+    {"cat":"Node","name":"shape_kernel_time","args":{"provider":"CPUExecutionProvider",
+    "op_name":"Shape","output_type_shape":[{"int64":[65]}]}}])json"), std::runtime_error);
+  BOOST_CHECK_THROW(apply("[" + shape + R"json(,
+    {"cat":"Node","name":"reshape_kernel_time","args":{"provider":"CPUExecutionProvider",
+    "op_name":"Reshape"}}])json"), std::runtime_error);
+  BOOST_CHECK_THROW(apply("[" + reshape + R"json(,
+    {"cat":"Node","name":"unknown_kernel_time","args":{"provider":"CPUExecutionProvider",
+    "op_name":"Gather","input_type_shape":[{"int64":[1]}],
+    "output_type_shape":[{"int64":[1]}]}}])json"), std::runtime_error);
+  BOOST_CHECK_THROW(apply("[" + reshape + R"json(,
+    {"cat":"Node","name":"shape_kernel_time","args":{"op_name":"Shape"}}])json"),
+    std::runtime_error);
+  BOOST_REQUIRE_EQUAL(evidence.getNodeProviderAssignments().size(), 2);
+  BOOST_CHECK_EQUAL(evidence.gpuUuid, "GPU-one");
+  BOOST_CHECK(!evidence.cpuFallbackUsed);
+}
+
+BOOST_AUTO_TEST_CASE(GraphMetadataSkipsBulkWeightsAndRejectsOversizedNodeMessages)
+{
+  GraphMetadataFixture fixture;
+  auto model = makeShapeMetadataModel();
+  auto* weight = model.mutable_graph()->add_initializer();
+  weight->set_name("unused-large-weight");
+  weight->set_data_type(onnx::TensorProto::FLOAT);
+  weight->add_dims(1024); weight->add_dims(1024);
+  weight->set_raw_data(std::string(1024 * 1024 * sizeof(float), '\0'));
+  auto inventory = detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model));
+  BOOST_REQUIRE_EQUAL(inventory.hostMetadataNodes.size(), 2);
+  BOOST_CHECK_EQUAL(inventory.modelNodes.at("reshape"), "Reshape");
+  auto* oversized = model.mutable_graph()->add_node();
+  oversized->set_name("oversized-constant"); oversized->set_op_type("Constant");
+  oversized->add_output("unused-constant");
+  auto* value = oversized->add_attribute();
+  value->set_name("value"); value->set_type(onnx::AttributeProto::TENSOR);
+  *value->mutable_t() = *weight;
+  inventory = detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model));
+  BOOST_CHECK(inventory.hostMetadataNodes.empty());
+  BOOST_CHECK(inventory.modelNodes.empty());
+}
+
+BOOST_AUTO_TEST_CASE(PortableGraphProfileMatchesFrozenCudaRun)
+{
+  const auto* modelPath = std::getenv("NDNSF_TEST_PORTABLE_ONNX_GRAPH");
+  const auto* profilePath = std::getenv("NDNSF_TEST_PORTABLE_CUDA_PROFILE");
+  if (!modelPath || !profilePath) {
+    BOOST_TEST_MESSAGE("Frozen portable graph/profile check not requested");
+    return;
+  }
+  const auto inventory = detail::inspectOnnxRuntimeGraphMetadata(modelPath);
+  BOOST_REQUIRE(!inventory.hostMetadataNodes.empty());
+  BOOST_REQUIRE(!inventory.modelNodes.empty());
+  BOOST_TEST_MESSAGE("Frozen graph inventory: metadata=" << inventory.hostMetadataNodes.size()
+    << ", required-model=" << inventory.modelNodes.size()
+    << ", optional-model=" << inventory.optionalModelNodes.size()
+    << ", cast-aliases=" << inventory.modelNodeAliases.size());
+  ExecutionEvidence evidence;
+  evidence.runnerKind = RunnerKind::OnnxRuntimeCuda;
+  applyOnnxRuntimeProviderProfile(evidence, profilePath, "frozen-role", false, "frozen-GPU",
+    inventory.hostMetadataNodes, inventory.modelNodes, inventory.optionalModelNodes,
+    inventory.modelNodeAliases);
+  BOOST_CHECK(!evidence.cpuFallbackUsed);
+  BOOST_CHECK_GT(evidence.getNodeProviderAssignments().size(), 1000);
+}
+
+BOOST_AUTO_TEST_CASE(GraphProfileAcceptsOnlyProvenCudaCastChainAliases)
+{
+  GraphMetadataFixture fixture;
+  auto model = makeShapeMetadataModel();
+  auto& graph = *model.mutable_graph();
+  auto identity = graph.node(3);
+  graph.mutable_node()->RemoveLast();
+  auto addCast = [&] (const std::string& name, const std::string& input,
+                     const std::string& output) {
+    auto* node = graph.add_node();
+    node->set_name(name); node->set_op_type("Cast");
+    node->add_input(input); node->add_output(output);
+    auto* to = node->add_attribute();
+    to->set_name("to"); to->set_type(onnx::AttributeProto::INT);
+    to->set_i(onnx::TensorProto::INT64);
+  };
+  addCast("cast-first", "reshaped", "integer");
+  addCast("cast-last", "integer", "integer-final");
+  identity.set_input(0, "integer-final");
+  *graph.add_node() = identity;
+  graph.mutable_output(0)->mutable_type()->mutable_tensor_type()->
+    set_elem_type(onnx::TensorProto::INT64);
+  const auto inventory = detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model));
+  BOOST_REQUIRE_EQUAL(inventory.modelNodeAliases.size(), 1);
+  BOOST_CHECK_EQUAL(inventory.modelNodeAliases.at("cast-last"), "cast-first");
+  BOOST_CHECK(inventory.modelNodes.count("cast-first") == 1);
+  ExecutionEvidence evidence;
+  evidence.runnerKind = RunnerKind::OnnxRuntimeCuda;
+  auto apply = [&] (const std::string& json) {
+    applyOnnxRuntimeProviderProfile(evidence, fixture.profile(json), "role", false, "GPU-cast",
+      inventory.hostMetadataNodes, inventory.modelNodes, inventory.optionalModelNodes,
+      inventory.modelNodeAliases);
+  };
+  const std::string reshape = R"json({"cat":"Node","name":"reshape_kernel_time",
+    "args":{"provider":"CUDAExecutionProvider","op_name":"Reshape"}})json";
+  const std::string cast = R"json({"cat":"Node","name":"cast-last_kernel_time",
+    "args":{"provider":"CUDAExecutionProvider","op_name":"Cast"}})json";
+  BOOST_CHECK_NO_THROW(apply("[" + reshape + "," + cast + "]"));
+  BOOST_CHECK_THROW(apply("[" + reshape + "]"), std::runtime_error);
+  BOOST_CHECK_THROW(apply("[" + reshape + R"json(,
+    {"cat":"Node","name":"cast-last_kernel_time",
+     "args":{"provider":"CPUExecutionProvider","op_name":"Cast"}}])json"),
+    std::runtime_error);
+  BOOST_CHECK_EQUAL(evidence.gpuUuid, "GPU-cast");
 }
 
 BOOST_AUTO_TEST_CASE(StatefulTinyOnnxRunsTwoRolesWithPersistentState)
@@ -572,6 +934,88 @@ BOOST_AUTO_TEST_CASE(WorkerDiscardsStaleAndCachedBackendTimingOnly)
     BOOST_CHECK_EQUAL(cached.runtimeMetrics->activationOutputBytes, 123);
     BOOST_CHECK_EQUAL(cached.outputsByScope.at("output").payload.at(0), 42);
   }
+}
+
+BOOST_AUTO_TEST_CASE(WorkerBindsReusedRunnerEvidenceToCurrentPlan)
+{
+  const std::string roleName = "/Evidence/Role";
+  const std::string planA = "sha256:" + std::string(64, 'a');
+  const std::string planB = "sha256:" + std::string(64, 'b');
+  ExecutionEvidence evidence;
+  evidence.providerName = "/provider/A";
+  evidence.providerBootId = "boot-a";
+  evidence.evidenceEpoch = 1;
+  evidence.runnerKind = RunnerKind::OnnxRuntimeCpu;
+  evidence.realCompute = true;
+  evidence.deviceKind = "cpu";
+  evidence.deviceId = "cpu-0";
+  evidence.runtimeVersion = "fixture";
+  evidence.modelDigest = "sha256:model";
+  evidence.planDigest = planA;
+  evidence.artifactDigests[roleName] = "sha256:artifact";
+  evidence.roles = {roleName};
+  evidence.loadCompleted = true;
+  evidence.warmupCompleted = true;
+  evidence.createdAtMs = 1;
+  evidence.providerProfilePath = "/profile/first";
+  evidence.profileRequestId = "/request/A";
+  evidence.profileAttemptEpoch = 1;
+  evidence.setNodeProviderAssignments({
+    {roleName, "/model/MatMul", "CPUExecutionProvider", true}});
+  evidence.validate();
+
+  const auto compute = [](const RoleExecutionContext&) {
+    return std::map<std::string, TensorBundle>{{"output", TensorBundle{"output", {42}}}};
+  };
+  auto runner = std::make_shared<LambdaModelRunner>(compute, evidence);
+  NativeProviderRuntime runtime(1);
+  runtime.registerRunner(roleName, runner);
+  auto io = std::make_shared<NoTimingDependencyIo>();
+  RoleSpec role(roleName, {}, {}, "/request/A", 1);
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = role.requestId;
+  lineage.attemptEpoch = role.attemptEpoch;
+  lineage.planDigest = planA;
+  lineage.generationId = "0123456789abcdef0123456789abcdef";
+  lineage.streamEpoch = 1;
+  lineage.logicalPrefixDigest = "sha256:" + std::string(64, '2');
+  lineage.positionDigest = "sha256:" + std::string(64, '3');
+  lineage.producerRole = roleName;
+  lineage.consumerRole = roleName;
+  role.generationLineage = lineage;
+  const auto first = runtime.executeRoleAsync("evidence-session", role, io).get();
+  role.requestId = "/request/B";
+  role.attemptEpoch = 2;
+  role.generationLineage->requestId = role.requestId;
+  role.generationLineage->attemptEpoch = role.attemptEpoch;
+  role.generationLineage->planDigest = planB;
+  const auto second = runtime.executeRoleAsync("evidence-session", role, io).get();
+  BOOST_REQUIRE(first.executionEvidence);
+  BOOST_REQUIRE(second.executionEvidence);
+  BOOST_CHECK_EQUAL(first.executionEvidence->planDigest, planA);
+  BOOST_CHECK_EQUAL(first.executionEvidence->requestId, "/request/A");
+  BOOST_CHECK_EQUAL(first.executionEvidence->attemptEpoch, 1);
+  BOOST_CHECK_EQUAL(second.executionEvidence->planDigest, planB);
+  BOOST_CHECK_EQUAL(second.executionEvidence->requestId, "/request/B");
+  BOOST_CHECK_EQUAL(second.executionEvidence->attemptEpoch, 2);
+  BOOST_CHECK(second.executionEvidence->executionCompleted);
+  BOOST_CHECK(!second.exactForwardCacheHit);
+  BOOST_CHECK_EQUAL(second.executionEvidence->providerProfilePath, evidence.providerProfilePath);
+  BOOST_CHECK_EQUAL(second.executionEvidence->profileRequestId, evidence.profileRequestId);
+  BOOST_CHECK_EQUAL(second.executionEvidence->profileAttemptEpoch, evidence.profileAttemptEpoch);
+  BOOST_CHECK(&second.executionEvidence->getNodeProviderAssignments() ==
+              &evidence.getNodeProviderAssignments());
+  BOOST_CHECK_EQUAL(runner->executionEvidenceSnapshot()->planDigest, planA);
+  BOOST_CHECK(runner->executionEvidenceSnapshot()->requestId.empty());
+
+  role.generationLineage.reset();
+  const auto legacy = runtime.executeRoleAsync("legacy-session", role, io).get();
+  BOOST_REQUIRE(legacy.executionEvidence);
+  BOOST_CHECK_EQUAL(legacy.executionEvidence->planDigest, planA);
+  runtime.registerRunner("/NoEvidence/Role", std::make_shared<LambdaModelRunner>(compute));
+  RoleSpec noEvidence("/NoEvidence/Role", {}, {}, "/request/no-evidence", 1);
+  const auto absent = runtime.executeRoleAsync("no-evidence-session", noEvidence, io).get();
+  BOOST_CHECK(!absent.executionEvidence);
 }
 
 BOOST_AUTO_TEST_CASE(StatefulTinyOnnxCpuStreamingRetainsResidentState)

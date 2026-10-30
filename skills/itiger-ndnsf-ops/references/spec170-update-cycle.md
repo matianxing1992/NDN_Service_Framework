@@ -1,12 +1,17 @@
 # Spec170 NDNSF-DI update cycle
 
+Historical Spec170 procedure. Apply its fixed profiles and local-only build
+restriction only when restoring that workflow. Current installed/Slurm changes
+use [portable-deployment.md](portable-deployment.md); config-only or genuinely
+host-only changes do not automatically require a new SIF.
+
 Start with the repository's concise operator handoff:
 [`spec170-update-lessons-20260819.md`](https://github.com/matianxing1992/NDN_Service_Framework/blob/main/specs/170-reusable-layer-artifacts/evidence/spec170-update-lessons-20260819.md).
 It is the current snapshot of the usable SIF, fixed configuration, and
 recurring failure classes. This reference supplies the executable gates; the
 handoff prevents rediscovering the same build-boundary and storage mistakes.
 
-Use this reference whenever NDNSF-DI source, dependencies, native bindings, or
+Use this reference when the selected Spec170 source, dependencies, native bindings, or
 the Apptainer definition changes. The repository version is
 `docs/NDNSF-DI-runtime-workflow.md` (the "Source-to-SIF update contract"
 section); this file is the skill's short operator memory aid.

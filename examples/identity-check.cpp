@@ -1,3 +1,5 @@
+#include "ndn-service-framework/trust-schema-resources.hpp"
+
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
@@ -15,8 +17,28 @@ int
 main(int argc, char** argv)
 {
   try {
+    if (argc == 3 && std::string(argv[1]) == "--trust-resources") {
+      constexpr size_t MAX_RESOURCE_BYTES =
+        ndn_service_framework::MAX_TRUST_SCHEMA_INSPECTION_BYTES;
+      const auto resources = ndn_service_framework::enumerateTrustSchemaResources(argv[2]);
+      std::string output = "NDNSF_TRUST_RESOURCES_V1";
+      output.push_back('\0');
+      for (const auto& resource : resources) {
+        if (resource.path.find('\0') != std::string::npos ||
+            output.size() > MAX_RESOURCE_BYTES - 3 ||
+            resource.path.size() > MAX_RESOURCE_BYTES - output.size() - 3)
+          throw std::invalid_argument("trust resource path exceeds inspection byte limit");
+        output.push_back(resource.required ? 'R' : 'O');
+        output.push_back('\0');
+        output.append(resource.path);
+        output.push_back('\0');
+      }
+      std::cout.write(output.data(), static_cast<std::streamsize>(output.size()));
+      return std::cout ? 0 : 1;
+    }
     if (argc != 2 && argc != 3)
-      throw std::invalid_argument("usage: ndnsf-identity-check HOME [IDENTITY]");
+      throw std::invalid_argument(
+        "usage: ndnsf-identity-check HOME [IDENTITY] | --trust-resources SCHEMA");
     const std::filesystem::path home(argv[1]);
     if (!home.is_absolute() || std::filesystem::canonical(home) != home)
       throw std::invalid_argument("credential HOME must be an absolute canonical directory");

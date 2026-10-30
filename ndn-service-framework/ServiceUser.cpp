@@ -7680,7 +7680,10 @@ namespace ndn_service_framework
                       return prepareManifest(encodedBytes);
                     });
                     publication->reservedBytes = reservation;
-                    if (rangeStore && !durable) {
+                    // Small transient control objects already have bounded private
+                    // files and immutable signed packets. Keep that owner instead
+                    // of committing a second copy through the model Repo catalog.
+                    if (rangeStore && !durable && plaintext.size() >= fileBackedThresholdBytes) {
                         auto commitTiming = measure(STORE_COMMIT);
                             publication->rangeSource = rangeStore->commitFile(
                                 encryptedDataName.toUri(), filePath, encodedBytes, requireActive);

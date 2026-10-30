@@ -48,6 +48,13 @@ class RegressionCase:
 
 
 CASES = {
+    "qwen06b-native": RegressionCase(
+        name="qwen06b-native",
+        script=REPO / "Experiments/NDNSF_DI_Qwen06B_LocalExperiment.py",
+        success_marker="SPEC217_CPP_DEPLOYMENT_EXECUTION_PASS",
+        description="shared installed C++ Qwen first/warm execution across MiniNDN namespaces",
+        extra_args=("run", "--verify"),
+    ),
     "runtime-compat": RegressionCase(
         name="runtime-compat",
         script=REPO / "Experiments/NDNSF_DI_RuntimeCompatibility_Smoke.py",
@@ -277,8 +284,15 @@ def run_case(case: RegressionCase, extra_args: list[str] | None = None) -> None:
         "PYTHONPATH": ":".join(python_path_entries()),
     }
     command = ["python3", str(case.script), *case.extra_args, *(extra_args or [])]
+    if case.name == 'qwen06b-native':
+        # Use the selected installed control environment, without development
+        # package overlays or the historical Python application path.
+        env = {key: value for key, value in os.environ.items()
+               if key not in ('PYTHONPATH', 'PYTHONHOME')}
+        command[0] = sys.executable
     if case.use_sudo:
-        command = ["sudo", "-E", "env", f"PYTHONPATH={env['PYTHONPATH']}", *command]
+        command = (["sudo", "-n", *command] if case.name == 'qwen06b-native' else
+                   ["sudo", "-E", "env", f"PYTHONPATH={env['PYTHONPATH']}", *command])
     proc = subprocess.run(
         command,
         cwd=str(REPO),
@@ -345,12 +359,20 @@ def main() -> int:
                         help="User async worker count forwarded to --case yolo-layout")
     parser.add_argument("--list", action="store_true",
                         help="List available regression cases and exit")
+    parser.add_argument('--deployment', type=Path,
+                        help='deployment JSON required by --case qwen06b-native')
+    parser.add_argument('--oracle', type=Path,
+                        help='explicit native oracle candidate for qwen06b-native qualification')
     args = parser.parse_args()
 
     if args.list:
         for name, case in CASES.items():
             print(f"{name}: {case.description}")
         return 0
+    if args.case == 'qwen06b-native' and args.deployment is None:
+        parser.error('--case qwen06b-native requires --deployment')
+    if args.case != 'qwen06b-native' and (args.deployment or args.oracle):
+        parser.error('--deployment/--oracle apply only to qwen06b-native; all is the legacy suite')
     selected_parallel_modes = sum([
         bool(args.parallel_output_shards),
         bool(args.parallel_detect_scale_shards),
@@ -365,6 +387,10 @@ def main() -> int:
 
     for case in selected_cases(args.case):
         extra_args = ["--layout", args.layout] if case.name.startswith("yolo-layout") else []
+        if case.name == 'qwen06b-native':
+            extra_args.extend(['--deployment', str(args.deployment.resolve())])
+            if args.oracle:
+                extra_args.extend(['--oracle', str(args.oracle.resolve())])
         if case.name == "yolo-layout-local" and args.parallel_output_shards:
             extra_args.append("--parallel-output-shards")
         if case.name == "yolo-layout-local" and args.parallel_detect_scale_shards:

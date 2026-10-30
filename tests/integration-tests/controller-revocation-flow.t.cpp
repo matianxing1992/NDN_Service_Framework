@@ -23,6 +23,7 @@
 #include <ndn-cxx/util/io.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
 #include <ndn-cxx/util/signal/scoped-connection.hpp>
+#include <ndn-cxx/util/scope.hpp>
 #include <ndn-cxx/util/time-unit-test-clock.hpp>
 
 #include <algorithm>
@@ -576,6 +577,65 @@ struct TerminalLedger
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(ControllerRevocationFlow)
+
+// Selected explicitly by the bounded mount-namespace fixture, never on a shared /tmp.
+BOOST_AUTO_TEST_CASE(DefaultControllersWithoutOverrideRemainIndependent,
+                     *boost::unit_test::disabled())
+{
+  const auto* isolated = ::getenv("NDNSF_TEST_ISOLATED_CONTROLLER_DEFAULT");
+  BOOST_REQUIRE(isolated != nullptr && std::string(isolated) == "1");
+  BOOST_REQUIRE(::getenv("NDNSF_CONTROLLER_GENERATION_STATE") == nullptr);
+  const auto root = test::trust_detail::makeTestTrustDirectory();
+  std::map<std::string, std::optional<std::string>> previous;
+  const auto restore = ndn::make_scope_exit([&] {
+    for (const auto& [name, value] : previous) {
+      if (value) ::setenv(name.c_str(), value->c_str(), 1);
+      else ::unsetenv(name.c_str());
+    }
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  });
+  for (const auto* name : {"HOME", "NDN_CLIENT_PIB", "NDN_CLIENT_TPM"}) {
+    const auto* old = ::getenv(name);
+    previous[name] = old ? std::optional<std::string>(old) : std::nullopt;
+  }
+  ::setenv("HOME", root.c_str(), 1);
+  ::setenv("NDN_CLIENT_PIB", ("pib-sqlite3:" + (root / ".ndn").string()).c_str(), 1);
+  ::setenv("NDN_CLIENT_TPM", ("tpm-file:" + (root / ".ndn").string()).c_str(), 1);
+  const auto policy = root / "policy";
+  std::ofstream(policy) <<
+    "provider-policies { provider-policy { for /spec217/provider allow { /HELLO } } }\n"
+    "user-policies { user-policy { for /spec217/user allow { /HELLO } } }\n";
+  ndn::KeyChain keys;
+  const auto certA = keys.createIdentity(ndn::Name("/spec217/default/a"), ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  const auto certB = keys.createIdentity(ndn::Name("/spec217/default/b"), ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace faceA(keys);
+  ndn::DummyClientFace faceB(keys);
+  ndn::ValidatorConfig validatorA(faceA);
+  ndn::ValidatorConfig validatorB(faceB);
+  auto first = std::make_unique<ServiceController>(faceA, certA, validatorA, policy.string());
+  auto second = std::make_unique<ServiceController>(faceB, certB, validatorB, policy.string());
+  BOOST_REQUIRE(first->getControllerVersion().isValid());
+  BOOST_REQUIRE(second->getControllerVersion().isValid());
+  RevocationTarget revoked;
+  revoked.kind = RevocationKind::IDENTITY;
+  revoked.targetIdentity = ndn::Name("/spec217/user");
+  BOOST_REQUIRE(first->revoke(revoked));
+  const auto version = first->getControllerVersion();
+  BOOST_CHECK(first->isRevoked(revoked.targetIdentity, ndn::Name("/HELLO")));
+  BOOST_CHECK(!second->isRevoked(revoked.targetIdentity, ndn::Name("/HELLO")));
+  first.reset();
+  const auto movedPolicy = root / "moved-policy";
+  std::filesystem::copy_file(policy, movedPolicy);
+  first = std::make_unique<ServiceController>(faceA, certA, validatorA, movedPolicy.string());
+  BOOST_REQUIRE(first->getControllerVersion().isValid());
+  BOOST_CHECK(first->getControllerVersion().controllerGenerationTimestamp >
+              version.controllerGenerationTimestamp);
+  BOOST_CHECK(first->isRevoked(revoked.targetIdentity, ndn::Name("/HELLO")));
+  BOOST_CHECK(!second->isRevoked(revoked.targetIdentity, ndn::Name("/HELLO")));
+}
 
 BOOST_FIXTURE_TEST_CASE(PortableRecipientPublicAnchorSupportsPermissionAndDkey,
                        PortableRecipientFixture)

@@ -309,15 +309,16 @@ ProtectedRuntime::withContentKey(
     m_grantConfig && m_grantConfig->shouldCancel;
   const bool cancelled = checkCancellation && m_grantConfig->shouldCancel();
   if (!authorized || expired || !consume || cancelled) {
+    const auto* reason = !authorized ? "UNAUTHORIZED_STATE" :
+                         expired ? "GRANT_EXPIRED" :
+                         !consume ? "MISSING_CONSUMER" : "REQUEST_CANCELLED";
     try {
       std::ostringstream rejected;
       rejected << "NDNSF_DI_CONTENT_KEY_LEASE_REJECTED"
                << " requestId=" << m_binding.requestId
                << " provider=" << m_binding.provider
                << " runtimeState=" << static_cast<int>(m_state)
-               << " reason=" << (!authorized ? "UNAUTHORIZED_STATE" :
-                                  expired ? "GRANT_EXPIRED" :
-                                  !consume ? "MISSING_CONSUMER" : "REQUEST_CANCELLED")
+               << " reason=" << reason
                << " nowMs=" << nowMs
                << " grantExpiresAtMs=" << m_grantExpiresAtMs
                << " bindingExpiresAtMs=" << m_binding.expiresAtMs;
@@ -326,7 +327,9 @@ ProtectedRuntime::withContentKey(
     catch (...) {
       // Diagnostics must not prevent rejection and key zeroization.
     }
-    m_terminalReason = "DI_PROTECTED_GRANT_REJECTED: content key lease is unavailable or expired";
+    m_terminalReason =
+      std::string("DI_PROTECTED_GRANT_REJECTED: content key lease is unavailable or expired; reason=") +
+      reason;
     drainLocked();
     throw std::runtime_error(m_terminalReason);
   }

@@ -322,6 +322,19 @@ applyOnnxRuntimeProviderProfile(ExecutionEvidence& evidence,
                                 bool cpuFallbackUsed,
                                 const std::string& gpuUuid)
 {
+  applyOnnxRuntimeProviderProfile(evidence, profilePath, role, cpuFallbackUsed, gpuUuid,
+                                  {}, {}, {});
+}
+
+void
+applyOnnxRuntimeProviderProfile(
+  ExecutionEvidence& evidence, const std::string& profilePath, const std::string& role,
+  bool cpuFallbackUsed, const std::string& gpuUuid,
+  const std::map<std::string, std::string>& hostMetadataNodes,
+  const std::map<std::string, std::string>& modelNodes,
+  const std::map<std::string, std::string>& optionalModelNodes,
+  const std::map<std::string, std::string>& modelNodeAliases)
+{
   std::ifstream input(profilePath);
   if (!input) {
     throw std::runtime_error("cannot open ONNX Runtime provider profile: " + profilePath);
@@ -329,6 +342,35 @@ applyOnnxRuntimeProviderProfile(ExecutionEvidence& evidence,
   ptree root;
   boost::property_tree::read_json(input, root);
   std::vector<ExecutionEvidence::NodeProviderAssignment> assignments;
+  const bool graphAdmission = evidence.runnerKind == RunnerKind::OnnxRuntimeCuda &&
+                             !hostMetadataNodes.empty();
+  std::set<std::string> covered;
+  bool cudaModelObserved = false;
+  for (const auto& alias : modelNodeAliases) {
+    const auto source = optionalModelNodes.find(alias.first);
+    const auto target = modelNodes.find(alias.second);
+    if (source == optionalModelNodes.end() || target == modelNodes.end() ||
+        source->second != "Cast" || target->second != "Cast")
+      throw std::runtime_error("invalid ONNX Runtime model cast alias inventory");
+  }
+  auto smallIntegralTypes = [] (const ptree& event, const std::string& key) {
+    const auto types = event.get_child_optional("args." + key);
+    if (!types || types->empty()) return false;
+    for (const auto& tensor : *types) {
+      if (tensor.second.size() != 1) return false;
+      const auto& typedShape = *tensor.second.begin();
+      if (typedShape.first != "int64" && typedShape.first != "int32" &&
+          typedShape.first != "bool") return false;
+      std::uint64_t elements = 1;
+      for (const auto& dimension : typedShape.second) {
+        const auto size = dimension.second.get_value<std::int64_t>();
+        if (size <= 0 || size > 64 || elements > 64 / static_cast<std::uint64_t>(size))
+          return false;
+        elements *= size;
+      }
+    }
+    return true;
+  };
   for (const auto& event : root) {
     const auto& value = event.second;
     if (value.get<std::string>("cat", "") != "Node") {
@@ -342,14 +384,63 @@ applyOnnxRuntimeProviderProfile(ExecutionEvidence& evidence,
       }
       continue;
     }
-    if (evidence.runnerKind == RunnerKind::OnnxRuntimeCuda &&
+    bool modelNode = true;
+    if (graphAdmission) {
+      const auto name = value.get<std::string>("name", "");
+      if (name.size() < 12 || name.compare(name.size() - 12, 12, "_kernel_time") != 0)
+        throw std::runtime_error("ONNX Runtime provider event lacks a kernel identity");
+      const auto sourceName = name.substr(0, name.size() - 12);
+      const auto op = value.get<std::string>("args.op_name", "");
+      const auto metadata = hostMetadataNodes.find(sourceName);
+      const auto model = modelNodes.find(sourceName);
+      const auto optional = optionalModelNodes.find(sourceName);
+      if (metadata != hostMetadataNodes.end()) {
+        if (op != metadata->second)
+          throw std::runtime_error("ONNX Runtime metadata operator identity mismatch");
+        modelNode = false;
+        if (provider == "CPUExecutionProvider") {
+          const bool shapeRead = op == "Shape" || op == "Size";
+          if (!smallIntegralTypes(value, "output_type_shape") ||
+              (!shapeRead && !smallIntegralTypes(value, "input_type_shape")))
+            throw std::runtime_error("ONNX Runtime host metadata exceeds integral bounds");
+        }
+        else if (provider != "CUDAExecutionProvider")
+          throw std::runtime_error("ONNX Runtime metadata uses an unknown provider");
+      }
+      else if (model != modelNodes.end() || optional != optionalModelNodes.end()) {
+        const auto& expected = model != modelNodes.end() ? model->second : optional->second;
+        if (provider != "CUDAExecutionProvider" || op != expected)
+          throw std::runtime_error("CUDA model computation fell back or changed identity: " +
+                                   sourceName + " (" + op + ", " + provider + ")");
+        covered.insert(sourceName);
+        const auto alias = modelNodeAliases.find(sourceName);
+        if (alias != modelNodeAliases.end()) covered.insert(alias->second);
+        cudaModelObserved = true;
+      }
+      else if (provider == "CUDAExecutionProvider" &&
+               (op == "MemcpyFromHost" || op == "MemcpyToHost")) {
+        modelNode = false;
+      }
+      else throw std::runtime_error("ONNX Runtime profile contains an unknown graph node: " +
+                                    sourceName + " (" + op + ", " + provider + ")");
+    }
+    else if (evidence.runnerKind == RunnerKind::OnnxRuntimeCuda &&
         provider != "CUDAExecutionProvider") {
       throw std::runtime_error("CUDA provider profile contains a non-CUDA model node");
     }
-    assignments.push_back({role, value.get<std::string>("name", ""), provider, true});
+    assignments.push_back({role, value.get<std::string>("name", ""), provider, modelNode});
   }
   if (assignments.empty()) {
     throw std::runtime_error("ONNX Runtime provider profile contains no model-node assignments");
+  }
+  if (graphAdmission) {
+    if (!cudaModelObserved || cpuFallbackUsed)
+      throw std::runtime_error("CUDA provider profile lacks genuine CUDA model execution");
+    for (const auto& required : modelNodes) {
+      if (!covered.count(required.first))
+        throw std::runtime_error("CUDA provider profile lacks a required model node: " +
+                                 required.first);
+    }
   }
   evidence.setNodeProviderAssignments(assignments);
   evidence.cpuFallbackUsed = cpuFallbackUsed;

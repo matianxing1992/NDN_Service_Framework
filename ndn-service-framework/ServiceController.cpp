@@ -266,19 +266,27 @@ ServiceController::initializeControllerGeneration()
   if (configured != nullptr && *configured != '\0') {
     statePath = configured;
   }
-  else {
-    const auto key = fnv1aPolicyHash(m_configFilePath + identity.toUri(ndn::name::UriFormat::CANONICAL));
-    statePath = fs::path("/tmp") /
-                ("ndnsf-controller-generation-" + std::to_string(key) + ".state");
-  }
-
   try {
-    m_generationStore = std::make_unique<ControllerGenerationStore>(statePath);
-    if (!m_generationStore->acquireWriter(identity.toUri(ndn::name::UriFormat::CANONICAL))) {
+    if (statePath.empty()) {
+      // Reproduce the old filename only to preserve an existing, proven owner.
+      // New state is keyed by the identity bytes, never by opening them as a file.
+      const auto key = fnv1aPolicyHash(
+        m_configFilePath + identity.toUri(ndn::name::UriFormat::CANONICAL));
+      const auto legacy = fs::path("/tmp") /
+        ("ndnsf-controller-generation-" + std::to_string(key) + ".state");
+      m_generationStore = ControllerGenerationStore::openDefault(
+        identity.toUri(ndn::name::UriFormat::CANONICAL), legacy);
+    }
+    else {
+      m_generationStore = std::make_unique<ControllerGenerationStore>(statePath);
+      m_generationStore->acquireWriter(identity.toUri(ndn::name::UriFormat::CANONICAL));
+    }
+    if (!m_generationStore->ownsWriter()) {
       NDN_LOG_ERROR("Controller generation writer unavailable identity="
                     << identity.toUri(ndn::name::UriFormat::CANONICAL) << " state=" << statePath);
       return false;
     }
+    statePath = m_generationStore->statePath();
     const auto now = nowMilliseconds();
     m_revocations = m_generationStore->loadRevocations();
     m_controllerVersion = m_generationStore->startGeneration(now, m_revocations);

@@ -1,6 +1,9 @@
-# NDNSF-DI Tiger no-repeat checklist
+# Spec175 Tiger no-repeat checklist
 
-Use this checklist immediately before every live Tiger submission. It is a
+Use this checklist before submissions governed by the historical Spec175
+profile/closure contract. Do not add it as a gate for unrelated current work;
+use [portable-deployment.md](portable-deployment.md) for installed/Slurm deployment.
+It is a
 failure-prevention index distilled from Codex work history and then checked
 against durable repository evidence. Conversation recollection identifies
 candidates; repository records, executable checks, and current candidate

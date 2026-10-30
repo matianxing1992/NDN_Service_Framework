@@ -92,6 +92,9 @@ struct RepoObjectManifest
   uint64_t envelopeBytes = 0;
   std::string dataPrefix;
 
+  /** Compare all persisted metadata with the same default handling as toJson(). */
+  bool hasSameMetadata(const RepoObjectManifest& other) const;
+
   std::string toJson() const;
 };
 

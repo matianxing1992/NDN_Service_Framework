@@ -1,6 +1,6 @@
 ---
 name: itiger-ndnsf-ops
-description: Prepare or review NDNSF source and SIF delivery, diagnose container ABI and launch boundaries, and operate authorized Tiger experiments through the repository's maintained tooling.
+description: Prepare NDNSF SIF delivery and installed deployment, diagnose Tiger SSH, quota, GPU and lifecycle failures, and operate authorized Slurm experiments through maintained tooling.
 ---
 
 # iTiger NDNSF Operations
@@ -12,8 +12,9 @@ description: Prepare or review NDNSF source and SIF delivery, diagnose container
 ## Authority And Ownership
 
 从目标 checkout 执行 `git rev-parse --show-toplevel` 确定 repo root；以下仓库路径均从该 root 解析，不能从个人安装的 skill 目录推导仓库位置。
-先读 `AGENTS.md`、`.specify/feature.json`、当前 feature 的 plan/tasks、`docs/failure-log.md`
-与相关持久 evidence。当前用户授权优先；历史 Spec、job ID 或成功候选不是新运行指令。
+先读适用的 `AGENTS.md`；若存在 feature 指针，核对其 plan/tasks，并读取与本任务相关的
+failure log 和持久 evidence。缺少可选历史文件不阻断无关工作。当前用户授权优先；
+历史 Spec、job ID 或成功候选不是新运行指令。
 
 开发机负责开发、源码审查、unit/integration 和约定的本地 MiniNDN；实验机接收明确源码版本，负责 SIF 构建、Tiger 运行和问题反馈。
 仅整理或交付源码时，只整理、固定和发布输入；不要自行启动宿主或容器编译、unit/integration、MiniNDN或集群测试。发现ABI变化时写清接收方重建要求，不把本机补测变成交付条件。不要按 Qwen/YOLO 划分长期机器职责。
@@ -30,9 +31,17 @@ description: Prepare or review NDNSF source and SIF delivery, diagnose container
 | 双节点基础设施与复用消费者 | `Experiments/TigerCluster/docs/two-node-baseline.md`、`runtime/`、`apps/`、`jobs/baseline/`、`profiles/`（均位于 TigerCluster 下） |
 | 模型准备与证据 | `Experiments/TigerCluster/docs/itiger-qwen-models.md`、`itiger-qwen-evidence.md`（同一 docs 目录） |
 | 既有 workload jobs | `Experiments/TigerCluster/jobs/`；按当前契约选择，不自动启动历史资格流程 |
+| installed 配置和生命周期 | `NDNSF-DistributedInference/ndnsf_distributed_inference/ops/`；维护的 `ndnsf-di cluster` 入口 |
 
 复用这些入口；不要另建构建 pipeline、复制启动器或把兼容链接变成第二份实现。
 先检查真实脚本参数和 effective config，再使用调用命令；不凭本 skill 假设已有工具支持新选项。
+
+处理当前安装、SIF复用、Slurm部署、GPU、配额或SSH故障时，读取
+[portable-deployment.md](references/portable-deployment.md)。该参考提炼最新实验中的决策，
+不把某次模型、节点、账号、镜像号或资源预算设为默认值。
+Spec170/175参考仅在恢复对应历史工作流时读取；其中的旧镜像、固定profile、
+本地构建限定和checklist不自动适用于当前选定部署。当前host管理只支持一个local节点；
+Slurm多节点路径不能被描述为通用SSH跨真机启动器。
 
 ## Delivery And Native Boundary
 
@@ -47,6 +56,9 @@ NDNSF 层统一拥有本仓库的 Core、DI、Repo、UAV、绑定和实验入口
 - NDNSF 日常源码变化只重建受影响的仓库目标、绑定及相应验收；不在 NDNSF 层 apt install、
   下载依赖或再次编译外部库。Cargo.lock 等依赖声明仍随源码封存，需与 base 的依赖集合匹配；
   缺项回到 base 补齐，不由构建阶段静默联网解决。
+- 模型、输入、token数、节点或Provider布局等已支持配置变化，更新配置/运行身份并复用
+  同一合格镜像。先定位实际消费端：只有容器内运行闭包改变才重建SIF；
+  容器外host控制工具修复可独立发布wheel并重验其生命周期，不能据此声称镜像内副本已更新。
 - base 验收覆盖真实 C++ compile/link/run、Python ABI/import 和动态加载路径；仅 NumPy/NFD smoke
   不证明 SDK 闭包。base 通过后才构建 NDNSF 候选，再做本地 C++ 模型/请求链与规定绑定验收。
   base PASS、candidate build、YOLO runner、MiniNDN 和 Tiger 结论分别记录，不相互代替。
