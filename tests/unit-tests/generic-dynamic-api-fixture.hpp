@@ -30,6 +30,37 @@
 #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 
+namespace ndn_service_framework {
+
+// Test-only admission seam for local targeted-handler invocation. It mirrors
+// the RegistrationState admission lease used by Core dispatch.
+struct ServiceProviderTestAccess
+{
+  static std::function<void()>
+  beginTargetedHandler(ServiceProvider& provider, const ndn::Name& serviceName)
+  {
+    const auto service = provider.m_services.find(serviceName);
+    if (service == provider.m_services.end() ||
+        !service->second.registrationState ||
+        !service->second.registrationState->tryBeginTargetedHandler())
+      return {};
+    const auto state = service->second.registrationState;
+    auto released = std::make_shared<std::atomic<bool>>(false);
+    return [state, released] {
+      if (!released->exchange(true, std::memory_order_acq_rel))
+        state->finishTargetedHandler();
+    };
+  }
+
+  static ndn::Name
+  extractLargeDataProducerPrefix(const ndn::Name& dataName)
+  {
+    return ServiceProvider::extractLargeDataProducerPrefix(dataName);
+  }
+};
+
+} // namespace ndn_service_framework
+
 namespace ndn_service_framework::test {
 namespace {
 
@@ -182,6 +213,7 @@ public:
                   trustSchemaPath)
   {
   }
+
 
   static SelectionExecutionStatus
   parseSelectionStatusForTest(const ndn::Data& data,
@@ -516,6 +548,7 @@ public:
   {
     return getStreamLifecycle(requestId);
   }
+
 };
 
 class LocalServiceProvider : public ServiceProvider
@@ -533,6 +566,37 @@ public:
                       attrAuthorityCertificate,
                       trustSchemaPath)
   {
+  }
+
+  // Exercise the callback installed in the real scoped registration without
+  // fabricating an authenticated network request. Wire authentication and
+  // identity selection remain covered by the Core targeted-request tests.
+  bool
+  invokeAsyncTargetedHandlerForTest(
+      const ndn::Name& serviceName,
+      const ndn::Name& requester,
+      const ndn::Name& requestId,
+      const RequestMessage& request,
+      AsyncTargetedCompletion completion)
+  {
+    const auto service = m_services.find(serviceName);
+    if (service == m_services.end() ||
+        !service->second.asyncTargetedRequestHandler) {
+      return false;
+    }
+    auto releaseAdmission = ServiceProviderTestAccess::beginTargetedHandler(
+      *this, serviceName);
+    if (!releaseAdmission)
+      return false;
+    struct AdmissionLease
+    {
+      std::function<void()> release;
+      ~AdmissionLease() { release(); }
+    } admissionLease{std::move(releaseAdmission)};
+    service->second.asyncTargetedRequestHandler(
+      requester, getName(), serviceName, requestId, request,
+      std::move(completion));
+    return true;
   }
 
   static std::string
@@ -641,6 +705,48 @@ public:
     ndn::Name key(requesterName);
     key.append(serviceName).append(requestId);
     schedulePendingRequestCleanup(key, ttl, authoritative);
+  }
+
+  void
+  extendPendingRequestCleanupForStreamForTest(
+      const ndn::Name& requesterName,
+      const ndn::Name& serviceName,
+      const ndn::Name& requestId,
+      uint64_t deadlineEpochMs,
+      const std::function<void()>& beforePendingStateLock = {})
+  {
+    ndn::Name key(requesterName);
+    key.append(serviceName).append(requestId);
+    extendPendingRequestCleanupForStream(
+        key, deadlineEpochMs, beforePendingStateLock);
+  }
+
+  bool
+  pendingRequestStateMutexAvailableForTest()
+  {
+    if (!m_pendingRequestMutex.try_lock()) {
+      return false;
+    }
+    m_pendingRequestMutex.unlock();
+    return true;
+  }
+
+  void
+  firePendingRequestCleanupTimerForTest(
+      const ndn::Name& requesterName,
+      const ndn::Name& serviceName,
+      const ndn::Name& requestId,
+      const std::function<void()>& afterDeadlineCheck = {})
+  {
+    ndn::Name key(requesterName);
+    key.append(serviceName).append(requestId);
+    handlePendingRequestCleanupTimer(key, afterDeadlineCheck);
+  }
+
+  void
+  setPendingRequestTimeoutGraceForTest(ndn::time::milliseconds grace)
+  {
+    m_pendingRequestTimeoutGrace = grace;
   }
 
   uint64_t

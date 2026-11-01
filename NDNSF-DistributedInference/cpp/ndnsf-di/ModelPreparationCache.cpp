@@ -428,6 +428,9 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     preparedPublication = spec.lookupPrepared(spec, deadline);
     if (preparedPublication)
       preparedPublication->validate();
+    if (preparedPublication && preparedPublication->missingDataNames.empty() &&
+        spec.validatePreparedPublication)
+      spec.validatePreparedPublication(preparedPublication);
   }
   const bool publicationRepairRequired = preparedPublication &&
     !preparedPublication->missingDataNames.empty();
@@ -646,6 +649,8 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
                                                   catalog.model, publicationControl);
     publicationControl.requireActive();
     preparedPublication->validate();
+    if (spec.validatePreparedPublication)
+      spec.validatePreparedPublication(preparedPublication);
     if (!preparedPublication->missingDataNames.empty())
       throw std::runtime_error("DI_NATIVE_PREPARATION_PARTIAL_PUBLICATION_UNRESOLVED");
     memory.encryptedPublicationBytes = preparedPublication->publishedBytes;
@@ -672,6 +677,8 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
                          std::make_shared<NativePreSplitFirstPlacement>(),
                          spec.runtimeBinding, std::move(modelReference),
                          preparedPublication});
+  if (spec.validatePreparedPublication)
+    spec.validatePreparedPublication(package->preparedPublication);
   // Catalog construction and prepare-time publication may transiently need
   // the canonical bytes. The published package carries only identity,
   // receipt and lease state; release the source owner before returning it so
@@ -697,7 +704,8 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
   if (deadline <= std::chrono::steady_clock::now())
     throw std::runtime_error("DI_NATIVE_PREPARATION_TIMEOUT");
 
-  {
+  for (unsigned retry = 0; ; ++retry) {
+    if (retry == 8) throw std::runtime_error("DI_NATIVE_PREPARATION_CACHE_CHANGED");
     requireActive(deadline, spec.cancelled);
     std::shared_ptr<void> commit;
     if (spec.acquireCommit) {
@@ -706,22 +714,39 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
         throw std::runtime_error(std::chrono::steady_clock::now() >= deadline
           ? "DI_NATIVE_PREPARATION_TIMEOUT" : "DI_NATIVE_PREPARATION_CANCELLED");
     }
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     auto found = m_entries.find(key);
     if (found != m_entries.end() && policy != CachePolicy::Refresh) {
+      auto package = found->second.package;
+      const auto generation = found->second.generation;
+      auto retained = acquireLease(found->second.lease);
+      lock.unlock();
+      commit.reset();
+      if (spec.validatePreparedPublication)
+        spec.validatePreparedPublication(package->preparedPublication);
+      requireActive(deadline, spec.cancelled);
+      if (spec.acquireCommit) {
+        commit = spec.acquireCommit(deadline);
+        if (!commit) throw std::runtime_error("DI_NATIVE_PREPARATION_CANCELLED");
+      }
+      lock.lock();
+      found = m_entries.find(key);
+      if (found == m_entries.end() || found->second.package != package ||
+          found->second.generation != generation)
+        continue;
       found->second.lastUse = m_nextUse++;
-      auto lease = found->second.lease;
       PreparationReceipt receipt{PreparationReceipt::Origin::CacheHit,
         found->second.package->preparationKeyDigest,
         found->second.package->catalog.model.modelManifestDigest,
         std::chrono::milliseconds(0)};
-      return PreparedModel(found->second.package, std::move(receipt), acquireLease(lease),
+      return PreparedModel(package, std::move(receipt), std::move(retained),
                            spec.clientFactory);
     }
     if (found == m_entries.end() && (policy == CachePolicy::RequireReady ||
                                      policy == CachePolicy::UseOrWait))
       throw std::runtime_error(policy == CachePolicy::UseOrWait
         ? "DI_NATIVE_PREPARATION_NOT_IN_FLIGHT" : "DI_NATIVE_MODEL_NOT_READY");
+    break;
   }
 
   // The commit guard above may own a caller's Runtime mutex.  Release it
@@ -818,6 +843,8 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
   };
   try {
     package = buildPackage(spec, deadline, &memory);
+    if (spec.validatePreparedPublication)
+      spec.validatePreparedPublication(package->preparedPublication);
     requireActive(deadline, spec.cancelled);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - started);
@@ -832,16 +859,33 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
     auto found = m_entries.find(key);
     if (spec.jobGeneration != 0 && found != m_entries.end() &&
         found->second.generation > spec.jobGeneration) {
+      const auto selected = found->second.package;
+      const auto selectedGeneration = found->second.generation;
+      auto selectedLease = acquireLease(found->second.lease);
+      lock.unlock();
+      commit.reset();
+      if (spec.validatePreparedPublication)
+        spec.validatePreparedPublication(selected->preparedPublication);
+      requireActive(deadline, spec.cancelled);
+      if (spec.acquireCommit) {
+        commit = spec.acquireCommit(deadline);
+        if (!commit) throw std::runtime_error("DI_NATIVE_PREPARATION_CANCELLED");
+      }
+      lock.lock();
+      found = m_entries.find(key);
+      if (found == m_entries.end() || found->second.package != selected ||
+          found->second.generation != selectedGeneration)
+        throw std::runtime_error("DI_NATIVE_PREPARATION_CACHE_CHANGED");
       found->second.lastUse = m_nextUse++;
-      auto lease = found->second.lease;
       m_reservedBytes -= reservation;
       reservationHeld = false;
       auto result = PreparedModel(found->second.package,
         PreparationReceipt{PreparationReceipt::Origin::CacheHit,
           found->second.package->preparationKeyDigest,
           found->second.package->catalog.model.modelManifestDigest,
-          std::chrono::milliseconds(0)}, acquireLease(lease), spec.clientFactory);
+          std::chrono::milliseconds(0)}, std::move(selectedLease), spec.clientFactory);
       lock.unlock();
+      commit.reset();
       rollbackPackagePublication();
       return result;
     }
@@ -1214,7 +1258,8 @@ ModelPreparationCache::prepareAsync(const PreparationSpec& spec,
   try {
     std::lock_guard<std::mutex> lock(m_mutex);
     const auto found = m_entries.find(key);
-    if (found != m_entries.end() && policy != CachePolicy::Refresh) {
+    if (found != m_entries.end() && policy != CachePolicy::Refresh &&
+        !spec.validatePreparedPublication) {
       found->second.lastUse = m_nextUse++;
       job->key = key;
       job->policy = policy;
@@ -1502,18 +1547,29 @@ ModelPreparationCache::prepareAsync(const PreparationSpec& spec,
       }
     }
     if (immediate) {
-      auto deliver = [control, cancelled, error, value = std::move(value),
-                      callback = std::move(callback)]() mutable {
-        if (cancelled->load(std::memory_order_acquire) || !control->begin())
+      auto callbackHolder = std::make_shared<PreparationCompletion>(std::move(callback));
+      auto deliver = [control, cancelled, gate, error, value = std::move(value),
+                      callbackHolder]() mutable {
+        if (cancelled->load(std::memory_order_acquire) ||
+            gate->exchange(true, std::memory_order_acq_rel) || !control->begin())
           return;
-        try { callback(error, std::move(value)); }
+        try { (*callbackHolder)(error, std::move(value)); }
         catch (...) {}
         control->end(true);
       };
-      if (waiterDispatch)
-        waiterDispatch(std::move(deliver));
-      else
-        deliver();
+      try {
+        if (waiterDispatch) waiterDispatch(std::move(deliver));
+        else deliver();
+      }
+      catch (...) {
+        const auto dispatchError = std::current_exception();
+        if (!cancelled->load(std::memory_order_acquire) &&
+            !gate->exchange(true, std::memory_order_acq_rel) && control->begin()) {
+          try { (*callbackHolder)(dispatchError, std::nullopt); }
+          catch (...) {}
+          control->end(true);
+        }
+      }
     }
     return ndn_service_framework::OperationSubscription::fromControl(std::move(control));
   };
@@ -1651,6 +1707,85 @@ ModelPreparationCache::prepareAsync(const PreparationSpec& spec,
     }
     return ndn_service_framework::OperationSubscription::fromControl(std::move(control));
   };
+
+  if (spec.validatePreparedPublication) {
+    struct WaiterVerdict
+    {
+      std::mutex mutex;
+      bool checked = false;
+      std::exception_ptr error;
+    };
+    auto verdict = std::make_shared<WaiterVerdict>();
+    const auto check = [verdict, validator = spec.validatePreparedPublication](
+      const PreparedModel& value) {
+      std::exception_ptr error;
+      try { validator(value.m_package ? value.m_package->preparedPublication : std::nullopt); }
+      catch (...) { error = std::current_exception(); }
+      std::lock_guard<std::mutex> lock(verdict->mutex);
+      verdict->checked = true;
+      if (error && !verdict->error) verdict->error = error;
+      if (verdict->error) std::rethrow_exception(verdict->error);
+    };
+    auto rawStatus = state->status;
+    state->status = [rawStatus, verdict] {
+      const auto status = rawStatus();
+      if (status != PreparationStatus::Ready) return status;
+      std::lock_guard<std::mutex> lock(verdict->mutex);
+      return verdict->error ? PreparationStatus::Failed :
+        verdict->checked ? PreparationStatus::Ready : PreparationStatus::Pending;
+    };
+    state->wouldBlock = [] { return true; };
+    auto rawResult = state->result;
+    state->result = [rawResult, check](std::chrono::milliseconds timeout) {
+      auto result = rawResult(timeout);
+      check(result);
+      return result;
+    };
+    auto rawDefault = state->resultDefault;
+    state->resultDefault = [rawDefault, check] {
+      auto result = rawDefault();
+      check(result);
+      return result;
+    };
+    const auto checkedCompletion = [check, verdict](PreparationCompletion callback,
+                                                    bool terminal = false) {
+      return [check, verdict, terminal, callback = std::move(callback)](
+        std::exception_ptr error, std::optional<PreparedModel> value) mutable {
+        if (!error && !value)
+          error = std::make_exception_ptr(std::runtime_error("DI_NATIVE_PREPARATION_FAILED"));
+        if (!error && value) {
+          try { check(*value); }
+          catch (...) { error = std::current_exception(); value.reset(); }
+        }
+        {
+          std::lock_guard<std::mutex> lock(verdict->mutex);
+          if (terminal) {
+            verdict->checked = true;
+            if (error && !verdict->error) verdict->error = error;
+          }
+          if (verdict->error) { error = verdict->error; value.reset(); }
+        }
+        callback(error, std::move(value));
+      };
+    };
+    auto rawCompletion = state->onCompletion;
+    state->onCompletion = [rawCompletion, checkedCompletion](PreparationCompletion callback) {
+      return rawCompletion(checkedCompletion(std::move(callback)));
+    };
+    auto rawAsync = state->resultAsync;
+    state->resultAsync = [rawAsync, checkedCompletion](std::chrono::milliseconds timeout,
+                                                     PreparationCompletion callback) {
+      return rawAsync(timeout, checkedCompletion(std::move(callback)));
+    };
+    auto internal = std::make_shared<ndn_service_framework::OperationSubscription>(
+      rawCompletion(checkedCompletion(
+        [](std::exception_ptr, std::optional<PreparedModel>) {}, true)));
+    auto rawDestroy = state->onDestroy;
+    state->onDestroy = [internal, rawDestroy] {
+      internal->cancel();
+      if (rawDestroy) rawDestroy();
+    };
+  }
 
   if (startJob) {
     auto done = std::make_shared<std::atomic<bool>>(false);

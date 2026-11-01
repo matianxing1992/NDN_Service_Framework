@@ -57,9 +57,10 @@ parseOptions(int argc, char* argv[])
         std::cout << "spec192-repo-client --mode inapp-publish|inapp-reopen|inapp-reopen-expect-error|inapp-invalid-inputs|persistent-invalid-config|discover|archive|archive-begin|publish|fetch|"
                    "availability|failover-fetch|failover-cooldown|all-down-fetch|reject-provider-alias|"
                    "operation-begin|operation-status|operation-status-once|operation-replay|operation-conflict|receipt-query|"
-                   "single-publish|invalid-selected-set|object-store-fetch|object-reopen-fetch|object-version-fetch|object-range-read|object-range-rejection-audit|object-remove-audit|object-corruption-audit|object-segmented-fetch|object-data-fetch|object-original-data-fetch|object-original-data-preimport-audit|object-original-data-location-audit|object-original-data-denied-audit|object-packet-set-fetch|object-payload-fetch|object-cache-status|object-catalog-query|object-catalog-delete|object-catalog-deleted|object-range-phase|object-inventory-audit|object-data-publisher|object-insert-request|object-insert-fetch|object-write-reject|import-public-certificate "
+                   "single-publish|invalid-selected-set|object-store-fetch|object-reopen-fetch|object-version-fetch|object-range-read|object-range-rejection-audit|object-remove-audit|object-corruption-audit|object-segmented-fetch|object-data-fetch|object-original-data-fetch|object-original-data-preimport-audit|object-original-data-location-audit|object-original-data-denied-audit|object-packet-set-fetch|object-payload-fetch|object-cache-status|object-catalog-query|object-catalog-delete|object-catalog-deleted|object-range-phase|object-inventory-audit|object-data-publisher|object-insert-request|object-insert-fetch|object-write-reject|spec204-owned-publish|spec204-owned-fetch|import-public-certificate "
                    "[--source PATH] [--store-dir PATH] [--handle PATH] [--handle-out PATH] "
                    "[--destination PATH] [--receipt-out PATH] [--report-out PATH] "
+                   "[--verify-owner-list-delete] "
                    "[--probe-kind metadata|verify_content] [--probe-first-repo NAME] [--group NAME] "
                    "[--certificate PATH] "
                    "[--controller NAME] [--authority NAME] [--user NAME] "
@@ -431,12 +432,22 @@ private:
   void
   waitForRepoRequestBootstrap(const Options& options)
   {
-    static const std::vector<std::string> operations = {
+    std::vector<std::string> operations = {
       "STORE", "STORE_RANGE", "COMMIT_RANGES", "ABORT_RANGES", "INSERT",
       "STORE_MANIFEST", "FETCH", "FETCH_RANGE", "MANIFEST", "INVENTORY",
       "CAPABILITY", "CACHE_STATUS", "STATUS", "CATALOG_STATUS",
       "CATALOG_SNAPSHOT", "CATALOG_DELTA", "CATALOG_LOOKUP", "DELETE",
     };
+    if (required(options, "mode") == "spec204-owned-publish") {
+      operations = options.count("spec204-owner-context")
+        ? std::vector<std::string>{"USER_STORAGE_GRANT", "USER_STORAGE_USAGE",
+                                   "USER_STORAGE_LIST", "USER_STORAGE_DELETE"}
+        : std::vector<std::string>{"STORE", "STORE_RANGE", "COMMIT_RANGES",
+            "ABORT_RANGES", "CAPABILITY", "STATUS"};
+    }
+    else if (required(options, "mode") == "spec204-owned-fetch") {
+      operations = {"FETCH_RANGE", "STATUS"};
+    }
 
     const ndn::Name servicePrefix(required(options, "service-prefix"));
     std::vector<ndn::Name> services;
@@ -905,7 +916,8 @@ run(const Options& options)
     }
   }
 
-  if (mode != "discover" && mode != "archive" && mode != "publish" &&
+  if (mode != "spec204-owned-publish" && mode != "spec204-owned-fetch" &&
+      mode != "discover" && mode != "archive" && mode != "publish" &&
       mode != "single-publish" && mode != "invalid-selected-set" && mode != "fetch" &&
       mode != "availability" && mode != "failover-fetch" &&
       mode != "failover-cooldown" &&
@@ -2656,6 +2668,19 @@ run(const Options& options)
   config.ackCollectionTimeMs = 1500;
   config.requestTimeoutMs = 30000;
   config.operationWaitTimeoutMs = 60000;
+  std::unique_ptr<PersistentContext> storageOwner;
+  if (mode == "spec204-owned-publish") {
+    auto ownerOptions = options;
+    ownerOptions["user"] = required(options, "owner");
+    ownerOptions["spec204-owner-context"] = "1";
+    if (ndn::Name(ownerOptions.at("user")) == ndn::Name(required(options, "user")))
+      throw std::invalid_argument("Spec204 fixture requires distinct owner and producer");
+    storageOwner = std::make_unique<PersistentContext>(ownerOptions);
+    config.userStorageOwnerIdentity = storageOwner->user().getName().toUri(ndn::name::UriFormat::ALTERNATE);
+    config.userStorageAuthorizer = repo::ArtifactRepositoryApi::makeUserStorageAuthorizer(
+      storageOwner->user(), std::stoull(required(options, "grant-expiry-ms")),
+      config.ackCollectionTimeMs, config.requestTimeoutMs);
+  }
   if (mode == "operation-begin") {
     // Leave time to fetch the selected STORE ACK after five-host SVS sync.
     config.ackCollectionTimeMs = 10000;
@@ -2706,6 +2731,185 @@ run(const Options& options)
     config.fetchFailureCooldownMs = 60000;
   }
   auto api = repo::ArtifactRepositoryApi::makePersistent(context.user(), config);
+
+  if (mode == "spec204-owned-publish") {
+    const auto source = required(options, "source");
+    auto reference = makeReference(source, required(options, "user"));
+    reference.logicalName = ndn::Name(required(options, "user"))
+      .append("Spec204").append(reference.contentDigest).toUri(ndn::name::UriFormat::ALTERNATE);
+    reference.formatVersion = "raw-file-v1";
+    reference.rootManifestName.clear();
+    reference.validateProducerOwnership();
+    const auto selected = makeSelected(options, config.servicePrefix);
+    if (selected.consistency != repo::RepoWriteConsistency::All)
+      throw std::invalid_argument("Spec204 driver requires ALL selected replicas");
+    const auto key = required(options, "key");
+    const auto handle = api.beginPublishFile(source, reference, selected, key, 180000);
+    const auto status = waitForTerminal(api, handle, 120000);
+    if (status.state != "COMMITTED" || status.schemaVersion != 2 ||
+        status.userStorageBindings.size() != selected.targets.size())
+      throw std::runtime_error("Spec204 owned publish did not commit the complete bound target set");
+    const auto owner = storageOwner->user().getName().toUri(ndn::name::UriFormat::ALTERNATE);
+    auto usage = [&] (const repo::RepoArtifactTarget& target) {
+      const auto wire = repo::RepoClient::requestSelectedService(storageOwner->user(),
+        ndn::Name(target.providerIdentity),
+        repo::makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_USAGE"),
+        repo::toBytes(repo::RepoUserStorageUsageRequest{}.toJson()),
+        config.ackCollectionTimeMs, config.requestTimeoutMs);
+      auto result = repo::RepoUserStorageUsageReply::fromJson(repo::toString(wire));
+      result.validateExpected(target, owner);
+      return result;
+    };
+    auto listOwned = [&] (const repo::RepoArtifactTarget& target) {
+      const repo::RepoUserStorageListRequest request{};
+      const auto wire = repo::RepoClient::requestSelectedService(storageOwner->user(),
+        ndn::Name(target.providerIdentity),
+        repo::makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
+        repo::toBytes(request.toJson()),
+        config.ackCollectionTimeMs, config.requestTimeoutMs);
+      auto result = repo::RepoUserStorageListReply::fromJson(repo::toString(wire));
+      result.validateExpected(target, owner, request);
+      return result;
+    };
+    std::vector<repo::RepoUserStorageUsageReply> before;
+    for (const auto& binding : status.userStorageBindings) {
+      const auto writer = binding.target == status.seed ? reference.publisherIdentity :
+        status.seed.providerIdentity;
+      if (binding.binding.ownerIdentity != owner ||
+          binding.writerIdentity != writer || binding.binding.ownerEpoch == 0)
+        throw std::runtime_error("Spec204 grant owner/epoch/immediate writer mismatch");
+      auto observed = usage(binding.target);
+      if (observed.usage.limitBytes != 1000000000ULL ||
+          observed.usage.reservedBytes != 0 ||
+          observed.usage.committedBytes < reference.sizeBytes)
+        throw std::runtime_error("Spec204 committed replica has invalid owner accounting");
+      before.push_back(std::move(observed));
+    }
+    const auto replay = api.beginPublishFile(source, reference, selected, key, 180000);
+    const auto replayStatus = api.getPublishStatus(replay, config.requestTimeoutMs);
+    if (replay.operationId != handle.operationId || replay.seed != handle.seed ||
+        replayStatus.state != "COMMITTED" || replayStatus.schemaVersion != 2 ||
+        replayStatus.userStorageBindings.size() != status.userStorageBindings.size())
+      throw std::runtime_error("Spec204 retry changed operation or accepted authority");
+    for (const auto& accepted : status.userStorageBindings) {
+      const auto sameTarget = std::find_if(replayStatus.userStorageBindings.begin(),
+        replayStatus.userStorageBindings.end(), [&accepted] (const auto& item) {
+          return item.target == accepted.target;
+        });
+      if (sameTarget == replayStatus.userStorageBindings.end() ||
+          sameTarget->toJson() != accepted.toJson())
+        throw std::runtime_error("Spec204 retry changed destination-local grant");
+    }
+    for (size_t i = 0; i < status.userStorageBindings.size(); ++i) {
+      const auto after = usage(status.userStorageBindings[i].target);
+      if (after.usage.committedBytes != before[i].usage.committedBytes ||
+          after.usage.reservedBytes != before[i].usage.reservedBytes)
+        throw std::runtime_error("Spec204 same-operation retry changed charged usage");
+      writeText(required(options, "report-out") + ".usage-" + std::to_string(i) + ".json",
+        after.toJson());
+    }
+    repo::ArtifactHandle artifact;
+    artifact.reference = reference;
+    artifact.selectedTargets = selected.targets;
+    artifact.seedRepoId = selected.seedRepoId;
+    artifact.writeConsistency = "ALL";
+    artifact.lifecycleMode = "PERSISTENT";
+    artifact.commitReceiptIds.push_back(status.receiptId);
+    for (const auto& target : status.targets) {
+      if (!target.receipt || target.state != "COMMITTED")
+        throw std::runtime_error("Spec204 committed status omits an individual target receipt");
+      const auto& committed = *target.receipt;
+      repo::ArtifactReplicaCommit replica;
+      replica.repoNode = target.target.repoNode;
+      replica.providerIdentity = target.target.providerIdentity;
+      replica.receiptId = committed.receiptId;
+      replica.operationId = status.operationId;
+      replica.reference = reference;
+      replica.generation = committed.generation;
+      replica.contentDigest = reference.contentDigest;
+      replica.persistedBytes = committed.persistedBytes;
+      replica.completedAtMs = committed.completedAtMs;
+      replica.locationVersion = committed.locationVersion;
+      replica.routeState = committed.routeState;
+      replica.state = "COMMITTED";
+      replica.forwardingHint = committed.forwardingHint;
+      artifact.replicaCommits.push_back(std::move(replica));
+      artifact.commitReceiptIds.push_back(committed.receiptId);
+    }
+    artifact.validate();
+    const auto receipt = api.getReceipt(status.receiptId, artifact, config.requestTimeoutMs);
+    if (receipt.operationId != handle.operationId || receipt.reference != reference ||
+        receipt.state != "COMMITTED" || receipt.achievedReplicas != selected.targets.size())
+      throw std::runtime_error("Spec204 terminal receipt differs from committed owned status");
+    if (options.count("verify-owner-list-delete")) {
+      uint64_t releasedBytes = 0;
+      for (size_t i = 0; i < status.userStorageBindings.size(); ++i) {
+        const auto& binding = status.userStorageBindings[i];
+        const auto listed = listOwned(binding.target);
+        if (listed.objects.size() != 1 ||
+            listed.objects.front().ownerIdentity != owner ||
+            listed.objects.front().ownerEpoch != binding.binding.ownerEpoch ||
+            listed.objects.front().state != repo::RepoUserStorageClaimState::Committed ||
+            listed.objects.front().object.objectName !=
+              repo::artifactStorageObjectName(reference))
+          throw std::runtime_error("Spec204 owner list does not contain the exact committed claim");
+
+        const repo::RepoUserStorageDeleteRequest request{
+          1, "worker-delete-" + handle.operationId,
+          repo::artifactStorageObjectName(reference),
+          listed.objects.front().ownerEpoch};
+        const auto wire = repo::RepoClient::requestSelectedService(storageOwner->user(),
+          ndn::Name(binding.target.providerIdentity),
+          repo::makeRepoServiceName(ndn::Name(binding.target.servicePrefix),
+                                    "USER_STORAGE_DELETE"),
+          repo::toBytes(request.toJson()),
+          config.ackCollectionTimeMs, config.requestTimeoutMs);
+        const auto deleted = repo::RepoUserStorageDeleteReply::fromJson(repo::toString(wire));
+        deleted.validateExpected(binding.target, owner, request);
+        if (deleted.state != "DELETED" ||
+            deleted.releasedBytes != before[i].usage.committedBytes)
+          throw std::runtime_error("Spec204 owner delete did not confirm the exact charged claim");
+        releasedBytes += deleted.releasedBytes;
+
+        const auto afterList = listOwned(binding.target);
+        const auto afterUsage = usage(binding.target);
+        if (!afterList.objects.empty() || !afterList.nextAfterObjectName.empty() ||
+            afterUsage.usage.committedBytes != 0 || afterUsage.usage.reservedBytes != 0)
+          throw std::runtime_error("Spec204 confirmed owner delete left listed or charged data");
+        writeText(required(options, "report-out") + ".list-before-" + std::to_string(i) + ".json",
+                  listed.toJson());
+        writeText(required(options, "report-out") + ".delete-" + std::to_string(i) + ".json",
+                  deleted.toJson());
+        writeText(required(options, "report-out") + ".list-after-" + std::to_string(i) + ".json",
+                  afterList.toJson());
+        writeText(required(options, "report-out") + ".usage-after-delete-" + std::to_string(i) + ".json",
+                  afterUsage.toJson());
+      }
+      std::cout << "SPEC204_OWNER_LIST_DELETE_PASS targets="
+                << status.userStorageBindings.size() << " released_bytes="
+                << releasedBytes << std::endl;
+    }
+    writeText(required(options, "handle-out"), artifact.toJson());
+    writeText(required(options, "handle-out") + ".operation.json", handle.toJson());
+    writeText(required(options, "report-out"), status.toJson());
+    std::cout << "SPEC204_OWNED_PUBLISH_RETRY_PASS operation=" << handle.operationId
+              << " owner=" << owner << " producer=" << reference.publisherIdentity
+              << " targets=" << status.targets.size() << std::endl;
+    return 0;
+  }
+  if (mode == "spec204-owned-fetch") {
+    const auto artifact = repo::ArtifactHandle::fromJson(readText(required(options, "handle")));
+    if (artifact.lifecycleMode != "PERSISTENT" || artifact.writeConsistency != "ALL" ||
+        ndn::Name(artifact.reference.publisherIdentity) == context.user().getName())
+      throw std::invalid_argument("Spec204 fetch requires another producer's persistent ALL handle");
+    (void)api.fetchFile(artifact, required(options, "destination"), 120000);
+    const auto bytes = readBytes(required(options, "destination"));
+    if (bytes.size() != artifact.reference.sizeBytes || sha256(bytes) != artifact.reference.contentDigest)
+      throw std::runtime_error("Spec204 independent fetched bytes differ from committed reference");
+    std::cout << "SPEC204_OWNED_FETCH_PASS producer=" << artifact.reference.publisherIdentity
+              << " sha256=" << sha256(bytes) << std::endl;
+    return 0;
+  }
 
   if (mode == "invalid-selected-set") {
     const auto source = required(options, "source");

@@ -19,6 +19,42 @@
 namespace ndn_service_framework::test {
 namespace {
 
+class ResponseDroppingServiceUser : public ServiceUser
+{
+public:
+  ResponseDroppingServiceUser(ndn::Face& face, const ndn::Name& groupPrefix,
+                              const ndn::security::Certificate& userCert,
+                              const ndn::security::Certificate& aaCert,
+                              const std::string& trustSchemaPath)
+    : ServiceUser(LocalMockTag{}, face, groupPrefix, userCert, aaCert,
+                  trustSchemaPath)
+  {
+  }
+
+  void setPredicate(
+    std::function<bool(const ndn::svs::SVSPubSub::SubscriptionData&)> predicate)
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_predicate = std::move(predicate);
+  }
+
+  void OnResponse(const ndn::svs::SVSPubSub::SubscriptionData& subscription) override
+  {
+    std::function<bool(const ndn::svs::SVSPubSub::SubscriptionData&)> predicate;
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      predicate = m_predicate;
+    }
+    if (predicate && predicate(subscription))
+      return;
+    ServiceUser::OnResponse(subscription);
+  }
+
+private:
+  std::mutex m_mutex;
+  std::function<bool(const ndn::svs::SVSPubSub::SubscriptionData&)> m_predicate;
+};
+
 ndn::svs::SecurityOptions
 makeSecurityOptions(ndn::KeyChain& keyChain, const ndn::security::Certificate& cert,
                     const BootstrapProfile& profile, ndn::Face& face)
@@ -280,9 +316,9 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
           deliverData(*face, data);
         }
       });
-  m_user = std::make_unique<ServiceUser>(
-      ServiceUser::LocalMockTag{}, *m_userFace, m_profile.groupPrefix,
-      userCert, aaCert, m_profile.trustSchemaPath);
+  m_user = std::make_unique<ResponseDroppingServiceUser>(
+      *m_userFace, m_profile.groupPrefix, userCert, aaCert,
+      m_profile.trustSchemaPath);
   m_user->useSigningKeyChainForTest(*m_keyChain);
   m_provider = std::make_unique<ServiceProvider>(
       ServiceProvider::LocalMockTag{}, *m_providerFace, m_profile.groupPrefix,
@@ -1185,6 +1221,16 @@ NdnsfIntegrationEnvironment::user()
   return *m_user;
 }
 
+void
+NdnsfIntegrationEnvironment::setResponseDropPredicateForTest(
+  std::function<bool(const ndn::svs::SVSPubSub::SubscriptionData&)> predicate)
+{
+  auto* user = dynamic_cast<ResponseDroppingServiceUser*>(m_user.get());
+  if (!user)
+    throw std::logic_error("fixture response drop hook has no LocalMock User");
+  user->setPredicate(std::move(predicate));
+}
+
 ServiceProvider&
 NdnsfIntegrationEnvironment::provider()
 {
@@ -1232,6 +1278,15 @@ NdnsfIntegrationEnvironment::disconnectProviderPeerTransportForTest()
   for (auto& connection : m_providerPeerDataBridges) {
     connection.disconnect();
   }
+}
+
+void
+NdnsfIntegrationEnvironment::destroyProviderKeepingFaceForTest(size_t index)
+{
+  disconnectProviderTransportForTest(index);
+  disconnectProviderPeerTransportForTest();
+  if (index == 0) m_provider.reset();
+  else m_extraProviders.at(index - 1).reset();
 }
 
 } // namespace ndn_service_framework::test

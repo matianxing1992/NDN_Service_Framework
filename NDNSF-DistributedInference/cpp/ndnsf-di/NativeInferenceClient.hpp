@@ -4,6 +4,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedKvPublication.hpp"
 #include "ndn-service-framework/InvocationStream.hpp"
 #include "ndn-service-framework/OperationState.hpp"
 
@@ -13,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -30,6 +33,7 @@ class Runtime;
 class NativeGrantClient;
 class NativeRequestPreparation;
 class NativeOfferAdmission;
+class ConversationHandoffHandle;
 struct NativeRequestRuntime;
 struct NativeStrategyPorts;
 
@@ -224,6 +228,38 @@ public:
     std::shared_ptr<const NativePlacementStrategy> placementStrategy,
     const NativeRequestOptions& options);
 
+  ConversationHandoffHandle switchConversationProviders(
+    const std::string& conversationId,
+    const std::string& expectedCheckpointDigest,
+    const std::map<std::string, std::string>& sourceProvidersByRole,
+    const std::map<std::string, std::string>& destinationProvidersByRole,
+    const std::map<std::string, NativeRemoteProtectedKvRoleTrustPolicyV1>&
+      trustedSourcePolicyByRole,
+    std::chrono::steady_clock::time_point deadline);
+
+  /** Query one current source through Core targeted authentication. This is
+   * called from an Owner worker while the User Face remains live. A positive
+   * reply is returned only after the original Provider Data is verified. */
+  NativeWithdrawalQueryReplyV1 queryProviderWithdrawalIntent(
+    const std::string& conversationId,
+    const std::string& expectedCheckpointDigest,
+    const std::string& providerIdentity,
+    const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
+    std::chrono::steady_clock::time_point deadline);
+
+  /** Save a complete committed source set for a verified departure intent.
+   * An empty destination keeps next-turn placement with the Owner; this call
+   * does not select a successor Provider. */
+  ConversationHandoffHandle saveConversationForWithdrawal(
+    const std::string& conversationId,
+    const std::string& expectedCheckpointDigest,
+    const std::map<std::string, std::string>& sourceProvidersByRole,
+    const std::map<std::string, NativeRemoteProtectedKvRoleTrustPolicyV1>&
+      trustedSourcePolicyByRole,
+    const std::string& withdrawingProviderIdentity,
+    const NativeWithdrawalQueryReplyV1& intentReply,
+    std::chrono::steady_clock::time_point deadline);
+
   /** Submit through the cooperative strategy ports used by PreparedModel.
    * The operation owner and Core request path are identical to request();
    * only the strategy extension contract differs. */
@@ -246,6 +282,8 @@ public:
   bool isQuiescent() const noexcept;
   /** Return whether the caller is already on the Core/operation worker. */
   bool isWorkerThread() const noexcept;
+  /** Return whether the caller is on this client's Core Face I/O thread. */
+  bool isCoreIoThread() const noexcept;
   /** Return the Runtime-owned conversation coordinator, if configured. */
   std::shared_ptr<NativeConversationCoordinator> conversationCoordinator() const noexcept;
   /** Retain the enclosing transport owner until this client and its
@@ -253,6 +291,44 @@ public:
   void retainOwner(std::shared_ptr<void> owner);
 
 private:
+  struct HandoffRegistration
+  {
+    struct WithdrawalBinding
+    {
+      std::string providerIdentity;
+      NativeWithdrawalQueryReplyV1 reply;
+    };
+    std::string bindingDigest;
+    std::string checkpointDigest;
+    std::map<std::string, std::string> sourceProvidersByRole;
+    std::map<std::string, std::string> destinationProvidersByRole;
+    std::map<std::string, NativeRemoteProtectedKvRoleTrustPolicyV1> trustedSourcePolicyByRole;
+    std::optional<WithdrawalBinding> withdrawal;
+    std::chrono::steady_clock::time_point deadline;
+    std::shared_ptr<ConversationHandoffHandle> handle;
+    std::mutex mutex;
+    bool cancellationRequested = false;
+    bool commitReleased = false;
+    bool settled = false;
+  };
+
+  ConversationHandoffHandle startConversationSave(
+    const std::string& conversationId,
+    const std::string& expectedCheckpointDigest,
+    const std::map<std::string, std::string>& sourceProvidersByRole,
+    const std::map<std::string, std::string>& destinationProvidersByRole,
+    const std::map<std::string, NativeRemoteProtectedKvRoleTrustPolicyV1>&
+      trustedSourcePolicyByRole,
+    std::optional<HandoffRegistration::WithdrawalBinding> withdrawal,
+    std::chrono::steady_clock::time_point deadline);
+
+  void registerDepartureWatchLifecycle(
+    std::weak_ptr<void> owner,
+    std::function<void()> cancel,
+    std::function<bool(std::chrono::milliseconds)> drain,
+    std::function<bool()> isQuiescent,
+    std::function<void(std::function<void()>)> setNotifier);
+
   // Runtime uses this only from its owned Face exception boundary.  It
   // delivers a stable native failure to active requests and performs their
   // Core cancellation while postToIo can still execute on that Face.
@@ -261,6 +337,7 @@ private:
   // Only the unit-test friend can replace clocks/dispatch. Production
   // construction always uses a monotonic clock and an independent timer.
   friend class NativeClientTestAccess;
+  friend class Conversation;
   friend class Runtime;
   struct TestPort {
     std::function<std::chrono::steady_clock::time_point()> now;
@@ -297,6 +374,12 @@ private:
   std::shared_ptr<const NativeRequestContract> m_requestContract;
   std::shared_ptr<const NativeRequestRuntime> m_runtime;
   std::shared_ptr<ndn_service_framework::OperationRuntime> m_operationRuntime;
+  struct HandoffWorkerClientGate
+  {
+    std::mutex mutex;
+    NativeInferenceClient* client = nullptr;
+  };
+  std::shared_ptr<HandoffWorkerClientGate> m_handoffWorkerGate;
   // Production request names include a fresh owner scope per native client,
   // so separately launched or forked requester owners cannot reuse a cached
   // process scope. The private test port keeps deterministic legacy IDs for
@@ -312,6 +395,17 @@ private:
                                      std::function<void()>)> m_schedule;
   mutable std::mutex m_mutex;
   std::vector<std::weak_ptr<NativeInferenceHandle::Operation>> m_operations;
+  std::map<std::string, std::shared_ptr<HandoffRegistration>> m_handoffRegistrations;
+  struct DepartureWatchLifecycle
+  {
+    std::weak_ptr<void> owner;
+    std::function<void()> cancel;
+    std::function<bool(std::chrono::milliseconds)> drain;
+    std::function<bool()> isQuiescent;
+    std::function<void(std::function<void()>)> setNotifier;
+  };
+  std::vector<DepartureWatchLifecycle> m_departureWatches;
+  std::function<void()> m_drainNotifier;
   // Keep closed operations alive until the explicit drain boundary can emit
   // one terminal lifecycle observation for each request.
   std::vector<std::shared_ptr<NativeInferenceHandle::Operation>> m_closedOperations;

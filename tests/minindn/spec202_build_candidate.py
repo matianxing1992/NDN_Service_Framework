@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TARGETS = preflight.BUILD_TARGETS
 NATIVE_OUTPUTS = preflight.BUILD_OUTPUTS
 INSTALLED_LIBRARIES = ("libndn-service-framework.so", "libndnsf-distributed-inference.so")
+INSTALLED_BINARIES = ("spec192-repo-client", "spec193-object-repo-server")
 LOCAL_NDN_CXX_HEADERS = "dependencies/ndn-cxx-8296fc9462c7ef9635b7c45468c067fd39514e31/ndn-cxx"
 
 
@@ -119,7 +120,8 @@ def main():
     external_before = sdk_inputs(args.svs_source.resolve(), args.svs_build.resolve())
     output.mkdir(parents=True)
     previous = [*(ROOT / "build" / name for name in NATIVE_OUTPUTS),
-                *(Path("/usr/local/lib") / name for name in INSTALLED_LIBRARIES)]
+                *(Path("/usr/local/lib") / name for name in INSTALLED_LIBRARIES),
+                *(Path("/usr/local/bin") / name for name in INSTALLED_BINARIES)]
     for directory, pattern in ((ROOT / "pythonWrapper/ndnsf", "_ndnsf*.so"),
                                (ROOT / "NDNSF-DistributedRepo/pythonWrapper/py_repoclient",
                                 "_py_repoclient*.so")):
@@ -178,6 +180,12 @@ def main():
     for name in INSTALLED_LIBRARIES:
         if installed[name] != preflight.sha256(build / name):
             raise RuntimeError("installed native library differs from fresh output: " + name)
+    installed_binaries = {
+        name: preflight.sha256(Path("/usr/local/bin") / name)
+        for name in INSTALLED_BINARIES}
+    for name in INSTALLED_BINARIES:
+        if installed_binaries[name] != preflight.sha256(build / name):
+            raise RuntimeError("installed runtime app differs from fresh output: " + name)
     effective = preflight.candidate_build_environment(ROOT, build, sdk_source, sdk_build, bindings=True)
     environment.update(effective)
     environment["NDNSF_GLOBAL_NATIVE_DIGESTS"] = json.dumps(installed)
@@ -206,6 +214,7 @@ def main():
         extensions.extend(matches)
     artifacts = hashes([*(ROOT / "build" / name for name in NATIVE_OUTPUTS),
                         *(Path("/usr/local/lib") / name for name in INSTALLED_LIBRARIES),
+                        *(Path("/usr/local/bin") / name for name in INSTALLED_BINARIES),
                         *extensions])
     runtime = hashes([Path(path) for path in loaded])
     for name in NATIVE_OUTPUTS:

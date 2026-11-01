@@ -136,6 +136,8 @@ namespace ndn_service_framework
         std::shared_ptr<const EncryptedLargeDataRangeSource> rangeSource;
         std::shared_ptr<const detail::OriginalPacketFile> originalPackets;
         std::shared_ptr<const ndn::Data> manifestPacket;
+        std::vector<ndn::Name> auxiliaryPacketNames;
+        std::string durableStorageOwnerIdentity;
         bool originalPacketSource = false;
         std::weak_ptr<void> servingLease;
         std::shared_ptr<void> keyLease;
@@ -144,6 +146,18 @@ namespace ndn_service_framework
         bool controllerVersioned = false;
         ControllerVersion controllerVersion;
         std::vector<std::string> protectedImsNames;
+
+        void enqueueCurrent(ndn::Face& face, const ndn::Data& data) const
+        {
+            if (durableStorageOwnerIdentity.empty()) {
+                face.put(data);
+                return;
+            }
+            if (!rangeSource || !rangeSource->isDurable() || !manifestPacket)
+                throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+            rangeSource->withCurrentDurableStorageOwner(manifestPacket->getName(),
+                durableStorageOwnerIdentity, [&] { face.put(data); });
+        }
 
         ~LargeDataFilePublication()
         {
@@ -2977,6 +2991,7 @@ namespace ndn_service_framework
 
     ServiceUser::~ServiceUser()
     {
+        unregisterNDNSFMessages();
         if (m_largeDataKeyReleaseState) {
             std::lock_guard<std::mutex> lock(m_largeDataKeyReleaseState->mutex);
             m_largeDataKeyReleaseState->crypto = nullptr;
@@ -6691,10 +6706,12 @@ namespace ndn_service_framework
                 const auto ownerDigest = makeNamingDigestComponent(options.publicationIdentity.substr(7));
                 const auto semanticDigest = makeNamingDigestComponent(contentName.objectIdentity());
                 const auto& suffixWire = options.manifestSuffix.wireEncode();
-                durablePublicationBase = "sha256:" + computeNamingDigest("ndnsf-naming/publication",
-                    {{1, 4, {ownerDigest.value(), ownerDigest.value() + ownerDigest.value_size()}},
+                std::vector<NamingDigestField> publicationFields{
+                     {1, 4, {ownerDigest.value(), ownerDigest.value() + ownerDigest.value_size()}},
                      {2, 4, {semanticDigest.value(), semanticDigest.value() + semanticDigest.value_size()}},
-                     {3, 1, {suffixWire.begin(), suffixWire.end()}}});
+                     {3, 1, {suffixWire.begin(), suffixWire.end()}}};
+                if (options.persistAuxiliaryPackets) publicationFields.push_back({4, 4, {1}});
+                durablePublicationBase = "sha256:" + computeNamingDigest("ndnsf-naming/publication", publicationFields);
             }
         }
         catch (const std::exception& error) { result.errorMessage = error.what(); return result; }
@@ -6722,6 +6739,42 @@ namespace ndn_service_framework
             result.errorMessage = "ORIGINAL_DATA_PACKET_UNSUPPORTED";
             return result;
         }
+        if (options.persistAuxiliaryPackets && (!durable || !rangeStore || !rangeStore->supportsAuxiliaryDataPackets())) {
+            result.errorMessage = "DURABLE_AUXILIARY_PACKETS_UNSUPPORTED";
+            return result;
+        }
+        const bool ownedDurable = durable &&
+            (rangeStore->requiresDurableStorageActor() || options.resolveDurableStorageGrant);
+        if (durable && rangeStore->requiresDurableStorageActor() &&
+            !options.resolveDurableStorageGrant) {
+            result.errorMessage = "DURABLE_STORAGE_GRANT_RESOLVER_REQUIRED";
+            return result;
+        }
+        if (ownedDurable && !marshalIo) {
+            result.errorMessage = "OWNED_DURABLE_REQUIRES_WORKER";
+            return result;
+        }
+        const auto bindStorageActor = [&](EncryptedLargeDataCommitOptions& commitOptions,
+                                          const ndn::Name& manifestName) {
+            if (!options.resolveDurableStorageGrant) return;
+            if (requireActive) requireActive();
+            const auto writer = identity.toUri(ndn::name::UriFormat::ALTERNATE);
+            if (options.onDurableStorageGrantRequired) {
+                DurableStorageGrantChallengeV1 challenge;
+                challenge.manifestName = manifestName;
+                challenge.writerIdentity = writer;
+                challenge.publicationIdentity = commitOptions.publicationIdentity;
+                challenge.protectionEpoch = commitOptions.protectionEpoch;
+                challenge.dataPrefix = ndn::Name(commitOptions.dataPrefix);
+                challenge.packetWireBytes = commitOptions.packetWireBytes;
+                challenge.auxiliaryPacketNames = commitOptions.auxiliaryPacketNames;
+                options.onDurableStorageGrantRequired(challenge);
+                if (requireActive) requireActive();
+            }
+            auto grant = options.resolveDurableStorageGrant(manifestName, writer, requireActive);
+            if (requireActive) requireActive();
+            commitOptions.storageActor = DurableStorageActorContext{writer, std::move(grant)};
+        };
         const bool fileBackedRequested = rangeStore || retainWhileLeased ||
             useFileBackedLargeData() || plaintext.size() >= fileBackedThresholdBytes;
         const auto fileBackedRetention = fileBackedRequested ?
@@ -6927,6 +6980,32 @@ namespace ndn_service_framework
                     if (durableReference->packetStorageFormat == "original-packet-set" &&
                         ndn::Name(durableReference->manifestName) != manifestName)
                         throw std::runtime_error("DURABLE_REFERENCE_MANIFEST_MISMATCH");
+                    EncryptedLargeDataCommitOptions retainOptions;
+                    retainOptions.retention = options.retention;
+                    retainOptions.publicationIdentity = durableHit->publicationIdentity;
+                    retainOptions.protectionEpoch = durableHit->protectionEpoch;
+                    retainOptions.keyReferenceId = durableHit->keyReferenceId;
+                    retainOptions.keyReferenceVersion = durableHit->keyReferenceVersion;
+                    retainOptions.ciphertextManifestDigest = durableHit->ciphertextManifestDigest;
+                    retainOptions.servingLocator = durableHit->servingLocator;
+                    retainOptions.contentDigest = durableHit->contentDigest;
+                    retainOptions.plaintextSize = durableHit->plaintextSize;
+                    retainOptions.packetStorageFormat = durableHit->packetStorageFormat;
+                    retainOptions.manifestName = durableHit->manifestName;
+                    retainOptions.dataPrefix = durableHit->dataPrefix;
+                    retainOptions.packetWireBytes = durableHit->packetWireBytes;
+                    bindStorageActor(retainOptions, manifestName);
+                    const auto retained = rangeStore->retainDurableSource(
+                        *durableHit, retainOptions, requireActive);
+                    if (!retained || !retained->isDurable() ||
+                        retained->size() != durableHit->source->size())
+                        throw std::runtime_error("DURABLE_OWNER_RETAIN_INVALID");
+                    durableHit->source = retained;
+                    if (options.persistAuxiliaryPackets) {
+                        result.auxiliaryPacketNames = retained->auxiliaryDataPacketNames();
+                        if (result.auxiliaryPacketNames.empty())
+                            throw std::runtime_error("DURABLE_AUXILIARY_PACKETS_MISSING");
+                    }
                     const auto rootWire = durableHit->source->readOriginalDataPacket(manifestName);
                     if (rootWire.empty() || rootWire.size() > ndn::MAX_NDN_PACKET_SIZE)
                         throw std::runtime_error("DURABLE_LOOKUP_UNREADABLE");
@@ -6993,6 +7072,7 @@ namespace ndn_service_framework
                         }
                     }
                     std::shared_ptr<LargeDataFilePublication> publication;
+                    std::shared_ptr<LargeDataFilePublication> retiredPublication;
                     bool scheduleExpiry = false;
                     {
                         std::unique_lock<std::shared_mutex> fence(m_protectedReuseMutex);
@@ -7002,7 +7082,7 @@ namespace ndn_service_framework
                         }
                         std::lock_guard<std::mutex> lock(_cache_mutex);
                         const auto existing = m_largeDataFiles.find(publicationKey);
-                        if (existing != m_largeDataFiles.end()) {
+                        if (existing != m_largeDataFiles.end() && !ownedDurable) {
                             publication = existing->second;
                             if (retainWhileLeased) {
                                 auto lease = publication->servingLease.lock();
@@ -7016,6 +7096,13 @@ namespace ndn_service_framework
                             }
                         }
                         else {
+                            if (existing != m_largeDataFiles.end()) {
+                                const auto& previous = existing->second;
+                                if (!previous->originalPacketSource || !previous->rangeSource ||
+                                    !previous->rangeSource->isDurable() || previous->reservedBytes != 0)
+                                    throw std::runtime_error("DURABLE_CACHED_PUBLICATION_REBIND_INVALID");
+                                retiredPublication = previous;
+                            }
                             publication = std::make_shared<LargeDataFilePublication>();
                             publication->baseName = encryptedDataName;
                             publication->fileSize = durableHit->source->size();
@@ -7025,8 +7112,23 @@ namespace ndn_service_framework
                             publication->freshness = freshness;
                             publication->windowCapacity = largeDataWindowSegments();
                             publication->rangeSource = durableHit->source;
+                            if (retainOptions.storageActor)
+                                publication->durableStorageOwnerIdentity =
+                                    retainOptions.storageActor->grant.ownerIdentity;
                             publication->originalPacketSource = true;
                             publication->manifestPacket = restoredRoot;
+                            std::set<ndn::Name> restoredAuxiliaryNames;
+                            for (const auto& nameText : result.auxiliaryPacketNames) {
+                                const ndn::Name name(nameText);
+                                if (name.empty() || !identity.isPrefixOf(name) ||
+                                    name.size() <= identity.size() ||
+                                    encryptedDataName.isPrefixOf(name) ||
+                                    name == manifestName ||
+                                    !restoredAuxiliaryNames.insert(name).second)
+                                    throw std::runtime_error(
+                                        "DURABLE_AUXILIARY_PACKET_METADATA_INVALID");
+                                publication->auxiliaryPacketNames.push_back(name);
+                            }
                             publication->segmentCount = restoredManifest.segmentCount;
                             publication->maxSegmentBytes = restoredManifest.segmentBytes;
                             publication->serviceName = ctx.serviceName.toUri();
@@ -7034,17 +7136,25 @@ namespace ndn_service_framework
                             publication->controllerVersioned = durableVersioned;
                             if (durableVersioned)
                                 publication->controllerVersion = *durableControllerVersion;
+                            if (retiredPublication) {
+                                publication->keyLease = retiredPublication->keyLease;
+                                publication->protectedImsNames = retiredPublication->protectedImsNames;
+                            }
                             m_retiredProtectedPrefixes.erase(publicationKey);
                             if (retainWhileLeased) {
                                 result.servingLease = std::make_shared<unsigned char>(0);
                                 publication->servingLease = result.servingLease;
                             }
-                            const auto [it, inserted] = m_largeDataFiles.emplace(
-                                publicationKey, publication);
-                            if (!inserted)
-                                throw std::runtime_error(
-                                    "duplicate durable large-data publication name");
-                            (void)it;
+                            if (existing != m_largeDataFiles.end())
+                                existing->second = publication;
+                            else {
+                                const auto [it, inserted] = m_largeDataFiles.emplace(
+                                    publicationKey, publication);
+                                if (!inserted)
+                                    throw std::runtime_error(
+                                        "duplicate durable large-data publication name");
+                                (void)it;
+                            }
                             scheduleExpiry = true;
                         }
                     }
@@ -7061,6 +7171,7 @@ namespace ndn_service_framework
                                  << " name=" << result.encryptedDataName.toUri()
                                  << " plaintextBytes=" << result.plaintextSize
                                  << " envelopeBytes=" << durableHit->source->size());
+                    result.durableStorageSource = publication->rangeSource;
                     result.success = true;
                     return result;
                 }
@@ -7123,6 +7234,7 @@ namespace ndn_service_framework
 
             ndn::nacabe::SPtrVector<ndn::Data> wrappedContentData;
             ndn::nacabe::SPtrVector<ndn::Data> wrappedCkData;
+            std::vector<std::pair<ndn::Name, std::vector<std::uint8_t>>> auxiliaryPackets;
             ndn::Buffer wrappedMessageKey;
             bool hasWrappedMessageKey = false;
 
@@ -7169,6 +7281,10 @@ namespace ndn_service_framework
                         throw std::invalid_argument("original NAC CK signer/namespace/budget rejected");
                 m_hybridMessageCrypto.cacheWrappedSendPackets(ctx.serviceName, key.keyId,
                     wrappedMessageKey, wrappedContentData, wrappedCkData);
+                // The current envelope can carry this key inline, but later
+                // compact envelopes resolve the same immutable key by name.
+                // Serve its original Producer packets from the first publish.
+                serveDataWithIMS(wrappedContentData, wrappedCkData);
                 wrappedKeyReferenceHeld = true;
                 envelope.setWrappedMessageKey(
                     ndn::Buffer(wrappedMessageKey.data(), wrappedMessageKey.size()));
@@ -7184,6 +7300,31 @@ namespace ndn_service_framework
                 wrappedKeyReferenceHeld = true;
                 if (m_hybridMessageCrypto.getWrappedSendPackets(key.keyId, wrappedContentData, wrappedCkData))
                     serveDataWithIMS(wrappedContentData, wrappedCkData);
+            }
+            if (options.persistAuxiliaryPackets) {
+                if (!m_hybridMessageCrypto.getWrappedSendPackets(key.keyId, wrappedContentData, wrappedCkData) ||
+                    wrappedContentData.empty() || wrappedCkData.empty())
+                    throw std::runtime_error("DURABLE_AUXILIARY_PACKETS_MISSING");
+                if (wrappedContentData.size() > EncryptedLargeDataCommitOptions::MaxAuxiliaryPacketCount ||
+                    wrappedCkData.size() > EncryptedLargeDataCommitOptions::MaxAuxiliaryPacketCount - wrappedContentData.size())
+                    throw std::runtime_error("DURABLE_AUXILIARY_PACKET_LIMIT");
+                std::set<ndn::Name> names;
+                std::uint64_t wireBytes = 0;
+                const auto retainOriginal = [&](const auto& packets) {
+                    for (const auto& packet : packets) {
+                        if (!packet || !identity.isPrefixOf(packet->getName()) || packet->getName().size() <= identity.size() ||
+                            encryptedDataName.isPrefixOf(packet->getName()) || !names.insert(packet->getName()).second ||
+                            !validator->isProducerSignerAuthorized(*packet, identity))
+                            throw std::runtime_error("DURABLE_AUXILIARY_PACKET_INVALID");
+                        const auto& wire = packet->wireEncode();
+                        if (wire.size() > ndn::MAX_NDN_PACKET_SIZE ||
+                            wire.size() > EncryptedLargeDataCommitOptions::MaxAuxiliaryPacketWireBytes - wireBytes)
+                            throw std::runtime_error("DURABLE_AUXILIARY_PACKET_LIMIT");
+                        wireBytes += wire.size();
+                        auxiliaryPackets.emplace_back(packet->getName(), std::vector<uint8_t>(wire.begin(), wire.end()));
+                    }
+                };
+                retainOriginal(wrappedContentData); retainOriginal(wrappedCkData);
             }
             });
             wrappedKeyReferenceHeld = true;
@@ -7379,6 +7520,14 @@ namespace ndn_service_framework
                         const auto& rootWire = publication->manifestPacket->wireEncode();
                         commitOptions.packetWireBytes = rootWire.size() +
                             publication->originalPackets->storageBytes() - segmentCount * 2 * sizeof(std::uint64_t);
+                        for (const auto& packet : auxiliaryPackets) {
+                            if (packet.first == result.manifestName ||
+                                packet.second.size() > std::numeric_limits<std::uint64_t>::max() - commitOptions.packetWireBytes)
+                                throw std::runtime_error("DURABLE_AUXILIARY_PACKET_INVALID");
+                            commitOptions.auxiliaryPacketNames.push_back(packet.first);
+                            commitOptions.packetWireBytes += packet.second.size();
+                        }
+                        bindStorageActor(commitOptions, result.manifestName);
                         std::uint64_t next = 0;
                         publication->rangeSource = rangeStore->commitOriginalDataPackets(result.manifestName,
                             commitOptions, [&]() -> std::optional<std::pair<ndn::Name, std::vector<std::uint8_t>>> {
@@ -7388,18 +7537,28 @@ namespace ndn_service_framework
                                 return std::make_pair(result.manifestName,
                                     std::vector<std::uint8_t>(rootWire.begin(), rootWire.end()));
                             }
-                            if (next > segmentCount) return std::nullopt;
+                            if (next > segmentCount) {
+                                const auto index = next - segmentCount - 1;
+                                if (index >= auxiliaryPackets.size()) return std::nullopt;
+                                ++next; return auxiliaryPackets[index];
+                            }
                             const auto segment = next++ - 1;
                             return std::make_pair(ndn::Name(encryptedDataName).appendSegment(segment),
                                 publication->originalPackets->read(segment));
                         }, requireActive);
                         if (!publication->rangeSource || !publication->rangeSource->isDurable() ||
                             publication->rangeSource->size() != encodedBytes ||
+                            (options.persistAuxiliaryPackets &&
+                             publication->rangeSource->auxiliaryDataPacketNames() != commitOptions.auxiliaryPacketNames) ||
                             publication->rangeSource->readOriginalDataPacket(result.manifestName) !=
                                 std::vector<std::uint8_t>(rootWire.begin(), rootWire.end()))
                             throw std::runtime_error("DURABLE_ORIGINAL_PACKET_COMMIT_INVALID");
+                        result.auxiliaryPacketNames = commitOptions.auxiliaryPacketNames;
                         publication->originalPacketSource = true;
                         publication->originalPackets.reset();
+                        if (commitOptions.storageActor)
+                            publication->durableStorageOwnerIdentity =
+                                commitOptions.storageActor->grant.ownerIdentity;
                     }
                     // This metric counts serving reads, not preparation reads.
                     publication->segmentReadCount = 0;
@@ -7444,7 +7603,7 @@ namespace ndn_service_framework
                                     ControllerVersion{}, durableVersioned,
                                 {}, false});
                     }
-                    if (hasWrappedMessageKey) onIo([&] {
+                    if (!wrappedContentData.empty() || !wrappedCkData.empty()) onIo([&] {
                         // Wrapped-key packets remain small control Data and use
                         // the existing IMS path; only the encrypted object body
                         // is moved to the file-backed serving owner.
@@ -7455,14 +7614,8 @@ namespace ndn_service_framework
                                 const bool existed = static_cast<bool>(m_IMS.find(fullName));
                                 if (!existed) {
                                     stagedFullNames.push_back(fullName);
-                                    if (durable)
-                                        protectedImsNames.push_back(fullName.toUri());
                                 }
-                                else if (durable &&
-                                         m_protectedImsOwners.find(fullName.toUri()) !=
-                                             m_protectedImsOwners.end()) {
-                                    protectedImsNames.push_back(fullName.toUri());
-                                }
+                                protectedImsNames.push_back(fullName.toUri());
                                 m_IMS.insert(*data);
                             }
                             for (const auto& data : wrappedCkData) {
@@ -7470,14 +7623,8 @@ namespace ndn_service_framework
                                 const bool existed = static_cast<bool>(m_IMS.find(fullName));
                                 if (!existed) {
                                     stagedFullNames.push_back(fullName);
-                                    if (durable)
-                                        protectedImsNames.push_back(fullName.toUri());
                                 }
-                                else if (durable &&
-                                         m_protectedImsOwners.find(fullName.toUri()) !=
-                                             m_protectedImsOwners.end()) {
-                                    protectedImsNames.push_back(fullName.toUri());
-                                }
+                                protectedImsNames.push_back(fullName.toUri());
                                 m_IMS.insert(*data);
                             }
                         }
@@ -7493,8 +7640,8 @@ namespace ndn_service_framework
                                     if (m_protectedImsOwners.find(fullName) ==
                                         m_protectedImsOwners.end()) {
                                         m_IMS.erase(ndn::Name(fullName), false);
+                                        m_retiredProtectedPrefixes.insert(fullName);
                                     }
-                                    m_retiredProtectedPrefixes.insert(fullName);
                                 }
                             }
                             else {
@@ -7545,6 +7692,8 @@ namespace ndn_service_framework
                                     "duplicate large-data publication name");
                             }
                             (void)it;
+                            publicationRegistered = true;
+                            reservationHeld = false;
                             for (const auto& fullName : protectedImsNames) {
                                 m_protectedImsOwners[fullName][publicationKey] =
                                     ProtectedImsOwner{
@@ -7553,8 +7702,6 @@ namespace ndn_service_framework
                                             ControllerVersion{}};
                             }
                             m_protectedPendingPublications.erase(pending);
-                            publicationRegistered = true;
-                            reservationHeld = false;
                         }
                         // The Core-owned reference becomes COMMITTED only
                         // after Repo commit/read-back and local serving-owner
@@ -7583,6 +7730,8 @@ namespace ndn_service_framework
                         }
                     }
                     else {
+                        std::unique_lock<std::shared_mutex> fence(m_protectedReuseMutex);
+                        publication->protectedImsNames = protectedImsNames;
                         std::lock_guard<std::mutex> lock(_cache_mutex);
                         const auto [it, inserted] = m_largeDataFiles.emplace(
                             publicationKey, publication);
@@ -7593,6 +7742,11 @@ namespace ndn_service_framework
                         (void)it;
                         publicationRegistered = true;
                         reservationHeld = false;
+                        for (const auto& fullName : protectedImsNames) {
+                            m_protectedImsOwners[fullName][publicationKey] =
+                                ProtectedImsOwner{ctx.serviceName.toUri(), ControllerVersion{}};
+                            m_retiredProtectedPrefixes.erase(fullName);
+                        }
                     }
                     const auto expiry = *fileBackedRetention;
                     onIo([&] { m_scheduler.schedule(expiry, [this, publicationKey,
@@ -7619,6 +7773,8 @@ namespace ndn_service_framework
                                  << " segments=" << segmentCount
                                  << " window=" << publication->windowCapacity
                                  << " retentionMs=" << expiry.count());
+                    if (durable)
+                        result.durableStorageSource = publication->rangeSource;
                     result.success = true;
                     return result;
                 }
@@ -7899,10 +8055,10 @@ namespace ndn_service_framework
                 pending.cancelled = true;
                 m_retiredProtectedPrefixes.insert(pending.publicationKey);
                 for (const auto& fullName : pending.imsNames) {
-                    m_retiredProtectedPrefixes.insert(fullName);
                     if (m_protectedImsOwners.find(fullName) ==
                         m_protectedImsOwners.end()) {
                         m_IMS.erase(ndn::Name(fullName), false);
+                        m_retiredProtectedPrefixes.insert(fullName);
                     }
                 }
                 (void)pendingKey;
@@ -7953,6 +8109,19 @@ namespace ndn_service_framework
             m_largeDataRangeStore->supportsOriginalDataPackets();
     }
 
+    bool ServiceUser::requiresDurableStorageActor() const noexcept
+    {
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        return m_largeDataRangeStore && m_largeDataRangeStore->requiresDurableStorageActor();
+    }
+
+    bool ServiceUser::supportsDurableAuxiliaryDataPackets() const noexcept
+    {
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        return m_largeDataRangeStore && m_largeDataRangeStore->supportsDurableRetention() &&
+            m_largeDataRangeStore->supportsOriginalDataPackets() && m_largeDataRangeStore->supportsAuxiliaryDataPackets();
+    }
+
     void ServiceUser::expireLargeDataPublication(const std::string& publicationKey,
         std::weak_ptr<LargeDataFilePublication> weakPublication)
     {
@@ -7996,7 +8165,7 @@ namespace ndn_service_framework
         for (const auto& publication : publications) {
             try {
                 std::lock_guard<std::mutex> lock(_cache_mutex);
-                if (!publication.publicationIdentity.empty()) {
+                if (publication.fileBacked || !publication.publicationIdentity.empty()) {
                     const auto publicationKey = publication.encryptedDataName.toUri();
                     for (const auto& value : publication.rollbackDataNames) {
                         auto owners = m_protectedImsOwners.find(value);
@@ -10097,6 +10266,30 @@ namespace ndn_service_framework
         // No raw ServiceUser capture: the queued task owns exactly the
         // captures supplied by its caller, including any required owner.
         boost::asio::post(m_face.getIoContext(), std::move(task));
+        if (m_isLocalMock) {
+            m_localIoPostCountForTest.fetch_add(1, std::memory_order_release);
+        }
+    }
+
+    void ServiceUser::postToIoWithFace(std::function<void(ndn::Face&)> task) const
+    {
+        if (!task) {
+            throw std::invalid_argument("ServiceUser Face I/O task must not be empty");
+        }
+        auto* face = &m_face;
+        boost::asio::post(m_face.getIoContext(),
+            [face, task = std::move(task)] () mutable { task(*face); });
+        if (m_isLocalMock) {
+            m_localIoPostCountForTest.fetch_add(1, std::memory_order_release);
+        }
+    }
+
+    uint64_t ServiceUser::getIoPostCountForTest() const
+    {
+        if (!m_isLocalMock) {
+            throw std::logic_error("LocalMock I/O post observation is test-only");
+        }
+        return m_localIoPostCountForTest.load(std::memory_order_acquire);
     }
 
     bool ServiceUser::isOnIoThread() const
@@ -10943,6 +11136,19 @@ namespace ndn_service_framework
         return result;
     }
 
+    void ServiceUser::noteAckObservation(const ndn::Name& name)
+    {
+        if (const auto parsed = parsePendingAckName(name)) {
+            m_pendingCalls.at(parsed->requestId).ackObserved = true;
+            return;
+        }
+        // Ambiguous ACK traffic cannot establish silence for any open collection.
+        for (auto& entry : m_pendingCalls) {
+            if (entry.second.collaborationDeferred && !entry.second.collaborationAcksClosed)
+                entry.second.ackObserved = true;
+        }
+    }
+
     std::optional<ResponseNameV2> ServiceUser::parsePendingResponseName(const ndn::Name& name) const
     {
         std::optional<ResponseNameV2> result;
@@ -11516,6 +11722,7 @@ namespace ndn_service_framework
         const ndn_service_framework::RequestAckMessage& ackMessage,
         AckAuthenticationEvidence authenticationEvidence)
     {
+        noteAckObservation(ackName);
         auto parsedV2 = parsePendingAckName(ackName);
         if (parsedV2) {
             const auto ackReceiveUs = nowMicroseconds();
@@ -11980,6 +12187,7 @@ namespace ndn_service_framework
     bool ServiceUser::handleRequestAckByName(const ndn::Name& ackName,
                                              const ndn::Block& ackBlock)
     {
+        noteAckObservation(ackName);
         ndn_service_framework::RequestAckMessage ackMessage;
         if (!ackMessage.WireDecode(ackBlock)) {
             traceSpec192SelectedRequestAckStage("ack-reject-reason-wire-decode");
@@ -12650,6 +12858,7 @@ namespace ndn_service_framework
         closure.digest = pendingCall.collaborationAckClosedDigest;
         closure.closedAtUs = pendingCall.collaborationAcksClosedAtUs;
         closure.requestDeadlineUs = pendingCall.requestDeadlineUs;
+        closure.ackObserved = pendingCall.ackObserved;
         logPhaseTiming(
             "user", "ackClosed", requestId,
             {{"attempt", pendingCall.streamOptions ?
@@ -13820,6 +14029,7 @@ namespace ndn_service_framework
 
     void ServiceUser::OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
+        noteAckObservation(subscription.name);
         // log message
         NDN_LOG_DEBUG("OnRequestAck: " << subscription.name);
 
@@ -14947,26 +15157,52 @@ void ServiceUser::finishRequestAckOnEventLoop(
         // packet, and deliver the bundle only to the selected Provider.
         if (pendingIt != m_pendingCalls.end() &&
             pendingIt->second.requestScopedConfidentiality) {
-            if (!selectionMessage.hasControllerVersion() ||
-                !selectionMessage.getControllerVersion().isValid()) {
-                throw std::runtime_error(
-                    "request-scoped Selection requires a current ControllerVersion");
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_SCOPED_SELECTION_PREPARE_BEGIN timestamp_us="
+                      << nowMicroseconds()
+                      << " requestId=" << requestId.toUri()
+                      << " providerName=" << providerName.toUri());
+            try {
+                if (!selectionMessage.hasControllerVersion() ||
+                    !selectionMessage.getControllerVersion().isValid()) {
+                    throw std::runtime_error(
+                        "request-scoped Selection requires a current ControllerVersion");
+                }
+                const auto ackIt = std::find_if(
+                    pendingIt->second.requestAcks.begin(),
+                    pendingIt->second.requestAcks.end(),
+                    [&providerName] (const StoredAck& ack) {
+                        return ack.providerName.equals(providerName) &&
+                               ack.message.getStatus();
+                    });
+                if (ackIt == pendingIt->second.requestAcks.end() ||
+                    !ackIt->message.hasSelectionInputKeyOffer()) {
+                    throw std::runtime_error(
+                        "request-scoped Selection requires a successful Provider key offer");
+                }
+                const auto& offer = ackIt->message.getSelectionInputKeyOffer();
+                prepareRequestScopedRecipient(selectionMessage, serviceName, requestId,
+                                              providerName, pendingIt->second, offer);
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_SCOPED_SELECTION_PREPARE_DONE timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << requestId.toUri()
+                          << " providerName=" << providerName.toUri());
             }
-            const auto ackIt = std::find_if(
-                pendingIt->second.requestAcks.begin(),
-                pendingIt->second.requestAcks.end(),
-                [&providerName] (const StoredAck& ack) {
-                    return ack.providerName.equals(providerName) &&
-                           ack.message.getStatus();
-                });
-            if (ackIt == pendingIt->second.requestAcks.end() ||
-                !ackIt->message.hasSelectionInputKeyOffer()) {
-                throw std::runtime_error(
-                    "request-scoped Selection requires a successful Provider key offer");
+            catch (const std::exception& error) {
+                NDN_LOG_ERROR("Cannot prepare request-scoped Selection requestId="
+                              << requestId.toUri()
+                              << " provider=" << providerName.toUri()
+                              << " reason=" << error.what());
+                rejectPreparation(error.what());
+                return;
             }
-            const auto& offer = ackIt->message.getSelectionInputKeyOffer();
-            prepareRequestScopedRecipient(selectionMessage, serviceName, requestId,
-                                          providerName, pendingIt->second, offer);
+            catch (...) {
+                NDN_LOG_ERROR("Cannot prepare request-scoped Selection requestId="
+                              << requestId.toUri()
+                              << " provider=" << providerName.toUri()
+                              << " reason=unknown exception");
+                rejectPreparation("unknown exception");
+                return;
+            }
         }
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_TOKEN_STATE timestamp_us="
                   << nowMicroseconds()
@@ -15309,7 +15545,21 @@ void ServiceUser::finishRequestAckOnEventLoop(
     bool ServiceUser::replyFromIMS(const ndn::Interest &interest)
     {
         std::optional<ndn::Data> dataToSend;
+        std::vector<std::shared_ptr<LargeDataFilePublication>> witnesses;
+        bool protectedData = false;
         bool suppressFallback = false;
+        const bool keyWrapperInterest = [&] {
+            const auto& name = interest.getName();
+            return identity.isPrefixOf(name) && name.size() >= identity.size() + 2 &&
+                name[identity.size()].toUri() == "NDNSF" &&
+                name[identity.size() + 1].toUri() == "KEY";
+        }();
+        const bool contentKeyInterest = [&] {
+            const auto& name = interest.getName();
+            return identity.isPrefixOf(name) && name.size() > identity.size() &&
+                name[identity.size()].toUri() == "CK";
+        }();
+        const bool keyPacketInterest = keyWrapperInterest || contentKeyInterest;
         std::shared_lock<std::shared_mutex> fence(m_protectedReuseMutex);
         {
             std::lock_guard<std::mutex> lock(_cache_mutex);
@@ -15330,14 +15580,69 @@ void ServiceUser::finishRequestAckOnEventLoop(
             }
             else if (auto data = m_IMS.find(interest)) {
                 dataToSend.emplace(*data);
+                const auto owners = m_protectedImsOwners.find(data->getFullName().toUri());
+                if (owners != m_protectedImsOwners.end()) {
+                    protectedData = true;
+                    for (const auto& owner : owners->second) {
+                        const auto publication = m_largeDataFiles.find(owner.first);
+                        if (publication != m_largeDataFiles.end() && publication->second)
+                            witnesses.push_back(publication->second);
+                    }
+                }
             }
         }
         if (suppressFallback) {
             return true;
         }
+        if (!dataToSend && keyPacketInterest) {
+            const auto cached = m_hybridMessageCrypto.findWrappedSendData(interest);
+            if (cached) {
+                dataToSend.emplace(*cached);
+                std::lock_guard<std::mutex> lock(_cache_mutex);
+                const auto owners = m_protectedImsOwners.find(
+                    cached->getFullName().toUri());
+                if (owners != m_protectedImsOwners.end()) {
+                    protectedData = true;
+                    for (const auto& owner : owners->second) {
+                        const auto publication = m_largeDataFiles.find(owner.first);
+                        if (publication != m_largeDataFiles.end() && publication->second)
+                            witnesses.push_back(publication->second);
+                    }
+                }
+            }
+        }
         if (dataToSend)
         {
             NDN_LOG_TRACE("Reply from IMS: " << interest.getName().toUri());
+            if (protectedData) {
+                for (const auto& publication : witnesses) {
+                    bool enteredEnqueue = false;
+                    try {
+                        // Retry another shared owner only before entering put.
+                        // No cache/controller lock is held across Repo admission.
+                        if (publication->durableStorageOwnerIdentity.empty()) {
+                            enteredEnqueue = true;
+                            m_face.put(*dataToSend);
+                        }
+                        else {
+                            if (!publication->rangeSource || !publication->manifestPacket)
+                                throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+                            publication->rangeSource->withCurrentDurableStorageOwner(
+                                publication->manifestPacket->getName(),
+                                publication->durableStorageOwnerIdentity, [&] {
+                                    enteredEnqueue = true;
+                                    m_face.put(*dataToSend);
+                                });
+                        }
+                        return true;
+                    }
+                    catch (const std::exception& error) {
+                        NDN_LOG_TRACE("Protected IMS admission refused: " << error.what());
+                        if (enteredEnqueue) return true;
+                    }
+                }
+                return true;
+            }
             m_face.put(*dataToSend);
         }else{
             size_t imsSize = 0;
@@ -15353,6 +15658,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
     bool ServiceUser::replyFromLargeDataFile(const ndn::Interest& interest)
     {
         std::shared_ptr<LargeDataFilePublication> publication;
+        std::vector<std::shared_ptr<LargeDataFilePublication>> auxiliaryPublications;
         const auto& interestName = interest.getName();
         std::shared_lock<std::shared_mutex> fence(m_protectedReuseMutex);
         {
@@ -15360,6 +15666,12 @@ void ServiceUser::finishRequestAckOnEventLoop(
             for (const auto& item : m_largeDataFiles) {
                 const auto& candidate = item.second;
                 if (!candidate) {
+                    continue;
+                }
+                if (std::find(candidate->auxiliaryPacketNames.begin(),
+                              candidate->auxiliaryPacketNames.end(), interestName) !=
+                    candidate->auxiliaryPacketNames.end()) {
+                    auxiliaryPublications.push_back(candidate);
                     continue;
                 }
                 if (candidate->manifestPacket && candidate->manifestPacket->getName() == interestName) {
@@ -15379,6 +15691,66 @@ void ServiceUser::finishRequestAckOnEventLoop(
                     break;
                 }
             }
+        }
+        if (!auxiliaryPublications.empty()) {
+            for (const auto& candidate : auxiliaryPublications) {
+                if (!candidate->publicationIdentity.empty()) {
+                    bool current = true;
+                    std::lock_guard<std::mutex> versionLock(m_controllerVersionMutex);
+                    const auto statusIt = m_revocationStates.find(candidate->serviceName);
+                    if (candidate->controllerVersioned) {
+                        current = statusIt != m_revocationStates.end() &&
+                            statusIt->second.hasCurrentStatus() &&
+                            statusIt->second.currentVersion().compare(
+                                candidate->controllerVersion) == 0;
+                    }
+                    else {
+                        current = statusIt == m_revocationStates.end() ||
+                            !statusIt->second.hasCurrentStatus();
+                    }
+                    if (!current)
+                        continue;
+                }
+                try {
+                    if (!candidate->rangeSource || !candidate->rangeSource->isDurable() ||
+                        !candidate->manifestPacket)
+                        throw std::runtime_error("DURABLE_AUXILIARY_SOURCE_UNAVAILABLE");
+                    const auto wire = candidate->rangeSource->readOriginalDataPacket(interestName);
+                    if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE)
+                        throw std::runtime_error("DURABLE_AUXILIARY_PACKET_UNREADABLE");
+                    const auto data = std::make_shared<ndn::Data>(ndn::Block(
+                        ndn::span<const std::uint8_t>(wire.data(), wire.size())));
+                    if (data->getName() != interestName)
+                        throw std::runtime_error("DURABLE_AUXILIARY_PACKET_NAME_MISMATCH");
+                    bool enteredEnqueue = false;
+                    try {
+                        const auto enqueue = [&] {
+                            enteredEnqueue = true;
+                            m_face.put(*data);
+                        };
+                        if (candidate->durableStorageOwnerIdentity.empty())
+                            enqueue();
+                        else {
+                            candidate->rangeSource->withCurrentDurableStorageOwner(
+                                candidate->manifestPacket->getName(),
+                                candidate->durableStorageOwnerIdentity, enqueue);
+                        }
+                        return true;
+                    }
+                    catch (const std::exception& error) {
+                        NDN_LOG_TRACE("Durable auxiliary Data admission refused: "
+                                      << error.what());
+                        if (enteredEnqueue)
+                            return true;
+                    }
+                }
+                catch (const std::exception& error) {
+                    NDN_LOG_TRACE("Durable auxiliary Data read refused: " << error.what());
+                }
+            }
+            // A matching durable publication owns this name. Do not fall back
+            // to an unowned cache path when every current storage grant refuses it.
+            return true;
         }
         if (publication && !publication->publicationIdentity.empty()) {
             bool current = true;
@@ -15413,15 +15785,15 @@ void ServiceUser::finishRequestAckOnEventLoop(
             return false;
         }
 
-        if (publication->manifestPacket && publication->manifestPacket->getName() == interestName) {
-            m_face.put(*publication->manifestPacket);
-            return true;
-        }
-        const auto segment = interestName.equals(publication->baseName) ?
-            std::uint64_t(0) : interestName.get(-1).toSegment();
         try {
+            if (publication->manifestPacket && publication->manifestPacket->getName() == interestName) {
+                publication->enqueueCurrent(m_face, *publication->manifestPacket);
+                return true;
+            }
+            const auto segment = interestName.equals(publication->baseName) ?
+                std::uint64_t(0) : interestName.get(-1).toSegment();
             if (const auto cached = publication->findCached(segment)) {
-                m_face.put(*cached);
+                publication->enqueueCurrent(m_face, *cached);
                 NDN_LOG_TRACE("Reply large-data segment from retransmission window: "
                                << cached->getName());
                 return true;
@@ -15441,7 +15813,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 if (data->getName() != ndn::Name(publication->baseName).appendSegment(segment))
                     throw std::runtime_error("ORIGINAL_PACKET_NAME_MISMATCH");
                 publication->cache(segment, data);
-                m_face.put(*data);
+                publication->enqueueCurrent(m_face, *data);
                 return true;
             }
             // Explicit historical range restoration; migration to persistent
@@ -15460,7 +15832,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                     'D', data->getName(), data->wireEncode().size());
             }
             publication->cache(segment, data);
-            m_face.put(*data);
+            publication->enqueueCurrent(m_face, *data);
             NDN_LOG_TRACE("Reply large-data segment from file: " << data->getName());
         }
         catch (const std::exception& error) {
@@ -16459,37 +16831,54 @@ void ServiceUser::finishRequestAckOnEventLoop(
 
     void ServiceUser::registerNDNSFMessages()
     {
+        if (!m_messageSubscriptionHandles.empty()) return;
+        if (!m_svsps) throw std::logic_error("ServiceUser PubSub is not initialized");
+        std::vector<uint32_t> subscriptions;
+        subscriptions.reserve(4);
+        try {
+            // log register
+            NDN_LOG_INFO("Register NDNSF Messages in ndn-svs");
 
-        // log register
-        NDN_LOG_INFO("Register NDNSF Messages in ndn-svs");
+            // V2 ACK/RESPONSE subscriptions match every provider and parse counted
+            // requester/service names from the message body.
+            std::string regex_str = "^(<>*)" + NameToRegexString(ndn::Name("/NDNSF/ACK")) + "(<>*)$";
+            NDN_LOG_INFO(regex_str);
+            // Keep the validated Data packet for ACK provenance.  The ACK-aware
+            // V3 planner must bind the inner ProviderOfferV3 to the signer and
+            // wire digest produced by the Trust-Schema-validated packet; a
+            // payload-only subscription cannot provide that evidence.
+            subscriptions.push_back(m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
+                                        std::bind(&ServiceUser::OnRequestAck, this, _1),
+                                        true, true));
+            std::string regex_str2 = "^(<>*)" + NameToRegexString(ndn::Name("/NDNSF/RESPONSE")) + "(<>*)$";
+            NDN_LOG_INFO(regex_str2);
+            subscriptions.push_back(m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
+                                        std::bind(&ServiceUser::OnResponse, this, _1),
+                                        true, false));
+            const std::string eventRegex = "^(<>*)" + NameToRegexString(ndn::Name("/NDNSF/event")) + "(<>*)$";
+            subscriptions.push_back(m_svsps->subscribeWithRegex(ndn::Regex(eventRegex),
+                                        std::bind(&ServiceUser::onStreamEvent, this, _1),
+                                        true, true));
+            const std::string collaborationRegex =
+                "^(<>*)<NDNSF><COLLAB>(<>*)$";
+            subscriptions.push_back(m_svsps->subscribeWithRegex(
+                ndn::Regex(collaborationRegex),
+                std::bind(&ServiceUser::OnCollaborationData, this, _1),
+                true, true));
+        }
+        catch (...) {
+            for (const auto handle : subscriptions) m_svsps->unsubscribe(handle);
+            throw;
+        }
+        m_messageSubscriptionHandles.swap(subscriptions);
+    }
 
-        // V2 ACK/RESPONSE subscriptions match every provider and parse counted
-        // requester/service names from the message body.
-        std::string regex_str = "^(<>*)" + NameToRegexString(ndn::Name("/NDNSF/ACK")) + "(<>*)$";
-        NDN_LOG_INFO(regex_str);
-        // Keep the validated Data packet for ACK provenance.  The ACK-aware
-        // V3 planner must bind the inner ProviderOfferV3 to the signer and
-        // wire digest produced by the Trust-Schema-validated packet; a
-        // payload-only subscription cannot provide that evidence.
-        m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
-                                    std::bind(&ServiceUser::OnRequestAck, this, _1),
-                                    true, true);
-        std::string regex_str2 = "^(<>*)" + NameToRegexString(ndn::Name("/NDNSF/RESPONSE")) + "(<>*)$";
-        NDN_LOG_INFO(regex_str2);
-        m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
-                                    std::bind(&ServiceUser::OnResponse, this, _1),
-                                    true, false);
-        const std::string eventRegex = "^(<>*)" + NameToRegexString(ndn::Name("/NDNSF/event")) + "(<>*)$";
-        m_svsps->subscribeWithRegex(ndn::Regex(eventRegex),
-                                    std::bind(&ServiceUser::onStreamEvent, this, _1),
-                                    true, true);
-        const std::string collaborationRegex =
-            "^(<>*)<NDNSF><COLLAB>(<>*)$";
-        m_svsps->subscribeWithRegex(
-            ndn::Regex(collaborationRegex),
-            std::bind(&ServiceUser::OnCollaborationData, this, _1),
-            true, true);
-
+    void ServiceUser::unregisterNDNSFMessages()
+    {
+        if (m_svsps) {
+            for (const auto handle : m_messageSubscriptionHandles) m_svsps->unsubscribe(handle);
+        }
+        m_messageSubscriptionHandles.clear();
     }
 
     void ServiceUser::OnCollaborationData(

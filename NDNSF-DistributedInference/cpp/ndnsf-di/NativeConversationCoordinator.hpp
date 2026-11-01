@@ -16,6 +16,8 @@
 
 namespace ndnsf::di {
 class NativeDiError;
+class NativeProtectedKvPublicationV1;
+class NativeVerifiedRemoteKvPublicationV1;
 
 struct NativeConversationConfig
 {
@@ -98,8 +100,28 @@ struct NativeConversationRecord
   NativeConversationCheckpoint checkpoint;
   std::string serviceName;
   std::string planRoleMapDigest;
+  // Owner-selected next-turn placement. Kept separate from the historical
+  // checkpoint/source map and its signed digest.
+  std::map<std::string, std::string> nextTurnProvidersByRole;
   std::string requestContractDigest;
   std::uint64_t retentionDeadlineMs = 0;
+  // Durable byte references only. Availability and execution authority are checked afresh.
+  std::optional<NativeJson> protectedKvReferences;
+};
+
+// One owned historical parent snapshot, never a new storage or execution grant.
+struct NativeConversationKvRecoveryV1
+{
+  NativeJson references;
+  NativeJson checkpoint;
+  // Original decoded transcript bytes; do not reconstruct or re-sign receipts.
+  std::map<std::string, std::string> originReceipts;
+
+  bool operator==(const NativeConversationKvRecoveryV1& other) const
+  {
+    return references == other.references && checkpoint == other.checkpoint &&
+           originReceipts == other.originReceipts;
+  }
 };
 
 class NativeConversationCoordinator
@@ -130,18 +152,42 @@ public:
   NativeConversationTurn bindAttemptPlanRoleMap(
     const NativeConversationTurn& turn,
     const std::map<std::string, std::string>& providersByRole) const;
+  // A fresh turn may select a new map only against this exact saved parent.
+  // The historical checkpoint/receipt map remains the parent CAS identity.
+  NativeConversationTurn bindRecoveryPlanRoleMap(
+    const NativeConversationTurn& turn,
+    const std::map<std::string, std::string>& providersByRole,
+    const NativeConversationKvRecoveryV1& expectedRecovery) const;
   void bindGrantLease(const NativeConversationTurn& turn,
                       const NativeGrantLease& lease) const;
   NativeConversationCheckpoint prepareCheckpoint(
     const NativeConversationTurn& turn, const NativeCompletedAttempt& completed) const;
   NativeConversationRecord commitTurn(const NativeConversationTurn& turn,
                                       const NativeConversationCheckpoint& checkpoint);
+  NativeConversationRecord promoteProtectedKvSet(const std::string& conversationId,
+    const std::string& expectedCheckpointDigest,
+    const std::map<std::string, NativeProtectedKvPublicationV1>& publications);
+  // Current pending owner/CAS lookup, not a new grant or Repo availability proof.
+  std::optional<NativeJson> protectedKvForTurn(const NativeConversationTurn& turn) const;
+  std::optional<NativeConversationKvRecoveryV1> protectedKvRecoveryForTurn(
+    const NativeConversationTurn& turn) const;
   void restore(const std::filesystem::path& journalRoot);
   void restore();
 
   std::optional<NativeConversationRecord> find(const std::string& conversationId) const;
 
 private:
+  friend class NativeRemoteProtectedKvSetPromoter;
+
+  // Remote proofs are promoted only inside the Owner operation that fetched
+  // them and rechecked every Repo claim; callers cannot retain a proof and
+  // submit it after its storage claim has changed.
+  NativeConversationRecord promoteProtectedKvSet(const std::string& conversationId,
+    const std::string& expectedCheckpointDigest,
+    const std::map<std::string, NativeVerifiedRemoteKvPublicationV1>& publications,
+    const std::map<std::string, std::string>& nextTurnProvidersByRole,
+    const std::function<void()>& requireActive);
+
   struct Impl;
   std::unique_ptr<Impl> m_impl;
 };

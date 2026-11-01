@@ -221,7 +221,7 @@ targetStatusesJson(const std::vector<PublishOperationTargetStatus>& targets)
 std::string
 publishOperationStatusJson(const PublishOperationStatus& status)
 {
-  return "{\"schemaVersion\":1,\"operationId\":" + detail::quoteJson(status.operationId) +
+  auto result = "{\"schemaVersion\":" + std::to_string(status.schemaVersion) + ",\"operationId\":" + detail::quoteJson(status.operationId) +
     ",\"artifact\":" + referenceJson(status.reference) +
     ",\"generation\":" + std::to_string(status.generation) +
     ",\"seed\":" + targetJson(status.seed) +
@@ -229,7 +229,16 @@ publishOperationStatusJson(const PublishOperationStatus& status)
     ",\"targets\":" + targetStatusesJson(status.targets) +
     ",\"state\":" + detail::quoteJson(status.state) +
     ",\"updatedAtMs\":" + std::to_string(status.updatedAtMs) +
-    ",\"receiptId\":" + detail::quoteJson(status.receiptId) + "}";
+    ",\"receiptId\":" + detail::quoteJson(status.receiptId);
+  if (status.schemaVersion == 2) {
+    result += ",\"userStorageBindings\":[";
+    for (size_t i = 0; i < status.userStorageBindings.size(); ++i) {
+      if (i != 0) result += ',';
+      result += status.userStorageBindings[i].toJson();
+    }
+    result += ']';
+  }
+  return result + '}';
 }
 
 void
@@ -238,6 +247,8 @@ validatePublishStatusSizeEnvelope(const PublishOperationIntent& intent,
 {
   const std::string maximumReceiptId(256, '\x01');
   PublishOperationStatus maximum;
+  maximum.schemaVersion = intent.schemaVersion;
+  maximum.userStorageBindings = intent.userStorageBindings;
   maximum.operationId = std::string(64, 'a');
   maximum.reference = intent.reference;
   maximum.generation = intent.generation;
@@ -923,14 +934,19 @@ RepoAvailabilityProbeRequest::toJson() const
 {
   reference.validate();
   expectedLocation.validate();
-  if (schemaVersion != 1 ||
+  if ((schemaVersion != 1 && schemaVersion != 2) ||
+      (schemaVersion == 1 && ownerEpoch != 0) ||
+      (schemaVersion == 2 && (ownerEpoch == 0 ||
+        ownerEpoch > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))) ||
       (probeKind != "metadata" && probeKind != "verify_content")) {
     throw ArtifactValidationError(
       artifact_error::InvalidReceipt, "availability request version or probe kind is invalid");
   }
-  return "{\"schemaVersion\":1,\"operation\":\"AVAILABILITY\",\"artifact\":" +
+  return "{\"schemaVersion\":" + std::to_string(schemaVersion) +
+    ",\"operation\":\"AVAILABILITY\",\"artifact\":" +
     referenceJson(reference) + ",\"expectedLocation\":" + expectedLocation.toJson() +
-    ",\"probeKind\":" + detail::quoteJson(probeKind) + "}";
+    ",\"probeKind\":" + detail::quoteJson(probeKind) +
+    (schemaVersion == 2 ? ",\"ownerEpoch\":" + std::to_string(ownerEpoch) : "") + "}";
 }
 
 RepoAvailabilityProbeRequest
@@ -939,14 +955,26 @@ RepoAvailabilityProbeRequest::fromJson(const std::string& wire,
 {
   const auto root = detail::parseJson(wire, 64 * 1024);
   const auto& object = detail::requireObject(root);
-  detail::requireExactKeys(object, {"schemaVersion", "operation", "artifact",
-    "expectedLocation", "probeKind"});
-  if (getUnsigned(object, "schemaVersion") != 1 ||
+  const auto schema = getUnsigned(object, "schemaVersion");
+  if (schema == 2)
+    detail::requireExactKeys(object, {"schemaVersion", "operation", "artifact",
+      "expectedLocation", "probeKind", "ownerEpoch"});
+  else
+    detail::requireExactKeys(object, {"schemaVersion", "operation", "artifact",
+      "expectedLocation", "probeKind"});
+  if ((schema != 1 && schema != 2) ||
       getString(object, "operation") != "AVAILABILITY") {
     throw ArtifactValidationError(
       artifact_error::InvalidReceipt, "unsupported availability request");
   }
   RepoAvailabilityProbeRequest result;
+  result.schemaVersion = static_cast<uint32_t>(schema);
+  if (schema == 2) {
+    result.ownerEpoch = getUnsigned(object, "ownerEpoch");
+    if (result.ownerEpoch == 0 ||
+        result.ownerEpoch > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+      throw ArtifactValidationError(artifact_error::InvalidReceipt, "invalid owner epoch");
+  }
   result.reference = parseReference(object.at("artifact"));
   const auto& expected = detail::requireObject(object.at("expectedLocation"));
   detail::requireExactKeys(expected, {"repoNode", "providerIdentity", "operationId",
@@ -1107,9 +1135,18 @@ AvailabilityLocationReport::fromJson(const std::string& wire,
 void
 RepoAvailabilityProbeResponse::validate(const ArtifactLimits& limits) const
 {
-  if (schemaVersion != 1) {
+  if ((schemaVersion != 1 && schemaVersion != 2) ||
+      (schemaVersion == 1 && (!ownerIdentity.empty() || ownerEpoch != 0)) ||
+      (schemaVersion == 2 && (ownerEpoch == 0 ||
+        ownerEpoch > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())))) {
     throw ArtifactValidationError(
       artifact_error::InvalidReceipt, "unsupported availability response version");
+  }
+  if (schemaVersion == 2) {
+    validateCanonicalName(ownerIdentity, limits, "ownerIdentity");
+    const ndn::Name owner(ownerIdentity);
+    if (owner.empty() || owner.toUri(ndn::name::UriFormat::ALTERNATE) != ownerIdentity)
+      throw ArtifactValidationError(artifact_error::InvalidName, "owner requires normalized alternate name");
   }
   reference.validate(limits);
   expectedLocation.validate(limits);
@@ -1132,9 +1169,27 @@ std::string
 RepoAvailabilityProbeResponse::toJson() const
 {
   validate();
-  return "{\"schemaVersion\":1,\"artifact\":" + referenceJson(reference) +
+  return "{\"schemaVersion\":" + std::to_string(schemaVersion) +
+    ",\"artifact\":" + referenceJson(reference) +
     ",\"expectedLocation\":" + expectedLocation.toJson() +
-    ",\"report\":" + report.toJson() + "}";
+    ",\"report\":" + report.toJson() +
+    (schemaVersion == 2 ? ",\"ownerIdentity\":" + detail::quoteJson(ownerIdentity) +
+      ",\"ownerEpoch\":" + std::to_string(ownerEpoch) : "") + "}";
+}
+
+void
+RepoAvailabilityProbeResponse::validateExpected(const RepoAvailabilityProbeRequest& request,
+  const std::string& authenticatedOwnerIdentity) const
+{
+  validate();
+  (void)request.toJson();
+  if (schemaVersion != request.schemaVersion || reference != request.reference ||
+      expectedLocation.toJson() != request.expectedLocation.toJson() ||
+      report.probeKind != request.probeKind ||
+      (schemaVersion == 2 && (ownerIdentity != authenticatedOwnerIdentity ||
+                             ownerEpoch != request.ownerEpoch)))
+    throw ArtifactValidationError(artifact_error::InvalidReceipt,
+      "availability response differs from requested owner or tuple");
 }
 
 RepoAvailabilityProbeResponse
@@ -1143,12 +1198,22 @@ RepoAvailabilityProbeResponse::fromJson(const std::string& wire,
 {
   const auto root = detail::parseJson(wire, 64 * 1024);
   const auto& object = detail::requireObject(root);
-  detail::requireExactKeys(object, {"schemaVersion", "artifact", "expectedLocation", "report"});
-  if (getUnsigned(object, "schemaVersion") != 1) {
+  const auto schema = getUnsigned(object, "schemaVersion");
+  if (schema == 2)
+    detail::requireExactKeys(object, {"schemaVersion", "artifact", "expectedLocation", "report",
+      "ownerIdentity", "ownerEpoch"});
+  else
+    detail::requireExactKeys(object, {"schemaVersion", "artifact", "expectedLocation", "report"});
+  if (schema != 1 && schema != 2) {
     throw ArtifactValidationError(
       artifact_error::InvalidReceipt, "unsupported availability response version");
   }
   RepoAvailabilityProbeResponse result;
+  result.schemaVersion = static_cast<uint32_t>(schema);
+  if (schema == 2) {
+    result.ownerIdentity = getString(object, "ownerIdentity");
+    result.ownerEpoch = getUnsigned(object, "ownerEpoch");
+  }
   result.reference = parseReference(object.at("artifact"));
   const auto& expected = detail::requireObject(object.at("expectedLocation"));
   detail::requireExactKeys(expected, {"repoNode", "providerIdentity", "operationId",
@@ -1311,10 +1376,51 @@ AvailabilityReport::fromJson(const std::string& wire,
   return result;
 }
 
+namespace {
+
+void
+validatePublishStorageBindings(const ArtifactReference& reference,
+                              const RepoArtifactTarget& seed,
+                              const std::vector<RepoArtifactTarget>& targets,
+                              const std::vector<RepoUserStorageTargetBinding>& bindings)
+{
+  if (bindings.empty() || bindings.size() != targets.size())
+    throw ArtifactValidationError(artifact_error::InvalidReceipt,
+                                  "publish storage bindings must cover every selected target");
+  std::set<std::string> boundNodes;
+  const auto& owner = bindings.front().binding.ownerIdentity;
+  for (const auto& entry : bindings) {
+    (void)entry.toJson();
+    if (std::find(targets.begin(), targets.end(), entry.target) == targets.end() ||
+        !boundNodes.insert(entry.target.repoNode).second ||
+        entry.binding.ownerIdentity != owner)
+      throw ArtifactValidationError(artifact_error::InvalidReceipt,
+                                    "publish storage bindings must match unique targets and one owner");
+    const auto expectedWriter = ndn::Name(entry.target == seed ? reference.publisherIdentity :
+                                         seed.providerIdentity).toUri(ndn::name::UriFormat::ALTERNATE);
+    if (entry.writerIdentity != expectedWriter)
+      throw ArtifactValidationError(artifact_error::InvalidReceipt,
+                                    "publish storage writer must be the producer or selected seed");
+  }
+}
+
+std::string
+publishStorageBindingsJson(const std::vector<RepoUserStorageTargetBinding>& bindings)
+{
+  std::string result = "[";
+  for (const auto& entry : bindings) {
+    if (result.size() != 1) result += ',';
+    result += entry.toJson();
+  }
+  return result + ']';
+}
+
+} // namespace
+
 void
 PublishOperationIntent::validate(const ArtifactLimits& limits) const
 {
-  if (schemaVersion != 1 || generation == 0 || targets.empty() || targets.size() > 256 ||
+  if ((schemaVersion != 1 && schemaVersion != 2) || generation == 0 || targets.empty() || targets.size() > 256 ||
       (consistency != "ONE" && consistency != "QUORUM" && consistency != "ALL")) {
     throw ArtifactValidationError(artifact_error::InvalidReceipt,
                                   "publish intent version, generation, consistency, or targets are invalid");
@@ -1343,8 +1449,13 @@ PublishOperationIntent::validate(const ArtifactLimits& limits) const
     throw ArtifactValidationError(artifact_error::InvalidReceipt,
                                   "publish intent seed must be one of its selected targets");
   }
-  if (requestDigest != makePublishRequestDigest(reference, generation, seed,
-                                                consistency, targets)) {
+  if (schemaVersion == 1 && !userStorageBindings.empty())
+    throw ArtifactValidationError(artifact_error::InvalidReceipt,
+                                  "legacy publish intent cannot discard storage bindings");
+  const auto expectedDigest = schemaVersion == 2
+    ? makePublishRequestDigest(reference, generation, seed, consistency, targets, userStorageBindings)
+    : makePublishRequestDigest(reference, generation, seed, consistency, targets);
+  if (requestDigest != expectedDigest) {
     throw ArtifactValidationError(artifact_error::InvalidReceipt,
                                   "publish request digest does not bind the intent fields");
   }
@@ -1355,12 +1466,19 @@ std::string
 PublishOperationIntent::toJson() const
 {
   validate();
-  return "{\"schemaVersion\":1,\"operation\":\"PUBLISH_INTENT\",\"idempotencyKeyDigest\":" +
+  auto result = "{\"schemaVersion\":" + std::to_string(schemaVersion) +
+    ",\"operation\":\"PUBLISH_INTENT\",\"idempotencyKeyDigest\":" +
     detail::quoteJson(idempotencyKeyDigest) + ",\"requestDigest\":" +
     detail::quoteJson(requestDigest) + ",\"artifact\":" + referenceJson(reference) +
     ",\"generation\":" + std::to_string(generation) + ",\"seed\":" +
     targetJson(seed) + ",\"consistency\":" + detail::quoteJson(consistency) +
-    ",\"targets\":" + targetsJson(targets) + "}";
+    ",\"targets\":" + targetsJson(targets);
+  if (schemaVersion == 2)
+    result += ",\"userStorageBindings\":" + publishStorageBindingsJson(userStorageBindings);
+  result += '}';
+  if (result.size() > 256 * 1024)
+    throw ArtifactValidationError(artifact_error::InvalidReceipt, "publish intent exceeds wire bound");
+  return result;
 }
 
 PublishOperationIntent
@@ -1368,14 +1486,20 @@ PublishOperationIntent::fromJson(const std::string& wire, const ArtifactLimits& 
 {
   const auto root = detail::parseJson(wire, 256 * 1024);
   const auto& object = detail::requireObject(root);
-  detail::requireExactKeys(object, {"schemaVersion", "operation", "idempotencyKeyDigest",
-    "requestDigest", "artifact", "generation", "seed", "consistency", "targets"});
-  if (getUnsigned(object, "schemaVersion") != 1 ||
+  const auto version = getU32(object, "schemaVersion");
+  if (version == 2)
+    detail::requireExactKeys(object, {"schemaVersion", "operation", "idempotencyKeyDigest",
+      "requestDigest", "artifact", "generation", "seed", "consistency", "targets", "userStorageBindings"});
+  else
+    detail::requireExactKeys(object, {"schemaVersion", "operation", "idempotencyKeyDigest",
+      "requestDigest", "artifact", "generation", "seed", "consistency", "targets"});
+  if ((version != 1 && version != 2) ||
       getString(object, "operation") != "PUBLISH_INTENT") {
     throw ArtifactValidationError(artifact_error::InvalidReceipt,
                                   "unsupported publish intent envelope");
   }
   PublishOperationIntent result;
+  result.schemaVersion = version;
   result.idempotencyKeyDigest = getString(object, "idempotencyKeyDigest");
   result.requestDigest = getString(object, "requestDigest");
   result.reference = parseReference(object.at("artifact"));
@@ -1383,6 +1507,13 @@ PublishOperationIntent::fromJson(const std::string& wire, const ArtifactLimits& 
   result.seed = parseTarget(object.at("seed"));
   result.consistency = getString(object, "consistency");
   result.targets = parseTargets(object.at("targets"));
+  if (version == 2) {
+    const auto& entries = detail::member(object, "userStorageBindings", JsonValue::Kind::Array).array;
+    if (entries.size() > 256)
+      throw ArtifactValidationError(artifact_error::InvalidReceipt, "too many publish storage bindings");
+    for (const auto& entry : entries)
+      result.userStorageBindings.push_back(RepoUserStorageTargetBinding::fromJson(detail::renderJson(entry)));
+  }
   result.validate(limits);
   return result;
 }
@@ -1531,7 +1662,7 @@ RepoArtifactCommitReceipt::fromJson(const std::string& wire,
 void
 PublishOperationStatus::validate(const ArtifactLimits& limits) const
 {
-  if (schemaVersion != 1 || generation == 0 || updatedAtMs == 0 || targets.empty() ||
+  if ((schemaVersion != 1 && schemaVersion != 2) || generation == 0 || updatedAtMs == 0 || targets.empty() ||
       targets.size() > 256 ||
       (consistency != "ONE" && consistency != "QUORUM" && consistency != "ALL") ||
       (state != "ACCEPTED" && state != "IN_PROGRESS" && state != "COMMITTED" &&
@@ -1624,6 +1755,14 @@ PublishOperationStatus::validate(const ArtifactLimits& limits) const
   if (!receiptId.empty()) {
     validateIdentifier(receiptId, 256, "receiptId", artifact_error::InvalidReceipt);
   }
+  if (schemaVersion == 1 && !userStorageBindings.empty())
+    throw ArtifactValidationError(artifact_error::InvalidReceipt,
+                                  "legacy publish status cannot discard storage bindings");
+  if (schemaVersion == 2) {
+    std::vector<RepoArtifactTarget> selected;
+    for (const auto& entry : targets) selected.push_back(entry.target);
+    validatePublishStorageBindings(reference, seed, selected, userStorageBindings);
+  }
 }
 
 std::string
@@ -1643,13 +1782,19 @@ PublishOperationStatus::fromJson(const std::string& wire, const ArtifactLimits& 
 {
   const auto root = detail::parseJson(wire, MAX_PUBLISH_OPERATION_STATUS_JSON_BYTES);
   const auto& object = detail::requireObject(root);
-  detail::requireExactKeys(object, {"schemaVersion", "operationId", "artifact", "generation",
-    "seed", "consistency", "targets", "state", "updatedAtMs", "receiptId"});
-  if (getUnsigned(object, "schemaVersion") != 1) {
+  const auto version = getU32(object, "schemaVersion");
+  if (version == 2)
+    detail::requireExactKeys(object, {"schemaVersion", "operationId", "artifact", "generation",
+      "seed", "consistency", "targets", "state", "updatedAtMs", "receiptId", "userStorageBindings"});
+  else
+    detail::requireExactKeys(object, {"schemaVersion", "operationId", "artifact", "generation",
+      "seed", "consistency", "targets", "state", "updatedAtMs", "receiptId"});
+  if (version != 1 && version != 2) {
     throw ArtifactValidationError(artifact_error::InvalidReceipt,
                                   "unsupported publish operation status version");
   }
   PublishOperationStatus result;
+  result.schemaVersion = version;
   result.operationId = getString(object, "operationId");
   result.reference = parseReference(object.at("artifact"));
   result.generation = getUnsigned(object, "generation");
@@ -1667,6 +1812,13 @@ PublishOperationStatus::fromJson(const std::string& wire, const ArtifactLimits& 
   result.state = getString(object, "state");
   result.updatedAtMs = getUnsigned(object, "updatedAtMs");
   result.receiptId = getString(object, "receiptId");
+  if (version == 2) {
+    const auto& entries = detail::member(object, "userStorageBindings", JsonValue::Kind::Array).array;
+    if (entries.size() > 256)
+      throw ArtifactValidationError(artifact_error::LimitExceeded, "too many status storage bindings");
+    for (const auto& entry : entries)
+      result.userStorageBindings.push_back(RepoUserStorageTargetBinding::fromJson(detail::renderJson(entry)));
+  }
   result.validate(limits);
   return result;
 }
@@ -1754,6 +1906,25 @@ makePublishRequestDigest(const ArtifactReference& reference, uint64_t generation
   appendString(material, consistency);
   appendU32(material, static_cast<uint32_t>(ordered.size()));
   for (const auto& target : ordered) appendTarget(material, target);
+  return sha256Hex(material);
+}
+
+std::string
+makePublishRequestDigest(const ArtifactReference& reference, uint64_t generation,
+                         const RepoArtifactTarget& seed, const std::string& consistency,
+                         const std::vector<RepoArtifactTarget>& targets,
+                         const std::vector<RepoUserStorageTargetBinding>& bindings)
+{
+  const auto legacyDigest = makePublishRequestDigest(reference, generation, seed, consistency, targets);
+  validatePublishStorageBindings(reference, seed, targets, bindings);
+  auto ordered = bindings;
+  std::sort(ordered.begin(), ordered.end(), [] (const auto& a, const auto& b) {
+    return targetByteLess(a.target, b.target);
+  });
+  std::string material = "ndnsf-repo-publish-request-v2";
+  material.append(decodeSha256Hex(legacyDigest));
+  appendU32(material, static_cast<uint32_t>(ordered.size()));
+  for (const auto& entry : ordered) appendString(material, entry.toJson());
   return sha256Hex(material);
 }
 

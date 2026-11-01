@@ -1,4 +1,5 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/spec204/runtime-config.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
@@ -17,6 +18,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
@@ -25,6 +27,8 @@
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
+#include "ndnsf-distributed-repo/RepoNode.hpp"
+#include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
 #include "ndnsf-integration-fixture.hpp"
@@ -594,30 +598,6 @@ bool conversationRejectsBusyTurn(Conversation& conversation,
   return false;
 }
 
-void writeEd25519KeyPair(const std::filesystem::path& privatePath,
-                         const std::filesystem::path& publicPath)
-{
-  std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> context(
-    EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr), EVP_PKEY_CTX_free);
-  if (!context || EVP_PKEY_keygen_init(context.get()) != 1)
-    throw std::runtime_error("cannot initialize fixture key generator");
-  EVP_PKEY* raw = nullptr;
-  if (EVP_PKEY_keygen(context.get(), &raw) != 1)
-    throw std::runtime_error("cannot generate fixture key");
-  std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(raw, EVP_PKEY_free);
-  std::unique_ptr<BIO, decltype(&BIO_free)> privateBio(
-    BIO_new_file(privatePath.c_str(), "wb"), BIO_free);
-  std::unique_ptr<BIO, decltype(&BIO_free)> publicBio(
-    BIO_new_file(publicPath.c_str(), "wb"), BIO_free);
-  if (!privateBio || !publicBio ||
-      PEM_write_bio_PrivateKey(privateBio.get(), key.get(), nullptr, nullptr, 0,
-                               nullptr, nullptr) != 1 ||
-      PEM_write_bio_PUBKEY(publicBio.get(), key.get()) != 1)
-    throw std::runtime_error("cannot write fixture key");
-  std::filesystem::permissions(privatePath,
-    std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-    std::filesystem::perm_options::replace);
-}
 
 void writeEd25519PrivateKey(const std::filesystem::path& privatePath,
                             const std::shared_ptr<EVP_PKEY>& key)
@@ -633,23 +613,6 @@ void writeEd25519PrivateKey(const std::filesystem::path& privatePath,
     std::filesystem::perm_options::replace);
 }
 
-std::string publicKeyDigest(const std::filesystem::path& path)
-{
-  std::ifstream input(path);
-  const std::string pem((std::istreambuf_iterator<char>(input)),
-                        std::istreambuf_iterator<char>());
-  std::unique_ptr<BIO, decltype(&BIO_free)> bio(
-    BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), BIO_free);
-  std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(
-    PEM_read_bio_PUBKEY(bio.get(), nullptr, nullptr, nullptr), EVP_PKEY_free);
-  if (!key) throw std::runtime_error("cannot read fixture public key");
-  std::string raw(32, '\0');
-  std::size_t size = raw.size();
-  if (EVP_PKEY_get_raw_public_key(key.get(),
-        reinterpret_cast<unsigned char*>(raw.data()), &size) != 1 || size != raw.size())
-    throw std::runtime_error("fixture public key is not Ed25519");
-  return nativePlanningDigest(raw);
-}
 
 std::shared_ptr<EVP_PKEY> deterministicEd25519Key(unsigned char seed)
 {
@@ -699,276 +662,6 @@ std::string signDigest(const std::shared_ptr<EVP_PKEY>& key, const std::string& 
   return std::string(reinterpret_cast<const char*>(encoded.data()), 88);
 }
 
-class RuntimeFixture
-{
-public:
-  explicit RuntimeFixture(bool streaming = false, bool qwenStreaming = false,
-                          std::size_t maxPayloadBytes = 32)
-    : root(std::filesystem::temp_directory_path() /
-           ("spec185-prepared-request-" + std::to_string(::getpid()) + "-" +
-            std::to_string(++sequence)))
-  {
-    std::filesystem::create_directories(root);
-    write("trust.conf",
-      "; Spec185 prepared request fixture\n"
-      "rule\n"
-      "{\n"
-      "  id \"Testbed Validation Rule\"\n"
-      "  for data\n"
-      "  checker\n"
-      "  {\n"
-      "    type hierarchical\n"
-      "    sig-type rsa-sha256\n"
-      "  }\n"
-      "}\n"
-      "trust-anchor\n"
-      "{\n"
-      "  type any\n"
-      "}\n");
-    writeEd25519KeyPair(root / "requester.pem", root / "requester-public.pem");
-    writeEd25519KeyPair(root / "authority.pem", root / "authority-public.pem");
-    writeEd25519KeyPair(root / "offer.pem", root / "offer-public.pem");
-    {
-      std::ofstream key(root / "conversation.key", std::ios::binary);
-      const std::string bytes(32, 'k');
-      key.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-      key.close();
-      std::filesystem::permissions(root / "conversation.key",
-        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-        std::filesystem::perm_options::replace);
-    }
-
-    NativeCanonicalSource source;
-    NativeModelDescriptor descriptor;
-    NativeJson catalog = NativeJson::object();
-    const auto control = NativeAssemblyControl{
-      std::chrono::steady_clock::now() + std::chrono::seconds(30), [] {},
-      1 << 20, 1 << 20};
-    if (qwenStreaming) {
-      std::ifstream qwenFile("tests/fixtures/spec182/qwen-native-config.onnx", std::ios::binary);
-      if (!qwenFile.good()) throw std::runtime_error("missing Qwen native config fixture");
-      const std::string qwenBytes((std::istreambuf_iterator<char>(qwenFile)),
-                                  std::istreambuf_iterator<char>());
-      source.modelBytes.assign(qwenBytes.begin(), qwenBytes.end());
-      const auto sourceIdentity = canonicalOnnxSourceIdentity(source, control);
-      const std::string role = "/LLM/Pipeline/Stage/0";
-      const std::string manifestDigest = nativePlanningDigest("spec185-qwen-manifest");
-      const std::string protectionEpoch = "epoch-1";
-      // The provider fixture's grant publication source intentionally binds the
-      // shared fixture profile; keep the Qwen source/model identity distinct
-      // while using the same authorized artifact profile at this boundary.
-      const std::string artifactProfileDigest = nativePlanningDigest("fixture-profile");
-      const std::string qwenGraphDigest =
-        "sha256:8f901f484f07440aef844373c95d64b6462bcbc90c0070087b4c85c78a0de2b2";
-      descriptor = fixture::completeModel({
-        "QwenFixture", nativePlanningDigest("spec185-qwen-content"),
-        nativePlanningDigest("spec185-qwen-semantics"), qwenGraphDigest,
-        "onnx", "float32", "qwen", "1"});
-      descriptor.sourceRevision = "pinned-r1";
-      const std::string sourceDigest = nativePlanningDigest(
-        source.modelBytes.data(), source.modelBytes.size());
-      const NativeJson stateInputs = {{role, {{"attention_kv_in", {"attention_kv_in"}},
-        {"recurrent_state_in", {"recurrent_state_in"}},
-        {"convolution_state_in", {"convolution_state_in"}}}}};
-      const NativeJson stateOutputs = {{role, {{"attention_kv_out", {"attention_kv_out"}},
-        {"recurrent_state_out", {"recurrent_state_out"}},
-        {"convolution_state_out", {"convolution_state_out"}}}}};
-      catalog = {
-        {"schema", "ndnsf-di-native-request-catalog-v1"},
-        {"model", nativeParseJson(descriptor.canonicalJson())},
-        {"source", {{"file", "model.onnx"}, {"data_name", "/fixture/qwen/source"},
-          {"digest", sourceDigest}, {"model_manifest_digest", manifestDigest},
-          {"canonical_graph_digest", sourceIdentity.graphDigest}}},
-        {"recipe", {{"artifact_profile_digest", artifactProfileDigest},
-          {"assembler_descriptor_digest", nativePlanningDigest("spec185-qwen-assembler")},
-          {"backend_abi", "fixture-abi"}, {"precision", "float32"},
-          {"quantization", "none"}, {"layout", "native"}, {"padding", "none"},
-          {"protection_epoch", protectionEpoch}, {"max_source_bytes", 1 << 20},
-          {"max_assembled_bytes", 1 << 20}, {"max_nodes", 64}}},
-        {"publication", {{"artifact_root", "/fixture/qwen/artifacts"}}},
-        // The Qwen generation envelope carries tokenizer/state metadata in
-        // addition to the inline input; use the maintained native-config
-        // bound rather than the compact YOLO fixture's 32-byte probe limit.
-        {"input_format", "OPAQUE"}, {"max_payload_bytes", 4096},
-        {"conversation_input", {{"kind", "OPAQUE_BYTE_TOKEN_IDS"}}},
-        {"splitter", {{"kind", "QWEN"},
-          {"layer_ranges", NativeJson::array({NativeJson::array({0, 2})})},
-          {"artifact_digests_by_role", {{role, nativePlanningDigest("spec185-qwen-artifact")}}},
-          {"weight_bytes_by_role", {{role, 1}}}, {"roles", {role}},
-          {"tensor_degrees", {1}}, {"input_ingress_role", role},
-          {"result_egress_role", role}}},
-        {"node_mapping", {{"embedding", {0}}, {"layer-00", {1}},
-          {"layer-01", {2}}, {"final-norm-head", {3, 4, 5, 6}}}},
-        {"state_inputs", stateInputs}, {"state_outputs", stateOutputs}};
-    }
-    else {
-      std::ifstream oracleFile("tests/fixtures/spec182/yolo-semantic-oracle.json");
-      if (!oracleFile.good()) throw std::runtime_error("missing YOLO semantic oracle");
-      NativeJson oracle;
-      oracleFile >> oracle;
-      const auto hex = oracle.at("model_hex").get<std::string>();
-      for (std::size_t i = 0; i < hex.size(); i += 2)
-        source.modelBytes.push_back(static_cast<std::uint8_t>(
-          std::stoul(hex.substr(i, 2), nullptr, 16)));
-      std::ifstream graphFile("tests/fixtures/spec182/onnx-planning-graph-oracle.json");
-      if (!graphFile.good()) throw std::runtime_error("missing ONNX graph oracle");
-      NativeJson graphOracles;
-      graphFile >> graphOracles;
-      NativeJson graphOracle;
-      for (const auto& item : graphOracles) {
-        if (item.at("model_hex") == hex) {
-          graphOracle = item;
-          break;
-        }
-      }
-      if (graphOracle.is_null()) throw std::runtime_error("missing matching graph oracle");
-      descriptor = fixture::completeModel({
-        "yolo26n", nativePlanningDigest("YOLOFixture-content"),
-        nativePlanningDigest("YOLOFixture-semantics"), oracle.at("graph_digest"),
-        "onnx", "float32", "YOLOFixture", "1"});
-      const auto sourceIdentity = canonicalOnnxSourceIdentity(source, control);
-      const auto planning = inspectNativeOnnxSourceGraph(source, descriptor, control);
-      descriptor.graphDigest = planning.graph.graphDigest;
-      if (sourceIdentity.graphDigest != graphOracle.at("canonical_graph_digest"))
-        throw std::runtime_error("fixture graph identity differs from oracle");
-      catalog["schema"] = "ndnsf-di-native-request-catalog-v1";
-      catalog["model"] = nativeParseJson(descriptor.canonicalJson());
-      catalog["source"] = {
-        {"file", "model.onnx"}, {"data_name", "/fixture/source"},
-        {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
-        {"model_manifest_digest", nativePlanningDigest("fixture-manifest")},
-        {"canonical_graph_digest", sourceIdentity.graphDigest} };
-      catalog["recipe"] = NativeJson::object();
-      catalog["recipe"]["artifact_profile_digest"] = nativePlanningDigest("fixture-profile");
-      catalog["recipe"]["assembler_descriptor_digest"] = nativePlanningDigest("fixture-assembler-v1");
-      catalog["recipe"]["backend_abi"] = "fixture-abi";
-      catalog["recipe"]["precision"] = descriptor.precision;
-      catalog["recipe"]["quantization"] = "none";
-      catalog["recipe"]["layout"] = "NCHW";
-      catalog["recipe"]["padding"] = "none";
-      catalog["recipe"]["protection_epoch"] = "epoch-1";
-      catalog["recipe"]["max_source_bytes"] = 1 << 20;
-      catalog["recipe"]["max_assembled_bytes"] = 1 << 20;
-      catalog["recipe"]["max_nodes"] = 100;
-      catalog["publication"] = {{"artifact_root", "/fixture/artifacts"}};
-      catalog["input_format"] = "OPAQUE";
-      catalog["max_payload_bytes"] = maxPayloadBytes;
-      const NativeJson component = {
-        {"candidate_id", "semantic-v1"}, {"priority", 1},
-        {"roles", {"Front", "Branch", "Merge"}},
-        {"node_names_by_role", NativeJson::object()},
-        {"input_ingress_role", "Front"}, {"result_egress_role", "Merge"},
-        {"merge_kind", ""}, {"candidate_digest", oracle.at("registered_digest")},
-        {"semantic_partition", oracle.at("partition")} };
-      catalog["splitter"] = { {"kind", "YOLO"}, {"components", {component}} };
-    }
-
-    std::ofstream model(root / "model.onnx", std::ios::binary);
-    model.write(reinterpret_cast<const char*>(source.modelBytes.data()),
-                static_cast<std::streamsize>(source.modelBytes.size()));
-    const auto digest = std::string("sha256:") + std::string(64, 'a');
-    const auto offerKeyId = publicKeyDigest(root / "offer-public.pem");
-    NativeJson offerAdmission = NativeJson::object();
-    offerAdmission["policy"] = NativeJson::object();
-    offerAdmission["policy"]["schema"] = "spec180-provider-offer-trust-v1";
-    offerAdmission["policy"]["candidateId"] = "candidate";
-    offerAdmission["policy"]["candidateDigest"] = digest;
-    offerAdmission["policy"]["trustSchema"] = "/group/trust";
-    offerAdmission["policy"]["entries"] = NativeJson::array({NativeJson{
-      {"provider", "/provider"}, {"service", "/Inference"},
-      {"keyLocatorPrefix", "/provider/KEY/offer"}, {"signerKeyId", offerKeyId},
-      {"certificateName", "/provider/KEY/offer/ID-CERT"}}});
-    offerAdmission["public_key_files"] = NativeJson::object();
-    offerAdmission["public_key_files"][offerKeyId] = "offer-public.pem";
-    offerAdmission["candidate_digest"] = digest;
-
-    // Sanitizer instrumentation makes the cooperative extension boundary
-    // substantially slower on this host.  Keep the normal fixture's strict
-    // 100 ms policy budget, but give the instrumented C++ selector enough
-    // wall-clock budget to exercise the same authenticated path without
-    // turning tool overhead into a deadline failure.
-#if defined(__SANITIZE_ADDRESS__)
-    constexpr std::uint64_t policyBudgetMs = 5000;
-#elif defined(__clang__)
-#  if __has_feature(address_sanitizer)
-    constexpr std::uint64_t policyBudgetMs = 5000;
-#  else
-    constexpr std::uint64_t policyBudgetMs = 100;
-#  endif
-#else
-    constexpr std::uint64_t policyBudgetMs = 100;
-#endif
-    NativeJson request = {
-      {"service", "/Inference"}, {"task", "task"},
-      {"adapter_composition_digest", digest}, {"task_descriptor_digest", digest},
-      {"input_layout_digest", digest}, {"security_policy_digest", digest},
-      {"max_candidates", 1}, {"max_policy_ms", policyBudgetMs},
-      {"generation_mode", streaming ? "TOKEN_STREAMING" : "TOKEN_DIAGNOSTIC"},
-      {"timeout_ms", 30000}, {"ack_timeout_ms", 5000}};
-    if (streaming) {
-      const auto tokenizerDigest = nativePlanningDigest("spec185-fixture-tokenizer");
-      request["tokenizer_digest"] = tokenizerDigest;
-      request["generation_defaults"] = {
-        {"useCache", true}, {"outputMode", "TOKEN_STREAMING"},
-        {"maxNewTokens", 32}, {"tokenizerDigest", tokenizerDigest},
-        {"eosTokenIds", {2}}, {"samplingMode", "Greedy"},
-        {"stateInputNames", {"attention_kv_in", "recurrent_state_in", "convolution_state_in"}},
-        {"stateOutputNames", {"attention_kv_out", "recurrent_state_out", "convolution_state_out"}}};
-    }
-    auto config = NativeJson{
-      {"schema", "ndnsf-di-native-requester-v1"},
-      {"core", {{"requester_identity", "/user"}, {"authority_identity", "/aa"},
-        {"group", "/group"}, {"trust_schema_file", "trust.conf"}}},
-      {"catalog", catalog}, {"offer_admission", offerAdmission},
-      {"grant", {{"authority_identity", "/aa"}, {"authority_service", "/grant"},
-        {"authority_public_key_file", "authority-public.pem"},
-        {"requester_private_key_file", "requester.pem"},
-        {"protection_epoch", "epoch-1"}}},
-      {"limits", {{"bootstrap_ms", 1000}, {"max_source_bytes", 1 << 20},
-        {"max_assembled_bytes", 1 << 20}}},
-      {"request", request}};
-    if (streaming) {
-      config["conversation"] = {
-        {"schema", "ndnsf-di-native-conversation-v1"},
-        {"journal", {{"state_root", "conversation-state"}, {"identity", "runtime"},
-          {"keys", NativeJson::array({NativeJson{{"id", "k1"}, {"file", "conversation.key"}}})},
-          {"quota_bytes", 1 << 20}, {"test_only_allow_ephemeral_state_root", true}}},
-        {"owner", {{"requester_identity", "/user"}, {"service_name", "/Inference"},
-          {"security_domain_digest", digest}}}};
-    }
-    configPath = root / "requester.json";
-    std::ofstream output(configPath);
-    output << nativeCanonicalJson(config);
-  }
-
-  ~RuntimeFixture()
-  {
-    std::error_code error;
-    std::filesystem::remove_all(root, error);
-  }
-
-  std::filesystem::path write(const std::string& name, const std::string& content)
-  {
-    const auto path = root / name;
-    std::ofstream output(path);
-    output << content;
-    return path;
-  }
-
-  std::filesystem::path root;
-  std::filesystem::path configPath;
-  inline static std::atomic<unsigned> sequence{0};
-};
-
-RuntimeConfig runtimeConfig(const RuntimeFixture& fixture)
-{
-  RuntimeConfig config;
-  config.nativeConfigPath = fixture.configPath.string();
-  config.maxPreparedBytes = 4 * 1024 * 1024;
-  config.maxPreparedEntries = 2;
-  config.preparationJobTimeout = std::chrono::seconds(5);
-  return config;
-}
 
 PreparedModel prepareWithInProcessPump(
   const std::shared_ptr<Runtime>& runtime,
@@ -1424,6 +1117,16 @@ makePreparedServedProviderPreparation()
 } // namespace
 
 namespace ndnsf::di {
+
+#if defined(SPEC204_STORAGE_OWNER_SELECTOR)
+struct Spec185PreparationTestAccess
+{
+  static PreparationHandle prepareAsync(ModelPreparationCache& cache, const PreparationSpec& spec)
+  {
+    return PreparationHandle(cache.prepareAsync(spec, CachePolicy::UseOrFetch, std::chrono::seconds(5)));
+  }
+};
+#endif
 
 struct Spec185PreparedModelTestAccess
 {
@@ -2559,7 +2262,28 @@ makeLocalRepoOwner(const RuntimeFixture& fixture,
 }
 #endif
 
-#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+#if defined(SPEC204_STORAGE_OWNER_SELECTOR)
+class Spec204ExistingPublication final : public RepositoryArtifactPublisher
+{
+public:
+  explicit Spec204ExistingPublication(NativePreparedCanonicalPublication receipt)
+    : m_receipt(std::move(receipt)) { m_receipt.rollbackOwned = false; }
+  NativePreparedCanonicalPublication publish(const std::string&, const std::string&,
+    const NativeInspectedModel&, const NativeCanonicalSource&,
+    const NativeCanonicalPublicationOptions& options, const NativeRequestControl& control) const override
+  {
+    control.requireActive();
+    if (!options.durableStorageOwner || options.durableStorageOwner->ownerIdentity != "/user")
+      throw std::runtime_error("OWNER_CONTEXT_NOT_PROPAGATED");
+    return m_receipt;
+  }
+  void rollback(const NativePreparedCanonicalPublication&) const noexcept override {}
+private:
+  NativePreparedCanonicalPublication m_receipt;
+};
+
+BOOST_AUTO_TEST_CASE(OwnedStorageCompletesThroughServedProvider)
+#elif defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
 BOOST_AUTO_TEST_CASE(FullPathV4PlacementCompletesThroughServedProvider)
 #else
 BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
@@ -2585,6 +2309,18 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   profile.providerNode = ndn::Name("/ndnsf/spec185/served-provider/provider");
   profile.userIdentity = ndn::Name("/user");
   profile.providerIdentity = ndn::Name("/provider");
+#if defined(SPEC204_STORAGE_OWNER_SELECTOR)
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
+  const auto userActor = ndn_service_framework::parseSvsProducerActor(
+    ndn::Name(profile.userNode).append("0"), "user");
+  const auto providerActor = ndn_service_framework::parseSvsProducerActor(
+    ndn::Name(profile.providerNode).append("0"), "provider");
+  BOOST_REQUIRE(userActor);
+  BOOST_REQUIRE(providerActor);
+  BOOST_CHECK(*userActor == profile.userIdentity);
+  BOOST_CHECK(*providerActor == profile.providerIdentity);
+#endif
   profile.attributeAuthority = ndn::Name("/aa");
   profile.serviceName = ndn::Name("/Inference");
   profile.providerRoles = {"/Front", "/Branch", "/Merge"};
@@ -2649,14 +2385,50 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
 
 #if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
   auto placementCapture = std::make_shared<Spec194PlacementCapture>();
+#if defined(SPEC204_STORAGE_OWNER_SELECTOR)
+  ndnsf_distributed_repo::StorageCapability ownedCapability;
+  ownedCapability.repoNode = "/spec204/native/repo";
+  ownedCapability.repoMode = "persistent";
+  ownedCapability.freeBytes = 1ULL << 30;
+  const auto ownedRoot = fixture.root / "owned-encrypted";
+  std::filesystem::create_directories(ownedRoot);
+  std::filesystem::permissions(ownedRoot, std::filesystem::perms::owner_all);
+  const auto journalPath = (fixture.root / "owned-encrypted.sqlite").string();
+  auto ownedNode = std::make_shared<ndnsf_distributed_repo::RepoNode>(
+    ndn::Name(ownedCapability.repoNode), ownedCapability,
+    ndnsf_distributed_repo::makeFilesystemRepoStore(ownedRoot.string(), 1U << 20,
+      1U << 20, "spec204-native"), ownedCapability.repoNode, "/spec204/native/storage", journalPath);
+  auto ownedJournal = std::make_shared<ndnsf_distributed_repo::SqliteArtifactMetadataStore>(
+    journalPath, true, 16, false);
+  auto encryptedRangeStore = ownedNode->createEncryptedLargeDataStore();
+  auto runtimeConfiguration = runtimeConfig(fixture);
+  auto grantSequence = std::make_shared<std::atomic<std::uint64_t>>(0);
+  runtimeConfiguration.durableStorageOwner = NativeDurableStorageOwner{
+    "/user", [ownedJournal, grantSequence, node = ownedCapability.repoNode](
+      const ndn::Name& name, const std::string& writer, const std::function<void()>& active) {
+      if (active) active();
+      if (writer != "/user") throw std::runtime_error("DURABLE_OWNER_BINDING_MISMATCH");
+      const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+      const auto id = "native-grant-" + std::to_string(grantSequence->fetch_add(1));
+      const auto grant = ownedJournal->grantUserStorage("/user", node, id, writer,
+        name.toUri(ndn::name::UriFormat::ALTERNATE), now + 60000, now);
+      return ndn_service_framework::DurableStorageGrantSelector{
+        node, "/user", id, grant.ownerEpoch};
+    }};
+#else
   auto repoOwner = makeLocalRepoOwner(fixture);
   auto encryptedRangeStore = std::make_shared<
     ndnsf_distributed_repo::RepoEncryptedLargeDataStore>(repoOwner.repo);
   auto runtimeConfiguration = runtimeConfig(fixture);
   runtimeConfiguration.repositorySourceProvider = repoOwner.sourceProvider;
+#endif
   runtimeConfiguration.encryptedRangeStore = encryptedRangeStore;
   runtimeConfiguration.fixedPlacementStrategy =
     std::make_shared<Spec194RecordingV4Placement>(placementCapture);
+#if defined(SPEC204_STORAGE_OWNER_SELECTOR)
+  const auto storageOwner = runtimeConfiguration.durableStorageOwner;
+#endif
   auto runtime = Runtime::open(std::move(runtimeConfiguration));
 #else
   auto runtime = Runtime::open(runtimeConfig(fixture));
@@ -2667,7 +2439,28 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   environmentUser->setEncryptedLargeDataRangeStore(encryptedRangeStore);
 #endif
   auto prepared = prepareWithInProcessPump(runtime, *environment);
-#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+#if defined(SPEC204_STORAGE_OWNER_SELECTOR)
+  for (const bool wrongOwner : {false, true}) {
+    auto invalidConfig = runtimeConfig(fixture);
+    invalidConfig.encryptedRangeStore = encryptedRangeStore;
+    if (wrongOwner) {
+      invalidConfig.durableStorageOwner = storageOwner;
+      invalidConfig.durableStorageOwner->ownerIdentity = "/other-user";
+    }
+    auto invalidRuntime = Runtime::open(std::move(invalidConfig));
+    ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+      invalidRuntime, environmentUser, earlyGrants, admission);
+    const auto originalBytes = ownedJournal->userStorageUsage("/user", ownedCapability.repoNode).committedBytes;
+    BOOST_CHECK_THROW(prepareWithInProcessPump(invalidRuntime, *environment), std::exception);
+    BOOST_CHECK_EQUAL(ownedJournal->userStorageUsage("/user", ownedCapability.repoNode).committedBytes,
+                      originalBytes);
+    BOOST_CHECK_EQUAL(ownedJournal->userStorageUsage("/other-user", ownedCapability.repoNode).committedBytes, 0U);
+    invalidRuntime->close();
+    InProcessRuntimeBinding invalidBinding{environment, environmentUser, earlyGrants, admission};
+    BOOST_REQUIRE(drainWithInProcessPump(invalidBinding, invalidRuntime, testDrainTimeout()));
+  }
+#endif
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR) && !defined(SPEC204_STORAGE_OWNER_SELECTOR)
   const auto repoStats = repoOwner.concreteProvider->stats();
   BOOST_CHECK_GT(repoStats.lookups, 0U);
   BOOST_CHECK_GT(repoStats.missIngests, 0U);
@@ -2678,11 +2471,226 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     }));
 #endif
   const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
+#if defined(SPEC204_STORAGE_OWNER_SELECTOR)
+  BOOST_REQUIRE(package->preparedPublication);
+  const auto& ownedReceipt = *package->preparedPublication;
+  BOOST_CHECK(!ownedReceipt.durableStorageSources.empty());
+  BOOST_CHECK_NO_THROW(ownedReceipt.requireCurrentDurableStorageOwner("/user"));
+  BOOST_CHECK_THROW(ownedReceipt.requireCurrentDurableStorageOwner("/other-user"), std::runtime_error);
+  const auto usage = ownedJournal->userStorageUsage("/user", ownedCapability.repoNode);
+  BOOST_CHECK_GT(usage.committedBytes, 0U);
+  BOOST_CHECK_EQUAL(usage.reservedBytes, 0U);
+  BOOST_CHECK_EQUAL(usage.limitBytes, 1000000000ULL);
+  const auto initialClaims = ownedJournal->listUserStorage("/user", ownedCapability.repoNode, "", 100);
+  std::uint64_t claimedBytes = 0;
+  for (const auto& claim : initialClaims) {
+    BOOST_CHECK(environmentUser->getName().isPrefixOf(ndn::Name(claim.object.objectName)));
+    claimedBytes += claim.object.payloadWireBytes + claim.object.manifestBytes;
+  }
+  BOOST_CHECK_EQUAL(claimedBytes, usage.committedBytes);
+  BOOST_REQUIRE(storageOwner);
+  BOOST_CHECK_NO_THROW(storageOwner->checkedResolver()(ndn::Name(ownedReceipt.rootDataName), "/user", {}));
+  for (const int customCase : {0, 1, 2}) {
+    const bool metadataOnly = customCase == 0;
+    auto existing = ownedReceipt;
+    if (metadataOnly) existing.durableStorageSources.clear();
+    auto customConfig = runtimeConfig(fixture);
+    customConfig.encryptedRangeStore = encryptedRangeStore;
+    customConfig.durableStorageOwner = storageOwner;
+    if (customCase == 1) customConfig.durableStorageOwner->resolveGrant = {};
+    customConfig.repositoryArtifactPublisher = std::make_shared<Spec204ExistingPublication>(existing);
+    auto customRuntime = Runtime::open(std::move(customConfig));
+    ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+      customRuntime, environmentUser, earlyGrants, admission);
+    if (customCase != 2) {
+      BOOST_CHECK_EXCEPTION(prepareWithInProcessPump(customRuntime, *environment), DiError,
+        [](const DiError& error) {
+          return std::string(error.what()).find("DURABLE_OWNER_BINDING_REQUIRED") != std::string::npos;
+        });
+    }
+    else BOOST_CHECK_NO_THROW(prepareWithInProcessPump(customRuntime, *environment));
+    customRuntime->close();
+    InProcessRuntimeBinding customBinding{environment, environmentUser, earlyGrants, admission};
+    BOOST_REQUIRE(drainWithInProcessPump(customBinding, customRuntime, testDrainTimeout()));
+    BOOST_CHECK_EQUAL(ownedJournal->userStorageUsage("/user", ownedCapability.repoNode).committedBytes,
+                      usage.committedBytes);
+  }
+  BOOST_CHECK_NO_THROW(runtime->user().prepare());
+  auto warmAsync = runtime->user().prepareAsync();
+  BOOST_CHECK_NO_THROW(warmAsync.result(std::chrono::seconds(5)));
+  std::atomic<bool> faceGuarded{false};
+  environmentUser->postToIo([&] {
+    bool syncGuard = false, handleGuard = false;
+    try { (void)runtime->user().prepare(); }
+    catch (const DiError& error) { syncGuard = error.code() == "WOULD_DEADLOCK"; }
+    try { (void)warmAsync.result(std::chrono::milliseconds(0)); }
+    catch (const DiError& error) { handleGuard = error.code() == "WOULD_DEADLOCK"; }
+    faceGuarded.store(syncGuard && handleGuard);
+  });
+  environment->pumpUntilWithAttributeAuthority([&] { return faceGuarded.load(); });
+  BOOST_REQUIRE(faceGuarded.load());
+  {
+    auto reentryConfig = runtimeConfig(fixture);
+    reentryConfig.encryptedRangeStore = encryptedRangeStore;
+    reentryConfig.durableStorageOwner = storageOwner;
+    auto reentryRuntime = Runtime::open(std::move(reentryConfig));
+    ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+      reentryRuntime, environmentUser, earlyGrants, admission);
+    auto reentryPrepared = prepareWithInProcessPump(reentryRuntime, *environment);
+    auto reentryHandle = reentryRuntime->user().prepareAsync();
+    BOOST_CHECK_NO_THROW(reentryHandle.result(std::chrono::seconds(5)));
+    ndnsf::di::detail::RuntimeTestAccess::closePreparationDispatcher(reentryRuntime);
+    unsigned deliveries = 0;
+    bool deliveryError = false;
+    const auto registrationStarted = std::chrono::steady_clock::now();
+    auto reentrySubscription = reentryHandle.onCompletion(
+      [&](std::exception_ptr error, std::optional<PreparedModel> value) {
+        ++deliveries;
+        deliveryError = bool(error) && !value;
+        reentryRuntime->close();
+      });
+    BOOST_CHECK_EQUAL(deliveries, 1U);
+    BOOST_CHECK(deliveryError);
+    BOOST_CHECK(std::chrono::steady_clock::now() - registrationStarted < std::chrono::seconds(2));
+    InProcessRuntimeBinding reentryBinding{environment, environmentUser, earlyGrants, admission};
+    BOOST_REQUIRE(drainWithInProcessPump(reentryBinding, reentryRuntime, testDrainTimeout()));
+    BOOST_CHECK_NO_THROW(runtime->user().prepare());
+  }
+  {
+    const auto sharedConfiguration = nativeParseJson(readTextFile(fixture.configPath));
+    PreparationSpec sharedSpec;
+    sharedSpec.key = "owned-shared";
+    sharedSpec.baseDirectory = fixture.root;
+    sharedSpec.configurationJson = nativeCanonicalJson(sharedConfiguration);
+    sharedSpec.configurationDigest = nativePlanningDigest(sharedSpec.configurationJson);
+    sharedSpec.catalogConfigurationJson = nativeCanonicalJson(sharedConfiguration.at("catalog"));
+    const auto& requestConfig = sharedConfiguration.at("request");
+    sharedSpec.taskName = requestConfig.at("task").get<std::string>();
+    sharedSpec.taskContractDigest = requestConfig.at("task_descriptor_digest").get<std::string>();
+    sharedSpec.inputLayoutDigest = requestConfig.at("input_layout_digest").get<std::string>();
+    sharedSpec.publicationServiceName = serviceName;
+    sharedSpec.maxSourceBytes = sharedConfiguration.at("limits").at("max_source_bytes").get<std::uint64_t>();
+    sharedSpec.maxAssembledBytes = sharedConfiguration.at("limits").at("max_assembled_bytes").get<std::uint64_t>();
+    auto sourceStarted = std::make_shared<std::promise<void>>();
+    auto sourceStartedFuture = sourceStarted->get_future();
+    auto sourceRelease = std::make_shared<std::promise<void>>();
+    auto sourceReleased = sourceRelease->get_future().share();
+    auto sourceReads = std::make_shared<std::atomic<unsigned>>(0);
+    sharedSpec.loadSource = [sourceStarted, sourceReleased, sourceReads, &fixture](
+      const PreparationSpec&, std::chrono::steady_clock::time_point deadline) {
+      ++*sourceReads;
+      sourceStarted->set_value();
+      if (sourceReleased.wait_until(deadline) != std::future_status::ready)
+        throw std::runtime_error("shared source barrier timeout");
+      const auto bytes = readTextFile(fixture.root / "model.onnx");
+      NativeCanonicalSource source;
+      source.modelBytes.assign(bytes.begin(), bytes.end());
+      return source;
+    };
+    sharedSpec.preparePublication = [ownedReceipt](const auto&, const auto&, const auto& control) {
+      control.requireActive();
+      return ownedReceipt;
+    };
+    sharedSpec.validatePreparedPublication = [](const auto& receipt) {
+      if (!receipt) throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+      receipt->requireCurrentDurableStorageOwner("/user");
+    };
+    ModelPreparationCache sharedCache(4U << 20, 2, std::chrono::seconds(5));
+    auto first = ndnsf::di::Spec185PreparationTestAccess::prepareAsync(sharedCache, sharedSpec);
+    BOOST_REQUIRE(sourceStartedFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    std::promise<std::exception_ptr> localTimeout;
+    auto localTimeoutResult = localTimeout.get_future();
+    auto timeoutSubscription = first.resultAsync(std::chrono::milliseconds(0),
+      [&localTimeout](std::exception_ptr error, std::optional<PreparedModel> value) {
+        BOOST_CHECK(!value);
+        localTimeout.set_value(error);
+      });
+    BOOST_REQUIRE(localTimeoutResult.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    BOOST_REQUIRE(localTimeoutResult.get());
+    BOOST_CHECK(first.status() == PreparationStatus::Pending);
+    auto foreignSpec = sharedSpec;
+    foreignSpec.validatePreparedPublication = [](const auto& receipt) {
+      if (!receipt) throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+      receipt->requireCurrentDurableStorageOwner("/other-user");
+    };
+    auto foreign = ndnsf::di::Spec185PreparationTestAccess::prepareAsync(sharedCache, foreignSpec);
+    auto joined = ndnsf::di::Spec185PreparationTestAccess::prepareAsync(sharedCache, sharedSpec);
+    sourceRelease->set_value();
+    BOOST_CHECK_NO_THROW(first.result(std::chrono::seconds(5)));
+    BOOST_CHECK(joined.result(std::chrono::seconds(5)).receipt().origin ==
+                PreparationReceipt::Origin::JoinedInFlight);
+    BOOST_CHECK_THROW(foreign.result(std::chrono::seconds(5)), std::runtime_error);
+    BOOST_CHECK(foreign.status() == PreparationStatus::Failed);
+    BOOST_CHECK(first.status() == PreparationStatus::Ready);
+    BOOST_CHECK_EQUAL(sourceReads->load(), 1U);
+
+    auto dispatchSpec = sharedSpec;
+    dispatchSpec.dispatch = [](std::function<void()>) { throw std::runtime_error("owned dispatch failure"); };
+    auto failedDelivery = ndnsf::di::Spec185PreparationTestAccess::prepareAsync(sharedCache, dispatchSpec);
+    const auto failureDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (failedDelivery.status() == PreparationStatus::Pending &&
+           std::chrono::steady_clock::now() < failureDeadline)
+      std::this_thread::yield();
+    BOOST_CHECK(failedDelivery.status() == PreparationStatus::Failed);
+    BOOST_CHECK_THROW(failedDelivery.result(std::chrono::milliseconds(0)), std::runtime_error);
+    dispatchSpec.loadSource = [&fixture](const PreparationSpec&, std::chrono::steady_clock::time_point) {
+      const auto bytes = readTextFile(fixture.root / "model.onnx");
+      NativeCanonicalSource source;
+      source.modelBytes.assign(bytes.begin(), bytes.end());
+      return source;
+    };
+    ModelPreparationCache freshDispatchCache(4U << 20, 2, std::chrono::seconds(5));
+    auto failedFresh = ndnsf::di::Spec185PreparationTestAccess::prepareAsync(freshDispatchCache, dispatchSpec);
+    const auto freshDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (failedFresh.status() == PreparationStatus::Pending &&
+           std::chrono::steady_clock::now() < freshDeadline)
+      std::this_thread::yield();
+    BOOST_CHECK(failedFresh.status() == PreparationStatus::Failed);
+    BOOST_CHECK_THROW(failedFresh.result(std::chrono::milliseconds(0)), std::runtime_error);
+  }
+#endif
   const auto model = package->catalog.model.descriptor;
   const auto candidates = package->catalog.splitter->enumerate(
     model, package->catalog.model.graph, NativeCandidateBudget{1, 1000, 1});
   BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
   const auto roles = candidates.front().executionPlan.roles;
+#if defined(SPEC204_STORAGE_OWNER_SELECTOR)
+  auto ownedOptions = package->catalog.preparation->publicationFor(model);
+  ownedOptions.durableStorageOwner = storageOwner;
+  NativeCanonicalArtifactPublisher ownedBinder(environmentUser, serviceName, ownedOptions,
+    [](const NativeInspectedModel&, const NativeRequestControl&)
+      -> std::shared_ptr<const NativeCanonicalSource> {
+      throw std::runtime_error("bind must not resolve source bytes");
+    });
+  NativeRequestControl bindControl{"spec204/bind", 1,
+    std::chrono::steady_clock::now() + std::chrono::seconds(5), [] { return false; }};
+  const auto ownedRoles = package->catalog.preparation->prepareRoles(
+    package->catalog.model, candidates.front(), bindControl);
+  BOOST_CHECK_NO_THROW(ownedBinder.bindPrepared(package->catalog.model, candidates.front(),
+    ownedRoles, ownedReceipt, bindControl));
+  auto metadataOnly = ownedReceipt;
+  metadataOnly.durableStorageSources.clear();
+  BOOST_CHECK_THROW(ownedBinder.bindPrepared(package->catalog.model, candidates.front(),
+    ownedRoles, metadataOnly, bindControl), std::runtime_error);
+  NativeRolePlacementProposalV3 ownedProposal;
+  ownedProposal.context = {bindControl.requestId, bindControl.attempt, serviceName,
+    model.intentDigest(), package->catalog.model.graph.graphDigest, 2000000000000ULL};
+  ownedProposal.ackClosedDigest = nativePlanningDigest("spec204-owned-ack");
+  ownedProposal.strategy = candidates.front().splitter;
+  ownedProposal.roles = ownedRoles;
+  for (const auto& role : ownedRoles) {
+    ownedProposal.providerByRole.emplace(role.selectedRole, providerName);
+  }
+  ownedProposal.offerDigestByProvider.emplace(providerName, nativePlanningDigest("spec204-owned-offer"));
+  auto rebound = package->catalog.preparation->makePreparation(
+    environmentUser, serviceName, ownedReceipt, storageOwner);
+  BOOST_CHECK_NO_THROW(rebound->ensureArtifacts(package->catalog.model, candidates.front(),
+    ownedProposal, bindControl));
+  auto metadataBinding = package->catalog.preparation->makePreparation(
+    environmentUser, serviceName, metadataOnly, storageOwner);
+  BOOST_CHECK_THROW(metadataBinding->ensureArtifacts(package->catalog.model, candidates.front(),
+    ownedProposal, bindControl), std::runtime_error);
+#endif
   BOOST_REQUIRE(!roles.empty());
   const auto& providerRoleNames = profile.providerRoles;
   BOOST_REQUIRE_EQUAL(providerRoleNames.size(), roles.size());
@@ -2740,7 +2748,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     return std::vector<std::uint8_t>(32, 0x77);
   };
   auto grantIssuer = std::make_shared<NativeArtifactGrantIssuer>(std::move(issuerConfig));
-  auto publishedGrantWires = std::make_shared<std::map<std::string, std::string>>();
+  auto publishedGrantWires = std::make_shared<std::map<ndn::Name, std::string>>();
   auto publishedGrantWiresMutex = std::make_shared<std::mutex>();
   auto grantPublications = std::make_shared<std::atomic<unsigned>>(0);
   NativeAuthenticatedGrantClient::Issue issue = [grantIssuer] (
@@ -2759,7 +2767,12 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     control.check();
     {
       std::lock_guard<std::mutex> lock(*publishedGrantWiresMutex);
-      (*publishedGrantWires)[name] = wire;
+      (*publishedGrantWires)[ndn::Name(name)] = wire;
+#if defined(SPEC204_STORAGE_OWNER_SELECTOR)
+      BOOST_CHECK_EQUAL(ndn::Name(name).toUri(ndn::name::UriFormat::CANONICAL), name);
+      BOOST_CHECK_EQUAL(publishedGrantWires->count(ndn::Name(
+        ndn::Name(name).toUri(ndn::name::UriFormat::ALTERNATE))), 1U);
+#endif
     }
     grantPublications->fetch_add(1, std::memory_order_relaxed);
     return name;
@@ -2847,7 +2860,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
       std::string wire;
       {
         std::lock_guard<std::mutex> lock(*publishedGrantWiresMutex);
-        const auto found = publishedGrantWires->find(interest.getName().toUri());
+        const auto found = publishedGrantWires->find(interest.getName());
         if (found == publishedGrantWires->end())
           return;
         wire = found->second;
@@ -2889,7 +2902,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
       state->pending = face->expressInterest(interest,
         [state, name] (const ndn::Interest&, const ndn::Data& data) {
           std::lock_guard<std::mutex> lock(state->mutex);
-          if (data.getName().toUri() == name && data.getContent().value_size() <= 65536) {
+          if (data.getName() == ndn::Name(name) && data.getContent().value_size() <= 65536) {
             state->payload.assign(reinterpret_cast<const char*>(data.getContent().value()),
                                   data.getContent().value_size());
             state->received = true;
@@ -3137,6 +3150,41 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   const auto residentCounters = sessionCache->counters();
   BOOST_CHECK_EQUAL(residentCounters.loads, 1U);
   BOOST_CHECK_EQUAL(residentCounters.hits, 1U);
+#endif
+#if defined(SPEC204_STORAGE_OWNER_SELECTOR)
+  const auto claims = ownedJournal->listUserStorage("/user", ownedCapability.repoNode, "", 100);
+  const auto roleClaim = std::find_if(claims.begin(), claims.end(), [&](const auto& claim) {
+    return ownedReceipt.durableStorageSources.count(ndn::Name(claim.object.objectName)
+      .toUri(ndn::name::UriFormat::CANONICAL)) == 0;
+  });
+  BOOST_REQUIRE(roleClaim != claims.end());
+  const auto cleanupNow = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count());
+  ownedJournal->prepareUserStorageCleanup("/user", ownedCapability.repoNode, "role-cleanup",
+    roleClaim->object.objectName, roleClaim->ownerEpoch, cleanupNow);
+  const auto objectsBeforeDenied = ownedNode->core().list().size();
+  const auto grantsBeforeDenied = grantSequence->load();
+  auto deniedHandle = prepared.request(Input::inlineBytes(spec194Float32Input(4.0F, 5.0F, 6.0F)), options);
+  auto deniedResult = startConversationResultObservation(deniedHandle, requestResultTimeout);
+  pumpUntilConversationResultReady(*environment, deniedResult, requestResultTimeout);
+  BOOST_CHECK_THROW(deniedResult->get(), std::exception);
+  BOOST_CHECK_EQUAL(ownedNode->core().list().size(), objectsBeforeDenied);
+  BOOST_CHECK_EQUAL(grantSequence->load(), grantsBeforeDenied);
+  const auto rootClaim = std::find_if(claims.begin(), claims.end(), [&](const auto& claim) {
+    return ndn::Name(claim.object.objectName) == ndn::Name(ownedReceipt.rootDataName);
+  });
+  BOOST_REQUIRE(rootClaim != claims.end());
+  ownedJournal->prepareUserStorageCleanup("/user", ownedCapability.repoNode, "root-cleanup",
+    rootClaim->object.objectName, rootClaim->ownerEpoch, cleanupNow);
+  BOOST_CHECK_THROW(runtime->user().prepare(), std::exception);
+  auto deniedWarm = runtime->user().prepareAsync();
+  BOOST_CHECK_THROW(deniedWarm.result(std::chrono::seconds(5)), std::exception);
+  BOOST_CHECK(deniedWarm.status() == PreparationStatus::Failed);
+  bindControl.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  BOOST_CHECK_THROW(ownedBinder.bindPrepared(package->catalog.model, candidates.front(),
+    ownedRoles, ownedReceipt, bindControl), std::runtime_error);
+  BOOST_CHECK_THROW(rebound->ensureArtifacts(package->catalog.model, candidates.front(),
+    ownedProposal, bindControl), std::runtime_error);
 #endif
   const auto dataFetchesBeforeMissing = grantDataFetches->load(std::memory_order_relaxed);
   const auto exactFetchesBeforeMissing = exactGrantFetches->load(std::memory_order_relaxed);

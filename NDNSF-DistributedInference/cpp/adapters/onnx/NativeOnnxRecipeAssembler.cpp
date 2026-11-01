@@ -2155,6 +2155,29 @@ std::vector<TensorIndexEntry> buildTensorIndex(
       externalMaterial.emplace(materializeExternalTensor(initializer, externalBytes, control));
       material = &*externalMaterial;
     }
+    else if (initializer.data_type() != onnx::TensorProto::INT4 &&
+             initializer.data_type() != onnx::TensorProto::UINT4 &&
+             initializer.data_type() != onnx::TensorProto::STRING &&
+             !initializer.raw_data().empty()) {
+      // Numeric ONNX raw_data is already the canonical payload. Hash the
+      // original bytes directly instead of serializing and reparsing a large
+      // TensorProto solely to copy those bytes back out.
+      const auto count = tensorElementCount(initializer);
+      const auto expected = rawByteLength(initializer.data_type(), count);
+      const auto& raw = initializer.raw_data();
+      if (raw.size() != expected)
+        failNormalization("INITIALIZER_ENCODING_INVALID");
+      entry.dtype = dtypeLabel(initializer.data_type());
+      entry.shape.reserve(static_cast<std::size_t>(initializer.dims_size()));
+      for (const auto dim : initializer.dims()) entry.shape.push_back(dim);
+      entry.byteOrder = byteOrderOf(initializer.data_type());
+      entry.byteLength = static_cast<std::size_t>(expected);
+      entry.contentDigest = digest(
+        reinterpret_cast<const std::uint8_t*>(raw.data()), entry.byteLength);
+      entries.push_back(std::move(entry));
+      if (control != nullptr) checkActive(*control);
+      continue;
+    }
     std::vector<std::uint8_t> serialized(static_cast<std::size_t>(material->ByteSizeLong()));
     if (!serialized.empty() &&
         !material->SerializeToArray(serialized.data(), static_cast<int>(serialized.size())))
@@ -3076,7 +3099,7 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
       continue;
     const auto payload = payloads.find(reference.payloadId);
     if (payload == payloads.end())
-      fail("MATERIAL_INITIALIZER");
+        fail("MATERIAL_INITIALIZER");
     *model.mutable_graph()->add_initializer() = materializeInitializer(reference);
   }
   // Every selected node and initializer has now been parsed, authenticated,

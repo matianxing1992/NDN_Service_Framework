@@ -67,6 +67,8 @@ struct ProviderConfig::Impl
   std::size_t maxArtifactBytes = 1ULL << 30;
   std::size_t maxArtifactEntries = 8;
   Milliseconds assemblyJobTimeout{300000};
+  std::optional<NativeProviderKvRecoveryConfigV1> kvRecovery;
+  std::string kvRecoveryPolicy;
   bool checkOnly = false;
   bool serve = false;
 };
@@ -208,6 +210,10 @@ ProviderConfig detail::parseProviderLaunchFile(const std::filesystem::path& path
     if (!item.first.empty() || item.second.data().empty())
       invalid("arguments must be a string array");
     argv.push_back(item.second.data());
+  }
+  for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+    if (argv[index] == "--kv-recovery-config" && std::filesystem::path(argv[index + 1]).is_relative())
+      argv[index + 1] = (canonical.parent_path() / argv[index + 1]).lexically_normal().string();
   }
   // Parse one shared C++ grammar.  argv[0] is optional and ignored when it
   // is an executable name; all paths are resolved relative to this file.
@@ -635,6 +641,27 @@ public:
     return m_inner->supportsConversationStateTransfer();
   }
 
+  bool supportsPortableConversationState() const final
+  {
+    return m_inner->supportsPortableConversationState();
+  }
+
+  NativePortableKvSnapshotV1 exportConversationState(
+    const NativeConversationStateHandleV1& state,
+    const DecodeStateIdentityV1& identity,
+    const NativePortableKvLimitsV1& limits) final
+  {
+    return m_inner->exportConversationState(state, identity, limits);
+  }
+
+  NativeConversationStateHandleV1 importConversationState(
+    const NativePortableKvSnapshotV1& snapshot,
+    const DecodeStateIdentityV1& identity, const std::string& key,
+    const NativePortableKvLimitsV1& limits) final
+  {
+    return m_inner->importConversationState(snapshot, identity, key, limits);
+  }
+
   std::optional<NativeConversationStateHandleV1>
   promoteSessionStateToConversation(const std::string& sessionId,
                                     const std::string& conversationKey) final
@@ -1052,6 +1079,11 @@ ProviderConfig ProviderConfig::fromCommandLine(int argc,
     else if (option == "--role") result->allowedRoles.push_back(valueAfter(option, i, argc, argv));
     else if (option == "--workers") result->workerCount = parsePositive(valueAfter(option, i, argc, argv), option);
     else if (option == "--artifact-cache-dir") result->artifactCacheDir = valueAfter(option, i, argc, argv);
+    else if (option == "--kv-recovery-config") {
+      const auto wire = readFile(valueAfter(option, i, argc, argv));
+      result->kvRecovery = nativeProviderKvRecoveryConfigFromJson(wire);
+      result->kvRecoveryPolicy = nativeCanonicalJson(nativeParseJson(wire));
+    }
     else if (option == "--plan") result->planPath = valueAfter(option, i, argc, argv);
     else if (option == "--manifest") result->manifestPath = valueAfter(option, i, argc, argv);
     else if (option == "--check-only") result->checkOnly = true;
@@ -1102,6 +1134,7 @@ bool ProviderConfig::equivalent(const ProviderConfig& other) const noexcept
     m_impl->maxArtifactBytes == other.m_impl->maxArtifactBytes &&
     m_impl->maxArtifactEntries == other.m_impl->maxArtifactEntries &&
     m_impl->assemblyJobTimeout == other.m_impl->assemblyJobTimeout &&
+    m_impl->kvRecoveryPolicy == other.m_impl->kvRecoveryPolicy &&
     m_impl->checkOnly == other.m_impl->checkOnly &&
     m_impl->serve == other.m_impl->serve;
 }
@@ -2076,6 +2109,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
       throw std::runtime_error("Provider ServiceProvider is unavailable");
     nativeConfig.providerBootId = serviceProvider->getProviderBootEpoch();
     nativeConfig.workerCount = m_state->config->workerCount;
+    nativeConfig.kvRecovery = m_state->config->kvRecovery;
     nativeConfig.protectedResidentAuthority = m_state->protectedResidentAuthority;
   }
   catch (const DiError&) {
@@ -2709,6 +2743,11 @@ bool Provider::drain(Milliseconds timeout) const
   }
   if (nativeHost)
     nativeHost->stop();
+  // Keep the Provider runtime, Repo-facing publisher, and Face alive while
+  // accepted handoff callbacks and workers settle. stop() only closes intake;
+  // it does not join the per-service operation runtimes.
+  if (nativeHost && !nativeHost->drain(timeout))
+    return false;
   if (m_state->runnerReuseCache)
     m_state->runnerReuseCache->clear();
   if (m_state->protectedResidentAuthority)

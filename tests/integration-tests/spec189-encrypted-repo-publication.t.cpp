@@ -5,10 +5,13 @@
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/lp/nack.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
+#include <ndn-cxx/util/scheduler.hpp>
 #include <ndn-svs/security-options.hpp>
 #include <ndn-svs/svspubsub.hpp>
 #include <boost/test/unit_test.hpp>
+#include <boost/asio/post.hpp>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -19,16 +22,6 @@
 #include <thread>
 #include <unistd.h>
 #include <sys/wait.h>
-
-namespace ndn_service_framework {
-struct ServiceProviderTestAccess
-{
-  static ndn::Name extractLargeDataProducerPrefix(const ndn::Name& dataName)
-  {
-    return ServiceProvider::extractLargeDataProducerPrefix(dataName);
-  }
-};
-} // namespace ndn_service_framework
 
 namespace {
 using namespace ndn_service_framework;
@@ -44,6 +37,22 @@ struct InspectingUser : LocalServiceUser
   {
     ndn::Buffer bytes;
     return m_hybridMessageCrypto.getWrappedSendKey(id, bytes);
+  }
+  void seedOpaqueOriginalAuxiliaries(const ndn::Name& service, ndn::KeyChain& keys)
+  {
+    const auto key = prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+    const ndn::Buffer opaque{0x00};
+    auto content = prepareHybridMessageKeyPackets(service, getName(),
+      makeAbeServiceAttribute(service, "SERVICE"), key.epochId,
+      ndn::span<const std::uint8_t>(opaque.data(), opaque.size()), keys,
+      ndn::security::signingByIdentity(getName()), ndn::time::milliseconds(1000),
+      ndn::tlv::ContentType_Blob);
+    auto ck = std::make_shared<ndn::Data>(
+      ndn::Name(getName()).append("CK").append("fixture-original-ck").appendVersion(1));
+    ck->setContent(opaque);
+    keys.sign(*ck, ndn::security::signingByIdentity(getName()));
+    m_hybridMessageCrypto.cacheWrappedSendPackets(service, key.keyId, opaque,
+                                                   content, {ck});
   }
 };
 
@@ -81,6 +90,23 @@ struct SlowStore final : EncryptedLargeDataRangeStore
   bool supportsDurableRetention() const noexcept override
   {
     return true;
+  }
+  bool supportsOriginalDataPackets() const noexcept override
+  {
+    return delegate->supportsOriginalDataPackets();
+  }
+  std::shared_ptr<const EncryptedLargeDataRangeSource> commitOriginalDataPackets(
+    const ndn::Name& name, const EncryptedLargeDataCommitOptions& options,
+    const std::function<std::optional<std::pair<ndn::Name, std::vector<std::uint8_t>>>()>& next,
+    const std::function<void()>& active) override
+  {
+    auto source = delegate->commitOriginalDataPackets(name, options, next, active);
+    entered = true;
+    while (!release.load()) {
+      if (active) active();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return source;
   }
   std::optional<EncryptedLargeDataLookupResult> lookupDurable(
     const std::string& publicationIdentity,
@@ -473,16 +499,43 @@ BOOST_AUTO_TEST_CASE(DurablePublicationServesAfterExecRestart)
 
     const ndn::Name service("/spec189/exec-model");
     const std::vector<std::uint8_t> plaintext(40000, 0x4c);
-    restarted.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
     LargeDataPublishOptions options;
     options.retention = EncryptedLargeDataRetention::Durable;
     options.publicationIdentity = "sha256:" + std::string(64, 'c');
+    options.persistAuxiliaryPackets = true;
     const auto recovered = restarted.publishEncryptedLargeData(
       restarted.prepareServiceRequest(service.toUri()), plaintext, "model-material",
       ndn::time::milliseconds(1), true, options);
     BOOST_REQUIRE_MESSAGE(recovered.success, recovered.errorMessage);
     BOOST_REQUIRE(recovered.fileBacked);
     BOOST_REQUIRE_EQUAL(repo->list().size(), 1U);
+
+    const auto durable = store->lookupDurable(recovered.publicationIdentity);
+    BOOST_REQUIRE(durable);
+    BOOST_REQUIRE(!recovered.auxiliaryPacketNames.empty());
+    BOOST_REQUIRE_EQUAL(recovered.auxiliaryPacketNames.size(),
+                        durable->source->auxiliaryDataPacketNames().size());
+    for (const auto& nameText : recovered.auxiliaryPacketNames) {
+      const ndn::Name name(nameText);
+      const auto expectedWire = durable->source->readOriginalDataPacket(name);
+      BOOST_REQUIRE(!expectedWire.empty());
+      const auto sentBefore = face.sentData.size();
+      face.receive(ndn::Interest(name));
+      face.processEvents(ndn::time::milliseconds(1));
+      const ndn::Data* served = nullptr;
+      for (std::size_t i = sentBefore; i < face.sentData.size(); ++i) {
+        if (face.sentData[i].getName() == name) {
+          served = &face.sentData[i];
+          break;
+        }
+      }
+      BOOST_REQUIRE_MESSAGE(served,
+        "durable auxiliary packet was not served: " + name.toUri() +
+        " under publication " + recovered.encryptedDataName.toUri());
+      const auto& actualWire = served->wireEncode();
+      BOOST_CHECK_EQUAL_COLLECTIONS(actualWire.begin(), actualWire.end(),
+                                    expectedWire.begin(), expectedWire.end());
+    }
 
     // Exercise the production Core Interest callback after a real exec.  The
     // returned bytes must be the original immutable envelope, not a fresh
@@ -553,18 +606,20 @@ BOOST_AUTO_TEST_CASE(DurablePublicationServesAfterExecRestart)
 
     const ndn::Name service("/spec189/exec-model");
     const std::vector<std::uint8_t> plaintext(40000, 0x4c);
-    user.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+    user.seedOpaqueOriginalAuxiliaries(service, keys);
     LargeDataPublishOptions options;
     options.retention = EncryptedLargeDataRetention::Durable;
     options.publicationIdentity = "sha256:" + std::string(64, 'c');
+    options.persistAuxiliaryPackets = true;
     const auto first = user.publishEncryptedLargeData(
       user.prepareServiceRequest(service.toUri()), plaintext, "model-material",
       ndn::time::milliseconds(1), true, options);
     BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
     BOOST_REQUIRE(first.fileBacked);
     BOOST_REQUIRE_EQUAL(fixture.repo->list().size(), 1U);
-    committedName = first.encryptedDataName.toUri();
+    committedName = first.manifestName.toUri(ndn::name::UriFormat::CANONICAL);
     committedManifest = fixture.repo->getManifest(committedName);
+    BOOST_CHECK(ndn::Name(committedManifest.objectName) == first.manifestName);
   }
   // The child must acquire the backend's authoritative owner after the
   // original process has released it; inheriting a live Repo object would
@@ -657,7 +712,7 @@ BOOST_AUTO_TEST_CASE(ProviderDecryptsDurableEnvelopeThroughProductionFetch)
     std::vector<std::uint8_t>(rootBytes.value(), rootBytes.value() + rootBytes.value_size()),
     userCertificate.getIdentity(), publication.manifestName);
   const auto referenceText = sendKey.keyId + "|" + sendKey.epochId + "|" +
-    service.toUri() + "|" + rootDescriptor.authorizationScope;
+    service.toUri(ndn::name::UriFormat::CANONICAL) + "|" + rootDescriptor.authorizationScope;
   ndn::util::Sha256 referenceHash;
   referenceHash.update(ndn::span<const std::uint8_t>(
     reinterpret_cast<const std::uint8_t*>(referenceText.data()), referenceText.size()));
@@ -680,6 +735,199 @@ BOOST_AUTO_TEST_CASE(ProviderDecryptsDurableEnvelopeThroughProductionFetch)
   BOOST_CHECK_EQUAL_COLLECTIONS(fetched.plaintext.begin(), fetched.plaintext.end(),
                                 plaintext.begin(), plaintext.end());
   BOOST_CHECK_EQUAL(fixture.repo->list().size(), 1U);
+}
+
+namespace {
+enum class RetryProbe { BackedOffBody, ShortDiscovery, MissingBody };
+
+void checkProviderRetry(RetryProbe probe)
+{
+  const bool backedOff = probe == RetryProbe::BackedOffBody;
+  ScopedEnvironmentValue timeout("NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS",
+                                 backedOff ? "10000" : "300");
+  ScopedEnvironmentValue window("NDNSF_REQUEST_LARGE_FETCH_INIT_CWND", "1");
+  RepoFixture fixture;
+  auto store = std::make_shared<RepoEncryptedLargeDataStore>(fixture.repo);
+  const auto spool = (fixture.root / "spool").string();
+  const auto references = (fixture.root / "key-references").string();
+  ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ScopedEnvironmentValue referenceDir("NDNSF_DURABLE_KEY_REFERENCE_DIR", references.c_str());
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace producerFace(keys);
+  ndn::DummyClientFace receiving(producerFace.getIoContext(), keys, {false, true});
+  const auto producer = makeRsaIdentity(keys, ndn::Name("/spec189/retry-producer"));
+  const auto recipient = makeRsaIdentity(keys, ndn::Name("/spec189/retry-recipient"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/spec189/retry-authority"));
+  const auto dkeyPrefix = ndn::Name(authority.getIdentity()).append("DKEY");
+  size_t rejectedDkeys = 0, deliveredDkeyNacks = 0;
+  ndn::signal::ScopedConnection absentAuthority = receiving.onSendInterest.connect(
+    [&](const ndn::Interest& interest) {
+      if (!dkeyPrefix.isPrefixOf(interest.getName())) return;
+      ++rejectedDkeys;
+      ndn::lp::Nack nack(interest);
+      nack.setReason(ndn::lp::NackReason::NO_ROUTE);
+      boost::asio::post(receiving.getIoContext(), [&, nack] {
+        receiving.receive(nack);
+        ++deliveredDkeyNacks;
+      });
+    });
+  const ndn::Name service("/spec189/retry-material");
+  InspectingUser user(producerFace, ndn::Name("/spec189/retry"), producer,
+                      authority, "examples/trust-any.conf");
+  user.useSigningKeyChainForSigningOnlyForTest(keys);
+  user.attachLocalMockPubSubForTest(pubsub(producerFace, keys));
+  user.setEncryptedLargeDataRangeStore(store);
+  user.init();
+  producerFace.processEvents(ndn::time::milliseconds(1));
+  const auto key = user.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+  const std::vector<std::uint8_t> plaintext(backedOff ? 40000 : 32, 0x63);
+  LargeDataPublishOptions options;
+  options.retention = EncryptedLargeDataRetention::Durable;
+  options.publicationIdentity = "sha256:" + std::string(64, 'e');
+  const auto publication = user.publishEncryptedLargeData(
+    user.prepareServiceRequest(service.toUri()), plaintext, "retry-material",
+    ndn::time::milliseconds(60000), true, options);
+  BOOST_REQUIRE_MESSAGE(publication.success, publication.errorMessage);
+  producerFace.processEvents(ndn::time::milliseconds(1));
+  LocalServiceProvider provider(receiving, ndn::Name("/spec189/retry"), recipient,
+                                authority, "examples/trust-any.conf");
+  provider.useSigningKeyChainForTest(keys);
+  // Isolate transport timing from Controller/AA bootstrap, as in the fetch fixture above.
+  provider.cacheHybridReceiveKeyForTest(key.keyId, key.epochId, key.key);
+  // Settle the absent authority's DKEY fetch before measuring transport timing.
+  producerFace.processEvents(ndn::time::milliseconds(10));
+  BOOST_REQUIRE_GT(rejectedDkeys, 0U);
+  BOOST_REQUIRE_EQUAL(deliveredDkeyNacks, rejectedDkeys);
+
+  ndn::Scheduler scheduler(producerFace.getIoContext());
+  ndn::scheduler::ScopedEventId delayed;
+  size_t discoveries = 0, delayedSegments = 0, targetAttempts = 0, replies = 0;
+  bool freshDiscoveryNonce = false, freshTargetNonce = false, signaturesValid = true;
+  bool expectedLifetime = true;
+  std::optional<ndn::Interest::Nonce> discoveryNonce, targetNonce;
+  std::chrono::steady_clock::time_point discoveryBegin, targetBegin;
+  std::chrono::steady_clock::duration discoveryRetry{}, targetRetry{};
+  ndn::signal::ScopedConnection outgoing = receiving.onSendInterest.connect(
+    [&](const ndn::Interest& interest) {
+      if (interest.getName() == publication.manifestName) {
+        producerFace.receive(interest);
+        return;
+      }
+      if (!publication.dataPrefix.isPrefixOf(interest.getName())) return;
+      expectedLifetime = expectedLifetime && interest.getInterestLifetime() ==
+        ndn::time::milliseconds(backedOff ? 4000 : 300);
+      const auto now = std::chrono::steady_clock::now();
+      if (interest.getName() == publication.dataPrefix) {
+        ++discoveries;
+        if (discoveries == 1) {
+          discoveryBegin = now;
+          discoveryNonce = interest.getNonce();
+          return;
+        }
+        discoveryRetry = now - discoveryBegin;
+        freshDiscoveryNonce = *discoveryNonce != interest.getNonce();
+        if (probe == RetryProbe::MissingBody) return;
+      }
+      else if (backedOff && interest.getName()[-1].isSegment()) {
+        const auto segment = interest.getName()[-1].toSegment();
+        if (segment == 1 && delayedSegments++ == 0) {
+          // Discovery's first timeout backs RTO off to 2s. This first-attempt
+          // 1.5s sample then raises the uncapped estimator above the 4s PIT lifetime.
+          delayed = scheduler.schedule(ndn::time::milliseconds(1500),
+            [&, interest] { producerFace.receive(interest); });
+          return;
+        }
+        if (segment == 2) {
+          ++targetAttempts;
+          if (targetAttempts == 1) {
+            targetBegin = now;
+            targetNonce = interest.getNonce();
+            return;
+          }
+          targetRetry = now - targetBegin;
+          freshTargetNonce = *targetNonce != interest.getNonce();
+        }
+      }
+      producerFace.receive(interest);
+    });
+  ndn::signal::ScopedConnection returning = producerFace.onSendData.connect(
+    [&](const ndn::Data& packet) {
+      if (!producer.getIdentity().isPrefixOf(packet.getName())) return;
+      ++replies;
+      signaturesValid = signaturesValid && ndn::security::verifySignature(packet, producer);
+      receiving.receive(packet);
+    });
+  const auto pendingBefore = receiving.getNPendingInterests();
+  const auto started = std::chrono::steady_clock::now();
+  auto work = std::async(std::launch::async, [&] {
+    return provider.fetchAndDecryptLargeData(publication.manifestName, service.toUri());
+  });
+  struct Drain {
+    ndn::DummyClientFace& face;
+    std::future<LargeDataFetchResult>& work;
+    bool wait(std::chrono::seconds timeout) {
+      const auto deadline = std::chrono::steady_clock::now() + timeout;
+      while (work.valid() && work.wait_for(std::chrono::milliseconds(0)) !=
+             std::future_status::ready) {
+        face.processEvents(ndn::time::milliseconds(1));
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+      }
+      return true;
+    }
+    ~Drain() {
+      // Never destroy a Face beneath a live worker, including assertion unwinding.
+      if (!wait(std::chrono::seconds(3))) std::terminate();
+    }
+  } drain{producerFace, work};
+  BOOST_REQUIRE_MESSAGE(drain.wait(std::chrono::seconds(12)), "fetch worker did not drain");
+  const auto result = work.get();
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  delayed.cancel();
+  producerFace.processEvents(ndn::time::milliseconds(5));
+  BOOST_CHECK(expectedLifetime);
+  BOOST_CHECK(signaturesValid);
+  BOOST_CHECK_LE(receiving.getNPendingInterests(), pendingBefore);
+  BOOST_CHECK_GT(replies, 0U);
+  if (probe == RetryProbe::MissingBody) {
+    BOOST_CHECK(!result.success);
+    BOOST_CHECK(result.plaintext.empty());
+    BOOST_CHECK_EQUAL(discoveries, 2U);
+    BOOST_CHECK(freshDiscoveryNonce);
+    BOOST_CHECK(discoveryRetry <= std::chrono::milliseconds(230));
+    BOOST_CHECK(elapsed >= std::chrono::milliseconds(250));
+    BOOST_CHECK(elapsed < std::chrono::milliseconds(450));
+    return;
+  }
+  BOOST_REQUIRE_MESSAGE(result.success, result.errorMessage);
+  BOOST_CHECK_EQUAL_COLLECTIONS(result.plaintext.begin(), result.plaintext.end(),
+                                plaintext.begin(), plaintext.end());
+  BOOST_CHECK_GE(discoveries, 2U);
+  BOOST_CHECK(freshDiscoveryNonce);
+  if (backedOff) {
+    BOOST_REQUIRE_EQUAL(targetAttempts, 2U);
+    BOOST_CHECK(freshTargetNonce);
+    BOOST_CHECK(targetRetry <= std::chrono::milliseconds(2300));
+  }
+  else {
+    BOOST_CHECK(discoveryRetry <= std::chrono::milliseconds(230));
+    BOOST_CHECK(elapsed < std::chrono::milliseconds(300));
+  }
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(ProviderLargeDataRetryPrecedesPitExpiry)
+{
+  checkProviderRetry(RetryProbe::BackedOffBody);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderLargeDataShortLifetimeClampsInitialRetry)
+{
+  checkProviderRetry(RetryProbe::ShortDiscovery);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderLargeDataMissingBodyKeepsOverallDeadline)
+{
+  checkProviderRetry(RetryProbe::MissingBody);
 }
 
 BOOST_AUTO_TEST_CASE(DurableLargeDataProducerPrefixPreservesIdentity)
@@ -748,8 +996,12 @@ BOOST_AUTO_TEST_CASE(ProviderRejectsAuthenticatedBlobWithFalsePlaintextIdentity)
     if (interest.getName() == prefix || interest.getName() == packet.getName())
       face.receive(packet);
   });
+  const auto strict = provider.fetchAndDecryptLargeData(prefix, service.toUri());
+  BOOST_CHECK(!strict.success);
+  BOOST_CHECK(strict.plaintext.empty());
+  BOOST_CHECK_EQUAL(strict.errorMessage, "NONCANONICAL_LARGE_DATA_NAME");
   auto pending = std::async(std::launch::async, [&] {
-    return provider.fetchAndDecryptLargeData(prefix, service.toUri());
+    return provider.fetchAndDecryptLargeData(prefix, service.toUri(), DataNameReadMode::AllowLegacyRead);
   });
   while (pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
     face.processEvents(ndn::time::milliseconds(1));
@@ -863,6 +1115,10 @@ BOOST_AUTO_TEST_CASE(ProtectedStatusAdvanceRejectsPostCommitStalePublication)
   });
   std::atomic<bool> cancelled{false};
   WorkerDrain drain{face, result, cancelled};
+  struct ReleaseBarrier {
+    SlowStore& store;
+    ~ReleaseBarrier() { store.release = true; }
+  } releaseBarrier{*store};
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   while (!store->entered && std::chrono::steady_clock::now() < deadline)
     face.processEvents(ndn::time::milliseconds(1));

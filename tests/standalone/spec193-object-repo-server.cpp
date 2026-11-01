@@ -2,10 +2,13 @@
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
+#include "ndn-service-framework/EncryptedLargeDataRangeStore.hpp"
 
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
+#include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/utils.hpp"
 
 #include <ndn-cxx/face.hpp>
@@ -25,6 +28,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -40,18 +44,33 @@ main(int argc, char* argv[])
     std::string localManifest;
     std::string localCertificate;
     std::string localStoreRoot;
+    std::string shutdownFile;
+    bool legacyObjectProtocol = false;
+    bool legacyObjectProtocolSeen = false;
     std::string responseFault;
     std::string faultResponseFile;
     size_t segmentBytes = 128;
     std::vector<char*> configArgs{argv[0]};
     for (int i = 1; i < argc; ++i) {
       const std::string option = argv[i];
+      if (option == "--legacy-object-protocol") {
+        if (legacyObjectProtocolSeen)
+          throw std::invalid_argument("duplicate local option: " + option);
+        legacyObjectProtocolSeen = true;
+        if (++i >= argc)
+          throw std::invalid_argument("missing local option value: " + option);
+        const std::string value = argv[i];
+        if (value != "0" && value != "1")
+          throw std::invalid_argument("--legacy-object-protocol must be0 or1");
+        legacyObjectProtocol = value == "1";
+        continue;
+      }
       if (option == "--local-command" || option == "--local-source" ||
           option == "--local-replacement" ||
           option == "--local-object" || option == "--local-manifest" ||
           option == "--local-segment-bytes" || option == "--local-certificate" ||
           option == "--local-store-root" || option == "--response-fault" ||
-          option == "--fault-response-file") {
+          option == "--fault-response-file" || option == "--shutdown-file") {
         if (++i >= argc) throw std::invalid_argument("missing local option value: " + option);
         const std::string value = argv[i];
         if (option == "--local-command") localCommand = value;
@@ -61,6 +80,7 @@ main(int argc, char* argv[])
         else if (option == "--local-manifest") localManifest = value;
         else if (option == "--local-certificate") localCertificate = value;
         else if (option == "--local-store-root") localStoreRoot = value;
+        else if (option == "--shutdown-file") shutdownFile = value;
         else if (option == "--response-fault") responseFault = value;
         else if (option == "--fault-response-file") faultResponseFile = value;
         else segmentBytes = std::stoul(value);
@@ -78,6 +98,8 @@ main(int argc, char* argv[])
     const auto config =
       ndnsf_distributed_repo::PersistentRepoServerConfig::fromArguments(
         static_cast<int>(configArgs.size()), configArgs.data());
+    if (localCommand == "user-storage-preflight" && legacyObjectProtocol)
+      throw std::invalid_argument("user-storage-preflight requires the owned profile");
 
     std::filesystem::create_directories(config.databasePath.parent_path());
     ndnsf_distributed_repo::StorageCapability capability;
@@ -99,11 +121,27 @@ main(int argc, char* argv[])
         config.repoNode + "|" + config.providerIdentity.toUri()),
       config.memoryCacheBytes, "filesystem", config.largeObjectThresholdBytes);
 
-    // Empty artifact metadata path selects RepoNode's original object protocol.
+    // Owned storage is the default; old object-protocol experiments opt in.
     auto repo = std::make_shared<ndnsf_distributed_repo::RepoNode>(
       config.servicePrefix, std::move(capability), std::move(store),
-      config.repoNode, config.providerIdentity.toUri(), std::string{},
+      config.repoNode, config.providerIdentity.toUri(),
+      legacyObjectProtocol ? std::string{} : config.databasePath.string(),
       ndnsf_distributed_repo::ArtifactLimits{}, config.availabilityFreshnessMs);
+    if (localCommand == "user-storage-preflight") {
+      const auto adapter = repo->createEncryptedLargeDataStore();
+      if (!adapter->requiresDurableStorageActor())
+        throw std::runtime_error("owned profile requires an enforcing adapter");
+      ndnsf_distributed_repo::SqliteArtifactMetadataStore journal(
+        config.databasePath.string(), false, 16, false);
+      const auto usage = journal.userStorageUsage(
+        config.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE), config.repoNode);
+      if (journal.schemaGeneration() != 16 ||
+          usage.limitBytes != ndnsf_distributed_repo::REPO_USER_STORAGE_LIMIT_BYTES)
+        throw std::runtime_error("owned profile schema or account limit mismatch");
+      std::cout << "USER_STORAGE_PREFLIGHT profile=owned schema=16 limit_bytes="
+                << usage.limitBytes << " node=" << config.repoNode << std::endl;
+      return 0;
+    }
     if (!localCommand.empty()) {
       namespace repo_api = ndnsf_distributed_repo;
       if (localObject.empty() || localSource.empty() || segmentBytes == 0) {
@@ -1203,6 +1241,18 @@ main(int argc, char* argv[])
     ndn_service_framework::CertificatePublisher certificatePublisher(
       face, keyChain, providerCert.getName());
     (void)certificatePublisher;
+    struct ReleaseNodeOwnerBeforeFace {
+      std::shared_ptr<ndnsf_distributed_repo::RepoNode>& owner;
+      bool reportRelease;
+      ~ReleaseNodeOwnerBeforeFace()
+      {
+        owner.reset();
+        if (reportRelease) {
+          std::cout << "SPEC204_REPO_NODE_RELEASED_BEFORE_FACE" << std::endl;
+        }
+      }
+    } releaseNodeOwner{repo, !shutdownFile.empty()};
+    // Destroying the Provider releases registered handlers that retain RepoNode.
     ndn_service_framework::ServiceProvider provider(
       face, config.groupPrefix, providerCert, authorityCert,
       config.trustSchemaPath.string());
@@ -1254,7 +1304,18 @@ main(int argc, char* argv[])
       }
       return wires;
     });
-    repo->registerServices(provider);
+    if (legacyObjectProtocol) {
+      repo->registerServices(provider);
+    }
+    else {
+      auto publisherUser = std::make_shared<ndn_service_framework::ServiceUser>(
+        face, config.groupPrefix, providerCert, authorityCert,
+        config.trustSchemaPath.string());
+      publisherUser->init();
+      publisherUser->fetchPermissionsFromController(config.authorityIdentity);
+      repo->registerServices(provider, publisherUser,
+                             config.ackCollectionTimeMs, config.requestTimeoutMs);
+    }
     if (responseFault == "malformed" || responseFault == "hold") {
       provider.setHandlerThreads(1);
       provider.addService(ndnsf_distributed_repo::makeRepoServiceName(config.servicePrefix, "STATUS"),
@@ -1335,8 +1396,31 @@ main(int argc, char* argv[])
     }
 
     std::cout << "Spec193 object Repo serving " << repo->servicePrefix()
-              << " as " << config.repoNode << " using " << storeRoot << std::endl;
+              << " as " << config.repoNode << " using " << storeRoot
+              << " profile=" << (legacyObjectProtocol ? "legacy-object" : "owned")
+              << std::endl;
+    std::unique_ptr<ndn::Scheduler> shutdownScheduler;
+    std::function<void()> pollShutdown;
+    if (!shutdownFile.empty()) {
+      shutdownScheduler = std::make_unique<ndn::Scheduler>(face.getIoContext());
+      pollShutdown = [&] {
+        std::error_code error;
+        if (std::filesystem::exists(shutdownFile, error)) {
+          std::cout << "SPEC204_ORDERLY_SHUTDOWN_REQUESTED" << std::endl;
+          face.shutdown();
+          return;
+        }
+        if (error) {
+          throw std::system_error(error, "checking Repo shutdown request");
+        }
+        shutdownScheduler->schedule(ndn::time::milliseconds(100), pollShutdown);
+      };
+      shutdownScheduler->schedule(ndn::time::milliseconds(100), pollShutdown);
+    }
     face.processEvents();
+    if (!shutdownFile.empty()) {
+      std::cout << "SPEC204_FACE_EVENT_LOOP_STOPPED" << std::endl;
+    }
     return 0;
   }
   catch (const std::exception& error) {

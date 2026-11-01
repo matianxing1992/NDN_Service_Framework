@@ -217,6 +217,7 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
     "QwenReferenceFixture", digest("qwen-content"), digest("qwen-semantics"),
     digest("placeholder-graph"), "onnx", "float32", "qwen", "1"});
   descriptor.sourceRevision = "revision";
+  descriptor.quantizationSubtype = "dynamic_int8";
   const NativeJson ranges = NativeJson::array({NativeJson::array({0, 1})});
   const NativeJson nodes = NativeJson{"embedding", "layer-00", "final-norm-head"};
   const NativeJson edges = NativeJson{"hidden-embedding-to-layer-00", "hidden-layer-0-to-final"};
@@ -238,7 +239,7 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
                  {"model_manifest_digest", manifestDigest}, {"canonical_graph_digest", canonicalGraphDigest}}},
     {"recipe", {{"artifact_profile_digest", profileDigest},
                  {"assembler_descriptor_digest", assemblerDigest}, {"backend_abi", "qwen-reference-abi"},
-                 {"precision", "float32"}, {"quantization", "none"}, {"layout", "NCHW"},
+                 {"precision", "float32"}, {"quantization", "dynamic_int8"}, {"layout", "NCHW"},
                  {"padding", "none"}, {"protection_epoch", "reference-epoch"},
                  {"max_source_bytes", 1U << 20}, {"max_assembled_bytes", 1U << 20}, {"max_nodes", 16}}},
     {"publication", {{"artifact_root", "/qwen/reference/artifacts"}}},
@@ -303,8 +304,8 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
   preparedMetadata = nativeCanonicalJson(profileMetadata);
 
   NativePreparedCanonicalPublication publication;
-  publication.sourceDataName = "/qwen/reference/source";
-  publication.rootDataName = "/qwen/reference/artifacts/manifest";
+  publication.sourceDataName = ndn::Name("/qwen/reference/source").toUri(ndn::name::UriFormat::CANONICAL);
+  publication.rootDataName = ndn::Name("/qwen/reference/artifacts/manifest").toUri(ndn::name::UriFormat::CANONICAL);
   publication.canonicalManifestJson = "{}";
   publication.manifestDigest = digest("{}");
   publication.preparedMetadataJson = preparedMetadata;
@@ -319,6 +320,7 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
   materialManifest->manifestDigest = digest(materialManifest->canonicalJson());
   materialManifest->validate();
   publication.materialManifest = materialManifest;
+  BOOST_CHECK_NO_THROW(publication.validate());
 
   PreparationSpec spec;
   spec.key = "qwen-reference-hit";
@@ -478,6 +480,12 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
   const auto fixedSnapshotColdBefore = ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes;
   const auto restoredProfile = NativeRequestCatalog::load(
     nativeCanonicalJson(profiledCatalog), profileReference, restoreControl);
+  BOOST_CHECK_EQUAL(restoredProfile.model.descriptor.quantizationSubtype, "dynamic_int8");
+  auto mismatchedQuantization = profiledCatalog;
+  mismatchedQuantization["recipe"]["quantization"] = "weight_only_int8";
+  BOOST_CHECK_THROW(NativeRequestCatalog::load(
+    nativeCanonicalJson(mismatchedQuantization), profileReference, restoreControl),
+    std::invalid_argument);
   BOOST_CHECK_GT(ndnsf::di::detail::fixedAssignmentWork().snapshotFixedEncodes,
     fixedSnapshotColdBefore);
   BOOST_REQUIRE(restoredProfile.planningCache);
@@ -621,11 +629,12 @@ BOOST_AUTO_TEST_CASE(Spec189PreparationMemorySnapshotCoversOwnersAndCancellation
                                         const NativeInspectedModel&,
                                         const NativeRequestControl&) {
     NativePreparedCanonicalPublication publication;
-    publication.sourceDataName = "/fixture/source";
-    publication.rootDataName = "/fixture/root";
+    publication.sourceDataName = ndn::Name("/fixture/source").toUri(ndn::name::UriFormat::CANONICAL);
+    publication.rootDataName = ndn::Name("/fixture/root").toUri(ndn::name::UriFormat::CANONICAL);
     publication.canonicalManifestJson = "{}";
     publication.manifestDigest = nativePlanningDigest("{}");
     publication.publishedBytes = 123;
+    BOOST_CHECK_NO_THROW(publication.validate());
     return publication;
   };
   fixture.spec.rollbackPublication = [] (const NativePreparedCanonicalPublication&) {};

@@ -841,6 +841,88 @@ BOOST_AUTO_TEST_CASE(ReaderGenerationFencesClosedPendingReadAfterReopen)
   BOOST_CHECK(runtime->drain(std::chrono::seconds(1)));
 }
 
+BOOST_AUTO_TEST_CASE(DeferredJoinDoesNotBlockCallbackOwnerWhileWorkIsActive)
+{
+  auto runtime = OperationRuntime::create();
+  auto ticket = runtime->acquire();
+  std::promise<void> started;
+  auto startedFuture = started.get_future();
+  std::promise<void> release;
+  auto releaseFuture = release.get_future().share();
+  std::promise<void> finished;
+  auto finishedFuture = finished.get_future();
+  runtime->post(ticket, [&started, releaseFuture, &finished] {
+    started.set_value();
+    releaseFuture.wait();
+    finished.set_value();
+  });
+  BOOST_REQUIRE(startedFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+  ticket = OperationRuntime::WorkTicket{};
+  auto destroy = std::async(std::launch::async, [runtime = std::move(runtime)]() mutable {
+    runtime->close();
+    runtime->deferJoinOnDestroy();
+    runtime.reset();
+  });
+  const bool returnedWhileWorkerWaited =
+    destroy.wait_for(std::chrono::seconds(1)) == std::future_status::ready;
+  release.set_value();
+  BOOST_CHECK(returnedWhileWorkerWaited);
+  destroy.get();
+  BOOST_CHECK(finishedFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+}
+
+BOOST_AUTO_TEST_CASE(ExplicitDrainJoinsWorkerBeforeOwnerDestruction)
+{
+  auto runtime = OperationRuntime::create();
+  auto ticket = runtime->acquire();
+  std::promise<void> started;
+  auto startedFuture = started.get_future();
+  std::promise<void> release;
+  auto releaseFuture = release.get_future().share();
+  runtime->post(ticket, [&started, releaseFuture] {
+    started.set_value();
+    releaseFuture.wait();
+  });
+  BOOST_REQUIRE(startedFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+  ticket = OperationRuntime::WorkTicket{};
+  runtime->close();
+  BOOST_CHECK(!runtime->joinAfterDrain(std::chrono::milliseconds(0)));
+  release.set_value();
+  BOOST_REQUIRE(runtime->drain(std::chrono::seconds(1)));
+  BOOST_CHECK(runtime->joinAfterDrain(std::chrono::seconds(1)));
+  BOOST_CHECK(runtime->joinAfterDrain(std::chrono::milliseconds(0)));
+}
+
+BOOST_AUTO_TEST_CASE(RepeatedRuntimeConstructionRetiresEachMutexBeforeReuse)
+{
+  for (int iteration = 0; iteration < 16; ++iteration) {
+    auto runtime = OperationRuntime::create();
+    auto ticket = runtime->acquire();
+    ticket = OperationRuntime::WorkTicket{};
+    runtime->close();
+    BOOST_REQUIRE(runtime->drain(std::chrono::seconds(1)));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(RepeatedCompletionTimersRetireBeforeRuntimeReuse)
+{
+  for (int iteration = 0; iteration < 16; ++iteration) {
+    auto runtime = OperationRuntime::create();
+    OperationState<int, std::string> state(runtime);
+    std::promise<void> timedOut;
+    auto done = timedOut.get_future();
+    auto subscription = state.resultAsync(std::chrono::milliseconds(1),
+      [&timedOut] (std::optional<int>, std::exception_ptr) {
+        timedOut.set_value();
+      });
+    BOOST_REQUIRE(done.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+    subscription.unsubscribe();
+    state.cancel();
+    runtime->close();
+    BOOST_REQUIRE(runtime->drain(std::chrono::seconds(1)));
+  }
+}
+
 BOOST_AUTO_TEST_CASE(ExternalTerminalAdmissionRejectsLateEventBeforeCorePublish)
 {
   auto runtime = OperationRuntime::create();

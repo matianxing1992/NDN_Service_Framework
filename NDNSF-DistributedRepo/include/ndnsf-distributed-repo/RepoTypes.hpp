@@ -13,6 +13,142 @@
 
 namespace ndnsf_distributed_repo {
 
+inline constexpr uint64_t REPO_USER_STORAGE_LIMIT_BYTES = 1000000000ULL;
+
+struct RepoUserStorageObject
+{
+  std::string objectName;
+  std::string wireSha256;
+  uint64_t generation = 0;
+  uint64_t payloadWireBytes = 0;
+  uint64_t manifestBytes = 0;
+};
+
+void validateRepoUserStorageObject(const RepoUserStorageObject& object);
+
+enum class RepoUserStorageClaimState { Committed, CleanupPrepared, Deleted };
+
+struct RepoUserStorageClaim
+{
+  std::string repoNode;
+  std::string ownerIdentity;
+  std::string grantId;
+  uint64_t ownerEpoch = 0;
+  RepoUserStorageObject object;
+  RepoUserStorageClaimState state = RepoUserStorageClaimState::Committed;
+  std::string cleanupId;
+  uint64_t committedAtMs = 0;
+  uint64_t deletedAtMs = 0;
+};
+
+struct RepoUserStorageGrant
+{
+  std::string grantId;
+  std::string repoNode;
+  std::string ownerIdentity;
+  std::string writerIdentity;
+  std::string objectName;
+  uint64_t ownerEpoch = 0;
+  uint64_t expiresAtMs = 0;
+  uint64_t createdAtMs = 0;
+};
+
+struct RepoUserStorageUsage
+{
+  std::string repoNode;
+  std::string ownerIdentity;
+  uint64_t limitBytes = REPO_USER_STORAGE_LIMIT_BYTES;
+  uint64_t committedBytes = 0;
+  uint64_t reservedBytes = 0;
+};
+
+struct RepoUserStorageGrantRequest;
+
+struct RepoUserStorageGrantReply
+{
+  uint32_t schemaVersion = 1;
+  RepoUserStorageGrant grant;
+  std::string toJson() const;
+  static RepoUserStorageGrantReply fromJson(const std::string& wire);
+  void validateExpected(const RepoArtifactTarget& target, const std::string& owner,
+                        const RepoUserStorageGrantRequest& request) const;
+};
+
+struct RepoUserStorageUsageReply
+{
+  uint32_t schemaVersion = 1;
+  RepoUserStorageUsage usage;
+  std::string toJson() const;
+  static RepoUserStorageUsageReply fromJson(const std::string& wire);
+  void validateExpected(const RepoArtifactTarget& target, const std::string& owner) const;
+};
+
+struct RepoUserStorageGrantRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string grantId;
+  std::string writerIdentity;
+  std::string objectName;
+  uint64_t expiresAtMs = 0;
+  std::string toJson() const;
+  static RepoUserStorageGrantRequest fromJson(const std::string& wire);
+};
+
+struct RepoUserStorageUsageRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string toJson() const;
+  static RepoUserStorageUsageRequest fromJson(const std::string& wire);
+};
+
+struct RepoUserStorageListRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string afterObjectName;
+  uint32_t limit = 100;
+  std::string toJson() const;
+  static RepoUserStorageListRequest fromJson(const std::string& wire);
+};
+
+struct RepoUserStorageDeleteRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string cleanupId;
+  std::string objectName;
+  uint64_t ownerEpoch = 0;
+  std::string toJson() const;
+  static RepoUserStorageDeleteRequest fromJson(const std::string& wire);
+};
+
+struct RepoUserStorageDeleteReply
+{
+  uint32_t schemaVersion = 1;
+  std::string repoNode;
+  std::string ownerIdentity;
+  std::string cleanupId;
+  std::string objectName;
+  uint64_t ownerEpoch = 0;
+  std::string state;
+  uint64_t releasedBytes = 0;
+  std::string toJson() const;
+  static RepoUserStorageDeleteReply fromJson(const std::string& wire);
+  void validateExpected(const RepoArtifactTarget& target, const std::string& owner,
+                        const RepoUserStorageDeleteRequest& request) const;
+};
+
+struct RepoUserStorageListReply
+{
+  uint32_t schemaVersion = 1;
+  std::string repoNode;
+  std::string ownerIdentity;
+  std::vector<RepoUserStorageClaim> objects;
+  std::string nextAfterObjectName;
+  std::string toJson() const;
+  static RepoUserStorageListReply fromJson(const std::string& wire);
+  void validateExpected(const RepoArtifactTarget& target, const std::string& owner,
+                        const RepoUserStorageListRequest& request) const;
+};
+
 namespace reason {
 inline constexpr const char* OperationConflict = "repo-operation-conflict";
 inline constexpr const char* GenerationConflict = "repo-generation-conflict";
@@ -104,6 +240,8 @@ struct RepoObjectMetadataProbe
   bool payloadPresent = false;
   bool payloadRepresentationValid = false;
   uint64_t payloadSize = 0;
+  bool manifestMeasurementAvailable = false;
+  uint64_t manifestWireBytes = 0;
 };
 
 struct RepoWriteIntent
@@ -178,6 +316,7 @@ struct ArtifactStoreRequest
   // The local seed's foreground write instead requires its submitter journal.
   std::optional<RepoArtifactTarget> operationOwner;
   std::vector<uint8_t> bytes;
+  std::optional<RepoUserStorageBinding> storageBinding;
 
   std::vector<uint8_t> toWire(const ArtifactLimits& limits = {}) const;
   static ArtifactStoreRequest
@@ -194,6 +333,7 @@ struct ArtifactRangeWriteRequest
   uint64_t offsetBytes = 0;
   uint64_t lengthBytes = 0;
   std::vector<uint8_t> bytes;
+  std::optional<RepoUserStorageBinding> storageBinding;
 
   std::vector<uint8_t> toWire(const ArtifactLimits& limits = {}) const;
   static ArtifactRangeWriteRequest
@@ -207,6 +347,7 @@ struct ArtifactRangeCommitRequest
   uint64_t generation = 0;
   ArtifactReference reference;
   std::optional<RepoArtifactTarget> operationOwner;
+  std::optional<RepoUserStorageBinding> storageBinding;
 
   std::vector<uint8_t> toWire(const ArtifactLimits& limits = {}) const;
   static ArtifactRangeCommitRequest
@@ -219,6 +360,8 @@ struct ArtifactRangeAbortRequest
   std::string operationId;
   uint64_t generation = 0;
   ArtifactReference reference;
+  std::optional<RepoArtifactTarget> operationOwner;
+  std::optional<RepoUserStorageBinding> storageBinding;
 
   std::vector<uint8_t> toWire(const ArtifactLimits& limits = {}) const;
   static ArtifactRangeAbortRequest
@@ -248,6 +391,12 @@ struct RepoDataReference
   uint64_t expectedSize = 0;
   bool storeWirePackets = true;
   std::string objectType = "ndn-segmented-data";
+
+  // Optional exact original-packet index and opaque publication metadata.
+  // Repo measures wire bytes, offsets and quota itself; these are not authority.
+  std::optional<RepoObjectManifest> packetSetMetadata;
+
+  void validateExactPacketSet() const;
 
   std::string toJson() const;
 };
@@ -514,9 +663,24 @@ public:
   virtual void unpin(const std::string& objectName) const;
 
   virtual void abortRanges(const std::string& objectName);
+  /** Trusted owner-cleanup staging abort with exact publication identity.
+   * Caller fences the owner epoch and all physical writers. Unsupported stores
+   * refuse; true proves selected staging durably absent, not quota release. */
+  virtual bool abortUserStorageRangesIfOwned(const RepoObjectManifest& expected);
+  /** Failed transaction rollback confirmation; unreferenced finalized residue
+   * or matching committed metadata refuses. No user quota release is implied. */
+  virtual bool abortFailedRangesIfOwned(const RepoObjectManifest& expected);
 
   // True only when getManifest can be served without materializing payload.
   virtual bool supportsManifestLookup() const noexcept;
+  /** Trusted cleanup confirmation after owner/writer fences and physical erase.
+   * Unsupported stores return false. Does not authorize deletion or release quota.
+   * Caller excludes all physical writers and other owners of this object. */
+  virtual bool confirmUserStorageRemoval(const RepoUserStorageObject& expected);
+  /** Read-only preflight under caller's physical-writer exclusion.
+   * Unsupported backends refuse; a true result is not a lease or authorization.
+   */
+  virtual bool canRemoveUserStorageObject(const RepoUserStorageObject& expected) const;
 };
 
 std::shared_ptr<RepoStoreBackend>

@@ -39,6 +39,7 @@
 #include <mutex>
 #include <set>
 #include <thread>
+#include <openssl/evp.h>
 
 namespace ndnsf::di::test {
 
@@ -58,6 +59,25 @@ std::string
 stateDigest(char value)
 {
   return "sha256:" + std::string(64, value);
+}
+
+std::string
+sha256Wire(const std::vector<std::uint8_t>& bytes)
+{
+  std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+  unsigned int digestBytes = 0;
+  if (EVP_Digest(bytes.data(), bytes.size(), digest.data(), &digestBytes,
+                 EVP_sha256(), nullptr) != 1 || digestBytes != 32) {
+    throw std::runtime_error("test fixture SHA-256 failed");
+  }
+  constexpr char hex[] = "0123456789abcdef";
+  std::string result = "sha256:";
+  result.reserve(71);
+  for (unsigned int i = 0; i < digestBytes; ++i) {
+    result.push_back(hex[digest[i] >> 4]);
+    result.push_back(hex[digest[i] & 0x0f]);
+  }
+  return result;
 }
 
 DecodeStateIdentityV1
@@ -115,6 +135,40 @@ exactConversationBinding(const DecodeStateIdentityV1& origin,
   binding.identity = origin;
   binding.validate();
   return binding;
+}
+
+ConversationSaveMetadataV1
+saveMetadataFor(ConversationStateBinding& binding,
+                const std::string& requester = "/requester/A")
+{
+  const auto& identity = binding.identity;
+  ProviderConversationStateReceiptV1 receipt;
+  receipt.conversationId = binding.conversationId;
+  receipt.parentContextEpoch = binding.contextEpoch - 1;
+  receipt.successorContextEpoch = binding.contextEpoch;
+  receipt.originRequestId = identity.requestId;
+  receipt.originGenerationId = identity.generationId;
+  receipt.serviceName = binding.serviceName;
+  receipt.requesterIdentity = requester;
+  receipt.securityDomainDigest = identity.securityDomainDigest;
+  receipt.modelDigest = identity.modelDigest;
+  receipt.graphSemanticDigest = identity.graphSemanticDigest;
+  receipt.adapterDigest = identity.adapterDigest;
+  receipt.roleName = identity.roleName;
+  receipt.roleSplitDigest = identity.roleSplitDigest;
+  receipt.layoutDigest = identity.layoutDigest;
+  receipt.planRoleMapDigest = binding.planRoleMapDigest;
+  receipt.providerIdentity = identity.providerIdentity;
+  receipt.providerBootId = identity.providerBootId;
+  receipt.cacheEpoch = identity.cacheEpoch;
+  receipt.prefixDigest = identity.prefixDigest;
+  receipt.prefixTokenCount = identity.prefixTokenCount;
+  receipt.positionDigest = identity.positionDigest;
+  receipt.stateSchemaDigest = identity.stateSchemaDigest;
+  receipt.stateComponentDigests = identity.stateComponentDigests;
+  receipt.expiresAtMs = binding.expiresAtMs;
+  binding.receiptDigest = receipt.computedDigest();
+  return {requester, std::move(receipt)};
 }
 
 BOOST_AUTO_TEST_CASE(DecodeStateIdentityRequiresExactPredecessorEpoch)
@@ -718,6 +772,13 @@ private:
 class ConversationTransferRunner final : public NativeModelRunner
 {
 public:
+  explicit ConversationTransferRunner(bool portable = false,
+                                     std::string role = "/Stage/0")
+    : m_portable(portable)
+    , m_role(std::move(role))
+  {
+  }
+
   struct Counters
   {
     std::atomic<int> promote{0};
@@ -743,6 +804,7 @@ public:
     {
       std::lock_guard<std::mutex> lock(mutex);
       sessionState[ctx.sessionId] = true;
+      sessionTensorBySession[ctx.sessionId] = state;
     }
     return {
       {"onnx-output-bundle",
@@ -756,18 +818,79 @@ public:
     return true;
   }
 
+  bool
+  supportsPortableConversationState() const final
+  {
+    return m_portable;
+  }
+
+  NativePortableKvSnapshotV1
+  exportConversationState(const NativeConversationStateHandleV1& state,
+                          const DecodeStateIdentityV1& identity,
+                          const NativePortableKvLimitsV1& limits) final
+  {
+    if (!m_portable) throw std::runtime_error("native-portable-kv-unsupported");
+    state.validate();
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto handle = conversationHandleByKey.find(state.conversationKey);
+    const auto tensor = conversationTensorByKey.find(state.conversationKey);
+    if (handle == conversationHandleByKey.end() || tensor == conversationTensorByKey.end() ||
+        handle->second.opaque.token != state.opaque.token ||
+        state.opaque.providerIdentity != identity.providerIdentity ||
+        state.opaque.providerBootId != identity.providerBootId ||
+        state.opaque.role != identity.roleName ||
+        state.opaque.stateInferenceEpoch != identity.stateInferenceEpoch) {
+      throw std::invalid_argument("portable-kv-origin-handle-mismatch");
+    }
+
+    NativePortableKvComponentV1 component;
+    component.inputName = "attention_kv_in";
+    component.elementType = tensor->second.elementType;
+    component.shape = tensor->second.shape;
+    component.payloadBytes = tensor->second.payload.size();
+    component.tensorWire = encodeTensorBundle({NamedTensor{
+      component.inputName, component.elementType, component.shape,
+      tensor->second.payload}});
+    component.contentDigest = sha256Wire(component.tensorWire);
+
+    NativePortableKvSnapshotV1 snapshot;
+    snapshot.originIdentity = identity;
+    snapshot.stateIoDigest = stateDigest('0');
+    snapshot.logicalBytes = component.payloadBytes;
+    snapshot.encodedBytes = component.tensorWire.size();
+    snapshot.components.push_back(std::move(component));
+    validateNativePortableKvSnapshot(snapshot, limits);
+    return snapshot;
+  }
+
   std::optional<NativeConversationStateHandleV1>
   promoteSessionStateToConversation(const std::string& sessionId,
                                     const std::string& conversationKey) final
   {
     std::lock_guard<std::mutex> lock(mutex);
-    if (!sessionState.count(sessionId) || conversationState.count(conversationKey)) {
+    if (!sessionState.count(sessionId)) {
+      lastPromotionFailure = "missing session " + sessionId + "; available=";
+      for (const auto& item : sessionState) lastPromotionFailure += item.first + ",";
+      return std::nullopt;
+    }
+    if (conversationState.count(conversationKey)) {
+      lastPromotionFailure = "duplicate conversation key " + conversationKey;
+      return std::nullopt;
+    }
+    lastPromotionFailure.clear();
+    const auto tensor = sessionTensorBySession.find(sessionId);
+    if (tensor == sessionTensorBySession.end()) {
+      lastPromotionFailure = "missing tensor for session " + sessionId;
       return std::nullopt;
     }
     sessionState.erase(sessionId);
     conversationState[conversationKey] = true;
+    conversationTensorByKey[conversationKey] = tensor->second;
+    sessionTensorBySession.erase(tensor);
     ++counters.promote;
-    return makeHandle(sessionId, conversationKey);
+    auto handle = makeHandle(sessionId, conversationKey);
+    conversationHandleByKey[conversationKey] = handle;
+    return handle;
   }
 
   bool
@@ -793,6 +916,11 @@ public:
       return false;
     }
     hostState[state.conversationKey] = true;
+    const auto tensor = conversationTensorByKey.find(state.conversationKey);
+    if (tensor != conversationTensorByKey.end()) {
+      hostTensorByKey[state.conversationKey] = tensor->second;
+      conversationTensorByKey.erase(tensor);
+    }
     conversationState.erase(state.conversationKey);
     ++counters.pause;
     return true;
@@ -811,6 +939,11 @@ public:
         }
         hostState.erase(state.conversationKey);
         conversationState[state.conversationKey] = true;
+        const auto tensor = hostTensorByKey.find(state.conversationKey);
+        if (tensor != hostTensorByKey.end()) {
+          conversationTensorByKey[state.conversationKey] = tensor->second;
+          hostTensorByKey.erase(tensor);
+        }
         return true;
       });
   }
@@ -818,14 +951,20 @@ public:
   bool
   releaseConversationState(const NativeConversationStateHandleV1& state) final
   {
+    if (releaseProbe) releaseProbe();
     std::lock_guard<std::mutex> lock(mutex);
     const auto removed = conversationState.erase(state.conversationKey) +
       hostState.erase(state.conversationKey);
+    conversationTensorByKey.erase(state.conversationKey);
+    hostTensorByKey.erase(state.conversationKey);
+    conversationHandleByKey.erase(state.conversationKey);
     ++counters.release;
     return removed != 0;
   }
 
   std::atomic<bool> restoredWithoutBundle{false};
+  std::string lastPromotionFailure;
+  std::function<void()> releaseProbe;
   std::string restoredSession;
 
 private:
@@ -836,7 +975,7 @@ private:
     handle.opaque.providerIdentity = "/provider/A";
     handle.opaque.providerBootId = "boot-a";
     handle.opaque.sessionId = sessionId;
-    handle.opaque.role = "/Stage/0";
+    handle.opaque.role = m_role;
     handle.opaque.token = "ndnsf-device-state-v1:" + sessionId;
     handle.conversationKey = conversationKey;
     handle.logicalBytes = sizeof(std::int64_t);
@@ -845,9 +984,15 @@ private:
   }
 
   mutable std::mutex mutex;
+  const bool m_portable;
+  const std::string m_role;
   std::map<std::string, bool> sessionState;
   std::map<std::string, bool> conversationState;
   std::map<std::string, bool> hostState;
+  std::map<std::string, NamedTensor> sessionTensorBySession;
+  std::map<std::string, NamedTensor> conversationTensorByKey;
+  std::map<std::string, NamedTensor> hostTensorByKey;
+  std::map<std::string, NativeConversationStateHandleV1> conversationHandleByKey;
 };
 
 } // namespace
@@ -3494,7 +3639,8 @@ BOOST_AUTO_TEST_CASE(KvStateStorePinsAndAtomicallyRollsBackCandidates)
 
 BOOST_AUTO_TEST_CASE(ConversationStateStoreSeparatesCrossRequestState)
 {
-  ConversationStateStore store(4, 1, 4, 1, 1'000);
+  auto storeOwner = std::make_shared<ConversationStateStore>(4, 1, 4, 1, 1'000);
+  auto& store = *storeOwner;
   store.setProviderBinding("/provider/A", "boot-a", 7);
   const auto origin = exactStateIdentity();
   const auto binding = exactConversationBinding(origin, 1, 10'000);
@@ -3724,6 +3870,217 @@ BOOST_AUTO_TEST_CASE(ConversationStateStoreResolvesOnlyExactSelectionCommitment)
   BOOST_REQUIRE(legacyStore.rollbackStagedPromotion(binding));
 }
 
+BOOST_AUTO_TEST_CASE(ConversationStoreCommitAloneDoesNotMakeKvSaveEligible)
+{
+  const auto identity = exactStateIdentity();
+  auto binding = exactConversationBinding(identity, 1, 10'000);
+  const auto metadata = saveMetadataFor(binding);
+  ConversationStateStore store(16, 2, 16, 2, 1'000);
+  BOOST_REQUIRE(store.stagePromotion(identity.requestId, identity.roleName,
+    binding, bundle("state", "AAAA"), 100, metadata));
+  BOOST_REQUIRE(store.commitStagedPromotion(binding, stateDigest('8')));
+  BOOST_CHECK_EQUAL(store.snapshot().saveEligibleEntries, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(ConversationSaveBatchRejectsMetadataFreeAffectedState)
+{
+  const auto identity = exactStateIdentity();
+  auto binding = exactConversationBinding(identity, 1, 10'000);
+  auto store = std::make_shared<ConversationStateStore>(16, 2, 16, 2, 1'000);
+  store->setProviderBinding(identity.providerIdentity,
+                            identity.providerBootId, identity.cacheEpoch);
+  BOOST_REQUIRE(store->stagePromotion(identity.requestId, identity.roleName,
+    binding, bundle("state", "AAAA"), 100));
+  BOOST_REQUIRE(store->commitStagedPromotion(binding, stateDigest('8')));
+  binding.checkpointDigest = stateDigest('8');
+  auto fence = store->beginConversationSaveFence(
+    "/requester/A", binding.serviceName, binding.conversationId);
+  BOOST_REQUIRE(fence);
+  const auto result = store->tryAcquireCommittedSaveBatch(
+    *fence, ConversationSaveBatchLimitsV1{4, 64 * 1024}, 150);
+  BOOST_CHECK(result.status ==
+              ConversationSaveBatchStatusV1::IneligibleOrUnavailable);
+  BOOST_CHECK(!result.batch);
+  BOOST_CHECK(store->release(binding));
+}
+
+BOOST_AUTO_TEST_CASE(Spec212WithdrawalEmptyBatchDiffersFromIneligibleState)
+{
+  auto store = std::make_shared<ConversationStateStore>(16, 2, 16, 2, 1'000);
+  store->setProviderBinding("/provider/A", "boot-a", 7);
+  auto fence = store->beginServiceWithdrawalSaveFence(
+    "/service/A", "withdrawal-empty-0001", 17);
+  BOOST_REQUIRE(fence);
+  BOOST_CHECK(store->isSaveFenceQuiescent(*fence));
+  const auto result = store->tryAcquireCommittedSaveBatch(
+    *fence, ConversationSaveBatchLimitsV1{4, 64 * 1024}, 150);
+  BOOST_CHECK(result.status == ConversationSaveBatchStatusV1::Empty);
+  BOOST_CHECK(!result.batch);
+}
+
+BOOST_AUTO_TEST_CASE(ConversationSaveFenceScopesAdmissionsAndWaitsForEarlierWork)
+{
+  auto store = std::make_shared<ConversationStateStore>(16, 2, 16, 2, 1'000);
+  store->setProviderBinding("/provider/A", "boot-a", 7);
+  auto admitted = store->tryAcquireConversationExecution(
+    "/requester/A", "/LLM/Pipeline/Generate", "conversation-a-0001");
+  BOOST_REQUIRE(admitted);
+  auto fence = store->beginConversationSaveFence(
+    "/requester/A", "/LLM/Pipeline/Generate", "conversation-a-0001");
+  BOOST_REQUIRE(fence);
+  BOOST_CHECK(!store->isSaveFenceQuiescent(*fence));
+  BOOST_CHECK(!store->tryAcquireConversationExecution(
+    "/requester/A", "/LLM/Pipeline/Generate", "conversation-a-0001"));
+  BOOST_CHECK(!store->beginConversationSaveFence(
+    "/requester/A", "/LLM/Pipeline/Generate", "conversation-a-0001"));
+  BOOST_CHECK(!store->beginServiceWithdrawalSaveFence(
+    "/LLM/Pipeline/Generate", "withdraw-a-0001", 7));
+  BOOST_CHECK(store->tryAcquireConversationExecution(
+    "/requester/B", "/LLM/Pipeline/Generate", "conversation-a-0001"));
+  BOOST_CHECK(store->tryAcquireConversationExecution(
+    "/requester/A", "/LLM/Pipeline/Generate", "conversation-b-0002"));
+  BOOST_CHECK(store->tryAcquireConversationExecution(
+    "/requester/A", "/LLM/Other", "conversation-a-0001"));
+  admitted.reset();
+  BOOST_CHECK(store->isSaveFenceQuiescent(*fence));
+  fence.reset();
+  BOOST_CHECK(store->tryAcquireConversationExecution(
+    "/requester/A", "/LLM/Pipeline/Generate", "conversation-a-0001"));
+
+  BOOST_CHECK_THROW(store->beginServiceWithdrawalSaveFence(
+    "/LLM/Pipeline/Generate", "", 7), std::invalid_argument);
+  BOOST_CHECK_THROW(store->beginServiceWithdrawalSaveFence(
+    "/LLM/Pipeline/Generate", "withdraw-a-0001", 0), std::invalid_argument);
+  auto serviceFence = store->beginServiceWithdrawalSaveFence(
+    "/LLM/Pipeline/Generate", "withdraw-a-0001", 7);
+  BOOST_REQUIRE(serviceFence);
+  BOOST_CHECK(!store->tryAcquireConversationExecution(
+    "/requester/B", "/LLM/Pipeline/Generate", "conversation-b-0002"));
+  BOOST_CHECK(store->tryAcquireConversationExecution(
+    "/requester/B", "/LLM/Other", "conversation-b-0002"));
+  BOOST_CHECK(!store->beginConversationSaveFence(
+    "/requester/B", "/LLM/Pipeline/Generate", "conversation-b-0002"));
+  BOOST_CHECK(!store->beginProviderWithdrawalSaveFence("withdraw-b-0002", 8));
+  BOOST_CHECK(!store->borrowConversationWithdrawalSaveFence(
+    *serviceFence, "/requester/B", "/LLM/Other", "conversation-b-0002",
+    "withdraw-a-0001", 7));
+  BOOST_CHECK(!store->borrowConversationWithdrawalSaveFence(
+    *serviceFence, "/requester/B", "/LLM/Pipeline/Generate", "conversation-b-0002",
+    "withdraw-b-0002", 7));
+  BOOST_CHECK(!store->borrowConversationWithdrawalSaveFence(
+    *serviceFence, "/requester/B", "/LLM/Pipeline/Generate", "conversation-b-0002",
+    "withdraw-a-0001", 8));
+  auto borrowedService = store->borrowConversationWithdrawalSaveFence(
+    *serviceFence, "/requester/B", "/LLM/Pipeline/Generate", "conversation-b-0002",
+    "withdraw-a-0001", 7);
+  BOOST_REQUIRE(borrowedService);
+  BOOST_CHECK(!store->borrowConversationWithdrawalSaveFence(
+    *serviceFence, "/requester/B", "/LLM/Pipeline/Generate", "conversation-b-0002",
+    "withdraw-a-0001", 7));
+  serviceFence.reset();
+  BOOST_CHECK(!store->tryAcquireConversationExecution(
+    "/requester/A", "/LLM/Pipeline/Generate", "conversation-a-0001"));
+  borrowedService.reset();
+  BOOST_CHECK(store->tryAcquireConversationExecution(
+    "/requester/A", "/LLM/Pipeline/Generate", "conversation-a-0001"));
+
+  auto providerFence = store->beginProviderWithdrawalSaveFence("withdraw-b-0002", 8);
+  BOOST_REQUIRE(providerFence);
+  BOOST_CHECK(!store->tryAcquireConversationExecution(
+    "/requester/A", "/LLM/Other", "conversation-c-0003"));
+  BOOST_CHECK(!store->beginConversationSaveFence(
+    "/requester/A", "/LLM/Other", "conversation-c-0003"));
+  BOOST_CHECK(!store->beginServiceWithdrawalSaveFence(
+    "/LLM/Other", "withdraw-c-0003", 9));
+  BOOST_CHECK(!store->beginProviderWithdrawalSaveFence("withdraw-c-0003", 9));
+  auto otherStore = std::make_shared<ConversationStateStore>(16, 2, 16, 2, 1'000);
+  otherStore->setProviderBinding("/provider/A", "boot-a", 7);
+  BOOST_CHECK(!otherStore->borrowConversationWithdrawalSaveFence(
+    *providerFence, "/requester/A", "/LLM/Other", "conversation-c-0003",
+    "withdraw-b-0002", 8));
+  auto borrowedProvider = store->borrowConversationWithdrawalSaveFence(
+    *providerFence, "/requester/A", "/LLM/Other", "conversation-c-0003",
+    "withdraw-b-0002", 8);
+  BOOST_REQUIRE(borrowedProvider);
+  providerFence.reset();
+  BOOST_CHECK(!store->tryAcquireConversationExecution(
+    "/requester/A", "/LLM/Other", "conversation-c-0003"));
+  borrowedProvider.reset();
+  BOOST_CHECK(store->tryAcquireConversationExecution(
+    "/requester/A", "/LLM/Other", "conversation-c-0003"));
+
+  auto staleStore = std::make_shared<ConversationStateStore>(16, 2, 16, 2, 1'000);
+  staleStore->setProviderBinding("/provider/A", "boot-a", 7);
+  auto staleFence = staleStore->beginProviderWithdrawalSaveFence("withdraw-stale", 11);
+  BOOST_REQUIRE(staleFence);
+  BOOST_CHECK(staleStore->setProviderBinding("/provider/A", "boot-b", 8));
+  BOOST_CHECK(!staleStore->borrowConversationWithdrawalSaveFence(
+    *staleFence, "/requester/A", "/LLM/Other", "conversation-c-0003",
+    "withdraw-stale", 11));
+}
+
+BOOST_AUTO_TEST_CASE(ConversationStoreClearInvalidatesAdmissionAndFenceHandles)
+{
+  auto store = std::make_shared<ConversationStateStore>(16, 2, 16, 2, 1'000);
+  auto binding = exactConversationBinding(exactStateIdentity());
+  store->setProviderBinding(binding.identity.providerIdentity,
+                            binding.identity.providerBootId,
+                            binding.identity.cacheEpoch);
+  auto staleAdmission = store->tryAcquireConversationExecution(
+    "/requester/A", binding.serviceName, binding.conversationId);
+  BOOST_REQUIRE(staleAdmission);
+  auto staleFence = store->beginConversationSaveFence(
+    "/requester/A", binding.serviceName, binding.conversationId);
+  BOOST_REQUIRE(staleFence);
+
+  store->clear();
+  BOOST_CHECK(!store->isSaveFenceQuiescent(*staleFence));
+  auto freshAdmission = store->tryAcquireConversationExecution(
+    "/requester/A", binding.serviceName, binding.conversationId);
+  BOOST_REQUIRE(freshAdmission);
+  auto metadata = saveMetadataFor(binding);
+  BOOST_CHECK(!store->stagePromotion(binding.identity.requestId,
+    binding.identity.roleName, binding, bundle("state", "AAAA"), 100,
+    metadata, &*staleAdmission));
+  BOOST_REQUIRE(store->stagePromotion(binding.identity.requestId,
+    binding.identity.roleName, binding, bundle("state", "AAAA"), 100,
+    std::move(metadata), &*freshAdmission));
+  BOOST_REQUIRE(store->rollbackStagedPromotion(binding));
+}
+
+BOOST_AUTO_TEST_CASE(ConversationStoreRebindIgnoresPriorIncarnationFence)
+{
+  auto store = std::make_shared<ConversationStateStore>(16, 2, 16, 2, 1'000);
+  auto oldBinding = exactConversationBinding(exactStateIdentity());
+  store->setProviderBinding(oldBinding.identity.providerIdentity,
+                            oldBinding.identity.providerBootId,
+                            oldBinding.identity.cacheEpoch);
+  auto oldAdmission = store->tryAcquireConversationExecution(
+    "/requester/A", oldBinding.serviceName, oldBinding.conversationId);
+  BOOST_REQUIRE(oldAdmission);
+  auto oldFence = store->beginConversationSaveFence(
+    "/requester/A", oldBinding.serviceName, oldBinding.conversationId);
+  BOOST_REQUIRE(oldFence);
+
+  auto newBinding = oldBinding;
+  newBinding.identity.providerBootId = "boot-b";
+  newBinding.identity.cacheEpoch = oldBinding.identity.cacheEpoch + 1;
+  BOOST_CHECK(store->setProviderBinding(newBinding.identity.providerIdentity,
+    newBinding.identity.providerBootId, newBinding.identity.cacheEpoch));
+  BOOST_CHECK(!store->isSaveFenceQuiescent(*oldFence));
+  auto newAdmission = store->tryAcquireConversationExecution(
+    "/requester/A", newBinding.serviceName, newBinding.conversationId);
+  BOOST_REQUIRE(newAdmission);
+  auto metadata = saveMetadataFor(newBinding);
+  BOOST_CHECK(!store->stagePromotion(newBinding.identity.requestId,
+    newBinding.identity.roleName, newBinding, bundle("state", "CCCC"), 100,
+    metadata, &*oldAdmission));
+  BOOST_REQUIRE(store->stagePromotion(newBinding.identity.requestId,
+    newBinding.identity.roleName, newBinding, bundle("state", "BBBB"), 100,
+    std::move(metadata)));
+  BOOST_REQUIRE(store->rollbackStagedPromotion(newBinding));
+}
+
 BOOST_AUTO_TEST_CASE(NativeProviderRuntimeAutomaticallyReusesCommittedDecodeState)
 {
   NativeProviderRuntime runtime(1);
@@ -3866,14 +4223,36 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimePromotesDecodeStateAcrossRequests)
     "session-a", role, std::make_shared<FakeDependencyIo>(),
     {{"input_ids", bundle("input_ids", "prompt")}}).get();
 
-  const auto binding = exactConversationBinding(identity, 1, 10'000);
+  auto binding = exactConversationBinding(identity, 1, 10'000);
+  auto saveMetadata = saveMetadataFor(binding);
+  runtime.bindConversationStateProvider(identity.providerIdentity,
+    identity.providerBootId, identity.cacheEpoch);
+  auto mismatchedRequester = saveMetadata;
+  mismatchedRequester.authenticatedRequester = "/requester/B";
+  BOOST_CHECK(!runtime.stageDecodeStatePromotion(
+    "session-a", role, binding, 100, std::move(mismatchedRequester)));
+  auto admission = runtime.tryAcquireConversationExecution(
+    "/requester/A", binding.serviceName, binding.conversationId);
+  BOOST_REQUIRE(admission);
   BOOST_REQUIRE(runtime.stageDecodeStatePromotion(
-    "session-a", role, binding, 100));
+    "session-a", role, binding, 100, std::move(saveMetadata), &*admission));
+  admission.reset();
+  auto saveFence = runtime.beginConversationSaveFence(
+    "/requester/A", binding.serviceName, binding.conversationId);
+  BOOST_REQUIRE(saveFence);
+  BOOST_CHECK(!runtime.isSaveFenceQuiescent(*saveFence));
+  auto admissionBusyBatch = runtime.tryAcquireCommittedSaveBatch(
+    *saveFence, ConversationSaveBatchLimitsV1{1, 64 * 1024}, 150);
+  BOOST_CHECK(admissionBusyBatch.status ==
+              ConversationSaveBatchStatusV1::Busy);
+  BOOST_CHECK(!runtime.tryAcquireConversationExecution(
+    "/requester/A", binding.serviceName, binding.conversationId));
   auto local = runtime.decodeStateSnapshot();
   BOOST_CHECK_EQUAL(local.entries, 1U);
   auto conversation = runtime.conversationStateSnapshot();
   BOOST_CHECK_EQUAL(conversation.entries, 1U);
   BOOST_CHECK_EQUAL(conversation.committingEntries, 1U);
+  BOOST_CHECK_EQUAL(conversation.saveEligibleEntries, 0U);
   BOOST_CHECK_EQUAL(conversation.promotions, 0U);
   BOOST_CHECK(!runtime.lookupConversationState(binding, 150));
 
@@ -3889,7 +4268,26 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimePromotesDecodeStateAcrossRequests)
   BOOST_REQUIRE(runtime.resolveStagedConversationState(stagedReference, 150));
   BOOST_CHECK(!runtime.resolveConversationState(stagedReference, 150));
 
-  BOOST_REQUIRE(runtime.commitStagedDecodeStatePromotion(binding));
+  BOOST_REQUIRE(runtime.commitStagedDecodeStatePromotion(binding, stateDigest('8')));
+  BOOST_CHECK(runtime.isSaveFenceQuiescent(*saveFence));
+  conversation = runtime.conversationStateSnapshot();
+  BOOST_CHECK_EQUAL(conversation.saveEligibleEntries, 1U);
+  auto committedBinding = binding;
+  committedBinding.checkpointDigest = stateDigest('8');
+  auto saveBatch = runtime.tryAcquireCommittedSaveBatch(
+    *saveFence, ConversationSaveBatchLimitsV1{1, 64 * 1024}, 150);
+  BOOST_CHECK(saveBatch.status ==
+              ConversationSaveBatchStatusV1::IneligibleOrUnavailable);
+  BOOST_CHECK(!saveBatch.batch);
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 0U);
+  BOOST_CHECK(runtime.lookupConversationState(committedBinding, 160).has_value());
+  BOOST_CHECK_THROW(runtime.exportConversationState(committedBinding,
+    NativePortableKvLimitsV1{1024, 2048, {}}, 160), std::runtime_error);
+  saveFence.reset();
+  auto reopenedAdmission = runtime.tryAcquireConversationExecution(
+    "/requester/A", binding.serviceName, binding.conversationId);
+  BOOST_REQUIRE(reopenedAdmission);
+  reopenedAdmission.reset();
   local = runtime.decodeStateSnapshot();
   BOOST_CHECK_EQUAL(local.entries, 0U);
   conversation = runtime.conversationStateSnapshot();
@@ -3897,6 +4295,7 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimePromotesDecodeStateAcrossRequests)
   BOOST_CHECK_EQUAL(conversation.committingEntries, 0U);
   BOOST_CHECK_EQUAL(conversation.promotions, 1U);
   BOOST_CHECK_EQUAL(conversation.requestLocalReleases, 1U);
+  BOOST_CHECK_EQUAL(conversation.saveEligibleEntries, 1U);
 
   auto resumed = binding;
   resumed.identity.requestId = "request-b";
@@ -3935,6 +4334,332 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimePromotesDecodeStateAcrossRequests)
              std::string(error.what()).find("compact binding") !=
                std::string::npos;
     });
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeBatchesCommittedAdapterStateAtomically)
+{
+  NativeProviderRuntime runtime(2, 1024, 1024, 4, 1024, 6, 1024, 4, 1'000);
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "/Stage/0";
+  runnerSpec.metadata = {
+    {"evidence.modelDigest", stateDigest('1')},
+    {"evidence.planDigest", stateDigest('0')},
+    {"evidence.providerName", "/provider/A"},
+    {"evidence.providerBootId", "boot-a"},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", "generation-a"},
+    {"state.schemaDigest", stateDigest('b')},
+  };
+  auto runner = std::make_shared<ConversationTransferRunner>(true);
+  runtime.registerRunner(runnerSpec, runner);
+
+  auto secondRoleSpec = runnerSpec;
+  secondRoleSpec.role = "/Stage/1";
+  auto secondRoleRunner = std::make_shared<ConversationTransferRunner>(
+    true, secondRoleSpec.role);
+  runtime.registerRunner(secondRoleSpec, secondRoleRunner);
+
+  const auto firstIdentity = exactStateIdentity();
+  auto secondIdentity = exactStateIdentity("request-b", 1, "generation-a", 0);
+  secondIdentity.prefixDigest = stateDigest('0');
+  secondIdentity.prefixTokenCount = 4;
+  secondIdentity.positionDigest = stateDigest('a');
+  auto thirdIdentity = exactStateIdentity("request-c", 1, "generation-a", 0);
+  thirdIdentity.roleName = secondRoleSpec.role;
+  thirdIdentity.validate();
+  const auto executeAndStage = [&] (const NativeModelRunnerSpec& spec,
+                                    const std::shared_ptr<ConversationTransferRunner>& stateRunner,
+                                    const std::string& sessionId,
+                                    const DecodeStateIdentityV1& identity,
+                                    const std::string& conversationId,
+                                    char checkpoint, std::uint64_t contextEpoch)
+    -> std::optional<std::pair<ConversationStateBinding, std::string>> {
+    RoleSpec role;
+    role.role = spec.role;
+    role.requestId = identity.requestId;
+    role.attemptEpoch = identity.attemptEpoch;
+    role.inferenceEpoch = identity.stateInferenceEpoch;
+    role.stateInputNames = {"attention_kv_in"};
+    role.stateOutputNames = {"attention_kv_out"};
+    role.candidateDecodeStateIdentity = identity;
+    runtime.executeRoleAsync(
+      sessionId, role, std::make_shared<FakeDependencyIo>(),
+      {{"input_ids", bundle("input_ids", "prompt:" + sessionId)}}).get();
+
+    auto binding = exactConversationBinding(identity, contextEpoch, 10'000);
+    binding.conversationId = conversationId;
+    binding.validate();
+    auto metadata = saveMetadataFor(binding);
+    auto admission = runtime.tryAcquireConversationExecution(
+      "/requester/A", binding.serviceName, binding.conversationId);
+    if (!admission) {
+      BOOST_TEST_MESSAGE("no execution admission for " << conversationId);
+      return std::nullopt;
+    }
+    if (!runtime.stageDecodeStatePromotion(
+          sessionId, role, binding, 100, std::move(metadata), &*admission)) {
+      const auto snapshot = runtime.conversationStateSnapshot();
+      BOOST_TEST_MESSAGE("state promotion failed for " << conversationId
+                         << "; adapter promotions=" << stateRunner->counters.promote.load()
+                         << "; " << stateRunner->lastPromotionFailure
+                         << "; entries=" << snapshot.entries
+                         << "; staged=" << snapshot.committingEntries
+                         << "; GPU bytes=" << snapshot.gpuBytes);
+      return std::nullopt;
+    }
+    admission.reset();
+    return std::make_pair(std::move(binding), stateDigest(checkpoint));
+  };
+
+  const auto firstResult = executeAndStage(
+    runnerSpec, runner, "session-a", firstIdentity, "conversation-a-0001", '8', 1);
+  BOOST_REQUIRE(firstResult);
+  const auto& first = *firstResult;
+  const auto secondResult = executeAndStage(
+    runnerSpec, runner, "session-b", secondIdentity, "conversation-b-0002", '9', 1);
+  BOOST_REQUIRE(secondResult);
+  const auto thirdResult = executeAndStage(
+    secondRoleSpec, secondRoleRunner, "session-c", thirdIdentity,
+    "conversation-a-0001", 'a', 1);
+  BOOST_REQUIRE(thirdResult);
+  BOOST_CHECK_EQUAL(runner->counters.promote.load(), 2);
+  BOOST_CHECK_EQUAL(secondRoleRunner->counters.promote.load(), 1);
+  auto saveFence = runtime.beginProviderWithdrawalSaveFence("withdraw-d-0004", 10);
+  BOOST_REQUIRE(saveFence);
+  BOOST_CHECK(!runtime.isSaveFenceQuiescent(*saveFence));
+  BOOST_CHECK(!runtime.tryAcquireConversationExecution(
+    "/requester/A", first.first.serviceName, "conversation-c-0003"));
+  auto stagedBatch = runtime.tryAcquireCommittedSaveBatch(
+    *saveFence, ConversationSaveBatchLimitsV1{2, 64 * 1024}, 150);
+  BOOST_CHECK(stagedBatch.status == ConversationSaveBatchStatusV1::Busy);
+  BOOST_CHECK(!stagedBatch.batch);
+
+  BOOST_REQUIRE(runtime.commitStagedDecodeStatePromotion(first.first, first.second));
+  BOOST_REQUIRE(runtime.commitStagedDecodeStatePromotion(
+    secondResult->first, secondResult->second));
+  BOOST_REQUIRE(runtime.commitStagedDecodeStatePromotion(
+    thirdResult->first, thirdResult->second));
+  BOOST_CHECK(runtime.isSaveFenceQuiescent(*saveFence));
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().saveEligibleEntries, 3U);
+
+  auto countBound = runtime.tryAcquireCommittedSaveBatch(
+    *saveFence, ConversationSaveBatchLimitsV1{2, 64 * 1024}, 150);
+  BOOST_CHECK(countBound.status == ConversationSaveBatchStatusV1::BoundsExceeded);
+  BOOST_CHECK(!countBound.batch);
+  BOOST_CHECK(countBound.affectedRows.empty());
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 0U);
+  auto metadataBound = runtime.tryAcquireCommittedSaveBatch(
+    *saveFence, ConversationSaveBatchLimitsV1{3, 1}, 150);
+  BOOST_CHECK(metadataBound.status == ConversationSaveBatchStatusV1::BoundsExceeded);
+  BOOST_CHECK(!metadataBound.batch);
+  BOOST_REQUIRE_EQUAL(metadataBound.affectedRows.size(), 3U);
+  for (const auto& row : metadataBound.affectedRows)
+    BOOST_CHECK_EQUAL(row.metadata.authenticatedRequester, "/requester/A");
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 0U);
+  auto stateBound = runtime.tryAcquireCommittedSaveBatch(
+    *saveFence,
+    ConversationSaveBatchLimitsV1{3, 64 * 1024, metadataBound.metadataBytes}, 150);
+  BOOST_CHECK(stateBound.status == ConversationSaveBatchStatusV1::BoundsExceeded);
+  BOOST_CHECK_GT(stateBound.totalBytes, stateBound.metadataBytes);
+  BOOST_CHECK(!stateBound.batch);
+  BOOST_REQUIRE_EQUAL(stateBound.affectedRows.size(), 3U);
+  for (const auto& row : stateBound.affectedRows)
+    BOOST_CHECK_EQUAL(row.metadata.authenticatedRequester, "/requester/A");
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 0U);
+
+  auto borrowed = runtime.borrowConversationWithdrawalSaveFence(
+    *saveFence, "/requester/A", first.first.serviceName, "conversation-a-0001",
+    "withdraw-d-0004", 10);
+  BOOST_REQUIRE(borrowed);
+  auto scopedBatch = runtime.tryAcquireCommittedSaveBatch(
+    *borrowed, ConversationSaveBatchLimitsV1{2, 64 * 1024}, 150);
+  BOOST_REQUIRE(scopedBatch.status == ConversationSaveBatchStatusV1::Ready);
+  BOOST_REQUIRE(scopedBatch.batch);
+  BOOST_REQUIRE_EQUAL(scopedBatch.batch->size(), 2U);
+  for (const auto& row : scopedBatch.batch->rows()) {
+    BOOST_CHECK_EQUAL(row.binding.conversationId, "conversation-a-0001");
+    BOOST_CHECK_EQUAL(row.metadata.authenticatedRequester, "/requester/A");
+  }
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 2U);
+  scopedBatch.batch.reset();
+  borrowed.reset();
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 0U);
+
+  auto saveBatch = runtime.tryAcquireCommittedSaveBatch(
+    *saveFence, ConversationSaveBatchLimitsV1{3, 64 * 1024}, 150);
+  BOOST_REQUIRE(saveBatch.status == ConversationSaveBatchStatusV1::Ready);
+  BOOST_REQUIRE(saveBatch.batch);
+  BOOST_REQUIRE_EQUAL(saveBatch.batch->size(), 3U);
+  using BatchKey = std::pair<std::string, std::string>;
+  const std::map<BatchKey, DecodeStateIdentityV1> expectedIdentities{
+    {{"conversation-a-0001", runnerSpec.role}, firstIdentity},
+    {{"conversation-a-0001", secondRoleSpec.role}, thirdIdentity},
+    {{"conversation-b-0002", runnerSpec.role}, secondIdentity},
+  };
+  std::set<BatchKey> observedRows;
+  bool foundFirst = false;
+  bool foundSecond = false;
+  bool foundFirstRole = false;
+  bool foundSecondRole = false;
+  for (const auto& row : saveBatch.batch->rows()) {
+    const BatchKey key{row.binding.conversationId, row.binding.identity.roleName};
+    const auto expected = expectedIdentities.find(key);
+    BOOST_REQUIRE(expected != expectedIdentities.end());
+    BOOST_CHECK(observedRows.insert(key).second);
+    BOOST_CHECK(row.binding.identity == expected->second);
+    BOOST_CHECK_EQUAL(row.binding.identity.requestId, expected->second.requestId);
+    BOOST_CHECK_EQUAL(row.metadata.authenticatedRequester, "/requester/A");
+    BOOST_CHECK_EQUAL(row.metadata.receipt.requesterIdentity, "/requester/A");
+    BOOST_CHECK_EQUAL(row.metadata.receipt.conversationId, row.binding.conversationId);
+    BOOST_CHECK_EQUAL(row.metadata.receipt.serviceName, row.binding.serviceName);
+    BOOST_CHECK_EQUAL(row.metadata.receipt.originRequestId,
+                      expected->second.requestId);
+    BOOST_CHECK_EQUAL(row.metadata.receipt.roleName, row.binding.identity.roleName);
+    BOOST_CHECK_EQUAL(row.metadata.receipt.planRoleMapDigest, row.binding.planRoleMapDigest);
+    BOOST_CHECK_EQUAL(row.metadata.receipt.computedDigest(), row.binding.receiptDigest);
+    foundFirst = foundFirst || (row.binding.conversationId == "conversation-a-0001" &&
+                                row.binding.identity.roleName == runnerSpec.role);
+    foundSecond = foundSecond || row.binding.conversationId == "conversation-b-0002";
+    foundFirstRole = foundFirstRole || (row.binding.conversationId == "conversation-a-0001" &&
+                                        row.binding.identity.roleName == secondRoleSpec.role);
+    foundSecondRole = foundSecondRole || (row.binding.conversationId == "conversation-b-0002" &&
+                                          row.binding.identity.roleName == runnerSpec.role);
+    BOOST_CHECK(row.serializedMetadataBytes > 0U);
+  }
+  BOOST_CHECK(foundFirst);
+  BOOST_CHECK(foundSecond);
+  BOOST_CHECK(foundFirstRole);
+  BOOST_CHECK(foundSecondRole);
+  BOOST_CHECK_EQUAL(observedRows.size(), expectedIdentities.size());
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 3U);
+  for (std::size_t i = 0; i < saveBatch.batch->size(); ++i) {
+    const auto& row = saveBatch.batch->rows()[i];
+    BOOST_CHECK_THROW(runtime.exportConversationState(*saveBatch.batch, i,
+      NativePortableKvLimitsV1{1, 2048, {}}, 160), std::invalid_argument);
+    const auto snapshot = runtime.exportConversationState(*saveBatch.batch, i,
+      NativePortableKvLimitsV1{1024, 2048, {}}, 160);
+    BOOST_CHECK(snapshot.originIdentity == row.binding.identity);
+    const auto& expected = expectedIdentities.at({row.binding.conversationId,
+                                                   row.binding.identity.roleName});
+    BOOST_CHECK(snapshot.originIdentity == expected);
+    BOOST_CHECK_EQUAL(snapshot.components.size(), 1U);
+    BOOST_CHECK_EQUAL(snapshot.logicalBytes, sizeof(std::int64_t));
+    BOOST_CHECK_EQUAL(snapshot.encodedBytes, snapshot.components.front().tensorWire.size());
+    BOOST_CHECK_EQUAL(snapshot.components.front().inputName, "attention_kv_in");
+    BOOST_CHECK_EQUAL(snapshot.components.front().contentDigest,
+                      sha256Wire(snapshot.components.front().tensorWire));
+    const auto tensors = decodeTensorBundle(snapshot.components.front().tensorWire);
+    BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+    BOOST_CHECK_EQUAL(tensors.front().name, "attention_kv_in");
+    BOOST_REQUIRE_EQUAL(tensors.front().payload.size(), sizeof(std::int64_t));
+    std::int64_t value = 0;
+    std::memcpy(&value, tensors.front().payload.data(), sizeof(value));
+    BOOST_CHECK_EQUAL(value, 42);
+  }
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 3U);
+
+  saveFence.reset();
+  BOOST_CHECK(!runtime.tryAcquireConversationExecution(
+    "/requester/A", first.first.serviceName, "conversation-c-0003"));
+  saveBatch.batch.reset();
+  auto reopenedAdmission = runtime.tryAcquireConversationExecution(
+    "/requester/A", first.first.serviceName, "conversation-c-0003");
+  BOOST_REQUIRE(reopenedAdmission);
+  reopenedAdmission.reset();
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().saveEligibleEntries, 3U);
+
+  auto fourthIdentity = exactStateIdentity("request-d", 1, "generation-a", 0);
+  auto fifthIdentity = exactStateIdentity("request-e", 1, "generation-a", 0);
+  fifthIdentity.roleName = secondRoleSpec.role;
+  fifthIdentity.validate();
+  const auto fourth = executeAndStage(runnerSpec, runner, "session-d",
+    fourthIdentity, "conversation-a-0001", 'b', 2);
+  const auto fifth = executeAndStage(secondRoleSpec, secondRoleRunner,
+    "session-e", fifthIdentity, "conversation-a-0001", 'b', 2);
+  BOOST_REQUIRE(fourth);
+  BOOST_REQUIRE(fifth);
+  BOOST_REQUIRE(runtime.commitStagedDecodeStatePromotion(fourth->first, fourth->second));
+  BOOST_REQUIRE(runtime.commitStagedDecodeStatePromotion(fifth->first, fifth->second));
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().saveEligibleEntries, 5U);
+
+  auto latestFence = runtime.beginProviderWithdrawalSaveFence("withdraw-e-0005", 11);
+  BOOST_REQUIRE(latestFence);
+  auto latest = runtime.tryAcquireCommittedSaveBatch(*latestFence,
+    ConversationSaveBatchLimitsV1{3, 64 * 1024}, 200);
+  BOOST_REQUIRE(latest.status == ConversationSaveBatchStatusV1::Ready);
+  BOOST_REQUIRE(latest.batch);
+  BOOST_REQUIRE_EQUAL(latest.batch->size(), 3U);
+  for (const auto& row : latest.batch->rows()) {
+    if (row.binding.conversationId == "conversation-a-0001") {
+      BOOST_CHECK_EQUAL(row.binding.contextEpoch, 2U);
+      BOOST_CHECK_EQUAL(row.binding.checkpointDigest, fourth->second);
+    }
+    else {
+      BOOST_CHECK_EQUAL(row.binding.conversationId, "conversation-b-0002");
+      BOOST_CHECK_EQUAL(row.binding.contextEpoch, 1U);
+    }
+  }
+  BOOST_CHECK_GT(latest.totalBytes, latest.metadataBytes);
+  const auto latestChargedBytes = latest.totalBytes;
+  latest.batch.reset();
+  auto belowLatest = runtime.tryAcquireCommittedSaveBatch(*latestFence,
+    ConversationSaveBatchLimitsV1{3, 64 * 1024, latestChargedBytes - 1}, 200);
+  BOOST_CHECK(belowLatest.status == ConversationSaveBatchStatusV1::BoundsExceeded);
+  BOOST_CHECK_EQUAL(belowLatest.totalBytes, latestChargedBytes);
+  BOOST_REQUIRE_EQUAL(belowLatest.affectedRows.size(), 3U);
+  auto exactLatest = runtime.tryAcquireCommittedSaveBatch(*latestFence,
+    ConversationSaveBatchLimitsV1{3, 64 * 1024, latestChargedBytes}, 200);
+  BOOST_REQUIRE(exactLatest.status == ConversationSaveBatchStatusV1::Ready);
+  BOOST_REQUIRE(exactLatest.batch);
+  BOOST_CHECK_EQUAL(exactLatest.batch->size(), 3U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeBorrowsServiceFencesFromProviderWithdrawal)
+{
+  NativeProviderRuntime runtime(2, 1024, 1024, 4, 1024, 4, 1024, 4, 1'000);
+  NativeProviderRuntime other(2, 1024, 1024, 4, 1024, 4, 1024, 4, 1'000);
+  const std::string firstService = "/service/withdraw-a";
+  const std::string secondService = "/service/withdraw-b";
+  const std::string conversation = "conversation-a-0001";
+  auto parent = runtime.beginProviderWithdrawalSaveFence("provider-withdraw-0001", 7);
+  BOOST_REQUIRE(parent);
+  BOOST_CHECK(!runtime.tryAcquireConversationExecution(
+    "/requester/A", firstService, conversation));
+  BOOST_CHECK(!runtime.tryAcquireConversationExecution(
+    "/requester/A", secondService, conversation));
+  BOOST_CHECK(!other.borrowServiceWithdrawalSaveFence(
+    *parent, firstService, "service-withdraw-0001", 11));
+  BOOST_CHECK_THROW(runtime.borrowServiceWithdrawalSaveFence(
+    *parent, "invalid-service", "service-withdraw-0001", 11),
+    std::invalid_argument);
+
+  auto first = runtime.borrowServiceWithdrawalSaveFence(
+    *parent, firstService, "service-withdraw-0001", 11);
+  BOOST_REQUIRE(first);
+  auto second = runtime.borrowServiceWithdrawalSaveFence(
+    *parent, secondService, "service-withdraw-0002", 12);
+  BOOST_REQUIRE(second);
+  BOOST_CHECK(!runtime.borrowServiceWithdrawalSaveFence(
+    *parent, firstService, "service-withdraw-0003", 13));
+  BOOST_CHECK(!runtime.borrowServiceWithdrawalSaveFence(
+    *first, secondService, "service-withdraw-0004", 14));
+  auto conversationFence = runtime.borrowConversationWithdrawalSaveFence(
+    *first, "/requester/A", firstService, conversation,
+    "service-withdraw-0001", 11);
+  BOOST_REQUIRE(conversationFence);
+  BOOST_CHECK(!runtime.borrowConversationWithdrawalSaveFence(
+    *first, "/requester/A", firstService, conversation,
+    "provider-withdraw-0001", 7));
+
+  parent.reset();
+  second.reset();
+  first.reset();
+  BOOST_CHECK(!runtime.tryAcquireConversationExecution(
+    "/requester/A", secondService, conversation));
+  conversationFence.reset();
+  auto admitted = runtime.tryAcquireConversationExecution(
+    "/requester/A", secondService, conversation);
+  BOOST_REQUIRE(admitted);
 }
 
 BOOST_AUTO_TEST_CASE(NativeProviderRuntimeUsesAdapterOwnedConversationTransfers)
@@ -4006,9 +4731,120 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeUsesAdapterOwnedConversationTransfers)
   BOOST_CHECK(transferRunner->restoredWithoutBundle.load());
   BOOST_CHECK_EQUAL(transferRunner->restoredSession, "session-b");
 
+  auto readyRole = resumedRole;
+  readyRole.requestId = "request-c";
+  readyRole.candidateDecodeStateIdentity->requestId = readyRole.requestId;
+  readyRole.candidateDecodeStateIdentity->generationId = "generation-c";
+  readyRole.conversationStateLookupNowMs = 500;
+  auto readyUse = runtime.acquireConversationUse(binding, 500);
+  BOOST_REQUIRE(readyUse);
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 1U);
+  auto duplicateUse = *readyUse;
+  auto alteredUse = *readyUse;
+  alteredUse.binding.identity.providerBootId = "wrong-boot";
+  BOOST_CHECK_THROW(runtime.executeRoleWithConversationUseAsync(
+    "session-c", readyRole, std::make_shared<FakeDependencyIo>(),
+    std::move(alteredUse)), std::runtime_error);
+  ConversationStateUseLeaseV1 unownedUse;
+  unownedUse.binding = binding;
+  BOOST_CHECK_THROW(runtime.executeRoleWithConversationUseAsync(
+    "session-c", readyRole, std::make_shared<FakeDependencyIo>(),
+    std::move(unownedUse)), std::runtime_error);
+  NativeProviderRuntime foreignRuntime(1, 1024);
+  foreignRuntime.registerRunner(runnerSpec, transferRunner);
+  BOOST_CHECK_THROW(foreignRuntime.executeRoleWithConversationUseAsync(
+    "session-c", readyRole, std::make_shared<FakeDependencyIo>(),
+    *readyUse), std::runtime_error);
+  BOOST_CHECK_THROW(runtime.executeRoleWithConversationUseAsync(
+    "session-c", readyRole, std::make_shared<FakeDependencyIo>(),
+    *readyUse, {}, {}, [] { throw std::runtime_error("cancelled before dispatch"); }),
+    std::runtime_error);
+  BOOST_CHECK_EQUAL(transferRunner->counters.restore.load(), 1);
+
+  // Public adapter fields are observations. Only the Store's private token
+  // authorizes use of its actual retained handle and runner.
+  BOOST_REQUIRE(readyUse->state);
+  readyUse->state->conversationKey = "forged-key";
+  readyUse->runner = makeNativeModelRunner(
+    [] (const RoleExecutionContext&) -> std::map<std::string, TensorBundle> {
+      throw std::runtime_error("untrusted public lease runner executed");
+    });
+  const auto readyResult = runtime.executeRoleWithConversationUseAsync(
+    "session-c", readyRole, std::make_shared<FakeDependencyIo>(),
+    std::move(*readyUse),
+    {{"input_ids", bundle("input_ids", "continuation")}}).get();
+  readyUse.reset();
+  BOOST_CHECK_EQUAL(readyResult.outputsByScope.size(), 1U);
+  BOOST_CHECK_EQUAL(transferRunner->counters.restore.load(), 2);
+  BOOST_CHECK_EQUAL(transferRunner->restoredSession, "session-c");
+  BOOST_CHECK_THROW(runtime.executeRoleWithConversationUseAsync(
+    "session-duplicate", readyRole, std::make_shared<FakeDependencyIo>(),
+    std::move(duplicateUse)), std::runtime_error);
+  BOOST_CHECK_EQUAL(transferRunner->counters.restore.load(), 2);
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 0U);
+
   BOOST_REQUIRE(runtime.releaseConversationState(binding));
   BOOST_CHECK_EQUAL(transferRunner->counters.release.load(), 1);
   BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().entries, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeDuplicatePromotionRollbackAllowsRuntimeReentry)
+{
+  NativeProviderRuntime runtime(1, 1024, 1024, 4, 1024, 4, 1024, 4, 1'000);
+  auto runner = std::make_shared<ConversationTransferRunner>();
+  const auto origin = exactStateIdentity();
+  RoleSpec first;
+  first.role = origin.roleName;
+  first.requestId = origin.requestId;
+  first.attemptEpoch = origin.attemptEpoch;
+  first.stateInputNames = {"attention_kv_in"};
+  first.stateOutputNames = {"attention_kv_out"};
+  first.candidateDecodeStateIdentity = origin;
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = origin.requestId;
+  lineage.attemptEpoch = origin.attemptEpoch;
+  lineage.planDigest = stateDigest('0');
+  lineage.generationId = origin.generationId;
+  lineage.streamEpoch = 1;
+  lineage.inferenceEpoch = 0;
+  lineage.transitionKind = GenerationEpochLineageV1::PREFILL;
+  lineage.logicalPrefixDigest = origin.prefixDigest;
+  lineage.logicalPrefixTokenCount = origin.prefixTokenCount;
+  lineage.positionDigest = origin.positionDigest;
+  lineage.producerRole = origin.roleName;
+  lineage.consumerRole = origin.roleName;
+  first.generationLineage = lineage;
+  runtime.executePreparedRoleAsync("session-a", first, std::make_shared<FakeDependencyIo>(),
+    [runner] { return runner; }, {{"input_ids", bundle("input_ids", "prompt")}}).get();
+  const auto oldBinding = exactConversationBinding(origin, 1, 9000);
+  BOOST_REQUIRE(runtime.stageDecodeStatePromotion("session-a", first, oldBinding, 100));
+  // Expiry removes physical state; its Runtime operation record still fences
+  // another child attempting the same conversation/epoch/role winner key.
+  BOOST_CHECK(!runtime.lookupConversationState(oldBinding, 1100));
+  BOOST_CHECK_EQUAL(runner->counters.release.load(), 1);
+  auto next = first;
+  next.requestId = "request-b";
+  next.candidateDecodeStateIdentity = exactStateIdentity("request-b", 1, "generation-b");
+  next.generationLineage->requestId = next.requestId;
+  next.generationLineage->generationId = next.candidateDecodeStateIdentity->generationId;
+  runtime.executePreparedRoleAsync("session-b", next, std::make_shared<FakeDependencyIo>(),
+    [runner] { return runner; }, {{"input_ids", bundle("input_ids", "prompt")}}).get();
+  bool reentered = false;
+  struct ClearReleaseProbeOnExit {
+    std::shared_ptr<ConversationTransferRunner> runner;
+    ~ClearReleaseProbeOnExit() { runner->releaseProbe = {}; }
+  } resetProbe{runner};
+  runner->releaseProbe = [&] {
+    BOOST_CHECK(!runtime.hasRunner(next.role));
+    BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().gpuBytes, sizeof(std::int64_t));
+    reentered = true;
+  };
+  const auto nextBinding = exactConversationBinding(*next.candidateDecodeStateIdentity, 1, 9000);
+  BOOST_CHECK(!runtime.stageDecodeStatePromotion("session-b", next, nextBinding, 1200));
+  BOOST_CHECK(reentered);
+  BOOST_CHECK_EQUAL(runner->counters.release.load(), 2);
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().entries, 0U);
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().gpuBytes, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(NativeProviderRuntimePromotesThePreparedSelectionRunner)
@@ -4166,6 +5002,7 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRestoresConversationStateForFreshReque
   BOOST_CHECK_EQUAL(conversation.hits, 1U);
   BOOST_CHECK_EQUAL(conversation.misses, 0U);
   BOOST_CHECK_EQUAL(runtime.decodeStateSnapshot().commits, 2U);
+  BOOST_CHECK_EQUAL(conversation.pinnedEntries, 0U);
 
   auto zeroGrowth = resumed;
   zeroGrowth.requestId = "request-zero-growth";
@@ -4187,6 +5024,8 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRestoresConversationStateForFreshReque
   BOOST_CHECK_EQUAL(calls.load(), 2U);
 
   auto missing = resumed;
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 0U);
+  BOOST_CHECK(runtime.lookupConversationState(binding, 200).has_value());
   missing.conversationStateBinding->contextEpoch = 2;
   BOOST_CHECK_EXCEPTION(
     runtime.executeRoleAsync(
@@ -4202,7 +5041,25 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRestoresConversationStateForFreshReque
 BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPrefix)
 {
   NativeProviderRuntime runtime(1, 1024, 1024, 4, 1024, 4, 1024, 4, 1'000);
-  const auto origin = exactStateIdentity();
+  auto origin = exactStateIdentity();
+  const std::vector<std::int64_t> parentPromptTokens{1, 2, 3};
+  const std::string parentPrefixDigest =
+    "sha256:5f5479b0f1771727df6a41bc955072b53575a51572880fbfb9069898b50daa75";
+  const std::string restoredSuffixPrefixDigest =
+    "sha256:c64e7d24c8c3cbab273679890f1c6141475c4b48ddf61e3784dfdb0890b5e2f7";
+  BOOST_CHECK_EQUAL(
+    nativeGenerationStatePrefixDigest(parentPromptTokens,
+                                      parentPromptTokens.size(),
+                                      origin.tokenizerDigest),
+    parentPrefixDigest);
+  BOOST_CHECK_NE(
+    nativeGenerationStatePrefixDigest({1, 2, 3, 4, 6},
+                                      parentPromptTokens.size(),
+                                      origin.tokenizerDigest),
+    restoredSuffixPrefixDigest);
+  origin.prefixDigest = parentPrefixDigest;
+  origin.prefixTokenCount = static_cast<std::uint32_t>(parentPromptTokens.size());
+  origin.validate();
   NativeModelRunnerSpec runnerSpec;
   runnerSpec.role = origin.roleName;
   runnerSpec.metadata = {
@@ -4220,7 +5077,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
   auto runner = makeNativeModelRunner(
     [&calls, &restored] (const RoleExecutionContext& ctx) {
       const auto call = calls.fetch_add(1);
-      if (call == 1) {
+      if (call >= 1) {
         const auto found = ctx.inputsByScope.find(
           "__ndnsf_provider_decode_state");
         BOOST_REQUIRE(found != ctx.inputsByScope.end());
@@ -4306,7 +5163,15 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
     return true;
   };
 
+  auto readyConfig = config;
   const auto result = runNativeEpochCoordinator(std::move(config));
+  BOOST_REQUIRE(result.finalizedRole);
+  BOOST_REQUIRE(result.finalizedRole->candidateDecodeStateIdentity);
+  BOOST_CHECK_EQUAL(
+    result.finalizedRole->candidateDecodeStateIdentity->prefixTokenCount, 5U);
+  BOOST_CHECK_EQUAL(
+    result.finalizedRole->candidateDecodeStateIdentity->prefixDigest,
+    restoredSuffixPrefixDigest);
   BOOST_CHECK_EQUAL(calls.load(), 2U);
   BOOST_CHECK(restored.load());
   BOOST_CHECK_EQUAL(events, 1U);
@@ -4316,6 +5181,32 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
   BOOST_CHECK_EQUAL(result.cacheObservations.front().representedPrefixTokenCount, 5U);
   BOOST_CHECK_EQUAL(result.cacheObservations.front().prefixWorkAvoided, 3U);
   BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().hits, 1U);
+  BOOST_CHECK_EQUAL(runtime.decodeStateSnapshot().entries, 0U);
+
+  readyConfig.sessionId = "session-c";
+  readyConfig.requestId = "request-c";
+  readyConfig.stateIdentityTemplate = exactStateIdentity(
+    "request-c", 1, "generation-c");
+  readyConfig.prepareRunner = {};
+  readyConfig.firstEpochConversationUse = runtime.acquireConversationUse(binding, 300);
+  BOOST_REQUIRE(readyConfig.firstEpochConversationUse);
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 1U);
+  const auto readyResult = runNativeEpochCoordinator(std::move(readyConfig));
+  BOOST_REQUIRE(readyResult.finalizedRole);
+  BOOST_REQUIRE(readyResult.finalizedRole->candidateDecodeStateIdentity);
+  BOOST_CHECK_EQUAL(
+    readyResult.finalizedRole->candidateDecodeStateIdentity->prefixTokenCount, 5U);
+  BOOST_CHECK_EQUAL(
+    readyResult.finalizedRole->candidateDecodeStateIdentity->prefixDigest,
+    restoredSuffixPrefixDigest);
+  BOOST_CHECK_EQUAL(calls.load(), 3U);
+  BOOST_CHECK_EQUAL(events, 2U);
+  BOOST_REQUIRE_EQUAL(readyResult.cacheObservations.size(), 1U);
+  BOOST_CHECK(readyResult.cacheObservations.front().conversationStateHit);
+  BOOST_CHECK_EQUAL(readyResult.cacheObservations.front().actualNewInputExtent, 2U);
+  BOOST_CHECK_EQUAL(readyResult.cacheObservations.front().representedPrefixTokenCount, 5U);
+  BOOST_CHECK_EQUAL(readyResult.cacheObservations.front().prefixWorkAvoided, 3U);
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 0U);
   BOOST_CHECK_EQUAL(runtime.decodeStateSnapshot().entries, 0U);
 }
 
@@ -7712,9 +8603,9 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
   BOOST_REQUIRE_EQUAL(compatibilityFallback.timeline.size(), 5U);
   BOOST_CHECK_EQUAL(compatibilityFallback.timeline[0], "event:1");
   BOOST_CHECK(compatibilityFallback.timeline[1].find(
-    "prefetch:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
-  BOOST_CHECK(compatibilityFallback.timeline[2].find(
     "publish:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
+  BOOST_CHECK(compatibilityFallback.timeline[2].find(
+    "prefetch:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
   BOOST_CHECK_EQUAL(compatibilityFallback.timeline[3], "event:2");
   BOOST_CHECK(compatibilityFallback.timeline[4].find(
     "publish:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
@@ -7732,8 +8623,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
   BOOST_REQUIRE_EQUAL(deferredCompatibilityFailure.events.size(), 1U);
   BOOST_REQUIRE_EQUAL(deferredCompatibilityFailure.timeline.size(), 3U);
   BOOST_CHECK_EQUAL(deferredCompatibilityFailure.timeline[0], "event:1");
-  BOOST_CHECK(deferredCompatibilityFailure.timeline[1].find("prefetch:") == 0);
-  BOOST_CHECK(deferredCompatibilityFailure.timeline[2].find("publish:") == 0);
+  BOOST_CHECK(deferredCompatibilityFailure.timeline[1].find("publish:") == 0);
+  BOOST_CHECK(deferredCompatibilityFailure.timeline[2].find("prefetch:") == 0);
   BOOST_CHECK_EQUAL(deferredCompatibilityFailure.decodeState.commits, 1U);
 
   bool terminalFeedbackSeen = false;

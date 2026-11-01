@@ -7,5 +7,5 @@ Name: ndnsf-distributed-inference
 Description: Native NDNSF distributed-inference runtime and adapters
 Version: @VERSION@
 Requires: libndn-service-framework libndn-cxx
-Libs: -L${libdir} -lndnsf-distributed-inference
+Libs: -L${libdir} -lndnsf-distributed-inference -lndnsf-distributed-repo
 Cflags: -I${includedir} -I${includedir}/NDNSF-DistributedInference/cpp @EXTRA_INCLUDES@

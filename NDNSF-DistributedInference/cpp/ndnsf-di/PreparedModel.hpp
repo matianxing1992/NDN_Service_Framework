@@ -34,6 +34,7 @@ namespace detail { struct RuntimeState; }
 // obtain this binding exclusively through Runtime::prepare; the friend keeps
 // the public header free of transport-specific construction APIs.
 struct Spec185PreparedModelTestAccess;
+struct Spec212PreparedModelTestAccess;
 
 /** An owning protected repository reference.  Construction validates only
  * canonical syntax and required metadata; authorization remains native. */
@@ -291,6 +292,7 @@ private:
   friend class Conversation;
   friend class User;
   friend struct Spec185PreparedModelTestAccess;
+  friend struct Spec212PreparedModelTestAccess;
 };
 
 } // namespace ndnsf::di

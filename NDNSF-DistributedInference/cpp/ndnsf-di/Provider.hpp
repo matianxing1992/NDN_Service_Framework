@@ -127,6 +127,11 @@ public:
 
   ProviderRegistration serve(const ServiceDefinition& service);
   void stop() const noexcept;
+  /**
+   * Synchronously waits for accepted callbacks and the Face barrier. Call from
+   * outside the Face I/O thread while that Face remains running; use
+   * drainAsync() when shutdown is initiated by a Face callback.
+   */
   bool drain(Milliseconds timeout) const;
   Subscription drainAsync(
     Milliseconds timeout,

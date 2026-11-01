@@ -1,206 +1,1480 @@
-#include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
-#include "ndn-service-framework/ProtectedBlobManifest.hpp"
-#include "ndn-service-framework/ProducerDataNaming.hpp"
-#include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
-#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
-#include <ndn-cxx/security/signing-helpers.hpp>
-#include <ndn-cxx/security/verification-helpers.hpp>
-#include <ndn-cxx/util/io.hpp>
-#include <ndn-svs/security-options.hpp>
-#include <ndn-svs/svspubsub.hpp>
-#include <filesystem>
-#include <cstring>
+#include "tests/fixtures/spec204/owned-kv-publication.hpp"
+#include "ndn-service-framework/ProviderDurableLargeDataPublisher.hpp"
 #include <fstream>
-#include <future>
-#include <iomanip>
-#include <openssl/sha.h>
-#include <sstream>
-#include <sys/wait.h>
-#include <boost/asio/executor_work_guard.hpp>
-#include <thread>
-#include <unistd.h>
+using namespace spec204_owned_kv;
+
+BOOST_AUTO_TEST_SUITE(Spec201OriginalPacketPublication)
+
+BOOST_AUTO_TEST_CASE(ProviderPublicationDeadlineCancelsQueuedFaceWorkBeforeStackRelease)
+{
+  OwnedCorePublicationFixture f;
+  auto producer = std::make_shared<LocalServiceProvider>(
+    f.face, ndn::Name("/spec212/publication-group"), f.actor, f.authority,
+    "examples/trust-any.conf");
+  ProviderDurableLargeDataPublishRequestV1 request;
+  request.serviceName = f.service;
+  request.requestId = ndn::Name("/spec212/publication-deadline");
+  request.protectedPayload = {1, 2, 3};
+  request.objectLabel = "kvcache";
+  request.freshness = ndn::time::milliseconds(100);
+  request.contentName.kind = ContentDataKind::Blob;
+  request.contentName.label = request.objectLabel;
+  request.commitOptions.retention = EncryptedLargeDataRetention::Durable;
+  request.commitOptions.publicationIdentity = keyReferenceDigest("queued-provider-publication");
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+  std::atomic<unsigned> grantRequests{0};
+  auto work = std::async(std::launch::async,
+    [&, producer, request = std::move(request)] () mutable {
+      return ProviderDurableLargeDataPublisher::publish(producer, std::move(request), f.store,
+        [&] (const ndn::Name&, const std::string&, const std::function<void()>&)
+          -> DurableStorageGrantSelector {
+          ++grantRequests;
+          throw std::runtime_error("unexpected grant after publication deadline");
+        }, {}, [deadline] {
+          if (std::chrono::steady_clock::now() >= deadline)
+            throw std::runtime_error("test-provider-publication-deadline");
+        });
+    });
+
+  // Leave the Face unpumped until the worker's actual deadline has expired.
+  // A failing old implementation is still released by the cleanup pump below.
+  const bool settledWithoutFace =
+    work.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready;
+  for (unsigned round = 0; round < 200 &&
+       work.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready; ++round) {
+    f.face.processEvents(ndn::time::milliseconds(1));
+  }
+  BOOST_CHECK(settledWithoutFace);
+  BOOST_REQUIRE(work.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready);
+  const auto result = work.get();
+  BOOST_CHECK(!result.success);
+  BOOST_CHECK_EQUAL(result.errorMessage, "test-provider-publication-deadline");
+  BOOST_CHECK_EQUAL(grantRequests.load(), 0U);
+  BOOST_CHECK(f.node->core().list().empty());
+
+  // The publication stack is gone. Running its queued callback now must be a
+  // no-op, including under ASAN, with no late crypto/grant/storage side effect.
+  f.face.processEvents(ndn::time::milliseconds(10));
+  BOOST_CHECK_EQUAL(grantRequests.load(), 0U);
+  BOOST_CHECK(f.node->core().list().empty());
+}
 
 namespace {
-using namespace ndn_service_framework;
-using namespace ndn_service_framework::test;
-namespace fs = std::filesystem;
-
-std::string keyReferenceDigest(const std::string& text)
-{
-  unsigned char digest[SHA256_DIGEST_LENGTH];
-  SHA256(reinterpret_cast<const unsigned char*>(text.data()), text.size(), digest);
-  std::ostringstream output;
-  output << "sha256:" << std::hex << std::setfill('0');
-  for (const auto value : digest) output << std::setw(2) << static_cast<unsigned>(value);
-  return output.str();
-}
-
-PublishedContentName materialContent(const std::string& label)
-{
-  PublishedContentName value;
-  value.kind = ContentDataKind::Material;
-  value.label = label;
-  return value;
-}
-
-ndn::Name materialManifestSuffix(const std::string& label)
-{
-  return ndn::Name("/NDNSF-DI/material")
-    .append(makeNamingLabelComponent(label)).append("MANIFEST");
-}
-
-std::string packetKey(const ndn::Name& name)
-{
-  const auto& wire = name.wireEncode();
-  ndn::util::Sha256 hash;
-  hash.update(ndn::span<const std::uint8_t>(wire.data(), wire.size()));
-  return hash.toString();
-}
-std::vector<std::uint8_t> readPacket(const fs::path& path)
-{
-  std::ifstream input(path, std::ios::binary);
-  if (!input) throw std::runtime_error("fixture packet missing");
-  const auto size = fs::file_size(path);
-  if (size == 0 || size > ndn::MAX_NDN_PACKET_SIZE) throw std::runtime_error("fixture packet size");
-  std::vector<std::uint8_t> wire(size);
-  input.read(reinterpret_cast<char*>(wire.data()), wire.size());
-  if (!input) throw std::runtime_error("fixture packet short read");
-  return wire;
-}
-class PacketSource final : public EncryptedLargeDataRangeSource {
-public:
-  PacketSource(fs::path folder, std::uint64_t size) : m_folder(std::move(folder)), m_size(size) {}
-  std::uint64_t size() const noexcept override { return m_size; }
-  bool isDurable() const noexcept override { return true; }
-  std::vector<std::uint8_t> read(std::uint64_t, std::uint64_t) const override
-  { throw std::runtime_error("range read forbidden in packet fixture"); }
-  std::vector<std::uint8_t> readOriginalDataPacket(const ndn::Name& name) const override
-  {
-    auto wire = readPacket(m_folder / packetKey(name));
-    ndn::Data data(ndn::Block(ndn::span<const std::uint8_t>(wire.data(), wire.size())));
-    if (data.getName() != name) throw std::runtime_error("fixture packet wrong name");
-    return wire;
-  }
-private:
-  fs::path m_folder;
-  std::uint64_t m_size;
+enum class RecoveryProbe {
+  Success, BadDigest, PlainBudget, EnvelopeBudget, MissingHint, WrongHint,
+  WrongSigner, MissingCurrent, ExpiredCaller, ExpiredAssignment, CancelBody, MissingCk,
+  NoHintNoOptions, NoHintInlineNoOptions, NoHintMissingCk,
+  NoHintCurrentWrapperCancel, NoHintCurrentInlineCancel
 };
 
-class RangeOnlyDurableStore final : public EncryptedLargeDataRangeStore {
-public:
-  bool supportsDurableRetention() const noexcept override { return true; }
-  std::shared_ptr<const EncryptedLargeDataRangeSource> commitFile(
-    const std::string&, const fs::path&, std::uint64_t, const std::function<void()>&) override
-  { ++commits; throw std::runtime_error("range-only commit must not run"); }
-  unsigned commits = 0;
-};
-
-// Native Core fixture only. Real Repo adapter/network serving is T003.
-class PacketStore final : public EncryptedLargeDataRangeStore {
-public:
-  explicit PacketStore(fs::path root) : m_root(std::move(root)) { fs::create_directories(m_root); }
-  bool supportsDurableRetention() const noexcept override { return true; }
-  bool supportsOriginalDataPackets() const noexcept override { return true; }
-  std::shared_ptr<const EncryptedLargeDataRangeSource> commitFile(
-    const std::string&, const fs::path&, std::uint64_t, const std::function<void()>&) override
-  { throw std::runtime_error("legacy commit forbidden in packet fixture"); }
-  std::shared_ptr<const EncryptedLargeDataRangeSource> commitOriginalDataPackets(
-    const ndn::Name& rootName, const EncryptedLargeDataCommitOptions& options,
-    const std::function<std::optional<std::pair<ndn::Name, std::vector<std::uint8_t>>>()>& next,
-    const std::function<void()>& current) override
-  {
-    ++commits;
-    lastAttemptIdentity = options.publicationIdentity;
-    if (options.packetStorageFormat != "original-packet-set") throw std::runtime_error("fixture format");
-    const auto destination = m_root / options.publicationIdentity.substr(7);
-    const auto temporary = m_root / ("pending-" + std::to_string(::getpid()) + "-" + std::to_string(commits));
-    fs::create_directory(temporary);
-    try {
-      std::optional<ProtectedBlobManifest> manifest;
-      std::uint64_t packets = 0, bytes = 0;
-      while (const auto item = next()) {
-        if (current) current();
-        ndn::Data data(ndn::Block(ndn::span<const std::uint8_t>(item->second.data(), item->second.size())));
-        if (data.getName() != item->first) throw std::runtime_error("fixture declared name mismatch");
-        if (packets == 0) {
-          const auto& content = data.getContent();
-          const auto producer = ProtectedBlobManifest::inferProducer(rootName);
-          if (!producer) throw std::runtime_error("fixture manifest grammar");
-          manifest = ProtectedBlobManifest::decode(
-            std::vector<std::uint8_t>(content.value(), content.value() + content.value_size()),
-            *producer, rootName);
-        }
-        else if (!manifest || item->first != ndn::Name(manifest->dataPrefix).appendSegment(packets - 1))
-          throw std::runtime_error("fixture packet order");
-        std::ofstream output(temporary / packetKey(item->first), std::ios::binary);
-        output.write(reinterpret_cast<const char*>(item->second.data()), item->second.size());
-        output.close();
-        if (!output) throw std::runtime_error("fixture packet write");
-        bytes += item->second.size();
-        ++packets;
-        if (afterPacket) afterPacket(packets);
-      }
-      if (!manifest || packets != manifest->segmentCount + 1 || bytes != options.packetWireBytes)
-        throw std::runtime_error("fixture incomplete packet set");
-      std::ofstream index(temporary / "index");
-      index << std::quoted(options.publicationIdentity) << ' ' << std::quoted(options.protectionEpoch) << ' '
-        << std::quoted(options.keyReferenceId) << ' ' << std::quoted(options.keyReferenceVersion) << ' '
-        << std::quoted(options.ciphertextManifestDigest) << ' ' << std::quoted(options.servingLocator) << ' '
-        << std::quoted(options.contentDigest) << ' ' << options.plaintextSize << ' '
-        << std::quoted(options.manifestName) << ' ' << std::quoted(options.dataPrefix) << ' '
-        << bytes << ' ' << manifest->envelopeBytes;
-      index.close();
-      if (!index) throw std::runtime_error("fixture index write");
-      if (current) current();
-      if (fs::exists(destination)) throw std::runtime_error("fixture duplicate publication");
-      fs::rename(temporary, destination);
-      return std::make_shared<PacketSource>(destination, manifest->envelopeBytes);
-    }
-    catch (...) { fs::remove_all(temporary); throw; }
-  }
-  std::optional<EncryptedLargeDataLookupResult> lookupDurable(
-    const std::string& identity, const std::function<void()>& current) const override
-  {
+void checkRepoRecovery(bool locatorWrapper, RecoveryProbe probe)
+{
+  std::unique_ptr<ScopedEnvironmentValue> fetchTimeout;
+  if (probe == RecoveryProbe::NoHintNoOptions || probe == RecoveryProbe::NoHintInlineNoOptions ||
+      probe == RecoveryProbe::NoHintMissingCk ||
+      probe == RecoveryProbe::NoHintCurrentWrapperCancel ||
+      probe == RecoveryProbe::NoHintCurrentInlineCancel)
+    fetchTimeout = std::make_unique<ScopedEnvironmentValue>(
+      "NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS", "2000");
+  OwnedCorePublicationFixture f;
+  ndnsf::di::test::protectedKv::Fixture kv;
+  const ndn::Name producer("/spec204/recovery-producer");
+  const auto owner = kv.certificate.getIdentity().toUri(ndn::name::UriFormat::ALTERNATE);
+  BootstrapProfile profile; profile.userIdentity = producer; profile.serviceName = f.service;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap(); environment.enableProductionIngressForTest();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  BOOST_REQUIRE(environment.user().isNacProducerReadyForTest());
+  BOOST_REQUIRE(environment.provider().isNacConsumerReadyForTest());
+  environment.user().setEncryptedLargeDataRangeStore(f.store);
+  kv.state.originIdentity.providerIdentity = producer.toUri();
+  ndnsf::di::nativeExportPrivatePortableKvCheckpoint(kv.plain, kv.state, kv.portableLimits);
+  const auto protectedFile = kv.protect();
+  const auto input = ndnsf::di::nativeLoadProtectedPortableKvCheckpoint(kv.cipher, protectedFile, kv.limits);
+  const auto expected = ndnsf::di::test::protectedKv::read(kv.cipher);
+  auto options = f.options; options.persistAuxiliaryPackets = true; options.manifestSuffix = ndn::Name{};
+  PublishedContentName content; content.kind = ContentDataKind::Blob; content.label = "kvcache";
+  options.contentName = content;
+  options.resolveDurableStorageGrant = [held = f.journal, repo = f.repoName, owner, producer,
+                                        expiry = f.grantExpiresAt]
+    (const ndn::Name& name, const std::string& writer, const std::function<void()>& current) {
+    if (ndn::Name(writer) != producer || !producer.isPrefixOf(name))
+      throw std::runtime_error("recovery actual producer mismatch");
     if (current) current();
-    const auto folder = m_root / identity.substr(7);
-    std::ifstream index(folder / "index");
-    if (!index) return std::nullopt;
-    EncryptedLargeDataLookupResult value;
-    std::uint64_t envelopeSize = 0;
-    index >> std::quoted(value.publicationIdentity) >> std::quoted(value.protectionEpoch)
-      >> std::quoted(value.keyReferenceId) >> std::quoted(value.keyReferenceVersion)
-      >> std::quoted(value.ciphertextManifestDigest) >> std::quoted(value.servingLocator)
-      >> std::quoted(value.contentDigest) >> value.plaintextSize >> std::quoted(value.manifestName)
-      >> std::quoted(value.dataPrefix) >> value.packetWireBytes >> envelopeSize;
-    if (!index) throw std::runtime_error("fixture malformed index");
-    value.encryptedName = value.dataPrefix;
-    value.packetStorageFormat = "original-packet-set";
-    value.source = std::make_shared<PacketSource>(folder, envelopeSize);
-    return value;
+    const auto grant = held->grantUserStorage(owner, repo, keyReferenceDigest(name.toUri()), writer,
+      name.toUri(ndn::name::UriFormat::ALTERNATE), expiry, OwnedCorePublicationFixture::now());
+    return DurableStorageGrantSelector{grant.repoNode, grant.ownerIdentity, grant.grantId, grant.ownerEpoch};
+  };
+  const auto prepared = environment.user().prepareServiceRequest(f.service.toUri());
+  LargeDataPublishResult publication;
+  std::optional<LargeDataPublishResult> primerPublication;
+  {
+    auto& io = environment.userFace().getIoContext(); io.restart();
+    auto guard = boost::asio::make_work_guard(io);
+    std::thread worker([&] { io.run(); });
+    struct Join { boost::asio::io_context& io; std::thread& thread;
+      ~Join() { io.stop(); if (thread.joinable()) thread.join(); } } join{io, worker};
+    if (locatorWrapper) {
+      options.contentName->label = "kvcache-primer";
+      primerPublication = environment.user().publishEncryptedLargeDataFromWorker(prepared, input,
+        "kvcache-primer", ndn::time::milliseconds(100), options);
+      BOOST_REQUIRE_MESSAGE(primerPublication->success, primerPublication->errorMessage);
+      options.contentName->label = "kvcache-next";
+    }
+    publication = environment.user().publishEncryptedLargeDataFromWorker(prepared, input,
+      locatorWrapper ? "kvcache-next" : "kvcache", ndn::time::milliseconds(100), options);
   }
-  unsigned commits = 0;
-  std::function<void(std::uint64_t)> afterPacket;
-  std::string lastAttemptIdentity;
-private:
-  fs::path m_root;
-};
+  BOOST_REQUIRE_MESSAGE(publication.success, publication.errorMessage);
+  const auto source = publication.durableStorageSource; BOOST_REQUIRE(source);
 
-std::shared_ptr<ndn::svs::SVSPubSub> pubsub(ndn::Face& face, ndn::KeyChain& keys)
-{
-  ndn::svs::SecurityOptions security(keys);
-  security.interestSigner = std::make_shared<ndn::svs::BaseSigner>();
-  security.dataSigner->signingInfo = ndn::security::signingWithSha256();
-  security.pubSigner->signingInfo = ndn::security::signingWithSha256();
-  security.validator = std::make_shared<ndn::svs::BaseValidator>();
-  security.encapsulatedDataValidator = std::make_shared<ndn::svs::BaseValidator>();
-  ndn::svs::SVSPubSubOptions options;
-  options.useTimestamp = false;
-  return std::make_shared<ndn::svs::SVSPubSub>(ndn::Name("/spec201/raw/sync"),
-    ndn::Name("/spec201/raw/user"), face, [](const auto&) {}, options, security);
+  std::map<ndn::Name, std::vector<uint8_t>> originals;
+  std::map<uint64_t, ndn::Buffer> bodySegments;
+  std::vector<ndn::Name> storedManifests{publication.manifestName};
+  if (primerPublication) {
+    BOOST_CHECK(primerPublication->manifestName != publication.manifestName);
+    storedManifests.push_back(primerPublication->manifestName);
+  }
+  for (const auto& manifestName : storedManifests) {
+    const auto stored = f.node->core().lookupDataPacketObject(manifestName.toUri());
+    BOOST_REQUIRE(stored);
+    for (const auto& wire : ndnsf_distributed_repo::RepoClient::getDataPackets(*f.node, *stored)) {
+      const ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+      const auto inserted = originals.emplace(packet.getName(), wire);
+      if (!inserted.second) BOOST_CHECK(inserted.first->second == wire);
+      if (publication.dataPrefix.isPrefixOf(packet.getName())) {
+        BOOST_REQUIRE_EQUAL(packet.getName().size(), publication.dataPrefix.size() + 1);
+        BOOST_REQUIRE(packet.getName()[-1].isSegment());
+        const auto& content = packet.getContent();
+        BOOST_REQUIRE(bodySegments.emplace(packet.getName()[-1].toSegment(),
+          ndn::Buffer(content.value(), content.value_size())).second);
+      }
+    }
+  }
+  // The transparent store exposes original packets, not reconstructed ranges.
+  // Inspect the actual published body bytes without reproducing its serializer.
+  BOOST_REQUIRE(!bodySegments.empty());
+  ndn::Buffer envelopeWire;
+  uint64_t nextSegment = 0;
+  for (const auto& [number, content] : bodySegments) {
+    BOOST_REQUIRE_EQUAL(number, nextSegment++);
+    envelopeWire.insert(envelopeWire.end(), content.begin(), content.end());
+  }
+  HybridMessageEnvelope envelope;
+  BOOST_REQUIRE(envelope.WireDecode(ndn::Block(
+    ndn::span<const uint8_t>(envelopeWire.data(), envelopeWire.size()))));
+  BOOST_REQUIRE_EQUAL(envelope.hasWrappedMessageKey(), !locatorWrapper);
+  const auto certificate = environment.keyChain().getPib().getIdentity(producer).getDefaultKey().getDefaultCertificate();
+  const auto foreign = makeRsaIdentity(environment.keyChain(), ndn::Name("/spec204/foreign-recovery-signer"));
+  environment.disconnectProviderTransportForTest(0);
+  auto& receiving = environment.providerFace(0);
+  ndn::DummyClientFace repoFace(receiving.getIoContext(), environment.keyChain(), {false, true});
+  // Serving/filter handles must be released before their referenced Face.
+  struct Unregister { std::shared_ptr<ndnsf_distributed_repo::RepoNode>& node;
+    ~Unregister() { node.reset(); } } unregister{f.node};
+  f.node->registerOriginalDataServing(repoFace);
+  const ndn::Name route(f.actor.getIdentity());
+  size_t manifestRequests = 0, bodyRequests = 0, primerManifestRequests = 0,
+         primerBodyRequests = 0, ckRequests = 0, wrapperRequests = 0;
+  size_t originalReplies = 0, producerReplies = 0;
+  auto current = std::make_shared<std::atomic<bool>>(true);
+  const auto cancelPendingKeyFetch = probe == RecoveryProbe::NoHintCurrentWrapperCancel ||
+      probe == RecoveryProbe::NoHintCurrentInlineCancel;
+  ndn::signal::ScopedConnection producerObserver = environment.userFace().onSendData.connect(
+    [&](const ndn::Data& packet) { if (producer.isPrefixOf(packet.getName())) ++producerReplies; });
+  ndn::signal::ScopedConnection outgoing = receiving.onSendInterest.connect([&](const ndn::Interest& interest) {
+    if (!producer.isPrefixOf(interest.getName())) return;
+    const auto hints = interest.getForwardingHint();
+    if (probe == RecoveryProbe::NoHintNoOptions || probe == RecoveryProbe::NoHintInlineNoOptions ||
+        probe == RecoveryProbe::NoHintMissingCk ||
+        probe == RecoveryProbe::NoHintCurrentWrapperCancel ||
+        probe == RecoveryProbe::NoHintCurrentInlineCancel)
+      BOOST_CHECK(hints.empty());
+    if (interest.getName() == publication.manifestName) ++manifestRequests;
+    else if (primerPublication && interest.getName() == primerPublication->manifestName)
+      ++primerManifestRequests;
+    else if (publication.dataPrefix.isPrefixOf(interest.getName())) {
+      ++bodyRequests;
+      if (probe == RecoveryProbe::CancelBody) { current->store(false); return; }
+    }
+    else if (primerPublication && primerPublication->dataPrefix.isPrefixOf(interest.getName()))
+      ++primerBodyRequests;
+    else {
+      bool ck = false;
+      for (const auto& part : interest.getName()) if (part == ndn::name::Component("CK")) ck = true;
+      if (ck) {
+        ++ckRequests;
+        if (probe == RecoveryProbe::NoHintCurrentInlineCancel) {
+          current->store(false);
+          return;
+        }
+        if (probe == RecoveryProbe::MissingCk || probe == RecoveryProbe::NoHintMissingCk) return;
+      }
+      else {
+        ++wrapperRequests;
+        if (probe == RecoveryProbe::NoHintCurrentWrapperCancel) {
+          current->store(false);
+          return;
+        }
+      }
+    }
+    if ((hints.size() == 1 && hints.front() == route) ||
+        ((probe == RecoveryProbe::NoHintNoOptions || probe == RecoveryProbe::NoHintInlineNoOptions ||
+          probe == RecoveryProbe::NoHintMissingCk ||
+          probe == RecoveryProbe::NoHintCurrentWrapperCancel ||
+          probe == RecoveryProbe::NoHintCurrentInlineCancel) && hints.empty())) repoFace.receive(interest);
+  });
+  ndn::signal::ScopedConnection returning = repoFace.onSendData.connect([&](const ndn::Data& packet) {
+    if (!producer.isPrefixOf(packet.getName())) return;
+    const auto found = originals.find(packet.getName()); BOOST_REQUIRE(found != originals.end());
+    const auto& wire = packet.wireEncode();
+    BOOST_CHECK(std::vector<uint8_t>(wire.begin(), wire.end()) == found->second);
+    BOOST_CHECK(ndn::security::verifySignature(packet, certificate));
+    ++originalReplies;
+    if (probe == RecoveryProbe::WrongSigner) {
+      ndn::Data wrong(packet); environment.keyChain().sign(wrong, ndn::security::signingByCertificate(foreign));
+      receiving.receive(wrong);
+    }
+    else receiving.receive(packet);
+  });
+  ProtectedBlobFetchOptions fetchOptions;
+  fetchOptions.forwardingHint = {route};
+  BOOST_REQUIRE(publication.ciphertextManifestDigest.rfind("sha256:", 0) == 0);
+  fetchOptions.manifestContentSha256 = publication.ciphertextManifestDigest.substr(7);
+  fetchOptions.maxPlaintextBytes = expected.size();
+  fetchOptions.maxEnvelopeBytes = envelopeWire.size();
+  if (probe == RecoveryProbe::BadDigest) fetchOptions.manifestContentSha256.assign(64, '0');
+  if (probe == RecoveryProbe::PlainBudget) --fetchOptions.maxPlaintextBytes;
+  if (probe == RecoveryProbe::EnvelopeBudget) --fetchOptions.maxEnvelopeBytes;
+  if (probe == RecoveryProbe::MissingHint) fetchOptions.forwardingHint.clear();
+  if (probe == RecoveryProbe::WrongHint) fetchOptions.forwardingHint = {ndn::Name("/wrong/repo")};
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "restore-probe"; assignment.service = f.service;
+  assignment.workDeadline = std::chrono::steady_clock::now() +
+      (cancelPendingKeyFetch ? std::chrono::seconds(5) : std::chrono::milliseconds(800));
+  if (probe != RecoveryProbe::MissingCurrent) assignment.workCurrent = [current] { return current->load(); };
+  auto deadline = assignment.workDeadline;
+  if (probe == RecoveryProbe::ExpiredCaller) deadline = std::chrono::steady_clock::now();
+  if (probe == RecoveryProbe::ExpiredAssignment) assignment.workDeadline = std::chrono::steady_clock::now();
+  ServiceProvider::CollaborationContext context(environment.provider(), producer,
+    ndn::Name("/request/repo-recovery"), RequestMessage(), assignment);
+  const auto unwraps = environment.provider().getHybridCryptoCounters().nac_abe_key_unwrap_count.load();
+  const auto pendingBefore = receiving.getNPendingInterests();
+  std::optional<ndn::Buffer> primerResult;
+  const auto fetchStarted = std::chrono::steady_clock::now();
+  auto work = std::async(std::launch::async, [&] {
+    if (probe == RecoveryProbe::NoHintNoOptions || probe == RecoveryProbe::NoHintInlineNoOptions ||
+        probe == RecoveryProbe::NoHintMissingCk) {
+      auto result = context.fetchEncryptedLargeData(publication.manifestName);
+      if (probe == RecoveryProbe::NoHintNoOptions && result && primerPublication)
+        primerResult = context.fetchEncryptedLargeData(primerPublication->manifestName);
+      return result;
+    }
+    if (probe == RecoveryProbe::NoHintCurrentWrapperCancel ||
+        probe == RecoveryProbe::NoHintCurrentInlineCancel)
+      return context.fetchEncryptedLargeDataCurrent(publication.manifestName, deadline);
+    return context.fetchEncryptedLargeDataCurrent(publication.manifestName, deadline, fetchOptions);
+  });
+  environment.pumpUntil([&] { return work.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready; });
+  const auto result = work.get(); // joins the worker before callback dependencies leave scope
+  const auto fetchElapsed = std::chrono::steady_clock::now() - fetchStarted;
+  const auto drainUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+  environment.pumpUntil([&] { return std::chrono::steady_clock::now() >= drainUntil; });
+  if (cancelPendingKeyFetch)
+    BOOST_CHECK_LE(receiving.getNPendingInterests(), pendingBefore);
+  BOOST_CHECK_EQUAL(producerReplies, 0U);
+  if (probe == RecoveryProbe::Success) {
+    BOOST_REQUIRE(result); BOOST_CHECK(*result == ndn::Buffer(expected.begin(), expected.end()));
+    BOOST_CHECK_GT(manifestRequests, 0U); BOOST_CHECK_GT(bodyRequests, 0U);
+    BOOST_CHECK_GT(ckRequests, 0U); BOOST_CHECK_GT(originalReplies, 2U);
+    BOOST_CHECK_EQUAL(environment.provider().getHybridCryptoCounters().nac_abe_key_unwrap_count.load(), unwraps + 1);
+    if (locatorWrapper) BOOST_CHECK_GT(wrapperRequests, 0U); else BOOST_CHECK_EQUAL(wrapperRequests, 0U);
+  }
+  else if (probe == RecoveryProbe::NoHintNoOptions) {
+    BOOST_REQUIRE(result);
+    BOOST_REQUIRE(primerResult);
+    BOOST_CHECK(*result == ndn::Buffer(expected.begin(), expected.end()));
+    BOOST_CHECK(*primerResult == ndn::Buffer(expected.begin(), expected.end()));
+    BOOST_CHECK_GT(manifestRequests, 0U); BOOST_CHECK_GT(bodyRequests, 0U);
+    BOOST_CHECK_GT(primerManifestRequests, 0U); BOOST_CHECK_GT(primerBodyRequests, 0U);
+    BOOST_CHECK_GT(ckRequests, 0U); BOOST_CHECK_GT(wrapperRequests, 0U);
+    BOOST_CHECK_GT(originalReplies, 2U);
+    BOOST_CHECK_EQUAL(environment.provider().getHybridCryptoCounters().nac_abe_key_unwrap_count.load(), unwraps + 1);
+  }
+  else if (probe == RecoveryProbe::NoHintInlineNoOptions) {
+    BOOST_REQUIRE(result);
+    BOOST_CHECK(*result == ndn::Buffer(expected.begin(), expected.end()));
+    BOOST_CHECK_GT(manifestRequests, 0U); BOOST_CHECK_GT(bodyRequests, 0U);
+    BOOST_CHECK_GT(ckRequests, 0U); BOOST_CHECK_EQUAL(wrapperRequests, 0U);
+    BOOST_CHECK_GT(originalReplies, 2U);
+    BOOST_CHECK_EQUAL(environment.provider().getHybridCryptoCounters().nac_abe_key_unwrap_count.load(), unwraps + 1);
+  }
+  else {
+    BOOST_CHECK(!result);
+    BOOST_CHECK_EQUAL(environment.provider().getHybridCryptoCounters().nac_abe_key_unwrap_count.load(), unwraps);
+    if (probe != RecoveryProbe::CancelBody && probe != RecoveryProbe::MissingCk &&
+        probe != RecoveryProbe::NoHintMissingCk &&
+        probe != RecoveryProbe::NoHintCurrentWrapperCancel &&
+        probe != RecoveryProbe::NoHintCurrentInlineCancel) BOOST_CHECK_EQUAL(bodyRequests, 0U);
+    if (probe == RecoveryProbe::MissingCk || probe == RecoveryProbe::NoHintMissingCk ||
+        probe == RecoveryProbe::NoHintCurrentInlineCancel)
+      BOOST_CHECK_GT(ckRequests, 0U);
+    if (probe == RecoveryProbe::NoHintCurrentWrapperCancel) BOOST_CHECK_GT(wrapperRequests, 0U);
+    if (probe == RecoveryProbe::NoHintMissingCk ||
+        probe == RecoveryProbe::NoHintCurrentWrapperCancel ||
+        probe == RecoveryProbe::NoHintCurrentInlineCancel) {
+      BOOST_CHECK_GT(bodyRequests, 0U);
+      BOOST_CHECK(fetchElapsed < (cancelPendingKeyFetch ? std::chrono::seconds(2) : std::chrono::seconds(5)));
+    }
+    if (probe == RecoveryProbe::MissingHint || probe == RecoveryProbe::MissingCurrent ||
+        probe == RecoveryProbe::ExpiredCaller || probe == RecoveryProbe::ExpiredAssignment)
+      BOOST_CHECK_EQUAL(manifestRequests, 0U);
+  }
 }
 } // namespace
 
-BOOST_AUTO_TEST_SUITE(Spec201OriginalPacketPublication)
+BOOST_AUTO_TEST_CASE(RepoHintFetchesProtectedKvAndColdCkAfterProducerDisconnect)
+{
+  checkRepoRecovery(false, RecoveryProbe::Success);
+  checkRepoRecovery(true, RecoveryProbe::Success);
+}
+
+BOOST_AUTO_TEST_CASE(RepoHintRejectsManifestDigestAndAllocationBoundsBeforeBody)
+{
+  for (const auto probe : {RecoveryProbe::BadDigest, RecoveryProbe::PlainBudget,
+      RecoveryProbe::EnvelopeBudget, RecoveryProbe::MissingHint, RecoveryProbe::WrongHint,
+      RecoveryProbe::WrongSigner}) checkRepoRecovery(false, probe);
+}
+
+BOOST_AUTO_TEST_CASE(RepoHintCurrentDispatchCancellationAndMissingCk)
+{
+  for (const auto probe : {RecoveryProbe::MissingCurrent, RecoveryProbe::ExpiredCaller,
+      RecoveryProbe::ExpiredAssignment, RecoveryProbe::CancelBody, RecoveryProbe::MissingCk})
+    checkRepoRecovery(false, probe);
+  checkRepoRecovery(true, RecoveryProbe::MissingCk);
+}
+
+BOOST_AUTO_TEST_CASE(RepoNoHintFetchesTwoProtectedObjectsAndCancelsPendingKeyResolution)
+{
+  checkRepoRecovery(false, RecoveryProbe::NoHintInlineNoOptions);
+  checkRepoRecovery(true, RecoveryProbe::NoHintNoOptions);
+  checkRepoRecovery(true, RecoveryProbe::NoHintMissingCk);
+  checkRepoRecovery(true, RecoveryProbe::NoHintCurrentWrapperCancel);
+  checkRepoRecovery(false, RecoveryProbe::NoHintCurrentInlineCancel);
+}
+
+BOOST_AUTO_TEST_CASE(AuxiliaryPersistenceRejectsPlaceholderAndPreservesOlderObject)
+{
+  OwnedCorePublicationFixture f; f.authorize(f.owner); f.options.persistAuxiliaryPackets = true;
+  auto missing = f.publish(); BOOST_CHECK(!missing.success);
+  BOOST_CHECK(missing.errorMessage.find("DURABLE_AUXILIARY_PACKETS_MISSING") != std::string::npos);
+  BOOST_CHECK(f.node->list().empty()); BOOST_CHECK(f.resolved.empty());
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).committedBytes, 0U);
+  f.options.persistAuxiliaryPackets = false;
+  const auto old = f.publish(); BOOST_REQUIRE_MESSAGE(old.success, old.errorMessage);
+  const auto oldWire = old.durableStorageSource->readOriginalDataPacket(old.manifestName);
+  const auto usage = f.journal->userStorageUsage(f.owner, f.repoName).committedBytes;
+  f.options.persistAuxiliaryPackets = true; missing = f.publish(); BOOST_CHECK(!missing.success);
+  BOOST_CHECK_EQUAL(f.node->list().size(), 1U);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).committedBytes, usage);
+  BOOST_CHECK(old.durableStorageSource->readOriginalDataPacket(old.manifestName) == oldWire);
+}
+
+BOOST_AUTO_TEST_CASE(AuxiliaryPacketSetIsExactChargedAndModeSeparated)
+{
+  OwnedCorePublicationFixture f; f.authorize(f.owner);
+  const auto bodyOnly = f.publish(); BOOST_REQUIRE_MESSAGE(bodyOnly.success, bodyOnly.errorMessage);
+  BOOST_CHECK(bodyOnly.durableStorageSource->auxiliaryDataPacketNames().empty());
+  f.user->seedOpaqueOriginalAuxiliaries(f.service, f.keys); f.options.persistAuxiliaryPackets = true;
+  const auto complete = f.publish(); BOOST_REQUIRE_MESSAGE(complete.success, complete.errorMessage);
+  BOOST_CHECK(complete.publicationIdentity != bodyOnly.publicationIdentity);
+  BOOST_CHECK(complete.manifestName != bodyOnly.manifestName);
+  const auto names = complete.durableStorageSource->auxiliaryDataPacketNames(); BOOST_REQUIRE_EQUAL(names.size(), 2U);
+  BOOST_CHECK(names == complete.auxiliaryPacketNames);
+  const auto stored = f.node->core().lookupDataPacketObject(complete.manifestName.toUri()); BOOST_REQUIRE(stored);
+  const auto wires = ndnsf_distributed_repo::RepoClient::getDataPackets(*f.node, *stored);
+  const auto usage = f.journal->userStorageUsage(f.owner, f.repoName).committedBytes;
+  const auto repeated = f.publish(); BOOST_REQUIRE_MESSAGE(repeated.success, repeated.errorMessage);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).committedBytes, usage);
+  BOOST_CHECK(complete.manifestName == repeated.manifestName);
+  BOOST_CHECK(ndnsf_distributed_repo::RepoClient::getDataPackets(*f.node, *stored) == wires);
+  EncryptedLargeDataCommitOptions options;
+  options.retention = EncryptedLargeDataRetention::Durable; options.publicationIdentity = complete.publicationIdentity;
+  options.protectionEpoch = complete.protectionEpoch; options.keyReferenceId = complete.keyReferenceId;
+  options.keyReferenceVersion = complete.keyReferenceVersion; options.ciphertextManifestDigest = complete.ciphertextManifestDigest;
+  options.servingLocator = complete.servingLocator; options.contentDigest = complete.contentDigest;
+  options.plaintextSize = complete.plaintextSize; options.packetStorageFormat = "original-packet-set";
+  options.manifestName = complete.manifestName.toUri(); options.dataPrefix = complete.dataPrefix.toUri();
+  options.auxiliaryPacketNames = names;
+  options.storageActor = DurableStorageActorContext{f.actor.getIdentity().toUri(ndn::name::UriFormat::ALTERNATE),
+    f.options.resolveDurableStorageGrant(complete.manifestName,
+      f.actor.getIdentity().toUri(ndn::name::UriFormat::ALTERNATE), {})};
+  std::vector<std::pair<ndn::Name, std::vector<uint8_t>>> packets;
+  for (const auto& wire : wires) {
+    const ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+    packets.emplace_back(packet.getName(), wire); options.packetWireBytes += wire.size();
+  }
+  const auto reject = [&](const auto& changedPackets, const auto& changedOptions) {
+    size_t next = 0;
+    BOOST_CHECK_THROW(f.store->commitOriginalDataPackets(complete.manifestName, changedOptions,
+      [&]() -> std::optional<std::pair<ndn::Name, std::vector<uint8_t>>> {
+        if (next == changedPackets.size()) return std::nullopt; return changedPackets[next++];
+      }), std::invalid_argument);
+    BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).committedBytes, usage);
+    BOOST_CHECK(ndnsf_distributed_repo::RepoClient::getDataPackets(*f.node, *stored) == wires);
+  };
+  auto changed = packets; changed.pop_back(); reject(changed, options);
+  changed = packets; std::swap(changed[changed.size() - 1], changed[changed.size() - 2]); reject(changed, options);
+  changed = packets; changed.push_back(changed.back()); reject(changed, options);
+  auto bad = options; bad.auxiliaryPacketNames.push_back(names.back()); reject(packets, bad);
+  bad = options; bad.auxiliaryPacketNames.front() = ndn::Name("/foreign/key"); reject(packets, bad);
+  bad = options; bad.auxiliaryPacketNames.assign(EncryptedLargeDataCommitOptions::MaxAuxiliaryPacketCount + 1, names.front());
+  reject(packets, bad);
+  const auto foreign = makeRsaIdentity(f.keys, ndn::Name("/foreign/key-signer"));
+  auto last = ndn::Data(ndn::Block(ndn::span<const uint8_t>(packets.back().second.data(), packets.back().second.size())));
+  f.keys.sign(last, ndn::security::signingByCertificate(foreign));
+  const auto& foreignWire = last.wireEncode(); changed = packets;
+  changed.back().second.assign(foreignWire.begin(), foreignWire.end());
+  bad = options; bad.packetWireBytes = 0; for (const auto& packet : changed) bad.packetWireBytes += packet.second.size();
+  reject(changed, bad);
+  size_t next = 0;
+  BOOST_CHECK_THROW(f.store->commitOriginalDataPackets(complete.manifestName, options,
+    [&]() -> std::optional<std::pair<ndn::Name, std::vector<uint8_t>>> {
+      if (next == packets.size()) return std::nullopt; return packets[next++];
+    }, [&] { if (next == packets.size()) throw std::runtime_error("cancel auxiliary packet"); }), std::runtime_error);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).committedBytes, usage);
+  BOOST_CHECK(ndnsf_distributed_repo::RepoClient::getDataPackets(*f.node, *stored) == wires);
+}
+
+BOOST_AUTO_TEST_CASE(AuxiliaryRealNacOriginalsSurviveProducerExitAndFreshOwnerRetention)
+{
+  OwnedCorePublicationFixture f; ndnsf::di::test::protectedKv::Fixture kv;
+  const auto owner = kv.certificate.getIdentity().toUri(ndn::name::UriFormat::ALTERNATE);
+  const ndn::Name producer("/spec204/real-key-producer");
+  ndn::Name manifestName; std::string publicationIdentity;
+  std::vector<ndn::Name> auxiliaryNames;
+  std::map<std::string, std::vector<uint8_t>> originals;
+  std::uint64_t charge = 0;
+  {
+    BootstrapProfile profile; profile.userIdentity = producer; profile.serviceName = f.service;
+    NdnsfIntegrationEnvironment environment(profile); environment.bootstrap(); environment.enableProductionIngressForTest();
+    BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+    BOOST_REQUIRE(environment.user().isNacProducerReadyForTest());
+    environment.user().setEncryptedLargeDataRangeStore(f.store);
+    kv.state.originIdentity.providerIdentity = producer.toUri();
+    ndnsf::di::nativeExportPrivatePortableKvCheckpoint(kv.plain, kv.state, kv.portableLimits);
+    const auto protectedFile = kv.protect();
+    const auto input = ndnsf::di::nativeLoadProtectedPortableKvCheckpoint(kv.cipher, protectedFile, kv.limits);
+    auto options = f.options; options.persistAuxiliaryPackets = true; options.manifestSuffix = ndn::Name{};
+    PublishedContentName content; content.kind = ContentDataKind::Blob; content.label = "kvcache"; options.contentName = content;
+    options.resolveDurableStorageGrant = [held = f.journal, repo = f.repoName, owner, producer, expiry = f.grantExpiresAt]
+      (const ndn::Name& name, const std::string& writer, const std::function<void()>& current) {
+      if (ndn::Name(writer) != producer || !producer.isPrefixOf(name)) throw std::runtime_error("actual key producer mismatch");
+      if (current) current();
+      const auto grant = held->grantUserStorage(owner, repo, keyReferenceDigest(name.toUri()), writer,
+        name.toUri(ndn::name::UriFormat::ALTERNATE), expiry, OwnedCorePublicationFixture::now());
+      return DurableStorageGrantSelector{grant.repoNode, grant.ownerIdentity, grant.grantId, grant.ownerEpoch};
+    };
+    const auto prepared = environment.user().prepareServiceRequest(f.service.toUri());
+    const auto wrapsBefore = environment.user().getHybridCryptoCounters().nac_abe_key_wrap_count.load();
+    LargeDataPublishResult result;
+    {
+      auto& io = environment.userFace().getIoContext(); io.restart(); auto guard = boost::asio::make_work_guard(io);
+      std::thread thread([&] { io.run(); });
+      struct Join { boost::asio::io_context& io; std::thread& thread;
+        ~Join() { io.stop(); if (thread.joinable()) thread.join(); } } join{io, thread};
+      result = environment.user().publishEncryptedLargeDataFromWorker(prepared, input, "kvcache",
+        ndn::time::milliseconds(100), options);
+    }
+    BOOST_REQUIRE_MESSAGE(result.success, result.errorMessage);
+    BOOST_CHECK(environment.user().getHybridCryptoCounters().nac_abe_key_wrap_count.load() > wrapsBefore);
+    manifestName = result.manifestName; publicationIdentity = result.publicationIdentity;
+    auxiliaryNames = result.auxiliaryPacketNames; BOOST_REQUIRE(auxiliaryNames.size() >= 2U);
+    BOOST_CHECK(auxiliaryNames == result.durableStorageSource->auxiliaryDataPacketNames());
+    const auto certificate = environment.keyChain().getPib().getIdentity(producer).getDefaultKey().getDefaultCertificate();
+    for (const auto& name : auxiliaryNames) {
+      const auto wire = result.durableStorageSource->readOriginalDataPacket(name);
+      const ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+      BOOST_CHECK(producer.isPrefixOf(packet.getName())); BOOST_CHECK(ndn::security::verifySignature(packet, certificate));
+      originals.emplace(name.toUri(), wire);
+    }
+    const auto stored = f.node->core().lookupDataPacketObject(manifestName.toUri()); BOOST_REQUIRE(stored);
+    const auto all = ndnsf_distributed_repo::RepoClient::getDataPackets(*f.node, *stored);
+    std::uint64_t wireBytes = 0; for (const auto& wire : all) wireBytes += wire.size();
+    const auto measurement = f.node->core().probeObjectMetadata(stored->objectName);
+    charge = f.journal->userStorageUsage(owner, f.repoName).committedBytes;
+    BOOST_CHECK_EQUAL(charge, wireBytes + measurement.manifestWireBytes);
+    BOOST_CHECK_EQUAL(f.journal->userStorageUsage(owner, f.repoName).reservedBytes, 0U);
+  }
+  // No Producer, Face/IMS, NAC cache or original Source survives this point.
+  f.options.resolveDurableStorageGrant = {}; f.user.reset(); f.store.reset(); f.node.reset(); f.journal.reset();
+  ndnsf_distributed_repo::StorageCapability capability;
+  capability.repoNode = f.repoName; capability.repoMode = "persistent"; capability.freeBytes = 64U << 20;
+  auto reopened = std::make_shared<ndnsf_distributed_repo::RepoNode>(ndn::Name("/spec204/core-service"), capability,
+    ndnsf_distributed_repo::makeFilesystemRepoStore((f.root / "objects").string(), 1U << 20, 1U << 20),
+    f.repoName, f.actor.getIdentity().toUri(), (f.root / "metadata.db").string());
+  auto store = reopened->createEncryptedLargeDataStore(); const auto hit = store->lookupDurable(publicationIdentity); BOOST_REQUIRE(hit);
+  BOOST_CHECK_THROW(hit->source->auxiliaryDataPacketNames(), std::runtime_error);
+  auto journal = std::make_shared<ndnsf_distributed_repo::SqliteArtifactMetadataStore>((f.root / "metadata.db").string(), true, 16, false);
+  const std::string nextActor = "/spec204/new-key-reader";
+  const auto grant = journal->grantUserStorage(owner, f.repoName, "fresh-original-key-reader", nextActor,
+    manifestName.toUri(ndn::name::UriFormat::ALTERNATE), f.now() + 60000, f.now());
+  EncryptedLargeDataCommitOptions retain;
+  retain.retention = EncryptedLargeDataRetention::Durable; retain.publicationIdentity = hit->publicationIdentity;
+  retain.protectionEpoch = hit->protectionEpoch; retain.keyReferenceId = hit->keyReferenceId;
+  retain.keyReferenceVersion = hit->keyReferenceVersion; retain.ciphertextManifestDigest = hit->ciphertextManifestDigest;
+  retain.servingLocator = hit->servingLocator; retain.contentDigest = hit->contentDigest; retain.plaintextSize = hit->plaintextSize;
+  retain.packetStorageFormat = hit->packetStorageFormat; retain.manifestName = hit->manifestName;
+  retain.dataPrefix = hit->dataPrefix; retain.packetWireBytes = hit->packetWireBytes;
+  retain.storageActor = DurableStorageActorContext{nextActor, {grant.repoNode, grant.ownerIdentity, grant.grantId, grant.ownerEpoch}};
+  const auto source = store->retainDurableSource(*hit, retain); BOOST_REQUIRE(source);
+  BOOST_CHECK(source->auxiliaryDataPacketNames() == auxiliaryNames);
+  for (const auto& name : auxiliaryNames) BOOST_CHECK(source->readOriginalDataPacket(name) == originals.at(name.toUri()));
+  BOOST_CHECK_EQUAL(journal->userStorageUsage(owner, f.repoName).committedBytes, charge);
+  const auto claims = journal->listUserStorage(owner, f.repoName, "", 10); BOOST_REQUIRE_EQUAL(claims.size(), 1U);
+  journal->prepareUserStorageCleanup(owner, f.repoName, "remove-real-key-set", claims.front().object.objectName,
+    claims.front().ownerEpoch, f.now());
+  BOOST_CHECK_THROW(source->auxiliaryDataPacketNames(), std::runtime_error);
+  BOOST_CHECK_THROW(source->readOriginalDataPacket(auxiliaryNames.front()), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(KvOwnerCompletePromotionIsAtomicIdempotentAndReopens)
+{
+  OwnedCorePublicationFixture f; ndnsf::di::test::protectedKv::Fixture kv;
+  f.authorize(kv.certificate.getIdentity().toUri()); OwnerKvConversationFixture owner(f, f.owner);
+  auto publications = owner.publish(kv);
+  BOOST_REQUIRE(!owner.coordinator->find(owner.id())->protectedKvReferences);
+  const auto promoted = owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), publications);
+  BOOST_REQUIRE(promoted.protectedKvReferences); BOOST_CHECK_EQUAL(promoted.protectedKvReferences->size(), 2U);
+  for (const auto& [role, publication] : publications) {
+    const auto& reference = promoted.protectedKvReferences->at(role);
+    BOOST_CHECK_EQUAL(reference.at("version").get<std::uint64_t>(), 2U);
+    BOOST_CHECK_EQUAL(reference.at("keyEnvelope").get<std::string>(), publication.checkpoint.keyEnvelope);
+  }
+  const auto logSize = fs::file_size(owner.log());
+  const auto repeated = owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), publications);
+  BOOST_CHECK(repeated.protectedKvReferences == promoted.protectedKvReferences);
+  BOOST_CHECK_EQUAL(fs::file_size(owner.log()), logSize);
+  BOOST_CHECK_EQUAL(owner.config.journal->readConversations(owner.time).size(), 1U);
+  const auto wire = ndnsf::di::test::protectedKv::read(owner.log());
+  BOOST_CHECK(wire.find("checkpointIdentityDigest") == std::string::npos);
+  BOOST_CHECK(wire.find("keyReferenceId") == std::string::npos);
+  BOOST_CHECK(wire.find("wrappedKey") == std::string::npos);
+  publications.clear(); f.options.resolveDurableStorageGrant = {}; f.user.reset(); f.store.reset(); f.node.reset(); f.journal.reset();
+  owner.reopen(); const auto restored = owner.coordinator->find(owner.id()); BOOST_REQUIRE(restored);
+  BOOST_CHECK(restored->protectedKvReferences == promoted.protectedKvReferences);
+  BOOST_CHECK_EQUAL(restored->checkpoint.successorContextEpoch, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(KvActiveTurnRecoveryReferenceUsesOwnedParent)
+{
+  using namespace ndnsf::di;
+  OwnedCorePublicationFixture producer; ndnsf::di::test::protectedKv::Fixture kv;
+  producer.authorize(kv.certificate.getIdentity().toUri());
+  OwnerKvConversationFixture owner(producer, producer.owner);
+  const auto continuation = owner.continuation();
+  auto turn = owner.coordinator->beginTurn(continuation, "opaque-unsaved-turn");
+  BOOST_CHECK(!owner.coordinator->protectedKvForTurn(turn));
+  owner.coordinator->abortTurn(turn, NativeDiError("CANCELLED", "local", "test", "controlled abort"));
+  auto publications = owner.publish(kv);
+  const auto promoted = owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), publications);
+  BOOST_REQUIRE(promoted.protectedKvReferences);
+  publications.clear(); producer.user.reset(); producer.store.reset(); producer.node.reset(); producer.journal.reset();
+  owner.reopen();
+  turn = owner.coordinator->beginTurn(continuation, "opaque-active-turn");
+  BOOST_CHECK(owner.coordinator->protectedKvForTurn(turn) == promoted.protectedKvReferences);
+  auto recovery = owner.coordinator->protectedKvRecoveryForTurn(turn);
+  BOOST_REQUIRE(recovery);
+  BOOST_CHECK(recovery->references == *promoted.protectedKvReferences);
+  BOOST_CHECK(recovery->checkpoint == owner.checkpoint);
+  BOOST_REQUIRE_EQUAL(recovery->originReceipts.size(), owner.placement.size());
+  const auto ownedRecord = owner.coordinator->find(owner.id());
+  BOOST_REQUIRE(ownedRecord);
+  for (const auto& encoded : ownedRecord->checkpoint.transcript.at("providerRoleReceipts")) {
+    const auto raw = nativeConversationBase64Decode(encoded.get<std::string>());
+    const auto receipt = nativeReadProviderConversationStateReceipt(nativeParseJson(raw));
+    BOOST_CHECK_EQUAL(recovery->originReceipts.at(receipt.roleName), raw);
+    BOOST_CHECK_EQUAL(receipt.computedDigest(),
+      recovery->checkpoint.at("roleReceiptDigests").at(receipt.roleName).get<std::string>());
+    BOOST_CHECK(ndn::Name(receipt.providerIdentity) == ndn::Name(owner.placement.at(receipt.roleName)));
+  }
+  const auto expectedRecovery = *recovery;
+  recovery->checkpoint["expiresAtMs"] = 0U;
+  recovery->references.clear(); recovery->originReceipts.clear();
+  BOOST_CHECK(*owner.coordinator->protectedKvRecoveryForTurn(turn) == expectedRecovery);
+  auto copy = owner.coordinator->protectedKvForTurn(turn);
+  copy->erase("/role/A");
+  BOOST_CHECK(owner.coordinator->protectedKvForTurn(turn) == promoted.protectedKvReferences);
+  for (const auto& mutate : std::vector<std::function<void(NativeConversationTurn&)>>{
+    [](auto& value) { value.ticket += "forged"; },
+    [](auto& value) { value.executionRequestId += "other"; },
+    [](auto& value) { value.parent.conversationId += "other"; },
+    [](auto& value) { ++value.parent.parentContextEpoch; },
+    [](auto& value) { value.parent.parentCheckpointDigest = keyReferenceDigest("other parent"); },
+    [](auto& value) { value.parent.requestContractDigest = keyReferenceDigest("other contract"); },
+    [](auto& value) { value.parent.planRoleMapDigest = keyReferenceDigest("other placement"); },
+    [](auto& value) { value.parent.expectedRoles.clear(); },
+    [](auto& value) { ++value.parent.retentionDeadlineMs; }}) {
+    auto invalid = turn; mutate(invalid);
+    BOOST_CHECK_THROW(owner.coordinator->protectedKvForTurn(invalid), std::runtime_error);
+    BOOST_CHECK_THROW(owner.coordinator->protectedKvRecoveryForTurn(invalid), std::runtime_error);
+  }
+  auto replacement = owner.coordinator->replaceAttempt(turn, "opaque-replacement-turn");
+  BOOST_CHECK_THROW(owner.coordinator->protectedKvForTurn(turn), std::runtime_error);
+  BOOST_CHECK(owner.coordinator->protectedKvForTurn(replacement) == promoted.protectedKvReferences);
+  const auto remapped = owner.coordinator->bindAttemptPlanRoleMap(replacement,
+    {{"/role/A", "/fresh/provider/b"}, {"/role/B", "/fresh/provider/c"}});
+  // New execution placement must not change the saved parent's Producer map.
+  BOOST_CHECK(owner.coordinator->protectedKvForTurn(remapped) == promoted.protectedKvReferences);
+  BOOST_CHECK(*owner.coordinator->protectedKvRecoveryForTurn(remapped) == expectedRecovery);
+  owner.time = owner.expiry;
+  BOOST_CHECK_THROW(owner.coordinator->protectedKvForTurn(remapped), std::runtime_error);
+  --owner.time;
+  owner.coordinator->abortTurn(remapped, NativeDiError("CANCELLED", "local", "test", "controlled abort"));
+  BOOST_CHECK_THROW(owner.coordinator->protectedKvForTurn(remapped), std::runtime_error);
+  BOOST_CHECK(owner.coordinator->find(owner.id())->protectedKvReferences == promoted.protectedKvReferences);
+}
+
+BOOST_AUTO_TEST_CASE(KvOwnerLongKeyEnvelopePassesActualPromotionAndReopen)
+{
+  OwnedCorePublicationFixture f; ndnsf::di::test::protectedKv::Fixture kv;
+  kv.certificate = kv.ownerKeys.createIdentity(ndn::Name("/" + std::string(1900, 'o')),
+    ndn::RsaKeyParams(2048)).getDefaultKey().getDefaultCertificate();
+  f.authorize(kv.certificate.getIdentity().toUri()); OwnerKvConversationFixture owner(f, f.owner);
+  auto publications = owner.publish(kv);
+  for (const auto& [role, publication] : publications) {
+    BOOST_REQUIRE_GT(publication.checkpoint.keyEnvelope.size(), 4096U);
+    BOOST_REQUIRE_LE(publication.checkpoint.keyEnvelope.size(), 16384U);
+  }
+  const auto saved = owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), publications);
+  BOOST_REQUIRE(saved.protectedKvReferences);
+  publications.clear(); f.options.resolveDurableStorageGrant = {}; f.user.reset();
+  f.store.reset(); f.node.reset(); f.journal.reset();
+  owner.reopen(); const auto restored = owner.coordinator->find(owner.id()); BOOST_REQUIRE(restored);
+  BOOST_CHECK(restored->protectedKvReferences == saved.protectedKvReferences);
+}
+
+BOOST_AUTO_TEST_CASE(KvOwnerLegacyReferencesReopenWithoutInventingKeyEnvelope)
+{
+  OwnedCorePublicationFixture f; ndnsf::di::test::protectedKv::Fixture kv;
+  f.authorize(kv.certificate.getIdentity().toUri()); OwnerKvConversationFixture owner(f, f.owner);
+  const auto publications = owner.publish(kv);
+  ndnsf::di::NativeJson legacy = ndnsf::di::NativeJson::object();
+  for (const auto& [role, publication] : publications) {
+    auto reference = ndnsf::di::nativeProtectedKvPublicationReference(publication);
+    reference["version"] = 1U; reference.erase("keyEnvelope"); legacy[role] = std::move(reference);
+  }
+  BOOST_CHECK_NO_THROW(ndnsf::di::nativeValidateProtectedKvReferences(legacy, owner.checkpoint, owner.placement));
+  auto mixed = legacy;
+  mixed["/role/A"] = ndnsf::di::nativeProtectedKvPublicationReference(publications.at("/role/A"));
+  BOOST_CHECK_NO_THROW(ndnsf::di::nativeValidateProtectedKvReferences(mixed, owner.checkpoint, owner.placement));
+  owner.config.journal->appendProtectedKvSet(owner.checkpointWire, legacy, owner.time);
+  owner.reopen(); const auto restored = owner.coordinator->find(owner.id()); BOOST_REQUIRE(restored);
+  BOOST_REQUIRE(restored->protectedKvReferences);
+  BOOST_CHECK(*restored->protectedKvReferences == legacy);
+  for (const auto& reference : restored->protectedKvReferences->items())
+    BOOST_CHECK(!reference.value().contains("keyEnvelope"));
+  const auto size = fs::file_size(owner.log());
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), publications), std::runtime_error);
+  BOOST_CHECK_EQUAL(fs::file_size(owner.log()), size);
+  BOOST_CHECK(owner.coordinator->find(owner.id())->protectedKvReferences == restored->protectedKvReferences);
+}
+
+BOOST_AUTO_TEST_CASE(KvOwnerMissingAliasStaleAndDeletedReferencesRejectWithoutVisibility)
+{
+  OwnedCorePublicationFixture f; ndnsf::di::test::protectedKv::Fixture kv;
+  f.authorize(kv.certificate.getIdentity().toUri()); OwnerKvConversationFixture owner(f, f.owner);
+  const auto publications = owner.publish(kv); const auto initialSize = fs::file_size(owner.log());
+  auto invalid = publications; invalid.erase("/role/B");
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), invalid), std::runtime_error);
+  invalid = publications; invalid["/role/B"] = publications.at("/role/A");
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), invalid), std::runtime_error);
+  invalid = publications; invalid["/role/A"].checkpoint.ownerIdentity = ndn::Name("/other-owner");
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), invalid), std::runtime_error);
+  invalid = publications; invalid["/role/A"].checkpoint.producerPrefix = ndn::Name("/other-producer");
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), invalid), std::runtime_error);
+  invalid = publications; invalid["/role/A"].transport.keyReferenceVersion = "forged-version";
+  BOOST_CHECK_THROW(invalid["/role/A"].requireCurrent(), std::runtime_error);
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), invalid), std::runtime_error);
+  invalid = publications; invalid["/role/A"].checkpoint.keyEnvelope += " ";
+  BOOST_CHECK_THROW(invalid["/role/A"].requireCurrent(), std::runtime_error);
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), invalid), std::runtime_error);
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), keyReferenceDigest("stale"), publications), std::runtime_error);
+  BOOST_CHECK_EQUAL(fs::file_size(owner.log()), initialSize);
+  BOOST_CHECK(!owner.coordinator->find(owner.id())->protectedKvReferences);
+  ndnsf::di::NativeConversationContinuation continuation;
+  continuation.mode = "APPEND_DELTA"; continuation.conversationId = owner.id();
+  continuation.parentContextEpoch = 1; continuation.serviceName = owner.config.serviceName;
+  continuation.planRoleMapDigest = owner.checkpoint.at("planRoleMapDigest").get<std::string>();
+  continuation.parentCheckpointWire = owner.checkpointWire; continuation.parentCheckpointDigest = owner.digest();
+  continuation.requestContractDigest = keyReferenceDigest("pending-request"); continuation.retentionDeadlineMs = owner.expiry;
+  continuation.generationId = std::string(32, '4'); continuation.expectedRoles = {"/role/A", "/role/B"};
+  continuation.canonicalTokenIds = owner.coordinator->find(owner.id())->checkpoint.transcript.at("canonicalTokenIds")
+    .get<std::vector<std::int64_t>>(); continuation.canonicalTokenIds.push_back(99);
+  owner.coordinator->beginTurn(continuation, "pending-turn");
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), publications), std::runtime_error);
+  BOOST_CHECK_EQUAL(fs::file_size(owner.log()), initialSize); owner.reopen();
+  const auto promoted = owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), publications);
+  const auto claims = f.journal->listUserStorage(f.owner, f.repoName, "", 10); BOOST_REQUIRE_EQUAL(claims.size(), 2U);
+  f.journal->prepareUserStorageCleanup(f.owner, f.repoName, "kv-owner-delete", claims.front().object.objectName,
+    claims.front().ownerEpoch, f.now());
+  const auto size = fs::file_size(owner.log());
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), publications), std::runtime_error);
+  BOOST_CHECK_EQUAL(fs::file_size(owner.log()), size);
+  BOOST_CHECK(owner.coordinator->find(owner.id())->protectedKvReferences == promoted.protectedKvReferences);
+}
+
+BOOST_AUTO_TEST_CASE(KvOwnerConflictingActualPublicationAndQuotaFailureKeepOldState)
+{
+  OwnedCorePublicationFixture f; ndnsf::di::test::protectedKv::Fixture kv;
+  f.authorize(kv.certificate.getIdentity().toUri()); OwnerKvConversationFixture owner(f, f.owner);
+  const auto publications = owner.publish(kv); const auto initialSize = fs::file_size(owner.log());
+  owner.reopen(initialSize + 1);
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), publications), std::runtime_error);
+  BOOST_CHECK_EQUAL(fs::file_size(owner.log()), initialSize);
+  BOOST_CHECK(!owner.coordinator->find(owner.id())->protectedKvReferences);
+  owner.reopen(); const auto saved = owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), publications);
+  const auto other = owner.publish(kv); const auto size = fs::file_size(owner.log());
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), other), std::runtime_error);
+  BOOST_CHECK_EQUAL(fs::file_size(owner.log()), size);
+  BOOST_CHECK(owner.coordinator->find(owner.id())->protectedKvReferences == saved.protectedKvReferences);
+}
+
+BOOST_AUTO_TEST_CASE(KvOwnerSuccessorAndExpiryDoNotInheritReferences)
+{
+  OwnedCorePublicationFixture f; ndnsf::di::test::protectedKv::Fixture kv;
+  f.authorize(kv.certificate.getIdentity().toUri()); OwnerKvConversationFixture owner(f, f.owner);
+  const auto publications = owner.publish(kv);
+  owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), publications);
+  const auto oldDigest = owner.digest(); owner.seed(2); owner.coordinator->restore();
+  BOOST_REQUIRE(owner.coordinator->find(owner.id()));
+  BOOST_CHECK(!owner.coordinator->find(owner.id())->protectedKvReferences);
+  BOOST_CHECK_EQUAL(owner.coordinator->find(owner.id())->checkpoint.successorContextEpoch, 2U);
+  BOOST_CHECK_THROW(owner.coordinator->promoteProtectedKvSet(owner.id(), oldDigest, publications), std::runtime_error);
+  owner.time = owner.expiry; owner.coordinator->restore();
+  BOOST_CHECK(!owner.coordinator->find(owner.id()));
+  BOOST_CHECK(owner.config.journal->readConversations(owner.time).empty());
+}
+
+BOOST_AUTO_TEST_CASE(KvOwnerDescriptorValidationRejectsMalformedTypesNamesAndRoleBinding)
+{
+  OwnedCorePublicationFixture f; ndnsf::di::test::protectedKv::Fixture kv;
+  f.authorize(kv.certificate.getIdentity().toUri()); OwnerKvConversationFixture owner(f, f.owner);
+  const auto publications = owner.publish(kv);
+  ndnsf::di::NativeJson references = ndnsf::di::NativeJson::object();
+  for (const auto& [role, publication] : publications)
+    references[role] = ndnsf::di::nativeProtectedKvPublicationReference(publication);
+  const auto validate = [&](const auto& value) {
+    ndnsf::di::nativeValidateProtectedKvReferences(value, owner.checkpoint, owner.placement);
+  };
+  BOOST_CHECK_NO_THROW(validate(references));
+  auto missing = references; missing["/role/A"].erase("keyEnvelope");
+  BOOST_CHECK_THROW(validate(missing), std::exception);
+  auto wrongVersion = references; wrongVersion["/role/A"]["version"] = 1U;
+  BOOST_CHECK_THROW(validate(wrongVersion), std::exception);
+  wrongVersion = references; wrongVersion["/role/A"]["version"] = 3U;
+  BOOST_CHECK_THROW(validate(wrongVersion), std::exception);
+  auto malformedEnvelope = references; malformedEnvelope["/role/A"]["keyEnvelope"] = std::string(16385, 'x');
+  BOOST_CHECK_THROW(validate(malformedEnvelope), std::exception);
+  malformedEnvelope = references; malformedEnvelope["/role/A"]["keyEnvelope"] = "{}";
+  BOOST_CHECK_THROW(validate(malformedEnvelope), std::exception);
+  for (const auto& value : {ndnsf::di::NativeJson(false), ndnsf::di::NativeJson(-1), ndnsf::di::NativeJson(1.0)}) {
+    auto invalid = references; invalid["/role/A"]["wireBytes"] = value;
+    BOOST_CHECK_THROW(validate(invalid), std::exception);
+    invalid = references; invalid["/role/A"]["version"] = value;
+    BOOST_CHECK_THROW(validate(invalid), std::exception);
+  }
+  for (const auto& field : {"ownerCertificateName", "manifestName", "dataPrefix"}) {
+    auto invalid = references; invalid["/role/A"][field] = "/8=unrelated/8=object";
+    BOOST_CHECK_THROW(validate(invalid), std::exception);
+  }
+  auto invalid = references; invalid["/role/A"]["extra"] = "unrecognized";
+  BOOST_CHECK_THROW(validate(invalid), std::exception);
+  invalid = references; invalid["/role/A"]["keyReferenceVersion"] = std::string(4097, 'x');
+  BOOST_CHECK_THROW(validate(invalid), std::exception);
+  invalid = references; invalid["/role/A"] = references.at("/role/B");
+  BOOST_CHECK_THROW(validate(invalid), std::exception);
+  BOOST_CHECK(!owner.coordinator->find(owner.id())->protectedKvReferences);
+}
+
+BOOST_AUTO_TEST_CASE(KvPublicationPersistsOwnedOriginalWireAndReusesStableInput)
+{
+  OwnedCorePublicationFixture f;
+  f.user->seedOpaqueOriginalAuxiliaries(f.service, f.keys);
+  ndnsf::di::test::protectedKv::Fixture kv;
+  kv.state.originIdentity.providerIdentity = f.actor.getIdentity().toUri();
+  ndnsf::di::nativeExportPrivatePortableKvCheckpoint(kv.plain, kv.state, kv.portableLimits);
+  const auto checkpoint = kv.protect(); f.authorize(kv.certificate.getIdentity().toUri(ndn::name::UriFormat::ALTERNATE));
+  std::mutex challengeMutex;
+  std::vector<std::string> grantEvents;
+  std::vector<ndn_service_framework::DurableStorageGrantChallengeV1> challenges;
+  bool repoEmptyAtChallenge = true;
+  const auto resolveGrant = f.options.resolveDurableStorageGrant;
+  auto owner = ndnsf::di::NativeDurableStorageOwner{f.owner,
+    [&, resolveGrant](const ndn::Name& name, const std::string& writer,
+                      const std::function<void()>& active) {
+      {
+        std::lock_guard<std::mutex> lock(challengeMutex);
+        grantEvents.emplace_back("resolver");
+      }
+      return resolveGrant(name, writer, active);
+    },
+    [&](const auto& challenge) {
+      const auto usage = f.journal->userStorageUsage(f.owner, f.repoName);
+      const bool emptyBeforeGrant = f.node->list().empty() && usage.committedBytes == 0 &&
+                                    usage.reservedBytes == 0;
+      std::lock_guard<std::mutex> lock(challengeMutex);
+      grantEvents.emplace_back("challenge"); challenges.push_back(challenge);
+      repoEmptyAtChallenge = repoEmptyAtChallenge && emptyBeforeGrant;
+    }};
+  const auto publish = [&] {
+    const auto request = f.user->prepareServiceRequest(f.service.toUri());
+    auto& io = f.face.getIoContext(); io.restart(); auto guard = boost::asio::make_work_guard(io);
+    std::thread thread([&] { io.run(); });
+    struct Join { boost::asio::io_context& io; std::thread& thread;
+      ~Join() { io.stop(); if (thread.joinable()) thread.join(); } } join{io, thread};
+    return ndnsf::di::nativePublishProtectedPortableKvCheckpoint(f.user, request, kv.cipher, checkpoint,
+      owner, kv.limits);
+  };
+  auto first = publish(); BOOST_CHECK_NO_THROW(first.requireCurrent());
+  {
+    std::lock_guard<std::mutex> lock(challengeMutex);
+    BOOST_REQUIRE_EQUAL(grantEvents.size(), challenges.size() * 2U);
+    for (std::size_t i = 0; i < grantEvents.size(); i += 2U) {
+      BOOST_CHECK_EQUAL(grantEvents[i], "challenge");
+      BOOST_CHECK_EQUAL(grantEvents[i + 1U], "resolver");
+    }
+    BOOST_REQUIRE(!challenges.empty());
+    const auto& challenge = challenges.front();
+    BOOST_CHECK_EQUAL(challenge.manifestName, first.transport.manifestName);
+    BOOST_CHECK_EQUAL(challenge.writerIdentity,
+      f.user->getName().toUri(ndn::name::UriFormat::ALTERNATE));
+    BOOST_CHECK_EQUAL(challenge.publicationIdentity, first.transport.publicationIdentity);
+    BOOST_CHECK(challenge.dataPrefix == first.transport.dataPrefix);
+    BOOST_CHECK(challenge.packetWireBytes > checkpoint.wireBytes);
+    BOOST_CHECK(challenge.auxiliaryPacketNames == first.transport.auxiliaryPacketNames);
+    BOOST_CHECK(repoEmptyAtChallenge);
+  }
+  BOOST_REQUIRE(first.transport.auxiliaryPacketNames.size() >= 2U);
+  BOOST_CHECK(first.transport.auxiliaryPacketNames == first.transport.durableStorageSource->auxiliaryDataPacketNames());
+  BOOST_CHECK_EQUAL(first.inputPublicationIdentity().size(), 71U);
+  BOOST_CHECK(first.transport.publicationIdentity != first.inputPublicationIdentity());
+  auto alteredReceipt = first; alteredReceipt.checkpoint.checkpointIdentityDigest = keyReferenceDigest("other-checkpoint");
+  BOOST_CHECK_THROW(alteredReceipt.requireCurrent(), std::runtime_error);
+  alteredReceipt = first; alteredReceipt.transport.publicationIdentity = keyReferenceDigest("other-core-publication");
+  BOOST_CHECK_THROW(alteredReceipt.requireCurrent(), std::runtime_error);
+  alteredReceipt = first; alteredReceipt.transport.auxiliaryPacketNames.clear();
+  BOOST_CHECK_THROW(alteredReceipt.requireCurrent(), std::runtime_error);
+  auto otherSource = f.store->lookupDurable(first.transport.publicationIdentity); BOOST_REQUIRE(otherSource);
+  BOOST_REQUIRE(otherSource->source != first.transport.durableStorageSource);
+  alteredReceipt = first; alteredReceipt.transport.durableStorageSource = otherSource->source;
+  BOOST_CHECK_THROW(alteredReceipt.requireCurrent(), std::runtime_error);
+  BOOST_CHECK_THROW(ndnsf::di::NativeProtectedKvPublicationV1{}.requireCurrent(), std::exception);
+  BOOST_CHECK(first.transport.manifestName != checkpoint.objectName());
+  BOOST_CHECK(f.actor.getIdentity().isPrefixOf(first.transport.dataPrefix));
+  const auto wire = first.transport.durableStorageSource->readOriginalDataPacket(first.transport.manifestName);
+  const ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+  BOOST_CHECK(ndn::security::verifySignature(packet, f.actor));
+  const auto usage = f.journal->userStorageUsage(f.owner, f.repoName);
+  BOOST_CHECK(usage.committedBytes > checkpoint.wireBytes); BOOST_CHECK_EQUAL(usage.reservedBytes, 0U);
+  const auto stored = f.node->core().lookupDataPacketObject(first.transport.manifestName.toUri());
+  BOOST_REQUIRE(stored); const auto allWires = ndnsf_distributed_repo::RepoClient::getDataPackets(*f.node, *stored);
+  BOOST_REQUIRE(allWires.size() > 1);
+  for (const auto& bytes : allWires) {
+    const ndn::Data original(ndn::Block(ndn::span<const uint8_t>(bytes.data(), bytes.size())));
+    BOOST_CHECK(f.actor.getIdentity().isPrefixOf(original.getName()));
+    BOOST_CHECK(ndn::security::verifySignature(original, f.actor));
+  }
+  auto repeated = publish(); BOOST_CHECK_NO_THROW(repeated.requireCurrent());
+  BOOST_CHECK(first.transport.manifestName == repeated.transport.manifestName);
+  BOOST_CHECK(repeated.transport.durableStorageSource->readOriginalDataPacket(repeated.transport.manifestName) == wire);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).committedBytes, usage.committedBytes);
+  BOOST_CHECK_EQUAL(f.node->list().size(), 1U);
+  const auto claims = f.journal->listUserStorage(f.owner, f.repoName, "", 10); BOOST_REQUIRE_EQUAL(claims.size(), 1U);
+  f.journal->prepareUserStorageCleanup(f.owner, f.repoName, "kv-prepare-cleanup",
+    claims.front().object.objectName, claims.front().ownerEpoch, f.now());
+  BOOST_CHECK_THROW(first.requireCurrent(), std::runtime_error);
+  BOOST_CHECK_THROW(repeated.requireCurrent(), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(KvPublicationReopensExactPacketsAfterProducerAndReceiptsRelease)
+{
+  OwnedCorePublicationFixture f; ndnsf::di::test::protectedKv::Fixture kv;
+  f.user->seedOpaqueOriginalAuxiliaries(f.service, f.keys);
+  kv.state.originIdentity.providerIdentity = f.actor.getIdentity().toUri();
+  ndnsf::di::nativeExportPrivatePortableKvCheckpoint(kv.plain, kv.state, kv.portableLimits);
+  const auto checkpoint = kv.protect(); f.authorize(kv.certificate.getIdentity().toUri(ndn::name::UriFormat::ALTERNATE));
+  ndnsf::di::NativeProtectedKvPublicationV1 receipt;
+  {
+    const auto request = f.user->prepareServiceRequest(f.service.toUri());
+    auto& io = f.face.getIoContext(); io.restart(); auto guard = boost::asio::make_work_guard(io);
+    std::thread thread([&] { io.run(); });
+    struct Join { boost::asio::io_context& io; std::thread& thread;
+      ~Join() { io.stop(); if (thread.joinable()) thread.join(); } } join{io, thread};
+    receipt = ndnsf::di::nativePublishProtectedPortableKvCheckpoint(f.user, request, kv.cipher, checkpoint,
+      ndnsf::di::NativeDurableStorageOwner{f.owner, f.options.resolveDurableStorageGrant}, kv.limits);
+  }
+  const auto claims = f.journal->listUserStorage(f.owner, f.repoName, "", 10);
+  BOOST_REQUIRE_EQUAL(claims.size(), 1U);
+  const auto manifestName = receipt.transport.manifestName;
+  const auto physical = f.node->core().lookupDataPacketObject(manifestName.toUri()); BOOST_REQUIRE(physical);
+  const auto original = ndnsf_distributed_repo::RepoClient::getDataPackets(*f.node, *physical);
+  BOOST_CHECK_NO_THROW(receipt.requireCurrent());
+  receipt = {}; f.options.resolveDurableStorageGrant = {}; f.user.reset(); f.store.reset(); f.node.reset(); f.journal.reset();
+  ndnsf_distributed_repo::StorageCapability capability;
+  capability.repoNode = f.repoName; capability.repoMode = "persistent"; capability.freeBytes = 64U << 20;
+  auto reopened = std::make_shared<ndnsf_distributed_repo::RepoNode>(ndn::Name("/spec204/core-service"), capability,
+    ndnsf_distributed_repo::makeFilesystemRepoStore((f.root / "objects").string(), 1U << 20, 1U << 20),
+    f.repoName, f.actor.getIdentity().toUri(), (f.root / "metadata.db").string());
+  const auto restored = reopened->core().lookupDataPacketObject(manifestName.toUri()); BOOST_REQUIRE(restored);
+  BOOST_CHECK(ndnsf_distributed_repo::RepoClient::getDataPackets(*reopened, *restored) == original);
+  BOOST_CHECK(reopened->getDataPacket(manifestName.toUri()) == original.front());
+  BOOST_REQUIRE(!original.empty());
+}
+
+BOOST_AUTO_TEST_CASE(KvPublicationFailurePreflightAndOwnerQuotaRemainHonest)
+{
+  OwnedCorePublicationFixture f; ndnsf::di::test::protectedKv::Fixture kv;
+  f.user->seedOpaqueOriginalAuxiliaries(f.service, f.keys);
+  kv.state.originIdentity.providerIdentity = f.actor.getIdentity().toUri();
+  ndnsf::di::nativeExportPrivatePortableKvCheckpoint(kv.plain, kv.state, kv.portableLimits);
+  const auto checkpoint = kv.protect(); f.authorize(kv.certificate.getIdentity().toUri(ndn::name::UriFormat::ALTERNATE));
+  const auto request = f.user->prepareServiceRequest(f.service.toUri());
+  auto owner = ndnsf::di::NativeDurableStorageOwner{f.owner, f.options.resolveDurableStorageGrant};
+  BOOST_CHECK(!f.actor.getIdentity().isPrefixOf(request.requestId));
+  auto unconfigured = std::make_shared<LocalServiceUser>(f.face, ndn::Name("/spec204/core-group"),
+    f.actor, f.authority, "examples/trust-any.conf");
+  BOOST_CHECK_THROW(ndnsf::di::nativePublishProtectedPortableKvCheckpoint(unconfigured, request, kv.cipher,
+    checkpoint, owner, kv.limits), std::runtime_error);
+  const auto publish = [&](const auto& reference, const auto& storageOwner, const auto& limits) {
+    return ndnsf::di::nativePublishProtectedPortableKvCheckpoint(f.user, request, kv.cipher,
+      reference, storageOwner, limits);
+  };
+  auto wrong = checkpoint; wrong.producerPrefix.append("other");
+  BOOST_CHECK_THROW(publish(wrong, owner, kv.limits), std::runtime_error);
+  auto missing = owner; missing.resolveGrant = {};
+  BOOST_CHECK_THROW(publish(checkpoint, missing, kv.limits), std::invalid_argument);
+  auto other = owner; other.ownerIdentity = "/other/owner";
+  BOOST_CHECK_THROW(publish(checkpoint, other, kv.limits), std::runtime_error);
+  auto cancelled = kv.limits; cancelled.cancelled = [] { return true; };
+  BOOST_CHECK_THROW(publish(checkpoint, owner, cancelled), std::runtime_error);
+  auto changed = ndnsf::di::test::protectedKv::read(kv.cipher); changed.back() ^= 1;
+  ndnsf::di::test::protectedKv::write(kv.cipher, changed);
+  BOOST_CHECK_THROW(publish(checkpoint, owner, kv.limits), std::invalid_argument);
+  BOOST_CHECK(f.node->list().empty()); BOOST_CHECK(f.resolved.empty());
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).committedBytes, 0U);
+  f.face.getIoContext().restart(); bool faceRejected = false;
+  f.user->postToIo([&] {
+    try { (void)publish(checkpoint, owner, kv.limits); }
+    catch (const std::runtime_error&) { faceRejected = true; }
+  });
+  f.face.processEvents(ndn::time::milliseconds(1)); BOOST_CHECK(faceRejected);
+}
+
+BOOST_AUTO_TEST_CASE(KvPublicationRejectsActualFullOwnerReservationWithoutRefund)
+{
+  OwnedCorePublicationFixture f; ndnsf::di::test::protectedKv::Fixture kv;
+  f.user->seedOpaqueOriginalAuxiliaries(f.service, f.keys);
+  kv.state.originIdentity.providerIdentity = f.actor.getIdentity().toUri();
+  ndnsf::di::nativeExportPrivatePortableKvCheckpoint(kv.plain, kv.state, kv.portableLimits);
+  const auto checkpoint = kv.protect(); f.authorize(kv.certificate.getIdentity().toUri(ndn::name::UriFormat::ALTERNATE));
+  const auto writer = f.actor.getIdentity().toUri(ndn::name::UriFormat::ALTERNATE);
+  BOOST_REQUIRE(f.node->core().list().empty());
+  BOOST_REQUIRE(f.journal->reconcileUserStorageInventory(f.repoName, {}, f.now()).ready);
+  ndnsf_distributed_repo::RepoUserStorageObject reserved{
+    ndn::Name(f.actor.getIdentity()).append("capacity-reservation").toUri(ndn::name::UriFormat::ALTERNATE),
+    std::string(64, 'a'), 1, 999999999, 1};
+  const auto grant = f.journal->grantUserStorage(f.owner, f.repoName, "kv-full-owner", writer,
+    reserved.objectName, f.grantExpiresAt, f.now());
+  (void)f.journal->reserveUserStorage(writer, f.repoName, f.owner, grant.grantId, "kv-full-reservation", reserved, f.now());
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).reservedBytes, 1000000000U);
+  const auto request = f.user->prepareServiceRequest(f.service.toUri());
+  auto& io = f.face.getIoContext(); io.restart(); auto guard = boost::asio::make_work_guard(io);
+  std::thread thread([&] { io.run(); });
+  struct Join { boost::asio::io_context& io; std::thread& thread;
+    ~Join() { io.stop(); if (thread.joinable()) thread.join(); } } join{io, thread};
+  BOOST_CHECK_THROW(ndnsf::di::nativePublishProtectedPortableKvCheckpoint(f.user, request, kv.cipher, checkpoint,
+    ndnsf::di::NativeDurableStorageOwner{f.owner, f.options.resolveDurableStorageGrant}, kv.limits), std::runtime_error);
+  const auto usage = f.journal->userStorageUsage(f.owner, f.repoName);
+  BOOST_CHECK_EQUAL(usage.limitBytes, 1000000000U); BOOST_CHECK_EQUAL(usage.reservedBytes, 1000000000U);
+  BOOST_CHECK_EQUAL(usage.committedBytes, 0U); BOOST_CHECK(f.node->list().empty());
+  BOOST_CHECK_EQUAL(ndnsf::di::test::protectedKv::read(kv.plain).substr(0, 8), "NDKV0001");
+}
+
+BOOST_AUTO_TEST_CASE(OwnedCoreRequiresWorkerAndResolverBeforeCrypto)
+{
+  OwnedCorePublicationFixture f;
+  const auto missing = f.publish();
+  BOOST_CHECK(!missing.success);
+  BOOST_CHECK_EQUAL(missing.errorMessage, "DURABLE_STORAGE_GRANT_RESOLVER_REQUIRED");
+  BOOST_CHECK(f.node->list().empty());
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).committedBytes, 0U);
+  f.authorize(f.owner);
+  const auto inlineResult = f.user->publishEncryptedLargeData(
+    f.user->prepareServiceRequest(f.service.toUri()), f.input, "owned-core",
+    ndn::time::milliseconds(100), true, f.options);
+  BOOST_CHECK(!inlineResult.success);
+  BOOST_CHECK_EQUAL(inlineResult.errorMessage, "OWNED_DURABLE_REQUIRES_WORKER");
+  BOOST_CHECK(f.resolved.empty());
+  BOOST_CHECK(f.node->list().empty());
+  BOOST_CHECK_EQUAL(f.user->getLargeDataServingMetricsForTest().publicationCount, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedCoreWorkerPreservesProducerWireAndExactCharge)
+{
+  OwnedCorePublicationFixture f; f.authorize(f.owner);
+  const auto first = f.publish();
+  BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
+  BOOST_REQUIRE(first.durableStorageSource);
+  BOOST_CHECK_NO_THROW(first.durableStorageSource->requireCurrentDurableStorageOwner(first.manifestName, f.owner));
+  BOOST_REQUIRE_EQUAL(f.resolved.size(), 1U);
+  BOOST_CHECK(f.resolved.front() == first.manifestName);
+  BOOST_CHECK(f.actor.getIdentity().isPrefixOf(first.manifestName));
+  const auto physical = f.node->list();
+  BOOST_REQUIRE_EQUAL(physical.size(), 1U);
+  const auto usage = f.journal->userStorageUsage(f.owner, f.repoName);
+  const auto stored = f.node->core().probeObjectMetadata(physical.front().objectName);
+  BOOST_CHECK_EQUAL(usage.committedBytes, physical.front().size + stored.manifestWireBytes);
+  BOOST_CHECK_EQUAL(usage.reservedBytes, 0U);
+  f.face.getIoContext().restart();
+  const auto before = f.face.sentData.size();
+  f.face.receive(ndn::Interest(first.manifestName)); f.face.processEvents(ndn::time::milliseconds(1));
+  BOOST_REQUIRE_EQUAL(f.face.sentData.size(), before + 1);
+  const auto& packet = f.face.sentData.back();
+  BOOST_CHECK(packet.getName() == first.manifestName);
+  BOOST_CHECK(ndn::security::verifySignature(packet, f.actor));
+  const auto originalWire = packet.wireEncode();
+  const auto storedWire = first.durableStorageSource->readOriginalDataPacket(first.manifestName);
+  BOOST_CHECK(storedWire == std::vector<uint8_t>(originalWire.begin(), originalWire.end()));
+  const auto same = f.publish();
+  BOOST_REQUIRE_MESSAGE(same.success, same.errorMessage);
+  BOOST_REQUIRE(same.durableStorageSource);
+  BOOST_CHECK_NO_THROW(same.durableStorageSource->requireCurrentDurableStorageOwner(same.manifestName, f.owner));
+  BOOST_CHECK(same.durableStorageSource->readOriginalDataPacket(same.manifestName) == storedWire);
+  BOOST_REQUIRE_EQUAL(f.resolved.size(), 2U);
+  BOOST_CHECK(same.manifestName == first.manifestName);
+  BOOST_CHECK(first.servingLease != same.servingLease);
+  BOOST_CHECK_EQUAL(f.node->list().size(), 1U);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).committedBytes, usage.committedBytes);
+  f.face.getIoContext().restart(); f.face.receive(ndn::Interest(same.manifestName));
+  f.face.processEvents(ndn::time::milliseconds(1));
+  BOOST_CHECK(f.face.sentData.back().wireEncode() == originalWire);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedCoreCachedHitInstallsNewOwnerSourceAndKeepsExpiryIndependent)
+{
+  OwnedCorePublicationFixture f; f.authorize(f.owner);
+  auto first = f.publish(); BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
+  BOOST_REQUIRE(first.durableStorageSource);
+  const auto firstOwner = f.owner;
+  BOOST_CHECK_NO_THROW(first.durableStorageSource->requireCurrentDurableStorageOwner(first.manifestName, firstOwner));
+  const auto hit = f.store->lookupDurable(first.publicationIdentity);
+  BOOST_REQUIRE(hit);
+  const auto retain = f.retainOptions(*hit);
+  auto oldSource = f.store->retainDurableSource(*hit, retain);
+  BOOST_REQUIRE(oldSource);
+  const auto charge = f.journal->userStorageUsage(f.owner, f.repoName).committedBytes;
+  (void)f.journal->prepareUserStorageCleanup(f.owner, f.repoName, "prepare-old-core-owner",
+    first.manifestName.toUri(ndn::name::UriFormat::ALTERNATE),
+    retain.storageActor->grant.ownerEpoch, f.now());
+  BOOST_CHECK_THROW(oldSource->readOriginalDataPacket(first.manifestName), std::runtime_error);
+  BOOST_CHECK_THROW(first.durableStorageSource->requireCurrentDurableStorageOwner(first.manifestName, firstOwner), std::runtime_error);
+  f.authorize("/spec204/core-owner-v");
+  auto next = f.publish(); BOOST_REQUIRE_MESSAGE(next.success, next.errorMessage);
+  BOOST_REQUIRE(next.durableStorageSource);
+  BOOST_CHECK_NO_THROW(next.durableStorageSource->requireCurrentDurableStorageOwner(next.manifestName, f.owner));
+  BOOST_CHECK_THROW(first.durableStorageSource->requireCurrentDurableStorageOwner(first.manifestName, f.owner), std::runtime_error);
+  BOOST_CHECK(next.manifestName == first.manifestName);
+  BOOST_CHECK(first.servingLease != next.servingLease);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).committedBytes, charge);
+  first.servingLease.reset();
+  f.face.getIoContext().restart(); f.face.processEvents(ndn::time::milliseconds(150));
+  BOOST_CHECK_EQUAL(f.user->getLargeDataServingMetricsForTest().publicationCount, 1U);
+  const auto before = f.face.sentData.size();
+  const auto segment = ndn::Name(next.dataPrefix).appendSegment(3);
+  f.face.receive(ndn::Interest(segment)); f.face.processEvents(ndn::time::milliseconds(1));
+  BOOST_REQUIRE_EQUAL(f.face.sentData.size(), before + 1);
+  BOOST_CHECK(f.face.sentData.back().getName() == segment);
+  BOOST_CHECK(ndn::security::verifySignature(f.face.sentData.back(), f.actor));
+  BOOST_CHECK_THROW(oldSource->readOriginalDataPacket(first.manifestName), std::runtime_error);
+  next.servingLease.reset(); f.face.processEvents(ndn::time::milliseconds(1200));
+  BOOST_CHECK_EQUAL(f.user->getLargeDataServingMetricsForTest().publicationCount, 0U);
+  BOOST_CHECK_EQUAL(f.node->list().size(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedCoreResolverFailureAndCancellationCannotCommit)
+{
+  OwnedCorePublicationFixture f;
+  f.options.resolveDurableStorageGrant = [](const ndn::Name&, const std::string&,
+    const std::function<void()>&) -> DurableStorageGrantSelector {
+      throw std::runtime_error("OWNER_UNAVAILABLE");
+    };
+  const auto failed = f.publish();
+  BOOST_CHECK(!failed.success); BOOST_CHECK_EQUAL(failed.errorMessage, "OWNER_UNAVAILABLE");
+  BOOST_CHECK(!failed.durableStorageSource);
+  BOOST_CHECK(f.node->list().empty());
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).reservedBytes, 0U);
+  f.authorize(f.owner);
+  const auto resolver = f.options.resolveDurableStorageGrant;
+  bool resolved = false;
+  f.options.resolveDurableStorageGrant = [resolver, &resolved](const ndn::Name& name,
+    const std::string& writer, const std::function<void()>& current) {
+      const auto grant = resolver(name, writer, current); resolved = true; return grant;
+    };
+  const auto cancelled = f.publish([&] { if (resolved) throw std::runtime_error("CANCELLED_AFTER_GRANT"); });
+  BOOST_CHECK(!cancelled.success); BOOST_CHECK_EQUAL(cancelled.errorMessage, "CANCELLED_AFTER_GRANT");
+  BOOST_CHECK(!cancelled.durableStorageSource);
+  BOOST_CHECK(f.node->list().empty());
+  const auto usage = f.journal->userStorageUsage(f.owner, f.repoName);
+  BOOST_CHECK_EQUAL(usage.reservedBytes, 0U); BOOST_CHECK_EQUAL(usage.committedBytes, 0U);
+  BOOST_CHECK_EQUAL(f.user->getLargeDataServingMetricsForTest().publicationCount, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedSourceEnqueueSerializesActualNodeCleanup)
+{
+  OwnedCorePublicationFixture f; f.authorize(f.owner);
+  const auto publication = f.publish(); BOOST_REQUIRE_MESSAGE(publication.success, publication.errorMessage);
+  const auto source = publication.durableStorageSource; BOOST_REQUIRE(source);
+  unsigned calls = 0;
+  BOOST_CHECK_THROW(source->withCurrentDurableStorageOwner(publication.manifestName, f.owner, {}), std::invalid_argument);
+  BOOST_CHECK_THROW(source->withCurrentDurableStorageOwner(publication.manifestName, "/wrong-owner", [&] { ++calls; }), std::runtime_error);
+  BOOST_CHECK_THROW(source->withCurrentDurableStorageOwner(ndn::Name("/wrong-manifest"), f.owner, [&] { ++calls; }), std::runtime_error);
+  BOOST_CHECK_EQUAL(calls, 0U);
+  BOOST_CHECK_THROW(source->withCurrentDurableStorageOwner(publication.manifestName, f.owner,
+    [] { throw std::runtime_error("enqueue failed"); }), std::runtime_error);
+  BOOST_CHECK_NO_THROW(source->requireCurrentDurableStorageOwner(publication.manifestName, f.owner));
+  const auto claims = f.journal->listUserStorage(f.owner, f.repoName, "", 10);
+  BOOST_REQUIRE_EQUAL(claims.size(), 1U);
+  ndnsf_distributed_repo::RepoUserStorageDeleteRequest request;
+  request.cleanupId = "enqueue-cleanup"; request.objectName = claims.front().object.objectName;
+  request.ownerEpoch = claims.front().ownerEpoch;
+  const auto json = request.toJson(); const std::vector<uint8_t> bytes(json.begin(), json.end());
+  std::promise<void> entered, release, cleanupStarted;
+  auto enteredFuture = entered.get_future(); auto releaseFuture = release.get_future();
+  auto cleanupStartedFuture = cleanupStarted.get_future();
+  auto enqueue = std::async(std::launch::async, [&] {
+    source->withCurrentDurableStorageOwner(publication.manifestName, f.owner, [&] {
+      entered.set_value();
+      if (releaseFuture.wait_for(std::chrono::seconds(2)) != std::future_status::ready)
+        throw std::runtime_error("fixture enqueue barrier timed out");
+      ++calls;
+    });
+  });
+  const auto enteredState = enteredFuture.wait_for(std::chrono::seconds(2));
+  auto cleanup = std::async(std::launch::async, [&] {
+    cleanupStarted.set_value(); return f.node->handleUserStorageDelete(bytes, f.owner);
+  });
+  const auto startedState = cleanupStartedFuture.wait_for(std::chrono::seconds(2));
+  const auto blockedState = cleanup.wait_for(std::chrono::milliseconds(50));
+  release.set_value(); enqueue.get(); const auto reply = cleanup.get();
+  BOOST_CHECK(enteredState == std::future_status::ready);
+  BOOST_CHECK(startedState == std::future_status::ready);
+  BOOST_CHECK(blockedState == std::future_status::timeout);
+  BOOST_CHECK_EQUAL(calls, 1U);
+  BOOST_CHECK_EQUAL(ndnsf_distributed_repo::RepoUserStorageDeleteReply::fromJson(
+    std::string(reply.begin(), reply.end())).state, "DELETED");
+  BOOST_CHECK_THROW(source->withCurrentDurableStorageOwner(publication.manifestName, f.owner, [&] { ++calls; }), std::runtime_error);
+  BOOST_CHECK_EQUAL(calls, 1U);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage(f.owner, f.repoName).committedBytes, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedCoreRootWindowAndDiscoveryRejectCleanedOwner)
+{
+  OwnedCorePublicationFixture f; f.authorize(f.owner);
+  auto first = f.publish(); BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
+  const auto serve = [&](const ndn::Name& name, bool prefix = false) {
+    f.face.getIoContext().restart();
+    const auto before = f.face.sentData.size();
+    ndn::Interest interest(name); interest.setCanBePrefix(prefix);
+    f.face.receive(interest); f.face.processEvents(ndn::time::milliseconds(1));
+    return f.face.sentData.size() - before;
+  };
+  BOOST_REQUIRE_EQUAL(serve(first.manifestName), 1U);
+  const auto root = f.face.sentData.back().wireEncode();
+  const auto segment = ndn::Name(first.dataPrefix).appendSegment(0);
+  BOOST_REQUIRE_EQUAL(serve(segment), 1U);
+  const auto wire = f.face.sentData.back().wireEncode();
+  BOOST_REQUIRE_EQUAL(serve(segment), 1U);
+  BOOST_CHECK(f.face.sentData.back().wireEncode() == wire);
+  const auto hits = f.user->getLargeDataServingMetricsForTest().retransmissionHitCount;
+  BOOST_CHECK_GT(hits, 0U);
+  const auto claims = f.journal->listUserStorage(f.owner, f.repoName, "", 10);
+  BOOST_REQUIRE_EQUAL(claims.size(), 1U);
+  // Sequential epoch fence retains bytes for an independently charged new
+  // owner. The concurrent gate invariant uses actual Node cleanup above.
+  f.journal->prepareUserStorageCleanup(f.owner, f.repoName, "cached-owner-fence",
+    claims.front().object.objectName, claims.front().ownerEpoch, f.now());
+  BOOST_CHECK_EQUAL(serve(first.manifestName), 0U);
+  BOOST_CHECK_EQUAL(serve(segment), 0U);
+  BOOST_CHECK_EQUAL(serve(first.dataPrefix, true), 0U);
+  BOOST_CHECK_EQUAL(serve(ndn::Name(first.dataPrefix).appendSegment(3)), 0U);
+  f.authorize("/spec204/current-cached-owner");
+  auto next = f.publish(); BOOST_REQUIRE_MESSAGE(next.success, next.errorMessage);
+  BOOST_CHECK(next.manifestName == first.manifestName);
+  BOOST_REQUIRE_EQUAL(serve(next.manifestName), 1U);
+  BOOST_CHECK(f.face.sentData.back().wireEncode() == root);
+  BOOST_REQUIRE_EQUAL(serve(segment), 1U);
+  BOOST_CHECK(f.face.sentData.back().wireEncode() == wire);
+  BOOST_CHECK_THROW(first.durableStorageSource->withCurrentDurableStorageOwner(
+    first.manifestName, claims.front().ownerIdentity, [] {}), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedCoreControllerRebindResolvesOnlyTheNewExactRoot)
+{
+  OwnedCorePublicationFixture f; f.authorize(f.owner);
+  const auto first = f.publish(); BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
+  PolicyStatusData status; status.setServiceName(f.service);
+  status.setControllerVersion(ControllerVersion{2040, 7});
+  status.setValidity(f.now() - 1000, f.now() + 60000);
+  status.setPolicyDigest("sha256:" + std::string(64, '0'));
+  status.setControllerCertificate(ndn::Name("/controller/spec204"));
+  BOOST_REQUIRE(f.user->installControllerStatus(status));
+  f.user->prepareHybridSendKeyForTest(f.service, "REQUEST-LARGE");
+  const auto rebound = f.publish(); BOOST_REQUIRE_MESSAGE(rebound.success, rebound.errorMessage);
+  BOOST_REQUIRE(rebound.durableStorageSource);
+  BOOST_CHECK_NO_THROW(rebound.durableStorageSource->requireCurrentDurableStorageOwner(rebound.manifestName, f.owner));
+  BOOST_REQUIRE_EQUAL(f.resolved.size(), 2U);
+  BOOST_CHECK(rebound.manifestName != first.manifestName);
+  BOOST_CHECK(f.resolved.back() == rebound.manifestName);
+  BOOST_CHECK(f.actor.getIdentity().isPrefixOf(rebound.manifestName));
+  BOOST_CHECK_EQUAL(f.node->list().size(), 2U);
+  const auto same = f.publish(); BOOST_REQUIRE_MESSAGE(same.success, same.errorMessage);
+  BOOST_REQUIRE_EQUAL(f.resolved.size(), 3U);
+  BOOST_CHECK(f.resolved.back() == rebound.manifestName);
+  BOOST_CHECK_EQUAL(f.node->list().size(), 2U);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedCoreReplacementPreservesActualWrappedControlCleanup)
+{
+  OwnedCorePublicationFixture f;
+  BootstrapProfile profile; profile.userIdentity = ndn::Name("/spec204/control-producer");
+  profile.serviceName = f.service;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  environment.enableProductionIngressForTest();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  BOOST_REQUIRE(environment.user().isNacProducerReadyForTest());
+  environment.user().setEncryptedLargeDataRangeStore(f.store);
+  auto options = f.options;
+  options.resolveDurableStorageGrant = [heldJournal = f.journal, repo = f.repoName,
+    writerIdentity = profile.userIdentity, grantExpiresAt = f.grantExpiresAt](const ndn::Name& name, const std::string& writer,
+      const std::function<void()>& current) {
+      if (writer != writerIdentity.toUri(ndn::name::UriFormat::ALTERNATE) ||
+          !writerIdentity.isPrefixOf(name)) throw std::runtime_error("control producer mismatch");
+      if (current) current();
+      const auto grant = heldJournal->grantUserStorage(writer, repo,
+        keyReferenceDigest(name.toUri(ndn::name::UriFormat::ALTERNATE)), writer,
+        name.toUri(ndn::name::UriFormat::ALTERNATE), grantExpiresAt,
+        OwnedCorePublicationFixture::now());
+      return DurableStorageGrantSelector{grant.repoNode, grant.ownerIdentity, grant.grantId, grant.ownerEpoch};
+    };
+  auto& face = environment.userFace(); auto& io = face.getIoContext();
+  const auto publish = [&] {
+    io.restart(); auto guard = boost::asio::make_work_guard(io);
+    std::thread thread([&io] { io.run(); });
+    struct Join { boost::asio::io_context& io; std::thread& thread;
+      ~Join() { io.stop(); if (thread.joinable()) thread.join(); } } join{io, thread};
+    return environment.user().publishEncryptedLargeDataFromWorker(
+      environment.user().prepareServiceRequest(f.service.toUri()), f.input, "owned-control",
+      ndn::time::milliseconds(100), options);
+  };
+  auto first = publish(); BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
+  BOOST_REQUIRE(!first.rollbackDataNames.empty());
+  auto next = publish(); BOOST_REQUIRE_MESSAGE(next.success, next.errorMessage);
+  BOOST_CHECK(first.manifestName == next.manifestName);
+  BOOST_CHECK(first.servingLease != next.servingLease);
+  first.servingLease.reset(); io.restart(); face.processEvents(ndn::time::milliseconds(150));
+  BOOST_CHECK_EQUAL(environment.user().getLargeDataServingMetricsForTest().publicationCount, 1U);
+  const auto servedControl = [&](const std::string& fullName) {
+    const auto before = face.sentData.size();
+    face.receive(ndn::Interest(ndn::Name(fullName))); face.processEvents(ndn::time::milliseconds(1));
+    return std::any_of(face.sentData.begin() + before, face.sentData.end(), [&](const ndn::Data& data) {
+      return data.getFullName() == ndn::Name(fullName);
+    });
+  };
+  for (const auto& name : first.rollbackDataNames) BOOST_CHECK(servedControl(name));
+  next.servingLease.reset(); face.processEvents(ndn::time::milliseconds(1200));
+  BOOST_CHECK_EQUAL(environment.user().getLargeDataServingMetricsForTest().publicationCount, 0U);
+  for (const auto& name : first.rollbackDataNames) BOOST_CHECK(!servedControl(name));
+  BOOST_CHECK_EQUAL(f.node->list().size(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedCoreSharedWrappedControlRequiresOneLiveOwner)
+{
+  OwnedCorePublicationFixture f;
+  BootstrapProfile profile; profile.userIdentity = ndn::Name("/spec204/shared-control-producer");
+  profile.serviceName = f.service;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap(); environment.enableProductionIngressForTest();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  BOOST_REQUIRE(environment.user().isNacProducerReadyForTest());
+  environment.user().setEncryptedLargeDataRangeStore(f.store);
+  auto options = f.options;
+  options.resolveDurableStorageGrant = [heldJournal = f.journal, repo = f.repoName,
+    writerIdentity = profile.userIdentity, grantExpiresAt = f.grantExpiresAt](const ndn::Name& name,
+      const std::string& writer, const std::function<void()>& current) {
+      if (writer != writerIdentity.toUri(ndn::name::UriFormat::ALTERNATE) ||
+          !writerIdentity.isPrefixOf(name)) throw std::runtime_error("shared control producer mismatch");
+      if (current) current();
+      const auto grant = heldJournal->grantUserStorage(writer, repo,
+        keyReferenceDigest(name.toUri(ndn::name::UriFormat::ALTERNATE)), writer,
+        name.toUri(ndn::name::UriFormat::ALTERNATE), grantExpiresAt, OwnedCorePublicationFixture::now());
+      return DurableStorageGrantSelector{grant.repoNode, grant.ownerIdentity, grant.grantId, grant.ownerEpoch};
+    };
+  auto& face = environment.userFace(); auto& io = face.getIoContext();
+  const auto publish = [&] {
+    io.restart(); auto guard = boost::asio::make_work_guard(io);
+    std::thread thread([&io] { io.run(); });
+    struct Join { boost::asio::io_context& io; std::thread& thread;
+      ~Join() { io.stop(); if (thread.joinable()) thread.join(); } } join{io, thread};
+    return environment.user().publishEncryptedLargeDataFromWorker(
+      environment.user().prepareServiceRequest(f.service.toUri()), f.input, "shared-control",
+      ndn::time::milliseconds(100), options);
+  };
+  auto first = publish(); BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
+  BOOST_REQUIRE(!first.rollbackDataNames.empty());
+  options.publicationIdentity = keyReferenceDigest("spec204-second-shared-control");
+  options.contentName = materialContent("second-control");
+  options.manifestSuffix = materialManifestSuffix("second-control");
+  f.input.front() ^= 1;
+  auto second = publish(); BOOST_REQUIRE_MESSAGE(second.success, second.errorMessage);
+  BOOST_REQUIRE(first.manifestName != second.manifestName);
+  BOOST_REQUIRE_EQUAL(first.keyReferenceId, second.keyReferenceId);
+  BOOST_REQUIRE_EQUAL(first.protectionEpoch, second.protectionEpoch);
+  BOOST_REQUIRE(!second.rollbackDataNames.empty());
+  std::vector<std::string> shared;
+  for (const auto& name : first.rollbackDataNames)
+    if (std::find(second.rollbackDataNames.begin(), second.rollbackDataNames.end(), name) !=
+        second.rollbackDataNames.end()) shared.push_back(name);
+  BOOST_REQUIRE(!shared.empty());
+  const auto serves = [&](const std::string& fullName) {
+    io.restart(); const auto before = face.sentData.size();
+    face.receive(ndn::Interest(ndn::Name(fullName))); face.processEvents(ndn::time::milliseconds(1));
+    return std::count_if(face.sentData.begin() + before, face.sentData.end(), [&](const ndn::Data& data) {
+      return data.getFullName() == ndn::Name(fullName);
+    });
+  };
+  for (const auto& name : shared) BOOST_CHECK_EQUAL(serves(name), 1);
+  const auto owner = profile.userIdentity.toUri(ndn::name::UriFormat::ALTERNATE);
+  const auto claims = f.journal->listUserStorage(owner, f.repoName, "", 10);
+  BOOST_REQUIRE_EQUAL(claims.size(), 2U);
+  const auto fence = [&](const ndn::Name& manifest, const std::string& cleanupId) {
+    const auto claim = std::find_if(claims.begin(), claims.end(), [&](const auto& candidate) {
+      return ndn::Name(candidate.object.objectName) == manifest;
+    });
+    BOOST_REQUIRE(claim != claims.end());
+    f.journal->prepareUserStorageCleanup(owner, f.repoName, cleanupId,
+      claim->object.objectName, claim->ownerEpoch, f.now());
+  };
+  fence(first.manifestName, "shared-first");
+  for (const auto& name : shared) BOOST_CHECK_EQUAL(serves(name), 1);
+  fence(second.manifestName, "shared-second");
+  for (const auto& name : shared) BOOST_CHECK_EQUAL(serves(name), 0);
+  BOOST_CHECK_EQUAL(environment.user().getLargeDataServingMetricsForTest().publicationCount, 2U);
+  first.servingLease.reset(); second.servingLease.reset();
+  io.restart(); face.processEvents(ndn::time::milliseconds(1200));
+  BOOST_CHECK_EQUAL(environment.user().getLargeDataServingMetricsForTest().publicationCount, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedCoreMixedControlWitnessesSurviveIndependentCleanup)
+{
+  for (const auto mode : {0, 1, 2}) {
+    OwnedCorePublicationFixture f;
+    BootstrapProfile profile; profile.userIdentity = ndn::Name("/spec204/mixed-control-producer");
+    profile.serviceName = f.service;
+    NdnsfIntegrationEnvironment environment(profile);
+    environment.bootstrap(); environment.enableProductionIngressForTest();
+    BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+    BOOST_REQUIRE(environment.user().isNacProducerReadyForTest());
+    environment.user().setEncryptedLargeDataRangeStore(f.store);
+    auto options = f.options;
+    options.retention = EncryptedLargeDataRetention::Transient;
+    auto& face = environment.userFace(); auto& io = face.getIoContext();
+    const auto publish = [&](const std::function<void()>& current = {}) {
+      io.restart(); auto guard = boost::asio::make_work_guard(io);
+      std::thread thread([&io] { io.run(); });
+      struct Join { boost::asio::io_context& io; std::thread& thread;
+        ~Join() { io.stop(); if (thread.joinable()) thread.join(); } } join{io, thread};
+      return environment.user().publishEncryptedLargeDataFromWorker(
+        environment.user().prepareServiceRequest(f.service.toUri()), f.input, "mixed-control",
+        ndn::time::milliseconds(100), options, current);
+    };
+    auto transient = publish(); BOOST_REQUIRE_MESSAGE(transient.success, transient.errorMessage);
+    BOOST_REQUIRE(transient.fileBacked);
+    BOOST_REQUIRE(!transient.rollbackDataNames.empty());
+    const auto serves = [&](const std::string& fullName) {
+      io.restart(); const auto before = face.sentData.size();
+      face.receive(ndn::Interest(ndn::Name(fullName))); face.processEvents(ndn::time::milliseconds(1));
+      return std::count_if(face.sentData.begin() + before, face.sentData.end(), [&](const ndn::Data& data) {
+        return data.getFullName() == ndn::Name(fullName);
+      });
+    };
+    for (const auto& name : transient.rollbackDataNames) BOOST_CHECK_EQUAL(serves(name), 1);
+    options.retention = EncryptedLargeDataRetention::Durable;
+    options.publicationIdentity = keyReferenceDigest("spec204-mixed-durable");
+    options.contentName = materialContent("mixed-durable");
+    options.manifestSuffix = materialManifestSuffix("mixed-durable");
+    const auto owner = profile.userIdentity.toUri(ndn::name::UriFormat::ALTERNATE);
+    options.resolveDurableStorageGrant = [heldJournal = f.journal, repo = f.repoName,
+      producer = profile.userIdentity, grantExpiresAt = f.grantExpiresAt](const ndn::Name& name,
+        const std::string& writer, const std::function<void()>& current) {
+      if (writer != producer.toUri(ndn::name::UriFormat::ALTERNATE) || !producer.isPrefixOf(name))
+        throw std::runtime_error("mixed control producer mismatch");
+      if (current) current();
+      const auto grant = heldJournal->grantUserStorage(writer, repo,
+        keyReferenceDigest(name.toUri(ndn::name::UriFormat::ALTERNATE)), writer,
+        name.toUri(ndn::name::UriFormat::ALTERNATE), grantExpiresAt, OwnedCorePublicationFixture::now());
+      return DurableStorageGrantSelector{grant.repoNode, grant.ownerIdentity, grant.grantId, grant.ownerEpoch};
+    };
+    f.input.front() ^= 1;
+    bool retiredPending = false;
+    const auto current = [&] {
+      // The Repo claim becomes committed before Core's final pending check.
+      // This exercises real status retirement in that registration gap.
+      if (mode != 2 || retiredPending || f.journal->listUserStorage(owner, f.repoName, "", 10).empty())
+        return;
+      PolicyStatusData status; status.setServiceName(f.service);
+      status.setControllerVersion(ControllerVersion{2041, 8});
+      status.setValidity(f.now() - 1000, f.now() + 60000);
+      status.setPolicyDigest("sha256:" + std::string(64, '0'));
+      status.setControllerCertificate(ndn::Name("/controller/spec204"));
+      if (!environment.user().installControllerStatus(status))
+        throw std::runtime_error("fixture controller status rejected");
+      retiredPending = true;
+    };
+    auto durable = publish(current);
+    if (mode == 2) {
+      BOOST_REQUIRE(retiredPending);
+      BOOST_CHECK(!durable.success);
+      BOOST_CHECK_EQUAL(durable.errorMessage, "DURABLE_STALE_CONTROLLER_VERSION");
+      BOOST_CHECK_EQUAL(environment.user().getLargeDataServingMetricsForTest().publicationCount, 1U);
+    }
+    else {
+      BOOST_REQUIRE_MESSAGE(durable.success, durable.errorMessage);
+      BOOST_REQUIRE_EQUAL(transient.rollbackKeyId, durable.rollbackKeyId);
+      BOOST_REQUIRE_EQUAL(transient.protectionEpoch, durable.protectionEpoch);
+      BOOST_REQUIRE_EQUAL(transient.rollbackDataNames.size(), durable.rollbackDataNames.size());
+      for (const auto& name : transient.rollbackDataNames)
+        BOOST_REQUIRE(std::find(durable.rollbackDataNames.begin(), durable.rollbackDataNames.end(), name) !=
+                      durable.rollbackDataNames.end());
+      if (mode == 1) {
+        environment.user().abortLargeDataPublications({transient});
+        BOOST_CHECK_EQUAL(environment.user().getLargeDataServingMetricsForTest().publicationCount, 1U);
+        for (const auto& name : transient.rollbackDataNames) BOOST_CHECK_EQUAL(serves(name), 1);
+      }
+      const auto claims = f.journal->listUserStorage(owner, f.repoName, "", 10);
+      BOOST_REQUIRE_EQUAL(claims.size(), 1U);
+      f.journal->prepareUserStorageCleanup(owner, f.repoName, "mixed-cleanup",
+        claims.front().object.objectName, claims.front().ownerEpoch, f.now());
+    }
+    for (const auto& name : transient.rollbackDataNames) BOOST_CHECK_EQUAL(serves(name), mode == 1 ? 0 : 1);
+    transient.servingLease.reset(); durable.servingLease.reset();
+    io.restart(); face.processEvents(ndn::time::milliseconds(1200));
+    BOOST_CHECK_EQUAL(environment.user().getLargeDataServingMetricsForTest().publicationCount, 0U);
+    for (const auto& name : transient.rollbackDataNames) BOOST_CHECK_EQUAL(serves(name), 0);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(WorkerPublicationMeasuresOwnerDispatchAndPreservesOriginalPackets)
 {
   const auto root = fs::temp_directory_path() /
@@ -1418,6 +2692,55 @@ BOOST_AUTO_TEST_CASE(RangeOnlyDurableBackendIsRejectedBeforeCommit)
   BOOST_CHECK(published.manifestName.empty());
   BOOST_CHECK_EQUAL(user.getLargeDataServingMetricsForTest().publicationCount, 0);
 }
+
+BOOST_AUTO_TEST_CASE(OwnerBoundDurableOperationsRequireRepoJournal)
+{
+  using namespace ndnsf_distributed_repo;
+  OwnedCorePublicationFixture fixture;
+  fixture.authorize(fixture.owner);
+  const auto publication = fixture.publish();
+  BOOST_REQUIRE_MESSAGE(publication.success, publication.errorMessage);
+  const auto candidate = fixture.store->lookupDurable(publication.publicationIdentity);
+  BOOST_REQUIRE(candidate);
+  const auto ownerOptions = fixture.retainOptions(*candidate);
+
+  StorageCapability capability;
+  capability.repoNode = "/spec204/unowned-repo";
+  capability.freeBytes = 1U << 20;
+  auto repo = std::make_shared<RepoCore>(capability,
+    makeFilesystemRepoStore((fixture.root / "unowned-repo").string(), 1U << 20, 1U << 20));
+  RepoEncryptedLargeDataStore unowned(repo);
+  const auto missingJournal = [](const std::runtime_error& error) {
+    return std::string(error.what()) == "DURABLE_OWNER_JOURNAL_REQUIRED";
+  };
+
+  auto packetOptions = ownerOptions;
+  packetOptions.packetStorageFormat = "original-packet-set";
+  std::size_t packetReads = 0;
+  BOOST_CHECK_EXCEPTION(unowned.commitOriginalDataPackets(ndn::Name(candidate->manifestName), packetOptions,
+    [&]() -> std::optional<std::pair<ndn::Name, std::vector<uint8_t>>> {
+      ++packetReads;
+      return std::nullopt;
+    }), std::runtime_error, missingJournal);
+  BOOST_CHECK_EQUAL(packetReads, 0U);
+  BOOST_CHECK(repo->list().empty());
+
+  auto envelopeOptions = ownerOptions;
+  envelopeOptions.packetStorageFormat = "encrypted-envelope-bytes";
+  const auto envelope = fixture.root / "owner-bound-envelope.bin";
+  std::ofstream output(envelope, std::ios::binary);
+  BOOST_REQUIRE(output.good());
+  output.put('x');
+  output.close();
+  BOOST_REQUIRE(output.good());
+  BOOST_CHECK_EXCEPTION(unowned.commitFile(candidate->manifestName, envelope, 1, envelopeOptions),
+    std::runtime_error, missingJournal);
+  BOOST_CHECK(repo->list().empty());
+
+  BOOST_CHECK_EXCEPTION(unowned.retainDurableSource(*candidate, ownerOptions),
+    std::runtime_error, missingJournal);
+}
+
 BOOST_AUTO_TEST_CASE(CancelledPacketTransactionPreservesEarlierPublication)
 {
   const auto root = fs::temp_directory_path() / ("spec201-cancel-" + std::to_string(::getpid()));
@@ -1574,6 +2897,10 @@ BOOST_AUTO_TEST_CASE(RealCorePublicationUsesAtomicRepoBackendAndRestoresOriginal
       BOOST_CHECK(std::vector<uint8_t>(wire.begin(), wire.end()) == repo->getDataPacket(name.toUri()));
     }
   }
+  BOOST_REQUIRE(first.durableStorageSource);
+  BOOST_CHECK_THROW(openRepo(), std::runtime_error);
+  // A process-local storage proof owns its backend until the process releases it.
+  first.durableStorageSource.reset();
   {
     auto repo = openRepo();
     LocalServiceUser user(face, ndn::Name("/spec201/raw"), actor, authority, "examples/trust-any.conf");
@@ -1590,6 +2917,212 @@ BOOST_AUTO_TEST_CASE(RealCorePublicationUsesAtomicRepoBackendAndRestoresOriginal
     BOOST_CHECK(repo->getDataPacket(ndn::Name(reused.dataPrefix).appendSegment(0).toUri()) == firstWire);
     BOOST_CHECK_EQUAL(repo->list().size(), 1U);
   }
+}
+
+namespace {
+struct RecipientConsumptionFixture
+{
+  NdnsfIntegrationEnvironment environment;
+  ndn::security::Certificate certificate;
+  ndn::Buffer plaintext = ndn::Buffer(32, 0x5a);
+  ndn::Buffer aad{0x31, 0x32, 0x33};
+  RecipientEncryptedAssignment capsule;
+  std::string publicDigest;
+
+  explicit RecipientConsumptionFixture(BootstrapProfile profile = {})
+    : environment(std::move(profile)) {
+    environment.bootstrap();
+    BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+    certificate = environment.keyChain().getPib()
+      .getIdentity(environment.profile().providerIdentity).getDefaultKey().getDefaultCertificate();
+    const auto publicKey = certificate.getPublicKey();
+    publicDigest = ndnsf::di::nativePlanningDigest(publicKey.data(), publicKey.size());
+    capsule = encryptRecipientAssignment(plaintext, publicKey, certificate.getIdentity(),
+      certificate.getName(), aad);
+  }
+
+  struct Outcome {
+    bool accepted = false, threw = false, onWorker = false;
+    std::size_t calls = 0;
+    ndn::Buffer bytes;
+  };
+
+  Outcome run(const RecipientEncryptedAssignment& input, const ndn::Name& cert,
+              const std::string& digest, const ndn::Buffer& ad,
+              bool authority = true, bool expired = false, bool throwConsumer = false,
+              bool expiredCaller = false) {
+    ServiceProvider::CollaborationAssignment assignment;
+    assignment.role = "recipient-probe"; assignment.service = ndn::Name("/spec204/model");
+    assignment.workDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    if (authority) assignment.workCurrent = [] { return true; };
+    if (expired) assignment.workDeadline = std::chrono::steady_clock::now();
+    ServiceProvider::CollaborationContext context(environment.provider(),
+      environment.profile().userIdentity, ndn::Name("/request/recipient-probe"), {}, assignment);
+    auto& io = environment.providerFace().getIoContext(); io.restart();
+    auto guard = boost::asio::make_work_guard(io);
+    auto work = std::async(std::launch::async, [&] {
+      Outcome out;
+      const auto worker = std::this_thread::get_id();
+      try {
+        const auto deadline = std::chrono::steady_clock::now() +
+          (expiredCaller ? std::chrono::seconds(0) : std::chrono::seconds(2));
+        out.accepted = context.consumeRecipientAssignmentCurrent(input, cert, digest, ad,
+          deadline, [&](const ndn::Buffer& bytes) {
+            ++out.calls; out.bytes = bytes; out.onWorker = std::this_thread::get_id() == worker;
+            if (throwConsumer) throw std::runtime_error("consumer sentinel");
+          });
+      }
+      catch (const std::runtime_error& error) {
+        if (std::string(error.what()) != "consumer sentinel") throw;
+        out.threw = true;
+      }
+      return out;
+    });
+    environment.pumpUntil([&] { return work.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready; });
+    return work.get();
+  }
+};
+}
+
+BOOST_AUTO_TEST_CASE(RecipientCurrentConsumesOnWorkerAndPreservesThrowingCleanup)
+{
+  RecipientConsumptionFixture f;
+  const auto success = f.run(f.capsule, f.certificate.getName(), f.publicDigest, f.aad);
+  BOOST_REQUIRE(success.accepted); BOOST_CHECK_EQUAL(success.calls, 1U);
+  BOOST_CHECK(success.onWorker); BOOST_CHECK(success.bytes == f.plaintext);
+  const auto throwing = f.run(f.capsule, f.certificate.getName(), f.publicDigest, f.aad, true, false, true);
+  BOOST_CHECK(throwing.threw); BOOST_CHECK(!throwing.accepted);
+  BOOST_CHECK_EQUAL(throwing.calls, 1U); BOOST_CHECK(throwing.onWorker);
+  const ndn::Buffer maximum(2048, 0x6b);
+  const ndn::Buffer maximumAad(65536, 0x31);
+  const auto maximumCapsule = encryptRecipientAssignment(maximum, f.certificate.getPublicKey(),
+    f.certificate.getIdentity(), f.certificate.getName(), maximumAad);
+  const auto bounded = f.run(maximumCapsule, f.certificate.getName(), f.publicDigest, maximumAad);
+  BOOST_CHECK(bounded.accepted); BOOST_CHECK_EQUAL(bounded.calls, 1U);
+  BOOST_CHECK(bounded.bytes == maximum);
+}
+
+BOOST_AUTO_TEST_CASE(RecipientCurrentRejectsMalformedOrReboundCapsulesBeforeConsumption)
+{
+  RecipientConsumptionFixture f;
+  auto changedAad = f.aad; changedAad.push_back(0x34);
+  auto wrongCert = f.certificate.getName(); wrongCert.appendVersion(9);
+  auto wrongCertCapsule = f.capsule;
+  wrongCertCapsule.setField("recipientCertName", wrongCert.toUri(ndn::name::UriFormat::CANONICAL));
+  const auto rejected = [&](const auto& capsule, const auto& cert, const auto& digest, const auto& aad) {
+    const auto result = f.run(capsule, cert, digest, aad);
+    BOOST_CHECK(!result.accepted); BOOST_CHECK_EQUAL(result.calls, 0U);
+  };
+  rejected(wrongCertCapsule, wrongCert, f.publicDigest, f.aad);
+  rejected(f.capsule, f.certificate.getName(), "sha256:" + std::string(64, '0'), f.aad);
+  rejected(f.capsule, f.certificate.getName(), f.publicDigest, changedAad);
+  rejected(f.capsule, f.certificate.getName(), f.publicDigest, ndn::Buffer(65537, 0x31));
+  for (const auto& edit : std::vector<std::function<void(RecipientEncryptedAssignment&)>>{
+    [](auto& value) { value.setVersion(2); },
+    [](auto& value) { value.setField("schemaVersion", "2"); },
+    [](auto& value) { value.setField("unknown", "x"); },
+    [](auto& value) { value.setField("nonce", "0"); },
+    [](auto& value) { auto bytes = value.getField("ciphertext"); bytes[0] = bytes[0] == '0' ? '1' : '0'; value.setField("ciphertext", bytes); },
+    [](auto& value) { value.setField("assignmentDigest", std::string(64, '0')); }
+  }) {
+    auto capsule = f.capsule; edit(capsule);
+    rejected(capsule, f.certificate.getName(), f.publicDigest, f.aad);
+  }
+  const auto missing = f.run(f.capsule, f.certificate.getName(), f.publicDigest, f.aad, false);
+  BOOST_CHECK(!missing.accepted); BOOST_CHECK_EQUAL(missing.calls, 0U);
+  const auto expired = f.run(f.capsule, f.certificate.getName(), f.publicDigest, f.aad, true, true);
+  BOOST_CHECK(!expired.accepted); BOOST_CHECK_EQUAL(expired.calls, 0U);
+  const auto callerExpired = f.run(f.capsule, f.certificate.getName(), f.publicDigest,
+    f.aad, true, false, false, true);
+  BOOST_CHECK(!callerExpired.accepted); BOOST_CHECK_EQUAL(callerExpired.calls, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(RecipientCurrentCancelsQueuedTpmBeforeIoDrain)
+{
+  RecipientConsumptionFixture f;
+  auto current = std::make_shared<std::atomic<bool>>(true);
+  auto probes = std::make_shared<std::atomic<std::size_t>>(0);
+  std::atomic<std::size_t> calls{0};
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "recipient-cancel"; assignment.service = ndn::Name("/spec204/model");
+  assignment.workDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  assignment.workCurrent = [current, probes] { ++*probes; return current->load(); };
+  ServiceProvider::CollaborationContext context(f.environment.provider(),
+    f.environment.profile().userIdentity, ndn::Name("/request/recipient-cancel"), {}, assignment);
+  auto& io = f.environment.providerFace().getIoContext(); io.restart();
+  auto guard = boost::asio::make_work_guard(io);
+  auto work = std::async(std::launch::async, [&] {
+    return context.consumeRecipientAssignmentCurrent(f.capsule, f.certificate.getName(),
+      f.publicDigest, f.aad, assignment.workDeadline, [&](const auto&) { ++calls; });
+  });
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (probes->load() < 2 && std::chrono::steady_clock::now() < until)
+    std::this_thread::yield();
+  const bool queued = probes->load() >= 2;
+  current->store(false);
+  const bool cancelled = work.get(); // join before draining the queued callback
+  BOOST_CHECK(queued); BOOST_CHECK(!cancelled); BOOST_CHECK_EQUAL(calls.load(), 0U);
+  bool drained = false; boost::asio::post(io, [&] { drained = true; });
+  f.environment.pumpUntil([&] { return drained; });
+  BOOST_CHECK_EQUAL(calls.load(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(RecipientCurrentRecoversCompletePrivatePortableCheckpoint)
+{
+  namespace kv = ndnsf::di::test::protectedKv;
+  kv::Fixture source;
+  const auto reference = source.protect();
+  BootstrapProfile profile; profile.userIdentity = source.certificate.getIdentity();
+  RecipientConsumptionFixture f(profile);
+  ndnsf::di::NativeProtectedKvRecipientBindingV1 binding;
+  binding.requesterIdentity = source.certificate.getIdentity();
+  binding.recipientIdentity = f.certificate.getIdentity();
+  binding.recipientCertificateName = f.certificate.getName();
+  binding.recipientPublicKeyDigest = f.publicDigest;
+  binding.serviceName = ndn::Name("/spec204/model");
+  binding.requestId = ndn::Name("/request/recipient-file");
+  binding.authorizationBinding = "current-native-grant-commitment";
+  binding.planDigest = kv::hash("recipient-file-plan");
+  // Exercise the crypto binding's legal limit while retaining a valid portable
+  // origin. This is an AAD/file oracle, not Handler role admission or import.
+  binding.roleName.assign(4096, '\x01');
+  binding.attemptEpoch = 1; binding.expiresAtMs = std::numeric_limits<std::uint64_t>::max();
+  const auto capsule = ndnsf::di::nativeWrapProtectedKvKeyForRecipient(reference,
+    source.certificate, source.ownerKeys, f.certificate.getPublicKey(), binding, [] {});
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = binding.roleName; assignment.service = binding.serviceName;
+  assignment.workDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  auto active = std::make_shared<std::atomic<bool>>(true);
+  assignment.workCurrent = [active] { return active->load(); };
+  ServiceProvider::CollaborationContext context(f.environment.provider(), binding.requesterIdentity,
+    binding.requestId, {}, assignment);
+  auto& io = f.environment.providerFace().getIoContext(); io.restart();
+  auto guard = boost::asio::make_work_guard(io);
+  std::size_t observedAadBytes = 0;
+  auto work = std::async(std::launch::async, [&] {
+    ndnsf::di::NativeProtectedKvRecipientConsumerV1 consume = [&](const auto& encrypted,
+      const auto& certificateName, const auto& publicDigest, const auto& associatedData, const auto& deliver) {
+      observedAadBytes = associatedData.size();
+      return context.consumeRecipientAssignmentCurrent(encrypted, certificateName, publicDigest,
+        associatedData, assignment.workDeadline, deliver);
+    };
+    ndnsf::di::nativeRecoverProtectedPortableKvCheckpointForRecipient(source.cipher,
+      source.restored, reference, capsule, binding, source.limits, consume, [&] {
+        if (!active->load() || std::chrono::steady_clock::now() >= assignment.workDeadline)
+          throw std::runtime_error("recipient file authority expired");
+      });
+  });
+  f.environment.pumpUntil([&] { return work.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready; });
+  work.get(); // all borrowed Context and file owners remain live through recovery
+  BOOST_CHECK_GT(observedAadBytes, 16384U);
+  BOOST_CHECK_LE(observedAadBytes, 65536U);
+  BOOST_CHECK_EQUAL(kv::read(source.restored), kv::read(source.plain));
+  const auto recovered = ndnsf::di::nativeReadPrivatePortableKvCheckpoint(source.restored, source.portableLimits);
+  BOOST_CHECK(recovered.originIdentity == source.state.originIdentity);
+  BOOST_CHECK_EQUAL(recovered.stateIoDigest, source.state.stateIoDigest);
+  BOOST_REQUIRE_EQUAL(recovered.components.size(), source.state.components.size());
+  for (std::size_t i = 0; i < recovered.components.size(); ++i)
+    BOOST_CHECK(recovered.components[i].tensorWire == source.state.components[i].tensorWire);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

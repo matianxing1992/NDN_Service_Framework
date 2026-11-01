@@ -409,6 +409,49 @@ BOOST_AUTO_TEST_CASE(HybridMessageCryptoInvalidatesOnlyAffectedService)
   BOOST_CHECK_NE(replacement.keyId, keyA.keyId);
 }
 
+BOOST_AUTO_TEST_CASE(HybridMessageCryptoFindsOriginalWrappedPacketsByInterest)
+{
+  HybridMessageCrypto crypto;
+  HybridCryptoCounters counters;
+  const ndn::Name service("/ObjectDetection/YOLOv8");
+  const ndn::Name sender("/test/user/alice");
+  const auto key = crypto.getOrCreateSendKey(service, sender,
+                                             "/SERVICE/ObjectDetection/YOLOv8",
+                                             "REQUEST", counters);
+  ndn::security::KeyChain keyChain("pib-memory:wrapped-packet-cache-test",
+                                   "tpm-memory:wrapped-packet-cache-test");
+  const auto identityCert = makeRsaIdentity(keyChain, sender);
+  const auto signingInfo = ndn::security::signingByCertificate(identityCert);
+  const auto wrappers = prepareHybridMessageKeyPackets(
+    service, sender, "/SERVICE/ObjectDetection/YOLOv8", key.epochId,
+    ndn::span<const uint8_t>(key.key.data(), key.key.size()), keyChain,
+    signingInfo, ndn::time::milliseconds(1000), ndn::tlv::ContentType_Blob);
+  BOOST_REQUIRE(!wrappers.empty());
+  BOOST_CHECK(wrappers.front()->getName() != key.keyName);
+  const auto wrapper = wrappers.front();
+  const ndn::Name contentKeyName("/test/user/alice/CK/independent/key/packet");
+  auto contentKey = std::make_shared<ndn::Data>(contentKeyName);
+  contentKey->setContent("content-key");
+  keyChain.sign(*contentKey, signingInfo);
+  const ndn::Buffer wrappedKey(reinterpret_cast<const uint8_t*>("wrapped-key"), 11);
+
+  crypto.cacheWrappedSendPackets(service, key.keyId, wrappedKey,
+                                 {wrapper}, {contentKey});
+
+  auto foundWrapper = crypto.findWrappedSendData(
+    ndn::Interest(wrapper->getName()));
+  BOOST_REQUIRE(foundWrapper);
+  BOOST_CHECK(foundWrapper->wireEncode() == wrapper->wireEncode());
+  auto foundContentKey = crypto.findWrappedSendData(ndn::Interest(contentKeyName));
+  BOOST_REQUIRE(foundContentKey);
+  BOOST_CHECK(foundContentKey->wireEncode() == contentKey->wireEncode());
+  BOOST_CHECK(!crypto.findWrappedSendData(ndn::Interest("/test/no-such-key")));
+
+  BOOST_CHECK(crypto.eraseWrappedSendKey(service, key.keyId));
+  BOOST_CHECK(!crypto.findWrappedSendData(
+    ndn::Interest(wrapper->getName())));
+}
+
 BOOST_AUTO_TEST_CASE(ProviderRequiresPermissionAndUserToken)
 {
   ndn::Face face;

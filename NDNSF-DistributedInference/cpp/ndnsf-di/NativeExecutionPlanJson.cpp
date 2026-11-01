@@ -1976,6 +1976,10 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     throw std::invalid_argument(
       "V3 Selection role/assembly/dataflow/device binding mismatch");
   }
+  if (typedRoot.contains("conversation_kv_restore")) {
+    projection.protectedKvRestore = nativeProtectedKvRestoreFromJson(typedRoot.at("conversation_kv_restore"));
+    nativeValidateProtectedKvRestoreProjection(*projection.protectedKvRestore, projection);
+  }
   return projection;
 }
 
@@ -2572,6 +2576,10 @@ NativeJson selectionInvocationFields(const NativeSelectionProjectionV3& value,
     ? generationBindingsJson(value.generationContract) : jsonValue(value.generationContract);
   if (value.conversationStateReference) root["conversation_state_reference"] = jsonValue(*value.conversationStateReference);
   if (value.conversationTurnBinding) root["conversation_turn_binding"] = jsonValue(*value.conversationTurnBinding);
+  if (value.protectedKvRestore) {
+    nativeValidateProtectedKvRestoreProjection(*value.protectedKvRestore, value);
+    root["conversation_kv_restore"] = nativeProtectedKvRestoreToJson(*value.protectedKvRestore);
+  }
   if (value.hasGrantBinding) {
     root["grant_binding"] = {{"provider", value.provider}, {"request_id", value.requestId},
       {"attempt", value.attempt}, {"plan_core_digest", value.planCoreDigest},
@@ -3002,35 +3010,56 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> NativeFixedRoleAssignmentCach
   return assignment;
 }
 
+void NativeFixedRoleSourceV1::requireCurrentDurableStorageOwner(const std::string& owner) const
+{
+  if (owner.empty() || manifestName.empty() || !durableStorageSource)
+    throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+  durableStorageSource->requireCurrentDurableStorageOwner(manifestName, owner);
+}
+
 std::shared_ptr<const NativeFixedRoleSourceV1> NativeFixedRoleAssignmentCache::source(
   const std::string& requester, const std::string& service,
-  const NativeFixedRoleAssignmentV1& assignment)
+  const NativeFixedRoleAssignmentV1& assignment, const std::string& owner)
 {
   validateScope(requester, service);
-  std::lock_guard<std::mutex> lock(m_mutex);
-  pruneExpired(std::chrono::steady_clock::now());
-  const auto it = m_entries.find(Key{requester, service, assignment.provider(), assignment.roleOwner()->selectedRole});
-  return it != m_entries.end() && it->second.assignment && it->second.assignment->digest() == assignment.digest()
-    ? it->second.source : nullptr;
+  std::shared_ptr<const NativeFixedRoleSourceV1> result;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    pruneExpired(std::chrono::steady_clock::now());
+    const auto it = m_entries.find(Key{requester, service, assignment.provider(), assignment.roleOwner()->selectedRole});
+    result = it != m_entries.end() && it->second.assignment && it->second.assignment->digest() == assignment.digest()
+      ? it->second.source : nullptr;
+  }
+  if (result && !owner.empty()) result->requireCurrentDurableStorageOwner(owner);
+  return result;
 }
 
 std::shared_ptr<const NativeFixedRoleSourceV1> NativeFixedRoleAssignmentCache::rememberSource(
   const std::string& requester, const std::string& service,
-  const NativeFixedRoleAssignmentV1& assignment, NativeFixedRoleSourceV1 source)
+  const NativeFixedRoleAssignmentV1& assignment, NativeFixedRoleSourceV1 source,
+  const std::string& owner)
 {
   validateScope(requester, service);
   nativeValidateFixedRoleSourceProducer(source, requester, assignment.roleOwner()->selectedRole);
   auto published = std::make_shared<const NativeFixedRoleSourceV1>(std::move(source));
-  std::lock_guard<std::mutex> lock(m_mutex);
-  pruneExpired(std::chrono::steady_clock::now());
-  const auto it = m_entries.find(Key{requester, service, assignment.provider(), assignment.roleOwner()->selectedRole});
-  if (it == m_entries.end() || !it->second.assignment || it->second.assignment->digest() != assignment.digest()) {
-    // A concurrent model change may replace the slot while publication runs.
-    // The current operation still retains its own valid source serving pin.
-    return published;
+  if (!owner.empty()) published->requireCurrentDurableStorageOwner(owner);
+  std::shared_ptr<const NativeFixedRoleSourceV1> result;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    pruneExpired(std::chrono::steady_clock::now());
+    const auto it = m_entries.find(Key{requester, service, assignment.provider(), assignment.roleOwner()->selectedRole});
+    if (it == m_entries.end() || !it->second.assignment || it->second.assignment->digest() != assignment.digest()) {
+      // A concurrent model change may replace the slot while publication runs.
+      // The current operation still retains its own valid source serving pin.
+      result = published;
+    }
+    else {
+      if (!it->second.source) it->second.source = published;
+      result = it->second.source;
+    }
   }
-  if (!it->second.source) it->second.source = published;
-  return it->second.source;
+  if (!owner.empty()) result->requireCurrentDurableStorageOwner(owner);
+  return result;
 }
 
 std::shared_ptr<const NativeFixedPlacementCoreV1> NativeFixedRoleAssignmentCache::placementCore(

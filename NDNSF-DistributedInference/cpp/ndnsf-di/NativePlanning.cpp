@@ -217,7 +217,8 @@ void NativeModelDescriptor::validate() const
       adapterId.empty() || adapterVersion.empty() || quantizationSubtype.empty()) {
     throw std::invalid_argument("model descriptor is incomplete");
   }
-  if (quantizationSubtype != "none" && quantizationSubtype != "weight_only_int8")
+  if (quantizationSubtype != "none" && quantizationSubtype != "weight_only_int8" &&
+      quantizationSubtype != "dynamic_int8")
     throw std::invalid_argument("unsupported model quantization subtype");
   requireDigest(contentDigest, "model contentDigest");
   requireDigest(semanticsDigest, "model semanticsDigest");

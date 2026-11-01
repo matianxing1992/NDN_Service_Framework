@@ -61,7 +61,11 @@ public:
   bool supportsRange() const noexcept override;
   uint64_t fullCopyFallbackCount() const noexcept override;
   void abortRanges(const std::string& objectName) override;
+  bool abortUserStorageRangesIfOwned(const RepoObjectManifest& expected) override;
+  bool abortFailedRangesIfOwned(const RepoObjectManifest& expected) override;
   bool supportsManifestLookup() const noexcept override;
+  bool confirmUserStorageRemoval(const RepoUserStorageObject& expected) override;
+  bool canRemoveUserStorageObject(const RepoUserStorageObject& expected) const override;
 
   /** Remove uncommitted staging files and committed payloads with no manifest. */
   uint64_t recoverOrphans();
@@ -96,6 +100,9 @@ private:
   static bool isMetadataOnly(const RepoObjectManifest& manifest) noexcept;
   void reserveDiskUnlocked(const RepoObjectManifest& manifest);
   void releaseReservationUnlocked(const std::string& objectName);
+  bool abortUserStorageRangesIfOwnedUnlocked(const RepoObjectManifest& expected);
+  bool abortFailedRangesIfOwnedUnlocked(const RepoObjectManifest& expected) noexcept;
+  bool hasVerifiedCommittedDigestReferenceUnlocked(const RepoObjectManifest& expected) const;
 
 private:
   std::string m_rootPath;

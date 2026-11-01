@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -32,6 +33,9 @@ struct InAppRepoConfig
   uint64_t availabilityFreshnessMs = 5000;
 };
 
+using UserStorageAuthorizer = std::function<std::vector<RepoUserStorageTargetBinding>(
+  const PublishOperationIntent&, std::chrono::steady_clock::time_point)>;
+
 struct PersistentRepoClientConfig
 {
   ArtifactLimits limits;
@@ -42,6 +46,13 @@ struct PersistentRepoClientConfig
   int operationWaitTimeoutMs = 5000;
   int fetchFailureCooldownMs = 3000;
   size_t maxFetchHealthEntries = 1024;
+  // Return stable exact owner grants for this provisional operation; honor its
+  // deadline. Failure never falls back to legacy publication. An owner ServiceUser
+  // must register new grants; this producer-facing API does not fabricate them.
+  UserStorageAuthorizer userStorageAuthorizer;
+  // Required with an authorizer. Stable retries validate this configured Owner
+  // against accepted bindings without asking an offline Owner or replica again.
+  std::string userStorageOwnerIdentity;
 };
 
 struct RepoCandidate
@@ -219,6 +230,16 @@ private:
 class ArtifactRepositoryApi
 {
 public:
+  /** Register exact grants using the authenticated owner, separately from the
+   * producer. Expiry is fixed for stable retries. Owner and its running Face
+   * must outlive this callback; invoke outside its I/O thread. Known grants may
+   * instead be returned by a caller-provided authorizer without contacting owner. */
+  static UserStorageAuthorizer
+  makeUserStorageAuthorizer(ndn_service_framework::ServiceUser& owner,
+                           uint64_t grantExpiresAtMs,
+                           int ackCollectionTimeMs = 200,
+                           int requestTimeoutMs = 5000);
+
   static ArtifactRepositoryApi
   makeInApp(InAppRepoConfig config);
 

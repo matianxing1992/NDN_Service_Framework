@@ -56,6 +56,17 @@ namespace {
 class ScopedEnvironmentVariable
 {
 public:
+  explicit ScopedEnvironmentVariable(const char* name)
+    : m_name(name)
+  {
+    if (const char* previous = std::getenv(name); previous != nullptr) {
+      m_previous = previous;
+      m_hadPrevious = true;
+    }
+    if (::unsetenv(m_name.c_str()) != 0)
+      throw std::runtime_error("cannot unset provider test environment variable");
+  }
+
   ScopedEnvironmentVariable(const char* name, const char* value)
     : m_name(name)
   {
@@ -627,8 +638,18 @@ BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
 // ingress with a direct assembler-only fixture.
 BOOST_AUTO_TEST_SUITE(Spec188ProviderReferenceAssembly)
 
-static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool restartHandler = false)
+static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
+                                                    bool restartHandler = false,
+                                                    bool testRequesterDataHintBypass = false)
 {
+  std::unique_ptr<ScopedEnvironmentVariable> unavailableRepoHint;
+  std::unique_ptr<ScopedEnvironmentVariable> inheritedHintFile;
+  if (testRequesterDataHintBypass) {
+    inheritedHintFile = std::make_unique<ScopedEnvironmentVariable>(
+      "NDNSF_COLLABORATION_FETCH_FORWARDING_HINT_FILE");
+    unavailableRepoHint = std::make_unique<ScopedEnvironmentVariable>(
+      "NDNSF_COLLABORATION_FETCH_FORWARDING_HINT", "/spec185/unavailable-repo");
+  }
   // This C++ ingress fixture uses the production Provider::serve path.  The
   // only test seam injects an already-bootstrapped Core owner and a
   // deterministic runner factory; Selection, registration, preparation and
@@ -813,14 +834,19 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
   std::atomic<unsigned> fixedSourceInterests{0};
   std::atomic<unsigned> roleSourceInterests{0};
   unsigned fixedSourcePublications = 0;
+  std::atomic<unsigned> fixedSourceInterestsWithForwardingHint{0};
   const auto fixedSourcePrefix = ndn::Name(requesterName).append("NDNSF-DI").append("assignment");
   const ndn::signal::ScopedConnection sourceInterestObserver = environment.providerFace().onSendInterest.connect(
-    [&fixedSourceInterests, &roleSourceInterests, &fixedSourcePrefix] (const ndn::Interest& interest) {
+    [&fixedSourceInterests, &roleSourceInterests, &fixedSourceInterestsWithForwardingHint,
+     &fixedSourcePrefix] (const ndn::Interest& interest) {
       if (std::find(interest.getName().begin(), interest.getName().end(),
                     ndn::name::Component("ROLE")) != interest.getName().end())
         roleSourceInterests.fetch_add(1, std::memory_order_relaxed);
-      if (fixedSourcePrefix.isPrefixOf(interest.getName()))
+      if (fixedSourcePrefix.isPrefixOf(interest.getName())) {
         fixedSourceInterests.fetch_add(1, std::memory_order_relaxed);
+        if (!interest.getForwardingHint().empty())
+          fixedSourceInterestsWithForwardingHint.fetch_add(1, std::memory_order_relaxed);
+      }
     });
   const auto referenceAssignment = [&] (const std::string& fullWire) {
     if (!useFixedReferences) return fullWire;
@@ -1036,6 +1062,9 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
   if (useFixedReferences) {
     BOOST_CHECK_EQUAL(fixedSourcePublications, 1U);
     BOOST_CHECK_GT(warmSourceInterests, 0U);
+  }
+  if (testRequesterDataHintBypass) {
+    BOOST_CHECK_EQUAL(fixedSourceInterestsWithForwardingHint.load(std::memory_order_relaxed), 0U);
   }
   for (const auto mutation : mutations) {
     if (mutation == -2) {
@@ -1270,9 +1299,9 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
   runAuthenticatedProviderAssignmentCase(false);
 }
 
-BOOST_AUTO_TEST_CASE(FixedRoleSourceMissThenWarmHitUsesSameProviderObject)
+BOOST_AUTO_TEST_CASE(RequesterOwnedFixedRoleSourceBypassesRepoForwardingHint)
 {
-  runAuthenticatedProviderAssignmentCase(true);
+  runAuthenticatedProviderAssignmentCase(true, false, true);
 }
 
 BOOST_AUTO_TEST_CASE(FixedRoleSourceRecoversAfterHandlerRestartWithCurrentGrant)
@@ -2313,10 +2342,25 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
   const auto sourceIdentity = providerAssemblySourceIdentity(source);
   const auto profileDigest = std::string("sha256:") + std::string(64, 'b');
   const auto rootName = ndn::Name("/spec185/provider/cache/root");
-  const auto sourceDataName = ndn::Name(requesterName)
-    .append("NDNSF").append("LARGE-DATA").append(serviceName)
-    .append("spec185-provider-cache-source").appendVersion();
-  const auto sourceName = sourceDataName;
+  std::vector<LargeDataPublishResult> publications;
+  const auto publishLarge = [&] (const ndn::Name& requestId,
+                                 const std::string& label,
+                                 const std::vector<std::uint8_t>& payload) {
+    PreparedServiceRequest context;
+    context.serviceName = serviceName;
+    context.requestId = requestId;
+    const auto key = environment.user().prepareHybridSendKeyForTest(serviceName, "REQUEST-LARGE");
+    environment.provider().cacheHybridReceiveKeyForTest(key.keyId, key.epochId, key.key);
+    auto publication = environment.user().publishEncryptedLargeData(
+      context, payload, label, ndn::DEFAULT_FRESHNESS_PERIOD, true);
+    BOOST_REQUIRE_MESSAGE(publication.success, publication.errorMessage);
+    BOOST_REQUIRE(publication.servingLease);
+    const auto name = publication.encryptedDataName;
+    publications.push_back(std::move(publication));
+    return name;
+  };
+  const auto sourceName = publishLarge(ndn::Name("/spec185-provider-cache-source"),
+                                       "spec185-provider-cache-source", source);
   const auto rootText = std::string(
     "{\"artifactProfileDigest\":\"") + profileDigest +
     "\",\"metadata\":{\"canonicalSourceBytes\":" +
@@ -2328,47 +2372,6 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
     "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}";
   const std::vector<std::uint8_t> rootPayload(rootText.begin(), rootText.end());
   const auto rootDigest = providerAssemblyDigest(rootPayload);
-
-  // Publish one exact-name encrypted source object through the same DummyFace
-  // and Segmenter path used by the existing assignment-fetch tests.
-  auto publishLarge = [&] (const ndn::Name& dataName,
-                           const std::vector<std::uint8_t>& payload) {
-    HybridMessageCrypto crypto;
-    HybridCryptoCounters counters;
-    const auto key = crypto.getOrCreateSendKey(
-      serviceName, requesterName, std::string("/SERVICE") + serviceName.toUri(),
-      "REQUEST-LARGE", counters);
-    const auto associatedDataText = dataName.toUri() + "|REQUEST-LARGE|" +
-                                    serviceName.toUri();
-    const ndn::Buffer associatedData(
-      reinterpret_cast<const std::uint8_t*>(associatedDataText.data()),
-      associatedDataText.size());
-    const auto encrypted = hybridAesGcmEncrypt(
-      key.key,
-      ndn::span<const std::uint8_t>(payload.data(), payload.size()),
-      ndn::span<const std::uint8_t>(associatedData.data(), associatedData.size()));
-    HybridMessageEnvelope envelope;
-    envelope.setKeyId(key.keyId);
-    envelope.setEpochId(key.epochId);
-    envelope.setMessageType("REQUEST-LARGE");
-    envelope.setNonce(encrypted.nonce);
-    envelope.setCipherText(encrypted.ciphertext);
-    envelope.setAuthTag(encrypted.tag);
-    const auto wireBlock = envelope.WireEncode();
-    ndn::Segmenter segmenter(
-      environment.keyChain(), ndn::security::signingWithSha256());
-    const auto segments = segmenter.segment(
-      ndn::span<const std::uint8_t>(wireBlock.data(), wireBlock.size()),
-      dataName, 4096, ndn::time::milliseconds(60000));
-    BOOST_REQUIRE(!segments.empty());
-    environment.provider().cacheHybridReceiveKeyForTest(
-      key.keyId, key.epochId, key.key);
-    for (const auto& data : segments) {
-      environment.user().cacheDataForTest(*data, ndn::time::milliseconds(60000));
-      environment.userFace().put(*data);
-    }
-  };
-  publishLarge(sourceDataName, source);
 
   struct IssuedGrant
   {
@@ -2622,10 +2625,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
     auto projection = makeProjection(requestId, issued.grant);
     const auto projectionText = nativeSelectionProjectionV3ToJson(projection);
     BOOST_TEST_MESSAGE("protected-cache assignment bytes=" << projectionText.size());
-    auto rootDataName = ndn::Name(requesterName);
-    rootDataName.append("NDNSF").append("LARGE-DATA").append(serviceName)
-      .append(requestId).append("root").appendVersion();
-    publishLarge(rootDataName, rootPayload);
+    const auto rootDataName = publishLarge(requestId, "spec185-provider-cache-root", rootPayload);
     auto probe = std::make_shared<Probe>();
     {
       std::lock_guard<std::mutex> lock(probeMutex);

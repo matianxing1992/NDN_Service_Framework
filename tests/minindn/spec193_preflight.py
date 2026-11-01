@@ -1,4 +1,4 @@
-"""Side-effect-free candidate checks for the shared Spec202 MiniNDN campaign."""
+"""Side-effect-free candidate checks for shared Spec202 and Spec204 campaigns."""
 
 import hashlib
 import fnmatch
@@ -12,10 +12,14 @@ import sys
 from pathlib import Path
 
 
-DESIGN_FILES = (
+COMMON_DESIGN_FILES = (
     "AGENTS.md",
     ".specify/feature.json",
     ".specify/memory/constitution.md",
+    "tests/minindn/run_spec192_real_cpp_repo.py",
+    "tests/minindn/spec193_preflight.py",
+)
+SPEC202_DESIGN_FILES = (
     "specs/202-distributedrepo-convergence/spec.md",
     "specs/202-distributedrepo-convergence/plan.md",
     "specs/202-distributedrepo-convergence/tasks.md",
@@ -23,8 +27,16 @@ DESIGN_FILES = (
     "specs/202-distributedrepo-convergence/api-inventory.md",
     "specs/202-distributedrepo-convergence/contracts/architecture-and-api.md",
     "specs/202-distributedrepo-convergence/contracts/candidate-and-validation.md",
-    "tests/minindn/run_spec192_real_cpp_repo.py",
-    "tests/minindn/spec193_preflight.py",
+)
+DESIGN_FILES = (*COMMON_DESIGN_FILES, *SPEC202_DESIGN_FILES)
+SPEC202_FEATURE_DIRECTORY = "specs/202-distributedrepo-convergence"
+SPEC204_FEATURE_DIRECTORY = "specs/204-kvcache-provider-handoff"
+SPEC204_NETWORK_WORKER_DESIGN_FILES = (
+    *COMMON_DESIGN_FILES,
+    "specs/204-kvcache-provider-handoff/spec.md",
+    "specs/204-kvcache-provider-handoff/plan.md",
+    "specs/204-kvcache-provider-handoff/tasks.md",
+    "specs/204-kvcache-provider-handoff/contracts/repo-network-publish-worker.md",
 )
 
 # These owners supply the production native libraries and Python consumers.
@@ -118,7 +130,7 @@ def candidate_build_commands(root, fresh, source, build, python):
                             "WAFLOCK=.lock-waf_" + fresh.name,
                             "NDNSF_SKIP_DEV_PIP_INSTALL=1", str(root / "waf"),
                             "install", "-j2",
-                            "--targets=ndn-service-framework,ndnsf-distributed-inference"], root),
+                            "--targets=ndn-service-framework,ndnsf-distributed-inference,spec192-repo-client,spec193-object-repo-server"], root),
         ("base-binding", [python, "setup.py", "build_ext", "--inplace", "--force",
                           "--parallel=2", "--build-temp=" + str(fresh / "python-base")], root / "pythonWrapper"),
         ("repo-binding", [python, "setup.py", "build_ext", "--inplace", "--force",
@@ -145,10 +157,12 @@ def candidate_build_environment(root, fresh, source, build, bindings=False):
     return values
 
 
-def design_acceptance_digest(path):
+def design_acceptance_digest(path, profile="spec202"):
     """Exclude only explicitly declared qualification progress from identity."""
     path = require_file(path, "DESIGN")
     if path.name not in ("tasks.md", "validation-matrix.md"):
+        return sha256(path)
+    if profile != "spec202":
         return sha256(path)
     try:
         text = path.read_text(encoding="utf-8")
@@ -202,6 +216,11 @@ def design_acceptance_digest(path):
             raise PreflightError("MALFORMED_DESIGN", "missing or duplicate acceptance cases")
         text = "".join(lines)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def select_design_files(design_files=None, additional_design_files=()):
+    selected = DESIGN_FILES if design_files is None else design_files
+    return tuple(dict.fromkeys((*selected, *additional_design_files)))
 
 
 def participates_in_source(name):
@@ -294,12 +313,17 @@ def topology_hosts(path):
     return hosts
 
 
-def resolved_libraries(binary):
+def resolved_libraries(binary, *, system_installed=False):
     ldd = shutil.which("ldd")
     if not ldd:
         raise PreflightError("MISSING_TOOL", "ldd")
+    environment = None
+    if system_installed:
+        environment = dict(os.environ)
+        environment["LD_LIBRARY_PATH"] = "/usr/local/lib:/opt/gstreamer-1.20/lib"
     result = subprocess.run([ldd, str(binary)], text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            env=environment)
     if result.returncode or "not found" in result.stdout.lower():
         raise PreflightError("UNRESOLVED_LIBRARY", str(binary) + "\n" + result.stdout)
     libraries = {}
@@ -375,6 +399,8 @@ def verify_build_receipt(root, source_sha, source_files, binaries, files):
         expected_artifacts.update(str(binary) for binary in binaries)
         expected_artifacts.update("/usr/local/lib/" + name for name in (
             "libndn-service-framework.so", "libndnsf-distributed-inference.so"))
+        expected_artifacts.update("/usr/local/bin/" + name for name in (
+            "spec192-repo-client", "spec193-object-repo-server"))
         if not expected_artifacts.issubset(receipt["artifacts"]):
             raise ValueError("incomplete native/binding artifact inventory")
         for category in ("fresh_outputs", "artifacts", "configuration", "external_inputs", "runtime"):
@@ -404,13 +430,19 @@ def verify_build_receipt(root, source_sha, source_files, binaries, files):
 
 
 def verify_runtime_policy(path, service_prefix, operations, repo_users,
-                          repo_providers, metadata_denied_user=None):
+                          repo_providers, metadata_denied_user=None,
+                          owner_operations=(), owner_identity=None):
     import yaml
 
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     services = config.get("services", [])
     names = [service.get("name") for service in services]
-    expected = {service_prefix + "/" + item for item in operations}
+    owner_services = {service_prefix + "/" + item for item in owner_operations}
+    expected = {service_prefix + "/" + item for item in operations} | owner_services
+    if owner_services & {service_prefix + "/" + item for item in operations}:
+        raise PreflightError("RUNTIME_ACL_SERVICES", "owner operation overlaps public Repo API")
+    if owner_operations and not owner_identity:
+        raise PreflightError("RUNTIME_ACL_PRINCIPALS", "missing owner identity")
     actual = {name for name in names if isinstance(name, str) and
               name.startswith(service_prefix + "/")}
     if actual != expected or len(actual) != sum(name in expected for name in names):
@@ -420,7 +452,10 @@ def verify_runtime_policy(path, service_prefix, operations, repo_users,
             continue
         users = service.get("users", [])
         providers = [item.get("identity") for item in service.get("providers", [])]
-        expected_users = list(repo_users)
+        if service.get("name") in owner_services:
+            expected_users = [owner_identity]
+        else:
+            expected_users = list(repo_users)
         if metadata_denied_user and service.get("name") in (
                 service_prefix + "/DATA_RECEIPT",
                 service_prefix + "/DATA_LOCATION"):
@@ -435,7 +470,10 @@ def verify_runtime_policy(path, service_prefix, operations, repo_users,
 def check(root, output, topology, source_sha, source_files, roles,
           service_prefix, operations, repo_users, repo_providers,
           require_six=False, require_seven=False, object_mode=False, lock_path=None,
-          acl_services=None, include_object_server=False, include_importer=False):
+          acl_services=None, include_object_server=False, include_importer=False,
+          expected_feature_directory=None, additional_design_files=(),
+          design_files=None, owner_operations=(), owner_identity=None,
+          runtime_binary_paths=None):
     """Return a lockable manifest without creating files or processes."""
     root = root.resolve()
     output = output.resolve()
@@ -443,8 +481,12 @@ def check(root, output, topology, source_sha, source_files, roles,
         raise PreflightError("OUTPUT_EXISTS", str(output))
     pointer = json.loads(require_file(root / ".specify/feature.json", "DESIGN")
                          .read_text(encoding="utf-8"))
-    if Path(pointer.get("feature_directory", "")).name != \
-            "202-distributedrepo-convergence":
+    active_feature_directory = pointer.get("feature_directory", "")
+    if not isinstance(active_feature_directory, str) or not active_feature_directory or \
+            not (root / active_feature_directory).is_dir():
+        raise PreflightError("ACTIVE_FEATURE", str(active_feature_directory))
+    if expected_feature_directory and active_feature_directory != \
+            Path(expected_feature_directory).as_posix():
         raise PreflightError("ACTIVE_FEATURE", str(pointer.get("feature_directory")))
     expected_roles = dict(roles)
     if len(expected_roles) != len(set(expected_roles.values())):
@@ -464,9 +506,12 @@ def check(root, output, topology, source_sha, source_files, roles,
     if hosts != set(expected_roles):
         raise PreflightError("TOPOLOGY_ROLES", "expected {} found {}".format(
             sorted(expected_roles), sorted(hosts)))
-    expected_services = {service_prefix + "/" + operation for operation in operations}
-    if len(expected_services) != len(operations):
-        raise PreflightError("DUPLICATE_OPERATION", str(operations))
+    all_operations = tuple(operations) + tuple(owner_operations)
+    if owner_operations and not owner_identity:
+        raise PreflightError("ACL_OWNER", "owner operations require an exact owner identity")
+    expected_services = {service_prefix + "/" + operation for operation in all_operations}
+    if len(expected_services) != len(all_operations):
+        raise PreflightError("DUPLICATE_OPERATION", str(all_operations))
     actual_services = set(acl_services if acl_services is not None else expected_services)
     if actual_services != expected_services:
         raise PreflightError("ACL_SERVICES", "missing {} extra {}".format(
@@ -475,9 +520,12 @@ def check(root, output, topology, source_sha, source_files, roles,
         raise PreflightError("DUPLICATE_PRINCIPAL", "Repo ACL principals")
     files = {}
     progress_provenance = {}
-    for name in DESIGN_FILES:
+    selected_design_files = select_design_files(design_files, additional_design_files)
+    for name in selected_design_files:
         path = require_file(root / name, "DESIGN")
-        files[name] = design_acceptance_digest(path)
+        profile = "spec202" if path.parent == root / \
+            "specs/202-distributedrepo-convergence" else None
+        files[name] = design_acceptance_digest(path, profile)
         if path.name in ("tasks.md", "validation-matrix.md"):
             progress_provenance[name] = sha256(path)
     for name in source_files:
@@ -512,6 +560,23 @@ def check(root, output, topology, source_sha, source_files, roles,
         files[str(binary)] = sha256(binary)
         files.update(resolved_libraries(binary))
     verify_build_receipt(root, source_sha, source_files, binaries, files)
+    runtime_binary_paths = dict(runtime_binary_paths or {})
+    allowed_runtime_names = {"spec192-repo-client", "spec193-object-repo-server"}
+    if set(runtime_binary_paths) - allowed_runtime_names:
+        raise PreflightError("SYSTEM_RUNTIME_BINARY", "unexpected runtime binary mapping")
+    for name, candidate in runtime_binary_paths.items():
+        installed = require_file(Path(candidate), "SYSTEM_RUNTIME_BINARY")
+        try:
+            installed.relative_to(root)
+        except ValueError:
+            pass
+        else:
+            raise PreflightError("SYSTEM_RUNTIME_BINARY", "runtime binary is inside checkout: " + name)
+        built = require_file(root / "build" / name, "BUILD_OUTPUT")
+        if sha256(installed) != sha256(built):
+            raise PreflightError("STALE_SYSTEM_INSTALL", name)
+        files[str(installed)] = sha256(installed)
+        files.update(resolved_libraries(installed, system_installed=True))
     files[str(topology)] = sha256(topology)
     template = require_file(root / "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml",
                             "POLICY_TEMPLATE")
@@ -547,6 +612,9 @@ def check(root, output, topology, source_sha, source_files, roles,
         "roles": expected_roles, "services": sorted(expected_services),
         "object_protocol_server": object_mode or include_object_server,
         "legacy_importer": include_importer,
+        "system_runtime_binaries": {
+            name: str(Path(path).resolve())
+            for name, path in sorted(runtime_binary_paths.items())},
         "repo_users": list(repo_users), "repo_providers": list(repo_providers),
         "files": dict(sorted(files.items())),
         "progress_provenance": progress_provenance,

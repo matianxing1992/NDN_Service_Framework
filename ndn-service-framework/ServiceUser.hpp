@@ -208,6 +208,7 @@ namespace ndn_service_framework{
         std::string digest;
         uint64_t closedAtUs = 0;
         uint64_t requestDeadlineUs = 0;
+        bool ackObserved = false;
     };
 
     using CollaborationAckClosedHandler =
@@ -237,6 +238,15 @@ namespace ndn_service_framework{
         // Empty derives the manifest from the content/representation prefix.
         ndn::Name manifestSuffix;
         std::optional<PublishedContentName> contentName;
+        // Process-local authorization. The callback must strongly retain its
+        // owner/Face and settle on the publication worker, outside Repo locks.
+        DurableStorageGrantResolver resolveDurableStorageGrant;
+        // Optional event seam invoked with the exact prepared packet set before
+        // the resolver waits for authorization and before any Repo commit.
+        // The observer receives metadata only; it does not grant authority.
+        DurableStorageGrantChallengeObserverV1 onDurableStorageGrantRequired;
+        // Opt in to atomic original wrapped-key/CK persistence with the body.
+        bool persistAuxiliaryPackets = false;
     };
 
     struct LargeDataPublishResult
@@ -268,6 +278,10 @@ namespace ndn_service_framework{
         // Immutable producer-owned descriptor and segmented envelope prefix.
         ndn::Name manifestName;
         ndn::Name dataPrefix;
+        // Actual process-local storage source, independently of the serving
+        // lease. Callers must verify its current owner before durable reuse.
+        std::shared_ptr<const EncryptedLargeDataRangeSource> durableStorageSource;
+        std::vector<ndn::Name> auxiliaryPacketNames;
     };
 
     /** Bounded file-backed serving counters exposed only for native selectors.
@@ -300,6 +314,11 @@ namespace ndn_service_framework{
              * keeps the Face alive and running; the task must retain its
              * own owners and contain its asynchronous exceptions. */
             void postToIo(std::function<void()> task) const;
+
+            /** Queue work on this user's existing Face I/O context and pass
+             * its Face to the task. Never invokes inline or starts an event
+             * loop; the application keeps the Face alive and running. */
+            void postToIoWithFace(std::function<void(ndn::Face&)> task) const;
 
             /** True while this thread executes the existing Face context.
              * Blocking application waits must be rejected on that thread. */
@@ -605,6 +624,10 @@ namespace ndn_service_framework{
                                                      ServiceAuthorizationTable& permissionTable);
             void setRequestPublisher(RequestPublisher publisher);
             void setLocalPublicationHandler(LocalPublicationHandler handler);
+            /** Observe successful postToIo submissions on a LocalMock only.
+             * This counts posts, not execution or publication, and supplies a
+             * bounded test barrier without running the external Face queue. */
+            uint64_t getIoPostCountForTest() const;
             static ndn::Buffer makeGenericAdmissionLeaseSelectionPayload(
                 const std::string& leaseId,
                 const ndn::Buffer& resourceBindingProof = ndn::Buffer());
@@ -772,6 +795,9 @@ namespace ndn_service_framework{
 
             /** True only when the configured range-store has durable ownership. */
             bool supportsDurableEncryptedLargeData() const noexcept;
+            /** Thread-safe capability query; no key material or owner authority is returned. */
+            bool supportsDurableAuxiliaryDataPackets() const noexcept;
+            bool requiresDurableStorageActor() const noexcept;
 
             /** Configure before the first publication, on the owning thread.
              * The store handles ciphertext only; Core keeps naming/signing. */
@@ -1414,6 +1440,7 @@ namespace ndn_service_framework{
 
             std::string selectionRetryContext(const ndn::Name& requestId, const ndn::Name& provider) const;
             std::optional<RequestAckNameV2> parsePendingAckName(const ndn::Name& name) const;
+            void noteAckObservation(const ndn::Name& name);
             std::optional<ResponseNameV2> parsePendingResponseName(const ndn::Name& name) const;
             void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWithoutPrefix, AbstractMessage& message,
                                 std::function<void(bool, const std::string&)> onPublished = {});
@@ -1542,6 +1569,7 @@ namespace ndn_service_framework{
                 size_t ackSelectionDeferrals = 0;
                 size_t learnedAckProviderCountAtPublish = 0;
                 std::vector<StoredAck> requestAcks;
+                bool ackObserved = false;
                 std::vector<StoredAck> customSelectedAcks;
                 std::vector<ndn::Name> successfulAckProviders;
                 std::vector<ndn::Name> negativeAckProviders;
@@ -1926,6 +1954,11 @@ namespace ndn_service_framework{
             ndn::KeyChain m_keyChain;
             ndn::KeyChain* m_testSigningKeyChain = nullptr;
             std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;
+        private:
+            void unregisterNDNSFMessages();
+            std::vector<uint32_t> m_messageSubscriptionHandles;
+
+        protected:
             std::shared_ptr<MessageValidator> validator;
             std::vector<std::string> m_serviceNames;
 
@@ -1960,6 +1993,7 @@ namespace ndn_service_framework{
             // bootstrap lifecycle.  Keep their refresh path fail-closed until
             // the fixture explicitly completes its bootstrap.
             bool m_isLocalMock = false;
+            mutable std::atomic<uint64_t> m_localIoPostCountForTest{0};
             //ndn::nacabe::Producer nacProducer;
             ndn::nacabe::CacheProducer nacProducer;
             std::unique_ptr<ndn::nacabe::CacheProducer> m_testNacProducer;

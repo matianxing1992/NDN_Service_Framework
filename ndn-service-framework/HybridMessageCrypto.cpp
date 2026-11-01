@@ -1,9 +1,12 @@
 #include "HybridMessageCrypto.hpp"
 #include "utils.hpp"
 #include "ProducerDataNaming.hpp"
+#include <ndn-cxx/encoding/block-helpers.hpp>
 #include <ndn-cxx/util/segmenter.hpp>
 #include <ndn-cxx/util/segment-fetcher.hpp>
 #include <nac-abe/consumer.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/post.hpp>
 
 #include <iomanip>
 #include <algorithm>
@@ -18,6 +21,9 @@
 #include <ndn-cxx/security/transform/public-key.hpp>
 
 namespace ndn_service_framework {
+
+NDN_LOG_INIT(ndn_service_framework.HybridMessageCrypto);
+
 namespace {
 
 ndn::Buffer
@@ -42,12 +48,18 @@ hexEncode(ndn::span<const uint8_t> bytes)
 }
 
 std::string
-wrappedCipherDigest(ndn::span<const uint8_t> cipher)
+sha256Hex(ndn::span<const uint8_t> bytes)
 {
     uint8_t digest[SHA256_DIGEST_LENGTH];
-    if (!SHA256(cipher.data(), cipher.size(), digest))
-        throw std::runtime_error("hybrid wrapper digest failed");
+    if (!SHA256(bytes.data(), bytes.size(), digest))
+        throw std::runtime_error("SHA-256 digest failed");
     return hexEncode(ndn::span<const uint8_t>(digest, sizeof(digest)));
+}
+
+std::string
+wrappedCipherDigest(ndn::span<const uint8_t> cipher)
+{
+    return sha256Hex(cipher);
 }
 
 bool
@@ -307,6 +319,20 @@ HybridMessageCrypto::getWrappedSendPackets(const std::string& keyId,
     return true;
 }
 
+std::shared_ptr<const ndn::Data>
+HybridMessageCrypto::findWrappedSendData(const ndn::Interest& interest) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& entry : m_wrappedSendPackets) {
+        for (const auto* packets : {&entry.second.content, &entry.second.contentKeys}) {
+            for (const auto& packet : *packets) {
+                if (packet && interest.matchesData(*packet)) return packet;
+            }
+        }
+    }
+    return nullptr;
+}
+
 void
 HybridMessageCrypto::eraseWrappedPacketsLocked(const std::string& keyId)
 {
@@ -519,35 +545,363 @@ prepareHybridMessageKeyPackets(const ndn::Name& service, const ndn::Name& sender
     return originals;
 }
 
+VerifiedHybridMessageKeyWrapperPacketSetV1
+validateHybridMessageKeyWrapperPacketSet(
+  const ndn::Name& locator,
+  const std::vector<std::vector<uint8_t>>& packetWires,
+  const std::function<bool(const ndn::Data&)>& authorizeProducer)
+{
+    constexpr std::size_t MaxSegments = 128;
+    constexpr std::size_t MaxCipherBytes = 65536;
+    if (locator.empty())
+        throw std::invalid_argument("hybrid key wrapper locator is empty");
+    checkNamingNameSize(locator);
+    if (packetWires.empty() || packetWires.size() > MaxSegments)
+        throw std::invalid_argument("hybrid key wrapper segment budget exceeded");
+
+    ndn::Name object;
+    ndn::name::Component commitment;
+    std::optional<uint64_t> finalSegment;
+    std::map<uint64_t, std::vector<uint8_t>> contents;
+    std::map<uint64_t, std::pair<ndn::Name, std::string>> wireFingerprints;
+    std::size_t totalContentBytes = 0;
+
+    for (const auto& wire : packetWires) {
+        if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE)
+            throw std::invalid_argument("hybrid key wrapper packet wire size invalid");
+        ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+        const auto& encoded = packet.wireEncode();
+        if (encoded.size() != wire.size() ||
+            !std::equal(encoded.begin(), encoded.end(), wire.begin()))
+            throw std::invalid_argument("hybrid key wrapper packet wire changed during parse");
+
+        bool authorized = false;
+        try { authorized = authorizeProducer && authorizeProducer(packet); }
+        catch (const std::exception&) { }
+        if (!authorized)
+            throw std::invalid_argument("hybrid key wrapper signer is not authorized for Producer");
+
+        const auto& name = packet.getName();
+        if (!locator.isPrefixOf(name) || name.size() != locator.size() + 2 ||
+            name[-2].type() != 8 || name[-2].value_size() != 32 ||
+            !name[-1].isSegment() || !packet.getFinalBlock() ||
+            !packet.getFinalBlock()->isSegment())
+            throw std::invalid_argument("hybrid key wrapper namespace or geometry mismatch");
+
+        const auto segment = name[-1].toSegment();
+        const auto final = packet.getFinalBlock()->toSegment();
+        if (final >= MaxSegments || segment > final ||
+            name[-1] != ndn::name::Component::fromSegment(segment) ||
+            *packet.getFinalBlock() != ndn::name::Component::fromSegment(final))
+            throw std::invalid_argument("hybrid key wrapper segment budget exceeded");
+        if (finalSegment && *finalSegment != final)
+            throw std::invalid_argument("hybrid key wrapper FinalBlock changed during packet-set validation");
+
+        const auto packetObject = name.getPrefix(-1);
+        if (object.empty()) {
+            object = packetObject;
+            commitment = name[-2];
+            finalSegment = final;
+        }
+        else if (object != packetObject || commitment != name[-2]) {
+            throw std::invalid_argument("hybrid key wrapper object changed during packet-set validation");
+        }
+
+        const auto content = packet.getContent();
+        if (content.value_size() > MaxCipherBytes - totalContentBytes)
+            throw std::invalid_argument("hybrid key wrapper exceeds envelope limit");
+        std::vector<uint8_t> payload;
+        if (content.value_size() != 0)
+            payload.assign(content.value(), content.value() + content.value_size());
+        if (!contents.emplace(segment, std::move(payload)).second)
+            throw std::invalid_argument("hybrid key wrapper duplicate segment");
+        auto wireSpan = ndn::span<const uint8_t>(wire.data(), wire.size());
+        if (!wireFingerprints.emplace(segment,
+              std::make_pair(name, sha256Hex(wireSpan))).second)
+            throw std::invalid_argument("hybrid key wrapper duplicate segment");
+        totalContentBytes += content.value_size();
+    }
+
+    if (!finalSegment || contents.size() != *finalSegment + 1 ||
+        totalContentBytes == 0 || totalContentBytes > MaxCipherBytes)
+        throw std::invalid_argument("hybrid key wrapper packet set is incomplete");
+
+    std::vector<uint8_t> cipher;
+    cipher.reserve(totalContentBytes);
+    for (uint64_t segment = 0; segment <= *finalSegment; ++segment) {
+        const auto found = contents.find(segment);
+        if (found == contents.end())
+            throw std::invalid_argument("hybrid key wrapper packet set is incomplete");
+        cipher.insert(cipher.end(), found->second.begin(), found->second.end());
+    }
+    if (commitment != makeNamingDigestComponent(wrappedCipherDigest(
+          ndn::span<const uint8_t>(cipher.data(), cipher.size()))))
+        throw std::invalid_argument("hybrid key wrapper cipher commitment mismatch");
+
+    ndn::Block cipherBlock(ndn::span<const uint8_t>(cipher.data(), cipher.size()));
+    try {
+        if (cipherBlock.size() != cipher.size())
+            throw std::invalid_argument("trailing NAC block bytes");
+        cipherBlock.parse();
+    }
+    catch (const std::exception&) {
+        throw std::invalid_argument("hybrid key wrapper is not a valid NAC Block");
+    }
+    std::vector<std::pair<ndn::Name, std::string>> packetFingerprints;
+    packetFingerprints.reserve(wireFingerprints.size());
+    for (auto& entry : wireFingerprints)
+        packetFingerprints.push_back(std::move(entry.second));
+    return VerifiedHybridMessageKeyWrapperPacketSetV1(std::move(object),
+                                                       std::move(cipherBlock),
+                                                       std::move(packetFingerprints));
+}
+
+VerifiedHybridMessageKeyEnvelopeV1
+validateHybridMessageKeyWrapperEnvelopeV1(
+  const VerifiedHybridMessageKeyWrapperPacketSetV1& packetSet)
+{
+    const auto& encoded = packetSet.cipherBlock();
+    try {
+        if (encoded.type() != ndn::tlv::Content || encoded.size() == 0 || encoded.size() > 65536)
+            throw std::invalid_argument("hybrid key wrapper NAC Content size or type invalid");
+
+        const auto& fields = encoded.elements();
+        if (fields.size() != 3 ||
+            fields[0].type() != ndn::nacabe::TLV_EncryptedContent ||
+            fields[1].type() != ndn::nacabe::TLV_PlainTextSize ||
+            fields[2].type() != ndn::tlv::Name ||
+            fields[0].value_size() == 0 || fields[0].value_size() > 65536)
+            throw std::invalid_argument("hybrid key wrapper NAC fields invalid");
+
+        const auto plaintextBytes = ndn::readNonNegativeInteger(fields[1]);
+        if (plaintextBytes != HybridMessageCrypto::MESSAGE_KEY_SIZE)
+            throw std::invalid_argument("hybrid key wrapper plaintext key size invalid");
+
+        ndn::Name contentKeyName(fields[2]);
+        if (contentKeyName.empty() || contentKeyName.wireEncode().size() > 4096)
+            throw std::invalid_argument("hybrid key wrapper CK name invalid");
+
+        ndn::Block canonical(ndn::tlv::Content);
+        canonical.push_back(ndn::makeBinaryBlock(
+          ndn::nacabe::TLV_EncryptedContent, fields[0].value_bytes()));
+        canonical.push_back(ndn::makeNonNegativeIntegerBlock(
+          ndn::nacabe::TLV_PlainTextSize, plaintextBytes));
+        canonical.push_back(contentKeyName.wireEncode());
+        canonical.encode();
+        if (canonical.size() != encoded.size() ||
+            !std::equal(canonical.begin(), canonical.end(), encoded.begin()))
+            throw std::invalid_argument("hybrid key wrapper NAC Content is not canonical");
+
+        return VerifiedHybridMessageKeyEnvelopeV1(
+          packetSet.objectName(), packetSet.packetFingerprints(),
+          std::move(contentKeyName), plaintextBytes, fields[0].value_size());
+    }
+    catch (const std::invalid_argument&) {
+        throw;
+    }
+    catch (const std::exception&) {
+        throw std::invalid_argument("hybrid key wrapper NAC envelope malformed");
+    }
+}
+
+VerifiedNacContentKeyPacketSetV1
+validateNacContentKeyPacketSetV1(
+  const ndn::Name& contentKeyName, const ndn::Name& producerPrefix,
+  const std::vector<std::vector<uint8_t>>& packetWires,
+  const std::function<bool(const ndn::Data&)>& authorizeProducer)
+{
+    constexpr std::size_t MaxPacketCount = 65536;
+    if (contentKeyName.empty() || contentKeyName[-1].isSegment() ||
+        producerPrefix.empty() || !producerPrefix.isPrefixOf(contentKeyName) ||
+        packetWires.empty() || packetWires.size() > MaxPacketCount || !authorizeProducer)
+        throw std::invalid_argument("NAC CK packet-set request invalid");
+
+    std::map<std::uint64_t, std::pair<ndn::Name, std::string>> segments;
+    std::optional<std::uint64_t> finalSegment;
+    std::optional<std::uint32_t> contentType;
+    std::optional<ndn::time::milliseconds> freshness;
+    std::uint64_t contentBytes = 0;
+    for (const auto& wire : packetWires) {
+        if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE)
+            throw std::invalid_argument("NAC CK packet wire size invalid");
+        ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+        const auto& encoded = packet.wireEncode();
+        if (encoded.size() != wire.size() ||
+            !std::equal(encoded.begin(), encoded.end(), wire.begin()))
+            throw std::invalid_argument("NAC CK packet wire changed during parse");
+
+        const auto& name = packet.getName();
+        if (name == contentKeyName || contentKeyName.isPrefixOf(name)) {
+            if (name.size() != contentKeyName.size() + 1 || !name[-1].isSegment() ||
+                name[-1] != ndn::name::Component::fromSegment(name[-1].toSegment()) ||
+                !producerPrefix.isPrefixOf(name) || !packet.getFinalBlock() ||
+                !packet.getFinalBlock()->isSegment() ||
+                *packet.getFinalBlock() != ndn::name::Component::fromSegment(
+                  packet.getFinalBlock()->toSegment()))
+                throw std::invalid_argument("NAC CK packet name or segment geometry invalid");
+
+            const auto segment = name[-1].toSegment();
+            const auto final = packet.getFinalBlock()->toSegment();
+            if (final >= MaxPacketCount || segment > final ||
+                (finalSegment && *finalSegment != final))
+                throw std::invalid_argument("NAC CK packet FinalBlock mismatch");
+            bool authorized = false;
+            try { authorized = authorizeProducer(packet); }
+            catch (...) { }
+            if (!authorized)
+                throw std::invalid_argument("NAC CK signer is not authorized for Producer");
+
+            const auto type = packet.getContentType();
+            const auto period = packet.getFreshnessPeriod();
+            if ((contentType && *contentType != type) ||
+                (freshness && *freshness != period))
+                throw std::invalid_argument("NAC CK segment metadata changed");
+            contentType = type;
+            freshness = period;
+
+            const auto bytes = packet.getContent().value_size();
+            const auto maxContentBytes =
+              static_cast<std::uint64_t>(MaxPacketCount) * ndn::MAX_NDN_PACKET_SIZE;
+            if (bytes == 0 || contentBytes > maxContentBytes ||
+                bytes > maxContentBytes - contentBytes)
+                throw std::invalid_argument("NAC CK packet content budget exceeded");
+            auto wireSpan = ndn::span<const uint8_t>(wire.data(), wire.size());
+            if (!segments.emplace(segment, std::make_pair(name, sha256Hex(wireSpan))).second)
+                throw std::invalid_argument("NAC CK duplicate segment");
+            contentBytes += bytes;
+            finalSegment = final;
+        }
+    }
+
+    if (!finalSegment || segments.empty() || segments.size() != *finalSegment + 1 ||
+        segments.begin()->first != 0 || segments.rbegin()->first != *finalSegment)
+        throw std::invalid_argument("NAC CK packet set incomplete");
+    std::vector<std::pair<ndn::Name, std::string>> fingerprints;
+    fingerprints.reserve(segments.size());
+    for (auto& entry : segments)
+        fingerprints.push_back(std::move(entry.second));
+    return VerifiedNacContentKeyPacketSetV1(contentKeyName, producerPrefix,
+                                             std::move(fingerprints), contentBytes);
+}
+
 void
-fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validator,
+requireOriginalPacketFingerprintsPresentV1(
+  const std::vector<std::string>& packetNames,
+  const std::vector<std::vector<uint8_t>>& packetWires,
+  const std::vector<std::pair<ndn::Name, std::string>>& requiredPackets,
+  const std::function<void()>& requireActive)
+{
+    constexpr std::size_t MaxPacketCount = 65536;
+    constexpr std::size_t MaxNameBytes = 16ULL << 20;
+    if (packetNames.empty() || packetNames.size() != packetWires.size() ||
+        packetNames.size() > MaxPacketCount || requiredPackets.empty() ||
+        requiredPackets.size() > MaxPacketCount)
+        throw std::invalid_argument("original packet bundle index invalid");
+
+    std::map<ndn::Name, std::size_t> packetIndexes;
+    std::size_t nameBytes = 0;
+    for (std::size_t index = 0; index < packetNames.size(); ++index) {
+        if (requireActive)
+            requireActive();
+        if (packetNames[index].empty() || packetNames[index].size() > 4096 ||
+            packetNames[index].size() > MaxNameBytes - nameBytes)
+            throw std::invalid_argument("original packet bundle name budget exceeded");
+        nameBytes += packetNames[index].size();
+        const ndn::Name name(packetNames[index]);
+        if (name.empty() ||
+            (name.toUri(ndn::name::UriFormat::CANONICAL) != packetNames[index] &&
+             name.toUri(ndn::name::UriFormat::ALTERNATE) != packetNames[index]) ||
+            !packetIndexes.emplace(name, index).second)
+            throw std::invalid_argument("original packet bundle name index invalid");
+    }
+
+    std::set<ndn::Name> uniqueRequiredNames;
+    for (const auto& [name, expectedDigest] : requiredPackets) {
+        if (requireActive)
+            requireActive();
+        if (name.empty() || expectedDigest.size() != 64 ||
+            !std::all_of(expectedDigest.begin(), expectedDigest.end(), [](char c) {
+              return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            }) || !uniqueRequiredNames.insert(name).second)
+            throw std::invalid_argument("required original packet fingerprint invalid");
+        const auto found = packetIndexes.find(name);
+        if (found == packetIndexes.end())
+            throw std::invalid_argument("required original packet is absent from bundle");
+
+        const auto& wire = packetWires[found->second];
+        if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE)
+            throw std::invalid_argument("required original packet wire size invalid");
+        ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+        const auto& encoded = packet.wireEncode();
+        if (packet.getName() != name || encoded.size() != wire.size() ||
+            !std::equal(encoded.begin(), encoded.end(), wire.begin()) ||
+            sha256Hex(ndn::span<const uint8_t>(wire.data(), wire.size())) != expectedDigest)
+            throw std::invalid_argument("required original packet wire differs from bundle");
+    }
+    if (requireActive)
+        requireActive();
+}
+
+static void
+fetchHybridMessageKeyWrapperImpl(ndn::Face& face, ndn::security::Validator& validator,
   const ndn::Name& locator,
   std::function<bool(const ndn::Data&)> authorizeProducer,
   std::function<void(const ndn::Name&, const ndn::Block&)> success,
-  std::function<void(const std::string&)> failure)
+  std::function<void(const std::string&)> failure,
+  std::optional<HybridKeyFetchOptions> route)
 {
-    struct State {
+    struct State : std::enable_shared_from_this<State> {
+        explicit State(boost::asio::io_context& io) : timer(io) {}
         bool done = false;
         ndn::Name object;
-        ndn::name::Component commitment;
         std::optional<uint64_t> finalSegment;
-        std::map<uint64_t, ndn::Block> wires;
+        std::map<uint64_t, std::vector<uint8_t>> wires;
         std::size_t bytes = 0;
         std::weak_ptr<ndn::SegmentFetcher> fetcher;
+        boost::asio::steady_timer timer;
+
+        bool current(const HybridKeyFetchOptions& options) const {
+            try {
+                return options.isCurrent && options.isCurrent() &&
+                    std::chrono::steady_clock::now() < options.deadline;
+            }
+            catch (...) { return false; }
+        }
+        void poll(const HybridKeyFetchOptions& options,
+                  const std::function<void(const std::string&)>& reject) {
+            timer.expires_at(std::min(options.deadline,
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(20)));
+            timer.async_wait([self = shared_from_this(), options, reject](const auto& error) {
+                if (error || self->done) return;
+                if (!self->current(options)) reject("hybrid key authority or deadline expired");
+                else self->poll(options, reject);
+            });
+        }
     };
     checkNamingNameSize(locator);
-    auto state = std::make_shared<State>();
+    auto state = std::make_shared<State>(face.getIoContext());
+    if (route && !state->current(*route)) {
+        if (failure) failure("hybrid key authority or deadline expired");
+        return;
+    }
     ndn::Interest interest(locator);
     interest.setCanBePrefix(true);
     interest.setMustBeFresh(false);
+    if (route && !route->forwardingHint.empty())
+        interest.setForwardingHint(route->forwardingHint);
     ndn::SegmentFetcher::Options options;
     options.probeLatestVersion = false;
     options.flowControlWindow = 16;
+    if (route) options.maxTimeout = ndn::time::milliseconds(std::max<int64_t>(1,
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            route->deadline - std::chrono::steady_clock::now()).count()));
     auto fetcher = ndn::SegmentFetcher::start(face, interest, validator, options);
     state->fetcher = fetcher;
-    const auto reject = [state, failure, &face](const std::string& reason) {
+    const auto reject = [state, failure, &face](
+                            const std::string& reason) {
         if (state->done) return;
         state->done = true;
+        state->timer.cancel();
         if (auto owner = state->fetcher.lock()) owner->stop();
         // stop posts its self release. This acknowledgement runs after that
         // release, so any Interests created by the remainder of the installed
@@ -556,8 +910,13 @@ fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validato
             if (failure) failure(reason);
         });
     };
-    fetcher->afterSegmentValidated.connect([state, locator, authorizeProducer, reject](const ndn::Data& packet) {
+    if (route) state->poll(*route, reject);
+    fetcher->afterSegmentValidated.connect(
+      [state, locator, authorizeProducer, reject, route](const ndn::Data& packet) {
         if (state->done) return;
+        if (route && !state->current(*route)) {
+            reject("hybrid key authority or deadline expired"); return;
+        }
         bool authorized = false;
         try { authorized = authorizeProducer && authorizeProducer(packet); }
         catch (const std::exception&) { }
@@ -581,14 +940,15 @@ fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validato
         if (state->object.empty()) {
             state->finalSegment = final;
             state->object = name.getPrefix(-1);
-            state->commitment = name[-2];
         }
         if (state->object != name.getPrefix(-1)) {
             reject("hybrid key wrapper object changed during fetch"); return;
         }
         const auto existing = state->wires.find(segment);
+        const auto encoded = packet.wireEncode();
+        const std::vector<uint8_t> packetWire(encoded.begin(), encoded.end());
         if (existing != state->wires.end()) {
-            if (!(existing->second == packet.wireEncode()))
+            if (existing->second != packetWire)
                 reject("hybrid key wrapper immutable segment conflict");
             return;
         }
@@ -596,30 +956,98 @@ fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validato
             reject("hybrid key wrapper exceeds envelope limit"); return;
         }
         state->bytes += packet.getContent().value_size();
-        state->wires.emplace(segment, packet.wireEncode());
+        state->wires.emplace(segment, packetWire);
     });
-    fetcher->onComplete.connect([state, success, reject](ndn::ConstBufferPtr cipher) {
+    fetcher->onComplete.connect([state, success, reject, route, locator,
+                                 authorizeProducer](ndn::ConstBufferPtr cipher) {
         if (state->done) return;
-        std::optional<ndn::Block> block;
-        try {
-            if (!cipher || cipher->empty() || cipher->size() > 65536 || state->object.empty() ||
-                state->commitment != makeNamingDigestComponent(wrappedCipherDigest(
-                  ndn::span<const uint8_t>(cipher->data(), cipher->size())))) {
-                reject("hybrid key wrapper cipher commitment mismatch"); return;
-            }
-            block.emplace(ndn::span<const uint8_t>(cipher->data(), cipher->size()));
-            if (block->size() != cipher->size()) {
-                reject("hybrid key wrapper is not a valid NAC Block"); return;
-            }
-            block->parse();
+        if (route && !state->current(*route)) {
+            reject("hybrid key authority or deadline expired"); return;
         }
-        catch (const std::exception&) { reject("hybrid key wrapper is not a valid NAC Block"); return; }
+        std::optional<VerifiedHybridMessageKeyWrapperPacketSetV1> verified;
+        try {
+            if (!cipher || cipher->empty() || cipher->size() > 65536 ||
+                state->object.empty() || state->wires.empty()) {
+                reject("hybrid key wrapper packet set is incomplete"); return;
+            }
+            std::vector<std::vector<uint8_t>> packetWires;
+            packetWires.reserve(state->wires.size());
+            for (const auto& [segment, wire] : state->wires) {
+                (void)segment;
+                packetWires.push_back(wire);
+            }
+            auto packetSet = validateHybridMessageKeyWrapperPacketSet(
+                locator, packetWires, authorizeProducer);
+            (void)validateHybridMessageKeyWrapperEnvelopeV1(packetSet);
+            verified.emplace(std::move(packetSet));
+            if (verified->objectName() != state->object ||
+                !(verified->cipherBlock() == ndn::Block(
+                    ndn::span<const uint8_t>(cipher->data(), cipher->size())))) {
+                reject("hybrid key wrapper reassembled packet set mismatch"); return;
+            }
+            if (route && !state->current(*route)) {
+                reject("hybrid key authority or deadline expired"); return;
+            }
+        }
+        catch (const std::exception& error) { reject(error.what()); return; }
         state->done = true;
-        if (success) success(state->object, *block);
+        state->timer.cancel();
+        if (success) success(verified->objectName(), verified->cipherBlock());
     });
     fetcher->onError.connect([reject](uint32_t, const std::string& reason) {
         reject("hybrid key wrapper fetch failed: " + reason);
     });
+}
+
+void
+fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validator,
+  const ndn::Name& locator, std::function<bool(const ndn::Data&)> authorizeProducer,
+  std::function<void(const ndn::Name&, const ndn::Block&)> success,
+  std::function<void(const std::string&)> failure)
+{
+    fetchHybridMessageKeyWrapperImpl(face, validator, locator, std::move(authorizeProducer),
+        std::move(success), std::move(failure), std::nullopt);
+}
+
+void
+fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validator,
+  const ndn::Name& locator, const HybridKeyFetchOptions& options,
+  std::function<bool(const ndn::Data&)> authorizeProducer,
+  std::function<void(const ndn::Name&, const ndn::Block&)> success,
+  std::function<void(const std::string&)> failure)
+{
+    fetchHybridMessageKeyWrapperImpl(face, validator, locator, std::move(authorizeProducer),
+        std::move(success), std::move(failure), options);
+}
+
+void
+consumeHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validator,
+  ndn::nacabe::Consumer& consumer, const ndn::Name& locator,
+  const HybridKeyFetchOptions& options,
+  std::function<bool(const ndn::Data&)> authorizeProducer,
+  std::function<void(const ndn::Buffer&)> success,
+  std::function<void(const std::string&)> failure)
+{
+    const auto unwrapSuccess = [success = std::move(success)](
+                                   const ndn::Buffer& key) {
+        if (success) success(key);
+    };
+    const auto unwrapFailure = [failure](const std::string& reason) {
+        if (failure) failure(reason);
+    };
+    fetchHybridMessageKeyWrapper(face, validator, locator, options, std::move(authorizeProducer),
+      [&consumer, options, unwrapSuccess, unwrapFailure](
+          const ndn::Name& object, const ndn::Block& cipher) mutable {
+        try {
+            ndn::Interest interest(object);
+            interest.setForwardingHint(options.forwardingHint);
+            ndn::nacabe::Consumer::CkFetchOptions limits;
+            limits.deadline = options.deadline;
+            limits.isCurrent = options.isCurrent;
+            consumer.consume(interest, cipher, limits, unwrapSuccess, unwrapFailure);
+        }
+        catch (const std::exception& e) { unwrapFailure(e.what()); }
+      }, failure);
 }
 
 void

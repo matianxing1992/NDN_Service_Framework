@@ -53,11 +53,13 @@ public:
     std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName) const;
   std::shared_ptr<NativeRequestPreparation> makePreparation(
     std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
-    std::optional<NativePreparedCanonicalPublication> preparedPublication) const;
+    std::optional<NativePreparedCanonicalPublication> preparedPublication,
+    std::optional<NativeDurableStorageOwner> owner = {}) const;
 
   NativePreparedCanonicalPublication preparePublication(
     std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
-    const NativeModelDescriptor& model, const NativeRequestControl& control) const;
+    const NativeModelDescriptor& model, const NativeRequestControl& control,
+    std::optional<NativeDurableStorageOwner> owner = {}) const;
 
 private:
   friend class ModelPreparationCache;

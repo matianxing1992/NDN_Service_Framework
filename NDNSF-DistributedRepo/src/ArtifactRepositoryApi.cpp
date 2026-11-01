@@ -1404,6 +1404,8 @@ validateAcceptedPublishStatus(const PublishOperationStatus& status,
 {
   status.validate(limits);
   bool matchesIntent = status.operationId == operationId &&
+    status.schemaVersion == intent.schemaVersion &&
+    status.userStorageBindings.size() == intent.userStorageBindings.size() &&
     status.reference == intent.reference &&
     status.generation == intent.generation &&
     status.seed == intent.seed &&
@@ -1415,6 +1417,12 @@ validateAcceptedPublishStatus(const PublishOperationStatus& status,
     matchesIntent = actual.repoNode == expected.repoNode &&
       actual.providerIdentity == expected.providerIdentity &&
       actual.servicePrefix == expected.servicePrefix;
+  }
+  for (const auto& expected : intent.userStorageBindings) {
+    const auto actual = std::find_if(status.userStorageBindings.begin(), status.userStorageBindings.end(),
+      [&expected] (const auto& entry) { return entry.target == expected.target; });
+    matchesIntent = matchesIntent && actual != status.userStorageBindings.end() &&
+      actual->toJson() == expected.toJson();
   }
   if (!matchesIntent) {
     throw std::runtime_error(
@@ -2437,7 +2445,7 @@ struct ArtifactRepositoryApi::Impl
       , limits(std::move(config.limits))
       , availabilityFreshnessMs(config.availabilityFreshnessMs)
       , ownership((rootPath / "metadata.sqlite3").string(), ownerId)
-      , metadataStore((rootPath / "metadata.sqlite3").string(), true, 15, true)
+      , metadataStore((rootPath / "metadata.sqlite3").string(), true, 16, true)
       , payloadStore(rootPath.string(), MAX_STORE_RANGE_BYTES,
                      metadataStore.artifactWritesEnabled())
     {
@@ -2494,6 +2502,15 @@ struct ArtifactRepositoryApi::Impl
     }
     validateName(persistentConfig->servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE),
                  persistentConfig->limits, "servicePrefix");
+    if (persistentConfig->userStorageAuthorizer) {
+      const auto& owner = persistentConfig->userStorageOwnerIdentity;
+      validateName(owner, persistentConfig->limits, "userStorageOwnerIdentity");
+      if (ndn::Name(owner).empty() ||
+          ndn::Name(owner).toUri(ndn::name::UriFormat::ALTERNATE) != owner) {
+        throw std::invalid_argument(
+          "repo-persistent-client-config-invalid: storage Owner must be canonical");
+      }
+    }
     std::set<std::string> providers;
     for (const auto& provider : persistentConfig->providerScope) {
       if (provider.empty()) {
@@ -2548,6 +2565,54 @@ ArtifactRepositoryApi
 ArtifactRepositoryApi::makeInApp(InAppRepoConfig config)
 {
   return ArtifactRepositoryApi(std::make_unique<Impl>(std::move(config)));
+}
+
+UserStorageAuthorizer
+ArtifactRepositoryApi::makeUserStorageAuthorizer(
+  ndn_service_framework::ServiceUser& owner, uint64_t grantExpiresAtMs,
+  int ackCollectionTimeMs, int requestTimeoutMs)
+{
+  if (grantExpiresAtMs <= nowMilliseconds() || grantExpiresAtMs > static_cast<uint64_t>(INT64_MAX) ||
+      ackCollectionTimeMs <= 0 || requestTimeoutMs <= ackCollectionTimeMs)
+    throw std::invalid_argument("repo-user-storage-authorizer-invalid: expiry or request budget");
+  return [&owner, grantExpiresAtMs, ackCollectionTimeMs, requestTimeoutMs]
+    (const PublishOperationIntent& provisional, std::chrono::steady_clock::time_point deadline) {
+    if (provisional.schemaVersion != 2 || !provisional.requestDigest.empty() ||
+        !provisional.userStorageBindings.empty())
+      throw std::invalid_argument("repo-user-storage-authorizer-invalid: expected a provisional owned operation");
+    auto checked = provisional;
+    checked.schemaVersion = 1;
+    checked.requestDigest = makePublishRequestDigest(checked.reference, checked.generation,
+      checked.seed, checked.consistency, checked.targets);
+    checked.validate();
+    checked.reference.validateProducerOwnership();
+    const auto ownerIdentity = owner.getName().toUri(ndn::name::UriFormat::ALTERNATE);
+    const auto grantId = std::string("handoff-") + makePublishOperationId(
+      checked.reference.publisherIdentity, checked.seed, checked.idempotencyKeyDigest);
+    std::vector<RepoUserStorageTargetBinding> result;
+    for (const auto& target : checked.targets) {
+      if (grantExpiresAtMs <= nowMilliseconds())
+        throw std::runtime_error("repo-user-storage-authorizer-expired");
+      const auto timeout = std::min(requestTimeoutMs, remainingTimeoutMs(deadline));
+      if (timeout <= ackCollectionTimeMs)
+        throw std::runtime_error("repo-operation-timeout: owner grant deadline exhausted");
+      const auto writer = ndn::Name(target == checked.seed ? checked.reference.publisherIdentity :
+        checked.seed.providerIdentity).toUri(ndn::name::UriFormat::ALTERNATE);
+      const RepoUserStorageGrantRequest request{1, grantId, writer,
+        artifactStorageObjectName(checked.reference), grantExpiresAtMs};
+      const auto wire = RepoClient::requestSelectedService(owner, ndn::Name(target.providerIdentity),
+        makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
+        toBytes(request.toJson()), ackCollectionTimeMs, timeout);
+      const auto reply = RepoUserStorageGrantReply::fromJson(std::string(wire.begin(), wire.end()));
+      reply.validateExpected(target, ownerIdentity, request);
+      (void)remainingTimeoutMs(deadline);
+      if (grantExpiresAtMs <= nowMilliseconds())
+        throw std::runtime_error("repo-user-storage-authorizer-expired");
+      result.push_back({1, target,
+        {1, ownerIdentity, reply.grant.grantId, reply.grant.ownerEpoch}, writer});
+    }
+    return result;
+  };
 }
 
 ArtifactRepositoryApi
@@ -2744,10 +2809,7 @@ ArtifactRepositoryApi::beginPublishFileImpl(
   for (const auto& target : orderedTargets) {
     intent.targets.push_back(toArtifactTarget(target));
   }
-  intent.requestDigest = makePublishRequestDigest(
-    intent.reference, intent.generation, intent.seed,
-    intent.consistency, intent.targets);
-  intent.validate(config.limits);
+  intent.schemaVersion = config.userStorageAuthorizer ? 2 : 1;
   const auto operationId = makePublishOperationId(
     m_impl->serviceUser->getName().toUri(ndn::name::UriFormat::ALTERNATE), intent.seed,
     intent.idempotencyKeyDigest);
@@ -2763,7 +2825,33 @@ ArtifactRepositoryApi::beginPublishFileImpl(
   try {
     auto previous = queryPublishOperationStatus(
       *m_impl->serviceUser, config, handle, remainingRequestTimeout());
-    validateAcceptedPublishStatus(previous, intent, operationId, config.limits);
+    auto acceptedIntent = intent;
+    acceptedIntent.userStorageBindings = previous.userStorageBindings;
+    if (config.userStorageAuthorizer) {
+      const auto& ownerIdentity = config.userStorageOwnerIdentity;
+      for (const auto& target : intent.targets) {
+        const auto actual = std::find_if(previous.userStorageBindings.begin(),
+          previous.userStorageBindings.end(), [&target] (const auto& entry) {
+            return entry.target == target;
+          });
+        const auto expectedWriter = ndn::Name(target == intent.seed
+          ? intent.reference.publisherIdentity : intent.seed.providerIdentity)
+          .toUri(ndn::name::UriFormat::ALTERNATE);
+        std::string invalidBinding;
+        if (actual == previous.userStorageBindings.end()) invalidBinding = "target-missing";
+        else if (actual->schemaVersion != 1) invalidBinding = "target-binding-schema";
+        else if (actual->binding.schemaVersion != 1) invalidBinding = "grant-binding-schema";
+        else if (actual->binding.ownerIdentity != ownerIdentity) invalidBinding = "owner";
+        else if (actual->binding.ownerEpoch == 0) invalidBinding = "owner-epoch";
+        else if (actual->writerIdentity != expectedWriter) invalidBinding = "writer";
+        if (!invalidBinding.empty()) {
+          throw std::runtime_error(
+            "repo-publish-idempotency-conflict: existing operation has invalid owner bindings (" +
+            invalidBinding + ")");
+        }
+      }
+    }
+    validateAcceptedPublishStatus(previous, acceptedIntent, operationId, config.limits);
     if (acceptedStatus != nullptr) {
       *acceptedStatus = std::move(previous);
     }
@@ -2791,6 +2879,33 @@ ArtifactRepositoryApi::beginPublishFileImpl(
     throw std::runtime_error(
       "repo-artifact-source-digest-mismatch: source does not match ArtifactReference");
   }
+
+  if (config.userStorageAuthorizer) {
+    intent.userStorageBindings = config.userStorageAuthorizer(intent, deadline);
+    (void)remaining();
+  }
+  intent.requestDigest = intent.schemaVersion == 2
+    ? makePublishRequestDigest(intent.reference, intent.generation, intent.seed,
+        intent.consistency, intent.targets, intent.userStorageBindings)
+    : makePublishRequestDigest(intent.reference, intent.generation, intent.seed,
+        intent.consistency, intent.targets);
+  intent.validate(config.limits);
+  for (const auto& binding : intent.userStorageBindings) {
+    if (binding.binding.ownerIdentity != config.userStorageOwnerIdentity) {
+      throw std::runtime_error(
+        "repo-user-storage-owner-mismatch: authorizer returned a different storage Owner");
+    }
+  }
+  const auto seedStorage = std::find_if(intent.userStorageBindings.begin(),
+    intent.userStorageBindings.end(), [&intent] (const auto& entry) {
+      return entry.target == intent.seed;
+    });
+  const auto bindSeed = [&] (auto& request, uint32_t version) {
+    if (intent.schemaVersion == 2) {
+      request.schemaVersion = version;
+      request.storageBinding = seedStorage->binding;
+    }
+  };
 
   const auto candidates = discoverCandidates(
     *m_impl->serviceUser, config, nullptr, &reference,
@@ -2853,6 +2968,7 @@ ArtifactRepositoryApi::beginPublishFileImpl(
   try {
     if (reference.sizeBytes <= chunkBytes) {
       ArtifactStoreRequest write;
+      bindSeed(write, 3);
       write.operationId = operationId;
       write.generation = intent.generation;
       write.reference = reference;
@@ -2869,6 +2985,7 @@ ArtifactRepositoryApi::beginPublishFileImpl(
         const auto length = std::min<uint64_t>(
           chunkBytes, reference.sizeBytes - offset);
         ArtifactRangeWriteRequest write;
+        bindSeed(write, 3);
         write.operationId = operationId;
         write.generation = intent.generation;
         write.reference = reference;
@@ -2887,6 +3004,7 @@ ArtifactRepositoryApi::beginPublishFileImpl(
         offset += length;
       }
       ArtifactRangeCommitRequest commit;
+      bindSeed(commit, 3);
       commit.operationId = operationId;
       commit.generation = intent.generation;
       commit.reference = reference;
@@ -2942,6 +3060,7 @@ ArtifactRepositoryApi::beginPublishFileImpl(
     if (rangeTransferStarted) {
       try {
         ArtifactRangeAbortRequest abort;
+        bindSeed(abort, 2);
         abort.operationId = operationId;
         abort.generation = intent.generation;
         abort.reference = reference;
@@ -2958,6 +3077,8 @@ ArtifactRepositoryApi::beginPublishFileImpl(
   }
 
   PublishOperationStatus accepted;
+  accepted.schemaVersion = intent.schemaVersion;
+  accepted.userStorageBindings = intent.userStorageBindings;
   accepted.operationId = operationId;
   accepted.reference = reference;
   accepted.generation = intent.generation;

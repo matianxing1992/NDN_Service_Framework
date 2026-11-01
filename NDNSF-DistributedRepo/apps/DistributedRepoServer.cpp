@@ -2,6 +2,7 @@
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
+#include "FaceDataReferenceFetcher.hpp"
 
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
@@ -11,6 +12,7 @@
 #include <ndn-cxx/security/key-chain.hpp>
 
 #include <filesystem>
+#include <chrono>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -97,12 +99,33 @@ main(int argc, char* argv[])
       config.databasePath.string() + ".artifact-v2.sqlite",
       ndnsf_distributed_repo::ArtifactLimits{},
       config.availabilityFreshnessMs);
+    repo->registerOriginalDataServing(face);
+    const auto referenceFetchTimeout =
+      std::chrono::milliseconds(config.requestTimeoutMs);
+    repo->setDataReferenceSpoolFetcher(
+      ndnsf_distributed_repo::detail::FaceDataReferenceFetcher(
+        face, referenceFetchTimeout, referenceFetchTimeout));
     ndn_service_framework::ServiceProvider provider(
       face,
       config.groupPrefix,
       providerCert,
       authorityCert,
       config.trustSchemaPath.string());
+
+    // Close owned-INSERT and validation admission before Provider teardown on
+    // every exit path, including exceptions from registration or event-loop
+    // processing. This guard is declared after both owners so it runs first.
+    struct OwnedInsertShutdownFence
+    {
+      ndnsf_distributed_repo::RepoNode& repo;
+      ndn_service_framework::ServiceProvider& provider;
+
+      ~OwnedInsertShutdownFence() noexcept
+      {
+        repo.beginShutdown();
+        provider.stopProducerPacketValidation();
+      }
+    } shutdownFence{*repo, provider};
 
     repo->registerServices(provider, publisherUser,
                            config.ackCollectionTimeMs,

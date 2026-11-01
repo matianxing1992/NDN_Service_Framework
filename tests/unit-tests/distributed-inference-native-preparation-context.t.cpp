@@ -166,6 +166,32 @@ BOOST_AUTO_TEST_CASE(NativePreparationContextProjectsPositionPolicyToLocalInputs
                     std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(NativePreparationContextCertifiesOnlyLocalAuthenticatedTokenInput)
+{
+  NativeSelectionProjectionV3 projection;
+  projection.generationContract.enabled = true;
+  projection.generationContract.tokenInputName = "tokens";
+  projection.generationContract.stateInputNames = {"state_in"};
+  projection.generationContract.stateOutputNames = {"state_out"};
+  projection.assembly.expectedInputs = {
+    {"tokens", "int64", {std::int64_t{1}, std::string{"sequence"}}},
+    {"state_in", "float32", {}}};
+  projection.assembly.expectedOutputs = {{"state_out", "float32", {}}};
+  NativeModelRunnerSpec spec;
+  const NativeRunnerPreparationContext context{
+    "/provider/token", "boot-1", 1234, "/private/cache"};
+  bindNativeRunnerPreparationContext(spec, projection, context);
+  BOOST_CHECK_EQUAL(spec.metadata.at("workTokenInputName"), "tokens");
+  BOOST_CHECK_EQUAL(spec.metadata.at("workTokenAxis"), "1");
+  projection.assembly.expectedInputs.front().shape = {std::string{"sequence"}};
+  bindNativeRunnerPreparationContext(spec, projection, context);
+  BOOST_CHECK_EQUAL(spec.metadata.at("workTokenAxis"), "0");
+  projection.assembly.expectedInputs.erase(projection.assembly.expectedInputs.begin());
+  bindNativeRunnerPreparationContext(spec, projection, context);
+  BOOST_CHECK(spec.metadata.count("workTokenInputName") == 0);
+  BOOST_CHECK(spec.metadata.count("workTokenAxis") == 0);
+}
+
 BOOST_AUTO_TEST_CASE(NativeGenerationControlPreservesSealedRankForPartialAssignment)
 {
   NativeExecutionPlan plan;

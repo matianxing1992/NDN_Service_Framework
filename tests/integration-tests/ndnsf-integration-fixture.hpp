@@ -198,10 +198,14 @@ public:
   /** Backward-compatible name for callers that only need Provider ingress. */
   void enableProviderProductionIngressForTest();
   ServiceUser& user();
+  void setResponseDropPredicateForTest(
+    std::function<bool(const ndn::svs::SVSPubSub::SubscriptionData&)> predicate);
   ServiceProvider& provider();
   ServiceProvider& provider(size_t index);
   /** Detach one Provider's user-facing transport for live-loss tests. */
   void disconnectProviderTransportForTest(size_t index);
+  /** Destroy one Provider while retaining its Face for late-callback tests. */
+  void destroyProviderKeepingFaceForTest(size_t index);
   /** Detach the default Provider-to-Provider mesh before installing a fault link. */
   void disconnectProviderPeerTransportForTest();
   size_t providerCount() const { return 1 + m_extraProviderFaces.size(); }

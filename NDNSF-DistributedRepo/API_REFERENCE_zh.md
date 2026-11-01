@@ -147,7 +147,12 @@ C++ fetch 失败抛 `ArtifactFetchError`，可通过 `result()` 检查已完成�
 | `putDataPacket` / `getDataPacket` / `getDataPackets` | 保存/取回 NDN signed Data 的原始 wire；按完整原名及 manifest 顺序取回，不把 packet 名改成 Repo 自造别名。 |
 | `insert` / `insertPayload` / `status` | 将既有 Data reference 插入 Repo，或用 KeyChain/SigningInfo 分段签名 payload 后插入；按 operation ID 查询状态。 |
 | `fetchOriginalDataPacket` | 先检查副本的 receipt/当前位置，再通过原 Data 名取 wire；调用方必须提供 producer-signature verifier 和预期 wire SHA-256。 |
+| `fetchOriginalDataPacketFromUserStorage` | 通过选定 Repo Provider 的 forwarding hint 取回 packet-set 中的精确原始 Data，不依赖单包 receipt。调用方须绑定 Owner LIST claim、校验单包长度与 Producer 签名，并对完整有序 wire 重算 claim digest；该阻塞调用不能运行在 ServiceUser I/O 线程。 |
+| `fetchOriginalDataPacketSetFromUserStorage` | 在固定预算内分页读取 Owner LIST、按完整 claim 校验 Repo manifest 和 generation，再依次取回并验证所有原始 Data，重算聚合 wire digest，最后重读并比较 Owner claim。`maxListingPagesPerScan` 和 `maxListedObjectsPerScan` 分别限制初次读取与末尾复核；`maxListingWireBytes` 和总 deadline 跨两次扫描累计。返回的不可变结果只证明当前 Repo 传输集合，不验证 KV 语义或授予执行权限；阻塞调用不能运行在 ServiceUser I/O 线程。 |
+| `revalidateCurrentUserStorageClaim` | 在调用方完成 protected-KV 语义校验后，以有界 Owner LIST 重新读取同一对象，并逐字段比较 committed claim；缺失、变化、超时或越界均失败。它是一次新鲜观察，不是 durability lease；阻塞调用不能运行在 ServiceUser I/O 线程。 |
 | `cacheStatus`、`catalogStatus`、`catalogSnapshot`、`catalogDelta(sinceEpoch)`、`catalogLookup(name)` | 查询缓存和 catalog epoch、snapshot、增量及单对象条目。 |
+
+配置持久发布的`userStorageAuthorizer`时，必须同时将`userStorageOwnerIdentity`设为实际Owner的完整规范Name；Owner可以与Producer不同。重试按已接受的Owner绑定恢复，既不把Producer冒充Owner，也不要求离线副本重新在线。调用方提供的既有精确grant不要求采用工厂的grant ID格式。
 
 对象写入的最小用法（`node` 是已配置的 `RepoNode`）：
 

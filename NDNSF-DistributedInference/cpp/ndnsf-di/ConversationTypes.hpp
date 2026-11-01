@@ -34,6 +34,9 @@ struct ConversationOptions
 {
   std::string conversationId;
   std::optional<ConversationCheckpoint> checkpoint;
+  // Override the prepared package's configured deadline for this conversation.
+  // Omit to retain the package deadline (or the coordinator's default).
+  std::optional<std::uint64_t> retentionDeadlineMs;
 };
 
 } // namespace ndnsf::di

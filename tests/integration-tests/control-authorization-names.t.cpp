@@ -12,6 +12,7 @@
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/io.hpp>
 #include <ndn-cxx/lp/nack.hpp>
+#include <nac-abe/common.hpp>
 #include <openssl/sha.h>
 #include <fstream>
 #include <filesystem>
@@ -711,7 +712,7 @@ BOOST_AUTO_TEST_CASE(ActualSelectionStatusQueryPreservesOriginalAndRefreshesCurr
 
 BOOST_AUTO_TEST_CASE(WrappedKeySingleFetchRejectsSignerGeometryAndMalformedBlock)
 {
-  enum class Fault { None, Signer, FinalBlock, Block, TrailingBlock, Timeout };
+  enum class Fault { None, Signer, FinalBlock, Block, TrailingBlock, MalformedNac, Timeout };
   ndn::KeyChain keys("pib-memory:", "tpm-memory:");
   const auto owner = makeRsaIdentity(keys, ndn::Name("/spec201/wrapper/owner"));
   const auto foreign = makeRsaIdentity(keys, ndn::Name("/spec201/wrapper/foreign"));
@@ -735,7 +736,8 @@ BOOST_AUTO_TEST_CASE(WrappedKeySingleFetchRejectsSignerGeometryAndMalformedBlock
     .append("EPOCH").append(commitment("ndnsf-naming/opaque/protection-epoch", {{1, 4, utf8("epoch")}}))
     .append("OBJECT");
   BOOST_CHECK(locator.wireEncode() == expectedLocator.wireEncode());
-  for (const auto fault : {Fault::None, Fault::Signer, Fault::FinalBlock, Fault::Block, Fault::TrailingBlock, Fault::Timeout}) {
+  for (const auto fault : {Fault::None, Fault::Signer, Fault::FinalBlock, Fault::Block,
+                           Fault::TrailingBlock, Fault::MalformedNac, Fault::Timeout}) {
     bool completed = false, succeeded = false;
     std::string failure;
     size_t outgoing = 0;
@@ -744,13 +746,30 @@ BOOST_AUTO_TEST_CASE(WrappedKeySingleFetchRejectsSignerGeometryAndMalformedBlock
     ndn::DummyClientFace face(io, keys);
     ndn::ValidatorConfig validator(face);
     validator.load("spec201-wrapper.conf");
-    Bytes plaintext(9000, 0x33);
-    ndn::Block envelope(128);
-    envelope.push_back(ndn::makeBinaryBlock(129, plaintext.begin(), plaintext.end()));
+    ndn::Block envelope = ndn::makeEmptyBlock(ndn::tlv::Content);
+    const Bytes encryptedContent(9000, 0x33);
+    auto contentKeyName = producer;
+    contentKeyName.append("CK").append("key-1").append("ENC-BY")
+      .append(attribute).appendVersion(1);
+    envelope.push_back(ndn::makeBinaryBlock(ndn::nacabe::TLV_EncryptedContent,
+      encryptedContent.begin(), encryptedContent.end()));
+    envelope.push_back(ndn::makeNonNegativeIntegerBlock(
+      ndn::nacabe::TLV_PlainTextSize, HybridMessageCrypto::MESSAGE_KEY_SIZE));
+    envelope.push_back(contentKeyName.wireEncode());
     envelope.encode();
     Bytes cipher(envelope.data(), envelope.data() + envelope.size());
     if (fault == Fault::Block) cipher = {0x80, 0x03, 0x01};
     if (fault == Fault::TrailingBlock) cipher.push_back(0);
+    if (fault == Fault::MalformedNac) {
+      ndn::Block malformed = ndn::makeEmptyBlock(ndn::tlv::Content);
+      malformed.push_back(contentKeyName.wireEncode());
+      malformed.push_back(ndn::makeBinaryBlock(ndn::nacabe::TLV_EncryptedContent,
+        encryptedContent.begin(), encryptedContent.end()));
+      malformed.push_back(ndn::makeNonNegativeIntegerBlock(
+        ndn::nacabe::TLV_PlainTextSize, HybridMessageCrypto::MESSAGE_KEY_SIZE));
+      malformed.encode();
+      cipher.assign(malformed.begin(), malformed.end());
+    }
     auto packets = prepareHybridMessageKeyPackets(service, producer, attribute, "epoch",
         ndn::span<const uint8_t>(cipher.data(), cipher.size()), keys,
         ndn::security::signingByIdentity(producer), ndn::time::milliseconds(1000), ndn::tlv::ContentType_Blob);
@@ -763,6 +782,188 @@ BOOST_AUTO_TEST_CASE(WrappedKeySingleFetchRejectsSignerGeometryAndMalformedBlock
     }
     if (fault == Fault::Signer)
       for (auto& packet : packets) keys.sign(*packet, ndn::security::signingByIdentity(foreign.getIdentity()));
+
+    const auto authorizeWrapperProducer = [&owner, &producer](const ndn::Data& packet) {
+      return ndn::security::verifySignature(packet, owner.getDefaultKey()) &&
+        ProducerSignerPolicy().allowsValidatedSigner(packet, producer);
+    };
+    std::vector<std::vector<uint8_t>> originalWrapperWires;
+    originalWrapperWires.reserve(packets.size());
+    for (const auto& packet : packets) {
+      const auto wire = packet->wireEncode();
+      originalWrapperWires.emplace_back(wire.begin(), wire.end());
+    }
+    bool packetSetAccepted = false;
+    std::string packetSetFailure;
+    try {
+      const auto verified = validateHybridMessageKeyWrapperPacketSet(
+        locator, originalWrapperWires, authorizeWrapperProducer);
+      packetSetAccepted = true;
+      BOOST_CHECK(verified.objectName() == ndn::Name(locator).append(rawHash(cipher)));
+      BOOST_REQUIRE_EQUAL(verified.packetFingerprints().size(), packets.size());
+      for (std::size_t i = 0; i < packets.size(); ++i) {
+        BOOST_CHECK(verified.packetFingerprints()[i].first == packets[i]->getName());
+        BOOST_CHECK_EQUAL(verified.packetFingerprints()[i].second.size(), 64);
+      }
+      const ndn::Block expectedCipher(ndn::span<const uint8_t>(cipher.data(), cipher.size()));
+      BOOST_CHECK(verified.cipherBlock() == expectedCipher);
+    }
+    catch (const std::exception& error) {
+      packetSetFailure = error.what();
+    }
+    const bool expectPacketSetAccepted = fault == Fault::None || fault == Fault::MalformedNac ||
+      fault == Fault::Timeout;
+    BOOST_CHECK_EQUAL(packetSetAccepted, expectPacketSetAccepted);
+    if (fault == Fault::Signer)
+      BOOST_CHECK(packetSetFailure.find("signer is not authorized for Producer") != std::string::npos);
+    if (fault == Fault::FinalBlock)
+      BOOST_CHECK(packetSetFailure.find("FinalBlock") != std::string::npos);
+    if (fault == Fault::Block || fault == Fault::TrailingBlock)
+      BOOST_CHECK(packetSetFailure.find("valid NAC Block") != std::string::npos);
+    if (fault == Fault::None) {
+      const auto packetSet = validateHybridMessageKeyWrapperPacketSet(
+        locator, originalWrapperWires, authorizeWrapperProducer);
+      const auto nacEnvelope = validateHybridMessageKeyWrapperEnvelopeV1(packetSet);
+      BOOST_CHECK(nacEnvelope.wrapperObjectName() == packetSet.objectName());
+      BOOST_CHECK(nacEnvelope.packetFingerprints() == packetSet.packetFingerprints());
+      BOOST_CHECK(nacEnvelope.contentKeyName() == contentKeyName);
+      BOOST_CHECK_EQUAL(nacEnvelope.plaintextBytes(), HybridMessageCrypto::MESSAGE_KEY_SIZE);
+      BOOST_CHECK_EQUAL(nacEnvelope.encryptedContentBytes(), encryptedContent.size());
+      auto reversedWires = originalWrapperWires;
+      std::reverse(reversedWires.begin(), reversedWires.end());
+      BOOST_CHECK_NO_THROW(validateHybridMessageKeyWrapperPacketSet(
+        locator, reversedWires, authorizeWrapperProducer));
+      auto missingSegment = originalWrapperWires;
+      missingSegment.pop_back();
+      BOOST_CHECK_THROW(validateHybridMessageKeyWrapperPacketSet(
+        locator, missingSegment, authorizeWrapperProducer), std::invalid_argument);
+      auto duplicateSegment = originalWrapperWires;
+      duplicateSegment.push_back(originalWrapperWires.front());
+      BOOST_CHECK_THROW(validateHybridMessageKeyWrapperPacketSet(
+        locator, duplicateSegment, authorizeWrapperProducer), std::invalid_argument);
+
+      ndn::Data tamperedPacket(*packets.front());
+      const auto content = tamperedPacket.getContent();
+      Bytes alteredContent(content.value(), content.value() + content.value_size());
+      BOOST_REQUIRE(!alteredContent.empty());
+      alteredContent.front() ^= 1;
+      tamperedPacket.setContent(alteredContent);
+      const auto tamperedWire = tamperedPacket.wireEncode();
+      auto tamperedPacketSet = originalWrapperWires;
+      tamperedPacketSet.front().assign(tamperedWire.begin(), tamperedWire.end());
+      std::string tamperedPacketFailure;
+      try {
+        (void)validateHybridMessageKeyWrapperPacketSet(
+          locator, tamperedPacketSet, authorizeWrapperProducer);
+      }
+      catch (const std::exception& error) {
+        tamperedPacketFailure = error.what();
+      }
+      BOOST_CHECK_MESSAGE(
+        tamperedPacketFailure.find("signer is not authorized for Producer") != std::string::npos,
+        "tampered wrapper packet must fail signature authorization: " << tamperedPacketFailure);
+
+      std::vector<std::vector<uint8_t>> originalContentKeyWires;
+      for (std::uint64_t segment = 0; segment < 2; ++segment) {
+        ndn::Data packet;
+        auto name = contentKeyName;
+        name.appendSegment(segment);
+        packet.setName(name);
+        packet.setContentType(ndn::tlv::ContentType_Blob);
+        packet.setFreshnessPeriod(ndn::time::milliseconds(1000));
+        packet.setFinalBlock(ndn::name::Component::fromSegment(1));
+        const Bytes payload{static_cast<uint8_t>(0x40 + segment), 0x51};
+        packet.setContent(payload);
+        keys.sign(packet, ndn::security::signingByIdentity(producer));
+        const auto encoded = packet.wireEncode();
+        originalContentKeyWires.emplace_back(encoded.begin(), encoded.end());
+      }
+      auto completeBundle = originalWrapperWires;
+      completeBundle.insert(completeBundle.end(), originalContentKeyWires.begin(),
+                            originalContentKeyWires.end());
+      const auto verifiedContentKeySet = validateNacContentKeyPacketSetV1(
+        contentKeyName, producer, completeBundle, authorizeWrapperProducer);
+      BOOST_CHECK(verifiedContentKeySet.contentKeyName() == contentKeyName);
+      BOOST_CHECK(verifiedContentKeySet.producerPrefix() == producer);
+      BOOST_CHECK_EQUAL(verifiedContentKeySet.segmentCount(), 2);
+      BOOST_CHECK_EQUAL(verifiedContentKeySet.contentBytes(), 4);
+      auto expectedContentKeySegment0 = contentKeyName;
+      expectedContentKeySegment0.appendSegment(0);
+      auto expectedContentKeySegment1 = contentKeyName;
+      expectedContentKeySegment1.appendSegment(1);
+      BOOST_CHECK(verifiedContentKeySet.packetFingerprints()[0].first == expectedContentKeySegment0);
+      BOOST_CHECK(verifiedContentKeySet.packetFingerprints()[1].first == expectedContentKeySegment1);
+      BOOST_CHECK_EQUAL(verifiedContentKeySet.packetFingerprints()[0].second.size(), 64);
+      BOOST_CHECK_EQUAL(verifiedContentKeySet.packetFingerprints()[1].second.size(), 64);
+      std::vector<std::string> completeBundleNames;
+      completeBundleNames.reserve(completeBundle.size());
+      for (const auto& wire : completeBundle) {
+        const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))};
+        completeBundleNames.push_back(packet.getName().toUri(ndn::name::UriFormat::ALTERNATE));
+      }
+      auto requiredFingerprints = packetSet.packetFingerprints();
+      requiredFingerprints.insert(requiredFingerprints.end(),
+        verifiedContentKeySet.packetFingerprints().begin(),
+        verifiedContentKeySet.packetFingerprints().end());
+      BOOST_CHECK_NO_THROW(requireOriginalPacketFingerprintsPresentV1(
+        completeBundleNames, completeBundle, requiredFingerprints));
+
+      auto missingOriginals = completeBundle;
+      auto missingNames = completeBundleNames;
+      missingOriginals.pop_back();
+      missingNames.pop_back();
+      BOOST_CHECK_THROW(requireOriginalPacketFingerprintsPresentV1(
+        missingNames, missingOriginals, requiredFingerprints), std::invalid_argument);
+
+      auto changedOriginals = completeBundle;
+      changedOriginals.front() = tamperedPacketSet.front();
+      BOOST_CHECK_THROW(requireOriginalPacketFingerprintsPresentV1(
+        completeBundleNames, changedOriginals, requiredFingerprints), std::invalid_argument);
+
+      auto incompleteBundle = completeBundle;
+      incompleteBundle.pop_back();
+      BOOST_CHECK_THROW(validateNacContentKeyPacketSetV1(
+        contentKeyName, producer, incompleteBundle, authorizeWrapperProducer), std::invalid_argument);
+      auto duplicateBundle = completeBundle;
+      duplicateBundle.push_back(originalContentKeyWires.front());
+      BOOST_CHECK_THROW(validateNacContentKeyPacketSetV1(
+        contentKeyName, producer, duplicateBundle, authorizeWrapperProducer), std::invalid_argument);
+
+      ndn::Data inconsistentFinal{ndn::Block(ndn::span<const uint8_t>(
+        originalContentKeyWires.back().data(), originalContentKeyWires.back().size()))};
+      inconsistentFinal.setFinalBlock(ndn::name::Component::fromSegment(2));
+      keys.sign(inconsistentFinal, ndn::security::signingByIdentity(producer));
+      const auto inconsistentWire = inconsistentFinal.wireEncode();
+      auto inconsistentBundle = completeBundle;
+      inconsistentBundle.back().assign(inconsistentWire.begin(), inconsistentWire.end());
+      BOOST_CHECK_THROW(validateNacContentKeyPacketSetV1(
+        contentKeyName, producer, inconsistentBundle, authorizeWrapperProducer), std::invalid_argument);
+
+      ndn::Data wrongSigner{ndn::Block(ndn::span<const uint8_t>(
+        originalContentKeyWires.back().data(), originalContentKeyWires.back().size()))};
+      keys.sign(wrongSigner, ndn::security::signingByIdentity(foreign.getIdentity()));
+      const auto wrongSignerWire = wrongSigner.wireEncode();
+      auto wrongSignerBundle = completeBundle;
+      wrongSignerBundle.back().assign(wrongSignerWire.begin(), wrongSignerWire.end());
+      BOOST_CHECK_THROW(validateNacContentKeyPacketSetV1(
+        contentKeyName, producer, wrongSignerBundle, authorizeWrapperProducer), std::invalid_argument);
+
+      auto unsegmentedBundle = completeBundle;
+      ndn::Data unsegmented;
+      unsegmented.setName(contentKeyName);
+      unsegmented.setContent(Bytes{0x01});
+      keys.sign(unsegmented, ndn::security::signingByIdentity(producer));
+      const auto unsegmentedWire = unsegmented.wireEncode();
+      unsegmentedBundle.push_back(std::vector<uint8_t>(unsegmentedWire.begin(), unsegmentedWire.end()));
+      BOOST_CHECK_THROW(validateNacContentKeyPacketSetV1(
+        contentKeyName, producer, unsegmentedBundle, authorizeWrapperProducer), std::invalid_argument);
+    }
+    if (fault == Fault::MalformedNac) {
+      const auto packetSet = validateHybridMessageKeyWrapperPacketSet(
+        locator, originalWrapperWires, authorizeWrapperProducer);
+      BOOST_CHECK_THROW(validateHybridMessageKeyWrapperEnvelopeV1(packetSet), std::invalid_argument);
+    }
+
     ndn::signal::ScopedConnection connection = face.onSendInterest.connect([&](const ndn::Interest& interest) {
       ++outgoing; expressedNames.push_back(interest.getName());
       if (fault == Fault::Timeout) return;
@@ -771,7 +972,7 @@ BOOST_AUTO_TEST_CASE(WrappedKeySingleFetchRejectsSignerGeometryAndMalformedBlock
         if (interest.getName() == packet->getName()) { face.receive(*packet); break; }
     });
     fetchHybridMessageKeyWrapper(face, validator, locator,
-      [producer](const ndn::Data& packet) { return ProducerSignerPolicy().allowsValidatedSigner(packet, producer); },
+      authorizeWrapperProducer,
       [&](const ndn::Name& name, const ndn::Block& block) {
         succeeded = true; completed = true;
         BOOST_CHECK(name == ndn::Name(locator).append(rawHash(cipher)));
@@ -799,6 +1000,7 @@ BOOST_AUTO_TEST_CASE(WrappedKeySingleFetchRejectsSignerGeometryAndMalformedBlock
     if (fault == Fault::Signer) BOOST_CHECK(failure.find("signer is not authorized for Producer") != std::string::npos);
     if (fault == Fault::FinalBlock) BOOST_CHECK(failure.find("FinalBlock") != std::string::npos);
     if (fault == Fault::Block || fault == Fault::TrailingBlock) BOOST_CHECK(failure.find("valid NAC Block") != std::string::npos);
+    if (fault == Fault::MalformedNac) BOOST_CHECK(failure.find("NAC fields invalid") != std::string::npos);
   }
 }
 

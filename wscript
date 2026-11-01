@@ -48,12 +48,13 @@ def limit_compile_memory_concurrency(generator):
 
 # Host builds consume one installed dependency closure.  The host ONNX Runtime
 # SDK is deliberately installed under /opt because it is a versioned system
-# SDK; all other host NDNSF dependencies use /usr or /usr/local.  Container
+# SDKs; all other host NDNSF dependencies use /usr or /usr/local.  Container
 # builds may use their declared SDK roots only after the image sets the explicit
 # NDNSF_CONTAINER_BUILD marker.  Checkout, /tmp, .codex-tmp and build-work
 # prefixes are never valid dependency inputs.
 HOST_GLOBAL_DEPENDENCY_PREFIXES = (
-    '/usr', '/usr/local', '/opt/onnxruntime', '/opt/onnxruntime-1.26.0')
+    '/usr', '/usr/local', '/opt/onnxruntime', '/opt/onnxruntime-1.26.0',
+    '/opt/onnx-1.17.0')
 CONTAINER_GLOBAL_DEPENDENCY_PREFIXES = (
     '/opt/ndn-base', '/opt/onnx', '/opt/ndnsf-stage', '/opt/ndnsf-di')
 # The development host has one supported Boost pair.  Keep this explicit so
@@ -84,9 +85,9 @@ def _require_global_dependency_prefix(path, owner):
         allowed = ', '.join(roots)
         raise RuntimeError(
             f'{owner} must use an installed global dependency root; '
-            f'rejected {resolved}. Install it under /usr/local or the '
-            'declared container SDK root instead of using a temporary '
-            f'checkout prefix (allowed roots: {allowed})')
+            f'rejected {resolved}; use a declared global SDK root instead '
+            'of a temporary checkout prefix '
+            f'(allowed roots: {allowed})')
     return resolved
 
 
@@ -952,8 +953,9 @@ def build(bld):
             'NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.cpp',
         ])
     bld.objects(target='ndnsf-di-core-objects', source=di_core_sources,
-                includes=['.', 'ndn-service-framework'],
-                use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL',
+                includes=['.', 'ndn-service-framework',
+                          'NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL',
                 cxxflags=['-fPIC'])
     bld.objects(
         target='ndnsf-di-adapter-onnx-objects',
@@ -983,7 +985,7 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp') + \
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp') + \
         bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
-    di_library_use = 'ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL DL'
+    di_library_use = 'ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL DL'
     if bld.env.HAVE_ONNXRUNTIME_CPP:
         di_library_use += ' ONNXRUNTIME'
     if bld.env.enable_shared:
@@ -995,9 +997,11 @@ def build(bld):
                   source=di_library_sources,
                   use=di_shlib_use,
                   includes=['.', 'ndn-service-framework',
+                            'NDNSF-DistributedRepo/include',
                             'NDNSF-DistributedInference/cpp/adapters/onnx'],
                   export_includes=['.', 'ndn-service-framework',
-                                   'NDNSF-DistributedInference/cpp'],
+                                   'NDNSF-DistributedInference/cpp',
+                                   'NDNSF-DistributedRepo/include'],
                   install_path='${LIBDIR}',
                   linkflags=['-Wl,-rpath,$ORIGIN'])
     if bld.env.enable_static:
@@ -1008,9 +1012,11 @@ def build(bld):
                   source=di_library_sources,
                   use=di_library_use,
                   includes=['.', 'ndn-service-framework',
+                            'NDNSF-DistributedRepo/include',
                             'NDNSF-DistributedInference/cpp/adapters/onnx'],
                   export_includes=['.', 'ndn-service-framework',
-                                   'NDNSF-DistributedInference/cpp'],
+                                   'NDNSF-DistributedInference/cpp',
+                                   'NDNSF-DistributedRepo/include'],
                   install_path='${LIBDIR}')
 
     bld.recurse('NDNSF-DistributedRepo')
@@ -1051,6 +1057,10 @@ def build(bld):
                 'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp',
                 'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp',
                 'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativePortableKvCheckpoint.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedKvCheckpoint.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedKvPublication.hpp',
+                'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedKvRestore.hpp',
                 'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp',
                 'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp',
                 'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp',

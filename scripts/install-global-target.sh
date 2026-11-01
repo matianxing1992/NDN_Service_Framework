@@ -110,6 +110,10 @@ clean_env=(
   "NDNSF_SKIP_DEV_PIP_INSTALL=1"
 )
 
+if [[ -n ${WAFLOCK:-} ]]; then
+  clean_env+=("WAFLOCK=$WAFLOCK")
+fi
+
 echo "==> Checking the canonical global dependency receipt"
 (cd "$ROOT" && "${clean_env[@]}" "$ROOT/install_ndnsf_stack.sh" \
   --check-dependencies --python /usr/bin/python3)

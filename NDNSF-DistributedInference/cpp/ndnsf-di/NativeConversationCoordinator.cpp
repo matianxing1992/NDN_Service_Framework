@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedKvPublication.hpp"
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 #include <chrono>
@@ -9,6 +10,7 @@
 #include <set>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <type_traits>
 
 namespace ndnsf::di {
 namespace {
@@ -33,6 +35,24 @@ void validateLocalPlacement(const std::map<std::string, std::string>& placement,
   }
   require(nativePlanningDigest(nativeCanonicalJson(roles)) == checkpoint.at("planRoleMapDigest"),
           "conversation local placement digest mismatch");
+}
+
+void validateNextTurnPlacement(const std::map<std::string, std::string>& placement,
+                               const NativeJson& checkpoint)
+{
+  if (placement.empty()) return;
+  const auto& receipts = checkpoint.at("roleReceiptDigests");
+  require(placement.size() == receipts.size(), "conversation next-turn placement role cover mismatch");
+  std::set<std::string> providers;
+  for (const auto& [role, provider] : placement) {
+    require(receipts.contains(role) && !provider.empty() && provider.size() <= 4096,
+      "conversation next-turn placement role mismatch");
+    const ndn::Name identity(provider);
+    require(!identity.empty() && identity.wireEncode().size() <= 4096,
+      "conversation next-turn Provider identity invalid");
+    providers.insert(provider);
+  }
+  require(providers.size() <= 16, "conversation next-turn Provider roster exceeds bound");
 }
 std::string ticket()
 {
@@ -109,6 +129,34 @@ struct NativeConversationCoordinator::Impl
       current->second.planRoleMapDigest ==
         (expectedPlanRoleMapDigest ? *expectedPlanRoleMapDigest : turn.parent.planRoleMapDigest),
       "DI_NATIVE_CONVERSATION_STATE_CHANGED");
+  }
+  NativeConversationTurn bindSelectedMap(Pending& value,
+    const std::map<std::string, std::string>& providersByRole)
+  {
+    if (!value.turn.parent.expectedProvidersByRole.empty())
+      require(providersByRole == value.turn.parent.expectedProvidersByRole,
+        "conversation plan map differs from Owner-selected next-turn map");
+    std::set<std::string> expected(value.turn.parent.expectedRoles.begin(), value.turn.parent.expectedRoles.end());
+    require(expected.size() == providersByRole.size() && !providersByRole.empty(),
+      "conversation replacement plan map role cover invalid");
+    NativeJson roleMap = NativeJson::array();
+    for (const auto& [role, provider] : providersByRole) {
+      require(expected.erase(role) == 1 && !provider.empty(),
+        "conversation replacement plan map role binding invalid");
+      roleMap.push_back(NativeJson::array({role, provider}));
+    }
+    require(expected.empty(), "conversation replacement plan map role cover invalid");
+    const auto digest = nativePlanningDigest(nativeCanonicalJson(roleMap));
+    require(digest != value.parentPlanRoleMapDigest, "conversation replacement plan map unchanged");
+    auto replacement = value.turn;
+    replacement.parent.planRoleMapDigest = digest;
+    replacement.providersByRole = providersByRole;
+    auto result = replacement;
+    // Allocation/validation completes before the only pending-state mutation.
+    static_assert(std::is_nothrow_move_assignable<NativeConversationTurn>::value);
+    static_assert(std::is_nothrow_move_constructible<NativeConversationTurn>::value);
+    value.turn = std::move(replacement);
+    return result;
   }
 };
 
@@ -228,7 +276,8 @@ NativeConversationTurn NativeConversationCoordinator::beginTurn(
   turn.ticket = ticket();
   turn.executionRequestId = turn.requestId;
   if (c.mode == "FULL_CONTEXT")
-    require(c.parentContextEpoch == 0 && c.parentCheckpointWire.empty() && c.parentCheckpointDigest.empty(),
+    require(c.parentContextEpoch == 0 && c.parentCheckpointWire.empty() && c.parentCheckpointDigest.empty() &&
+      c.expectedProvidersByRole.empty(),
       "conversation full context carries parent");
   else {
     require(c.mode == "APPEND_DELTA" && c.parentContextEpoch > 0 &&
@@ -241,6 +290,7 @@ NativeConversationTurn NativeConversationCoordinator::beginTurn(
     const auto current = s.records.find(c.conversationId);
     require(current != s.records.end(), "conversation transcript unavailable");
     turn.providersByRole = current->second.checkpoint.providersByRole;
+    turn.parent.expectedProvidersByRole = current->second.nextTurnProvidersByRole;
     const auto lease = s.grantLeases.find(c.conversationId);
     if (lease != s.grantLeases.end()) turn.grantLease = lease->second;
     const auto previous = current->second.checkpoint.transcript.at("canonicalTokenIds").get<std::vector<std::int64_t>>();
@@ -330,22 +380,43 @@ NativeConversationTurn NativeConversationCoordinator::bindAttemptPlanRoleMap(
   require(pending.turn.attempt == 2 && !pending.prepared && !pending.committing &&
     pending.turn.parent.planRoleMapDigest == pending.parentPlanRoleMapDigest &&
     !providersByRole.empty(), "conversation replacement plan map binding invalid");
-  std::set<std::string> expectedRoles(pending.turn.parent.expectedRoles.begin(),
-                                      pending.turn.parent.expectedRoles.end());
-  require(expectedRoles.size() == providersByRole.size(),
-    "conversation replacement plan map role cover invalid");
-  NativeJson roleMap = NativeJson::array();
-  for (const auto& [role, provider] : providersByRole) {
-    require(expectedRoles.erase(role) == 1 && !provider.empty(),
-      "conversation replacement plan map role binding invalid");
-    roleMap.push_back(NativeJson::array({role, provider}));
-  }
-  require(expectedRoles.empty(), "conversation replacement plan map role cover invalid");
-  const auto digest = nativePlanningDigest(nativeCanonicalJson(roleMap));
-  require(digest != pending.parentPlanRoleMapDigest, "conversation replacement plan map unchanged");
-  pending.turn.parent.planRoleMapDigest = digest;
-  pending.turn.providersByRole = providersByRole;
-  return pending.turn;
+  return s.bindSelectedMap(pending, providersByRole);
+}
+
+NativeConversationTurn NativeConversationCoordinator::bindRecoveryPlanRoleMap(
+  const NativeConversationTurn& turn,
+  const std::map<std::string, std::string>& providersByRole,
+  const NativeConversationKvRecoveryV1& expectedRecovery) const
+{
+  // This call validates the complete authenticated saved parent without a
+  // nested lock. Recheck its immutable record and pending CAS below.
+  const auto recovery = protectedKvRecoveryForTurn(turn);
+  require(recovery && *recovery == expectedRecovery, "conversation recovery parent snapshot changed");
+  auto& s = *m_impl;
+  std::lock_guard<std::mutex> guard(s.mutex);
+  auto& pending = s.find(turn);
+  const auto& owned = pending.turn;
+  require(owned.attempt == 1 && !owned.aborted && !pending.prepared && !pending.committing &&
+    owned.parent.parentContextEpoch > 0 && owned.parent.mode == "APPEND_DELTA" &&
+    owned.executionRequestId == turn.executionRequestId &&
+    owned.parent.conversationId == turn.parent.conversationId &&
+    owned.parent.parentContextEpoch == turn.parent.parentContextEpoch &&
+    owned.parent.parentCheckpointDigest == turn.parent.parentCheckpointDigest &&
+    owned.parent.requestContractDigest == turn.parent.requestContractDigest &&
+    owned.parent.planRoleMapDigest == turn.parent.planRoleMapDigest &&
+    owned.parent.planRoleMapDigest == pending.parentPlanRoleMapDigest &&
+    owned.parent.expectedRoles == turn.parent.expectedRoles &&
+    owned.parent.serviceName == turn.parent.serviceName &&
+    owned.parent.retentionDeadlineMs == turn.parent.retentionDeadlineMs &&
+    owned.parent.retentionDeadlineMs > s.config.nowMs(), "conversation recovery map binding invalid");
+  s.parent(owned, &pending.parentPlanRoleMapDigest);
+  const auto& record = s.records.at(owned.parent.conversationId);
+  require(record.retentionDeadlineMs > s.config.nowMs() && record.protectedKvReferences &&
+    *record.protectedKvReferences == expectedRecovery.references &&
+    record.checkpoint.checkpointDigest == expectedRecovery.checkpoint.at("checkpointDigest") &&
+    record.checkpoint.successorContextEpoch == expectedRecovery.checkpoint.at("contextEpoch"),
+    "conversation recovery parent snapshot changed");
+  return s.bindSelectedMap(pending, providersByRole);
 }
 
 void NativeConversationCoordinator::bindGrantLease(
@@ -553,6 +624,222 @@ NativeConversationRecord NativeConversationCoordinator::commitTurn(
   }
 }
 
+std::optional<NativeJson> NativeConversationCoordinator::protectedKvForTurn(
+  const NativeConversationTurn& turn) const
+{
+  const auto recovery = protectedKvRecoveryForTurn(turn);
+  if (!recovery) return std::nullopt;
+  return recovery->references;
+}
+
+std::optional<NativeConversationKvRecoveryV1>
+NativeConversationCoordinator::protectedKvRecoveryForTurn(
+  const NativeConversationTurn& turn) const
+{
+  auto& state = *m_impl;
+  std::lock_guard<std::mutex> guard(state.mutex);
+  const auto& pending = state.find(turn);
+  const auto& owned = pending.turn;
+  const auto now = state.config.nowMs();
+  require(!owned.aborted && !pending.committing && !pending.prepared &&
+    owned.parent.retentionDeadlineMs > now &&
+    turn.executionRequestId == owned.executionRequestId &&
+    turn.parent.conversationId == owned.parent.conversationId &&
+    turn.parent.parentContextEpoch == owned.parent.parentContextEpoch &&
+    turn.parent.parentCheckpointDigest == owned.parent.parentCheckpointDigest &&
+    turn.parent.requestContractDigest == owned.parent.requestContractDigest &&
+    turn.parent.planRoleMapDigest == owned.parent.planRoleMapDigest &&
+    turn.parent.expectedRoles == owned.parent.expectedRoles &&
+    turn.parent.serviceName == owned.parent.serviceName &&
+    turn.parent.retentionDeadlineMs == owned.parent.retentionDeadlineMs,
+    "conversation KV pending owner changed or expired");
+  state.parent(owned, &pending.parentPlanRoleMapDigest);
+  if (!owned.parent.parentContextEpoch) return std::nullopt;
+  const auto& record = state.records.at(owned.parent.conversationId);
+  require(record.retentionDeadlineMs > now, "conversation KV parent expired");
+  if (!record.protectedKvReferences) return std::nullopt;
+  const auto checkpoint = nativeReadConversationCheckpoint(record.checkpoint.wire,
+    state.config.authenticationKeys, now);
+  state.scope(checkpoint);
+  nativeValidateProtectedKvReferences(*record.protectedKvReferences, checkpoint,
+    record.checkpoint.providersByRole);
+  for (const auto& reference : record.protectedKvReferences->items())
+    require(reference.value().at("version").get<std::uint64_t>() == 2,
+      "conversation KV recipient recovery requires v2 metadata");
+  NativeConversationKvRecoveryV1 recovery{*record.protectedKvReferences, checkpoint, {}};
+  const auto& receipts = record.checkpoint.transcript.at("providerRoleReceipts");
+  require(receipts.is_array() && receipts.size() == recovery.references.size(),
+    "conversation KV origin role cover mismatch");
+  for (const auto& encoded : receipts) {
+    require(encoded.is_string() && encoded.get_ref<const std::string&>().size() <= 87384,
+      "conversation KV origin receipt exceeds bound");
+    auto wire = nativeConversationBase64Decode(encoded.get_ref<const std::string&>());
+    require(!wire.empty() && wire.size() <= 65536,
+      "conversation KV origin receipt exceeds bound");
+    const auto receipt = nativeReadProviderConversationStateReceipt(nativeParseJson(wire));
+    const auto producer = record.checkpoint.providersByRole.find(receipt.roleName);
+    require(recovery.references.contains(receipt.roleName) &&
+      producer != record.checkpoint.providersByRole.end() &&
+      ndn::Name(producer->second) == ndn::Name(receipt.providerIdentity) &&
+      receipt.computedDigest() == checkpoint.at("roleReceiptDigests").at(receipt.roleName) &&
+      receipt.expiresAtMs > now &&
+      recovery.originReceipts.emplace(receipt.roleName, std::move(wire)).second,
+      "conversation KV origin receipt differs from saved parent");
+  }
+  require(recovery.originReceipts.size() == recovery.references.size(),
+    "conversation KV origin role cover mismatch");
+  // Preflight every retained receipt's size before the transcript validator
+  // decodes the same original bytes to check its full parent scope.
+  nativeValidateConversationTranscript(record.checkpoint.transcript, checkpoint,
+    record.checkpoint.nativeInitialPromptTokenCount);
+  return recovery;
+}
+
+NativeConversationRecord NativeConversationCoordinator::promoteProtectedKvSet(
+  const std::string& conversationId, const std::string& expectedCheckpointDigest,
+  const std::map<std::string, NativeProtectedKvPublicationV1>& publications)
+{
+  auto& state = *m_impl;
+  std::lock_guard<std::mutex> guard(state.mutex);
+  const auto found = state.records.find(conversationId);
+  require(state.config.journal && found != state.records.end() && !publications.empty() && publications.size() <= 64,
+    "conversation KV committed owner unavailable");
+  auto& record = found->second;
+  require(record.checkpoint.checkpointDigest == expectedCheckpointDigest &&
+    record.retentionDeadlineMs > state.config.nowMs(), "conversation KV checkpoint changed or expired");
+  for (const auto& pending : state.pending)
+    require(pending.second.turn.parent.conversationId != conversationId, "conversation KV requires idle owner");
+  const auto checkpoint = nativeReadConversationCheckpoint(record.checkpoint.wire,
+    state.config.authenticationKeys, state.config.nowMs());
+  state.scope(checkpoint);
+  require(publications.size() == record.checkpoint.expectedRoles.size() &&
+    publications.size() == record.checkpoint.providersByRole.size(), "conversation KV role cover mismatch");
+  std::vector<std::pair<std::string, NativeJson>> pieces;
+  pieces.reserve(publications.size());
+  std::size_t textBytes = 0;
+  const auto consume = [&](const std::string& value, std::size_t limit = 4096) {
+    require(!value.empty() && value.size() <= limit && value.size() <= 128 * 1024 - textBytes,
+      "conversation KV reference text exceeds bound"); textBytes += value.size();
+  };
+  for (const auto& [role, publication] : publications) {
+    consume(role);
+    require(checkpoint.at("roleReceiptDigests").contains(role) &&
+      record.checkpoint.providersByRole.count(role) == 1 &&
+      publication.checkpoint.ownerIdentity == ndn::Name(state.config.requesterIdentity) &&
+      publication.checkpoint.producerPrefix == ndn::Name(record.checkpoint.providersByRole.at(role)) &&
+      publication.checkpoint.checkpointIdentityDigest == nativeProtectedKvRoleBinding(checkpoint, role),
+      "conversation KV role commitment mismatch");
+    auto reference = nativeProtectedKvPublicationReference(publication);
+    for (const auto& field : reference.items())
+      if (field.value().is_string())
+        consume(field.value().get_ref<const std::string&>(), field.key() == "keyEnvelope" ? 16384 : 4096);
+    pieces.emplace_back(role, std::move(reference));
+  }
+  NativeJson references = NativeJson::object();
+  for (auto& [role, reference] : pieces) references[role] = std::move(reference);
+  nativeValidateProtectedKvReferences(references, checkpoint, record.checkpoint.providersByRole);
+  if (record.protectedKvReferences) {
+    require(*record.protectedKvReferences == references, "conversation KV set changed"); return record;
+  }
+  std::optional<NativeJson> replacement{std::move(references)};
+  auto result = record; result.protectedKvReferences = replacement;
+  static_assert(std::is_nothrow_swappable_v<std::optional<NativeJson>> &&
+                std::is_nothrow_move_constructible_v<NativeConversationRecord>);
+  state.config.journal->appendProtectedKvSet(record.checkpoint.wire, *replacement, state.config.nowMs());
+  record.protectedKvReferences.swap(replacement);
+  return result;
+}
+
+NativeConversationRecord NativeConversationCoordinator::promoteProtectedKvSet(
+  const std::string& conversationId, const std::string& expectedCheckpointDigest,
+  const std::map<std::string, NativeVerifiedRemoteKvPublicationV1>& publications,
+  const std::map<std::string, std::string>& nextTurnProvidersByRole,
+  const std::function<void()>& requireActive)
+{
+  auto& state = *m_impl;
+  std::lock_guard<std::mutex> guard(state.mutex);
+  const auto found = state.records.find(conversationId);
+  require(state.config.journal && found != state.records.end() && !publications.empty() && publications.size() <= 64,
+    "conversation KV committed owner unavailable");
+  auto& record = found->second;
+  require(record.checkpoint.checkpointDigest == expectedCheckpointDigest &&
+    record.retentionDeadlineMs > state.config.nowMs(), "conversation KV checkpoint changed or expired");
+  for (const auto& pending : state.pending)
+    require(pending.second.turn.parent.conversationId != conversationId, "conversation KV requires idle owner");
+  const auto checkpoint = nativeReadConversationCheckpoint(record.checkpoint.wire,
+    state.config.authenticationKeys, state.config.nowMs());
+  state.scope(checkpoint);
+  if (!nextTurnProvidersByRole.empty()) {
+    validateNextTurnPlacement(nextTurnProvidersByRole, checkpoint);
+    require(nextTurnProvidersByRole != record.checkpoint.providersByRole,
+      "conversation next-turn Provider map is unchanged");
+  }
+  auto destinationProviders = nextTurnProvidersByRole.empty()
+    ? record.nextTurnProvidersByRole : nextTurnProvidersByRole;
+  validateNextTurnPlacement(destinationProviders, checkpoint);
+  require(publications.size() == record.checkpoint.expectedRoles.size() &&
+    publications.size() == record.checkpoint.providersByRole.size(), "conversation KV role cover mismatch");
+
+  std::vector<std::pair<std::string, NativeJson>> pieces;
+  pieces.reserve(publications.size());
+  std::size_t textBytes = 0;
+  const auto consume = [&](const std::string& value, std::size_t limit = 4096) {
+    require(!value.empty() && value.size() <= limit && value.size() <= 128 * 1024 - textBytes,
+      "conversation KV reference text exceeds bound");
+    textBytes += value.size();
+  };
+  for (const auto& [role, proof] : publications) {
+    consume(role);
+    require(record.checkpoint.providersByRole.count(role) == 1,
+      "conversation remote KV role binding unavailable");
+    const auto& ownerReference = proof.ownerReference();
+    const auto reference = nativeReadProtectedKvPublicationReference(ownerReference);
+    const auto& packetSet = proof.keyGraph().packetSet();
+    const auto expectedProducer = ndn::Name(record.checkpoint.providersByRole.at(role));
+    const ndn::Name authorizationScope(proof.rootManifest().authorizationScope);
+    const auto boundServiceName = authorizationScope.size() > 1 ?
+      authorizationScope.getSubName(1) : ndn::Name{};
+    require(checkpoint.at("roleReceiptDigests").contains(role) &&
+      ndn::Name(state.config.requesterIdentity) == reference.ownerIdentity &&
+      reference.producerPrefix == expectedProducer &&
+      reference.checkpointIdentityDigest == nativeProtectedKvRoleBinding(checkpoint, role) &&
+      boundServiceName == ndn::Name(state.config.serviceName) &&
+      ndn::Name(packetSet.claim().ownerIdentity) == reference.ownerIdentity,
+      "conversation remote KV role commitment mismatch");
+    for (const auto& field : ownerReference.items())
+      if (field.value().is_string())
+        consume(field.value().get_ref<const std::string&>(), field.key() == "keyEnvelope" ? 16384 : 4096);
+    pieces.emplace_back(role, ownerReference);
+  }
+
+  NativeJson references = NativeJson::object();
+  for (auto& [role, reference] : pieces) references[role] = std::move(reference);
+  nativeValidateProtectedKvReferences(references, checkpoint, record.checkpoint.providersByRole);
+  // This callback runs while the Coordinator lock is held. It closes the
+  // deadline check after lock wait and immediately before the durable boundary.
+  if (requireActive)
+    requireActive();
+  if (record.protectedKvReferences) {
+    require(*record.protectedKvReferences == references, "conversation KV set changed");
+    if (record.nextTurnProvidersByRole == destinationProviders) return record;
+  }
+  std::optional<NativeJson> replacement{std::move(references)};
+  auto replacementProviders = destinationProviders;
+  auto result = record;
+  result.protectedKvReferences = replacement;
+  result.nextTurnProvidersByRole = replacementProviders;
+  static_assert(std::is_nothrow_swappable_v<std::optional<NativeJson>> &&
+                std::is_nothrow_move_constructible_v<NativeConversationRecord> &&
+                std::is_nothrow_swappable_v<std::map<std::string, std::string>>);
+  if (requireActive)
+    requireActive();
+  state.config.journal->appendProtectedKvSet(record.checkpoint.wire, *replacement, state.config.nowMs(),
+    replacementProviders);
+  record.protectedKvReferences.swap(replacement);
+  record.nextTurnProvidersByRole.swap(replacementProviders);
+  return result;
+}
+
 void NativeConversationCoordinator::restore(const std::filesystem::path& root)
 {
   require(m_impl->config.journal && std::filesystem::absolute(root).lexically_normal() ==
@@ -580,6 +867,17 @@ void NativeConversationCoordinator::restore()
       record.checkpoint.providersByRole = body.at("providersByRole").get<std::map<std::string, std::string>>();
       require(!record.checkpoint.providersByRole.empty(), "conversation local placement is empty");
       validateLocalPlacement(record.checkpoint.providersByRole, cp);
+    }
+    if (body.contains("nextTurnProvidersByRole")) {
+      record.nextTurnProvidersByRole = body.at("nextTurnProvidersByRole").get<std::map<std::string, std::string>>();
+      require(!record.nextTurnProvidersByRole.empty(), "conversation next-turn placement is empty");
+      validateNextTurnPlacement(record.nextTurnProvidersByRole, cp);
+      require(record.nextTurnProvidersByRole != record.checkpoint.providersByRole,
+        "conversation next-turn placement does not change source map");
+    }
+    if (body.contains("protectedKvReferences")) {
+      nativeValidateProtectedKvReferences(body.at("protectedKvReferences"), cp, record.checkpoint.providersByRole);
+      record.protectedKvReferences = body.at("protectedKvReferences");
     }
     const auto found = restored.find(record.checkpoint.conversationId);
     if (found != restored.end()) {

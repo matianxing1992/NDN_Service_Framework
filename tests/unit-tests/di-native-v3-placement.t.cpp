@@ -28,7 +28,7 @@
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-svs/security-options.hpp>
 #include <ndn-svs/svspubsub.hpp>
-#include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "tests/fixtures/spec204/owned-kv-publication.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
 #include <thread>
 #include <atomic>
@@ -1489,6 +1489,268 @@ BOOST_AUTO_TEST_CASE(InjectedV3PolicyUsesAdmittedOffersAndIndependentValidation)
   BOOST_CHECK_THROW(strategy->proposeRoles(input.context, input.ackDigest, input.roles, input.offers,
     input.context.deadlineMs), std::invalid_argument);
 }
+void runSavedKvPlannerUsesAdmittedRecipientAndRoleGrant(bool freshTurn)
+{
+  const auto f = oracle();
+  const auto sample = std::find_if(f.at("seal_cases").begin(), f.at("seal_cases").end(),
+    [](const auto& value) { return value.at("name") == "cpu"; });
+  BOOST_REQUIRE(sample != f.at("seal_cases").end()); Input input(f, *sample, true);
+  NativeOfferAdmission admission(uriProfileFixturePolicy(f), {{f.at("key_id"), f.at("public_pem")}}, f.at("candidate"));
+  const std::uint64_t attempt = freshTurn ? 1 : 2;
+  input.context.attempt = attempt;
+  input.context.deadlineMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count()) + 30000;
+  input.offers.clear();
+  std::map<std::string, std::shared_ptr<ndn::security::KeyChain>> recipientKeys;
+  std::map<std::string, ndn::security::Certificate> certificates;
+  for (auto& ack : input.acks) {
+    const auto& payload = ack.ack.getPayload();
+    auto value = nativeParseJson(std::string(reinterpret_cast<const char*>(payload.data()), payload.size()));
+    value["attempt"] = attempt;
+    const auto wire = resignOfferAcceptingRole(nativeCanonicalJson(value), input.roles.front().selectedRole);
+    ndn::Buffer payloadBytes(wire.begin(), wire.end());
+    ack.ack.setPayload(payloadBytes, wire.size());
+    const auto observed = decodeNativeProviderOfferV3(wire);
+    const auto keys = std::make_shared<ndn::security::KeyChain>("pib-memory:", "tpm-memory:");
+    const auto certificate = keys->createIdentity(ack.providerName, ndn::RsaKeyParams(2048))
+      .getDefaultKey().getDefaultCertificate();
+    const auto publicKey = certificate.getPublicKey();
+    ndn_service_framework::SelectionInputKeyOffer keyOffer;
+    keyOffer.setField("schemaVersion", "1"); keyOffer.setField("recipient", observed.provider);
+    keyOffer.setField("providerBootEpoch", observed.bootEpoch);
+    keyOffer.setField("recipientCertName", certificate.getName().toUri(ndn::name::UriFormat::CANONICAL));
+    keyOffer.setField("recipientPublicKey", ndn_service_framework::selectionGatedHex(publicKey));
+    keyOffer.setField("recipientCertDigest", nativePlanningDigest(
+      std::string(reinterpret_cast<const char*>(publicKey.data()), publicKey.size())));
+    keyOffer.setField("ndnsfDataV1EndpointPrefix", observed.provider);
+    ack.ack.setSelectionInputKeyOffer(keyOffer);
+    BOOST_CHECK(!ack.ack.hasReservationLease());
+    input.offers.push_back(admission.verify(ack, input.context, 200));
+    recipientKeys.emplace(observed.provider, keys); certificates.emplace(observed.provider, certificate);
+  }
+  class Splitter final : public NativeModelSplitStrategy {
+  public:
+    explicit Splitter(NativeSplitCandidate candidate) : value(std::move(candidate)) {}
+    NativeStrategyIdentity identity() const override { return value.splitter; }
+    std::vector<NativeSplitCandidate> enumerate(const NativeModelDescriptor&, const NativeGraphSnapshot&,
+      const NativeCandidateBudget&) const override { return {value}; }
+    NativeSplitCandidate value;
+  } splitter(input.split);
+  NativeArtifactBinding artifacts;
+  artifacts.manifestDigest = input.inspected.modelManifestDigest; artifacts.recipeDigest = input.roles.front().recipeDigest;
+  for (const auto& role : input.roles) {
+    artifacts.sourceByRole[role.selectedRole] = ndn::Name("/catalog/root").toUri();
+    artifacts.artifactNameByRole[role.selectedRole] = "/catalog/artifact";
+    artifacts.artifactDigestByRole[role.selectedRole] = role.artifactDigest;
+  }
+  auto registry = std::make_shared<NativeAdapterRegistry>(); registry->freeze();
+  NativeRequestPreparation preparation(registry, {},
+    [&](const auto&, const auto&, const auto&, const auto&) { return artifacts; },
+    [&](const auto&, const auto&, const auto&) { return input.roles; });
+  const auto key = [](char c) {
+    const std::string bytes(32, c);
+    return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
+      reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()), EVP_PKEY_free);
+  };
+  ndnsf::di::test::protectedKv::Fixture kv;
+  spec204_owned_kv::OwnedCorePublicationFixture producer; producer.service = ndn::Name(input.context.serviceName);
+  producer.authorize(kv.certificate.getIdentity().toUri());
+  const auto role = input.roles.front().selectedRole;
+  spec204_owned_kv::OwnerKvConversationFixture owner(producer, producer.owner, {{role, producer.actor.getIdentity().toUri()}});
+  auto publications = owner.publish(kv);
+  owner.coordinator->promoteProtectedKvSet(owner.id(), owner.digest(), publications);
+  publications.clear(); producer.user.reset(); owner.reopen();
+
+  NativeGrantIssuerConfig issuer;
+  issuer.authorityIdentity = "/authority"; issuer.requesterIdentity = producer.owner;
+  issuer.protectionEpoch = input.roles.front().protectionEpoch; issuer.keyId = "kv-fixture-key";
+  issuer.authorityPrivateKey = key('a'); issuer.requesterPublicKey = key('b');
+  issuer.allowedModelManifests = {artifacts.manifestDigest};
+  for (const auto& offer : input.offers) issuer.recipientPublicKeys[offer.observation().provider] = key('c');
+  issuer.contentKey = [](const auto&, const auto&) { return std::vector<std::uint8_t>(32, 42); };
+  std::string authorityPublic(32, '\0'); std::size_t publicSize = authorityPublic.size();
+  BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(issuer.authorityPrivateKey.get(),
+    reinterpret_cast<unsigned char*>(authorityPublic.data()), &publicSize), 1);
+  NativeRequestRuntime runtime;
+  runtime.contract = {input.context.serviceName, "task", input.inspected.descriptor.adapterId,
+    input.inspected.descriptor.adapter.descriptorDigest(), nativePlanningDigest("composition"), nativePlanningDigest("task")};
+  runtime.requesterIdentity = producer.owner; runtime.protectionEpoch = issuer.protectionEpoch;
+  runtime.security = {nativePlanningDigest("runtime-policy"), true}; runtime.budget.maxPolicyMs = 1000;
+  runtime.grants = std::make_shared<NativeAuthenticatedGrantClient>(producer.owner, key('b'), "/authority",
+    authorityPublic, std::make_shared<NativeArtifactGrantIssuer>(issuer),
+    [](const auto& name, const auto&, const auto&) { return name; });
+  NativeApplicationInput application;
+  application.taskName = "task"; application.payload = {1};
+  application.inputSchemaDigest = input.inspected.descriptor.adapter.inputSchemaDigest;
+  application.optionsSchemaDigest = input.inspected.descriptor.adapter.optionsSchemaDigest;
+  runtime.contract.generationMode = "TOKEN_STREAMING";
+  runtime.contract.tokenizerDigest = nativePlanningDigest("saved-kv-tokenizer");
+  const auto generationOptions = nativeCanonicalJson(NativeJson{
+    {"useCache", true}, {"outputMode", "TOKEN_STREAMING"}, {"maxNewTokens", 4},
+    {"eosTokenIds", {2}}, {"tokenizerDigest", runtime.contract.tokenizerDigest},
+    {"tokenInputName", "x"}, {"stateInputNames", {"x"}}, {"stateOutputNames", {"y"}}});
+  application.options.assign(generationOptions.begin(), generationOptions.end());
+  NativeRequestOptions requestOptions;
+  requestOptions.outputMode = "TOKEN_STREAMING";
+  requestOptions.stream = ndn_service_framework::StreamRequestOptions{};
+  requestOptions.stream->generationId.fill(0x44);
+  requestOptions.generation = nativeGenerationFromOptions(application.options, owner.continuation().generationId);
+  const auto encoded = encodeNativeRequestEnvelope(input.inspected.descriptor, application, runtime.contract,
+    input.context.requestId, attempt, input.context.deadlineMs);
+  auto continuation = owner.continuation(); continuation.requestContractDigest = encoded.requestContractDigest;
+  auto turn = owner.coordinator->beginTurn(continuation,
+    freshTurn ? input.context.requestId : "opaque-parent-turn");
+  if (!freshTurn) turn = owner.coordinator->replaceAttempt(turn, input.context.requestId);
+  runtime.conversationOwner = std::shared_ptr<NativeConversationCoordinator>(std::move(owner.coordinator));
+  if (freshTurn) {
+    // Trusted scope-only fixture for the reuse predicate. It supplies no usable
+    // old grant; the newly selected B grant below is still actually issued.
+    NativeGrantLease oldLease;
+    oldLease.scope.providerByRole = turn.providersByRole;
+    oldLease.scope.conversationId = turn.parent.conversationId;
+    oldLease.scope.requesterIdentity = runtime.requesterIdentity;
+    oldLease.scope.serviceName = runtime.contract.serviceName;
+    oldLease.scope.securityPolicySnapshotDigest = runtime.security.policyDigest;
+    oldLease.scope.protectionEpoch = runtime.protectionEpoch;
+    oldLease.scope.expiresAtMs = input.context.deadlineMs + 1000;
+    turn.grantLease = std::move(oldLease);
+  }
+  unsigned wraps = 0;
+  // Trusted scheduling seam only; coordinator, ACK admission, grant and crypto are real.
+  runtime.wrapProtectedKvKey = [&](const auto& checkpoint, const auto& publicKey, const auto& binding,
+                                  const auto& control, const auto& current) {
+    control.requireActive(); ++wraps;
+    return nativeWrapProtectedKvKeyForRecipient(checkpoint, kv.certificate, kv.ownerKeys, publicKey, binding, current);
+  };
+  ndn_service_framework::CollaborationAckClosure closure;
+  closure.requestId = ndn::Name(input.context.requestId); closure.candidates = input.acks; closure.digest = input.ackDigest;
+  auto cancelled = std::make_shared<std::atomic<bool>>(false);
+  NativeRequestControl control{input.context.requestId, attempt, std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [cancelled] { return cancelled->load(); }};
+  const auto plan = [&] {
+    return planNativeRequest(runtime, requestOptions, input.inspected, encoded, splitter, NativePreSplitFirstPlacement(),
+      preparation, admission, closure, control, input.context.deadlineMs, cancelled, &turn);
+  };
+  if (freshTurn) {
+    const auto actualOwner = runtime.conversationOwner;
+    const auto oldLease = turn.grantLease;
+    runtime.conversationOwner.reset(); turn.grantLease.reset();
+    BOOST_CHECK_THROW(plan(), std::invalid_argument);
+    runtime.conversationOwner = actualOwner; turn.grantLease = oldLease;
+  }
+  const auto planned = plan(); BOOST_CHECK_EQUAL(wraps, 1U);
+  BOOST_REQUIRE(planned.recoveryParent);
+  BOOST_CHECK(*planned.recoveryParent == *runtime.conversationOwner->protectedKvRecoveryForTurn(turn));
+  const auto selected = planned.corePlan.participantSelector->select(closure.candidates, planned.corePlan.roles);
+  BOOST_REQUIRE_EQUAL(selected.size(), 1U);
+  const auto provider = selected.front().provider.toUri();
+  const auto& payload = selected.front().assignmentPayload;
+  std::istringstream inputWire(std::string(reinterpret_cast<const char*>(payload.data()), payload.size()));
+  const auto projection = nativeSelectionProjectionV3FromJson(inputWire, role);
+  BOOST_REQUIRE_EQUAL(planned.recoveryExpectations.size(), 1U);
+  const auto& expectation = planned.recoveryExpectations.at(role);
+  const auto admittedOffer = std::find_if(input.offers.begin(), input.offers.end(),
+    [&](const auto& offer) { return offer.observation().provider == provider; });
+  BOOST_REQUIRE(admittedOffer != input.offers.end());
+  BOOST_CHECK_EQUAL(expectation.admittedBootEpoch, admittedOffer->observation().bootEpoch);
+  BOOST_CHECK_EQUAL(nativeSelectionProjectionV3ToJson(expectation.projection),
+                    nativeSelectionProjectionV3ToJson(projection));
+  BOOST_REQUIRE(projection.protectedKvRestore);
+  const auto& restore = *projection.protectedKvRestore;
+  BOOST_REQUIRE(restore.originReceipt);
+  const auto originalRecord = runtime.conversationOwner->find(owner.id());
+  BOOST_REQUIRE(originalRecord);
+  BOOST_REQUIRE_EQUAL(originalRecord->checkpoint.transcript.at("providerRoleReceipts").size(), 1U);
+  BOOST_CHECK_EQUAL(*restore.originReceipt, nativeConversationBase64Decode(
+    originalRecord->checkpoint.transcript.at("providerRoleReceipts").at(0).get<std::string>()));
+  const auto origin = nativeReadProviderConversationStateReceipt(nativeParseJson(*restore.originReceipt));
+  BOOST_CHECK_EQUAL(origin.computedDigest(),
+    owner.checkpoint.at("roleReceiptDigests").at(role).get<std::string>());
+  BOOST_CHECK(ndn::Name(origin.providerIdentity) != ndn::Name(provider));
+  BOOST_CHECK(origin.planRoleMapDigest != projection.conversationStateReference->planRoleMapDigest);
+  nativeValidateProtectedKvRestoreContext(restore, projection, kv.certificate.getIdentity(), producer.service, owner.time);
+  const auto reference = nativeReadProtectedKvPublicationReference(restore.reference);
+  BOOST_CHECK_EQUAL(reference.producerPrefix, producer.actor.getIdentity());
+  BOOST_CHECK(reference.producerPrefix != ndn::Name(provider));
+  const auto binding = nativeProtectedKvRecipientBindingForProjection(projection,
+    kv.certificate.getIdentity(), producer.service, restore.recipient, owner.time);
+  nativeRecoverProtectedPortableKvCheckpointForRecipient(kv.cipher, kv.restored, reference, restore.capsule,
+    certificates.at(provider), *recipientKeys.at(provider), binding, kv.limits, [] {});
+  BOOST_CHECK_EQUAL(ndnsf::di::test::protectedKv::read(kv.restored), ndnsf::di::test::protectedKv::read(kv.plain));
+  const auto wrapping = runtime.wrapProtectedKvKey;
+  runtime.wrapProtectedKvKey = {};
+  BOOST_CHECK_THROW(plan(), std::runtime_error);
+  runtime.wrapProtectedKvKey = wrapping;
+  bool abortDuringPublication = false;
+  unsigned sourcePublications = 0;
+  runtime.fixedRoleSourcePublisher = [&](const auto& invocation, const auto& fixed, const auto&) {
+    ++sourcePublications;
+    const auto wire = nativeFixedRoleAssignmentV1ToJson(fixed);
+    NativeFixedRoleSourceV1 source;
+    source.plaintextDigest = nativePlanningDigest(wire); source.plaintextSize = wire.size();
+    source.servingLease = std::make_shared<int>(1);
+    source.dataName = nativeFixedRoleSourceContentName(invocation, fixed)
+      .contentPrefix(ndn::Name(producer.owner), source.plaintextDigest.substr(7))
+      .append("PROTECTED").append(ndn_service_framework::makeNamingDigestComponent(std::string(64, 'a')))
+      .append("DATA").toUri();
+    if (abortDuringPublication)
+      runtime.conversationOwner->abortTurn(turn, NativeDiError("CANCELLED", "local", "test", "publication abort"));
+    return source;
+  };
+  const auto fixedPlanned = plan();
+  BOOST_REQUIRE_EQUAL(fixedPlanned.recoveryExpectations.size(), 1U);
+  BOOST_CHECK_EQUAL(fixedPlanned.recoveryExpectations.at(role).admittedBootEpoch,
+                    expectation.admittedBootEpoch);
+  BOOST_CHECK_EQUAL(fixedPlanned.recoveryExpectations.at(role).projection.requestId,
+                    expectation.projection.requestId);
+  BOOST_CHECK_EQUAL(*fixedPlanned.recoveryExpectations.at(role).projection.protectedKvRestore->originReceipt,
+                    *expectation.projection.protectedKvRestore->originReceipt);
+  BOOST_CHECK_EQUAL(sourcePublications, 1U);
+  BOOST_REQUIRE(fixedPlanned.recoveryParent);
+  BOOST_CHECK(*fixedPlanned.recoveryParent == *planned.recoveryParent);
+  if (freshTurn) {
+    const auto original = runtime.conversationOwner->find(owner.id()); BOOST_REQUIRE(original);
+    const auto map = planned.sealed.core.assignment.providerByRole;
+    auto altered = *planned.recoveryParent;
+    altered.originReceipts.at(role).push_back(' ');
+    BOOST_CHECK_THROW(runtime.conversationOwner->bindRecoveryPlanRoleMap(turn, map, altered), std::runtime_error);
+    BOOST_CHECK_THROW(runtime.conversationOwner->bindRecoveryPlanRoleMap(turn, {}, *planned.recoveryParent), std::runtime_error);
+    BOOST_CHECK_THROW(runtime.conversationOwner->bindRecoveryPlanRoleMap(turn,
+      turn.providersByRole, *planned.recoveryParent), std::runtime_error);
+    auto stale = turn; stale.ticket += "stale";
+    BOOST_CHECK_THROW(runtime.conversationOwner->bindRecoveryPlanRoleMap(stale, map, *planned.recoveryParent), std::runtime_error);
+    const auto time = owner.time; owner.time = owner.expiry;
+    BOOST_CHECK_THROW(runtime.conversationOwner->bindRecoveryPlanRoleMap(turn, map, *planned.recoveryParent), std::runtime_error);
+    owner.time = time;
+    const auto rebound = runtime.conversationOwner->bindRecoveryPlanRoleMap(turn, map, *planned.recoveryParent);
+    BOOST_CHECK_EQUAL(rebound.attempt, 1U);
+    BOOST_CHECK_EQUAL(rebound.executionRequestId, input.context.requestId);
+    BOOST_CHECK(rebound.providersByRole == map);
+    BOOST_CHECK_NE(rebound.parent.planRoleMapDigest, original->planRoleMapDigest);
+    BOOST_CHECK_EQUAL(rebound.parent.parentCheckpointWire, original->checkpoint.wire);
+    BOOST_CHECK_EQUAL(runtime.conversationOwner->find(owner.id())->checkpoint.wire, original->checkpoint.wire);
+    BOOST_CHECK_EQUAL(runtime.conversationOwner->find(owner.id())->checkpoint.transcript, original->checkpoint.transcript);
+    BOOST_CHECK_THROW(runtime.conversationOwner->bindRecoveryPlanRoleMap(turn, map, *planned.recoveryParent), std::runtime_error);
+    turn = rebound;
+  }
+  runtime.fixedRoleAssignments->clear();
+  abortDuringPublication = true;
+  BOOST_CHECK_THROW(plan(), std::runtime_error);
+  BOOST_CHECK_EQUAL(sourcePublications, 2U);
+  runtime.fixedRoleSourcePublisher = {};
+  BOOST_CHECK_THROW(plan(), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(SavedKvPlannerUsesAdmittedRecipientAndRoleGrant)
+{
+  runSavedKvPlannerUsesAdmittedRecipientAndRoleGrant(false);
+}
+
+BOOST_AUTO_TEST_CASE(SavedKvFreshTurnSelectsCurrentProviderAndBindsExactOwnerParent)
+{
+  runSavedKvPlannerUsesAdmittedRecipientAndRoleGrant(true);
+}
+
 BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments)
 {
   const auto f = oracle();
@@ -1906,9 +2168,9 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
                              ProbeRemeasurementFixture remeasurement = ProbeRemeasurementFixture::None)
 {
   using namespace ndn_service_framework;
-  class User final : public test::LocalServiceUser {
+  class User final : public ndn_service_framework::test::LocalServiceUser {
   public:
-    using test::LocalServiceUser::LocalServiceUser;
+    using ndn_service_framework::test::LocalServiceUser::LocalServiceUser;
     std::map<std::string, SelectionInputKeyOffer> groupKeys;
     std::map<std::string, std::string> providerBootEpochs;
     void seedAckTelemetry(const std::string& provider, const std::string& bootEpoch)
@@ -2172,8 +2434,8 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
   const std::weak_ptr<BootstrapOwners> weakOwners = owners;
   auto& keyChain = owners->keyChain;
   auto& face = owners->face;
-  const auto requesterCert = test::makeRsaIdentity(keyChain, ndn::Name("/requester"));
-  const auto authorityCert = test::makeRsaIdentity(keyChain, ndn::Name("/authority"));
+  const auto requesterCert = ndn_service_framework::test::makeRsaIdentity(keyChain, ndn::Name("/requester"));
+  const auto authorityCert = ndn_service_framework::test::makeRsaIdentity(keyChain, ndn::Name("/authority"));
   // A derived member dies before the ServiceUser base destructor. Keep both
   // external bootstrap resources in the control-block deleter instead: they
   // survive delete (including base teardown), even on a late worker release.
@@ -2218,7 +2480,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
     user->applyPermissionResponse(permissions);
   }
   else {
-    user->applyPermissionResponse(test::makePermissionResponse(
+    user->applyPermissionResponse(ndn_service_framework::test::makePermissionResponse(
       ndn::Name("/requester"), tlv::UserPermission,
       ndn::Name("/provider/a"), ndn::Name("/service")));
   }

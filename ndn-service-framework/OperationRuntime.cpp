@@ -12,7 +12,7 @@ namespace {
 
 /**
  * Joins a runtime worker whose last owner was released from that worker.
- * A worker cannot join itself, so this short-lived process-wide join service
+ * A worker cannot join itself, so this process-wide join service
  * provides the required join barrier without detaching the runtime thread.
  */
 class RuntimeJoinReaper
@@ -32,6 +32,8 @@ public:
       {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_workers.push_back(std::move(worker));
+        if (!m_thread.joinable())
+          m_thread = std::thread([this] { run(); });
       }
       m_condition.notify_one();
     }
@@ -43,10 +45,7 @@ public:
   }
 
 private:
-  RuntimeJoinReaper()
-    : m_thread([this] { run(); })
-  {
-  }
+  RuntimeJoinReaper() = default;
 
   ~RuntimeJoinReaper() noexcept
   {
@@ -82,6 +81,10 @@ private:
   bool m_stopping = false;
   std::thread m_thread;
 };
+
+// Register teardown before main can register runtime cleanup callbacks.
+// No worker is started until the first deferred join is enqueued.
+[[maybe_unused]] auto& runtimeJoinReaper = RuntimeJoinReaper::instance();
 
 bool isDrainedLocked(const detail::RuntimeState& state)
 {
@@ -259,10 +262,11 @@ OperationRuntime::~OperationRuntime() noexcept
   auto state = m_state;
   if (!state || !state->worker.joinable())
     return;
-  bool self = false;
+  bool deferJoin = false;
   {
     std::lock_guard<std::mutex> lock(state->mutex);
-    self = state->workerId == std::this_thread::get_id();
+    deferJoin = state->workerId == std::this_thread::get_id() ||
+                state->deferJoinOnDestroy;
   }
   // A worker cannot join itself.  Transfer the joinable thread to the
   // process-local reaper; it will join after this callback returns.
@@ -270,7 +274,7 @@ OperationRuntime::~OperationRuntime() noexcept
   // holds) outside the runtime until a test pump invokes them.  Do not block
   // the owner destructor joining a timer worker that is waiting for those
   // external holds; the reaper still performs a real join once they drain.
-  if (self || static_cast<bool>(state->submitHook))
+  if (deferJoin || static_cast<bool>(state->submitHook))
     RuntimeJoinReaper::instance().enqueue(std::move(state->worker));
   else
     state->worker.join();
@@ -400,6 +404,16 @@ OperationRuntime::close() noexcept
   state->condition.notify_all();
 }
 
+void
+OperationRuntime::deferJoinOnDestroy() noexcept
+{
+  auto state = m_state;
+  if (!state)
+    return;
+  std::lock_guard<std::mutex> lock(state->mutex);
+  state->deferJoinOnDestroy = true;
+}
+
 bool
 OperationRuntime::drain(std::chrono::milliseconds timeout)
 {
@@ -421,6 +435,27 @@ OperationRuntime::drain(std::chrono::milliseconds timeout)
   if (!state->condition.wait_for(lock, timeout, done))
     return false;
   state->drained = true;
+  return true;
+}
+
+bool
+OperationRuntime::joinAfterDrain(std::chrono::milliseconds timeout)
+{
+  if (timeout.count() < 0)
+    throw std::invalid_argument("operation runtime join timeout is negative");
+  if (isWorkerThread())
+    throw OperationError(OperationErrorCode::WouldDeadlock,
+                         "operation runtime join from its worker would deadlock");
+  std::lock_guard<std::mutex> joinLock(m_workerJoinMutex);
+  auto state = m_state;
+  {
+    std::unique_lock<std::mutex> lock(state->mutex);
+    if (!state->closed || !state->condition.wait_for(lock, timeout,
+                                                     [&] { return state->workerExited; }))
+      return false;
+  }
+  if (state->worker.joinable())
+    state->worker.join();
   return true;
 }
 
@@ -716,6 +751,10 @@ OperationRuntime::runWorker(const std::shared_ptr<detail::RuntimeState>& state) 
                 try { notification.callback(notification.result); } catch (...) {}
                 notification.control->end(true);
               }
+            }
+            {
+              std::lock_guard<std::mutex> exitLock(state->mutex);
+              state->workerExited = true;
             }
             state->condition.notify_all();
             return;

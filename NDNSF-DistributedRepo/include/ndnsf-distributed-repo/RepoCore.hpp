@@ -3,6 +3,7 @@
 
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
+#include <ndn-cxx/interest.hpp>
 
 #include <chrono>
 #include <memory>
@@ -14,9 +15,14 @@
 
 namespace ndnsf_distributed_repo {
 
+struct RepoUserStorageWrite;
+
 class RepoCore
 {
 public:
+  using OriginalPacketRangeReader =
+    std::function<std::vector<uint8_t>(uint64_t, std::size_t)>;
+
   RepoCore(StorageCapability capability, std::shared_ptr<RepoStoreBackend> store);
 
   RepoObjectManifest put(const std::string& objectName,
@@ -39,6 +45,15 @@ public:
   std::vector<RepoObjectManifest> list() const;
 
   bool remove(const std::string& objectName);
+  /** Caller has fenced physical writers/other ownership; legacy remove's return
+   * is not sufficient for this backend durability confirmation. */
+  bool confirmUserStorageRemoval(const RepoUserStorageObject& expected);
+  /** Trusted caller fences owners/publish work and holds Node writer exclusion.
+   * Reject staging/tuple drift before legacy erase; true requires durability.
+   */
+  bool removeUserStorageObject(const RepoUserStorageObject& expected);
+  /** Readonly staging/path/tuple preflight; caller still excludes all writers. */
+  bool canRemoveUserStorageObject(const RepoUserStorageObject& expected) const;
 
   RepoObjectManifest putManifest(const RepoObjectManifest& manifest);
 
@@ -59,11 +74,22 @@ public:
                                        RepoByteRange range) const;
   bool removeIfCurrent(const RepoObjectManifest& expected);
   bool abortRangesIfOwned(const RepoObjectManifest& expected);
+  /** Owner-cleanup variant: exact Core and backend reservation/staging proof.
+   * Caller fences owner epoch and physical writers; no quota release is implied. */
+  bool abortUserStorageRangesIfOwned(const RepoObjectManifest& expected);
+  /** Confirm failed rollback before cancelling an owned quota reservation. */
+  bool abortFailedRangesIfOwned(const RepoObjectManifest& expected);
+  /** Trusted prepared-cleanup source; caller verifies its exact owner/epoch/claim.
+   * Requires Cancelled and exact operation/measurement against live Core staging. */
+  bool abortUserStorageWriteRangesIfOwned(const RepoUserStorageWrite& expected);
   /** Drop idle range staging and its capacity reservation. */
   uint64_t reapExpiredRangeReservations(std::chrono::steady_clock::duration idleTimeout);
   void putRangeIfAbsent(const RepoObjectManifest& manifest, RepoByteRange range,
                         const std::vector<uint8_t>& bytes);
   RepoObjectManifest commitRangesIfOwned(const RepoObjectManifest& manifest);
+  /** Confirm exact current protected publication durability before owner reuse.
+   * This trusted primitive does not itself grant user-storage authority. */
+  RepoObjectManifest confirmDurablePublicationIfCurrent(const RepoObjectManifest& expected);
 
   RepoObjectManifest putDataPacket(const std::string& dataName,
                                    const std::vector<uint8_t>& wire,
@@ -76,6 +102,21 @@ public:
                                                   const std::string& providerIdentity);
 
   std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
+  /** Match an original signed packet, including segmented-object bootstrap.
+   * Admission and reading use the same holder; hints never change the name. */
+  std::vector<uint8_t> getDataPacket(const ndn::Interest& interest,
+    const std::function<bool(const RepoObjectManifest&)>& acceptObject = {}) const;
+
+  /** Select an accepted physical holder and read that exact original packet.
+   * Predicate runs synchronously without m_mutex; it may probe metadata but
+   * must not mutate the store or recursively select packets. The caller must
+   * exclude physical admission/cleanup through its existing writer gate. */
+  std::vector<uint8_t> getDataPacket(
+    const std::string& dataName,
+    const std::function<bool(const RepoObjectManifest&)>& acceptObject) const;
+
+  /** Physical object containing an exact original packet; not access authority. */
+  std::optional<RepoObjectManifest> lookupDataPacketObject(const std::string& dataName) const;
 
   /** Return only a receipt embedded at the original Data commit boundary. */
   RepoWriteReceipt getDataPacketReceipt(const std::string& dataName,
@@ -90,6 +131,9 @@ public:
 
   RepoObjectManifest commitOriginalPacketFile(
     const RepoObjectManifest& manifest, const std::filesystem::path& file,
+    const std::function<void()>& requireActive = {});
+  RepoObjectManifest commitOriginalPacketReader(
+    const RepoObjectManifest& manifest, const OriginalPacketRangeReader& readRange,
     const std::function<void()>& requireActive = {});
 
   std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request);
@@ -145,9 +189,11 @@ public:
 private:
   RepoObjectManifest describeDataPacket(const std::string& name) const;
   std::optional<std::pair<RepoObjectManifest, size_t>> findPacketRecord(
-    const ndn::Name& name) const;
+    const ndn::Name& name,
+    const std::function<bool(const RepoObjectManifest&)>& acceptObject = {}) const;
   std::string resolveObjectKey(const std::string& objectName) const;
   std::vector<uint8_t> deleteLocked(const std::string& objectName);
+  bool canRemoveUserStorageObjectLocked(const RepoUserStorageObject& expected) const;
   void putRangeLocked(const RepoObjectManifest&, RepoByteRange, const std::vector<uint8_t>&);
   // Caller holds m_mutex and has checked immutable-packet admission.
   void putAdmittedRangeLocked(const RepoObjectManifest&, RepoByteRange, const std::vector<uint8_t>&);
@@ -171,6 +217,8 @@ private:
                                          uint64_t newSize) noexcept;
 
   void clearRangeReservation(const std::string& objectName);
+  bool abortUserStorageRangesIfOwnedLocked(const RepoObjectManifest& expected);
+  bool abortFailedOwnedRangeIfUncommittedLocked(const RepoObjectManifest& expected);
 
 private:
   StorageCapability m_capability;

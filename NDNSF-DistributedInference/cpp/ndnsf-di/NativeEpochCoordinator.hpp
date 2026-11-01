@@ -89,6 +89,8 @@ struct NativeEpochCoordinatorConfig
   // retained Provider-local state from the parent conversation epoch; it is
   // never reused as the new request's decode identity.
   std::optional<ConversationStateBinding> conversationStateBinding;
+  // Provider-owned READY pin, consumed once by epoch zero; never a wire field.
+  std::optional<ConversationStateUseLeaseV1> firstEpochConversationUse;
   std::uint64_t conversationStateLookupNowMs = 0;
   // Adapter-certified policy seed used to derive the exact runtime position
   // digest for each accepted logical token prefix.

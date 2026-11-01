@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderResidencyV4.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePortableKv.hpp"
 
 #include <cstdint>
 #include <cstddef>
@@ -57,6 +58,10 @@ struct NativeRuntimeMetrics
   std::uint64_t stateInputMisses = 0;
   std::uint64_t stateRecomputes = 0;
   std::uint64_t stateReleases = 0;
+  // False means work is unclassified, not proof of zero executed tokens.
+  bool workCounterCertified = false;
+  std::uint64_t executedPrefillTokens = 0;
+  std::uint64_t executedDecodeTokens = 0;
 };
 
 /**
@@ -146,6 +151,30 @@ public:
   /** Whether this runner can retain conversation state without a bundle. */
   virtual bool
   supportsConversationStateTransfer() const;
+
+  /** Whether this adapter supports complete portable conversation tensors. */
+  virtual bool
+  supportsPortableConversationState() const;
+
+  /** Export stable retained state under mandatory memory/cancellation limits.
+   * The committed identity is trusted local binding, not user authorization.
+   * Default adapters throw unsupported; returned bytes require protection
+   * before publication. Caller retains runner ownership until completion.
+   */
+  virtual NativePortableKvSnapshotV1
+  exportConversationState(const NativeConversationStateHandleV1& state,
+                          const DecodeStateIdentityV1& committedIdentity,
+                          const NativePortableKvLimitsV1& limits);
+
+  /** Atomically install portable state with a fresh destination-local handle.
+   * Destination identity/key come from trusted current authorization wiring.
+   * Default adapters throw unsupported; no partial state is published.
+   */
+  virtual NativeConversationStateHandleV1
+  importConversationState(const NativePortableKvSnapshotV1& snapshot,
+                          const DecodeStateIdentityV1& destinationIdentity,
+                          const std::string& destinationConversationKey,
+                          const NativePortableKvLimitsV1& limits);
 
   /** Move request-local adapter state into a Provider-owned conversation key. */
   virtual std::optional<NativeConversationStateHandleV1>

@@ -8,7 +8,10 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
+#include "ndnsf-distributed-repo/RepoRemoteEncryptedLargeDataStore.hpp"
+#include "NDNSF-DistributedRepo/src/FaceDataReferenceFetcher.hpp"
 #include "ndn-service-framework/NDNSFMessages.hpp"
+#include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/utils.hpp"
 
 #include <ndn-cxx/security/signing-helpers.hpp>
@@ -267,7 +270,8 @@ releaseRepoNodeServiceHandlersForRestart(
   const std::vector<std::string> operations{
     "STORE", "STORE_RANGE", "COMMIT_RANGES", "ABORT_RANGES", "INSERT",
     "STORE_MANIFEST", "FETCH", "FETCH_RANGE", "MANIFEST", "INVENTORY",
-    "CAPABILITY", "CACHE_STATUS", "STATUS", "CATALOG_STATUS",
+    "CAPABILITY", "CACHE_STATUS", "STATUS", "USER_STORAGE_GRANT",
+    "USER_STORAGE_USAGE", "USER_STORAGE_LIST", "USER_STORAGE_DELETE", "CATALOG_STATUS",
     "CATALOG_SNAPSHOT", "CATALOG_DELTA", "CATALOG_LOOKUP", "DELETE",
     "DATA_RECEIPT", "DATA_LOCATION",
   };
@@ -386,6 +390,63 @@ runWithFacePump(NdnsfIntegrationEnvironment& environment, Work&& work)
       [&] { return pending.wait_for(0ms) == std::future_status::ready; });
   }
   return pending.get();
+}
+
+uint64_t
+userStorageGrantExpiryMs()
+{
+  const auto nowMs = static_cast<uint64_t>(std::chrono::duration_cast<
+    std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  if (nowMs == 0 || nowMs > static_cast<uint64_t>(INT64_MAX) - 60 * 60 * 1000) {
+    throw std::runtime_error("Spec204 owner grant expiry is outside the supported clock range");
+  }
+  return nowMs + 60 * 60 * 1000;
+}
+
+repo::PublishOperationIntent
+authorizeOwnedIntent(NdnsfIntegrationEnvironment& environment,
+                     repo::PublishOperationIntent intent,
+                     uint64_t grantExpiresAtMs = 0)
+{
+  intent.schemaVersion = 2;
+  intent.requestDigest.clear();
+  intent.userStorageBindings.clear();
+  if (grantExpiresAtMs == 0) {
+    grantExpiresAtMs = userStorageGrantExpiryMs();
+  }
+  const auto authorizer = repo::ArtifactRepositoryApi::makeUserStorageAuthorizer(
+    environment.user(), grantExpiresAtMs, 1000, 10000);
+  intent.userStorageBindings = runWithFacePump(environment, [&] {
+    return authorizer(intent, std::chrono::steady_clock::now() + 60s);
+  });
+  intent.requestDigest = repo::makePublishRequestDigest(
+    intent.reference, intent.generation, intent.seed, intent.consistency,
+    intent.targets, intent.userStorageBindings);
+  intent.validate();
+  return intent;
+}
+
+repo::RepoUserStorageBinding
+userStorageBindingFor(const repo::PublishOperationIntent& intent,
+                      const repo::RepoArtifactTarget& target)
+{
+  const auto binding = std::find_if(intent.userStorageBindings.begin(),
+    intent.userStorageBindings.end(), [&target] (const auto& item) {
+      return item.target == target;
+    });
+  if (binding == intent.userStorageBindings.end()) {
+    throw std::runtime_error("Spec204 owner grant is missing for a persistent write target");
+  }
+  return binding->binding;
+}
+
+template<typename Request>
+void
+bindUserStorage(Request& request, const repo::PublishOperationIntent& intent,
+                const repo::RepoArtifactTarget& target)
+{
+  request.schemaVersion = 3;
+  request.storageBinding = userStorageBindingFor(intent, target);
 }
 
 repo::PublishOperationStatus
@@ -591,6 +652,409 @@ makeRepoPublisherUser(NdnsfIntegrationEnvironment& environment, size_t index,
 
 BOOST_AUTO_TEST_SUITE(DistributedRepoPersistentArtifactApi)
 
+BOOST_AUTO_TEST_CASE(RemotePacketStoreReadsOwnedManifestThroughProviderUserFace)
+{
+  TempRoot temporary;
+  const ndn::Name prefix(repo::RepoClient::DEFAULT_SERVICE_NAME);
+  const std::vector<std::string> operations{"INSERT", "MANIFEST"};
+  BootstrapProfile profile;
+  profile.serviceName = repoService(prefix, "INSERT");
+  profile.additionalServices.push_back(repoService(prefix, "MANIFEST"));
+  profile.providerCount = 2;
+  profile.providerCanActAsUser = true;
+  profile.deferBridgeDelivery = true;
+  profile.providerFacesUseIndependentIoContexts = true;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  auto writer = makeRepoPublisherUser(environment, 1, prefix, operations);
+  auto fetcher = makeRepoPublisherUser(environment, 0, prefix, operations);
+  writer->fetchPermissionsFromController(ndn::Name("/controller/spec212/remote"));
+  const auto now = static_cast<uint64_t>(std::chrono::duration_cast<
+      std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  for (const auto& operation : operations) {
+    ndn_service_framework::PolicyStatusData status;
+    status.setServiceName(repoService(prefix, operation));
+    status.setControllerVersion(ndn_service_framework::ControllerVersion{now, 1});
+    status.setValidity(now - 1000, now + 120000);
+    status.setPolicyDigest("sha256:" + std::string(64, '0'));
+    status.setControllerCertificate(ndn::Name("/controller/spec212/remote"));
+    status.setAbePublicParametersName(environment.attributeAuthorityPublicParametersName());
+    status.setAbePublicParametersDigest(environment.attributeAuthorityPublicParametersDigest());
+    BOOST_REQUIRE(writer->installControllerStatus(status));
+    for (size_t index = 0; index < environment.providerCount(); ++index)
+      BOOST_REQUIRE(environment.provider(index).installControllerStatus(status));
+  }
+  BOOST_REQUIRE(writer->hasRequestScopedDefault());
+  writer->setUseTokens(false);
+  for (size_t index = 0; index < environment.providerCount(); ++index)
+    environment.provider(index).setUseTokens(false);
+  const auto actor = writer->getName();
+  const auto actorUri = actor.toUri(ndn::name::UriFormat::ALTERNATE);
+  const repo::RepoArtifactTarget target{"/logical/spec212/remote",
+      environment.provider(0).getName().toUri(ndn::name::UriFormat::ALTERNATE),
+      prefix.toUri(ndn::name::UriFormat::ALTERNATE)};
+  repo::StorageCapability capability;
+  capability.repoNode = target.repoNode;
+  capability.repoMode = "persistent";
+  capability.freeBytes = 64ULL << 20;
+  const auto database = temporary.path() / "repo.sqlite";
+  auto node = std::make_shared<repo::RepoNode>(prefix, capability,
+      std::make_shared<repo::FilesystemRepoStoreBackend>(
+          (temporary.path() / "objects").string(), 64ULL << 20, 4096, "spec212-remote"),
+      target.repoNode, target.providerIdentity, database.string());
+  node->registerServices(environment.provider(0), fetcher, 3000, 30000);
+  node->setDataReferenceSpoolFetcher(repo::detail::FaceDataReferenceFetcher(
+      environment.providerFace(0), 30000ms, 30000ms));
+  node->registerOriginalDataServing(environment.providerFace(0));
+  environment.enableProductionIngressForTest();
+  writer->refreshNacProducerForTest();
+  environment.pumpUntilWithAttributeAuthority([&] {
+    return writer->isNacConsumerReadyForTest() && writer->isNacProducerReadyForTest() &&
+        fetcher->isNacConsumerReadyForTest() && fetcher->isNacProducerReadyForTest();
+  });
+  BOOST_REQUIRE(writer->isNacConsumerReadyForTest());
+  BOOST_REQUIRE(writer->isNacProducerReadyForTest());
+  BOOST_REQUIRE(fetcher->isNacConsumerReadyForTest());
+  BOOST_REQUIRE(fetcher->isNacProducerReadyForTest());
+
+  const std::vector<uint8_t> envelope(4096, 0x5a);
+  ProtectedBlobManifest root;
+  root.producer = actor;
+  root.plaintextDigest.assign(32, 0x2a);
+  root.plaintextBytes = envelope.size();
+  root.envelopeBytes = envelope.size();
+  root.segmentBytes = envelope.size();
+  root.segmentCount = 1;
+  root.representationSpec = "{\"encoding\":\"fixture\",\"segmentBytes\":4096}";
+  root.protectionSpec = "{\"epoch\":\"1\",\"keyReference\":\"fixture\"}";
+  root.authorizationScope = "/SERVICE/spec212/remote";
+  root.protectionEpoch = "1";
+  root.keyReferenceId = "fixture-reference";
+  root.keyIdentifier = "fixture-key";
+  root.contentName = PublishedContentName{};
+  root.contentName->label = "remote-control-fixture";
+  std::string plaintextHex;
+  for (unsigned i = 0; i < 32; ++i) plaintextHex += "2a";
+  const auto protection = computeNamingDigest("ndnsf-naming/protection",
+      {{1, 5, std::vector<uint8_t>(root.representationSpec.begin(), root.representationSpec.end())},
+       {2, 5, std::vector<uint8_t>(root.protectionSpec.begin(), root.protectionSpec.end())}});
+  root.dataPrefix = root.contentName->contentPrefix(actor, plaintextHex)
+      .append("PROTECTED").append(makeNamingDigestComponent(protection)).append("DATA");
+  const auto rootWire = root.encode();
+  const auto rootName = root.getName();
+  const auto certificate = environment.keyChain().getPib().getIdentity(actor)
+      .getDefaultKey().getDefaultCertificate();
+  std::vector<std::pair<ndn::Name, std::vector<uint8_t>>> originals;
+  const auto append = [&] (ndn::Name name, const std::vector<uint8_t>& content, bool segment) {
+    auto packet = std::make_shared<ndn::Data>(name);
+    packet->setFreshnessPeriod(ndn::time::seconds(120));
+    packet->setContent(content);
+    if (segment) packet->setFinalBlock(ndn::name::Component::fromSegment(0));
+    environment.keyChain().sign(*packet, ndn::security::signingByCertificate(certificate));
+    const auto& wire = packet->wireEncode();
+    originals.emplace_back(std::move(name), std::vector<uint8_t>(wire.begin(), wire.end()));
+  };
+  append(rootName, rootWire, false);
+  append(ndn::Name(root.dataPrefix).appendSegment(0), envelope, true);
+  EncryptedLargeDataCommitOptions options;
+  options.retention = EncryptedLargeDataRetention::Durable;
+  options.publicationIdentity = "sha256:" + sha256(rootWire);
+  options.protectionEpoch = root.protectionEpoch;
+  options.keyReferenceId = root.keyReferenceId;
+  options.keyReferenceVersion = "1";
+  options.ciphertextManifestDigest = "sha256:" + sha256(rootWire);
+  options.servingLocator = target.providerIdentity;
+  options.contentDigest = "sha256:" + plaintextHex;
+  options.plaintextSize = root.plaintextBytes;
+  options.packetStorageFormat = "original-packet-set";
+  options.manifestName = rootName.toUri(ndn::name::UriFormat::ALTERNATE);
+  options.dataPrefix = root.dataPrefix.toUri(ndn::name::UriFormat::ALTERNATE);
+  for (unsigned index = 0; index < 365; ++index) {
+    auto name = ndn::Name(actor).append("NDNSF").append("CONTROL")
+        .append(std::string(256, 'a')).appendNumber(index);
+    options.auxiliaryPacketNames.push_back(name);
+    std::vector<uint8_t> content(6500);
+    for (size_t offset = 0; offset < content.size(); ++offset)
+      content[offset] = static_cast<uint8_t>((offset * 37 + index) % 256);
+    append(std::move(name), content, false);
+  }
+  for (const auto& packet : originals) options.packetWireBytes += packet.second.size();
+  BOOST_REQUIRE_EQUAL(originals.size(), 367U);
+  BOOST_REQUIRE_GT(options.packetWireBytes, 2ULL << 20);
+  repo::SqliteArtifactMetadataStore journal(database.string(), true, 16, false);
+  const auto owner = environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  // Isolate the adapter transport: this is a trusted fixture grant boundary.
+  const auto grant = journal.grantUserStorage(owner, target.repoNode, "remote-fixture-grant",
+      actorUri, options.manifestName, now + 120000, now);
+  options.storageActor = DurableStorageActorContext{actorUri,
+      {grant.repoNode, grant.ownerIdentity, grant.grantId, grant.ownerEpoch}};
+  const auto scratch = temporary.path() / "spool";
+  fs::create_directory(scratch);
+  fs::permissions(scratch, fs::perms::owner_all, fs::perm_options::replace);
+  repo::RepoRemoteEncryptedLargeDataStore::Options transport;
+  transport.target = target;
+  transport.scratchRoot = scratch;
+  transport.maxWireBytes = 8ULL << 20;
+  transport.maxPacketCount = 512;
+  transport.timeoutMs = 60000;
+  transport.ackCollectionTimeMs = 3000;
+  const auto publicationDeadline = std::chrono::steady_clock::now() + 30000ms;
+  auto store = std::make_shared<repo::RepoRemoteEncryptedLargeDataStore>(writer, certificate, transport);
+  store->setPublicationDeadline(publicationDeadline);
+  auto result = std::async(std::launch::async, [&] {
+    size_t index = 0;
+    return store->commitOriginalDataPackets(rootName, options,
+      [&]() -> std::optional<std::pair<ndn::Name, std::vector<uint8_t>>> {
+        if (index == originals.size()) return std::nullopt;
+        return originals[index++];
+      });
+  });
+  for (unsigned pump = 0; pump < 25 && result.wait_for(0ms) != std::future_status::ready; ++pump) {
+    environment.pumpUntilWithAttributeAuthority([&] {
+      return result.wait_for(0ms) == std::future_status::ready;
+    });
+  }
+  BOOST_REQUIRE(result.wait_for(0ms) == std::future_status::ready);
+  auto source = result.get();
+  BOOST_REQUIRE(source);
+  BOOST_CHECK(source->isDurable());
+  BOOST_CHECK_EQUAL(source->size(), envelope.size());
+  const auto committed = node->getManifest(options.manifestName);
+  BOOST_REQUIRE_EQUAL(committed.packetNames.size(), originals.size());
+  const auto usage = journal.userStorageUsage(owner, target.repoNode);
+  BOOST_CHECK_EQUAL(usage.reservedBytes, 0U);
+  BOOST_CHECK_GE(usage.committedBytes, options.packetWireBytes);
+
+  const auto manifestService = repoService(prefix, "MANIFEST");
+  std::atomic<unsigned> suppressed{0};
+  std::atomic<unsigned> unexpectedWrites{0};
+  auto observationsMutex = std::make_shared<std::mutex>();
+  std::set<ndn::Name> suppressedIds;
+  auto observedIds = std::make_shared<std::set<ndn::Name>>();
+  writer->setRequestLifecycleCallback([observedIds, observationsMutex, manifestService](
+      const ndn_service_framework::ServiceUser::RequestLifecycleStatus& status) {
+    if (status.serviceName == manifestService) {
+      std::lock_guard<std::mutex> lock(*observationsMutex);
+      observedIds->insert(status.requestId);
+    }
+  });
+  const auto suppressManifest = [&] (const ndn::Name& id, const ndn::Name&,
+      const std::vector<ndn::Name>&, const ndn::Name& service,
+      const ndn_service_framework::RequestMessage&, size_t) {
+    if (service != manifestService) ++unexpectedWrites;
+    {
+      std::lock_guard<std::mutex> lock(*observationsMutex);
+      suppressedIds.insert(id);
+    }
+    ++suppressed;
+  };
+  {
+    ScopedRequestPublisher suppression(*writer, suppressManifest);
+    auto retry = std::async(std::launch::async, [&] {
+      source->requireCurrentDurableStorageOwner(rootName, owner);
+    });
+    bool restoreQueued = false;
+    while (retry.wait_for(0ms) != std::future_status::ready) {
+      environment.pumpUntilWithAttributeAuthority([&] {
+        if (suppressed.load() && !restoreQueued) {
+          restoreQueued = true;
+          writer->postToIo([writer] { writer->setRequestPublisher({}); });
+        }
+        return retry.wait_for(0ms) == std::future_status::ready;
+      });
+    }
+    BOOST_CHECK_NO_THROW(retry.get());
+    BOOST_CHECK_EQUAL(suppressed.load(), 1U);
+    {
+      std::lock_guard<std::mutex> lock(*observationsMutex);
+      BOOST_CHECK_GE(observedIds->size(), 2U);
+    }
+    BOOST_CHECK_EQUAL(unexpectedWrites.load(), 0U);
+  }
+  suppressed = 0;
+  suppressedIds.clear();
+  const auto remainingBeforeExhaustion = std::chrono::duration_cast<std::chrono::milliseconds>(
+      publicationDeadline - std::chrono::steady_clock::now()).count();
+  BOOST_TEST_MESSAGE("owner revalidation exhaustion remainingMs=" << remainingBeforeExhaustion);
+  BOOST_REQUIRE_GT(remainingBeforeExhaustion, 4LL * transport.ackCollectionTimeMs);
+  {
+    ScopedRequestPublisher suppression(*writer, suppressManifest);
+    auto exhausted = std::async(std::launch::async, [&] {
+      source->requireCurrentDurableStorageOwner(rootName, owner);
+    });
+    while (exhausted.wait_for(0ms) != std::future_status::ready)
+      environment.pumpUntilWithAttributeAuthority([&] {
+        return exhausted.wait_for(0ms) == std::future_status::ready;
+      });
+    BOOST_CHECK_THROW(exhausted.get(), repo::RepoNoAckObservations);
+    BOOST_CHECK_EQUAL(suppressed.load(), 3U);
+    BOOST_CHECK_EQUAL(suppressedIds.size(), 3U);
+    BOOST_CHECK_EQUAL(unexpectedWrites.load(), 0U);
+  }
+  while (std::chrono::steady_clock::now() < publicationDeadline - 2500ms)
+    environment.pumpUntilWithAttributeAuthority([&] {
+      return std::chrono::steady_clock::now() >= publicationDeadline - 2500ms;
+    });
+  suppressed = 0;
+  {
+    ScopedRequestPublisher suppression(*writer, suppressManifest);
+    auto expired = std::async(std::launch::async, [&] {
+      source->requireCurrentDurableStorageOwner(rootName, owner);
+    });
+    while (expired.wait_for(0ms) != std::future_status::ready)
+      environment.pumpUntilWithAttributeAuthority([&] {
+        return expired.wait_for(0ms) == std::future_status::ready;
+      });
+    BOOST_CHECK_EXCEPTION(expired.get(), std::runtime_error, [] (const auto& error) {
+      return std::string(error.what()) == "remote-packet-publication-deadline";
+    });
+    BOOST_CHECK_EQUAL(suppressed.load(), 0U);
+    BOOST_CHECK_EQUAL(unexpectedWrites.load(), 0U);
+  }
+  for (size_t index = 0; index < originals.size(); ++index) {
+    BOOST_CHECK(ndn::Name(committed.packetNames[index]) == originals[index].first);
+    BOOST_CHECK(node->getDataPacket(originals[index].first.toUri(
+        ndn::name::UriFormat::ALTERNATE)) == originals[index].second);
+    BOOST_CHECK(source->readOriginalDataPacket(originals[index].first) == originals[index].second);
+  }
+  BOOST_CHECK_EQUAL(journal.userStorageUsage(owner, target.repoNode).committedBytes,
+                    usage.committedBytes);
+  BOOST_CHECK_EQUAL(journal.userStorageUsage(owner, target.repoNode).reservedBytes, 0U);
+  sqlite3* rawCountDatabase = nullptr;
+  BOOST_REQUIRE_EQUAL(sqlite3_open_v2(database.c_str(), &rawCountDatabase,
+      SQLITE_OPEN_READONLY, nullptr), SQLITE_OK);
+  std::unique_ptr<sqlite3, decltype(&sqlite3_close)> countDatabase(rawCountDatabase, sqlite3_close);
+  sqlite3_stmt* rawCount = nullptr;
+  BOOST_REQUIRE_EQUAL(sqlite3_prepare_v2(countDatabase.get(),
+      "SELECT COUNT(*) FROM repo_user_storage_writes WHERE state='Committed'",
+      -1, &rawCount, nullptr), SQLITE_OK);
+  std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> count(rawCount, sqlite3_finalize);
+  BOOST_REQUIRE_EQUAL(sqlite3_step(count.get()), SQLITE_ROW);
+  BOOST_CHECK_EQUAL(sqlite3_column_int64(count.get(), 0), 1);
+  source.reset();
+  store.reset();
+  node->beginShutdown();
+}
+
+BOOST_AUTO_TEST_CASE(ProviderUserSelectedManifestServesProtectedInputThroughFaceFilters)
+{
+  const ndn::Name prefix("/spec212/control/repo");
+  const auto service = repoService(prefix, "MANIFEST");
+  BootstrapProfile profile;
+  profile.serviceName = service;
+  profile.providerCount = 2;
+  profile.providerCanActAsUser = true;
+  profile.deferBridgeDelivery = true;
+  profile.providerFacesUseIndependentIoContexts = true;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  auto writer = makeRepoPublisherUser(environment, 1, prefix, {"MANIFEST"});
+  writer->fetchPermissionsFromController(ndn::Name("/controller/spec212/control"));
+  const auto now = static_cast<uint64_t>(std::chrono::duration_cast<
+      std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  ndn_service_framework::PolicyStatusData status;
+  status.setServiceName(service);
+  status.setControllerVersion(ndn_service_framework::ControllerVersion{now, 1});
+  status.setValidity(now - 1000, now + 120000);
+  status.setPolicyDigest("sha256:" + std::string(64, '0'));
+  status.setControllerCertificate(ndn::Name("/controller/spec212/control"));
+  status.setAbePublicParametersName(environment.attributeAuthorityPublicParametersName());
+  status.setAbePublicParametersDigest(environment.attributeAuthorityPublicParametersDigest());
+  BOOST_REQUIRE(writer->installControllerStatus(status));
+  BOOST_REQUIRE(writer->hasRequestScopedDefault());
+  writer->setUseTokens(false);
+  for (size_t index = 0; index < environment.providerCount(); ++index) {
+    BOOST_REQUIRE(environment.provider(index).installControllerStatus(status));
+    environment.provider(index).setUseTokens(false);
+  }
+  environment.pumpUntilWithAttributeAuthority([] { return false; });
+  const auto actor = writer->getName();
+  std::atomic<unsigned> calls{0};
+  std::atomic<bool> exact{true};
+  std::atomic<unsigned> inputInterests{0};
+  std::atomic<unsigned> inputPackets{0};
+  std::map<ndn::Name, unsigned> packetsByName;
+  std::set<ndn::Name> inputInterestNames;
+  const auto makePayload = [] (size_t size) {
+    std::vector<uint8_t> bytes(size);
+    for (size_t index = 0; index < size; ++index)
+      bytes[index] = static_cast<uint8_t>((index * 37 + index / 251) % 256);
+    return bytes;
+  };
+  const auto ready = [] (const ndn_service_framework::RequestMessage&) {
+    ndn_service_framework::ServiceProvider::AckDecision ack;
+    ack.status = true;
+    ack.pendingStateTtlMs = 20000;
+    return ack;
+  };
+  environment.provider(0).addService(service, ready,
+    [&] (const ndn::Name& requester, const ndn::Name&, const ndn::Name&,
+         const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
+      const auto payload = request.getPayload();
+      bool valid = requester == actor &&
+          (payload.size() == 128 || payload.size() == 131072);
+      if (valid) {
+        const auto expected = makePayload(payload.size());
+        valid = std::equal(payload.begin(), payload.end(), expected.begin());
+      }
+      if (!valid) exact.store(false);
+      calls.fetch_add(1);
+      return makeSyntheticResponse(ndn::Buffer{'o', 'k'});
+    });
+  environment.enableProductionIngressForTest();
+  auto interests = environment.providerFace(0).onSendInterest.connect(
+    [&] (const ndn::Interest& interest) {
+      if (interest.getName().toUri().find("REQUEST-INPUT") != std::string::npos) {
+        inputInterests.fetch_add(1);
+        inputInterestNames.insert(interest.getName());
+      }
+    });
+  auto packets = environment.providerFace(1).onSendData.connect(
+    [&] (const ndn::Data& data) {
+      if (data.getName().toUri().find("REQUEST-INPUT") != std::string::npos) {
+        inputPackets.fetch_add(1);
+        ++packetsByName[data.getName()];
+      }
+    });
+  for (const size_t size : {size_t{128}, size_t{131072}}) {
+    const auto callsBefore = calls.load();
+    const auto interestsBefore = inputInterests.load();
+    const auto packetsBefore = inputPackets.load();
+    std::set<ndn::Name> namesBefore;
+    for (const auto& item : packetsByName) namesBefore.insert(item.first);
+    auto result = std::async(std::launch::async, [&, size] {
+      return repo::RepoClient::requestSelectedService(*writer,
+          environment.provider(0).getName(), service,
+          makePayload(size), 3000, 15000);
+    });
+    for (unsigned pump = 0; pump < 6 && result.wait_for(0ms) != std::future_status::ready; ++pump) {
+      environment.pumpUntilWithAttributeAuthority([&] {
+        return result.wait_for(0ms) == std::future_status::ready;
+      });
+    }
+    BOOST_REQUIRE(result.wait_for(0ms) == std::future_status::ready);
+    const auto reply = result.get();
+    BOOST_CHECK(reply == std::vector<uint8_t>({'o', 'k'}));
+    BOOST_CHECK_EQUAL(calls.load(), callsBefore + 1);
+    BOOST_CHECK(exact.load());
+    BOOST_CHECK_GT(inputInterests.load(), interestsBefore);
+    const auto segments = (size + 4095) / 4096;
+    BOOST_CHECK_GE(inputPackets.load() - packetsBefore, segments * 2);
+    size_t newNames = 0;
+    for (const auto& item : packetsByName) {
+      if (namesBefore.count(item.first)) continue;
+      ++newNames;
+      BOOST_CHECK_GE(item.second, 2U);
+      BOOST_CHECK(actor.isPrefixOf(item.first));
+      const bool segmentZeroPrefix = item.first.get(-1).isSegment() &&
+          item.first.get(-1).toSegment() == 0 &&
+          inputInterestNames.count(item.first.getPrefix(-1)) != 0;
+      BOOST_CHECK(inputInterestNames.count(item.first) != 0 || segmentZeroPrefix);
+    }
+    BOOST_CHECK_EQUAL(newNames, segments);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
 {
   TempRoot temporary;
@@ -702,13 +1166,15 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
     intent.targets = {owner, target};
     intent.requestDigest = repo::makePublishRequestDigest(
       intent.reference, 1, owner, "ALL", intent.targets);
+    intent = authorizeOwnedIntent(environment, std::move(intent));
     auto accepted = dispatchRepoRequest(environment.provider(0), environment.user().getName(),
       repoService(servicePrefix, "STORE"), repo::toBytes(intent.toJson()), "owner-intent-" + suffix);
     BOOST_REQUIRE_MESSAGE(accepted.getStatus(), accepted.getErrorInfo());
+    bindUserStorage(write, intent, owner);
     auto committedSeed = dispatchRepoRequest(environment.provider(0), environment.user().getName(),
       repoService(servicePrefix, "STORE"), write.toWire(), "owner-seed-store-" + suffix);
     BOOST_REQUIRE_MESSAGE(committedSeed.getStatus(), committedSeed.getErrorInfo());
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 16);
     seedCatalog.updatePublishOperationTarget(write.operationId,
       {target, "IN_FLIGHT", 1, 1, std::nullopt, {}}, 1);
     auto acceptedOperation = seedCatalog.lookupPublishOperation(
@@ -721,6 +1187,7 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
       ownerState->status = status;
     }
     write.operationOwner = owner;
+    bindUserStorage(write, intent, target);
     auto response = runWithFacePump(environment, [&] {
       return dispatchRepoRequest(environment.provider(1), ndn::Name(owner.providerIdentity),
         repoService(servicePrefix, "STORE"), write.toWire(), "owner-budget-" + suffix);
@@ -848,7 +1315,12 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
   profile.providerCanActAsUser = true;
   const std::vector<std::string> operations{"STORE", "STATUS"};
   profile.serviceName = repoService(servicePrefix, "STORE");
-  profile.additionalServices.push_back(repoService(servicePrefix, "STATUS"));
+  const auto statusService = repoService(servicePrefix, "STATUS");
+  const auto storageGrantService = repoService(servicePrefix, "USER_STORAGE_GRANT");
+  profile.additionalServices.push_back(statusService);
+  profile.providerAdditionalServices.push_back(statusService);
+  profile.userAdditionalServices.push_back(storageGrantService);
+  profile.providerAdditionalServices.push_back(storageGrantService);
   NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
   BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
@@ -857,9 +1329,27 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
     {"/logical/early-seed", environment.provider(0).getName().toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)},
     {"/logical/early-B", environment.provider(1).getName().toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)},
     {"/logical/early-C", environment.provider(2).getName().toUri(ndn::name::UriFormat::ALTERNATE), servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)}};
+  repo::ArtifactLimits limits;
+  repo::StorageCapability capability;
+  capability.repoNode = targets[0].repoNode;
+  capability.repoMode = "persistent";
+  capability.freeBytes = 8 * 1024 * 1024;
   const auto storeService = repoService(servicePrefix, "STORE");
   auto stores = std::make_shared<std::atomic<unsigned>>(0);
+  std::vector<std::shared_ptr<repo::RepoNode>> replicaNodes;
   for (size_t index = 1; index < targets.size(); ++index) {
+    const auto replicaRoot = temporary.path() / ("early-seed-replica-" + std::to_string(index));
+    auto replicaCapability = capability;
+    replicaCapability.repoNode = targets[index].repoNode;
+    auto replicaNode = std::make_shared<repo::RepoNode>(
+      servicePrefix, replicaCapability,
+      std::make_shared<repo::FilesystemRepoStoreBackend>(
+        (replicaRoot / "objects").string(), 1024 * 1024, 4096,
+        "early-seed-replica-" + std::to_string(index)),
+      targets[index].repoNode, targets[index].providerIdentity,
+      (replicaRoot / "artifact-v2.sqlite").string(), limits);
+    replicaNode->registerServices(environment.provider(index));
+    replicaNodes.push_back(std::move(replicaNode));
     environment.provider(index).addService(storeService,
       [] (const ndn_service_framework::RequestMessage&) {
         ndn_service_framework::ServiceProvider::AckDecision decision;
@@ -876,11 +1366,16 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
         return response;
       });
   }
-  repo::ArtifactLimits limits;
-  repo::StorageCapability capability;
-  capability.repoNode = targets[0].repoNode;
-  capability.repoMode = "persistent";
-  capability.freeBytes = 8 * 1024 * 1024;
+  const auto firstRoot = temporary.path() / "missing-seed";
+  const auto firstObjects = firstRoot / "objects";
+  const auto firstDatabase = firstRoot / "artifact-v2.sqlite";
+  auto firstNode = std::make_shared<repo::RepoNode>(
+    servicePrefix, capability,
+    std::make_shared<repo::FilesystemRepoStoreBackend>(
+      firstObjects.string(), 1024 * 1024, 4096, "missing-seed"),
+    targets[0].repoNode, targets[0].providerIdentity,
+    firstDatabase.string(), limits);
+  firstNode->registerServices(environment.provider(0));
   environment.enableProductionIngressForTest();
   const auto principal = environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE);
   for (const bool corrupt : {false, true}) {
@@ -894,8 +1389,8 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
           objects.string(), 1024 * 1024, 4096, label),
         targets[0].repoNode, targets[0].providerIdentity, database.string(), limits);
     };
-    auto node = openNode();
-    node->registerServices(environment.provider(0));
+    auto node = corrupt ? openNode() : std::move(firstNode);
+    if (corrupt) node->registerServices(environment.provider(0));
     const std::vector<uint8_t> bytes{0x73, 0x65, 0x65, 0x64};
     const auto reference = makeReference(label, bytes, profile.userIdentity);
     repo::PublishOperationIntent intent;
@@ -907,6 +1402,7 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
     intent.targets = targets;
     intent.requestDigest = repo::makePublishRequestDigest(
       reference, intent.generation, intent.seed, intent.consistency, targets);
+    intent = authorizeOwnedIntent(environment, std::move(intent));
     const auto operationId = repo::makePublishOperationId(
       principal, intent.seed, intent.idempotencyKeyDigest);
     const auto intentJson = intent.toJson();
@@ -918,6 +1414,7 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
     write.generation = 1;
     write.reference = reference;
     write.bytes = bytes;
+    bindUserStorage(write, intent, targets[0]);
     const auto committed = dispatchRepoRequest(environment.provider(0), environment.user().getName(),
       storeService, write.toWire(limits), std::string(label) + "-store");
     BOOST_REQUIRE_MESSAGE(committed.getStatus(), committed.getErrorInfo());
@@ -925,7 +1422,7 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
     const auto seedReceipt = repo::RepoArtifactCommitReceipt::fromJson(
       std::string(receiptWire.begin(), receiptWire.end()), limits).toJson();
     {
-      repo::SqliteArtifactMetadataStore catalog(database.string(), true, 15);
+      repo::SqliteArtifactMetadataStore catalog(database.string(), true, 16);
       const auto operation = catalog.lookupPublishOperation(operationId, principal);
       BOOST_REQUIRE(operation);
       const auto interruptedAt = static_cast<uint64_t>(std::chrono::duration_cast<
@@ -939,10 +1436,10 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
     }
     releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
     node.reset();
+    node = openNode();
     const auto payload = committedPayloadPath(objects, reference);
     if (corrupt) writeFile(payload, {0x62, 0x61, 0x64, 0x21});
     else BOOST_REQUIRE(fs::remove(payload));
-    node = openNode();
     node->registerServices(environment.provider(0), publisher, 5000, 20000);
     repo::SqliteArtifactMetadataStore catalog(database.string(), false, 15);
     environment.pumpUntilWithAttributeAuthority([&] {
@@ -997,6 +1494,10 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
     releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
     node.reset();
   }
+  for (size_t index = 1; index < targets.size(); ++index) {
+    releaseRepoNodeServiceHandlersForRestart(environment.provider(index), servicePrefix);
+  }
+  replicaNodes.clear();
 }
 
 BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
@@ -1017,7 +1518,7 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
   profile.providerCount = 3;
   profile.providerCanActAsUser = true;
   const std::vector<std::string> operations{
-    "CAPABILITY", "STATUS", "STORE", "STORE_RANGE", "COMMIT_RANGES",
+    "CAPABILITY", "STATUS", "USER_STORAGE_GRANT", "STORE", "STORE_RANGE", "COMMIT_RANGES",
     "ABORT_RANGES", "STORE_MANIFEST", "INSERT", "DELETE", "FETCH", "FETCH_RANGE",
     "MANIFEST", "INVENTORY", "CATALOG_STATUS", "CATALOG_SNAPSHOT",
     "CATALOG_DELTA", "CATALOG_LOOKUP",
@@ -1086,6 +1587,10 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
   config.ackCollectionTimeMs = recoveryAckMs;
   config.requestTimeoutMs = 20000;
   config.limits = artifactLimits;
+  config.userStorageOwnerIdentity = environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  config.userStorageAuthorizer = repo::ArtifactRepositoryApi::makeUserStorageAuthorizer(
+    environment.user(), userStorageGrantExpiryMs(), config.ackCollectionTimeMs,
+    config.requestTimeoutMs);
   auto recoveryStatusApi = repo::ArtifactRepositoryApi::makePersistent(environment.user(), config);
   auto sourceLossSeed = std::make_shared<repo::RepoNode>(
     servicePrefix, seedCapability,
@@ -1292,7 +1797,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   profile.providerCount = 3;
   profile.providerCanActAsUser = true;
   const std::vector<std::string> operations{
-    "CAPABILITY", "STATUS", "STORE", "STORE_RANGE", "COMMIT_RANGES",
+    "CAPABILITY", "STATUS", "USER_STORAGE_GRANT", "STORE", "STORE_RANGE", "COMMIT_RANGES",
     "ABORT_RANGES", "STORE_MANIFEST", "INSERT", "DELETE", "FETCH", "FETCH_RANGE",
     "MANIFEST", "INVENTORY", "CATALOG_STATUS", "CATALOG_SNAPSHOT",
     "CATALOG_DELTA", "CATALOG_LOOKUP",
@@ -1389,6 +1894,8 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
               intent.targets.end());
   intent.requestDigest = repo::makePublishRequestDigest(
     reference, intent.generation, seed, intent.consistency, intent.targets);
+  const auto publishGrantExpiryMs = userStorageGrantExpiryMs();
+  intent = authorizeOwnedIntent(environment, std::move(intent), publishGrantExpiryMs);
   const auto submittingPrincipal = environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE);
   const auto operationId = repo::makePublishOperationId(
     submittingPrincipal, seed, intent.idempotencyKeyDigest);
@@ -1413,6 +1920,16 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   const std::vector<uint8_t> unacceptedBytes{0x75, 0x6e, 0x61, 0x75};
   const auto unacceptedReference = makeReference(
     "matching-owner-without-journal", unacceptedBytes, profile.userIdentity);
+  const auto unacceptedKeyDigest = repo::digestPublishIdempotencyKey(
+    "spec192-unaccepted-owner-key");
+  repo::PublishOperationIntent unacceptedIntent;
+  unacceptedIntent.idempotencyKeyDigest = unacceptedKeyDigest;
+  unacceptedIntent.reference = unacceptedReference;
+  unacceptedIntent.generation = 1;
+  unacceptedIntent.seed = seed;
+  unacceptedIntent.consistency = "ONE";
+  unacceptedIntent.targets = {seed};
+  unacceptedIntent = authorizeOwnedIntent(environment, std::move(unacceptedIntent));
   const auto verifyUnacceptedSeedState = [&] {
     const auto objectName = repo::artifactStorageObjectName(unacceptedReference);
     BOOST_CHECK(!seedNode->core().has(objectName));
@@ -1426,11 +1943,11 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   };
   repo::ArtifactStoreRequest unacceptedStore;
   unacceptedStore.operationId = repo::makePublishOperationId(
-    submittingPrincipal, seed,
-    repo::digestPublishIdempotencyKey("spec192-unaccepted-owner-key"));
+    submittingPrincipal, seed, unacceptedKeyDigest);
   unacceptedStore.generation = 1;
   unacceptedStore.reference = unacceptedReference;
   unacceptedStore.bytes = unacceptedBytes;
+  bindUserStorage(unacceptedStore, unacceptedIntent, seed);
   const auto makeArtifactManifestForWrite = [] (
       const repo::ArtifactReference& reference, const std::string& operationId,
       uint64_t generation) {
@@ -1596,6 +2113,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   unacceptedRange.offsetBytes = firstHalf.size();
   unacceptedRange.lengthBytes = secondHalf.size();
   unacceptedRange.bytes = secondHalf;
+  bindUserStorage(unacceptedRange, unacceptedIntent, seed);
   denied = dispatchUnaccepted(
     storeRangeService, unacceptedRange.toWire(artifactLimits), "unaccepted-owner-range");
   BOOST_CHECK_MESSAGE(!denied.getStatus(), denied.getErrorInfo());
@@ -1624,8 +2142,18 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   unacceptedCommit.operationId = unacceptedStore.operationId;
   unacceptedCommit.generation = unacceptedStore.generation;
   unacceptedCommit.reference = unacceptedReference;
+  bindUserStorage(unacceptedCommit, unacceptedIntent, seed);
   denied = dispatchUnaccepted(
     commitRangesService, unacceptedCommit.toWire(artifactLimits), "unaccepted-owner-commit");
+  BOOST_CHECK_MESSAGE(!denied.getStatus(), denied.getErrorInfo());
+  repo::ArtifactRangeAbortRequest unacceptedAbort;
+  unacceptedAbort.schemaVersion = 2;
+  unacceptedAbort.operationId = unacceptedStore.operationId;
+  unacceptedAbort.generation = unacceptedStore.generation;
+  unacceptedAbort.reference = unacceptedReference;
+  unacceptedAbort.storageBinding = userStorageBindingFor(unacceptedIntent, seed);
+  denied = dispatchUnaccepted(
+    abortRangesService, unacceptedAbort.toWire(artifactLimits), "unaccepted-owner-abort");
   BOOST_CHECK_MESSAGE(!denied.getStatus(), denied.getErrorInfo());
   verifyUnacceptedSeedState();
   const auto unacceptedFullBytesAfter = seedPayloadStore.readRange(
@@ -1844,6 +2372,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   store.generation = intent.generation;
   store.reference = reference;
   store.bytes = bytes;
+  bindUserStorage(store, intent, seed);
   const auto seedStoreResponse = dispatchRepoRequest(
     environment.provider(0), environment.user().getName(), storeService,
     store.toWire(artifactLimits), "recovery-seed-store");
@@ -1856,7 +2385,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
                            "seed-receipt-committed");
 
   {
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 16);
     const auto accepted = seedCatalog.lookupPublishOperation(
       operationId, submittingPrincipal);
     BOOST_REQUIRE(accepted);
@@ -1886,6 +2415,11 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   }
 
   store.operationOwner = seed;
+  auto unselectedGrantIntent = intent;
+  unselectedGrantIntent.targets = {seed, unselected};
+  unselectedGrantIntent = authorizeOwnedIntent(
+    environment, std::move(unselectedGrantIntent), publishGrantExpiryMs);
+  bindUserStorage(store, unselectedGrantIntent, unselected);
   const auto unselectedStoreResponse = runWithFacePump(environment, [&] {
     return dispatchRepoRequest(
       environment.provider(2), seedProvider, storeService,
@@ -1906,6 +2440,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   unselectedRange.generation = intent.generation;
   unselectedRange.reference = reference;
   unselectedRange.operationOwner = seed;
+  bindUserStorage(unselectedRange, unselectedGrantIntent, unselected);
   unselectedRange.lengthBytes = bytes.size();
   unselectedRange.bytes = bytes;
   const auto unselectedRangeResponse = runWithFacePump(environment, [&] {
@@ -1919,6 +2454,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   unselectedCommit.generation = intent.generation;
   unselectedCommit.reference = reference;
   unselectedCommit.operationOwner = seed;
+  bindUserStorage(unselectedCommit, unselectedGrantIntent, unselected);
   const auto unselectedCommitResponse = runWithFacePump(environment, [&] {
     return dispatchRepoRequest(
       environment.provider(2), seedProvider, commitRangesService,
@@ -1926,6 +2462,8 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   });
   checkUnselectedOwnerDenied(unselectedCommitResponse);
   BOOST_CHECK(!fs::exists(committedPayloadPath(unselectedObjects, reference)));
+  BOOST_CHECK(!fs::exists(unselectedObjects / "staging" /
+    (reference.contentDigest + "." + std::to_string(intent.generation) + ".part")));
   BOOST_CHECK_EQUAL(repoManifestCount(unselectedObjects), 0U);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
     unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), reference), 0);
@@ -1940,6 +2478,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   (void)replicaNode->core().commitRanges(replicaManifest);
   assertArtifactVisibility(*replicaNode, 1, replicaManifest, bytes, false,
                            "replica-core-commit-before-receipt");
+  bindUserStorage(store, intent, replica);
   const auto replicaStoreResponse = runWithFacePump(environment, [&] {
     return dispatchRepoRequest(
       environment.provider(1), seedProvider, storeService,
@@ -1975,6 +2514,8 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   lateCommitIntent.requestDigest = repo::makePublishRequestDigest(
     lateCommitReference, lateCommitIntent.generation, seed,
     lateCommitIntent.consistency, lateCommitIntent.targets);
+  lateCommitIntent = authorizeOwnedIntent(
+    environment, std::move(lateCommitIntent));
   const auto lateCommitOperationId = repo::makePublishOperationId(
     submittingPrincipal, seed, lateCommitIntent.idempotencyKeyDigest);
   const auto lateCommitIntentJson = lateCommitIntent.toJson();
@@ -1995,6 +2536,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   lateCommitSeedStore.generation = lateCommitIntent.generation;
   lateCommitSeedStore.reference = lateCommitReference;
   lateCommitSeedStore.bytes = lateCommitBytes;
+  bindUserStorage(lateCommitSeedStore, lateCommitIntent, seed);
   const auto lateCommitSeedStoreResponse = dispatchRepoRequest(
     environment.provider(0), environment.user().getName(), storeService,
     lateCommitSeedStore.toWire(artifactLimits), "recovery-stale-owner-proof-seed-store");
@@ -2002,7 +2544,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
                         lateCommitSeedStoreResponse.getErrorInfo());
   repo::PublishOperationTargetStatus lateCommitInFlight;
   {
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 16);
     const auto accepted = seedCatalog.lookupPublishOperation(
       lateCommitOperationId, submittingPrincipal);
     BOOST_REQUIRE(accepted);
@@ -2029,6 +2571,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   lateCommitRange.offsetBytes = 0;
   lateCommitRange.lengthBytes = lateCommitBytes.size();
   lateCommitRange.bytes = lateCommitBytes;
+  bindUserStorage(lateCommitRange, lateCommitIntent, replica);
   const auto stagedLateCommitRange = runWithFacePump(environment, [&] {
     return dispatchRepoRequest(
       environment.provider(1), seedProvider, storeRangeService,
@@ -2042,7 +2585,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
   {
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 16);
     seedCatalog.updatePublishOperationTarget(
       lateCommitOperationId, lateCommitInFlight, lateCommitInFlight.updatedAtMs);
   }
@@ -2051,6 +2594,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   lateCommit.generation = lateCommitIntent.generation;
   lateCommit.reference = lateCommitReference;
   lateCommit.operationOwner = seed;
+  bindUserStorage(lateCommit, lateCommitIntent, replica);
   const auto lateCommitResponse = runWithFacePump(environment, [&] {
     return dispatchRepoRequest(
       environment.provider(1), seedProvider, commitRangesService,
@@ -2094,12 +2638,19 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   clientConfig.ackCollectionTimeMs = 1000;
   clientConfig.requestTimeoutMs = 20000;
   clientConfig.limits = artifactLimits;
+  clientConfig.userStorageOwnerIdentity = environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  clientConfig.userStorageAuthorizer = repo::ArtifactRepositoryApi::makeUserStorageAuthorizer(
+    environment.user(), userStorageGrantExpiryMs(), clientConfig.ackCollectionTimeMs,
+    clientConfig.requestTimeoutMs);
   auto persistent = repo::ArtifactRepositoryApi::makePersistent(
     environment.user(), clientConfig);
   // Instrumented transport gets a bounded admission/status window. The timeout
   // case retains its separate 500 ms post-accept wait and original server budgets.
   auto recoveryStatusConfig = clientConfig;
   recoveryStatusConfig.ackCollectionTimeMs = recoveryAckMs;
+  recoveryStatusConfig.userStorageAuthorizer = repo::ArtifactRepositoryApi::makeUserStorageAuthorizer(
+    environment.user(), userStorageGrantExpiryMs(), recoveryStatusConfig.ackCollectionTimeMs,
+    recoveryStatusConfig.requestTimeoutMs);
   auto recoveryStatusApi = repo::ArtifactRepositoryApi::makePersistent(
     environment.user(), recoveryStatusConfig);
   repo::PublishOperationHandle handle;
@@ -2178,15 +2729,17 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   exhaustedReplayIntent.requestDigest = repo::makePublishRequestDigest(
     exhaustedReplayReference, exhaustedReplayIntent.generation, seed,
     exhaustedReplayIntent.consistency, exhaustedReplayIntent.targets);
-  const auto exhaustedReplayOperationId = repo::makePublishOperationId(
-    submittingPrincipal, seed,
-    exhaustedReplayIntent.idempotencyKeyDigest);
   auto exhaustedSeedNode = std::make_shared<repo::RepoNode>(
     servicePrefix, seedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       seedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-seed"),
     seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   exhaustedSeedNode->registerServices(environment.provider(0));
+  exhaustedReplayIntent = authorizeOwnedIntent(
+    environment, std::move(exhaustedReplayIntent));
+  const auto exhaustedReplayOperationId = repo::makePublishOperationId(
+    submittingPrincipal, seed,
+    exhaustedReplayIntent.idempotencyKeyDigest);
   const auto exhaustedIntentJson = exhaustedReplayIntent.toJson();
   const std::vector<uint8_t> exhaustedIntentWire(
     exhaustedIntentJson.begin(), exhaustedIntentJson.end());
@@ -2200,6 +2753,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   exhaustedSeedStore.generation = exhaustedReplayIntent.generation;
   exhaustedSeedStore.reference = exhaustedReplayReference;
   exhaustedSeedStore.bytes = exhaustedReplayBytes;
+  bindUserStorage(exhaustedSeedStore, exhaustedReplayIntent, seed);
   const auto exhaustedSeedStoreResponse = dispatchRepoRequest(
     environment.provider(0), environment.user().getName(), storeService,
     exhaustedSeedStore.toWire(artifactLimits),
@@ -2207,7 +2761,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_REQUIRE_MESSAGE(exhaustedSeedStoreResponse.getStatus(),
                         exhaustedSeedStoreResponse.getErrorInfo());
   {
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 16);
     const auto accepted = seedCatalog.lookupPublishOperation(
       exhaustedReplayOperationId, submittingPrincipal);
     BOOST_REQUIRE(accepted);
@@ -2687,6 +3241,120 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK(lossCatalog.lookupAggregateReceipt(lossStatus.receiptId) == lossAggregate);
 }
 
+BOOST_AUTO_TEST_CASE(PersistentOwnedRetryKeepsDistinctOwnerWithOfflineReplica)
+{
+  TempRoot temporary;
+  const ndn::Name servicePrefix(repo::RepoClient::DEFAULT_SERVICE_NAME);
+  BootstrapProfile profile;
+  profile.providerCount = 2;
+  profile.serviceName = repoService(servicePrefix, "STATUS");
+  profile.additionalServices = {repoService(servicePrefix, "STORE")};
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+
+  const std::string owner = "/spec212/storage-owner";
+  const auto producer = environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  BOOST_REQUIRE_NE(owner, producer);
+  const auto database = temporary.path() / "metadata.db";
+  repo::StorageCapability capability;
+  capability.repoNode = "/spec212/retry-seed";
+  capability.repoMode = "persistent";
+  capability.freeBytes = 1U << 20;
+  const repo::RepoArtifactTarget seed{capability.repoNode,
+    environment.provider(0).getName().toUri(ndn::name::UriFormat::ALTERNATE),
+    servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
+  const repo::RepoArtifactTarget replica{"/spec212/retry-replica",
+    environment.provider(1).getName().toUri(ndn::name::UriFormat::ALTERNATE), seed.servicePrefix};
+  auto node = std::make_shared<repo::RepoNode>(servicePrefix, capability,
+    repo::makeFilesystemRepoStore((temporary.path() / "objects").string(), 1U << 20, 4096),
+    seed.repoNode, seed.providerIdentity, database.string());
+  node->registerServices(environment.provider(0));
+  environment.enableProductionIngressForTest();
+
+  const std::vector<uint8_t> bytes{1, 2, 3};
+  const auto reference = makeReference("distinct-owner-retry", bytes, profile.userIdentity);
+  const std::string key = "distinct-owner-retry-key";
+  repo::PublishOperationIntent intent;
+  intent.schemaVersion = 2;
+  intent.idempotencyKeyDigest = repo::digestPublishIdempotencyKey(key);
+  intent.reference = reference;
+  intent.generation = 1;
+  intent.seed = seed;
+  intent.consistency = "ONE";
+  intent.targets = {seed, replica};
+  std::sort(intent.targets.begin(), intent.targets.end(), [] (const auto& a, const auto& b) {
+    return a.repoNode < b.repoNode;
+  });
+  const std::string grantId = "preexisting-owner-selected-grant";
+  repo::SqliteArtifactMetadataStore journal(database.string(), true, 16, false);
+  const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count());
+  // Seed a real owner-authorized native commit. The replica is an unattempted
+  // selected target; the seed owns the accepted operation and durable receipt.
+  const auto grant = journal.grantUserStorage(owner, seed.repoNode, grantId, producer,
+    repo::artifactStorageObjectName(reference), userStorageGrantExpiryMs(), now);
+  intent.userStorageBindings = {
+    {1, seed, {1, owner, grantId, grant.ownerEpoch}, producer},
+    {1, replica, {1, owner, grantId, 1}, seed.providerIdentity}};
+  intent.requestDigest = repo::makePublishRequestDigest(reference, 1, seed, "ONE",
+    intent.targets, intent.userStorageBindings);
+  intent.validate();
+  const auto operationId = repo::makePublishOperationId(producer, seed, intent.idempotencyKeyDigest);
+  const auto storeService = repoService(servicePrefix, "STORE");
+  const auto reserved = dispatchRepoRequest(environment.provider(0), environment.user().getName(),
+    storeService, repo::toBytes(intent.toJson()), "distinct-owner-intent");
+  BOOST_REQUIRE_MESSAGE(reserved.getStatus(), reserved.getErrorInfo());
+  repo::ArtifactStoreRequest write;
+  write.operationId = operationId;
+  write.generation = 1;
+  write.reference = reference;
+  write.bytes = bytes;
+  bindUserStorage(write, intent, seed);
+  const auto committed = dispatchRepoRequest(environment.provider(0), environment.user().getName(),
+    storeService, write.toWire(), "distinct-owner-commit");
+  BOOST_REQUIRE_MESSAGE(committed.getStatus(), committed.getErrorInfo());
+
+  repo::SelectedRepoSet selected;
+  selected.seedRepoId = seed.repoNode;
+  selected.consistency = repo::RepoWriteConsistency::One;
+  for (const auto& target : intent.targets) {
+    selected.targets.push_back({target.repoNode, ndn::Name(target.providerIdentity),
+                                ndn::Name(target.servicePrefix)});
+  }
+  std::atomic<unsigned> authorizerCalls{0};
+  repo::PersistentRepoClientConfig config;
+  config.servicePrefix = servicePrefix;
+  config.ackCollectionTimeMs = 1000;
+  config.requestTimeoutMs = 10000;
+  config.userStorageOwnerIdentity = owner;
+  config.userStorageAuthorizer = [&] (const repo::PublishOperationIntent&, auto)
+    -> std::vector<repo::RepoUserStorageTargetBinding> {
+    ++authorizerCalls;
+    throw std::runtime_error("retry must not contact Owner or replica");
+  };
+  auto api = repo::ArtifactRepositoryApi::makePersistent(environment.user(), config);
+  environment.disconnectProviderTransportForTest(1);
+  const auto first = runWithFacePump(environment, [&] {
+    return api.beginPublishFile("", reference, selected, key, 30000);
+  });
+  const auto repeated = runWithFacePump(environment, [&] {
+    return api.beginPublishFile("", reference, selected, key, 30000);
+  });
+  BOOST_CHECK_EQUAL(first.operationId, operationId);
+  BOOST_CHECK_EQUAL(first.toJson(), repeated.toJson());
+  BOOST_CHECK_EQUAL(authorizerCalls.load(), 0U);
+
+  config.userStorageOwnerIdentity = "/spec212/different-storage-owner";
+  auto changedOwnerApi = repo::ArtifactRepositoryApi::makePersistent(environment.user(), config);
+  BOOST_CHECK_EXCEPTION(runWithFacePump(environment, [&] {
+    return changedOwnerApi.beginPublishFile("", reference, selected, key, 30000);
+  }), std::runtime_error, [] (const auto& error) {
+    return std::string(error.what()).find("repo-publish-idempotency-conflict:") == 0;
+  });
+  BOOST_CHECK_EQUAL(authorizerCalls.load(), 0U);
+}
+
 BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
 {
   TempRoot temporary;
@@ -2704,7 +3372,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   profile.providerCount = 3;
   profile.providerCanActAsUser = true;
   const std::vector<std::string> operations{
-    "CAPABILITY", "STATUS", "STORE", "STORE_RANGE", "COMMIT_RANGES",
+    "CAPABILITY", "STATUS", "USER_STORAGE_GRANT", "STORE", "STORE_RANGE", "COMMIT_RANGES",
     "ABORT_RANGES", "FETCH", "FETCH_RANGE",
   };
   profile.serviceName = repoService(servicePrefix, operations.front());
@@ -2765,6 +3433,10 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   clientConfig.ackCollectionTimeMs = 1000;
   clientConfig.requestTimeoutMs = 8000;
   clientConfig.limits = artifactLimits;
+  clientConfig.userStorageOwnerIdentity = environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  clientConfig.userStorageAuthorizer = repo::ArtifactRepositoryApi::makeUserStorageAuthorizer(
+    environment.user(), userStorageGrantExpiryMs(), clientConfig.ackCollectionTimeMs,
+    clientConfig.requestTimeoutMs);
   auto persistent = repo::ArtifactRepositoryApi::makePersistent(environment.user(), clientConfig);
 
   // Give signed discovery and selected-write ACK collection their own windows;
@@ -2777,6 +3449,10 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   auto selectedWriteConfig = clientConfig;
   selectedWriteConfig.ackCollectionTimeMs = 5000;
   selectedWriteConfig.requestTimeoutMs = 20000;
+  const auto selectedWriteGrantExpiryMs = userStorageGrantExpiryMs();
+  selectedWriteConfig.userStorageAuthorizer = repo::ArtifactRepositoryApi::makeUserStorageAuthorizer(
+    environment.user(), selectedWriteGrantExpiryMs, selectedWriteConfig.ackCollectionTimeMs,
+    selectedWriteConfig.requestTimeoutMs);
   auto selectedWriteApi = repo::ArtifactRepositoryApi::makePersistent(
     environment.user(), selectedWriteConfig);
 
@@ -4494,6 +5170,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   auto boundedBeginConfig = clientConfig;
   boundedBeginConfig.ackCollectionTimeMs = 10;
   boundedBeginConfig.requestTimeoutMs = 500;
+  boundedBeginConfig.userStorageAuthorizer = {};
   auto boundedBeginApi = repo::ArtifactRepositoryApi::makePersistent(
     environment.user(), boundedBeginConfig);
   const auto boundedStatusService = repoService(servicePrefix, "STATUS");
@@ -5002,6 +5679,8 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
     staleReplayIntent.reference, staleReplayIntent.generation,
     staleReplayIntent.seed, staleReplayIntent.consistency,
     staleReplayIntent.targets);
+  staleReplayIntent = authorizeOwnedIntent(
+    environment, std::move(staleReplayIntent), selectedWriteGrantExpiryMs);
   const auto staleReplayOperationId = repo::makePublishOperationId(
     environment.user().getName().toUri(ndn::name::UriFormat::ALTERNATE), staleReplaySeed,
     staleReplayIntent.idempotencyKeyDigest);
@@ -5031,6 +5710,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   staleReplayStore.generation = staleReplayIntent.generation;
   staleReplayStore.reference = staleReplayReference;
   staleReplayStore.bytes = staleReplayBytes;
+  bindUserStorage(staleReplayStore, staleReplayIntent, staleReplaySeed);
   const auto staleReplayStoreWire = staleReplayStore.toWire(artifactLimits);
   (void)dispatchRepoRequest(
     environment.provider(staleReplaySeedIndex), environment.user().getName(),

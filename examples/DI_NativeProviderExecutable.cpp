@@ -28,11 +28,13 @@
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndnsf-distributed-repo/RepoRemoteEncryptedLargeDataStore.hpp"
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/security/validator-null.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/security/transform/base64-decode.hpp>
 #include <ndn-cxx/security/transform/buffer-source.hpp>
 #include <ndn-cxx/security/transform/stream-sink.hpp>
@@ -80,6 +82,7 @@ namespace {
 using namespace ndnsf::di;
 
 volatile std::sig_atomic_t g_shutdownRequested = 0;
+volatile std::sig_atomic_t g_withdrawRequested = 0;
 
 // Tokenizer decoding is provider-process immutable preparation.  Keep one
 // digest-bound Rust tokenizer owner for all requests handled by this process;
@@ -259,6 +262,9 @@ struct Options
   // budget.  Keep it separate from dependency/readiness/control budgets.
   int assemblyTimeoutMs = 300000;
   int conversationRetentionMs = 300000;
+  std::string kvRecoveryConfigPath;
+  std::string kvHandoffConfigPath;
+  bool checkKvHandoffConfig = false;
   int repoAckTimeoutMs = 500;
   int repoPermissionWaitMs = 3000;
   int permissionWaitMs = 30000;
@@ -931,6 +937,15 @@ parseArgs(int argc, char** argv)
     else if (arg == "--assembly-timeout-ms") {
       options.assemblyTimeoutMs = parsePositiveInt(readValue(), "--assembly-timeout-ms");
     }
+    else if (arg == "--kv-recovery-config") {
+      options.kvRecoveryConfigPath = readValue();
+    }
+    else if (arg == "--kv-handoff-config") {
+      options.kvHandoffConfigPath = readValue();
+    }
+    else if (arg == "--check-kv-handoff-config") {
+      options.checkKvHandoffConfig = true;
+    }
     else if (arg == "--conversation-retention-ms") {
       const auto value = readValue();
       if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
@@ -1027,6 +1042,11 @@ parseArgs(int argc, char** argv)
         tokenizer != nullptr && *tokenizer != '\0') {
       options.tokenizerJson = tokenizer;
     }
+  }
+  if (options.checkKvHandoffConfig &&
+      (!options.serve || options.kvHandoffConfigPath.empty())) {
+    throw std::invalid_argument(
+      "--check-kv-handoff-config requires --serve and --kv-handoff-config");
   }
   if (options.wiringCheckOnly && !options.checkOnly) {
     throw std::invalid_argument("--wiring-check-only requires --check-only");
@@ -1387,6 +1407,8 @@ printUsage(const char* program)
     << "[--tokenizer-json <path>] "
     << "[--repo-fetch-timeout-ms <ms>] [--assembly-timeout-ms <ms>] "
     << "[--conversation-retention-ms <1..3600000>] "
+    << "[--kv-recovery-config <operator-json>] "
+    << "[--kv-handoff-config <operator-json>] [--check-kv-handoff-config] "
     << "[--repo-ack-timeout-ms <ms>] "
     << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
     << "[--permission-wait-ms <ms>] "
@@ -1408,7 +1430,37 @@ main(int argc, char** argv)
   try {
     std::signal(SIGINT, requestShutdown);
     std::signal(SIGTERM, requestShutdown);
+    std::signal(SIGUSR1, [](int) { g_withdrawRequested = 1; });
     auto options = parseArgs(argc, argv);
+    std::optional<NativeProviderKvRecoveryConfigV1> kvRecovery;
+    std::optional<NativeJson> kvHandoff;
+    if (!options.kvRecoveryConfigPath.empty()) {
+      std::error_code error;
+      const auto bytes = std::filesystem::file_size(options.kvRecoveryConfigPath, error);
+      if (error || !bytes || bytes > 64 * 1024)
+        throw std::invalid_argument("KV recovery policy file is unavailable or exceeds bound");
+      std::ifstream input(options.kvRecoveryConfigPath, std::ios::binary);
+      std::string wire(static_cast<std::size_t>(bytes), '\0');
+      if (!input.read(wire.data(), static_cast<std::streamsize>(wire.size())))
+        throw std::invalid_argument("KV recovery policy file cannot be read");
+      kvRecovery = nativeProviderKvRecoveryConfigFromJson(wire);
+    }
+    if (!options.kvHandoffConfigPath.empty()) {
+      if (!kvRecovery)
+        throw std::invalid_argument("--kv-handoff-config requires --kv-recovery-config");
+      std::error_code error;
+      const auto bytes = std::filesystem::file_size(options.kvHandoffConfigPath, error);
+      if (error || !bytes || bytes > 64 * 1024)
+        throw std::invalid_argument("KV handoff config file is unavailable or exceeds bound");
+      std::ifstream input(options.kvHandoffConfigPath, std::ios::binary);
+      std::string wire(static_cast<std::size_t>(bytes), '\0');
+      if (!input.read(wire.data(), static_cast<std::streamsize>(wire.size())))
+        throw std::invalid_argument("KV handoff config file cannot be read");
+      kvHandoff = nativeParseJson(wire);
+      if (!kvHandoff->is_object() || kvHandoff->value("schema", std::string{}) !=
+          "ndnsf-di-native-kv-handoff-v1")
+        throw std::invalid_argument("KV handoff config schema is invalid");
+    }
     const auto staleAfter = std::chrono::milliseconds(std::max<std::int64_t>(
       10 * 60 * 1000,
       static_cast<std::int64_t>(options.assemblyTimeoutMs) + 60 * 1000));
@@ -1615,7 +1667,7 @@ main(int argc, char** argv)
       }
 
       std::unique_ptr<ndn_service_framework::CertificatePublisher> certPublisher;
-      if (!options.noServeCertificates) {
+      if (!options.noServeCertificates && !options.checkKvHandoffConfig) {
         logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_CERT_PUBLISHER_CREATING");
         certPublisher = std::make_unique<ndn_service_framework::CertificatePublisher>(
           face,
@@ -1648,14 +1700,6 @@ main(int argc, char** argv)
         nativeOfferConfig->bootEpoch = providerBootId;
       }
       logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_SERVICE_PROVIDER_READY");
-      // Independent targeted registration: model permissions do not grant
-      // access to this handler. Declared after provider so it closes first.
-      auto networkProbeRegistration = provider->addScopedTargetedService(
-        ndn::Name(ndn_service_framework::NETWORK_PROBE_SERVICE),
-        ndnsf::di::makeNativePlacementMeasurementTargetedHandler(*provider));
-      logRuntimeEvidence(
-        std::string("NDNSF_DI_NETWORK_PROBE_REGISTERED service=") +
-        ndn_service_framework::NETWORK_PROBE_SERVICE);
       provider->setUseTokens(!options.disableTokens);
       provider->setHandlerThreads(options.handlerThreads);
       provider->setAckThreads(options.ackThreads);
@@ -1685,7 +1729,8 @@ main(int argc, char** argv)
         std::function<void(std::chrono::milliseconds)>>();
       auto executionEvidenceObserver = std::make_shared<
         std::function<void(const ExecutionEvidence&)>>();
-      telemetryCollector->start();
+      if (!options.checkKvHandoffConfig)
+        telemetryCollector->start();
       provisioningState->setTelemetrySnapshotProvider(
         [telemetryCollector] { return telemetryCollector->snapshot(); });
       if (options.enableAdmissionLease) {
@@ -1713,6 +1758,184 @@ main(int argc, char** argv)
       ndnsf::di::NativeServiceDefinition nativeService;
       nativeService.serviceName = options.serviceName;
       nativeService.allowedRoles = allowedRoles;
+      std::shared_ptr<ndn_service_framework::ServiceUser> handoffWriter;
+      NativeWithdrawalOptionsV1 withdrawalOptions;
+      bool withdrawProviderScope = false;
+      std::chrono::milliseconds withdrawalSaveTimeout{120000};
+      std::chrono::milliseconds withdrawalDrainTimeout{125000};
+      if (kvHandoff) {
+        const auto& value = *kvHandoff;
+        const auto positive = [&](const char* key, std::uint64_t fallback, std::uint64_t maximum) {
+          const auto found = value.find(key);
+          if (found == value.end()) return fallback;
+          if (!found->is_number_unsigned() || !found->get<std::uint64_t>() ||
+              found->get<std::uint64_t>() > maximum)
+            throw std::invalid_argument(std::string("invalid KV handoff limit: ") + key);
+          return found->get<std::uint64_t>();
+        };
+        const auto scope = value.at("withdrawal_scope").get<std::string>();
+        if (scope != "provider" && scope != "service")
+          throw std::invalid_argument("KV withdrawal_scope must be provider or service");
+        withdrawProviderScope = scope == "provider";
+        nativeService.withdrawalPersistencePolicyId = value.at("policy_id").get<std::string>();
+        if (nativeService.withdrawalPersistencePolicyId.empty() ||
+            nativeService.withdrawalPersistencePolicyId.size() > 256)
+          throw std::invalid_argument("KV handoff policy_id must be bounded and nonempty");
+        withdrawalOptions.persistencePolicyId = nativeService.withdrawalPersistencePolicyId;
+        const auto failurePolicy = value.value("failure_policy", std::string("abort"));
+        if (failurePolicy != "abort" && failurePolicy != "force-unsaved")
+          throw std::invalid_argument("KV failure_policy must be abort or force-unsaved");
+        withdrawalOptions.failurePolicy = failurePolicy == "abort"
+          ? NativeWithdrawalFailurePolicyV1::Abort : NativeWithdrawalFailurePolicyV1::ForceUnsaved;
+        withdrawalOptions.maxConversations = positive("max_conversations", 32, 64);
+        withdrawalSaveTimeout = std::chrono::milliseconds(positive("save_timeout_ms", 120000, 600000));
+        withdrawalDrainTimeout = std::chrono::milliseconds(positive("drain_timeout_ms", 125000, 605000));
+        if (withdrawalDrainTimeout < withdrawalSaveTimeout + std::chrono::seconds(5))
+          throw std::invalid_argument("KV drain_timeout_ms must cover save_timeout_ms plus 5000ms");
+        NativeConversationHandoffOwnerContextV1 contextTemplate;
+        contextTemplate.portableLimits = kvRecovery->portableLimits;
+        contextTemplate.protectedCheckpointLimits = kvRecovery->protectedLimits;
+        auto& policy = contextTemplate.policy;
+        policy.enabled = true;
+        policy.maxConcurrentEvents = positive("max_concurrent_events", 1, 16);
+        policy.maxRolesPerEvent = allowedRoles.size();
+        if (policy.maxRolesPerEvent == 0 || policy.maxRolesPerEvent > 64 ||
+            policy.maxConcurrentEvents > 64 / policy.maxRolesPerEvent)
+          throw std::invalid_argument("KV handoff concurrent role budget exceeds 64");
+        policy.maxConcurrentRoleSlots = policy.maxRolesPerEvent * policy.maxConcurrentEvents;
+        policy.maxPacketCountPerRole = positive("max_packets_per_role", 4096, 4096);
+        policy.maxPacketSetWireBytesPerRole = positive("max_packet_wire_bytes_per_role",
+          64ULL << 20, ndnsf_distributed_repo::REPO_USER_STORAGE_LIMIT_BYTES);
+        policy.maxSaveDurationMs = withdrawalSaveTimeout.count();
+        const auto multiply = [](std::uint64_t bytes, std::uint64_t count) {
+          if (bytes > (std::uint64_t{1} << 40) / count)
+            throw std::invalid_argument("KV handoff aggregate budget is too large");
+          return bytes * count;
+        };
+        policy.maxAggregateBytes = multiply(policy.maxPacketSetWireBytesPerRole, policy.maxRolesPerEvent);
+        const auto perRoleScratch = contextTemplate.protectedCheckpointLimits.maxPlaintextBytes +
+          contextTemplate.protectedCheckpointLimits.maxWireBytes + policy.maxPacketSetWireBytesPerRole;
+        if (perRoleScratch < contextTemplate.protectedCheckpointLimits.maxPlaintextBytes ||
+            perRoleScratch < contextTemplate.protectedCheckpointLimits.maxWireBytes)
+          throw std::invalid_argument("KV handoff scratch budget overflow");
+        policy.maxScratchBytesPerEvent = multiply(perRoleScratch, policy.maxRolesPerEvent);
+        policy.scratchQuotaBytes = multiply(policy.maxScratchBytesPerEvent, policy.maxConcurrentEvents);
+        policy.scratchRoot = kvRecovery->privateScratchRoot /
+          ("producer-" + nativePlanningDigest(options.providerName).substr(7));
+        std::error_code scratchError;
+        const bool created = std::filesystem::create_directories(policy.scratchRoot, scratchError);
+        if (scratchError || std::filesystem::is_symlink(std::filesystem::symlink_status(policy.scratchRoot)))
+          throw std::invalid_argument("KV handoff scratch directory is unavailable");
+        if (created) std::filesystem::permissions(policy.scratchRoot,
+          std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+        contextTemplate.saveBatchLimits.maxEntries =
+          withdrawalOptions.maxConversations * policy.maxRolesPerEvent;
+        contextTemplate.saveBatchLimits.maxMetadataBytes = 4ULL << 20;
+        contextTemplate.saveBatchLimits.maxTotalBytes = positive("max_withdrawal_bytes",
+          ndnsf_distributed_repo::REPO_USER_STORAGE_LIMIT_BYTES,
+          ndnsf_distributed_repo::REPO_USER_STORAGE_LIMIT_BYTES);
+        withdrawalOptions.maxTotalBytes = contextTemplate.saveBatchLimits.maxTotalBytes;
+        const auto& repo = value.at("repo");
+        const ndnsf_distributed_repo::RepoArtifactTarget target{
+          repo.at("repo_node").get<std::string>(), repo.at("provider_identity").get<std::string>(),
+          repo.at("service_prefix").get<std::string>()};
+        for (const auto& role : allowedRoles)
+          contextTemplate.repoTargetByRole.emplace(role,
+            NativeDurableStorageGrantRepoTargetV1{target.repoNode, target.providerIdentity, target.servicePrefix});
+        const auto& configuredOwners = value.at("owner_certificates");
+        if (!configuredOwners.is_array() || configuredOwners.empty() || configuredOwners.size() > 64)
+          throw std::invalid_argument("KV handoff requires 1..64 pinned Owner certificates");
+        std::map<ndn::Name, ndn::security::Certificate> owners;
+        std::vector<ndn::Name> ownerIdentities;
+        const auto configRoot = std::filesystem::absolute(options.kvHandoffConfigPath).parent_path();
+        auto ownerIssuer = controllerCert;
+        if (value.contains("owner_issuer_certificate")) {
+          const auto issuerPath = configRoot / value.at("owner_issuer_certificate").get<std::string>();
+          std::error_code issuerError;
+          const auto issuerBytes = std::filesystem::file_size(issuerPath, issuerError);
+          if (issuerError || issuerBytes == 0 || issuerBytes > 64 * 1024)
+            throw std::invalid_argument("KV Owner issuer certificate is unavailable or exceeds bound");
+          const auto issuer = ndn::io::load<ndn::security::Certificate>(issuerPath.string());
+          if (!issuer || !issuer->getValidityPeriod().isValid())
+            throw std::invalid_argument("KV Owner issuer trust pin is invalid");
+          ownerIssuer = *issuer;
+        }
+        for (const auto& entry : configuredOwners) {
+          const auto certificatePath = configRoot / entry.get<std::string>();
+          std::error_code certificateError;
+          const auto certificateBytes = std::filesystem::file_size(certificatePath, certificateError);
+          if (certificateError || certificateBytes == 0 || certificateBytes > 64 * 1024)
+            throw std::invalid_argument("KV Owner certificate is unavailable or exceeds bound");
+          const auto certificate = ndn::io::load<ndn::security::Certificate>(certificatePath.string());
+          if (!certificate || !ownerIssuer.getValidityPeriod().isValid() ||
+              !certificate->getValidityPeriod().isValid() ||
+              !ndn::security::verifySignature(*certificate, ownerIssuer) ||
+              !owners.emplace(certificate->getIdentity(), *certificate).second)
+            throw std::invalid_argument("KV Owner certificate does not match its unique identity and issuer trust pin");
+          ownerIdentities.push_back(certificate->getIdentity());
+        }
+        handoffWriter = std::make_shared<ndn_service_framework::ServiceUser>(face,
+          ndn::Name(options.groupName), providerCert, providerCert, controllerCert,
+          options.trustSchema, keyChain);
+        ndnsf_distributed_repo::RepoRemoteEncryptedLargeDataStore::Options storeOptions;
+        storeOptions.target = target;
+        storeOptions.scratchRoot = policy.scratchRoot;
+        storeOptions.maxWireBytes = policy.maxAggregateBytes;
+        storeOptions.maxPacketCount = policy.maxPacketCountPerRole;
+        storeOptions.timeoutMs = withdrawalSaveTimeout.count();
+        storeOptions.ackCollectionTimeMs = positive("repo_ack_collection_ms", 1000, 600000);
+        // Construct once to reject invalid local policy before service export.
+        (void)ndnsf_distributed_repo::RepoRemoteEncryptedLargeDataStore(
+          handoffWriter, providerCert, storeOptions);
+        nativeService.handoffOwnerContextResolver =
+          [owners = std::move(owners), contextTemplate, handoffWriter, providerCert,
+           ownerIssuer, storeOptions, service = ndn::Name(options.serviceName)](
+              const ndn::Name& owner, const ndn::Name& requestedService, const std::string&) {
+            const auto found = owners.find(owner);
+            if (requestedService != service || found == owners.end() ||
+                !found->second.getValidityPeriod().isValid() ||
+                !ownerIssuer.getValidityPeriod().isValid() ||
+                !ndn::security::verifySignature(found->second, ownerIssuer))
+              throw std::invalid_argument("HANDOFF_OWNER_TRUST_PROFILE_MISMATCH");
+            auto context = contextTemplate;
+            context.ownerEncryptionCertificate = found->second;
+            context.durableStorageOwner.ownerIdentity = owner.toUri(ndn::name::UriFormat::ALTERNATE);
+            context.durableStorageOwner.resolveGrant = [](const ndn::Name&, const std::string&,
+                const std::function<void()>&) -> ndn_service_framework::DurableStorageGrantSelector {
+              throw std::runtime_error("HANDOFF_AUTHENTICATED_OWNER_GRANT_REQUIRED");
+            };
+            const auto store =
+              std::make_shared<ndnsf_distributed_repo::RepoRemoteEncryptedLargeDataStore>(
+                handoffWriter, providerCert, storeOptions);
+            context.originalPacketStore = store;
+            context.bindPublicationDeadline = [store](std::chrono::steady_clock::time_point deadline) {
+              store->setPublicationDeadline(deadline);
+            };
+            return context;
+          };
+        // Exercise the configured resolver before model work, using the same
+        // validation as an authenticated Begin without taking a save fence.
+        for (const auto& owner : ownerIdentities) {
+          (void)resolveNativeConversationHandoffOwnerContextV1(
+            nativeService.handoffOwnerContextResolver, owner,
+            ndn::Name(options.serviceName), "startup-context-check");
+        }
+        logRuntimeEvidence("NDNSF_DI_HANDOFF_CONFIG_VALIDATED owners=" +
+          std::to_string(ownerIdentities.size()) + " roles=" +
+          std::to_string(allowedRoles.size()) + " repoAckMs=" +
+          std::to_string(storeOptions.ackCollectionTimeMs));
+      }
+      if (options.checkKvHandoffConfig) {
+        std::cout << "NDNSF_DI_HANDOFF_CONFIG_CHECK_PASS" << std::endl;
+        return 0;
+      }
+      // Independent targeted registration; close before the Provider dies.
+      auto networkProbeRegistration = provider->addScopedTargetedService(
+        ndn::Name(ndn_service_framework::NETWORK_PROBE_SERVICE),
+        ndnsf::di::makeNativePlacementMeasurementTargetedHandler(*provider));
+      logRuntimeEvidence(
+        std::string("NDNSF_DI_NETWORK_PROBE_REGISTERED service=") +
+        ndn_service_framework::NETWORK_PROBE_SERVICE);
       const std::weak_ptr<ndn_service_framework::ServiceProvider> weakProvider = provider;
       auto makeBaseAckDecision =
         [rolesText = joinRoles(allowedRoles),
@@ -2037,6 +2260,7 @@ main(int argc, char** argv)
       };
       auto installTask =
         [options,
+         kvRecovery,
          tensorSegmentBytes,
          plan,
          specs,
@@ -2116,6 +2340,7 @@ main(int argc, char** argv)
             }
 
             NativeProviderHandlerConfig config;
+            config.kvRecovery = kvRecovery;
             config.maxSegmentSize = tensorSegmentBytes;
             config.allowSelectionGenerationOptions = options.allowSelectionGenerationOptions;
             config.plan = plan;
@@ -2595,6 +2820,20 @@ main(int argc, char** argv)
       auto shutdownResidentState = [&] {
         nativeRegistration.close();
         providerHost->stop();
+        const bool hostDrained = providerHost->drain(withdrawalDrainTimeout);
+        if (!hostDrained) {
+          logRuntimeError("NDNSF_DI_KV_HOST_DRAIN_DEADLINE_EXCEEDED");
+          // Preserve Face-dependent owners until cancellation cleanup finishes.
+          // Exceeding the configured deadline remains a failed shutdown result.
+          while (!providerHost->drain(std::chrono::seconds(1))) {}
+        }
+        // The capacity callback owns the runtime; its runner observers in turn
+        // retain telemetry. Release that callback before waiting for runner leases.
+        telemetryCollector->stop();
+        {
+          std::lock_guard<std::mutex> lock(*capacitySnapshotMutex);
+          *capacitySnapshot = {};
+        }
         nativeRegistration = {};
         providerHost.reset();
         protectedResidentAuthority->retireAll();
@@ -2605,15 +2844,24 @@ main(int argc, char** argv)
         const bool residentsDrained = protectedResidentAuthority->drain(
           std::chrono::milliseconds(5000));
         protectedPlaintextCache->stop();
+        const auto sessionCounters = sessionCache->counters();
+        const auto residentCounters = protectedResidentAuthority->counters();
         std::ostringstream record;
         record << "NDNSF_DI_PROTECTED_RESIDENT_SHUTDOWN"
                << " sessionsDrained=" << (sessionsDrained ? "true" : "false")
-               << " residentsDrained=" << (residentsDrained ? "true" : "false");
+               << " residentsDrained=" << (residentsDrained ? "true" : "false")
+               << " activeSessionLeases=" << sessionCounters.activeLeases
+               << " inFlightSessionLoads=" << sessionCounters.inFlightLoads
+               << " activeResidentUses=" << residentCounters.activeUses;
         logRuntimeEvidence(record.str());
-        return sessionsDrained && residentsDrained;
+        return hostDrained && sessionsDrained && residentsDrained;
       };
 
       provider->fetchPermissionsFromController(controllerIdentity);
+      if (handoffWriter) {
+        handoffWriter->fetchPermissionsFromController(controllerIdentity);
+        handoffWriter->init();
+      }
       {
         std::ostringstream record;
         record << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_FETCH_ISSUED controller="
@@ -2628,6 +2876,28 @@ main(int argc, char** argv)
       // KeyChain by reference while waiting for permission, so detaching it
       // would let the main stack unwind before the callback has drained.
       std::thread installThread(std::move(installTask));
+      auto shutdownWithLiveFace = [&] {
+        bool faceOk = true;
+        const auto pump = [&](int milliseconds) {
+          try { face.processEvents(ndn::time::milliseconds(milliseconds)); }
+          catch (const std::exception& error) {
+            faceOk = false;
+            logRuntimeError(std::string("NDNSF_DI_SHUTDOWN_FACE_ERROR reason=") + error.what());
+          }
+        };
+        provider->stopNdnsdPeriodicPublish();
+        networkProbeRegistration.close();
+        while (!provisioningDone->load(std::memory_order_acquire))
+          pump(100);
+        if (installThread.joinable()) installThread.join();
+        auto cleanup = std::async(std::launch::async, shutdownResidentState);
+        while (cleanup.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+          pump(100);
+        const bool ok = cleanup.get();
+        pump(1);
+        face.shutdown();
+        return ok && faceOk;
+      };
 
       // InstallTask runs serve() off the main thread; wait for the host
       // registration to land (or the assembly failure to be reported) before
@@ -2638,18 +2908,7 @@ main(int argc, char** argv)
                                [&serveCompleted] { return serveCompleted->load(); });
       }
       if (provisionFailed->load(std::memory_order_acquire)) {
-        provider->stopNdnsdPeriodicPublish();
-        networkProbeRegistration.close();
-        face.shutdown();
-        if (installThread.joinable())
-          installThread.join();
-        std::unique_lock<std::mutex> lock(*provisioningDoneMutex);
-        provisioningDoneCv->wait(lock,
-                                  [&provisioningDone] {
-                                    return provisioningDone->load(
-                                      std::memory_order_acquire);
-                                  });
-        shutdownResidentState();
+        (void)shutdownWithLiveFace();
         return 2;
       }
       {
@@ -2665,8 +2924,57 @@ main(int argc, char** argv)
         logRuntimeEvidence(record.str());
       }
       const auto serveStartedAt = std::chrono::steady_clock::now();
+      std::optional<NativeWithdrawalHandle> withdrawal;
+      bool withdrawalReported = false;
+      bool withdrawalFailed = false;
+      bool forcedUnsavedExit = false;
       while (!provisionFailed->load(std::memory_order_acquire) &&
              g_shutdownRequested == 0) {
+        if (g_withdrawRequested && provisioningDone->load(std::memory_order_acquire)) {
+          g_withdrawRequested = 0;
+          if (!kvHandoff) {
+            logRuntimeError("NDNSF_DI_KV_WITHDRAWAL_DISABLED");
+          }
+          else if (!withdrawal || withdrawalFailed) {
+            auto requested = withdrawalOptions;
+            const auto now = std::chrono::steady_clock::now();
+            requested.deadline = now + withdrawalSaveTimeout;
+            requested.drainDeadline = now + withdrawalDrainTimeout;
+            try {
+              withdrawal = withdrawProviderScope ? providerHost->withdraw(requested)
+                                                  : nativeRegistration.withdraw(requested);
+              withdrawalReported = false;
+              withdrawalFailed = false;
+              logRuntimeEvidence("NDNSF_DI_KV_WITHDRAWAL_STARTED operation=" + withdrawal->operationId());
+            }
+            catch (const std::exception& error) {
+              withdrawalFailed = true;
+              logRuntimeError(std::string("NDNSF_DI_KV_WITHDRAWAL_REJECTED reason=") + error.what());
+            }
+          }
+          else {
+            logRuntimeEvidence("NDNSF_DI_KV_WITHDRAWAL_JOINED operation=" + withdrawal->operationId());
+          }
+        }
+        if (withdrawal && !withdrawalReported) {
+          const auto status = withdrawal->status();
+          if (status == NativeWithdrawalStatusV1::Closed ||
+              status == NativeWithdrawalStatusV1::Aborted ||
+              status == NativeWithdrawalStatusV1::Failed ||
+              status == NativeWithdrawalStatusV1::ForcedUnsaved) {
+            const auto result = withdrawal->result(std::chrono::seconds(1));
+            withdrawalReported = true;
+            withdrawalFailed = !result.closed;
+            forcedUnsavedExit = result.forced;
+            std::ostringstream record;
+            record << "NDNSF_DI_KV_WITHDRAWAL_RESULT operation=" << result.withdrawalId
+                   << " scope=" << (withdrawProviderScope ? "provider" : "service")
+                   << " closed=" << result.closed << " forced=" << result.forced
+                   << " reason=" << result.reason;
+            logRuntimeEvidence(record.str());
+            if (result.closed && withdrawProviderScope) break;
+          }
+        }
         if (options.runForMs &&
             std::chrono::steady_clock::now() >=
               serveStartedAt + std::chrono::milliseconds(*options.runForMs)) {
@@ -2699,21 +3007,8 @@ main(int argc, char** argv)
       if (g_shutdownRequested != 0) {
         logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_SHUTDOWN_REQUESTED");
       }
-      provider->stopNdnsdPeriodicPublish();
-      networkProbeRegistration.close();
-      face.shutdown();
-      if (installThread.joinable())
-        installThread.join();
-      {
-        std::unique_lock<std::mutex> lock(*provisioningDoneMutex);
-        provisioningDoneCv->wait(lock,
-                                  [&provisioningDone] {
-                                    return provisioningDone->load(
-                                      std::memory_order_acquire);
-                                  });
-      }
-      const bool residentCleanupOk = shutdownResidentState();
-      return provisionFailed->load(std::memory_order_acquire) || !residentCleanupOk
+      const bool residentCleanupOk = shutdownWithLiveFace();
+      return provisionFailed->load(std::memory_order_acquire) || !residentCleanupOk || forcedUnsavedExit
         ? 2 : 0;
     }
 

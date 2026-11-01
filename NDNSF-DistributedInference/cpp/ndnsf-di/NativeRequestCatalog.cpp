@@ -16,31 +16,6 @@
 namespace ndnsf::di {
 namespace {
 
-void expandStateContractsFromCatalog(NativeSplitCandidate& candidate,
-                                     const NativeStateTensorMapping& mapping,
-                                     const NativeModelDescriptor& model)
-{
-  const auto expand = [&model] (const NativeStateTensorMapping::Roles& mapped,
-                                auto& declared) {
-    if (mapped.empty()) return;
-    for (const auto& item : mapped) {
-      const auto found = declared.find(item.first);
-      if (found == declared.end() || item.second.size() == found->second.size())
-        continue;
-      std::vector<NativeTensorContract> replacement;
-      for (const auto& semantic : item.second) {
-        for (const auto& name : semantic.second)
-          replacement.push_back({name, model.precision,
-            {"batch", "heads", "sequence", "head-dimension"}, std::nullopt});
-      }
-      if (!replacement.empty()) found->second = std::move(replacement);
-    }
-  };
-  expand(mapping.inputs, candidate.roleStateInputsByRole);
-  expand(mapping.outputs, candidate.roleStateOutputsByRole);
-  candidate.candidateDigest = candidate.computedDigest();
-}
-
 NativeJson tensorContractJson(const NativeTensorContract& value)
 {
   NativeJson shape = NativeJson::array();
@@ -501,7 +476,8 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     result.model.descriptor, result.model.graph, preparationBudget, extensionControl);
   preparedCandidates.reserve(enumerated.size());
   for (auto candidate : enumerated) {
-    expandStateContractsFromCatalog(candidate, result.stateMapping, result.model.descriptor);
+    // Preserve semantic state names until the source-aware catalog maps them
+    // to actual tensor names. Expanding first breaks non-identity mappings.
     auto bound = result.preparation->bindStateContracts(
       result.model, candidate, result.stateMapping, planningControl);
     auto roles = result.preparation->prepareRoles(result.model, bound, planningControl);

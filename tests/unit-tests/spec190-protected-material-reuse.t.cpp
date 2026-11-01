@@ -118,7 +118,8 @@ BOOST_AUTO_TEST_CASE(ExplicitReleaseIsIdempotentAndGenerationFenced)
   Fixture fixture;
   RepoEncryptedLargeDataStore store(fixture.repo);
   const auto path = fixture.input("replace.bin");
-  const auto options = durableOptions();
+  EncryptedLargeDataCommitOptions options;
+  options.retention = EncryptedLargeDataRetention::Transient;
   auto old = store.commitFile("/protected/replace", path, 10, options);
   const auto oldManifest = fixture.repo->getManifest("/protected/replace");
   BOOST_REQUIRE(fixture.repo->removeIfCurrent(oldManifest));

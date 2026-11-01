@@ -11,6 +11,19 @@
 
 namespace ndnsf_distributed_repo {
 
+/** Authenticated, owner-bound INSERT request for an original signed Data set.
+ *  The authenticated writer is supplied by the Core request context, never by
+ *  this payload.
+ */
+struct RepoUserStorageInsertRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string operationId;
+  uint64_t generation = 0;
+  RepoDataReference reference;
+  RepoUserStorageBinding storageBinding;
+};
+
 ndn::Name
 makeRepoServiceName(const ndn::Name& prefix, const std::string& operation);
 
@@ -42,6 +55,12 @@ encodeManifestRequest(const RepoObjectManifest& manifest);
 
 std::vector<uint8_t>
 encodeDataReferenceRequest(const RepoDataReference& reference);
+
+std::vector<uint8_t>
+encodeUserStorageInsertRequest(const RepoUserStorageInsertRequest& request);
+
+RepoUserStorageInsertRequest
+decodeUserStorageInsertRequest(const std::vector<uint8_t>& request);
 
 std::vector<uint8_t>
 encodeStatusRequest(const std::string& operationId);

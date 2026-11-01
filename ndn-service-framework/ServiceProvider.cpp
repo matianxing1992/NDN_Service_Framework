@@ -6,6 +6,8 @@
 #include "ProducerDataNaming.hpp"
 #include "ProtectedBlobManifest.hpp"
 #include <ndn-cxx/security/pib/key.hpp>
+#include <ndn-cxx/data.hpp>
+#include <ndn-cxx/encoding/block.hpp>
 
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -19,6 +21,7 @@
 #include <cmath>
 #include <ctime>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -33,6 +36,7 @@
 #include <ndn-cxx/security/interest-signer.hpp>
 #include <ndn-cxx/security/transform/public-key.hpp>
 #include <ndn-cxx/util/sha256.hpp>
+#include <openssl/crypto.h>
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -4389,6 +4393,7 @@ namespace ndn_service_framework
 
     ServiceProvider::~ServiceProvider()
     {
+        stopProducerPacketValidation();
         // Peer probe callbacks capture only a weak lifetime state. Nulling the
         // owner prevents late callbacks from entering; this barrier waits for
         // any callback already inside Provider code to leave before members
@@ -5562,14 +5567,14 @@ namespace ndn_service_framework
     void
     ServiceProvider::ServiceRegistration::close() noexcept
     {
-        auto state = std::move(m_state);
-        m_state.reset();
+        auto state = std::atomic_exchange(&m_state,
+                                          std::shared_ptr<RegistrationState>{});
         if (state == nullptr) {
             return;
         }
         // Closing becomes observable by any dispatch thread the moment the
         // atomic flips; only the Core-entry cleanup below is Face-bound.
-        state->closed.store(true);
+        state->markClosed();
         state->cancelPendingAcks();
         auto control = m_control.lock();
         if (control == nullptr) {
@@ -5601,29 +5606,49 @@ namespace ndn_service_framework
                           });
     }
 
+    ServiceProvider::ServiceRegistration::TargetedHandlerDrainWaiter
+    ServiceProvider::ServiceRegistration::makeTargetedHandlerDrainWaiter() const
+    {
+        const auto state = std::atomic_load(&m_state);
+        if (!state)
+            return [](std::chrono::milliseconds) { return true; };
+        return [state](std::chrono::milliseconds timeout) {
+            if (timeout.count() < 0)
+                throw std::invalid_argument("targeted handler drain timeout is negative");
+            std::unique_lock<std::mutex> lock(state->targetedHandlerMutex);
+            return state->targetedHandlersDrained.wait_for(lock, timeout, [&state] {
+                return state->activeTargetedHandlers == 0;
+            });
+        };
+    }
+
     bool
     ServiceProvider::ServiceRegistration::closed() const noexcept
     {
         // An empty (moved-from or already closed) handle reports closed.
-        return m_state == nullptr || m_state->closed.load();
+        const auto state = std::atomic_load(&m_state);
+        return state == nullptr || state->closed.load();
     }
 
     bool
     ServiceProvider::ServiceRegistration::valid() const noexcept
     {
-        return m_state != nullptr && !m_state->closed.load();
+        const auto state = std::atomic_load(&m_state);
+        return state != nullptr && !state->closed.load();
     }
 
     uint64_t
     ServiceProvider::ServiceRegistration::generation() const noexcept
     {
-        return m_state == nullptr ? 0 : m_state->generation;
+        const auto state = std::atomic_load(&m_state);
+        return state == nullptr ? 0 : state->generation;
     }
 
     ndn::Name
     ServiceProvider::ServiceRegistration::serviceName() const
     {
-        return m_state == nullptr ? ndn::Name() : m_state->serviceName;
+        const auto state = std::atomic_load(&m_state);
+        return state == nullptr ? ndn::Name() : state->serviceName;
     }
 
     uint64_t
@@ -5661,13 +5686,13 @@ namespace ndn_service_framework
     {
         for (auto& item : m_services) {
             if (item.second.registrationState != nullptr) {
-                item.second.registrationState->closed.store(true);
+                item.second.registrationState->markClosed();
                 item.second.registrationState->cancelPendingAcks();
             }
         }
         for (auto& item : m_collaborationServices) {
             if (item.second.registrationState != nullptr) {
-                item.second.registrationState->closed.store(true);
+                item.second.registrationState->markClosed();
                 item.second.registrationState->cancelPendingAcks();
             }
         }
@@ -6110,6 +6135,24 @@ namespace ndn_service_framework
         const ndn::Name& dataName,
         std::chrono::steady_clock::time_point deadline)
     {
+        return fetchEncryptedLargeDataCurrentImpl(dataName, deadline, std::nullopt);
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchEncryptedLargeDataCurrent(
+        const ndn::Name& dataName,
+        std::chrono::steady_clock::time_point deadline,
+        const ProtectedBlobFetchOptions& options)
+    {
+        return fetchEncryptedLargeDataCurrentImpl(dataName, deadline, options);
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchEncryptedLargeDataCurrentImpl(
+        const ndn::Name& dataName,
+        std::chrono::steady_clock::time_point deadline,
+        std::optional<ProtectedBlobFetchOptions> options)
+    {
         deadline = std::min(deadline, m_assignment.workDeadline);
         const auto workCurrent = m_assignment.workCurrent;
         const auto pendingKey = ndn::Name(m_requesterName)
@@ -6130,9 +6173,140 @@ namespace ndn_service_framework
         };
         if (!current()) return std::nullopt;
         auto result = m_provider.fetchAndDecryptLargeDataUntil(
-            dataName, m_assignment.service.toUri(), deadline, current);
-        if (!result.success || !current()) return std::nullopt;
+            dataName, m_assignment.service.toUri(), deadline, current,
+            DataNameReadMode::StrictCanonical, std::move(options));
+        if (!result.success) {
+            NDN_LOG_WARN("Current encrypted large Data fetch failed requestId="
+                         << m_requestId.toUri() << " reason=" << result.errorMessage);
+            return std::nullopt;
+        }
+        if (!current()) {
+            NDN_LOG_WARN("Current encrypted large Data fetch lost work authority requestId="
+                         << m_requestId.toUri());
+            return std::nullopt;
+        }
         return std::optional<ndn::Buffer>(std::move(result.plaintext));
+    }
+
+    bool ServiceProvider::CollaborationContext::consumeRecipientAssignmentCurrent(
+        const RecipientEncryptedAssignment& capsule,
+        const ndn::Name& expectedCertificate,
+        const std::string& expectedPublicKeyDigest,
+        const ndn::Buffer& associatedData,
+        std::chrono::steady_clock::time_point deadline,
+        const std::function<void(const ndn::Buffer&)>& consume)
+    {
+        auto& io = m_provider.m_face.getIoContext();
+        if (io.get_executor().running_in_this_thread() || !consume ||
+            expectedCertificate.empty() || expectedCertificate.wireEncode().size() > 4096 ||
+            expectedCertificate.toUri(ndn::name::UriFormat::CANONICAL).size() > 4096 ||
+            associatedData.empty() || associatedData.size() > 65536 ||
+            expectedPublicKeyDigest.size() != 71 ||
+            expectedPublicKeyDigest.compare(0, 7, "sha256:") != 0 ||
+            !std::all_of(expectedPublicKeyDigest.begin() + 7, expectedPublicKeyDigest.end(),
+                [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+            return false;
+        const auto& fields = capsule.getFields();
+        const auto text = [&](const char* key, const std::string& value) {
+            const auto found = fields.find(key);
+            return found != fields.end() && found->second.size() <= 4096 && found->second == value;
+        };
+        const auto hex = [&](const char* key, std::size_t minimum, std::size_t maximum) {
+            const auto found = fields.find(key);
+            return found != fields.end() && found->second.size() >= minimum &&
+                found->second.size() <= maximum && found->second.size() % 2 == 0 &&
+                std::all_of(found->second.begin(), found->second.end(), [](char c) {
+                    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                });
+        };
+        if (capsule.getVersion() != 1 || fields.size() != 10 ||
+            !text("schemaVersion", "1") || !text("algorithm", "RSA-WRAPPED-AES-256-GCM") ||
+            !text("recipient", m_provider.identity.toUri(ndn::name::UriFormat::CANONICAL)) ||
+            !text("recipientCertName", expectedCertificate.toUri(ndn::name::UriFormat::CANONICAL)) ||
+            !hex("wrappedAssignmentKey", 512, 2048) || !hex("nonce", 24, 24) ||
+            !hex("authTag", 32, 32) || !hex("aadDigest", 64, 64) ||
+            !hex("assignmentDigest", 64, 64) || !hex("ciphertext", 0, 4096))
+            return false;
+        deadline = std::min(deadline, m_assignment.workDeadline);
+        const auto lifecycle = m_provider.getStreamLifecycle(ndn::Name(m_requesterName)
+            .append(m_assignment.service).append(m_requestId));
+        const auto stopping = m_provider.m_fetchStopping;
+        const auto current = [workCurrent = m_assignment.workCurrent, lifecycle, stopping, deadline] {
+            return !stopping->load() && workCurrent && workCurrent() &&
+                std::chrono::steady_clock::now() < deadline &&
+                (!lifecycle || (!lifecycle->terminalAuthority()->isTerminal() &&
+                               !lifecycle->terminalAuthority()->isFenced()));
+        };
+        if (!current()) return false;
+        struct Secret {
+            ndn::Buffer bytes;
+            ~Secret() {
+                bytes.resize(bytes.capacity());
+                if (!bytes.empty()) OPENSSL_cleanse(bytes.data(), bytes.size());
+            }
+        };
+        struct Consumption {
+            std::mutex mutex;
+            std::condition_variable cv;
+            bool done = false;
+            std::shared_ptr<Secret> plaintext;
+        };
+        const auto state = std::make_shared<Consumption>();
+        const auto finish = [state](std::shared_ptr<Secret> plaintext) {
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                if (state->done) return;
+                state->plaintext = std::move(plaintext);
+                state->done = true;
+            }
+            state->cv.notify_one();
+        };
+        boost::asio::post(io, [control = m_provider.m_registrationControl, stopping,
+            state, current, capsule, expectedCertificate, expectedPublicKeyDigest,
+            associatedData, finish] {
+            try {
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (state->done) return;
+                }
+                if (stopping->load() || !current()) { finish({}); return; }
+                auto* owner = control->acquireOwner();
+                if (!owner) { finish({}); return; }
+                struct Release {
+                    std::shared_ptr<RegistrationControl> control;
+                    ~Release() { control->releaseOwner(); }
+                } release{control};
+                const auto publicKey = owner->identityCert.getPublicKey();
+                const ndn::Buffer publicBytes(publicKey.data(), publicKey.size());
+                if (owner->identityCert.getName() != expectedCertificate ||
+                    sha256DigestString(publicBytes) != expectedPublicKeyDigest || !current()) {
+                    finish({}); return;
+                }
+                auto plaintext = std::make_shared<Secret>();
+                const auto& keys = owner->m_testSigningKeyChain
+                    ? *owner->m_testSigningKeyChain : owner->m_keyChain;
+                if (!decryptRecipientAssignment(capsule, owner->identity,
+                    owner->identityCert.getName(), keys, associatedData, plaintext->bytes) ||
+                    plaintext->bytes.size() > 2048 || !current()) {
+                    finish({}); return;
+                }
+                finish(std::move(plaintext));
+            }
+            catch (...) { finish({}); }
+        });
+        std::shared_ptr<Secret> plaintext;
+        {
+            std::unique_lock<std::mutex> lock(state->mutex);
+            while (!state->done) {
+                if (io.stopped() || !current()) { state->done = true; return false; }
+                state->cv.wait_until(lock, std::min(deadline,
+                    std::chrono::steady_clock::now() + std::chrono::milliseconds(20)));
+            }
+            plaintext = std::move(state->plaintext);
+        }
+        if (!plaintext || !current()) return false;
+        consume(plaintext->bytes);
+        return current();
     }
 
     void ServiceProvider::CollaborationContext::fail(const std::string& reason)
@@ -6750,6 +6924,115 @@ namespace ndn_service_framework
     size_t ServiceProvider::getHandlerQueueDepth() const
     {
         return m_handlerPool.getQueueSize();
+    }
+
+    bool
+    ServiceProvider::validateProducerPacketWireUntil(
+      const std::vector<uint8_t>& wire, const ndn::Name& producer,
+      std::chrono::steady_clock::time_point deadline)
+    {
+        if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE || producer.empty() ||
+            !validator || deadline <= std::chrono::steady_clock::now()) {
+            return false;
+        }
+        // A zero-worker production Provider dispatches service handlers inline
+        // on the Face thread. Waiting there for ValidatorConfig would deadlock
+        // certificate retrieval; LocalMock has no Face callback and validates
+        // synchronously, so it remains usable for adapter fixtures.
+        if (!m_isLocalMock && getHandlerThreads() == 0) {
+            return false;
+        }
+
+        const auto control = m_producerPacketValidationControl;
+        auto waiter = std::make_shared<ProducerPacketValidationWaiter>();
+        struct PendingSlot {
+            std::shared_ptr<ProducerPacketValidationControl> control;
+            bool counted = false;
+            ~PendingSlot()
+            {
+                if (!counted) return;
+                {
+                    std::lock_guard<std::mutex> lock(control->mutex);
+                    if (control->outstanding != 0) --control->outstanding;
+                }
+                control->wake.notify_all();
+            }
+        };
+        auto slot = std::make_shared<PendingSlot>();
+        slot->control = control;
+        {
+            std::lock_guard<std::mutex> lock(control->mutex);
+            if (control->stopping || control->outstanding >= 16) {
+                return false;
+            }
+            ++control->outstanding;
+            slot->counted = true;
+        }
+
+        try {
+            const ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
+            block.parse();
+            const ndn::Data data(block);
+            if (data.wireEncode().size() != wire.size()) {
+                return false;
+            }
+
+            const auto validationOwner = validator;
+            validationOwner->validateWithConfiguredTrustSchema(
+              data,
+              [control, waiter, slot, validationOwner, producer](const ndn::Data& validated) {
+                  bool signerAllowed = false;
+                  try {
+                      signerAllowed = validationOwner->isProducerSignerAuthorized(
+                        validated, producer);
+                  }
+                  catch (const std::exception&) {
+                      signerAllowed = false;
+                  }
+                  {
+                      std::lock_guard<std::mutex> lock(control->mutex);
+                      if (!control->stopping) {
+                          waiter->accepted = signerAllowed;
+                          waiter->complete = true;
+                      }
+                  }
+                  control->wake.notify_all();
+              },
+              [control, waiter, slot](const ndn::Data&,
+                                      const ndn::security::ValidationError&) {
+                  {
+                      std::lock_guard<std::mutex> lock(control->mutex);
+                      if (!control->stopping) {
+                          waiter->accepted = false;
+                          waiter->complete = true;
+                      }
+                  }
+                  control->wake.notify_all();
+              });
+        }
+        catch (const std::exception&) {
+            return false;
+        }
+
+        std::unique_lock<std::mutex> lock(control->mutex);
+        if (!control->wake.wait_until(lock, deadline, [&] {
+                return control->stopping || waiter->complete;
+            })) {
+            return false;
+        }
+        return !control->stopping && waiter->complete && waiter->accepted;
+    }
+
+    void
+    ServiceProvider::stopProducerPacketValidation() noexcept
+    {
+        const auto control = m_producerPacketValidationControl;
+        if (!control) return;
+        {
+            std::lock_guard<std::mutex> lock(control->mutex);
+            control->stopping = true;
+        }
+        control->wake.notify_all();
     }
 
     void ServiceProvider::setAckThreads(size_t n)
@@ -7548,6 +7831,11 @@ namespace ndn_service_framework
         }
 
         const auto pendingKey = ndn::Name(requesterName).append(serviceName).append(requestId);
+        // The ACK cleanup horizon only covers waiting for a Selection. Once
+        // its authenticated stream grant is accepted, retain Provider state
+        // through the request's own deadline so cold artifact assembly cannot
+        // be fenced by the shorter offer horizon.
+        extendPendingRequestCleanupForStream(pendingKey, options.deadlineEpochMs);
         auto lifecycle = getStreamLifecycle(pendingKey);
         if (!lifecycle) {
             lifecycle = std::make_shared<StreamInvocationLifecycle>();
@@ -7927,16 +8215,6 @@ namespace ndn_service_framework
                       << " requestId=" << requestId.toUri()
                       << " serviceName=" << serviceName.toUri()
                       << " pendingKey=" << pendingKey.toUri());
-            constexpr uint64_t MAX_PENDING_STATE_TTL_MS =
-                60ULL * 60ULL * 1000ULL;
-            const auto requestedTtlMs = std::min(
-                decision.pendingStateTtlMs, MAX_PENDING_STATE_TTL_MS);
-            schedulePendingRequestCleanup(
-                pendingKey,
-                requestedTtlMs > 0
-                    ? ndn::time::milliseconds(requestedTtlMs)
-                    : ndn::time::seconds(30),
-                requestedTtlMs > 0);
             if (m_useTokens) {
                 auto tokenIt = pendingProviderTokens.find(pendingKey);
                 if (tokenIt != pendingProviderTokens.end()) {
@@ -7947,6 +8225,18 @@ namespace ndn_service_framework
                     pendingProviderTokens[pendingKey] = providerToken;
                 }
             }
+        }
+        if (decision.status) {
+            constexpr uint64_t MAX_PENDING_STATE_TTL_MS =
+                60ULL * 60ULL * 1000ULL;
+            const auto requestedTtlMs = std::min(
+                decision.pendingStateTtlMs, MAX_PENDING_STATE_TTL_MS);
+            schedulePendingRequestCleanup(
+                pendingKey,
+                requestedTtlMs > 0
+                    ? ndn::time::milliseconds(requestedTtlMs)
+                    : ndn::time::seconds(30),
+                requestedTtlMs > 0);
         }
         NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=ACK_DECISION timestamp_us="
                   << nowMicroseconds()
@@ -8245,6 +8535,45 @@ namespace ndn_service_framework
             return true;
         }
         if (service->second.asyncTargetedRequestHandler) {
+            if (registrationState &&
+                !registrationState->tryBeginTargetedHandler()) {
+                publishExecutionFailureOnEventLoop(
+                    requesterIdentity, identity, serviceName, requestId,
+                    requestMessage,
+                    "Service registration closed before targeted handler admission");
+                return true;
+            }
+            struct TargetedHandlerCallLease
+            {
+                std::shared_ptr<RegistrationState> state;
+                std::atomic<bool> released{false};
+
+                explicit TargetedHandlerCallLease(
+                    std::shared_ptr<RegistrationState> value)
+                    : state(std::move(value)) {}
+
+                void release() noexcept
+                {
+                    if (state &&
+                        !released.exchange(true, std::memory_order_acq_rel))
+                        state->finishTargetedHandler();
+                }
+
+                ~TargetedHandlerCallLease()
+                {
+                    release();
+                }
+            };
+            std::shared_ptr<TargetedHandlerCallLease> targetedHandlerCallLease;
+            try {
+                targetedHandlerCallLease =
+                    std::make_shared<TargetedHandlerCallLease>(registrationState);
+            }
+            catch (...) {
+                if (registrationState)
+                    registrationState->finishTargetedHandler();
+                throw;
+            }
             const ndn::Name pendingKey = ndn::Name(requesterIdentity)
                                              .append(serviceName).append(requestId);
             const std::string fenceError =
@@ -8268,43 +8597,59 @@ namespace ndn_service_framework
             auto completion = [completionState, weakControl,
                                requesterIdentity, serviceName, requestId,
                                requestMessage, selectionDigest,
-                               registrationState](
+                               registrationState, targetedHandlerCallLease](
                                   ResponseMessage response) mutable {
                 if (completionState->exchange(true, std::memory_order_acq_rel))
                     return;
                 const auto control = weakControl.lock();
-                if (!control)
+                if (!control) {
+                    targetedHandlerCallLease->release();
                     return;
+                }
                 auto* const owner = control->acquireOwner();
-                if (owner == nullptr)
+                if (owner == nullptr) {
+                    targetedHandlerCallLease->release();
                     return;
+                }
                 const auto releaseOwner = [](RegistrationControl* value) {
                     value->releaseOwner();
                 };
                 std::unique_ptr<RegistrationControl, decltype(releaseOwner)>
                     ownerLease(control.get(), releaseOwner);
-                boost::asio::post(owner->m_face.getIoContext(),
-                    [weakControl, requesterIdentity, serviceName, requestId,
-                     requestMessage, response = std::move(response),
-                     selectionDigest, registrationState]() mutable {
-                        const auto control = weakControl.lock();
-                        if (!control)
-                            return;
-                        auto* const owner = control->acquireOwner();
-                        if (owner == nullptr)
-                            return;
-                        const auto releaseOwner = [](RegistrationControl* value) {
-                            value->releaseOwner();
-                        };
-                        std::unique_ptr<RegistrationControl,
-                                        decltype(releaseOwner)>
-                            ownerLease(control.get(), releaseOwner);
-                        owner->finishRequestExecutionOnEventLoop(
-                            requesterIdentity, owner->identity, serviceName,
-                            requestId, requestMessage, std::move(response),
-                            selectionDigest,
-                            registrationState);
-                    });
+                try {
+                    boost::asio::post(owner->m_face.getIoContext(),
+                        [weakControl, requesterIdentity, serviceName, requestId,
+                         requestMessage, response = std::move(response),
+                         selectionDigest, registrationState,
+                         targetedHandlerCallLease]() mutable {
+                            struct ReleaseTargetedHandlerLease
+                            {
+                                std::shared_ptr<TargetedHandlerCallLease> lease;
+                                ~ReleaseTargetedHandlerLease() { lease->release(); }
+                            } release{targetedHandlerCallLease};
+                            const auto control = weakControl.lock();
+                            if (!control)
+                                return;
+                            auto* const owner = control->acquireOwner();
+                            if (owner == nullptr)
+                                return;
+                            const auto releaseOwner = [](RegistrationControl* value) {
+                                value->releaseOwner();
+                            };
+                            std::unique_ptr<RegistrationControl,
+                                            decltype(releaseOwner)>
+                                ownerLease(control.get(), releaseOwner);
+                            owner->finishRequestExecutionOnEventLoop(
+                                requesterIdentity, owner->identity, serviceName,
+                                requestId, requestMessage, std::move(response),
+                                selectionDigest,
+                                registrationState);
+                        });
+                }
+                catch (...) {
+                    targetedHandlerCallLease->release();
+                    throw;
+                }
             };
             try {
                 service->second.asyncTargetedRequestHandler(
@@ -9361,12 +9706,19 @@ namespace ndn_service_framework
                             providerName, serviceName, requestId, inputAttempt);
         const ndn::Name pendingKey = ndn::Name(requesterName)
             .append(serviceName).append(requestId);
+        const auto acquireOwner = [control = m_registrationControl] {
+            const auto release = [control](RegistrationControl*) { control->releaseOwner(); };
+            return std::unique_ptr<RegistrationControl, decltype(release)>(
+                control->acquireOwner() ? control.get() : nullptr, release);
+        };
         auto completed = std::make_shared<std::atomic_bool>(false);
         const ndn::Buffer assignmentPayloadCopy = assignmentPayload;
 
         const auto finishFailure =
             [this, requesterName, providerName, serviceName, requestId,
-             requestMessage, selectionDigest, completed, inputAttempt](std::string reason) {
+             requestMessage, selectionDigest, completed, inputAttempt, acquireOwner](std::string reason) {
+                auto ownerLease = acquireOwner();
+                if (!ownerLease) return;
                 if (completed->exchange(true)) {
                     return;
                 }
@@ -9377,9 +9729,11 @@ namespace ndn_service_framework
                              << " providerName=" << providerName.toUri()
                              << " reason=" << reason);
                 boost::asio::post(m_face.getIoContext(),
-                    [this, requesterName, providerName, serviceName, requestId,
+                    [this, acquireOwner, requesterName, providerName, serviceName, requestId,
                      requestMessage, selectionDigest,
                      reason = std::move(reason)]() mutable {
+                        auto ownerLease = acquireOwner();
+                        if (!ownerLease) return;
                         publishExecutionFailureOnEventLoop(
                             requesterName, providerName, serviceName, requestId,
                             requestMessage,
@@ -9465,7 +9819,9 @@ namespace ndn_service_framework
         const auto dispatchPlaintext =
             [this, requesterName, providerName, serviceName, requestId,
              requestMessage, selectionMessage, assignmentPayloadCopy,
-             selectionDigest, targetedTokenConsumed, acceptedRegistration](ndn::Buffer plaintext) {
+             selectionDigest, targetedTokenConsumed, acceptedRegistration, acquireOwner](ndn::Buffer plaintext) {
+                auto ownerLease = acquireOwner();
+                if (!ownerLease) return;
                 // Data signature/name, AEAD and nonce replay checks completed.
                 // This is input readiness, not authorization to execute a handler.
                 logScopedInputStage("SCOPED_INPUT_READY", requesterName,
@@ -9475,7 +9831,9 @@ namespace ndn_service_framework
                             [this, requesterName, providerName, serviceName,
                              requestId, requestMessage, selectionMessage,
                              assignmentPayloadCopy, plaintext = std::move(plaintext),
-                             selectionDigest, targetedTokenConsumed, acceptedRegistration]() mutable {
+                             selectionDigest, targetedTokenConsumed, acceptedRegistration, acquireOwner]() mutable {
+                                auto ownerLease = acquireOwner();
+                                if (!ownerLease) return;
                                 logScopedInputStage("SCOPED_INPUT_DISPATCH_ENTER", requesterName,
                                                     providerName, serviceName, requestId,
                                                     selectionMessage.getAttempt());
@@ -9647,8 +10005,10 @@ namespace ndn_service_framework
             };
 
         const auto decryptEnvelopes =
-            [this, expected, keys, completed, finishFailure, dispatchPlaintext]
+            [this, expected, keys, completed, finishFailure, dispatchPlaintext, acquireOwner]
             (const std::vector<AeadEnvelope>& envelopes) {
+                auto ownerLease = acquireOwner();
+                if (!ownerLease) return;
                 constexpr std::size_t inputMaxSegments = 4096;
                 if (envelopes.empty() || envelopes.size() > inputMaxSegments) {
                     finishFailure("request-scoped input segment count is invalid");
@@ -9694,7 +10054,9 @@ namespace ndn_service_framework
             };
 
         const auto startSegmentedFetch =
-            [this, expected, requesterName, keys, completed, finishFailure, decryptEnvelopes]() {
+            [this, expected, requesterName, keys, completed, finishFailure, decryptEnvelopes, acquireOwner]() {
+                auto ownerLease = acquireOwner();
+                if (!ownerLease) return;
                 ndn::Interest segmentInterest(expected.inputDataName);
                 segmentInterest.setCanBePrefix(true);
                 segmentInterest.setMustBeFresh(true);
@@ -9704,6 +10066,7 @@ namespace ndn_service_framework
                     constexpr std::size_t inputMaxEncodedBytes = 20 * 1024 * 1024;
                     auto fetcherHolder =
                         std::make_shared<std::shared_ptr<ndn::SegmentFetcher>>();
+                    const std::weak_ptr<std::shared_ptr<ndn::SegmentFetcher>> weakFetcherHolder = fetcherHolder;
                     auto observedSegments = std::make_shared<std::size_t>(0);
                     auto observedEncodedBytes = std::make_shared<std::size_t>(0);
                     ndn::SegmentFetcher::Options options;
@@ -9741,12 +10104,13 @@ namespace ndn_service_framework
                         });
                     fetcher->afterSegmentValidated.connect(
                         [expected, requesterName, completed, finishFailure,
-                         fetcherHolder, observedSegments, observedEncodedBytes](
+                         weakFetcherHolder, observedSegments, observedEncodedBytes](
                             const ndn::Data& data) {
                             if (completed->load()) return;
                             const auto& name = data.getName();
-                            const auto fail = [fetcherHolder, finishFailure](const std::string& reason) {
-                                auto fetcher = std::move(*fetcherHolder);
+                            const auto fail = [weakFetcherHolder, finishFailure](const std::string& reason) {
+                                const auto holder = weakFetcherHolder.lock();
+                                auto fetcher = holder ? std::move(*holder) : nullptr;
                                 if (fetcher) fetcher->stop();
                                 finishFailure(reason);
                             };
@@ -9773,10 +10137,10 @@ namespace ndn_service_framework
                             }
                         });
                     fetcher->onComplete.connect(
-                        [completed, finishFailure, decryptEnvelopes, fetcherHolder](
+                        [completed, finishFailure, decryptEnvelopes, weakFetcherHolder, transportValidator](
                             ndn::ConstBufferPtr buffer) {
                             if (completed->load()) return;
-                            *fetcherHolder = nullptr;
+                            if (const auto holder = weakFetcherHolder.lock()) *holder = nullptr;
                             if (buffer->size() > 20 * 1024 * 1024) {
                                 finishFailure("segmented input exceeds encoded transfer bounds");
                                 return;
@@ -9812,10 +10176,10 @@ namespace ndn_service_framework
                             decryptEnvelopes(envelopes);
                         });
                     fetcher->onError.connect(
-                        [completed, finishFailure, fetcherHolder](uint32_t code,
+                        [completed, finishFailure, weakFetcherHolder, transportValidator](uint32_t code,
                                                                    const std::string& reason) {
                             if (completed->load()) return;
-                            *fetcherHolder = nullptr;
+                            if (const auto holder = weakFetcherHolder.lock()) *holder = nullptr;
                             finishFailure("segmented input fetch failed: " +
                                           std::to_string(code) + ": " + reason);
                         });
@@ -9827,12 +10191,15 @@ namespace ndn_service_framework
             };
 
         const auto validateSingleInput =
-            [this, requesterName, expected, completed, finishFailure, decryptEnvelopes]
+            [this, requesterName, expected, completed, finishFailure, decryptEnvelopes, acquireOwner]
             (const ndn::Data& data, std::shared_ptr<const ndn::Data> owner) {
-                validator->validate(
+                auto ownerLease = acquireOwner();
+                if (!ownerLease) return;
+                const auto inputValidator = validator;
+                inputValidator->validate(
                     data,
                     [requesterName, expected, completed, finishFailure,
-                     decryptEnvelopes, owner](const ndn::Data& validated) {
+                     decryptEnvelopes, owner, inputValidator](const ndn::Data& validated) {
                         if (completed->load()) return;
                         if (validated.getName() != expected.inputDataName ||
                             !isSignedByIdentity(validated, requesterName)) {
@@ -9854,7 +10221,7 @@ namespace ndn_service_framework
                         }
                         decryptEnvelopes({std::move(envelope)});
                     },
-                    [finishFailure, owner](const ndn::Data&,
+                    [finishFailure, owner, inputValidator](const ndn::Data&,
                                           const ndn::security::ValidationError& error) {
                         finishFailure("input Data signature validation failed: " + error.getInfo());
                     });
@@ -9885,17 +10252,43 @@ namespace ndn_service_framework
             return;
         }
 
-        ndn::Interest interest(expected.inputDataName);
-        interest.setCanBePrefix(true);
-        interest.setMustBeFresh(true);
-        interest.setInterestLifetime(ndn::time::milliseconds(1000));
         NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_INPUT_FETCH requestId="
                      << requestId.toUri()
                      << " providerName=" << providerName.toUri()
                      << " dataName=" << expected.inputDataName.toUri());
         logScopedInputStage("SCOPED_INPUT_FETCH_BEGIN", requesterName,
                             providerName, serviceName, requestId, expected.attempt);
-        m_face.expressInterest(
+        // A missed initial Interest must not immediately fail an otherwise
+        // authenticated invocation. Keep acquisition bounded, including when
+        // Face scheduling is delayed, and never extend the key lifetime.
+        const auto fetchInput =
+            [this, expected, completed, finishFailure, validateSingleInput,
+             startSegmentedFetch, requestId, providerName, acquireOwner,
+             expiresAtMs = keys.expiresAtMs,
+             deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000)]
+            (const auto& self, unsigned attempt) -> void {
+            if (completed->load()) return;
+            auto ownerLease = acquireOwner();
+            if (!ownerLease) return;
+            const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            const auto nowMs = nowMilliseconds();
+            if (attempt >= 3 || remainingMs <= 0 || nowMs >= expiresAtMs) {
+                finishFailure("input Data fetch timeout");
+                return;
+            }
+            ndn::Interest interest(expected.inputDataName);
+            interest.setCanBePrefix(true);
+            interest.setMustBeFresh(true);
+            const auto keyLifetimeMs = std::min<uint64_t>(1000, expiresAtMs - nowMs);
+            interest.setInterestLifetime(ndn::time::milliseconds(
+                std::min<int64_t>(remainingMs, static_cast<int64_t>(keyLifetimeMs))));
+            if (attempt != 0) {
+                NDN_LOG_WARN("NDNSF_REQUEST_SCOPED_INPUT_RETRY requestId="
+                             << requestId.toUri() << " providerName=" << providerName.toUri()
+                             << " attempt=" << attempt + 1);
+            }
+            m_face.expressInterest(
             interest,
             [expected, completed, finishFailure, validateSingleInput,
              startSegmentedFetch](const ndn::Interest&, const ndn::Data& data) {
@@ -9916,9 +10309,11 @@ namespace ndn_service_framework
                 finishFailure("input Data Nack: " +
                               std::to_string(static_cast<int>(nack.getReason())));
             },
-            [finishFailure](const ndn::Interest&) {
-                finishFailure("input Data fetch timeout");
+            [self, attempt](const ndn::Interest&) {
+                self(self, attempt + 1);
             });
+        };
+        fetchInput(fetchInput, 0);
     }
 
     void ServiceProvider::publishExecutionFailureOnEventLoop(
@@ -9975,7 +10370,25 @@ namespace ndn_service_framework
                    std::memory_order_relaxed)) {
         }
         releaseDataV1Subscriptions(requestId);
-        cleanupPendingRequestState(pendingKey);
+        const auto streamLifecycle = getStreamLifecycle(pendingKey);
+        const bool streamStillOwnsRequestState = streamLifecycle &&
+            !streamLifecycle->provider().isTerminal() &&
+            !streamLifecycle->terminalAuthority()->isTerminal() &&
+            !streamLifecycle->terminalAuthority()->isFenced();
+        if (streamStillOwnsRequestState) {
+            // Multiple collaboration roles can execute on this Provider for
+            // one request. A nonterminal role must not fence the shared stream
+            // lifecycle before the role that owns the terminal response ends it.
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event="
+                          "COLLAB_ROLE_COMPLETE_STREAM_RETAIN timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << requestId.toUri()
+                          << " serviceName=" << serviceName.toUri()
+                          << " providerName=" << providerName.toUri());
+        }
+        else {
+            cleanupPendingRequestState(pendingKey);
+        }
     }
 
     void ServiceProvider::publishCollaborationData(
@@ -12831,7 +13244,6 @@ namespace ndn_service_framework
         state->requestId = requestId;
         state->assignment = std::move(assignment);
         state->onReady = std::move(onReady);
-
         if (auto reference = parseLargeDataReferencePayload(
                 state->assignment.assignmentPayload)) {
             static const std::string OBJECT_TYPE =
@@ -13047,7 +13459,8 @@ namespace ndn_service_framework
                     try {
                         if (state->fence.current()) {
                             result = fetchAndDecryptLargeDataUntil(
-                                dataName, serviceName, state->fence.deadline, state->fence.current);
+                                dataName, serviceName, state->fence.deadline, state->fence.current,
+                                DataNameReadMode::StrictCanonical, std::nullopt);
                         }
                         else {
                             result.errorMessage = "collaboration fetch authority or deadline expired";
@@ -13959,6 +14372,12 @@ namespace ndn_service_framework
     bool ServiceProvider::expirePendingRequestState(const ndn::Name& pendingKey)
     {
         std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+        return expirePendingRequestStateLocked(pendingKey);
+    }
+
+    bool ServiceProvider::expirePendingRequestStateLocked(
+        const ndn::Name& pendingKey)
+    {
         const bool hadRequest = pendingRequests.find(pendingKey) != pendingRequests.end();
         const bool hadToken = pendingProviderTokens.find(pendingKey) != pendingProviderTokens.end();
         const bool hadRecent = m_recentProviderRequests.find(pendingKey) != m_recentProviderRequests.end();
@@ -14645,6 +15064,18 @@ namespace ndn_service_framework
         const auto total = ttl + m_pendingRequestTimeoutGrace;
         bool scheduleTimer = false;
         {
+            // Serialize deadline creation with expiry and authenticated stream
+            // extension. Every writer follows pending-state -> deadline order.
+            std::lock_guard<std::mutex> stateLock(m_pendingRequestMutex);
+            const bool hasPendingState =
+                pendingRequests.find(pendingKey) != pendingRequests.end() ||
+                pendingProviderTokens.find(pendingKey) != pendingProviderTokens.end() ||
+                m_recentProviderRequests.find(pendingKey) != m_recentProviderRequests.end() ||
+                m_pendingRequestTokenHashes.find(pendingKey) !=
+                    m_pendingRequestTokenHashes.end();
+            if (!hasPendingState) {
+                return;
+            }
             std::lock_guard<std::mutex> lock(m_pendingCleanupDeadlineMutex);
             const auto existing = m_pendingCleanupDeadlines.find(pendingKey);
             if (existing == m_pendingCleanupDeadlines.end()) {
@@ -14674,34 +15105,107 @@ namespace ndn_service_framework
         m_scheduler.schedule(
             std::max(total, ndn::time::milliseconds(1)),
             [this, pendingKey] {
-                ndn::time::milliseconds remaining{0};
-                {
-                    std::lock_guard<std::mutex> lock(
-                        m_pendingCleanupDeadlineMutex);
-                    const auto found =
-                        m_pendingCleanupDeadlines.find(pendingKey);
-                    if (found == m_pendingCleanupDeadlines.end()) {
-                        return;
-                    }
-                    const auto now = std::chrono::steady_clock::now();
-                    if (found->second > now) {
-                        const auto remainingStd =
-                            std::chrono::duration_cast<
-                                std::chrono::milliseconds>(
-                                    found->second - now);
-                        remaining =
-                            ndn::time::milliseconds(remainingStd.count());
-                    }
-                }
-                if (remaining.count() > 0) {
-                    m_scheduler.schedule(
-                        std::max(remaining, ndn::time::milliseconds(1)),
-                        [this, pendingKey] {
-                            expirePendingRequestState(pendingKey);
-                        });
+                handlePendingRequestCleanupTimer(pendingKey);
+            });
+    }
+
+    void ServiceProvider::extendPendingRequestCleanupForStream(
+        const ndn::Name& pendingKey,
+        uint64_t deadlineEpochMs,
+        const std::function<void()>& beforePendingStateLock)
+    {
+        const auto nowEpochMs = nowMilliseconds();
+        if (deadlineEpochMs <= nowEpochMs) {
+            return;
+        }
+
+        // Match the existing one-hour maximum for Provider pending state.
+        constexpr uint64_t MAX_PENDING_STATE_TTL_MS =
+            60ULL * 60ULL * 1000ULL;
+        const auto remainingMs = std::min(
+            deadlineEpochMs - nowEpochMs, MAX_PENDING_STATE_TTL_MS);
+        const auto total = ndn::time::milliseconds(remainingMs) +
+                           m_pendingRequestTimeoutGrace;
+        const auto steadyDeadline = std::chrono::steady_clock::now() +
+                                    std::chrono::milliseconds(total.count());
+        const auto expiryEpochMs = nowEpochMs +
+            static_cast<uint64_t>(std::max<int64_t>(1, total.count()));
+        bool scheduleTimer = false;
+        {
+            if (beforePendingStateLock) {
+                beforePendingStateLock();
+            }
+            // Expiry and extension follow the same pending-state -> deadline
+            // lock order. A late grant callback must not recreate cleanup
+            // state after the request was already expired.
+            std::lock_guard<std::mutex> stateLock(m_pendingRequestMutex);
+            const bool hasPendingState =
+                pendingRequests.find(pendingKey) != pendingRequests.end() ||
+                pendingProviderTokens.find(pendingKey) != pendingProviderTokens.end() ||
+                m_recentProviderRequests.find(pendingKey) != m_recentProviderRequests.end() ||
+                m_pendingRequestTokenHashes.find(pendingKey) !=
+                    m_pendingRequestTokenHashes.end();
+            if (!hasPendingState) {
+                return;
+            }
+            std::lock_guard<std::mutex> lock(m_pendingCleanupDeadlineMutex);
+            const auto existing = m_pendingCleanupDeadlines.find(pendingKey);
+            if (existing != m_pendingCleanupDeadlines.end() &&
+                existing->second >= steadyDeadline) {
+                return;
+            }
+            scheduleTimer = existing == m_pendingCleanupDeadlines.end();
+            m_pendingCleanupDeadlines[pendingKey] = steadyDeadline;
+            m_pendingCleanupExpiryUnixMs[pendingKey] = expiryEpochMs;
+        }
+        // The original provisional timer rechecks the deadline when it fires.
+        // If this state had no timer yet, arm one for the active stream horizon.
+        if (scheduleTimer) {
+            m_scheduler.schedule(
+                std::max(total, ndn::time::milliseconds(1)),
+                [this, pendingKey] {
+                    handlePendingRequestCleanupTimer(pendingKey);
+                });
+        }
+    }
+
+    void ServiceProvider::handlePendingRequestCleanupTimer(
+        const ndn::Name& pendingKey,
+        const std::function<void()>& afterDeadlineCheck)
+    {
+        ndn::time::milliseconds remaining{0};
+        {
+            // Serialize the due check and expiry with all deadline writers. A
+            // grant worker either extends first (and this callback reschedules)
+            // or observes the completed expiry and leaves no orphan deadline.
+            std::lock_guard<std::mutex> stateLock(m_pendingRequestMutex);
+            {
+                std::lock_guard<std::mutex> deadlineLock(
+                    m_pendingCleanupDeadlineMutex);
+                const auto found = m_pendingCleanupDeadlines.find(pendingKey);
+                if (found == m_pendingCleanupDeadlines.end()) {
                     return;
                 }
-                expirePendingRequestState(pendingKey);
+                const auto now = std::chrono::steady_clock::now();
+                if (found->second > now) {
+                    const auto remainingStd =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            found->second - now);
+                    remaining = ndn::time::milliseconds(remainingStd.count());
+                }
+            }
+            if (remaining.count() == 0) {
+                if (afterDeadlineCheck) {
+                    afterDeadlineCheck();
+                }
+                expirePendingRequestStateLocked(pendingKey);
+                return;
+            }
+        }
+        m_scheduler.schedule(
+            std::max(remaining, ndn::time::milliseconds(1)),
+            [this, pendingKey] {
+                handlePendingRequestCleanupTimer(pendingKey);
             });
     }
 
@@ -15361,7 +15865,6 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
         std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
         pendingRequests[pendingKey] =
             std::make_shared<RequestMessage>(requestMessage);
-        schedulePendingRequestCleanup(pendingKey);
         if (m_useTokens) {
             auto tokenIt = pendingProviderTokens.find(pendingKey);
             if (tokenIt != pendingProviderTokens.end()) {
@@ -15373,6 +15876,7 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
             }
         }
     }
+    schedulePendingRequestCleanup(pendingKey);
     PublishRequestAckMessageV2(requesterIdentity,
                                serviceName,
                                requestId,
@@ -15976,6 +16480,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
     void ServiceProvider::rememberPendingImsInterest(const ndn::Interest& interest)
     {
+        const auto& interestWire = interest.wireEncode();
+        ndn::Interest retainedInterest(ndn::Block(ndn::span<const uint8_t>(
+            interestWire.data(), interestWire.size())));
         std::lock_guard<std::mutex> lock(_cache_mutex);
         pruneExpiredPendingImsInterestsLocked();
         const size_t maxPending =
@@ -16005,16 +16512,16 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         const auto now = ndn::time::steady_clock::now();
         PendingImsInterest item{
-            interest,
+            retainedInterest,
             now,
-            now + interest.getInterestLifetime()
+            now + retainedInterest.getInterestLifetime()
         };
-        if (interest.getCanBePrefix()) {
+        if (retainedInterest.getCanBePrefix()) {
             m_pendingPrefixImsInterests.push_back(std::move(item));
         }
         else {
-            m_pendingImsInterestsByName[interest.getName()].push_back(std::move(item));
-            m_pendingImsInsertionOrder.push_back(interest.getName());
+            m_pendingImsInterestsByName[retainedInterest.getName()].push_back(std::move(item));
+            m_pendingImsInsertionOrder.push_back(retainedInterest.getName());
         }
         ++m_pendingImsInterestCount;
         if (isTruthyEnv("NDNSF_PENDING_IMS_TIMING")) {
@@ -16289,6 +16796,17 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         std::chrono::steady_clock::time_point admittedDeadline,
         std::function<bool()> current, DataNameReadMode readMode)
     {
+        return fetchAndDecryptLargeDataUntil(referenceName, serviceName,
+            admittedDeadline, std::move(current), readMode, std::nullopt);
+    }
+
+    LargeDataFetchResult ServiceProvider::fetchAndDecryptLargeDataUntil(
+        const ndn::Name& referenceName, const std::string& serviceName,
+        std::chrono::steady_clock::time_point admittedDeadline,
+        std::function<bool()> current, DataNameReadMode readMode,
+        std::optional<ProtectedBlobFetchOptions> fetchOptions,
+        std::vector<ndn::Name> forwardingHint)
+    {
         ndn::Name encryptedDataName = referenceName;
         std::optional<ProtectedBlobManifest> expectedManifest;
         const auto stopping = m_fetchStopping;
@@ -16311,6 +16829,31 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return result;
         }
         const auto manifestProducer = ProtectedBlobManifest::inferProducer(referenceName, readMode);
+        if (fetchOptions) {
+            const auto& options = *fetchOptions;
+            bool valid = manifestProducer && readMode == DataNameReadMode::StrictCanonical &&
+                !options.forwardingHint.empty() && options.forwardingHint.size() <= 8 &&
+                options.manifestContentSha256.size() == 64 &&
+                std::all_of(options.manifestContentSha256.begin(), options.manifestContentSha256.end(),
+                    [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }) &&
+                options.maxPlaintextBytes > 0 && options.maxEnvelopeBytes > 0 &&
+                options.maxPlaintextBytes <= static_cast<uint64_t>(std::numeric_limits<int>::max()) &&
+                options.maxEnvelopeBytes <= std::numeric_limits<std::size_t>::max();
+            try {
+                for (const auto& hint : options.forwardingHint) {
+                    if (hint.empty()) valid = false;
+                    checkNamingNameSize(hint);
+                }
+            }
+            catch (const std::exception&) { valid = false; }
+            if (!valid) {
+                result.errorMessage = "INVALID_PROTECTED_BLOB_FETCH_OPTIONS";
+                return result;
+            }
+        }
+        if (fetchOptions) {
+            forwardingHint = fetchOptions->forwardingHint;
+        }
         const auto producer = extractLargeDataProducerPrefix(referenceName);
         const bool canonicalData = ProtectedBlobManifest::inferDataProducer(referenceName, readMode).has_value();
         if (!manifestProducer && !canonicalData &&
@@ -16365,7 +16908,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             };
             boost::asio::post(m_face.getIoContext(),
                 [this, stopping, current, overallDeadline, referenceName, producer,
-                 interestLifetimeMs, state, dataValidator, finish, readMode] {
+                 interestLifetimeMs, state, dataValidator, finish, readMode, fetchOptions,
+                 forwardingHint] {
                 if (stopping->load() || std::chrono::steady_clock::now() >= overallDeadline ||
                     (current && !current())) {
                     finish(std::nullopt, "manifest authority or deadline expired");
@@ -16375,25 +16919,28 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     ndn::Interest interest(referenceName);
                     interest.setCanBePrefix(false);
                     interest.setMustBeFresh(false); // immutable payload hash
+                    if (!forwardingHint.empty()) interest.setForwardingHint(forwardingHint);
                     interest.setInterestLifetime(ndn::time::milliseconds(interestLifetimeMs));
                     state->pending = m_face.expressInterest(interest,
                         [referenceName, producer, stopping, current, overallDeadline,
-                         dataValidator, finish, readMode](const ndn::Interest&, const ndn::Data& data) {
+                         dataValidator, finish, readMode, fetchOptions](const ndn::Interest&, const ndn::Data& data) {
                         if (stopping->load() || std::chrono::steady_clock::now() >= overallDeadline ||
                             (current && !current())) {
                             finish(std::nullopt, "manifest authority or deadline expired");
                             return;
                         }
                         dataValidator->getConfiguredValidatorForSegmentFetcher().validate(data,
-                            [referenceName, producer, finish, dataValidator, readMode](const ndn::Data& validated) {
+                            [referenceName, producer, finish, dataValidator, readMode, fetchOptions](const ndn::Data& validated) {
                             try {
                                 if (validated.getName() != referenceName)
                                     throw std::runtime_error("manifest Data name mismatch");
                                 if (!dataValidator->isProducerSignerAuthorized(validated, producer))
                                     throw std::runtime_error("manifest signer is not authorized for its Producer");
                                 const auto& content = validated.getContent();
-                                const std::vector<std::uint8_t> payload(
-                                    content.value(), content.value() + content.value_size());
+                                const ndn::Buffer payload(content.value(), content.value_size());
+                                if (fetchOptions && sha256DigestString(payload) !=
+                                    "sha256:" + fetchOptions->manifestContentSha256)
+                                    throw std::runtime_error("manifest content digest mismatch");
                                 finish(ProtectedBlobManifest::decode(payload, producer, referenceName, readMode), {});
                             }
                             catch (const std::exception& error) { finish(std::nullopt, error.what()); }
@@ -16423,6 +16970,11 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 return result;
             }
             expectedManifest = std::move(state->manifest);
+            if (fetchOptions && (expectedManifest->plaintextBytes > fetchOptions->maxPlaintextBytes ||
+                expectedManifest->envelopeBytes > fetchOptions->maxEnvelopeBytes)) {
+                result.errorMessage = "protected BLOB manifest exceeds fetch budget";
+                return result;
+            }
             encryptedDataName = expectedManifest->dataPrefix;
             try {
                 if (expectedManifest->authorizationScope.compare(0, 9, "/SERVICE/") != 0 ||
@@ -16546,13 +17098,15 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
         boost::asio::post(m_face.getIoContext(), [this, stopping, current, overallDeadline, dataValidator, encryptedDataName,
                                                   mutex, owner, finish,
-                                                  interestLifetimeMs, fetchTimeoutMs, expectedManifest] {
+                                                  interestLifetimeMs, fetchTimeoutMs, expectedManifest, fetchOptions,
+                                                  forwardingHint] {
             std::unique_lock<std::mutex> admission(*mutex);
             if (owner->terminalRequested || stopping->load() ||
                 std::chrono::steady_clock::now() >= overallDeadline || (current && !current())) return;
             ndn::Interest interest(encryptedDataName);
             interest.setCanBePrefix(true);
             interest.setMustBeFresh(true);
+            if (!forwardingHint.empty()) interest.setForwardingHint(forwardingHint);
             interest.setInterestLifetime(ndn::time::milliseconds(interestLifetimeMs));
             try {
                 ndn::SegmentFetcher::Options options;
@@ -16565,6 +17119,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                         std::chrono::duration_cast<std::chrono::milliseconds>(
                             overallDeadline - std::chrono::steady_clock::now()).count())));
                 options.interestLifetime = ndn::time::milliseconds(interestLifetimeMs);
+                // SegmentFetcher owns a separate retry timer. Leave room for a
+                // fresh-nonce retry before the original Interest's PIT lifetime ends.
+                options.rttOptions.maxRto = options.interestLifetime / 2;
+                options.rttOptions.initialRto = std::min(
+                    options.rttOptions.initialRto, options.rttOptions.maxRto);
+                options.rttOptions.minRto = std::min(
+                    options.rttOptions.minRto, options.rttOptions.maxRto);
                 auto transportValidator = dataValidator;
                 auto fetcher = ndn::SegmentFetcher::start(m_face, interest,
                     transportValidator->getConfiguredValidatorForSegmentFetcher(), options);
@@ -16642,7 +17203,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         });
         lock.lock();
         const bool cleaned = cv->wait_for(lock,
-            std::chrono::milliseconds(std::min(interestLifetimeMs, 20)),
+            std::chrono::milliseconds(std::min(interestLifetimeMs, 1000)),
             [owner] { return owner->cleanupDone; });
         lock.unlock();
         if (!cleaned) {
@@ -16686,6 +17247,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         // fields needed for authentication/decryption.
         *encodedEnvelope = nullptr;
 
+        if (fetchOptions && (envelope->getCipherText().size() > fetchOptions->maxPlaintextBytes ||
+            envelope->getCipherText().size() > static_cast<size_t>(std::numeric_limits<int>::max()))) {
+            result.errorMessage = "protected BLOB ciphertext exceeds plaintext budget";
+            return result;
+        }
+
         const auto messageType = envelope->getMessageType();
         if (expectedManifest && envelope->getEpochId() != expectedManifest->protectionEpoch) {
             result.errorMessage = "manifest protection epoch mismatch";
@@ -16722,6 +17289,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         auto decryptCv = std::make_shared<std::condition_variable>();
         auto decryptError = std::make_shared<std::string>();
         auto plaintext = std::make_shared<ndn::Buffer>();
+        const auto producerPrefix = extractLargeDataProducerPrefix(encryptedDataName);
+        const auto keyDataName = makeHybridMessageKeyDataName(
+            ndn::Name(serviceName), producerPrefix,
+            makeAbeServiceAttribute(ndn::Name(serviceName), "SERVICE"),
+            envelope->getEpochId());
+        const auto keyResolutionMode = envelope->hasWrappedMessageKey() ?
+            "inline-wrapped-key" : "producer-key-wrapper";
 
         auto finishDecrypt = [encryptedDataName,
                               serviceName,
@@ -16776,70 +17350,76 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         };
 
         ndn::Buffer key;
-        if (m_hybridMessageCrypto.findReceiveKey(envelope->getKeyId(),
-                                                 key,
-                                                 m_hybridCryptoCounters)) {
+        const bool receiveKeyCached = m_hybridMessageCrypto.findReceiveKey(
+            envelope->getKeyId(), key, m_hybridCryptoCounters);
+        if (receiveKeyCached) {
             finishDecrypt(key);
         }
         else if (envelope->hasWrappedMessageKey()) {
             boost::asio::post(m_face.getIoContext(),
-                [this, stopping, current, overallDeadline, envelope, serviceName, encryptedDataName, finishDecrypt, decryptCompleted,
-                 decryptMutex, decryptCv, decryptError]() mutable {
+                [this, stopping, current, overallDeadline, envelope, serviceName, finishDecrypt, decryptCompleted,
+                 decryptMutex, decryptCv, decryptError, keyDataName, forwardingHint]() mutable {
                     if (stopping->load() || std::chrono::steady_clock::now() >= overallDeadline ||
                         (current && !current())) return;
-                    const auto keyDataName = makeHybridMessageKeyDataName(
-                        ndn::Name(serviceName), extractLargeDataProducerPrefix(encryptedDataName),
-                        makeAbeServiceAttribute(ndn::Name(serviceName), "SERVICE"),
-                        envelope->getEpochId());
-                    activeNacConsumer().consume(
-                        keyDataName,
-                        makeNacInlineContentBlock(envelope->getWrappedMessageKey()),
+                    const auto unwrapSuccess =
                         [this, stopping, current, overallDeadline, serviceName, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
                             if (stopping->load() || std::chrono::steady_clock::now() >= overallDeadline ||
                                 (current && !current())) return;
+                            ++m_hybridCryptoCounters.nac_abe_key_unwrap_count;
                             m_hybridMessageCrypto.cacheReceiveKey(serviceName,
                                                                   envelope->getKeyId(),
                                                                   envelope->getEpochId(),
                                                                   unwrappedKey);
                             finishDecrypt(unwrappedKey);
-                        },
-                        [decryptCompleted, decryptMutex, decryptCv, decryptError](
+                        };
+                    const auto unwrapFailure = [decryptCompleted, decryptMutex, decryptCv, decryptError, keyDataName](
                             const std::string& reason) {
                             {
                                 std::lock_guard<std::mutex> lock(*decryptMutex);
-                                *decryptError = "hybrid MessageKey unwrap failed: " + reason;
+                                *decryptError = "hybrid MessageKey unwrap failed " +
+                                                keyDataName.toUri() + ": " + reason;
                                 decryptCompleted->store(true);
                             }
                             decryptCv->notify_one();
-                        });
+                        };
+                    try {
+                        const auto content = makeNacInlineContentBlock(envelope->getWrappedMessageKey());
+                        ndn::Interest interest(keyDataName);
+                        ndn::nacabe::Consumer::CkFetchOptions limits;
+                        limits.deadline = overallDeadline;
+                        limits.isCurrent = [stopping, current] {
+                            return !stopping->load() && (!current || current());
+                        };
+                        if (!forwardingHint.empty()) {
+                            interest.setForwardingHint(forwardingHint);
+                        }
+                        activeNacConsumer().consume(interest, content, limits, unwrapSuccess, unwrapFailure);
+                    }
+                    catch (const std::exception& e) { unwrapFailure(e.what()); }
                 });
         }
         else {
             boost::asio::post(m_face.getIoContext(),
-                [this, stopping, current, overallDeadline, serviceName, encryptedDataName, envelope, finishDecrypt, decryptCompleted,
-                 decryptMutex, decryptCv, decryptError]() mutable {
+                [this, stopping, current, overallDeadline, serviceName, envelope, finishDecrypt, decryptCompleted,
+                 decryptMutex, decryptCv, decryptError, keyDataName, producerPrefix,
+                 forwardingHint]() mutable {
                     if (stopping->load() || std::chrono::steady_clock::now() >= overallDeadline ||
                         (current && !current())) return;
-                    const auto keyDataName = makeHybridMessageKeyDataName(
-                        ndn::Name(serviceName), extractLargeDataProducerPrefix(encryptedDataName),
-                        makeAbeServiceAttribute(ndn::Name(serviceName), "SERVICE"),
-                        envelope->getEpochId());
-                    consumeHybridMessageKeyWrapper(m_face, nac_validator, activeNacConsumer(),
-                        keyDataName,
-                        [dataValidator = validator, producer = extractLargeDataProducerPrefix(encryptedDataName)](
+                    const auto authorizeProducer = [dataValidator = validator, producer = producerPrefix](
                             const ndn::Data& packet) {
                             return dataValidator->isProducerSignerAuthorized(packet, producer);
-                        },
-                        [this, stopping, current, overallDeadline, serviceName, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
+                        };
+                    const auto unwrapSuccess = [this, stopping, current, overallDeadline, serviceName, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
                             if (stopping->load() || std::chrono::steady_clock::now() >= overallDeadline ||
                                 (current && !current())) return;
+                            ++m_hybridCryptoCounters.nac_abe_key_unwrap_count;
                             m_hybridMessageCrypto.cacheReceiveKey(serviceName,
                                                                   envelope->getKeyId(),
                                                                   envelope->getEpochId(),
                                                                   unwrappedKey);
                             finishDecrypt(unwrappedKey);
-                        },
-                        [decryptCompleted, decryptMutex, decryptCv, decryptError, keyDataName](
+                        };
+                    const auto unwrapFailure = [decryptCompleted, decryptMutex, decryptCv, decryptError, keyDataName](
                             const std::string& reason) {
                             {
                                 std::lock_guard<std::mutex> lock(*decryptMutex);
@@ -16848,7 +17428,19 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                 decryptCompleted->store(true);
                             }
                             decryptCv->notify_one();
-                        });
+                        };
+                    try {
+                        HybridKeyFetchOptions options;
+                        options.deadline = overallDeadline;
+                        options.isCurrent = [stopping, current] {
+                            return !stopping->load() && (!current || current());
+                        };
+                        if (!forwardingHint.empty())
+                            options.forwardingHint = forwardingHint;
+                        consumeHybridMessageKeyWrapper(m_face, nac_validator, activeNacConsumer(),
+                            keyDataName, options, authorizeProducer, unwrapSuccess, unwrapFailure);
+                    }
+                    catch (const std::exception& e) { unwrapFailure(e.what()); }
                 });
         }
 
@@ -16860,6 +17452,24 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 std::chrono::steady_clock::now() + std::chrono::milliseconds(20)));
         }
         if (!decryptCompleted->load()) {
+            const bool requestCurrent = !current || current();
+            const auto observedAt = std::chrono::steady_clock::now();
+            // The collaboration work fence also returns false when this same
+            // deadline expires. Do not require requestCurrent here: that made
+            // the timeout detail disappear at the normal fence boundary.
+            const bool overallDeadlineExpired = !stopping->load() &&
+                observedAt >= overallDeadline;
+            if (overallDeadlineExpired) {
+                NDN_LOG_WARN("NDNSF_LARGE_DATA_DECRYPT_TIMEOUT service=" << serviceName
+                    << " data=" << encryptedDataName.toUri()
+                    << " manifest=" << (expectedManifest ? "verified" : "not-applicable")
+                    << " body=envelope-decoded receiveKeyCache=miss"
+                    << " keyResolution=" << keyResolutionMode
+                    << " keyDataName=" << keyDataName.toUri()
+                    << " epoch=" << envelope->getEpochId()
+                    << " authorityCurrent=" << (requestCurrent ? "true" : "false")
+                    << " callback=not-completed-before-deadline");
+            }
             result.errorMessage = "large-data hybrid decrypt timed out for " +
                                   encryptedDataName.toUri();
             return result;
@@ -17525,6 +18135,24 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     ndn::Name ServiceProvider::getSigningCertificateName() const
     {
         return signingCert.getName();
+    }
+
+    void ServiceProvider::signProducerData(ndn::Data& data)
+    {
+        const auto& name = data.getName();
+        if (identity.empty() || !identity.isPrefixOf(name) ||
+            name.size() < identity.size() + 2 ||
+            signingCert.getIdentity() != identity) {
+            throw std::invalid_argument("Provider Data signer requires its complete producer prefix");
+        }
+        if (data.getContent().value_size() > ndn::MAX_NDN_PACKET_SIZE) {
+            throw std::invalid_argument("Provider Data content exceeds packet bound");
+        }
+        (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
+            .sign(data, m_signingInfo);
+        if (data.getName() != name || data.wireEncode().size() > ndn::MAX_NDN_PACKET_SIZE) {
+            throw std::invalid_argument("signed Provider Data changed name or exceeds packet bound");
+        }
     }
 
     std::shared_ptr<LiveStreamPublisher>

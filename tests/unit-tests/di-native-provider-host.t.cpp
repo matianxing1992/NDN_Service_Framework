@@ -22,17 +22,26 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
 
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include <ndn-cxx/security/verification-helpers.hpp>
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <fstream>
+#include <filesystem>
+#include <limits>
+#include <cstdlib>
+#include <unistd.h>
 
 namespace ndn_service_framework::test {
 
@@ -96,6 +105,21 @@ makeCountingRequestHandler(std::atomic<int>& executions)
       return response;
     });
 }
+
+class Spec212CountingPacketStore final :
+  public ndn_service_framework::EncryptedLargeDataRangeStore
+{
+public:
+  std::shared_ptr<const ndn_service_framework::EncryptedLargeDataRangeSource>
+  commitFile(const std::string&, const std::filesystem::path&, std::uint64_t,
+             const std::function<void()>&) override
+  {
+    ++commitCalls;
+    return {};
+  }
+
+  std::atomic<unsigned> commitCalls{0};
+};
 
 // 真实 accept：把请求投到 provider 的解密完成入口。LocalMock 默认
 // handler pool 为 0，decode 与 accept commit 同步完成；启用 worker 的
@@ -161,6 +185,91 @@ public:
 };
 
 } // namespace
+
+BOOST_AUTO_TEST_SUITE(Spec204RecoveryPolicy)
+BOOST_AUTO_TEST_CASE(TypedAndJsonPoliciesRejectActualTransportBoundaryViolations)
+{
+  using namespace ndnsf::di;
+  const NativeJson value{{"privateScratchRoot", "/tmp/spec204-private"},
+    {"repoForwardingHints", {"/repo/A"}}, {"maxPayloadBytes", 128U},
+    {"maxEncodedBytes", 256U}, {"maxMetadataBytes", 512U}, {"maxCheckpointBytes", 1024U},
+    {"maxProtectedPlaintextBytes", 1024U}, {"maxProtectedWireBytes", 2048U},
+    {"maxTransportEnvelopeBytes", 4096U}};
+  auto policy = nativeProviderKvRecoveryConfigFromJson(nativeCanonicalJson(value));
+  BOOST_CHECK_NO_THROW(policy.validate());
+  int probes = 0;
+  policy.protectedLimits.cancelled = [&] { ++probes; return false; };
+  policy.portableLimits.portable.cancelled = [&] { ++probes; return false; };
+  policy.validate();
+  BOOST_CHECK_EQUAL(probes, 0);
+  BOOST_CHECK(!policy.protectedLimits.cancelled());
+  BOOST_CHECK(!policy.portableLimits.portable.cancelled());
+  BOOST_CHECK_EQUAL(probes, 2);
+  const auto rejects = [](const NativeJson& changed) {
+    BOOST_CHECK_THROW(nativeProviderKvRecoveryConfigFromJson(nativeCanonicalJson(changed)), std::exception);
+  };
+  auto changed = value; changed["repoForwardingHints"] = NativeJson::array(); rejects(changed);
+  changed = value; changed["repoForwardingHints"] = std::vector<std::string>(9, "/repo/A"); rejects(changed);
+  changed = value; changed["repoForwardingHints"] = {"/" + std::string(1100, 'a')}; rejects(changed);
+  changed = value; changed["maxProtectedWireBytes"] = std::uint64_t(std::numeric_limits<int>::max()) + 1;
+  changed["maxTransportEnvelopeBytes"] = std::uint64_t(std::numeric_limits<int>::max()) + 4096; rejects(changed);
+  changed = value; changed["maxPayloadBytes"] = 257U; rejects(changed);
+  changed = value; changed["maxCheckpointBytes"] = 0U; rejects(changed);
+  changed = value; changed["privateScratchRoot"] = "relative"; rejects(changed);
+  changed = value; changed["recipientKey"] = "not-policy"; rejects(changed);
+  auto typed = policy; typed.repoForwardingHints.clear();
+  BOOST_CHECK_THROW(typed.validate(), std::invalid_argument);
+  typed = policy; typed.portableLimits.portable.maxPayloadBytes = 257;
+  BOOST_CHECK_THROW(typed.validate(), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(PublicConfigOwnsPolicyValuesAcrossFileChangesAndRelativeLaunchPaths)
+{
+  using namespace ndnsf::di;
+  std::string pattern = (std::filesystem::temp_directory_path() / "spec204-policy-XXXXXX").string();
+  std::vector<char> path(pattern.begin(), pattern.end()); path.push_back('\0');
+  BOOST_REQUIRE(::mkdtemp(path.data()));
+  struct Scratch {
+    std::filesystem::path root;
+    ~Scratch() { std::error_code ignored; std::filesystem::remove_all(root, ignored); }
+  } scratch{path.data()};
+  const auto policyPath = scratch.root / "policy.json";
+  NativeJson policy{{"privateScratchRoot", scratch.root.string()},
+    {"repoForwardingHints", {"/repo/A"}}, {"maxPayloadBytes", 128U},
+    {"maxEncodedBytes", 256U}, {"maxMetadataBytes", 512U}, {"maxCheckpointBytes", 1024U},
+    {"maxProtectedPlaintextBytes", 1024U}, {"maxProtectedWireBytes", 2048U},
+    {"maxTransportEnvelopeBytes", 4096U}};
+  const auto writePolicy = [&] {
+    std::ofstream output(policyPath); output << nativeCanonicalJson(policy);
+    BOOST_REQUIRE(output.good());
+  };
+  writePolicy();
+  std::vector<std::string> arguments{"provider", "--provider", "/provider/A", "--trust-schema",
+    (scratch.root / "schema").string(), "--service", "/LLM/Generate", "--kv-recovery-config", policyPath.string()};
+  const auto parse = [&] {
+    std::vector<const char*> argv;
+    for (const auto& argument : arguments) argv.push_back(argument.c_str());
+    return ProviderConfig::fromCommandLine(static_cast<int>(argv.size()), argv.data());
+  };
+  const auto first = parse(); const auto same = parse();
+  BOOST_CHECK(first.equivalent(same));
+  auto launchArguments = arguments; launchArguments.erase(launchArguments.begin());
+  launchArguments.back() = "policy.json";
+  const auto launchPath = scratch.root / "launch.json";
+  {
+    std::ofstream output(launchPath);
+    output << nativeCanonicalJson(NativeJson{{"schema", "ndnsf-di-native-provider-launch-v1"},
+      {"arguments", launchArguments}});
+    BOOST_REQUIRE(output.good());
+  }
+  BOOST_CHECK(first.equivalent(ProviderConfig::fromFile(launchPath)));
+  policy["maxPayloadBytes"] = 129U; writePolicy();
+  BOOST_CHECK(!first.equivalent(parse()));
+  std::filesystem::remove(policyPath);
+  BOOST_CHECK(first.equivalent(same));
+  BOOST_CHECK_THROW(parse(), std::invalid_argument);
+}
+BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(Spec182Registration)
 
@@ -1348,6 +1457,1061 @@ makeHostService(const std::string& serviceName,
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec182ProviderHost)
+
+BOOST_AUTO_TEST_CASE(Spec212EmptyServiceWithdrawalClosesOnlyItsRegistration)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec212-empty-withdrawal",
+                                   "tpm-memory:spec212-empty-withdrawal");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec212/aa-empty-withdrawal"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec212/group-empty-withdrawal"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  std::atomic<unsigned> ownerResolverCalls{0};
+  auto firstService = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
+  firstService.withdrawalPersistencePolicyId = "spec212-empty-service-policy";
+  firstService.handoffOwnerContextResolver = [&ownerResolverCalls](
+      const ndn::Name&, const ndn::Name&, const std::string&)
+      -> ndnsf::di::NativeConversationHandoffOwnerContextV1 {
+    ++ownerResolverCalls;
+    throw std::runtime_error("empty withdrawal must not resolve an Owner");
+  };
+  auto first = host->serve(
+    firstService,
+    makeHostConfig(HOST_SERVICE_A));
+  auto sibling = host->serve(
+    makeHostService(HOST_SERVICE_B, makeAcceptingAckHandler()),
+    makeHostConfig(HOST_SERVICE_B));
+
+  ndnsf::di::NativeWithdrawalOptionsV1 options;
+  options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  options.drainDeadline = options.deadline + std::chrono::seconds(1);
+  options.maxConversations = 1;
+  options.maxTotalBytes = 1024;
+  options.persistencePolicyId = "spec212-empty-service-policy";
+  BOOST_CHECK_THROW(sibling.withdraw(options), std::logic_error);
+  BOOST_CHECK(!sibling.closed());
+  auto invalid = options;
+  invalid.drainDeadline = invalid.deadline - std::chrono::milliseconds(1);
+  BOOST_CHECK_THROW(first.withdraw(invalid), std::invalid_argument);
+  BOOST_CHECK(!first.closed());
+  auto wrongPolicy = options;
+  wrongPolicy.persistencePolicyId = "different-policy";
+  BOOST_CHECK_THROW(first.withdraw(wrongPolicy), std::invalid_argument);
+  BOOST_CHECK(!first.closed());
+  auto withdrawal = first.withdraw(options);
+  BOOST_REQUIRE(withdrawal.valid());
+  BOOST_CHECK(!withdrawal.operationId().empty());
+  const auto result = withdrawal.result(std::chrono::seconds(2));
+  BOOST_CHECK(result.closed);
+  BOOST_CHECK(!result.forced);
+  BOOST_CHECK_EQUAL(result.reason, "EMPTY");
+  BOOST_CHECK(result.conversationResults.empty());
+  BOOST_CHECK_EQUAL(ownerResolverCalls.load(), 0U);
+  BOOST_CHECK_EQUAL(result.withdrawalId, withdrawal.operationId());
+  BOOST_CHECK(withdrawal.status() == ndnsf::di::NativeWithdrawalStatusV1::Closed);
+  BOOST_CHECK(!withdrawal.cancel());
+  BOOST_CHECK(first.closed());
+  BOOST_CHECK(!sibling.closed());
+  BOOST_CHECK(first.drain(std::chrono::seconds(2)));
+  BOOST_CHECK(sibling.drain(std::chrono::seconds(2)));
+  face.shutdown();
+  face.processEvents(ndn::time::milliseconds(20));
+  host.reset();
+  provider.reset();
+}
+
+BOOST_AUTO_TEST_CASE(Spec212ProviderWithdrawalClosesTwoEmptyServices)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec212-provider-withdrawal",
+                                   "tpm-memory:spec212-provider-withdrawal");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec212/aa-provider-withdrawal"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec212/group-provider-withdrawal"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  std::atomic<unsigned> ownerResolverCalls{0};
+  const auto makeWithdrawable = [&ownerResolverCalls](const std::string& name) {
+    auto service = makeHostService(name, makeAcceptingAckHandler());
+    service.withdrawalPersistencePolicyId = "spec212-provider-policy";
+    service.handoffOwnerContextResolver = [&ownerResolverCalls](
+        const ndn::Name&, const ndn::Name&, const std::string&)
+        -> ndnsf::di::NativeConversationHandoffOwnerContextV1 {
+      ++ownerResolverCalls;
+      throw std::runtime_error("empty Provider withdrawal must not resolve an Owner");
+    };
+    return service;
+  };
+  ndnsf::di::NativeProviderCollaborationRuntime firstRuntime;
+  auto firstDefinition = makeWithdrawable(HOST_SERVICE_A);
+  firstDefinition.runtimeObserver = [&firstRuntime](
+      const ndnsf::di::NativeProviderCollaborationRuntime& runtime) {
+    firstRuntime = runtime;
+  };
+  auto first = host->serve(firstDefinition, makeHostConfig(HOST_SERVICE_A));
+  auto second = host->serve(makeWithdrawable(HOST_SERVICE_B),
+                            makeHostConfig(HOST_SERVICE_B));
+
+  ndnsf::di::NativeWithdrawalOptionsV1 options;
+  options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  options.drainDeadline = options.deadline + std::chrono::seconds(2);
+  options.maxConversations = 2;
+  options.maxTotalBytes = 1024;
+  options.persistencePolicyId = "spec212-provider-policy";
+  auto competingFence = firstRuntime.beginConversationSaveFence(
+    "/spec212/owner", HOST_SERVICE_A, "conversation-busy-0001");
+  BOOST_REQUIRE(competingFence);
+  BOOST_CHECK_THROW(host->withdraw(options), std::logic_error);
+  BOOST_CHECK(!first.closed());
+  BOOST_CHECK(!second.closed());
+  competingFence.reset();
+  auto withdrawal = host->withdraw(options);
+  BOOST_REQUIRE(withdrawal.valid());
+  auto duplicate = host->withdraw(options);
+  BOOST_CHECK_EQUAL(duplicate.operationId(), withdrawal.operationId());
+  auto changed = options;
+  ++changed.maxTotalBytes;
+  BOOST_CHECK_THROW(host->withdraw(changed), std::logic_error);
+  const auto result = withdrawal.result(std::chrono::seconds(5));
+  BOOST_CHECK(result.scope == ndnsf::di::NativeWithdrawalScopeV1::Provider);
+  BOOST_CHECK(result.closed);
+  BOOST_CHECK(!result.forced);
+  BOOST_CHECK_EQUAL(result.reason, "EMPTY");
+  BOOST_CHECK(result.conversationResults.empty());
+  BOOST_CHECK_EQUAL(result.withdrawalId, withdrawal.operationId());
+  BOOST_CHECK_EQUAL(ownerResolverCalls.load(), 0U);
+  BOOST_CHECK(first.closed());
+  BOOST_CHECK(second.closed());
+  BOOST_CHECK_THROW(host->serve(makeWithdrawable(HOST_SERVICE_A),
+    makeHostConfig(HOST_SERVICE_A)), std::logic_error);
+  BOOST_CHECK(first.drain(std::chrono::seconds(2)));
+  BOOST_CHECK(second.drain(std::chrono::seconds(2)));
+  BOOST_CHECK(host->drain(std::chrono::seconds(2)));
+  face.shutdown();
+  face.processEvents(ndn::time::milliseconds(20));
+  host.reset();
+  provider.reset();
+}
+
+BOOST_AUTO_TEST_CASE(Spec212V2BootstrapUsesHandoffAckPath)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec212-v2-bootstrap",
+                                   "tpm-memory:spec212-v2-bootstrap");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName(HOST_PROVIDER_NAME);
+  const ndn::Name serviceName(HOST_SERVICE_A);
+  const ndn::Name requesterName("/spec212/user-v2-bootstrap");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec212/aa-v2-bootstrap"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec212/group-v2-bootstrap"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  provider->applyPermissionResponse(makePermissionResponse(
+    providerName, tlv::ProviderPermission, providerName, serviceName));
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  unsigned modelAckCalls = 0;
+  auto service = makeHostService(HOST_SERVICE_A,
+    [&modelAckCalls](const RequestMessage&) {
+      ++modelAckCalls;
+      ServiceProvider::AckDecision decision;
+      decision.status = false;
+      decision.message = "model ACK must not inspect handoff bootstrap";
+      return decision;
+    });
+  service.handoffOwnerContextResolver = [] (const ndn::Name&, const ndn::Name&,
+                                           const std::string&) {
+    return ndnsf::di::NativeConversationHandoffOwnerContextV1{};
+  };
+  auto registration = host->serve(service, makeHostConfig(HOST_SERVICE_A));
+  auto request = makeRequestMessageWithUserToken("", "spec212-v2-bootstrap-token");
+  request.setRequestMode(tlv::TargetedBootstrapRequest);
+  request.setTargetProvider(providerName);
+  RequestCapabilities capabilities;
+  capabilities.setField("RequestScopedConfidentialityV1", "required");
+  capabilities.setField("NativeConversationHandoffV2", "required");
+  request.setRequestCapabilities(capabilities);
+  const ndn::Name requestId("/v2-bootstrap-request");
+  BOOST_CHECK(!provider->hasPendingRequestForTokenTest(
+    requesterName, serviceName, requestId));
+  const auto wire = request.WireEncode();
+  injectRequest(*provider, requesterName, serviceName, requestId,
+                ndn::Buffer(wire.data(), wire.data() + wire.size()));
+  BOOST_CHECK(provider->hasPendingRequestForTokenTest(
+    requesterName, serviceName, requestId));
+  BOOST_CHECK_EQUAL(modelAckCalls, 0U);
+
+  ndnsf::di::NativeConversationHandoffControlV2 control;
+  control.control.action = ndnsf::di::NativeConversationHandoffActionV1::Begin;
+  control.control.operationId = "spec212-v2-bootstrap-operation";
+  control.control.conversationId = "conversation-v2-bootstrap";
+  control.control.checkpointDigest = "sha256:" + std::string(64, 'a');
+  control.control.destinationRoleMapDigest = "sha256:" + std::string(64, 'b');
+  control.control.deadlineMs = 1'800'000'000'000;
+  control.sourceProvidersByRole = {{"/Backbone", HOST_PROVIDER_NAME}};
+  ndnsf::di::NativeJson sourceRoles = ndnsf::di::NativeJson::array();
+  sourceRoles.push_back(ndnsf::di::NativeJson::array(
+    {"/Backbone", HOST_PROVIDER_NAME}));
+  control.control.sourceRoleMapDigest = ndnsf::di::nativePlanningDigest(
+    ndnsf::di::nativeCanonicalJson(sourceRoles));
+  control.trigger = ndnsf::di::NativeConversationSaveTriggerV2::UserSwitch;
+  const auto controlWire = ndnsf::di::nativeConversationCanonicalJson(
+    ndnsf::di::nativeConversationHandoffControlV2ToJson(control));
+  auto payloadRequest = makeRequestMessageWithUserToken(
+    controlWire, "spec212-v2-bootstrap-payload-token");
+  payloadRequest.setRequestMode(tlv::TargetedBootstrapRequest);
+  payloadRequest.setTargetProvider(providerName);
+  payloadRequest.setRequestCapabilities(capabilities);
+  const ndn::Name payloadRequestId("/v2-bootstrap-payload-request");
+  BOOST_CHECK(!provider->hasPendingRequestForTokenTest(
+    requesterName, serviceName, payloadRequestId));
+  const auto payloadWire = payloadRequest.WireEncode();
+  injectRequest(*provider, requesterName, serviceName, payloadRequestId,
+                ndn::Buffer(payloadWire.data(), payloadWire.data() + payloadWire.size()));
+  BOOST_CHECK(provider->hasPendingRequestForTokenTest(
+    requesterName, serviceName, payloadRequestId));
+  BOOST_CHECK_EQUAL(modelAckCalls, 0U);
+
+  ndnsf::di::NativeWithdrawalQueryV1 query;
+  query.conversationId = "conversation-v2-bootstrap";
+  query.checkpointDigest = control.control.checkpointDigest;
+  query.deadlineMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()) + 60 * 1000;
+  const auto queryWire = ndnsf::di::nativeConversationCanonicalJson(
+    ndnsf::di::nativeWithdrawalQueryV1ToJson(query));
+  auto queryRequest = makeRequestMessageWithUserToken(
+    queryWire, "spec212-withdrawal-query-bootstrap-token");
+  queryRequest.setRequestMode(tlv::TargetedBootstrapRequest);
+  queryRequest.setTargetProvider(providerName);
+  RequestCapabilities queryCapabilities;
+  queryCapabilities.setField("RequestScopedConfidentialityV1", "required");
+  queryRequest.setRequestCapabilities(queryCapabilities);
+  const ndn::Name queryRequestId("/withdrawal-query-bootstrap-request");
+  BOOST_CHECK(!provider->hasPendingRequestForTokenTest(
+    requesterName, serviceName, queryRequestId));
+  const auto queryRequestWire = queryRequest.WireEncode();
+  injectRequest(*provider, requesterName, serviceName, queryRequestId,
+                ndn::Buffer(queryRequestWire.data(),
+                            queryRequestWire.data() + queryRequestWire.size()));
+  BOOST_CHECK(provider->hasPendingRequestForTokenTest(
+    requesterName, serviceName, queryRequestId));
+  BOOST_CHECK_EQUAL(modelAckCalls, 0U);
+
+  registration.close();
+  BOOST_CHECK(registration.drain(std::chrono::seconds(2)));
+  face.shutdown();
+  face.processEvents(ndn::time::milliseconds(20));
+  host.reset();
+  provider.reset();
+}
+
+BOOST_AUTO_TEST_CASE(Spec212ProviderSignsOnlyOwnWithdrawalIntentData)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec212-provider-intent",
+                                   "tpm-memory:spec212-provider-intent");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName(HOST_PROVIDER_NAME);
+  const auto providerCert = makeRsaIdentity(keyChain, providerName);
+  const auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec212/aa-intent"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec212/group-intent"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  provider->useSigningKeyChainForTest(keyChain);
+
+  ndnsf::di::NativeWithdrawalIntentV1 intent;
+  intent.withdrawalId = "withdrawal-001";
+  intent.ownerIdentity = "/spec212/user";
+  intent.serviceName = HOST_SERVICE_A;
+  intent.providerBootId = "boot-a";
+  intent.registrationGeneration = 17;
+  intent.deadlineMs = 1'800'000'000'000;
+  intent.conversationId = "conversation-a-0001";
+  intent.checkpointDigest = "sha256:" + std::string(64, 'a');
+  intent.sourceRoleMapDigest = "sha256:" + std::string(64, 'b');
+  intent.localRoles = {"/Stage/0"};
+  intent.policyDigest = "sha256:" + std::string(64, 'c');
+  auto proof = ndnsf::di::nativeSignWithdrawalIntentProofV1(
+    providerName, intent, [provider](ndn::Data& packet) {
+      provider->signProducerData(packet);
+    });
+  const auto& encoded = proof.wireEncode();
+  const ndn::Buffer original(encoded.data(), encoded.data() + encoded.size());
+  BOOST_CHECK_NO_THROW(ndnsf::di::nativeValidateWithdrawalIntentProofV1(
+    original, providerName, intent, intent.deadlineMs - 1,
+    [&providerCert](const ndn::Data& packet, const ndn::Name& expected) {
+      return expected == providerCert.getIdentity() &&
+        ndn::security::verifySignature(packet, providerCert);
+    }));
+
+  ndn::Data foreign(ndn::Name("/spec212/foreign/withdrawal-intent/v1/id/digest"));
+  BOOST_CHECK_THROW(provider->signProducerData(foreign), std::invalid_argument);
+  ndn::Data prefixOnly(providerName);
+  BOOST_CHECK_THROW(provider->signProducerData(prefixOnly), std::invalid_argument);
+  provider.reset();
+  face.shutdown();
+  face.processEvents(ndn::time::milliseconds(10));
+}
+
+BOOST_AUTO_TEST_CASE(Spec212CoreDrainWaiterTracksAdmittedCallback)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec212-core-drain-waiter",
+                                   "tpm-memory:spec212-core-drain-waiter");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec212/aa-core-drain-waiter"));
+  LocalServiceProvider provider(
+    face, ndn::Name("/spec212/group-core-drain-waiter"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  const ndn::Name serviceName(HOST_SERVICE_A);
+  auto registration = provider.addScopedTargetedService(
+    serviceName,
+    [] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+        const ndn::Name&, const RequestMessage&,
+        ServiceProvider::AsyncTargetedCompletion) {});
+  auto waitForCallbacks = registration.makeTargetedHandlerDrainWaiter();
+
+  // Hold the exact Core admission state without entering the native wrapper.
+  auto releaseAdmission = ServiceProviderTestAccess::beginTargetedHandler(
+    provider, serviceName);
+  BOOST_REQUIRE(releaseAdmission);
+  registration.close();
+  auto draining = std::async(std::launch::async, [&] {
+    return waitForCallbacks(std::chrono::seconds(2));
+  });
+  const bool waitedForAdmission =
+    draining.wait_for(std::chrono::milliseconds(50)) ==
+      std::future_status::timeout;
+  releaseAdmission();
+
+  BOOST_CHECK(waitedForAdmission);
+  BOOST_CHECK(draining.get());
+  BOOST_CHECK(!ServiceProviderTestAccess::beginTargetedHandler(
+    provider, serviceName));
+}
+
+BOOST_AUTO_TEST_CASE(Spec212HandoffRegistrationDrainWaitsForOwnerResolver)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec212-handoff-drain",
+                                   "tpm-memory:spec212-handoff-drain");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec212/aa-handoff-drain"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec212/group-handoff-drain"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+
+  std::mutex resolverMutex;
+  std::condition_variable resolverChanged;
+  bool resolverEntered = false;
+  bool resolverReleased = false;
+  std::atomic<unsigned> resolverCalls{0};
+  auto service = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
+  service.handoffOwnerContextResolver = [&](const ndn::Name&,
+                                             const ndn::Name&,
+                                             const std::string&)
+      -> ndnsf::di::NativeConversationHandoffOwnerContextV1 {
+    resolverCalls.fetch_add(1, std::memory_order_relaxed);
+    std::unique_lock<std::mutex> lock(resolverMutex);
+    resolverEntered = true;
+    resolverChanged.notify_all();
+    resolverChanged.wait(lock, [&] { return resolverReleased; });
+    return {};
+  };
+  auto registration = host->serve(service, makeHostConfig(HOST_SERVICE_A));
+
+  ndnsf::di::NativeConversationHandoffControlV1 control;
+  control.operationId = "spec212-drain-operation-0001";
+  control.conversationId = "spec212-drain-conversation-0001";
+  control.checkpointDigest = "sha256:" + std::string(64, '6');
+  control.sourceRoleMapDigest = "sha256:" + std::string(64, '7');
+  control.destinationRoleMapDigest = "sha256:" + std::string(64, '8');
+  control.deadlineMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()) +
+    5 * 60 * 1000;
+  const auto makeRequest = [](const auto& value) {
+    const auto wire = ndnsf::di::nativeConversationCanonicalJson(
+      ndnsf::di::nativeConversationHandoffControlV1ToJson(value));
+    ndn::Buffer payload(wire.begin(), wire.end());
+    RequestMessage result;
+    result.setPayload(payload, payload.size());
+    return result;
+  };
+  const auto request = makeRequest(control);
+
+  bool completionCalled = false;
+  bool responseStatus = true;
+  auto invocation = std::async(std::launch::async, [&] {
+    return provider->invokeAsyncTargetedHandlerForTest(
+      ndn::Name(HOST_SERVICE_A), ndn::Name("/spec212/user"),
+      ndn::Name("/spec212/handoff/1"), request,
+      [&](ResponseMessage response) {
+        responseStatus = response.getStatus();
+        completionCalled = true;
+      });
+  });
+  bool entered = false;
+  {
+    std::unique_lock<std::mutex> lock(resolverMutex);
+    entered = resolverChanged.wait_for(lock, std::chrono::seconds(2),
+      [&] { return resolverEntered; });
+  }
+  if (!entered) {
+    {
+      std::lock_guard<std::mutex> lock(resolverMutex);
+      resolverReleased = true;
+    }
+    resolverChanged.notify_all();
+    BOOST_CHECK_MESSAGE(false, "handoff Owner resolver was not entered");
+    (void)invocation.get();
+    return;
+  }
+
+  bool duplicateCompleted = false;
+  bool duplicateStatus = false;
+  BOOST_CHECK(provider->invokeAsyncTargetedHandlerForTest(
+    ndn::Name(HOST_SERVICE_A), ndn::Name("/spec212/user"),
+    ndn::Name("/spec212/handoff/duplicate"), makeRequest(control),
+    [&](ResponseMessage response) {
+      duplicateStatus = response.getStatus();
+      duplicateCompleted = true;
+    }));
+  BOOST_CHECK(duplicateCompleted);
+  BOOST_CHECK(duplicateStatus);
+  BOOST_CHECK_EQUAL(resolverCalls.load(std::memory_order_relaxed), 1U);
+
+  auto conflictingControl = control;
+  conflictingControl.destinationRoleMapDigest =
+    "sha256:" + std::string(64, '9');
+  bool conflictingRetryCompleted = false;
+  bool conflictingRetryStatus = true;
+  BOOST_CHECK(provider->invokeAsyncTargetedHandlerForTest(
+    ndn::Name(HOST_SERVICE_A), ndn::Name("/spec212/user"),
+    ndn::Name("/spec212/handoff/conflict"), makeRequest(conflictingControl),
+    [&](ResponseMessage response) {
+      conflictingRetryStatus = response.getStatus();
+      conflictingRetryCompleted = true;
+    }));
+  BOOST_CHECK(conflictingRetryCompleted);
+  BOOST_CHECK(!conflictingRetryStatus);
+  BOOST_CHECK_EQUAL(resolverCalls.load(std::memory_order_relaxed), 1U);
+
+  // Close intake on this thread first. The test-only Core invoker shares the
+  // same RegistrationState admission lease as the production callback path.
+  registration.close();
+  auto draining = std::async(std::launch::async, [&] {
+    return registration.drain(std::chrono::seconds(2));
+  });
+  BOOST_CHECK(draining.wait_for(std::chrono::milliseconds(50)) ==
+              std::future_status::timeout);
+  {
+    std::lock_guard<std::mutex> lock(resolverMutex);
+    resolverReleased = true;
+  }
+  resolverChanged.notify_all();
+
+  BOOST_CHECK(invocation.get());
+  BOOST_CHECK(draining.get());
+  BOOST_CHECK(completionCalled);
+  BOOST_CHECK(!responseStatus);
+}
+
+BOOST_AUTO_TEST_CASE(Spec212OwnerContextPreflightValidatesWithoutPublishing)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec212-context-preflight",
+                                 "tpm-memory:spec212-context-preflight");
+  const ndn::Name owner("/spec212/preflight-owner");
+  const ndn::Name service(HOST_SERVICE_A);
+  auto store = std::make_shared<Spec212CountingPacketStore>();
+  unsigned grantCalls = 0;
+  ndnsf::di::NativeConversationHandoffOwnerContextV1 context;
+  context.ownerEncryptionCertificate = makeRsaIdentity(keyChain, owner);
+  context.durableStorageOwner.ownerIdentity = owner.toUri(ndn::name::UriFormat::ALTERNATE);
+  context.durableStorageOwner.resolveGrant = [&grantCalls](const ndn::Name&,
+      const std::string&, const std::function<void()>&)
+      -> ndn_service_framework::DurableStorageGrantSelector {
+    ++grantCalls;
+    throw std::runtime_error("preflight must not request a grant");
+  };
+  context.originalPacketStore = store;
+  context.saveBatchLimits = {1, 1024};
+  context.portableLimits = {{16U << 20, 20U << 20, {}}, 1U << 20, 24U << 20};
+  context.protectedCheckpointLimits = {25U << 20, 32U << 20, {}};
+  context.policy.enabled = true;
+  context.policy.maxConcurrentEvents = 1;
+  context.policy.maxRolesPerEvent = 1;
+  context.policy.maxConcurrentRoleSlots = 1;
+  context.policy.maxPacketCountPerRole = 1;
+  context.policy.maxPacketSetWireBytesPerRole = 8192;
+  context.policy.maxAggregateBytes = 8192;
+  context.policy.maxScratchBytesPerEvent = 16384;
+  context.policy.scratchQuotaBytes = 16384;
+  context.policy.maxSaveDurationMs = 60000;
+  context.policy.scratchRoot = "/spec212/preflight-scratch";
+  context.repoTargetByRole.emplace("/Backbone",
+    ndnsf::di::NativeDurableStorageGrantRepoTargetV1{
+      "/spec212/repo", "/spec212/repo-provider", "/spec212/repo/service"});
+  const auto original = context;
+  const ndnsf::di::NativeConversationHandoffOwnerContextResolverV1 resolver =
+    [&context](const ndn::Name&, const ndn::Name&, const std::string&) { return context; };
+  const auto check = [&] {
+    return ndnsf::di::resolveNativeConversationHandoffOwnerContextV1(
+      resolver, owner, service, "startup-context-check");
+  };
+  const auto validated = check();
+  BOOST_CHECK(validated.policy.effectiveDigest.find("sha256:") == 0);
+  BOOST_CHECK_EQUAL(validated.portableLimits.maxMetadataBytes, 1U << 20);
+  BOOST_CHECK_EQUAL(validated.portableLimits.maxCheckpointBytes, 24U << 20);
+  BOOST_CHECK_EQUAL(validated.protectedCheckpointLimits.maxPlaintextBytes, 25U << 20);
+  context.portableLimits.maxCheckpointBytes -= 1;
+  BOOST_CHECK_NE(check().policy.effectiveDigest, validated.policy.effectiveDigest);
+  context = original;
+  context.portableLimits.maxMetadataBytes += 1;
+  BOOST_CHECK_THROW(check(), std::invalid_argument);
+  context = original;
+  BOOST_CHECK_EXCEPTION(ndnsf::di::resolveNativeConversationHandoffOwnerContextV1(
+    resolver, ndn::Name(), service, "startup-context-check"), std::invalid_argument,
+    [](const auto& error) {
+      return std::string(error.what()) == "HANDOFF_AUTHENTICATED_OWNER_SCOPE_INVALID";
+    });
+  for (const auto& invalid : std::vector<std::pair<const char*, std::function<void()>>>{
+         {"HANDOFF_OWNER_CONTEXT_BINDING_INVALID", [&] {
+           context.durableStorageOwner.ownerIdentity = "/spec212/wrong-owner"; }},
+         {"HANDOFF_OWNER_CONTEXT_BINDING_INVALID", [&] { context.originalPacketStore.reset(); }},
+         {"HANDOFF_OWNER_CONTEXT_BINDING_INVALID", [&] { context.saveBatchLimits.maxMetadataBytes = 0; }},
+         {"HANDOFF_OWNER_CONTEXT_BINDING_INVALID", [&] { context.portableLimits.portable.maxEncodedBytes = 0; }},
+         {"HANDOFF_OWNER_CONTEXT_BINDING_INVALID", [&] { context.portableLimits.maxCheckpointBytes = 26U << 20; }},
+         {"HANDOFF_EFFECTIVE_POLICY_INVALID", [&] { context.policy.enabled = false; }},
+         {"HANDOFF_EFFECTIVE_POLICY_INVALID", [&] { context.repoTargetByRole.clear(); }}}) {
+    context = original;
+    invalid.second();
+    BOOST_CHECK_EXCEPTION(check(), std::invalid_argument, [&](const auto& error) {
+      return std::string(error.what()) == invalid.first;
+    });
+  }
+  BOOST_CHECK_EQUAL(grantCalls, 0U);
+  BOOST_CHECK_EQUAL(store->commitCalls.load(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(Spec212ProductionHandoffRejectsAggregateAndScratchBudgetsBeforeDispatch)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec212-handoff-budget",
+                                   "tpm-memory:spec212-handoff-budget");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name ownerName("/spec212/user-budget");
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec212/aa-handoff-budget"));
+  auto ownerCert = makeRsaIdentity(keyChain, ownerName);
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec212/group-handoff-budget"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  auto packetStore = std::make_shared<Spec212CountingPacketStore>();
+
+  std::atomic<unsigned> resolverCalls{0};
+  std::atomic<unsigned> grantResolverCalls{0};
+  std::atomic<std::uint64_t> aggregateLimit{512};
+  std::atomic<std::uint64_t> scratchLimit{4096};
+  auto service = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
+  service.handoffOwnerContextResolver =
+    [&, ownerCert, packetStore](const ndn::Name& authenticatedOwner,
+                                const ndn::Name& serviceName,
+                                const std::string&)
+        -> ndnsf::di::NativeConversationHandoffOwnerContextV1 {
+    BOOST_CHECK_EQUAL(authenticatedOwner, ownerName);
+    BOOST_CHECK_EQUAL(serviceName, ndn::Name(HOST_SERVICE_A));
+    ++resolverCalls;
+    ndnsf::di::NativeConversationHandoffOwnerContextV1 context;
+    context.ownerEncryptionCertificate = ownerCert;
+    context.durableStorageOwner.ownerIdentity = ownerName.toUri();
+    context.durableStorageOwner.resolveGrant = [&grantResolverCalls] (const ndn::Name&,
+        const std::string&, const std::function<void()>&)
+        -> ndn_service_framework::DurableStorageGrantSelector {
+      ++grantResolverCalls;
+      throw std::runtime_error("test Owner denies grant after admission");
+    };
+    context.originalPacketStore = packetStore;
+    context.saveBatchLimits = {1, 1024};
+    context.portableLimits = {{1024, 2048, {}}, 1024, 1024};
+    context.protectedCheckpointLimits = {1024, 2048, {}};
+    context.policy.enabled = true;
+    context.policy.maxConcurrentEvents = 1;
+    context.policy.maxRolesPerEvent = 1;
+    context.policy.maxConcurrentRoleSlots = 1;
+    context.policy.maxPacketCountPerRole = 1;
+    context.policy.maxPacketSetWireBytesPerRole = 1024;
+    // The aggregate cap is lower than the configured per-role ceiling. The
+    // effective policy therefore cannot admit even one role and must reject
+    // before taking the save fence or scheduling export work.
+    context.policy.maxAggregateBytes = aggregateLimit.load();
+    context.policy.maxScratchBytesPerEvent = scratchLimit.load();
+    context.policy.scratchQuotaBytes = 4096;
+    context.policy.maxSaveDurationMs = 300000;
+    context.policy.scratchRoot = std::filesystem::temp_directory_path() /
+      "ndnsf-spec212-handoff-budget";
+    context.repoTargetByRole.emplace("/Backbone", ndnsf::di::NativeDurableStorageGrantRepoTargetV1{
+      "/spec212/repo", "/spec212/repo-provider", "/spec212/repo/service"});
+    return context;
+  };
+
+  auto registration = host->serve(service, makeHostConfig(HOST_SERVICE_A));
+  ndnsf::di::NativeConversationHandoffControlV1 control;
+  control.operationId = "spec212-budget-operation-0001";
+  control.conversationId = "spec212-budget-conversation-0001";
+  control.checkpointDigest = "sha256:" + std::string(64, '6');
+  control.sourceRoleMapDigest = "sha256:" + std::string(64, '7');
+  control.destinationRoleMapDigest = "sha256:" + std::string(64, '8');
+  control.deadlineMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()) + 60 * 1000;
+  const auto makeRequest = [](const auto& value) {
+    const auto wire = ndnsf::di::nativeConversationCanonicalJson(
+      ndnsf::di::nativeConversationHandoffControlV1ToJson(value));
+    ndn::Buffer payload(wire.begin(), wire.end());
+    RequestMessage result;
+    result.setPayload(payload, payload.size());
+    return result;
+  };
+
+  ndnsf::di::NativeWithdrawalQueryV1 query;
+  query.conversationId = control.conversationId;
+  query.checkpointDigest = control.checkpointDigest;
+  query.deadlineMs = control.deadlineMs;
+  const auto queryWire = ndnsf::di::nativeConversationCanonicalJson(
+    ndnsf::di::nativeWithdrawalQueryV1ToJson(query));
+  ndn::Buffer queryPayload(queryWire.begin(), queryWire.end());
+  RequestMessage queryRequest;
+  queryRequest.setPayload(queryPayload, queryPayload.size());
+  bool queryCompleted = false;
+  bool queryAccepted = false;
+  std::optional<ndnsf::di::NativeWithdrawalQueryReplyV1> queryReply;
+  const bool queryRouted = provider->invokeAsyncTargetedHandlerForTest(
+    ndn::Name(HOST_SERVICE_A), ownerName,
+    ndn::Name("/spec212/handoff/no-withdrawal-intent"), queryRequest,
+    [&](ResponseMessage response) {
+      queryCompleted = true;
+      queryAccepted = response.getStatus();
+      if (queryAccepted) {
+        const auto payload = response.getPayload();
+        queryReply = ndnsf::di::nativeWithdrawalQueryReplyV1FromJson(
+          std::string(reinterpret_cast<const char*>(payload.data()), payload.size()));
+      }
+    });
+  BOOST_REQUIRE(queryRouted);
+  BOOST_REQUIRE(queryCompleted);
+  BOOST_REQUIRE(queryAccepted);
+  BOOST_REQUIRE(queryReply);
+  BOOST_CHECK(queryReply->status == ndnsf::di::NativeWithdrawalQueryStatusV1::NoIntent);
+  BOOST_CHECK_EQUAL(queryReply->query.conversationId, query.conversationId);
+  BOOST_CHECK_EQUAL(queryReply->query.checkpointDigest, query.checkpointDigest);
+  BOOST_CHECK_EQUAL(queryReply->query.deadlineMs, query.deadlineMs);
+  BOOST_CHECK(!queryReply->intent);
+  BOOST_CHECK(queryReply->originalProofWire.empty());
+  BOOST_CHECK_EQUAL(resolverCalls.load(), 0U);
+  BOOST_CHECK_EQUAL(grantResolverCalls.load(), 0U);
+  BOOST_CHECK_EQUAL(packetStore->commitCalls.load(), 0U);
+
+  bool completed = false;
+  bool responseStatus = true;
+  std::string responseError;
+  const bool routed = provider->invokeAsyncTargetedHandlerForTest(
+    ndn::Name(HOST_SERVICE_A), ownerName, ndn::Name("/spec212/handoff/budget"),
+    makeRequest(control),
+    [&] (ResponseMessage response) {
+      responseStatus = response.getStatus();
+      responseError = response.getErrorInfo();
+      completed = true;
+    });
+  BOOST_REQUIRE(routed);
+  BOOST_CHECK(completed);
+  BOOST_CHECK_EQUAL(resolverCalls.load(), 1U);
+  BOOST_CHECK(!responseStatus);
+  BOOST_CHECK_EQUAL(responseError, "BUDGET_EXCEEDED");
+  BOOST_CHECK_EQUAL(packetStore->commitCalls.load(), 0U);
+  BOOST_CHECK_EQUAL(grantResolverCalls.load(), 0U);
+
+  // Failed operation IDs keep their original result without resolving again.
+  completed = false;
+  responseStatus = true;
+  responseError.clear();
+  BOOST_REQUIRE(provider->invokeAsyncTargetedHandlerForTest(
+    ndn::Name(HOST_SERVICE_A), ownerName, ndn::Name("/spec212/handoff/budget-replay"),
+    makeRequest(control),
+    [&] (ResponseMessage response) {
+      responseStatus = response.getStatus();
+      responseError = response.getErrorInfo();
+      completed = true;
+    }));
+  BOOST_CHECK(completed);
+  BOOST_CHECK(!responseStatus);
+  BOOST_CHECK_EQUAL(responseError, "BUDGET_EXCEEDED");
+  BOOST_CHECK_EQUAL(resolverCalls.load(), 1U);
+
+  // Aggregate capacity is now sufficient, but the scratch reservation cannot
+  // cover the configured portable plus protected per-role upper bounds. Retry
+  // the same conversation immediately with a new operation ID.
+  aggregateLimit.store(2048);
+  scratchLimit.store(1024);
+  control.operationId = "spec212-budget-operation-0002";
+  completed = false;
+  responseStatus = true;
+  responseError.clear();
+  const bool scratchRouted = provider->invokeAsyncTargetedHandlerForTest(
+    ndn::Name(HOST_SERVICE_A), ownerName, ndn::Name("/spec212/handoff/scratch-budget"),
+    makeRequest(control),
+    [&] (ResponseMessage response) {
+      responseStatus = response.getStatus();
+      responseError = response.getErrorInfo();
+      completed = true;
+    });
+  BOOST_REQUIRE(scratchRouted);
+  BOOST_CHECK(completed);
+  BOOST_CHECK(!responseStatus);
+  BOOST_CHECK_EQUAL(responseError, "BUDGET_EXCEEDED");
+  BOOST_CHECK_EQUAL(resolverCalls.load(), 2U);
+  BOOST_CHECK_EQUAL(grantResolverCalls.load(), 0U);
+  BOOST_CHECK_EQUAL(packetStore->commitCalls.load(), 0U);
+
+  // A control with both ceilings sufficient is admitted and fenced; without
+  // packet input it cannot reach Owner grant resolution or commit data.
+  scratchLimit.store(4096);
+  control.operationId = "spec212-budget-operation-0003";
+  completed = false;
+  responseStatus = false;
+  responseError.clear();
+  const bool admissibleRouted = provider->invokeAsyncTargetedHandlerForTest(
+    ndn::Name(HOST_SERVICE_A), ownerName, ndn::Name("/spec212/handoff/admissible"),
+    makeRequest(control),
+    [&] (ResponseMessage response) {
+      responseStatus = response.getStatus();
+      responseError = response.getErrorInfo();
+      completed = true;
+    });
+  BOOST_REQUIRE(admissibleRouted);
+  BOOST_CHECK(completed);
+  BOOST_CHECK(responseStatus);
+  BOOST_CHECK_EQUAL(resolverCalls.load(), 3U);
+  BOOST_CHECK_EQUAL(grantResolverCalls.load(), 0U);
+  BOOST_CHECK_EQUAL(packetStore->commitCalls.load(), 0U);
+
+  registration.close();
+  BOOST_CHECK(registration.drain(std::chrono::seconds(2)));
+}
+
+BOOST_AUTO_TEST_CASE(Spec212V2WithdrawalDispatchValidatesOriginalProducerProof)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec212-v2-withdrawal-dispatch",
+                                   "tpm-memory:spec212-v2-withdrawal-dispatch");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name ownerName("/spec212/user-withdrawal-dispatch");
+  const ndn::Name withdrawingProvider("/spec212/provider-withdrawing");
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec212/aa-withdrawal-dispatch"));
+  makeRsaIdentity(keyChain, withdrawingProvider);
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec212/group-withdrawal-dispatch"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  provider->useSigningKeyChainForTest(keyChain);
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+  std::atomic<unsigned> resolverCalls{0};
+  auto service = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
+  service.handoffOwnerContextResolver =
+    [&resolverCalls](const ndn::Name&, const ndn::Name&, const std::string&)
+      -> ndnsf::di::NativeConversationHandoffOwnerContextV1 {
+    ++resolverCalls;
+    throw std::runtime_error("fixture stops before save admission");
+  };
+  auto registration = host->serve(service, makeHostConfig(HOST_SERVICE_A));
+
+  ndnsf::di::NativeConversationHandoffControlV2 control;
+  control.control.action = ndnsf::di::NativeConversationHandoffActionV1::Begin;
+  control.control.operationId = "spec212-v2-withdrawal-dispatch";
+  control.control.conversationId = "spec212-v2-withdrawal-conversation";
+  control.control.checkpointDigest = "sha256:" + std::string(64, 'a');
+  control.control.deadlineMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()) + 5 * 1000;
+  control.sourceProvidersByRole = {
+    {"/Backbone", HOST_PROVIDER_NAME},
+    {"/Other", withdrawingProvider.toUri(ndn::name::UriFormat::ALTERNATE)}};
+  ndnsf::di::NativeJson sourceRoles = ndnsf::di::NativeJson::array();
+  for (const auto& [role, source] : control.sourceProvidersByRole)
+    sourceRoles.push_back(ndnsf::di::NativeJson::array({role, source}));
+  control.control.sourceRoleMapDigest = ndnsf::di::nativePlanningDigest(
+    ndnsf::di::nativeCanonicalJson(sourceRoles));
+  control.control.destinationRoleMapDigest = ndnsf::di::nativePlanningDigest("[]");
+  control.trigger = ndnsf::di::NativeConversationSaveTriggerV2::WithdrawalSave;
+  control.withdrawingProviderIdentity = withdrawingProvider.toUri(
+    ndn::name::UriFormat::ALTERNATE);
+  ndnsf::di::NativeWithdrawalIntentV1 intent;
+  intent.withdrawalId = "spec212-v2-withdrawal-intent";
+  intent.ownerIdentity = ownerName.toUri(ndn::name::UriFormat::ALTERNATE);
+  intent.serviceName = HOST_SERVICE_A;
+  intent.providerBootId = "spec212-v2-withdrawal-boot";
+  intent.registrationGeneration = 1;
+  intent.deadlineMs = control.control.deadlineMs;
+  intent.conversationId = control.control.conversationId;
+  intent.checkpointDigest = control.control.checkpointDigest;
+  intent.sourceRoleMapDigest = control.control.sourceRoleMapDigest;
+  intent.localRoles = {"/Other"};
+  intent.policyDigest = "sha256:" + std::string(64, 'b');
+  control.withdrawalIntent = intent;
+  const auto proof = ndnsf::di::nativeSignWithdrawalIntentProofV1(
+    withdrawingProvider, intent, [&keyChain, &withdrawingProvider](ndn::Data& packet) {
+      keyChain.sign(packet, ndn::security::signingByIdentity(withdrawingProvider));
+    });
+  const auto& encoded = proof.wireEncode();
+  control.withdrawalProofWire = ndn::Buffer(encoded.data(), encoded.data() + encoded.size());
+
+  const auto dispatch = [&](const auto& value, const ndn::Name& requester) {
+    const auto wire = ndnsf::di::nativeConversationCanonicalJson(
+      ndnsf::di::nativeConversationHandoffControlV2ToJson(value));
+    RequestMessage request;
+    ndn::Buffer payload(wire.begin(), wire.end());
+    request.setPayload(payload, payload.size());
+    bool completed = false;
+    bool accepted = true;
+    const bool routed = provider->invokeAsyncTargetedHandlerForTest(
+      ndn::Name(HOST_SERVICE_A), requester,
+      ndn::Name("/spec212/v2-withdrawal-dispatch"), request,
+      [&](ResponseMessage response) {
+        accepted = response.getStatus();
+        completed = true;
+      });
+    BOOST_REQUIRE(routed);
+    BOOST_REQUIRE(completed);
+    return accepted;
+  };
+
+  BOOST_CHECK(!dispatch(control, ndn::Name("/spec212/other-user")));
+  BOOST_CHECK_EQUAL(resolverCalls.load(), 0U);
+  auto wrongProof = control;
+  const ndn::Name wrongSigner("/spec212/wrong-signer");
+  makeRsaIdentity(keyChain, wrongSigner);
+  const auto signedByOther = ndnsf::di::nativeSignWithdrawalIntentProofV1(
+    withdrawingProvider, intent, [&keyChain, &wrongSigner](ndn::Data& packet) {
+      keyChain.sign(packet, ndn::security::signingByIdentity(wrongSigner));
+    });
+  const auto& wrongWire = signedByOther.wireEncode();
+  wrongProof.withdrawalProofWire = ndn::Buffer(
+    wrongWire.data(), wrongWire.data() + wrongWire.size());
+  BOOST_CHECK(!dispatch(wrongProof, ownerName));
+  BOOST_CHECK_EQUAL(resolverCalls.load(), 0U);
+  auto absentSource = control;
+  absentSource.sourceProvidersByRole.erase("/Backbone");
+  ndnsf::di::NativeJson remainingRoles = ndnsf::di::NativeJson::array();
+  remainingRoles.push_back(ndnsf::di::NativeJson::array(
+    {"/Other", withdrawingProvider.toUri(ndn::name::UriFormat::ALTERNATE)}));
+  absentSource.control.sourceRoleMapDigest = ndnsf::di::nativePlanningDigest(
+    ndnsf::di::nativeCanonicalJson(remainingRoles));
+  absentSource.withdrawalIntent->sourceRoleMapDigest =
+    absentSource.control.sourceRoleMapDigest;
+  BOOST_CHECK(!dispatch(absentSource, ownerName));
+  BOOST_CHECK_EQUAL(resolverCalls.load(), 0U);
+
+  control.control.deadlineMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()) + 5 * 1000;
+  intent.deadlineMs = control.control.deadlineMs;
+  control.withdrawalIntent = intent;
+  const auto renewedProof = ndnsf::di::nativeSignWithdrawalIntentProofV1(
+    withdrawingProvider, intent, [&keyChain, &withdrawingProvider](ndn::Data& packet) {
+      keyChain.sign(packet, ndn::security::signingByIdentity(withdrawingProvider));
+    });
+  const auto& renewedWire = renewedProof.wireEncode();
+  control.withdrawalProofWire = ndn::Buffer(
+    renewedWire.data(), renewedWire.data() + renewedWire.size());
+  BOOST_CHECK(!dispatch(control, ownerName));
+  BOOST_CHECK_EQUAL(resolverCalls.load(), 1U);
+  auto changedV2 = control;
+  const auto changedProof = ndnsf::di::nativeSignWithdrawalIntentProofV1(
+    withdrawingProvider, intent, [&keyChain, &wrongSigner](ndn::Data& packet) {
+      keyChain.sign(packet, ndn::security::signingByIdentity(wrongSigner));
+    });
+  const auto& changedProofWire = changedProof.wireEncode();
+  changedV2.withdrawalProofWire = ndn::Buffer(
+    changedProofWire.data(), changedProofWire.data() + changedProofWire.size());
+  BOOST_CHECK(!dispatch(changedV2, ownerName));
+  BOOST_CHECK_EQUAL(resolverCalls.load(), 1U);
+  auto changedContext = control;
+  changedContext.control.checkpointDigest = "sha256:" + std::string(64, 'c');
+  changedContext.withdrawalIntent->checkpointDigest =
+    changedContext.control.checkpointDigest;
+  BOOST_CHECK(!dispatch(changedContext, ownerName));
+  BOOST_CHECK_EQUAL(resolverCalls.load(), 1U);
+  registration.close();
+  BOOST_CHECK(registration.drain(std::chrono::seconds(2)));
+  face.shutdown();
+  face.processEvents(ndn::time::milliseconds(20));
+  host.reset();
+  provider.reset();
+}
+
+BOOST_AUTO_TEST_CASE(Spec204TargetedControlSharesInferenceRegistrationLifetime)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec204-targeted-control",
+                                   "tpm-memory:spec204-targeted-control");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec204/aa-targeted-control"));
+  auto provider = std::make_shared<LocalServiceProvider>(
+    face, ndn::Name("/spec204/group-targeted-control"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  auto host = std::make_shared<NativeInferenceProvider>(
+    provider, std::make_shared<NativeAdapterRegistry>());
+
+  std::size_t handlerCalls = 0;
+  bool runtimeSaveSurfaceReady = false;
+  bool providerKvPublisherReady = false;
+  bool handoffOwnerContextResolverReady = false;
+  bool handoffOwnerContextResolverInvoked = false;
+  std::string handoffResolverOperationId;
+  bool runtimeObserverHasNoPublisher = false;
+  bool saveFenceAcquired = false;
+  bool saveFenceQuiescent = false;
+  std::optional<ndnsf::di::ConversationSaveBatchStatusV1> emptyStoreBatchStatus;
+  NativeServiceDefinition service =
+    makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
+  service.handoffOwnerContextResolver = [&handoffOwnerContextResolverInvoked,
+                                         &handoffResolverOperationId](
+      const ndn::Name& owner, const ndn::Name& serviceName,
+      const std::string& operationId)
+      -> ndnsf::di::NativeConversationHandoffOwnerContextV1 {
+    BOOST_CHECK_EQUAL(owner, ndn::Name("/spec204/user"));
+    BOOST_CHECK_EQUAL(serviceName, ndn::Name(HOST_SERVICE_A));
+    handoffOwnerContextResolverInvoked = true;
+    handoffResolverOperationId = operationId;
+    return {};
+  };
+  service.runtimeObserver = [&runtimeObserverHasNoPublisher](
+      const ndnsf::di::NativeProviderCollaborationRuntime& runtime) {
+    runtimeObserverHasNoPublisher = !static_cast<bool>(runtime.publishProtectedKvCheckpoint);
+  };
+  service.asyncTargetedRequestHandlerFactory =
+    [&handlerCalls, &runtimeSaveSurfaceReady, &saveFenceAcquired,
+     &saveFenceQuiescent, &emptyStoreBatchStatus, &providerKvPublisherReady,
+     &handoffOwnerContextResolverReady](
+      const ndnsf::di::NativeProviderCollaborationRuntime& runtime,
+      ndnsf::di::NativeConversationHandoffOwnerContextResolverV1 resolver) {
+      providerKvPublisherReady = static_cast<bool>(runtime.publishProtectedKvCheckpoint);
+      handoffOwnerContextResolverReady = static_cast<bool>(resolver);
+      runtimeSaveSurfaceReady = static_cast<bool>(runtime.beginConversationSaveFence) &&
+        static_cast<bool>(runtime.beginServiceWithdrawalSaveFence) &&
+        static_cast<bool>(runtime.beginProviderWithdrawalSaveFence) &&
+        static_cast<bool>(runtime.borrowConversationWithdrawalSaveFence) &&
+        static_cast<bool>(runtime.isSaveFenceQuiescent) &&
+        static_cast<bool>(runtime.tryAcquireCommittedSaveBatch) &&
+        static_cast<bool>(runtime.exportCommittedSaveBatchRow);
+      const auto beginFence = runtime.beginConversationSaveFence;
+      const auto isQuiescent = runtime.isSaveFenceQuiescent;
+      const auto acquireBatch = runtime.tryAcquireCommittedSaveBatch;
+      return [&, resolver = std::move(resolver), beginFence, isQuiescent,
+              acquireBatch](
+          const ndn::Name& requester,
+          const ndn::Name& providerName,
+          const ndn::Name& serviceName,
+          const ndn::Name& requestId,
+          const RequestMessage&,
+          ServiceProvider::AsyncTargetedCompletion complete) mutable {
+        BOOST_CHECK_EQUAL(requester, ndn::Name("/spec204/user"));
+        BOOST_CHECK_EQUAL(providerName, ndn::Name(HOST_PROVIDER_NAME));
+        BOOST_CHECK_EQUAL(serviceName, ndn::Name(HOST_SERVICE_A));
+        BOOST_CHECK_EQUAL(requestId, ndn::Name("/spec204/handoff/1"));
+        ++handlerCalls;
+
+        const std::string operationId = "spec204-handoff-operation-0001";
+        const auto ownerContext = resolver(requester, serviceName, operationId);
+        (void)ownerContext;
+
+        auto fence = beginFence(requester.toUri(), serviceName.toUri(),
+                                "conversation-a-0001");
+        saveFenceAcquired = static_cast<bool>(fence);
+        if (fence) {
+          saveFenceQuiescent = isQuiescent(*fence);
+          const auto result = acquireBatch(
+            *fence, ndnsf::di::ConversationSaveBatchLimitsV1{4, 64 * 1024}, 1);
+          emptyStoreBatchStatus = result.status;
+        }
+
+        // This fixture has no committed conversation state. A connected event
+        // handler must report that condition rather than claim a saved handoff.
+        ResponseMessage response;
+        response.setStatus(false);
+        response.setErrorInfo("KV_SAVE_STATE_UNAVAILABLE");
+        complete(std::move(response));
+      };
+    };
+
+  const auto validFactory = service.asyncTargetedRequestHandlerFactory;
+  service.asyncTargetedRequestHandlerFactory = [] (const auto&, const auto&) {
+    return ServiceProvider::AsyncTargetedRequestHandler{};
+  };
+  BOOST_CHECK_THROW(host->serve(service, makeHostConfig(HOST_SERVICE_A)),
+                    std::invalid_argument);
+  service.asyncTargetedRequestHandlerFactory = validFactory;
+
+  auto registration = host->serve(service, makeHostConfig(HOST_SERVICE_A));
+  BOOST_REQUIRE(registration.valid());
+  service.handoffOwnerContextResolver = {};
+  BOOST_CHECK(providerKvPublisherReady);
+  BOOST_CHECK(handoffOwnerContextResolverReady);
+  BOOST_CHECK(runtimeObserverHasNoPublisher);
+  BOOST_CHECK(!registration.closed());
+
+  RequestMessage request;
+  ResponseMessage observed;
+  bool completed = false;
+  const bool routed = provider->invokeAsyncTargetedHandlerForTest(
+    ndn::Name(HOST_SERVICE_A), ndn::Name("/spec204/user"),
+    ndn::Name("/spec204/handoff/1"), request,
+    [&observed, &completed](ResponseMessage response) {
+      observed = std::move(response);
+      completed = true;
+    });
+  BOOST_REQUIRE(routed);
+  BOOST_CHECK(completed);
+  BOOST_CHECK(!observed.getStatus());
+  BOOST_CHECK_EQUAL(observed.getErrorInfo(), "KV_SAVE_STATE_UNAVAILABLE");
+  BOOST_CHECK_EQUAL(handlerCalls, 1U);
+  BOOST_CHECK(runtimeSaveSurfaceReady);
+  BOOST_CHECK(saveFenceAcquired);
+  BOOST_CHECK(saveFenceQuiescent);
+  BOOST_REQUIRE(emptyStoreBatchStatus);
+  BOOST_CHECK(*emptyStoreBatchStatus ==
+              ndnsf::di::ConversationSaveBatchStatusV1::Empty);
+  BOOST_CHECK(handoffOwnerContextResolverInvoked);
+  BOOST_CHECK_EQUAL(handoffResolverOperationId,
+                    "spec204-handoff-operation-0001");
+
+  // The native drain fence is raised before Core registration close. A late
+  // dispatch through the retained callback cannot start a second handoff.
+  registration.close();
+  completed = false;
+  const bool lateRouted = provider->invokeAsyncTargetedHandlerForTest(
+    ndn::Name(HOST_SERVICE_A), ndn::Name("/spec204/user"),
+    ndn::Name("/spec204/handoff/2"), request,
+    [&observed, &completed](ResponseMessage response) {
+      observed = std::move(response);
+      completed = true;
+    });
+  BOOST_CHECK_EQUAL(handlerCalls, 1U);
+  if (lateRouted) {
+    BOOST_CHECK(completed);
+    BOOST_CHECK(!observed.getStatus());
+    BOOST_CHECK_EQUAL(observed.getErrorInfo(), "native service is closing");
+  }
+}
 
 // host.serve 通过真实 addScopedService/addScopedCollaborationHandler 安装：
 // 双 target 同 host 共存、各自 registration 有效；active 同名重复 serve 被

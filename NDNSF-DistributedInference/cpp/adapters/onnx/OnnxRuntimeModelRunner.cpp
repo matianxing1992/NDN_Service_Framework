@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/CudaDeviceIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -14,6 +15,7 @@
 #include <cstdlib>
 #include <mutex>
 #include <optional>
+#include <limits>
 #include <set>
 #include <sstream>
 
@@ -306,6 +308,8 @@ public:
   using CudaMalloc = int (*)(void**, std::size_t);
   using CudaMemcpy = int (*)(void*, const void*, std::size_t, int);
   using CudaFree = int (*)(void*);
+  using CudaGetDevice = int (*)(int*);
+  using CudaSetDevice = int (*)(int);
 
   CudaRuntimeApi()
   {
@@ -321,6 +325,8 @@ public:
     m_malloc = reinterpret_cast<CudaMalloc>(dlsym(m_handle, "cudaMalloc"));
     m_memcpy = reinterpret_cast<CudaMemcpy>(dlsym(m_handle, "cudaMemcpy"));
     m_free = reinterpret_cast<CudaFree>(dlsym(m_handle, "cudaFree"));
+    m_getDevice = reinterpret_cast<CudaGetDevice>(dlsym(m_handle, "cudaGetDevice"));
+    m_setDevice = reinterpret_cast<CudaSetDevice>(dlsym(m_handle, "cudaSetDevice"));
     if (m_malloc == nullptr || m_memcpy == nullptr || m_free == nullptr) {
       dlclose(m_handle);
       m_handle = nullptr;
@@ -341,6 +347,8 @@ public:
   }
 
   bool available() const { return m_handle != nullptr; }
+  int getDevice(int* device) const { return m_getDevice ? m_getDevice(device) : -1; }
+  int setDevice(int device) const { return m_setDevice ? m_setDevice(device) : -1; }
 
   int malloc(void** pointer, std::size_t bytes) const
   {
@@ -363,6 +371,8 @@ private:
   CudaMalloc m_malloc = nullptr;
   CudaMemcpy m_memcpy = nullptr;
   CudaFree m_free = nullptr;
+  CudaGetDevice m_getDevice = nullptr;
+  CudaSetDevice m_setDevice = nullptr;
 };
 
 constexpr int cudaMemcpyHostToDevice = 1;
@@ -427,6 +437,15 @@ makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
     }
   }
   return options;
+}
+
+Ort::Session
+makeSession(const NativeModelRunnerSpec& spec, const Ort::SessionOptions& options)
+{
+  // ORT's CPU execution provider setup is shared across independent sessions.
+  static std::mutex sessionConstructionMutex;
+  std::lock_guard<std::mutex> lock(sessionConstructionMutex);
+  return Ort::Session(ortEnv(), spec.path.c_str(), options);
 }
 
 void
@@ -524,7 +543,12 @@ copyOrtTensorToHost(const Ort::Value& source, void* destination, std::size_t byt
 OnnxRuntimeProviderSelection
 resolveRuntimeProviderSelection(const NativeModelRunnerSpec& spec)
 {
-  auto selection = resolveOnnxRuntimeProviderSelection(spec, Ort::GetAvailableProviders());
+  static std::mutex providerEnumerationMutex;
+  OnnxRuntimeProviderSelection selection;
+  {
+    std::lock_guard<std::mutex> lock(providerEnumerationMutex);
+    selection = resolveOnnxRuntimeProviderSelection(spec, Ort::GetAvailableProviders());
+  }
   if (selection.selectedProvider == "cuda") {
     // Ort reports CUDAExecutionProvider when its shared libraries are present,
     // even on a CPU-only node.  Probe the actual visible CUDA device before
@@ -901,7 +925,7 @@ public:
   explicit SharedSession(const NativeModelRunnerSpec& spec)
     : selection(resolveRuntimeProviderSelection(spec))
     , sessionOptions(makeSessionOptions(selection, spec))
-    , session(ortEnv(), spec.path.c_str(), sessionOptions)
+    , session(makeSession(spec, sessionOptions))
   {
   }
 
@@ -1636,6 +1660,50 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     logRuntimeInfo(record.str());
   }
 
+  std::optional<std::pair<bool, std::uint64_t>> executedWork;
+  const auto workInput = runnerMetadataValue(m_spec, {"workTokenInputName"});
+  const auto workAxis = runnerMetadataValue(m_spec, {"workTokenAxis"});
+  if (effectiveContext.sessionId != "native-runtime-warmup" &&
+      (!workInput.empty() || !workAxis.empty())) {
+    if (workInput.empty() || workAxis.empty() || !effectiveContext.generationLineage ||
+        !std::all_of(workAxis.begin(), workAxis.end(), [](unsigned char c) { return c >= '0' && c <= '9'; }) ||
+        workInput == "attention_mask" || workInput == "position_ids" || workInput == "cache_position" ||
+        (m_impl->causalPositionInputs &&
+         (workInput == m_impl->causalPositionInputs->attentionMaskInputName ||
+          workInput == m_impl->causalPositionInputs->positionIdsInputName ||
+          workInput == m_impl->causalPositionInputs->cachePositionInputName)) ||
+        (m_impl->statefulIo && std::find(m_impl->statefulIo->stateInputNames.begin(),
+          m_impl->statefulIo->stateInputNames.end(), workInput) != m_impl->statefulIo->stateInputNames.end()))
+      throw std::invalid_argument("native-work-certification-invalid");
+    const auto axis = std::stoull(workAxis);
+    const Ort::Value* actual = nullptr;
+    const auto device = boundDeviceInputs.find(workInput);
+    const auto host = boundHostInputs.find(workInput);
+    const auto cpu = cpuInputIndexes.find(workInput);
+    if (device != boundDeviceInputs.end()) actual = device->second;
+    else if (host != boundHostInputs.end()) actual = host->second;
+    else if (cpu != cpuInputIndexes.end()) actual = &inputValues[cpu->second];
+    if (!actual || !actual->IsTensor()) throw std::invalid_argument("native-work-input-missing");
+    const auto shape = actual->GetTensorTypeAndShapeInfo().GetShape();
+    if (axis >= shape.size() || shape[axis] < 0) throw std::invalid_argument("native-work-axis-invalid");
+    const auto& kind = effectiveContext.generationLineage->transitionKind;
+    if (kind != GenerationEpochLineageV1::PREFILL && kind != GenerationEpochLineageV1::DECODE &&
+        kind != GenerationEpochLineageV1::CHECKPOINT_FINALIZE)
+      throw std::invalid_argument("native-work-transition-invalid");
+    // Finalization consumes the last generated token into KV without emitting
+    // another token; its actual input work belongs to post-prefill decode.
+    const bool prefill = kind == GenerationEpochLineageV1::PREFILL;
+    const auto count = static_cast<std::uint64_t>(shape[axis]);
+    const auto prior = prefill ? m_impl->runtimeMetrics.executedPrefillTokens : m_impl->runtimeMetrics.executedDecodeTokens;
+    if (count > std::numeric_limits<std::uint64_t>::max() - prior)
+      throw std::runtime_error("native-work-counter-overflow");
+    // This certificate describes one token sequence. Symbolic batch dimensions
+    // are resolved here; other batches still execute but remain uncertified.
+    bool singleSequence = true;
+    for (std::size_t index = 0; index < shape.size(); ++index)
+      if (index != axis && shape[index] != 1) singleSequence = false;
+    if (singleSequence) executedWork = std::make_pair(prefill, count);
+  }
   const auto runStart = std::chrono::steady_clock::now();
   std::vector<Ort::Value> outputs;
   std::optional<Ort::IoBinding> ioBinding;
@@ -1718,6 +1786,17 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
                     phaseAttempt, phaseFields);
   }
   const auto runDone = std::chrono::steady_clock::now();
+  if (executedWork) {
+    m_impl->runtimeMetrics.workCounterCertified = true;
+    if (executedWork->first) m_impl->runtimeMetrics.executedPrefillTokens += executedWork->second;
+    else m_impl->runtimeMetrics.executedDecodeTokens += executedWork->second;
+    logRuntimePhase("di-provider", "certifiedTokenWork", effectiveContext.requestId,
+                    phaseAttempt, {{"executionRole", m_spec.role},
+                      {"transition", effectiveContext.generationLineage->transitionKind},
+                      {"tokens", std::to_string(executedWork->second)},
+                      {"prefillTokens", std::to_string(m_impl->runtimeMetrics.executedPrefillTokens)},
+                      {"decodeTokens", std::to_string(m_impl->runtimeMetrics.executedDecodeTokens)}});
+  }
   const bool captureRequestProfile =
     !runnerMetadataBool(m_spec, {"profileAfterRequest"}) ||
     (!ctx.requestId.empty() && ctx.attemptEpoch != 0);
@@ -2285,6 +2364,293 @@ OnnxRuntimeModelRunner::supportsConversationStateTransfer() const
   return m_impl != nullptr && m_impl->statefulIo.has_value();
 }
 
+namespace {
+
+void checkPortableOperation(const NativePortableKvLimitsV1& limits)
+{
+  if (limits.maxPayloadBytes == 0 || limits.maxEncodedBytes < limits.maxPayloadBytes)
+    throw std::invalid_argument("portable-kv-invalid-limits");
+  if (limits.cancelled && limits.cancelled())
+    throw std::runtime_error("portable-kv-cancelled");
+}
+
+bool sameConversationHandle(const NativeConversationStateHandleV1& a,
+                            const NativeConversationStateHandleV1& b)
+{
+  return a.conversationKey == b.conversationKey && a.logicalBytes == b.logicalBytes &&
+    a.opaque.providerIdentity == b.opaque.providerIdentity &&
+    a.opaque.providerBootId == b.opaque.providerBootId &&
+    a.opaque.sessionId == b.opaque.sessionId && a.opaque.role == b.opaque.role &&
+    a.opaque.token == b.opaque.token &&
+    a.opaque.stateInferenceEpoch == b.opaque.stateInferenceEpoch;
+}
+
+void checkPortableRunnerIdentity(const NativeModelRunnerSpec& spec,
+                                 const DecodeStateIdentityV1& identity)
+{
+  identity.validate();
+  if (identity.roleName != spec.role ||
+      identity.providerIdentity != runnerMetadataValue(spec,
+        {"providerIdentity", "provider_identity", "evidence.providerName", "providerName", "provider_name"}) ||
+      identity.providerBootId != runnerMetadataValue(spec,
+        {"providerBootId", "provider_boot_id", "evidence.providerBootId"}))
+    throw std::invalid_argument("portable-kv-runner-identity-mismatch");
+}
+
+std::string portableStateIoDigest(const StatefulOnnxIoContractV1& io)
+{
+  NativeJson pairs = NativeJson::array();
+  for (const auto& output : io.stateOutputNames)
+    pairs.push_back(NativeJson{{"input", io.stateInputForOutput(output)}, {"output", output}});
+  auto families = io.stateFamilies;
+  // An explicit map implementing the legacy pairs has the same semantics.
+  const std::vector<std::string> legacy{"attention_kv", "recurrent_state", "convolution_state"};
+  if (families.empty() && std::all_of(legacy.begin(), legacy.end(), [&](const auto& family) {
+      const auto output = family + "_out";
+      return std::find(io.stateOutputNames.begin(), io.stateOutputNames.end(), output) != io.stateOutputNames.end() &&
+             io.stateInputForOutput(output) == family + "_in";
+    })) families = legacy;
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-portable-state-io-v1"}, {"version", 1},
+    {"inputs", io.stateInputNames}, {"outputs", io.stateOutputNames},
+    {"families", families}, {"successors", pairs}}));
+}
+
+std::uint64_t portableTensorBytes(TensorElementType type,
+                                  const std::vector<std::int64_t>& shape)
+{
+  if (shape.size() > 16) throw std::invalid_argument("portable-kv-rank-exceeded");
+  std::uint64_t count = 1;
+  for (const auto dim : shape) {
+    if (dim < 0 || dim > (std::int64_t{1} << 31) ||
+        (dim != 0 && count > std::numeric_limits<std::uint64_t>::max() / static_cast<std::uint64_t>(dim)))
+      throw std::invalid_argument("portable-kv-shape-overflow");
+    count *= static_cast<std::uint64_t>(dim);
+  }
+  const auto width = tensorElementByteSize(type);
+  if (count > std::numeric_limits<std::uint64_t>::max() / width)
+    throw std::invalid_argument("portable-kv-byte-overflow");
+  return count * width;
+}
+
+} // namespace
+
+bool
+OnnxRuntimeModelRunner::supportsPortableConversationState() const
+{
+  if (!supportsConversationStateTransfer() || m_impl->statefulIo->stateInputNames.empty()) return false;
+  try {
+    const auto& io = *m_impl->statefulIo;
+    for (const auto& name : io.stateInputNames) {
+      const auto input = std::find(io.inputNames.begin(), io.inputNames.end(), name);
+      if (input == io.inputNames.end()) return false;
+      const auto type = m_impl->session.GetInputTypeInfo(static_cast<std::size_t>(input - io.inputNames.begin()));
+      (void)fromOnnxElementType(type.GetTensorTypeAndShapeInfo().GetElementType());
+    }
+    if (m_impl->selection.selectedProvider == "cpu") return true;
+    if (m_impl->selection.selectedProvider == "cuda") return CudaRuntimeApi{}.available();
+  }
+  catch (...) { }
+  return false;
+}
+
+NativePortableKvSnapshotV1
+OnnxRuntimeModelRunner::exportConversationState(
+  const NativeConversationStateHandleV1& state,
+  const DecodeStateIdentityV1& committedIdentity,
+  const NativePortableKvLimitsV1& limits)
+{
+  checkPortableOperation(limits);
+  state.validate();
+  checkPortableRunnerIdentity(m_spec, committedIdentity);
+  if (!supportsPortableConversationState()) throw std::runtime_error("portable-kv-unsupported");
+  std::lock_guard<std::mutex> lock(m_impl->executionMutex);
+  const auto handle = m_impl->stateHandleByConversation.find(state.conversationKey);
+  if (handle == m_impl->stateHandleByConversation.end() || !sameConversationHandle(handle->second, state) ||
+      state.opaque.providerIdentity != committedIdentity.providerIdentity ||
+      state.opaque.providerBootId != committedIdentity.providerBootId ||
+      state.opaque.role != committedIdentity.roleName ||
+      state.opaque.stateInferenceEpoch != committedIdentity.stateInferenceEpoch)
+    throw std::invalid_argument("portable-kv-origin-handle-mismatch");
+  const auto device = m_impl->deviceStateByConversation.find(state.conversationKey);
+  const auto cpu = m_impl->residentHostStateByConversation.find(state.conversationKey);
+  const auto host = m_impl->hostStateByConversation.find(state.conversationKey);
+  const unsigned tiers = (device != m_impl->deviceStateByConversation.end()) +
+                         (cpu != m_impl->residentHostStateByConversation.end()) +
+                         (host != m_impl->hostStateByConversation.end());
+  if (tiers != 1) throw std::runtime_error("portable-kv-source-tier-invalid");
+  const auto* ortState = device != m_impl->deviceStateByConversation.end() ? &device->second :
+                        cpu != m_impl->residentHostStateByConversation.end() ? &cpu->second : nullptr;
+  const auto& names = m_impl->statefulIo->stateInputNames;
+  if (names.size() > 256) throw std::invalid_argument("portable-kv-component-count-exceeded");
+  if ((ortState ? ortState->size() : host->second.size()) != names.size())
+    throw std::runtime_error("portable-kv-source-component-set-invalid");
+  NativePortableKvSnapshotV1 snapshot;
+  snapshot.originIdentity = committedIdentity;
+  snapshot.stateIoDigest = portableStateIoDigest(*m_impl->statefulIo);
+  // Preflight every component before allocating any tensor payload.
+  for (const auto& name : names) {
+    checkPortableOperation(limits);
+    NativePortableKvComponentV1 component;
+    component.inputName = name;
+    if (ortState) {
+      const auto found = ortState->find(name);
+      if (found == ortState->end() || !found->second.IsTensor())
+        throw std::runtime_error("portable-kv-source-component-missing");
+      const auto info = found->second.GetTensorTypeAndShapeInfo();
+      component.elementType = fromOnnxElementType(info.GetElementType());
+      component.shape = info.GetShape();
+    }
+    else {
+      const auto found = host->second.find(name);
+      if (found == host->second.end()) throw std::runtime_error("portable-kv-source-component-missing");
+      component.elementType = found->second.elementType;
+      component.shape = found->second.shape;
+    }
+    component.payloadBytes = portableTensorBytes(component.elementType, component.shape);
+    if (!ortState && host->second.at(name).payload.size() != component.payloadBytes)
+      throw std::runtime_error("portable-kv-source-byte-mismatch");
+    const auto wireBytes = tensorBundleEncodedSize({{name.size(), component.shape.size(), component.payloadBytes}});
+    if (component.payloadBytes > limits.maxPayloadBytes - snapshot.logicalBytes ||
+        wireBytes > limits.maxEncodedBytes - snapshot.encodedBytes)
+      throw std::invalid_argument("portable-kv-budget-exceeded");
+    snapshot.logicalBytes += component.payloadBytes;
+    snapshot.encodedBytes += wireBytes;
+    snapshot.components.push_back(std::move(component));
+  }
+  if (snapshot.logicalBytes != state.logicalBytes) throw std::runtime_error("portable-kv-source-byte-mismatch");
+  for (auto& component : snapshot.components) {
+    checkPortableOperation(limits);
+    NamedTensor tensor{component.inputName, component.elementType, component.shape, {}};
+    tensor.payload.resize(static_cast<std::size_t>(component.payloadBytes));
+    if (ortState) {
+      if (!tensor.payload.empty()) {
+        copyOrtTensorToHost(ortState->at(component.inputName), tensor.payload.data(), tensor.payload.size());
+        if (device != m_impl->deviceStateByConversation.end())
+          m_impl->runtimeMetrics.stateDeviceToHostBytes += tensor.payload.size();
+      }
+    }
+    else tensor.payload = host->second.at(component.inputName).payload;
+    std::vector<NamedTensor> scratch;
+    scratch.emplace_back(std::move(tensor));
+    component.tensorWire = encodeTensorBundle(scratch);
+    component.contentDigest = sha256TensorBytes(component.tensorWire);
+  }
+  validateNativePortableKvSnapshot(snapshot, limits);
+  return snapshot;
+}
+
+NativeConversationStateHandleV1
+OnnxRuntimeModelRunner::importConversationState(
+  const NativePortableKvSnapshotV1& snapshot,
+  const DecodeStateIdentityV1& destinationIdentity,
+  const std::string& destinationConversationKey,
+  const NativePortableKvLimitsV1& limits)
+{
+  validateNativePortableKvSnapshot(snapshot, limits);
+  checkPortableRunnerIdentity(m_spec, destinationIdentity);
+  if (!supportsPortableConversationState()) throw std::runtime_error("portable-kv-unsupported");
+  if (destinationConversationKey.empty() || !nativePortableKvIdentityCompatible(snapshot.originIdentity, destinationIdentity))
+    throw std::invalid_argument("portable-kv-destination-incompatible");
+  std::lock_guard<std::mutex> lock(m_impl->executionMutex);
+  const auto& io = *m_impl->statefulIo;
+  if (snapshot.stateIoDigest != portableStateIoDigest(io) || snapshot.components.size() != io.stateInputNames.size())
+    throw std::invalid_argument("portable-kv-state-io-mismatch");
+  for (std::size_t i = 0; i < snapshot.components.size(); ++i) {
+    checkPortableOperation(limits);
+    const auto& component = snapshot.components[i];
+    if (component.inputName != io.stateInputNames[i]) throw std::invalid_argument("portable-kv-component-order-mismatch");
+    const auto input = std::find(io.inputNames.begin(), io.inputNames.end(), component.inputName);
+    if (input == io.inputNames.end()) throw std::invalid_argument("portable-kv-component-input-missing");
+    const auto type = m_impl->session.GetInputTypeInfo(static_cast<std::size_t>(input - io.inputNames.begin()));
+    const auto info = type.GetTensorTypeAndShapeInfo();
+    const auto shape = info.GetShape();
+    if (fromOnnxElementType(info.GetElementType()) != component.elementType || shape.size() != component.shape.size())
+      throw std::invalid_argument("portable-kv-component-schema-mismatch");
+    for (std::size_t axis = 0; axis < shape.size(); ++axis)
+      if (shape[axis] >= 0 && shape[axis] != component.shape[axis])
+        throw std::invalid_argument("portable-kv-component-shape-mismatch");
+  }
+  const auto& key = destinationConversationKey;
+  const auto& session = destinationIdentity.requestId;
+  if (m_impl->deviceStateByConversation.count(key) || m_impl->residentHostStateByConversation.count(key) ||
+      m_impl->hostStateByConversation.count(key) || m_impl->externalDeviceAllocationsByConversation.count(key) ||
+      m_impl->stateHandleByConversation.count(key) || m_impl->deviceStateBySession.count(session) ||
+      m_impl->hostStateBySession.count(session) || m_impl->stateHandleBySession.count(session) ||
+      m_impl->conversationBindingBySession.count(session))
+    throw std::runtime_error("portable-kv-destination-collision");
+  NativeConversationStateHandleV1 result;
+  result.opaque.providerIdentity = destinationIdentity.providerIdentity;
+  result.opaque.providerBootId = destinationIdentity.providerBootId;
+  result.opaque.sessionId = session;
+  result.opaque.role = destinationIdentity.roleName;
+  result.opaque.stateInferenceEpoch = destinationIdentity.stateInferenceEpoch;
+  const bool deviceResident = m_impl->selection.selectedProvider == "cuda";
+  static std::atomic<std::uint64_t> importSequence{0};
+  result.opaque.token = std::string(deviceResident ? "ndnsf-device-state-v1:" : "ndnsf-resident-state-v1:") +
+                        "import:" + std::to_string(cacheIdentity()) + ":" +
+                        std::to_string(++importSequence);
+  result.conversationKey = key;
+  result.logicalBytes = static_cast<std::size_t>(snapshot.logicalBytes);
+  result.validate();
+  CudaRuntimeApi cuda;
+  Ort::AllocatorWithDefaultOptions allocator;
+  std::map<std::string, Ort::Value> tensors;
+  std::map<std::string, void*> allocations;
+  struct Cleanup {
+    CudaRuntimeApi& cuda;
+    std::map<std::string, Ort::Value>& tensors;
+    std::map<std::string, void*>& allocations;
+    int priorDevice = 0;
+    bool deviceSelected = false;
+    ~Cleanup() {
+      tensors.clear();
+      freeCudaPointers(cuda, allocations);
+      if (deviceSelected) (void)cuda.setDevice(priorDevice);
+    }
+  } cleanup{cuda, tensors, allocations};
+  std::optional<Ort::MemoryInfo> deviceMemory;
+  if (deviceResident) {
+    const auto deviceId = std::stoi(m_impl->selection.deviceId);
+    if (!cuda.available() || cuda.getDevice(&cleanup.priorDevice) != 0 || cuda.setDevice(deviceId) != 0)
+      throw std::runtime_error("portable-kv-cuda-unavailable");
+    cleanup.deviceSelected = true;
+    deviceMemory.emplace("Cuda", OrtAllocatorType::OrtDeviceAllocator, deviceId, OrtMemTypeDefault);
+  }
+  for (const auto& component : snapshot.components) {
+    checkPortableOperation(limits);
+    auto decoded = decodeTensorBundle(component.tensorWire);
+    const auto& tensor = decoded.front();
+    Ort::Value value{nullptr};
+    if (deviceResident) {
+      auto raw = allocations.emplace(component.inputName, nullptr).first;
+      if (!tensor.payload.empty() &&
+          (cuda.malloc(&raw->second, tensor.payload.size()) != 0 || raw->second == nullptr ||
+           cuda.memcpy(raw->second, tensor.payload.data(), tensor.payload.size(), cudaMemcpyHostToDevice) != 0))
+        throw std::runtime_error("portable-kv-cuda-copy-failed");
+      value = Ort::Value::CreateTensor(*deviceMemory, raw->second, tensor.payload.size(),
+        tensor.shape.data(), tensor.shape.size(), toOnnxElementType(tensor.elementType));
+    }
+    else {
+      value = Ort::Value::CreateTensor(allocator, tensor.shape.data(), tensor.shape.size(), toOnnxElementType(tensor.elementType));
+      if (!tensor.payload.empty()) std::memcpy(value.GetTensorMutableRawData(), tensor.payload.data(), tensor.payload.size());
+    }
+    tensors.emplace(component.inputName, std::move(value));
+  }
+  checkPortableOperation(limits);
+  try {
+    if (deviceResident) {
+      m_impl->deviceStateByConversation.emplace(key, std::move(tensors));
+      m_impl->externalDeviceAllocationsByConversation.emplace(key, std::move(allocations));
+    }
+    else m_impl->residentHostStateByConversation.emplace(key, std::move(tensors));
+    m_impl->stateHandleByConversation.emplace(key, result);
+  }
+  catch (...) { m_impl->releaseConversationLocked(key); throw; }
+  if (deviceResident) m_impl->runtimeMetrics.stateHostToDeviceBytes += snapshot.logicalBytes;
+  return result;
+}
+
 std::optional<NativeConversationStateHandleV1>
 OnnxRuntimeModelRunner::promoteSessionStateToConversation(
   const std::string& sessionId,
@@ -2394,6 +2760,8 @@ OnnxRuntimeModelRunner::restoreConversationState(
     return false;
   }
   std::lock_guard<std::mutex> lock(m_impl->executionMutex);
+  const auto exactHandle = m_impl->stateHandleByConversation.find(state.conversationKey);
+  if (exactHandle == m_impl->stateHandleByConversation.end() || !sameConversationHandle(exactHandle->second, state)) return false;
   const bool deviceResident = m_impl->selection.selectedProvider == "cuda";
   const auto deviceRetained = m_impl->deviceStateByConversation.find(
     state.conversationKey);
@@ -2432,6 +2800,8 @@ OnnxRuntimeModelRunner::pauseConversationStateToHost(
     return false;
   }
   std::lock_guard<std::mutex> lock(m_impl->executionMutex);
+  const auto exactHandle = m_impl->stateHandleByConversation.find(state.conversationKey);
+  if (exactHandle == m_impl->stateHandleByConversation.end() || !sameConversationHandle(exactHandle->second, state)) return false;
   if (m_impl->selection.selectedProvider != "cuda") {
     return m_impl->residentHostStateByConversation.count(state.conversationKey) != 0;
   }
@@ -2483,11 +2853,17 @@ OnnxRuntimeModelRunner::prefetchConversationStateToGpu(
   const NativeConversationStateHandleV1& state)
 {
   state.validate();
-  if (!m_impl || m_impl->selection.selectedProvider != "cuda") {
+  if (!m_impl) return std::async(std::launch::deferred, [] { return false; });
+  if (m_impl->selection.selectedProvider != "cuda") {
     // CPU conversation state is already in the host ORT memory domain used
     // by the next request.  The store may still call this method after an
     // accounting-only host pause; no data movement is required.
-    return std::async(std::launch::deferred, [] { return true; });
+    std::lock_guard<std::mutex> lock(m_impl->executionMutex);
+    const auto exactHandle = m_impl->stateHandleByConversation.find(state.conversationKey);
+    const bool retained = exactHandle != m_impl->stateHandleByConversation.end() &&
+      sameConversationHandle(exactHandle->second, state) &&
+      m_impl->residentHostStateByConversation.count(state.conversationKey) != 0;
+    return std::async(std::launch::deferred, [retained] { return retained; });
   }
   return std::async(
     std::launch::async,
@@ -2496,6 +2872,8 @@ OnnxRuntimeModelRunner::prefetchConversationStateToGpu(
         return false;
       }
       std::lock_guard<std::mutex> lock(m_impl->executionMutex);
+      const auto exactHandle = m_impl->stateHandleByConversation.find(state.conversationKey);
+      if (exactHandle == m_impl->stateHandleByConversation.end() || !sameConversationHandle(exactHandle->second, state)) return false;
       if (m_impl->deviceStateByConversation.count(state.conversationKey) != 0) {
         return true;
       }
@@ -2591,6 +2969,8 @@ OnnxRuntimeModelRunner::releaseConversationState(
     return false;
   }
   std::lock_guard<std::mutex> lock(m_impl->executionMutex);
+  const auto exactHandle = m_impl->stateHandleByConversation.find(state.conversationKey);
+  if (exactHandle == m_impl->stateHandleByConversation.end() || !sameConversationHandle(exactHandle->second, state)) return false;
   const bool known = m_impl->deviceStateByConversation.count(state.conversationKey) != 0 ||
     m_impl->residentHostStateByConversation.count(state.conversationKey) != 0 ||
     m_impl->hostStateByConversation.count(state.conversationKey) != 0 ||
@@ -2673,6 +3053,31 @@ bool
 OnnxRuntimeModelRunner::supportsConversationStateTransfer() const
 {
   return false;
+}
+
+bool
+OnnxRuntimeModelRunner::supportsPortableConversationState() const
+{
+  return false;
+}
+
+NativePortableKvSnapshotV1
+OnnxRuntimeModelRunner::exportConversationState(
+  const NativeConversationStateHandleV1& state,
+  const DecodeStateIdentityV1& identity,
+  const NativePortableKvLimitsV1& limits)
+{
+  return NativeModelRunner::exportConversationState(state, identity, limits);
+}
+
+NativeConversationStateHandleV1
+OnnxRuntimeModelRunner::importConversationState(
+  const NativePortableKvSnapshotV1& snapshot,
+  const DecodeStateIdentityV1& identity,
+  const std::string& key,
+  const NativePortableKvLimitsV1& limits)
+{
+  return NativeModelRunner::importConversationState(snapshot, identity, key, limits);
 }
 
 std::optional<NativeConversationStateHandleV1>

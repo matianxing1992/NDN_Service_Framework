@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <thread>
 
 namespace ndn_service_framework::test {
@@ -461,6 +463,160 @@ BOOST_AUTO_TEST_CASE(ServiceProviderSeamCommitsBeforeProjectionAndReplays)
   BOOST_CHECK_EQUAL(participant->committedCount.load(), 2);
   BOOST_CHECK_EQUAL(provider.getTokenConsumeCountForTesting(), 1);
   std::filesystem::remove_all(root);
+}
+
+BOOST_AUTO_TEST_CASE(
+    ServiceProviderRetainsPendingStateThroughAuthenticatedStreamDeadline)
+{
+  ndn::security::KeyChain keyChain(
+      "pib-memory:stream-retention-provider",
+      "tpm-memory:stream-retention-provider");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requester("/test/user/stream-retention");
+  const ndn::Name providerName("/test/provider/stream-retention");
+  const ndn::Name service("/Generic/ImageTransform");
+  const ndn::Name requestId("request-stream-retention-1");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto authorityCert = makeRsaIdentity(
+      keyChain, ndn::Name("/test/stream-retention-authority"));
+  LocalServiceProvider provider(
+      face, ndn::Name("/test/group"), providerCert, authorityCert,
+      "examples/trust-any.conf");
+  provider.setPendingRequestTimeoutGraceForTest(ndn::time::milliseconds(0));
+
+  RequestMessage request;
+  auto requestPayload = bytes("request");
+  request.setPayload(requestPayload, requestPayload.size());
+  provider.addPendingRequestForTokenTest(
+      requester, service, requestId, request, "provider-token");
+  const auto lifecycle = provider.attachStreamLifecycleForTest(
+      requester, service, requestId);
+  provider.schedulePendingRequestCleanupForTest(
+      requester, service, requestId, ndn::time::milliseconds(30));
+
+  const auto streamDeadlineEpochMs = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count() + 250);
+  provider.extendPendingRequestCleanupForStreamForTest(
+      requester, service, requestId, streamDeadlineEpochMs);
+  BOOST_CHECK_GE(
+      provider.pendingCleanupExpiryUnixMsForTest(
+          requester, service, requestId),
+      streamDeadlineEpochMs);
+
+  // Let the original 30 ms offer horizon fire. Its callback must observe the
+  // accepted stream's later deadline and retain the provider lifecycle.
+  face.processEvents(ndn::time::milliseconds(70));
+  BOOST_CHECK(provider.hasPendingRequestForTokenTest(
+      requester, service, requestId));
+  BOOST_CHECK(provider.getStreamLifecycleForTest(
+      requester, service, requestId) == lifecycle);
+
+  face.processEvents(ndn::time::milliseconds(250));
+  BOOST_CHECK(!provider.hasPendingRequestForTokenTest(
+      requester, service, requestId));
+  BOOST_CHECK(!provider.getStreamLifecycleForTest(
+      requester, service, requestId));
+}
+
+BOOST_AUTO_TEST_CASE(
+    ServiceProviderCleanupTimerSerializesWithConcurrentStreamDeadlineExtension)
+{
+  ndn::security::KeyChain keyChain(
+      "pib-memory:stream-cleanup-race-provider",
+      "tpm-memory:stream-cleanup-race-provider");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requester("/test/user/stream-cleanup-race");
+  const ndn::Name providerName("/test/provider/stream-cleanup-race");
+  const ndn::Name service("/Generic/ImageTransform");
+  const ndn::Name requestId("request-stream-cleanup-race-1");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto authorityCert = makeRsaIdentity(
+      keyChain, ndn::Name("/test/stream-cleanup-race-authority"));
+  LocalServiceProvider provider(
+      face, ndn::Name("/test/group"), providerCert, authorityCert,
+      "examples/trust-any.conf");
+  provider.setPendingRequestTimeoutGraceForTest(ndn::time::milliseconds(0));
+
+  RequestMessage request;
+  auto requestPayload = bytes("request");
+  request.setPayload(requestPayload, requestPayload.size());
+  provider.addPendingRequestForTokenTest(
+      requester, service, requestId, request, "provider-token");
+  provider.attachStreamLifecycleForTest(
+      requester, service, requestId);
+  provider.schedulePendingRequestCleanupForTest(
+      requester, service, requestId, ndn::time::milliseconds(1));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+  std::promise<void> timerCheckedDeadline;
+  auto timerCheckedDeadlineFuture = timerCheckedDeadline.get_future();
+  std::promise<void> releaseTimer;
+  auto releaseTimerFuture = releaseTimer.get_future().share();
+  std::thread timerThread([&] {
+    provider.firePendingRequestCleanupTimerForTest(
+        requester, service, requestId, [&] {
+          timerCheckedDeadline.set_value();
+          releaseTimerFuture.wait();
+        });
+  });
+  if (timerCheckedDeadlineFuture.wait_for(std::chrono::seconds(1)) !=
+      std::future_status::ready) {
+    // Unblock the callback if it crossed the wait boundary just as the timeout
+    // elapsed; otherwise joining the timer thread could hang this regression.
+    releaseTimer.set_value();
+    timerThread.join();
+    BOOST_FAIL("cleanup timer did not reach its due-deadline check");
+    return;
+  }
+
+  std::promise<void> extensionStarted;
+  auto extensionStartedFuture = extensionStarted.get_future();
+  std::promise<bool> extensionLockAvailable;
+  auto extensionLockAvailableFuture = extensionLockAvailable.get_future();
+  std::promise<void> extensionFinished;
+  auto extensionFinishedFuture = extensionFinished.get_future();
+  const auto extensionDeadline = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count() + 1000);
+  std::thread extensionThread([&] {
+    extensionStarted.set_value();
+    provider.extendPendingRequestCleanupForStreamForTest(
+        requester, service, requestId, extensionDeadline, [&] {
+          extensionLockAvailable.set_value(
+              provider.pendingRequestStateMutexAvailableForTest());
+        });
+    extensionFinished.set_value();
+  });
+  extensionStartedFuture.wait();
+
+  // The timer retains the pending-state lock after releasing the deadline
+  // lock. The extension's probe runs at the contested lock boundary and must
+  // observe that lock as unavailable before the timer is released.
+  const bool extensionReachedLockProbe =
+      extensionLockAvailableFuture.wait_for(std::chrono::seconds(1)) ==
+      std::future_status::ready;
+  const bool extensionCouldAcquireStateLock = extensionReachedLockProbe
+      ? extensionLockAvailableFuture.get()
+      : true;
+  const bool extensionRemainedBlocked =
+      extensionFinishedFuture.wait_for(std::chrono::milliseconds(30)) ==
+      std::future_status::timeout;
+  releaseTimer.set_value();
+  timerThread.join();
+  extensionThread.join();
+
+  BOOST_CHECK(extensionReachedLockProbe);
+  BOOST_CHECK(!extensionCouldAcquireStateLock);
+  BOOST_CHECK(extensionRemainedBlocked);
+  BOOST_CHECK(extensionFinishedFuture.wait_for(std::chrono::milliseconds(0)) ==
+              std::future_status::ready);
+  BOOST_CHECK(!provider.hasPendingRequestForTokenTest(
+      requester, service, requestId));
+  BOOST_CHECK_EQUAL(provider.pendingCleanupExpiryUnixMsForTest(
+      requester, service, requestId), 0);
 }
 
 BOOST_AUTO_TEST_CASE(

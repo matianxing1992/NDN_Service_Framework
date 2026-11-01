@@ -73,6 +73,7 @@ struct RuntimeConfig
   std::shared_ptr<const CooperativePlacementStrategy> fixedPlacementStrategy;
   /** Ciphertext storage only; Core remains the protected Data producer. */
   std::shared_ptr<ndn_service_framework::EncryptedLargeDataRangeStore> encryptedRangeStore;
+  std::optional<NativeDurableStorageOwner> durableStorageOwner;
 };
 
 /** v1 accepts the empty profile or the explicit default profile only. */

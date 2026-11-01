@@ -27,6 +27,8 @@ USERS = ["/example/repo/user", "/example/repo/consumer",
          "/example/repo/di-authorized-reader"]
 PROVIDERS = ["/example/repo/provider/repoA", "/example/repo/provider/repoB",
              "/example/repo/provider/repoC"]
+OWNER_OPERATIONS = ("USER_STORAGE_GRANT", "USER_STORAGE_USAGE",
+                    "USER_STORAGE_LIST", "USER_STORAGE_DELETE")
 
 
 class PreflightMutationTests(unittest.TestCase):
@@ -43,7 +45,9 @@ class PreflightMutationTests(unittest.TestCase):
                          source_sha=source_sha, source_files=source_files, roles=ROLES,
                          service_prefix=PREFIX, operations=OPERATIONS,
                          repo_users=USERS, repo_providers=PROVIDERS,
-                         require_six=True)
+                         require_six=True,
+                         expected_feature_directory=preflight.SPEC204_FEATURE_DIRECTORY,
+                         design_files=preflight.SPEC204_NETWORK_WORKER_DESIGN_FILES)
         arguments.update(changes)
         return preflight.check(**arguments)
 
@@ -60,7 +64,7 @@ class PreflightMutationTests(unittest.TestCase):
         lock = self.scratch / "wrong-lock.json"
         for label, field in (("source", "source_candidate_sha256"),
                              ("binary", str(ROOT / "build/spec192-repo-client")),
-                             ("design", "specs/202-distributedrepo-convergence/spec.md")):
+                             ("design", "specs/204-kvcache-provider-handoff/spec.md")):
             with self.subTest(label=label):
                 changed = json.loads(json.dumps(state))
                 if label == "source":
@@ -69,6 +73,68 @@ class PreflightMutationTests(unittest.TestCase):
                     changed["files"][field] = "wrong"
                 lock.write_text(json.dumps(changed), encoding="utf-8")
                 self.reject("CANDIDATE_MISMATCH", lock_path=lock)
+
+    def test_active_feature_must_match_explicit_campaign_binding(self):
+        pointer = json.loads((ROOT / ".specify/feature.json").read_text(encoding="utf-8"))
+        active = pointer["feature_directory"]
+        self.assertIn(active, (preflight.SPEC202_FEATURE_DIRECTORY,
+                               preflight.SPEC204_FEATURE_DIRECTORY))
+        self.check(expected_feature_directory=active)
+        self.reject("ACTIVE_FEATURE", expected_feature_directory="not-the-active-feature")
+        same_basename_other_path = f"other/{Path(active).name}"
+        self.assertEqual(Path(same_basename_other_path).name, Path(active).name)
+        self.reject("ACTIVE_FEATURE", expected_feature_directory=same_basename_other_path)
+
+    def test_spec204_task_plan_is_bound_as_full_document(self):
+        path = ROOT / "specs/204-kvcache-provider-handoff/tasks.md"
+        original = path.read_text(encoding="utf-8")
+        self.assertEqual(preflight.design_acceptance_digest(path, profile=None),
+                         preflight.sha256(path))
+        changed = original.replace("**Status**: `PARTIAL`", "**Status**: `PASS`", 1)
+        self.assertNotEqual(original, changed)
+        self.assertNotEqual(preflight.design_acceptance_digest(path, profile=None),
+                            hashlib.sha256(changed.encode("utf-8")).hexdigest())
+
+    def test_default_and_explicit_campaign_design_sets_remain_separate(self):
+        default_files = preflight.select_design_files()
+        spec204_files = preflight.select_design_files(
+            preflight.SPEC204_NETWORK_WORKER_DESIGN_FILES)
+        self.assertEqual(default_files, preflight.DESIGN_FILES)
+        self.assertIn("specs/202-distributedrepo-convergence/spec.md", default_files)
+        self.assertFalse(any(name.startswith("specs/204-kvcache-provider-handoff/")
+                             for name in default_files))
+        self.assertEqual(spec204_files, preflight.SPEC204_NETWORK_WORKER_DESIGN_FILES)
+        self.assertFalse(any(name.startswith("specs/202-distributedrepo-convergence/")
+                             for name in spec204_files))
+
+    def test_owner_storage_policy_is_restricted_to_owner(self):
+        import json as json_module
+
+        path = self.scratch / "runtime-policy.json"
+        providers = [{"identity": provider, "roles": []} for provider in PROVIDERS]
+        services = [{"name": PREFIX + "/" + operation,
+                     "model": PREFIX + "/" + operation,
+                     "users": USERS,
+                     "providers": providers}
+                    for operation in OPERATIONS]
+        services.extend({"name": PREFIX + "/" + operation,
+                         "model": PREFIX + "/" + operation,
+                         "users": [USERS[0]],
+                         "providers": providers}
+                        for operation in OWNER_OPERATIONS)
+        path.write_text(json_module.dumps({"services": services}), encoding="utf-8")
+        digest = preflight.verify_runtime_policy(
+            path, PREFIX, OPERATIONS, USERS, PROVIDERS,
+            owner_operations=OWNER_OPERATIONS, owner_identity=USERS[0])
+        self.assertEqual(len(digest), 64)
+
+        services[-1]["users"] = USERS
+        path.write_text(json_module.dumps({"services": services}), encoding="utf-8")
+        with self.assertRaises(preflight.PreflightError) as caught:
+            preflight.verify_runtime_policy(
+                path, PREFIX, OPERATIONS, USERS, PROVIDERS,
+                owner_operations=OWNER_OPERATIONS, owner_identity=USERS[0])
+        self.assertEqual(caught.exception.failure_class, "RUNTIME_ACL_PRINCIPALS")
 
     def test_clean_source_inputs_remain_in_candidate(self):
         before, names = preflight.source_candidate(ROOT)
@@ -330,49 +396,26 @@ class PreflightMutationTests(unittest.TestCase):
         self.assertEqual(state["candidate_lock_sha256"], replay["candidate_lock_sha256"])
         self.assertFalse(self.output.exists())
 
-    def test_progress_replay_preserves_lock_but_acceptance_change_rejects(self):
+    def test_spec204_task_status_change_invalidates_candidate_identity(self):
         state = self.check()
-        lock = self.scratch / "progress-replay-lock.json"
+        lock = self.scratch / "spec204-task-lock.json"
         lock.write_text(json.dumps(state))
-        feature = ROOT / "specs/202-distributedrepo-convergence"
-        tasks = feature / "tasks.md"
-        matrix = feature / "validation-matrix.md"
-        originals = {path: path.read_text() for path in (tasks, matrix)}
-        changed = {
-            tasks: originals[tasks].replace("| T009 | PARTIAL |", "| T009 | DONE |")
-                .replace("- [ ] T010", "- [x] T010"),
-            matrix: originals[matrix].replace("**Status**: NOT_RUN", "**Status**: PASS")
-                .replace(" | NOT_RUN | NOT_RUN |", " | PASS | FAIL |"),
-        }
-        for path in changed:
-            self.assertNotEqual(originals[path], changed[path])
+        tasks = ROOT / "specs/204-kvcache-provider-handoff/tasks.md"
+        original = tasks.read_text()
+        changed = original.replace("**Status**: `PARTIAL`", "**Status**: `PASS`", 1)
+        self.assertNotEqual(original, changed)
         actual_read = Path.read_text
         actual_hash = preflight.sha256
 
         def read(path, *args, **kwargs):
-            return changed[path] if path in changed else actual_read(path, *args, **kwargs)
+            return changed if path == tasks else actual_read(path, *args, **kwargs)
 
         def digest(path):
-            return hashlib.sha256(changed[path].encode()).hexdigest() \
-                if path in changed else actual_hash(path)
+            return hashlib.sha256(changed.encode()).hexdigest() \
+                if path == tasks else actual_hash(path)
 
         with mock.patch.object(Path, "read_text", read), \
                 mock.patch.object(preflight, "sha256", digest):
-            replay = self.check(lock_path=lock)
-            self.assertEqual(state["candidate_lock_sha256"], replay["candidate_lock_sha256"])
-            self.assertEqual(state["files"], replay["files"])
-            for path in changed:
-                name = str(path.relative_to(ROOT))
-                self.assertNotEqual(state["progress_provenance"][name],
-                                    replay["progress_provenance"][name])
-            old = "59case及网络子场景两轮"
-            self.assertIn(old, changed[tasks])
-            changed[tasks] = changed[tasks].replace(old, "59case及网络子场景一轮")
-            self.reject("CANDIDATE_MISMATCH", lock_path=lock)
-            changed[tasks] = originals[tasks]
-            old = "完整 SHA-256"
-            self.assertIn(old, changed[matrix])
-            changed[matrix] = changed[matrix].replace(old, "部分 SHA-256")
             self.reject("CANDIDATE_MISMATCH", lock_path=lock)
         self.assertFalse(self.output.exists())
 

@@ -2,10 +2,13 @@
 #define NDNSF_DISTRIBUTED_INFERENCE_NATIVE_EXECUTION_PLAN_JSON_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSelectionRole.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantTypes.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedKvRestore.hpp"
 #include "ndn-service-framework/PublishedContentName.hpp"
+#include "ndn-service-framework/EncryptedLargeDataRangeStore.hpp"
 
 #include <boost/property_tree/ptree_fwd.hpp>
 
@@ -22,60 +25,6 @@
 #include <variant>
 
 namespace ndnsf::di {
-
-struct NativeAssemblyTensorContractV3
-{
-  std::string name;
-  std::string dtype;
-  // Wire identity distinguishes numeric dimensions from symbolic strings.
-  std::vector<std::variant<std::int64_t, std::string>> shape;
-};
-
-struct NativeSelectionRoleV3
-{
-  std::string role;
-  std::string selectedRole;
-  std::uint64_t rank = 0;
-  std::uint64_t layerBegin = 0;
-  std::uint64_t layerEnd = 0;
-  std::string backend;
-  std::vector<std::string> deviceSet;
-  std::uint64_t requiredDeviceMemoryMb = 0;
-  std::string artifactDigest;
-  std::string recipeDigest;
-  std::string roleKind;
-  std::string adapterId;
-  std::string adapterVersion;
-  std::string modelManifestDigest;
-  std::string artifactProfileDigest;
-  std::string graphDigest;
-  std::string canonicalInitializerDigest;
-  std::string adapterDescriptorDigest;
-  std::string assemblerDescriptorDigest;
-  std::string backendAbi;
-  std::vector<std::uint64_t> nodeIndices;
-  std::vector<NativeAssemblyTensorContractV3> expectedInputs;
-  std::vector<NativeAssemblyTensorContractV3> expectedOutputs;
-  // Internal worker binding: the parent rebuilt this role from the
-  // authenticated post-Selection material manifest, so the worker receives
-  // a compact role graph rather than the complete canonical graph.
-  bool materializedRole = false;
-  std::string precision;
-  std::string quantization;
-  std::string layout;
-  std::string padding;
-  std::string protectionEpoch = "plaintext-v1";
-  // Adapter-declared terminal postprocessing. NATIVE_POSTPROCESS has no
-  // model-layer artifact; the Provider consumes dependency tensors directly.
-  std::string mergeKind;
-  std::string postprocessIdentity;
-  std::string postprocessOutputName;
-  double postprocessConfidenceThreshold = 0.0;
-  std::string postprocessSort;
-  std::uint64_t maxSourceBytes = 0;
-  std::uint64_t maxAssembledBytes = 0;
-  std::uint64_t maxNodes = 0;
-};
 
 struct NativeGenerationExecutionContractV1
 {
@@ -140,6 +89,7 @@ struct NativeSelectionProjectionV3
   NativeGenerationExecutionContractV1 generationContract;
   std::optional<ConversationStateReferenceV1> conversationStateReference;
   std::optional<ConversationTurnBindingV1> conversationTurnBinding;
+  std::optional<NativeProtectedKvRestoreV1> protectedKvRestore;
   NativeExecutionPlan plan;
 
   // A protected grant may be bound to a process-local conversation lease.
@@ -188,6 +138,10 @@ struct NativeFixedRoleSourceV1
   std::string plaintextDigest;
   std::uint64_t plaintextSize = 0;
   std::shared_ptr<void> servingLease;
+  ndn::Name manifestName;
+  std::shared_ptr<const ndn_service_framework::EncryptedLargeDataRangeSource> durableStorageSource;
+
+  void requireCurrentDurableStorageOwner(const std::string& owner) const;
 };
 
 /** Admit the original assignment DATA prefix before fetch or cache mutation. */
@@ -303,10 +257,11 @@ public:
 
   std::shared_ptr<const NativeFixedRoleSourceV1> source(
     const std::string& requester, const std::string& service,
-    const NativeFixedRoleAssignmentV1& assignment);
+    const NativeFixedRoleAssignmentV1& assignment, const std::string& owner = {});
   std::shared_ptr<const NativeFixedRoleSourceV1> rememberSource(
     const std::string& requester, const std::string& service,
-    const NativeFixedRoleAssignmentV1& assignment, NativeFixedRoleSourceV1 source);
+    const NativeFixedRoleAssignmentV1& assignment, NativeFixedRoleSourceV1 source,
+    const std::string& owner = {});
 
 private:
   using Key = std::tuple<std::string, std::string, std::string, std::string>;

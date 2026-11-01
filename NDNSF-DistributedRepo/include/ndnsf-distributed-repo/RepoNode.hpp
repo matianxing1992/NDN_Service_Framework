@@ -24,15 +24,33 @@ class LocalServiceRegistry;
 class ResponseMessage;
 class ServiceProvider;
 class ServiceUser;
+class EncryptedLargeDataRangeStore;
 } // namespace ndn_service_framework
 
 namespace ndnsf_distributed_repo {
+
+namespace detail {
+struct RepoNodeTestAccess;
+/** Bounded packet source used by Repo's internal streaming INSERT path. */
+class DataReferencePacketSource
+{
+public:
+  virtual ~DataReferencePacketSource() = default;
+  virtual std::size_t packetCount() const noexcept = 0;
+  virtual uint64_t totalWireBytes() const = 0;
+  virtual std::vector<uint8_t> readPacket(std::size_t packetIndex) const = 0;
+  virtual std::vector<uint8_t> readRange(uint64_t offset, std::size_t length) const = 0;
+};
+}
 
 class RepoNode : public std::enable_shared_from_this<RepoNode>
 {
 public:
   using DataReferenceFetcher =
     std::function<std::vector<std::vector<uint8_t>>(const RepoDataReference&)>;
+  using DataReferenceSpoolFetcher =
+    std::function<std::shared_ptr<detail::DataReferencePacketSource>(
+      const RepoDataReference&)>;
 
   RepoNode(ndn::Name servicePrefix,
            StorageCapability capability,
@@ -53,6 +71,11 @@ public:
 
   const RepoCore& core() const;
 
+  /** Enforcing durable adapter with independent resources, never a Node alias.
+   * The persistent journal retains this connection's reconciliation state. */
+  std::shared_ptr<ndn_service_framework::EncryptedLargeDataRangeStore>
+  createEncryptedLargeDataStore();
+
   void registerLocalServices(ndn_service_framework::LocalServiceRegistry& registry);
 
   /** Register the Persistent network operations on a Core Provider.
@@ -65,6 +88,8 @@ public:
                         std::shared_ptr<ndn_service_framework::ServiceUser> publisherUser,
                         int ackCollectionTimeMs = 250,
                         int requestTimeoutMs = 5000);
+  /** Close owned original-packet INSERT admission before Provider teardown. */
+  void beginShutdown() noexcept;
 
   /** Serve committed original Data packets under their producer names.
    *  The per-Repo Provider identity is the forwarding hint route. The Face
@@ -110,10 +135,16 @@ public:
   bool hasDataPacket(const std::string& dataName) const;
 
   void setDataReferenceFetcher(DataReferenceFetcher fetcher);
+  void setDataReferenceSpoolFetcher(DataReferenceSpoolFetcher fetcher);
 
   RepoOperationStatus insertWirePackets(
     const RepoDataReference& reference,
     const std::vector<std::vector<uint8_t>>& wirePackets);
+
+  RepoOperationStatus insertWirePackets(
+    const RepoUserStorageInsertRequest& request,
+    const std::vector<std::vector<uint8_t>>& wirePackets,
+    const std::string& authenticatedWriter);
 
   std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request);
 
@@ -131,13 +162,24 @@ public:
 
   std::vector<uint8_t> handleFetchRange(const std::vector<uint8_t>& request) const;
 
-  std::vector<uint8_t> handleManifest(const std::vector<uint8_t>& request) const;
+  std::vector<uint8_t> handleManifest(const std::vector<uint8_t>& request,
+                                    const std::string& authenticatedWriter = {}) const;
 
   std::vector<uint8_t> handleDataReceipt(const std::vector<uint8_t>& request) const;
 
   std::vector<uint8_t> handleDataLocation(const std::vector<uint8_t>& request) const;
 
   std::vector<uint8_t> handleInventory() const;
+
+  /** Owner is trusted Core adapter input, never a field in the request payload. */
+  std::vector<uint8_t> handleUserStorageGrant(
+    const std::vector<uint8_t>& request, const std::string& authenticatedOwner);
+  std::vector<uint8_t> handleUserStorageUsage(
+    const std::vector<uint8_t>& request, const std::string& authenticatedOwner) const;
+  std::vector<uint8_t> handleUserStorageList(
+    const std::vector<uint8_t>& request, const std::string& authenticatedOwner) const;
+  std::vector<uint8_t> handleUserStorageDelete(
+    const std::vector<uint8_t>& request, const std::string& authenticatedOwner);
 
   std::vector<uint8_t> handleCapability() const;
 
@@ -169,7 +211,31 @@ private:
                                        const std::string& requesterIdentity,
                                        const std::optional<RepoArtifactTarget>& operationOwner,
                                        bool allowRemoteOwnerQuery = true,
-                                       bool forceRemoteOwnerQuery = false) const;
+                                       bool forceRemoteOwnerQuery = false,
+                                       const std::optional<RepoUserStorageBinding>& storageBinding = std::nullopt) const;
+
+  void reconcilePersistentUserStorage();
+  RepoUserStorageObject measurePersistentUserStorageObject(const RepoObjectManifest& manifest,
+                                                          bool verifyPayload = true) const;
+  RepoUserStorageWrite reservePersistentUserStorage(
+    const ArtifactReference& reference, const std::string& operationId,
+    uint64_t generation, const std::string& authenticatedWriter,
+    const RepoUserStorageBinding& binding);
+  RepoUserStorageWrite reservePersistentOriginalPacketStorage(
+    const RepoObjectManifest& manifest, const std::string& operationId,
+    const std::string& authenticatedWriter, const RepoUserStorageBinding& binding);
+  RepoOperationStatus insertWirePacketsImpl(
+    const RepoDataReference& reference,
+     std::size_t packetCount,
+     const std::function<std::vector<uint8_t>(std::size_t)>& readPacket,
+    const RepoCore::OriginalPacketRangeReader& readRange,
+    const std::string& operationId, uint64_t generation,
+    const std::string& authenticatedWriter,
+    const std::optional<RepoUserStorageBinding>& storageBinding,
+    const std::optional<std::string>& validatedWireSha256 = std::nullopt);
+  std::vector<uint8_t> handleInsert(const std::vector<uint8_t>& request,
+                                    const std::string& requesterIdentity,
+                                    bool networkRequest);
 
   std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request,
                                    const std::string& requesterIdentity,
@@ -198,9 +264,17 @@ private:
                                    int ackCollectionTimeMs,
                                    int requestTimeoutMs);
   void stopPublishOperationWorker() noexcept;
+  void enqueueOriginalDataInterest(const ndn::Interest& interest);
+  void runOriginalDataWorker(ndn::Face& face);
+  void requestOriginalDataWorkerStop() noexcept;
+  void stopOriginalDataWorker() noexcept;
+  void serveOriginalDataInterest(ndn::Face& face, const ndn::Interest& interest);
+  friend struct detail::RepoNodeTestAccess;
   void enqueuePublishOperation(const std::string& operationId);
   void runPublishOperationWorker();
   bool runPublishOperationPass(const std::string& operationId);
+  void finalizePublishOperation(PublishOperationStatus& status,
+                                const std::string& terminalState, uint64_t terminalAtMs);
 
   ndn_service_framework::ResponseMessage makeResponse(const std::vector<uint8_t>& payload) const;
 
@@ -219,16 +293,37 @@ private:
   std::string m_providerIdentity;
   ArtifactLimits m_artifactLimits;
   uint64_t m_availabilityFreshnessMs;
-  std::unique_ptr<SqliteArtifactMetadataStore> m_artifactMetadataStore;
-  RepoCore m_core;
+  std::shared_ptr<SqliteArtifactMetadataStore> m_artifactMetadataStore;
+  std::shared_ptr<RepoCore> m_coreOwner;
+  RepoCore& m_core;
   // Keeps legacy Repo mutations from interleaving a persistent artifact byte
   // commit and its immutable receipt publication.
-  mutable std::mutex m_storeWriteMutex;
+  std::shared_ptr<std::mutex> m_storeWriteMutexOwner;
+  std::mutex& m_storeWriteMutex;
+  // Pass -> writer lock order. Cleanup try-locks to avoid blocking I/O callbacks
+  // behind a pass that is waiting for selected-service replies.
+  std::mutex m_publishPassMutex;
+  // Only one reference ingest may own a large temporary spool per RepoNode.
+  // Keep the gate through commit so concurrent fetches cannot multiply scratch
+  // usage before the persistent per-user quota is reserved.
+  std::mutex m_dataReferenceFetchMutex;
   DataReferenceFetcher m_dataReferenceFetcher;
+  DataReferenceSpoolFetcher m_dataReferenceSpoolFetcher;
+  std::function<bool(const std::vector<uint8_t>&, const ndn::Name&,
+                     std::chrono::steady_clock::time_point)>
+    m_ownedPacketValidator;
+  std::atomic<bool> m_ownedInsertStopping{false};
   bool m_originalDataServingRegistered = false;
   std::atomic<bool> m_originalDataRouteReady{false};
   ndn::ScopedInterestFilterHandle m_originalDataFilter;
   ndn::ScopedRegisteredPrefixHandle m_originalDataRoute;
+  std::mutex m_originalDataMutex;
+  std::mutex m_originalDataJoinMutex;
+  std::condition_variable m_originalDataWake;
+  std::deque<ndn::Interest> m_originalDataQueue;
+  std::atomic<size_t> m_originalDataPending{0};
+  bool m_stopOriginalDataWorker = false;
+  std::thread m_originalDataWorker;
   mutable std::mutex m_statusMutex;
   std::map<std::string, RepoOperationStatus> m_statusById;
   uint64_t m_nextOperationId = 0;
@@ -244,6 +339,7 @@ private:
     RepoArtifactTarget owner;
     RepoArtifactTarget target;
     std::chrono::steady_clock::time_point verifiedAt;
+    std::optional<RepoUserStorageBinding> storageBinding;
   };
   mutable std::mutex m_remotePublishBindingMutex;
   mutable std::map<std::string, VerifiedRemotePublishBinding> m_remotePublishBindings;

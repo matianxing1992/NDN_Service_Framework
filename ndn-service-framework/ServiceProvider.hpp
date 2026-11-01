@@ -11,6 +11,7 @@
 #include "InvocationStream.hpp"
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
+#include "ProviderDurableLargeDataPublisher.hpp"
 #include "RequestConfidentiality.hpp"
 #include "GenericSelectionTxnStore.hpp"
 #include "NetworkTelemetry.hpp"
@@ -27,6 +28,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -81,6 +83,15 @@ namespace ndn_service_framework{
         std::string errorMessage;
     };
 
+    /** Caller-owned transport constraints; routing hints confer no authority. */
+    struct ProtectedBlobFetchOptions
+    {
+        std::vector<ndn::Name> forwardingHint;
+        std::string manifestContentSha256;
+        std::uint64_t maxPlaintextBytes = 0;
+        std::uint64_t maxEnvelopeBytes = 0;
+    };
+
     /** Native-only measurements for one collaboration object transfer. */
     struct CollaborationTransferMetrics
     {
@@ -113,6 +124,7 @@ namespace ndn_service_framework{
 
     class ServiceProvider
     {
+        friend class ProviderDurableLargeDataPublisher;
         friend struct test::InvocationNamesOracle;
         friend struct test::TensorOriginalOracle;
         public:
@@ -511,6 +523,21 @@ namespace ndn_service_framework{
                 std::optional<ndn::Buffer> fetchEncryptedLargeDataCurrent(
                     const ndn::Name& dataName,
                     std::chrono::steady_clock::time_point deadline);
+                std::optional<ndn::Buffer> fetchEncryptedLargeDataCurrent(
+                    const ndn::Name& dataName,
+                    std::chrono::steady_clock::time_point deadline,
+                    const ProtectedBlobFetchOptions& options);
+                /** Consume bounded recipient plaintext on this worker while
+                 * the original dispatch remains current. TPM work runs on the
+                 * existing Face thread. The borrowed plaintext must not escape
+                 * consume; all retained storage is wiped before release. */
+                bool consumeRecipientAssignmentCurrent(
+                    const RecipientEncryptedAssignment& capsule,
+                    const ndn::Name& expectedCertificate,
+                    const std::string& expectedPublicKeyDigest,
+                    const ndn::Buffer& associatedData,
+                    std::chrono::steady_clock::time_point deadline,
+                    const std::function<void(const ndn::Buffer&)>& consume);
                 void fail(const std::string& reason);
 
                 void publish(KeyScope keyScope,
@@ -747,6 +774,10 @@ namespace ndn_service_framework{
 
             private:
                 friend class ndnsf::di::NdnsfCollaborationDependencyIo;
+                std::optional<ndn::Buffer> fetchEncryptedLargeDataCurrentImpl(
+                    const ndn::Name& dataName,
+                    std::chrono::steady_clock::time_point deadline,
+                    std::optional<ProtectedBlobFetchOptions> options);
                 // Retain the complete signed batch before any serving side effect.
                 bool publishOwnedExactData(KeyScope keyScope,
                     const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
@@ -961,6 +992,11 @@ namespace ndn_service_framework{
             ndn::Name getSigningKeyName() const;
             ndn::Name getSigningCertificateName() const;
 
+            /** Sign a locally authored Data packet under this Provider's
+             * complete producer prefix. This only signs; it does not publish
+             * the packet or grant any requester access. */
+            void signProducerData(ndn::Data& data);
+
             /** Create the sole Core-owned semantic-name live-stream publisher. */
             std::shared_ptr<LiveStreamPublisher>
             createLiveStream(const LiveStreamDefinition& definition);
@@ -1023,6 +1059,14 @@ namespace ndn_service_framework{
             void setHandlerThreads(size_t n);
             size_t getHandlerThreads() const;
             size_t getHandlerQueueDepth() const;
+            /** Validate one original Producer Data packet through the configured
+             * TrustSchema and Producer signer policy. Network callers must run
+             * on a handler worker; LocalMock's validator is synchronous. */
+            bool validateProducerPacketWireUntil(
+                const std::vector<uint8_t>& wire, const ndn::Name& producer,
+                std::chrono::steady_clock::time_point deadline);
+            /** Close admission and wake any handler waiting for Face validation. */
+            void stopProducerPacketValidation() noexcept;
             void setAckThreads(size_t n);
             size_t getAckThreads() const;
             size_t getAckQueueDepth() const;
@@ -1679,8 +1723,34 @@ namespace ndn_service_framework{
                 ndn::Name serviceName;
                 uint64_t generation = 0;
                 std::atomic<bool> closed{false};
+                std::mutex targetedHandlerMutex;
+                std::condition_variable targetedHandlersDrained;
+                std::size_t activeTargetedHandlers = 0;
                 std::mutex ackCancellationMutex;
                 std::vector<std::weak_ptr<std::atomic<bool>>> ackCancellations;
+
+                bool tryBeginTargetedHandler()
+                {
+                    std::lock_guard<std::mutex> lock(targetedHandlerMutex);
+                    if (closed.load(std::memory_order_relaxed))
+                        return false;
+                    ++activeTargetedHandlers;
+                    return true;
+                }
+
+                void finishTargetedHandler() noexcept
+                {
+                    std::lock_guard<std::mutex> lock(targetedHandlerMutex);
+                    if (activeTargetedHandlers > 0 &&
+                        --activeTargetedHandlers == 0)
+                        targetedHandlersDrained.notify_all();
+                }
+
+                void markClosed() noexcept
+                {
+                    std::lock_guard<std::mutex> lock(targetedHandlerMutex);
+                    closed.store(true, std::memory_order_release);
+                }
 
                 void trackAckCancellation(
                     const std::shared_ptr<std::atomic<bool>>& cancellation)
@@ -1748,6 +1818,9 @@ namespace ndn_service_framework{
                 ~ServiceRegistration();
 
                 void close() noexcept;
+                using TargetedHandlerDrainWaiter =
+                    std::function<bool(std::chrono::milliseconds)>;
+                TargetedHandlerDrainWaiter makeTargetedHandlerDrainWaiter() const;
                 bool closed() const noexcept;
                 bool valid() const noexcept;
                 uint64_t generation() const noexcept;
@@ -1866,6 +1939,14 @@ namespace ndn_service_framework{
             void schedulePendingRequestCleanup(const ndn::Name& pendingKey,
                                                ndn::time::milliseconds ttl = ndn::time::seconds(30),
                                                bool authoritative = false);
+            void extendPendingRequestCleanupForStream(
+                const ndn::Name& pendingKey,
+                uint64_t deadlineEpochMs,
+                const std::function<void()>& beforePendingStateLock = {});
+            void handlePendingRequestCleanupTimer(
+                const ndn::Name& pendingKey,
+                const std::function<void()>& afterDeadlineCheck = {});
+            bool expirePendingRequestStateLocked(const ndn::Name& pendingKey);
 
             struct CollaborationWorkFence
             {
@@ -1885,6 +1966,12 @@ namespace ndn_service_framework{
                 const ndn::Name& encryptedDataName, const std::string& serviceName,
                 std::chrono::steady_clock::time_point deadline,
                 std::function<bool()> current, DataNameReadMode readMode);
+            LargeDataFetchResult fetchAndDecryptLargeDataUntil(
+                const ndn::Name& encryptedDataName, const std::string& serviceName,
+                std::chrono::steady_clock::time_point deadline,
+                std::function<bool()> current, DataNameReadMode readMode,
+                std::optional<ProtectedBlobFetchOptions> options,
+                std::vector<ndn::Name> forwardingHint = {});
 
             void cleanupPendingRequestState(const ndn::Name& pendingKey,
                                             bool preserveReplayTombstone = false);
@@ -2317,6 +2404,19 @@ namespace ndn_service_framework{
             mutable std::mutex m_collaborationPublicationInterceptorMutex;
             CollaborationPublicationInterceptorForTest m_collaborationPublicationInterceptorForTest;
             std::shared_ptr<MessageValidator> validator;
+            struct ProducerPacketValidationControl {
+                std::mutex mutex;
+                std::condition_variable wake;
+                bool stopping = false;
+                size_t outstanding = 0;
+            };
+            struct ProducerPacketValidationWaiter {
+                bool complete = false;
+                bool accepted = false;
+            };
+            std::shared_ptr<ProducerPacketValidationControl>
+                m_producerPacketValidationControl =
+                    std::make_shared<ProducerPacketValidationControl>();
             // Face-owned diagnostic for explicit ambiguous request rejection.
             uint64_t m_ambiguousRequestContextRejections = 0;
             std::vector<std::string> m_serviceNames;

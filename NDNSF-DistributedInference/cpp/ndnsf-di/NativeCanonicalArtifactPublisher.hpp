@@ -2,15 +2,93 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeDurableStorageOwner.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <exception>
 #include <future>
+#include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace ndnsf::di {
+
+struct NativeDurableStorageRoleGrantChallengeV1
+{
+  std::string roleName;
+  ndn::Name manifestName;
+  std::string writerIdentity;
+};
+
+struct NativeDurableStorageRoleGrantV1
+{
+  // The complete Repo grant reply fields used to derive the writer selector.
+  // Keeping object and writer beside the grant ID prevents pairing a valid
+  // selector with another role's exact-object challenge.
+  std::string repoNode;
+  std::string ownerIdentity;
+  std::string grantId;
+  std::string writerIdentity;
+  std::string objectName;
+  std::uint64_t ownerEpoch = 0;
+};
+
+/**
+ * Request-local all-role authorization barrier. Every role's Core publisher
+ * stops in its exact-object resolver until the Owner has authorized the full
+ * role set. The returned selectors are still subject to Repo validation on
+ * every original-packet commit; this object is coordination, not authority.
+ */
+class NativeDurableStorageGrantBarrierV1 final
+  : public std::enable_shared_from_this<NativeDurableStorageGrantBarrierV1>
+{
+public:
+  using ProducerPrefixesByRole = std::map<std::string, ndn::Name>;
+  using GrantSet = std::map<std::string, NativeDurableStorageRoleGrantV1>;
+  using SelectorSet = std::map<std::string, ndn_service_framework::DurableStorageGrantSelector>;
+  using Clock = std::chrono::steady_clock;
+
+  NativeDurableStorageGrantBarrierV1(std::string ownerIdentity,
+    ProducerPrefixesByRole producerPrefixesByRole, Clock::time_point deadline);
+
+  ndn_service_framework::DurableStorageGrantResolver resolverFor(
+    const std::string& roleName);
+  std::vector<NativeDurableStorageRoleGrantChallengeV1> waitForAllChallenges(
+    const std::function<void()>& current = {});
+  void releaseAll(GrantSet grants);
+  void abort(std::exception_ptr error);
+
+private:
+  using ReadyPredicate = std::function<bool()>;
+
+  ndn_service_framework::DurableStorageGrantSelector resolve(
+    const std::string& roleName, const ndn::Name& manifestName,
+    const std::string& writerIdentity, const std::function<void()>& current);
+  void waitUntil(std::unique_lock<std::mutex>& lock,
+    const ReadyPredicate& ready, const std::function<void()>& current,
+    const char* timeoutError);
+  void failLocked(std::exception_ptr error);
+  void rethrowIfFailedLocked() const;
+  [[noreturn]] void abortAndRethrow(std::exception_ptr error);
+
+  const std::string m_ownerIdentity;
+  const ProducerPrefixesByRole m_producerPrefixesByRole;
+  const Clock::time_point m_deadline;
+  std::mutex m_mutex;
+  std::condition_variable m_condition;
+  std::map<std::string, NativeDurableStorageRoleGrantChallengeV1> m_challenges;
+  SelectorSet m_grants;
+  std::exception_ptr m_error;
+  bool m_released = false;
+};
 
 /** Model publication identity excludes advisory per-request transfer geometry.
  * All source, recipe, split and publication contract fields remain bound. */
@@ -32,6 +110,7 @@ struct NativeCanonicalPublicationOptions
   // Stable prepare identity supplied by the operator-pinned catalog. Empty
   // preserves the legacy source-digest root for old direct publisher users.
   std::string publicationIdentityDigest;
+  std::optional<NativeDurableStorageOwner> durableStorageOwner;
 };
 
 struct NativePublicationKeyReference
@@ -98,8 +177,12 @@ struct NativePreparedCanonicalPublication
   std::string preparedMetadataDataName;
   std::string preparedMetadataDigest;
   std::uint64_t preparedMetadataBytes = 0;
+  std::map<std::string,
+    std::shared_ptr<const ndn_service_framework::EncryptedLargeDataRangeSource>>
+      durableStorageSources;
 
   void validate() const;
+  void requireCurrentDurableStorageOwner(const std::string& owner) const;
 };
 
 // Internal result used by the legacy request-time publication path so a
@@ -198,6 +281,7 @@ private:
       const ndn_service_framework::PreparedServiceRequest&, const std::vector<std::uint8_t>&,
       const std::string&, const std::string&, const ndn_service_framework::PublishedContentName&,
       const NativeRequestControl&)> durablePublish;
+    std::function<bool()> requiresDurableStorageActor;
   };
   NativeCanonicalArtifactPublisher(Transport transport, std::string serviceName,
     NativeCanonicalPublicationOptions options, SourcePort source);
@@ -218,6 +302,7 @@ private:
   void abortPublishedResults(
     const std::vector<ndn_service_framework::LargeDataPublishResult>& publications) const noexcept;
   std::string prepareKey(const NativeInspectedModel& model) const;
+  void requireCurrentStorageOwner(const NativePreparedCanonicalPublication&) const;
 
   Transport m_transport;
   std::string m_serviceName;

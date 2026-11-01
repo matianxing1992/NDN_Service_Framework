@@ -81,7 +81,7 @@ echo "Build scope: ${build_unit}.service; memory limit ${build_memory_limit}"
 sudo -n systemd-run --quiet --wait --pipe --collect \
     --unit="$build_unit" --uid="$UID" --gid="$(id -g)" \
     --working-directory="$build_repo" \
-    --property="MemoryLimit=$build_memory_limit" \
+    --property="MemoryMax=$build_memory_limit" \
     --property=MemoryAccounting=yes --property=OOMScoreAdjust=600 \
     --property=OOMPolicy=stop --property=KillMode=control-group \
     --property=Nice=10 "${build_environment[@]}" \

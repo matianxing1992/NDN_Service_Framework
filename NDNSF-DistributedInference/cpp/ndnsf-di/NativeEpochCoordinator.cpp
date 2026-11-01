@@ -1073,13 +1073,15 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         config.stateInputNames.empty() ||
         config.conversationStateBinding->identity.roleName != config.role ||
         !config.stateIdentityTemplate ||
-        config.conversationStateBinding->identity.requestId ==
-          config.stateIdentityTemplate->requestId ||
-        config.conversationStateBinding->identity.generationId ==
-          config.stateIdentityTemplate->generationId) {
+        !nativeConversationStateAllowsContinuation(
+          *config.conversationStateBinding, *config.stateIdentityTemplate)) {
       throw std::invalid_argument(
         "native conversation continuation requires a fresh stateful request");
     }
+  }
+  if (config.firstEpochConversationUse &&
+      (!config.conversationStateBinding || config.prepareRunner)) {
+    throw std::invalid_argument("READY use requires a resolved conversation without preparation");
   }
   if (config.maxCheckpointFinalizeTokens == 0 ||
       config.maxCheckpointFinalizeTokens > 32) {
@@ -1276,7 +1278,13 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         throwIfStopped(stopCheck, executionGuard);
       };
     std::future<ProviderRoleResult> roleFuture;
-    if (config.prepareRunner) {
+    if (epoch == 0 && config.firstEpochConversationUse) {
+      auto use = std::move(*config.firstEpochConversationUse);
+      config.firstEpochConversationUse.reset();
+      roleFuture = config.runtime.executeRoleWithConversationUseAsync(
+        config.sessionId, executable, config.io, std::move(use), std::move(inputs), {}, stopGuard);
+    }
+    else if (config.prepareRunner) {
       roleFuture = config.runtime.executePreparedRoleAsync(
         config.sessionId, executable, config.io, config.prepareRunner,
         std::move(inputs), {}, stopGuard);
@@ -1290,7 +1298,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
     traceEpoch("role_done", config.role, epoch);
     try {
       throwIfStopped(config);
-      if (config.resultObserver && !checkpointFinalization) {
+      if (config.resultObserver) {
         config.resultObserver(executable, roleResult);
       }
       throwIfStopped(config);
@@ -1337,20 +1345,15 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
             }
           }
         }
-        if (config.resultObserver) {
-          config.resultObserver(executable, roleResult);
-        }
         return result;
       }
 
       if (!terminalRole) {
         throwIfStopped(config);
-        if (epoch < config.maxEpochs) {
-          // The output publication above has completed before roleFuture is
-          // made ready.  Start the next epoch's exact Interest now, while the
-          // current epoch still performs state bookkeeping and any later
-          // stages consume the result.  The next loop consumes this future as
-          // pre-satisfied input, so the dependency is never fetched twice.
+        if (epoch < config.maxEpochs && !checkpointFinalization) {
+          // This role's output publication completed before roleFuture became
+          // ready. Start exact reads for the next epoch while state bookkeeping
+          // proceeds. A finalization pass has no next token to prefetch.
           nextInputPrefetch.emplace(
             config.io, executableRoleForEpoch(config, epoch + 1),
             std::map<std::string, TensorBundle>{});
@@ -1382,9 +1385,6 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
                 }
               }
             }
-          }
-          if (config.resultObserver) {
-            config.resultObserver(executable, roleResult);
           }
           if (executable.candidateDecodeStateIdentity) stateRelease.retain();
           // A committed state-only finalization is successful completion,
@@ -1509,11 +1509,6 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         }
         throwIfStopped(config);
       }
-      if (nextInputPrefetch) {
-        // Non-cancellable compatibility fetches retain their old position:
-        // after the event commit, but before feedback publication.
-        startRemainingInputPrefetch(config, *nextInputPrefetch, true);
-      }
       generated.push_back(token);
       if (config.textDecoder) {
         generatedText = std::move(stableCandidateText);
@@ -1522,6 +1517,12 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       throwIfStopped(config);
       config.io->publishOutput(config.sessionId, *feedbackEdge, feedbackBundle);
       throwIfStopped(config);
+      if (nextInputPrefetch) {
+        // Compatibility reads may synchronously wait for this internal
+        // TOKEN_FEEDBACK object. Start them after publication and defer startup
+        // failures until the next epoch consumes the read.
+        startRemainingInputPrefetch(config, *nextInputPrefetch, true);
+      }
       if (executable.deferStateCommit &&
           !config.runtime.commitDecodeStateTransition(
             config.sessionId, executable)) {

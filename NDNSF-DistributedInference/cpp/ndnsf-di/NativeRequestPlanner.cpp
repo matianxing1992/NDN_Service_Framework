@@ -3,6 +3,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedKvPublication.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "ndn-service-framework/NetworkProbeRate.hpp"
@@ -1050,7 +1052,8 @@ void bindConversationProjections(
   const NativeConversationTurn& turn,
   const std::string& requestContractDigest,
   const std::string& serviceName,
-  const std::map<std::string, std::string>& providersByRole)
+  const std::map<std::string, std::string>& providersByRole,
+  const NativeConversationKvRecoveryV1* savedParent)
 {
   if (turn.requestId.empty() || turn.executionRequestId.empty() ||
       turn.executionRequestId != sealed.core.requestId ||
@@ -1070,11 +1073,14 @@ void bindConversationProjections(
   if (!unboundInitialPlan && expected != actual)
     throw std::invalid_argument("conversation turn role set does not match placement");
   const auto roleMapDigest = conversationRoleMapDigest(providersByRole);
-  // Attempt 1 must use the parent's immutable placement. A replacement may
-  // switch to an alternate Provider; the coordinator binds that new map after
-  // planning while retaining the old map for the parent CAS.
+  // A new placement needs either the existing replacement transition or a
+  // complete Owner-checked saved parent, then a separate pre-commit Owner CAS.
   if (turn.attempt == 1 && !unboundInitialPlan &&
-      roleMapDigest != turn.parent.planRoleMapDigest) {
+      roleMapDigest != turn.parent.planRoleMapDigest &&
+      !(savedParent && turn.parent.parentContextEpoch > 0 && turn.parent.mode == "APPEND_DELTA" &&
+        savedParent->references.size() == providersByRole.size() &&
+        savedParent->originReceipts.size() == providersByRole.size() &&
+        savedParent->checkpoint.at("checkpointDigest") == turn.parent.parentCheckpointDigest)) {
     try {
       std::ostringstream diagnostic;
       diagnostic << "DEBUG-SPEC194-R16 CONVERSATION_ROLE_MAP_MISMATCH requestId="
@@ -1325,6 +1331,14 @@ NativePlannedRequest planNativeRequestImpl(
   context.allowedRttPairs = encoded.allowedRttPairs;
   context.allowedGoodputEdges = encoded.allowedGoodputEdges;
   context.placementProbeRoundCompleted = placementProbeRound != nullptr || observationFallback;
+  std::shared_ptr<const NativeConversationKvRecoveryV1> savedKv;
+  if (conversationTurn && runtime.conversationOwner) {
+    auto saved = runtime.conversationOwner->protectedKvRecoveryForTurn(*conversationTurn);
+    if (saved) {
+      if (!runtime.wrapProtectedKvKey) throw std::runtime_error("KV_RECIPIENT_KEY_OWNER_UNAVAILABLE");
+      savedKv = std::make_shared<const NativeConversationKvRecoveryV1>(std::move(*saved));
+    }
+  }
   if (observationFallback)
     context.placementObservationFallbackReason = "SNAPSHOT_STALE";
   if (conversationTurn && conversationTurn->attempt == 1 &&
@@ -1549,9 +1563,10 @@ NativePlannedRequest planNativeRequestImpl(
       NativeRequestPreparation::validateRoles(model, candidate, roles);
     }
     else {
-      expandStateContractsFromCatalog(*candidateCopy, runtime.stateMapping, model.descriptor);
       if (runtime.catalog)
         *candidateCopy = runtime.catalog->bindStateContracts(model, candidate, runtime.stateMapping, control);
+      else
+        expandStateContractsFromCatalog(*candidateCopy, runtime.stateMapping, model.descriptor);
       roles = preparation.prepareRoles(model, candidate, control);
     }
     logPlanPhase(control.requestId, "candidate_role_copy", candidateCopyTiming);
@@ -1565,10 +1580,18 @@ NativePlannedRequest planNativeRequestImpl(
         // admission and feasibility remain authoritative for this new turn.
         const NativeFixedProviderPlacement pinnedPlacement(conversationTurn->providersByRole);
         expectedPlacementIdentity = pinnedPlacement.identity();
-        proposal = pinnedPlacement.proposeRoles(
-          context, closure.digest, roles, offers, epochMs(), extensionControl);
-        logRuntimeEvidence("NDNSF_DI_NATIVE_WARM_PLAN_REUSE requestId=" + control.requestId +
-          " status=REUSED_PINNED_CONVERSATION_PLACEMENT");
+        try {
+          proposal = pinnedPlacement.proposeRoles(
+            context, closure.digest, roles, offers, epochMs(), extensionControl);
+          logRuntimeEvidence("NDNSF_DI_NATIVE_WARM_PLAN_REUSE requestId=" + control.requestId +
+            " status=REUSED_PINNED_CONVERSATION_PLACEMENT");
+        }
+        catch (const NativeNoFeasiblePlacement&) {
+          if (!savedKv) throw;
+          extensionControl.requireActive();
+          expectedPlacementIdentity = ports.placementIdentity;
+          proposal = ports.proposeRoles(context, closure.digest, roles, offers, epochMs(), extensionControl);
+        }
       }
       else {
         proposal = ports.proposeRoles(context, closure.digest, roles, offers, epochMs(),
@@ -1928,14 +1951,18 @@ NativePlannedRequest planNativeRequestImpl(
     }
     std::map<std::string, NativeRoleProjectionInputs> projections;
     phaseStarted = planPhaseStarted();
-    if (execution.dependencies.empty())
-      projections = NativePlanProjectionBuilder::build(ownedSealed, candidate, offers, projection);
-    else {
+    std::function<void()> requireSavedKvCurrent;
+    std::unique_ptr<NativeGroupKeyAdmission> recipientKeys;
+    if (!execution.dependencies.empty() || savedKv) {
       std::vector<ndn_service_framework::AckSelectionCandidate> selectedAcks;
       for (const auto& ack : closure.candidates)
         if (core.offerDigestByProvider.count(ack.providerName.toUri())) selectedAcks.push_back(ack);
-      NativeGroupKeyAdmission keys(admission, selectedAcks, context, epochMs());
-      projections = NativeGroupProjectionBuilder::build(ownedSealed, candidate, keys, projection);
+      recipientKeys = std::make_unique<NativeGroupKeyAdmission>(admission, selectedAcks, context, epochMs());
+    }
+    if (execution.dependencies.empty())
+      projections = NativePlanProjectionBuilder::build(ownedSealed, candidate, offers, projection);
+    else {
+      projections = NativeGroupProjectionBuilder::build(ownedSealed, candidate, *recipientKeys, projection);
     }
     logPlanPhase(control.requestId, "projection_build", phaseStarted);
     result.grantLease = grantLease;
@@ -1943,8 +1970,69 @@ NativePlannedRequest planNativeRequestImpl(
       phaseStarted = planPhaseStarted();
       bindConversationProjections(projections, result.sealed, *conversationTurn,
         encoded.requestContractDigest, runtime.contract.serviceName,
-        core.assignment.providerByRole);
+        core.assignment.providerByRole, savedKv.get());
       logPlanPhase(control.requestId, "conversation_projection_binding", phaseStarted);
+    }
+    if (savedKv) {
+      if (savedKv->references.size() != projections.size())
+        throw std::invalid_argument("saved KV role cover differs from selected execution");
+      requireSavedKvCurrent = [owner = runtime.conversationOwner, turn = *conversationTurn, savedKv, control] {
+        control.requireActive();
+        const auto current = owner->protectedKvRecoveryForTurn(turn);
+        if (!current || !(*current == *savedKv))
+          throw std::runtime_error("KV_RECIPIENT_PARENT_CHANGED");
+      };
+      const auto& requireCurrent = requireSavedKvCurrent;
+      for (auto& projectionEntry : projections) {
+        const auto& role = projectionEntry.first;
+        auto& inputs = projectionEntry.second;
+        requireCurrent();
+        const auto& provider = core.assignment.providerByRole.at(role);
+        const auto grant = std::find_if(result.sealed.grants.begin(), result.sealed.grants.end(),
+          [&](const auto& value) { return value.provider == provider && value.role == role; });
+        if (grant == result.sealed.grants.end() || !savedKv->references.contains(role))
+          throw std::invalid_argument("saved KV recovery requires the exact selected role grant");
+        const auto& key = recipientKeys->recipient(provider);
+        NativeProtectedKvRestoreV1 restore;
+        restore.reference = savedKv->references.at(role);
+        restore.originReceipt = savedKv->originReceipts.at(role);
+        const auto checkpoint = nativeReadProtectedKvPublicationReference(restore.reference);
+        restore.recipient = {key.certificateName, key.publicKeyDigest,
+          std::min({wireDeadlineMs, core.expiresAtMs, conversationTurn->parent.retentionDeadlineMs,
+            grant->expiresAtMs, recipientKeys->offer(provider).observation().expiresAtMs})};
+        const auto currentProjection = NativePlanSealer::project(result.sealed, provider, inputs);
+        const auto binding = nativeProtectedKvRecipientBindingForProjection(currentProjection,
+          ndn::Name(runtime.requesterIdentity), ndn::Name(runtime.contract.serviceName), restore.recipient, epochMs());
+        restore.capsule = runtime.wrapProtectedKvKey(checkpoint,
+          ndn::Buffer(key.publicKey.begin(), key.publicKey.end()), binding, control, requireCurrent);
+        requireCurrent();
+        nativeValidateProtectedKvRestoreContext(restore, currentProjection,
+          ndn::Name(runtime.requesterIdentity), ndn::Name(runtime.contract.serviceName), epochMs());
+        inputs.protectedKvRestore = std::move(restore);
+        auto expectedProjection = NativePlanSealer::project(result.sealed, provider, inputs);
+        const auto& parent = *expectedProjection.conversationStateReference;
+        NativeConversationRecoveryActivationV1 preflight;
+        preflight.requestId = expectedProjection.requestId;
+        preflight.attemptEpoch = expectedProjection.attempt;
+        preflight.generationId = expectedProjection.generationContract.generationId;
+        preflight.planDigest = expectedProjection.planDigest;
+        preflight.conversationId = parent.conversationId;
+        preflight.contextEpoch = parent.contextEpoch;
+        preflight.serviceName = parent.serviceName;
+        preflight.planRoleMapDigest = parent.planRoleMapDigest;
+        preflight.checkpointDigest = parent.checkpointDigest;
+        preflight.roleName = parent.roleName;
+        preflight.readyDigest = "sha256:" + std::string(64, '0');
+        preflight.readySetDigest = preflight.readyDigest;
+        preflight.expiresAtMs = std::numeric_limits<std::uint64_t>::max();
+        (void)nativeConversationRecoveryActivationV1ToJson(preflight);
+        result.recoveryExpectations.emplace(role, NativeConversationRecoveryExpectationV1{
+          std::move(expectedProjection), recipientKeys->offer(provider).observation().bootEpoch});
+      }
+      requireCurrent();
+      if (result.recoveryExpectations.size() != projections.size())
+        throw std::invalid_argument("recovery READY expectation role cover is incomplete");
+      result.recoveryParent = savedKv;
     }
     phaseStarted = planPhaseStarted();
     auto& plan = result.corePlan;
@@ -1975,13 +2063,20 @@ NativePlannedRequest planNativeRequestImpl(
           invocation.selectedRole = {};
           invocation.assembly = {};
         }
+        const bool storageOwnerRequired = runtime.durableStorageOwner.has_value() ||
+          (runtime.requiresDurableStorageActor && runtime.requiresDurableStorageActor());
+        if (storageOwnerRequired && !runtime.durableStorageOwner)
+          throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+        if (storageOwnerRequired) runtime.durableStorageOwner->validate();
+        const std::string storageOwner = storageOwnerRequired
+          ? runtime.durableStorageOwner->ownerIdentity : std::string{};
         auto source = runtime.fixedRoleAssignments->source(
-          runtime.requesterIdentity, runtime.contract.serviceName, *fixed);
+          runtime.requesterIdentity, runtime.contract.serviceName, *fixed, storageOwner);
         if (!source) {
           auto published = runtime.fixedRoleSourcePublisher(invocation, *fixed, control);
           control.requireActive();
           source = runtime.fixedRoleAssignments->rememberSource(runtime.requesterIdentity,
-            runtime.contract.serviceName, *fixed, std::move(published));
+            runtime.contract.serviceName, *fixed, std::move(published), storageOwner);
         }
         const auto wire = nativeSelectionInvocationV1ToJson(invocation, *fixed, source.get());
         if (wire.size() > (4U << 20))
@@ -2030,6 +2125,7 @@ NativePlannedRequest planNativeRequestImpl(
     plan.participantSelector = std::make_shared<const FrozenSelection>(std::move(selected));
     control.requireActive();
     logPlanPhase(control.requestId, "core_plan_finalize", phaseStarted);
+    if (requireSavedKvCurrent) requireSavedKvCurrent();
     return result;
   }
   throw std::runtime_error("DI_NATIVE_NO_FEASIBLE_CANDIDATE");

@@ -105,6 +105,9 @@ struct PreparationSpec
   std::function<void()> onTerminal;
   /** Optional C++ evidence hook; exceptions are swallowed by the owner. */
   std::function<void(const MemorySnapshot&)> memoryObserver;
+  using PublicationValidator = std::function<void(
+    const std::optional<NativePreparedCanonicalPublication>&)>;
+  PublicationValidator validatePreparedPublication;
 };
 
 /**

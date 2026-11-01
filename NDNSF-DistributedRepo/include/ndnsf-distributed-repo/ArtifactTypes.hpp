@@ -361,6 +361,8 @@ struct RepoAvailabilityProbeRequest
   ArtifactReference reference;
   ArtifactExpectedLocation expectedLocation;
   std::string probeKind = "metadata";
+  // Schema2 checks the authenticated requester's live claim at this node.
+  uint64_t ownerEpoch = 0;
 
   std::string toJson() const;
   static RepoAvailabilityProbeRequest
@@ -400,8 +402,13 @@ struct RepoAvailabilityProbeResponse
   ArtifactReference reference;
   ArtifactExpectedLocation expectedLocation;
   AvailabilityLocationReport report;
+  std::string ownerIdentity;
+  uint64_t ownerEpoch = 0;
 
   void validate(const ArtifactLimits& limits = {}) const;
+  /** Bind an already authenticated response to the request and owner account. */
+  void validateExpected(const RepoAvailabilityProbeRequest& request,
+                        const std::string& authenticatedOwnerIdentity) const;
   std::string toJson() const;
   static RepoAvailabilityProbeResponse
   fromJson(const std::string& wire, const ArtifactLimits& limits = {});
@@ -438,6 +445,27 @@ struct RepoArtifactTarget
   }
 };
 
+/** Exact storage selectors; authentication comes from Core, not these fields. */
+struct RepoUserStorageBinding
+{
+  uint32_t schemaVersion = 1;
+  std::string ownerIdentity;
+  std::string grantId;
+  uint64_t ownerEpoch = 0;
+  std::string toJson() const;
+  static RepoUserStorageBinding fromJson(const std::string& wire);
+};
+
+struct RepoUserStorageTargetBinding
+{
+  uint32_t schemaVersion = 1;
+  RepoArtifactTarget target;
+  RepoUserStorageBinding binding;
+  std::string writerIdentity;
+  std::string toJson() const;
+  static RepoUserStorageTargetBinding fromJson(const std::string& wire);
+};
+
 struct PublishOperationIntent
 {
   uint32_t schemaVersion = 1;
@@ -448,6 +476,9 @@ struct PublishOperationIntent
   RepoArtifactTarget seed;
   std::string consistency;
   std::vector<RepoArtifactTarget> targets;
+
+  // Schema2 binds the same user's exact node-local grants and immediate writers.
+  std::vector<RepoUserStorageTargetBinding> userStorageBindings;
 
   void validate(const ArtifactLimits& limits = {}) const;
   std::string toJson() const;
@@ -520,6 +551,7 @@ struct PublishOperationStatus
   std::string state;
   uint64_t updatedAtMs = 0;
   std::string receiptId;
+  std::vector<RepoUserStorageTargetBinding> userStorageBindings;
 
   void validate(const ArtifactLimits& limits = {}) const;
   std::string toJson() const;
@@ -536,6 +568,13 @@ std::string makePublishRequestDigest(const ArtifactReference& reference,
                                     const RepoArtifactTarget& seed,
                                     const std::string& consistency,
                                     const std::vector<RepoArtifactTarget>& targets);
+
+std::string makePublishRequestDigest(const ArtifactReference& reference,
+                                    uint64_t generation,
+                                    const RepoArtifactTarget& seed,
+                                    const std::string& consistency,
+                                    const std::vector<RepoArtifactTarget>& targets,
+                                    const std::vector<RepoUserStorageTargetBinding>& bindings);
 
 struct ArtifactManifestChild
 {

@@ -260,10 +260,13 @@ std::shared_ptr<NativeRequestPreparation> NativeCanonicalPreparationCatalog::mak
 std::shared_ptr<NativeRequestPreparation>
 NativeCanonicalPreparationCatalog::makePreparation(
   std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
-  std::optional<NativePreparedCanonicalPublication> preparedPublication) const
+  std::optional<NativePreparedCanonicalPublication> preparedPublication,
+  std::optional<NativeDurableStorageOwner> owner) const
 {
-  return makePreparation([user = std::move(user), serviceName = std::move(serviceName)](
+  return makePreparation([user = std::move(user), serviceName = std::move(serviceName),
+                          owner = std::move(owner)](
     auto options, auto source) {
+    options.durableStorageOwner = owner;
     return NativeCanonicalArtifactPublisher(user, serviceName, std::move(options), std::move(source));
   }, std::move(preparedPublication));
 }
@@ -271,7 +274,8 @@ NativeCanonicalPreparationCatalog::makePreparation(
 NativePreparedCanonicalPublication
 NativeCanonicalPreparationCatalog::preparePublication(
   std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
-  const NativeModelDescriptor& model, const NativeRequestControl& control) const
+  const NativeModelDescriptor& model, const NativeRequestControl& control,
+  std::optional<NativeDurableStorageOwner> owner) const
 {
   const auto& record = m_state->find(model);
   // Material-backed publication has already authenticated and indexed the
@@ -279,7 +283,9 @@ NativeCanonicalPreparationCatalog::preparePublication(
   // source/initializer buffers before the publisher starts encrypting the
   // material bundles; the immutable manifest and payloads remain available.
   releaseTransientSourceBytes();
-  NativeCanonicalArtifactPublisher publisher(user, std::move(serviceName), record.publication,
+  auto options = record.publication;
+  options.durableStorageOwner = std::move(owner);
+  NativeCanonicalArtifactPublisher publisher(user, std::move(serviceName), std::move(options),
     [state = m_state](const auto& inspected, const auto& requestControl) {
       requestControl.requireActive();
       const auto& record = state->find(inspected);

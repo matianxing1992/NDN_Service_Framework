@@ -1,7 +1,7 @@
 #ifndef NDNSF_DI_NATIVE_ONNX_RECIPE_ASSEMBLER_HPP
 #define NDNSF_DI_NATIVE_ONNX_RECIPE_ASSEMBLER_HPP
 
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSelectionRole.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 
 #include <chrono>
@@ -101,7 +101,7 @@ public:
 // consumer can reserve the complete fetched object before touching the Repo.
 // A payload larger than this limit is rejected by the publisher rather than
 // silently creating an unbounded bundle.
-inline constexpr std::uint64_t NativeCanonicalMaterialBundleMaxBytes = 1U << 20;
+inline constexpr std::uint64_t NativeCanonicalMaterialBundleMaxBytes = 2U << 20;
 
 // The material-object index is carried by an authenticated receipt rather
 // than the inline authority root.  Prepare reserves this conservative bound

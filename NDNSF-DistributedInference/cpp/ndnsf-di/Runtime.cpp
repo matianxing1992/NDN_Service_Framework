@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -910,6 +911,56 @@ struct PreparationTicket
 
 namespace {
 
+auto runtimeKvKeyWrapper(std::weak_ptr<detail::CoreRuntimeOwner> weakOwner,
+                         std::weak_ptr<detail::RuntimeState> weakState)
+{
+  return [weakOwner, weakState](const NativeProtectedKvCheckpointReferenceV1& checkpoint,
+    const ndn::Buffer& publicKey, const NativeProtectedKvRecipientBindingV1& binding,
+    const NativeRequestControl& control, const std::function<void()>& requireCurrent) {
+    if (!requireCurrent) throw std::invalid_argument("KV key wrapping requires current owner context");
+    const auto owner = weakOwner.lock();
+    if (!owner) throw std::runtime_error("KV key owner unavailable");
+    const auto current = [weakOwner, weakState, control, requireCurrent] {
+      control.requireActive();
+      const auto state = weakState.lock();
+      if (!state) throw std::runtime_error("KV key owner Runtime unavailable");
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->phase != detail::RuntimeState::Phase::Open)
+          throw std::runtime_error("KV key owner Runtime is closing");
+      }
+      requireCurrent();
+      const auto owned = weakOwner.lock();
+      if (!owned || owned->closed.load(std::memory_order_acquire) ||
+          owned->ioFailed.load(std::memory_order_acquire) ||
+          owned->ioStopRequested.load(std::memory_order_acquire) ||
+          owned->ioRecoveryStopped.load(std::memory_order_acquire))
+        throw std::runtime_error("KV key owner I/O unavailable");
+    };
+    current();
+    const auto crypto = [weakOwner, checkpoint, publicKey, binding, current] {
+      current();
+      const auto owned = weakOwner.lock();
+      if (!owned || !owned->keyChain) throw std::runtime_error("KV owner TPM unavailable");
+      const auto certificate = owned->keyChain->getPib().getIdentity(checkpoint.ownerIdentity)
+        .getKey(ndn::security::extractKeyNameFromCertName(checkpoint.ownerCertificateName))
+        .getCertificate(checkpoint.ownerCertificateName);
+      return nativeWrapProtectedKvKeyForRecipient(checkpoint, certificate, *owned->keyChain,
+        publicKey, binding, current);
+    };
+    // Inline execution on the owner avoids waiting for its own I/O queue.
+    if (owner->io.get_executor().running_in_this_thread()) return crypto();
+    auto promise = std::make_shared<std::promise<ndn_service_framework::RecipientEncryptedAssignment>>();
+    auto result = promise->get_future();
+    boost::asio::post(owner->io, [crypto, promise] {
+      try { promise->set_value(crypto()); }
+      catch (...) { promise->set_exception(std::current_exception()); }
+    });
+    while (result.wait_for(std::chrono::milliseconds(5)) != std::future_status::ready) current();
+    auto capsule = result.get(); current(); return capsule;
+  };
+}
+
 std::string rawPublicKey(const std::shared_ptr<EVP_PKEY>& key)
 {
   if (!key) throw std::runtime_error("Runtime authority public key is unavailable");
@@ -984,6 +1035,7 @@ void ensureRuntimeCoreTransport(const std::shared_ptr<detail::RuntimeState>& sta
   const auto primary = state->models.find("default");
   if (primary == state->models.end() || !primary->second.requesterPrivateKey ||
       !primary->second.authorityPublicKey || !state->coreOwner->keyChain ||
+      !state->coreOwner->face ||
       state->coreOwner->requesterCertificate.getName().empty() ||
       state->coreOwner->authorityCertificate.getName().empty())
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
@@ -1052,6 +1104,7 @@ std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
     if (primary == state->models.end() || !primary->second.requesterPrivateKey ||
         !primary->second.authorityPublicKey ||
         !state->coreOwner->keyChain ||
+        !state->coreOwner->face ||
         state->coreOwner->requesterCertificate.getName().empty() ||
         state->coreOwner->authorityCertificate.getName().empty())
       throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
@@ -1120,10 +1173,17 @@ std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
   if (registration == state->models.end())
     throw DiError("MODEL_NOT_FOUND", "local", "request", "prepared model registration is not retained");
   const auto runtimeJson = requestRuntimeConfiguration(registration->second, *package);
-  const auto runtime = nativeRequestRuntimeFromJson(
+  auto runtime = nativeRequestRuntimeFromJson(
     nativeCanonicalJson(runtimeJson), package->catalog, state->grants);
+  runtime.durableStorageOwner = state->config.durableStorageOwner;
+  runtime.conversationOwner = state->conversations;
+  // An injected external transport has a different key owner; fail closed if
+  // it later requests saved-KV recovery rather than borrowing unrelated keys.
+  if (state->coreOwner->serviceUser == state->coreUser)
+    runtime.wrapProtectedKvKey = runtimeKvKeyWrapper(state->coreOwner, state);
   auto preparation = package->catalog.preparation->makePreparation(
-    state->coreUser, runtime.contract.serviceName, package->preparedPublication);
+    state->coreUser, runtime.contract.serviceName, package->preparedPublication,
+    state->config.durableStorageOwner);
   auto client = std::make_shared<NativeInferenceClient>(
     state->coreUser, package->catalog.preparation->adapters(), runtime,
     state->conversations,
@@ -1372,6 +1432,52 @@ Conversation User::openConversation(const PreparedModel& model,
   return model.openConversationInternal(options);
 }
 
+namespace {
+
+bool requiresStorageOwner(const std::shared_ptr<detail::RuntimeState>& state)
+{
+  std::shared_ptr<ndn_service_framework::ServiceUser> user;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    user = state->coreUser;
+  }
+  return state->config.durableStorageOwner.has_value() ||
+    (user ? user->requiresDurableStorageActor() :
+      (state->config.encryptedRangeStore &&
+       state->config.encryptedRangeStore->requiresDurableStorageActor()));
+}
+
+void requireStorageResultThread(const std::shared_ptr<detail::RuntimeState>& state)
+{
+  if (!requiresStorageOwner(state)) return;
+  std::shared_ptr<ndn_service_framework::ServiceUser> user;
+  std::shared_ptr<detail::CoreRuntimeOwner> owner;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    user = state->coreUser;
+    owner = state->coreOwner;
+  }
+  if ((user && user->isOnIoThread()) ||
+      (owner && owner->operationRuntime && owner->operationRuntime->isWorkerThread()))
+    throw DiError("WOULD_DEADLOCK", "local", "preparation",
+                  "owned storage validation requires a non-Face, non-Core-worker caller");
+}
+
+PreparationSpec::PublicationValidator storagePublicationValidator(
+  const std::shared_ptr<detail::RuntimeState>& state)
+{
+  return [state](const std::optional<NativePreparedCanonicalPublication>& publication) {
+    if (!requiresStorageOwner(state)) return;
+    if (!state->config.durableStorageOwner || !publication)
+      throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+    state->config.durableStorageOwner->validate();
+    publication->requireCurrentDurableStorageOwner(
+      state->config.durableStorageOwner->ownerIdentity);
+  };
+}
+
+} // namespace
+
 PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& options) const
 {
   if (!m_state)
@@ -1400,10 +1506,12 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
   }
   if (!cache)
     throw DiError("RUNTIME_CLOSED", "local", "preparation", "preparation owner is unavailable");
+  requireStorageResultThread(m_state);
   auto spec = preparationSpec(frozen, modelKey, m_state->config.repositorySourceLoader,
                               m_state->config.repositorySourceProvider,
                               m_state->config.repositoryArtifactPublisher);
   spec.runtimeBinding = m_state->runtimeBinding;
+  spec.validatePreparedPublication = storagePublicationValidator(m_state);
   if (m_state->config.repositorySourceProvider) {
     const auto provider = m_state->config.repositorySourceProvider;
     spec.lookupPrepared = [provider](const PreparationSpec& current,
@@ -1419,9 +1527,11 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
     const NativeRequestControl& control) {
     if (state->config.repositoryArtifactPublisher) {
       const auto source = catalog.sourceRefFor(model.descriptor);
+      auto publicationOptions = catalog.publicationFor(model.descriptor);
+      publicationOptions.durableStorageOwner = state->config.durableStorageOwner;
       return state->config.repositoryArtifactPublisher->publish(
         modelKey, publicationServiceName, model, *source,
-        catalog.publicationFor(model.descriptor), control);
+        publicationOptions, control);
     }
     ensureRuntimeCoreTransport(state);
     std::shared_ptr<ndn_service_framework::ServiceUser> user;
@@ -1429,7 +1539,8 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
       std::lock_guard<std::mutex> lock(state->mutex);
       user = state->coreUser;
     }
-    return catalog.preparePublication(user, publicationServiceName, model.descriptor, control);
+    return catalog.preparePublication(user, publicationServiceName, model.descriptor, control,
+                                      state->config.durableStorageOwner);
   };
   spec.rollbackPublication = [state = m_state](const NativePreparedCanonicalPublication& publication) {
     if (state->config.repositoryArtifactPublisher) {
@@ -1545,6 +1656,7 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
                               m_state->config.repositorySourceProvider,
                               m_state->config.repositoryArtifactPublisher);
   spec.runtimeBinding = m_state->runtimeBinding;
+  spec.validatePreparedPublication = storagePublicationValidator(m_state);
   if (m_state->config.repositorySourceProvider) {
     const auto provider = m_state->config.repositorySourceProvider;
     spec.lookupPrepared = [provider](const PreparationSpec& current,
@@ -1560,9 +1672,11 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
     const NativeRequestControl& control) {
     if (state->config.repositoryArtifactPublisher) {
       const auto source = catalog.sourceRefFor(model.descriptor);
+      auto publicationOptions = catalog.publicationFor(model.descriptor);
+      publicationOptions.durableStorageOwner = state->config.durableStorageOwner;
       return state->config.repositoryArtifactPublisher->publish(
         modelKey, publicationServiceName, model, *source,
-        catalog.publicationFor(model.descriptor), control);
+        publicationOptions, control);
     }
     ensureRuntimeCoreTransport(state);
     std::shared_ptr<ndn_service_framework::ServiceUser> user;
@@ -1570,7 +1684,8 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
       std::lock_guard<std::mutex> lock(state->mutex);
       user = state->coreUser;
     }
-    return catalog.preparePublication(user, publicationServiceName, model.descriptor, control);
+    return catalog.preparePublication(user, publicationServiceName, model.descriptor, control,
+                                      state->config.durableStorageOwner);
   };
   spec.rollbackPublication = [state = m_state](const NativePreparedCanonicalPublication& publication) {
     if (state->config.repositoryArtifactPublisher) {
@@ -1654,22 +1769,40 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
     throw mapPreparationError(error);
   }
   operation->lifetime = std::shared_ptr<void>(ticketBox, static_cast<void*>(ticketBox.get()));
-  operation->onDestroy = operation->cancel;
+  auto cacheDestroy = operation->onDestroy;
+  operation->onDestroy = [cacheDestroy, cancel = operation->cancel] {
+    if (cacheDestroy) cacheDestroy();
+    if (cancel) cancel();
+  };
   operation->workerThread = [owner] {
     return owner && owner->operationRuntime && owner->operationRuntime->isWorkerThread();
   };
+  auto rawStatus = operation->status;
+  operation->wouldBlock = [rawStatus, state = m_state] {
+    return requiresStorageOwner(state) || rawStatus() == PreparationStatus::Pending;
+  };
   auto rawResult = operation->result;
-  operation->result = [rawResult](Milliseconds timeout) {
+  operation->result = [rawResult, state = m_state](Milliseconds timeout) {
+    requireStorageResultThread(state);
     try { return rawResult(timeout); }
+    catch (const DiError&) { throw; }
+    catch (const std::exception& error) { throw mapPreparationError(error); }
+  };
+  auto rawDefault = operation->resultDefault;
+  if (rawDefault) operation->resultDefault = [rawDefault, state = m_state] {
+    requireStorageResultThread(state);
+    try { return rawDefault(); }
     catch (const DiError&) { throw; }
     catch (const std::exception& error) { throw mapPreparationError(error); }
   };
   auto rawCompletion = operation->onCompletion;
   auto runtimeState = m_state;
   operation->onCompletion = [rawCompletion, runtimeState](PreparationCompletion callback) {
-    std::lock_guard<std::mutex> lock(runtimeState->mutex);
-    if (runtimeState->phase != detail::RuntimeState::Phase::Open)
-      throw DiError("RUNTIME_CLOSED", "local", "preparation", "Runtime is closed");
+    {
+      std::lock_guard<std::mutex> lock(runtimeState->mutex);
+      if (runtimeState->phase != detail::RuntimeState::Phase::Open)
+        throw DiError("RUNTIME_CLOSED", "local", "preparation", "Runtime is closed");
+    }
     try {
       return rawCompletion([callback = std::move(callback)](
       std::exception_ptr error, std::optional<PreparedModel> value) mutable {
@@ -1694,9 +1827,11 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
   auto rawResultAsync = operation->resultAsync;
   operation->resultAsync = [rawResultAsync, runtimeState](Milliseconds timeout,
                                              PreparationCompletion callback) {
-    std::lock_guard<std::mutex> lock(runtimeState->mutex);
-    if (runtimeState->phase != detail::RuntimeState::Phase::Open)
-      throw DiError("RUNTIME_CLOSED", "local", "preparation", "Runtime is closed");
+    {
+      std::lock_guard<std::mutex> lock(runtimeState->mutex);
+      if (runtimeState->phase != detail::RuntimeState::Phase::Open)
+        throw DiError("RUNTIME_CLOSED", "local", "preparation", "Runtime is closed");
+    }
     try {
       return rawResultAsync(timeout, [callback = std::move(callback)](
       std::exception_ptr error, std::optional<PreparedModel> value) mutable {
@@ -1760,6 +1895,51 @@ Runtime::~Runtime() noexcept
   // The owner performs an idempotent Core close.  Its destructor later
   // releases Face/keys after the IO context has stopped; User handles retain
   // this closed state until their own references are gone.
+}
+
+NativeProtectedKvKeyWrap detail::RuntimeTestAccess::startProtectedKvKeyOwner(
+  const std::shared_ptr<Runtime>& runtime, ndn::security::Certificate& ownerCertificate)
+{
+  if (!runtime || !runtime->m_state) throw std::invalid_argument("KV fixture requires Runtime");
+  std::lock_guard<std::mutex> lock(runtime->m_state->mutex);
+  const auto owner = runtime->m_state->coreOwner;
+  if (!owner || owner->closed.load() || owner->serviceUser || owner->ioThread.joinable())
+    throw std::runtime_error("KV fixture requires an unopened Runtime Core owner");
+  ownerCertificate = owner->requesterCertificate;
+  // Its constructor queued only a weak-Impl connect; destroy it before I/O
+  // runs so this key-owner fixture never starts a network connection.
+  owner->face.reset();
+  owner->startIo(owner);
+  return runtimeKvKeyWrapper(owner, runtime->m_state);
+}
+
+void detail::RuntimeTestAccess::postProtectedKvOwner(
+  const std::shared_ptr<Runtime>& runtime, std::function<void()> work)
+{
+  if (!runtime || !runtime->m_state || !work) throw std::invalid_argument("KV fixture requires owned work");
+  std::shared_ptr<detail::CoreRuntimeOwner> owner;
+  {
+    std::lock_guard<std::mutex> lock(runtime->m_state->mutex);
+    owner = runtime->m_state->coreOwner;
+  }
+  if (!owner || owner->closed.load()) throw std::runtime_error("KV fixture owner closed");
+  boost::asio::post(owner->io, [weakOwner = std::weak_ptr<detail::CoreRuntimeOwner>(owner), work = std::move(work)] {
+    if (const auto owned = weakOwner.lock(); owned && !owned->closed.load()) work();
+  });
+}
+
+void detail::RuntimeTestAccess::closePreparationDispatcher(const std::shared_ptr<Runtime>& runtime)
+{
+  if (!runtime || !runtime->m_state)
+    throw std::invalid_argument("Runtime test dispatcher requires an owner");
+  std::shared_ptr<ndn_service_framework::OperationRuntime> dispatcher;
+  {
+    std::lock_guard<std::mutex> lock(runtime->m_state->mutex);
+    const auto owner = runtime->m_state->coreOwner;
+    if (owner) dispatcher = owner->operationRuntime;
+  }
+  if (!dispatcher) throw std::runtime_error("Runtime test dispatcher is unavailable");
+  dispatcher->close();
 }
 
 void detail::RuntimeTestAccess::bindProviderFixture(

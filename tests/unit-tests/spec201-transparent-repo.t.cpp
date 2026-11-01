@@ -7,10 +7,14 @@
 #include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "ndn-service-framework/PublishedContentName.hpp"
 #include "ndn-service-framework/ImmutableFilePublication.hpp"
+#include "ndn-service-framework/ServiceProvider.hpp"
+#include "ndn-service-framework/NDNSFMessages.hpp"
 
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/key-params.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
+#include <ndn-cxx/mgmt/nfd/control-parameters.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
 #include <boost/test/unit_test.hpp>
 #include <filesystem>
@@ -19,7 +23,40 @@
 #include <sys/wait.h>
 #include <cstdlib>
 #include <atomic>
+#include <algorithm>
+#include <future>
+#include <condition_variable>
+#include <boost/asio/post.hpp>
 #include <chrono>
+#include <sys/stat.h>
+#include <cerrno>
+#include <sqlite3.h>
+
+namespace ndnsf_distributed_repo::detail {
+struct RepoNodeTestAccess
+{
+  static size_t pending(const RepoNode& node) { return node.m_originalDataPending.load(); }
+  static void enqueue(RepoNode& node, const ndn::Interest& interest)
+  { node.enqueueOriginalDataInterest(interest); }
+  static bool queuedOwnsWire(RepoNode& node, const ndn::Interest& interest)
+  {
+    std::lock_guard<std::mutex> guard(node.m_originalDataMutex);
+    if (node.m_originalDataQueue.empty()) return false;
+    const auto& queued = node.m_originalDataQueue.back();
+    const auto& sourceWire = interest.wireEncode();
+    const auto& queuedWire = queued.wireEncode();
+    return queuedWire.size() == sourceWire.size() &&
+      std::equal(queuedWire.begin(), queuedWire.end(), sourceWire.begin()) &&
+      queuedWire.data() != sourceWire.data() &&
+      queued.getName().wireEncode().data() != interest.getName().wireEncode().data();
+  }
+  static bool stopped(RepoNode& node)
+  {
+    std::lock_guard<std::mutex> guard(node.m_originalDataMutex);
+    return node.m_stopOriginalDataWorker;
+  }
+};
+}
 
 namespace {
 using namespace ndnsf_distributed_repo;
@@ -88,6 +125,57 @@ struct CountingStore : RepoStoreBackend
   void abortRanges(const std::string& n) override { delegate->abortRanges(n); }
 };
 
+void waitForOriginalData(ndn::DummyClientFace& face, const RepoNode* node)
+{
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (node && detail::RepoNodeTestAccess::pending(*node) != 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    face.getIoContext().restart();
+    face.processEvents(ndn::time::milliseconds(1));
+    std::this_thread::yield();
+  }
+  if (node) BOOST_REQUIRE_EQUAL(detail::RepoNodeTestAccess::pending(*node), 0U);
+  face.getIoContext().restart();
+  face.processEvents(ndn::time::milliseconds(1));
+}
+
+struct SlowReadStore : CountingStore
+{
+  using CountingStore::CountingStore;
+  mutable std::mutex mutex;
+  mutable std::condition_variable wake;
+  mutable bool armed = false, entered = false, released = false, timedOut = false;
+  mutable std::atomic<bool> failOnce{false};
+  void arm()
+  {
+    std::lock_guard<std::mutex> guard(mutex);
+    armed = true; entered = released = timedOut = false;
+  }
+  void release()
+  {
+    std::lock_guard<std::mutex> guard(mutex);
+    released = true; wake.notify_all();
+  }
+  bool waitEntered()
+  {
+    std::unique_lock<std::mutex> guard(mutex);
+    return wake.wait_for(guard, std::chrono::seconds(2), [&] { return entered; });
+  }
+  bool timeout() const { std::lock_guard<std::mutex> guard(mutex); return timedOut; }
+  StoredObject get(const std::string& name) const override
+  {
+    if (failOnce.exchange(false)) throw 37;
+    {
+      std::unique_lock<std::mutex> guard(mutex);
+      if (armed && !entered) {
+        entered = true; wake.notify_all();
+        timedOut = !wake.wait_for(guard, std::chrono::seconds(2), [&] { return released; });
+      }
+    }
+    return delegate->get(name);
+  }
+};
+
 std::vector<uint8_t>
 packet(const ndn::Name& name, uint8_t content = 42, size_t contentBytes = 1)
 {
@@ -113,13 +201,14 @@ struct PacketSet
   ndn_service_framework::ProtectedBlobManifest manifest;
   ndn_service_framework::EncryptedLargeDataCommitOptions options;
   std::vector<std::pair<ndn::Name, std::vector<uint8_t>>> packets;
-  explicit PacketSet(const std::string& producer = "/actual/packet-set-producer")
+  explicit PacketSet(const std::string& producer = "/actual/packet-set-producer",
+                     const std::string& label = "canonical-source")
   {
     using namespace ndn_service_framework;
     manifest.producer = ndn::Name(producer);
     PublishedContentName semantics;
     semantics.kind = ContentDataKind::ModelFile;
-    semantics.label = "canonical-source";
+    semantics.label = label;
     semantics.modelName = "model/full";
     semantics.modelIdentity = std::string(64, 'b');
     manifest.contentName = semantics;
@@ -159,6 +248,8 @@ struct PacketSet
     options.manifestName = manifest.getName().toUri(ndn::name::UriFormat::CANONICAL);
     options.dataPrefix = manifest.dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
     options.publicationIdentity = "sha256:" + sha256Hex(toBytes(producer));
+    if (label != "canonical-source")
+      options.publicationIdentity = "sha256:" + sha256Hex(toBytes(producer + "\n" + label));
     options.protectionEpoch = "1";
     options.keyReferenceId = "test";
     options.keyReferenceVersion = "1";
@@ -170,9 +261,135 @@ struct PacketSet
     for (const auto& item : packets) options.packetWireBytes += item.second.size();
   }
 };
+void signPacketSetAsProducer(PacketSet& set, ndn::KeyChain& keys)
+{
+  keys.createIdentity(set.manifest.producer, ndn::RsaKeyParams(2048));
+  set.options.packetWireBytes = 0;
+  for (auto& packet : set.packets) {
+    ndn::Data data(ndn::Block(ndn::span<const uint8_t>(packet.second.data(), packet.second.size())));
+    keys.sign(data, ndn::security::signingByIdentity(set.manifest.producer));
+    const auto& wire = data.wireEncode();
+    packet.second.assign(wire.begin(), wire.end());
+    set.options.packetWireBytes += packet.second.size();
+  }
+}
+
+struct OwnedAdapterFixture
+{
+  Fixture files;
+  ndn::KeyChain keys{"pib-memory:", "tpm-memory:"};
+  ndn::DummyClientFace face{keys, {true, true}};
+  StorageCapability capability = files.capability();
+  std::unique_ptr<ndn_service_framework::ServiceProvider> provider;
+  std::shared_ptr<RepoNode> node;
+  std::unique_ptr<SqliteArtifactMetadataStore> journal;
+  std::string database = (files.root / "owned.sqlite3").string();
+  OwnedAdapterFixture()
+  {
+    capability.repoMode = "persistent";
+    (void)keys.createIdentity(ndn::Name("/owned/provider"), ndn::RsaKeyParams(2048));
+    (void)keys.createIdentity(ndn::Name("/owned/authority"), ndn::RsaKeyParams(2048));
+    reopen();
+  }
+  void close()
+  {
+    provider.reset(); // Release registered handlers before inspecting Node lifetime.
+    node.reset(); journal.reset();
+  }
+  void reopen()
+  {
+    close();
+    node = std::make_shared<RepoNode>(ndn::Name("/owned/repo-service"), capability,
+      files.store("owned"), capability.repoNode, "/owned/provider", database);
+    provider = std::make_unique<ndn_service_framework::ServiceProvider>(
+      ndn_service_framework::ServiceProvider::LocalMockTag{}, face, ndn::Name("/owned/group"),
+      keys.getPib().getIdentity(ndn::Name("/owned/provider")).getDefaultKey().getDefaultCertificate(),
+      keys.getPib().getIdentity(ndn::Name("/owned/authority")).getDefaultKey().getDefaultCertificate(),
+      std::filesystem::absolute("examples/trust-any.conf").string());
+    node->registerServices(*provider);
+    journal = std::make_unique<SqliteArtifactMetadataStore>(database, true, 16, false);
+  }
+  static uint64_t now()
+  {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  }
+  ndn_service_framework::EncryptedLargeDataCommitOptions authorize(
+    ndn_service_framework::EncryptedLargeDataCommitOptions options, const ndn::Name& name,
+    const std::string& owner, const std::string& id)
+  {
+    const auto grant = journal->grantUserStorage(owner, capability.repoNode, id, "/owned/writer",
+      name.toUri(ndn::name::UriFormat::ALTERNATE), now() + 60000, now());
+    options.storageActor = ndn_service_framework::DurableStorageActorContext{
+      "/owned/writer", {grant.repoNode, grant.ownerIdentity, grant.grantId, grant.ownerEpoch}};
+    return options;
+  }
+  static std::shared_ptr<const ndn_service_framework::EncryptedLargeDataRangeSource>
+  commit(ndn_service_framework::EncryptedLargeDataRangeStore& adapter, const PacketSet& set,
+         const ndn_service_framework::EncryptedLargeDataCommitOptions& options,
+         const std::function<void()>& active = {})
+  {
+    size_t cursor = 0;
+    return adapter.commitOriginalDataPackets(set.manifest.getName(), options,
+      [&]() -> std::optional<std::pair<ndn::Name, std::vector<uint8_t>>> {
+        if (cursor == set.packets.size()) return std::nullopt;
+        return set.packets[cursor++];
+      }, active);
+  }
+  RepoUserStorageDeleteReply remove(const std::string& owner, const ndn::Name& name,
+                                   uint64_t epoch, const std::string& id)
+  {
+    const auto payload = toBytes(RepoUserStorageDeleteRequest{1, id,
+      name.toUri(ndn::name::UriFormat::ALTERNATE), epoch}.toJson());
+    ndn_service_framework::RequestMessage request;
+    ndn::Buffer buffer(payload.data(), payload.size());
+    request.setPayload(buffer, buffer.size());
+    const auto response = provider->dispatchRequest(ndn::Name(owner), provider->getName(),
+      makeRepoServiceName(node->servicePrefix(), "USER_STORAGE_DELETE"), ndn::Name("/owned/delete").append(id), request);
+    BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+    const auto result = response.getPayload();
+    return RepoUserStorageDeleteReply::fromJson(std::string(result.begin(), result.end()));
+  }
+};
+
+int rejectDirectoryFsync(int fd)
+{
+  struct stat value{};
+  if (::fstat(fd, &value) == 0 && S_ISDIR(value.st_mode)) {
+    errno = EIO; return -1;
+  }
+  return ::fsync(fd);
+}
+struct RejectDirectorySync
+{
+  detail::FilesystemRepoStoreIoHooks previous =
+    detail::installFilesystemRepoStoreIoHooks({rejectDirectoryFsync, nullptr, nullptr});
+  ~RejectDirectorySync() { detail::installFilesystemRepoStoreIoHooks(previous); }
+};
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec201TransparentRepo)
+
+BOOST_AUTO_TEST_CASE(OriginalWireInterestMatchingSupportsPrefixAndImplicitDigest)
+{
+  Fixture fixture;
+  RepoCore repo(fixture.capability(), fixture.store("interest-matching"));
+  const auto name = packetName();
+  const auto wire = packet(name);
+  repo.putDataPacket(name.toUri(), wire);
+  ndn::Interest prefix(name.getPrefix(-1)); prefix.setCanBePrefix(true);
+  BOOST_CHECK(repo.getDataPacket(prefix) == wire);
+  size_t admissions = 0;
+  BOOST_CHECK_THROW(repo.getDataPacket(prefix, [&](const auto&) { ++admissions; return false; }), std::runtime_error);
+  BOOST_CHECK_GT(admissions, 0U);
+  prefix.setCanBePrefix(false);
+  BOOST_CHECK_THROW(repo.getDataPacket(prefix), std::runtime_error);
+  const ndn::Data original(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+  BOOST_CHECK(repo.getDataPacket(ndn::Interest(original.getFullName())) == wire);
+  auto bad = name; const std::vector<uint8_t> zeros(32, 0);
+  bad.appendImplicitSha256Digest(ndn::span<const uint8_t>(zeros.data(), zeros.size()));
+  BOOST_CHECK_THROW(repo.getDataPacket(ndn::Interest(bad)), std::runtime_error);
+}
 
 BOOST_AUTO_TEST_CASE(PacketIdentitySurvivesUriAliasesTwoReplicasAndRestart)
 {
@@ -381,6 +598,130 @@ struct AdmissionFile
   }
 };
 
+BOOST_AUTO_TEST_CASE(PacketFileFailedCleanupRetainsCapacityUntilOwnedAbort)
+{
+  Fixture fixture;
+  AdmissionFile incoming(fixture, "owned-failed-cleanup", 2);
+  auto store = fixture.store("owned-failed-cleanup");
+  const auto original = packet(packetName());
+  auto capability = fixture.capability();
+  capability.freeBytes = original.size() + 2 * incoming.manifest.size;
+  RepoCore repo(capability, store);
+  repo.putDataPacket(packetName().toUri(), original);
+  const auto staging = fixture.root / "owned-failed-cleanup" / "staging";
+  struct RestorePermissions {
+    std::filesystem::path path;
+    ~RestorePermissions() {
+      std::error_code error;
+      std::filesystem::permissions(path, std::filesystem::perms::owner_all, error);
+    }
+  } restore{staging};
+  BOOST_REQUIRE_NE(::geteuid(), 0U); // This oracle requires actual unprivileged unlink denial.
+  bool staged = false;
+  BOOST_CHECK_EXCEPTION(repo.commitOriginalPacketFile(incoming.manifest, incoming.path, [&] {
+    if (!staged && !std::filesystem::is_empty(staging)) {
+      staged = !std::filesystem::is_empty(staging);
+      std::filesystem::permissions(staging,
+        std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
+      throw std::runtime_error("test-owner-cancelled");
+    }
+  }), std::runtime_error, [](const std::runtime_error& error) {
+    return std::string(error.what()) == "test-owner-cancelled";
+  });
+  BOOST_REQUIRE(staged);
+  BOOST_CHECK(!std::filesystem::is_empty(staging));
+  BOOST_CHECK(!repo.has(incoming.manifest.objectName));
+  BOOST_CHECK_EQUAL(repo.reapExpiredRangeReservations(std::chrono::steady_clock::duration::zero()), 0U);
+  BOOST_CHECK(!std::filesystem::is_empty(staging));
+  auto other = incoming.manifest;
+  other.objectName = "/actual/producer/other-capacity";
+  other.operationId = "other-capacity";
+  other.generation = 1;
+  other.size = incoming.manifest.size + 1;
+  std::vector<uint8_t> otherBytes(other.size, 7);
+  other.sha256 = sha256Hex(otherBytes);
+  other.objectType = "object";
+  other.packetNames.clear();
+  other.packetOffsets.clear();
+  BOOST_CHECK_EXCEPTION(repo.putRange(other, {0, other.size}, otherBytes), std::runtime_error,
+    [](const std::runtime_error& error) {
+      return std::string(error.what()).find("insufficient") != std::string::npos;
+    });
+  BOOST_CHECK(repo.getDataPacket(packetName().toUri()) == original);
+  std::filesystem::permissions(staging, std::filesystem::perms::owner_all);
+  auto expected = incoming.manifest;
+  BOOST_CHECK_EQUAL(expected.generation, 0U);
+  expected.generation = 1; // Core assigned this actual staging generation.
+  BOOST_CHECK(repo.abortUserStorageRangesIfOwned(expected));
+  BOOST_CHECK(!repo.abortUserStorageRangesIfOwned(expected));
+  BOOST_CHECK(std::filesystem::is_empty(staging));
+  BOOST_CHECK_NO_THROW(repo.putRange(other, {0, other.size}, otherBytes));
+  BOOST_CHECK(repo.abortUserStorageRangesIfOwned(other));
+  BOOST_CHECK(repo.getDataPacket(packetName().toUri()) == original);
+}
+
+BOOST_AUTO_TEST_CASE(PacketFileCommittedResidueIsNotRolledBackByFailureOrReaper)
+{
+  Fixture fixture;
+  AdmissionFile incoming(fixture, "owned-committed-residue", 2);
+  auto store = fixture.store("owned-committed-residue");
+  auto capability = fixture.capability();
+  capability.freeBytes = 2 * incoming.manifest.size;
+  RepoCore repo(capability, store);
+  const auto staging = fixture.root / "owned-committed-residue" / "staging";
+  bool injected = false;
+  auto committed = incoming.manifest;
+  committed.generation = 1;
+  BOOST_CHECK_EXCEPTION(repo.commitOriginalPacketFile(incoming.manifest, incoming.path, [&] {
+    if (!injected && !std::filesystem::is_empty(staging)) {
+      injected = true;
+      store->commitRanges(committed); // Real durable residue before the Core sees failure.
+      throw std::runtime_error("test-post-commit-cancelled");
+    }
+  }), std::runtime_error, [](const std::runtime_error& error) {
+    return std::string(error.what()) == "test-post-commit-cancelled";
+  });
+  BOOST_CHECK(injected);
+  BOOST_REQUIRE(repo.has(committed.objectName));
+  BOOST_CHECK_EQUAL(repo.reapExpiredRangeReservations(std::chrono::steady_clock::duration::zero()), 0U);
+  auto other = committed;
+  other.objectName = "/actual/producer/committed-residue-capacity";
+  other.operationId = "residue-capacity";
+  other.size = incoming.manifest.size + 1;
+  std::vector<uint8_t> bytes(other.size, 9);
+  other.sha256 = sha256Hex(bytes);
+  other.objectType = "object";
+  other.packetNames.clear();
+  other.packetOffsets.clear();
+  BOOST_CHECK_EXCEPTION(repo.putRange(other, {0, other.size}, bytes), std::runtime_error,
+    [](const std::runtime_error& error) {
+      return std::string(error.what()).find("insufficient") != std::string::npos;
+    });
+  for (const auto& item : incoming.packets)
+    BOOST_CHECK(repo.getDataPacket(item.first.toUri()) == item.second);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedReplacementReaperPreservesOlderCommittedBytes)
+{
+  Fixture fixture;
+  auto store = fixture.store("owned-replacement-reaper");
+  RepoCore repo(fixture.capability(), store);
+  const std::vector<uint8_t> oldBytes{1, 2, 3};
+  const auto old = repo.put("/actual/producer/owned-replacement", oldBytes);
+  auto replacement = old;
+  replacement.operationId = "owned-replacement";
+  replacement.generation = old.generation + 1;
+  const std::vector<uint8_t> newBytes{4, 5, 6, 7};
+  replacement.size = newBytes.size();
+  replacement.sha256 = sha256Hex(newBytes);
+  repo.putRange(replacement, {0, newBytes.size()}, newBytes);
+  BOOST_CHECK_EQUAL(repo.reapExpiredRangeReservations(std::chrono::steady_clock::duration::zero()), 1U);
+  BOOST_CHECK_EQUAL(repo.reapExpiredRangeReservations(std::chrono::steady_clock::duration::zero()), 0U);
+  BOOST_CHECK(repo.get(old.objectName) == oldBytes);
+  BOOST_CHECK_EQUAL(repo.getManifest(old.objectName).generation, old.generation);
+  BOOST_CHECK(std::filesystem::is_empty(fixture.root / "owned-replacement-reaper" / "staging"));
+}
+
 BOOST_AUTO_TEST_CASE(PacketFileAdmissionBoundsCatalogScans)
 {
   Fixture fixture;
@@ -518,6 +859,84 @@ BOOST_AUTO_TEST_CASE(PacketFileCannotShadowLegacyAlternateStandalonePacket)
   BOOST_CHECK(repo.getDataPacket(canonical) == original);
 }
 
+BOOST_AUTO_TEST_CASE(OriginalServingKeepsControlResponsiveAndBoundsShutdown)
+{
+  Fixture fixture;
+  auto store = std::make_shared<SlowReadStore>(fixture.store("slow-serving"));
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keys, {true, true});
+  auto node = std::make_shared<RepoNode>(ndn::Name("/serving/service"),
+    fixture.capability(), store, "/spec201/repo", "/serving/provider");
+  struct ReleaseRead { std::shared_ptr<SlowReadStore> store; ~ReleaseRead() { store->release(); } } release{store};
+  const auto name = packetName(); const auto wire = packet(name);
+  node->core().putDataPacket(name.toUri(), wire);
+  node->registerOriginalDataServing(face);
+  bool controlHandled = false;
+  auto control = face.setInterestFilter(ndn::InterestFilter(ndn::Name("/control")),
+    [&](const ndn::InterestFilter&, const ndn::Interest&) { controlHandled = true; });
+  face.processEvents(ndn::time::milliseconds(10));
+  store->arm();
+  face.receive(ndn::Interest(name)); face.processEvents(ndn::time::milliseconds(1));
+  BOOST_REQUIRE(store->waitEntered());
+  ndn::Interest callerOwned(name);
+  detail::RepoNodeTestAccess::enqueue(*node, callerOwned);
+  BOOST_CHECK(detail::RepoNodeTestAccess::queuedOwnsWire(*node, callerOwned));
+  ndn::Interest oversized(ndn::Name("/oversized").append(std::string(ndn::MAX_NDN_PACKET_SIZE, 'x')));
+  BOOST_REQUIRE_GT(oversized.wireEncode().size(), ndn::MAX_NDN_PACKET_SIZE);
+  detail::RepoNodeTestAccess::enqueue(*node, oversized);
+  BOOST_CHECK_EQUAL(detail::RepoNodeTestAccess::pending(*node), 2U);
+  for (size_t i = 0; i < 300; ++i) face.receive(ndn::Interest(name));
+  face.receive(ndn::Interest(ndn::Name("/control/check")));
+  face.processEvents(ndn::time::milliseconds(10));
+  BOOST_CHECK(controlHandled);
+  BOOST_CHECK(!store->timeout());
+  BOOST_REQUIRE_EQUAL(detail::RepoNodeTestAccess::pending(*node), 256U);
+  BOOST_CHECK(face.sentData.empty());
+  store->release(); waitForOriginalData(face, node.get());
+  BOOST_REQUIRE_EQUAL(face.sentData.size(), 256U);
+  for (const auto& data : face.sentData) {
+    const auto& encoded = data.wireEncode();
+    BOOST_CHECK(std::vector<uint8_t>(encoded.begin(), encoded.end()) == wire);
+  }
+  face.receive(ndn::Interest(name)); face.processEvents(ndn::time::milliseconds(1));
+  waitForOriginalData(face, node.get());
+  BOOST_CHECK_EQUAL(face.sentData.size(), 257U); // an overflowed Interest may retry
+
+  store->failOnce.store(true);
+  face.receive(ndn::Interest(name)); face.processEvents(ndn::time::milliseconds(1));
+  waitForOriginalData(face, node.get());
+  BOOST_CHECK_EQUAL(face.sentData.size(), 257U);
+  face.receive(ndn::Interest(name)); face.processEvents(ndn::time::milliseconds(1));
+  waitForOriginalData(face, node.get());
+  BOOST_CHECK_EQUAL(face.sentData.size(), 258U); // non-std backend failure is contained
+
+  store->arm();
+  face.receive(ndn::Interest(name)); face.processEvents(ndn::time::milliseconds(1));
+  BOOST_REQUIRE(store->waitEntered());
+  for (size_t i = 0; i < 30; ++i) face.receive(ndn::Interest(name));
+  face.processEvents(ndn::time::milliseconds(1));
+  auto stopping = std::async(std::launch::async, [&] { node->beginShutdown(); });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (!detail::RepoNodeTestAccess::stopped(*node) && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::yield();
+  BOOST_REQUIRE(detail::RepoNodeTestAccess::stopped(*node));
+  BOOST_CHECK(stopping.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+  BOOST_CHECK_EQUAL(detail::RepoNodeTestAccess::pending(*node), 1U);
+  face.receive(ndn::Interest(name)); face.processEvents(ndn::time::milliseconds(1));
+  BOOST_CHECK_EQUAL(detail::RepoNodeTestAccess::pending(*node), 1U);
+  store->release();
+  BOOST_REQUIRE(stopping.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+  stopping.get(); waitForOriginalData(face, node.get());
+  const auto afterClose = face.sentData.size();
+  face.receive(ndn::Interest(name)); face.processEvents(ndn::time::milliseconds(1));
+  BOOST_CHECK_EQUAL(face.sentData.size(), afterClose);
+  BOOST_CHECK_THROW(node->registerOriginalDataServing(face), std::logic_error);
+  const std::weak_ptr<RepoNode> weak = node;
+  node.reset(); BOOST_CHECK(weak.expired());
+  face.receive(ndn::Interest(name)); face.processEvents(ndn::time::milliseconds(1));
+  BOOST_CHECK_EQUAL(face.sentData.size(), afterClose);
+}
+
 BOOST_AUTO_TEST_CASE(CatalogParseReuseRequiresExactCurrentBytes)
 {
   Fixture fixture;
@@ -578,6 +997,75 @@ BOOST_AUTO_TEST_CASE(CatalogParseReuseRequiresExactCurrentBytes)
   const auto parsesBeforeReopen = catalogParses.load();
   BOOST_CHECK_EQUAL(store->listManifests().front().policyEpoch, "epoch-b");
   BOOST_CHECK_GT(catalogParses.load(), parsesBeforeReopen);
+}
+
+BOOST_AUTO_TEST_CASE(ExactReadsReuseOnlyCurrentCatalogBytes)
+{
+  Fixture fixture;
+  const auto directory = fixture.root / "exact-read-parse-cache";
+  auto store = makeFilesystemRepoStore(directory.string());
+  const auto wire = packet(packetName());
+  RepoObjectManifest metadata;
+  metadata.objectName = packetName().toUri(ndn::name::UriFormat::CANONICAL);
+  metadata.objectType = "ndn-data-wire";
+  metadata.packetNames = {metadata.objectName};
+  metadata.sha256 = sha256Hex(wire);
+  metadata.size = wire.size();
+  metadata.generation = 1;
+  metadata.policyEpoch = "epoch-a";
+  store->put(metadata, wire);
+  const auto sidecar = std::filesystem::directory_iterator(directory / "manifests")->path();
+  const auto originalTime = std::filesystem::last_write_time(sidecar);
+  const auto writeSidecar = [&](const std::string& bytes) {
+    std::ofstream output(sidecar, std::ios::binary | std::ios::trunc);
+    output << bytes;
+    output.close();
+    std::filesystem::last_write_time(sidecar, originalTime);
+  };
+  CatalogParseScope counts;
+  BOOST_REQUIRE_EQUAL(store->listManifests().size(), 1U);
+  BOOST_REQUIRE_EQUAL(catalogParses.load(), 1U);
+  for (size_t i = 0; i < 12; ++i) {
+    BOOST_CHECK_EQUAL(store->getManifest(metadata.objectName).policyEpoch, "epoch-a");
+    const auto probe = store->probeObjectMetadata(metadata.objectName);
+    BOOST_CHECK(probe.payloadPresent);
+    BOOST_CHECK_EQUAL(probe.payloadSize, wire.size());
+    BOOST_CHECK(store->getRange(metadata.objectName, {0, wire.size()}) == wire);
+  }
+  BOOST_CHECK_EQUAL(catalogParses.load(), 1U);
+
+  metadata.policyEpoch = "epoch-b";
+  const auto current = metadata.toJson();
+  BOOST_REQUIRE_EQUAL(current.size(), std::filesystem::file_size(sidecar));
+  writeSidecar(current);
+  BOOST_CHECK_EQUAL(store->getManifest(metadata.objectName).policyEpoch, "epoch-b");
+  BOOST_CHECK_EQUAL(catalogParses.load(), 2U);
+  BOOST_CHECK_EQUAL(store->probeObjectMetadata(metadata.objectName).manifest.policyEpoch, "epoch-b");
+  BOOST_CHECK(store->getRange(metadata.objectName, {0, wire.size()}) == wire);
+  BOOST_CHECK_EQUAL(catalogParses.load(), 4U);
+  BOOST_CHECK(std::filesystem::last_write_time(sidecar) == originalTime);
+  BOOST_REQUIRE_EQUAL(store->listManifests().front().policyEpoch, "epoch-b");
+  const auto warmParses = catalogParses.load();
+  BOOST_CHECK(store->getRange(metadata.objectName, {0, wire.size()}) == wire);
+  BOOST_CHECK_EQUAL(catalogParses.load(), warmParses);
+
+  writeSidecar(std::string(current.size(), 'x'));
+  BOOST_CHECK_THROW(store->getManifest(metadata.objectName), std::exception);
+  BOOST_CHECK_THROW(store->probeObjectMetadata(metadata.objectName), std::exception);
+  BOOST_CHECK_THROW(store->getRange(metadata.objectName, {0, wire.size()}), std::exception);
+  writeSidecar(current);
+  const auto backup = directory / "sidecar-backup";
+  std::filesystem::rename(sidecar, backup);
+  std::filesystem::create_symlink(backup, sidecar);
+  BOOST_CHECK_THROW(store->getManifest(metadata.objectName), std::exception);
+  BOOST_CHECK_THROW(store->probeObjectMetadata(metadata.objectName), std::exception);
+  BOOST_CHECK_THROW(store->getRange(metadata.objectName, {0, wire.size()}), std::exception);
+  std::filesystem::remove(sidecar);
+  BOOST_CHECK_THROW(store->getManifest(metadata.objectName), std::out_of_range);
+  BOOST_CHECK(!store->probeObjectMetadata(metadata.objectName).manifestPresent);
+  BOOST_CHECK_THROW(store->getRange(metadata.objectName, {0, wire.size()}), std::out_of_range);
+  std::filesystem::rename(backup, sidecar);
+  BOOST_CHECK_EQUAL(store->getManifest(metadata.objectName).policyEpoch, "epoch-b");
 }
 
 BOOST_AUTO_TEST_CASE(CatalogParseCacheEvictsBeyondEntryBound)
@@ -724,6 +1212,79 @@ BOOST_AUTO_TEST_CASE(JsonQuotingPreservesLegacyBytesAndLargeMetadata)
     std::chrono::steady_clock::now() - start).count();
   BOOST_TEST_MESSAGE("REPO_JSON_QUOTE_BENCH repetitions=" << repetitions <<
     " encodedBytes=" << encodedBytes << " elapsed_us=" << elapsed);
+}
+
+BOOST_AUTO_TEST_CASE(DurableEnvelopeReleasePreservesIndependentSourcesAndRestart)
+{
+  using namespace ndn_service_framework;
+  Fixture fixture;
+  const std::vector<uint8_t> bytes{11, 22, 33, 44};
+  const auto inputPath = fixture.root / "envelope-input.bin";
+  {
+    std::ofstream input(inputPath, std::ios::binary);
+    input.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    BOOST_REQUIRE(input.good());
+  }
+  EncryptedLargeDataCommitOptions options;
+  options.retention = EncryptedLargeDataRetention::Durable;
+  options.publicationIdentity = "spec204-durable-envelope";
+  options.protectionEpoch = "epoch1";
+  options.keyReferenceId = "key1";
+  options.keyReferenceVersion = "v1";
+  options.ciphertextManifestDigest = std::string(64, 'c');
+  options.servingLocator = "/actual/envelope-producer";
+  options.contentDigest = std::string(64, 'd');
+  options.plaintextSize = bytes.size();
+  const std::string name = "/actual/envelope-producer/durable";
+  std::string persistedManifest;
+  {
+    auto repo = std::make_shared<RepoCore>(fixture.capability(), fixture.store("envelope"));
+    RepoEncryptedLargeDataStore backend(repo);
+    auto original = backend.commitFile(name, inputPath, bytes.size(), options);
+    BOOST_REQUIRE(original);
+    BOOST_REQUIRE(original->isDurable());
+    BOOST_CHECK_THROW(original->requireCurrentDurableStorageOwner(ndn::Name(name), "/owner/u"), std::runtime_error);
+    auto shared = original;
+    auto first = backend.lookupDurable(options.publicationIdentity);
+    auto second = backend.lookupDurable(options.publicationIdentity);
+    BOOST_REQUIRE(first);
+    BOOST_REQUIRE(second);
+    BOOST_CHECK(first->source != second->source);
+    persistedManifest = repo->getManifest(name).toJson();
+    original->release();
+    original->release();
+    original.reset();
+    shared.reset();
+    BOOST_CHECK(repo->has(name));
+    BOOST_CHECK(first->source->read(0, bytes.size()) == bytes);
+    first->source->release();
+    first->source->release();
+    first.reset();
+    BOOST_CHECK(second->source->read(0, bytes.size()) == bytes);
+    BOOST_CHECK_EQUAL(repo->getManifest(name).toJson(), persistedManifest);
+
+    const std::string transientName = "/actual/envelope-producer/transient";
+    auto transient = backend.commitFile(transientName, inputPath, bytes.size());
+    BOOST_REQUIRE(transient);
+    BOOST_CHECK(!transient->isDurable());
+    BOOST_CHECK(repo->has(transientName));
+    transient->release();
+    transient->release();
+    BOOST_CHECK(!repo->has(transientName));
+    BOOST_CHECK(second->source->read(0, bytes.size()) == bytes);
+    BOOST_CHECK_EQUAL(repo->getManifest(name).toJson(), persistedManifest);
+  }
+  {
+    auto repo = std::make_shared<RepoCore>(fixture.capability(), fixture.store("envelope"));
+    RepoEncryptedLargeDataStore backend(repo);
+    auto restored = backend.lookupDurable(options.publicationIdentity);
+    BOOST_REQUIRE(restored);
+    BOOST_CHECK(restored->source->isDurable());
+    BOOST_CHECK(restored->source->read(0, bytes.size()) == bytes);
+    restored->source->release();
+    BOOST_CHECK(restored->source->read(0, bytes.size()) == bytes);
+    BOOST_CHECK_EQUAL(repo->getManifest(name).toJson(), persistedManifest);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(AtomicPacketSetBackendPreservesWireAcrossReuseAndRestart)
@@ -1026,6 +1587,543 @@ BOOST_AUTO_TEST_CASE(FileSourceFullWireSlotAndCapacityFailureAreSafe)
   else ::unsetenv("NDNSF_FILE_PUBLICATION_CACHE_MAX_BYTES");
   for (const auto& item : std::filesystem::directory_iterator(limited))
     BOOST_CHECK(item.path().extension() != ".packets" && item.path().extension() != ".partial");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(Spec204OwnedLiveStore)
+
+BOOST_AUTO_TEST_CASE(PersistentOriginalServingUsesPhysicalSharedClaimsAndPreservesWire)
+{
+  OwnedAdapterFixture f; PacketSet packets; signPacketSetAsProducer(packets, f.keys);
+  const auto root = packets.manifest.getName();
+  const auto objectName = root.toUri(ndn::name::UriFormat::ALTERNATE);
+  auto adapter = f.node->createEncryptedLargeDataStore();
+  const auto u = f.authorize(packets.options, root, "/owner/u", "u1");
+  auto uSource = OwnedAdapterFixture::commit(*adapter, packets, u);
+  auto hit = adapter->lookupDurable(packets.options.publicationIdentity);
+  BOOST_REQUIRE(hit);
+  const auto v = f.authorize(packets.options, root, "/owner/v", "v1");
+  auto vSource = adapter->retainDurableSource(*hit, v);
+  for (const auto& packet : packets.packets) {
+    const auto physical = f.node->core().lookupDataPacketObject(packet.first.toUri());
+    BOOST_REQUIRE(physical);
+    BOOST_CHECK_EQUAL(physical->objectName, objectName);
+    BOOST_CHECK_EQUAL(physical->objectType, "original-packet-set");
+    BOOST_CHECK_EQUAL(physical->size, packets.options.packetWireBytes);
+  }
+  BOOST_CHECK(!f.node->core().lookupDataPacketObject("/unknown/original"));
+  BOOST_CHECK_EQUAL(f.node->core().catalogLookup(packets.packets.back().first.toUri()).manifest.objectName,
+                    packets.packets.back().first.toUri(ndn::name::UriFormat::CANONICAL));
+  f.face.processEvents(ndn::time::milliseconds(10));
+  const auto registrationsBegin = f.face.sentInterests.size();
+  BOOST_CHECK_NO_THROW(f.node->registerOriginalDataServing(f.face));
+  BOOST_CHECK_THROW(f.node->registerOriginalDataServing(f.face), std::logic_error);
+  f.face.processEvents(ndn::time::milliseconds(10));
+  size_t routes = 0;
+  const ndn::Name registrationCommand("/localhost/nfd/rib/register");
+  for (auto i = registrationsBegin; i < f.face.sentInterests.size(); ++i) {
+    const auto& name = f.face.sentInterests[i].getName();
+    if (!registrationCommand.isPrefixOf(name) || name.size() <= 4) continue;
+    ndn::nfd::ControlParameters parameters;
+    parameters.wireDecode(name[4].blockFromValue());
+    BOOST_CHECK(parameters.getName() == ndn::Name("/owned/provider"));
+    ++routes;
+  }
+  BOOST_CHECK_EQUAL(routes, 1U);
+  const auto request = [&](const ndn::Interest& interest, size_t count,
+                           const std::vector<uint8_t>& wire) {
+    f.face.getIoContext().restart(); const auto before = f.face.sentData.size();
+    f.face.receive(interest); f.face.processEvents(ndn::time::milliseconds(1));
+    waitForOriginalData(f.face, f.node.get());
+    BOOST_REQUIRE_EQUAL(f.face.sentData.size(), before + count);
+    if (count == 0) return;
+    const auto& actual = f.face.sentData.back(); const auto& encoded = actual.wireEncode();
+    BOOST_CHECK(std::vector<uint8_t>(encoded.begin(), encoded.end()) == wire);
+    BOOST_CHECK(interest.matchesData(actual));
+    BOOST_CHECK(ndn::security::verifySignature(actual,
+      f.keys.getPib().getIdentity(packets.manifest.producer).getDefaultKey().getDefaultCertificate()));
+  };
+  for (const auto& packet : packets.packets) {
+    request(ndn::Interest(packet.first), 1, packet.second);
+    const ndn::Data original(ndn::Block(ndn::span<const uint8_t>(packet.second.data(), packet.second.size())));
+    request(ndn::Interest(original.getFullName()), 1, packet.second);
+  }
+  request(ndn::Interest(root).setCanBePrefix(true), 1, packets.packets.front().second);
+  auto wrongDigest = root;
+  const std::vector<uint8_t> zeros(32, 0);
+  wrongDigest.appendImplicitSha256Digest(ndn::span<const uint8_t>(zeros.data(), zeros.size()));
+  request(ndn::Interest(wrongDigest), 0, {});
+  request(ndn::Interest(packets.manifest.producer).setCanBePrefix(true), 0, {});
+  const auto ownerlessName = packetName();
+  f.node->core().putDataPacket(ownerlessName.toUri(), packet(ownerlessName));
+  request(ndn::Interest(ownerlessName), 0, {});
+  const auto charge = f.journal->userStorageUsage("/owner/v", f.capability.repoNode).committedBytes;
+  f.journal->prepareUserStorageCleanup("/owner/u", f.capability.repoNode, "serving-u",
+    objectName, u.storageActor->grant.ownerEpoch, f.now());
+  for (const auto& packet : packets.packets) request(ndn::Interest(packet.first), 1, packet.second);
+  f.journal->prepareUserStorageCleanup("/owner/v", f.capability.repoNode, "serving-v",
+    objectName, v.storageActor->grant.ownerEpoch, f.now());
+  BOOST_CHECK(f.node->core().hasDataPacket(root.toUri()));
+  for (const auto& packet : packets.packets) request(ndn::Interest(packet.first), 0, {});
+  BOOST_CHECK_EQUAL(f.remove("/owner/u", root, u.storageActor->grant.ownerEpoch, "serving-u").state, "DELETED");
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/u", f.capability.repoNode).committedBytes, 0U);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/v", f.capability.repoNode).committedBytes, charge);
+  BOOST_CHECK_EQUAL(f.remove("/owner/v", root, v.storageActor->grant.ownerEpoch, "serving-v").state, "DELETED");
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/v", f.capability.repoNode).committedBytes, 0U);
+  request(ndn::Interest(root), 0, {});
+  const auto fresh = f.authorize(packets.options, root, "/owner/u", "u2");
+  BOOST_CHECK_GT(fresh.storageActor->grant.ownerEpoch, u.storageActor->grant.ownerEpoch);
+  auto freshSource = OwnedAdapterFixture::commit(*adapter, packets, fresh);
+  request(ndn::Interest(root), 1, packets.packets.front().second);
+  BOOST_CHECK_THROW(uSource->readOriginalDataPacket(root), std::runtime_error);
+  uSource.reset(); vSource.reset(); freshSource.reset(); hit.reset(); adapter.reset();
+  const std::weak_ptr<RepoNode> oldNode = f.node;
+  f.close(); BOOST_CHECK(oldNode.expired());
+  f.face.processEvents(ndn::time::milliseconds(10));
+  request(ndn::Interest(root), 0, {});
+  f.reopen(); f.node->registerOriginalDataServing(f.face);
+  f.face.processEvents(ndn::time::milliseconds(10));
+  request(ndn::Interest(root), 1, packets.packets.front().second);
+  BOOST_CHECK_EQUAL(f.remove("/owner/u", root, fresh.storageActor->grant.ownerEpoch, "serving-reopen").state,
+                    "DELETED");
+  request(ndn::Interest(root), 0, {});
+}
+
+BOOST_AUTO_TEST_CASE(SharedOriginalPacketServingSelectsCurrentHolderBeforeReading)
+{
+  OwnedAdapterFixture f;
+  const ndn::Name producer("/actual/shared-key-producer");
+  f.keys.createIdentity(producer, ndn::RsaKeyParams(2048));
+  ndn::Data key(ndn::Name(producer).append("KEY").append("shared-original").appendVersion(1));
+  key.setContent(toBytes("opaque encrypted key packet"));
+  f.keys.sign(key, ndn::security::signingByIdentity(producer));
+  const auto& encoded = key.wireEncode();
+  const std::vector<uint8_t> keyWire(encoded.begin(), encoded.end());
+  auto adapter = f.node->createEncryptedLargeDataStore();
+  f.node->registerOriginalDataServing(f.face);
+  f.face.processEvents(ndn::time::milliseconds(10));
+  const auto request = [&](const ndn::Interest& interest, size_t count) {
+    f.face.getIoContext().restart(); const auto before = f.face.sentData.size();
+    f.face.receive(interest); f.face.processEvents(ndn::time::milliseconds(1));
+    waitForOriginalData(f.face, f.node.get());
+    BOOST_REQUIRE_EQUAL(f.face.sentData.size(), before + count);
+    if (count == 0) return;
+    const auto& actual = f.face.sentData.back(); const auto& wire = actual.wireEncode();
+    BOOST_CHECK(std::vector<uint8_t>(wire.begin(), wire.end()) == keyWire);
+    BOOST_CHECK(interest.matchesData(actual));
+    BOOST_CHECK(ndn::security::verifySignature(actual,
+      f.keys.getPib().getIdentity(producer).getDefaultKey().getDefaultCertificate()));
+  };
+  for (const bool bothFenced : {false, true}) {
+    const std::string prefix = bothFenced ? "both" : "one";
+    PacketSet a(producer.toUri(), prefix + "-a"), b(producer.toUri(), prefix + "-b");
+    signPacketSetAsProducer(a, f.keys); signPacketSetAsProducer(b, f.keys);
+    for (auto* packets : {&a, &b}) {
+      packets->packets.emplace_back(key.getName(), keyWire);
+      packets->options.auxiliaryPacketNames = {key.getName()};
+      packets->options.packetWireBytes += keyWire.size();
+    }
+    const auto ao = f.authorize(a.options, a.manifest.getName(), "/owner/u", prefix + "-u");
+    const auto bo = f.authorize(b.options, b.manifest.getName(), "/owner/v", prefix + "-v");
+    auto as = OwnedAdapterFixture::commit(*adapter, a, ao);
+    auto bs = OwnedAdapterFixture::commit(*adapter, b, bo);
+    const auto holder = f.node->core().lookupDataPacketObject(key.getName().toUri());
+    BOOST_REQUIRE(holder);
+    const bool firstIsA = ndn::Name(holder->objectName) == a.manifest.getName();
+    BOOST_REQUIRE(firstIsA || ndn::Name(holder->objectName) == b.manifest.getName());
+    const auto firstRoot = firstIsA ? a.manifest.getName() : b.manifest.getName();
+    const auto secondRoot = firstIsA ? b.manifest.getName() : a.manifest.getName();
+    const auto firstOwner = firstIsA ? "/owner/u" : "/owner/v";
+    const auto secondOwner = firstIsA ? "/owner/v" : "/owner/u";
+    const auto firstEpoch = (firstIsA ? ao : bo).storageActor->grant.ownerEpoch;
+    const auto secondEpoch = (firstIsA ? bo : ao).storageActor->grant.ownerEpoch;
+    const auto firstCharge = f.journal->userStorageUsage(firstOwner, f.capability.repoNode).committedBytes;
+    const auto secondCharge = f.journal->userStorageUsage(secondOwner, f.capability.repoNode).committedBytes;
+    request(ndn::Interest(key.getName()), 1);
+    f.journal->prepareUserStorageCleanup(firstOwner, f.capability.repoNode, prefix + "-first",
+      firstRoot.toUri(), firstEpoch, f.now());
+    request(ndn::Interest(key.getName()), 1);
+    request(ndn::Interest(key.getFullName()), 1);
+    ndn::Interest bootstrap(key.getName().getPrefix(-1));
+    bootstrap.setCanBePrefix(true);
+    request(bootstrap, 1); // select the live shared holder, preserving original wire
+    bootstrap.setCanBePrefix(false);
+    request(bootstrap, 0);
+    auto wrongDigest = key.getName(); const std::vector<uint8_t> zeros(32, 0);
+    wrongDigest.appendImplicitSha256Digest(ndn::span<const uint8_t>(zeros.data(), zeros.size()));
+    request(ndn::Interest(wrongDigest), 0);
+    if (bothFenced) {
+      f.journal->prepareUserStorageCleanup(secondOwner, f.capability.repoNode, prefix + "-second",
+        secondRoot.toUri(), secondEpoch, f.now());
+      request(ndn::Interest(key.getName()), 0);
+      bootstrap.setCanBePrefix(true); request(bootstrap, 0);
+      BOOST_CHECK_EQUAL(f.journal->userStorageUsage(firstOwner, f.capability.repoNode).committedBytes, firstCharge);
+      BOOST_CHECK_EQUAL(f.journal->userStorageUsage(secondOwner, f.capability.repoNode).committedBytes, secondCharge);
+    }
+    BOOST_CHECK_EQUAL(f.remove(firstOwner, firstRoot, firstEpoch, prefix + "-first").state, "DELETED");
+    request(ndn::Interest(key.getName()), bothFenced ? 0 : 1);
+    if (!bothFenced) {
+      f.journal->prepareUserStorageCleanup(secondOwner, f.capability.repoNode, prefix + "-second",
+        secondRoot.toUri(), secondEpoch, f.now());
+      request(ndn::Interest(key.getName()), 0);
+      BOOST_CHECK_EQUAL(f.journal->userStorageUsage(secondOwner, f.capability.repoNode).committedBytes, secondCharge);
+    }
+    BOOST_CHECK_EQUAL(f.remove(secondOwner, secondRoot, secondEpoch, prefix + "-second").state, "DELETED");
+    request(ndn::Interest(key.getName()), 0);
+    BOOST_CHECK_EQUAL(f.journal->userStorageUsage(firstOwner, f.capability.repoNode).committedBytes, 0U);
+    BOOST_CHECK_EQUAL(f.journal->userStorageUsage(secondOwner, f.capability.repoNode).committedBytes, 0U);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(PersistentOriginalServingRejectsIncompletePhysicalMetadata)
+{
+  OwnedAdapterFixture f; PacketSet packets; signPacketSetAsProducer(packets, f.keys);
+  const auto root = packets.manifest.getName();
+  auto adapter = f.node->createEncryptedLargeDataStore();
+  auto source = OwnedAdapterFixture::commit(*adapter, packets,
+    f.authorize(packets.options, root, "/owner/u", "u1"));
+  const auto charge = f.journal->userStorageUsage("/owner/u", f.capability.repoNode).committedBytes;
+  const auto physical = f.node->core().lookupDataPacketObject(root.toUri());
+  BOOST_REQUIRE(physical); BOOST_REQUIRE_EQUAL(physical->generation, 1U);
+  BOOST_REQUIRE(!physical->operationId.empty());
+  const auto metadata = f.files.root / "owned" / "manifests" /
+    (sha256Hex(toBytes(root.toUri(ndn::name::UriFormat::ALTERNATE))) + ".json");
+  std::ifstream input(metadata, std::ios::binary);
+  const std::string original(std::istreambuf_iterator<char>(input), {});
+  input.close();
+  const auto write = [&](const std::string& bytes) {
+    std::ofstream output(metadata, std::ios::binary | std::ios::trunc); output << bytes;
+    BOOST_REQUIRE(output.good());
+  };
+  const auto request = [&](size_t count) {
+    f.face.getIoContext().restart(); const auto before = f.face.sentData.size();
+    f.face.receive(ndn::Interest(root)); f.face.processEvents(ndn::time::milliseconds(1));
+    waitForOriginalData(f.face, f.node.get());
+    BOOST_REQUIRE_EQUAL(f.face.sentData.size(), before + count);
+    if (count == 1) {
+      const auto& wire = f.face.sentData.back().wireEncode();
+      BOOST_CHECK(std::vector<uint8_t>(wire.begin(), wire.end()) == packets.packets.front().second);
+    }
+    BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/u", f.capability.repoNode).committedBytes, charge);
+  };
+  f.node->registerOriginalDataServing(f.face); f.face.processEvents(ndn::time::milliseconds(10));
+  request(1);
+  for (const bool zeroGeneration : {true, false}) {
+    auto changed = *physical;
+    if (zeroGeneration) changed.generation = 0;
+    else changed.operationId.clear();
+    auto encoded = changed.toJson(); BOOST_REQUIRE_LE(encoded.size(), original.size());
+    encoded.append(original.size() - encoded.size(), ' '); write(encoded);
+    BOOST_CHECK_EQUAL(std::filesystem::file_size(metadata), original.size());
+    const auto probe = f.node->core().probeObjectMetadata(physical->objectName);
+    BOOST_REQUIRE(probe.manifestPresent);
+    if (zeroGeneration) BOOST_CHECK_EQUAL(probe.manifest.generation, 0U);
+    else BOOST_CHECK(probe.manifest.operationId.empty());
+    request(0); write(original); request(1);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(ExactActorAdmissionPreservesSignedPacketWireAndMeasuredCharge)
+{
+  OwnedAdapterFixture f;
+  PacketSet packets;
+  const auto root = packets.manifest.getName();
+  auto adapter = f.node->createEncryptedLargeDataStore();
+  BOOST_CHECK_THROW(OwnedAdapterFixture::commit(*adapter, packets, packets.options), std::runtime_error);
+  auto options = f.authorize(packets.options, root, "/owner/u", "u1");
+  auto wrong = options;
+  wrong.storageActor->authenticatedWriterIdentity = "/alien/writer";
+  BOOST_CHECK_THROW(OwnedAdapterFixture::commit(*adapter, packets, wrong), std::runtime_error);
+  wrong = options; ++wrong.storageActor->grant.ownerEpoch;
+  BOOST_CHECK_THROW(OwnedAdapterFixture::commit(*adapter, packets, wrong), std::runtime_error);
+  wrong = options; wrong.storageActor->grant.repoNode = "/other/node";
+  BOOST_CHECK_THROW(OwnedAdapterFixture::commit(*adapter, packets, wrong), std::runtime_error);
+  const auto expired = f.journal->grantUserStorage("/owner/u", f.capability.repoNode,
+    "expired", "/owned/writer", root.toUri(ndn::name::UriFormat::ALTERNATE),
+    OwnedAdapterFixture::now() - 1000, OwnedAdapterFixture::now() - 2000);
+  wrong = options;
+  wrong.storageActor->grant.grantId = expired.grantId;
+  BOOST_CHECK_THROW(OwnedAdapterFixture::commit(*adapter, packets, wrong), std::runtime_error);
+  BOOST_CHECK(f.node->core().list().empty());
+  BOOST_CHECK(std::filesystem::is_empty(f.files.root / "owned" / "staging"));
+  auto source = OwnedAdapterFixture::commit(*adapter, packets, options);
+  BOOST_CHECK_NO_THROW(source->requireCurrentDurableStorageOwner(root, "/owner/u"));
+  BOOST_CHECK_NO_THROW(source->requireCurrentDurableStorageOwner(
+    ndn::Name(root.toUri(ndn::name::UriFormat::CANONICAL)), "/owner/u"));
+  BOOST_CHECK_THROW(source->requireCurrentDurableStorageOwner(root, "/owner/v"), std::runtime_error);
+  BOOST_CHECK_THROW(source->requireCurrentDurableStorageOwner(ndn::Name("/wrong/manifest"), "/owner/u"), std::runtime_error);
+  BOOST_CHECK_THROW(source->requireCurrentDurableStorageOwner(ndn::Name(), "/owner/u"), std::runtime_error);
+  BOOST_CHECK_THROW(source->requireCurrentDurableStorageOwner(root, ""), std::runtime_error);
+  BOOST_CHECK_THROW(source->requireCurrentDurableStorageOwner(root, "/"), std::runtime_error);
+  BOOST_CHECK_THROW(source->requireCurrentDurableStorageOwner(root, "/8=owner/8=u"), std::runtime_error);
+  const auto key = root.toUri(ndn::name::UriFormat::ALTERNATE);
+  const auto probe = f.node->core().probeObjectMetadata(key);
+  BOOST_REQUIRE(probe.manifestPresent);
+  BOOST_CHECK_EQUAL(probe.manifest.objectName, key);
+  BOOST_CHECK_EQUAL(probe.manifest.generation, 1U);
+  BOOST_CHECK_EQUAL(probe.manifest.packetNames.front(), root.toUri(ndn::name::UriFormat::CANONICAL));
+  BOOST_CHECK_EQUAL(probe.payloadSize, packets.options.packetWireBytes);
+  const auto usage = f.journal->userStorageUsage("/owner/u", f.capability.repoNode);
+  BOOST_CHECK_EQUAL(usage.committedBytes, probe.payloadSize + probe.manifestWireBytes);
+  BOOST_CHECK_EQUAL(usage.reservedBytes, 0U);
+  for (const auto& packet : packets.packets) {
+    BOOST_CHECK(source->readOriginalDataPacket(packet.first) == packet.second);
+    BOOST_CHECK(f.node->core().getDataPacket(packet.first.toUri()) == packet.second);
+  }
+  auto again = OwnedAdapterFixture::commit(*adapter, packets, options);
+  BOOST_CHECK(again->readOriginalDataPacket(root) == packets.packets.front().second);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/u", f.capability.repoNode).committedBytes,
+                    usage.committedBytes);
+}
+
+BOOST_AUTO_TEST_CASE(ProvisionalSharedSourcesHonorOwnerDeleteAndNewEpoch)
+{
+  OwnedAdapterFixture f;
+  PacketSet packets;
+  const auto root = packets.manifest.getName();
+  auto adapter = f.node->createEncryptedLargeDataStore();
+  const auto u = f.authorize(packets.options, root, "/owner/u", "u1");
+  auto uSource = OwnedAdapterFixture::commit(*adapter, packets, u);
+  auto candidate = adapter->lookupDurable(packets.options.publicationIdentity);
+  BOOST_REQUIRE(candidate);
+  BOOST_CHECK(candidate->source->isDurable());
+  BOOST_CHECK_THROW(candidate->source->requireCurrentDurableStorageOwner(root, "/owner/u"), std::runtime_error);
+  BOOST_CHECK_THROW(candidate->source->readOriginalDataPacket(root), std::runtime_error);
+  const auto v = f.authorize(packets.options, root, "/owner/v", "v1");
+  auto vSource = adapter->retainDurableSource(*candidate, v);
+  BOOST_CHECK_NO_THROW(vSource->requireCurrentDurableStorageOwner(root, "/owner/v"));
+  const auto charge = f.journal->userStorageUsage("/owner/v", f.capability.repoNode).committedBytes;
+  BOOST_CHECK_EQUAL(charge, f.journal->userStorageUsage("/owner/u", f.capability.repoNode).committedBytes);
+  auto vAgain = adapter->retainDurableSource(*candidate, v);
+  BOOST_CHECK(vAgain->readOriginalDataPacket(root) == packets.packets.front().second);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/v", f.capability.repoNode).committedBytes, charge);
+  (void)f.journal->prepareUserStorageCleanup("/owner/u", f.capability.repoNode, "delete-u",
+    root.toUri(ndn::name::UriFormat::ALTERNATE), u.storageActor->grant.ownerEpoch, OwnedAdapterFixture::now());
+  BOOST_CHECK_THROW(uSource->readOriginalDataPacket(root), std::runtime_error);
+  BOOST_CHECK_THROW(uSource->requireCurrentDurableStorageOwner(root, "/owner/u"), std::runtime_error);
+  BOOST_CHECK_NO_THROW(vSource->requireCurrentDurableStorageOwner(root, "/owner/v"));
+  BOOST_CHECK(vSource->readOriginalDataPacket(root) == packets.packets.front().second);
+  BOOST_CHECK_EQUAL(f.journal->liveUserStorageClaimsForObject(f.capability.repoNode,
+    root.toUri(ndn::name::UriFormat::ALTERNATE)).size(), 2U);
+  BOOST_CHECK_EQUAL(f.remove("/owner/u", root, u.storageActor->grant.ownerEpoch, "delete-u").state, "DELETED");
+  BOOST_CHECK_THROW(uSource->readOriginalDataPacket(root), std::runtime_error);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/u", f.capability.repoNode).committedBytes, 0U);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/v", f.capability.repoNode).committedBytes, charge);
+  const auto freshU = f.authorize(packets.options, root, "/owner/u", "u2");
+  BOOST_CHECK_GT(freshU.storageActor->grant.ownerEpoch, u.storageActor->grant.ownerEpoch);
+  auto newUSource = adapter->retainDurableSource(*candidate, freshU);
+  BOOST_CHECK_NO_THROW(newUSource->requireCurrentDurableStorageOwner(root, "/owner/u"));
+  BOOST_CHECK_THROW(uSource->requireCurrentDurableStorageOwner(root, "/owner/u"), std::runtime_error);
+  BOOST_CHECK(newUSource->readOriginalDataPacket(root) == packets.packets.front().second);
+  BOOST_CHECK_THROW(uSource->readOriginalDataPacket(root), std::runtime_error);
+  BOOST_CHECK(vSource->readOriginalDataPacket(root) == packets.packets.front().second);
+}
+
+BOOST_AUTO_TEST_CASE(RetentionFsyncFailureRetainsReservationUntilActualRetry)
+{
+  OwnedAdapterFixture f;
+  PacketSet packets;
+  const auto root = packets.manifest.getName();
+  auto adapter = f.node->createEncryptedLargeDataStore();
+  auto uSource = OwnedAdapterFixture::commit(*adapter, packets,
+    f.authorize(packets.options, root, "/owner/u", "u1"));
+  const auto candidate = adapter->lookupDurable(packets.options.publicationIdentity);
+  BOOST_REQUIRE(candidate);
+  const auto v = f.authorize(packets.options, root, "/owner/v", "v1");
+  const auto charge = f.journal->userStorageUsage("/owner/u", f.capability.repoNode).committedBytes;
+  {
+    RejectDirectorySync fault;
+    BOOST_CHECK_THROW(adapter->retainDurableSource(*candidate, v), std::runtime_error);
+  }
+  const auto pending = f.journal->userStorageUsage("/owner/v", f.capability.repoNode);
+  BOOST_CHECK_EQUAL(pending.committedBytes, 0U);
+  BOOST_CHECK_EQUAL(pending.reservedBytes, charge);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/u", f.capability.repoNode).committedBytes, charge);
+  BOOST_CHECK(uSource->readOriginalDataPacket(root) == packets.packets.front().second);
+  auto recovered = adapter->retainDurableSource(*candidate, v);
+  BOOST_CHECK(recovered->readOriginalDataPacket(root) == packets.packets.front().second);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/v", f.capability.repoNode).reservedBytes, 0U);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/v", f.capability.repoNode).committedBytes, charge);
+}
+
+BOOST_AUTO_TEST_CASE(SharedHolderDriftRejectsNewOwnerBeforeMetadataRewrite)
+{
+  OwnedAdapterFixture f;
+  PacketSet packets;
+  const auto root = packets.manifest.getName();
+  auto adapter = f.node->createEncryptedLargeDataStore();
+  auto source = OwnedAdapterFixture::commit(*adapter, packets,
+    f.authorize(packets.options, root, "/owner/u", "u1"));
+  const auto candidate = adapter->lookupDurable(packets.options.publicationIdentity);
+  BOOST_REQUIRE(candidate);
+  const auto v = f.authorize(packets.options, root, "/owner/v", "v1");
+  const auto metadata = f.files.root / "owned" / "manifests" /
+    (sha256Hex(toBytes(root.toUri(ndn::name::UriFormat::ALTERNATE))) + ".json");
+  const auto read = [&] {
+    std::ifstream input(metadata, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  };
+  const auto original = read();
+  {
+    std::ofstream output(metadata, std::ios::binary);
+    output << " \n" << original;
+    BOOST_REQUIRE(output.good());
+  }
+  BOOST_CHECK_THROW(adapter->retainDurableSource(*candidate, v), std::runtime_error);
+  BOOST_CHECK_EQUAL(read(), " \n" + original);
+  BOOST_CHECK_THROW(source->readOriginalDataPacket(root), std::runtime_error);
+  {
+    std::ofstream output(metadata, std::ios::binary); output << original;
+    BOOST_REQUIRE(output.good());
+  }
+  sqlite3* raw = nullptr;
+  BOOST_REQUIRE_EQUAL(sqlite3_open(f.database.c_str(), &raw), SQLITE_OK);
+  const auto result = sqlite3_exec(raw,
+    "UPDATE repo_user_storage_claims SET manifest_bytes=manifest_bytes+1 WHERE owner_identity='/owner/u'",
+    nullptr, nullptr, nullptr);
+  sqlite3_close(raw);
+  BOOST_REQUIRE_EQUAL(result, SQLITE_OK);
+  BOOST_CHECK_THROW(adapter->retainDurableSource(*candidate, v), std::runtime_error);
+  BOOST_CHECK_EQUAL(read(), original);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/v", f.capability.repoNode).reservedBytes, 0U);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/v", f.capability.repoNode).committedBytes, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedEnvelopeSurvivesNodeDestructionAndReconciledReopen)
+{
+  OwnedAdapterFixture f;
+  {
+    RepoNode transient(ndn::Name("/trusted/service"), f.capability, f.files.store("trusted"));
+    BOOST_CHECK_THROW(transient.createEncryptedLargeDataStore(), std::logic_error);
+  }
+  PacketSet profile;
+  auto options = profile.options;
+  options.packetStorageFormat = "encrypted-envelope-bytes";
+  const ndn::Name name("/owned/producer/envelope");
+  const std::vector<uint8_t> bytes{4, 5, 6, 7};
+  const auto input = f.files.root / "input.bin";
+  {
+    std::ofstream file(input, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    BOOST_REQUIRE(file.good());
+  }
+  options = f.authorize(options, name, "/owner/u", "u1");
+  auto adapter = f.node->createEncryptedLargeDataStore();
+  auto source = adapter->commitFile(name.toUri(), input, bytes.size(), options);
+  const auto probe = f.node->core().probeObjectMetadata(name.toUri(ndn::name::UriFormat::ALTERNATE));
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/u", f.capability.repoNode).committedBytes,
+                    bytes.size() + probe.manifestWireBytes);
+  std::weak_ptr<RepoNode> node = f.node;
+  f.close(); adapter.reset();
+  BOOST_CHECK(node.expired());
+  BOOST_CHECK(source->read(0, bytes.size()) == bytes);
+  source->release(); source->release();
+  BOOST_CHECK(source->read(0, bytes.size()) == bytes);
+  source.reset();
+  f.reopen();
+  adapter = f.node->createEncryptedLargeDataStore();
+  const auto provisional = adapter->lookupDurable(options.publicationIdentity);
+  BOOST_REQUIRE(provisional);
+  BOOST_CHECK_THROW(provisional->source->read(0, 1), std::runtime_error);
+  auto restored = adapter->retainDurableSource(*provisional, options);
+  BOOST_CHECK(restored->read(0, bytes.size()) == bytes);
+  BOOST_CHECK_EQUAL(f.remove("/owner/u", name, options.storageActor->grant.ownerEpoch, "cleanup").state, "DELETED");
+  BOOST_CHECK_THROW(restored->read(0, bytes.size()), std::runtime_error);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/u", f.capability.repoNode).committedBytes, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(ReservedQuotaRejectsRealPacketSpoolBeforeAnyPersistentRange)
+{
+  OwnedAdapterFixture f;
+  PacketSet packets;
+  BOOST_REQUIRE(f.node->core().list().empty());
+  BOOST_REQUIRE(f.journal->reconcileUserStorageInventory(f.capability.repoNode, {},
+    OwnedAdapterFixture::now()).ready);
+  // An independently admitted pending write occupies quota before any payload
+  // arrives. This is a ledger reservation fixture, not a measured 1 GB upload.
+  const auto grant = f.journal->grantUserStorage("/owner/u", f.capability.repoNode,
+    "pending", "/owned/writer", "/owned/pending", OwnedAdapterFixture::now() + 60000,
+    OwnedAdapterFixture::now());
+  (void)f.journal->reserveUserStorage("/owned/writer", f.capability.repoNode, "/owner/u",
+    grant.grantId, "pending-op", {"/owned/pending", std::string(64, 'b'), 1,
+      REPO_USER_STORAGE_LIMIT_BYTES - 1, 1}, OwnedAdapterFixture::now());
+  auto options = f.authorize(packets.options, packets.manifest.getName(), "/owner/u", "u1");
+  auto adapter = f.node->createEncryptedLargeDataStore();
+  BOOST_CHECK_EXCEPTION(OwnedAdapterFixture::commit(*adapter, packets, options), std::runtime_error,
+    [](const auto& error) { return std::string(error.what()).find("QUOTA_EXCEEDED") == 0; });
+  BOOST_CHECK(f.node->core().list().empty());
+  BOOST_CHECK(std::filesystem::is_empty(f.files.root / "owned" / "staging"));
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/u", f.capability.repoNode).reservedBytes,
+                    REPO_USER_STORAGE_LIMIT_BYTES);
+  BOOST_CHECK_EQUAL(f.journal->pendingUserStorageWrites(f.capability.repoNode).size(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(CancelledPacketStagingRefundsOnlyAfterPhysicalAbsence)
+{
+  OwnedAdapterFixture f;
+  PacketSet packets;
+  const auto root = packets.manifest.getName();
+  auto options = f.authorize(packets.options, root, "/owner/u", "u1");
+  auto adapter = f.node->createEncryptedLargeDataStore();
+  std::vector<uint8_t> spool;
+  for (const auto& packet : packets.packets) spool.insert(spool.end(), packet.second.begin(), packet.second.end());
+  const auto stage = f.files.root / "owned" / "staging" / (sha256Hex(spool) + ".1.part");
+  bool reachedStage = false;
+  const auto cancel = [&] {
+    if (std::filesystem::exists(stage)) {
+      reachedStage = true;
+      throw std::runtime_error("test cancellation after actual staging");
+    }
+  };
+  BOOST_CHECK_THROW(OwnedAdapterFixture::commit(*adapter, packets, options, cancel), std::runtime_error);
+  BOOST_CHECK(reachedStage);
+  BOOST_CHECK(!std::filesystem::exists(stage));
+  BOOST_CHECK(f.node->core().list().empty());
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/u", f.capability.repoNode).reservedBytes, 0U);
+  BOOST_CHECK_THROW(OwnedAdapterFixture::commit(*adapter, packets, options), std::runtime_error);
+  BOOST_CHECK(f.node->core().list().empty());
+}
+
+BOOST_AUTO_TEST_CASE(FailedPacketStageRemovalKeepsQuotaUntilOwnerCleanup)
+{
+  OwnedAdapterFixture f;
+  PacketSet packets;
+  const auto root = packets.manifest.getName();
+  auto options = f.authorize(packets.options, root, "/owner/u", "u1");
+  auto adapter = f.node->createEncryptedLargeDataStore();
+  std::vector<uint8_t> spool;
+  for (const auto& packet : packets.packets) spool.insert(spool.end(), packet.second.begin(), packet.second.end());
+  const auto directory = f.files.root / "owned" / "staging";
+  const auto stage = directory / (sha256Hex(spool) + ".1.part");
+  struct RestoreMode
+  {
+    std::filesystem::path path;
+    mode_t original;
+    ~RestoreMode() { ::chmod(path.c_str(), original); }
+  };
+  struct stat value{};
+  BOOST_REQUIRE_EQUAL(::stat(directory.c_str(), &value), 0);
+  RestoreMode restore{directory, value.st_mode & 07777};
+  bool reachedStage = false;
+  const auto failRemoval = [&] {
+    if (std::filesystem::exists(stage)) {
+      reachedStage = true;
+      if (::chmod(directory.c_str(), 0500) != 0) throw std::runtime_error("test chmod failed");
+      throw std::runtime_error("test cancellation with actual unlink failure");
+    }
+  };
+  BOOST_REQUIRE_NE(::getuid(), 0U);
+  BOOST_CHECK_THROW(OwnedAdapterFixture::commit(*adapter, packets, options, failRemoval), std::runtime_error);
+  BOOST_CHECK(reachedStage);
+  BOOST_CHECK(std::filesystem::exists(stage));
+  BOOST_CHECK_GT(f.journal->userStorageUsage("/owner/u", f.capability.repoNode).reservedBytes, 0U);
+  BOOST_REQUIRE_EQUAL(::chmod(directory.c_str(), restore.original), 0);
+  BOOST_CHECK_EQUAL(f.remove("/owner/u", root, options.storageActor->grant.ownerEpoch, "failed-cleanup").state,
+                    "DELETED");
+  BOOST_CHECK(!std::filesystem::exists(stage));
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/u", f.capability.repoNode).reservedBytes, 0U);
+  BOOST_CHECK_EQUAL(f.journal->userStorageUsage("/owner/u", f.capability.repoNode).committedBytes, 0U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

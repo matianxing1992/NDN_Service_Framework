@@ -84,6 +84,11 @@ REPO_OPERATIONS = (
     "CAPABILITY", "CACHE_STATUS", "STATUS", "CATALOG_STATUS",
     "CATALOG_SNAPSHOT", "CATALOG_DELTA", "CATALOG_LOOKUP", "DELETE",
 )
+OWNER_REPO_OPERATIONS = (
+    "USER_STORAGE_GRANT", "USER_STORAGE_USAGE", "USER_STORAGE_LIST",
+    "USER_STORAGE_DELETE",
+)
+T002_NETWORK_PUBLISH_WORKER = "T002_NETWORK_PUBLISH_WORKER"
 
 
 def repo_acl_principals() -> Tuple[List[str], List[str]]:
@@ -637,7 +642,9 @@ def generate_identities(ndn, output: Path) -> Dict[str, Any]:
 
 
 def make_runtime_policy(source: Path, destination: Path, root_cert: Path,
-                        metadata_denied_user: Optional[str] = None) -> None:
+                        metadata_denied_user: Optional[str] = None,
+                        owner_operations: Tuple[str, ...] = (),
+                        owner_identity: Optional[str] = None) -> None:
     import yaml
 
     config = yaml.safe_load(source.read_text(encoding="utf-8"))
@@ -663,6 +670,17 @@ def make_runtime_policy(source: Path, destination: Path, root_cert: Path,
         }
         for operation in REPO_OPERATIONS
     ]
+    if owner_operations:
+        if not owner_identity or set(owner_operations) & set(REPO_OPERATIONS):
+            raise RuntimeError("Repo owner service ACL requires a distinct owner and operations")
+        config["services"].extend({
+            "name": SERVICE_PREFIX + "/" + operation,
+            "model": SERVICE_PREFIX + "/" + operation,
+            "roles": [],
+            "dependencies": [],
+            "users": [owner_identity],
+            "providers": repo_providers,
+        } for operation in owner_operations)
     config["services"].append({
         "name": DI_SERVICE,
         "model": "/Spec192/DI/Model",
@@ -688,7 +706,8 @@ def make_runtime_policy(source: Path, destination: Path, root_cert: Path,
     destination.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
 
-def node_environment(host, repo_root: Path, *, no_python: bool = False) -> Dict[str, str]:
+def node_environment(host, repo_root: Path, *, no_python: bool = False,
+                     system_installed_runtime: bool = False) -> Dict[str, str]:
     home = str(Path(host.params["params"]["homeDir"]))
     env = dict(os.environ)
     for name in ("NDN_LOG", SELECTED_REQUEST_TRACE_ENV,
@@ -699,9 +718,11 @@ def node_environment(host, repo_root: Path, *, no_python: bool = False) -> Dict[
         "HOME": home,
         "NDN_CLIENT_CONF": str(Path(home) / ".ndn/client.conf"),
         "NDN_CLIENT_TRANSPORT": "unix:///run/nfd/{}.sock".format(host.name),
-        "LD_LIBRARY_PATH": ":".join(filter(None, [str(repo_root / "build"),
-                                                        str(repo_root / "NDNSF-DistributedRepo/pythonWrapper/build/lib.linux-x86_64-3.8"),
-                                                        env.get("LD_LIBRARY_PATH", "")])),
+        "LD_LIBRARY_PATH": ("/usr/local/lib:/opt/gstreamer-1.20/lib"
+                            if system_installed_runtime else
+                            ":".join(filter(None, [str(repo_root / "build"),
+                                str(repo_root / "NDNSF-DistributedRepo/pythonWrapper/build/lib.linux-x86_64-3.8"),
+                                env.get("LD_LIBRARY_PATH", "")]))),
         "PYTHONPATH": ":".join(filter(None, [str(repo_root / "NDNSF-DistributedInference"),
                                                   str(repo_root / "NDNSF-DistributedRepo/pythonWrapper"),
                                                   str(repo_root / "pythonWrapper"),
@@ -908,6 +929,34 @@ def stop_daemon(record: Dict[str, Any], timeout_s: float = 8.0) -> Dict[str, Any
 
 
 def stop_repo_server(record: Dict[str, Any], timeout_s: float = 8.0) -> Dict[str, Any]:
+    shutdown_file = record.get("graceful_shutdown_file")
+    proc = record["proc"]
+    if shutdown_file and proc.poll() is None:
+        request = Path(shutdown_file)
+        if request.exists():
+            raise RuntimeError("Repo server shutdown request already exists: " + str(request))
+        request.write_text("stop\n", encoding="utf-8")
+        try:
+            rc = proc.wait(timeout=timeout_s)
+            method = "ORDERLY_FACE_SHUTDOWN"
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = proc.wait(timeout=5)
+            method = "SIGKILL-fallback"
+        if not record["stream"].closed:
+            record["stream"].close()
+        stopped = {"host": record["host"], "label": record["label"],
+                   "pid": record["pid"], "exit_code": rc,
+                   "stop_method": method, "log": str(record["log"])}
+        log = read_log(record["log"])
+        required_markers = ("SPEC204_ORDERLY_SHUTDOWN_REQUESTED",
+                            "SPEC204_FACE_EVENT_LOOP_STOPPED",
+                            "SPEC204_REPO_NODE_RELEASED_BEFORE_FACE")
+        if rc != 0 or method != "ORDERLY_FACE_SHUTDOWN" or any(
+                marker not in log for marker in required_markers):
+            raise RuntimeError("Repo service missed orderly worker/Face shutdown: {}".format(
+                stopped))
+        return stopped
     stopped = stop_daemon(record, timeout_s)
     if (stopped["stop_method"] != "SIGTERM" or
             stopped["exit_code"] not in (0, -signal.SIGTERM)):
@@ -1225,6 +1274,8 @@ def start_repo_server(ndn, output: Path, processes: List[Dict[str, Any]],
         "--ack-collection-ms", str(REPO_SERVER_ACK_COLLECTION_MS),
         "--request-timeout-ms", str(REPO_SERVER_REQUEST_TIMEOUT_MS),
     ]
+    if repo_server.name == "spec193-object-repo-server" and legacy_object_protocol:
+        argv.extend(["--legacy-object-protocol", "1"])
     environment = node_environment(host, REPO, no_python=True)
     record = spawn(ndn, output, processes, host_name, label, argv,
                    repo_server_environment(environment, label))
@@ -1371,7 +1422,9 @@ def build_services(ndn, output: Path, runtime_config: Path,
                    processes: List[Dict[str, Any]], repo_root: Path,
                    server_ready_text: str = "Persistent Repo serving",
                    durable_repo_root: Optional[Path] = None,
-                   durable_mode: Optional[str] = None):
+                   durable_mode: Optional[str] = None,
+                   legacy_object_protocol: bool = True,
+                   orderly_object_shutdown: bool = False):
     environments = {name: node_environment(ndn.net[name], repo_root)
                     for name in HOST_ROLES}
     environments[CONTROLLER_HOST]["NDNSF_CONTROLLER_GENERATION_STATE"] = str(
@@ -1423,16 +1476,31 @@ def build_services(ndn, output: Path, runtime_config: Path,
             "--ack-collection-ms", str(REPO_SERVER_ACK_COLLECTION_MS),
             "--request-timeout-ms", str(REPO_SERVER_REQUEST_TIMEOUT_MS),
         ]
+        if repo_server.name == "spec193-object-repo-server" and legacy_object_protocol:
+            argv.extend(["--legacy-object-protocol", "1"])
         repo_label = "cpp-repo-" + host_name
+        graceful_shutdown_file = None
+        if orderly_object_shutdown:
+            if repo_server.name != "spec193-object-repo-server" or legacy_object_protocol:
+                raise RuntimeError("orderly object shutdown requires the owned object server")
+            graceful_shutdown_file = output / "shutdown-requests" / (repo_label + ".request")
+            graceful_shutdown_file.parent.mkdir(parents=True, exist_ok=True)
+            if graceful_shutdown_file.exists():
+                raise RuntimeError("Repo server shutdown request already exists: " +
+                                   str(graceful_shutdown_file))
+            argv.extend(["--shutdown-file", str(graceful_shutdown_file)])
         record = spawn(ndn, output, processes, host_name,
                        repo_label, argv,
                        repo_server_environment(node_environment(
-                           ndn.net[host_name], repo_root, no_python=True),
+                           ndn.net[host_name], repo_root, no_python=True,
+                           system_installed_runtime=orderly_object_shutdown),
                            repo_label))
         record["repo_dir"] = repo_dir
         record["database"] = database
         record["repo_node"] = repo_node
         record["provider_identity"] = provider
+        if graceful_shutdown_file is not None:
+            record["graceful_shutdown_file"] = str(graceful_shutdown_file)
         wait_log(record, server_ready_text, 35)
         assert_no_python_mapped(record)
         servers.append(record)
@@ -2304,6 +2372,64 @@ def run_spec193_object_baseline(ndn, output: Path,
             "capability_signer_key_locator": capability.group(3),
             "capture_offsets": capture_offsets,
             "repo_state_before": before, "repo_state_after": after}
+
+
+def run_spec204_network_publish_worker(ndn, output: Path,
+                                      processes: List[Dict[str, Any]],
+                                      repo_client: Path,
+                                      servers: List[Dict[str, Any]],
+                                      trust_schema: Path) -> Dict[str, Any]:
+    if len(servers) != 2:
+        raise RuntimeError("Spec204 network worker requires two owned Repo services")
+    source = output / "artifacts/spec204-owned-worker-source.bin"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"Spec204 owned publication worker MiniNDN cross-process\x00v1")
+    report = output / "spec204-owned-worker-report.json"
+    handle = output / "spec204-owned-worker-handle.json"
+    expires_at_ms = int(time.time() * 1000) + 600000
+    operation_key = "spec204-worker-" + digest(source)[:24] + "-" + str(time.time_ns())
+    argv = [str(repo_client), "--mode", "spec204-owned-publish",
+            "--source", str(source), "--handle-out", str(handle),
+            "--report-out", str(report), "--key", operation_key,
+            "--group", GROUP, "--controller", CONTROLLER,
+            "--authority", CONTROLLER, "--trust-schema", str(trust_schema),
+            "--service-prefix", SERVICE_PREFIX,
+            "--user", DI_PROVIDER, "--owner", USER,
+            "--grant-expiry-ms", str(expires_at_ms),
+            "--repo-a", REPO_A_ID, "--provider-a", REPO_A_PROVIDER,
+            "--repo-b", REPO_B_ID, "--provider-b", REPO_B_PROVIDER,
+            "--verify-owner-list-delete", "1"]
+    child = run_child(ndn, output, processes, APP_HOST,
+                      "spec204-owned-publish-worker", argv,
+                      node_environment(ndn.net[APP_HOST], REPO, no_python=True,
+                                       system_installed_runtime=True),
+                      360, require_no_python=True)
+    child_log = read_log(Path(child["log"]))
+    if "SPEC204_OWNED_PUBLISH_RETRY_PASS" not in child_log or \
+            "SPEC204_OWNER_LIST_DELETE_PASS" not in child_log:
+        raise RuntimeError("Spec204 owner grant/write/usage/list/delete sequence did not pass")
+    if not handle.is_file() or not report.is_file():
+        raise RuntimeError("Spec204 owner workflow omitted durable handle or report")
+    if any(server["proc"].poll() is not None for server in servers):
+        raise RuntimeError("owned Repo server exited before campaign shutdown")
+    shutdowns = [stop_repo_server(server) for server in servers]
+    return {
+        "case_id": T002_NETWORK_PUBLISH_WORKER,
+        "status": "PASS",
+        "client": child,
+        "source_sha256": digest(source),
+        "owner_identity": USER,
+        "producer_identity": DI_PROVIDER,
+        "targets": [REPO_A_ID, REPO_B_ID],
+        "operation_key": operation_key,
+        "owner_workflow_markers": [
+            "SPEC204_OWNED_PUBLISH_RETRY_PASS",
+            "SPEC204_OWNER_LIST_DELETE_PASS",
+        ],
+        "handle": str(handle),
+        "report": str(report),
+        "server_shutdowns": shutdowns,
+    }
 
 
 def run_spec193_persistence_seed(ndn, output: Path,
@@ -6361,6 +6487,8 @@ def run_spec193_partial_consistency(ndn, output: Path,
         object_argv = list(servers[1]["argv"])
         object_argv[0] = str(object_server)
         object_argv[object_argv.index("--database") + 1] = str(object_database)
+        if "--legacy-object-protocol" not in object_argv:
+            object_argv.extend(["--legacy-object-protocol", "1"])
         os.kill(servers[0]["pid"], signal.SIGSTOP)
         try:
             stopped = [stop_repo_server(servers[1])]
@@ -7859,7 +7987,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--campaign-case", choices=("A05", "ARTIFACT_BASELINE",
                                                    "ARTIFACT_SIX_HOST",
-                                                   "OBJECT_BASELINE", "PERSIST_SEED", "PERSIST_READ", "PERSIST_ARTIFACT_SEED", "PERSIST_ARTIFACT_READ", "L01", "L02", "L03_L04", "NW_OBJECT", "NW_MALFORMED", "O01", "O02", "O03", "O04", "O05", "O06_O07", "O08", "O09", "O10", "O11", "O12", "O13", "O14", "O15", "O16", "O17_ROUTE",
+                                                    "OBJECT_BASELINE", T002_NETWORK_PUBLISH_WORKER, "PERSIST_SEED", "PERSIST_READ", "PERSIST_ARTIFACT_SEED", "PERSIST_ARTIFACT_READ", "L01", "L02", "L03_L04", "NW_OBJECT", "NW_MALFORMED", "O01", "O02", "O03", "O04", "O05", "O06_O07", "O08", "O09", "O10", "O11", "O12", "O13", "O14", "O15", "O16", "O17_ROUTE",
                                                    "PERSISTENT_MODE_BOUNDARY", "NW_REJECT", "NW_NEGATIVE", "NW_WRONG_SIGNER", "P01_P02", "P06", "P05", "P03_P04",
                                                    "INAPP_MATRIX", "A04", "A06",
                                                    "A06_RANGE", "A06_LARGE", "A09", "A07",
@@ -7958,6 +8086,12 @@ def main() -> int:
             return 2
         raise
     preflight = None
+    runtime_binary_paths = {}
+    if args.campaign_case == T002_NETWORK_PUBLISH_WORKER:
+        runtime_binary_paths = {
+            "spec192-repo-client": Path("/usr/local/bin/spec192-repo-client"),
+            "spec193-object-repo-server": Path("/usr/local/bin/spec193-object-repo-server"),
+        }
     if args.campaign_case:
         acl_services = None
         if args.preflight_acl_services:
@@ -7970,10 +8104,23 @@ def main() -> int:
                 require_six=args.campaign_case in
                     ("ARTIFACT_SIX_HOST", "A08_ONE", "A08_QUORUM", "A08_REJECT", "A21"),
                 require_seven=args.campaign_case == "A07",
-                object_mode=args.campaign_case in ("OBJECT_BASELINE", "P05", "PERSIST_SEED", "PERSIST_READ", "L01", "L02", "L03_L04", "NW_OBJECT", "NW_MALFORMED", "NW_WRONG_SIGNER", "O01", "O02", "O03", "O04", "O05", "O06_O07", "O08", "O09", "O10", "O11", "O12", "O13", "O14", "O15", "O16", "O17_ROUTE"),
+                object_mode=args.campaign_case in ("OBJECT_BASELINE", T002_NETWORK_PUBLISH_WORKER, "P05", "PERSIST_SEED", "PERSIST_READ", "L01", "L02", "L03_L04", "NW_OBJECT", "NW_MALFORMED", "NW_WRONG_SIGNER", "O01", "O02", "O03", "O04", "O05", "O06_O07", "O08", "O09", "O10", "O11", "O12", "O13", "O14", "O15", "O16", "O17_ROUTE"),
                 lock_path=args.candidate_lock, acl_services=acl_services,
                 include_object_server=args.campaign_case == "A08_REJECT",
-                include_importer=args.campaign_case == "P05")
+                include_importer=args.campaign_case == "P05",
+                expected_feature_directory=(spec193_preflight.SPEC204_FEATURE_DIRECTORY
+                                             if args.campaign_case == T002_NETWORK_PUBLISH_WORKER
+                                             else spec193_preflight.SPEC202_FEATURE_DIRECTORY),
+                design_files=(spec193_preflight.SPEC204_NETWORK_WORKER_DESIGN_FILES
+                              if args.campaign_case == T002_NETWORK_PUBLISH_WORKER
+                              else spec193_preflight.DESIGN_FILES),
+                owner_operations=(OWNER_REPO_OPERATIONS
+                                  if args.campaign_case == T002_NETWORK_PUBLISH_WORKER
+                                  else ()),
+                owner_identity=(USER
+                                if args.campaign_case == T002_NETWORK_PUBLISH_WORKER
+                                else None),
+                runtime_binary_paths=runtime_binary_paths)
         except spec193_preflight.PreflightError as error:
             if args.preflight_only:
                 print(json.dumps({"status": "REJECT", "failure_class": error.failure_class,
@@ -7995,8 +8142,11 @@ def main() -> int:
     captures: List[Dict[str, Any]] = []
     capture_results: List[Dict[str, Any]] = []
     manifest: Dict[str, Any] = {
-        "spec": "193" if args.campaign_case else "192",
+        "spec": "204" if args.campaign_case == T002_NETWORK_PUBLISH_WORKER else
+                "193" if args.campaign_case else "192",
         "scenario": (
+            "Spec204 cross-process owned Repo publication worker, owner authority and shutdown"
+            if args.campaign_case == T002_NETWORK_PUBLISH_WORKER else
             "Spec193 A05 authenticated discovery without storage mutation"
             if args.campaign_case == "A05" else
             "Spec193 artifact lifecycle, failover, and DI baseline"
@@ -8136,6 +8286,9 @@ def main() -> int:
             "mininet": metadata.version("mininet"),
         },
         "repo_operations_authorized": list(REPO_OPERATIONS),
+        "owner_repo_operations_authorized": (
+            list(OWNER_REPO_OPERATIONS)
+            if args.campaign_case == T002_NETWORK_PUBLISH_WORKER else []),
         "private_keys_shared": False,
     }
     ndn = None
@@ -8211,23 +8364,38 @@ def main() -> int:
         runtime_config = args.output_dir / "repo_policy.yaml"
         template = REPO / "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"
         metadata_denied_user = USER if args.campaign_case == "O17_ROUTE" else None
-        make_runtime_policy(template, runtime_config,
-                            Path(identities["root_certificate"]),
-                            metadata_denied_user=metadata_denied_user)
+        make_runtime_policy(
+            template, runtime_config, Path(identities["root_certificate"]),
+            metadata_denied_user=metadata_denied_user,
+            owner_operations=(OWNER_REPO_OPERATIONS
+                              if args.campaign_case == T002_NETWORK_PUBLISH_WORKER
+                              else ()),
+            owner_identity=(USER
+                            if args.campaign_case == T002_NETWORK_PUBLISH_WORKER
+                            else None))
         if args.campaign_case:
             manifest["verified_runtime_policy_sha256"] = \
                 spec193_preflight.verify_runtime_policy(
                     runtime_config, SERVICE_PREFIX, REPO_OPERATIONS,
                     *repo_acl_principals(),
-                    metadata_denied_user=metadata_denied_user)
+                    metadata_denied_user=metadata_denied_user,
+                    owner_operations=(OWNER_REPO_OPERATIONS
+                                      if args.campaign_case == T002_NETWORK_PUBLISH_WORKER
+                                      else ()),
+                    owner_identity=(USER
+                                    if args.campaign_case == T002_NETWORK_PUBLISH_WORKER
+                                    else None))
         trust_schema = args.output_dir / "generated-policy/trust-schema.conf"
         server_candidates = (
+            [runtime_binary_paths["spec193-object-repo-server"]]
+            if args.campaign_case == T002_NETWORK_PUBLISH_WORKER else
             [REPO / "build/spec193-object-repo-server"]
             if args.campaign_case in ("OBJECT_BASELINE", "P05", "PERSIST_SEED", "PERSIST_READ", "L01", "L02", "L03_L04", "NW_OBJECT", "NW_MALFORMED", "NW_WRONG_SIGNER", "O01", "O02", "O03", "O04", "O05", "O06_O07", "O08", "O09", "O10", "O11", "O12", "O13", "O14", "O15", "O16", "O17_ROUTE") else
             [REPO / "build/NDNSF-DistributedRepo/DistributedRepoServer",
              REPO / "build/DistributedRepoServer"])
         repo_server = next((item for item in server_candidates if item.is_file()), None)
-        repo_client = REPO / "build/spec192-repo-client"
+        repo_client = runtime_binary_paths.get(
+            "spec192-repo-client", REPO / "build/spec192-repo-client")
         if repo_server is None or not repo_client.is_file():
             raise RuntimeError("build the exact C++ Repo server and spec192-repo-client before MiniNDN")
         manifest["controller_target_certificate_imports"] = []
@@ -8238,7 +8406,9 @@ def main() -> int:
                 "import-controller-target-public-certificate-{:02d}".format(index),
                 [str(repo_client), "--mode", "import-public-certificate",
                  "--certificate", certificate_file],
-                node_environment(ndn.net[CONTROLLER_HOST], REPO), 15,
+                node_environment(ndn.net[CONTROLLER_HOST], REPO,
+                                 system_installed_runtime=(
+                                     args.campaign_case == T002_NETWORK_PUBLISH_WORKER)), 15,
                 require_no_python=True)
             imported["target_identity"] = identity
             manifest["controller_target_certificate_imports"].append(imported)
@@ -8251,7 +8421,9 @@ def main() -> int:
                 "import-controller-public-certificate-" + host_name,
                 [str(repo_client), "--mode", "import-public-certificate",
                  "--certificate", identities["controller_certificate_file"]],
-                node_environment(ndn.net[host_name], REPO), 15,
+                node_environment(ndn.net[host_name], REPO,
+                                 system_installed_runtime=(
+                                     args.campaign_case == T002_NETWORK_PUBLISH_WORKER)), 15,
                 require_no_python=True))
         ldd_executable = shutil.which("ldd")
         if ldd_executable is None:
@@ -8260,13 +8432,15 @@ def main() -> int:
             ndn, args.output_dir, runtime_config, trust_schema,
             repo_server, processes, REPO,
             server_ready_text=("Spec193 object Repo serving"
-                               if args.campaign_case in ("OBJECT_BASELINE", "P05", "PERSIST_SEED", "PERSIST_READ", "L01", "L02", "L03_L04", "NW_OBJECT", "NW_MALFORMED", "NW_WRONG_SIGNER", "O01", "O02", "O03", "O04", "O05", "O06_O07", "O08", "O09", "O10", "O11", "O12", "O13", "O14", "O15", "O16", "O17_ROUTE") else
+                               if args.campaign_case in ("OBJECT_BASELINE", T002_NETWORK_PUBLISH_WORKER, "P05", "PERSIST_SEED", "PERSIST_READ", "L01", "L02", "L03_L04", "NW_OBJECT", "NW_MALFORMED", "NW_WRONG_SIGNER", "O01", "O02", "O03", "O04", "O05", "O06_O07", "O08", "O09", "O10", "O11", "O12", "O13", "O14", "O15", "O16", "O17_ROUTE") else
                                "Persistent Repo serving"),
             durable_repo_root=args.durable_repo_root,
             durable_mode=("seed" if args.campaign_case in
                           ("PERSIST_SEED", "PERSIST_ARTIFACT_SEED") else
                           "read" if args.campaign_case in
-                          ("PERSIST_READ", "PERSIST_ARTIFACT_READ") else None))
+                           ("PERSIST_READ", "PERSIST_ARTIFACT_READ") else None),
+            legacy_object_protocol=args.campaign_case != T002_NETWORK_PUBLISH_WORKER,
+            orderly_object_shutdown=args.campaign_case == T002_NETWORK_PUBLISH_WORKER)
         manifest["server_binary"] = str(repo_server)
         manifest["server_sha256"] = digest(repo_server)
         manifest["repo_server_configuration"] = {
@@ -8275,18 +8449,34 @@ def main() -> int:
         }
         manifest["client_binary"] = str(repo_client)
         manifest["client_sha256"] = digest(repo_client)
+        if args.campaign_case == T002_NETWORK_PUBLISH_WORKER:
+            manifest["system_installed_runtime"] = {
+                "binary_paths": {"server": str(repo_server), "client": str(repo_client)},
+                "library_search_path": "/usr/local/lib:/opt/gstreamer-1.20/lib",
+            }
         server_ldd = subprocess.check_output(
             [ldd_executable, str(repo_server)],
-            env=node_environment(ndn.net[REPO_A_HOST], REPO, no_python=True),
+            env=node_environment(ndn.net[REPO_A_HOST], REPO, no_python=True,
+                                 system_installed_runtime=(
+                                     args.campaign_case == T002_NETWORK_PUBLISH_WORKER)),
             text=True, stderr=subprocess.STDOUT)
         client_ldd = subprocess.check_output(
             [ldd_executable, str(repo_client)],
-            env=node_environment(ndn.net[APP_HOST], REPO, no_python=True),
+            env=node_environment(ndn.net[APP_HOST], REPO, no_python=True,
+                                 system_installed_runtime=(
+                                     args.campaign_case == T002_NETWORK_PUBLISH_WORKER)),
             text=True, stderr=subprocess.STDOUT)
         if "libpython" in server_ldd.lower() or "libpython" in client_ldd.lower():
             raise RuntimeError("standalone C++ Repo service/client links a Python runtime")
         if "not found" in server_ldd.lower() or "not found" in client_ldd.lower():
             raise RuntimeError("standalone C++ Repo service/client has an unresolved shared library")
+        if args.campaign_case == T002_NETWORK_PUBLISH_WORKER:
+            checkout_root = str(REPO.resolve())
+            repo_library = "libndn-service-framework.so => /usr/local/lib/"
+            for label, resolved in (("server", server_ldd), ("client", client_ldd)):
+                if checkout_root in resolved or repo_library not in resolved:
+                    raise RuntimeError(
+                        "Spec204 {} did not resolve the system-installed NDNSF runtime".format(label))
         manifest["server_ldd"] = server_ldd.splitlines()
         manifest["client_ldd"] = client_ldd.splitlines()
         manifest["server_runtime_libraries"] = runtime_libraries(server_ldd)
@@ -8301,6 +8491,9 @@ def main() -> int:
             for item in [controller] + servers]
         if args.campaign_case == "A05":
             scenario = run_spec193_discovery(
+                ndn, args.output_dir, processes, repo_client, servers, trust_schema)
+        elif args.campaign_case == T002_NETWORK_PUBLISH_WORKER:
+            scenario = run_spec204_network_publish_worker(
                 ndn, args.output_dir, processes, repo_client, servers, trust_schema)
         elif args.campaign_case == "OBJECT_BASELINE":
             scenario = run_spec193_object_baseline(
@@ -8531,7 +8724,10 @@ def main() -> int:
         ]
         for record in processes:
             if record["proc"].poll() is None and record not in captures:
-                daemon_stops.append(stop_daemon(record))
+                if record.get("graceful_shutdown_file"):
+                    daemon_stops.append(stop_repo_server(record))
+                else:
+                    daemon_stops.append(stop_daemon(record))
         capture_results.extend(stop_capture(record) for record in captures)
         manifest["pcap_traces"] = capture_results
         manifest["service_stop_results"] = daemon_stops

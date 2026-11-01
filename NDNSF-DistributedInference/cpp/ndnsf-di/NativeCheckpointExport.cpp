@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePrivateCheckpointFile.hpp"
 
 #include <cerrno>
 #include <fcntl.h>
@@ -10,6 +11,7 @@
 #include <atomic>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace ndnsf::di {
 namespace {
@@ -88,9 +90,16 @@ std::filesystem::path makeTemporaryPath(const std::filesystem::path& parent,
 
 } // namespace
 
-void nativeExportPrivateCheckpoint(const std::filesystem::path& destination,
-                                   const NativeJson& state,
-                                   const NativeCheckpointExportOptions& options)
+NativeCheckpointRollbackUnconfirmed::NativeCheckpointRollbackUnconfirmed(
+  std::filesystem::path retainedBackup)
+  : std::runtime_error("native checkpoint rollback unconfirmed")
+  , m_retainedBackup(std::move(retainedBackup))
+{
+}
+
+void detail::writePrivateCheckpointFile(const std::filesystem::path& destination,
+                                        const NativeCheckpointExportOptions& options,
+                                        const std::function<void(int)>& writer)
 {
   require(!destination.empty() && destination.filename() != "." &&
           destination.filename() != "..", "native checkpoint destination invalid");
@@ -105,7 +114,6 @@ void nativeExportPrivateCheckpoint(const std::filesystem::path& destination,
 
   Fd parentFd(::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
   require(parentFd.get() >= 0, "native checkpoint parent directory unavailable");
-  const auto bytes = nativeCanonicalJson(state);
   Fd temporary;
   const auto temporaryPath = makeTemporaryPath(parent, destination.filename().string(), temporary);
   Fd backupPlaceholder;
@@ -114,7 +122,7 @@ void nativeExportPrivateCheckpoint(const std::filesystem::path& destination,
   bool renamedNew = false;
   try {
     invoke(options, NativeCheckpointExportStage::BeforeWrite);
-    writeAll(temporary.get(), bytes);
+    writer(temporary.get());
     invoke(options, NativeCheckpointExportStage::BeforeFileSync);
     require(::fsync(temporary.get()) == 0, "native checkpoint file sync failed");
     require(::close(temporary.release()) == 0, "native checkpoint file close failed");
@@ -140,15 +148,35 @@ void nativeExportPrivateCheckpoint(const std::filesystem::path& destination,
   }
   catch (...) {
     if (temporary.get() >= 0) temporary.reset();
-    (void)::unlink(temporaryPath.c_str());
-    if (renamedNew)
-      (void)::unlink(destination.c_str());
-    if (movedOld)
-      (void)::rename(backupPath.c_str(), destination.c_str());
-    if (!backupPath.empty())
-      (void)::unlink(backupPath.c_str());
+    const auto discard = [] (const std::filesystem::path& path) {
+      return path.empty() || ::unlink(path.c_str()) == 0 || errno == ENOENT;
+    };
+    bool cleanupConfirmed = discard(temporaryPath);
+    const bool outputRemoved = !renamedNew || discard(destination);
+    if (movedOld) {
+      if (::rename(backupPath.c_str(), destination.c_str()) != 0) {
+        // This is the only previous copy. Keep it even when recovery cannot finish.
+        (void)::fsync(parentFd.get());
+        throw NativeCheckpointRollbackUnconfirmed(backupPath);
+      }
+      movedOld = false;
+    }
+    else {
+      const bool backupRemoved = discard(backupPath);
+      cleanupConfirmed = cleanupConfirmed && outputRemoved && backupRemoved;
+    }
+    if (::fsync(parentFd.get()) != 0 || !cleanupConfirmed)
+      throw NativeCheckpointRollbackUnconfirmed();
     throw;
   }
+}
+
+void nativeExportPrivateCheckpoint(const std::filesystem::path& destination,
+                                   const NativeJson& state,
+                                   const NativeCheckpointExportOptions& options)
+{
+  const auto bytes = nativeCanonicalJson(state);
+  detail::writePrivateCheckpointFile(destination, options, [&] (int fd) { writeAll(fd, bytes); });
 }
 
 } // namespace ndnsf::di

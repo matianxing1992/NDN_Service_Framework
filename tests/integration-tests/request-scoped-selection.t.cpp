@@ -16,6 +16,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <future>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -128,10 +130,15 @@ checkStoredRequestPackets(test::NdnsfIntegrationEnvironment& environment,
 
 BOOST_AUTO_TEST_SUITE(RequestScopedSelection)
 
+enum class LateInputAfterDestroy { None, Data, Nack, Timeout };
+
 void
 runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
                              bool revokeBeforeResponse,
-                             std::size_t inputBytes = 0)
+                             std::size_t inputBytes = 0,
+                             std::size_t dropInputInterests = 0,
+                             LateInputAfterDestroy lateInput = LateInputAfterDestroy::None,
+                             bool serveInputFromProducerIms = false)
 {
   test::BootstrapProfile profile;
   profile.providerCount = 2;
@@ -162,6 +169,11 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   std::vector<std::atomic<bool>> requestObserved(environment.providerCount());
   std::atomic<size_t> selectedProviderIndex{environment.providerCount()};
   std::atomic<bool> responseReceived{false};
+  std::atomic<bool> responseFailed{false};
+  std::atomic<std::size_t> initialInputInterests{0};
+  std::optional<ndn::Interest> heldInputInterest;
+  std::atomic<bool> providerDestroyed{false};
+  std::atomic<std::size_t> publicationsAfterDestroy{0};
   std::atomic<std::size_t> responseCallbackCount{0};
   std::atomic<std::size_t> responseReferenceFetchStarts{0};
   std::vector<ndn::signal::ScopedConnection> responseReferenceFetchObservers;
@@ -272,6 +284,7 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
 
     environment.provider(index).setLocalPublicationHandler(
         [&, index] (const ndn::Name& name, const ndn::Buffer& wire) {
+          if (providerDestroyed && parseResponseNameV2(name)) ++publicationsAfterDestroy;
           if (parseRequestAckNameV2(name) || parseResponseNameV2(name)) {
             publish(environment.providerPubSub(index), name, wire);
           }
@@ -457,9 +470,22 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
                                           data.wireEncode().size());
           if (data.getName().size() > 0 &&
               data.getName().at(-1).isSegment()) {
-            capturedInputSegments.push_back(data);
+            const auto existing = std::find_if(capturedInputSegments.begin(),
+                capturedInputSegments.end(), [&] (const ndn::Data& stored) {
+                  return stored.getName() == data.getName();
+                });
+            if (serveInputFromProducerIms && existing != capturedInputSegments.end()) {
+              ++inputSegmentsDelivered;
+            }
+            else {
+              capturedInputSegments.push_back(data);
+            }
           }
           else {
+            if (serveInputFromProducerIms && capturedInputData &&
+                capturedInputData->getName() == data.getName()) {
+              ++inputSegmentsDelivered;
+            }
             capturedInputData = data;
           }
         }
@@ -475,6 +501,36 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   for (size_t index = 0; index < environment.providerCount(); ++index) {
     inputFetchRelays.emplace_back(environment.providerFace(index).onSendInterest.connect(
         [&, index] (const ndn::Interest& interest) {
+          const bool initialInput =
+              (capturedInputData && interest.getName() == capturedInputData->getName()) ||
+              (!capturedInputSegments.empty() && interest.getName() ==
+                  capturedInputSegments.front().getName().getPrefix(-1));
+          if (initialInput) {
+            ++initialInputInterests;
+            if (lateInput != LateInputAfterDestroy::None) {
+              heldInputInterest = interest;
+              return;
+            }
+            if (initialInputInterests <= dropInputInterests) return;
+          }
+          if (serveInputFromProducerIms) {
+            if (!capturedInputSegments.empty()) {
+              const auto base = capturedInputSegments.front().getName().getPrefix(-1);
+              if (interest.getName() == base) ++inputPrefixInterests;
+              else if (base.isPrefixOf(interest.getName()) &&
+                       interest.getName().size() == base.size() + 1 &&
+                       interest.getName().at(-1).isSegment()) {
+                ++inputExactSegmentInterests;
+              }
+              else return;
+            }
+            else if (!capturedInputData ||
+                     interest.getName() != capturedInputData->getName()) return;
+            // Exercise the actual Producer serving path. Captured packets
+            // above are observations, never a substitute response here.
+            environment.user().onInterest(ndn::InterestFilter(requesterName), interest);
+            return;
+          }
           if (!capturedInputData || interest.getName() != capturedInputData->getName()) {
             if (capturedInputSegments.empty()) {
               return;
@@ -546,6 +602,7 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
       [&] (const ndn::Name&) { requestTimedOut = true; },
       [&] (const ResponseMessage& response) {
         ++responseCallbackCount;
+        responseFailed = !response.getStatus();
         const auto payload = response.getPayload();
         responseReceived = response.getStatus() &&
                            std::string(reinterpret_cast<const char*>(payload.data()),
@@ -554,9 +611,63 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
       tlv::FirstResponding);
   BOOST_REQUIRE(!requestId.empty());
 
-  environment.pumpUntil([&] {
-    return responseReceived || requestTimedOut;
-  });
+  // One fixture pump is about three seconds. Timeout recovery needs to
+  // observe the terminal reply after the last bounded Interest has expired.
+  for (unsigned round = 0; round < (dropInputInterests != 0 ? 3U : 1U); ++round) {
+    environment.pumpUntil([&] {
+      return responseReceived || responseFailed || requestTimedOut || heldInputInterest.has_value();
+    });
+  }
+
+  if (lateInput != LateInputAfterDestroy::None) {
+    BOOST_REQUIRE(heldInputInterest);
+    BOOST_REQUIRE(capturedInputData);
+    const auto selected = selectedProviderIndex.load();
+    BOOST_REQUIRE_LT(selected, environment.providerCount());
+    auto& face = environment.providerFace(selected);
+    BOOST_REQUIRE_GT(face.getNPendingInterests(), 0U);
+    environment.destroyProviderKeepingFaceForTest(selected);
+    providerDestroyed = true;
+    if (lateInput == LateInputAfterDestroy::Data) {
+      face.receive(*capturedInputData);
+    }
+    else if (lateInput == LateInputAfterDestroy::Nack) {
+      ndn::lp::Nack nack(*heldInputInterest);
+      nack.setReason(ndn::lp::NackReason::NO_ROUTE);
+      face.receive(nack);
+    }
+    face.processEvents(ndn::time::milliseconds(1200));
+    face.getIoContext().restart();
+    BOOST_CHECK_EQUAL(initialInputInterests.load(), 1U);
+    BOOST_CHECK_EQUAL(responseCallbackCount.load(), 0U);
+    BOOST_CHECK_EQUAL(publicationsAfterDestroy.load(), 0U);
+    BOOST_CHECK(!responseCaptured);
+    for (const auto& count : requestExecutions) BOOST_CHECK_EQUAL(count.load(), 0U);
+    environment.updateRequestResidue(scope, {});
+    environment.resetRequest(scope);
+    return;
+  }
+
+  if (dropInputInterests >= 3) {
+    BOOST_CHECK(selectionSeen);
+    BOOST_CHECK(discoveryPayloadWasEmpty);
+    BOOST_CHECK(inputDataWasOpaque);
+    BOOST_CHECK(!requestTimedOut);
+    BOOST_CHECK(responseFailed);
+    BOOST_CHECK(!responseReceived);
+    BOOST_CHECK_EQUAL(responseCallbackCount.load(), 1U);
+    BOOST_CHECK_EQUAL(initialInputInterests.load(), 3U);
+    for (const auto& count : requestExecutions) {
+      BOOST_CHECK_EQUAL(count.load(), 0U);
+    }
+    environment.updateRequestResidue(scope, {});
+    environment.resetRequest(scope);
+    return;
+  }
+  if (dropInputInterests != 0) {
+    BOOST_CHECK_EQUAL(initialInputInterests.load(), dropInputInterests + 1);
+    BOOST_CHECK(!responseFailed);
+  }
 
   if (revokeBeforeResponse) {
     BOOST_CHECK(revocationResponseRejected);
@@ -575,6 +686,11 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   BOOST_CHECK(discoveryPayloadWasEmpty);
   BOOST_CHECK(inputDataWasOpaque);
   BOOST_CHECK(responseWasOpaque);
+  if (serveInputFromProducerIms) {
+    BOOST_CHECK_GE(initialInputInterests.load(), 1U);
+    BOOST_CHECK_GE(inputSegmentsDelivered.load(),
+        inputBytes > 4096 ? (inputBytes + 4096 - 1) / 4096 : 1U);
+  }
   if (inputBytes > 4096) {
     const auto expectedSegments = (inputBytes + 4096 - 1) / 4096;
     std::set<std::uint64_t> segmentNumbers;
@@ -621,15 +737,17 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
     ResponseMessage replayedResponse;
     BOOST_REQUIRE(replayedResponse.WireDecode(*capturedResponseBlock));
     BOOST_REQUIRE_GE(responseReferenceFetchStarts.load(), 1U);
-    const auto diagnosticsBeforeReplay = environment.user().consumeRuntimeDiagnostics();
+    environment.user().consumeRuntimeDiagnostics();
     const auto callbacksBeforeReplay = responseCallbackCount.load();
     const auto fetchStartsBeforeReplay = responseReferenceFetchStarts.load();
     environment.user().finishDecryptedResponseByName(
         capturedResponseName, parsedResponse->requestId,
         std::move(replayedResponse));
     const auto diagnosticsAfterReplay = environment.user().consumeRuntimeDiagnostics();
-    BOOST_CHECK_EQUAL(diagnosticsAfterReplay.responseLargeReferenceSkippedNoPending,
-                      diagnosticsBeforeReplay.responseLargeReferenceSkippedNoPending + 1);
+    // Completed requests have no pending name binding and are rejected before
+    // entering large-reference processing. The wire/callback counters below
+    // independently prove that replay cannot fetch or deliver another result.
+    BOOST_CHECK_EQUAL(diagnosticsAfterReplay.responseLargeReferenceSkippedNoPending, 0U);
     BOOST_CHECK_EQUAL(responseReferenceFetchStarts.load(), fetchStartsBeforeReplay);
     BOOST_CHECK_EQUAL(responseCallbackCount.load(), callbacksBeforeReplay);
   }
@@ -667,12 +785,49 @@ BOOST_AUTO_TEST_CASE(SelectedProviderReceivesExactEncryptedInputOnly)
   runRequestScopedResponseCase(true, false, false);
 }
 
+BOOST_AUTO_TEST_CASE(SelectedProviderRetriesLostInitialInputInterest)
+{
+  runRequestScopedResponseCase(false, false, false, 0, 1);
+}
+
+BOOST_AUTO_TEST_CASE(SelectedProviderStopsAfterBoundedInputInterestTimeouts)
+{
+  runRequestScopedResponseCase(false, false, false, 0, 3);
+}
+
+BOOST_AUTO_TEST_CASE(RequestInputDataAfterProviderDestructionCannotDispatch)
+{
+  runRequestScopedResponseCase(false, false, false, 0, 0, LateInputAfterDestroy::Data);
+}
+
+BOOST_AUTO_TEST_CASE(RequestInputNackAfterProviderDestructionCannotPublish)
+{
+  runRequestScopedResponseCase(false, false, false, 0, 0, LateInputAfterDestroy::Nack);
+}
+
+BOOST_AUTO_TEST_CASE(RequestInputTimeoutAfterProviderDestructionCannotRetry)
+{
+  runRequestScopedResponseCase(false, false, false, 0, 0, LateInputAfterDestroy::Timeout);
+}
+
 BOOST_AUTO_TEST_CASE(SelectedProviderReceivesSegmentedEncryptedInput)
 {
   // Regression for the 6.55 MB YOLO request: the User must publish bounded
   // signed Data segments and the Provider must reconstruct them through its
   // production SegmentFetcher before invoking the handler.
   runRequestScopedResponseCase(false, false, false, 6555271);
+}
+
+BOOST_AUTO_TEST_CASE(SelectedProviderFetchesSmallInputFromProducerIms)
+{
+  runRequestScopedResponseCase(false, false, false, 128, 0,
+      LateInputAfterDestroy::None, true);
+}
+
+BOOST_AUTO_TEST_CASE(SelectedProviderFetchesSegmentedInputFromProducerIms)
+{
+  runRequestScopedResponseCase(false, false, false, 131072, 0,
+      LateInputAfterDestroy::None, true);
 }
 
 BOOST_AUTO_TEST_CASE(ModifiedInlineResponseCiphertextIsRejectedBeforeDelivery)
@@ -746,6 +901,89 @@ BOOST_AUTO_TEST_CASE(ProtectedTargetedExpectedBootRefreshesWithoutWeakeningCarri
     currentBoot = received.getTokens().at("targeted.providerBootEpoch");
     BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0U);
   }
+}
+
+BOOST_AUTO_TEST_CASE(Spec212TargetedDrainWaitsForCoreCompletionFinalizer)
+{
+  test::BootstrapProfile profile;
+  profile.providerCount = 1;
+  test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  const auto service = environment.profile().serviceName;
+  auto status = makeCurrentStatus(service, 1);
+  status.setAbePublicParametersName(environment.attributeAuthorityPublicParametersName());
+  status.setAbePublicParametersDigest(environment.attributeAuthorityPublicParametersDigest());
+  BOOST_REQUIRE(environment.user().installControllerStatus(status));
+  BOOST_REQUIRE(environment.provider().installControllerStatus(status));
+  environment.user().setUseTokens(true);
+  environment.provider().setUseTokens(true);
+  environment.provider().setHandlerThreads(0);
+
+  std::mutex completionMutex;
+  ServiceProvider::AsyncTargetedCompletion heldCompletion;
+  bool handlerEntered = false;
+  auto registration = environment.provider().addScopedTargetedService(
+    service,
+    [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+         const ndn::Name&, const RequestMessage&,
+         ServiceProvider::AsyncTargetedCompletion complete) {
+      std::lock_guard<std::mutex> lock(completionMutex);
+      heldCompletion = std::move(complete);
+      handlerEntered = true;
+    });
+  auto waitForCallbacks = registration.makeTargetedHandlerDrainWaiter();
+  environment.enableProductionIngressForTest();
+
+  RequestCapabilities capabilities;
+  capabilities.setField("RequestScopedConfidentialityV1", "required");
+  RequestMessage request;
+  request.setRequestCapabilities(capabilities);
+  ndn::Buffer input{'d', 'r', 'a', 'i', 'n'};
+  request.setPayload(input, input.size());
+  const auto requestId = environment.user().RequestServiceTargeted(
+    environment.provider().getName(), service, request, 5000,
+    [] (const ndn::Name&) {},
+    [] (const ResponseMessage&) {});
+  BOOST_REQUIRE(!requestId.empty());
+  environment.pumpUntil([&] {
+    std::lock_guard<std::mutex> lock(completionMutex);
+    return handlerEntered;
+  });
+  {
+    std::lock_guard<std::mutex> lock(completionMutex);
+    BOOST_REQUIRE(handlerEntered);
+    BOOST_REQUIRE(static_cast<bool>(heldCompletion));
+  }
+
+  registration.close();
+  auto draining = std::async(std::launch::async, [&] {
+    return waitForCallbacks(std::chrono::seconds(2));
+  });
+  BOOST_CHECK(draining.wait_for(std::chrono::milliseconds(50)) ==
+              std::future_status::timeout);
+
+  ServiceProvider::AsyncTargetedCompletion complete;
+  {
+    std::lock_guard<std::mutex> lock(completionMutex);
+    complete = heldCompletion;
+  }
+  ResponseMessage response;
+  response.setStatus(true);
+  ndn::Buffer output{'o', 'k'};
+  response.setPayload(output, output.size());
+  complete(std::move(response));
+
+  // The Core completion is posted to the Provider Face. Without pumping that
+  // Face, the registration lease must remain active through the finalizer.
+  BOOST_CHECK(draining.wait_for(std::chrono::milliseconds(50)) ==
+              std::future_status::timeout);
+  environment.pumpUntil([&] {
+    return draining.wait_for(std::chrono::milliseconds(0)) ==
+           std::future_status::ready;
+  });
+  BOOST_REQUIRE(draining.wait_for(std::chrono::milliseconds(0)) ==
+                std::future_status::ready);
+  BOOST_CHECK(draining.get());
 }
 
 BOOST_AUTO_TEST_CASE(ProtectedTargetedWarmCallsReplenishAndFenceClosedRegistration)

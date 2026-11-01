@@ -107,6 +107,16 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
     spec.metadata.erase("attentionMaskInputName");
     spec.metadata.erase("positionIdsInputName");
     spec.metadata.erase("cachePositionInputName");
+    spec.metadata.erase("workTokenInputName");
+    spec.metadata.erase("workTokenAxis");
+    const auto& tokenInput = projection.generationContract.tokenInputName;
+    for (const auto& tensor : projection.assemblyContract().expectedInputs) {
+      if (tensor.name == tokenInput && tensor.dtype == "int64" &&
+          (tensor.shape.size() == 1 || tensor.shape.size() == 2)) {
+        spec.metadata["workTokenInputName"] = tokenInput;
+        spec.metadata["workTokenAxis"] = tensor.shape.size() == 1 ? "0" : "1";
+      }
+    }
     const auto localNames = [] (const auto& declared, const auto& boundary) {
       std::vector<std::string> result;
       for (const auto& name : declared) {

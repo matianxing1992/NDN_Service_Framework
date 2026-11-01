@@ -3,6 +3,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include <cstdint>
 #include <map>
@@ -12,6 +14,12 @@
 namespace ndnsf::di {
 
 struct NativeConversationTurn;
+struct NativeConversationKvRecoveryV1;
+class NativeConversationCoordinator;
+using NativeProtectedKvKeyWrap = std::function<ndn_service_framework::RecipientEncryptedAssignment(
+  const NativeProtectedKvCheckpointReferenceV1&, const ndn::Buffer&,
+  const NativeProtectedKvRecipientBindingV1&, const NativeRequestControl&,
+  const std::function<void()>&)>;
 
 /** Type-erased cooperative ports captured by one request operation. */
 struct NativeStrategyPorts
@@ -52,6 +60,11 @@ struct NativeRequestRuntime
   std::function<NativeFixedRoleSourceV1(
     const NativeSelectionProjectionV3&, const NativeFixedRoleAssignmentV1&,
     const NativeRequestControl&)> fixedRoleSourcePublisher;
+  std::optional<NativeDurableStorageOwner> durableStorageOwner;
+  std::function<bool()> requiresDurableStorageActor;
+  // Bound by the concrete Client/Runtime owners; strategies and JSON cannot set keys.
+  std::shared_ptr<NativeConversationCoordinator> conversationOwner;
+  NativeProtectedKvKeyWrap wrapProtectedKvKey;
 };
 
 /** Parse an operator-owned runtime policy and bind it to an already checked
@@ -61,6 +74,12 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
   const std::string& configurationJson,
   const NativeRequestCatalog& catalog,
   std::shared_ptr<const NativeAuthenticatedGrantClient> grants);
+
+struct NativeConversationRecoveryExpectationV1
+{
+  NativeSelectionProjectionV3 projection;
+  std::string admittedBootEpoch;
+};
 
 struct NativePlannedRequest
 {
@@ -77,6 +96,10 @@ struct NativePlannedRequest
   // A committed request keeps its assignment for every token, even if a later
   // request replaces the reusable cache entry.
   std::vector<std::shared_ptr<const NativeFixedRoleAssignmentV1>> fixedAssignments;
+  // Final immutable operation snapshot; READY cannot define its own expectation.
+  std::map<std::string, NativeConversationRecoveryExpectationV1> recoveryExpectations;
+  // Exact Owner snapshot used for this plan, retained through pre-commit rebinding.
+  std::shared_ptr<const NativeConversationKvRecoveryV1> recoveryParent;
 };
 
 /** The exact first-pass intent plus responses received before the attempt deadline. */

@@ -41,10 +41,15 @@ struct NativeCanonicalArtifactPublisher::CacheState
   {
     NativePreparedCanonicalPublication receipt;
     std::vector<std::weak_ptr<void>> leases;
+    std::map<std::string,
+      std::weak_ptr<const ndn_service_framework::EncryptedLargeDataRangeSource>> sources;
     explicit PreparedEntry(const NativePreparedCanonicalPublication& value) : receipt(value)
     {
       for (const auto& lease : receipt.servingLeases) leases.emplace_back(lease);
       receipt.servingLeases.clear();
+      for (const auto& [name, source] : receipt.durableStorageSources)
+        sources.emplace(name, source);
+      receipt.durableStorageSources.clear();
     }
     std::optional<NativePreparedCanonicalPublication> acquire() const
     {
@@ -54,11 +59,17 @@ struct NativeCanonicalArtifactPublisher::CacheState
         if (!lease) return std::nullopt;
         result.servingLeases.push_back(std::move(lease));
       }
+      for (const auto& [name, weak] : sources) {
+        auto source = weak.lock();
+        if (!source) return std::nullopt;
+        result.durableStorageSources.emplace(name, std::move(source));
+      }
       return result;
     }
     bool expired() const
     {
       for (const auto& lease : leases) if (lease.expired()) return true;
+      for (const auto& [name, source] : sources) if (source.expired()) return true;
       return false;
     }
   };
@@ -255,6 +266,302 @@ struct PreparedPublicationJob
 };
 }
 
+void NativeDurableStorageOwner::validate() const
+{
+  if (ownerIdentity.empty() || !resolveGrant)
+    throw std::invalid_argument("DURABLE_OWNER_BINDING_REQUIRED");
+  const ndn::Name owner(ownerIdentity);
+  if (owner.empty() || owner.toUri(ndn::name::UriFormat::ALTERNATE) != ownerIdentity)
+    throw std::invalid_argument("DURABLE_OWNER_BINDING_REQUIRED");
+}
+
+ndn_service_framework::DurableStorageGrantResolver
+NativeDurableStorageOwner::checkedResolver() const
+{
+  validate();
+  return [owner = *this](const ndn::Name& manifest, const std::string& writer,
+                         const std::function<void()>& active) {
+    if (active) active();
+    auto grant = owner.resolveGrant(manifest, writer, active);
+    if (active) active();
+    if (grant.ownerIdentity != owner.ownerIdentity)
+      throw std::runtime_error("DURABLE_OWNER_BINDING_MISMATCH");
+    return grant;
+  };
+}
+
+NativeDurableStorageGrantBarrierV1::NativeDurableStorageGrantBarrierV1(
+  std::string ownerIdentity, ProducerPrefixesByRole producerPrefixesByRole,
+  Clock::time_point deadline)
+  : m_ownerIdentity(std::move(ownerIdentity)),
+    m_producerPrefixesByRole(std::move(producerPrefixesByRole)), m_deadline(deadline)
+{
+  const ndn::Name owner(m_ownerIdentity);
+  if (owner.empty() || owner.toUri(ndn::name::UriFormat::ALTERNATE) != m_ownerIdentity ||
+      m_producerPrefixesByRole.empty() || m_producerPrefixesByRole.size() > 64 ||
+      m_deadline <= Clock::now()) {
+    throw std::invalid_argument("DURABLE_GRANT_BATCH_BINDING_INVALID");
+  }
+  for (const auto& [role, producerPrefix] : m_producerPrefixesByRole) {
+    if (role.empty() || role.size() > 4096 || producerPrefix.empty() ||
+        producerPrefix.wireEncode().size() > 4096) {
+      throw std::invalid_argument("DURABLE_GRANT_BATCH_BINDING_INVALID");
+    }
+  }
+}
+
+ndn_service_framework::DurableStorageGrantResolver
+NativeDurableStorageGrantBarrierV1::resolverFor(const std::string& roleName)
+{
+  if (m_producerPrefixesByRole.count(roleName) != 1)
+    throw std::invalid_argument("DURABLE_GRANT_BATCH_UNKNOWN_ROLE");
+  auto self = weak_from_this().lock();
+  if (!self)
+    throw std::logic_error("DURABLE_GRANT_BATCH_REQUIRES_SHARED_OWNERSHIP");
+  return [self = std::move(self), roleName](
+           const ndn::Name& manifestName, const std::string& writerIdentity,
+           const std::function<void()>& current) {
+    return self->resolve(roleName, manifestName, writerIdentity, current);
+  };
+}
+
+void
+NativeDurableStorageGrantBarrierV1::waitUntil(
+  std::unique_lock<std::mutex>& lock, const ReadyPredicate& ready,
+  const std::function<void()>& current, const char* timeoutError)
+{
+  while (!ready() && !m_error) {
+    const auto now = Clock::now();
+    if (now >= m_deadline) {
+      failLocked(std::make_exception_ptr(std::runtime_error(timeoutError)));
+      m_condition.notify_all();
+      break;
+    }
+    auto wakeAt = now + std::chrono::milliseconds(50);
+    if (wakeAt > m_deadline) wakeAt = m_deadline;
+    m_condition.wait_until(lock, wakeAt);
+    if (ready() || m_error || !current)
+      continue;
+
+    lock.unlock();
+    try {
+      current();
+    }
+    catch (...) {
+      const auto error = std::current_exception();
+      abort(error);
+      lock.lock();
+      break;
+    }
+    lock.lock();
+  }
+  rethrowIfFailedLocked();
+}
+
+std::vector<NativeDurableStorageRoleGrantChallengeV1>
+NativeDurableStorageGrantBarrierV1::waitForAllChallenges(
+  const std::function<void()>& current)
+{
+  if (current) {
+    try {
+      current();
+    }
+    catch (...) {
+      abortAndRethrow(std::current_exception());
+    }
+  }
+  std::unique_lock<std::mutex> lock(m_mutex);
+  waitUntil(lock, [this] {
+    return m_challenges.size() == m_producerPrefixesByRole.size();
+  }, current, "DURABLE_GRANT_BATCH_CHALLENGE_TIMEOUT");
+
+  std::vector<NativeDurableStorageRoleGrantChallengeV1> result;
+  result.reserve(m_challenges.size());
+  for (const auto& [role, unused] : m_producerPrefixesByRole) {
+    (void)unused;
+    result.push_back(m_challenges.at(role));
+  }
+  return result;
+}
+
+void
+NativeDurableStorageGrantBarrierV1::releaseAll(GrantSet grants)
+{
+  std::unique_lock<std::mutex> lock(m_mutex);
+  rethrowIfFailedLocked();
+  const auto reject = [this, &lock](const char* reason) {
+    const auto error = std::make_exception_ptr(std::runtime_error(reason));
+    failLocked(error);
+    m_condition.notify_all();
+    lock.unlock();
+    std::rethrow_exception(error);
+  };
+  if (m_released)
+    reject("DURABLE_GRANT_BATCH_ALREADY_RELEASED");
+  if (Clock::now() >= m_deadline)
+    reject("DURABLE_GRANT_BATCH_AUTHORIZATION_TIMEOUT");
+  if (m_challenges.size() != m_producerPrefixesByRole.size() ||
+      grants.size() != m_producerPrefixesByRole.size()) {
+    reject("DURABLE_GRANT_BATCH_INCOMPLETE");
+  }
+  SelectorSet selectors;
+  for (const auto& [role, unusedPrefix] : m_producerPrefixesByRole) {
+    (void)unusedPrefix;
+    const auto challenge = m_challenges.find(role);
+    const auto grant = grants.find(role);
+    if (challenge == m_challenges.end() || grant == grants.end() ||
+        grant->second.writerIdentity != challenge->second.writerIdentity ||
+        grant->second.ownerIdentity != m_ownerIdentity ||
+        grant->second.grantId.empty() || grant->second.grantId.size() > 4096) {
+      reject("DURABLE_GRANT_BATCH_MISMATCH");
+    }
+    bool validObjectName = false;
+    bool validRepoNode = false;
+    try {
+      const ndn::Name objectName(grant->second.objectName);
+      validObjectName = !objectName.empty() && objectName.wireEncode().size() <= 4096 &&
+        objectName == challenge->second.manifestName;
+      const ndn::Name repoNode(grant->second.repoNode);
+      validRepoNode = !repoNode.empty() &&
+        repoNode.wireEncode().size() <= 4096 &&
+        repoNode.toUri(ndn::name::UriFormat::ALTERNATE) == grant->second.repoNode;
+    }
+    catch (const std::exception&) {
+      validObjectName = false;
+      validRepoNode = false;
+    }
+    if (!validObjectName || !validRepoNode) {
+      reject("DURABLE_GRANT_BATCH_MISMATCH");
+    }
+    selectors.emplace(role, ndn_service_framework::DurableStorageGrantSelector{
+      grant->second.repoNode, grant->second.ownerIdentity, grant->second.grantId,
+      grant->second.ownerEpoch});
+  }
+  if (Clock::now() >= m_deadline)
+    reject("DURABLE_GRANT_BATCH_AUTHORIZATION_TIMEOUT");
+  m_grants = std::move(selectors);
+  m_released = true;
+  m_condition.notify_all();
+}
+
+void
+NativeDurableStorageGrantBarrierV1::abort(std::exception_ptr error)
+{
+  if (!error)
+    error = std::make_exception_ptr(std::runtime_error("DURABLE_GRANT_BATCH_ABORTED"));
+  std::lock_guard<std::mutex> lock(m_mutex);
+  failLocked(std::move(error));
+  m_condition.notify_all();
+}
+
+void
+NativeDurableStorageGrantBarrierV1::failLocked(std::exception_ptr error)
+{
+  if (!m_error)
+    m_error = std::move(error);
+}
+
+void
+NativeDurableStorageGrantBarrierV1::rethrowIfFailedLocked() const
+{
+  if (m_error)
+    std::rethrow_exception(m_error);
+}
+
+[[noreturn]] void
+NativeDurableStorageGrantBarrierV1::abortAndRethrow(std::exception_ptr error)
+{
+  abort(error);
+  std::rethrow_exception(error);
+}
+
+ndn_service_framework::DurableStorageGrantSelector
+NativeDurableStorageGrantBarrierV1::resolve(
+  const std::string& roleName, const ndn::Name& manifestName,
+  const std::string& writerIdentity, const std::function<void()>& current)
+{
+  if (current) {
+    try {
+      current();
+    }
+    catch (...) {
+      abortAndRethrow(std::current_exception());
+    }
+  }
+  const auto expected = m_producerPrefixesByRole.find(roleName);
+  bool validWriter = false;
+  try {
+    const ndn::Name writer(writerIdentity);
+    validWriter = !writer.empty() &&
+      writer.toUri(ndn::name::UriFormat::ALTERNATE) == writerIdentity &&
+      expected != m_producerPrefixesByRole.end() && writer == expected->second;
+  }
+  catch (const std::exception&) {
+    validWriter = false;
+  }
+  if (!validWriter || manifestName.empty() ||
+      manifestName.wireEncode().size() > 4096 ||
+      !expected->second.isPrefixOf(manifestName) ||
+      manifestName.size() <= expected->second.size()) {
+    abortAndRethrow(std::make_exception_ptr(
+      std::runtime_error("DURABLE_GRANT_BATCH_CHALLENGE_MISMATCH")));
+  }
+
+  std::unique_lock<std::mutex> lock(m_mutex);
+  rethrowIfFailedLocked();
+  if (m_released || m_challenges.count(roleName) != 0) {
+    const auto error = std::make_exception_ptr(
+      std::runtime_error("DURABLE_GRANT_BATCH_DUPLICATE_ROLE"));
+    failLocked(error);
+    m_condition.notify_all();
+    lock.unlock();
+    std::rethrow_exception(error);
+  }
+  const auto reusedObject = std::find_if(m_challenges.begin(), m_challenges.end(),
+    [&manifestName](const auto& item) {
+      return item.second.manifestName == manifestName;
+    });
+  if (reusedObject != m_challenges.end()) {
+    const auto error = std::make_exception_ptr(
+      std::runtime_error("DURABLE_GRANT_BATCH_DUPLICATE_OBJECT"));
+    failLocked(error);
+    m_condition.notify_all();
+    lock.unlock();
+    std::rethrow_exception(error);
+  }
+  m_challenges.emplace(roleName, NativeDurableStorageRoleGrantChallengeV1{
+    roleName, manifestName, writerIdentity});
+  m_condition.notify_all();
+  waitUntil(lock, [this] { return m_released; }, current,
+    "DURABLE_GRANT_BATCH_AUTHORIZATION_TIMEOUT");
+  return m_grants.at(roleName);
+}
+
+void NativePreparedCanonicalPublication::requireCurrentDurableStorageOwner(
+  const std::string& owner) const
+{
+  if (owner.empty())
+    throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+  std::map<std::string, ndn::Name> required;
+  const auto add = [&required](const std::string& name) {
+    if (name.empty()) return;
+    ndn::Name parsed(name);
+    if (parsed.empty()) throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+    required.emplace(parsed.toUri(ndn::name::UriFormat::CANONICAL), parsed);
+  };
+  add(sourceDataName); add(initializerDataName); add(rootDataName);
+  add(materialManifestDataName); add(materialReceiptDataName); add(preparedMetadataDataName);
+  for (const auto& name : layerDataNames) add(name);
+  for (const auto& name : materialDataNames) add(name);
+  if (required.empty()) throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+  for (const auto& [name, manifest] : required) {
+    const auto found = durableStorageSources.find(name);
+    if (found == durableStorageSources.end() || !found->second)
+      throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+    found->second->requireCurrentDurableStorageOwner(manifest, owner);
+  }
+}
+
 void NativePreparedCanonicalPublication::validate() const
 {
   const auto validName = [](const std::string& value) {
@@ -435,12 +742,18 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
         if (user)
           onCoreIo(user, [&] { user->abortLargeDataPublications(publications); });
       }, true, NativeCanonicalMaterialReceiptDataNameMaxBytes,
-      [user](const auto& request, const auto& bytes, const auto& label,
+      [user, owner = options.durableStorageOwner](const auto& request, const auto& bytes, const auto& label,
              const auto& publicationIdentity, const auto& contentName, const auto& control) {
         ndn_service_framework::LargeDataPublishOptions publishOptions;
         publishOptions.contentName = contentName;
         publishOptions.manifestSuffix = publicationManifestSuffix(label, bytes, contentName);
+        if (owner)
+          publishOptions.resolveDurableStorageGrant = owner->checkedResolver();
+        else if (user->requiresDurableStorageActor())
+          throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
         if (!user->supportsDurableEncryptedLargeData()) {
+          if (owner || user->requiresDurableStorageActor())
+            throw std::runtime_error("DURABLE_STORAGE_UNAVAILABLE");
           if (!user->isOnIoThread())
             return user->publishEncryptedLargeDataFromWorker(
               request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD, publishOptions,
@@ -451,6 +764,7 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
         }
         publishOptions.retention = ndn_service_framework::EncryptedLargeDataRetention::Durable;
         publishOptions.publicationIdentity = publicationIdentity;
+        publishOptions.persistAuxiliaryPackets = true;
         if (!user->isOnIoThread())
           return user->publishEncryptedLargeDataFromWorker(
             request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD, publishOptions,
@@ -458,8 +772,8 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
         return user->publishEncryptedLargeData(
           request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD, true, publishOptions,
           [control] { control.requireActive(); });
-      }}, serviceName,
-      std::move(options), std::move(source))
+      }, [user] { return user && user->requiresDurableStorageActor(); }}, serviceName,
+      options, std::move(source))
 {
   if (!user) throw std::invalid_argument("missing Core publication owner");
 }
@@ -482,6 +796,18 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(Transport tra
     throw std::invalid_argument("native canonical publication configuration is incomplete");
   m_serviceName = ndn::Name(m_serviceName).toUri(ndn::name::UriFormat::CANONICAL);
   m_options.artifactRoot = ndn::Name(m_options.artifactRoot).toUri();
+  if (m_options.durableStorageOwner) m_options.durableStorageOwner->validate();
+}
+
+void NativeCanonicalArtifactPublisher::requireCurrentStorageOwner(
+  const NativePreparedCanonicalPublication& publication) const
+{
+  const bool required = m_options.durableStorageOwner.has_value() ||
+    (m_transport.requiresDurableStorageActor && m_transport.requiresDurableStorageActor());
+  if (!required) return;
+  if (!m_options.durableStorageOwner)
+    throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+  publication.requireCurrentDurableStorageOwner(m_options.durableStorageOwner->ownerIdentity);
 }
 
 NativeRequestPreparation::ArtifactPort NativeCanonicalArtifactPublisher::artifactPort() const
@@ -567,36 +893,47 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepare(
     throw std::runtime_error("DI_NATIVE_PUBLICATION_CACHE_UNAVAILABLE");
   if (m_transport.isOnIoThread())
     throw std::runtime_error("DI_NATIVE_PUBLICATION_IO_WAIT_FORBIDDEN");
+  const bool owned = m_options.durableStorageOwner.has_value() ||
+    (m_transport.requiresDurableStorageActor && m_transport.requiresDurableStorageActor());
+  if (owned && (!m_options.durableStorageOwner || !m_transport.durablePublish))
+    throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
   model.validate();
   const auto key = prepareKey(model);
   std::shared_ptr<std::promise<NativePreparedCanonicalPublication>> promise;
   std::shared_future<NativePreparedCanonicalPublication> future;
   std::shared_ptr<CacheState::SharedControl> sharedControl;
+  std::optional<NativePreparedCanonicalPublication> cachedReceipt;
   bool owner = false;
   {
     std::lock_guard<std::mutex> lock(m_cache->mutex);
     const auto completed = m_cache->prepared.find(key);
     if (completed != m_cache->prepared.end()) {
-      if (auto receipt = completed->second.acquire()) {
+      if ((cachedReceipt = completed->second.acquire())) {
         m_cache->cacheHits.fetch_add(1, std::memory_order_relaxed);
-        return std::move(*receipt);
       }
-      m_cache->prepared.erase(completed);
+      else m_cache->prepared.erase(completed);
     }
-    const auto pending = m_cache->preparedInFlight.find(key);
-    if (pending != m_cache->preparedInFlight.end()) {
-      future = pending->second.future;
-      sharedControl = pending->second.control;
-      sharedControl->participants.fetch_add(1, std::memory_order_acq_rel);
-      m_cache->sharedWaiters.fetch_add(1, std::memory_order_relaxed);
+    if (!cachedReceipt) {
+      const auto pending = m_cache->preparedInFlight.find(key);
+      if (pending != m_cache->preparedInFlight.end()) {
+        future = pending->second.future;
+        sharedControl = pending->second.control;
+        sharedControl->participants.fetch_add(1, std::memory_order_acq_rel);
+        m_cache->sharedWaiters.fetch_add(1, std::memory_order_relaxed);
+      }
+      else {
+        promise = std::make_shared<std::promise<NativePreparedCanonicalPublication>>();
+        future = promise->get_future().share();
+        sharedControl = std::make_shared<CacheState::SharedControl>();
+        m_cache->preparedInFlight.emplace(key, CacheState::PreparedInFlight{future, sharedControl});
+        owner = true;
+      }
     }
-    else {
-      promise = std::make_shared<std::promise<NativePreparedCanonicalPublication>>();
-      future = promise->get_future().share();
-      sharedControl = std::make_shared<CacheState::SharedControl>();
-      m_cache->preparedInFlight.emplace(key, CacheState::PreparedInFlight{future, sharedControl});
-      owner = true;
-    }
+  }
+  if (cachedReceipt) {
+    requireCurrentStorageOwner(*cachedReceipt);
+    control.requireActive();
+    return std::move(*cachedReceipt);
   }
   const auto release = [cache = m_cache, sharedControl] {
     if (!cache || !sharedControl)
@@ -616,6 +953,7 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepare(
         control.requireActive();
       control.requireActive();
       auto result = future.get();
+      requireCurrentStorageOwner(result);
       release();
       return result;
     }
@@ -639,6 +977,7 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepare(
                           publicationControl] () mutable {
       try {
         auto result = owner.prepareUncached(model, publicationControl);
+        owner.requireCurrentStorageOwner(result);
         bool discarded = false;
         bool cached = false;
         try {
@@ -713,6 +1052,7 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepare(
     if (future.wait_for(std::chrono::milliseconds(10)) == std::future_status::ready) {
       try {
         auto result = future.get();
+        requireCurrentStorageOwner(result);
         release();
         return result;
       }
@@ -762,6 +1102,7 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::bindPreparedImpl(
   const auto manifestStarted = std::chrono::steady_clock::now();
   if (validatePublication)
     publication.validate();
+  requireCurrentStorageOwner(publication);
   const auto root = NativeJson::parse(publication.canonicalManifestJson);
   const auto& metadata = root.at("metadata");
   const auto cacheNamespace = metadata.value("cacheCompatibilityNamespace", NativeJson{});
@@ -1124,6 +1465,25 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
           materialManifestJson.size())
         throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
       knownPublicationBytes += materialManifestJson.size();
+      try {
+        if (publicationTimingEnabled()) {
+          std::size_t bundles = 0;
+          std::uint64_t used = 0;
+          for (const auto& payload : materialManifest->payloads) {
+            if (used != 0 && payload.byteSize() > NativeCanonicalMaterialBundleMaxBytes - used) {
+              ++bundles;
+              used = 0;
+            }
+            used += payload.byteSize();
+          }
+          if (used != 0) ++bundles;
+          logRuntimeEvidence("NDNSF_DI_NATIVE_PUBLICATION_PLAN requestId=" + control.requestId +
+            " payloads=" + std::to_string(materialManifest->payloads.size()) +
+            " bundles=" + std::to_string(bundles) +
+            " materialBytes=" + std::to_string(knownPublicationBytes));
+        }
+      }
+      catch (...) { /* Diagnostics must never change publication behavior. */ }
       // The receipt contains one authenticated index record per payload.  Its
       // conservative bound is part of the preflight reservation, so a
       // configured maxPublicationBytes failure cannot publish a material
@@ -1303,6 +1663,13 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
       for (const auto& published : publishedResults) {
         if (published.servingLease)
           result.servingLeases.push_back(published.servingLease);
+        if (published.durableStorageSource) {
+          const auto name = published.manifestName.toUri(ndn::name::UriFormat::CANONICAL);
+          const auto [it, inserted] = result.durableStorageSources.emplace(
+            name, published.durableStorageSource);
+          if (!inserted && it->second != published.durableStorageSource)
+            throw std::runtime_error("DURABLE_OWNER_BINDING_MISMATCH");
+        }
         result.rollbackDataNames.insert(result.rollbackDataNames.end(),
                                         published.rollbackDataNames.begin(),
                                         published.rollbackDataNames.end());

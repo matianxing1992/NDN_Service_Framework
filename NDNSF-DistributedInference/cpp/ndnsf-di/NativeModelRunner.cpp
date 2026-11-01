@@ -133,6 +133,28 @@ NativeModelRunner::promoteSessionStateToConversation(
 }
 
 bool
+NativeModelRunner::supportsPortableConversationState() const
+{
+  return false;
+}
+
+NativePortableKvSnapshotV1
+NativeModelRunner::exportConversationState(
+  const NativeConversationStateHandleV1&, const DecodeStateIdentityV1&,
+  const NativePortableKvLimitsV1&)
+{
+  throw std::runtime_error("native-portable-kv-unsupported");
+}
+
+NativeConversationStateHandleV1
+NativeModelRunner::importConversationState(
+  const NativePortableKvSnapshotV1&, const DecodeStateIdentityV1&,
+  const std::string&, const NativePortableKvLimitsV1&)
+{
+  throw std::runtime_error("native-portable-kv-unsupported");
+}
+
+bool
 NativeModelRunner::restoreConversationState(
   const NativeConversationStateHandleV1&, const std::string&)
 {

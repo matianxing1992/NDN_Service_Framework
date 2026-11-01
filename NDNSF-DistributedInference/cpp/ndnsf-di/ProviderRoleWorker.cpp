@@ -1256,9 +1256,33 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
       item.role.stateOutputNames);
     if (item.role.generationLineage) {
       auto lineage = *item.role.generationLineage;
+      // A restored conversation starts at local adapter epoch zero, while its
+      // authenticated DECODE lineage can continue at a nonzero stream epoch.
+      const bool startsRestoredConversationDecode =
+        item.role.conversationStateBinding && item.role.inferenceEpoch == 0 &&
+        item.role.candidateDecodeStateIdentity &&
+        item.role.candidateDecodeStateIdentity->roleName == item.role.role &&
+        item.role.candidateDecodeStateIdentity->requestId == item.role.requestId &&
+        item.role.candidateDecodeStateIdentity->attemptEpoch ==
+          item.role.attemptEpoch &&
+        item.role.candidateDecodeStateIdentity->stateInferenceEpoch == 0 &&
+        !item.role.candidateDecodeStateIdentity->predecessorInferenceEpoch &&
+        lineage.transitionKind == GenerationEpochLineageV1::DECODE &&
+        lineage.inferenceEpoch > 0 &&
+        lineage.generationId ==
+          item.role.candidateDecodeStateIdentity->generationId &&
+        lineage.logicalPrefixDigest ==
+          item.role.candidateDecodeStateIdentity->prefixDigest &&
+        lineage.logicalPrefixTokenCount ==
+          item.role.candidateDecodeStateIdentity->prefixTokenCount &&
+        lineage.positionDigest ==
+          item.role.candidateDecodeStateIdentity->positionDigest &&
+        lineage.logicalPrefixTokenCount >
+          item.role.conversationStateBinding->identity.prefixTokenCount;
       if (lineage.requestId != item.role.requestId ||
           lineage.attemptEpoch != item.role.attemptEpoch ||
-          lineage.inferenceEpoch != item.role.inferenceEpoch) {
+          (lineage.inferenceEpoch != item.role.inferenceEpoch &&
+           !startsRestoredConversationDecode)) {
         throw std::logic_error(
           "role generation lineage does not match the execution epoch");
       }

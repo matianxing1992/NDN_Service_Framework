@@ -228,6 +228,21 @@ public:
   bool supportsConversationStateTransfer() const final
   { return m_inner->supportsConversationStateTransfer(); }
 
+  bool supportsPortableConversationState() const final
+  { return m_inner->supportsPortableConversationState(); }
+
+  NativePortableKvSnapshotV1 exportConversationState(
+    const NativeConversationStateHandleV1& state,
+    const DecodeStateIdentityV1& identity,
+    const NativePortableKvLimitsV1& limits) final
+  { return m_inner->exportConversationState(state, identity, limits); }
+
+  NativeConversationStateHandleV1 importConversationState(
+    const NativePortableKvSnapshotV1& snapshot,
+    const DecodeStateIdentityV1& identity, const std::string& key,
+    const NativePortableKvLimitsV1& limits) final
+  { return m_inner->importConversationState(snapshot, identity, key, limits); }
+
   std::optional<NativeConversationStateHandleV1>
   promoteSessionStateToConversation(const std::string& sessionId,
                                     const std::string& conversationKey) final

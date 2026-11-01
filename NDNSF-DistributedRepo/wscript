@@ -44,11 +44,13 @@ def build(bld):
         'src/ArtifactRepositoryApi.cpp',
         'src/ArtifactTransfer.cpp',
         'src/ArtifactTypes.cpp',
+        'src/FaceDataReferenceFetcher.cpp',
         'src/LegacyRepoImporter.cpp',
         'src/PersistentRepoServerConfig.cpp',
         'src/backends/FilesystemArtifactStore.cpp',
         'src/backends/FilesystemRepoStoreBackend.cpp',
         'src/RepoClient.cpp',
+        'src/RepoRemoteEncryptedLargeDataStore.cpp',
         'src/RepoCore.cpp',
         'src/RepoNode.cpp',
         'src/RepoPacketServer.cpp',
@@ -57,13 +59,19 @@ def build(bld):
         'src/RepoTypes.cpp',
     ]
 
-    bld.stlib(name='ndnsf-distributed-repo',
-              target='ndnsf-distributed-repo',
+    repo_library = bld.stlib
+    repo_target = 'ndnsf-distributed-repo'
+    if bld.env.CXX_NAME == 'clang' and '-fsanitize=address' in bld.env.CXXFLAGS:
+        # DI and its test clients must share one instrumented Repo instance.
+        repo_library = bld.shlib
+        repo_target = '../ndnsf-distributed-repo'
+    repo_library(name='ndnsf-distributed-repo',
+              target=repo_target,
               source=repo_sources,
               cxxflags=['-fPIC'],
               includes=['include', '..'],
               use='ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
-              install_path=None)
+              install_path='${LIBDIR}')
 
     if 'spec201-repo-python-binding' in (bld.targets or '').split(','):
         import sysconfig
@@ -91,7 +99,7 @@ def build(bld):
     bld.program(name='DistributedRepoServer',
                 target='DistributedRepoServer',
                 source=['apps/DistributedRepoServer.cpp'],
-                includes=['include', '..'],
+                includes=['include', 'src', '..'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
                 install_path='${BINDIR}')
 

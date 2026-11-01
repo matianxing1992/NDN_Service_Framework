@@ -3,6 +3,8 @@
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/detail/StrictJson.hpp"
 
+#include <ndn-cxx/name.hpp>
+
 #include <openssl/sha.h>
 #include <sqlite3.h>
 
@@ -26,6 +28,51 @@
 namespace ndnsf_distributed_repo {
 
 namespace {
+
+void
+validateStorageSchema(uint64_t schema)
+{
+  if (schema != 1) throw std::invalid_argument("repo-user-storage-invalid: schemaVersion");
+}
+
+void
+validateStorageName(const std::string& value)
+{
+  try {
+    if (value.empty() || value.size() > 4096 || value.front() != '/')
+      throw std::invalid_argument("name");
+    const ndn::Name name(value);
+    if (name.empty() || name.toUri(ndn::name::UriFormat::ALTERNATE) != value)
+      throw std::invalid_argument("name");
+  }
+  catch (const std::exception&) {
+    throw std::invalid_argument("repo-user-storage-invalid: normalized alternate name required");
+  }
+}
+
+void
+validateStorageId(const std::string& value)
+{
+  if (value.empty() || value.size() > 256 || value.find('\0') != std::string::npos)
+    throw std::invalid_argument("repo-user-storage-invalid: id");
+}
+
+void
+validateStoragePositive(uint64_t value)
+{
+  if (value == 0 || value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+    throw std::invalid_argument("repo-user-storage-invalid: integer");
+}
+
+detail::JsonValue::Object
+storageRequestObject(const std::string& wire, std::initializer_list<std::string_view> keys)
+{
+  auto root = detail::parseJson(wire, 64 * 1024);
+  const auto& object = detail::requireObject(root);
+  detail::requireExactKeys(object, keys);
+  validateStorageSchema(detail::member(object, "schemaVersion", detail::JsonValue::Kind::Unsigned).number);
+  return std::move(root.object);
+}
 
 bool
 isAmbiguousCommitError(const std::exception& error)
@@ -319,8 +366,9 @@ public:
     bindText(stmt, 1, manifest.objectName);
     const auto manifestJson = manifest.toJson();
     bindText(stmt, 2, manifestJson);
-    if (sqlite3_bind_blob(stmt, 3, payload.data(), static_cast<int>(payload.size()),
-                          SQLITE_TRANSIENT) != SQLITE_OK) {
+    const int payloadBinding = payload.empty() ? sqlite3_bind_zeroblob(stmt, 3, 0) :
+      sqlite3_bind_blob(stmt, 3, payload.data(), static_cast<int>(payload.size()), SQLITE_TRANSIENT);
+    if (payloadBinding != SQLITE_OK) {
       throwSqlite("failed to bind repo payload");
     }
     if (sqlite3_bind_int64(stmt, 4, static_cast<sqlite3_int64>(payload.size())) != SQLITE_OK) {
@@ -399,7 +447,8 @@ public:
   probeObjectMetadata(const std::string& objectName) const override
   {
     sqlite3_stmt* stmt = nullptr;
-    prepare("SELECT manifest_json,payload_size,length(payload),typeof(payload) "
+    prepare("SELECT manifest_json,payload_size,length(payload),typeof(payload),"
+            "length(CAST(manifest_json AS BLOB)),typeof(manifest_json) "
             "FROM objects WHERE object_name=?", &stmt);
     StatementGuard guard(stmt);
     bindText(stmt, 1, objectName);
@@ -410,6 +459,11 @@ public:
     RepoObjectMetadataProbe result;
     result.manifestPresent = true;
     result.manifest = parseManifestJson(columnText(stmt, 0));
+    const auto manifestBytes = sqlite3_column_int64(stmt, 4);
+    result.manifestMeasurementAvailable = sqlite3_column_type(stmt, 4) == SQLITE_INTEGER &&
+      manifestBytes >= 0 && columnText(stmt, 5) == "text";
+    result.manifestWireBytes = result.manifestMeasurementAvailable
+      ? static_cast<uint64_t>(manifestBytes) : 0;
     const auto recordedSize = sqlite3_column_int64(stmt, 1);
     const auto actualSize = sqlite3_column_int64(stmt, 2);
     const auto recordedSizeType = sqlite3_column_type(stmt, 1);
@@ -444,6 +498,25 @@ public:
       return false;
     }
     throwSqlite("failed to test repo object existence");
+  }
+
+  bool canRemoveUserStorageObject(const RepoUserStorageObject& expected) const override
+  {
+    validateRepoUserStorageObject(expected);
+    return true; // SQLite authority has no filesystem range staging.
+  }
+
+  bool confirmUserStorageRemoval(const RepoUserStorageObject& expected) override
+  {
+    validateRepoUserStorageObject(expected);
+    if (has(expected.objectName)) return false;
+    int logFrames = -1;
+    int checkpointedFrames = -1;
+    const int rc = sqlite3_wal_checkpoint_v2(m_db, "main", SQLITE_CHECKPOINT_FULL,
+      &logFrames, &checkpointedFrames);
+    if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) return false;
+    if (rc != SQLITE_OK) throwSqlite("repo-user-storage-removal-checkpoint-failed");
+    return logFrames >= 0 && logFrames == checkpointedFrames && !has(expected.objectName);
   }
 
   bool erase(const std::string& objectName) override
@@ -879,6 +952,32 @@ public:
     }
   }
 
+  bool abortUserStorageRangesIfOwned(const RepoObjectManifest& expected) override
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    if (!m_authoritativeStore->abortUserStorageRangesIfOwned(expected)) return false;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    invalidate(expected.objectName);
+    try {
+      ++m_epochs[expected.objectName];
+    }
+    catch (...) {
+      m_status.reconciliationRequired = true;
+    }
+    return true;
+  }
+
+  bool abortFailedRangesIfOwned(const RepoObjectManifest& expected) override
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    if (!m_authoritativeStore->abortFailedRangesIfOwned(expected)) return false;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    invalidate(expected.objectName);
+    try { ++m_epochs[expected.objectName]; }
+    catch (...) { m_status.reconciliationRequired = true; }
+    return true;
+  }
+
   std::vector<uint8_t> getRange(const std::string& objectName,
                                 RepoByteRange range) const override
   {
@@ -958,6 +1057,25 @@ public:
   {
     std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
     return m_authoritativeStore->has(objectName);
+  }
+
+  bool confirmUserStorageRemoval(const RepoUserStorageObject& expected) override
+  {
+    validateRepoUserStorageObject(expected);
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    if (!m_authoritativeStore->confirmUserStorageRemoval(expected)) return false;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    invalidate(expected.objectName);
+    try { ++m_epochs[expected.objectName]; }
+    catch (...) { m_status.reconciliationRequired = true; }
+    return true;
+  }
+
+  bool canRemoveUserStorageObject(const RepoUserStorageObject& expected) const override
+  {
+    validateRepoUserStorageObject(expected);
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    return m_authoritativeStore->canRemoveUserStorageObject(expected);
   }
 
   bool erase(const std::string& objectName) override
@@ -1188,6 +1306,353 @@ bool
 enablesEmbedded(RepoDeploymentMode mode)
 {
   return mode == RepoDeploymentMode::Embedded || mode == RepoDeploymentMode::Both;
+}
+
+void
+validateRepoUserStorageObject(const RepoUserStorageObject& object)
+{
+  validateStorageName(object.objectName);
+  validateDigest("sha256", object.wireSha256, "wireSha256");
+  validateStoragePositive(object.generation);
+  if (object.payloadWireBytes > REPO_USER_STORAGE_LIMIT_BYTES ||
+      object.manifestBytes > REPO_USER_STORAGE_LIMIT_BYTES - object.payloadWireBytes)
+    throw std::invalid_argument("repo-user-storage-invalid: object charge");
+}
+
+std::string
+RepoUserStorageGrantReply::toJson() const
+{
+  validateStorageSchema(schemaVersion); validateStorageId(grant.grantId);
+  validateStorageName(grant.repoNode); validateStorageName(grant.ownerIdentity);
+  validateStorageName(grant.writerIdentity); validateStorageName(grant.objectName);
+  validateStoragePositive(grant.ownerEpoch); validateStoragePositive(grant.createdAtMs);
+  validateStoragePositive(grant.expiresAtMs);
+  if (grant.expiresAtMs <= grant.createdAtMs)
+    throw std::invalid_argument("repo-user-storage-invalid: grant timestamps");
+  return "{\"schemaVersion\":1,\"grant\":{\"grantId\":" + detail::quoteJson(grant.grantId) +
+    ",\"repoNode\":" + detail::quoteJson(grant.repoNode) + ",\"ownerIdentity\":" + detail::quoteJson(grant.ownerIdentity) +
+    ",\"writerIdentity\":" + detail::quoteJson(grant.writerIdentity) + ",\"objectName\":" + detail::quoteJson(grant.objectName) +
+    ",\"ownerEpoch\":" + std::to_string(grant.ownerEpoch) + ",\"expiresAtMs\":" + std::to_string(grant.expiresAtMs) +
+    ",\"createdAtMs\":" + std::to_string(grant.createdAtMs) + "}}";
+}
+
+RepoUserStorageGrantReply
+RepoUserStorageGrantReply::fromJson(const std::string& wire)
+{
+  const auto object = storageRequestObject(wire, {"schemaVersion", "grant"});
+  const auto& grant = detail::requireObject(object.at("grant"));
+  detail::requireExactKeys(grant, {"grantId", "repoNode", "ownerIdentity", "writerIdentity", "objectName", "ownerEpoch", "expiresAtMs", "createdAtMs"});
+  RepoUserStorageGrantReply result;
+  result.grant = {jsonString(grant, "grantId"), jsonString(grant, "repoNode"), jsonString(grant, "ownerIdentity"),
+    jsonString(grant, "writerIdentity"), jsonString(grant, "objectName"), jsonUnsigned(grant, "ownerEpoch"),
+    jsonUnsigned(grant, "expiresAtMs"), jsonUnsigned(grant, "createdAtMs")};
+  (void)result.toJson();
+  return result;
+}
+
+std::string
+RepoUserStorageUsageReply::toJson() const
+{
+  validateStorageSchema(schemaVersion); validateStorageName(usage.repoNode);
+  validateStorageName(usage.ownerIdentity);
+  const auto maximum = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+  if (usage.limitBytes != REPO_USER_STORAGE_LIMIT_BYTES || usage.committedBytes > maximum || usage.reservedBytes > maximum)
+    throw std::invalid_argument("repo-user-storage-invalid: usage");
+  return "{\"schemaVersion\":1,\"usage\":{\"repoNode\":" + detail::quoteJson(usage.repoNode) +
+    ",\"ownerIdentity\":" + detail::quoteJson(usage.ownerIdentity) + ",\"limitBytes\":" + std::to_string(usage.limitBytes) +
+    ",\"committedBytes\":" + std::to_string(usage.committedBytes) + ",\"reservedBytes\":" + std::to_string(usage.reservedBytes) + "}}";
+}
+
+RepoUserStorageUsageReply
+RepoUserStorageUsageReply::fromJson(const std::string& wire)
+{
+  const auto object = storageRequestObject(wire, {"schemaVersion", "usage"});
+  const auto& usage = detail::requireObject(object.at("usage"));
+  detail::requireExactKeys(usage, {"repoNode", "ownerIdentity", "limitBytes", "committedBytes", "reservedBytes"});
+  RepoUserStorageUsageReply result;
+  result.usage = {jsonString(usage, "repoNode"), jsonString(usage, "ownerIdentity"), jsonUnsigned(usage, "limitBytes"),
+    jsonUnsigned(usage, "committedBytes"), jsonUnsigned(usage, "reservedBytes")};
+  (void)result.toJson();
+  return result;
+}
+
+void
+RepoUserStorageGrantReply::validateExpected(const RepoArtifactTarget& target,
+  const std::string& owner, const RepoUserStorageGrantRequest& request) const
+{
+  (void)toJson();
+  if (grant.repoNode != target.repoNode || grant.ownerIdentity != owner ||
+      grant.grantId != request.grantId || grant.writerIdentity != request.writerIdentity ||
+      grant.objectName != request.objectName || grant.expiresAtMs != request.expiresAtMs)
+    throw std::invalid_argument("repo-user-storage-reply-mismatch");
+}
+
+void
+RepoUserStorageUsageReply::validateExpected(const RepoArtifactTarget& target,
+                                           const std::string& owner) const
+{
+  (void)toJson();
+  if (usage.repoNode != target.repoNode || usage.ownerIdentity != owner)
+    throw std::invalid_argument("repo-user-storage-reply-mismatch");
+}
+
+std::string
+RepoUserStorageListReply::toJson() const
+{
+  validateStorageSchema(schemaVersion); validateStorageName(repoNode);
+  validateStorageName(ownerIdentity);
+  if (objects.size() > 1000)
+    throw std::invalid_argument("repo-user-storage-invalid: list count");
+  if (!nextAfterObjectName.empty() &&
+      (objects.empty() || nextAfterObjectName != objects.back().object.objectName))
+    throw std::invalid_argument("repo-user-storage-invalid: list cursor");
+  std::string result = "{\"schemaVersion\":1,\"repoNode\":" + detail::quoteJson(repoNode) +
+    ",\"ownerIdentity\":" + detail::quoteJson(ownerIdentity) + ",\"objects\":[";
+  std::string previous;
+  for (const auto& claim : objects) {
+    const auto& object = claim.object;
+    validateStorageName(object.objectName); validateStorageId(claim.grantId);
+    validateStoragePositive(claim.ownerEpoch); validateStoragePositive(object.generation);
+    validateStoragePositive(claim.committedAtMs);
+    validateDigest("sha256", object.wireSha256, "wireSha256");
+    if (claim.repoNode != repoNode || claim.ownerIdentity != ownerIdentity ||
+        (!previous.empty() && object.objectName <= previous) || claim.deletedAtMs != 0 ||
+        object.payloadWireBytes > REPO_USER_STORAGE_LIMIT_BYTES ||
+        object.manifestBytes > REPO_USER_STORAGE_LIMIT_BYTES - object.payloadWireBytes)
+      throw std::invalid_argument("repo-user-storage-invalid: list claim");
+    std::string state;
+    if (claim.state == RepoUserStorageClaimState::Committed && claim.cleanupId.empty())
+      state = "COMMITTED";
+    else if (claim.state == RepoUserStorageClaimState::CleanupPrepared) {
+      validateStorageId(claim.cleanupId); state = "CLEANUP_PREPARED";
+    }
+    else throw std::invalid_argument("repo-user-storage-invalid: list claim state");
+    if (!previous.empty()) result += ',';
+    result += "{\"grantId\":" + detail::quoteJson(claim.grantId) +
+      ",\"ownerEpoch\":" + std::to_string(claim.ownerEpoch) +
+      ",\"objectName\":" + detail::quoteJson(object.objectName) +
+      ",\"wireSha256\":" + detail::quoteJson(object.wireSha256) +
+      ",\"generation\":" + std::to_string(object.generation) +
+      ",\"payloadWireBytes\":" + std::to_string(object.payloadWireBytes) +
+      ",\"manifestBytes\":" + std::to_string(object.manifestBytes) +
+      ",\"state\":" + detail::quoteJson(state) +
+      ",\"cleanupId\":" + detail::quoteJson(claim.cleanupId) +
+      ",\"committedAtMs\":" + std::to_string(claim.committedAtMs) + "}";
+    if (result.size() > 1024 * 1024)
+      throw std::length_error("repo-user-storage-list-reply-too-large");
+    previous = object.objectName;
+  }
+  result += "],\"nextAfterObjectName\":" + detail::quoteJson(nextAfterObjectName) + "}";
+  if (result.size() > 1024 * 1024)
+    throw std::length_error("repo-user-storage-list-reply-too-large");
+  return result;
+}
+
+RepoUserStorageListReply
+RepoUserStorageListReply::fromJson(const std::string& wire)
+{
+  const auto root = detail::parseJson(wire, 1024 * 1024);
+  const auto& object = detail::requireObject(root);
+  detail::requireExactKeys(object, {"schemaVersion", "repoNode", "ownerIdentity", "objects", "nextAfterObjectName"});
+  validateStorageSchema(jsonUnsigned(object, "schemaVersion"));
+  RepoUserStorageListReply result;
+  result.repoNode = jsonString(object, "repoNode");
+  result.ownerIdentity = jsonString(object, "ownerIdentity");
+  result.nextAfterObjectName = jsonString(object, "nextAfterObjectName");
+  const auto& entries = detail::member(object, "objects", detail::JsonValue::Kind::Array).array;
+  if (entries.size() > 1000)
+    throw std::invalid_argument("repo-user-storage-invalid: list count");
+  for (const auto& entry : entries) {
+    const auto& claim = detail::requireObject(entry);
+    detail::requireExactKeys(claim, {"grantId", "ownerEpoch", "objectName", "wireSha256", "generation",
+      "payloadWireBytes", "manifestBytes", "state", "cleanupId", "committedAtMs"});
+    RepoUserStorageClaim decoded;
+    decoded.repoNode = result.repoNode; decoded.ownerIdentity = result.ownerIdentity;
+    decoded.grantId = jsonString(claim, "grantId"); decoded.ownerEpoch = jsonUnsigned(claim, "ownerEpoch");
+    decoded.object = {jsonString(claim, "objectName"), jsonString(claim, "wireSha256"),
+      jsonUnsigned(claim, "generation"), jsonUnsigned(claim, "payloadWireBytes"), jsonUnsigned(claim, "manifestBytes")};
+    const auto state = jsonString(claim, "state");
+    if (state == "COMMITTED") decoded.state = RepoUserStorageClaimState::Committed;
+    else if (state == "CLEANUP_PREPARED") decoded.state = RepoUserStorageClaimState::CleanupPrepared;
+    else throw std::invalid_argument("repo-user-storage-invalid: list claim state");
+    decoded.cleanupId = jsonString(claim, "cleanupId");
+    decoded.committedAtMs = jsonUnsigned(claim, "committedAtMs");
+    result.objects.push_back(std::move(decoded));
+  }
+  (void)result.toJson();
+  return result;
+}
+
+void
+RepoUserStorageListReply::validateExpected(const RepoArtifactTarget& target,
+  const std::string& owner, const RepoUserStorageListRequest& request) const
+{
+  (void)toJson(); (void)request.toJson();
+  if (repoNode != target.repoNode || ownerIdentity != owner || objects.size() > request.limit ||
+      (!objects.empty() && objects.front().object.objectName <= request.afterObjectName))
+    throw std::invalid_argument("repo-user-storage-reply-mismatch");
+}
+
+std::string
+RepoUserStorageBinding::toJson() const
+{
+  validateStorageSchema(schemaVersion); validateStorageName(ownerIdentity);
+  validateStorageId(grantId); validateStoragePositive(ownerEpoch);
+  return "{\"schemaVersion\":1,\"ownerIdentity\":" + detail::quoteJson(ownerIdentity) +
+    ",\"grantId\":" + detail::quoteJson(grantId) + ",\"ownerEpoch\":" + std::to_string(ownerEpoch) + "}";
+}
+
+RepoUserStorageBinding
+RepoUserStorageBinding::fromJson(const std::string& wire)
+{
+  const auto object = storageRequestObject(wire, {"schemaVersion", "ownerIdentity", "grantId", "ownerEpoch"});
+  RepoUserStorageBinding result{1, jsonString(object, "ownerIdentity"), jsonString(object, "grantId"), jsonUnsigned(object, "ownerEpoch")};
+  (void)result.toJson();
+  return result;
+}
+
+std::string
+RepoUserStorageTargetBinding::toJson() const
+{
+  validateStorageSchema(schemaVersion); validateStorageName(target.repoNode);
+  validateStorageName(target.providerIdentity); validateStorageName(target.servicePrefix);
+  validateStorageName(writerIdentity);
+  return "{\"schemaVersion\":1,\"target\":{\"repoNode\":" + detail::quoteJson(target.repoNode) +
+    ",\"providerIdentity\":" + detail::quoteJson(target.providerIdentity) +
+    ",\"servicePrefix\":" + detail::quoteJson(target.servicePrefix) + "},\"binding\":" +
+    binding.toJson() + ",\"writerIdentity\":" + detail::quoteJson(writerIdentity) + "}";
+}
+
+RepoUserStorageTargetBinding
+RepoUserStorageTargetBinding::fromJson(const std::string& wire)
+{
+  const auto object = storageRequestObject(wire, {"schemaVersion", "target", "binding", "writerIdentity"});
+  const auto& target = detail::requireObject(object.at("target"));
+  detail::requireExactKeys(target, {"repoNode", "providerIdentity", "servicePrefix"});
+  RepoUserStorageTargetBinding result;
+  result.target = {jsonString(target, "repoNode"), jsonString(target, "providerIdentity"), jsonString(target, "servicePrefix")};
+  result.binding = RepoUserStorageBinding::fromJson(detail::renderJson(object.at("binding")));
+  result.writerIdentity = jsonString(object, "writerIdentity");
+  (void)result.toJson();
+  return result;
+}
+
+std::string
+RepoUserStorageGrantRequest::toJson() const
+{
+  validateStorageSchema(schemaVersion); validateStorageId(grantId);
+  validateStorageName(writerIdentity); validateStorageName(objectName);
+  validateStoragePositive(expiresAtMs);
+  return "{\"schemaVersion\":1,\"grantId\":" + detail::quoteJson(grantId) +
+    ",\"writerIdentity\":" + detail::quoteJson(writerIdentity) +
+    ",\"objectName\":" + detail::quoteJson(objectName) +
+    ",\"expiresAtMs\":" + std::to_string(expiresAtMs) + "}";
+}
+
+RepoUserStorageGrantRequest
+RepoUserStorageGrantRequest::fromJson(const std::string& wire)
+{
+  const auto object = storageRequestObject(wire, {"schemaVersion", "grantId", "writerIdentity", "objectName", "expiresAtMs"});
+  RepoUserStorageGrantRequest result{1, jsonString(object, "grantId"), jsonString(object, "writerIdentity"),
+    jsonString(object, "objectName"), jsonUnsigned(object, "expiresAtMs")};
+  (void)result.toJson();
+  return result;
+}
+
+std::string
+RepoUserStorageUsageRequest::toJson() const
+{
+  validateStorageSchema(schemaVersion);
+  return "{\"schemaVersion\":1}";
+}
+
+RepoUserStorageUsageRequest
+RepoUserStorageUsageRequest::fromJson(const std::string& wire)
+{
+  (void)storageRequestObject(wire, {"schemaVersion"});
+  return {};
+}
+
+std::string
+RepoUserStorageListRequest::toJson() const
+{
+  validateStorageSchema(schemaVersion);
+  if (!afterObjectName.empty()) validateStorageName(afterObjectName);
+  if (limit == 0 || limit > 1000) throw std::invalid_argument("repo-user-storage-invalid: list limit");
+  return "{\"schemaVersion\":1,\"afterObjectName\":" + detail::quoteJson(afterObjectName) +
+    ",\"limit\":" + std::to_string(limit) + "}";
+}
+
+RepoUserStorageListRequest
+RepoUserStorageListRequest::fromJson(const std::string& wire)
+{
+  const auto object = storageRequestObject(wire, {"schemaVersion", "afterObjectName", "limit"});
+  const auto limit = jsonUnsigned(object, "limit");
+  if (limit == 0 || limit > 1000) throw std::invalid_argument("repo-user-storage-invalid: list limit");
+  RepoUserStorageListRequest result{1, jsonString(object, "afterObjectName"), static_cast<uint32_t>(limit)};
+  (void)result.toJson();
+  return result;
+}
+
+std::string
+RepoUserStorageDeleteRequest::toJson() const
+{
+  validateStorageSchema(schemaVersion); validateStorageId(cleanupId);
+  validateStorageName(objectName); validateStoragePositive(ownerEpoch);
+  return "{\"schemaVersion\":1,\"cleanupId\":" + detail::quoteJson(cleanupId) +
+    ",\"objectName\":" + detail::quoteJson(objectName) + ",\"ownerEpoch\":" + std::to_string(ownerEpoch) + "}";
+}
+
+RepoUserStorageDeleteRequest
+RepoUserStorageDeleteRequest::fromJson(const std::string& wire)
+{
+  const auto object = storageRequestObject(wire, {"schemaVersion", "cleanupId", "objectName", "ownerEpoch"});
+  RepoUserStorageDeleteRequest result{1, jsonString(object, "cleanupId"), jsonString(object, "objectName"), jsonUnsigned(object, "ownerEpoch")};
+  (void)result.toJson();
+  return result;
+}
+
+std::string
+RepoUserStorageDeleteReply::toJson() const
+{
+  validateStorageSchema(schemaVersion); validateStorageName(repoNode);
+  validateStorageName(ownerIdentity); validateStorageId(cleanupId);
+  validateStorageName(objectName); validateStoragePositive(ownerEpoch);
+  if ((state != "PENDING" && state != "DELETED") ||
+      releasedBytes > REPO_USER_STORAGE_LIMIT_BYTES ||
+      (state == "PENDING" && releasedBytes != 0))
+    throw std::invalid_argument("repo-user-storage-invalid: delete outcome");
+  return "{\"schemaVersion\":1,\"repoNode\":" + detail::quoteJson(repoNode) +
+    ",\"ownerIdentity\":" + detail::quoteJson(ownerIdentity) +
+    ",\"cleanupId\":" + detail::quoteJson(cleanupId) +
+    ",\"objectName\":" + detail::quoteJson(objectName) +
+    ",\"ownerEpoch\":" + std::to_string(ownerEpoch) +
+    ",\"state\":" + detail::quoteJson(state) +
+    ",\"releasedBytes\":" + std::to_string(releasedBytes) + "}";
+}
+
+RepoUserStorageDeleteReply
+RepoUserStorageDeleteReply::fromJson(const std::string& wire)
+{
+  const auto object = storageRequestObject(wire, {"schemaVersion", "repoNode",
+    "ownerIdentity", "cleanupId", "objectName", "ownerEpoch", "state", "releasedBytes"});
+  RepoUserStorageDeleteReply result{1, jsonString(object, "repoNode"),
+    jsonString(object, "ownerIdentity"), jsonString(object, "cleanupId"),
+    jsonString(object, "objectName"), jsonUnsigned(object, "ownerEpoch"),
+    jsonString(object, "state"), jsonUnsigned(object, "releasedBytes")};
+  (void)result.toJson();
+  return result;
+}
+
+void
+RepoUserStorageDeleteReply::validateExpected(const RepoArtifactTarget& target,
+  const std::string& owner, const RepoUserStorageDeleteRequest& request) const
+{
+  (void)toJson(); (void)request.toJson();
+  if (repoNode != target.repoNode || ownerIdentity != owner ||
+      cleanupId != request.cleanupId || objectName != request.objectName ||
+      ownerEpoch != request.ownerEpoch)
+    throw std::invalid_argument("repo-user-storage-reply-mismatch");
 }
 
 std::string
@@ -1432,7 +1897,8 @@ RepoDataPacketLocation::fromJson(const std::string& wire)
 std::vector<uint8_t>
 ArtifactStoreRequest::toWire(const ArtifactLimits& limits) const
 {
-  if (schemaVersion != 2 || generation == 0 ||
+  if ((schemaVersion != 2 && schemaVersion != 3) ||
+      (schemaVersion == 3) != storageBinding.has_value() || generation == 0 ||
       bytes.size() != reference.sizeBytes ||
       bytes.size() > std::min<uint64_t>(limits.maxChunkBytes, 16 * 1024 * 1024)) {
     throw std::invalid_argument("repo-artifact-store-request-invalid: version, size, or generation is invalid");
@@ -1440,12 +1906,14 @@ ArtifactStoreRequest::toWire(const ArtifactLimits& limits) const
   validateIdentifier(operationId, 256, "operationId", artifact_error::InvalidReceipt);
   reference.validate(limits);
   validateOperationOwner(operationOwner, limits);
-  const std::string header = "{\"schemaVersion\":2,\"operationId\":" +
+  const std::string header = "{\"schemaVersion\":" + std::to_string(schemaVersion) +
+    ",\"operationId\":" +
     detail::quoteJson(operationId) + ",\"generation\":" +
     std::to_string(generation) + ",\"artifact\":" + reference.toJson() +
     ",\"operationOwner\":" + operationOwnerJson(operationOwner) +
+    (schemaVersion == 3 ? ",\"storageBinding\":" + storageBinding->toJson() : "") +
     ",\"payloadBytes\":" + std::to_string(bytes.size()) + "}";
-  return frameArtifactRequest("ARV2PUT2", header, bytes);
+  return frameArtifactRequest(schemaVersion == 3 ? "ARV2PUT3" : "ARV2PUT2", header, bytes);
 }
 
 ArtifactStoreRequest
@@ -1453,17 +1921,21 @@ ArtifactStoreRequest::fromWire(const std::vector<uint8_t>& wire,
                                const ArtifactLimits& limits)
 {
   size_t payloadOffset = 0;
+  const bool version3Frame = hasArtifactFrameMagic(wire, "ARV2PUT3");
   const bool version2Frame = hasArtifactFrameMagic(wire, "ARV2PUT2");
   const auto header = unframeArtifactRequest(
-    wire, version2Frame ? "ARV2PUT2" : "ARV2PUT1", payloadOffset);
+    wire, version3Frame ? "ARV2PUT3" : version2Frame ? "ARV2PUT2" : "ARV2PUT1", payloadOffset);
   const auto root = detail::parseJson(header, 64 * 1024);
   const auto& object = detail::requireObject(root);
   const auto wireVersion = jsonUnsigned(object, "schemaVersion");
-  if ((wireVersion != 1 && wireVersion != 2) ||
-      (wireVersion == 2) != version2Frame) {
+  if (wireVersion != (version3Frame ? 3ULL : version2Frame ? 2ULL : 1ULL)) {
     throw std::invalid_argument("repo-artifact-store-request-invalid: unknown schema version");
   }
-  if (wireVersion == 2) {
+  if (wireVersion == 3) {
+    detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation",
+      "artifact", "operationOwner", "storageBinding", "payloadBytes"});
+  }
+  else if (wireVersion == 2) {
     detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation",
       "artifact", "operationOwner", "payloadBytes"});
   }
@@ -1472,12 +1944,17 @@ ArtifactStoreRequest::fromWire(const std::vector<uint8_t>& wire,
       "artifact", "payloadBytes"});
   }
   ArtifactStoreRequest result;
+  result.schemaVersion = wireVersion == 3 ? 3 : 2;
   result.operationId = jsonString(object, "operationId");
   result.generation = jsonUnsigned(object, "generation");
   result.reference = ArtifactReference::fromJson(
     detail::renderJson(object.at("artifact")), limits);
-  if (wireVersion == 2) {
+  if (wireVersion >= 2) {
     result.operationOwner = parseOperationOwner(object.at("operationOwner"));
+  }
+  if (wireVersion == 3) {
+    result.storageBinding = RepoUserStorageBinding::fromJson(
+      detail::renderJson(object.at("storageBinding")));
   }
   const auto payloadBytes = jsonUnsigned(object, "payloadBytes");
   if (payloadBytes != wire.size() - payloadOffset) {
@@ -1491,7 +1968,8 @@ ArtifactStoreRequest::fromWire(const std::vector<uint8_t>& wire,
 std::vector<uint8_t>
 ArtifactRangeWriteRequest::toWire(const ArtifactLimits& limits) const
 {
-  if (schemaVersion != 2 || generation == 0 || lengthBytes == 0 ||
+  if ((schemaVersion != 2 && schemaVersion != 3) ||
+      (schemaVersion == 3) != storageBinding.has_value() || generation == 0 || lengthBytes == 0 ||
       lengthBytes != bytes.size() || offsetBytes > reference.sizeBytes ||
       lengthBytes > reference.sizeBytes - offsetBytes ||
       lengthBytes > std::min<uint64_t>(limits.maxChunkBytes, 16 * 1024 * 1024)) {
@@ -1500,14 +1978,16 @@ ArtifactRangeWriteRequest::toWire(const ArtifactLimits& limits) const
   validateIdentifier(operationId, 256, "operationId", artifact_error::InvalidReceipt);
   reference.validate(limits);
   validateOperationOwner(operationOwner, limits);
-  const std::string header = "{\"schemaVersion\":2,\"operationId\":" +
+  const std::string header = "{\"schemaVersion\":" + std::to_string(schemaVersion) +
+    ",\"operationId\":" +
     detail::quoteJson(operationId) + ",\"generation\":" +
     std::to_string(generation) + ",\"artifact\":" + reference.toJson() +
     ",\"operationOwner\":" + operationOwnerJson(operationOwner) +
+    (schemaVersion == 3 ? ",\"storageBinding\":" + storageBinding->toJson() : "") +
     ",\"offsetBytes\":" + std::to_string(offsetBytes) +
     ",\"lengthBytes\":" + std::to_string(lengthBytes) +
     ",\"payloadBytes\":" + std::to_string(bytes.size()) + "}";
-  return frameArtifactRequest("ARV2RNG2", header, bytes);
+  return frameArtifactRequest(schemaVersion == 3 ? "ARV2RNG3" : "ARV2RNG2", header, bytes);
 }
 
 ArtifactRangeWriteRequest
@@ -1515,17 +1995,21 @@ ArtifactRangeWriteRequest::fromWire(const std::vector<uint8_t>& wire,
                                     const ArtifactLimits& limits)
 {
   size_t payloadOffset = 0;
+  const bool version3Frame = hasArtifactFrameMagic(wire, "ARV2RNG3");
   const bool version2Frame = hasArtifactFrameMagic(wire, "ARV2RNG2");
   const auto header = unframeArtifactRequest(
-    wire, version2Frame ? "ARV2RNG2" : "ARV2RNG1", payloadOffset);
+    wire, version3Frame ? "ARV2RNG3" : version2Frame ? "ARV2RNG2" : "ARV2RNG1", payloadOffset);
   const auto root = detail::parseJson(header, 64 * 1024);
   const auto& object = detail::requireObject(root);
   const auto wireVersion = jsonUnsigned(object, "schemaVersion");
-  if ((wireVersion != 1 && wireVersion != 2) ||
-      (wireVersion == 2) != version2Frame) {
+  if (wireVersion != (version3Frame ? 3ULL : version2Frame ? 2ULL : 1ULL)) {
     throw std::invalid_argument("repo-artifact-range-request-invalid: unknown schema version");
   }
-  if (wireVersion == 2) {
+  if (wireVersion == 3) {
+    detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation",
+      "artifact", "operationOwner", "storageBinding", "offsetBytes", "lengthBytes", "payloadBytes"});
+  }
+  else if (wireVersion == 2) {
     detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation",
       "artifact", "operationOwner", "offsetBytes", "lengthBytes", "payloadBytes"});
   }
@@ -1534,12 +2018,17 @@ ArtifactRangeWriteRequest::fromWire(const std::vector<uint8_t>& wire,
       "artifact", "offsetBytes", "lengthBytes", "payloadBytes"});
   }
   ArtifactRangeWriteRequest result;
+  result.schemaVersion = wireVersion == 3 ? 3 : 2;
   result.operationId = jsonString(object, "operationId");
   result.generation = jsonUnsigned(object, "generation");
   result.reference = ArtifactReference::fromJson(
     detail::renderJson(object.at("artifact")), limits);
-  if (wireVersion == 2) {
+  if (wireVersion >= 2) {
     result.operationOwner = parseOperationOwner(object.at("operationOwner"));
+  }
+  if (wireVersion == 3) {
+    result.storageBinding = RepoUserStorageBinding::fromJson(
+      detail::renderJson(object.at("storageBinding")));
   }
   result.offsetBytes = jsonUnsigned(object, "offsetBytes");
   result.lengthBytes = jsonUnsigned(object, "lengthBytes");
@@ -1555,17 +2044,20 @@ ArtifactRangeWriteRequest::fromWire(const std::vector<uint8_t>& wire,
 std::vector<uint8_t>
 ArtifactRangeCommitRequest::toWire(const ArtifactLimits& limits) const
 {
-  if (schemaVersion != 2 || generation == 0) {
+  if ((schemaVersion != 2 && schemaVersion != 3) ||
+      (schemaVersion == 3) != storageBinding.has_value() || generation == 0) {
     throw std::invalid_argument("repo-artifact-commit-request-invalid: generation or version invalid");
   }
   validateIdentifier(operationId, 256, "operationId", artifact_error::InvalidReceipt);
   reference.validate(limits);
   validateOperationOwner(operationOwner, limits);
-  const std::string header = "{\"schemaVersion\":2,\"operationId\":" +
+  const std::string header = "{\"schemaVersion\":" + std::to_string(schemaVersion) +
+    ",\"operationId\":" +
     detail::quoteJson(operationId) + ",\"generation\":" +
     std::to_string(generation) + ",\"artifact\":" + reference.toJson() +
-    ",\"operationOwner\":" + operationOwnerJson(operationOwner) + "}";
-  return frameArtifactRequest("ARV2COM2", header);
+    ",\"operationOwner\":" + operationOwnerJson(operationOwner) +
+    (schemaVersion == 3 ? ",\"storageBinding\":" + storageBinding->toJson() : "") + "}";
+  return frameArtifactRequest(schemaVersion == 3 ? "ARV2COM3" : "ARV2COM2", header);
 }
 
 ArtifactRangeCommitRequest
@@ -1573,20 +2065,24 @@ ArtifactRangeCommitRequest::fromWire(const std::vector<uint8_t>& wire,
                                      const ArtifactLimits& limits)
 {
   size_t payloadOffset = 0;
+  const bool version3Frame = hasArtifactFrameMagic(wire, "ARV2COM3");
   const bool version2Frame = hasArtifactFrameMagic(wire, "ARV2COM2");
   const auto header = unframeArtifactRequest(
-    wire, version2Frame ? "ARV2COM2" : "ARV2COM1", payloadOffset);
+    wire, version3Frame ? "ARV2COM3" : version2Frame ? "ARV2COM2" : "ARV2COM1", payloadOffset);
   if (payloadOffset != wire.size()) {
     throw std::invalid_argument("repo-artifact-commit-request-invalid: unexpected payload bytes");
   }
   const auto root = detail::parseJson(header, 64 * 1024);
   const auto& object = detail::requireObject(root);
   const auto wireVersion = jsonUnsigned(object, "schemaVersion");
-  if ((wireVersion != 1 && wireVersion != 2) ||
-      (wireVersion == 2) != version2Frame) {
+  if (wireVersion != (version3Frame ? 3ULL : version2Frame ? 2ULL : 1ULL)) {
     throw std::invalid_argument("repo-artifact-commit-request-invalid: unknown schema version");
   }
-  if (wireVersion == 2) {
+  if (wireVersion == 3) {
+    detail::requireExactKeys(object,
+      {"schemaVersion", "operationId", "generation", "artifact", "operationOwner", "storageBinding"});
+  }
+  else if (wireVersion == 2) {
     detail::requireExactKeys(object,
       {"schemaVersion", "operationId", "generation", "artifact", "operationOwner"});
   }
@@ -1594,12 +2090,17 @@ ArtifactRangeCommitRequest::fromWire(const std::vector<uint8_t>& wire,
     detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation", "artifact"});
   }
   ArtifactRangeCommitRequest result;
+  result.schemaVersion = wireVersion == 3 ? 3 : 2;
   result.operationId = jsonString(object, "operationId");
   result.generation = jsonUnsigned(object, "generation");
   result.reference = ArtifactReference::fromJson(
     detail::renderJson(object.at("artifact")), limits);
-  if (wireVersion == 2) {
+  if (wireVersion >= 2) {
     result.operationOwner = parseOperationOwner(object.at("operationOwner"));
+  }
+  if (wireVersion == 3) {
+    result.storageBinding = RepoUserStorageBinding::fromJson(
+      detail::renderJson(object.at("storageBinding")));
   }
   (void)result.toWire(limits);
   return result;
@@ -1608,15 +2109,21 @@ ArtifactRangeCommitRequest::fromWire(const std::vector<uint8_t>& wire,
 std::vector<uint8_t>
 ArtifactRangeAbortRequest::toWire(const ArtifactLimits& limits) const
 {
-  if (schemaVersion != 1 || generation == 0) {
+  if ((schemaVersion != 1 && schemaVersion != 2) || generation == 0 ||
+      (schemaVersion == 2) != storageBinding.has_value() ||
+      (schemaVersion == 1 && operationOwner.has_value())) {
     throw std::invalid_argument("repo-artifact-abort-request-invalid: generation or version invalid");
   }
   validateIdentifier(operationId, 256, "operationId", artifact_error::InvalidReceipt);
   reference.validate(limits);
-  const std::string header = "{\"schemaVersion\":1,\"operationId\":" +
+  validateOperationOwner(operationOwner, limits);
+  const std::string header = "{\"schemaVersion\":" + std::to_string(schemaVersion) +
+    ",\"operationId\":" +
     detail::quoteJson(operationId) + ",\"generation\":" +
-    std::to_string(generation) + ",\"artifact\":" + reference.toJson() + "}";
-  return frameArtifactRequest("ARV2ABT1", header);
+    std::to_string(generation) + ",\"artifact\":" + reference.toJson() +
+    (schemaVersion == 2 ? ",\"operationOwner\":" + operationOwnerJson(operationOwner) +
+      ",\"storageBinding\":" + storageBinding->toJson() : "") + "}";
+  return frameArtifactRequest(schemaVersion == 2 ? "ARV2ABT2" : "ARV2ABT1", header);
 }
 
 ArtifactRangeAbortRequest
@@ -1624,21 +2131,32 @@ ArtifactRangeAbortRequest::fromWire(const std::vector<uint8_t>& wire,
                                     const ArtifactLimits& limits)
 {
   size_t payloadOffset = 0;
-  const auto header = unframeArtifactRequest(wire, "ARV2ABT1", payloadOffset);
+  const bool version2Frame = hasArtifactFrameMagic(wire, "ARV2ABT2");
+  const auto header = unframeArtifactRequest(wire, version2Frame ? "ARV2ABT2" : "ARV2ABT1", payloadOffset);
   if (payloadOffset != wire.size()) {
     throw std::invalid_argument("repo-artifact-abort-request-invalid: unexpected payload bytes");
   }
   const auto root = detail::parseJson(header, 64 * 1024);
   const auto& object = detail::requireObject(root);
-  detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation", "artifact"});
-  if (jsonUnsigned(object, "schemaVersion") != 1) {
+  const auto wireVersion = jsonUnsigned(object, "schemaVersion");
+  if (wireVersion != (version2Frame ? 2ULL : 1ULL)) {
     throw std::invalid_argument("repo-artifact-abort-request-invalid: unknown schema version");
   }
+  if (wireVersion == 2)
+    detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation", "artifact", "operationOwner", "storageBinding"});
+  else
+    detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation", "artifact"});
   ArtifactRangeAbortRequest result;
+  result.schemaVersion = static_cast<uint32_t>(wireVersion);
   result.operationId = jsonString(object, "operationId");
   result.generation = jsonUnsigned(object, "generation");
   result.reference = ArtifactReference::fromJson(
     detail::renderJson(object.at("artifact")), limits);
+  if (wireVersion == 2) {
+    result.operationOwner = parseOperationOwner(object.at("operationOwner"));
+    result.storageBinding = RepoUserStorageBinding::fromJson(
+      detail::renderJson(object.at("storageBinding")));
+  }
   (void)result.toWire(limits);
   return result;
 }
@@ -1672,8 +2190,39 @@ RepoDataReference::toJson() const
   os << "\"expectedSize\":" << expectedSize << ",";
   os << "\"storeWirePackets\":" << (storeWirePackets ? "true" : "false") << ",";
   os << "\"objectType\":" << jsonQuote(objectType);
+  if (packetSetMetadata)
+    os << ",\"packetSetMetadata\":" << jsonQuote(packetSetMetadata->toJson());
   os << "}";
   return os.str();
+}
+
+void
+RepoDataReference::validateExactPacketSet() const
+{
+  if (!packetSetMetadata) return;
+  const auto& metadata = *packetSetMetadata;
+  if (hasFinalSegment || !storeWirePackets || expectedSize == 0 ||
+      expectedSize > REPO_USER_STORAGE_LIMIT_BYTES || metadata.packetNames.empty() ||
+      metadata.packetNames.size() > 65536 || metadata.packetNames.size() > expectedSize ||
+      metadata.objectType != "original-packet-set" ||
+      ndn::Name(metadata.objectName) != ndn::Name(objectName) ||
+      ndn::Name(metadata.packetNames.front()) != ndn::Name(objectName) ||
+      metadata.size != expectedSize || metadata.envelopeBytes > expectedSize)
+    throw std::invalid_argument("repo-exact-packet-index-invalid");
+  const ndn::Name prefix(dataPrefix);
+  if (prefix.empty() || (!metadata.dataPrefix.empty() &&
+      !prefix.isPrefixOf(ndn::Name(metadata.dataPrefix))))
+    throw std::invalid_argument("repo-exact-packet-prefix-invalid");
+  std::set<ndn::Name> names;
+  std::size_t indexBytes = 0;
+  for (const auto& text : metadata.packetNames) {
+    if (text.empty() || text.size() > 4096 || indexBytes > (4U << 20) - text.size())
+      throw std::invalid_argument("repo-exact-packet-index-too-large");
+    indexBytes += text.size();
+    const ndn::Name name(text);
+    if (name.empty() || !prefix.isPrefixOf(name) || !names.insert(name).second)
+      throw std::invalid_argument("repo-exact-packet-name-invalid");
+  }
 }
 
 std::string
@@ -2087,9 +2636,35 @@ RepoStoreBackend::unpin(const std::string&) const
 {
 }
 
+bool
+RepoStoreBackend::canRemoveUserStorageObject(const RepoUserStorageObject& expected) const
+{
+  validateRepoUserStorageObject(expected);
+  return false;
+}
+
+bool
+RepoStoreBackend::confirmUserStorageRemoval(const RepoUserStorageObject& expected)
+{
+  validateRepoUserStorageObject(expected);
+  return false;
+}
+
 void
 RepoStoreBackend::abortRanges(const std::string&)
 {
+}
+
+bool
+RepoStoreBackend::abortUserStorageRangesIfOwned(const RepoObjectManifest&)
+{
+  return false;
+}
+
+bool
+RepoStoreBackend::abortFailedRangesIfOwned(const RepoObjectManifest&)
+{
+  return false;
 }
 
 bool

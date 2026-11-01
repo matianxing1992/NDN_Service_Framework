@@ -4,6 +4,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
+#include "ndnsf-distributed-repo/RepoNode.hpp"
+#include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
@@ -12,8 +14,12 @@
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
+#include <ndn-cxx/util/io.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -21,11 +27,13 @@
 #include <limits>
 #include <map>
 #include <cmath>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -34,6 +42,14 @@ using namespace ndnsf::di;
 using boost::property_tree::ptree;
 
 constexpr std::uint64_t MAX_NATIVE_INPUT_BYTES = 16 * 1024 * 1024;
+
+std::uint64_t
+oneHourRetentionDeadlineMs()
+{
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  return static_cast<std::uint64_t>(now) + 3'600'000;
+}
 
 volatile std::sig_atomic_t interrupted = 0;
 
@@ -83,6 +99,65 @@ relativeTo(const std::filesystem::path& base, const std::string& value)
 {
   const auto path = std::filesystem::path(value);
   return path.is_absolute() ? path : base / path;
+}
+
+struct KvHandoffOptions
+{
+  std::size_t afterTurn = 0;
+  std::chrono::milliseconds timeout{120000};
+  bool waitForDeparture = false;
+  std::map<std::string, std::string> destinations;
+  std::map<std::string, NativeRemoteProtectedKvRoleTrustPolicyV1> trust;
+};
+
+KvHandoffOptions
+readKvHandoffOptions(const ptree& value, const std::filesystem::path& base)
+{
+  KvHandoffOptions result;
+  result.afterTurn = value.get<std::size_t>("after_turn");
+  const auto timeout = value.get<int>("timeout_ms", 120000);
+  if (timeout <= 0 || timeout > 600000)
+    throw std::invalid_argument("kv_handoff timeout_ms must be in [1,600000]");
+  result.timeout = std::chrono::milliseconds(timeout);
+  result.waitForDeparture = value.get<bool>("wait_for_departure", false);
+  for (const auto& entry : value.get_child("roles")) {
+    if (entry.first.empty() || result.trust.size() >= 64)
+      throw std::invalid_argument("kv_handoff requires bounded, named roles");
+    const auto& role = entry.second;
+    const auto producer = ndn::Name(role.get<std::string>("producer_identity"));
+    const auto certificatePath = relativeTo(base, role.get<std::string>("producer_certificate"));
+    const auto bytes = readBytes(certificatePath, 64 * 1024);
+    std::istringstream certificateInput(std::string(bytes.begin(), bytes.end()));
+    const auto certificate = ndn::io::load<ndn::security::Certificate>(certificateInput);
+    if (!certificate || producer.empty() || certificate->getIdentity() != producer ||
+        !certificate->getValidityPeriod().isValid())
+      throw std::invalid_argument("kv_handoff requires a valid pinned Producer certificate");
+    NativeRemoteProtectedKvRoleTrustPolicyV1 trust;
+    trust.target.repoNode = role.get<std::string>("repo_node");
+    trust.target.providerIdentity = role.get<std::string>("repo_provider_identity");
+    trust.target.servicePrefix = role.get<std::string>("repo_service_prefix");
+    if (trust.target.repoNode.empty() || trust.target.providerIdentity.empty() ||
+        trust.target.servicePrefix.empty())
+      throw std::invalid_argument("kv_handoff requires a complete Repo target");
+    // The operator pins the complete certificate, including its namespace and key.
+    trust.producerVerifierPolicyDigest = nativePlanningDigest(
+      std::string(bytes.begin(), bytes.end()));
+    trust.verifyProducerSignature = [certificate, producer](const ndn::Data& data) {
+      return certificate->getValidityPeriod().isValid() && producer.isPrefixOf(data.getName()) &&
+        ndn::security::verifySignature(data, *certificate);
+    };
+    if (!result.waitForDeparture) {
+      const auto destination = role.get<std::string>("destination_provider");
+      if (destination.empty() || ndn::Name(destination).empty() ||
+          !result.destinations.emplace(entry.first, destination).second)
+        throw std::invalid_argument("kv_handoff has an invalid destination");
+    }
+    if (!result.trust.emplace(entry.first, std::move(trust)).second)
+      throw std::invalid_argument("kv_handoff has an invalid or duplicate role");
+  }
+  if (result.trust.empty())
+    throw std::invalid_argument("kv_handoff requires at least one role");
+  return result;
 }
 
 std::vector<std::uint8_t>
@@ -316,27 +391,32 @@ streamEventText(const Event& event)
 
 void
 waitForTestStreamBarrier(const ptree& config, const std::filesystem::path& base,
-                         std::size_t turnIndex, std::size_t observedEvents)
+                         std::size_t turnIndex, std::size_t observedEvents,
+                         const char* configurationKey = "test_stream_barrier")
 {
   if (turnIndex != 0 || observedEvents != 1)
     return;
-  const auto barrier = config.get_child_optional("test_stream_barrier");
+  const auto barrier = config.get_child_optional(configurationKey);
   if (!barrier)
     return;
   if (!config.get<bool>("test_only", false))
-    throw std::invalid_argument("test_stream_barrier requires test_only=true");
+    throw std::invalid_argument(std::string(configurationKey) + " requires test_only=true");
   const auto readyValue = barrier->get_optional<std::string>("ready_file");
   const auto releaseValue = barrier->get_optional<std::string>("release_file");
   const auto timeoutMs = barrier->get<std::uint64_t>("timeout_ms", 10000);
+  const std::uint64_t timeoutLimitMs =
+    std::string(configurationKey) == "test_handoff_barrier" &&
+    config.get<bool>("kv_handoff.wait_for_departure", false) ? 650000 : 60000;
   if (!readyValue || !releaseValue || readyValue->empty() || releaseValue->empty() ||
-      timeoutMs == 0 || timeoutMs > 60000)
+      timeoutMs == 0 || timeoutMs > timeoutLimitMs)
     throw std::invalid_argument("test_stream_barrier is invalid");
   const auto ready = relativeTo(base, *readyValue);
   const auto release = relativeTo(base, *releaseValue);
   std::ofstream readyOutput(ready, std::ios::trunc);
   if (!readyOutput)
     throw std::runtime_error("test stream barrier ready file could not be written");
-  readyOutput << "first-event-flushed\n";
+  readyOutput << (std::string(configurationKey) == "test_stream_barrier" ?
+                   "first-event-flushed" : configurationKey) << "\n";
   readyOutput.flush();
   const auto deadline = std::chrono::steady_clock::now() +
     std::chrono::milliseconds(timeoutMs);
@@ -347,6 +427,48 @@ waitForTestStreamBarrier(const ptree& config, const std::filesystem::path& base,
       throw std::runtime_error("test stream barrier release timed out");
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
+}
+
+void
+waitForTestExecutionBarrier(const ptree& root, const ptree& barrier,
+                            const std::filesystem::path& base,
+                            const char* barrierName)
+{
+  if (!root.get<bool>("test_only", false))
+    throw std::invalid_argument(std::string(barrierName) + " requires test_only=true");
+  const auto readyValue = barrier.get_optional<std::string>("ready_file");
+  const auto releaseValue = barrier.get_optional<std::string>("release_file");
+  const auto timeoutMs = barrier.get<std::uint64_t>("timeout_ms", 10000);
+  if (!readyValue || readyValue->empty() || !releaseValue || releaseValue->empty() ||
+      timeoutMs == 0 || timeoutMs > 60000)
+    throw std::invalid_argument(std::string(barrierName) + " is invalid");
+  const auto ready = relativeTo(base, *readyValue);
+  const auto release = relativeTo(base, *releaseValue);
+  if (ready == release)
+    throw std::invalid_argument(std::string(barrierName) + " ready and release paths must differ");
+  if (std::filesystem::exists(ready) || std::filesystem::exists(release))
+    throw std::runtime_error(std::string(barrierName) + " has a stale marker");
+  std::ofstream readyOutput(ready, std::ios::trunc);
+  if (!readyOutput)
+    throw std::runtime_error(std::string(barrierName) + " ready file could not be written");
+  readyOutput << barrierName << "\n";
+  readyOutput.flush();
+  if (!readyOutput)
+    throw std::runtime_error(std::string(barrierName) + " ready file could not be flushed");
+  readyOutput.close();
+  if (!readyOutput)
+    throw std::runtime_error(std::string(barrierName) + " ready file could not be closed");
+  std::cout << "NATIVE_TEST_EXECUTION_BARRIER_READY name=" << barrierName << std::endl;
+  const auto deadline = std::chrono::steady_clock::now() +
+    std::chrono::milliseconds(timeoutMs);
+  while (!std::filesystem::exists(release)) {
+    if (interrupted)
+      throw std::runtime_error("NATIVE_REQUEST_INTERRUPTED");
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw std::runtime_error(std::string(barrierName) + " release timed out");
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  std::cout << "NATIVE_TEST_EXECUTION_BARRIER_RELEASED name=" << barrierName << std::endl;
 }
 
 void
@@ -365,6 +487,7 @@ struct TurnSpec
   std::filesystem::path options;
   std::filesystem::path output;
   std::optional<std::filesystem::path> checkpoint;
+  std::optional<std::chrono::milliseconds> requestTimeout;
 };
 
 std::vector<TurnSpec>
@@ -377,7 +500,7 @@ readTurnSpecs(const ptree& config, const std::filesystem::path& base,
     if (!legacyInput || !legacyOutput)
       throw std::invalid_argument(
         "requester turns are absent; provide --input and --output for a single turn");
-    return {{*legacyInput, {}, *legacyOutput, std::nullopt}};
+    return {{*legacyInput, {}, *legacyOutput, std::nullopt, std::nullopt}};
   }
 
   std::vector<TurnSpec> result;
@@ -393,14 +516,36 @@ readTurnSpecs(const ptree& config, const std::filesystem::path& base,
         "each turns entry requires input_file, options_file, and output_file");
     const auto checkpoint = item.second.get_optional<std::string>(
       "checkpoint_output_file");
+    std::optional<std::chrono::milliseconds> requestTimeout;
+    if (item.second.count("request_timeout_ms") > 1)
+      throw std::invalid_argument("turn request_timeout_ms must not be repeated");
+    if (const auto value = item.second.get_child_optional("request_timeout_ms")) {
+      const auto timeoutMs = value->get_value<std::uint64_t>();
+      if (timeoutMs == 0 || timeoutMs > 3600000)
+        throw std::invalid_argument("turn request_timeout_ms must be in [1,3600000]");
+      requestTimeout = std::chrono::milliseconds(timeoutMs);
+    }
     result.push_back({relativeTo(base, *input), relativeTo(base, *options),
                       relativeTo(base, *output), checkpoint
                         ? std::optional<std::filesystem::path>(relativeTo(base, *checkpoint))
-                        : std::nullopt});
+                        : std::nullopt, requestTimeout});
   }
   if (result.empty())
     throw std::invalid_argument("turns must contain at least one entry");
   return result;
+}
+
+RequestOptions
+requestOptionsForTurn(const RequestOptions& base, const TurnSpec& turn)
+{
+  if (turn.requestTimeout &&
+      (*turn.requestTimeout <= base.ackTimeout || *turn.requestTimeout > base.timeout))
+    throw std::invalid_argument(
+      "turn request deadline must exceed its ACK window and not exceed the base deadline");
+  auto options = base;
+  if (turn.requestTimeout)
+    options.timeout = *turn.requestTimeout;
+  return options;
 }
 
 void
@@ -410,6 +555,167 @@ writeResult(const Result& result, const std::filesystem::path& path)
   if (!output || (!result.payload.empty() && !output.write(
       reinterpret_cast<const char*>(result.payload.data()), result.payload.size())))
     throw std::runtime_error("requester output could not be written");
+}
+
+std::string
+executeConversationTurn(const ptree& config, const ptree& request,
+                        const std::filesystem::path& base, const TurnSpec& turn,
+                        std::size_t turnIndex, const RequestOptions& baseOptions,
+                        bool streaming, const std::vector<std::int64_t>& streamExpected,
+                        const User& user, const PreparedModel& prepared,
+                        Conversation* conversation)
+{
+  const auto options = requestOptionsForTurn(baseOptions, turn);
+  const auto payload = readBytes(turn.input, MAX_NATIVE_INPUT_BYTES);
+  const auto optionsBytes = turn.options.empty()
+    ? readOptions(request, base) : readBytes(turn.options, 4 * 1024 * 1024);
+  RequestHandle handle = conversation
+    ? conversation->request(Input::inlineBytes(payload, optionsBytes), options)
+    : user.request(prepared, Input::inlineBytes(payload, optionsBytes), options);
+  const auto requestId = handle.id();
+  std::cout << "NATIVE_CONVERSATION_TURN_BUDGET index=" << turnIndex
+            << " timeoutMs=" << options.timeout.count()
+            << " ackTimeoutMs=" << options.ackTimeout.count() << std::endl;
+  std::cout << "NATIVE_CONVERSATION_TURN_START index=" << turnIndex
+            << " request=" << requestId << std::endl;
+
+  std::size_t observedEvents = 0;
+  bool terminalSeen = false;
+  Result result;
+  if (streaming) {
+    auto reader = handle.events();
+    bool livePendingReported = false;
+    std::cout << "NATIVE_STREAM_READER_OPENED index=" << turnIndex
+              << " request=" << requestId << std::endl;
+    while (!terminalSeen) {
+      if (interrupted) {
+        handle.cancel();
+        throw std::runtime_error("NATIVE_REQUEST_INTERRUPTED");
+      }
+      const auto remaining = reader.remainingTimeout();
+      if (remaining.count() <= 0) {
+        handle.cancel();
+        throw std::runtime_error(
+          "NATIVE_STREAM_ORACLE_FAILED: terminal event timeout");
+      }
+      const auto wait = std::min(remaining, std::chrono::milliseconds(100));
+      if (!livePendingReported && observedEvents == 0 &&
+          handle.status() == RequestStatus::Pending) {
+        std::cout << "NATIVE_STREAM_LIVE_PENDING index=" << turnIndex
+                  << " request=" << requestId << std::endl;
+        livePendingReported = true;
+      }
+      std::optional<Event> event;
+      try {
+        event = reader.next(wait);
+      }
+      catch (const DiError& error) {
+        // EventReader::next reports a bounded local read timeout as
+        // WAIT_TIMEOUT. A streamed request may remain quiet while ACK/Selection
+        // completes authenticated material fetch and runner assembly; only
+        // the absolute request deadline is terminal.
+        if (error.code() != "WAIT_TIMEOUT")
+          throw;
+        if (handle.status() == RequestStatus::Pending)
+          continue;
+        result = handle.result(std::chrono::milliseconds(0));
+        throw std::runtime_error(
+          "NATIVE_STREAM_ORACLE_FAILED: terminal event missing");
+      }
+      if (!event) {
+        // A local read timeout is not EOF. Continue until the business
+        // deadline; a failed handle is surfaced by result() below.
+        if (handle.status() != RequestStatus::Pending) {
+          result = handle.result(std::chrono::milliseconds(0));
+          throw std::runtime_error(
+            "NATIVE_STREAM_ORACLE_FAILED: terminal event missing");
+        }
+        continue;
+      }
+      if (event->terminal) {
+        terminalSeen = true;
+        std::cout << "NATIVE_STREAM_TERMINAL index=" << turnIndex
+                  << " request=" << requestId << std::endl;
+        break;
+      }
+      const auto firstEventStatus = observedEvents == 0
+        ? handle.status() : RequestStatus::Pending;
+      const bool firstEventPending = observedEvents == 0 &&
+        firstEventStatus == RequestStatus::Pending;
+      if (observedEvents == 0 && config.get_child_optional("test_stream_barrier") &&
+          !firstEventPending)
+        throw std::runtime_error(
+          "NATIVE_STREAM_ORACLE_FAILED: first event arrived after native completion");
+      if (!streamExpected.empty()) {
+        if (observedEvents >= streamExpected.size())
+          throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: too many events");
+        validateStreamEvent(streamExpected, *event, observedEvents);
+      }
+      const bool firstEvent = observedEvents == 0;
+      std::cout << streamEventText(*event);
+      ++observedEvents;
+      // NativeInferenceClient records API queue delivery separately. This
+      // marker follows actual text output and its flush boundary.
+      std::cout.flush();
+      if (firstEvent) {
+        std::cout << "NATIVE_STREAM_FIRST_EVENT index=" << turnIndex
+                  << " request=" << requestId << std::endl;
+        std::cout << "NATIVE_STREAM_FIRST_EVENT_STATUS="
+                  << (firstEventPending ? "PENDING" : "TERMINAL")
+                  << " index=" << turnIndex << " request=" << requestId << std::endl;
+      }
+      logRuntimePhase(
+        "di-cli", "tokenEmitted", requestId, "request",
+        {{"executionRole", "cli-output"},
+         {"conversationId", "none"},
+         {"tokenIndex", std::to_string(observedEvents)}});
+      waitForTestStreamBarrier(config, base, turnIndex, observedEvents);
+    }
+    auto completionWait = reader.remainingTimeout();
+    if (completionWait.count() <= 0)
+      completionWait = std::chrono::milliseconds(100);
+    result = handle.result(completionWait);
+    std::cout << "NATIVE_STREAM_EVENTS index=" << turnIndex
+              << " NATIVE_STREAM_EVENTS=" << observedEvents << '\n';
+  }
+  else {
+    result = handle.result();
+  }
+  if (streaming && !terminalSeen)
+    throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: terminal event missing");
+  validateStreamOracle(config, result, observedEvents);
+  if (const auto oracle = config.get_child_optional("oracle")) {
+    const auto tensor = oracle->get<std::string>("tensor", {});
+    const auto expected = floatArray(*oracle, "float32");
+    const auto tolerance = oracle->get<double>("tolerance", 1e-5);
+    if (tensor.empty() || expected.empty() || !std::isfinite(tolerance) || tolerance < 0.0 ||
+        !result.matchesFloat32Tensor(tensor, expected, tolerance))
+      throw std::runtime_error("NATIVE_NUMERICAL_ORACLE_FAILED: tensor value mismatch");
+    std::cout << "NATIVE_NUMERICAL_ORACLE_PASS tensor=" << tensor
+              << " values=" << expected.size() << '\n';
+  }
+  if (conversation) {
+    const auto conversationConfig = config.get_child_optional("conversation");
+    if (!conversationConfig)
+      throw std::invalid_argument("conversation checkpoint config is missing");
+    std::optional<std::filesystem::path> path;
+    if (turn.checkpoint)
+      path = *turn.checkpoint;
+    else if (const auto configured = conversationConfig->get_optional<std::string>(
+               "checkpoint_output_file"))
+      path = relativeTo(base, *configured);
+    if (path) {
+      writeCheckpoint(*conversation, *path);
+      std::cout << "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN index="
+                << turnIndex << '\n';
+    }
+  }
+  writeResult(result, turn.output);
+  std::cout << "NATIVE_CONVERSATION_TURN_COMPLETE index=" << turnIndex
+            << " request=" << requestId << " plan=" << result.planDigest << '\n';
+  std::cout << "NATIVE_REQUEST_SUCCEEDED request=" << requestId
+            << " plan=" << result.planDigest << '\n';
+  return requestId;
 }
 
 class NativeRepoSourceOwner final : public RepositorySourceProvider
@@ -437,6 +743,7 @@ public:
         throw RepositorySourceError(RepositorySourceError::Kind::Timeout,
                                     "native Repo source deadline expired");
     };
+    static std::atomic<std::uint64_t> materializationSequence{0};
     const auto loadFile = [&] (const char* fileField, const char* digestField,
                               const char* label) {
       checkDeadline();
@@ -479,16 +786,26 @@ public:
           throw std::runtime_error("native Repo source publication has no receipt");
       }
       checkDeadline();
-      const auto output = m_root / "materialized" / digest.substr(7);
+      const auto outputName = digest.substr(7) + "-" + std::to_string(::getpid()) + "-" +
+        std::to_string(materializationSequence.fetch_add(1, std::memory_order_relaxed));
+      const auto output = m_root / "materialized" / outputName;
       std::filesystem::create_directories(output.parent_path());
       struct RemoveMaterializedFile {
         std::filesystem::path path;
-        ~RemoveMaterializedFile() { std::error_code error; std::filesystem::remove(path, error); }
+        ~RemoveMaterializedFile()
+        {
+          std::error_code error;
+          std::filesystem::remove(path, error);
+        }
       } cleanup{output};
       m_api.fetchFileUntil(reference, output.string(), request.deadline);
       auto bytes = readBytes(output, request.maxSourceBytes, request.deadline);
-      if (bytes.size() != size || nativePlanningDigest(bytes.data(), bytes.size()) != digest)
-        throw std::runtime_error("native Repo source fetch failed content verification");
+      const auto fetchedDigest = nativePlanningDigest(bytes.data(), bytes.size());
+      if (bytes.size() != size || fetchedDigest != digest) {
+        throw std::runtime_error("native Repo source fetch failed content verification: expectedBytes=" +
+          std::to_string(size) + " actualBytes=" + std::to_string(bytes.size()) +
+          " expectedDigest=" + digest + " actualDigest=" + fetchedDigest);
+      }
       checkDeadline();
       std::cout << "NATIVE_REPO_SOURCE_API label=" << label << " bytes=" << size
                 << " deduplicated=" << existing.has_value() << std::endl;
@@ -553,6 +870,20 @@ run(int argc, char** argv)
       std::filesystem::absolute(argv[6]).lexically_normal()) : std::nullopt);
   if (turns.size() > 1 && !config.get_child_optional("conversation"))
     throw std::invalid_argument("NATIVE_TURNS_REQUIRES_CONVERSATION");
+
+  RequestOptions parsedOptions;
+  parsedOptions.timeout = std::chrono::milliseconds(
+    request.get<std::uint64_t>("timeout_ms", parsedOptions.timeout.count()));
+  parsedOptions.ackTimeout = std::chrono::milliseconds(
+    request.get<std::uint64_t>("ack_timeout_ms", parsedOptions.ackTimeout.count()));
+  parsedOptions.applicationRequestId = request.get<std::string>("application_request_id", {});
+  parsedOptions.providerNames = providerNames(request);
+  if (parsedOptions.timeout.count() <= 0 || parsedOptions.ackTimeout.count() <= 0 ||
+      parsedOptions.ackTimeout >= parsedOptions.timeout)
+    throw std::invalid_argument(
+      "request ACK window must be positive and smaller than the request deadline");
+  for (const auto& turn : turns)
+    (void)requestOptionsForTurn(parsedOptions, turn);
 
   RuntimeConfig runtimeConfig;
   runtimeConfig.nativeConfigPath = configPath.string();
@@ -634,15 +965,49 @@ run(int argc, char** argv)
     capability.repoNode = "/local/encrypted-model-materials";
     capability.repoMode = "persistent";
     capability.freeBytes = repository->get<std::uint64_t>("max_bytes", 4ULL << 30);
-    auto repo = std::make_shared<ndnsf_distributed_repo::RepoCore>(
-      std::move(capability), ndnsf_distributed_repo::makeFilesystemRepoStore(
-        path.string(), 1U << 20, 1U << 20, "native-requester"));
-    runtimeConfig.encryptedRangeStore =
-      std::make_shared<ndnsf_distributed_repo::RepoEncryptedLargeDataStore>(std::move(repo));
+    const auto repoName = capability.repoNode;
+    const auto journalPath = (path / "native-user-storage.sqlite").string();
+    auto node = std::make_shared<ndnsf_distributed_repo::RepoNode>(
+      ndn::Name(repoName), capability, ndnsf_distributed_repo::makeFilesystemRepoStore(
+        path.string(), 1U << 20, 1U << 20, "native-requester"),
+      repoName, "/local/native-requester/repo", journalPath);
+    runtimeConfig.encryptedRangeStore = node->createEncryptedLargeDataStore();
+    auto journal = std::make_shared<ndnsf_distributed_repo::SqliteArtifactMetadataStore>(
+      journalPath, true, 16, false);
+    const auto owner = ndn::Name(config.get<std::string>("core.requester_identity"))
+      .toUri(ndn::name::UriFormat::ALTERNATE);
+    auto sequence = std::make_shared<std::atomic<std::uint64_t>>(0);
+    runtimeConfig.durableStorageOwner = NativeDurableStorageOwner{
+      owner, [journal, owner, repoName, sequence](const ndn::Name& manifest,
+        const std::string& writer, const std::function<void()>& active) {
+        if (active) active();
+        if (writer != owner) throw std::runtime_error("DURABLE_OWNER_BINDING_MISMATCH");
+        const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<
+          std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+        const auto id = nativePlanningDigest(manifest.toUri() + ":" +
+          std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ":" +
+          std::to_string(sequence->fetch_add(1)));
+        const auto grant = journal->grantUserStorage(owner, repoName, id, writer,
+          manifest.toUri(ndn::name::UriFormat::ALTERNATE),
+          now + 60000, now);
+        if (active) active();
+        return ndn_service_framework::DurableStorageGrantSelector{
+          repoName, owner, id, grant.ownerEpoch};
+      }};
   }
   if (const auto limits = config.get_child_optional("limits")) {
-    if (const auto value = limits->get_optional<std::uint64_t>("bootstrap_ms"))
+    if (const auto value = limits->get_optional<std::uint64_t>("preparation_timeout_ms")) {
+      if (*value == 0 || *value > 3600000)
+        throw std::invalid_argument(
+          "limits.preparation_timeout_ms must be between 1 ms and one hour");
       runtimeConfig.preparationJobTimeout = std::chrono::milliseconds(*value);
+    }
+    else if (const auto value = limits->get_optional<std::uint64_t>("bootstrap_ms")) {
+      // Preserve the legacy requester configuration while allowing Runtime
+      // bootstrap and the source-backed User::prepare job to have independent
+      // bounds for large local model catalogs.
+      runtimeConfig.preparationJobTimeout = std::chrono::milliseconds(*value);
+    }
     if (const auto value = limits->get_optional<std::uint64_t>("max_prepared_bytes")) {
       if (*value > std::numeric_limits<std::size_t>::max())
         throw std::invalid_argument("limits.max_prepared_bytes exceeds size_t");
@@ -656,6 +1021,15 @@ run(int argc, char** argv)
   }
   PrepareOptions prepareOptions;
   prepareOptions.timeout = runtimeConfig.preparationJobTimeout;
+  std::optional<KvHandoffOptions> kvHandoff;
+  if (const auto handoffConfig = config.get_child_optional("kv_handoff")) {
+    kvHandoff = readKvHandoffOptions(*handoffConfig, base);
+    if (!config.get_child_optional("conversation") || turns.size() < 2 ||
+        kvHandoff->afterTurn >= turns.size() - 1)
+      throw std::invalid_argument("kv_handoff requires a conversation and a following turn");
+    if (config.get_child_optional("fixed_placement"))
+      throw std::invalid_argument("kv_handoff requires live compatible-Provider placement");
+  }
   auto runtime = Runtime::open(std::move(runtimeConfig));
   std::shared_ptr<const PlacementStrategy> requestPlacementStrategy;
   if (!requestPlacementStrategyId.empty()) {
@@ -666,24 +1040,14 @@ run(int argc, char** argv)
   auto user = runtime->user();
   const auto prepared = user.prepare("default", prepareOptions);
 
-  RequestOptions options;
-  options.timeout = std::chrono::milliseconds(
-    request.get<std::uint64_t>("timeout_ms", options.timeout.count()));
-  options.ackTimeout = std::chrono::milliseconds(
-    request.get<std::uint64_t>("ack_timeout_ms", options.ackTimeout.count()));
-  options.applicationRequestId = request.get<std::string>("application_request_id", {});
-  options.providerNames = providerNames(request);
+  // Runtime-bound placement must be released before the Runtime.
+  RequestOptions options = parsedOptions;
   if (requestPlacementStrategy) {
     options.placement = std::move(requestPlacementStrategy);
   }
   else if (!fixedPlacementStrategyId.empty()) {
     options.placement = runtime->placementStrategy(fixedPlacementStrategyId);
     std::cout << "NATIVE_FIXED_PLACEMENT strategy=" << fixedPlacementStrategyId << std::endl;
-  }
-  if (options.timeout.count() <= 0 || options.ackTimeout.count() <= 0 ||
-      options.ackTimeout >= options.timeout) {
-    throw std::invalid_argument(
-      "request ACK window must be positive and smaller than the request deadline");
   }
   std::cout << "SPEC190_ACK_WINDOW_NATIVE {\"ackTimeoutMs\":"
             << options.ackTimeout.count()
@@ -731,6 +1095,83 @@ run(int argc, char** argv)
   std::signal(SIGTERM, onSignal);
   std::cout << "NATIVE_REQUEST_ROUTE=Runtime.open->User.prepare->User.request\n";
 
+  std::vector<std::int64_t> streamExpected;
+  if (const auto oracle = config.get_child_optional("stream_oracle"))
+    streamExpected = integerArray(*oracle, "token_ids");
+  bool refreshConversationRetentionDeadline = false;
+  if (const auto prewarm = config.get_child_optional("test_destination_prewarm")) {
+    if (!config.get<bool>("test_only", false))
+      throw std::invalid_argument("test_destination_prewarm requires test_only=true");
+    const auto conversationConfig = config.get_child_optional("conversation");
+    if (!conversationConfig)
+      throw std::invalid_argument("test_destination_prewarm requires conversation config");
+    const auto mainTurnConfig = conversationConfig->get_child_optional("turn");
+    const auto mainConversationId = mainTurnConfig
+      ? mainTurnConfig->get<std::string>("conversation_id", {}) : std::string{};
+    const auto prewarmConversationId = prewarm->get<std::string>("conversation_id", {});
+    if (mainConversationId.empty() || prewarmConversationId.empty() ||
+        mainConversationId == prewarmConversationId)
+      throw std::invalid_argument(
+        "test_destination_prewarm requires a distinct prewarm and main conversation_id");
+    const auto prewarmRequest = prewarm->get_child_optional("request");
+    if (!prewarmRequest)
+      throw std::invalid_argument("test_destination_prewarm.request is required");
+    RequestOptions prewarmOptions = options;
+    prewarmOptions.providerNames = providerNames(*prewarmRequest);
+    if (options.providerNames.size() != 1 || prewarmOptions.providerNames.size() != 1 ||
+        options.providerNames.front() == prewarmOptions.providerNames.front())
+      throw std::invalid_argument(
+        "test_destination_prewarm requires distinct single source and destination Providers");
+    if (const auto timeout = prewarmRequest->get_optional<std::uint64_t>("timeout_ms")) {
+      if (*timeout == 0 || *timeout > 3600000)
+        throw std::invalid_argument(
+          "test_destination_prewarm.request.timeout_ms must be between 1 ms and one hour");
+      prewarmOptions.timeout = std::chrono::milliseconds(*timeout);
+    }
+    if (const auto ackTimeout = prewarmRequest->get_optional<std::uint64_t>("ack_timeout_ms")) {
+      if (*ackTimeout == 0 || *ackTimeout > 3600000)
+        throw std::invalid_argument(
+          "test_destination_prewarm.request.ack_timeout_ms must be between 1 ms and one hour");
+      prewarmOptions.ackTimeout = std::chrono::milliseconds(*ackTimeout);
+    }
+    if (prewarmOptions.timeout.count() <= 0 || prewarmOptions.ackTimeout.count() <= 0 ||
+        prewarmOptions.ackTimeout >= prewarmOptions.timeout)
+      throw std::invalid_argument(
+        "test_destination_prewarm ACK window must be positive and smaller than its deadline");
+    const auto prewarmTurns = readTurnSpecs(*prewarm, base, std::nullopt, std::nullopt);
+    if (prewarmTurns.size() != 1)
+      throw std::invalid_argument("test_destination_prewarm requires exactly one turn");
+    ConversationOptions prewarmConversationOptions;
+    prewarmConversationOptions.conversationId = prewarmConversationId;
+    prewarmConversationOptions.retentionDeadlineMs = oneHourRetentionDeadlineMs();
+    auto prewarmConversation = user.openConversation(prepared, prewarmConversationOptions);
+    refreshConversationRetentionDeadline = true;
+
+    // Keep the Runtime/User publication face alive, but isolate warm-up
+    // conversation state and exclude the main event gates from this request.
+    ptree prewarmRoot = config;
+    prewarmRoot.erase("test_destination_prewarm");
+    prewarmRoot.erase("test_stream_barrier");
+    prewarmRoot.erase("test_handoff_barrier");
+    prewarmRoot.erase("kv_handoff");
+    auto prewarmConversationConfig = *conversationConfig;
+    prewarmConversationConfig.put("turn.conversation_id", prewarmConversationId);
+    prewarmRoot.put_child("conversation", prewarmConversationConfig);
+    prewarmRoot.put_child("turns", prewarm->get_child("turns"));
+    const auto prewarmRequestId = executeConversationTurn(
+      prewarmRoot, request, base, prewarmTurns.front(), 0, prewarmOptions,
+      streaming, streamExpected, user, prepared, &prewarmConversation);
+    prewarmConversation.close();
+    std::cout << "NATIVE_DESTINATION_PREWARM_SUCCEEDED warmupConversation="
+              << prewarmConversationId << " mainConversation=" << mainConversationId
+              << " request=" << prewarmRequestId << std::endl;
+    const auto barrier = prewarm->get_child_optional("barrier");
+    if (!barrier)
+      throw std::invalid_argument("test_destination_prewarm.barrier is required");
+    waitForTestExecutionBarrier(
+      config, *barrier, base, "test_destination_prewarm");
+  }
+
   std::optional<Conversation> conversation;
   if (const auto conversationConfig = config.get_child_optional("conversation")) {
     ConversationOptions conversationOptions;
@@ -746,6 +1187,8 @@ run(int argc, char** argv)
       if (const auto id = turn->get_optional<std::string>("conversation_id"))
         conversationOptions.conversationId = *id;
     }
+    if (refreshConversationRetentionDeadline)
+      conversationOptions.retentionDeadlineMs = oneHourRetentionDeadlineMs();
     const auto checkpoint = parentCheckpoint(config, base);
     if (turn) {
       if (const auto expectedDigest = turn->get_optional<std::string>("parent_checkpoint_digest")) {
@@ -771,156 +1214,61 @@ run(int argc, char** argv)
     conversation.emplace(user.openConversation(prepared, conversationOptions));
   }
 
-  std::vector<std::int64_t> streamExpected;
-  if (const auto oracle = config.get_child_optional("stream_oracle"))
-    streamExpected = integerArray(*oracle, "token_ids");
+  std::optional<ConversationHandoffHandle> providerSwitch;
   for (std::size_t turnIndex = 0; turnIndex < turns.size(); ++turnIndex) {
     const auto& turn = turns[turnIndex];
-    const auto payload = readBytes(turn.input, MAX_NATIVE_INPUT_BYTES);
-    const auto optionsBytes = turn.options.empty()
-      ? readOptions(request, base) : readBytes(turn.options, 4 * 1024 * 1024);
-    RequestHandle handle = conversation
-      ? conversation->request(Input::inlineBytes(payload, optionsBytes), options)
-      : user.request(prepared, Input::inlineBytes(payload, optionsBytes), options);
-    std::cout << "NATIVE_CONVERSATION_TURN_START index=" << turnIndex
-              << " request=" << handle.id() << std::endl;
-
-    std::size_t observedEvents = 0;
-    bool terminalSeen = false;
-    Result result;
-    if (streaming) {
-      auto reader = handle.events();
-      bool livePendingReported = false;
-      std::cout << "NATIVE_STREAM_READER_OPENED index=" << turnIndex
-                << " request=" << handle.id() << std::endl;
-      while (!terminalSeen) {
-        if (interrupted) {
-          handle.cancel();
-          throw std::runtime_error("NATIVE_REQUEST_INTERRUPTED");
-        }
-        const auto remaining = reader.remainingTimeout();
-        if (remaining.count() <= 0) {
-          handle.cancel();
-          throw std::runtime_error(
-            "NATIVE_STREAM_ORACLE_FAILED: terminal event timeout");
-        }
-        const auto wait = std::min(remaining, std::chrono::milliseconds(100));
-        if (!livePendingReported && observedEvents == 0 &&
-            handle.status() == RequestStatus::Pending) {
-          std::cout << "NATIVE_STREAM_LIVE_PENDING index=" << turnIndex
-                    << " request=" << handle.id() << std::endl;
-          livePendingReported = true;
-        }
-        std::optional<Event> event;
-        try {
-          event = reader.next(wait);
-        }
-        catch (const DiError& error) {
-          // EventReader::next reports a bounded local read timeout as
-          // WAIT_TIMEOUT.  A streamed request may legitimately remain quiet
-          // while ACK/Selection completes authenticated material fetch and
-          // runner assembly; only the absolute request deadline is terminal.
-          if (error.code() != "WAIT_TIMEOUT")
-            throw;
-          if (handle.status() == RequestStatus::Pending)
-            continue;
-          result = handle.result(std::chrono::milliseconds(0));
-          throw std::runtime_error(
-            "NATIVE_STREAM_ORACLE_FAILED: terminal event missing");
-        }
-        if (!event) {
-          // A local read timeout is not EOF.  Continue until the business
-          // deadline; a failed handle is surfaced by result() below.
-          if (handle.status() != RequestStatus::Pending) {
-            result = handle.result(std::chrono::milliseconds(0));
-            throw std::runtime_error(
-              "NATIVE_STREAM_ORACLE_FAILED: terminal event missing");
+    (void)executeConversationTurn(
+      config, request, base, turn, turnIndex, options, streaming,
+      streamExpected, user, prepared, conversation ? &*conversation : nullptr);
+    if (providerSwitch) {
+      providerSwitch->result(std::chrono::seconds(5));
+      std::cout << "NATIVE_KV_HANDOFF_APPEND_SUCCEEDED operation="
+                << providerSwitch->operationId() << std::endl;
+      providerSwitch.reset();
+    }
+    if (kvHandoff && turnIndex == kvHandoff->afterTurn) {
+      const auto deadline = std::chrono::steady_clock::now() + kvHandoff->timeout;
+      if (kvHandoff->waitForDeparture) {
+        NativeDepartureWatchOptionsV1 watchOptions;
+        watchOptions.deadline = deadline;
+        watchOptions.saveTimeout = kvHandoff->timeout;
+        watchOptions.trustedSourcePolicyByRole = kvHandoff->trust;
+        auto watch = conversation->watchProviderDeparture(watchOptions);
+        std::cout << "NATIVE_KV_DEPARTURE_WATCH_READY index=" << turnIndex << std::endl;
+        while (watch.status() == NativeDepartureWatchStatusV1::Watching ||
+               watch.status() == NativeDepartureWatchStatusV1::Saving) {
+          if (interrupted || std::chrono::steady_clock::now() >= deadline) {
+            watch.close();
+            throw std::runtime_error("KV departure watch interrupted or timed out");
           }
-          continue;
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
-        if (event->terminal) {
-          terminalSeen = true;
-          std::cout << "NATIVE_STREAM_TERMINAL index=" << turnIndex
-                    << " request=" << handle.id() << std::endl;
-          break;
-        }
-        const auto firstEventStatus = observedEvents == 0
-          ? handle.status() : RequestStatus::Pending;
-        const bool firstEventPending = observedEvents == 0 &&
-          firstEventStatus == RequestStatus::Pending;
-        if (observedEvents == 0 && config.get_child_optional("test_stream_barrier") &&
-            !firstEventPending)
-          throw std::runtime_error(
-            "NATIVE_STREAM_ORACLE_FAILED: first event arrived after native completion");
-        if (!streamExpected.empty()) {
-          if (observedEvents >= streamExpected.size())
-            throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: too many events");
-          validateStreamEvent(streamExpected, *event, observedEvents);
-        }
-        const bool firstEvent = observedEvents == 0;
-        std::cout << streamEventText(*event);
-        ++observedEvents;
-        // NativeInferenceClient records API queue delivery separately.  This
-        // marker follows actual text output from the requester executable and
-        // its flush boundary, with a distinct execution role.
-        std::cout.flush();
-        if (firstEvent) {
-          std::cout << "NATIVE_STREAM_FIRST_EVENT index=" << turnIndex
-                    << " request=" << handle.id() << std::endl;
-          std::cout << "NATIVE_STREAM_FIRST_EVENT_STATUS="
-                    << (firstEventPending ? "PENDING" : "TERMINAL")
-                    << " index=" << turnIndex << " request=" << handle.id() << std::endl;
-        }
-        logRuntimePhase(
-          "di-cli", "tokenEmitted", handle.id(), "request",
-          {{"executionRole", "cli-output"},
-           {"conversationId", "none"},
-           {"tokenIndex", std::to_string(observedEvents)}});
-        waitForTestStreamBarrier(config, base, turnIndex, observedEvents);
+        const auto saved = watch.result(std::chrono::milliseconds(0));
+        watch.close();
+        if (saved.status != NativeDepartureWatchStatusV1::Saved)
+          throw std::runtime_error("KV departure save failed: " + saved.reason);
+        std::cout << "NATIVE_KV_DEPARTURE_SAVED operation=" << saved.saveOperationId << std::endl;
       }
-      auto completionWait = reader.remainingTimeout();
-      if (completionWait.count() <= 0)
-        completionWait = std::chrono::milliseconds(100);
-      result = handle.result(completionWait);
-      std::cout << "NATIVE_STREAM_EVENTS index=" << turnIndex
-                << " NATIVE_STREAM_EVENTS=" << observedEvents << '\n';
-    }
-    else {
-      result = handle.result();
-    }
-    if (streaming && !terminalSeen)
-      throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: terminal event missing");
-    validateStreamOracle(config, result, observedEvents);
-    if (const auto oracle = config.get_child_optional("oracle")) {
-      const auto tensor = oracle->get<std::string>("tensor", {});
-      const auto expected = floatArray(*oracle, "float32");
-      const auto tolerance = oracle->get<double>("tolerance", 1e-5);
-      if (tensor.empty() || expected.empty() || !std::isfinite(tolerance) || tolerance < 0.0 ||
-          !result.matchesFloat32Tensor(tensor, expected, tolerance))
-        throw std::runtime_error("NATIVE_NUMERICAL_ORACLE_FAILED: tensor value mismatch");
-      std::cout << "NATIVE_NUMERICAL_ORACLE_PASS tensor=" << tensor
-                << " values=" << expected.size() << '\n';
-    }
-    if (conversation) {
-      if (const auto conversationConfig = config.get_child_optional("conversation")) {
-        std::optional<std::filesystem::path> path;
-        if (turn.checkpoint)
-          path = *turn.checkpoint;
-        else if (const auto configured = conversationConfig->get_optional<std::string>(
-                   "checkpoint_output_file"))
-          path = relativeTo(base, *configured);
-        if (path) {
-          writeCheckpoint(*conversation, *path);
-          std::cout << "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN index="
-                    << turnIndex << '\n';
+      else {
+        providerSwitch = conversation->switchProviders(
+          kvHandoff->destinations, kvHandoff->trust, deadline);
+        while (providerSwitch->status() == ConversationHandoffStatus::Pending) {
+          if (interrupted || std::chrono::steady_clock::now() >= deadline) {
+            providerSwitch->cancel();
+            throw std::runtime_error("KV Provider switch interrupted or timed out");
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
+        if (providerSwitch->status() != ConversationHandoffStatus::PromotedAwaitingAppend)
+          providerSwitch->result(std::chrono::milliseconds(0));
+        std::cout << "NATIVE_KV_HANDOFF_PROMOTED operation="
+                  << providerSwitch->operationId() << std::endl;
       }
+      // An initial source-only filter must not constrain the continuation.
+      // Conversation supplies the authenticated destination map after a switch.
+      options.providerNames.clear();
+      waitForTestStreamBarrier(config, base, 0, 1, "test_handoff_barrier");
     }
-    writeResult(result, turn.output);
-    std::cout << "NATIVE_CONVERSATION_TURN_COMPLETE index=" << turnIndex
-              << " request=" << handle.id() << " plan=" << result.planDigest << '\n';
-    std::cout << "NATIVE_REQUEST_SUCCEEDED request=" << handle.id()
-              << " plan=" << result.planDigest << '\n';
   }
   if (turns.size() > 1)
     std::cout << "NATIVE_CONVERSATION_TURNS_SUCCEEDED count=" << turns.size() << '\n';
@@ -931,6 +1279,7 @@ run(int argc, char** argv)
 
 } // namespace
 
+#ifndef NDNSF_DI_REQUESTER_NO_MAIN
 int
 main(int argc, char** argv)
 {
@@ -949,3 +1298,4 @@ main(int argc, char** argv)
     return 1;
   }
 }
+#endif

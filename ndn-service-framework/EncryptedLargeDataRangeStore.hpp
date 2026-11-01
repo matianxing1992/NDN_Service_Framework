@@ -19,8 +19,30 @@ enum class EncryptedLargeDataRetention
   Durable,
 };
 
+/** Exact destination selectors, not a portable credential or wire authority. */
+struct DurableStorageGrantSelector
+{
+  std::string repoNode;
+  std::string ownerIdentity;
+  std::string grantId;
+  std::uint64_t ownerEpoch = 0;
+};
+
+/** Exact-object authorization supplied by a strongly retained owner lane. */
+using DurableStorageGrantResolver = std::function<DurableStorageGrantSelector(
+  const ndn::Name&, const std::string&, const std::function<void()>&)>;
+
+/** Trusted Core wiring derives the writer from the producing ServiceUser. */
+struct DurableStorageActorContext
+{
+  std::string authenticatedWriterIdentity;
+  DurableStorageGrantSelector grant;
+};
+
 struct EncryptedLargeDataCommitOptions
 {
+  static constexpr std::size_t MaxAuxiliaryPacketCount = 8192;
+  static constexpr std::uint64_t MaxAuxiliaryPacketWireBytes = 64ULL * 1024 * 1024;
   EncryptedLargeDataRetention retention = EncryptedLargeDataRetention::Transient;
 
   // Non-secret identity supplied by the Core/crypto owner. The Repo stores
@@ -43,7 +65,28 @@ struct EncryptedLargeDataCommitOptions
   std::string manifestName;
   std::string dataPrefix;
   std::uint64_t packetWireBytes = 0;
+  std::optional<DurableStorageActorContext> storageActor;
+  // Exact ordered original control packets appended after the envelope segments.
+  std::vector<ndn::Name> auxiliaryPacketNames;
 };
+
+/**
+ * Non-secret exact-object metadata exposed after packet preparation and before
+ * Repo commit. This is a challenge description, not storage authority.
+ */
+struct DurableStorageGrantChallengeV1
+{
+  ndn::Name manifestName;
+  std::string writerIdentity;
+  std::string publicationIdentity;
+  std::string protectionEpoch;
+  ndn::Name dataPrefix;
+  std::uint64_t packetWireBytes = 0;
+  std::vector<ndn::Name> auxiliaryPacketNames;
+};
+
+using DurableStorageGrantChallengeObserverV1 =
+  std::function<void(const DurableStorageGrantChallengeV1&)>;
 
 struct EncryptedLargeDataLookupResult
 {
@@ -62,6 +105,10 @@ struct EncryptedLargeDataLookupResult
   std::string manifestName;
   std::string dataPrefix;
   std::uint64_t packetWireBytes = 0;
+  // Provisional names from the committed packet index for an exact-object
+  // grant challenge. These names are not read authority; after retain, the
+  // owner-bound source must provide the authoritative list for comparison.
+  std::vector<ndn::Name> auxiliaryPacketNames;
 };
 
 /** Immutable encrypted envelope. The last owner releases its storage lease.
@@ -73,7 +120,25 @@ public:
   virtual std::uint64_t size() const noexcept = 0;
   /** True only when the committed object is not owned by this request lease. */
   virtual bool isDurable() const noexcept { return false; }
-  /** Explicit owner-driven invalidation; implementations must be idempotent. */
+  /** Check an actual current storage binding, without granting authority or
+   * extending a producer/key serving lease. Legacy sources fail closed. */
+  virtual void requireCurrentDurableStorageOwner(const ndn::Name&,
+                                                const std::string&) const
+  {
+    throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+  }
+  /** Serialize current owner admission with cleanup through enqueue's return.
+   * The synchronous callback may only enqueue Data, never wait for I/O or
+   * re-enter this source/store. Already queued packets may remain in flight.
+   * Legacy sources fail closed rather than promise a fence they do not own. */
+  virtual void withCurrentDurableStorageOwner(const ndn::Name&,
+                                            const std::string&,
+                                            const std::function<void()>&) const
+  {
+    throw std::runtime_error("DURABLE_OWNER_BINDING_REQUIRED");
+  }
+  /** Release a request-owned lease, idempotently. Durable bytes require the
+   * storage owner's separate authenticated cleanup operation. */
   virtual void release() const noexcept {}
   virtual std::vector<std::uint8_t> read(std::uint64_t offset,
                                        std::uint64_t length) const = 0;
@@ -83,6 +148,9 @@ public:
   {
     throw std::runtime_error("ORIGINAL_DATA_PACKET_UNSUPPORTED");
   }
+  /** Original auxiliary names from the current owned packet index, never credentials.
+   * Implementations may throw when the claim/physical object is unavailable. */
+  virtual std::vector<ndn::Name> auxiliaryDataPacketNames() const { return {}; }
 };
 
 /** Synchronous, bounded publication of an already encrypted envelope.
@@ -94,6 +162,19 @@ class EncryptedLargeDataRangeStore
 {
 public:
   virtual ~EncryptedLargeDataRangeStore() = default;
+  /** Fixed adapter policy; request options cannot disable owner admission. */
+  virtual bool requiresDurableStorageActor() const noexcept { return false; }
+  /** Rebind a provisional durable lookup to the current authorized owner.
+   * Trusted-local stores preserve their existing source; enforcing adapters
+   * verify destination authority and actual storage before returning a lease. */
+  virtual std::shared_ptr<const EncryptedLargeDataRangeSource> retainDurableSource(
+    const EncryptedLargeDataLookupResult& candidate,
+    const EncryptedLargeDataCommitOptions&,
+    const std::function<void()>& requireActive = {})
+  {
+    if (requireActive) requireActive();
+    return candidate.source;
+  }
   virtual std::shared_ptr<const EncryptedLargeDataRangeSource> commitFile(
     const std::string& encryptedName, const std::filesystem::path& file,
     std::uint64_t size, const std::function<void()>& requireActive = {}) = 0;
@@ -143,6 +224,8 @@ public:
   {
     throw std::runtime_error("ORIGINAL_DATA_PACKET_UNSUPPORTED");
   }
+  /** Whether atomic original packet commits accept a bounded auxiliary suffix. */
+  virtual bool supportsAuxiliaryDataPackets() const noexcept { return false; }
 };
 
 } // namespace ndn_service_framework

@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <exception>
 #include <filesystem>
 #include <fcntl.h>
 #include <limits>
@@ -52,9 +53,10 @@ constexpr std::uint64_t MaxWorkerFramePayloadBytes = 2ULL * 1024 * 1024 * 1024;
 constexpr std::size_t WorkerPayloadReserveChunk = 16 * 1024 * 1024;
 
 void
-workerFail(const char* code)
+workerFail(std::string code)
 {
-  throw std::runtime_error(std::string("DI_NATIVE_ONNX_") + code);
+  std::replace(code.begin(), code.end(), ' ', '_');
+  throw std::runtime_error("DI_NATIVE_ONNX_" + code);
 }
 
 std::string
@@ -1575,6 +1577,25 @@ private:
   int m_fd = -1;
 };
 
+std::string
+createPrivateWorkerHome()
+{
+  std::filesystem::path tempRoot;
+  try {
+    tempRoot = std::filesystem::temp_directory_path();
+  }
+  catch (...) {
+    workerFail("WORKER_HOME");
+  }
+  const auto name = "ndnsf-di-onnx-worker-home-" +
+    std::to_string(::getpid()) + "-XXXXXX";
+  auto pattern = (tempRoot / name).string();
+  if (::mkdtemp(pattern.data()) == nullptr) {
+    workerFail("WORKER_HOME");
+  }
+  return pattern;
+}
+
 class WorkerProcess
 {
 public:
@@ -1584,6 +1605,7 @@ public:
     if (fromChild >= 0) close(fromChild);
     if (childErr >= 0) close(childErr);
     if (m_modelFd >= 0) close(m_modelFd);
+    cleanupPrivateHome();
   }
 
   void start(const NativeOnnxWorkerLocation& location,
@@ -1626,15 +1648,18 @@ public:
     posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
     posix_spawnattr_setpgroup(&attributes, 0);
 
-    // Minimal environment: only loader-relevant variables survive.  The
-    // worker never receives credentials or request state through the env.
+    // Keep loader variables and an empty, private HOME so NDN defaults cannot
+    // resolve against the caller's keychain or current working directory. No
+    // credentials or request state are copied into the worker environment.
     const char* pathValue = std::getenv("PATH");
     const char* libraryPath = std::getenv("LD_LIBRARY_PATH");
+    m_privateHome = createPrivateWorkerHome();
     const std::string pathEnv = std::string("PATH=") +
       (pathValue != nullptr ? pathValue : "");
     const std::string ldEnv = std::string("LD_LIBRARY_PATH=") +
       (libraryPath != nullptr ? libraryPath : "");
-    char* envp[3] = {nullptr, nullptr, nullptr};
+    const std::string homeEnv = "HOME=" + m_privateHome;
+    char* envp[4] = {nullptr, nullptr, nullptr, nullptr};
     std::size_t envCount = 0;
     if (pathValue != nullptr) {
       envp[envCount++] = const_cast<char*>(pathEnv.c_str());
@@ -1642,6 +1667,7 @@ public:
     if (libraryPath != nullptr) {
       envp[envCount++] = const_cast<char*>(ldEnv.c_str());
     }
+    envp[envCount++] = const_cast<char*>(homeEnv.c_str());
     envp[envCount] = nullptr;
 
     // Fixed argv: the declared metadata length is the actually serialized
@@ -1719,6 +1745,21 @@ public:
     return reaped;
   }
 
+  bool cleanupPrivateHome() noexcept
+  {
+    if (m_privateHome.empty()) return true;
+    try {
+      std::error_code error;
+      std::filesystem::remove_all(m_privateHome, error);
+      if (error) return false;
+      m_privateHome.clear();
+      return true;
+    }
+    catch (...) {
+      return false;
+    }
+  }
+
   bool exitedZero() const
   {
     return reaped && m_status >= 0 && WIFEXITED(m_status) &&
@@ -1730,6 +1771,10 @@ public:
   {
     return reaped && m_status >= 0 && WIFSIGNALED(m_status);
   }
+  int signalNumber() const
+  {
+    return wasSignaled() ? WTERMSIG(m_status) : 0;
+  }
 
   pid_t pid = -1;
   bool started = false;
@@ -1739,6 +1784,9 @@ public:
   int fromChild = -1;
   int childErr = -1;
   int m_modelFd = -1;
+
+private:
+  std::string m_privateHome;
 };
 
 } // namespace
@@ -1954,7 +2002,9 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
       // bytes sit unread in the pipe.
       if (stdoutEof && child.reaped && !response.complete()) {
         if (child.wasSignaled()) {
-          workerFail("WORKER_SIGNALED");
+          drainChildStderr();
+          workerFail("WORKER_SIGNALED_SIGNAL_" +
+                     std::to_string(child.signalNumber()));
         }
         if (child.exitedZero()) {
           workerFail("WORKER_INCOMPLETE");
@@ -1962,6 +2012,9 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
         workerFail("WORKER_EXITED");
       }
       if (writeDone && stdoutEof && response.complete() && child.reaped) {
+        if (!child.cleanupPrivateHome()) {
+          workerFail("WORKER_HOME_CLEANUP");
+        }
         break;
       }
 
@@ -2134,7 +2187,11 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
     // Cancellation or failure: terminate the worker side first (TERM, 1s,
     // KILL), reap it, then rethrow the original error.
     child.killAndReap();
-    throw;
+    const auto failure = std::current_exception();
+    if (!child.cleanupPrivateHome()) {
+      workerFail("WORKER_HOME_CLEANUP");
+    }
+    std::rethrow_exception(failure);
   }
 }
 

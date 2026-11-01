@@ -8,6 +8,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedKvPublication.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
+#include "tests/unit-tests/spec204-protected-kv-fixture.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -18,6 +21,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <limits>
 
 namespace {
 
@@ -137,6 +141,236 @@ std::string sealedEncodeBytes(const NativeSealedPlan& sealed,
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec182PlanSealer)
+
+BOOST_AUTO_TEST_CASE(KvRestoreCodecBindsAuthenticatedContext)
+{
+  ndnsf::di::test::protectedKv::Fixture kv;
+  auto plan = oneRolePlan("kv-codec", digest("ack"));
+  for (auto& offer : plan.snapshot.offers) offer.provider = "/" + offer.provider;
+  plan.proposal = NativePreSplitFirstPlacement().propose(plan.snapshot, plan.candidate);
+  // Saved commitments retain canonical spelling even when callers use Names.
+  plan.inputs.requesterIdentity = kv.certificate.getIdentity().toUri(ndn::name::UriFormat::CANONICAL);
+  plan.inputs.requestContractDigest = digest("request contract");
+  plan.snapshot.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+  plan.inputs.expiresAtMs += 59000;
+  const auto now = plan.inputs.expiresAtMs - 60000;
+  const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
+  const auto sealed = NativePlanSealer::finalizeSecurity(core,
+    {{"/provider-a", plan.role, "/grant/1", digest("grant"), "/provider-a", "", plan.inputs.expiresAtMs}},
+    {digest("policy"), true});
+  auto inputs = fixture::projection(sealed, "/provider-a");
+  inputs.conversationStateReference = ConversationStateReferenceV1{
+    "saved-conversation", 1, "/Inference", digest("saved role map"), digest("parent checkpoint"),
+    plan.role, digest("parent role receipt"), plan.inputs.expiresAtMs};
+  inputs.conversationTurnBinding = ConversationTurnBindingV1{
+    "saved-conversation", 1, 2, "/Inference", digest("saved role map"), plan.inputs.requestContractDigest,
+    plan.inputs.expiresAtMs, digest("parent checkpoint")};
+  auto projection = NativePlanSealer::project(sealed, "/provider-a", inputs);
+  const auto noRestore = nativeSelectionProjectionV3ToJson(projection);
+  BOOST_CHECK(!nativeParseJson(noRestore).contains("conversation_kv_restore"));
+  const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+  const auto reference = nativeProtectPortableKvCheckpoint(kv.plain, kv.cipher, kv.certificate,
+    ndn::Name(kv.state.originIdentity.providerIdentity),
+    nativeProtectedKvRoleBinding(plan.inputs.requesterIdentity, *inputs.conversationStateReference), kv.limits);
+  const auto canonical = [](const ndn::Name& value) { return value.toUri(ndn::name::UriFormat::CANONICAL); };
+  // Byte/schema fixture only: this descriptor does not claim current Repo presence.
+  NativeProtectedKvRestoreV1 restore;
+  restore.reference = {{"version", 2U}, {"ownerIdentity", canonical(reference.ownerIdentity)},
+    {"producerPrefix", canonical(reference.producerPrefix)}, {"ownerCertificateName", canonical(reference.ownerCertificateName)},
+    {"ownerCertificateDigest", reference.ownerCertificateDigest}, {"checkpointIdentityDigest", reference.checkpointIdentityDigest},
+    {"wireDigest", reference.wireDigest}, {"wireBytes", reference.wireBytes}, {"keyEnvelope", reference.keyEnvelope},
+    {"manifestName", canonical(ndn::Name(reference.producerPrefix).append("manifest"))},
+    {"dataPrefix", canonical(ndn::Name(reference.producerPrefix).append("data"))},
+    {"publicationIdentity", digest("publication")}, {"protectionEpoch", "epoch-1"},
+    {"keyReferenceId", "wrapper"}, {"keyReferenceVersion", "v1"}, {"ciphertextManifestDigest", digest("outer manifest")}};
+  ndn::security::KeyChain recipientKeys{"pib-memory:codec-recipient", "tpm-memory:codec-recipient"};
+  const auto certificate = recipientKeys.createIdentity(ndn::Name("/provider-a"), ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  const auto publicKey = certificate.getPublicKey();
+  restore.recipient = {certificate.getName(), nativePlanningDigest(
+    std::string(reinterpret_cast<const char*>(publicKey.data()), publicKey.size())), plan.inputs.expiresAtMs};
+  const auto binding = nativeProtectedKvRecipientBindingForProjection(projection,
+    reference.ownerIdentity, ndn::Name("/Inference"), restore.recipient, now);
+  restore.capsule = nativeWrapProtectedKvKeyForRecipient(reference, kv.certificate, kv.ownerKeys,
+    publicKey, binding, [] {});
+  inputs.protectedKvRestore = restore;
+  projection = NativePlanSealer::project(sealed, "/provider-a", inputs);
+  BOOST_CHECK_EQUAL(nativeFixedRoleAssignmentV1FromProjection(projection)->digest(), fixed->digest());
+  for (bool invocation : {false, true}) {
+    const auto wire = invocation ? nativeSelectionInvocationV1ToJson(projection, *fixed)
+                                 : nativeSelectionProjectionV3ToJson(projection);
+    std::istringstream input(wire);
+    const auto parsed = invocation ? nativeSelectionInvocationV1FromJson(input, plan.role, *fixed)
+                                    : nativeSelectionProjectionV3FromJson(input, plan.role);
+    BOOST_REQUIRE(parsed.protectedKvRestore);
+    nativeValidateProtectedKvRestoreContext(*parsed.protectedKvRestore, parsed,
+      reference.ownerIdentity, ndn::Name("/Inference"), now);
+    const auto parsedBinding = nativeProtectedKvRecipientBindingForProjection(parsed,
+      reference.ownerIdentity, ndn::Name("/Inference"), parsed.protectedKvRestore->recipient, now);
+    nativeRecoverProtectedPortableKvCheckpointForRecipient(kv.cipher, kv.restored, reference,
+      parsed.protectedKvRestore->capsule, certificate, recipientKeys, parsedBinding, kv.limits, [] {});
+    BOOST_CHECK_EQUAL(ndnsf::di::test::protectedKv::read(kv.restored), ndnsf::di::test::protectedKv::read(kv.plain));
+    BOOST_CHECK_THROW(nativeValidateProtectedKvRestoreContext(*parsed.protectedKvRestore, parsed,
+      ndn::Name("/other-owner"), ndn::Name("/Inference"), now), std::invalid_argument);
+    BOOST_CHECK_THROW(nativeValidateProtectedKvRestoreContext(*parsed.protectedKvRestore, parsed,
+      reference.ownerIdentity, ndn::Name("/other-service"), now), std::invalid_argument);
+    BOOST_CHECK_THROW(nativeValidateProtectedKvRestoreContext(*parsed.protectedKvRestore, parsed,
+      reference.ownerIdentity, ndn::Name("/Inference"), restore.recipient.expiresAtMs), std::invalid_argument);
+    for (const auto& mutate : std::vector<std::function<void(NativeSelectionProjectionV3&)>>{
+      [](auto& p) { p.requestId += "other"; }, [](auto& p) { p.grantDigest = digest("other grant"); },
+      [](auto& p) { p.conversationStateReference->roleReceiptDigest = digest("other receipt"); }}) {
+      auto wrong = parsed; mutate(wrong);
+      BOOST_CHECK_THROW(nativeValidateProtectedKvRestoreContext(*wrong.protectedKvRestore, wrong,
+        reference.ownerIdentity, ndn::Name("/Inference"), now), std::invalid_argument);
+    }
+  }
+  const auto encoded = nativeProtectedKvRestoreToJson(restore);
+  for (const auto& mutate : std::vector<std::function<void(NativeJson&)>>{
+    [](auto& j) { j["extra"] = "unknown"; }, [](auto& j) { j["version"] = true; },
+    [](auto& j) { j["recipient"]["expiresAtMs"] = "42"; },
+    [](auto& j) { j["capsule"]["fields"]["authTag"] = "00"; },
+    [](auto& j) { j["reference"]["keyEnvelope"] = std::string(16385, 'x'); }}) {
+    auto wrong = encoded; mutate(wrong);
+    BOOST_CHECK_THROW(nativeProtectedKvRestoreFromJson(wrong), std::exception);
+  }
+
+  // A real historical receipt is distinct from the new selected recipient/map.
+  const auto& id = kv.state.originIdentity;
+  ProviderConversationStateReceiptV1 origin;
+  origin.conversationId = inputs.conversationStateReference->conversationId;
+  origin.parentContextEpoch = 0; origin.successorContextEpoch = 1;
+  origin.originRequestId = id.requestId; origin.originGenerationId = id.generationId;
+  origin.serviceName = "/Inference"; origin.requesterIdentity = plan.inputs.requesterIdentity;
+  origin.securityDomainDigest = id.securityDomainDigest; origin.modelDigest = id.modelDigest;
+  origin.graphSemanticDigest = id.graphSemanticDigest; origin.adapterDigest = id.adapterDigest;
+  origin.roleName = plan.role; origin.roleSplitDigest = id.roleSplitDigest;
+  origin.layoutDigest = id.layoutDigest; origin.planRoleMapDigest = digest("original provider map");
+  origin.providerIdentity = id.providerIdentity; origin.providerBootId = id.providerBootId;
+  origin.cacheEpoch = id.cacheEpoch; origin.prefixDigest = id.prefixDigest;
+  origin.prefixTokenCount = id.prefixTokenCount; origin.positionDigest = id.positionDigest;
+  origin.stateSchemaDigest = id.stateSchemaDigest; origin.stateComponentDigests = id.stateComponentDigests;
+  origin.expiresAtMs = plan.inputs.expiresAtMs + 1000;
+  inputs.conversationStateReference->roleReceiptDigest = origin.computedDigest();
+  const auto originReference = nativeProtectPortableKvCheckpoint(kv.plain, kv.cipher, kv.certificate,
+    reference.producerPrefix, nativeProtectedKvRoleBinding(plan.inputs.requesterIdentity,
+      *inputs.conversationStateReference), kv.limits);
+  restore.reference["checkpointIdentityDigest"] = originReference.checkpointIdentityDigest;
+  restore.reference["wireDigest"] = originReference.wireDigest;
+  restore.reference["wireBytes"] = originReference.wireBytes;
+  restore.reference["keyEnvelope"] = originReference.keyEnvelope;
+  // Preserve actual decoded bytes, including insignificant JSON whitespace.
+  restore.originReceipt = " \n" + origin.toJson() + "\n";
+  restore.capsule = nativeWrapProtectedKvKeyForRecipient(originReference, kv.certificate,
+    kv.ownerKeys, publicKey, binding, [] {});
+  inputs.protectedKvRestore = restore;
+  projection = NativePlanSealer::project(sealed, "/provider-a", inputs);
+  BOOST_CHECK_EQUAL(nativeFixedRoleAssignmentV1FromProjection(projection)->digest(), fixed->digest());
+  const auto versionTwo = nativeProtectedKvRestoreToJson(restore);
+  BOOST_CHECK_EQUAL(versionTwo.at("version").get<std::uint64_t>(), 2U);
+  for (bool invocation : {false, true}) {
+    const auto wire = invocation ? nativeSelectionInvocationV1ToJson(projection, *fixed)
+                                : nativeSelectionProjectionV3ToJson(projection);
+    std::istringstream input(wire);
+    const auto parsed = invocation ? nativeSelectionInvocationV1FromJson(input, plan.role, *fixed)
+                                  : nativeSelectionProjectionV3FromJson(input, plan.role);
+    BOOST_REQUIRE(parsed.protectedKvRestore); BOOST_REQUIRE(parsed.protectedKvRestore->originReceipt);
+    BOOST_CHECK_EQUAL(*parsed.protectedKvRestore->originReceipt, *restore.originReceipt);
+    // Codec/context fixture: bind an explicit current generation expectation.
+    // The real native requester/Handler barrier has separate runtime coverage.
+    auto readyProjection = parsed;
+    readyProjection.generationContract.generationId = "current-generation";
+    NativeConversationStateReadyV2 ready;
+    ready.requestId = parsed.requestId; ready.attemptEpoch = parsed.attempt;
+    ready.generationId = readyProjection.generationContract.generationId;
+    ready.planDigest = parsed.planDigest; ready.parent = *parsed.conversationStateReference;
+    ready.parent.expiresAtMs = parsed.protectedKvRestore->recipient.expiresAtMs - 1;
+    ready.providerIdentity = parsed.provider; ready.providerBootId = "admitted-boot";
+    ready.cacheEpoch = 1; ready.reason = "repo-import";
+    ready.originProviderIdentity = origin.providerIdentity;
+    ready.protectedKvWireDigest = originReference.wireDigest;
+    const auto sealReady = [](NativeConversationStateReadyV2 value) {
+      value.readyDigest.clear();
+      return nativeConversationStateReadyV2FromJson(
+        nativeConversationCanonicalJson(nativeConversationStateReadyV2ToJson(value)));
+    };
+    ready = sealReady(ready);
+    BOOST_CHECK_NO_THROW(nativeValidateConversationStateReadyV2(
+      ready, readyProjection, "admitted-boot", parsed.provider, plan.role, now));
+    auto canonicalReady = ready;
+    canonicalReady.providerIdentity = ndn::Name(parsed.provider).toUri(ndn::name::UriFormat::CANONICAL);
+    canonicalReady.originProviderIdentity = ndn::Name(origin.providerIdentity).toUri(ndn::name::UriFormat::CANONICAL);
+    BOOST_CHECK_NO_THROW(nativeValidateConversationStateReadyV2(
+      sealReady(canonicalReady), readyProjection, "admitted-boot",
+      canonicalReady.providerIdentity, plan.role, now));
+    BOOST_CHECK_THROW(nativeValidateConversationStateReadyV2(
+      ready, readyProjection, "different-ack-boot", parsed.provider, plan.role, now), std::invalid_argument);
+    BOOST_CHECK_THROW(nativeValidateConversationStateReadyV2(
+      ready, readyProjection, "admitted-boot", "/foreign-producer", plan.role, now), std::invalid_argument);
+    BOOST_CHECK_THROW(nativeValidateConversationStateReadyV2(
+      ready, readyProjection, "admitted-boot", parsed.provider, "/foreign-role", now), std::invalid_argument);
+    auto changedReady = ready; changedReady.originProviderIdentity = parsed.provider;
+    BOOST_CHECK_THROW(nativeValidateConversationStateReadyV2(
+      sealReady(changedReady), readyProjection, "admitted-boot", parsed.provider, plan.role, now), std::invalid_argument);
+    changedReady = ready; changedReady.protectedKvWireDigest = digest("changed wire");
+    BOOST_CHECK_THROW(nativeValidateConversationStateReadyV2(
+      sealReady(changedReady), readyProjection, "admitted-boot", parsed.provider, plan.role, now), std::invalid_argument);
+    changedReady = ready; ++changedReady.attemptEpoch;
+    BOOST_CHECK_THROW(nativeValidateConversationStateReadyV2(
+      sealReady(changedReady), readyProjection, "admitted-boot", parsed.provider, plan.role, now), std::invalid_argument);
+    changedReady = ready; changedReady.parent.expiresAtMs = readyProjection.deadlineMs + 1;
+    BOOST_CHECK_THROW(nativeValidateConversationStateReadyV2(
+      sealReady(changedReady), readyProjection, "admitted-boot", parsed.provider, plan.role, now), std::invalid_argument);
+    // Cache incarnation is authenticated by this Provider's READY, not ACK telemetry.
+    changedReady = ready; ++changedReady.cacheEpoch;
+    BOOST_CHECK_NO_THROW(nativeValidateConversationStateReadyV2(
+      sealReady(changedReady), readyProjection, "admitted-boot", parsed.provider, plan.role, now));
+    nativeValidateProtectedKvRestoreContext(*parsed.protectedKvRestore, parsed,
+      reference.ownerIdentity, ndn::Name("/Inference"), now);
+    nativeRecoverProtectedPortableKvCheckpointForRecipient(kv.cipher, kv.restored, originReference,
+      parsed.protectedKvRestore->capsule, certificate, recipientKeys, binding, kv.limits, [] {});
+    BOOST_CHECK_EQUAL(ndnsf::di::test::protectedKv::read(kv.restored), ndnsf::di::test::protectedKv::read(kv.plain));
+  }
+  // Exact raw-byte boundary remains round-trippable without reserializing proof.
+  auto boundary = restore;
+  boundary.originReceipt->append(65536 - boundary.originReceipt->size(), ' ');
+  BOOST_CHECK_EQUAL(nativeProtectedKvRestoreFromJson(nativeProtectedKvRestoreToJson(boundary))
+    .originReceipt->size(), 65536U);
+  boundary.originReceipt->push_back(' ');
+  BOOST_CHECK_THROW(nativeProtectedKvRestoreToJson(boundary), std::invalid_argument);
+  for (const auto& mutate : std::vector<std::function<void(NativeJson&)>>{
+    [](auto& j) { j["extra"] = true; }, [](auto& j) { j["version"] = 1U; },
+    [](auto& j) { j.erase("originReceipt"); },
+    [](auto& j) { j["originReceipt"] = std::string(87388, 'A'); },
+    [](auto& j) { j["originReceipt"] = "!!!!"; },
+    [](auto& j) { j["originReceipt"] = nativeConversationBase64Encode("{}"); }}) {
+    auto wrong = versionTwo; mutate(wrong);
+    BOOST_CHECK_THROW(nativeProtectedKvRestoreFromJson(wrong), std::exception);
+  }
+  const auto originJson = nativeParseJson(origin.toJson());
+  for (const auto& mutate : std::vector<std::function<void(NativeJson&)>>{
+    [](auto& j) { j["parentContextEpoch"] = -1; },
+    [](auto& j) { j["parentContextEpoch"] = std::numeric_limits<std::uint64_t>::max(); j["successorContextEpoch"] = 0U; },
+    [](auto& j) { j["prefixTokenCount"] = std::uint64_t{1} << 32; },
+    [](auto& j) { j["cacheEpoch"] = true; }, [](auto& j) { j["expiresAtMs"] = -1; },
+    [](auto& j) { j["signature"] = "fabricated"; }, [](auto& j) { j["extra"] = "field"; }}) {
+    auto wrong = originJson; mutate(wrong);
+    BOOST_CHECK_THROW(nativeReadProviderConversationStateReceipt(wrong), std::exception);
+  }
+  // Keep each changed receipt internally valid and its digest matched to the
+  // reference, so a digest mismatch cannot mask the origin-scope checks.
+  for (const auto& mutate : std::vector<std::function<void(ProviderConversationStateReceiptV1&)>>{
+    [](auto& r) { r.conversationId += "other"; }, [](auto& r) { r.roleName += "other"; },
+    [](auto& r) { ++r.parentContextEpoch; ++r.successorContextEpoch; },
+    [](auto& r) { r.serviceName = "/other-service"; }, [](auto& r) { r.requesterIdentity = "/other-owner"; },
+    [](auto& r) { r.providerIdentity = "/other-producer"; },
+    [&](auto& r) { r.expiresAtMs = restore.recipient.expiresAtMs - 1; }}) {
+    auto changed = origin; mutate(changed);
+    auto wrong = projection;
+    wrong.protectedKvRestore->originReceipt = changed.toJson();
+    wrong.conversationStateReference->roleReceiptDigest = changed.computedDigest();
+    BOOST_CHECK_THROW(nativeValidateProtectedKvRestoreProjection(*wrong.protectedKvRestore, wrong), std::invalid_argument);
+  }
+}
 
 BOOST_AUTO_TEST_CASE(PlanSealerBindsSnapshotArtifactsAndGrantContext)
 {

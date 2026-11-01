@@ -2544,7 +2544,7 @@ prepareNativeCanonicalOnnxRole(
       std::uint64_t selectedMaterialBytes = std::max(materialMetadataBytes,
                                                      parseReservation);
       // Keep one authenticated bundle allocation and expose selected chunks as
-      // shared ranges.  Copying every 1 MiB chunk into materialPayloads would
+      // shared ranges.  Copying every 2 MiB chunk into materialPayloads would
       // retain the bundle cache and a second full initializer at the same time.
       std::map<std::string, std::shared_ptr<std::vector<std::uint8_t>>> fetchedBundles;
       std::set<std::string> countedBundles;

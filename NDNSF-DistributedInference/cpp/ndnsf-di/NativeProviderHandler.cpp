@@ -6,6 +6,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedKvPublication.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePrivateCheckpointFile.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
@@ -14,6 +17,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include "ndn-service-framework/utils.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 
 #include <algorithm>
 #include <array>
@@ -38,10 +42,160 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <cerrno>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace ndnsf::di {
 
 namespace {
+constexpr char kConversationRecoveryCancelTopic[] =
+  "/ndnsf-di/conversation/recovery-cancel";
+
+struct RecoveryCancelPollState
+{
+  std::mutex mutex;
+  std::size_t inspected = 0;
+  bool cancelled = false;
+};
+} // namespace
+
+namespace detail {
+
+void
+waitForRecoveryActivationUntil(
+  std::uint64_t expiresAtMs,
+  const std::function<std::uint64_t()>& now,
+  const std::function<void()>& executionGuard,
+  const std::function<bool()>& pollAndAccept)
+{
+  while (true) {
+    executionGuard();
+    if (now() >= expiresAtMs)
+      throw std::runtime_error("KV_RECOVERY_ACTIVATION_TIMEOUT");
+    if (pollAndAccept()) return;
+  }
+}
+
+} // namespace detail
+
+void
+NativeProviderKvRecoveryConfigV1::validate() const
+{
+  validateNativePortableKvCheckpointLimits(portableLimits);
+  const auto root = privateScratchRoot.string();
+  if (root.empty() || root.size() > 4096 || root.find('\0') != std::string::npos ||
+      !privateScratchRoot.is_absolute() || repoForwardingHints.empty() || repoForwardingHints.size() > 8)
+    throw std::invalid_argument("KV recovery policy root/hints invalid");
+  for (const auto& hint : repoForwardingHints) {
+    if (hint.empty()) throw std::invalid_argument("KV recovery hint is empty");
+    ndn_service_framework::checkNamingNameSize(hint);
+  }
+  for (const auto limit : {protectedLimits.maxPlaintextBytes, protectedLimits.maxWireBytes,
+         portableLimits.portable.maxPayloadBytes, portableLimits.portable.maxEncodedBytes,
+         portableLimits.maxMetadataBytes, portableLimits.maxCheckpointBytes, maxTransportEnvelopeBytes}) {
+    if (!limit || limit > std::numeric_limits<std::size_t>::max())
+      throw std::invalid_argument("KV recovery policy byte limit invalid");
+  }
+  if (protectedLimits.maxWireBytes > static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
+      portableLimits.portable.maxPayloadBytes > portableLimits.portable.maxEncodedBytes ||
+      portableLimits.portable.maxEncodedBytes > portableLimits.maxCheckpointBytes ||
+      portableLimits.maxMetadataBytes > portableLimits.maxCheckpointBytes ||
+      portableLimits.maxCheckpointBytes > protectedLimits.maxPlaintextBytes ||
+      protectedLimits.maxPlaintextBytes >= protectedLimits.maxWireBytes ||
+      protectedLimits.maxWireBytes >= maxTransportEnvelopeBytes)
+    throw std::invalid_argument("KV recovery policy limits are inconsistent");
+}
+
+NativeProviderKvRecoveryConfigV1
+nativeProviderKvRecoveryConfigFromJson(const std::string& wire)
+{
+  if (wire.size() > 64 * 1024) throw std::invalid_argument("KV recovery policy exceeds bound");
+  const auto value = nativeParseJson(wire);
+  const std::set<std::string> fields{"privateScratchRoot", "repoForwardingHints",
+    "maxProtectedPlaintextBytes", "maxProtectedWireBytes", "maxPayloadBytes",
+    "maxEncodedBytes", "maxMetadataBytes", "maxCheckpointBytes", "maxTransportEnvelopeBytes"};
+  if (!value.is_object() || value.size() != fields.size())
+    throw std::invalid_argument("KV recovery policy field set invalid");
+  for (const auto& item : value.items())
+    if (!fields.count(item.key())) throw std::invalid_argument("KV recovery policy field invalid");
+  const auto bytes = [&](const char* field) {
+    if (!value.at(field).is_number_unsigned() || value.at(field).get<std::uint64_t>() == 0 ||
+        value.at(field).get<std::uint64_t>() > std::numeric_limits<std::size_t>::max())
+      throw std::invalid_argument("KV recovery policy byte limit invalid");
+    return value.at(field).get<std::uint64_t>();
+  };
+  if (!value.at("privateScratchRoot").is_string() ||
+      !value.at("repoForwardingHints").is_array())
+    throw std::invalid_argument("KV recovery policy root/hints invalid");
+  NativeProviderKvRecoveryConfigV1 result;
+  const auto root = value.at("privateScratchRoot").get<std::string>();
+  if (root.empty() || root.size() > 4096 || root.find('\0') != std::string::npos ||
+      !std::filesystem::path(root).is_absolute())
+    throw std::invalid_argument("KV recovery scratch root must be absolute");
+  result.privateScratchRoot = root;
+  for (const auto& item : value.at("repoForwardingHints")) {
+    if (!item.is_string()) throw std::invalid_argument("KV recovery hint must be a name");
+    const auto text = item.get<std::string>();
+    if (text.empty() || text.front() != '/' || text.size() > 4096 || ndn::Name(text).empty())
+      throw std::invalid_argument("KV recovery hint must be a bounded producer name");
+    result.repoForwardingHints.emplace_back(text);
+  }
+  result.protectedLimits.maxPlaintextBytes = bytes("maxProtectedPlaintextBytes");
+  result.protectedLimits.maxWireBytes = bytes("maxProtectedWireBytes");
+  result.portableLimits.portable.maxPayloadBytes = bytes("maxPayloadBytes");
+  result.portableLimits.portable.maxEncodedBytes = bytes("maxEncodedBytes");
+  result.portableLimits.maxMetadataBytes = bytes("maxMetadataBytes");
+  result.portableLimits.maxCheckpointBytes = bytes("maxCheckpointBytes");
+  result.maxTransportEnvelopeBytes = bytes("maxTransportEnvelopeBytes");
+  result.validate();
+  return result;
+}
+
+namespace {
+struct NativeProviderKvRecoveryGuard
+{
+  explicit NativeProviderKvRecoveryGuard(NativeProviderRuntime& owner) : runtime(owner) {}
+  NativeProviderKvRecoveryGuard(const NativeProviderKvRecoveryGuard&) = delete;
+  NativeProviderKvRecoveryGuard& operator=(const NativeProviderKvRecoveryGuard&) = delete;
+  ~NativeProviderKvRecoveryGuard()
+  {
+    use.reset();
+    if (ownership && !retain) {
+      try {
+        const auto result = runtime.releaseImportedConversationState(*ownership);
+        if (result != ImportedStateReleaseResult::Released && result != ImportedStateReleaseResult::AlreadyGone)
+          logRuntimeError("NDNSF_DI_KV_RECOVERY_CLEANUP retained_import=true");
+      }
+      catch (...) { try { logRuntimeError("NDNSF_DI_KV_RECOVERY_CLEANUP retained_import=true"); } catch (...) {} }
+    }
+    if (!scratch.empty()) {
+      std::error_code error;
+      std::filesystem::remove_all(scratch, error);
+      if (error) { try { logRuntimeError("NDNSF_DI_KV_RECOVERY_CLEANUP scratch_removal_failed=true"); } catch (...) {} }
+    }
+  }
+  void createScratch(const std::filesystem::path& root)
+  {
+    struct stat status{};
+    if (::lstat(root.c_str(), &status) != 0 || !S_ISDIR(status.st_mode) ||
+        status.st_uid != ::geteuid() || (status.st_mode & 0077) != 0)
+      throw std::runtime_error("KV recovery requires an owned private scratch directory");
+    const auto real = std::filesystem::canonical(root).string();
+    if (real == "/dev/shm" || real.rfind("/dev/shm/", 0) == 0)
+      throw std::runtime_error("KV recovery scratch must use disk storage");
+    const auto pattern = (root / "recovery-XXXXXX").string();
+    std::vector<char> path(pattern.begin(), pattern.end()); path.push_back('\0');
+    if (!::mkdtemp(path.data())) throw std::runtime_error("KV recovery scratch admission failed");
+    scratch = path.data();
+  }
+  NativeProviderRuntime& runtime;
+  std::optional<ConversationStateImportOwnershipV1> ownership;
+  std::optional<ConversationStateUseLeaseV1> use;
+  std::filesystem::path scratch;
+  bool retain = false;
+};
+
 struct DecodedNativeProviderAssignment
 {
   std::map<std::string, std::string> fields;
@@ -776,6 +930,12 @@ public:
       throw std::invalid_argument(
         "NativeProviderHandlerState requires NativeModelRunnerFactory");
     }
+    // A source Provider must bind committed state for publication even when
+    // this instance does not also configure remote-state recovery.
+    if (config.runnerPreparationFactory && !config.localProviderName.empty() &&
+        !config.providerBootId.empty()) {
+      runtime.bindConversationStateProvider(config.localProviderName, config.providerBootId, 1);
+    }
     if (!config.runnerPreparationFactory) {
       for (const auto& spec : runnerSpecs) {
         logFragmentInventoryEvent("DISK_RESIDENT", spec, localProviderName);
@@ -870,6 +1030,7 @@ public:
   std::shared_ptr<NativeModelRunnerFactory> runnerFactory;
   std::string localProviderName;
   NativeProviderRuntime runtime;
+  std::atomic<std::uint64_t> saveBatchRowExportAttempts{0};
   ndn_service_framework::ProviderExecutionLeaseTable* executionLeaseTable = nullptr;
   uint64_t executionLeaseCleanupIntervalMs = 0;
   std::mutex executionLeaseCleanupMutex;
@@ -1855,6 +2016,38 @@ trustedDecodeStateTemplateFor(
   return result;
 }
 
+DecodeStateIdentityV1
+recoveryDestinationIdentity(const DecodeStateIdentityV1& parent,
+                            const DecodeStateIdentityV1& trusted)
+{
+  auto destination = trusted;
+  destination.prefixDigest = parent.prefixDigest;
+  destination.prefixTokenCount = parent.prefixTokenCount;
+  destination.positionDigest = parent.positionDigest;
+  destination.stateInferenceEpoch = parent.stateInferenceEpoch;
+  destination.predecessorInferenceEpoch = parent.predecessorInferenceEpoch;
+  if (!nativePortableKvIdentityCompatible(parent, destination))
+    throw std::runtime_error("KV_RECOVERY_STATIC_IDENTITY_MISMATCH");
+  return destination;
+}
+
+void
+validateRecoveryOrigin(const NativePortableKvSnapshotV1& snapshot,
+                       const ProviderConversationStateReceiptV1& receipt)
+{
+  const auto& origin = snapshot.originIdentity;
+  if (ndn::Name(origin.providerIdentity) != ndn::Name(receipt.providerIdentity) ||
+      origin.providerBootId != receipt.providerBootId || origin.cacheEpoch != receipt.cacheEpoch ||
+      origin.requestId != receipt.originRequestId || origin.generationId != receipt.originGenerationId ||
+      origin.securityDomainDigest != receipt.securityDomainDigest || origin.modelDigest != receipt.modelDigest ||
+      origin.graphSemanticDigest != receipt.graphSemanticDigest || origin.adapterDigest != receipt.adapterDigest ||
+      origin.roleName != receipt.roleName || origin.roleSplitDigest != receipt.roleSplitDigest ||
+      origin.layoutDigest != receipt.layoutDigest || origin.prefixDigest != receipt.prefixDigest ||
+      origin.prefixTokenCount != receipt.prefixTokenCount || origin.positionDigest != receipt.positionDigest ||
+      origin.stateSchemaDigest != receipt.stateSchemaDigest || origin.stateComponentDigests != receipt.stateComponentDigests)
+    throw std::runtime_error("KV_RECOVERY_ORIGIN_RECEIPT_MISMATCH");
+}
+
 ProtectedResidentIdentityV1
 protectedResidentIdentityFor(const NativeSelectionProjectionV3& projection,
                              const ProtectedRuntime& runtime,
@@ -2084,10 +2277,115 @@ generationConfigFromAuthenticatedRequest(
   return result;
 }
 
+NativeConversationHandoffOwnerContextV1
+resolveNativeConversationHandoffOwnerContextV1(
+  const NativeConversationHandoffOwnerContextResolverV1& resolver,
+  const ndn::Name& authenticatedOwner,
+  const ndn::Name& serviceName,
+  const std::string& operationId)
+{
+  if (!resolver || authenticatedOwner.empty() || serviceName.empty() ||
+      operationId.empty() || operationId.find('\0') != std::string::npos) {
+    throw std::invalid_argument(
+      "HANDOFF_AUTHENTICATED_OWNER_SCOPE_INVALID");
+  }
+
+  // The callback receives only identities supplied by Core's targeted-handler
+  // boundary. Its result is per invocation and cannot replace those identities.
+  auto context = resolver(authenticatedOwner, serviceName, operationId);
+  context.durableStorageOwner.validate();
+  const auto storageOwner = ndn::Name(context.durableStorageOwner.ownerIdentity);
+  if (context.ownerEncryptionCertificate.getName().empty() ||
+      context.ownerEncryptionCertificate.getIdentity() != authenticatedOwner ||
+      storageOwner != authenticatedOwner ||
+      context.durableStorageOwner.ownerIdentity != authenticatedOwner.toUri(ndn::name::UriFormat::ALTERNATE) ||
+      !context.originalPacketStore ||
+      context.saveBatchLimits.maxEntries == 0 ||
+      context.saveBatchLimits.maxMetadataBytes == 0 ||
+      context.portableLimits.portable.maxPayloadBytes == 0 ||
+      context.portableLimits.portable.maxEncodedBytes == 0 ||
+      context.protectedCheckpointLimits.maxPlaintextBytes == 0 ||
+      context.protectedCheckpointLimits.maxWireBytes == 0) {
+    throw std::invalid_argument(
+      "HANDOFF_OWNER_CONTEXT_BINDING_INVALID");
+  }
+
+  validateNativePortableKvCheckpointLimits(context.portableLimits);
+  if (context.portableLimits.maxCheckpointBytes >
+      context.protectedCheckpointLimits.maxPlaintextBytes)
+    throw std::invalid_argument("HANDOFF_OWNER_CONTEXT_BINDING_INVALID");
+
+  const auto& policy = context.policy;
+  constexpr std::size_t MaxConcurrentEvents = 16;
+  constexpr std::size_t MaxConcurrentRoleSlots = 64;
+  constexpr std::uint64_t MaxEventBytes = std::uint64_t{1} << 40;
+  constexpr std::uint64_t MaxScratchQuotaBytes = std::uint64_t{1} << 44;
+  constexpr std::uint64_t MaxSaveDurationMs = 10 * 60 * 1000;
+  if (!policy.enabled || policy.maxConcurrentEvents == 0 ||
+      policy.maxConcurrentEvents > MaxConcurrentEvents ||
+      policy.maxRolesPerEvent == 0 || policy.maxRolesPerEvent > 64 ||
+      policy.maxConcurrentRoleSlots < policy.maxRolesPerEvent ||
+      policy.maxConcurrentRoleSlots > MaxConcurrentRoleSlots ||
+      policy.maxPacketCountPerRole == 0 || policy.maxPacketCountPerRole > 4096 ||
+      policy.maxPacketSetWireBytesPerRole == 0 ||
+      policy.maxPacketSetWireBytesPerRole > MaxEventBytes ||
+      policy.maxAggregateBytes == 0 || policy.maxAggregateBytes > MaxEventBytes ||
+      policy.maxScratchBytesPerEvent == 0 ||
+      policy.maxScratchBytesPerEvent > MaxEventBytes ||
+      policy.scratchQuotaBytes < policy.maxScratchBytesPerEvent ||
+      policy.scratchQuotaBytes > MaxScratchQuotaBytes ||
+      policy.maxSaveDurationMs == 0 || policy.maxSaveDurationMs > MaxSaveDurationMs ||
+      !policy.scratchRoot.is_absolute() || policy.scratchRoot.empty() ||
+      context.repoTargetByRole.empty() ||
+      context.repoTargetByRole.size() > policy.maxRolesPerEvent) {
+    throw std::invalid_argument("HANDOFF_EFFECTIVE_POLICY_INVALID");
+  }
+
+  NativeJson effectivePolicy = NativeJson::object();
+  effectivePolicy["schema"] = "ndnsf-di-conversation-handoff-policy-v1";
+  effectivePolicy["enabled"] = policy.enabled;
+  effectivePolicy["maxConcurrentEvents"] = policy.maxConcurrentEvents;
+  effectivePolicy["maxRolesPerEvent"] = policy.maxRolesPerEvent;
+  effectivePolicy["maxConcurrentRoleSlots"] = policy.maxConcurrentRoleSlots;
+  effectivePolicy["maxPacketCountPerRole"] = policy.maxPacketCountPerRole;
+  effectivePolicy["maxPacketSetWireBytesPerRole"] = policy.maxPacketSetWireBytesPerRole;
+  effectivePolicy["maxAggregateBytes"] = policy.maxAggregateBytes;
+  effectivePolicy["maxScratchBytesPerEvent"] = policy.maxScratchBytesPerEvent;
+  effectivePolicy["scratchQuotaBytes"] = policy.scratchQuotaBytes;
+  effectivePolicy["maxSaveDurationMs"] = policy.maxSaveDurationMs;
+  effectivePolicy["scratchRoot"] = policy.scratchRoot.generic_string();
+  effectivePolicy["ownerIdentity"] = authenticatedOwner.toUri(ndn::name::UriFormat::ALTERNATE);
+  effectivePolicy["serviceName"] = serviceName.toUri(ndn::name::UriFormat::ALTERNATE);
+  effectivePolicy["ownerCertificate"] =
+    context.ownerEncryptionCertificate.getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  const auto& ownerCertificateWire = context.ownerEncryptionCertificate.wireEncode();
+  effectivePolicy["ownerCertificateDigest"] = nativePlanningDigest(std::string(
+    reinterpret_cast<const char*>(ownerCertificateWire.data()), ownerCertificateWire.size()));
+  effectivePolicy["limits"] = NativeJson{
+    {"saveBatchEntries", context.saveBatchLimits.maxEntries},
+    {"saveBatchMetadataBytes", context.saveBatchLimits.maxMetadataBytes},
+    {"portablePayloadBytes", context.portableLimits.portable.maxPayloadBytes},
+    {"portableEncodedBytes", context.portableLimits.portable.maxEncodedBytes},
+    {"portableMetadataBytes", context.portableLimits.maxMetadataBytes},
+    {"portableCheckpointBytes", context.portableLimits.maxCheckpointBytes},
+    {"protectedPlaintextBytes", context.protectedCheckpointLimits.maxPlaintextBytes},
+    {"protectedWireBytes", context.protectedCheckpointLimits.maxWireBytes}};
+  effectivePolicy["repoTargets"] = NativeJson::object();
+  for (const auto& [role, target] : context.repoTargetByRole) {
+    effectivePolicy["repoTargets"][role] = NativeJson{
+      {"repoNode", target.repoNode},
+      {"providerIdentity", target.providerIdentity},
+      {"servicePrefix", target.servicePrefix}};
+  }
+  context.policy.effectiveDigest = nativePlanningDigest(nativeCanonicalJson(effectivePolicy));
+  return context;
+}
+
 NativeProviderCollaborationRuntime
 makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
 {
   validateNativeProviderExecutionPolicy(config);
+  if (config.kvRecovery) config.kvRecovery->validate();
   if (!config.runnerFactory) {
     throw std::invalid_argument(
       "NativeProviderHandlerConfig requires NativeModelRunnerFactory");
@@ -2102,7 +2400,70 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
     return state->runtime.decodeStateSnapshot();
   };
   runtime.conversationStateSnapshot = [state] {
-    return state->runtime.conversationStateSnapshot();
+    auto snapshot = state->runtime.conversationStateSnapshot();
+    snapshot.saveBatchRowExportAttempts =
+      state->saveBatchRowExportAttempts.load(std::memory_order_relaxed);
+    return snapshot;
+  };
+  runtime.exportCommittedConversationState = [state](const ConversationStateReferenceV1& reference,
+    const NativePortableKvLimitsV1& limits, std::uint64_t nowMs) {
+    const auto binding = state->runtime.resolveConversationState(reference, nowMs);
+    if (!binding) throw std::runtime_error("KV_EXPORT_COMMITTED_STATE_MISSING");
+    return state->runtime.exportConversationState(*binding, limits, nowMs);
+  };
+  runtime.beginConversationSaveFence = [state](
+    const std::string& requester, const std::string& service,
+    const std::string& conversation) {
+    return state->runtime.beginConversationSaveFence(requester, service, conversation);
+  };
+  runtime.beginServiceWithdrawalSaveFence = [state](
+    const std::string& service, const std::string& operationId,
+    std::uint64_t registrationGeneration) {
+    return state->runtime.beginServiceWithdrawalSaveFence(
+      service, operationId, registrationGeneration);
+  };
+  runtime.beginProviderWithdrawalSaveFence = [state](
+    const std::string& operationId, std::uint64_t registrationGeneration) {
+    return state->runtime.beginProviderWithdrawalSaveFence(
+      operationId, registrationGeneration);
+  };
+  runtime.borrowServiceWithdrawalSaveFence = [state](
+    const ConversationStateStore::SaveFence& parent,
+    const std::string& service, const std::string& operationId,
+    std::uint64_t registrationGeneration) {
+    return state->runtime.borrowServiceWithdrawalSaveFence(
+      parent, service, operationId, registrationGeneration);
+  };
+  runtime.matchesServiceWithdrawalSaveFence = [state](
+    const ConversationStateStore::SaveFence& fence,
+    const std::string& service, const std::string& operationId,
+    std::uint64_t registrationGeneration) {
+    return state->runtime.matchesServiceWithdrawalSaveFence(
+      fence, service, operationId, registrationGeneration);
+  };
+  runtime.borrowConversationWithdrawalSaveFence = [state](
+    const ConversationStateStore::SaveFence& parent,
+    const std::string& requester, const std::string& service,
+    const std::string& conversation, const std::string& operationId,
+    std::uint64_t registrationGeneration) {
+    return state->runtime.borrowConversationWithdrawalSaveFence(
+      parent, requester, service, conversation,
+      operationId, registrationGeneration);
+  };
+  runtime.isSaveFenceQuiescent = [state](
+    const ConversationStateStore::SaveFence& fence) {
+    return state->runtime.isSaveFenceQuiescent(fence);
+  };
+  runtime.tryAcquireCommittedSaveBatch = [state](
+    const ConversationStateStore::SaveFence& fence,
+    ConversationSaveBatchLimitsV1 limits, std::uint64_t nowMs) {
+    return state->runtime.tryAcquireCommittedSaveBatch(fence, limits, nowMs);
+  };
+  runtime.exportCommittedSaveBatchRow = [state](
+    const ConversationStateStore::SaveBatch& batch, std::size_t index,
+    const NativePortableKvLimitsV1& limits, std::uint64_t nowMs) {
+    state->saveBatchRowExportAttempts.fetch_add(1, std::memory_order_relaxed);
+    return state->runtime.exportConversationState(batch, index, limits, nowMs);
   };
   runtime.executionEvidence = state->executionEvidence;
   runtime.handler = [config = std::move(config), state = std::move(state)] (
@@ -2122,6 +2483,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
     std::string stagePlanDigest;
     std::string stageAttemptEpoch;
     std::shared_ptr<ProtectedRuntime> protectedRuntime;
+    std::optional<ConversationStateStore::ExecutionAdmission> conversationAdmission;
     std::function<void()> waitConversationPromotion;
     std::function<void()> rollbackConversationPromotion;
     bool conversationPromotionStaged = false;
@@ -2137,6 +2499,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       activatedLeaseId.clear();
     };
     try {
+      NativeProviderKvRecoveryGuard kvRecovery(state->runtime);
+      std::uint64_t recoveryActivationExpiresAtMs = 0;
       logRuntimePhase("di-provider", "nativeHandlerEntered", ctx.sessionId(), {},
         {{"executionRole", "provider-admission"},
          {"providerName", ctx.localProvider().toUri()}, {"modelRole", ctx.role()}});
@@ -2297,6 +2661,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         if (selectionProjection->requestId != ctx.sessionId()) {
           ctx.fail("DI_SELECTION_REQUEST_MISMATCH");
           return;
+        }
+        if (selectionProjection->protectedKvRestore) {
+          nativeValidateProtectedKvRestoreContext(*selectionProjection->protectedKvRestore,
+            *selectionProjection, ctx.requesterName(), ctx.assignment().service,
+            static_cast<std::uint64_t>(std::max<long long>(0, epochMs())));
+          if (!config.conversationStateKeyScope.empty())
+            ctx.allowData(config.conversationStateKeyScope,
+                          ndn::Name(kConversationRecoveryCancelTopic));
         }
         if (!selectionProjection->requestContractDigest.empty()) {
           if (!nativeRequestContractDigestMatches(
@@ -2673,8 +3045,19 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         ctx.fail("CONVERSATION_SERVICE_BINDING_MISMATCH");
         return;
       }
+      if (selectionProjection && selectionProjection->conversationTurnBinding) {
+        const auto& turn = *selectionProjection->conversationTurnBinding;
+        conversationAdmission = state->runtime.tryAcquireConversationExecution(
+          ctx.requesterName().toUri(), ctx.assignment().service.toUri(),
+          turn.conversationId);
+        if (!conversationAdmission) {
+          completeExecutionLease();
+          ctx.fail("PROVIDER_CONVERSATION_SAVE_FENCED");
+          return;
+        }
+      }
       if (selectionProjection &&
-          selectionProjection->conversationStateReference) {
+          selectionProjection->conversationStateReference && !selectionProjection->protectedKvRestore) {
         if (config.conversationStateKeyScope.empty()) {
           completeExecutionLease();
           ctx.fail("PROVIDER_CONVERSATION_READY_SCOPE_MISSING");
@@ -2949,6 +3332,233 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       else {
         reportStatus(readinessOperationId, "ensure-deployment", "DONE", 1,
                      1.0, "READY");
+      }
+
+      if (selectionProjection && selectionProjection->protectedKvRestore) {
+        const auto& projection = *selectionProjection;
+        const auto& restore = *projection.protectedKvRestore;
+        if (!projection.conversationStateReference || !projection.conversationTurnBinding ||
+            !restore.originReceipt || !projection.generationContract.enabled ||
+            projection.generationContract.generationId.empty() || config.conversationStateKeyScope.empty())
+          throw std::runtime_error("KV_RECOVERY_CURRENT_BINDING_REQUIRED");
+        const auto priorGuard = executionGuard;
+        const auto cancelProjection = projection;
+        const auto cancelBootId = config.providerBootId;
+        const auto cancelScope = config.conversationStateKeyScope;
+        auto cancelPoll = std::make_shared<RecoveryCancelPollState>();
+        executionGuard = [&ctx, priorGuard, cancelProjection, cancelBootId, cancelScope, cancelPoll] {
+          if (!ctx.assignment().workCurrent || !ctx.assignment().workCurrent() ||
+              std::chrono::steady_clock::now() >= ctx.assignment().workDeadline)
+            throw std::runtime_error("KV_RECOVERY_DISPATCH_EXPIRED");
+          if (priorGuard) priorGuard();
+          const auto nowMs = static_cast<std::uint64_t>(std::max<long long>(0, epochMs()));
+          std::lock_guard<std::mutex> lock(cancelPoll->mutex);
+          if (cancelPoll->cancelled)
+            throw std::runtime_error("KV_RECOVERY_CANCELLED");
+          const auto controls = ctx.waitFor(cancelScope,
+            ndn::Name(kConversationRecoveryCancelTopic), 1, 0);
+          if (controls.size() < cancelPoll->inspected)
+            throw std::runtime_error("KV_RECOVERY_CANCEL_CONTROL_QUEUE_CHANGED");
+          const auto unseen = controls.size() - cancelPoll->inspected;
+          if (unseen > 64)
+            throw std::runtime_error("KV_RECOVERY_CANCEL_CONTROL_BACKLOG");
+          while (cancelPoll->inspected < controls.size()) {
+            const auto& control = controls[cancelPoll->inspected++];
+            if (control.producer != ctx.requesterName() ||
+                control.producerRole != "user-control-v1" ||
+                control.sessionId != ctx.sessionId() ||
+                control.keyScope != cancelScope ||
+                control.topic != ndn::Name(kConversationRecoveryCancelTopic) ||
+                control.payload.empty() || control.payload.size() > 16 * 1024)
+              continue;
+            try {
+              const auto cancel = nativeConversationRecoveryCancelV1FromJson(
+                std::string(control.payload.begin(), control.payload.end()));
+              nativeValidateConversationRecoveryCancelV1(
+                cancel, cancelProjection, cancelBootId, nowMs);
+              cancelPoll->cancelled = true;
+            }
+            catch (const std::exception&) {
+              // Unauthenticated or stale controls never cancel this invocation.
+            }
+          }
+          if (cancelPoll->cancelled)
+            throw std::runtime_error("KV_RECOVERY_CANCELLED");
+        };
+        executionGuard();
+        const auto now = [] { return static_cast<std::uint64_t>(std::max<long long>(0, epochMs())); };
+        nativeValidateProtectedKvRestoreContext(restore, projection, ctx.requesterName(),
+          ctx.assignment().service, now());
+        const auto reference = nativeReadProtectedKvPublicationReference(restore.reference);
+        const auto originReceipt = nativeReadProviderConversationStateReceipt(nativeParseJson(*restore.originReceipt));
+        const auto trusted = trustedDecodeStateTemplateFor(projection, readinessRunnerSpec, config.providerBootId);
+        const auto& parent = *projection.conversationStateReference;
+        auto resolved = state->runtime.resolveConversationState(parent, now());
+        bool imported = false;
+        if (!resolved) {
+          logProviderBoundaryStdout("KV_RECOVERY_REMOTE_FETCH_BEGIN", stageRequestId,
+                                    ctx.localProvider().toUri(), role);
+          if (!config.kvRecovery) throw std::runtime_error("KV_RECOVERY_NOT_CONFIGURED");
+          auto policy = *config.kvRecovery;
+          const auto protectedCancelled = policy.protectedLimits.cancelled;
+          const auto portableCancelled = policy.portableLimits.portable.cancelled;
+          const auto cancelled = [current = executionGuard, protectedCancelled, portableCancelled] {
+            current();
+            return (protectedCancelled && protectedCancelled()) || (portableCancelled && portableCancelled());
+          };
+          policy.protectedLimits.cancelled = cancelled;
+          policy.portableLimits.portable.cancelled = cancelled;
+          if (reference.wireBytes > policy.protectedLimits.maxWireBytes)
+            throw std::runtime_error("KV_RECOVERY_PROTECTED_WIRE_EXCEEDS_POLICY");
+          kvRecovery.createScratch(policy.privateScratchRoot);
+          ndn_service_framework::ProtectedBlobFetchOptions fetch;
+          fetch.forwardingHint = policy.repoForwardingHints;
+          fetch.manifestContentSha256 = restore.reference.at("ciphertextManifestDigest").get<std::string>().substr(7);
+          fetch.maxPlaintextBytes = policy.protectedLimits.maxWireBytes;
+          fetch.maxEnvelopeBytes = policy.maxTransportEnvelopeBytes;
+          auto protectedBytes = ctx.fetchEncryptedLargeDataCurrent(
+            ndn::Name(restore.reference.at("manifestName").get<std::string>()),
+            ctx.assignment().workDeadline, fetch);
+          logProviderBoundaryStdout("KV_RECOVERY_REMOTE_FETCH_DONE", stageRequestId,
+                                    ctx.localProvider().toUri(), role);
+          executionGuard();
+          if (!protectedBytes || protectedBytes->size() != reference.wireBytes) {
+            logRuntimeEvidence("NDNSF_DI_KV_RECOVERY_FETCH_REJECT requestId=" + stageRequestId +
+              " role=" + role + " receivedBytes=" +
+              std::to_string(protectedBytes ? protectedBytes->size() : 0) +
+              " expectedBytes=" + std::to_string(reference.wireBytes));
+            throw std::runtime_error("KV_RECOVERY_PROTECTED_FETCH_FAILED");
+          }
+          const auto protectedPath = kvRecovery.scratch / "protected-kv";
+          const auto plainPath = kvRecovery.scratch / "portable-kv";
+          detail::writePrivateCheckpointFile(protectedPath, {}, [&](int fd) {
+            std::size_t offset = 0;
+            while (offset < protectedBytes->size()) {
+              executionGuard();
+              const auto written = ::write(fd, protectedBytes->data() + offset, protectedBytes->size() - offset);
+              if (written < 0 && errno == EINTR) continue;
+              if (written <= 0) throw std::runtime_error("KV_RECOVERY_PRIVATE_WRITE_FAILED");
+              offset += static_cast<std::size_t>(written);
+            }
+          });
+          protectedBytes.reset();
+          const auto recipientBinding = nativeProtectedKvRecipientBindingForProjection(projection,
+            ctx.requesterName(), ctx.assignment().service, restore.recipient, now());
+          const NativeProtectedKvRecipientConsumerV1 consumer = [&](const auto& capsule,
+            const auto& certificate, const auto& keyDigest, const auto& aad, const auto& consume) {
+            return ctx.consumeRecipientAssignmentCurrent(capsule, certificate, keyDigest, aad,
+              ctx.assignment().workDeadline, consume);
+          };
+          nativeRecoverProtectedPortableKvCheckpointForRecipient(protectedPath, plainPath,
+            reference, restore.capsule, recipientBinding, policy.protectedLimits, consumer, executionGuard);
+          logProviderBoundaryStdout("KV_RECOVERY_DECRYPT_DONE", stageRequestId,
+                                    ctx.localProvider().toUri(), role);
+          executionGuard();
+          const auto snapshot = nativeReadPrivatePortableKvCheckpoint(plainPath, policy.portableLimits);
+          validateRecoveryOrigin(snapshot, originReceipt);
+          ConversationStateBinding destination;
+          destination.conversationId = parent.conversationId; destination.contextEpoch = parent.contextEpoch;
+          destination.serviceName = parent.serviceName; destination.planRoleMapDigest = parent.planRoleMapDigest;
+          destination.receiptDigest = parent.roleReceiptDigest; destination.expiresAtMs = parent.expiresAtMs;
+          destination.identity = recoveryDestinationIdentity(snapshot.originIdentity, trusted.identity);
+          destination.importedOriginIdentity = snapshot.originIdentity;
+          std::shared_ptr<NativeModelRunner> runner;
+          if (prepareRunner) runner = state->runtime.prepareRunnerAsync(prepareRunner, executionGuard).get();
+          else {
+            if (!readinessRunnerSpec) throw std::runtime_error("KV_RECOVERY_REGISTERED_RUNNER_REQUIRED");
+            if (const auto error = validateNativePreparedRunnerSpec(projection, *readinessRunnerSpec))
+              throw std::runtime_error(*error);
+            runner = state->runtime.registeredRunnerForRole(role);
+            const auto evidence = runner->executionEvidenceSnapshot();
+            if (!evidence) throw std::runtime_error("DI_RUNTIME_EVIDENCE_MISSING");
+            if (const auto error = validateNativeProviderRuntimeReadiness(*evidence, role,
+                  nativeProviderFieldValue(assignmentFields, {"backend", "executionBackend"}),
+                  nativeProviderFieldValue(assignmentFields, {"device", "executionDevice"}),
+                  nativeProviderFieldValue(assignmentFields, {"artifactDigest", "fragmentDigest", "modelFragmentDigest"})))
+              throw std::runtime_error(*error);
+          }
+          executionGuard();
+          kvRecovery.ownership = state->runtime.importConversationStateOwned(
+            snapshot, destination, runner, policy.portableLimits.portable, now(),
+            ctx.requesterName().toUri(),
+            conversationAdmission ? &*conversationAdmission : nullptr);
+          if (!kvRecovery.ownership)
+            throw std::runtime_error("KV_RECOVERY_IMPORT_REJECTED");
+          if (!state->runtime.commitImportedConversationState(*kvRecovery.ownership, parent.checkpointDigest))
+            throw std::runtime_error("KV_RECOVERY_IMPORT_COMMIT_FAILED");
+          resolved = state->runtime.resolveConversationState(parent, now());
+          if (!resolved) throw std::runtime_error("KV_RECOVERY_COMMITTED_BINDING_MISSING");
+          imported = true;
+          logProviderBoundaryStdout("KV_RECOVERY_IMPORT_DONE", stageRequestId,
+                                    ctx.localProvider().toUri(), role);
+        }
+        const auto validateLocal = [&](const ConversationStateBinding& binding) {
+          (void)recoveryDestinationIdentity(binding.identity, trusted.identity);
+          if (ndn::Name(binding.identity.providerIdentity) != ndn::Name(trusted.identity.providerIdentity) ||
+              binding.identity.providerBootId != trusted.identity.providerBootId ||
+              binding.identity.cacheEpoch != trusted.identity.cacheEpoch)
+            throw std::runtime_error("KV_RECOVERY_LOCAL_INCARNATION_MISMATCH");
+        };
+        validateLocal(*resolved);
+        if (!state->runtime.prefetchConversationStateToGpu(*resolved, now()).get())
+          throw std::runtime_error("KV_RECOVERY_PREFETCH_FAILED");
+        logProviderBoundaryStdout("KV_RECOVERY_PREFETCH_DONE", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
+        executionGuard();
+        kvRecovery.use = state->runtime.acquireConversationUse(*resolved, now());
+        if (!kvRecovery.use || !(kvRecovery.use->binding == *resolved) ||
+            !(kvRecovery.use->binding.identity == resolved->identity))
+          throw std::runtime_error("KV_RECOVERY_USE_BINDING_MISMATCH");
+        validateLocal(kvRecovery.use->binding);
+        roleSpec.conversationStateBinding = kvRecovery.use->binding;
+        roleSpec.conversationStateLookupNowMs = now();
+        prepareRunner = {};
+        NativeConversationStateReadyV2 ready;
+        ready.requestId = projection.requestId; ready.attemptEpoch = projection.attempt;
+        ready.generationId = projection.generationContract.generationId; ready.planDigest = projection.planDigest;
+        ready.parent = parent;
+        ready.parent.expiresAtMs = std::min({parent.expiresAtMs, projection.deadlineMs,
+          projection.conversationTurnBinding->retentionDeadlineMs, restore.recipient.expiresAtMs,
+          originReceipt.expiresAtMs, kvRecovery.use->binding.expiresAtMs});
+        ready.providerIdentity = kvRecovery.use->binding.identity.providerIdentity;
+        ready.providerBootId = kvRecovery.use->binding.identity.providerBootId;
+        ready.cacheEpoch = kvRecovery.use->binding.identity.cacheEpoch;
+        ready.reason = imported ? "repo-import" : "state-hit";
+        ready.originProviderIdentity = originReceipt.providerIdentity; ready.protectedKvWireDigest = reference.wireDigest;
+        const auto readyWire = nativeConversationCanonicalJson(nativeConversationStateReadyV2ToJson(ready));
+        ready = nativeConversationStateReadyV2FromJson(readyWire);
+        const ndn::Name activationTopic("/ndnsf-di/conversation/recovery-activate");
+        ctx.allowData(config.conversationStateKeyScope, activationTopic);
+        executionGuard();
+        if (ready.parent.expiresAtMs <= now()) throw std::runtime_error("KV_RECOVERY_READY_EXPIRED");
+        ctx.publish(config.conversationStateKeyScope, ndn::Name("/ndnsf-di/conversation/ready"),
+          ndn::Buffer(readyWire.begin(), readyWire.end()));
+        logProviderBoundaryStdout("KV_RECOVERY_READY_PUBLISHED", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
+        bool activated = false;
+        std::string activationWire;
+        std::size_t nextCount = 1;
+        detail::waitForRecoveryActivationUntil(ready.parent.expiresAtMs, now, executionGuard, [&] {
+          const auto controls = ctx.waitFor(config.conversationStateKeyScope, activationTopic, nextCount, 20);
+          nextCount = controls.size() + 1;
+          for (const auto& control : controls) {
+            if (control.producer != ctx.requesterName() || control.producerRole != "user-control-v1" ||
+                control.sessionId != ctx.sessionId() || control.keyScope != config.conversationStateKeyScope ||
+                control.topic != activationTopic) continue;
+            const auto activation = nativeConversationRecoveryActivationV1FromJson(
+              std::string(control.payload.begin(), control.payload.end()));
+            if (activation.roleName != role) continue;
+            nativeValidateConversationRecoveryActivationV1(activation, ready, now());
+            const auto canonical = nativeConversationCanonicalJson(nativeConversationRecoveryActivationV1ToJson(activation));
+            if (activated && canonical != activationWire)
+              throw std::runtime_error("KV_RECOVERY_ACTIVATION_CONFLICT");
+            executionGuard();
+            activationWire = canonical;
+            recoveryActivationExpiresAtMs = activation.expiresAtMs;
+            activated = true;
+          }
+          return activated;
+        });
       }
 
       // Readiness status is observational.  Before entering any runner, every
@@ -3513,6 +4123,16 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           roleSpec.conversationStateBinding;
         coordinatorConfig.conversationStateLookupNowMs =
           roleSpec.conversationStateLookupNowMs;
+        if (kvRecovery.use) {
+          executionGuard();
+          const auto currentMs = static_cast<std::uint64_t>(std::max<long long>(0, epochMs()));
+          if (!recoveryActivationExpiresAtMs || currentMs >= recoveryActivationExpiresAtMs)
+            throw std::runtime_error("KV_RECOVERY_ACTIVATION_EXPIRED_BEFORE_DISPATCH");
+          coordinatorConfig.conversationStateLookupNowMs = currentMs;
+          coordinatorConfig.firstEpochConversationUse = std::move(kvRecovery.use);
+          kvRecovery.use.reset();
+          coordinatorConfig.prepareRunner = {};
+        }
         if (request.hasStreamRequestOptions()) {
           // Every selected role receives the authenticated absolute stream
           // deadline, even though only the terminal role owns the external
@@ -3631,9 +4251,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           conversationBinding.receiptDigest = receipt.computedDigest();
           conversationBinding.expiresAtMs = receipt.expiresAtMs;
           conversationBinding.identity = identity;
+          ConversationSaveMetadataV1 saveMetadata{ctx.requesterName().toUri(), receipt};
           if (!state->runtime.stageDecodeStatePromotion(
                 executionSessionId, finalized, conversationBinding,
-                promotionNowMs)) {
+                promotionNowMs, std::move(saveMetadata),
+                conversationAdmission ? &*conversationAdmission : nullptr)) {
             // The conversation-enabled coordinator retained the final
             // request-local decode state for this handoff.  A failed stage
             // must release that state before surfacing the boundary error.
@@ -3773,13 +4395,6 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   logControl("rejected", {}, "producer_binding", item.sequence);
                   continue;
                 }
-                const auto sequenceDecision = controlSequenceGuard.observe(item.sequence);
-                if (sequenceDecision == NativeProviderControlSequenceGuard::Decision::Duplicate) {
-                  continue;
-                }
-                if (sequenceDecision == NativeProviderControlSequenceGuard::Decision::Reordered) {
-                  continue;
-                }
                 ConversationPromotionControl control;
                 try {
                   control = parseConversationPromotionControl(item.payload);
@@ -3788,7 +4403,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   logControl("rejected", {}, "malformed", item.sequence);
                   continue;
                 }
-                if (control.conversationId != turn.conversationId ||
+                const bool bindingMatches = !(control.conversationId != turn.conversationId ||
                     control.parentContextEpoch != turn.parentContextEpoch ||
                     control.successorContextEpoch != turn.successorContextEpoch ||
                     control.serviceName != turn.serviceName ||
@@ -3796,8 +4411,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                     control.roleName != finalized.role ||
                     control.receiptDigest != receipt.computedDigest() ||
                     control.expiresAtMs > receipt.expiresAtMs ||
-                    control.expiresAtMs <= now) {
+                    control.expiresAtMs <= now);
+                const auto sequenceDecision = controlSequenceGuard.observeBound(
+                  item.sequence, bindingMatches);
+                if (sequenceDecision == NativeProviderControlSequenceGuard::Decision::Unbound) {
                   logControl("rejected", control.action, "binding_or_expiry", item.sequence);
+                  continue;
+                }
+                if (sequenceDecision == NativeProviderControlSequenceGuard::Decision::Duplicate ||
+                    sequenceDecision == NativeProviderControlSequenceGuard::Decision::Reordered) {
                   continue;
                 }
                 logControl("received", control.action, "authenticated", item.sequence);
@@ -4156,6 +4778,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         logRuntimePhase("di-provider", "finalResponsePublishBegin", stageRequestId,
           stageAttemptEpoch, completionTimingFields);
         ctx.publishFinalResponse(ndn::Buffer(finalPayload->data(), finalPayload->size()));
+        kvRecovery.retain = true;
         logRuntimePhase("di-provider", "finalResponsePublishEnd", stageRequestId,
           stageAttemptEpoch, completionTimingFields);
         if (selectionProjection) {
@@ -4210,6 +4833,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                    stageAttemptEpoch);
           }
           ctx.completeRole();
+          kvRecovery.retain = true;
         }
       }
     }

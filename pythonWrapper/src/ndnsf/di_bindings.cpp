@@ -375,7 +375,9 @@ bindDistributedInference(py::module_& module)
   py::class_<di::ConversationOptions>(module, "ConversationOptions")
     .def(py::init<>())
     .def_readwrite("conversation_id", &di::ConversationOptions::conversationId)
-    .def_readwrite("checkpoint", &di::ConversationOptions::checkpoint);
+    .def_readwrite("checkpoint", &di::ConversationOptions::checkpoint)
+    .def_readwrite("retention_deadline_ms",
+                   &di::ConversationOptions::retentionDeadlineMs);
 
   py::class_<ndn_service_framework::OperationSubscription>(
       module, "Subscription")

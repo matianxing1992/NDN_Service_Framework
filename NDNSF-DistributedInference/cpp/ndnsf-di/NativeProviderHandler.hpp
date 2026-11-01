@@ -7,13 +7,20 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedKvCheckpoint.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedKvPublication.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeDurableStorageOwner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePortableKvCheckpoint.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ExecutionLease.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <initializer_list>
 #include <map>
@@ -28,8 +35,7 @@ namespace ndnsf::di {
 /**
  * Request-local monotonicity gate for authenticated conversation controls.
  * The provider receives the complete request-scoped history on each poll, so
- * duplicate history and late lower sequence numbers must be distinguished
- * before payload/state processing.
+ * validate the active role/turn binding before advancing its replay state.
  */
 class NativeProviderControlSequenceGuard
 {
@@ -39,7 +45,14 @@ public:
     Accepted,
     Duplicate,
     Reordered,
+    Unbound,
   };
+
+  Decision
+  observeBound(std::uint64_t sequence, bool bindingMatches)
+  {
+    return bindingMatches ? observe(sequence) : Decision::Unbound;
+  }
 
   Decision
   observe(std::uint64_t sequence)
@@ -77,6 +90,19 @@ private:
   std::size_t m_duplicateCount = 0;
   std::size_t m_reorderedCount = 0;
 };
+
+struct NativeProviderKvRecoveryConfigV1
+{
+  std::filesystem::path privateScratchRoot;
+  std::vector<ndn::Name> repoForwardingHints;
+  NativeProtectedKvCheckpointLimitsV1 protectedLimits;
+  NativePortableKvCheckpointLimitsV1 portableLimits;
+  std::uint64_t maxTransportEnvelopeBytes = 0;
+  void validate() const;
+};
+
+/** Operator policy only; Selection cannot supply paths, limits or key owners. */
+NativeProviderKvRecoveryConfigV1 nativeProviderKvRecoveryConfigFromJson(const std::string& wire);
 
 struct NativeProviderHandlerConfig
 {
@@ -141,6 +167,7 @@ struct NativeProviderHandlerConfig
   // host therefore uses the same ServiceProvider identity and boot epoch.
   std::string localProviderName;
   std::string providerBootId;
+  std::optional<NativeProviderKvRecoveryConfigV1> kvRecovery;
   std::string planDigest;
   // T011's Y-N-I mutation is injected at the native Provider boundary.  It
   // is empty for every ordinary deployment and cannot alter the authenticated
@@ -399,14 +426,126 @@ makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config);
 struct NativeProviderCollaborationRuntime
 {
   ndn_service_framework::ServiceProvider::CollaborationHandler handler;
+  // Worker-only protected-KV publisher bound to this host's existing
+  // ServiceProvider. The Owner resolver and original-packet store are supplied
+  // per call by the authenticated handoff owner. Pass the Core-authenticated
+  // requester identity from the targeted-handler invocation; the callback
+  // rejects an Owner context bound to any other identity.
+  std::function<NativeProtectedKvPublicationV1(
+    const ndn::Name& authenticatedOwner,
+    // Copy these identities from Core's authenticated targeted-handler call;
+    // the publisher builds its internal PreparedServiceRequest from them.
+    const ndn::Name& serviceName,
+    const ndn::Name& requestId,
+    const std::filesystem::path&,
+    const NativeProtectedKvCheckpointReferenceV1&,
+    const NativeDurableStorageOwner&,
+    std::shared_ptr<ndn_service_framework::EncryptedLargeDataRangeStore>,
+    const NativeProtectedKvCheckpointLimitsV1&,
+    const std::function<void()>&)> publishProtectedKvCheckpoint;
   std::function<ProviderRoleWorkerSnapshot()> capacitySnapshot;
   std::function<ProviderDecodeStateSnapshot()> decodeStateSnapshot;
   std::function<ConversationStateSnapshot()> conversationStateSnapshot;
+  // Trusted save owner; this closure retains the actual Handler Runtime.
+  std::function<NativePortableKvSnapshotV1(const ConversationStateReferenceV1&,
+    const NativePortableKvLimitsV1&, std::uint64_t)> exportCommittedConversationState;
+  // Event owners use these same-Runtime operations to fence admissions,
+  // atomically pin the affected committed set and export rows without
+  // reacquiring snapshot ownership.
+  std::function<std::optional<ConversationStateStore::SaveFence>(
+    const std::string&, const std::string&, const std::string&)>
+      beginConversationSaveFence;
+  std::function<std::optional<ConversationStateStore::SaveFence>(
+    const std::string&, const std::string&, std::uint64_t)> beginServiceWithdrawalSaveFence;
+  std::function<std::optional<ConversationStateStore::SaveFence>(
+    const std::string&, std::uint64_t)>
+    beginProviderWithdrawalSaveFence;
+  std::function<std::optional<ConversationStateStore::SaveFence>(
+    const ConversationStateStore::SaveFence&, const std::string&,
+    const std::string&, std::uint64_t)>
+    borrowServiceWithdrawalSaveFence;
+  std::function<bool(const ConversationStateStore::SaveFence&,
+    const std::string&, const std::string&, std::uint64_t)>
+    matchesServiceWithdrawalSaveFence;
+  std::function<std::optional<ConversationStateStore::SaveFence>(
+    const ConversationStateStore::SaveFence&, const std::string&,
+    const std::string&, const std::string&, const std::string&,
+    std::uint64_t)>
+    borrowConversationWithdrawalSaveFence;
+  std::function<bool(const ConversationStateStore::SaveFence&)>
+    isSaveFenceQuiescent;
+  std::function<ConversationStateStore::SaveBatchResult(
+    const ConversationStateStore::SaveFence&,
+    ConversationSaveBatchLimitsV1, std::uint64_t)>
+      tryAcquireCommittedSaveBatch;
+  std::function<NativePortableKvSnapshotV1(
+    const ConversationStateStore::SaveBatch&, std::size_t,
+    const NativePortableKvLimitsV1&, std::uint64_t)>
+      exportCommittedSaveBatchRow;
   std::vector<ExecutionEvidence> executionEvidence;
 };
 
+/** Effective resource policy frozen for one authenticated handoff event.
+ * Values come from the Provider operator/Owner resolver, not from the wire's
+ * parser ceiling. Zero/unconfigured values keep handoff disabled. */
+struct NativeConversationHandoffPolicyV1
+{
+  bool enabled = false;
+  std::size_t maxConcurrentEvents = 0;
+  std::size_t maxRolesPerEvent = 0;
+  std::size_t maxConcurrentRoleSlots = 0;
+  std::size_t maxPacketCountPerRole = 0;
+  std::uint64_t maxPacketSetWireBytesPerRole = 0;
+  std::uint64_t maxAggregateBytes = 0;
+  std::uint64_t maxScratchBytesPerEvent = 0;
+  std::uint64_t scratchQuotaBytes = 0;
+  std::uint64_t maxSaveDurationMs = 0;
+  std::filesystem::path scratchRoot;
+  std::string effectiveDigest;
+};
+
+/** Authority and packet-store inputs for one authenticated handoff event.
+ * Resolve these for each Core targeted invocation; never retain another
+ * requester's grant resolver or store in Provider host-wide state. */
+struct NativeConversationHandoffOwnerContextV1
+{
+  // Bind an injected network store to this operation's existing absolute
+  // deadline before any publisher starts. This grants no storage authority.
+  std::function<void(std::chrono::steady_clock::time_point)> bindPublicationDeadline;
+  ndn::security::Certificate ownerEncryptionCertificate;
+  NativeDurableStorageOwner durableStorageOwner;
+  std::shared_ptr<ndn_service_framework::EncryptedLargeDataRangeStore> originalPacketStore;
+  ConversationSaveBatchLimitsV1 saveBatchLimits;
+  NativePortableKvCheckpointLimitsV1 portableLimits;
+  NativeProtectedKvCheckpointLimitsV1 protectedCheckpointLimits;
+  NativeConversationHandoffPolicyV1 policy;
+  // Per-role route reported with the exact Repo grant challenge. Resolve this
+  // only for the authenticated Owner; the Owner compares every route with its
+  // own pinned trust policy before issuing any Repo grant.
+  std::map<std::string, NativeDurableStorageGrantRepoTargetV1> repoTargetByRole;
+};
+
+// Implementations must verify the returned certificate's signature and
+// validity against the Provider's configured trust profile.
+using NativeConversationHandoffOwnerContextResolverV1 =
+  std::function<NativeConversationHandoffOwnerContextV1(
+    const ndn::Name& authenticatedOwner,
+    const ndn::Name& serviceName,
+    const std::string& operationId)>;
+
+NativeConversationHandoffOwnerContextV1
+resolveNativeConversationHandoffOwnerContextV1(
+  const NativeConversationHandoffOwnerContextResolverV1& resolver,
+  const ndn::Name& authenticatedOwner,
+  const ndn::Name& serviceName,
+  const std::string& operationId);
+
 NativeProviderCollaborationRuntime
 makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config);
+
+void bindNativeProviderDurableKvPublisher(
+  NativeProviderCollaborationRuntime& runtime,
+  std::shared_ptr<ndn_service_framework::ServiceProvider> producer);
 
 } // namespace ndnsf::di
 

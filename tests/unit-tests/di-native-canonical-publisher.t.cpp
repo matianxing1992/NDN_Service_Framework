@@ -10,7 +10,12 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp"
+#include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
 
+#include <nac-abe/attribute-authority.hpp>
+#include <ndn-cxx/security/validator-null.hpp>
 #include <onnx/onnx_pb.h>
 #include <onnx/checker.h>
 
@@ -25,6 +30,7 @@
 #include <limits>
 #include <random>
 #include <utility>
+#include <exception>
 
 namespace ndnsf::di {
 class NativeCanonicalPublisherTestAccess
@@ -764,6 +770,45 @@ BOOST_AUTO_TEST_CASE(MaterialBackedPublicationOmitsWholeModelAndPreflightsUnionB
                     input.model.canonicalSourceDigest);
   BOOST_CHECK_EQUAL(root.at("metadata").at("canonicalSourceBytes").get<std::uint64_t>(),
                     input.model.canonicalSourceBytes);
+
+  std::vector<std::size_t> bundleIndexes;
+  for (std::size_t i = 0; i < io.labels.size(); ++i) {
+    if (io.labels[i].rfind("di-material-bundle-", 0) == 0)
+      bundleIndexes.push_back(i);
+  }
+  BOOST_REQUIRE_EQUAL(bundleIndexes.size(), 1U);
+  const auto receiptPosition = std::find(io.labels.begin(), io.labels.end(), "di-material-receipt");
+  BOOST_REQUIRE(receiptPosition != io.labels.end());
+  const auto receiptIndex = static_cast<std::size_t>(std::distance(io.labels.begin(), receiptPosition));
+  const auto materialReceiptBytes = io.payloads.at(receiptIndex);
+  const auto materialReceipt = NativeJson::parse(std::string(
+    materialReceiptBytes.begin(), materialReceiptBytes.end()));
+  BOOST_CHECK_EQUAL(receipt.materialReceiptDigest,
+    nativePlanningDigest(materialReceiptBytes.data(), materialReceiptBytes.size()));
+  const auto& objects = materialReceipt.at("materialObjects");
+  BOOST_REQUIRE_EQUAL(objects.size(), input.source->materialManifest->payloads.size());
+  BOOST_REQUIRE_GE(objects.size(), 2U);
+
+  const auto& bundle = io.payloads.at(bundleIndexes.front());
+  const auto dataName = objects.front().at("dataName").get<std::string>();
+  const auto bundleDigest = objects.front().at("bundleDigest").get<std::string>();
+  BOOST_CHECK_EQUAL(objects.front().at("bundleBytes").get<std::uint64_t>(), bundle.size());
+  BOOST_CHECK_EQUAL(bundleDigest, nativePlanningDigest(bundle.data(), bundle.size()));
+  std::uint64_t expectedOffset = 0;
+  for (std::size_t i = 0; i < objects.size(); ++i) {
+    const auto& object = objects.at(i);
+    BOOST_CHECK_EQUAL(object.at("dataName").get<std::string>(), dataName);
+    BOOST_CHECK_EQUAL(object.at("bundleDigest").get<std::string>(), bundleDigest);
+    BOOST_CHECK_EQUAL(object.at("bundleBytes").get<std::uint64_t>(), bundle.size());
+    BOOST_CHECK_EQUAL(object.at("bundleOffset").get<std::uint64_t>(), expectedOffset);
+    const auto payload = input.source->materialManifest->payloads.at(i).copyBytes();
+    BOOST_REQUIRE_EQUAL(object.at("bytes").get<std::uint64_t>(), payload.size());
+    BOOST_REQUIRE_LE(expectedOffset, bundle.size());
+    BOOST_REQUIRE_LE(payload.size(), bundle.size() - expectedOffset);
+    BOOST_CHECK(std::equal(payload.begin(), payload.end(), bundle.data() + expectedOffset));
+    expectedOffset += payload.size();
+  }
+  BOOST_CHECK_EQUAL(expectedOffset, bundle.size());
   BOOST_REQUIRE(!io.labels.empty());
   BOOST_CHECK_EQUAL(io.labels.back(), "di-canonical-root");
 }
@@ -818,7 +863,7 @@ BOOST_AUTO_TEST_CASE(ExternalInitializerUsesBoundedChunksAndReassemblesAfterSele
   const auto reference = std::find_if(manifest->references.begin(), manifest->references.end(),
     [] (const auto& item) { return item.kind == "shared-initializer"; });
   BOOST_REQUIRE(reference != manifest->references.end());
-  BOOST_REQUIRE_EQUAL(reference->chunkPayloadIds.size(), 4U);
+  BOOST_REQUIRE_EQUAL(reference->chunkPayloadIds.size(), 2U);
   BOOST_CHECK(reference->bytes < NativeCanonicalMaterialBundleMaxBytes);
   for (const auto& chunkId : reference->chunkPayloadIds) {
     const auto payload = std::find_if(manifest->payloads.begin(), manifest->payloads.end(),
@@ -887,7 +932,7 @@ BOOST_AUTO_TEST_CASE(InlineInitializerUsesBoundedChunksAndReassemblesAfterSelect
   const auto reference = std::find_if(manifest->references.begin(), manifest->references.end(),
     [] (const auto& item) { return item.kind == "shared-initializer"; });
   BOOST_REQUIRE(reference != manifest->references.end());
-  BOOST_REQUIRE_EQUAL(reference->chunkPayloadIds.size(), 4U);
+  BOOST_REQUIRE_EQUAL(reference->chunkPayloadIds.size(), 2U);
   BOOST_CHECK(reference->bytes < NativeCanonicalMaterialBundleMaxBytes);
   for (const auto& chunkId : reference->chunkPayloadIds) {
     const auto payload = std::find_if(manifest->payloads.begin(), manifest->payloads.end(),
@@ -969,6 +1014,16 @@ BOOST_AUTO_TEST_CASE(ModelIdentityBindsWeightOnlyQuantizationSubtype)
 
   auto decoded = NativeModelDescriptor::fromCanonicalJson(quantizedJson);
   BOOST_CHECK_EQUAL(decoded.quantizationSubtype, "weight_only_int8");
+  const auto weightOnlyDigest = model.modelDigest();
+  model.quantizationSubtype = "dynamic_int8";
+  const auto dynamicJson = model.canonicalJson();
+  BOOST_CHECK(dynamicJson != quantizedJson);
+  BOOST_CHECK(model.modelDigest() != weightOnlyDigest);
+  BOOST_CHECK(dynamicJson != legacyJson);
+  decoded = NativeModelDescriptor::fromCanonicalJson(dynamicJson);
+  BOOST_CHECK_EQUAL(decoded.quantizationSubtype, "dynamic_int8");
+  BOOST_CHECK_EQUAL(decoded.canonicalJson(), dynamicJson);
+  BOOST_CHECK_EQUAL(decoded.modelDigest(), model.modelDigest());
   model.quantizationSubtype = "unsupported";
   BOOST_CHECK_THROW(model.validate(), std::invalid_argument);
 }
@@ -1422,5 +1477,142 @@ BOOST_AUTO_TEST_CASE(UsesRealCoreIoAndEncryptedPublicationWithLocalMockKey)
   BOOST_CHECK(receiptName.getPrefix(-1) == expectedReceipt);
   BOOST_CHECK_EQUAL(receiptName.get(-1).type(), 8U);
   BOOST_CHECK_EQUAL(receiptName.get(-1).value_size(), 32U);
+}
+
+BOOST_AUTO_TEST_CASE(DurableCanonicalPublisherStoresOriginalAuxiliaryPackets)
+{
+  using namespace ndn_service_framework::test;
+  using namespace ndnsf_distributed_repo;
+  struct LocalRepo
+  {
+    std::filesystem::path root = std::filesystem::temp_directory_path() /
+      ("spec212-canonical-publisher-repo-" + std::to_string(::getpid()) + "-" +
+       std::to_string(Clock::now().time_since_epoch().count()));
+    std::shared_ptr<RepoCore> repo;
+    LocalRepo()
+    {
+      std::filesystem::create_directories(root);
+      std::filesystem::permissions(root, std::filesystem::perms::owner_all);
+      StorageCapability capability;
+      capability.repoNode = "/spec212/canonical-publisher-repo";
+      capability.freeBytes = 16U << 20;
+      repo = std::make_shared<RepoCore>(capability,
+        makeFilesystemRepoStore((root / "objects").string(), 1U << 20, 1U << 20));
+    }
+    ~LocalRepo()
+    {
+      repo.reset();
+      std::error_code error;
+      std::filesystem::remove_all(root, error);
+    }
+  } repoFixture;
+
+  Input input;
+  input.control.deadline = Clock::now() + std::chrono::seconds(30);
+  ndn::security::KeyChain keyChain{"pib-memory:", "tpm-memory:"};
+  ndn::DummyClientFace::Options faceOptions;
+  faceOptions.enableRegistrationReply = true;
+  ndn::DummyClientFace face{keyChain, faceOptions};
+  ndn::DummyClientFace authorityFace{keyChain, faceOptions};
+  const auto cert = makeRsaIdentity(keyChain, ndn::Name("/publisher-test/user"));
+  const auto aa = makeRsaIdentity(keyChain, ndn::Name("/publisher-test/aa"));
+  const ndn::Name aaPrefix("/publisher-test/aa");
+  auto authorityInterestBridge = face.onSendInterest.connect(
+    [&] (const ndn::Interest& interest) {
+      if (aaPrefix.isPrefixOf(interest.getName()))
+        authorityFace.receive(interest);
+    });
+  auto authorityDataBridge = authorityFace.onSendData.connect(
+    [&] (const ndn::Data& data) {
+      if (aaPrefix.isPrefixOf(data.getName()))
+        face.receive(data);
+    });
+  ndn::security::ValidatorNull authorityValidator;
+  ndn::nacabe::KpAttributeAuthority authority(aa, authorityFace, authorityValidator, keyChain);
+  authority.addNewPolicy(cert, "/SERVICE/service");
+  for (int round = 0; round < 4; ++round) {
+    authorityFace.processEvents(ndn::time::milliseconds(5));
+    authorityFace.getIoContext().restart();
+  }
+  auto user = std::make_shared<LocalServiceUser>(face, ndn::Name("/publisher-test"),
+    cert, aa, "examples/trust-any.conf");
+  user->useSigningKeyChainForTest(keyChain);
+  for (int round = 0; round < 4; ++round) {
+    face.processEvents(ndn::time::milliseconds(5));
+    face.getIoContext().restart();
+    authorityFace.processEvents(ndn::time::milliseconds(5));
+    authorityFace.getIoContext().restart();
+  }
+  user->setEncryptedLargeDataRangeStore(
+    std::make_shared<RepoEncryptedLargeDataStore>(repoFixture.repo));
+
+  NativeCanonicalArtifactPublisher publisher(user, "/service", input.options,
+                                               input.resolver());
+  const auto cancelled = std::make_shared<std::atomic<bool>>(false);
+  input.control.cancelled = [cancelled] { return cancelled->load(std::memory_order_acquire); };
+  auto pending = std::async(std::launch::async, [&] {
+    return publisher.prepare(input.model, input.control);
+  });
+  const auto pumpUntil = [&](Clock::time_point deadline) {
+    while (pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready &&
+           Clock::now() < deadline) {
+      face.getIoContext().restart();
+      face.getIoContext().poll();
+      authorityFace.getIoContext().restart();
+      authorityFace.getIoContext().poll();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return pending.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  };
+  if (!pumpUntil(Clock::now() + std::chrono::seconds(35))) {
+    cancelled->store(true, std::memory_order_release);
+    if (!pumpUntil(Clock::now() + std::chrono::seconds(5))) {
+      BOOST_TEST_MESSAGE("durable canonical publisher did not drain after cancellation; stopping selector safely");
+      std::terminate();
+    }
+    try {
+      (void)pending.get();
+    }
+    catch (const std::exception&) {
+    }
+    BOOST_FAIL("durable canonical publisher exceeded the bounded selector deadline");
+  }
+  const auto prepared = pending.get();
+  BOOST_REQUIRE(!prepared.durableStorageSources.empty());
+
+  const ndn::Name producer("/publisher-test/user");
+  ndn::Name keyWrapperPrefix(producer);
+  keyWrapperPrefix.append("NDNSF").append("KEY");
+  ndn::Name wrappedCkPrefix(producer);
+  wrappedCkPrefix.append("CK");
+  std::size_t wrappedContentPacketCount = 0;
+  std::size_t wrappedCkPacketCount = 0;
+  for (const auto& [manifestName, source] : prepared.durableStorageSources) {
+    BOOST_REQUIRE(source);
+    BOOST_CHECK(source->isDurable());
+    const auto names = source->auxiliaryDataPacketNames();
+    BOOST_REQUIRE(!names.empty());
+    for (const auto& name : names) {
+      BOOST_CHECK(producer.isPrefixOf(name));
+      const bool isWrappedContent = keyWrapperPrefix.isPrefixOf(name);
+      const bool isWrappedCk = wrappedCkPrefix.isPrefixOf(name);
+      BOOST_CHECK(isWrappedContent || isWrappedCk);
+      BOOST_CHECK(!(isWrappedContent && isWrappedCk));
+      wrappedContentPacketCount += isWrappedContent ? 1 : 0;
+      wrappedCkPacketCount += isWrappedCk ? 1 : 0;
+      const auto wire = source->readOriginalDataPacket(name);
+      BOOST_REQUIRE(!wire.empty());
+      const ndn::Data packet(ndn::Block(ndn::span<const std::uint8_t>(wire.data(), wire.size())));
+      BOOST_CHECK(packet.getName() == name);
+      const auto& encoded = packet.wireEncode();
+      BOOST_CHECK_EQUAL_COLLECTIONS(encoded.begin(), encoded.end(), wire.begin(), wire.end());
+    }
+    BOOST_CHECK(!source->readOriginalDataPacket(ndn::Name(manifestName)).empty());
+  }
+  BOOST_CHECK_GT(wrappedContentPacketCount, 0U);
+  BOOST_CHECK_GT(wrappedCkPacketCount, 0U);
+  const LargeDataPublishOptions defaultOptions;
+  BOOST_CHECK(defaultOptions.retention == EncryptedLargeDataRetention::Transient);
+  BOOST_CHECK(!defaultOptions.persistAuxiliaryPackets);
 }
 BOOST_AUTO_TEST_SUITE_END()

@@ -126,6 +126,27 @@
   Detailed skills supplement these self-contained rules; unavailable local
   Spec Kit entrypoints or evidence must be reported, not fabricated.
 
+## Goal interruption and checkpoint recovery
+
+- A transient model/service interruption does not cancel the user's objective.
+  After recovery, inspect the actual goal state and the latest durable task
+  checkpoint. If the goal is missing and the explicitly requested objective
+  remains authorized, restore that objective and continue from verified state.
+- Check goal state again before reporting recovery as successful. If a later
+  host interruption leaves it blocked, record the observed status and interruption
+  separately; do not claim it is active or invent a project blocker. Continue
+  authorized work when a turn is available. Use a supported client resume for
+  the goal loop if the exposed agent tools cannot resume it; do not clear or
+  replace an unfinished goal to bypass that limitation.
+- Record a build/test's terminal exit and first failure before diagnosing it or
+  starting the next phase. On resume, reconcile stale RUNNING records against
+  existing logs and artifacts; do not rerun completed work merely to recover state.
+- Keep host errors, build outcomes and test failures separate. Report the exact
+  observed stop reason; do not invent a cause for a missing goal record. Retry
+  safely with bounded backoff when a turn is active. A failure that ends the model
+  turn requires supported client-side retry/resume; agent rules cannot guarantee
+  recovery while no agent turn exists. Never claim an unverified automatic fallback.
+
 ## NDNSF-DI experiment storage
 
 - Reuse a stable disk workspace per purpose rather than creating a fresh
@@ -171,7 +192,10 @@
   unrestricted parallel build. Reading or editing source needs no build launcher.
 
 <!-- SPEC_KIT_PLAN_START -->
-Active implementation plan is at specs/201-producer-data-naming/plan.md.
+Active feature is Spec212 on `KVCache`; Spec204 execution is stopped. Follow scoped contracts and tasks.
+<!-- SPECKIT START -->
+Read the implementation plan at specs/212-kv-cache-continuation/plan.md.
+<!-- SPECKIT END -->
 <!-- SPEC_KIT_PLAN_END -->
 
 ## Git boundary for documentation and specs
