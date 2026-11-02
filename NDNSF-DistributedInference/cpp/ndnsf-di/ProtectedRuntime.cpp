@@ -1,7 +1,11 @@
-#include <ndn-cxx/name.hpp>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 
+#include <ndn-cxx/name.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 #include <algorithm>
 #include <cstdlib>
@@ -155,6 +159,23 @@ ProtectedRuntimeBindingV1::validate() const
                    })) {
     throw std::invalid_argument("protected runtime endpoint binding is invalid");
   }
+  if (compactDataflow) {
+    const auto& flow = *compactDataflow;
+    validateNativeRoleDataflowContractV3(flow);
+    if (!flow.endpointRange || flow.requestId != requestId || flow.attempt != attempt ||
+        flow.planDigest != planDigest || flow.role != role)
+      throw std::invalid_argument("protected compact dataflow request binding is invalid");
+    std::map<std::string, std::string> publishers;
+    std::map<std::string, std::string> fetchers;
+    for (const auto& endpoint : flow.mayPublish)
+      publishers.emplace(endpoint.endpointDigest, endpoint.consumerRole);
+    for (const auto& endpoint : flow.mustFetch) {
+      if (endpoint.sourceKind != "APPLICATION_INPUT" && endpoint.operation != "APPLICATION_INPUT")
+        fetchers.emplace(endpoint.endpointDigest, endpoint.producerRole);
+    }
+    if (publishers != mayPublishConsumerByEndpoint || fetchers != mustFetchProducerByEndpoint)
+      throw std::invalid_argument("protected compact dataflow endpoint binding is invalid");
+  }
 }
 
 bool
@@ -181,7 +202,9 @@ ProtectedRuntimeBindingV1::exactlyMatches(
          mayPublishEndpointDigests == other.mayPublishEndpointDigests &&
          mustFetchEndpointDigests == other.mustFetchEndpointDigests &&
          mayPublishConsumerByEndpoint == other.mayPublishConsumerByEndpoint &&
-         mustFetchProducerByEndpoint == other.mustFetchProducerByEndpoint;
+         mustFetchProducerByEndpoint == other.mustFetchProducerByEndpoint &&
+         compactDataflow.has_value() == other.compactDataflow.has_value() &&
+         (!compactDataflow || compactDataflow->dataflowDigest == other.compactDataflow->dataflowDigest);
 }
 
 ProtectedRuntime::ProtectedRuntime(ProtectedRuntimeBindingV1 expectedBinding,
@@ -213,9 +236,21 @@ ProtectedRuntime::~ProtectedRuntime()
 
 void
 ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
-                              std::uint64_t nowMs)
+                              std::uint64_t nowMs,
+                              const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  NativeWorkScope lockWait(statistics, "protected-grant-lock", NativeWorkKind::WAIT);
   std::lock_guard<std::mutex> lock(m_mutex);
+  lockWait.finish();
+  NativeWorkScope grantWork(statistics, "protected-grant-admission", NativeWorkKind::LOCAL);
+  const auto cancelled = [&] (const NativeProtectedGrantConfig& config) {
+    NativeWorkScope callbackWork(statistics, "protected-cancel-check", NativeWorkKind::UNCLASSIFIED);
+    return config.shouldCancel && config.shouldCancel();
+  };
+  const auto recordVerification = [&] (const char* status, const std::string& reason) {
+    NativeWorkScope auditWork(statistics, "protected-grant-audit", NativeWorkKind::UNCLASSIFIED);
+    recordGrantVerification(m_binding, status, reason);
+  };
   try {
     const auto started = std::chrono::steady_clock::now();
     if (!m_grantConfig || !m_grantConfig->fetchGrant ||
@@ -229,7 +264,7 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
       throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: sealed binding mismatch or expiry");
     }
     const auto& config = *m_grantConfig;
-    if (config.shouldCancel && config.shouldCancel()) {
+    if (cancelled(config)) {
       throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: grant acquisition cancelled");
     }
     const auto grantRequestId = m_binding.grantRequestId.empty()
@@ -247,15 +282,27 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
           config.modelManifestDigest, m_binding.protectionEpoch, m_binding.grantDigest))) {
       throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: canonical grant name mismatch");
     }
-    auto result = verifyAndUnwrapNativeGrant(
-      config.fetchGrant(m_binding.grantName), config.authorityPublicKeyRaw,
-      config.recipientKey, m_binding.provider, grantRequestId, grantAttempt,
-      grantPlanCoreDigest, config.modelManifestDigest, m_binding.protectionEpoch,
-      nowMs, config.authorityIdentity, m_binding.grantDigest);
+    auto result = [&] {
+      auto wire = [&] {
+        NativeWorkScope fetchWork(statistics, "protected-grant-fetch", NativeWorkKind::WAIT);
+        auto wire = config.fetchGrant(m_binding.grantName);
+        fetchWork.finish();
+        if (statistics) {
+          statistics->addCount("grant.returnedRepresentationBytes", wire.size());
+          statistics->addCount("grant.successfulFetchReturns", 1);
+        }
+        return wire;
+      }();
+      NativeWorkScope verifyWork(statistics, "protected-grant-unwrap", NativeWorkKind::LOCAL);
+      return verifyAndUnwrapNativeGrant(
+        wire, config.authorityPublicKeyRaw, config.recipientKey, m_binding.provider,
+        grantRequestId, grantAttempt, grantPlanCoreDigest, config.modelManifestDigest,
+        m_binding.protectionEpoch, nowMs, config.authorityIdentity, m_binding.grantDigest);
+    }();
     // Transfer the allocation before any later exception can release it unwiped.
     m_contentKey = std::move(result.contentKey);
     if (!result.verified || m_contentKey.size() != 32) {
-      recordGrantVerification(m_binding, "REJECTED", result.reason);
+      recordVerification("REJECTED", result.reason);
       throw std::runtime_error(result.reason.empty()
         ? "DI_PROTECTED_GRANT_REJECTED: invalid content key" : result.reason);
     }
@@ -276,11 +323,13 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
       std::chrono::steady_clock::now() - started).count();
     if (nowMs >= m_grantExpiresAtMs ||
         static_cast<std::uint64_t>(elapsed) >= m_grantExpiresAtMs - nowMs ||
-        (config.shouldCancel && config.shouldCancel())) {
+        cancelled(config)) {
       throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: grant acquisition expired or cancelled");
     }
     m_state = ProtectedRuntimeState::GrantVerified;
-    recordGrantVerification(m_binding, "VERIFIED", "");
+    recordVerification("VERIFIED", "");
+    NativeWorkScope diagnosticWork(statistics, "protected-grant-diagnostic",
+                                   NativeWorkKind::UNCLASSIFIED);
     std::ostringstream verified;
     verified << "NDNSF_DI_GRANT_VERIFIED"
              << " requestId=" << m_binding.requestId
@@ -290,6 +339,7 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
     logRuntimeEvidence(verified.str());
   }
   catch (const std::exception& error) {
+    NativeWorkScope cleanupWork(statistics, "protected-grant-failure", NativeWorkKind::UNCLASSIFIED);
     m_terminalReason = error.what();
     try { drainLocked(); } catch (...) {}
     m_state = ProtectedRuntimeState::FailedClosed;
@@ -309,6 +359,11 @@ ProtectedRuntime::withContentKey(
     m_grantConfig && m_grantConfig->shouldCancel;
   const bool cancelled = checkCancellation && m_grantConfig->shouldCancel();
   if (!authorized || expired || !consume || cancelled) {
+    if (!authorized && m_state == ProtectedRuntimeState::FailedClosed && !m_terminalReason.empty()) {
+      const auto firstFailure = m_terminalReason;
+      try { drainLocked(); } catch (...) {}
+      throw std::runtime_error(firstFailure);
+    }
     const auto* reason = !authorized ? "UNAUTHORIZED_STATE" :
                          expired ? "GRANT_EXPIRED" :
                          !consume ? "MISSING_CONSUMER" : "REQUEST_CANCELLED";
@@ -381,9 +436,18 @@ ProtectedRuntime::authorizeDataflow(ProtectedDataflowDirection direction,
                                     const std::string& endpointDigest,
                                     const std::string& producerRole,
                                     const std::string& consumerRole,
-                                    std::uint64_t nowMs)
+                                    std::uint64_t nowMs,
+                                    std::optional<std::uint64_t> round,
+                                    const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  NativeWorkScope lockWait(statistics, "protected-dataflow-lock", NativeWorkKind::WAIT);
   std::lock_guard<std::mutex> lock(m_mutex);
+  lockWait.finish();
+  NativeWorkScope admissionWork(statistics, "protected-dataflow-admission", NativeWorkKind::LOCAL);
+  const auto cancelled = [&] {
+    NativeWorkScope callbackWork(statistics, "protected-cancel-check", NativeWorkKind::UNCLASSIFIED);
+    return m_grantConfig && m_grantConfig->shouldCancel && m_grantConfig->shouldCancel();
+  };
   const auto& allowed = direction == ProtectedDataflowDirection::Publish
     ? m_binding.mayPublishEndpointDigests
     : m_binding.mustFetchEndpointDigests;
@@ -398,10 +462,34 @@ ProtectedRuntime::authorizeDataflow(ProtectedDataflowDirection direction,
     (direction == ProtectedDataflowDirection::Publish
        ? peer->second == consumerRole
        : peer->second == producerRole);
+  bool endpointMatches = allowed.count(endpointDigest) == 1 && peerMatches;
+  if (m_binding.compactDataflow) {
+    endpointMatches = false;
+    const auto& flow = *m_binding.compactDataflow;
+    const auto& range = *flow.endpointRange;
+    const auto& bases = direction == ProtectedDataflowDirection::Publish
+      ? flow.mayPublish : flow.mustFetch;
+    if (round) {
+      for (const auto& base : bases) {
+        if (base.sourceKind != "ROLE" || base.producerRole != producerRole ||
+            base.consumerRole != consumerRole || *round < base.round ||
+            (*round - base.round) % range.operationStride != 0)
+          continue;
+        const auto sequence = (*round - base.round) / range.operationStride;
+        if (sequence < range.epochCount &&
+            NativePlanProjectionBuilder::deriveGenerationEndpoint(base, range, sequence)
+              .endpointDigest == endpointDigest) {
+          endpointMatches = true;
+          break;
+        }
+      }
+    }
+  }
   if (!authorizedStateLocked() || nowMs >= m_grantExpiresAtMs ||
-      (m_grantConfig && m_grantConfig->shouldCancel && m_grantConfig->shouldCancel()) ||
-      !isDigest(endpointDigest) || allowed.count(endpointDigest) != 1 ||
-      !ownsRole || !peerMatches || producerRole.empty() || consumerRole.empty()) {
+      cancelled() ||
+      !isDigest(endpointDigest) || !endpointMatches ||
+      !ownsRole || producerRole.empty() || consumerRole.empty()) {
+    NativeWorkScope cleanupWork(statistics, "protected-dataflow-failure", NativeWorkKind::UNCLASSIFIED);
     if (std::getenv("NDNSF_DI_PROTECTED_DATAFLOW_DIAGNOSTIC") != nullptr) {
       std::ostringstream record;
       record << "NDNSF_DI_PROTECTED_DATAFLOW_REJECT"
@@ -414,6 +502,7 @@ ProtectedRuntime::authorizeDataflow(ProtectedDataflowDirection direction,
              << " authorized=" << (authorizedStateLocked() ? 1 : 0)
              << " expired=" << (nowMs >= m_grantExpiresAtMs ? 1 : 0)
              << " allowed=" << (allowed.count(endpointDigest) == 1 ? 1 : 0)
+             << " endpoint_matches=" << (endpointMatches ? 1 : 0)
              << " owns_role=" << (ownsRole ? 1 : 0)
              << " peer_matches=" << (peerMatches ? 1 : 0)
              << " peer_present=" << (peer != peers.end() ? 1 : 0);
@@ -564,6 +653,11 @@ ProtectedResidentIdentityV1::validate() const
           "protected.resident.securityPolicySnapshotDigest");
   require(grantDigest, "protected.resident.grantDigest");
   require(fencingToken, "protected.resident.fencingToken");
+  if (!assembledFileSetDigest.empty() &&
+      (assembledFileSetDigest.size() != 71 || assembledFileSetDigest.substr(0, 7) != "sha256:" ||
+       !std::all_of(assembledFileSetDigest.begin() + 7, assembledFileSetDigest.end(),
+         [] (unsigned char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); })))
+    throw std::invalid_argument("protected resident file-set digest is invalid");
   if (protectionEpoch == "plaintext-v1" || revocationSequence == 0) {
     throw std::invalid_argument("protected resident identity is not protected");
   }
@@ -595,6 +689,7 @@ ProtectedResidentIdentityV1::canonical() const
   frame(grantDigest);
   frame(fencingToken);
   frame(std::to_string(revocationSequence));
+  if (!assembledFileSetDigest.empty()) frame(assembledFileSetDigest);
   return result.str();
 }
 
@@ -633,6 +728,7 @@ ProtectedResidentIdentityV1::cacheKey() const
   frame(cacheScopeKey());
   frame(securityPolicySnapshotDigest);
   frame(std::to_string(revocationSequence));
+  if (!assembledFileSetDigest.empty()) frame(assembledFileSetDigest);
   return result.str();
 }
 

@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/runtime-logging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/statistics-file.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
@@ -27,12 +28,15 @@
 #include <map>
 #include <new>
 #include <cmath>
+#include <cstdlib>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
+#include <unistd.h>
 
 namespace {
 
@@ -42,6 +46,12 @@ bool
 diagnosticOutputEnabled()
 {
   return ndn_cxx_getLogger().isLevelEnabled(ndn::util::LogLevel::WARN);
+}
+
+void
+logSpec220PreparationStage(const char* stage)
+{
+  NDN_LOG_DEBUG(std::string("SPEC220_PREP_STAGE requester.") + stage);
 }
 
 using namespace ndnsf::di;
@@ -380,6 +390,7 @@ struct TurnSpec
   std::filesystem::path options;
   std::filesystem::path output;
   std::optional<std::filesystem::path> checkpoint;
+  std::optional<std::string> conversationId;
 };
 
 std::vector<TurnSpec>
@@ -392,7 +403,7 @@ readTurnSpecs(const ptree& config, const std::filesystem::path& base,
     if (!legacyInput || !legacyOutput)
       throw std::invalid_argument(
         "requester turns are absent; provide --input and --output for a single turn");
-    return {{*legacyInput, {}, *legacyOutput, std::nullopt}};
+    return {{*legacyInput, {}, *legacyOutput, std::nullopt, std::nullopt}};
   }
 
   std::vector<TurnSpec> result;
@@ -408,13 +419,108 @@ readTurnSpecs(const ptree& config, const std::filesystem::path& base,
         "each turns entry requires input_file, options_file, and output_file");
     const auto checkpoint = item.second.get_optional<std::string>(
       "checkpoint_output_file");
+    const auto conversationId = item.second.get_optional<std::string>("conversation_id");
+    if (checkpoint && checkpoint->empty())
+      throw std::invalid_argument("turn checkpoint_output_file must not be empty");
+    if (conversationId && conversationId->empty())
+      throw std::invalid_argument("turn conversation_id must not be empty");
+    // Reject malformed explicit IDs before preparing the model. Conversation
+    // remains responsible for admitting the ID when the conversation opens.
+    if (conversationId && (conversationId->size() < 16 ||
+                           conversationId->find_first_of("/\\") != std::string::npos))
+      throw std::invalid_argument(
+        "turn conversation_id must contain at least 16 characters and no slash");
     result.push_back({relativeTo(base, *input), relativeTo(base, *options),
                       relativeTo(base, *output), checkpoint
                         ? std::optional<std::filesystem::path>(relativeTo(base, *checkpoint))
-                        : std::nullopt});
+                        : std::nullopt,
+                      conversationId ? std::optional<std::string>(*conversationId)
+                                     : std::nullopt});
   }
   if (result.empty())
     throw std::invalid_argument("turns must contain at least one entry");
+
+  const bool grouped = result.front().conversationId.has_value();
+  for (const auto& turn : result) {
+    if (turn.conversationId.has_value() != grouped)
+      throw std::invalid_argument("turn conversation_id must be present on every turn or none");
+  }
+  if (grouped) {
+    if (result.size() > 10 || result.size() % 2 != 0)
+      throw std::invalid_argument(
+        "independent conversation groups require two turns each and at most five groups");
+    std::set<std::string> conversationIds;
+    std::vector<std::filesystem::path> readOnlyPaths;
+    std::vector<std::filesystem::path> outputPaths;
+    const auto canonicalPath = [] (const std::filesystem::path& path) {
+      std::error_code error;
+      auto canonical = std::filesystem::weakly_canonical(
+        std::filesystem::absolute(path), error);
+      if (error)
+        throw std::invalid_argument("independent conversation path cannot be resolved");
+      return canonical;
+    };
+    const auto refersToSameFile = [&] (const std::filesystem::path& first,
+                                       const std::filesystem::path& second) {
+      if (canonicalPath(first) == canonicalPath(second))
+        return true;
+      std::error_code error;
+      const bool firstExists = std::filesystem::exists(first, error);
+      if (error)
+        throw std::invalid_argument("independent conversation path cannot be inspected");
+      const bool secondExists = std::filesystem::exists(second, error);
+      if (error)
+        throw std::invalid_argument("independent conversation path cannot be inspected");
+      if (!firstExists || !secondExists)
+        return false;
+      const bool equivalent = std::filesystem::equivalent(first, second, error);
+      if (error)
+        throw std::invalid_argument("independent conversation path cannot be compared");
+      return equivalent;
+    };
+    for (std::size_t index = 0; index < result.size(); index += 2) {
+      const auto& first = result[index];
+      const auto& second = result[index + 1];
+      const auto& conversationId = *first.conversationId;
+      if (*second.conversationId != conversationId ||
+          !conversationIds.insert(conversationId).second)
+        throw std::invalid_argument(
+          "each independent conversation_id must name exactly two adjacent turns");
+      for (const auto* turn : {&first, &second}) {
+        if (!turn->checkpoint)
+          throw std::invalid_argument(
+            "independent conversation turns require checkpoint_output_file");
+        readOnlyPaths.push_back(turn->input);
+        readOnlyPaths.push_back(turn->options);
+      }
+    }
+    if (const auto statisticsFile = config.get_optional<std::string>("statistics_file")) {
+      if (statisticsFile->empty())
+        throw std::invalid_argument("statistics_file must not be empty");
+      const auto path = relativeTo(base, *statisticsFile);
+      for (const auto& source : readOnlyPaths) {
+        if (refersToSameFile(path, source))
+          throw std::invalid_argument(
+            "statistics_file cannot overwrite turn input or options");
+      }
+      outputPaths.push_back(path);
+    }
+    for (const auto& turn : result) {
+      for (const auto& destination : {turn.output, *turn.checkpoint}) {
+        for (const auto& source : readOnlyPaths) {
+          if (refersToSameFile(destination, source))
+            throw std::invalid_argument(
+              "independent conversation output cannot overwrite input, options, or statistics");
+        }
+        for (const auto& previous : outputPaths) {
+          if (refersToSameFile(destination, previous))
+            throw std::invalid_argument(
+              "independent conversation output and checkpoint paths must be unique");
+        }
+        outputPaths.push_back(destination);
+      }
+    }
+  }
   return result;
 }
 
@@ -453,7 +559,7 @@ public:
                                     "native Repo source deadline expired");
     };
     const auto loadFile = [&] (const char* fileField, const char* digestField,
-                              const char* label) {
+                              const char* label, const auto& consume) {
       checkDeadline();
       const auto path = (m_base / source.at(fileField).get<std::string>()).lexically_normal();
       const auto digest = source.at(digestField).get<std::string>();
@@ -494,26 +600,49 @@ public:
           throw std::runtime_error("native Repo source publication has no receipt");
       }
       checkDeadline();
-      const auto output = m_root / "materialized" / digest.substr(7);
-      std::filesystem::create_directories(output.parent_path());
-      struct RemoveMaterializedFile {
-        std::filesystem::path path;
-        ~RemoveMaterializedFile() { std::error_code error; std::filesystem::remove(path, error); }
-      } cleanup{output};
+      const auto directory = m_root / "materialized";
+      std::filesystem::create_directories(directory);
+      const auto pattern = (directory / (digest.substr(7) + "-XXXXXX")).string();
+      std::vector<char> outputPattern(pattern.begin(), pattern.end());
+      outputPattern.push_back('\0');
+      int temporaryFd = -1;
+      bool created = false;
+      BOOST_SCOPE_EXIT_ALL(&) {
+        if (temporaryFd >= 0) ::close(temporaryFd);
+        if (created) ::unlink(outputPattern.data());
+      };
+      temporaryFd = ::mkstemp(outputPattern.data());
+      if (temporaryFd < 0)
+        throw std::runtime_error("native Repo source materialization could not be reserved");
+      created = true;
+      const auto closeStatus = ::close(temporaryFd);
+      temporaryFd = -1;
+      if (closeStatus != 0)
+        throw std::runtime_error("native Repo source materialization reservation could not close");
+      const std::filesystem::path output(outputPattern.data());
       m_api.fetchFileUntil(reference, output.string(), request.deadline);
-      auto bytes = readBytes(output, request.maxSourceBytes, request.deadline);
-      if (bytes.size() != size || nativePlanningDigest(bytes.data(), bytes.size()) != digest)
-        throw std::runtime_error("native Repo source fetch failed content verification");
+      checkDeadline();
+      auto value = consume(output, size, digest);
       checkDeadline();
       if (diagnosticOutputEnabled())
         std::cout << "NATIVE_REPO_SOURCE_API label=" << label << " bytes=" << size
                   << " deduplicated=" << existing.has_value() << std::endl;
-      return bytes;
+      return value;
     };
     NativeCanonicalSource result;
-    result.modelBytes = loadFile("file", "digest", "source");
+    result.modelBytes = loadFile("file", "digest", "source",
+      [&] (const auto& path, std::uint64_t size, const std::string& expected) {
+        auto bytes = readBytes(path, request.maxSourceBytes, request.deadline);
+        if (bytes.size() != size || nativePlanningDigest(bytes.data(), bytes.size()) != expected)
+          throw std::runtime_error("native Repo source fetch failed content verification");
+        return bytes;
+      });
     if (source.contains("initializer_file"))
-      result.initializerBytes = loadFile("initializer_file", "initializer_digest", "initializer");
+      result.initializerRangeSource = loadFile("initializer_file", "initializer_digest", "initializer",
+        [&] (const auto& path, std::uint64_t size, const std::string& expected) {
+          return openNativeCanonicalInitializerFile(path.string(), size, expected,
+            {request.deadline, checkDeadline, request.maxSourceBytes, request.maxSourceBytes});
+        });
     return result;
   }
   catch (const std::exception&) {
@@ -563,19 +692,35 @@ run(int argc, char** argv)
   if (config.get<std::string>("schema", {}) != "ndnsf-di-native-requester-v1")
     throw std::invalid_argument("unsupported requester configuration schema");
   const auto& request = config.get_child("request");
-  std::shared_ptr<ndnsf::di::detail::StatisticsFile> statisticsOutput;
-  if (const auto path = config.get_optional<std::string>("statistics_file"))
-    statisticsOutput = std::make_shared<ndnsf::di::detail::StatisticsFile>(
-      relativeTo(base, *path).string());
-  bool statisticsWriteFailed = false;
   const auto turns = readTurnSpecs(
     config, base,
     legacyArgs ? std::optional<std::filesystem::path>(
       std::filesystem::absolute(argv[4]).lexically_normal()) : std::nullopt,
     legacyArgs ? std::optional<std::filesystem::path>(
       std::filesystem::absolute(argv[6]).lexically_normal()) : std::nullopt);
+  const bool groupedTurns = turns.front().conversationId.has_value();
   if (turns.size() > 1 && !config.get_child_optional("conversation"))
     throw std::invalid_argument("NATIVE_TURNS_REQUIRES_CONVERSATION");
+  if (groupedTurns) {
+    const auto conversationConfig = config.get_child_optional("conversation");
+    if (!conversationConfig)
+      throw std::invalid_argument("independent conversation turns require conversation options");
+    const auto turn = conversationConfig->get_child_optional("turn");
+    if (!turn || turn->get<std::string>("mode", {}) != "FULL_CONTEXT" ||
+        turn->get_optional<std::string>("parent_state_file") ||
+        turn->get_optional<std::string>("parent_checkpoint_digest") ||
+        turn->get_optional<std::string>("conversation_id"))
+      throw std::invalid_argument(
+        "independent conversation turns require per-turn IDs, explicit FULL_CONTEXT, and no parent checkpoint");
+    if (conversationConfig->get_optional<std::string>("checkpoint_output_file"))
+      throw std::invalid_argument(
+        "independent conversation turns require per-turn checkpoint_output_file values");
+  }
+  std::shared_ptr<ndnsf::di::detail::StatisticsFile> statisticsOutput;
+  if (const auto path = config.get_optional<std::string>("statistics_file"))
+    statisticsOutput = std::make_shared<ndnsf::di::detail::StatisticsFile>(
+      relativeTo(base, *path).string());
+  bool statisticsWriteFailed = false;
 
   RuntimeConfig runtimeConfig;
   runtimeConfig.nativeConfigPath = configPath.string();
@@ -680,7 +825,9 @@ run(int argc, char** argv)
   }
   PrepareOptions prepareOptions;
   prepareOptions.timeout = runtimeConfig.preparationJobTimeout;
+  logSpec220PreparationStage("runtime-open.begin");
   auto runtime = Runtime::open(std::move(runtimeConfig));
+  logSpec220PreparationStage("runtime-open.complete");
   std::shared_ptr<const PlacementStrategy> requestPlacementStrategy;
   if (!requestPlacementStrategyId.empty()) {
     requestPlacementStrategy = runtime->placementStrategy(requestPlacementStrategyId);
@@ -689,7 +836,9 @@ run(int argc, char** argv)
               << requestPlacementStrategyId << std::endl;
   }
   auto user = runtime->user();
+  logSpec220PreparationStage("user-prepare.begin");
   const auto prepared = user.prepare("default", prepareOptions);
+  logSpec220PreparationStage("user-prepare.complete");
 
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(
@@ -760,7 +909,9 @@ run(int argc, char** argv)
     std::cout << "NATIVE_REQUEST_ROUTE=Runtime.open->User.prepare->User.request\n";
 
   std::optional<Conversation> conversation;
-  if (const auto conversationConfig = config.get_child_optional("conversation")) {
+  std::optional<std::string> activeConversationId;
+  if (const auto conversationConfig = config.get_child_optional("conversation");
+      !groupedTurns && conversationConfig) {
     ConversationOptions conversationOptions;
     const auto turn = conversationConfig->get_child_optional("turn");
     const bool hasParent = turn && turn->get_optional<std::string>("parent_state_file").has_value();
@@ -796,19 +947,39 @@ run(int argc, char** argv)
     }
     if (checkpoint)
       conversationOptions.checkpoint = ConversationCheckpoint::fromBytes(*checkpoint);
+    logSpec220PreparationStage("conversation-open.begin");
     conversation.emplace(user.openConversation(prepared, conversationOptions));
+    logSpec220PreparationStage("conversation-open.complete");
   }
 
   std::vector<std::int64_t> streamExpected;
   if (const auto oracle = config.get_child_optional("stream_oracle"))
     streamExpected = integerArray(*oracle, "token_ids");
   for (std::size_t turnIndex = 0; turnIndex < turns.size(); ++turnIndex) {
+    const auto& turn = turns[turnIndex];
+    if (groupedTurns && (!activeConversationId ||
+                         *activeConversationId != *turn.conversationId)) {
+      if (conversation) {
+        conversation->close();
+        conversation.reset();
+      }
+      ConversationOptions conversationOptions;
+      conversationOptions.conversationId = *turn.conversationId;
+      logSpec220PreparationStage("conversation-open.begin");
+      conversation.emplace(user.openConversation(prepared, conversationOptions));
+      activeConversationId = *turn.conversationId;
+      logSpec220PreparationStage("conversation-open.complete");
+    }
     Result result;
     std::string statisticsRequestId;
     bool statisticsCompleted = false;
     std::size_t observedEvents = 0;
     bool terminalSeen = false;
     bool checkpointWritten = false;
+    options.workStatistics = statisticsOutput
+      ? makeNativeWorkStatistics() : nullptr;
+    std::int64_t requestSubmittedSteadyNs = 0;
+    std::int64_t requestSubmittedCpuNs = -1;
     const auto statisticsStartedCpu = statisticsOutput
       ? ndnsf::di::detail::nativeProcessCpuTimeNs() : -1;
     const auto statisticsStarted = statisticsOutput
@@ -820,6 +991,7 @@ run(int argc, char** argv)
           const auto finished = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
           const auto finishedCpu = ndnsf::di::detail::nativeProcessCpuTimeNs();
+          const auto clockDomain = nativeWorkClockDomain();
           statisticsOutput->write(NativeJson{
             {"schema", "ndnsf-di-native-requester-statistics-v1"}, {"type", "request"},
             {"turn", turnIndex}, {"requestId", statisticsRequestId},
@@ -827,6 +999,16 @@ run(int argc, char** argv)
             {"streaming", streaming}, {"observedEvents", observedEvents},
             {"terminalSeen", terminalSeen}, {"checkpointWritten", checkpointWritten},
             {"startedSteadyNs", statisticsStarted}, {"finishedSteadyNs", finished},
+            {"requestSubmittedSteadyNs", requestSubmittedSteadyNs == 0
+              ? NativeJson(nullptr) : NativeJson(requestSubmittedSteadyNs)},
+            {"requestSubmittedProcessCpuNs", requestSubmittedCpuNs < 0
+              ? NativeJson(nullptr) : NativeJson(requestSubmittedCpuNs)},
+            {"startedBoundary", "before-input-and-options-read"},
+            {"submittedBoundary", "before-native-request-call"},
+            {"clockDomain", clockDomain ? NativeJson(*clockDomain) : NativeJson(nullptr)},
+            {"workStatistics", options.workStatistics
+              ? nativeParseJson(nativeWorkStatisticsToJson(options.workStatistics->snapshot()))
+              : NativeJson(nullptr)},
             {"startedProcessCpuNs", statisticsStartedCpu < 0
               ? NativeJson(nullptr) : NativeJson(statisticsStartedCpu)},
             {"finishedProcessCpuNs", finishedCpu < 0
@@ -837,10 +1019,18 @@ run(int argc, char** argv)
         }
       }
     };
-    const auto& turn = turns[turnIndex];
     const auto payload = readBytes(turn.input, MAX_NATIVE_INPUT_BYTES);
     const auto optionsBytes = turn.options.empty()
       ? readOptions(request, base) : readBytes(turn.options, 4 * 1024 * 1024);
+    if (options.workStatistics) {
+      options.workStatistics->addCount("request.inputPlaintextBytes", payload.size());
+      options.workStatistics->addCount("request.optionsPlaintextBytes", optionsBytes.size());
+    }
+    if (statisticsOutput) {
+      requestSubmittedCpuNs = ndnsf::di::detail::nativeProcessCpuTimeNs();
+      requestSubmittedSteadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
     RequestHandle handle = conversation
       ? conversation->request(Input::inlineBytes(payload, optionsBytes), options)
       : user.request(prepared, Input::inlineBytes(payload, optionsBytes), options);
@@ -1004,6 +1194,10 @@ run(int argc, char** argv)
   }
   if (turns.size() > 1 && diagnosticOutputEnabled())
     std::cout << "NATIVE_CONVERSATION_TURNS_SUCCEEDED count=" << turns.size() << '\n';
+  if (groupedTurns && conversation) {
+    conversation->close();
+    conversation.reset();
+  }
   runtime->close();
   (void)runtime->drain(std::chrono::seconds(5));
   if (statisticsWriteFailed)

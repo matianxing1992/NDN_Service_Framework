@@ -361,16 +361,37 @@ def test_candidate_digest_is_canonical_and_changes_with_inputs():
     assert first.startswith("sha256:")
 
 
-def test_model_identity_normalizes_int8_without_hiding_activation_contract():
+@pytest.mark.parametrize("subtype", ["dynamic_int8", "weight_only_int8"])
+def test_model_identity_preserves_explicit_int8_representation(subtype):
     module = load_module()
     identity = module.normalized_model_identity({
         "modelFamily": "qwen", "model": "Qwen/Qwen3-0.6B",
         "dtype": "float32", "modelFormat": "onnx", "quantization": "INT8",
+        "quantizationSubtype": subtype,
     })
     assert identity["quantization"] == "int8"
-    assert identity["quantizationSubtype"] == "weight_only_int8"
+    assert identity["quantizationSubtype"] == subtype
     assert identity["dtype"] == "float32"
     assert identity["modelFormat"] == "onnx"
+
+
+@pytest.mark.parametrize("entry", ["local", "native"])
+def test_ambiguous_int8_manifest_is_rejected(entry):
+    module = load_module() if entry == "local" else load_native_module()
+    normalize = (module.normalized_model_identity if entry == "local" else
+                 module.manifest_quantization_subtype)
+    with pytest.raises(ValueError, match="MODEL_INT8_SUBTYPE_REQUIRED"):
+        normalize({"quantization": "int8"})
+
+
+@pytest.mark.parametrize("subtype", ["none", "dynamic_int8", "weight_only_int8",
+                                    "weight_only_int4"])
+def test_manifest_quantization_accepts_explicit_native_representation(subtype):
+    module = load_native_module()
+    assert module.manifest_quantization_subtype({"quantization": subtype}) == subtype
+    with pytest.raises(ValueError, match="MODEL_QUANTIZATION_SUBTYPE_MISMATCH"):
+        module.manifest_quantization_subtype({"quantization": subtype,
+                                              "quantizationSubtype": "unsupported"})
 
 
 def test_conversation_journal_quota_matches_native_limit():

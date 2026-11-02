@@ -608,6 +608,17 @@ FilesystemRepoStoreBackend::usedBytes() const
   return total;
 }
 
+bool
+FilesystemRepoStoreBackend::hasCommittedPayload(
+  const RepoObjectManifest& manifest) const
+{
+  if (isMetadataOnly(manifest) || manifest.size == 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return m_payloadStore.inspectCommitted(artifactReference(manifest)).exists;
+}
+
 void
 FilesystemRepoStoreBackend::putRange(const RepoObjectManifest& manifest,
                                       RepoByteRange range,

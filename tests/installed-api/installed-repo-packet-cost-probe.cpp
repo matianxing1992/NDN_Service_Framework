@@ -72,6 +72,8 @@ public:
   { return call("size", [&] { return m_store->size(); }); }
   uint64_t usedBytes() const override
   { return call("usedBytes", [&] { return m_store->usedBytes(); }); }
+  bool hasCommittedPayload(const RepoObjectManifest& m) const override
+  { return call("hasCommittedPayload", [&] { return m_store->hasCommittedPayload(m); }); }
   std::vector<RepoObjectManifest> listManifests() const override
   { return call("listManifests", [&] { return m_store->listManifests(); }); }
   void putRange(const RepoObjectManifest& m, RepoByteRange r,

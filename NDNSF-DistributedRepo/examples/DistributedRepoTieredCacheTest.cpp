@@ -110,6 +110,11 @@ public:
     return m_delegate->usedBytes();
   }
 
+  bool hasCommittedPayload(const RepoObjectManifest& manifest) const override
+  {
+    return m_delegate->hasCommittedPayload(manifest);
+  }
+
   void setRejectWrites(bool reject)
   {
     m_rejectWrites = reject;

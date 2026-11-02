@@ -31,6 +31,7 @@
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
 #include "ndnsf-integration-fixture.hpp"
+#include "isolated-test-trust.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
@@ -712,22 +713,10 @@ public:
             std::to_string(++sequence)))
   {
     std::filesystem::create_directories(root);
-    write("trust.conf",
-      "; Spec185 prepared request fixture\n"
-      "rule\n"
-      "{\n"
-      "  id \"Testbed Validation Rule\"\n"
-      "  for data\n"
-      "  checker\n"
-      "  {\n"
-      "    type hierarchical\n"
-      "    sig-type rsa-sha256\n"
-      "  }\n"
-      "}\n"
-      "trust-anchor\n"
-      "{\n"
-      "  type any\n"
-      "}\n");
+    testTrust = std::make_unique<ndn_service_framework::test::IsolatedTestTrust>();
+    ndn::KeyChain trustKeyChain{"pib-memory:", "tpm-memory:"};
+    testTrust->createTestIdentityCertificate(trustKeyChain,
+                                              ndn::Name("/spec185/runtime-trust"));
     writeEd25519KeyPair(root / "requester.pem", root / "requester-public.pem");
     writeEd25519KeyPair(root / "authority.pem", root / "authority-public.pem");
     writeEd25519KeyPair(root / "offer.pem", root / "offer-public.pem");
@@ -795,6 +784,8 @@ public:
           {"layer_ranges", NativeJson::array({NativeJson::array({0, 2})})},
           {"artifact_digests_by_role", {{role, nativePlanningDigest("spec185-qwen-artifact")}}},
           {"weight_bytes_by_role", {{role, 1}}}, {"roles", {role}},
+          {"resources_by_role", {{role, nativeParseJson(NativeRoleResourceRequirement{
+            {"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}.canonicalJson())}}},
           {"tensor_degrees", {1}}, {"input_ingress_role", role},
           {"result_egress_role", role}}},
         {"node_mapping", {{"embedding", {0}}, {"layer-00", {1}},
@@ -918,7 +909,7 @@ public:
     auto config = NativeJson{
       {"schema", "ndnsf-di-native-requester-v1"},
       {"core", {{"requester_identity", "/user"}, {"authority_identity", "/aa"},
-        {"group", "/group"}, {"trust_schema_file", "trust.conf"}}},
+        {"group", "/group"}, {"trust_schema_file", testTrust->schemaPath()}}},
       {"catalog", catalog}, {"offer_admission", offerAdmission},
       {"grant", {{"authority_identity", "/aa"}, {"authority_service", "/grant"},
         {"authority_public_key_file", "authority-public.pem"},
@@ -957,6 +948,7 @@ public:
 
   std::filesystem::path root;
   std::filesystem::path configPath;
+  std::unique_ptr<ndn_service_framework::test::IsolatedTestTrust> testTrust;
   inline static std::atomic<unsigned> sequence{0};
 };
 
@@ -1014,12 +1006,9 @@ std::string readTextFile(const std::filesystem::path& path)
   return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
-InProcessRuntimeBinding
-bindInProcessRuntime(RuntimeFixture& fixture, const std::shared_ptr<Runtime>& runtime)
+std::shared_ptr<ndn_service_framework::test::NdnsfIntegrationEnvironment>
+makeInProcessRuntimeEnvironment()
 {
-  if (!runtime)
-    throw std::invalid_argument("Spec185 in-process binding requires Runtime");
-
   ndn_service_framework::test::BootstrapProfile profile;
   profile.groupPrefix = ndn::Name("/group");
   profile.syncPrefix = ndn::Name("/ndnsf/spec185/t013/sync");
@@ -1034,6 +1023,19 @@ bindInProcessRuntime(RuntimeFixture& fixture, const std::shared_ptr<Runtime>& ru
     ndn_service_framework::test::NdnsfIntegrationEnvironment>(profile);
   environment->bootstrap();
   environment->enableProductionIngressForTest();
+  return environment;
+}
+
+InProcessRuntimeBinding
+bindInProcessRuntime(
+  RuntimeFixture& fixture, const std::shared_ptr<Runtime>& runtime,
+  std::shared_ptr<ndn_service_framework::test::NdnsfIntegrationEnvironment> environment = nullptr)
+{
+  if (!runtime)
+    throw std::invalid_argument("Spec185 in-process binding requires Runtime");
+
+  if (!environment)
+    environment = makeInProcessRuntimeEnvironment();
 
   // Reuse the exact offer policy and candidate identity frozen in the native
   // requester fixture.  The lifecycle selectors do not need a Provider
@@ -4362,8 +4364,16 @@ BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
     std::make_shared<ndnsf_distributed_repo::RepoEncryptedLargeDataStore>(repo);
   config.encryptedRangeStore = protectedStore;
 
+  auto environment = makeInProcessRuntimeEnvironment();
+  const auto controllerCertificatePath = (fixture.root / "controller.cert").string();
+  ndn::io::save(
+    environment->keyChain().getPib().getIdentity(environment->profile().attributeAuthority)
+      .getDefaultKey().getDefaultCertificate(),
+    controllerCertificatePath);
+  ScopedEnvironmentValue controllerCertificateSetting(
+    "NDNSF_CONTROLLER_CERT_FILE", controllerCertificatePath.c_str());
   auto runtime = Runtime::open(std::move(config));
-  binding = bindInProcessRuntime(fixture, runtime);
+  binding = bindInProcessRuntime(fixture, runtime, environment);
   // bindInProcessRuntime replaces Runtime's Core user with the fixture-owned
   // ServiceUser. Reinstall the same protected store on that actual owner so
   // this selector observes the production publisher's real storage boundary.
@@ -4400,11 +4410,12 @@ BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
                         "protected root envelope was not committed to Repo");
   const auto rootManifest = repo->getManifest(publication.rootDataName);
   const auto rootBytes = readRepoObject(publication.rootDataName);
-  BOOST_CHECK_EQUAL(rootManifest.objectType, "encrypted-large-data-envelope");
+  BOOST_CHECK_EQUAL(rootManifest.objectType, "original-packet-set");
   BOOST_CHECK_EQUAL("sha256:" + rootManifest.sha256,
                     nativePlanningDigest(rootBytes.data(), rootBytes.size()));
-  // Repo stores ciphertext envelopes; the authenticated plaintext manifest is
-  // the immutable receipt returned by the Core publisher.
+  // Repo stores the original signed Data packets; their Content carries the
+  // encrypted envelopes. The authenticated plaintext manifest is the
+  // immutable receipt returned by the Core publisher.
   const auto root = nativeParseJson(publication.canonicalManifestJson);
   // The authority grant uses one ordinary RequestMessage for this root; the
   // material object index lives in the separately fetched receipt so the
@@ -4436,7 +4447,7 @@ BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
   BOOST_REQUIRE_MESSAGE(repo->has(publication.materialManifestDataName),
                         "protected material manifest was not committed to Repo");
   BOOST_CHECK_EQUAL(repo->getManifest(publication.materialManifestDataName).objectType,
-                    "encrypted-large-data-envelope");
+                    "original-packet-set");
   const auto requireBoundedRepoRead = [&repo] (const std::string& name) {
     const auto manifest = repo->getManifest(name);
     if (manifest.size == 0)
@@ -4465,7 +4476,7 @@ BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
     BOOST_REQUIRE_MESSAGE(repo->has(publication.materialDataNames.at(i)),
                           "protected material payload was not committed to Repo");
     BOOST_CHECK_EQUAL(repo->getManifest(publication.materialDataNames.at(i)).objectType,
-                      "encrypted-large-data-envelope");
+                      "original-packet-set");
     requireBoundedRepoRead(publication.materialDataNames.at(i));
     materialBundles.insert(publication.materialDataNames.at(i));
   }

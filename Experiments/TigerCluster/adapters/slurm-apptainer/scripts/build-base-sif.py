@@ -36,6 +36,12 @@ def regular_path(value, exists=True):
 
 
 def build(args):
+    if getattr(args, 'upgrade_onnxruntime', None):
+        if any(getattr(args, name, None) for name in (
+                'repair_application_metadata', 'repair_framework_headers', 'complete_nac_abe',
+                'complete_tokenizer_bridge', 'dependency_bundle', 'wheel', 'nac_source_archive')):
+            raise ValueError('BASE_COMPLETION_MODE_CONFLICT')
+        return reseal_base(args, ort_bundle=args.upgrade_onnxruntime)
     if getattr(args, 'repair_application_metadata', False):
         if any(getattr(args, name, None) for name in (
                 'repair_framework_headers', 'complete_nac_abe', 'complete_tokenizer_bridge',
@@ -260,7 +266,7 @@ def nac_inputs(bundle, inputs, parent_sha, source_archive=None):
     sdk.nac_contract(destination, repository, expected)
 
 
-def reseal_base(args, tokenizer_bundle=None, nac_bundle=None, metadata_only=False):
+def reseal_base(args, tokenizer_bundle=None, nac_bundle=None, metadata_only=False, ort_bundle=None):
     """Share parent identity/resource handling across explicit base maintenance actions."""
     if args.dependency_bundle or args.wheel:
         raise ValueError('BASE_HEADER_REPAIR_INPUT_CONFLICT')
@@ -305,6 +311,26 @@ def reseal_base(args, tokenizer_bundle=None, nac_bundle=None, metadata_only=Fals
     if nac_bundle:
         nac_inputs(nac_bundle, inputs, lock['parentSha256'], getattr(args, 'nac_source_archive', None))
         shutil.copy2(HERE / 'dependency-sdk.py', inputs / 'dependency-sdk.py')
+    if ort_bundle:
+        mode = 'onnxruntime-upgrade'
+        bundle = Path(ort_bundle).absolute()
+        runtime_lock = regular_path(bundle / 'onnxruntime-upgrade.lock.json')
+        runtime = json.loads(runtime_lock.read_text())
+        if runtime.get('parentSha256') != lock['parentSha256']:
+            raise ValueError('ORT_PARENT_IDENTITY')
+        sdk_spec = importlib.util.spec_from_file_location('ort_sdk_contract', HERE / 'dependency-sdk.py')
+        sdk = importlib.util.module_from_spec(sdk_spec)
+        sdk_spec.loader.exec_module(sdk)
+        sdk.verify_onnxruntime_inputs(bundle)
+        destination = inputs / 'onnxruntime'
+        destination.mkdir()
+        shutil.copy2(runtime_lock, destination / runtime_lock.name)
+        for name in ('onnxRuntimeCpp', 'cudaRuntime'):
+            filename = runtime[name]['filename']
+            shutil.copy2(regular_path(bundle / filename), destination / filename)
+        shutil.copy2(HERE.parents[4] / 'tests/fixtures/spec220/ort-runtime-probe.cpp',
+                     destination / 'probe.cpp')
+        shutil.copy2(HERE / 'dependency-sdk.py', inputs / 'dependency-sdk.py')
     template_name = 'header-repair' if metadata_only else mode
     template = HERE.parent / 'templates' / (template_name + '.def.in')
     definition = out / 'base.def'
@@ -316,6 +342,8 @@ def reseal_base(args, tokenizer_bundle=None, nac_bundle=None, metadata_only=Fals
              ('BASE_TOKENIZER_BRIDGE_COMPLETION' if tokenizer_bundle else 'BASE_FRAMEWORK_HEADER_REPAIR'))
     if metadata_only:
         scope = 'BASE_APPLICATION_METADATA_REPAIR'
+    if ort_bundle:
+        scope = 'BASE_ONNXRUNTIME_UPGRADE'
     record = {'status': 'RUNNING', 'scope': scope,
               'parentSha256': lock['parentSha256'], 'parentBytes': lock['parentBytes'],
               'apptainerVersion': version, 'apptainerSha256': digest(apptainer),
@@ -350,12 +378,13 @@ def reseal_base(args, tokenizer_bundle=None, nac_bundle=None, metadata_only=Fals
                                env=env, stdout=log, stderr=log, check=True)
             cleanup = subprocess.check_output(command + [
                 '/bin/cat', '/opt/ndn-base/manifest/' + (
-                    'nac-abe-completion.json' if nac_bundle else
+                    'onnxruntime-upgrade.json' if ort_bundle else
+                    ('nac-abe-completion.json' if nac_bundle else
                     ('tokenizer-bridge-completion.json' if tokenizer_bundle
                      else ('application-metadata-repair.json' if metadata_only
-                           else 'framework-header-repair.json')))],
+                           else 'framework-header-repair.json'))))],
                 env=env, stderr=log, text=True)
-            if tokenizer_bundle or nac_bundle:
+            if tokenizer_bundle or nac_bundle or ort_bundle:
                 sdk = subprocess.check_output(command + [
                     '/bin/cat', '/opt/ndn-base/manifest/dependency-sdk.json'],
                     env=env, stderr=log, text=True)
@@ -488,6 +517,8 @@ if __name__ == '__main__':
                         help='Exact upstream NAC archive bound by the existing SDK manifest')
     parser.add_argument('--dependency-bundle', type=Path,
                         help='Extend the locked existing base with all sealed external dependencies')
+    parser.add_argument('--upgrade-onnxruntime', type=Path,
+                        help='Replace only the isolated ORT SDK and its sealed CUDA runtime dependency')
     parser.add_argument('--apptainer', default='apptainer')
     parser.add_argument('--expected-apptainer', required=True)
     build(parser.parse_args())

@@ -29,7 +29,8 @@ public:
     int freshnessMs = 60000,
     std::shared_ptr<ProviderGroupCoordinator> groupCoordinator = nullptr,
     std::shared_ptr<ProtectedRuntime> protectedRuntime = nullptr,
-    std::size_t prefetchWorkerCount = 0);
+    std::size_t prefetchWorkerCount = 0,
+    std::shared_ptr<NativeWorkStatistics> workStatistics = {});
 
   ~NdnsfCollaborationDependencyIo() override;
 
@@ -70,6 +71,7 @@ private:
   int m_freshnessMs = 60000;
   std::shared_ptr<ProviderGroupCoordinator> m_groupCoordinator;
   std::shared_ptr<ProtectedRuntime> m_protectedRuntime;
+  std::shared_ptr<NativeWorkStatistics> m_workStatistics;
   // Invocation-owned immutable originals. A live entry is never evicted or
   // re-encrypted; changed plaintext or protection bindings fail explicitly.
   struct CachedTensorPublication {

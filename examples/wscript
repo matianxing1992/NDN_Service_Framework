@@ -353,10 +353,10 @@ def build(bld):
         # Native qualification is part of the installed DI closure.
         bld.program(name='spec190-multiturn-oracle',
                     target='spec190-multiturn-oracle',
-                    source=['Spec189TwoProviderOracle.cpp'],
+                    source=['Spec189TwoProviderOracle.cpp', 'spec220-onnx-reference-oracle.cpp'],
                     rpath=[runtime_libdir],
                     includes=['..', '../NDNSF-DistributedRepo/include'],
-                    use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                    use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL ONNXRUNTIME',
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
                     install_path='${BINDIR}')
 

@@ -5,13 +5,18 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRunnerReuseCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include <ndn-cxx/name.hpp>
 
 #include <boost/property_tree/json_parser.hpp>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
+#include <limits>
 #include <sstream>
 #include <thread>
 #include <chrono>
@@ -215,6 +220,129 @@ std::vector<std::uint8_t> readBinaryFile(const std::filesystem::path& path)
   std::ifstream input(path, std::ios::binary);
   return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input), {});
 }
+
+}
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkObserversPreserveGrantAndWaitBoundaries, BoundGrantFixture)
+{
+  const auto endpointDigest = "sha256:" + std::string(64, 'e');
+  binding.mayPublishEndpointDigests = {endpointDigest};
+  binding.mayPublishConsumerByEndpoint = {{endpointDigest, "stage1"}};
+  for (const bool observed : {false, true}) {
+    NativeWorkClock clock{0, 0};
+    auto statistics = observed ? std::make_shared<NativeWorkStatistics>([&] { return clock; })
+                               : std::shared_ptr<NativeWorkStatistics>{};
+    const std::weak_ptr<NativeWorkStatistics> weak = statistics;
+    int fetched = 0, cancellationChecks = 0;
+    bool cancelled = false, cleaned = false;
+    auto observedConfig = config;
+    observedConfig.fetchGrant = [&] (const std::string& name) {
+      BOOST_CHECK_EQUAL(name, binding.grantName);
+      ++fetched;
+      clock.wallNs += 5000;
+      clock.threadCpuNs += 100;
+      return wire;
+    };
+    observedConfig.shouldCancel = [&] {
+      ++cancellationChecks;
+      clock.wallNs += 700;
+      clock.threadCpuNs += 70;
+      return cancelled;
+    };
+    ProtectedRuntime runtime(binding, std::move(observedConfig));
+    runtime.verifyGrant(binding, now, statistics);
+    runtime.authorizeDataflow(ProtectedDataflowDirection::Publish, endpointDigest,
+      binding.role, "stage1", now, std::nullopt, statistics);
+    runtime.registerHostPlaintextLease("observed-buffer", [&] {
+      cleaned = true;
+      clock.wallNs += 2500;
+      clock.threadCpuNs += 500;
+    });
+    cancelled = true;
+    BOOST_CHECK_EXCEPTION(runtime.authorizeDataflow(ProtectedDataflowDirection::Publish,
+      endpointDigest, binding.role, "stage1", now, std::nullopt, statistics),
+      std::runtime_error, [](const std::runtime_error& error) {
+        return std::string(error.what()) ==
+          "protected dataflow is not authorized for this role/endpoint";
+      });
+    BOOST_CHECK_EQUAL(fetched, 1);
+    BOOST_CHECK_EQUAL(cancellationChecks, 4);
+    BOOST_CHECK(cleaned);
+    BOOST_CHECK(runtime.state() == ProtectedRuntimeState::FailedClosed);
+    if (statistics) {
+      const auto work = statistics->snapshot();
+      BOOST_REQUIRE(work.complete);
+      BOOST_CHECK_EQUAL(work.activeSpans, 0U);
+      const auto& fetch = work.phases.at("protected-grant-fetch");
+      BOOST_CHECK(fetch.kind == NativeWorkKind::WAIT);
+      BOOST_CHECK_EQUAL(fetch.exclusiveWallNs, 5000U);
+      BOOST_REQUIRE(fetch.exclusiveThreadCpuNs);
+      BOOST_CHECK_EQUAL(*fetch.exclusiveThreadCpuNs, 100U);
+      BOOST_CHECK_EQUAL(work.counts.at("grant.successfulFetchReturns"), 1U);
+      BOOST_CHECK_EQUAL(work.counts.at("grant.returnedRepresentationBytes"), wire.size());
+      BOOST_CHECK_EQUAL(work.phases.at("protected-cancel-check").exclusiveWallNs, 2800U);
+      BOOST_CHECK_EQUAL(work.phases.at("protected-dataflow-failure").exclusiveWallNs, 2500U);
+      BOOST_CHECK_EQUAL(work.phases.at("protected-grant-admission").exclusiveWallNs, 0U);
+      BOOST_CHECK_EQUAL(work.phases.at("protected-dataflow-admission").exclusiveWallNs, 0U);
+    }
+    statistics.reset();
+    BOOST_CHECK(weak.expired());
+  }
+}
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkObserversCloseOnGrantFailures, BoundGrantFixture)
+{
+  for (int scenario = 0; scenario < 5; ++scenario) {
+    std::string originalReason;
+    for (const bool observed : {false, true}) {
+      auto statistics = observed ? makeNativeWorkStatistics() : nullptr;
+      BOOST_REQUIRE(!observed || statistics);
+      const std::weak_ptr<NativeWorkStatistics> weak = statistics;
+      int fetched = 0;
+      auto failingConfig = config;
+      failingConfig.shouldCancel = [scenario] { return scenario == 2; };
+      failingConfig.fetchGrant = [&] (const std::string&) {
+        ++fetched;
+        if (scenario == 3) throw std::runtime_error("fixture grant transport failed");
+        return scenario == 4 ? wire + "invalid suffix" : wire;
+      };
+      ProtectedRuntime runtime(binding, std::move(failingConfig));
+      auto observedBinding = binding;
+      if (scenario == 0) observedBinding.requestId += "/foreign";
+      std::string reason;
+      try {
+        runtime.verifyGrant(observedBinding, scenario == 1 ? binding.expiresAtMs : now,
+                            statistics);
+      }
+      catch (const std::exception& error) {
+        reason = error.what();
+      }
+      BOOST_REQUIRE(!reason.empty());
+      if (observed) BOOST_CHECK_EQUAL(reason, originalReason);
+      else originalReason = reason;
+      BOOST_CHECK_EQUAL(runtime.terminalReason(), reason);
+      BOOST_CHECK(runtime.state() == ProtectedRuntimeState::FailedClosed);
+      BOOST_CHECK_EQUAL(fetched, scenario >= 3 ? 1 : 0);
+      if (statistics) {
+        const auto work = statistics->snapshot();
+        BOOST_CHECK(work.complete);
+        BOOST_CHECK_EQUAL(work.activeSpans, 0U);
+        BOOST_CHECK_EQUAL(work.phases.at("protected-grant-failure").calls, 1U);
+        BOOST_CHECK(work.phases.at("protected-grant-failure").kind ==
+                    NativeWorkKind::UNCLASSIFIED);
+        if (scenario == 4) {
+          BOOST_CHECK_EQUAL(work.counts.at("grant.successfulFetchReturns"), 1U);
+          BOOST_CHECK_EQUAL(work.counts.at("grant.returnedRepresentationBytes"),
+                            wire.size() + std::string("invalid suffix").size());
+        }
+        else {
+          BOOST_CHECK(work.counts.empty());
+        }
+      }
+      statistics.reset();
+      BOOST_CHECK(weak.expired());
+    }
+  }
 }
 
 BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerRejectsExpiryAfterPreparation, BoundGrantFixture)
@@ -490,6 +618,148 @@ BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeRealGrantBoundsDataflowAndDrains, BoundG
     }
   }
   BOOST_CHECK_EQUAL(fetchCount, 8);
+}
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeCompactGenerationAuthorizesOnlySealedCurrentEndpoints,
+                        BoundGrantFixture)
+{
+  const auto endpoint = [&](bool publish) {
+    NativeTensorEndpointV3 value;
+    value.producerNamespace = publish ? binding.provider : "/provider/previous";
+    value.requester = "/requester";
+    value.requestId = binding.requestId;
+    value.attempt = binding.attempt;
+    value.planDigest = binding.planDigest;
+    value.groupId = "generation-group";
+    value.groupEpoch = "1";
+    value.operation = publish ? "PIPELINE" : "TOKEN_FEEDBACK";
+    value.round = publish ? 0 : 1;
+    value.sourceKind = "ROLE";
+    value.producerRole = publish ? binding.role : "stage-prev";
+    value.consumerRole = publish ? "stage1" : binding.role;
+    value.consumerRoles = {value.consumerRole};
+    value.tensorId = publish ? "activation" : "feedback";
+    value.tensorDigest = nativePlanningDigest(value.tensorId);
+    value.layoutDigest = value.targetLayoutDigest = nativePlanningDigest("layout");
+    value.segmentCount = 64;
+    value.securityProfile = "protected-native-v1";
+    value.noProgressDeadlineMs = 1000;
+    value.hardDeadlineMs = binding.expiresAtMs;
+    value.namingOperationStride = 4;
+    NativePlanProjectionBuilder::certifyEndpoint(value);
+    return value;
+  };
+  NativeRoleDataflowContractV3 flow;
+  flow.requestId = binding.requestId;
+  flow.attempt = binding.attempt;
+  flow.planDigest = binding.planDigest;
+  flow.role = binding.role;
+  flow.endpointRange = NativeGenerationEndpointRangeV1{3, 4};
+  flow.mayPublish = {endpoint(true)};
+  flow.mustFetch = {endpoint(false)};
+  const auto certifyFlow = [](NativeRoleDataflowContractV3& value) {
+    for (auto* endpoints : {&value.mayPublish, &value.mustFetch})
+      for (auto& item : *endpoints) NativePlanProjectionBuilder::certifyEndpoint(item);
+    auto json = nativeDataflowJson(value);
+    json.erase("dataflow_digest");
+    value.dataflowDigest = nativePlanningDigest(nativeCanonicalJson(json));
+  };
+  certifyFlow(flow);
+  binding.mayPublishEndpointDigests = {flow.mayPublish.front().endpointDigest};
+  binding.mustFetchEndpointDigests = {flow.mustFetch.front().endpointDigest};
+  binding.mayPublishConsumerByEndpoint = {{flow.mayPublish.front().endpointDigest, "stage1"}};
+  binding.mustFetchProducerByEndpoint = {{flow.mustFetch.front().endpointDigest, "stage-prev"}};
+  binding.compactDataflow = flow;
+  binding.validate();
+  // Independent expected endpoints: adjust the round explicitly and certify,
+  // rather than using the derivation function exercised by authorization.
+  const auto at = [](NativeTensorEndpointV3 value, std::uint64_t sequence) {
+    value.round += sequence * 4;
+    NativePlanProjectionBuilder::certifyEndpoint(value);
+    return value;
+  };
+  {
+    const auto statistics = makeNativeWorkStatistics();
+    BOOST_REQUIRE(statistics);
+    ProtectedRuntime runtime(binding, config);
+    runtime.verifyGrant(binding, now, statistics);
+    for (const auto& base : {flow.mayPublish.front(), flow.mustFetch.front()}) {
+      const auto direction = base.producerRole == binding.role
+        ? ProtectedDataflowDirection::Publish : ProtectedDataflowDirection::Fetch;
+      for (std::uint64_t sequence = 0; sequence < 3; ++sequence) {
+        const auto current = at(base, sequence);
+        BOOST_CHECK_NO_THROW(runtime.authorizeDataflow(direction, current.endpointDigest,
+          current.producerRole, current.consumerRole, now, current.round, statistics));
+      }
+    }
+    auto publish = at(flow.mayPublish.front(), 1);
+    auto fetch = at(flow.mustFetch.front(), 2);
+    auto first = std::async(std::launch::async, [&] {
+      runtime.authorizeDataflow(ProtectedDataflowDirection::Publish, publish.endpointDigest,
+        publish.producerRole, publish.consumerRole, now, publish.round, statistics);
+    });
+    auto second = std::async(std::launch::async, [&] {
+      runtime.authorizeDataflow(ProtectedDataflowDirection::Fetch, fetch.endpointDigest,
+        fetch.producerRole, fetch.consumerRole, now, fetch.round, statistics);
+    });
+    BOOST_CHECK_NO_THROW(first.get());
+    BOOST_CHECK_NO_THROW(second.get());
+    BOOST_CHECK_EQUAL(runtime.binding().mayPublishEndpointDigests.size(), 1U);
+    BOOST_CHECK_EQUAL(runtime.binding().mustFetchEndpointDigests.size(), 1U);
+    BOOST_CHECK_EQUAL(runtime.binding().compactDataflow->dataflowDigest, flow.dataflowDigest);
+    const auto work = statistics->snapshot();
+    BOOST_CHECK(work.complete);
+    BOOST_CHECK_EQUAL(work.activeSpans, 0U);
+    BOOST_CHECK_EQUAL(work.phases.at("protected-dataflow-admission").calls, 8U);
+  }
+  for (const auto direction : {ProtectedDataflowDirection::Publish, ProtectedDataflowDirection::Fetch}) {
+    for (int mutation = 0; mutation < 9; ++mutation) {
+      bool cleaned = false;
+      const auto statistics = makeNativeWorkStatistics();
+      BOOST_REQUIRE(statistics);
+      ProtectedRuntime runtime(binding, config);
+      runtime.verifyGrant(binding, now, statistics);
+      runtime.registerHostPlaintextLease("buffer", [&] { cleaned = true; });
+      auto current = at(direction == ProtectedDataflowDirection::Publish
+        ? flow.mayPublish.front() : flow.mustFetch.front(), 1);
+      std::optional<std::uint64_t> round = current.round;
+      if (mutation == 0) round.reset();
+      if (mutation == 1) ++*round;
+      if (mutation == 2) *round += 8;
+      if (mutation == 3) current.endpointDigest = nativePlanningDigest("foreign");
+      if (mutation == 4) current.producerRole = "foreign";
+      if (mutation == 5) current.consumerRole = "foreign";
+      if (mutation == 7) runtime.cancel("request cancelled");
+      if (mutation == 8) round = std::numeric_limits<std::uint64_t>::max();
+      const auto checkedAt = mutation == 6 ? binding.expiresAtMs : now;
+      BOOST_CHECK_THROW(runtime.authorizeDataflow(direction, current.endpointDigest,
+        current.producerRole, current.consumerRole, checkedAt, round, statistics), std::runtime_error);
+      BOOST_CHECK(statistics->snapshot().complete);
+      BOOST_CHECK_EQUAL(statistics->snapshot().activeSpans, 0U);
+      BOOST_CHECK(cleaned);
+      BOOST_CHECK(runtime.state() == ProtectedRuntimeState::FailedClosed);
+      BOOST_CHECK_EXCEPTION(runtime.withContentKey(now, [](const auto&) {}), std::runtime_error,
+        [](const std::runtime_error& error) {
+          return std::string(error.what()) == "protected dataflow is not authorized for this role/endpoint";
+        });
+    }
+  }
+  for (int mutation = 0; mutation < 6; ++mutation) {
+    auto changed = binding;
+    auto& value = *changed.compactDataflow;
+    if (mutation == 0) value.endpointRange->epochCount = 0;
+    if (mutation == 1) value.endpointRange->operationStride = 0;
+    if (mutation == 2) {
+      value.requestId += "/foreign";
+      for (auto* endpoints : {&value.mayPublish, &value.mustFetch})
+        for (auto& item : *endpoints) item.requestId = value.requestId;
+    }
+    if (mutation == 3) ++value.attempt;
+    if (mutation == 4) value.role = "foreign";
+    if (mutation == 5) changed.mayPublishConsumerByEndpoint.clear();
+    certifyFlow(value);
+    BOOST_CHECK_THROW(changed.validate(), std::invalid_argument);
+  }
 }
 
 BOOST_FIXTURE_TEST_CASE(SignedOpaqueRequestGrantDecryptsWithProducerUriAlias, BoundGrantFixture)
@@ -825,6 +1095,34 @@ BOOST_FIXTURE_TEST_CASE(ProtectedResidentCacheKeyExcludesRequestLocalGrantDigest
   BOOST_CHECK_NE(identity.canonical(), nextTurn.canonical());
   BOOST_CHECK_EQUAL(identity.cacheKey(), nextTurn.cacheKey());
   BOOST_CHECK_EQUAL(identity.cacheScopeKey(), nextTurn.cacheScopeKey());
+}
+
+BOOST_FIXTURE_TEST_CASE(ProtectedResidentFileSetIdentityRetainsLogicalRevocationScope,
+                        BoundGrantFixture)
+{
+  ProtectedRuntime runtime(binding, config);
+  runtime.verifyGrant(binding, now);
+  auto first = residentIdentity(binding, config.modelManifestDigest);
+  auto second = first;
+  first.assembledFileSetDigest = "sha256:" + std::string(64, 'a');
+  second.assembledFileSetDigest = "sha256:" + std::string(64, 'b');
+  BOOST_CHECK_NE(first.canonical(), second.canonical());
+  BOOST_CHECK_NE(first.cacheKey(), second.cacheKey());
+  BOOST_CHECK_EQUAL(first.cacheScopeKey(), second.cacheScopeKey());
+  ProtectedResidentAuthority authority;
+  auto firstUse = authority.acquire(first, runtime, now);
+  auto secondUse = authority.acquire(second, runtime, now);
+  BOOST_CHECK_NE(firstUse.identity(), secondUse.identity());
+  BOOST_CHECK_EQUAL(authority.counters().residentEntries, 2U);
+  authority.retire(first);
+  BOOST_CHECK_THROW(authority.acquire(second, runtime, now), std::runtime_error);
+  BOOST_CHECK(!authority.drain(std::chrono::milliseconds(1)));
+  firstUse = {};
+  secondUse = {};
+  BOOST_CHECK(authority.drain(std::chrono::milliseconds(100)));
+  auto invalid = first;
+  invalid.assembledFileSetDigest = "not-a-digest";
+  BOOST_CHECK_THROW(invalid.validate(), std::invalid_argument);
 }
 
 BOOST_FIXTURE_TEST_CASE(ProtectedResidentAuthorityRejectsExpiredOrSubstitutedBinding,

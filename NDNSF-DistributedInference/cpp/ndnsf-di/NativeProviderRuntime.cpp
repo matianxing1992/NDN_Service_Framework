@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -182,6 +183,8 @@ decodeStateBindingFor(const NativeModelRunnerSpec& spec,
 TensorBundle
 stateBundleFromResult(const ProviderRoleResult& result, const RoleSpec& role)
 {
+  NativeWorkScope stateWork(role.workStatistics, "role-state-result-pack",
+                            NativeWorkKind::LOCAL);
   if (role.stateInputNames.size() != role.stateOutputNames.size() ||
       role.stateInputNames.empty()) {
     throw std::invalid_argument(
@@ -197,7 +200,8 @@ stateBundleFromResult(const ProviderRoleResult& result, const RoleSpec& role)
       }
       try {
         auto tensor = findTensor(
-          decodeTensorBundle(output.second.payload), role.stateOutputNames[index]);
+          decodeTensorBundle(output.second.payload, role.workStatistics),
+          role.stateOutputNames[index]);
         tensor.name = role.stateInputNames[index];
         nextState.push_back(std::move(tensor));
         found = true;
@@ -1602,6 +1606,8 @@ NativeProviderRuntime::executeRoleAsyncImpl(
      conversationBinding = std::move(conversationBinding),
      executionGuard = std::move(executionGuard),
      future = std::move(workerFuture)] () mutable {
+      NativeWorkScope completionWork(role.workStatistics, "role-runtime-state-completion",
+                                     NativeWorkKind::UNCLASSIFIED);
       bool candidateStaged = false;
       const auto releaseConversationPin = [this, &conversationBinding] {
         if (conversationBinding) {
@@ -1610,7 +1616,10 @@ NativeProviderRuntime::executeRoleAsyncImpl(
         }
       };
       try {
+        NativeWorkScope workerWait(role.workStatistics, "role-runtime-worker-wait",
+                                   NativeWorkKind::WAIT);
         auto result = future.get();
+        workerWait.finish();
         if (executionGuard) executionGuard();
         if (result.runner) {
           std::lock_guard<std::mutex> lock(m_mutex);

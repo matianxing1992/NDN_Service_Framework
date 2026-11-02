@@ -3,6 +3,7 @@
 #include "ndnsf-integration-fixture.hpp"
 #include "ndn-service-framework/NDNSFMessages.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
+#include "ndn-service-framework/control-byte-statistics.hpp"
 #include "ndn-service-framework/utils.hpp"
 #include "ndn-service-framework/detail/ProtectedTargetedRequest.hpp"
 
@@ -772,6 +773,148 @@ BOOST_AUTO_TEST_CASE(SelectedProviderReceivesSegmentedEncryptedInput)
   runRequestScopedResponseCase(false, false, false, 6555271);
 }
 
+void
+runCollaborationInputReceiptCase(bool structured)
+{
+  class BothRoles final : public ParticipantSelectionPolicy
+  {
+  public:
+    explicit BothRoles(bool structured)
+      : m_structured(structured)
+    {
+    }
+
+    std::vector<SelectedParticipant>
+    select(const std::vector<AckCandidate>& candidates,
+           const std::vector<CollaborationRoleSpec>& roles) const override
+    {
+      if (candidates.size() != 1) return {};
+      std::vector<SelectedParticipant> result;
+      for (const auto& role : roles) {
+        const std::string json = role.role == "/second"
+          ? "{\"padding\":\"" + std::string(4096, 'x') + "\",\"role\":\"/second\"}"
+          : "{\"role\":\"/first\"}";
+        const ndn::Buffer payload = m_structured ? ndn::Buffer(json.begin(), json.end()) :
+                                                        ndn::Buffer{0x01};
+        result.push_back({role.role, role.service, candidates.front().providerName,
+                          {}, false, 0, payload, candidates.front(), {}});
+      }
+      return result;
+    }
+
+  private:
+    const bool m_structured;
+  };
+  for (const bool segmented : {false, true}) {
+    BOOST_TEST_CONTEXT("segmented=" << segmented << " structured=" << structured) {
+      test::BootstrapProfile profile;
+      profile.providerCount = 1;
+      test::NdnsfIntegrationEnvironment environment(profile);
+      environment.bootstrap();
+      const auto service = environment.profile().serviceName;
+      auto status = makeCurrentStatus(service, 1);
+      status.setAbePublicParametersName(environment.attributeAuthorityPublicParametersName());
+      status.setAbePublicParametersDigest(environment.attributeAuthorityPublicParametersDigest());
+      BOOST_REQUIRE(environment.user().installControllerStatus(status));
+      BOOST_REQUIRE(environment.provider().installControllerStatus(status));
+      environment.user().setUseTokens(false);
+      environment.provider().setUseTokens(false);
+      environment.provider().setHandlerThreads(0);
+      environment.pumpUntilWithAttributeAuthority([] { return false; });
+      const std::string text = segmented ? std::string(8193, 'x') :
+        R"({"schema":"ndnsf-di-request-envelope-v2","input_payload_b64":"c2VjcmV0","task":"survey"})";
+      const ndn::Buffer input(text.begin(), text.end());
+      std::vector<ServiceProvider::CollaborationPreparationFetchReceipt> receipts;
+      environment.provider().addCollaborationHandler(service,
+        [&] (ServiceProvider::CollaborationContext& context, const RequestMessage& request) {
+          BOOST_CHECK(request.getPayload() == input);
+          BOOST_REQUIRE(context.assignment().preparationFetchReceipt);
+          receipts.push_back(*context.assignment().preparationFetchReceipt);
+          if (!structured || context.role() == "/second") {
+            if (structured) {
+              BOOST_CHECK_EQUAL(receipts.back().assignmentObjects, 1U);
+              BOOST_CHECK_EQUAL(receipts.back().assignmentBytes,
+                                context.assignment().assignmentPayload.size());
+              BOOST_CHECK_GT(receipts.back().assignmentBytes, 4096U);
+            }
+            context.publishFinalResponse(ndn::Buffer{0x6f, 0x6b});
+          }
+          else {
+            BOOST_CHECK(context.completeRole());
+          }
+        });
+      environment.enableProductionIngressForTest();
+      RequestCapabilities capabilities;
+      capabilities.setField("RequestScopedConfidentialityV1", "required");
+      auto inventory = std::make_shared<ControlByteStatistics>();
+      bool completed = false, timedOut = false, committed = false;
+      const ndn::Name requestId(segmented ? "/spec220/receipt/segmented" : "/spec220/receipt/inline");
+      environment.user().BeginCollaborationWithProviders(service, input, 200, 5000,
+        [&] (const CollaborationAckClosure& closure) {
+          CollaborationPlan plan;
+          for (const auto* name : {"/first", "/second"}) {
+            CollaborationRoleSpec role;
+            role.role = name;
+            role.service = service;
+            role.terminalResponseOwner = role.role == "/second";
+            plan.roles.push_back(std::move(role));
+          }
+          plan.participantSelector = std::make_shared<BothRoles>(structured);
+          committed = environment.user().CommitCollaborationPlan(
+            closure.requestId, closure.digest, plan);
+        },
+        [&] (const ResponseMessage& response) {
+          completed = response.getStatus() && response.getPayload() == ndn::Buffer{0x6f, 0x6b};
+        },
+        [&] (const ndn::Name&) { timedOut = true; }, requestId, {}, capabilities,
+        std::nullopt, {}, {}, {}, {environment.provider().getName()}, inventory);
+      environment.pumpUntil([&] { return completed || timedOut; });
+      BOOST_REQUIRE(committed);
+      BOOST_REQUIRE(completed);
+      BOOST_CHECK(!timedOut);
+      BOOST_REQUIRE_EQUAL(receipts.size(), structured ? 2U : 1U);
+      std::uint64_t bytes = 0, packets = 0, objects = 0, retrieved = 0, shared = 0;
+      for (const auto& receipt : receipts) {
+        BOOST_CHECK(receipt.complete);
+        bytes += receipt.inputBytes;
+        packets += receipt.inputPackets;
+        objects += receipt.inputObjects;
+        retrieved += receipt.inputDisposition == ServiceProvider::InputFetchDisposition::RETRIEVED;
+        shared += receipt.inputDisposition == ServiceProvider::InputFetchDisposition::SHARED;
+        BOOST_CHECK_EQUAL(receipt.inputNestedInSelection, !segmented);
+        BOOST_CHECK(!receipt.inputNestedInRequest);
+      }
+      BOOST_CHECK_EQUAL(retrieved, 1U);
+      BOOST_CHECK_EQUAL(shared, structured ? 1U : 0U);
+      BOOST_CHECK_EQUAL(objects, 1U);
+      BOOST_CHECK_EQUAL(bytes, input.size());
+      BOOST_CHECK_EQUAL(packets, segmented ? 3U : 1U);
+      const auto measured = inventory->seal();
+      BOOST_REQUIRE(measured.complete);
+      const auto mode = segmented ? ControlByteKind::REQUEST_INPUT_EMPTY_DISCOVERY_MODE :
+                                    ControlByteKind::REQUEST_INPUT_SANITIZED_MODE;
+      const auto& entry = measured.entries[static_cast<std::size_t>(mode)];
+      BOOST_CHECK_EQUAL(entry.calls, 1U);
+      BOOST_CHECK_EQUAL(entry.bytes, segmented ? 0U : 8U);
+      const auto& published = measured.entries[
+        static_cast<std::size_t>(ControlByteKind::REQUEST_INPUT_PUBLISHED)];
+      BOOST_CHECK_EQUAL(published.calls, 1U);
+      BOOST_CHECK_EQUAL(published.bytes, input.size());
+      BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0U);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(CollaborationInputReceiptIsClaimedOnceAcrossRoles)
+{
+  runCollaborationInputReceiptCase(true);
+}
+
+BOOST_AUTO_TEST_CASE(LegacyCollaborationInputKeepsOneExecutionContext)
+{
+  runCollaborationInputReceiptCase(false);
+}
+
 BOOST_AUTO_TEST_CASE(ModifiedInlineResponseCiphertextIsRejectedBeforeDelivery)
 {
   runRequestScopedResponseCase(false, true, false);
@@ -827,15 +970,23 @@ BOOST_AUTO_TEST_CASE(ProtectedTargetedExpectedBootRefreshesWithoutWeakeningCarri
       request.setTokens({{"targeted.expected_provider_boot", currentBoot}});
     bool terminal = false, timedOut = false;
     ResponseMessage received;
+    const auto inventory = std::make_shared<ControlByteStatistics>(true);
     const auto id = environment.user().RequestServiceTargeted(providerName, service, request, 5000,
       [&] (const ndn::Name&) { timedOut = true; terminal = true; },
-      [&] (const ResponseMessage& response) { received = response; terminal = true; });
+      [&] (const ResponseMessage& response) { received = response; terminal = true; }, inventory);
     BOOST_REQUIRE(!id.empty());
     environment.pumpUntil([&] { return terminal; });
     BOOST_REQUIRE(terminal);
     BOOST_REQUIRE(!timedOut);
     BOOST_REQUIRE(received.getStatus());
     BOOST_CHECK(received.getPayload() == output);
+    const auto measured = inventory->seal();
+    BOOST_CHECK(measured.complete);
+    const auto responseEntry = measured.entries[
+      static_cast<std::size_t>(ControlByteKind::RESPONSE_DECODED)];
+    BOOST_CHECK_EQUAL(responseEntry.calls, 1U);
+    BOOST_CHECK_GE(responseEntry.bytes, output.size());
+    BOOST_CHECK(measured.responseBytesCaptured);
     BOOST_REQUIRE_EQUAL(modes.size(), round + 1);
     BOOST_CHECK_EQUAL(modes.back(), round == 0 || round == 2
       ? tlv::TargetedBootstrapRequest : tlv::TargetedRequest);

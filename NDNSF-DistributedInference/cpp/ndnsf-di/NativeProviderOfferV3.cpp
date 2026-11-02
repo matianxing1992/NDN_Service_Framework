@@ -1,4 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
+#include "request-work-statistics.hpp"
+
+#include <boost/scope_exit.hpp>
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -189,6 +192,20 @@ issueNativeProviderOfferV3(const std::vector<std::uint8_t>& requestPayload,
                            const NativeProviderOfferV3Config& config,
                            std::uint64_t nowMs)
 {
+  const auto work = config.workObserver ? makeNativeWorkStatistics() : nullptr;
+  std::string observedRequestId;
+  BOOST_SCOPE_EXIT_ALL(&) {
+    if (work) {
+      try {
+        config.workObserver(observedRequestId, work->snapshot());
+      }
+      catch (...) {
+        // Observations cannot change offer admission or replace its failure.
+      }
+    }
+  };
+  NativeWorkScope offerWork(work, "ack-offer", NativeWorkKind::UNCLASSIFIED);
+  NativeWorkScope parseWork(work, "ack-offer-parse", NativeWorkKind::LOCAL);
   validateConfig(config);
   const std::string wire(requestPayload.begin(), requestPayload.end());
   boost::property_tree::ptree root;
@@ -215,6 +232,7 @@ issueNativeProviderOfferV3(const std::vector<std::uint8_t>& requestPayload,
   }
 
   const auto requestId = root.get<std::string>("request_id", "");
+  if (work) observedRequestId = requestId;
   const auto service = root.get<std::string>("service", "");
   const auto modelDigest = root.get<std::string>("model_identity_hash", "");
   const auto attempt = root.get<std::uint64_t>("attempt", 0);
@@ -235,15 +253,21 @@ issueNativeProviderOfferV3(const std::vector<std::uint8_t>& requestPayload,
   }
 
   std::vector<NativeDeviceResourceObservationV3> resources;
+  parseWork.finish();
   const bool gpu = std::any_of(config.devices.begin(), config.devices.end(),
     [] (const std::string& device) { return device.rfind("cuda:", 0) == 0; }) ||
     std::any_of(config.backends.begin(), config.backends.end(),
     [] (const std::string& backend) { return backend.find("cuda") != std::string::npos; });
   if (gpu) {
+    NativeWorkScope resourceWork(work, "ack-device-resource", NativeWorkKind::UNCLASSIFIED);
     try {
       if (!config.observeResources || config.devices.empty())
         return reject("DI_V3_GPU_RESOURCE_UNAVAILABLE");
-      resources = config.observeResources(nowMs);
+      {
+        NativeWorkScope callbackWork(work, "ack-resource-callback", NativeWorkKind::UNCLASSIFIED);
+        resources = config.observeResources(nowMs, work);
+      }
+      NativeWorkScope validationWork(work, "ack-resource-validate", NativeWorkKind::LOCAL);
       std::set<std::string> seen;
       for (const auto& resource : resources) {
         if (resource.device.rfind("cuda:", 0) != 0 ||
@@ -265,7 +289,9 @@ issueNativeProviderOfferV3(const std::vector<std::uint8_t>& requestPayload,
   const auto unsignedOffer = canonicalOffer(
     config, resources, requestId, attempt, modelDigest, graphDigest, nowMs, deadlineMs,
     std::nullopt);
+  NativeWorkScope signingWork(work, "ack-offer-sign", NativeWorkKind::UNCLASSIFIED);
   const auto signature = config.signDigest(sha256Digest(unsignedOffer));
+  signingWork.finish();
   if (signature.empty()) {
     throw std::runtime_error("native V3 Provider offer signer returned no signature");
   }
@@ -275,6 +301,10 @@ issueNativeProviderOfferV3(const std::vector<std::uint8_t>& requestPayload,
   result.payload = canonicalOffer(
     config, resources, requestId, attempt, modelDigest, graphDigest, nowMs, deadlineMs, signature);
   result.pendingStateTtlMs = deadlineMs - nowMs;
+  if (work) {
+    work->addCount("ack.v3OfferRepresentationBytes", result.payload.size());
+    work->addCount("ack.successfulV3Offers", 1);
+  }
   return result;
 }
 

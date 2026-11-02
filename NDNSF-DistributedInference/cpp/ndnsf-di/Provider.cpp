@@ -1883,7 +1883,9 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
               artifact->ciphertextDigest =
                 protectedCiphertext
                   ? built.metadata.at("encryptedArtifactDigest")
-                  : built.metadata.at("assembledModelDigest");
+                  : (built.metadata.count("assembledFileSetDigest") != 0
+                    ? built.metadata.at("assembledFileSetDigest")
+                    : built.metadata.at("assembledModelDigest"));
               artifact->formatVersion = "ndnsf-di-native-assembled-artifact-v1";
               artifact->canonicalMetadataJson =
                 std::string("{\"schema\":\"ndnsf-di-provider-artifact-v1\","
@@ -1917,10 +1919,10 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 // content-addressed cache.  Keep the entry after this
                 // Provider exits so a later run can verify and reopen it;
                 // the current Selection/grant remains the authorization gate.
-                const auto modelPath = requireProviderArtifactPathUnderCacheRoot(
-                  options.cacheDir, built.path);
                 cleanupGuard.callback = [] {};
-                artifact->ciphertextBytes = std::filesystem::file_size(modelPath);
+                artifact->ciphertextBytes = validateNativeAssembledArtifactFiles(
+                  built, options.cacheDir, projection.assemblyContract().maxAssembledBytes, false,
+                  [&jobControl] { jobControl.requireActive(); });
               }
               auto runner = std::make_shared<const NativeModelRunnerSpec>(std::move(built));
               return ProviderArtifactCache::BuildResult{
@@ -2008,6 +2010,9 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
             spec.path = cachedModelPath.string();
             if (!std::filesystem::is_regular_file(cachedModelPath))
               throw std::runtime_error("DI_PROVIDER_ARTIFACT_MATERIALIZATION_MISSING");
+            validateNativeAssembledArtifactFiles(spec, options.cacheDir,
+              projection.assemblyContract().maxAssembledBytes, options.verifyCachedArtifactDigest,
+              [&control] { control.requireActive(); });
           }
           if (templateHit)
             metrics->templateHits.fetch_add(1, std::memory_order_relaxed);
@@ -2065,6 +2070,9 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
         identity.grantDigest = projection.grantDigest;
         identity.fencingToken = protectedRuntime->binding().fencingToken;
         identity.revocationSequence = protectedRuntime->binding().revocationSequence;
+        if (const auto fileSet = spec.metadata.find("assembledFileSetDigest");
+            fileSet != spec.metadata.end())
+          identity.assembledFileSetDigest = fileSet->second;
         auto use = protectedResidentAuthority->acquire(
           identity, *protectedRuntime, providerNowMs());
         spec.metadata["protectedResidentIdentity"] = use.identity();

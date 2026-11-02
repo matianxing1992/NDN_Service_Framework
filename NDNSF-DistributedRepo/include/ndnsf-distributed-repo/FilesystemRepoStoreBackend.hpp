@@ -43,6 +43,7 @@ public:
   size_t size() const override;
   std::vector<RepoObjectManifest> listManifests() const override;
   uint64_t usedBytes() const override;
+  bool hasCommittedPayload(const RepoObjectManifest& manifest) const override;
 
   void putRange(const RepoObjectManifest& manifest,
                 RepoByteRange range,

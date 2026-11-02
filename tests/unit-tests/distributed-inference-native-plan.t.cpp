@@ -6,6 +6,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
@@ -976,8 +977,28 @@ BOOST_AUTO_TEST_CASE(NativeFixedRoleCacheScopesIdentityReplacementAndLifetime)
   const auto projection = parseProjection(projectionJson(1, {}, "CPU", {}, false, true));
   const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
   NativeFixedRoleAssignmentCache cache(1);
-  const auto installed = cache.remember("/user/A", "/service", fixed);
+  auto statistics = std::make_shared<NativeWorkStatistics>();
+  std::weak_ptr<NativeWorkStatistics> weakStatistics = statistics;
+  BOOST_CHECK(!cache.find("/user/A", "/service", fixed->provider(), "S0R0",
+                          fixed->digest(), statistics));
+  const auto installed = cache.remember("/user/A", "/service", fixed, statistics);
   BOOST_CHECK_EQUAL(installed.get(), fixed.get());
+  BOOST_CHECK_EQUAL(cache.find("/user/A", "/service", fixed->provider(), "S0R0",
+                                fixed->digest(), statistics).get(), fixed.get());
+  BOOST_CHECK_EQUAL(cache.findMatching("/user/A", "/service", fixed->provider(),
+                                      projection.selectedRole, statistics).get(), fixed.get());
+  BOOST_CHECK_EQUAL(cache.findMatching("/user/A", "/service", projection, statistics).get(),
+                    fixed.get());
+  const auto observed = statistics->snapshot();
+  BOOST_CHECK(observed.complete);
+  BOOST_CHECK_EQUAL(observed.activeSpans, 0U);
+  BOOST_CHECK_EQUAL(observed.counts.count("fixedRole.cacheEntriesErased"), 0U);
+  BOOST_CHECK_EQUAL(observed.phases.at("fixed-cache-lookup").calls, 4U);
+  BOOST_CHECK(observed.phases.at("fixed-cache-lookup").kind == NativeWorkKind::LOCAL);
+  BOOST_CHECK_EQUAL(observed.phases.at("fixed-cache-lock").calls, 5U);
+  BOOST_CHECK(observed.phases.at("fixed-cache-lock").kind == NativeWorkKind::WAIT);
+  statistics.reset();
+  BOOST_CHECK(weakStatistics.expired());
   BOOST_CHECK_EQUAL(cache.find("/user/A", "/service", fixed->provider(), "S0R0", fixed->digest()).get(), fixed.get());
   BOOST_CHECK_EQUAL(cache.findMatching("/user/A", "/service", fixed->provider(), projection.selectedRole).get(), fixed.get());
   BOOST_CHECK(!cache.find("/user/B", "/service", fixed->provider(), "S0R0", fixed->digest()));
@@ -995,7 +1016,11 @@ BOOST_AUTO_TEST_CASE(NativeFixedRoleCacheScopesIdentityReplacementAndLifetime)
   changed.grantDigest = digest('9');
   const auto replacement = nativeFixedRoleAssignmentV1FromProjection(changed);
   BOOST_CHECK(!cache.findMatching("/user/A", "/service", fixed->provider(), changed.selectedRole));
-  BOOST_CHECK_EQUAL(cache.remember("/user/A", "/service", replacement).get(), replacement.get());
+  auto replacementStatistics = std::make_shared<NativeWorkStatistics>();
+  BOOST_CHECK_EQUAL(cache.remember("/user/A", "/service", replacement,
+                                   replacementStatistics).get(), replacement.get());
+  BOOST_CHECK_EQUAL(replacementStatistics->snapshot().counts.at(
+                      "fixedRole.cacheEntriesErased"), 1U);
   BOOST_CHECK(!cache.find("/user/A", "/service", fixed->provider(), "S0R0", fixed->digest()));
   BOOST_CHECK_EQUAL(installed->digest(), fixed->digest());
   BOOST_CHECK(installed->roleOwner()->nodeIndices == projection.selectedRole.nodeIndices);
@@ -1008,7 +1033,11 @@ BOOST_AUTO_TEST_CASE(NativeFixedRoleCacheScopesIdentityReplacementAndLifetime)
   NativeFixedRoleAssignmentCache expiring(1, std::chrono::milliseconds(1));
   expiring.remember("/user/A", "/service", fixed);
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  BOOST_CHECK(!expiring.find("/user/A", "/service", fixed->provider(), "S0R0", fixed->digest()));
+  auto expiryStatistics = std::make_shared<NativeWorkStatistics>();
+  BOOST_CHECK(!expiring.find("/user/A", "/service", fixed->provider(), "S0R0",
+                             fixed->digest(), expiryStatistics));
+  BOOST_CHECK_EQUAL(expiryStatistics->snapshot().counts.at(
+                      "fixedRole.cacheEntriesErased"), 1U);
   BOOST_CHECK_THROW(NativeFixedRoleAssignmentCache(0), std::invalid_argument);
   BOOST_CHECK_THROW(NativeFixedRoleAssignmentCache(1025), std::invalid_argument);
   BOOST_CHECK_THROW(NativeFixedRoleAssignmentCache(1, std::chrono::milliseconds(0)), std::invalid_argument);
@@ -1077,6 +1106,89 @@ BOOST_AUTO_TEST_CASE(NativeFixedExecutionTemplateBindsCurrentGenerationWithoutIn
   cache.remember("/user", "/service", changedPeer);
   BOOST_CHECK_EQUAL(next.fixedExecutionTemplateOwner.get(), fixed->executionTemplate().get());
   BOOST_CHECK_EQUAL(next.fixedRoleReference, fixed->digest());
+}
+
+BOOST_AUTO_TEST_CASE(NativeRangeInvocationEnforcesIndependentExpandedByteBound)
+{
+  // This exercises pre-I/O shape/allocation admission, not authorization.
+  // Materialize a separate legacy reference only in this fixture.
+  NativeJson binding{{"producer_namespace", "/provider/0"}, {"requester", "/requester"},
+    {"group_id", "group-\"line\nquoted"}, {"group_epoch", "epoch"}, {"microbatch", 0},
+    {"segment_count", 2}, {"manifest_digest", digest('a')}, {"endpoint_digest", digest('b')},
+    {"no_progress_deadline_ms", 1000}, {"hard_deadline_ms", 5000},
+    {"prefetch_bundle_bytes", 7000}, {"prefetch_segment_bytes", 4000},
+    {"inline_first_segment", true}};
+  auto input = binding;
+  input.erase("prefetch_bundle_bytes"); input.erase("prefetch_segment_bytes");
+  input["tensor_digest"] = digest('c'); input["layout_digest"] = digest('d');
+  input["target_layout_digest"] = digest('d');
+  NativeJson root{{"schema", "ndnsf-di-selection-invocation-v3"}, {"schema_version", 3},
+    {"request_id", "/request"}, {"dependencies", NativeJson::array()},
+    {"generation_contract", {{"max_generated_tokens", 32}}},
+    {"dataflow", {{"endpoint_range", {{"epoch_count", 33}, {"operation_stride", 3}}},
+      {"may_publish", NativeJson::array({binding})},
+      {"must_fetch", NativeJson::array({input, binding})},
+      {"wait_for", NativeJson::array()}, {"dataflow_digest", digest('e')}}}};
+  root = nativeParseJson(nativeCanonicalJson(root));
+  const auto expandReference = [](NativeJson current) {
+    const auto count = current.at("dataflow").at("endpoint_range").at("epoch_count")
+      .get<std::size_t>();
+    current["schema"] = "ndnsf-di-selection-invocation-v1";
+    current["schema_version"] = 1;
+    current["dataflow"].erase("endpoint_range");
+    for (const auto* key : {"may_publish", "must_fetch"}) {
+      const auto originals = current.at("dataflow").at(key);
+      current["dataflow"][key] = NativeJson::array();
+      for (const auto& original : originals) {
+        const auto repetitions = original.contains("tensor_digest") ? 1 : count;
+        for (std::size_t epoch = 0; epoch < repetitions; ++epoch) {
+          auto entry = original;
+          if (epoch != 0) {
+            entry.erase("prefetch_bundle_bytes"); entry.erase("prefetch_segment_bytes");
+          }
+          current["dataflow"][key].push_back(std::move(entry));
+        }
+      }
+    }
+    return nativeCanonicalJson(current).size();
+  };
+  for (const std::size_t budget : {32U, 128U, 256U, 1025U}) {
+    root["generation_contract"]["max_generated_tokens"] = budget;
+    root["dataflow"]["endpoint_range"]["epoch_count"] = budget + 1;
+    BOOST_REQUIRE_LT(expandReference(root), 4U << 20);
+    BOOST_CHECK_NO_THROW(validateNativeSelectionInvocationBindingShapeV1(root));
+    auto noSizing = root;
+    for (const auto* key : {"may_publish", "must_fetch"}) {
+      for (auto& item : noSizing["dataflow"][key]) {
+        item.erase("prefetch_bundle_bytes"); item.erase("prefetch_segment_bytes");
+      }
+    }
+    BOOST_REQUIRE_LT(expandReference(noSizing), 4U << 20);
+    BOOST_CHECK_NO_THROW(validateNativeSelectionInvocationBindingShapeV1(noSizing));
+  }
+  const auto epochs = std::size_t{1026};
+  const auto base = expandReference(root);
+  const auto padding = ((4U << 20) - base) / epochs;
+  root["dataflow"]["may_publish"][0]["producer_namespace"] =
+    "/provider/0" + std::string(padding, 'x');
+  const auto remainder = (4U << 20) - expandReference(root);
+  root["request_id"] = "/request" + std::string(remainder, 'x');
+  BOOST_REQUIRE_EQUAL(expandReference(root), 4U << 20);
+  BOOST_REQUIRE_LT(nativeCanonicalJson(root).size(), 10000U);
+  BOOST_CHECK_NO_THROW(validateNativeSelectionInvocationBindingShapeV1(root));
+  auto tooLarge = root;
+  tooLarge["request_id"] = root.at("request_id").get<std::string>() + "x";
+  BOOST_CHECK_EQUAL(expandReference(tooLarge), (4U << 20) + 1);
+  BOOST_CHECK_THROW(validateNativeSelectionInvocationBindingShapeV1(tooLarge), std::invalid_argument);
+  auto bad = root;
+  bad["dataflow"]["may_publish"][0]["manifest_digest"] = "short";
+  BOOST_CHECK_THROW(validateNativeSelectionInvocationBindingShapeV1(bad), std::invalid_argument);
+  bad = root;
+  bad["dataflow"]["endpoint_range"]["operation_stride"] = std::uint64_t{0};
+  BOOST_CHECK_THROW(validateNativeSelectionInvocationBindingShapeV1(bad), std::invalid_argument);
+  bad = root;
+  bad["schema"] = "ndnsf-di-selection-invocation-v4";
+  BOOST_CHECK_THROW(validateNativeSelectionInvocationBindingShapeV1(bad), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(NativeFixedTemplateReusesBaseEpochAcrossTokenBudgets)
@@ -1642,8 +1754,22 @@ BOOST_AUTO_TEST_CASE(NativeV3SelectionRoleFactoryReusesValidatedGenerationContra
   for (auto& value : values) certifyNamingFlow(value);
 
   NativeSelectionProjectionRoleFactory factory(values[0], values[0].provider);
-  const auto factoryPrefill = factory(0);
-  const auto factoryFinalize = factory(1);
+  auto statistics = makeNativeWorkStatistics();
+  BOOST_REQUIRE(statistics);
+  const std::weak_ptr<NativeWorkStatistics> statisticsOwner = statistics;
+  const auto factoryPrefill = factory(0, statistics);
+  const auto factoryFinalize = factory(1, statistics);
+  const auto work = statistics->snapshot();
+  BOOST_REQUIRE(work.complete);
+  BOOST_CHECK_EQUAL(work.activeSpans, 0U);
+  BOOST_REQUIRE(work.phases.count("epoch-role-factory-lock"));
+  BOOST_REQUIRE(work.phases.count("epoch-role-factory-decode"));
+  BOOST_CHECK(work.phases.at("epoch-role-factory-lock").kind == NativeWorkKind::WAIT);
+  BOOST_CHECK(work.phases.at("epoch-role-factory-decode").kind == NativeWorkKind::LOCAL);
+  BOOST_CHECK_EQUAL(work.phases.at("epoch-role-factory-lock").calls, 2U);
+  BOOST_CHECK_EQUAL(work.phases.at("epoch-role-factory-decode").calls, 2U);
+  statistics.reset();
+  BOOST_CHECK(statisticsOwner.expired());
   const auto directPrefill = roleSpecFromSelectionProjectionV3(
     values[0], values[0].provider, 0);
   const auto directFinalize = roleSpecFromSelectionProjectionV3(

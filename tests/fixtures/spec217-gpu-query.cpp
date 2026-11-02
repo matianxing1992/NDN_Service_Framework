@@ -1,10 +1,13 @@
 // Controlled vendor ABI for the native device-query subprocess tests only.
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 namespace {
+
+std::atomic<unsigned> queryCounts[4]{};
 
 bool
 scenario(const char* name)
@@ -16,6 +19,18 @@ scenario(const char* name)
 } // namespace
 
 extern "C" {
+
+void
+spec217GpuQueryReset()
+{
+  for (auto& count : queryCounts) count.store(0);
+}
+
+unsigned
+spec217GpuQueryCount(unsigned index)
+{
+  return index < 4 ? queryCounts[index].load() : 0;
+}
 
 int
 cudaGetDeviceCount(int* count)
@@ -57,12 +72,14 @@ cuDeviceGetUuid(void* uuid, int device)
 int
 nvmlInit_v2()
 {
-  return 0;
+  ++queryCounts[0];
+  return scenario("init-error") ? 1 : 0;
 }
 
 int
 nvmlShutdown()
 {
+  ++queryCounts[1];
   return 0;
 }
 
@@ -101,6 +118,7 @@ nvmlDeviceGetUUID(void* device, char* output, unsigned int size)
 int
 nvmlDeviceGetHandleByUUID(const char* uuid, void** device)
 {
+  ++queryCounts[2];
   if (scenario("memory-device-missing")) return 1;
   for (unsigned int index = 0; index < 4; ++index) {
     void* candidate = nullptr;
@@ -118,6 +136,7 @@ nvmlDeviceGetHandleByUUID(const char* uuid, void** device)
 int
 nvmlDeviceGetMemoryInfo(void* device, void* result)
 {
+  ++queryCounts[3];
   if (scenario("memory-error")) return 1;
   struct Memory { unsigned long long total; unsigned long long free; unsigned long long used; };
   auto* memory = static_cast<Memory*>(result);
@@ -125,6 +144,7 @@ nvmlDeviceGetMemoryInfo(void* device, void* result)
   constexpr unsigned long long MIB = 1024 * 1024;
   memory->total = 24576 * MIB;
   memory->free = (index == 3 ? 18000 : 1000) * MIB;
+  if (scenario("memory-low")) memory->free = 50 * MIB;
   memory->used = memory->total - memory->free;
   if (scenario("memory-zero-total")) memory->total = 0;
   if (scenario("memory-overflow")) memory->free = memory->total + 1;

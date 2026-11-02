@@ -4,12 +4,16 @@
 #include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include <nac-abe/attribute-authority.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
+#include <ndn-cxx/security/validator-null.hpp>
 #include <ndn-cxx/util/io.hpp>
 #include <ndn-svs/security-options.hpp>
 #include <ndn-svs/svspubsub.hpp>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <cstring>
 #include <fstream>
@@ -19,6 +23,7 @@
 #include <sstream>
 #include <sys/wait.h>
 #include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/post.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -344,6 +349,226 @@ BOOST_AUTO_TEST_CASE(WorkerPublicationMeasuresOwnerDispatchAndPreservesOriginalP
   }
   }
 }
+
+BOOST_AUTO_TEST_CASE(PersistentWorkerPublicationRetainsAndServesEveryDurableObject)
+{
+  using namespace ndnsf_distributed_repo;
+  constexpr size_t OBJECT_COUNT = 672;
+  constexpr size_t PAYLOAD_BYTES = 65536;
+  const auto root = fs::temp_directory_path() /
+    ("spec201-persistent-worker-" + std::to_string(::getpid()));
+  fs::create_directories(root);
+  struct Cleanup
+  {
+    fs::path path;
+    ~Cleanup() { std::error_code e; fs::remove_all(path, e); }
+  } cleanup{root};
+  const auto spool = (root / "spool").string();
+  const auto references = (root / "references").string();
+  ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ScopedEnvironmentValue keyDir("NDNSF_DURABLE_KEY_REFERENCE_DIR", references.c_str());
+  ScopedEnvironmentValue window("NDNSF_REQUEST_LARGE_WINDOW_SEGMENTS", "8");
+  std::string firstFailure;
+  LargeDataServingMetrics metrics;
+  size_t repoObjectCount = 0;
+  uint64_t repoFileBytes = 0;
+  int64_t elapsedMs = 0;
+  bool allLeasesReleased = false;
+
+  StorageCapability capability;
+  capability.repoNode = "/spec201/persistent-worker-repo";
+  capability.freeBytes = 256U << 20;
+  auto repo = std::make_shared<RepoCore>(capability,
+    makeFilesystemRepoStore((root / "repo").string(), 1U << 20, 1U << 20));
+  auto durableStore = std::make_shared<RepoEncryptedLargeDataStore>(repo);
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  boost::asio::io_context io;
+  ndn::DummyClientFace face(io, keys, {false, true});
+  ndn::DummyClientFace authorityFace(io, keys, {false, true});
+  face.linkTo(authorityFace);
+  const auto actor = makeRsaIdentity(keys, ndn::Name("/spec201/persistent-worker-owner"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/persistent-worker-authority"));
+  ndn::security::ValidatorNull authorityValidator;
+  ndn::nacabe::KpAttributeAuthority attributeAuthority(
+    authority, authorityFace, authorityValidator, keys);
+  for (int round = 0; round < 4; ++round) {
+    io.poll();
+    io.restart();
+  }
+  const ndn::Name service("/spec201/model");
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust{actor, authority};
+  auto user = std::make_unique<LocalServiceUser>(face, ndn::Name("/spec201/raw"), actor,
+                                                authority, fixedTrust.schemaPath());
+  user->useSigningKeyChainForSigningOnlyForTest(keys);
+  user->attachLocalMockPubSubForTest(pubsub(face, keys));
+  user->setEncryptedLargeDataRangeStore(durableStore);
+  user->init();
+  for (int round = 0; round < 4; ++round) {
+    io.poll();
+    io.restart();
+  }
+  user->prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+  const auto request = user->prepareServiceRequest(service.toUri());
+  const std::vector<uint8_t> plaintext(PAYLOAD_BYTES, 0x42);
+  std::vector<LargeDataPublishResult> publications;
+  std::vector<std::weak_ptr<void>> servingLeases;
+  publications.reserve(OBJECT_COUNT);
+  servingLeases.reserve(OBJECT_COUNT);
+
+  io.restart();
+  auto work = boost::asio::make_work_guard(io);
+  std::thread faceThread([&io] { io.run(); });
+  struct FaceThreadJoin
+  {
+    boost::asio::io_context& io;
+    std::thread& thread;
+    ~FaceThreadJoin()
+    {
+      io.stop();
+      if (thread.joinable())
+        thread.join();
+    }
+  } faceThreadJoin{io, faceThread};
+
+  const auto started = std::chrono::steady_clock::now();
+  const auto deadline = started + std::chrono::minutes(6);
+  const auto fetchData = [&face, &io](const ndn::Name& name) -> std::optional<ndn::Data> {
+    auto promise = std::make_shared<std::promise<ndn::Data>>();
+    auto delivered = std::make_shared<std::atomic_bool>(false);
+    auto future = promise->get_future();
+    auto connection = face.onSendData.connect(
+      [promise, delivered, name](const ndn::Data& data) {
+        if (data.getName() == name && !delivered->exchange(true))
+          promise->set_value(data);
+      });
+    boost::asio::post(io, [&face, name] { face.receive(ndn::Interest(name)); });
+    if (future.wait_for(std::chrono::seconds(1)) != std::future_status::ready)
+      return std::nullopt;
+    return future.get();
+  };
+  for (size_t i = 0; i < OBJECT_COUNT; ++i) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      firstFailure = "persistent worker publication deadline exceeded";
+      break;
+    }
+    const auto label = "worker-object-" + std::to_string(i);
+    LargeDataPublishOptions options;
+    options.retention = EncryptedLargeDataRetention::Durable;
+    options.publicationIdentity = keyReferenceDigest(label);
+    PublishedContentName contentName;
+    contentName.kind = ContentDataKind::Blob;
+    contentName.label = label;
+    options.contentName = contentName;
+    auto publication = user->publishEncryptedLargeDataFromWorker(
+      request, plaintext, "persistent-worker-probe", ndn::time::milliseconds(1000), options);
+    const bool succeeded = publication.success;
+    const auto error = publication.errorMessage;
+    publications.push_back(std::move(publication));
+    if (!succeeded) {
+      firstFailure = "publication " + std::to_string(i) + " failed: " + error;
+      break;
+    }
+    const auto& retained = publications.back();
+    if (!retained.fileBacked || !retained.servingLease) {
+      firstFailure = "publication " + std::to_string(i) + " did not retain a serving lease";
+      break;
+    }
+    servingLeases.emplace_back(retained.servingLease);
+    try {
+      const auto stored = durableStore->lookupDurable(retained.publicationIdentity, {});
+      if (!stored || !stored->source) {
+        firstFailure = "Repo lookup failed for publication " + std::to_string(i);
+        break;
+      }
+      const auto manifestPacket = fetchData(retained.manifestName);
+      if (!manifestPacket) {
+        firstFailure = "manifest Interest was not served for publication " + std::to_string(i) +
+          " name=" + retained.manifestName.toUri();
+        break;
+      }
+      const auto manifestWireBlock = manifestPacket->wireEncode();
+      const std::vector<uint8_t> manifestWire(manifestWireBlock.begin(), manifestWireBlock.end());
+      if (!ndn::security::verifySignature(*manifestPacket, actor) ||
+          stored->source->readOriginalDataPacket(retained.manifestName) != manifestWire) {
+        firstFailure = "manifest signature or original wire mismatch at publication " +
+          std::to_string(i);
+        break;
+      }
+      const auto& content = manifestPacket->getContent();
+      const auto manifest = ProtectedBlobManifest::decode(
+        std::vector<uint8_t>(content.value(), content.value() + content.value_size()),
+        actor.getIdentity(), retained.manifestName);
+      if (manifest.segmentCount == 0) {
+        firstFailure = "empty manifest at publication " + std::to_string(i);
+        break;
+      }
+      const auto segmentName = ndn::Name(manifest.dataPrefix)
+        .appendSegment(manifest.segmentCount - 1);
+      const auto segmentPacket = fetchData(segmentName);
+      if (!segmentPacket) {
+        firstFailure = "last segment was not served at publication " + std::to_string(i);
+        break;
+      }
+      const auto segmentWireBlock = segmentPacket->wireEncode();
+      const std::vector<uint8_t> segmentWire(segmentWireBlock.begin(), segmentWireBlock.end());
+      if (!ndn::security::verifySignature(*segmentPacket, actor) ||
+          stored->source->readOriginalDataPacket(segmentName) != segmentWire) {
+        firstFailure = "segment signature or original wire mismatch at publication " +
+          std::to_string(i);
+        break;
+      }
+      const auto retryPacket = fetchData(segmentName);
+      if (!retryPacket || retryPacket->wireEncode() != segmentPacket->wireEncode()) {
+        firstFailure = "retransmitted segment wire changed at publication " +
+          std::to_string(i);
+        break;
+      }
+    }
+    catch (const std::exception& error) {
+      firstFailure = "verification failed at publication " + std::to_string(i) +
+        ": " + error.what();
+    }
+  }
+  io.stop();
+  if (faceThread.joinable())
+    faceThread.join();
+
+  metrics = user->getLargeDataServingMetricsForTest();
+  const auto objects = repo->list();
+  repoObjectCount = objects.size();
+  for (const auto& entry : fs::recursive_directory_iterator(root / "repo")) {
+    if (entry.is_regular_file())
+      repoFileBytes += entry.file_size();
+  }
+  user->abortLargeDataPublications(publications);
+  publications.clear();
+  allLeasesReleased = std::all_of(servingLeases.begin(), servingLeases.end(),
+    [](const auto& lease) { return lease.expired(); });
+  elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now() - started).count();
+  user.reset();
+  durableStore.reset();
+  repo.reset();
+
+  std::error_code cleanupError;
+  fs::remove_all(root, cleanupError);
+  const bool scratchRemoved = !cleanupError && !fs::exists(root);
+  std::cout << "SPEC201_PERSISTENT_WORKER_PUBLICATION objects=" << OBJECT_COUNT
+            << " completed=" << metrics.publicationCount
+            << " repoObjects=" << repoObjectCount
+            << " repoFileBytes=" << repoFileBytes
+            << " peakWindowSegments=" << metrics.peakWindowSegments
+            << " elapsedMs=" << elapsedMs
+            << " scratchRemoved=" << scratchRemoved
+            << " firstFailure=" << (firstFailure.empty() ? "none" : firstFailure) << '\n';
+  BOOST_CHECK_MESSAGE(allLeasesReleased, "publication serving leases remain retained after abort");
+  BOOST_CHECK_MESSAGE(scratchRemoved, "temporary Repo workspace was not removed");
+  BOOST_CHECK_EQUAL(metrics.publicationCount, OBJECT_COUNT);
+  BOOST_CHECK_EQUAL(repoObjectCount, OBJECT_COUNT);
+  BOOST_CHECK_LE(metrics.peakWindowSegments, 8U);
+  BOOST_CHECK_MESSAGE(firstFailure.empty(), firstFailure);
+}
+
 BOOST_AUTO_TEST_CASE(StrictReaderRejectsLegacyAndMalformedNamesBeforeInterest)
 {
   ndn::KeyChain keys("pib-memory:", "tpm-memory:");

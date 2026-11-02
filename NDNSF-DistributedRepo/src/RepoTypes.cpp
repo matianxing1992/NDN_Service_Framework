@@ -1012,6 +1012,12 @@ public:
     return m_authoritativeStore->usedBytes();
   }
 
+  bool hasCommittedPayload(const RepoObjectManifest& manifest) const override
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    return m_authoritativeStore->hasCommittedPayload(manifest);
+  }
+
   RepoCacheStatus cacheStatus() const override
   {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -2048,6 +2054,20 @@ RepoCacheStatus
 RepoStoreBackend::cacheStatus() const
 {
   return {};
+}
+
+bool
+RepoStoreBackend::hasCommittedPayload(const RepoObjectManifest& manifest) const
+{
+  if (manifest.size == 0 || manifest.sha256.empty()) {
+    return false;
+  }
+  for (const auto& existing : listManifests()) {
+    if (existing.sha256 == manifest.sha256) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void

@@ -470,6 +470,11 @@ public:
 
   virtual uint64_t usedBytes() const = 0;
 
+  // Conservatively reports whether a commit may reuse payload bytes already
+  // present for this content. Content-addressed stores also detect orphaned
+  // committed payloads that are not referenced by a manifest.
+  virtual bool hasCommittedPayload(const RepoObjectManifest& manifest) const;
+
   virtual RepoCacheStatus cacheStatus() const;
 
   // Large-object path.  Legacy vector backends keep the compatibility

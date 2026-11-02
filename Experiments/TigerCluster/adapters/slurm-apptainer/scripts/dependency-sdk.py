@@ -18,6 +18,8 @@ MANIFEST = BASE / 'manifest/dependency-sdk.json'
 TOKENIZER_ARCHIVE = BASE / 'lib/libndnsf_tokenizer_bridge.a'
 TOKENIZER_PROVENANCE = BASE / 'manifest/tokenizer-bridge'
 NAC_PROVENANCE = BASE / 'manifest/nac-abe'
+ORT_PREFIX = Path('/opt/onnxruntime')
+ORT_PROVENANCE = BASE / 'manifest/onnxruntime'
 NAC_SUITES = ('TestProducerBoundCk', 'TestConsumerRevocation', 'TestConsumer', 'TestProducer')
 TOKENIZER_SYMBOLS = frozenset('ndi_token_create ndi_token_encode ndi_token_decode '
                               'ndi_token_decode_stable ndi_token_free ndi_token_destroy'.split())
@@ -37,6 +39,150 @@ def run(*args, **kwargs):
 
 def check(*args, **kwargs):
     subprocess.run(list(args), check=True, **kwargs)
+
+
+def verify_onnxruntime_inputs(inputs):
+    """Verify the explicit runtime pair before a new isolated image is modified."""
+    inputs = Path(inputs)
+    body = json.loads((inputs / 'onnxruntime-upgrade.lock.json').read_text())
+    if body.get('schema') != 'ndnsf-ort-upgrade-v1':
+        raise ValueError('SDK_ORT_INPUT_SCHEMA')
+    for name in ('parentSha256', 'parentSdkSha256'):
+        if not re.fullmatch('[0-9a-f]{64}', body.get(name, '')):
+            raise ValueError('SDK_ORT_PARENT_IDENTITY')
+    filenames = set()
+    for name in ('onnxRuntimeCpp', 'cudaRuntime'):
+        row = body[name]
+        filename = row['filename']
+        if (not re.fullmatch('[A-Za-z0-9_.-]+', filename) or filename in filenames or
+                not re.fullmatch('[0-9a-f]{64}', row['sha256']) or
+                type(row['bytes']) is not int or not 0 < row['bytes'] <= 1024**3 or
+                not re.fullmatch(r'[0-9]+(?:\.[0-9]+){2}', row['version'])):
+            raise ValueError('SDK_ORT_ARCHIVE_IDENTITY:' + name)
+        filenames.add(filename)
+        archive = inputs / filename
+        if (archive.is_symlink() or not archive.is_file() or
+                archive.stat().st_size != row['bytes'] or digest(archive) != row['sha256']):
+            raise ValueError('SDK_ORT_ARCHIVE_CHANGED:' + name)
+    return body
+
+
+def extract_runtime_archive(archive, destination):
+    """Extract a digest-verified vendor archive with one root and internal library links."""
+    with tarfile.open(archive) as source:
+        members = source.getmembers()
+        if not members or len(members) > 10000 or sum(m.size for m in members) > 4 * 1024**3:
+            raise ValueError('SDK_ORT_ARCHIVE_BOUNDS')
+        names = {m.name.rstrip('/') for m in members}
+        entries = {m.name.rstrip('/'): m for m in members}
+        roots = {Path(name).parts[0] for name in names if Path(name).parts}
+        if len(roots) != 1 or len(names) != len(members):
+            raise ValueError('SDK_ORT_ARCHIVE_LAYOUT')
+        for member in members:
+            path = Path(member.name)
+            if (path.is_absolute() or '..' in path.parts or
+                    not (member.isdir() or member.isfile() or member.issym())):
+                raise ValueError('SDK_ORT_ARCHIVE_MEMBER')
+            if member.issym() and (Path(member.linkname).name != member.linkname or
+                                  str(path.parent / member.linkname) not in names):
+                raise ValueError('SDK_ORT_ARCHIVE_LINK')
+            if any(str(parent) in entries and not entries[str(parent)].isdir()
+                   for parent in path.parents if str(parent) != '.'):
+                raise ValueError('SDK_ORT_ARCHIVE_PARENT')
+        # All paths/types/links have been checked before the first extraction write.
+        source.extractall(destination, members=members)
+    return Path(destination) / next(iter(roots))
+
+
+def verify_onnxruntime(info):
+    """Compile against the installed headers and run an independently checked CPU graph."""
+    if (ORT_PREFIX / 'VERSION_NUMBER').read_text().strip() != info['version']:
+        raise ValueError('SDK_ORT_VERSION')
+    pkg_env = dict(os.environ, PKG_CONFIG_PATH=str(ORT_PREFIX / 'lib/pkgconfig'))
+    if run('/usr/bin/pkg-config', '--variable=prefix', 'onnxruntime', env=pkg_env).strip() != str(ORT_PREFIX):
+        raise ValueError('SDK_ORT_PKGCONFIG_PREFIX')
+    for name, target in info['symlinks'].items():
+        if not Path(name).is_symlink() or os.readlink(name) != target:
+            raise ValueError('SDK_ORT_SYMLINK_CHANGED:' + name)
+    with tempfile.TemporaryDirectory(prefix='ort-sdk-probe-') as temporary:
+        executable = Path(temporary) / 'probe'
+        check('/usr/bin/g++', '-B/usr/bin', '-std=c++17', '-DONNX_ML', '-DONNX_NAMESPACE=onnx',
+              str(ORT_PROVENANCE / 'probe.cpp'), '-I/opt/onnx/include',
+              '-I' + str(ORT_PREFIX / 'include'), '-L/opt/onnx/lib',
+              '-L' + str(ORT_PREFIX / 'lib'), '-Wl,-rpath,/opt/onnx/lib:/opt/onnxruntime/lib',
+              '-lonnx_proto', '-lprotobuf', '-lonnxruntime', '-o', str(executable))
+        check(str(executable), info['version'])
+
+
+def upgrade_onnxruntime(inputs=Path('/build-input/onnxruntime')):
+    """Replace only the isolated ORT tree; preserve every unrelated SDK/package identity."""
+    if os.geteuid() != 0 or not Path('/.singularity.d').is_dir():
+        raise ValueError('SDK_CONTAINER_REQUIRED')
+    inputs = Path(inputs)
+    frozen = verify_onnxruntime_inputs(inputs)
+    original = MANIFEST.read_bytes()
+    body = json.loads(original)
+    if hashlib.sha256(original).hexdigest() != frozen['parentSdkSha256']:
+        raise ValueError('SDK_ORT_PARENT_MANIFEST')
+    if ORT_PROVENANCE.exists() or 'onnxRuntimeCpp' in body:
+        raise ValueError('SDK_ORT_OUTPUT_EXISTS')
+    verify()
+    if any(ORT_PREFIX == Path(name) or ORT_PREFIX in Path(name).parents
+           for name in body['artifacts']):
+        raise ValueError('SDK_ORT_PREVIOUS_OWNERSHIP_UNSUPPORTED')
+    with tempfile.TemporaryDirectory(prefix='ort-sdk-upgrade-') as temporary:
+        root = Path(temporary)
+        ort = extract_runtime_archive(inputs / frozen['onnxRuntimeCpp']['filename'], root / 'ort')
+        cuda = extract_runtime_archive(inputs / frozen['cudaRuntime']['filename'], root / 'cuda')
+        if (ort / 'VERSION_NUMBER').read_text().strip() != frozen['onnxRuntimeCpp']['version']:
+            raise ValueError('SDK_ORT_ARCHIVE_VERSION')
+        required = ['include/onnxruntime_c_api.h', 'include/onnxruntime_cxx_api.h',
+                    'lib/libonnxruntime.so', 'lib/libonnxruntime_providers_cuda.so',
+                    'lib/libonnxruntime_providers_shared.so', 'LICENSE']
+        if any(not (ort / name).is_file() for name in required):
+            raise ValueError('SDK_ORT_ARCHIVE_INCOMPLETE')
+        for name in ('libcudart.so', 'libcudart.so.12',
+                     'libcudart.so.' + frozen['cudaRuntime']['version']):
+            source = cuda / 'lib' / name
+            if not source.is_file():
+                raise ValueError('SDK_ORT_CUDA_RUNTIME_INCOMPLETE')
+            shutil.copy2(source, ort / 'lib' / name, follow_symlinks=False)
+        (ort / 'lib/pkgconfig/libonnxruntime.pc').write_text(
+            'prefix=/opt/onnxruntime\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\n'
+            'Name: onnxruntime\nDescription: ONNX Runtime C++ SDK\nVersion: ' +
+            frozen['onnxRuntimeCpp']['version'] +
+            '\nLibs: -L${libdir} -lonnxruntime\nCflags: -I${includedir}\n')
+        (ort / 'lib/pkgconfig/onnxruntime.pc').symlink_to('libonnxruntime.pc')
+        # This prefix is owned exclusively by ORT in the new writable image.
+        if ORT_PREFIX.is_symlink() or not ORT_PREFIX.is_dir():
+            raise ValueError('SDK_ORT_PREFIX_NOT_OWNED_DIRECTORY')
+        shutil.rmtree(ORT_PREFIX)
+        shutil.copytree(ort, ORT_PREFIX, symlinks=True)
+        ORT_PROVENANCE.mkdir()
+        shutil.copy2(inputs / 'onnxruntime-upgrade.lock.json', ORT_PROVENANCE / 'inputs.json')
+        shutil.copy2(inputs / 'probe.cpp', ORT_PROVENANCE / 'probe.cpp')
+        shutil.copy2(cuda / 'LICENSE', ORT_PROVENANCE / 'CUDA_RUNTIME_LICENSE')
+    for name, expected in body['artifacts'].items():
+        if digest(name) != expected:
+            raise ValueError('SDK_ORT_UNRELATED_ARTIFACT_CHANGED:' + name)
+    if run('/usr/bin/dpkg-query', '-W', '-f=${Package}=${Version}\n') != body['packages']:
+        raise ValueError('SDK_ORT_PACKAGES_CHANGED')
+    info = {'version': frozen['onnxRuntimeCpp']['version'], 'inputs': frozen,
+            'symlinks': {str(p): os.readlink(p) for p in ORT_PREFIX.rglob('*') if p.is_symlink()}}
+    verify_onnxruntime(info)
+    shutil.copy2(__file__, BASE / 'manifest/dependency-sdk.py')
+    for directory in (ORT_PREFIX, ORT_PROVENANCE):
+        for path in directory.rglob('*'):
+            if path.is_file():
+                body['artifacts'][str(path)] = digest(path)
+    body['artifacts'][str(BASE / 'manifest/dependency-sdk.py')] = digest(
+        BASE / 'manifest/dependency-sdk.py')
+    body['onnxRuntimeCpp'] = info
+    MANIFEST.write_text(json.dumps(body, indent=2) + '\n')
+    verify()
+    (BASE / 'manifest/onnxruntime-upgrade.json').write_text(json.dumps({
+        'status': 'PASS', 'scope': 'CPP_CPU_IDENTITY_ONLY_CUDA_NOT_QUALIFIED',
+        'parentSdkSha256': frozen['parentSdkSha256'], 'runtime': info}, indent=2) + '\n')
 
 
 def nac_contract(inputs, repository, archive_sha):
@@ -453,6 +599,8 @@ def verify():
     assert run('/usr/bin/dpkg-query', '-W', '-f=${Package}=${Version}\n') == body['packages'], 'SDK_PACKAGES_CHANGED'
     for name, value in body['artifacts'].items():
         assert digest(name) == value, 'SDK_ARTIFACT_CHANGED:' + name
+    if 'onnxRuntimeCpp' in body:
+        verify_onnxruntime(body['onnxRuntimeCpp'])
     if 'tokenizerBridge' in body:
         assert digest(TOKENIZER_ARCHIVE) == body['tokenizerBridge']['archiveSha256'], 'SDK_TOKENIZER_CHANGED'
         verify_tokenizer(TOKENIZER_ARCHIVE, TOKENIZER_PROVENANCE)
@@ -558,5 +706,7 @@ if __name__ == '__main__':
         complete_tokenizer()
     elif sys.argv[1:] == ['complete-nac']:
         complete_nac()
+    elif sys.argv[1:] == ['upgrade-onnxruntime']:
+        upgrade_onnxruntime()
     else:
-        raise SystemExit('usage: dependency-sdk.py prepare|verify|complete-tokenizer|complete-nac')
+        raise SystemExit('usage: dependency-sdk.py prepare|verify|complete-tokenizer|complete-nac|upgrade-onnxruntime')

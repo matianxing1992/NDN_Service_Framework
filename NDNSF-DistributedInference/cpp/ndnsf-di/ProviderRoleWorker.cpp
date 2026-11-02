@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp"
+#include "request-work-statistics.hpp"
 #ifdef NDNSF_DI_EXPERIMENT_FAULTS
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.hpp"
 #endif
@@ -91,11 +92,13 @@ populatePayloadAccounting(StageTransferObservation& observation,
   if (isEncodedTensorBundle(bundle.payload)) {
     // Count bytes and names from the same validated parse, avoiding another
     // allocation and copy of every activation just for accounting.
-    const auto tensors = decodeTensorBundle(bundle.payload);
-    observation.tensorBytes = tensorPayloadBytes(tensors);
+    const auto tensors = decodeTensorBundleViews(bundle.payload);
+    observation.tensorBytes = 0;
     for (const auto& tensor : tensors) {
-      if (tensor.name != generationEpochLineageTensorName())
+      if (tensor.name != generationEpochLineageTensorName()) {
+        observation.tensorBytes += tensor.payload.size();
         observation.tensorNames.push_back(tensor.name);
+      }
     }
   }
   else {
@@ -171,12 +174,22 @@ completeStageTransferObservationImpl(const DependencyEdge& edge,
 
 TensorBundle
 withoutProviderLocalState(const TensorBundle& bundle,
-                          const std::vector<std::string>& stateOutputNames)
+                          const std::vector<std::string>& stateOutputNames,
+                          const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
   if (stateOutputNames.empty() || !isEncodedTensorBundle(bundle.payload)) {
     return bundle;
   }
-  auto tensors = decodeTensorBundle(bundle.payload);
+  // Resident runners already keep KV outputs outside the activation bundle.
+  // Validate its framing without copying/re-encoding every tensor in that case.
+  const auto views = decodeTensorBundleViews(bundle.payload, workStatistics);
+  if (std::none_of(views.begin(), views.end(), [&] (const auto& tensor) {
+        return std::find(stateOutputNames.begin(), stateOutputNames.end(),
+                         tensor.name) != stateOutputNames.end();
+      })) {
+    return bundle;
+  }
+  auto tensors = decodeTensorBundle(bundle.payload, workStatistics);
   tensors.erase(
     std::remove_if(tensors.begin(), tensors.end(), [&] (const auto& tensor) {
       return std::find(stateOutputNames.begin(), stateOutputNames.end(),
@@ -195,6 +208,8 @@ providerDecodeStateFromOutputs(
   const std::map<std::string, TensorBundle>& outputs,
   const RoleSpec& role)
 {
+  NativeWorkScope stateWork(role.workStatistics, "role-decode-state-pack",
+                            NativeWorkKind::LOCAL);
   if (role.stateInputNames.size() != role.stateOutputNames.size() ||
       role.stateInputNames.empty()) {
     throw std::invalid_argument(
@@ -210,7 +225,8 @@ providerDecodeStateFromOutputs(
       }
       try {
         auto tensor = findTensor(
-          decodeTensorBundle(output.second.payload), role.stateOutputNames[index]);
+          decodeTensorBundle(output.second.payload, role.workStatistics),
+          role.stateOutputNames[index]);
         tensor.name = role.stateInputNames[index];
         nextState.push_back(std::move(tensor));
         found = true;
@@ -497,6 +513,7 @@ ProviderRoleWorker::executeAsyncImpl(
       // bundle is consumed directly.
       const auto existing = item.initialInputsByScope.find(edge.scope);
       if (existing != item.initialInputsByScope.end()) {
+        timing.preSatisfied = true;
         validateTensorBundleForEdge(edge, existing->second);
         timing.fetchCompletedAt = std::chrono::steady_clock::now();
         timing.bytes = existing->second.payload.size();
@@ -591,15 +608,23 @@ ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
     waitId,
     deadline,
     [state] (const DependencyWaitControl& control) {
+      NativeWorkScope admissionWork(state->item.role.workStatistics,
+                                    "role-dependency-admission",
+                                    NativeWorkKind::LOCAL);
       try {
         for (auto& pending : state->pendingInputs) {
-          while (pending.future.wait_for(std::chrono::milliseconds(2)) !=
-                 std::future_status::ready) {
-            if (control.isCancelled()) {
-              return DependencyWaitStatus::Cancelled;
-            }
-            if (control.deadlineExpired()) {
-              return DependencyWaitStatus::DeadlineExpired;
+          {
+            NativeWorkScope inputWait(state->item.role.workStatistics,
+                                      "role-dependency-fetch-wait",
+                                      NativeWorkKind::WAIT);
+            while (pending.future.wait_for(std::chrono::milliseconds(2)) !=
+                   std::future_status::ready) {
+              if (control.isCancelled()) {
+                return DependencyWaitStatus::Cancelled;
+              }
+              if (control.deadlineExpired()) {
+                return DependencyWaitStatus::DeadlineExpired;
+              }
             }
           }
           auto bundle = pending.future.get();
@@ -981,16 +1006,35 @@ ProviderRoleWorker::execute(const WorkItem& item)
   std::thread watchdog;
   if (item.collective.has_value()) {
     const auto runtime = item.collective->runtime;
+    const auto workStatistics = item.role.workStatistics;
     const auto tickMs = std::max<std::uint64_t>(
       1, runtime->snapshot().schedulerTickMs);
-    watchdog = std::thread([this, runtime, tickMs, &watchdogDone] {
+    watchdog = std::thread([this, runtime, tickMs, workStatistics,
+                            &watchdogDone] {
+      NativeWorkScope watchdogWork(workStatistics,
+                                   "role-collective-watchdog",
+                                   NativeWorkKind::LOCAL);
       while (!watchdogDone.load(std::memory_order_acquire)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(tickMs));
+        {
+          NativeWorkScope tickWait(workStatistics,
+                                   "role-collective-watchdog-tick",
+                                   NativeWorkKind::WAIT);
+          std::this_thread::sleep_for(std::chrono::milliseconds(tickMs));
+        }
         if (watchdogDone.load(std::memory_order_acquire)) {
           break;
         }
-        std::lock_guard<std::mutex> collectiveLock(m_collectiveMutex);
-        runtime->poll(collectiveNowMs());
+        {
+          NativeWorkScope lockWait(workStatistics,
+                                   "role-collective-watchdog-lock",
+                                   NativeWorkKind::WAIT);
+          std::lock_guard<std::mutex> collectiveLock(m_collectiveMutex);
+          lockWait.finish();
+          NativeWorkScope pollWork(workStatistics,
+                                   "role-collective-watchdog-poll",
+                                   NativeWorkKind::UNCLASSIFIED);
+          runtime->poll(collectiveNowMs());
+        }
       }
     });
   }
@@ -998,14 +1042,22 @@ ProviderRoleWorker::execute(const WorkItem& item)
     auto result = runReadyRole(item);
     watchdogDone.store(true, std::memory_order_release);
     if (watchdog.joinable()) {
+      NativeWorkScope watchdogJoin(item.role.workStatistics,
+                                   "role-collective-watchdog-join",
+                                   NativeWorkKind::WAIT);
       watchdog.join();
+      watchdogJoin.finish();
     }
     item.promise->set_value(std::move(result));
   }
   catch (...) {
     watchdogDone.store(true, std::memory_order_release);
     if (watchdog.joinable()) {
+      NativeWorkScope watchdogJoin(item.role.workStatistics,
+                                   "role-collective-watchdog-join",
+                                   NativeWorkKind::WAIT);
       watchdog.join();
+      watchdogJoin.finish();
     }
     if (item.collective.has_value()) {
       const auto& binding = *item.collective;
@@ -1021,6 +1073,8 @@ ProviderRoleWorker::execute(const WorkItem& item)
 ProviderRoleResult
 ProviderRoleWorker::runReadyRole(const WorkItem& item)
 {
+  NativeWorkScope roleWork(item.role.workStatistics, "role-worker",
+                          NativeWorkKind::UNCLASSIFIED);
   if (item.executionGuard) item.executionGuard();
   if (const auto* timing = std::getenv("NDNSF_DI_RUNTIME_TIMING");
       timing != nullptr && *timing != '\0' && *timing != '0') {
@@ -1082,7 +1136,9 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   result.timing.startedAt = std::chrono::steady_clock::now();
   result.inputTimings = item.inputTimings;
 
+  NativeWorkScope inputWork(item.role.workStatistics, "role-input-bind", NativeWorkKind::LOCAL);
   RoleExecutionContext ctx;
+  ctx.workStatistics = item.role.workStatistics;
   ctx.sessionId = item.sessionId;
   ctx.role = item.role.role;
   ctx.requestId = item.role.requestId;
@@ -1127,12 +1183,16 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     ctx.inputEdgesByScope.emplace(edge.scope, edge);
   }
   if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+    NativeWorkScope traceWork(item.role.workStatistics, "role-input-trace",
+                              NativeWorkKind::UNCLASSIFIED);
     logRuntimeTrace("NDNSF_DI_WORKER event=inputs_validated role=" + item.role.role);
   }
 
   result.exactForwardCacheKey = exactForwardCacheKeyFor(
     item, runner.get(), inputsByScope);
   if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+    NativeWorkScope traceWork(item.role.workStatistics, "role-input-trace",
+                              NativeWorkKind::UNCLASSIFIED);
     logRuntimeTrace("NDNSF_DI_WORKER event=cache_key role=" + item.role.role);
   }
   // A streamed terminal runner has an externally visible side effect: it
@@ -1140,13 +1200,35 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   // outputs would suppress those events on a retry and could turn a complete
   // transcript into the legacy single-final-event fallback. Keep this cache
   // limited to pure dependency-producing executions.
-  if (item.executionGuard) item.executionGuard();
+  if (item.executionGuard) {
+    NativeWorkScope guardWork(item.role.workStatistics, "role-input-authorization",
+                              NativeWorkKind::UNCLASSIFIED);
+    item.executionGuard();
+  }
   const bool hasStreamSideEffect = static_cast<bool>(item.eventSink);
   // A generation epoch may update adapter-owned KV or depend on lineage not
   // represented in the pure-output cache key, even with equal tensor bytes.
   // Reusing a loaded runner must not suppress that state transition.
   const bool canReuseOutputs = !hasStreamSideEffect &&
     !item.role.streamingStateExecution && !item.role.generationLineage;
+  inputWork.finish();
+  if (item.role.workStatistics) {
+    const auto admitted = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+    for (const auto& timing : result.inputTimings) {
+      if (timing.transferObservation) {
+        // A coordinator-supplied bundle has already completed its fetch.
+        // These worker timestamps describe consumption, not that earlier I/O.
+        item.role.workStatistics->observeTransfer(*timing.transferObservation,
+          item.role.inferenceEpoch,
+          timing.preSatisfied ? 0 : std::chrono::duration_cast<std::chrono::nanoseconds>(
+            timing.prefetchStartedAt.time_since_epoch()).count(),
+          timing.preSatisfied ? 0 : std::chrono::duration_cast<std::chrono::nanoseconds>(
+            timing.fetchCompletedAt.time_since_epoch()).count(), admitted,
+          NativeTransferPoint::WORKER_INPUT);
+      }
+    }
+  }
   if (canReuseOutputs) {
     result.outputsByScope = getCachedOutputs(result.exactForwardCacheKey);
   }
@@ -1170,6 +1252,8 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     // once per epoch and duplicate token events.  Direct streamed requests
     // (which have no coordinator lineage) retain the incremental runner path.
     const bool coordinatorOwnsStreaming = item.role.generationLineage.has_value();
+    NativeWorkScope adapterWork(item.role.workStatistics, "role-adapter",
+                               NativeWorkKind::UNCLASSIFIED);
     if (hasStreamSideEffect && !coordinatorOwnsStreaming) {
       if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
         logRuntimeTrace("NDNSF_DI_WORKER event=runner_streamed role=" + item.role.role);
@@ -1243,6 +1327,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   }
 
   const auto outputReadyAt = std::chrono::steady_clock::now();
+  NativeWorkScope outputWork(item.role.workStatistics, "role-output-pack", NativeWorkKind::LOCAL);
   std::vector<std::pair<DependencyEdge, TensorBundle>> stagedOutputs;
   stagedOutputs.reserve(item.role.outputs.size());
   for (const auto& edge : item.role.outputs) {
@@ -1264,7 +1349,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     }
     auto bundle = withoutProviderLocalState(
       outputForEdge(result.outputsByScope, edge),
-      item.role.stateOutputNames);
+      item.role.stateOutputNames, item.role.workStatistics);
     if (item.role.generationLineage) {
       auto lineage = *item.role.generationLineage;
       if (lineage.requestId != item.role.requestId ||
@@ -1288,6 +1373,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     validateTensorBundleForEdge(edge, bundle, false);
     stagedOutputs.emplace_back(edge, std::move(bundle));
   }
+  outputWork.finish();
   result.outputTimings.reserve(item.role.outputs.size());
   for (auto& staged : stagedOutputs) {
     const auto& edge = staged.first;
@@ -1295,6 +1381,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     NativeFaultInjection::instance().checkpoint(
       NativeFaultPoint::BeforePublish, item.role.role, item.sessionId);
 #endif
+    NativeWorkScope stageWork(item.role.workStatistics, "role-output-stage", NativeWorkKind::LOCAL);
     auto& bundle = staged.second;
     result.outputsByScope[edge.scope] = bundle;
     completeStageTransferObservation(edge, bundle, "send");
@@ -1320,6 +1407,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
       result.outputTimings.push_back(std::move(timing));
       continue;
     }
+    stageWork.finish();
     logDiTimelineTrace(
       "di-provider", "dependency_publish_start", requestId,
       {{"sessionId", item.sessionId},
@@ -1330,7 +1418,9 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
                             item.role.candidateDecodeStateIdentity->providerBootId : "none"},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
     if (item.executionGuard) item.executionGuard();
+    const auto publishStartedAt = std::chrono::steady_clock::now();
     item.io->publishOutput(item.sessionId, edge, bundle);
+    const auto publishDoneAt = std::chrono::steady_clock::now();
     logDiTimelineTrace(
       "di-provider", "dependency_publish_done", requestId,
       {{"sessionId", item.sessionId},
@@ -1351,7 +1441,8 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     timing.bytes = bundle.payload.size();
     timing.transferObservation = bundle.transferObservation;
     timing.outputReadyAt = outputReadyAt;
-    timing.publishDoneAt = std::chrono::steady_clock::now();
+    timing.publishDoneAt = publishDoneAt;
+    timing.publishStartedAt = publishStartedAt;
     result.outputTimings.push_back(std::move(timing));
   }
 
@@ -1383,6 +1474,17 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   }
   for (const auto& timing : result.outputTimings) {
     if (timing.transferObservation && !timing.publishDeferred) {
+      if (item.role.workStatistics) {
+        item.role.workStatistics->observeTransfer(*timing.transferObservation,
+          item.role.inferenceEpoch,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+            timing.publishStartedAt.time_since_epoch()).count(),
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+            timing.publishDoneAt.time_since_epoch()).count(), 0,
+          NativeTransferPoint::OUTPUT_PUBLICATION,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+            timing.outputReadyAt.time_since_epoch()).count());
+      }
       result.transferBudget.add(*timing.transferObservation);
     }
   }

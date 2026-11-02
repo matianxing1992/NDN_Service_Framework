@@ -15,9 +15,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "ndn-service-framework/NegativeAckReason.hpp"
 
@@ -419,8 +420,11 @@ public:
   {
     ++prefetchCalls;
     return std::async(std::launch::async, [this] () -> TensorBundle {
+      ++activePrefetches;
       std::unique_lock<std::mutex> lock(mutex);
       cv.wait(lock, [this] { return cancelled; });
+      --activePrefetches;
+      ++completedPrefetches;
       throw std::runtime_error("dependency prefetch cancelled");
     });
   }
@@ -448,6 +452,13 @@ public:
   }
 
   void
+  drainPendingPrefetches() noexcept override
+  {
+    // The caller still owns the async future; its destructor must join it.
+    ++drainCalls;
+  }
+
+  void
   publishOutput(const std::string&,
                 const DependencyEdge&,
                 const TensorBundle&) override
@@ -457,6 +468,9 @@ public:
 
   std::atomic<std::size_t> prefetchCalls{0};
   std::atomic<std::size_t> cancelCalls{0};
+  std::atomic<std::size_t> drainCalls{0};
+  std::atomic<std::size_t> activePrefetches{0};
+  std::atomic<std::size_t> completedPrefetches{0};
   std::atomic<std::size_t> publicationCalls{0};
   bool firstReadImmediately = true;
 
@@ -484,6 +498,10 @@ struct NativeEpochPublicationFailureResult
   std::size_t publicationCalls = 0;
   std::size_t prefetchCalls = 0;
   std::size_t cancelCalls = 0;
+  std::size_t drainCalls = 0;
+  std::size_t activePrefetches = 0;
+  std::size_t completedPrefetches = 0;
+  NativeWorkStatisticsSnapshot work;
   ProviderDecodeStateSnapshot state;
 };
 
@@ -572,6 +590,8 @@ runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
 
   std::atomic<std::size_t> eventCalls{0};
   NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+  auto work = std::make_shared<NativeWorkStatistics>();
+  config.workStatistics = work;
   config.sessionId = "publication-failure-session";
   config.requestId = "publication-failure-request";
   config.attemptEpoch = 1;
@@ -622,6 +642,9 @@ runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
     result.publicationCalls = cancellationIo->publicationCalls.load();
     result.prefetchCalls = cancellationIo->prefetchCalls.load();
     result.cancelCalls = cancellationIo->cancelCalls.load();
+    result.drainCalls = cancellationIo->drainCalls.load();
+    result.activePrefetches = cancellationIo->activePrefetches.load();
+    result.completedPrefetches = cancellationIo->completedPrefetches.load();
   }
   else {
     result.publicationCalls =
@@ -629,6 +652,7 @@ runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
         ->publicationCalls.load();
   }
   result.state = runtime.decodeStateSnapshot();
+  result.work = work->snapshot();
   return result;
 }
 
@@ -2828,6 +2852,26 @@ BOOST_AUTO_TEST_CASE(NativeTensorBundleCodecRoundTripsMultipleFloat32Tensors)
   BOOST_CHECK_CLOSE(values[0], 1.0f, 0.001);
   BOOST_CHECK_CLOSE(values[1], 2.0f, 0.001);
   BOOST_CHECK_THROW(findTensor(tensors, "missing"), std::out_of_range);
+}
+
+BOOST_AUTO_TEST_CASE(NativeTensorBundleCodecReportsRequestOwnedWork)
+{
+  const auto statistics = makeNativeWorkStatistics();
+  const auto payload = encodeTensorBundle({
+    makeFloat32Tensor("x", {1, 2}, floatPayload({1.0f, 2.0f})),
+  }, statistics);
+  const auto tensors = decodeTensorBundle(payload, statistics);
+  const auto views = decodeTensorBundleViews(payload, statistics);
+  const auto snapshot = statistics->snapshot();
+
+  BOOST_REQUIRE_EQUAL(tensors.size(), 1);
+  BOOST_REQUIRE_EQUAL(views.size(), 1);
+  BOOST_CHECK_EQUAL(snapshot.phases.at("tensor-bundle-encode").calls, 1U);
+  BOOST_CHECK(snapshot.phases.at("tensor-bundle-encode").kind == NativeWorkKind::LOCAL);
+  BOOST_CHECK_EQUAL(snapshot.phases.at("tensor-bundle-decode").calls, 2U);
+  BOOST_CHECK(snapshot.phases.at("tensor-bundle-decode").kind == NativeWorkKind::LOCAL);
+  BOOST_CHECK(snapshot.complete);
+  BOOST_CHECK_EQUAL(snapshot.activeSpans, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(NativeTensorBundleCodecSelectsNamedTensorSubset)
@@ -5620,6 +5664,35 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorLeavesNoStateAfterActivationFailure)
   BOOST_CHECK_EQUAL(result.state.entries, 0U);
   BOOST_CHECK_EQUAL(result.state.pinnedEntries, 0U);
   BOOST_CHECK_EQUAL(result.state.candidates, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(Spec220FailedEpochObservationsDrainWithoutCompletedTransfers)
+{
+  for (const auto fault : {NativeEpochPublicationFault::EventAdmission,
+                           NativeEpochPublicationFault::PrefetchCancellation,
+                           NativeEpochPublicationFault::PrefetchBeforeFirstReadCancellation,
+                           NativeEpochPublicationFault::FeedbackPublication,
+                           NativeEpochPublicationFault::ActivationPublication}) {
+    const auto result = runNativeEpochPublicationFailure(fault);
+    BOOST_REQUIRE(!result.error.empty());
+    BOOST_CHECK(result.work.complete);
+    BOOST_CHECK_EQUAL(result.work.activeSpans, 0U);
+    // A cancelled fetch or failed publication is never a completed receipt.
+    BOOST_CHECK(result.work.transfers.empty());
+    BOOST_CHECK_EQUAL(result.activePrefetches, 0U);
+    if (fault == NativeEpochPublicationFault::PrefetchCancellation ||
+        fault == NativeEpochPublicationFault::PrefetchBeforeFirstReadCancellation) {
+      BOOST_CHECK_EQUAL(result.prefetchCalls, 1U);
+      BOOST_CHECK_EQUAL(result.cancelCalls, 1U);
+      BOOST_CHECK_EQUAL(result.drainCalls, 1U);
+      BOOST_CHECK_EQUAL(result.completedPrefetches, 1U);
+      BOOST_CHECK_EQUAL(result.publicationCalls, 0U);
+    }
+    else {
+      BOOST_CHECK_EQUAL(result.prefetchCalls, 0U);
+      BOOST_CHECK_EQUAL(result.drainCalls, 0U);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanBuildsRoleLocalSpecsWithDeterministicNames)

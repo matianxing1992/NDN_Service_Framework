@@ -630,6 +630,7 @@ NativeRequestOptions PreparedModel::projectOptions(const RequestOptions& options
   NativeRequestOptions native;
   native.timeoutMs = static_cast<std::uint64_t>(options.timeout.count());
   native.ackTimeoutMs = static_cast<std::uint64_t>(options.ackTimeout.count());
+  native.workStatistics = options.workStatistics;
   native.taskName = m_package->manifest.taskName;
   native.outputMode = options.outputMode.empty() ? "FULL" : options.outputMode;
   native.applicationRequestId = options.applicationRequestId;

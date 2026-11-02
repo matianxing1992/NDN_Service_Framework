@@ -79,7 +79,11 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
     if (!entry.source.materialManifest)
       entry.source.materialManifest = deriveNativeCanonicalMaterialManifest(entry.source, control);
     else
-      entry.source.materialManifest->validate();
+      entry.source.materialManifest->validate([&] {
+        control.requireActive();
+        if (std::chrono::steady_clock::now() >= control.deadline)
+          throw std::runtime_error("native material preparation deadline expired");
+      });
     if (!entry.source.materialManifest)
       throw std::invalid_argument("native catalog material manifest is missing");
     if (entry.source.materialManifest->payloadsComplete)
@@ -233,10 +237,10 @@ NativeCanonicalPreparationCatalog::publicationFor(const NativeModelDescriptor& m
 
 NativeSplitCandidate NativeCanonicalPreparationCatalog::bindStateContracts(const NativeInspectedModel& model,
   const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
-  const NativeRequestControl& control) const
+  const NativeRequestControl& control, NativeStateContractBinding binding) const
 {
   control.requireActive();
-  return m_state->find(model).roles.bindStateContracts(model, candidate, mapping, control);
+  return m_state->find(model).roles.bindStateContracts(model, candidate, mapping, control, binding);
 }
 
 std::vector<NativeSelectionRoleV3>

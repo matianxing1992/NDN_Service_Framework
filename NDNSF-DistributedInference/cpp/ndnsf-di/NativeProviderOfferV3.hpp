@@ -4,11 +4,15 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace ndnsf::di {
+
+struct NativeWorkStatisticsSnapshot;
+class NativeWorkStatistics;
 
 struct NativeProviderOfferV3Config
 {
@@ -24,8 +28,12 @@ struct NativeProviderOfferV3Config
   // Required for GPU offers: one native memory observation per visible device,
   // captured no more than two seconds ago. Called once; the same immutable
   // snapshot is signed and emitted. Missing/invalid samples yield a negative ACK.
-  std::function<std::vector<NativeDeviceResourceObservationV3>(std::uint64_t)> observeResources;
+  // The optional per-call collector is borrowed and must not be retained.
+  std::function<std::vector<NativeDeviceResourceObservationV3>(
+    std::uint64_t, const std::shared_ptr<NativeWorkStatistics>&)> observeResources;
   std::function<std::string(const std::string&)> signDigest;
+  /** Local observations only; never changes the signed offer or admission. */
+  std::function<void(const std::string&, const NativeWorkStatisticsSnapshot&)> workObserver;
 };
 
 struct NativeProviderOfferV3Decision

@@ -1,6 +1,7 @@
 #include "tests/boost-test.hpp"
 #include "ndnsf-integration-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
@@ -670,11 +671,13 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     original.payload = {'N', 'D', 'I', 'T', 'B', 'Z', '0', '1',
                         1, 0, 0, 4, 0, 0, 0, 0, 0x78};
   }
+  const auto producerWork = mode == "prefetch" ? makeNativeWorkStatistics() : nullptr;
+  const auto consumerWork = mode == "prefetch" ? makeNativeWorkStatistics() : nullptr;
   NdnsfCollaborationDependencyIo producerIo(
-      producerContext, 5000, chunkSize, 60000, producerCoordinator);
+      producerContext, 5000, chunkSize, 60000, producerCoordinator, nullptr, 0, producerWork);
   NdnsfCollaborationDependencyIo consumerIo(
       consumerContext, 5000, chunkSize, 60000, consumerCoordinator,
-      nullptr, prefetchWorkerCount);
+      nullptr, prefetchWorkerCount, consumerWork);
   cancelWindowFetch = [&consumerIo] { consumerIo.cancelPendingPrefetches(); };
   if (mode == "inline-packed-publish-bounds" || mode == "inline-packed-publish-inflight") {
     const auto rawBudget = mode == "inline-packed-publish-bounds" ?
@@ -947,8 +950,13 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   }
 
   if (mode == "inline-pool-drain" || mode == "inline-pool-destroy") {
+    auto work = makeNativeWorkStatistics();
+    BOOST_REQUIRE(work);
+    const std::weak_ptr<NativeWorkStatistics> workOwner = work;
     auto owner = std::make_unique<NdnsfCollaborationDependencyIo>(
-      consumerContext, 5000, chunkSize, 60000, consumerCoordinator, nullptr, 1);
+      consumerContext, 5000, chunkSize, 60000, consumerCoordinator, nullptr, 1, work);
+    work.reset();
+    BOOST_CHECK(!workOwner.expired());
     // The release promise must die before the joining future on exceptions.
     std::future<void> draining;
     std::promise<void> release;
@@ -980,6 +988,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     release.set_value();
     draining.get();
     BOOST_CHECK(beforeRelease == std::future_status::timeout);
+    owner.reset();
+    BOOST_CHECK(workOwner.expired());
     return;
   }
 
@@ -1267,6 +1277,32 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   std::optional<TensorBundle> reconstructed;
   BOOST_REQUIRE_NO_THROW(reconstructed = fetched.get());
   BOOST_REQUIRE(reconstructed);
+  if (mode == "prefetch") {
+    for (const auto& statistics : {producerWork, consumerWork}) {
+      BOOST_REQUIRE(statistics);
+      const auto snapshot = statistics->snapshot();
+      BOOST_REQUIRE(snapshot.complete);
+      BOOST_CHECK_EQUAL(snapshot.activeSpans, 0U);
+      BOOST_REQUIRE(snapshot.phases.count("group-operation-lookup"));
+      const auto& lookup = snapshot.phases.at("group-operation-lookup");
+      BOOST_CHECK(lookup.kind == NativeWorkKind::LOCAL);
+      BOOST_CHECK_GT(lookup.calls, 0U);
+    }
+    const auto snapshot = consumerWork->snapshot();
+    BOOST_REQUIRE(snapshot.phases.count("dependency-prefetch-worker"));
+    const auto& prefetchWorker = snapshot.phases.at("dependency-prefetch-worker");
+    BOOST_CHECK(prefetchWorker.kind == NativeWorkKind::LOCAL);
+    BOOST_CHECK_GT(prefetchWorker.calls, 0U);
+    BOOST_REQUIRE(snapshot.phases.count("dependency-exact-data-fetch-wait"));
+    const auto& exactFetchWait =
+      snapshot.phases.at("dependency-exact-data-fetch-wait");
+    BOOST_CHECK(exactFetchWait.kind == NativeWorkKind::WAIT);
+    BOOST_CHECK_GT(exactFetchWait.calls, 0U);
+    BOOST_REQUIRE(snapshot.phases.count("dependency-speculative-batch-wait"));
+    const auto& batchWait = snapshot.phases.at("dependency-speculative-batch-wait");
+    BOOST_CHECK(batchWait.kind == NativeWorkKind::WAIT);
+    BOOST_CHECK_GT(batchWait.calls, 0U);
+  }
   BOOST_CHECK_EQUAL_COLLECTIONS(
       reconstructed->payload.begin(), reconstructed->payload.end(),
       original.payload.begin(), original.payload.end());

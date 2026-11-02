@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
+#include "request-work-statistics.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
@@ -139,10 +140,12 @@ feedbackScopeFor(const RoleSpec& role)
 RoleSpec
 roleSpecForEpoch(const NativeEpochCoordinatorConfig& config, std::size_t sequence)
 {
+  NativeWorkScope work(config.workStatistics, "epoch-role-bind", NativeWorkKind::LOCAL);
   auto role = config.roleSpecFactory
     ? config.roleSpecFactory(sequence)
     : roleSpecFor(config.plan, config.role, config.sessionId,
                   config.assignment, config.localProvider, sequence);
+  role.workStatistics = config.workStatistics;
   const auto bindFeedback = [&](DependencyEdge& edge) {
     if (edge.operationKind != "TOKEN_FEEDBACK") return;
     // Plan-owned feedback is appended to the sealed projection. Bind its
@@ -220,7 +223,8 @@ lineageForEdge(GenerationEpochLineageV1 lineage, const DependencyEdge& edge);
 bool
 hasTerminalMarker(const TensorBundle& bundle,
                   const std::string& markerName,
-                  bool required)
+                  bool required,
+                  const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
   if (!isEncodedTensorBundle(bundle.payload)) {
     if (!required) {
@@ -228,7 +232,7 @@ hasTerminalMarker(const TensorBundle& bundle,
     }
     throw std::invalid_argument("terminal control is not an encoded tensor bundle");
   }
-  const auto tensors = decodeTensorBundle(bundle.payload);
+  const auto tensors = decodeTensorBundle(bundle.payload, workStatistics);
   try {
     const auto& marker = findTensor(tensors, markerName);
     if (marker.elementType != TensorElementType::Bool || marker.payload.size() != 1) {
@@ -245,15 +249,17 @@ hasTerminalMarker(const TensorBundle& bundle,
 }
 
 bool
-isTerminalFeedback(const TensorBundle& bundle)
+isTerminalFeedback(
+  const TensorBundle& bundle,
+  const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
-  return hasTerminalMarker(bundle, FEEDBACK_TENSOR, true);
+  return hasTerminalMarker(bundle, FEEDBACK_TENSOR, true, workStatistics);
 }
 
 bool
 isTerminalActivation(const TensorBundle& bundle)
 {
-  return hasTerminalMarker(bundle, EPOCH_TERMINAL_TENSOR, false);
+  return hasTerminalMarker(bundle, EPOCH_TERMINAL_TENSOR, false, {});
 }
 
 TensorBundle
@@ -280,6 +286,38 @@ makeTerminalActivation()
     {NamedTensor{EPOCH_TERMINAL_TENSOR, TensorElementType::Bool, {1}, {1}}});
 }
 
+std::int64_t
+transferTimeNs(std::chrono::steady_clock::time_point value) noexcept
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+    value.time_since_epoch()).count();
+}
+
+std::int64_t
+transferNowNs() noexcept
+{
+  return transferTimeNs(std::chrono::steady_clock::now());
+}
+
+void
+observeCoordinatorTransfer(const NativeEpochCoordinatorConfig& config,
+                           const RoleSpec& role, const TensorBundle& bundle,
+                           NativeTransferPoint point, std::int64_t startedNs,
+                           std::int64_t finishedNs, std::int64_t outputReadyNs = 0) noexcept
+{
+  if (!config.workStatistics) {
+    return;
+  }
+  if (bundle.transferObservation) {
+    config.workStatistics->observeTransfer(*bundle.transferObservation,
+      role.inferenceEpoch, startedNs, finishedNs, 0, point, outputReadyNs);
+  }
+  else {
+    config.workStatistics->addCount(point == NativeTransferPoint::COORDINATOR_FETCH ?
+      "transfer.missingCoordinatorFetchReceipts" : "transfer.missingPublicationReceipts", 1);
+  }
+}
+
 void
 publishTerminalActivation(const NativeEpochCoordinatorConfig& config,
                           const RoleSpec& role,
@@ -293,7 +331,10 @@ publishTerminalActivation(const NativeEpochCoordinatorConfig& config,
         marker = attachGenerationEpochLineage(
           marker, lineageForEdge(*lineage, edge));
       }
+      const auto started = transferNowNs();
       config.io->publishOutput(config.sessionId, edge, marker);
+      observeCoordinatorTransfer(config, role, marker, NativeTransferPoint::OUTPUT_PUBLICATION,
+                                 started, transferNowNs(), started);
     }
   }
 }
@@ -307,9 +348,17 @@ fetchInputs(const NativeEpochCoordinatorConfig& config,
     if (inputs.find(edge.scope) != inputs.end()) {
       continue;
     }
+    const auto started = transferNowNs();
     auto future = config.io->prefetchInput(config.sessionId, edge);
+    NativeWorkScope wait(config.workStatistics, "epoch-input-wait", NativeWorkKind::WAIT);
     auto bundle = future.get();
+    const auto finished = transferNowNs();
+    wait.finish();
+    NativeWorkScope admission(config.workStatistics, "epoch-input-admit", NativeWorkKind::LOCAL);
     validateTensorBundleForEdge(edge, bundle);
+    admission.finish();
+    observeCoordinatorTransfer(config, role, bundle, NativeTransferPoint::COORDINATOR_FETCH,
+                               started, finished);
     inputs.emplace(edge.scope, std::move(bundle));
   }
   return inputs;
@@ -317,6 +366,12 @@ fetchInputs(const NativeEpochCoordinatorConfig& config,
 
 struct PendingInputPrefetch
 {
+  struct Fetch
+  {
+    DependencyEdge edge;
+    std::future<TensorBundle> result;
+    std::int64_t startedNs = 0;
+  };
   // Both owners outlive `pending` futures during destruction.
   std::shared_ptr<DependencyIo> io;
   std::shared_ptr<PromptCancellableDependencyIo> cancellation;
@@ -324,7 +379,7 @@ struct PendingInputPrefetch
   std::exception_ptr deferredStartFailure;
   RoleSpec role;
   std::map<std::string, TensorBundle> inputs;
-  std::vector<std::pair<DependencyEdge, std::future<TensorBundle>>> pending;
+  std::vector<Fetch> pending;
   std::vector<std::shared_future<void>> firstReadStarted;
 
   PendingInputPrefetch(std::shared_ptr<DependencyIo> owner,
@@ -370,12 +425,13 @@ beginInputPrefetch(const NativeEpochCoordinatorConfig& config,
     }
     // Allocate/copy the edge slot before starting async work. If setup throws,
     // no unowned future can block its destructor ahead of the cancel hook.
-    result.pending.emplace_back(edge, std::future<TensorBundle>{});
+    result.pending.push_back({edge, {}, 0});
     result.cancelOnAbandon = true;
+    result.pending.back().startedNs = transferNowNs();
     auto operation = result.cancellation->prefetchInputWithFirstReadBarrier(
       config.sessionId, edge);
-    result.pending.back().second = std::move(operation.result);
-    if (!result.pending.back().second.valid()) {
+    result.pending.back().result = std::move(operation.result);
+    if (!result.pending.back().result.valid()) {
       throw std::runtime_error(
         "prompt prefetch returned an invalid result future");
     }
@@ -419,12 +475,12 @@ startRemainingInputPrefetch(const NativeEpochCoordinatorConfig& config,
     if (pending.inputs.find(edge.scope) != pending.inputs.end() ||
         std::any_of(pending.pending.begin(), pending.pending.end(),
                     [&edge] (const auto& item) {
-                      return item.first.scope == edge.scope;
+                      return item.edge.scope == edge.scope;
                     })) {
       continue;
     }
     try {
-      pending.pending.emplace_back(edge, std::future<TensorBundle>{});
+      pending.pending.push_back({edge, {}, 0});
     }
     catch (...) {
       if (!deferStartFailure) {
@@ -439,12 +495,13 @@ startRemainingInputPrefetch(const NativeEpochCoordinatorConfig& config,
       (pending.cancellation &&
        pending.cancellation->supportsPromptPrefetchCancellation(edge));
     try {
+      pending.pending.back().startedNs = transferNowNs();
       auto future = config.io->prefetchInput(config.sessionId, edge);
       if (!future.valid()) {
         throw std::runtime_error(
           "dependency prefetch returned an invalid future");
       }
-      pending.pending.back().second = std::move(future);
+      pending.pending.back().result = std::move(future);
     }
     catch (...) {
       if (!deferStartFailure) {
@@ -455,7 +512,7 @@ startRemainingInputPrefetch(const NativeEpochCoordinatorConfig& config,
       // event's feedback/state commit and surface the startup failure only
       // when the next role consumes this edge.
       try {
-        pending.pending.back().second = failedPrefetchFuture(error);
+        pending.pending.back().result = failedPrefetchFuture(error);
       }
       catch (...) {
         pending.deferredStartFailure = error;
@@ -466,15 +523,24 @@ startRemainingInputPrefetch(const NativeEpochCoordinatorConfig& config,
 }
 
 std::map<std::string, TensorBundle>
-completeInputPrefetch(PendingInputPrefetch& pending)
+completeInputPrefetch(const NativeEpochCoordinatorConfig& config, PendingInputPrefetch& pending)
 {
   if (pending.deferredStartFailure) {
     std::rethrow_exception(pending.deferredStartFailure);
   }
   for (auto& item : pending.pending) {
-    auto bundle = item.second.get();
-    validateTensorBundleForEdge(item.first, bundle);
-    pending.inputs.emplace(item.first.scope, std::move(bundle));
+    NativeWorkScope wait(config.workStatistics, "epoch-input-wait", NativeWorkKind::WAIT);
+    auto bundle = item.result.get();
+    const auto finished = transferNowNs();
+    wait.finish();
+    NativeWorkScope admission(config.workStatistics, "epoch-input-admit", NativeWorkKind::LOCAL);
+    validateTensorBundleForEdge(item.edge, bundle);
+    admission.finish();
+    // get() observes consumption; an already-ready future may have finished earlier.
+    observeCoordinatorTransfer(config, pending.role, bundle,
+                               NativeTransferPoint::COORDINATOR_FETCH,
+                               item.startedNs, finished);
+    pending.inputs.emplace(item.edge.scope, std::move(bundle));
   }
   pending.cancelOnAbandon = false;
   return std::move(pending.inputs);
@@ -491,12 +557,14 @@ std::vector<std::int64_t>
 tokenIdsFromInputs(const NativeEpochCoordinatorConfig& config,
                    const std::map<std::string, TensorBundle>& inputs)
 {
+  NativeWorkScope work(config.workStatistics, "epoch-token-input-scan",
+                       NativeWorkKind::LOCAL);
   std::optional<std::vector<std::int64_t>> result;
   for (const auto& item : inputs) {
     if (!isEncodedTensorBundle(item.second.payload)) {
       continue;
     }
-    const auto tensors = decodeTensorBundle(item.second.payload);
+    const auto tensors = decodeTensorBundle(item.second.payload, config.workStatistics);
     const auto found = std::find_if(tensors.begin(), tensors.end(), [&] (const auto& tensor) {
       return tensor.name == config.tokenInputName;
     });
@@ -529,8 +597,11 @@ std::size_t
 actualNewInputExtent(
   const std::map<std::string, TensorBundle>& inputs,
   const std::vector<std::string>& stateInputNames,
-  const std::string& preferredInputName)
+  const std::string& preferredInputName,
+  const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
+  NativeWorkScope work(workStatistics, "epoch-input-extent-scan",
+                       NativeWorkKind::LOCAL);
   std::size_t nonStateExtent = 0;
   std::size_t preferredExtent = 0;
   bool foundPreferred = false;
@@ -539,7 +610,7 @@ actualNewInputExtent(
       throw std::invalid_argument(
         "native epoch cache observation requires encoded tensor inputs");
     }
-    for (const auto& tensor : decodeTensorBundle(item.second.payload)) {
+    for (const auto& tensor : decodeTensorBundle(item.second.payload, workStatistics)) {
       if (std::find(stateInputNames.begin(), stateInputNames.end(), tensor.name) !=
           stateInputNames.end()) {
         continue;
@@ -787,8 +858,10 @@ decodeStateIdentityForEpoch(
   return identity;
 }
 
-std::vector<float>
-lastLogits(const std::map<std::string, TensorBundle>& outputs)
+NamedTensorView
+lastLogitsView(
+  const std::map<std::string, TensorBundle>& outputs,
+  const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
   // A resident Provider returns a small encoded decode-state bundle alongside
   // the activation bundle.  Do not select the first encoded scope by map
@@ -800,7 +873,7 @@ lastLogits(const std::map<std::string, TensorBundle>& outputs)
     if (!isEncodedTensorBundle(item.second.payload)) {
       continue;
     }
-    tensors = decodeTensorBundleViews(item.second.payload);
+    tensors = decodeTensorBundleViews(item.second.payload, workStatistics);
     const auto found = std::find_if(tensors.begin(), tensors.end(), [] (const auto& tensor) {
       return tensor.name == "logits";
     });
@@ -825,34 +898,36 @@ lastLogits(const std::map<std::string, TensorBundle>& outputs)
       logits->payload.size() % (vocabulary * elementBytes) != 0) {
     throw std::invalid_argument("native epoch coordinator logits vocabulary is invalid");
   }
-  // Preserve the model/wire dtype. Sampling consumes only the final row,
-  // converting IEEE binary16 numerically rather than reinterpreting its bytes.
-  const auto* row = logits->payload.data() + logits->payload.size() - vocabulary * elementBytes;
-  std::vector<float> result(vocabulary);
-  for (std::size_t index = 0; index < vocabulary; ++index) {
-    if (logits->elementType == TensorElementType::Float32) {
-      std::memcpy(&result[index], row + index * elementBytes, sizeof(float));
-    }
-    else {
-      std::uint16_t bits;
-      std::memcpy(&bits, row + index * elementBytes, sizeof(bits));
-      const auto exponent = (bits >> 10) & 0x1f;
-      const auto fraction = bits & 0x3ff;
-      if (exponent == 0x1f) {
-        throw std::invalid_argument("native epoch coordinator logits are non-finite");
-      }
-      const float magnitude = exponent == 0
-        ? std::ldexp(static_cast<float>(fraction), -24)
-        : std::ldexp(static_cast<float>(1024 + fraction), static_cast<int>(exponent) - 25);
-      result[index] = (bits & 0x8000) ? -magnitude : magnitude;
-    }
+  // Own metadata, borrow only the final row from the unchanged output bundle.
+  auto result = *logits;
+  result.payload = result.payload.last(vocabulary * elementBytes);
+  return result;
+}
+
+float
+readLogit(const NamedTensorView& logits, std::size_t index)
+{
+  float value;
+  if (logits.elementType == TensorElementType::Float32) {
+    std::memcpy(&value, logits.payload.data() + index * sizeof(float), sizeof(float));
   }
-  if (std::any_of(result.begin(), result.end(), [] (const float value) {
-        return !std::isfinite(value);
-      })) {
+  else {
+    std::uint16_t bits;
+    std::memcpy(&bits, logits.payload.data() + index * sizeof(bits), sizeof(bits));
+    const auto exponent = (bits >> 10) & 0x1f;
+    const auto fraction = bits & 0x3ff;
+    if (exponent == 0x1f) {
+      throw std::invalid_argument("native epoch coordinator logits are non-finite");
+    }
+    const float magnitude = exponent == 0
+      ? std::ldexp(static_cast<float>(fraction), -24)
+      : std::ldexp(static_cast<float>(1024 + fraction), static_cast<int>(exponent) - 25);
+    value = (bits & 0x8000) ? -magnitude : magnitude;
+  }
+  if (!std::isfinite(value)) {
     throw std::invalid_argument("native epoch coordinator logits are non-finite");
   }
-  return result;
+  return value;
 }
 
 std::uint64_t
@@ -878,9 +953,9 @@ sampleToken(const std::map<std::string, TensorBundle>& outputs,
             const std::vector<std::int64_t>& generated,
             std::size_t step)
 {
-  const auto inputLogits = lastLogits(outputs);
-  if (inputLogits.empty() || config.samplingTopK == 0 ||
-      config.samplingTopK > inputLogits.size() ||
+  const auto inputLogits = lastLogitsView(outputs, config.workStatistics);
+  const auto vocabulary = static_cast<std::size_t>(inputLogits.shape.back());
+  if (config.samplingTopK == 0 || config.samplingTopK > vocabulary ||
       !std::isfinite(config.samplingTopP) || config.samplingTopP <= 0.0 || config.samplingTopP > 1.0 ||
       !std::isfinite(config.samplingRepetitionPenalty) || config.samplingRepetitionPenalty < 0.1 ||
       config.samplingRepetitionPenalty > 2.0 || !std::isfinite(config.samplingTemperature) ||
@@ -890,12 +965,24 @@ sampleToken(const std::map<std::string, TensorBundle>& outputs,
     throw std::invalid_argument("invalid native sampling contract");
   }
   if (config.samplingMode == "Greedy" && config.samplingRepetitionPenalty == 1.0) {
-    return static_cast<std::int64_t>(std::distance(
-      inputLogits.begin(), std::max_element(inputLogits.begin(), inputLogits.end())));
+    std::size_t best = 0;
+    auto maximum = readLogit(inputLogits, 0);
+    for (std::size_t index = 1; index < vocabulary; ++index) {
+      const auto value = readLogit(inputLogits, index);
+      // Keep first-index ties and check every value, including after a winner.
+      if (value > maximum) {
+        maximum = value;
+        best = index;
+      }
+    }
+    return static_cast<std::int64_t>(best);
   }
   // Preserve the exact transported float32 values, then apply the reference
   // sampler's double-precision arithmetic without rounding penalties to float.
-  std::vector<double> logits(inputLogits.begin(), inputLogits.end());
+  std::vector<double> logits(vocabulary);
+  for (std::size_t index = 0; index < vocabulary; ++index) {
+    logits[index] = readLogit(inputLogits, index);
+  }
   std::set<std::int64_t> penalized;
   for (const auto token : generated) {
     if (token < 0 || static_cast<std::size_t>(token) >= logits.size()) {
@@ -1175,7 +1262,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
     std::map<std::string, TensorBundle> inputs;
     if (nextInputPrefetch) {
       executable = std::move(nextInputPrefetch->role);
-      inputs = completeInputPrefetch(*nextInputPrefetch);
+      inputs = completeInputPrefetch(config, *nextInputPrefetch);
       nextInputPrefetch.reset();
     }
     else {
@@ -1221,7 +1308,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           if (found == inputs.end()) {
             throw std::runtime_error("TOKEN_FEEDBACK input was not fetched");
           }
-          if (isTerminalFeedback(found->second)) {
+          if (isTerminalFeedback(found->second, config.workStatistics)) {
             terminalLineage = extractGenerationEpochLineage(found->second);
             checkpointFinalization = terminalLineage.has_value() &&
               terminalLineage->transitionKind ==
@@ -1256,7 +1343,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
     NativeEpochCoordinatorResult::CacheObservation cacheObservation;
     cacheObservation.inferenceEpoch = epoch;
     cacheObservation.actualNewInputExtent = actualNewInputExtent(
-      inputs, config.stateInputNames, config.tokenInputName);
+      inputs, config.stateInputNames, config.tokenInputName, config.workStatistics);
     cacheObservation.representedPrefixTokenCount =
       epochLineage->logicalPrefixTokenCount;
     // A conversation continuation starts request-local epoch zero from an
@@ -1356,11 +1443,17 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           if (output == roleResult.outputsByScope.end()) {
             throw std::runtime_error("CHECKPOINT_FINALIZE activation output is missing");
           }
+          const auto publicationStarted = std::chrono::steady_clock::now();
           config.io->publishOutput(config.sessionId, edge, output->second);
+          const auto publicationFinished = std::chrono::steady_clock::now();
           for (auto& timing : roleResult.outputTimings) {
             if (timing.scope == edge.scope && timing.publishDeferred) {
-              timing.publishDoneAt = std::chrono::steady_clock::now();
+              timing.publishStartedAt = publicationStarted;
+              timing.publishDoneAt = publicationFinished;
               timing.publishDeferred = false;
+              observeCoordinatorTransfer(config, executable, output->second,
+                NativeTransferPoint::OUTPUT_PUBLICATION, transferTimeNs(publicationStarted),
+                transferTimeNs(publicationFinished), transferTimeNs(timing.outputReadyAt));
               if (timing.transferObservation) {
                 roleResult.transferBudget.add(*timing.transferObservation);
               }
@@ -1403,11 +1496,17 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
             const auto output = roleResult.outputsByScope.find(edge.scope);
             if (output == roleResult.outputsByScope.end())
               throw std::runtime_error("CHECKPOINT_FINALIZE activation output is missing");
+            const auto publicationStarted = std::chrono::steady_clock::now();
             config.io->publishOutput(config.sessionId, edge, output->second);
+            const auto publicationFinished = std::chrono::steady_clock::now();
             for (auto& timing : roleResult.outputTimings) {
               if (timing.scope == edge.scope && timing.publishDeferred) {
-                timing.publishDoneAt = std::chrono::steady_clock::now();
+                timing.publishStartedAt = publicationStarted;
+                timing.publishDoneAt = publicationFinished;
                 timing.publishDeferred = false;
+                observeCoordinatorTransfer(config, executable, output->second,
+                  NativeTransferPoint::OUTPUT_PUBLICATION, transferTimeNs(publicationStarted),
+                  transferTimeNs(publicationFinished), transferTimeNs(timing.outputReadyAt));
                 if (timing.transferObservation) {
                   roleResult.transferBudget.add(*timing.transferObservation);
                 }
@@ -1427,12 +1526,15 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         continue;
       }
       const auto samplingTiming = detail::nativePhaseStarted();
+      NativeWorkScope sampleWork(config.workStatistics, "epoch-sample", NativeWorkKind::LOCAL);
       const auto token = sampleToken(roleResult.outputsByScope, config,
                                      generated, epoch);
+      sampleWork.finish();
       detail::logNativeWorkPhase(config.requestId, "epoch_sample_token",
                                 samplingTiming, config.role,
                                 config.attemptEpoch);
       const auto textTiming = detail::nativePhaseStarted();
+      NativeWorkScope textWork(config.workStatistics, "epoch-text", NativeWorkKind::LOCAL);
       const auto candidateTokenIds = [&] {
         auto value = generated;
         value.push_back(token);
@@ -1475,6 +1577,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         }
         textDelta = stableCandidateText.substr(generatedText.size());
       }
+      textWork.finish();
       detail::logNativeWorkPhase(config.requestId, "epoch_decode_text",
                                 textTiming, config.role, config.attemptEpoch);
       if (replayingCommittedPrefix) {
@@ -1486,6 +1589,8 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       // next epoch.  Publishing the current projection would create a
       // one-epoch operation/name mismatch under a streaming stride.
       const auto feedbackTiming = detail::nativePhaseStarted();
+      NativeWorkScope feedbackWork(config.workStatistics, "epoch-feedback-prepare",
+                                   NativeWorkKind::UNCLASSIFIED);
       const auto nextRole = executableRoleForEpoch(config, epoch + 1);
       const auto feedbackEdge = std::find_if(
         nextRole.outputs.begin(), nextRole.outputs.end(), [] (const auto& edge) {
@@ -1528,6 +1633,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
             *feedbackEdge));
       }
 
+      const auto feedbackReadyNs = transferNowNs();
       std::vector<std::uint8_t> event;
       if (!replayingCommittedPrefix) {
         const auto eventWire = makeTokenEvent(
@@ -1535,6 +1641,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           config.samplingDigest, textDelta);
         event.assign(eventWire.begin(), eventWire.end());
       }
+      feedbackWork.finish();
       detail::logNativeWorkPhase(config.requestId, "epoch_prepare_feedback",
                                 feedbackTiming, config.role, config.attemptEpoch);
       logFeedbackBoundary(config, epoch, *feedbackEdge, "ready");
@@ -1542,13 +1649,18 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         // Preserve the first-read fence before synchronous event admission.
         // Its interval includes the overlapped construction above.
         throwIfStopped(config);
+        NativeWorkScope prefetchWait(config.workStatistics,
+          "epoch-prefetch-first-read-wait", NativeWorkKind::WAIT);
         waitForFirstReadStart(config, *nextInputPrefetch);
+        prefetchWait.finish();
         detail::logNativeWorkPhase(config.requestId, "epoch_prefetch_first_read",
                                   prefetchTiming, config.role, config.attemptEpoch);
       }
       if (!replayingCommittedPrefix) {
         throwIfStopped(config);
         const auto eventTiming = detail::nativePhaseStarted();
+        NativeWorkScope eventWork(config.workStatistics, "epoch-event-admission",
+                                  NativeWorkKind::UNCLASSIFIED);
         if (config.eventSink && !config.eventSink(std::move(event))) {
           throw std::runtime_error("native epoch token event admission was rejected");
         }
@@ -1571,13 +1683,22 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
 
       throwIfStopped(config);
       const auto feedbackPublishTiming = detail::nativePhaseStarted();
+      NativeWorkScope publishWork(config.workStatistics, "epoch-feedback-publish",
+                                  NativeWorkKind::UNCLASSIFIED);
       logFeedbackBoundary(config, epoch, *feedbackEdge, "publish_begin");
+      const auto feedbackPublicationStarted = transferNowNs();
       config.io->publishOutput(config.sessionId, *feedbackEdge, feedbackBundle);
+      observeCoordinatorTransfer(config, nextRole, feedbackBundle,
+        NativeTransferPoint::OUTPUT_PUBLICATION, feedbackPublicationStarted,
+        transferNowNs(), feedbackReadyNs);
       logFeedbackBoundary(config, epoch, *feedbackEdge, "publish_done");
+      publishWork.finish();
       detail::logNativeWorkPhase(config.requestId, "epoch_publish_feedback",
                                 feedbackPublishTiming, config.role, config.attemptEpoch);
       throwIfStopped(config);
       const auto stateCommitTiming = detail::nativePhaseStarted();
+      NativeWorkScope commitWork(config.workStatistics, "epoch-state-commit",
+                                 NativeWorkKind::UNCLASSIFIED);
       if (executable.deferStateCommit &&
           !config.runtime.commitDecodeStateTransition(
             config.sessionId, executable)) {
@@ -1585,6 +1706,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       }
       detail::logNativeWorkPhase(config.requestId, "epoch_commit_state",
                                 stateCommitTiming, config.role, config.attemptEpoch);
+      commitWork.finish();
       if (executable.candidateDecodeStateIdentity) {
         committedStateIdentity = executable.candidateDecodeStateIdentity;
         result.finalizedRole = executable;

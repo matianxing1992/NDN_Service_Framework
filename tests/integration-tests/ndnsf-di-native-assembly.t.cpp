@@ -474,6 +474,13 @@ makeProjection(const std::string& rootDigest,
   role.maxAssembledBytes = 1024 * 1024;
   role.maxNodes = 64;
   role.recipeDigest = recipeDigestFor(role);
+  projection.attempt = 1;
+  projection.planDigest = zeroDigest('d');
+  projection.executionRole.roleId = role.role;
+  projection.dataflow.role = role.role;
+  projection.dataflow.requestId = projection.requestId;
+  projection.dataflow.attempt = projection.attempt;
+  projection.dataflow.planDigest = projection.planDigest;
   return projection;
 }
 
@@ -993,7 +1000,13 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
   auto* unselectedNode = augmentedModel.mutable_graph()->add_node();
   unselectedNode->set_name("spec189-unselected-material");
   unselectedNode->set_op_type("Identity");
-  unselectedNode->add_input("float_zero");
+  auto* unselectedWeight = augmentedModel.mutable_graph()->add_initializer();
+  unselectedWeight->set_name("spec220_unselected_weight");
+  unselectedWeight->set_data_type(onnx::TensorProto::INT64);
+  unselectedWeight->add_dims(2);
+  unselectedWeight->add_int64_data(29);
+  unselectedWeight->add_int64_data(31);
+  unselectedNode->add_input("spec220_unselected_weight");
   unselectedNode->add_output("spec189-unselected-material");
   std::string augmentedWire;
   BOOST_REQUIRE(augmentedModel.SerializeToString(&augmentedWire));
@@ -1047,6 +1060,29 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
     payloadNames.emplace(payload.payloadId,
       "/spec189/material/payload/" + payload.payloadId);
   }
+  // Independently authenticated bounded serving objects include shared
+  // slices and full chunks. Padding must never enter the selected spool.
+  std::map<std::string, std::vector<std::uint8_t>> bundles;
+  std::map<std::string, std::uint64_t> bundleOffsets;
+  std::size_t bundleIndex = 0;
+  for (const auto& payload : materialSource.materialManifest->payloads) {
+    if (selectedIds.count(payload.payloadId) == 0) continue;
+    auto name = "/spec189/material/packed/" + std::to_string(bundleIndex);
+    if (!bundles[name].empty() && payload.byteSize() >
+        NativeCanonicalMaterialBundleMaxBytes - bundles[name].size())
+      name = "/spec189/material/packed/" + std::to_string(++bundleIndex);
+    auto& bundle = bundles[name];
+    payloadNames.at(payload.payloadId) = name;
+    bundleOffsets[payload.payloadId] = bundle.size();
+    const auto bytes = payload.copyBytes();
+    bundle.insert(bundle.end(), bytes.begin(), bytes.end());
+  }
+  BOOST_REQUIRE_GE(bundles.size(), 3U);
+  for (auto& item : bundles) {
+    if (item.second.size() <= NativeCanonicalMaterialBundleMaxBytes - 4)
+      item.second.insert(item.second.end(), {0xde, 0xad, 0xbe, 0xef});
+    BOOST_REQUIRE_LE(item.second.size(), NativeCanonicalMaterialBundleMaxBytes);
+  }
   std::ostringstream materialObjects;
   materialObjects << '[';
   for (std::size_t index = 0; index < materialSource.materialManifest->payloads.size(); ++index) {
@@ -1055,7 +1091,14 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
     materialObjects << "{\"bytes\":" << payload.byteSize()
                     << ",\"dataName\":" << jsonQuote(payloadNames.at(payload.payloadId))
                     << ",\"digest\":" << jsonQuote(payload.digest)
-                    << ",\"payloadId\":" << jsonQuote(payload.payloadId) << '}';
+                    << ",\"payloadId\":" << jsonQuote(payload.payloadId);
+    if (selectedIds.count(payload.payloadId) != 0) {
+      const auto& bundle = bundles.at(payloadNames.at(payload.payloadId));
+      materialObjects << ",\"bundleDigest\":" << jsonQuote(digest(bundle))
+                      << ",\"bundleBytes\":" << bundle.size()
+                      << ",\"bundleOffset\":" << bundleOffsets.at(payload.payloadId);
+    }
+    materialObjects << '}';
   }
   materialObjects << ']';
   const auto receiptText = std::string("{\"graphDigest\":") +
@@ -1173,6 +1216,9 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
       return ndn::Buffer(manifestBytes.data(), manifestBytes.size());
     if (name == receiptName)
       return ndn::Buffer(receiptBytes.data(), receiptBytes.size());
+    const auto bundle = bundles.find(name.toUri());
+    if (bundle != bundles.end())
+      return ndn::Buffer(bundle->second.data(), bundle->second.size());
     for (const auto& [payloadId, payloadName] : payloadNames) {
       if (name != ndn::Name(payloadName))
         continue;
@@ -1191,6 +1237,23 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
   options.cacheDir = (std::filesystem::temp_directory_path() /
                       "spec189-material-consumer-bundle").string();
   options.providerIdentity = projection.provider;
+  std::uint64_t observedSpoolBytes = 0;
+  const auto spoolPaths = [&] (const std::string& cacheDir,
+                                const std::string& filename = "material.spool") {
+    std::vector<std::filesystem::path> result;
+    if (std::filesystem::exists(cacheDir)) {
+      for (const auto& item : std::filesystem::recursive_directory_iterator(cacheDir))
+        if (item.path().filename() == filename) result.push_back(item.path());
+    }
+    return result;
+  };
+  options.reportProgress = [&] (const std::string& phase, double) {
+    if (phase != "MATERIAL_PAYLOAD_VERIFIED") return;
+    const auto paths = spoolPaths(options.cacheDir);
+    BOOST_REQUIRE_EQUAL(paths.size(), 1U);
+    observedSpoolBytes = std::max(observedSpoolBytes,
+      static_cast<std::uint64_t>(std::filesystem::file_size(paths.front())));
+  };
   options.signManifest = [] (const std::string& bytes) {
     return std::string("spec189-material-bundle-signature-") + digest(bytes);
   };
@@ -1198,6 +1261,46 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
   std::filesystem::remove_all(options.cacheDir, cleanupError);
   const auto prepared = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
   BOOST_REQUIRE(std::filesystem::is_regular_file(prepared.path));
+  BOOST_CHECK_EQUAL(observedSpoolBytes, selectedPayloadBytes);
+  BOOST_CHECK(spoolPaths(options.cacheDir).empty());
+  onnx::ModelProto assembledRole;
+  const auto assembledBytes = readBytes(prepared.path);
+  BOOST_REQUIRE(assembledRole.ParseFromArray(assembledBytes.data(),
+                                            static_cast<int>(assembledBytes.size())));
+  const auto weight = std::find_if(assembledRole.graph().initializer().begin(),
+    assembledRole.graph().initializer().end(), [] (const auto& initializer) {
+      return initializer.name() == "spec189_large_weight";
+    });
+  BOOST_REQUIRE(weight != assembledRole.graph().initializer().end());
+  BOOST_CHECK(std::none_of(assembledRole.graph().initializer().begin(),
+    assembledRole.graph().initializer().end(), [] (const auto& initializer) {
+      return initializer.name() == "spec220_unselected_weight";
+    }));
+  BOOST_CHECK(weight->raw_data().empty());
+  BOOST_CHECK_EQUAL(weight->data_location(), onnx::TensorProto::EXTERNAL);
+  const auto sidecarPath = std::filesystem::path(prepared.path).parent_path() / "model.onnx.data";
+  const auto sidecar = readBytes(sidecarPath);
+  BOOST_REQUIRE_EQUAL(sidecar.size(), externalBytes);
+  BOOST_CHECK(sidecar == materialSource.initializerBytes->asVector());
+  BOOST_CHECK_EQUAL(prepared.metadata.at("externalInitializerDigest"), digest(sidecar));
+  BOOST_CHECK_EQUAL(validateNativeAssembledArtifactFiles(
+    prepared, options.cacheDir, projection.assemblyContract().maxAssembledBytes, true),
+    assembledBytes.size() + externalBytes);
+  unsigned scanFences = 0;
+  validateNativeAssembledArtifactFiles(prepared, options.cacheDir,
+    projection.assemblyContract().maxAssembledBytes, true, [&] { ++scanFences; });
+  BOOST_REQUIRE(scanFences >= 8U);
+  for (unsigned stop = 1; stop <= scanFences; ++stop) {
+    unsigned visited = 0;
+    BOOST_CHECK_EXCEPTION(validateNativeAssembledArtifactFiles(prepared, options.cacheDir,
+      projection.assemblyContract().maxAssembledBytes, true, [&] {
+        if (++visited == stop) throw std::runtime_error("fixture file-set scan cancelled");
+      }), std::runtime_error, [] (const auto& error) {
+        return std::string(error.what()) == "fixture file-set scan cancelled";
+      });
+    BOOST_CHECK_EQUAL(visited, stop);
+    BOOST_CHECK(readBytes(sidecarPath) == sidecar);
+  }
   BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), manifestName.toUri()), 1U);
   BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), receiptName.toUri()), 1U);
   for (const auto& payloadId : selectedIds)
@@ -1206,6 +1309,101 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
     if (selectedIds.count(payload.payloadId) == 0)
       BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(),
                                    payloadNames.at(payload.payloadId)), 0U);
+  for (const auto& bundle : bundles)
+    BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), bundle.first), 1U);
+
+  auto strictOptions = options;
+  strictOptions.verifyCachedArtifactDigest = true;
+  const auto cacheHit = tryLoadNativeCanonicalOnnxRoleFromCache(
+    fetchers, projection, strictOptions, {}, {});
+  BOOST_REQUIRE(cacheHit);
+  BOOST_CHECK_EQUAL(cacheHit->metadata.at("assembledFileSetDigest"),
+                    prepared.metadata.at("assembledFileSetDigest"));
+  for (int mutation = 0; mutation < 4; ++mutation) {
+    auto invalidOptions = strictOptions;
+    invalidOptions.cacheDir = options.cacheDir + "-file-pair-invalid";
+    std::filesystem::remove_all(invalidOptions.cacheDir, cleanupError);
+    std::filesystem::copy(options.cacheDir, invalidOptions.cacheDir,
+                          std::filesystem::copy_options::recursive);
+    const auto relativeSidecar = std::filesystem::relative(sidecarPath, options.cacheDir);
+    const auto invalidSidecar = std::filesystem::path(invalidOptions.cacheDir) / relativeSidecar;
+    if (mutation == 0) {
+      std::filesystem::remove(invalidSidecar);
+    }
+    else if (mutation == 1) {
+      std::fstream tamper(invalidSidecar, std::ios::in | std::ios::out | std::ios::binary);
+      tamper.put(static_cast<char>(sidecar.front() ^ 1));
+    }
+    else if (mutation == 2) {
+      const auto foreign = std::filesystem::path(invalidOptions.cacheDir) / "foreign.bin";
+      std::filesystem::copy_file(sidecarPath, foreign);
+      std::filesystem::remove(invalidSidecar);
+      std::filesystem::create_symlink(foreign, invalidSidecar);
+    }
+    else {
+      std::filesystem::remove(invalidSidecar);
+      std::filesystem::create_symlink(sidecarPath, invalidSidecar);
+    }
+    BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(
+      fetchers, projection, invalidOptions, {}, {}));
+    BOOST_CHECK(readBytes(sidecarPath) == sidecar);
+    std::filesystem::remove_all(invalidOptions.cacheDir, cleanupError);
+  }
+
+  auto corruptFetchers = fetchers;
+  const auto fetch = fetchers.fetchEncryptedLargeData;
+  const auto corruptName = bundles.begin()->first;
+  corruptFetchers.fetchEncryptedLargeData = [fetch, corruptName]
+    (const ndn::Name& name, const ndn::Name& service) {
+      auto bytes = fetch(name, service);
+      if (name.toUri() == corruptName && bytes && !bytes->empty()) bytes->front() ^= 1;
+      return bytes;
+    };
+  auto corruptOptions = options;
+  corruptOptions.cacheDir = options.cacheDir + "-corrupt";
+  corruptOptions.reportProgress = {};
+  std::filesystem::remove_all(corruptOptions.cacheDir, cleanupError);
+  BOOST_CHECK_EXCEPTION(
+    prepareNativeCanonicalOnnxRole(corruptFetchers, projection, corruptOptions),
+    std::runtime_error, [] (const auto& error) {
+      return std::string(error.what()).find("material-bundle_DIGEST_MISMATCH") !=
+             std::string::npos;
+    });
+  BOOST_CHECK(spoolPaths(corruptOptions.cacheDir).empty());
+  std::filesystem::remove_all(corruptOptions.cacheDir, cleanupError);
+
+  bool cancelled = false;
+  auto cancelledOptions = options;
+  cancelledOptions.cacheDir = options.cacheDir + "-cancelled";
+  cancelledOptions.shouldCancel = [&] { return cancelled; };
+  cancelledOptions.reportProgress = [&] (const std::string& phase, double) {
+    if (phase == "MATERIAL_PAYLOAD_VERIFIED") cancelled = true;
+  };
+  std::filesystem::remove_all(cancelledOptions.cacheDir, cleanupError);
+  BOOST_CHECK_EXCEPTION(
+    prepareNativeCanonicalOnnxRole(fetchers, projection, cancelledOptions),
+    std::runtime_error, [] (const auto& error) {
+      return std::string(error.what()).find("DI_NATIVE_ASSEMBLY_CANCELLED") != std::string::npos;
+    });
+  BOOST_CHECK(cancelled);
+  BOOST_CHECK(spoolPaths(cancelledOptions.cacheDir).empty());
+  std::filesystem::remove_all(cancelledOptions.cacheDir, cleanupError);
+  bool lateCancelled = false;
+  auto lateOptions = options;
+  lateOptions.cacheDir = options.cacheDir + "-late-cancelled";
+  lateOptions.shouldCancel = [&] { return lateCancelled; };
+  lateOptions.reportProgress = [&] (const std::string& phase, double) {
+    if (phase == "WORKER_ASSEMBLY_VERIFIED") lateCancelled = true;
+  };
+  std::filesystem::remove_all(lateOptions.cacheDir, cleanupError);
+  BOOST_CHECK_EXCEPTION(prepareNativeCanonicalOnnxRole(fetchers, projection, lateOptions),
+    std::runtime_error, [] (const auto& error) {
+      return std::string(error.what()).find("DI_NATIVE_ASSEMBLY_CANCELLED") != std::string::npos;
+    });
+  BOOST_CHECK(lateCancelled);
+  BOOST_CHECK(spoolPaths(lateOptions.cacheDir).empty());
+  BOOST_CHECK(spoolPaths(lateOptions.cacheDir, "model.onnx.data").empty());
+  std::filesystem::remove_all(lateOptions.cacheDir, cleanupError);
   // The receipt is an authenticated continuation of the root binding, not a
   // merely reachable index.  A root that points at a receipt with a foreign
   // graph identity must fail before any selected bundle is assembled.

@@ -1,13 +1,18 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/spec220/transfer-receipt.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <mutex>
+#include <set>
 
 namespace ndnsf::di::test {
 namespace {
@@ -140,24 +145,42 @@ class RunnerReuseIo final : public DependencyIo {
 public:
   std::future<TensorBundle> prefetchInput(const std::string&, const DependencyEdge& edge) override
   {
-    return std::async(std::launch::async, [this, name = edge.plannedDataName] {
+    return std::async(std::launch::async, [this, edge] {
       std::unique_lock<std::mutex> lock(mutex);
-      if (!changed.wait_for(lock, std::chrono::seconds(5), [&] { return objects.count(name); })) {
+      if (!changed.wait_for(lock, std::chrono::seconds(5), [&] {
+            return objects.count(edge.plannedDataName);
+          })) {
         throw std::runtime_error("missing fixture feedback");
       }
-      return objects.at(name);
+      return observedBundle(edge, objects.at(edge.plannedDataName), "receive");
     });
   }
   void publishOutput(const std::string&, const DependencyEdge& edge, const TensorBundle& bundle) override
   {
     std::lock_guard<std::mutex> lock(mutex);
-    if (!objects.emplace(edge.plannedDataName, bundle).second)
+    auto stored = observedBundle(edge, bundle, "send");
+    bundle.transferObservation = stored.transferObservation;
+    if (!objects.emplace(edge.plannedDataName, std::move(stored)).second)
       throw std::runtime_error("duplicate fixture feedback");
     changed.notify_all();
   }
   std::mutex mutex;
   std::condition_variable changed;
   std::map<std::string, TensorBundle> objects;
+
+private:
+  static TensorBundle
+  observedBundle(const DependencyEdge& edge, const TensorBundle& bundle,
+                 const std::string& direction)
+  {
+    // Keep receive receipts independent of the sender's mutable receipt.
+    auto observed = bundle;
+    observed.transferObservation = fixture::makeTransportReceipt(edge, observed, direction);
+    observed.transferObservation->wireBytes = 999;
+    observed.transferObservation->interestCount = 2;
+    observed.transferObservation->retryCount = 0;
+    return observed;
+  }
 };
 } // namespace
 
@@ -195,6 +218,8 @@ BOOST_AUTO_TEST_CASE(Spec189EpochRunnerPreparationLifetimeAndFailureIsolation)
           NativeProviderAssignment assignment;
           assignment.providerByRole[identity.roleName] = identity.providerIdentity;
           NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+          auto work = std::make_shared<NativeWorkStatistics>();
+          config.workStatistics = work;
           config.sessionId = identity.requestId; config.requestId = identity.requestId;
           config.role = identity.roleName; config.localProvider = identity.providerIdentity;
           config.lineagePlanDigest = "sha256:" + std::string(64, '0');
@@ -235,6 +260,58 @@ BOOST_AUTO_TEST_CASE(Spec189EpochRunnerPreparationLifetimeAndFailureIsolation)
           std::optional<NativeEpochCoordinatorResult> result;
           try { result = runNativeEpochCoordinator(std::move(config)); }
           catch (const std::exception& e) { error = e.what(); }
+          const auto workResult = work->snapshot();
+          BOOST_CHECK(workResult.complete);
+          BOOST_CHECK_EQUAL(workResult.activeSpans, 0U);
+          if (behavior == 0) {
+            BOOST_REQUIRE_MESSAGE(result, error);
+            BOOST_CHECK_EQUAL(workResult.phases.at("epoch-sample").calls, 3U);
+            BOOST_CHECK_EQUAL(workResult.phases.at("epoch-event-admission").calls, 3U);
+            BOOST_CHECK_EQUAL(workResult.phases.at("role-worker").calls, 3U);
+            BOOST_CHECK_EQUAL(workResult.phases.at("role-input-bind").calls, 3U);
+            std::map<std::string, std::uint64_t> publishedEpochs;
+            std::size_t fetches = 0, admissions = 0;
+            for (const auto& transfer : workResult.transfers) {
+              if (transfer.point == NativeTransferPoint::OUTPUT_PUBLICATION) {
+                BOOST_CHECK_EQUAL(transfer.direction, "send");
+                BOOST_REQUIRE(publishedEpochs.emplace(transfer.plannedDataName,
+                                                      transfer.inferenceEpoch).second);
+                BOOST_CHECK_GT(transfer.startedSteadyNs, 0);
+                BOOST_CHECK_GE(transfer.finishedSteadyNs, transfer.startedSteadyNs);
+                BOOST_CHECK_GT(transfer.outputReadySteadyNs, 0);
+                BOOST_CHECK_LE(transfer.outputReadySteadyNs, transfer.startedSteadyNs);
+                BOOST_REQUIRE(transfer.wireBytes);
+                BOOST_CHECK_EQUAL(*transfer.wireBytes, 999U);
+              }
+            }
+            BOOST_REQUIRE_EQUAL(publishedEpochs.size(), 3U);
+            std::set<std::uint64_t> observedFetchEpochs;
+            for (const auto& transfer : workResult.transfers) {
+              if (transfer.point == NativeTransferPoint::COORDINATOR_FETCH) {
+                ++fetches;
+                BOOST_REQUIRE(publishedEpochs.count(transfer.plannedDataName));
+                BOOST_CHECK_EQUAL(transfer.inferenceEpoch,
+                                  publishedEpochs.at(transfer.plannedDataName));
+                BOOST_CHECK_GT(transfer.startedSteadyNs, 0);
+                BOOST_CHECK_GE(transfer.finishedSteadyNs, transfer.startedSteadyNs);
+                BOOST_CHECK_EQUAL(transfer.admittedSteadyNs, 0);
+                observedFetchEpochs.insert(transfer.inferenceEpoch);
+              }
+              else if (transfer.point == NativeTransferPoint::WORKER_INPUT) {
+                ++admissions;
+                BOOST_REQUIRE(publishedEpochs.count(transfer.plannedDataName));
+                BOOST_CHECK_EQUAL(transfer.inferenceEpoch,
+                                  publishedEpochs.at(transfer.plannedDataName));
+                BOOST_CHECK_EQUAL(transfer.startedSteadyNs, 0);
+                BOOST_CHECK_EQUAL(transfer.finishedSteadyNs, 0);
+                BOOST_CHECK_GT(transfer.admittedSteadyNs, 0);
+              }
+            }
+            BOOST_CHECK_EQUAL(fetches, 2U);
+            BOOST_CHECK_EQUAL(admissions, 2U);
+            const std::set<std::uint64_t> expectedFetchEpochs{1, 2};
+            BOOST_CHECK(observedFetchEpochs == expectedFetchEpochs);
+          }
           BOOST_CHECK_EQUAL(preparations.load() - beforePrepare, behavior == 3 ? 0U : 1U);
           BOOST_CHECK_EQUAL(executions.load() - beforeRun,
                             behavior == 0 ? 3U : behavior >= 4 ? 2U : 0U);
@@ -316,6 +393,104 @@ BOOST_AUTO_TEST_CASE(Spec189WorkerOutputCacheDoesNotSuppressEpochExecution)
       const auto actual = decodeTensorBundle(second.outputsByScope.at("output").payload);
       BOOST_CHECK(findTensor(actual, "value").payload ==
                   bytes<std::int64_t>({mode == 0 ? 1 : 2}));
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(Spec220WorkerFetchTimingPreservesOriginalProvenance)
+{
+  // Exercise both real fetch branches and the coordinator-supplied branch.
+  // Resolving the pending promise after executeAsync forces scheduler admission.
+  class InputIo final : public DependencyIo
+  {
+  public:
+    std::future<TensorBundle>
+    prefetchInput(const std::string&, const DependencyEdge&) override
+    {
+      ++fetches;
+      return input.get_future();
+    }
+    void
+    publishOutput(const std::string&, const DependencyEdge&, const TensorBundle& bundle) override
+    {
+      ++publications;
+      published = bundle;
+      if (onPublish) onPublish();
+    }
+    std::promise<TensorBundle> input;
+    unsigned fetches = 0;
+    unsigned publications = 0;
+    TensorBundle published;
+    std::function<void()> onPublish;
+  };
+  for (unsigned mode = 0; mode != 3; ++mode) {
+    BOOST_TEST_CONTEXT("input provenance mode=" << mode) {
+      const auto bundle = makeEncodedTensorBundle("activation", {
+        {"value", TensorElementType::Int64, {1}, bytes<std::int64_t>({7})}});
+      auto io = std::make_shared<InputIo>();
+      if (mode == 0) io->input.set_value(bundle);
+      std::atomic<std::int64_t> clock{1000};
+      auto work = std::make_shared<NativeWorkStatistics>([&clock] {
+        const auto now = clock.load();
+        return NativeWorkClock{now, now};
+      });
+      io->onPublish = [&clock] { clock.fetch_add(500); };
+      RoleSpec role;
+      role.role = "/Stage/1";
+      role.requestId = "timing-request";
+      role.attemptEpoch = 1;
+      role.workStatistics = work;
+      role.inputs.emplace_back("activation", "/Stage/0", role.role,
+                               "/provider/0/activation/1");
+      role.outputs.emplace_back("output", role.role, "/Stage/2",
+                                "/provider/1/activation/2");
+      auto runner = makeNativeModelRunner([](const RoleExecutionContext& context) {
+        const auto& input = context.inputsByScope.at("activation");
+        return std::map<std::string, TensorBundle>{{"output",
+          makeEncodedTensorBundle(input.name, decodeTensorBundle(input.payload))}};
+      });
+      ProviderRoleWorker worker(1);
+      std::map<std::string, TensorBundle> supplied;
+      if (mode == 2) supplied.emplace("activation", bundle);
+      auto result = worker.executeAsync("timing-session", role, io, runner, supplied, {}, [&clock] {
+        clock.fetch_add(100);
+      });
+      if (mode == 1) io->input.set_value(bundle);
+      BOOST_REQUIRE(result.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+      const auto completed = result.get();
+      BOOST_CHECK(completed.outputsByScope.at("output").payload == bundle.payload);
+      BOOST_CHECK_EQUAL(io->publications, 1U);
+      BOOST_CHECK(io->published.payload == bundle.payload);
+      BOOST_REQUIRE_EQUAL(completed.inputTimings.size(), 1U);
+      BOOST_CHECK_EQUAL(completed.inputTimings.front().preSatisfied, mode == 2);
+      BOOST_CHECK_EQUAL(io->fetches, mode == 2 ? 0U : 1U);
+      const auto snapshot = work->snapshot();
+      BOOST_REQUIRE(snapshot.complete);
+      BOOST_CHECK_EQUAL(snapshot.activeSpans, 0U);
+      BOOST_REQUIRE(snapshot.phases.count("role-input-authorization") == 1U);
+      const auto& authorization = snapshot.phases.at("role-input-authorization");
+      BOOST_CHECK(authorization.kind == NativeWorkKind::UNCLASSIFIED);
+      BOOST_CHECK_EQUAL(authorization.calls, 1U);
+      BOOST_CHECK_EQUAL(authorization.exclusiveWallNs, 100U);
+      BOOST_REQUIRE(snapshot.phases.count("role-input-bind") == 1U);
+      BOOST_CHECK_EQUAL(snapshot.phases.at("role-input-bind").exclusiveWallNs, 0U);
+      BOOST_REQUIRE(snapshot.phases.count("role-output-pack") == 1U);
+      BOOST_CHECK(snapshot.phases.at("role-output-pack").kind == NativeWorkKind::LOCAL);
+      BOOST_REQUIRE(snapshot.phases.count("role-output-stage") == 1U);
+      BOOST_CHECK(snapshot.phases.at("role-output-stage").kind == NativeWorkKind::LOCAL);
+      BOOST_CHECK_EQUAL(snapshot.phases.at("role-output-stage").exclusiveWallNs, 0U);
+      const auto wire = nativeParseJson(nativeWorkStatisticsToJson(snapshot));
+      BOOST_REQUIRE_EQUAL(wire.at("transfers").size(), 2U);
+      const auto& timing = wire.at("transfers").at(0);
+      BOOST_CHECK_EQUAL(timing.at("startedSteadyNs").is_null(), mode == 2);
+      BOOST_CHECK_EQUAL(timing.at("finishedSteadyNs").is_null(), mode == 2);
+      BOOST_CHECK(!timing.at("admittedSteadyNs").is_null());
+      if (mode != 2) {
+        BOOST_CHECK_LE(timing.at("startedSteadyNs").get<std::int64_t>(),
+                       timing.at("finishedSteadyNs").get<std::int64_t>());
+        BOOST_CHECK_LE(timing.at("finishedSteadyNs").get<std::int64_t>(),
+                       timing.at("admittedSteadyNs").get<std::int64_t>());
+      }
     }
   }
 }
@@ -456,6 +631,71 @@ BOOST_AUTO_TEST_CASE(Spec216TensorBundleViewsValidateCompleteWire)
   BOOST_CHECK_EQUAL(decodeTensorBundleViews(maximumCountWire).size(), 256);
 }
 
+
+BOOST_AUTO_TEST_CASE(Spec220BorrowedTensorEncodingPreservesFrozenWireAndOwnership)
+{
+  std::vector<NamedTensor> tensors{
+    {"x", TensorElementType::Float32, {2}, {0, 0, 128, 63, 0, 0, 0, 192}},
+    {"h", TensorElementType::Float16, {2}, {0, 60, 0, 192}},
+    {"mask", TensorElementType::Bool, {0}, {}}};
+  std::vector<NamedTensorView> views;
+  for (const auto& tensor : tensors) {
+    views.push_back({tensor.name, tensor.elementType, tensor.shape,
+      ndn::span<const std::uint8_t>(tensor.payload.data(), tensor.payload.size())});
+  }
+  // Fixed NDITB001 bytes: little-endian framing, FP32/FP16 values and an empty Bool.
+  const std::vector<std::uint8_t> expected{
+    0x4e, 0x44, 0x49, 0x54, 0x42, 0x30, 0x30, 0x31, 0x03, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x78, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+    0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00,
+    0xc0, 0x01, 0x00, 0x00, 0x00, 0x68, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x00, 0xc0, 0x04, 0x00,
+    0x00, 0x00, 0x6d, 0x61, 0x73, 0x6b, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  };
+  BOOST_CHECK(encodeTensorBundle(tensors) == expected);
+  BOOST_CHECK(encodeTensorBundleViews(views) == expected);
+  const auto bundle = makeEncodedTensorBundleViews("borrowed", views);
+  BOOST_CHECK_EQUAL(bundle.name, "borrowed");
+  BOOST_CHECK_EQUAL(bundle.expectedBytes, expected.size());
+  BOOST_CHECK(bundle.payload == expected);
+  BOOST_CHECK(!bundle.transferObservation);
+  const auto selected = selectTensorViews(views, {"h", "x", "h"});
+  BOOST_REQUIRE_EQUAL(selected.size(), 2U);
+  BOOST_CHECK_EQUAL(selected[0].name, "h");
+  BOOST_CHECK_EQUAL(selected[1].name, "x");
+  BOOST_CHECK_THROW(selectTensorViews(views, {"absent"}), std::out_of_range);
+  BOOST_CHECK_EQUAL(selectTensorViews(views, {}).size(), views.size());
+  auto invalid = views.front();
+  invalid.shape = {3};
+  BOOST_CHECK_THROW(encodeTensorBundleViews({invalid}), std::invalid_argument);
+  invalid.shape = {-1};
+  BOOST_CHECK_THROW(validateNamedTensorView(invalid), std::invalid_argument);
+  invalid = views.front();
+  invalid.name.clear();
+  BOOST_CHECK_THROW(encodeTensorBundleViews({invalid}), std::invalid_argument);
+  invalid = views.front();
+  invalid.payload = ndn::span<const std::uint8_t>(tensors.front().payload.data(), 1);
+  BOOST_CHECK_THROW(encodeTensorBundleViews({invalid}), std::invalid_argument);
+  BOOST_CHECK_THROW(encodeTensorBundleViews(std::vector<NamedTensorView>(257, views.front())),
+                    std::invalid_argument);
+  const std::vector<std::uint8_t> empty{
+    0x4e, 0x44, 0x49, 0x54, 0x42, 0x30, 0x30, 0x31, 0, 0, 0, 0};
+  BOOST_CHECK(encodeTensorBundleViews({}) == empty);
+  tensors.front().payload.front() = 255;
+  views.clear();
+  tensors.clear();
+  BOOST_CHECK(bundle.payload == expected);
+  const auto decoded = decodeTensorBundle(bundle.payload);
+  BOOST_REQUIRE_EQUAL(decoded.size(), 3U);
+  BOOST_CHECK(decoded[0].payload == bytes<float>({1.0f, -2.0f}));
+  BOOST_CHECK(decoded[1].elementType == TensorElementType::Float16);
+  BOOST_CHECK(decoded[2].payload.empty());
+}
+
 BOOST_AUTO_TEST_CASE(Spec189LogitsHalfBoundaryValues)
 {
   requireToken(sample({"logits", TensorElementType::Float16, {1, 4},
@@ -465,6 +705,29 @@ BOOST_AUTO_TEST_CASE(Spec189LogitsHalfBoundaryValues)
   // Preserve existing final-row-only finite validation.
   requireToken(sample({"logits", TensorElementType::Float16, {1, 2, 2},
     bytes<std::uint16_t>({0x7e00, 0x7c00, 0, 0x3c00})}), 1);
+}
+
+BOOST_AUTO_TEST_CASE(Spec189GreedyViewsReadFreshValuesAndPreserveFirstTies)
+{
+  for (std::size_t winner = 0; winner < 4; ++winner) {
+    std::vector<float> values(4, -2.0f);
+    values[winner] = 3.0f;
+    std::vector<std::uint8_t> payload(values.size() * sizeof(float));
+    std::memcpy(payload.data(), values.data(), payload.size());
+    requireToken(sample({"logits", TensorElementType::Float32, {1, 4},
+                         std::move(payload)}), winner);
+  }
+  requireToken(sample({"logits", TensorElementType::Float32, {1, 4},
+                       bytes<float>({-0.0f, 0.0f, -1.0f, -2.0f})}), 0);
+  requireToken(sample({"logits", TensorElementType::Float16, {1, 4},
+                       bytes<std::uint16_t>({0x3c00, 0x3c00, 0, 0})}), 0);
+  // A later invalid value must still reject, even after the maximum finite value.
+  const auto invalid = sample({"logits", TensorElementType::Float32, {1, 4},
+    bytes<float>({std::numeric_limits<float>::max(), 0, -1,
+                  std::numeric_limits<float>::quiet_NaN()})});
+  BOOST_CHECK(!invalid.error.empty());
+  BOOST_CHECK_EQUAL(invalid.events, 0);
+  BOOST_CHECK(invalid.feedback.empty());
 }
 
 BOOST_AUTO_TEST_CASE(Spec189LogitsRejectNonFiniteAndMalformedTensors)

@@ -393,6 +393,8 @@ def options(opt):
                       help='Installed NAC-ABE root (host default: /usr/local)')
     optgrp.add_option('--onnx-prefix', default='/usr/local',
                       help='Installed ONNX 1.17 full-protobuf root (host default: /usr/local)')
+    optgrp.add_option('--ort-probe-sdk-prefix', default='',
+                      help='Isolated SDK for spec220-ort-required-operators only; does not change applications')
     optgrp.add_option('--allow-container-runtime-rpath', action='store_true',
                       default=False,
                       help='Allow $ORIGIN runtime RPATH for an explicit container SDK build')

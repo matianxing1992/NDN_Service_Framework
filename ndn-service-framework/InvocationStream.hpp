@@ -908,6 +908,10 @@ private:
   // Derived once after constructor validation; binding_ stays immutable for
   // this publisher's lifetime. Consumers still compute their own binding.
   StreamDigest bindingDigest_{};
+  // Immutable request-scoped framing, reused across events, never across grants.
+  ndn::Name m_eventNamePrefix;
+  std::string m_eventKeyId;
+  std::string m_streamEpochText;
   StreamRequestOptions options_;
   ndn::Buffer eventKey_;
   std::shared_ptr<StreamInvocationLifecycle> lifecycle_;

@@ -77,6 +77,7 @@ struct NativeRequestOptions
   // fails the request without rolling back accepted tokens or replaying them.
   // This is distinct from the non-authoritative handle.observe() callback.
   std::function<void(const std::vector<std::uint8_t>&)> onGenerationEvent;
+  std::shared_ptr<class NativeWorkStatistics> workStatistics;
 };
 
 /** Pinned service/task metadata supplied by the application's catalog owner.

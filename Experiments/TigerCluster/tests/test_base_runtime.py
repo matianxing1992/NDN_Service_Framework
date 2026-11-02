@@ -17,6 +17,141 @@ def module(name):
 
 runtime = module('base-runtime')
 builder = module('build-base-sif')
+sdk = module('dependency-sdk')
+
+
+def test_native_smoke_rebuild_rejects_host_before_mutation(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime.os, 'geteuid', lambda: 1234)
+    monkeypatch.setattr(runtime, 'MANIFEST', tmp_path)
+    with pytest.raises(RuntimeError, match='BASE_CONTAINER_ROOT_REQUIRED'):
+        runtime.rebuild_native_smoke()
+    assert not list(tmp_path.iterdir())
+
+
+def test_native_smoke_uses_same_installed_sdk_compiler_path(monkeypatch, tmp_path):
+    import json
+    calls = []
+    monkeypatch.setattr(runtime, 'MANIFEST', tmp_path)
+    monkeypatch.setattr(runtime, 'run', lambda *args: 'frozen toolchain information')
+    monkeypatch.setattr(runtime.subprocess, 'run', lambda args, **kwargs: calls.append(args))
+    runtime.compile_native_smoke()
+    assert len(calls) == 1
+    command = calls[0]
+    assert command[0] == '/usr/bin/g++'
+    assert '-I/opt/onnxruntime/include' in command and '-L/opt/onnxruntime/lib' in command
+    assert command[-2:] == ['-o', str(tmp_path / 'base-smoke')]
+    assert '-lndn-cxx' in command and '-lonnxruntime' in command
+    assert 'OrtGetApiBase()->GetVersionString()' in (tmp_path / 'base-smoke.cpp').read_text()
+    assert json.loads((tmp_path / 'compiler.json').read_text())['command'] == command
+
+
+def test_ort_template_rebuilds_existing_abi_probe_before_image_sealing():
+    template = (SCRIPTS.parent / 'templates/onnxruntime-upgrade.def.in').read_text()
+    post, rest = template.split('%post\n', 1)[1].split('%test', 1)
+    assert post.index('upgrade-onnxruntime') < post.index('rebuild-native-smoke')
+    assert '/build-input/base-runtime.py rebuild-native-smoke' in post
+    assert '/opt/ndn-base/manifest/base-runtime.py verify' in rest
+
+
+def test_ort_upgrade_rejects_host_before_mutation(monkeypatch, tmp_path):
+    monkeypatch.setattr(sdk.os, 'geteuid', lambda: 1234)
+    with pytest.raises(ValueError, match='SDK_CONTAINER_REQUIRED'):
+        sdk.upgrade_onnxruntime(tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('conflict', ['repair_application_metadata', 'repair_framework_headers',
+                                   'complete_nac_abe', 'complete_tokenizer_bridge',
+                                   'dependency_bundle', 'wheel', 'nac_source_archive'])
+def test_ort_upgrade_conflicting_modes_rejected(conflict, tmp_path):
+    from types import SimpleNamespace
+    args = SimpleNamespace(upgrade_onnxruntime=tmp_path, **{conflict: True})
+    with pytest.raises(ValueError, match='BASE_COMPLETION_MODE_CONFLICT'):
+        builder.build(args)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('change', ['digest', 'size', 'symlink', 'duplicate', 'path', 'bool-size'])
+def test_ort_input_pair_rejects_changed_identity(tmp_path, change):
+    import json
+    ort = tmp_path / 'ort.tgz'
+    cuda = tmp_path / 'cuda.tar.xz'
+    ort.write_bytes(b'frozen ort input')
+    cuda.write_bytes(b'frozen cuda input')
+    rows = {'schema': 'ndnsf-ort-upgrade-v1', 'parentSha256': 'a' * 64,
+            'parentSdkSha256': 'b' * 64}
+    for name, path in [('onnxRuntimeCpp', ort), ('cudaRuntime', cuda)]:
+        rows[name] = {'filename': path.name, 'version': '1.31.1',
+                      'sha256': sdk.digest(path), 'bytes': path.stat().st_size}
+    lock = tmp_path / 'onnxruntime-upgrade.lock.json'
+    lock.write_text(json.dumps(rows))
+    assert sdk.verify_onnxruntime_inputs(tmp_path) == rows
+    if change == 'digest':
+        ort.write_bytes(b'changed ort file')
+    elif change == 'size':
+        rows['onnxRuntimeCpp']['bytes'] += 1
+    elif change == 'symlink':
+        ort.rename(tmp_path / 'original')
+        ort.symlink_to(tmp_path / 'original')
+    elif change == 'duplicate':
+        rows['cudaRuntime'] = dict(rows['onnxRuntimeCpp'])
+    elif change == 'path':
+        rows['onnxRuntimeCpp']['filename'] = '../ort.tgz'
+    else:
+        rows['onnxRuntimeCpp']['bytes'] = True
+    lock.write_text(json.dumps(rows))
+    with pytest.raises(ValueError, match='SDK_ORT_ARCHIVE_'):
+        sdk.verify_onnxruntime_inputs(tmp_path)
+
+
+@pytest.mark.parametrize('bad', ['traversal', 'external-link', 'symlink-parent', 'hard-link'])
+def test_ort_archive_rejected_before_extraction(tmp_path, bad):
+    import io
+    import tarfile
+    archive = tmp_path / 'vendor.tar'
+    with tarfile.open(archive, 'w') as output:
+        if bad == 'traversal':
+            member = tarfile.TarInfo('../outside')
+        elif bad == 'external-link':
+            member = tarfile.TarInfo('sdk/lib/libbad.so')
+            member.type = tarfile.SYMTYPE
+            member.linkname = '../../../outside'
+        elif bad == 'hard-link':
+            member = tarfile.TarInfo('sdk/lib/hard')
+            member.type = tarfile.LNKTYPE
+            member.linkname = 'sdk/lib/target'
+        else:
+            member = tarfile.TarInfo('sdk/lib')
+            member.type = tarfile.SYMTYPE
+            member.linkname = 'target'
+            output.addfile(member)
+            target = tarfile.TarInfo('sdk/target')
+            target.type = tarfile.DIRTYPE
+            output.addfile(target)
+            member = tarfile.TarInfo('sdk/lib/child')
+        output.addfile(member, io.BytesIO(b''))
+    destination = tmp_path / 'extracted'
+    with pytest.raises(ValueError, match='SDK_ORT_ARCHIVE_'):
+        sdk.extract_runtime_archive(archive, destination)
+    assert not destination.exists()
+
+
+def test_ort_archive_preserves_internal_soname_links(tmp_path):
+    import io
+    import tarfile
+    archive = tmp_path / 'vendor.tar'
+    with tarfile.open(archive, 'w') as output:
+        member = tarfile.TarInfo('sdk/lib/runtime.so.1')
+        member.size = 3
+        output.addfile(member, io.BytesIO(b'elf'))
+        link = tarfile.TarInfo('sdk/lib/runtime.so')
+        link.type = tarfile.SYMTYPE
+        link.linkname = 'runtime.so.1'
+        output.addfile(link)
+    root = sdk.extract_runtime_archive(archive, tmp_path / 'extracted')
+    assert root == tmp_path / 'extracted/sdk'
+    assert (root / 'lib/runtime.so').is_symlink()
+    assert (root / 'lib/runtime.so').read_bytes() == b'elf'
 
 
 @pytest.mark.parametrize('package', runtime.APP_DISTRIBUTIONS + (

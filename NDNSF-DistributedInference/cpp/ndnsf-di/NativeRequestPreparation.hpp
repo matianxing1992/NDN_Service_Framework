@@ -90,6 +90,8 @@ struct NativeRequestControl
   // may observe cancellation concurrently. Captured state must outlive callbacks.
   std::function<bool()> cancelled;
 
+  std::shared_ptr<class NativeWorkStatistics> workStatistics;
+
   void requireActive() const;
 };
 

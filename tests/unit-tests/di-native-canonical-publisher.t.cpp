@@ -14,8 +14,11 @@
 
 #include <onnx/onnx_pb.h>
 #include <onnx/checker.h>
+#include <onnx/defs/schema.h>
+#include <ndn-cxx/util/sha256.hpp>
 
 #include <fstream>
+#include <fcntl.h>
 #include <atomic>
 #include <cfenv>
 #include <future>
@@ -53,6 +56,32 @@ namespace {
 using namespace ndnsf::di;
 using namespace ndn_service_framework;
 using Clock = std::chrono::steady_clock;
+
+class InitializerRangeFixture final : public NativeCanonicalByteRangeSource
+{
+public:
+  std::vector<std::uint8_t> bytes;
+  std::uint64_t base = 0;
+  mutable std::uint64_t largestRead = 0;
+  mutable std::uint64_t reads = 0;
+  bool shortRead = false;
+
+  std::uint64_t size() const noexcept override
+  {
+    return base + bytes.size();
+  }
+
+  std::vector<std::uint8_t> read(std::uint64_t offset, std::uint64_t length) const override
+  {
+    if (length > NativeCanonicalMaterialBundleMaxBytes || offset < base ||
+        offset > size() || length > size() - offset)
+      throw std::runtime_error("fixture range exceeded declared backing");
+    largestRead = std::max(largestRead, length);
+    ++reads;
+    const auto first = bytes.begin() + static_cast<std::size_t>(offset - base);
+    return {first, first + static_cast<std::size_t>(length - (shortRead && length ? 1 : 0))};
+  }
+};
 
 std::vector<std::uint8_t> unhex(const std::string& text)
 {
@@ -114,7 +143,8 @@ struct Input
     candidate.artifactsByRole = {{role.role, {role.artifactDigest}}};
     candidate.rankArtifactDigestsByRole = candidate.artifactsByRole;
     candidate.fragmentsByRole = {{role.role, role.artifactDigest}};
-    candidate.requirementsByRole = {{role.role, {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0}}};
+    // Frozen inline/external fixture W1 is FP32[2,2], exactly 16 bytes.
+    candidate.requirementsByRole = {{role.role, {{"onnxruntime"}, 16, 0, 0, 0, 0, 1.0}}};
     candidate.candidateDigest = candidate.computedDigest();
     options = {"/fixture/NDNSF/DI/ARTIFACT", model.modelManifestDigest, {role.artifactDigest}};
   }
@@ -516,6 +546,8 @@ BOOST_AUTO_TEST_CASE(StateBindingConsumesActualCausalOnnxExport)
   input.candidate.model = input.model.descriptor; input.candidate.graphDigest = actual.graph.graphDigest;
   input.candidate.nodeRoles.clear();
   for (const auto& node : actual.graph.nodes) input.candidate.nodeRoles[node.id] = "/role";
+  // The frozen causal graph has 13 initializers totaling 504 bytes.
+  input.candidate.requirementsByRole.at("/role").weightBytes = 504;
   NativeStateTensorMapping mapping;
   for (const std::string family : {"attention_kv", "recurrent_state", "convolution_state"}) {
     input.candidate.roleStateInputsByRole["/role"].push_back({family + "_in", "float32", {std::string("abstract-state")}, std::nullopt});
@@ -544,6 +576,123 @@ BOOST_AUTO_TEST_CASE(StateBindingConsumesActualCausalOnnxExport)
   BOOST_CHECK_NO_THROW(owner.prepare(input.model, bound, input.control));
   auto cancelled = input.control; cancelled.cancelled = [] { return true; };
   BOOST_CHECK_THROW(owner.bindStateContracts(input.model, input.candidate, mapping, cancelled), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(SourceDefinedStateBindingPreservesMixedBoundaryTypesAndResourceFloor)
+{
+  Input input;
+  onnx::ModelProto source;
+  source.set_ir_version(8);
+  source.add_opset_import()->set_version(17);
+  auto* graph = source.mutable_graph();
+  graph->set_name("spec220-mixed-state");
+  const auto addValue = [] (onnx::ValueInfoProto* value, const char* name,
+                            int type, std::int64_t count) {
+    value->set_name(name);
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(type);
+    tensor->mutable_shape()->add_dim()->set_dim_value(count);
+  };
+  addValue(graph->add_input(), "X", onnx::TensorProto::FLOAT, 4);
+  addValue(graph->add_output(), "Y", onnx::TensorProto::FLOAT, 4);
+  addValue(graph->add_input(), "counter", onnx::TensorProto::INT64, 1);
+  addValue(graph->add_output(), "counter_out", onnx::TensorProto::INT64, 1);
+  auto* weight = graph->add_initializer();
+  weight->set_name("W");
+  weight->set_data_type(onnx::TensorProto::FLOAT);
+  weight->add_dims(4);
+  for (int i = 0; i < 4; ++i) weight->add_float_data(1.0F);
+  auto* add = graph->add_node();
+  add->set_op_type("Add");
+  add->add_input("X");
+  add->add_input("W");
+  add->add_output("Y");
+  auto* identity = graph->add_node();
+  identity->set_op_type("Identity");
+  identity->add_input("counter");
+  identity->add_output("counter_out");
+  onnx::checker::check_model(source);
+  const auto bytes = source.SerializeAsString();
+  input.source->modelBytes.assign(bytes.begin(), bytes.end());
+  input.model.canonicalSourceBytes = bytes.size();
+  input.model.canonicalSourceDigest = nativePlanningDigest(bytes);
+  NativeAssemblyControl control{input.control.deadline,
+    [&] { input.control.requireActive(); }, 1U << 20, 1U << 20};
+  const auto inspected = inspectNativeOnnxSourceGraph(*input.source, input.model.descriptor, control);
+  input.model.graph = inspected.graph;
+  input.model.descriptor.graphDigest = inspected.graph.graphDigest;
+  input.model.canonicalGraphDigest = inspected.canonicalIdentity.graphDigest;
+  input.candidate.model = input.model.descriptor;
+  input.candidate.graphDigest = inspected.graph.graphDigest;
+  input.candidate.nodeRoles.clear();
+  for (const auto& node : inspected.graph.nodes) input.candidate.nodeRoles[node.id] = "/role";
+  input.candidate.requirementsByRole.at("/role").weightBytes = 16;
+  // Equal count and plausible weight dtype still do not identify actual state.
+  input.candidate.roleStateInputsByRole["/role"] = {
+    {"old-state-a", "float32", {std::int64_t(4)}, 16},
+    {"old-state-b", "float32", {std::int64_t(1)}, 4}};
+  input.candidate.roleStateOutputsByRole = input.candidate.roleStateInputsByRole;
+  input.candidate.candidateDigest = input.candidate.computedDigest();
+  const auto& original = input.roles.front();
+  const NativeRoleRecipeProfile profile{original.artifactProfileDigest,
+    original.assemblerDescriptorDigest, original.backendAbi, original.precision,
+    original.quantization, original.layout, original.padding, original.protectionEpoch,
+    control.maxSourceBytes, control.maxAssembledBytes, 16};
+  const NativeCanonicalRolePreparer owner(input.model, *input.source, profile, control);
+  const NativeStateTensorMapping mapping{
+    {{"/role", {{"cache", {"X"}}, {"counter-state", {"counter"}}}}},
+    {{"/role", {{"cache", {"Y"}}, {"counter-state", {"counter_out"}}}}}};
+  BOOST_CHECK_THROW(owner.bindStateContracts(input.model, input.candidate, mapping, input.control),
+                    std::invalid_argument);
+  const auto bound = owner.bindStateContracts(input.model, input.candidate, mapping,
+    input.control, NativeStateContractBinding::SOURCE);
+  using StateShape = std::vector<std::variant<std::int64_t, std::string>>;
+  for (const auto* states : {&bound.roleStateInputsByRole, &bound.roleStateOutputsByRole}) {
+    BOOST_REQUIRE_EQUAL(states->at("/role").size(), 2U);
+    BOOST_CHECK_EQUAL(states->at("/role")[0].dtype, "float32");
+    BOOST_CHECK_EQUAL(states->at("/role")[1].dtype, "int64");
+    BOOST_CHECK_EQUAL(states->at("/role")[0].estimatedBytes.value(), 16U);
+    BOOST_CHECK_EQUAL(states->at("/role")[1].estimatedBytes.value(), 8U);
+    BOOST_CHECK(states->at("/role")[0].shape ==
+                StateShape{std::int64_t(4)});
+    BOOST_CHECK(states->at("/role")[1].shape ==
+                StateShape{std::int64_t(1)});
+  }
+  BOOST_CHECK_EQUAL(bound.roleStateInputsByRole.at("/role")[0].name, "X");
+  BOOST_CHECK_EQUAL(bound.roleStateOutputsByRole.at("/role")[1].name, "counter_out");
+  BOOST_CHECK_NO_THROW(owner.prepare(input.model, bound, input.control));
+  for (int failure = 0; failure != 4; ++failure) {
+    auto bad = input.candidate;
+    auto& resource = bad.requirementsByRole.at("/role");
+    if (failure == 0) resource.weightBytes = 15;
+    if (failure == 1) resource.workspaceBytes.reset();
+    if (failure == 2) resource.weightBytes = std::numeric_limits<std::uint64_t>::max();
+    if (failure == 3) resource.safetyMargin = std::numeric_limits<double>::infinity();
+    // Digest serialization itself validates malformed profiles and may reject.
+    const auto bindBad = [&] {
+      bad.candidateDigest = bad.computedDigest();
+      return owner.bindStateContracts(input.model, bad, mapping, input.control,
+        NativeStateContractBinding::SOURCE);
+    };
+    if (failure == 2)
+      BOOST_CHECK_THROW(bindBad(), std::overflow_error);
+    else
+      BOOST_CHECK_THROW(bindBad(), std::invalid_argument);
+  }
+  for (int failure = 0; failure != 4; ++failure) {
+    auto bad = mapping;
+    if (failure == 0) bad.inputs.clear();
+    if (failure == 1) bad.inputs["/role"]["counter-state"] = {"X"};
+    if (failure == 2) bad.inputs["/role"]["counter-state"] = {"foreign-tensor"};
+    if (failure == 3) bad.inputs["foreign-role"] = bad.inputs.at("/role");
+    BOOST_CHECK_THROW(owner.bindStateContracts(input.model, input.candidate, bad,
+      input.control, NativeStateContractBinding::SOURCE), std::invalid_argument);
+  }
+  auto cancelled = input.control;
+  cancelled.cancelled = [] { return true; };
+  BOOST_CHECK_THROW(owner.bindStateContracts(input.model, input.candidate, mapping,
+    cancelled, NativeStateContractBinding::SOURCE), std::runtime_error);
+  BOOST_CHECK_EQUAL(input.candidate.roleStateInputsByRole.at("/role")[1].dtype, "float32");
 }
 
 BOOST_AUTO_TEST_CASE(GeneratedMultiLayerModelSplitsAndAssemblesWithCleanup)
@@ -680,8 +829,8 @@ BOOST_AUTO_TEST_CASE(GeneratedMultiLayerModelSplitsAndAssemblesWithCleanup)
   candidate.rankArtifactDigestsByRole = candidate.artifactsByRole;
   candidate.tensorDegreesByRole = {{firstRole, 1}, {secondRole, 1}};
   candidate.requirementsByRole = {
-    {firstRole, {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0}},
-    {secondRole, {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0}}};
+    {firstRole, {{"onnxruntime"}, 36, 0, 0, 0, 0, 1.0}},
+    {secondRole, {{"onnxruntime"}, 24, 0, 0, 0, 0, 1.0}}};
   candidate.crossPartitionTensors = {"H2"};
   candidate.inputIngressRole = firstRole;
   candidate.resultEgressRole = secondRole;
@@ -950,6 +1099,595 @@ BOOST_AUTO_TEST_CASE(ExternalInitializerUsesBoundedChunksAndReassemblesAfterSele
                          [] (const char actual, const std::uint8_t expected) {
                            return static_cast<std::uint8_t>(static_cast<unsigned char>(actual)) == expected;
                          }));
+  auto range = std::make_shared<InitializerRangeFixture>();
+  range->bytes = source.initializerBytes->asVector();
+  NativeCanonicalSource rangeSource;
+  rangeSource.modelBytes = source.modelBytes;
+  rangeSource.initializerRangeSource = range;
+  NativeCanonicalSource::MaterialPayload legacyPayload;
+  legacyPayload.rangeSource = range;
+  legacyPayload.rangeSize = range->bytes.size();
+  BOOST_CHECK(legacyPayload.copyBytes() == range->bytes);
+  BOOST_CHECK_EQUAL(range->largestRead, NativeCanonicalMaterialBundleMaxBytes);
+  range->reads = 0;
+  BOOST_CHECK_THROW(legacyPayload.copyBytes([&] {
+    if (range->reads != 0) throw std::runtime_error("fixture cancelled after one window");
+  }), std::runtime_error);
+  BOOST_CHECK_EQUAL(range->reads, 1U);
+  const auto rangeManifest = deriveNativeCanonicalMaterialManifest(rangeSource, control);
+  BOOST_CHECK_EQUAL(rangeManifest->canonicalJson(), manifest->canonicalJson());
+  validateNativeCanonicalMaterialManifest(rangeSource, *rangeManifest, control);
+  rangeSource.materialManifest = rangeManifest;
+  rangeSource.materialPayloads = rangeManifest->payloads;
+  BOOST_CHECK(materializeNativeCanonicalModel(rangeSource, {0}, control) == assembled);
+  BOOST_CHECK_EQUAL(range->largestRead, NativeCanonicalMaterialBundleMaxBytes);
+  rangeSource.materialPayloads = rangeManifest->payloads;
+  range->reads = 0;
+  BOOST_CHECK_THROW(rangeManifest->validate([&] {
+    if (range->reads != 0) throw std::runtime_error("fixture cancelled during producer validation");
+  }), std::runtime_error);
+  BOOST_CHECK_EQUAL(range->reads, 1U);
+  auto consumerManifest = std::make_shared<NativeCanonicalSource::MaterialManifest>(*rangeManifest);
+  consumerManifest->payloads.clear();
+  consumerManifest->payloadsComplete = false;
+  rangeSource.materialManifest = std::move(consumerManifest);
+  range->reads = 0;
+  auto cancelled = control;
+  cancelled.requireActive = [&] {
+    if (range->reads != 0) throw std::runtime_error("fixture cancelled during material admission");
+  };
+  BOOST_CHECK_THROW(materializeNativeCanonicalModel(rangeSource, {0}, cancelled),
+                    std::runtime_error);
+  BOOST_CHECK_EQUAL(range->reads, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(RangeOnlyInitializerPreservesMaterialAndAssemblyIdentity)
+{
+  Input input(true);
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(30), [] {}, 1U << 20, 1U << 20};
+  const auto expected = deriveNativeCanonicalMaterialManifest(*input.source, control);
+  const auto expectedIdentity = canonicalOnnxSourceIdentity(*input.source, control);
+  auto range = std::make_shared<InitializerRangeFixture>();
+  range->bytes = input.source->initializerBytes->asVector();
+  NativeCanonicalSource source = *input.source;
+  source.initializerBytes.reset();
+  source.initializerRangeSource = range;
+  const auto actual = deriveNativeCanonicalMaterialManifest(source, control);
+  BOOST_CHECK_EQUAL(actual->canonicalJson(), expected->canonicalJson());
+  BOOST_CHECK_EQUAL(canonicalOnnxSourceIdentity(source, control).graphDigest,
+                    expectedIdentity.graphDigest);
+  validateNativeCanonicalMaterialManifest(source, *actual, control);
+  for (std::size_t i = 0; i < actual->payloads.size(); ++i)
+    BOOST_CHECK(actual->payloads[i].copyBytes() == expected->payloads[i].copyBytes());
+  source.materialManifest = actual;
+  source.materialPayloads = actual->payloads;
+  auto vectorSource = *input.source;
+  vectorSource.materialManifest = expected;
+  vectorSource.materialPayloads = expected->payloads;
+  BOOST_CHECK(materializeNativeCanonicalModel(source, {0, 1}, control) ==
+              materializeNativeCanonicalModel(vectorSource, {0, 1}, control));
+  BOOST_CHECK_GT(range->reads, 0U);
+  BOOST_CHECK_LE(range->largestRead, NativeCanonicalMaterialBundleMaxBytes);
+
+  input.model.canonicalGraphDigest = expectedIdentity.graphDigest;
+  *input.source = source;
+  TransportFixture io;
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    io.transport(), input.options, input.resolver());
+  const auto receipt = publisher.prepare(input.model, input.control);
+  BOOST_CHECK(!receipt.materialManifestDataName.empty());
+  BOOST_CHECK(receipt.initializerDataName.empty());
+  BOOST_CHECK(!receipt.rootDataName.empty());
+  BOOST_CHECK(std::find(io.labels.begin(), io.labels.end(), "di-canonical-initializer") ==
+              io.labels.end());
+
+  source.materialManifest.reset();
+  source.materialPayloads.clear();
+  source.initializerBytes = range->bytes;
+  range->bytes.front() ^= 1;
+  BOOST_CHECK_THROW(nativeCanonicalInitializerDigest(source, control), std::exception);
+  source.initializerBytes.reset();
+  range->shortRead = true;
+  BOOST_CHECK_THROW(deriveNativeCanonicalMaterialManifest(source, control), std::exception);
+  range->shortRead = false;
+  auto cancelled = control;
+  cancelled.requireActive = [] { throw std::runtime_error("fixture cancelled"); };
+  BOOST_CHECK_THROW(deriveNativeCanonicalMaterialManifest(source, cancelled), std::exception);
+  BOOST_CHECK_THROW(readNativeCanonicalInitializerRange(source, range->size(), 1, control),
+                    std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(RangeOnlyInitializerSupportsPhysicalOffsetsBeyondProtobufLimit)
+{
+  Input input(true);
+  auto range = std::make_shared<InitializerRangeFixture>();
+  range->bytes = input.source->initializerBytes->asVector();
+  range->base = static_cast<std::uint64_t>(std::numeric_limits<int>::max()) + 37;
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromArray(input.source->modelBytes.data(),
+                                     static_cast<int>(input.source->modelBytes.size())));
+  unsigned externalCount = 0;
+  for (auto& tensor : *model.mutable_graph()->mutable_initializer()) {
+    if (tensor.data_location() != onnx::TensorProto::EXTERNAL) continue;
+    ++externalCount;
+    bool found = false;
+    for (auto& entry : *tensor.mutable_external_data()) {
+      if (entry.key() == "offset") {
+        entry.set_value(std::to_string(range->base + std::stoull(entry.value())));
+        found = true;
+      }
+    }
+    if (!found) {
+      auto* entry = tensor.add_external_data();
+      entry->set_key("offset");
+      entry->set_value(std::to_string(range->base));
+    }
+  }
+  BOOST_REQUIRE_GT(externalCount, 0U);
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  NativeCanonicalSource source;
+  source.modelBytes.assign(wire.begin(), wire.end());
+  source.initializerRangeSource = range;
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(30), [] {}, range->size(), 1U << 20};
+  const auto manifest = deriveNativeCanonicalMaterialManifest(source, control);
+  validateNativeCanonicalMaterialManifest(source, *manifest, control);
+  BOOST_CHECK_GT(range->reads, 0U);
+  BOOST_CHECK_LE(range->largestRead, NativeCanonicalMaterialBundleMaxBytes);
+  BOOST_CHECK_EQUAL(nativeCanonicalInitializerByteSize(source), range->size());
+}
+
+BOOST_AUTO_TEST_CASE(NBitsExternalWeightsDoNotSupplyShapeValues)
+{
+  const Input fixture;
+  const auto* globalSchema = onnx::OpSchemaRegistry::Instance()->GetSchema(
+    "MatMulNBits", 1, "com.microsoft");
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(30), [] {}, 1U << 20, 1U << 20};
+  for (const int bits : {4, 8}) {
+    onnx::ModelProto model;
+    model.set_ir_version(8);
+    model.add_opset_import()->set_version(13);
+    auto* contrib = model.add_opset_import();
+    contrib->set_domain("com.microsoft");
+    contrib->set_version(1);
+    auto* graph = model.mutable_graph();
+    graph->set_name("spec220-nbits-shape");
+    const auto addValue = [&] (bool input, const char* name, std::int64_t last) {
+      auto* value = input ? graph->add_input() : graph->add_output();
+      value->set_name(name);
+      auto* type = value->mutable_type()->mutable_tensor_type();
+      type->set_elem_type(onnx::TensorProto::FLOAT);
+      type->mutable_shape()->add_dim()->set_dim_value(1);
+      type->mutable_shape()->add_dim()->set_dim_value(last);
+    };
+    addValue(true, "A", 33);
+    addValue(false, "Z", 1);
+    auto* node = graph->add_node();
+    node->set_domain("com.microsoft");
+    node->set_op_type("MatMulNBits");
+    node->add_input("A");
+    node->add_input("B");
+    node->add_input("scales");
+    node->add_output("Y");
+    for (const auto& item : std::map<std::string, int>{
+           {"K", 33}, {"N", 2}, {"bits", bits}, {"block_size", 32}}) {
+      auto* attribute = node->add_attribute();
+      attribute->set_name(item.first);
+      attribute->set_type(onnx::AttributeProto::INT);
+      attribute->set_i(item.second);
+    }
+    auto* packed = graph->add_initializer();
+    packed->set_name("B");
+    packed->set_data_type(onnx::TensorProto::UINT8);
+    for (const auto dim : {2, 2, 32 * bits / 8}) packed->add_dims(dim);
+    packed->set_raw_data(std::string(4 * 32 * bits / 8, '\x88'));
+    auto* scales = graph->add_initializer();
+    scales->set_name("scales");
+    scales->set_data_type(onnx::TensorProto::FLOAT);
+    scales->add_dims(2);
+    scales->add_dims(2);
+    scales->set_raw_data(std::string(16, '\0'));
+    // The split boundary Y has no exporter value_info. Its rank must come
+    // from the NBits contract before a following reduction can be extracted.
+    auto* reduce = graph->add_node();
+    reduce->set_op_type("ReduceMean");
+    reduce->add_input("Y");
+    reduce->add_output("Z");
+    auto* axes = reduce->add_attribute();
+    axes->set_name("axes");
+    axes->set_type(onnx::AttributeProto::INTS);
+    axes->add_ints(-1);
+    const auto makeSource = [&] (const onnx::ModelProto& value) {
+      std::string wire;
+      if (!value.SerializeToString(&wire)) throw std::runtime_error("fixture serialization");
+      NativeCanonicalSource source;
+      source.modelBytes.assign(wire.begin(), wire.end());
+      return source;
+    };
+    const auto inlined = inspectNativeOnnxSourceGraph(
+      makeSource(model), fixture.model.descriptor, control);
+    const auto metadata = NativeJson::parse(inlined.graphMetadataJson);
+    BOOST_REQUIRE(metadata.at("tensors").contains("Y"));
+    BOOST_CHECK(metadata.at("tensors").at("Y").at("shape") == NativeJson::array({1, 2}));
+    BOOST_CHECK_EQUAL(metadata.at("tensors").at("Y").at("dtype"), "float32");
+    auto batched = model;
+    auto* inputShape = batched.mutable_graph()->mutable_input(0)->mutable_type()
+      ->mutable_tensor_type()->mutable_shape();
+    inputShape->clear_dim();
+    inputShape->add_dim()->set_dim_param("batch");
+    inputShape->add_dim()->set_dim_param("sequence");
+    inputShape->add_dim()->set_dim_value(33);
+    auto* outputShape = batched.mutable_graph()->mutable_output(0)->mutable_type()
+      ->mutable_tensor_type()->mutable_shape();
+    outputShape->clear_dim();
+    outputShape->add_dim()->set_dim_param("batch");
+    outputShape->add_dim()->set_dim_param("sequence");
+    outputShape->add_dim()->set_dim_value(1);
+    const auto symbolic = inspectNativeOnnxSourceGraph(
+      makeSource(batched), fixture.model.descriptor, control);
+    BOOST_CHECK(NativeJson::parse(symbolic.graphMetadataJson).at("tensors").at("Y").at("shape") ==
+                NativeJson::array({"batch", "sequence", 2}));
+    inputShape->mutable_dim(2)->set_dim_value(34);
+    const auto invalidWidth = inspectNativeOnnxSourceGraph(
+      makeSource(batched), fixture.model.descriptor, control);
+    BOOST_CHECK(!NativeJson::parse(invalidWidth.graphMetadataJson).at("tensors").contains("Y"));
+    batched.mutable_graph()->mutable_input(0)->mutable_type()->mutable_tensor_type()->clear_shape();
+    const auto unknownRank = inspectNativeOnnxSourceGraph(
+      makeSource(batched), fixture.model.descriptor, control);
+    BOOST_CHECK(!NativeJson::parse(unknownRank.graphMetadataJson).at("tensors").contains("Y"));
+
+    auto local = model;
+    auto* function = local.add_functions();
+    function->set_name("MatMulNBits");
+    function->set_domain("com.microsoft");
+    function->add_opset_import()->set_version(13);
+    for (const char* name : {"A", "B", "scales"}) function->add_input(name);
+    function->add_output("Y");
+    for (const char* name : {"K", "N", "bits", "block_size"}) function->add_attribute(name);
+    auto* identity = function->add_node();
+    identity->set_op_type("Identity");
+    identity->add_input("A");
+    identity->add_output("Y");
+    const auto localFunction = inspectNativeOnnxSourceGraph(
+      makeSource(local), fixture.model.descriptor, control);
+    BOOST_CHECK(NativeJson::parse(localFunction.graphMetadataJson).at("tensors").at("Y").at("shape") ==
+                NativeJson::array({1, 33}));
+    BOOST_CHECK(onnx::OpSchemaRegistry::Instance()->GetSchema("MatMulNBits", 1, "com.microsoft") ==
+                globalSchema);
+    std::vector<std::uint8_t> backing;
+    for (auto& tensor : *graph->mutable_initializer()) {
+      const auto raw = tensor.raw_data();
+      const auto offset = backing.size();
+      backing.insert(backing.end(), raw.begin(), raw.end());
+      tensor.clear_raw_data();
+      tensor.set_data_location(onnx::TensorProto::EXTERNAL);
+      for (const auto& field : std::map<std::string, std::string>{
+             {"location", "weights.bin"}, {"offset", std::to_string(offset)},
+             {"length", std::to_string(raw.size())}}) {
+        auto* entry = tensor.add_external_data();
+        entry->set_key(field.first);
+        entry->set_value(field.second);
+      }
+    }
+    auto source = makeSource(model);
+    source.initializerBytes = backing;
+    const auto external = inspectNativeOnnxSourceGraph(source, fixture.model.descriptor, control);
+    BOOST_CHECK_EQUAL(external.graphMetadataJson, inlined.graphMetadataJson);
+    BOOST_CHECK_EQUAL(external.canonicalIdentity.graphDigest, inlined.canonicalIdentity.graphDigest);
+    BOOST_CHECK_EQUAL(external.canonicalIdentity.initializerDigest,
+                      inlined.canonicalIdentity.initializerDigest);
+    model.mutable_opset_import(1)->set_version(2);
+    source.modelBytes = makeSource(model).modelBytes;
+    BOOST_CHECK_EXCEPTION(inspectNativeOnnxSourceGraph(source, fixture.model.descriptor, control),
+      std::runtime_error, [] (const auto& error) {
+        return std::string(error.what()).find("SHAPE_INPUT_UNSUPPORTED") != std::string::npos;
+      });
+    model.mutable_opset_import(1)->set_version(1);
+    model.mutable_opset_import(1)->set_domain("fixture.unknown");
+    node->set_domain("fixture.unknown");
+    source.modelBytes = makeSource(model).modelBytes;
+    BOOST_CHECK_EXCEPTION(inspectNativeOnnxSourceGraph(source, fixture.model.descriptor, control),
+      std::runtime_error, [] (const auto& error) {
+        return std::string(error.what()).find("SHAPE_INPUT_UNSUPPORTED") != std::string::npos;
+      });
+  }
+}
+
+BOOST_AUTO_TEST_CASE(CausalConvExternalWeightsDoNotSupplyShapeValues)
+{
+  const Input fixture;
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(30), [] {}, 1U << 20, 1U << 20};
+  onnx::ModelProto model;
+  model.set_ir_version(10);
+  model.add_opset_import()->set_version(21);
+  auto* contrib = model.add_opset_import();
+  contrib->set_domain("com.microsoft");
+  contrib->set_version(1);
+  auto* graph = model.mutable_graph();
+  graph->set_name("spec220-causal-conv-shape");
+  const auto addValue = [&] (bool input, const char* name,
+                             std::initializer_list<std::int64_t> dims) {
+    auto* value = input ? graph->add_input() : graph->add_output();
+    value->set_name(name);
+    auto* type = value->mutable_type()->mutable_tensor_type();
+    type->set_elem_type(onnx::TensorProto::FLOAT16);
+    for (const auto dim : dims) type->mutable_shape()->add_dim()->set_dim_value(dim);
+  };
+  addValue(true, "input", {1, 10240, 2});
+  addValue(true, "past_state", {1, 10240, 3});
+  addValue(false, "output", {1, 10240, 2});
+  addValue(false, "present_state", {1, 10240, 3});
+  auto* node = graph->add_node();
+  node->set_domain("com.microsoft");
+  node->set_op_type("CausalConvWithState");
+  for (const char* name : {"input", "weight", "bias", "past_state"}) node->add_input(name);
+  node->add_output("output");
+  node->add_output("present_state");
+  auto* ndim = node->add_attribute();
+  ndim->set_name("ndim");
+  ndim->set_type(onnx::AttributeProto::INT);
+  ndim->set_i(1);
+  auto* activation = node->add_attribute();
+  activation->set_name("activation");
+  activation->set_type(onnx::AttributeProto::STRING);
+  activation->set_s("silu");
+  for (const auto& item : std::map<std::string, std::vector<std::int64_t>>{
+         {"weight", {10240, 1, 4}}, {"bias", {10240}}}) {
+    auto* tensor = graph->add_initializer();
+    tensor->set_name(item.first);
+    tensor->set_data_type(onnx::TensorProto::FLOAT16);
+    std::size_t bytes = 2;
+    for (const auto dim : item.second) {
+      tensor->add_dims(dim);
+      bytes *= static_cast<std::size_t>(dim);
+    }
+    std::string raw(bytes, '\0');
+    for (std::size_t i = 1; i < bytes; i += 2) raw[i] = '\x3c';
+    tensor->set_raw_data(std::move(raw));
+  }
+  const auto makeSource = [&] {
+    std::string wire;
+    if (!model.SerializeToString(&wire)) throw std::runtime_error("fixture serialization");
+    NativeCanonicalSource source;
+    source.modelBytes.assign(wire.begin(), wire.end());
+    return source;
+  };
+  auto descriptor = fixture.model.descriptor;
+  descriptor.precision = "fp16";
+  descriptor = fixture::completeModel(std::move(descriptor));
+  const auto inlined = inspectNativeOnnxSourceGraph(makeSource(), descriptor, control);
+  std::vector<std::uint8_t> backing;
+  for (auto& tensor : *graph->mutable_initializer()) {
+    const auto raw = tensor.raw_data();
+    const auto offset = backing.size();
+    backing.insert(backing.end(), raw.begin(), raw.end());
+    tensor.clear_raw_data();
+    tensor.set_data_location(onnx::TensorProto::EXTERNAL);
+    for (const auto& field : std::map<std::string, std::string>{
+           {"location", "weights.bin"}, {"offset", std::to_string(offset)},
+           {"length", std::to_string(raw.size())}}) {
+      auto* entry = tensor.add_external_data();
+      entry->set_key(field.first);
+      entry->set_value(field.second);
+    }
+  }
+  auto source = makeSource();
+  source.initializerBytes = backing;
+  const auto external = inspectNativeOnnxSourceGraph(source, descriptor, control);
+  BOOST_CHECK_EQUAL(external.graphMetadataJson, inlined.graphMetadataJson);
+  BOOST_CHECK_EQUAL(external.canonicalIdentity.graphDigest, inlined.canonicalIdentity.graphDigest);
+  BOOST_CHECK_EQUAL(external.canonicalIdentity.initializerDigest,
+                    inlined.canonicalIdentity.initializerDigest);
+  for (const bool foreignDomain : {false, true}) {
+    model.mutable_opset_import(1)->set_version(foreignDomain ? 1 : 2);
+    if (foreignDomain) {
+      model.mutable_opset_import(1)->set_domain("fixture.unknown");
+      node->set_domain("fixture.unknown");
+    }
+    source.modelBytes = makeSource().modelBytes;
+    BOOST_CHECK_EXCEPTION(inspectNativeOnnxSourceGraph(source, descriptor, control),
+      std::runtime_error, [] (const auto& error) {
+        return std::string(error.what()).find("SHAPE_INPUT_UNSUPPORTED") != std::string::npos;
+      });
+  }
+}
+
+BOOST_AUTO_TEST_CASE(SingleInitializerBeyondProtobufLimitStreamsIntoExternalFile)
+{
+  struct GeneratedRange final : NativeCanonicalByteRangeSource
+  {
+    mutable std::uint64_t largestRead = 0;
+    mutable bool crossedLimit = false;
+
+    std::uint64_t size() const noexcept override
+    {
+      return (std::uint64_t{1} << 31) + 32;
+    }
+
+    std::vector<std::uint8_t> read(std::uint64_t offset, std::uint64_t length) const override
+    {
+      if (offset > size() || length > size() - offset || length > (1U << 20))
+        throw std::runtime_error("generated initializer read outside bounded range");
+      largestRead = std::max(largestRead, length);
+      crossedLimit = crossedLimit || offset + length > (std::uint64_t{1} << 31);
+      std::vector<std::uint8_t> bytes(length, 0);
+      const auto tail = std::uint64_t{1} << 31;
+      for (auto position = std::max(offset, tail); position < offset + length; ++position)
+        bytes[position - offset] = static_cast<std::uint8_t>(position - tail);
+      return bytes;
+    }
+  };
+  auto range = std::make_shared<GeneratedRange>();
+  std::weak_ptr<const NativeCanonicalByteRangeSource> weak = range;
+  NativeCanonicalSource source;
+  source.initializerRangeSource = range;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(13);
+  model.mutable_graph()->set_name("spec220-single-large-initializer");
+  auto* output = model.mutable_graph()->add_output();
+  output->set_name("Y");
+  auto* type = output->mutable_type()->mutable_tensor_type();
+  type->set_elem_type(onnx::TensorProto::UINT8);
+  type->mutable_shape()->add_dim()->set_dim_value(range->size());
+  auto* node = model.mutable_graph()->add_node();
+  node->set_op_type("Identity");
+  node->add_input("weight");
+  node->add_output("Y");
+  auto* weight = model.mutable_graph()->add_initializer();
+  weight->set_name("weight");
+  weight->set_data_type(onnx::TensorProto::UINT8);
+  weight->add_dims(range->size());
+  weight->set_data_location(onnx::TensorProto::EXTERNAL);
+  for (const auto& field : std::map<std::string, std::string>{
+         {"location", "source.data"}, {"offset", "0"},
+         {"length", std::to_string(range->size())}}) {
+    auto* entry = weight->add_external_data();
+    entry->set_key(field.first);
+    entry->set_value(field.second);
+  }
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  source.modelBytes.assign(wire.begin(), wire.end());
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(300), [] {},
+    std::uint64_t{8} << 30, std::uint64_t{8} << 30};
+  auto manifest = deriveNativeCanonicalMaterialManifest(source, control);
+  BOOST_REQUIRE(manifest);
+  source.materialManifest = manifest;
+  source.materialPayloads = manifest->payloads;
+  ndn::util::Sha256 hash;
+  std::uint64_t total = 0;
+  std::size_t writes = 0;
+  const auto files = materializeNativeCanonicalModelFiles(source, {0}, {}, {}, control,
+    [&] (const auto& bytes) {
+      BOOST_REQUIRE_LE(bytes.size(), 1U << 20);
+      hash.update(ndn::span<const std::uint8_t>(bytes.data(), bytes.size()));
+      total += bytes.size();
+      ++writes;
+    });
+  const std::string expected =
+    "sha256:8998f71cf2403c396823a210fb680279178083d7f100453b2d82a2757cdc32bd";
+  auto digest = hash.toString();
+  std::transform(digest.begin(), digest.end(), digest.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  BOOST_CHECK_EQUAL("sha256:" + digest, expected);
+  BOOST_CHECK_EQUAL(files.initializerDigest, expected);
+  BOOST_CHECK_EQUAL(total, range->size());
+  BOOST_CHECK_EQUAL(files.initializerBytes, range->size());
+  BOOST_CHECK_EQUAL(writes, 2049U);
+  BOOST_CHECK(range->crossedLimit);
+  BOOST_CHECK_LE(range->largestRead, 1U << 20);
+  BOOST_CHECK_LT(files.modelBytes.size(), 4096U);
+  onnx::ModelProto external;
+  BOOST_REQUIRE(external.ParseFromArray(files.modelBytes.data(),
+                                       static_cast<int>(files.modelBytes.size())));
+  const auto& result = external.graph().initializer(0);
+  BOOST_CHECK(result.raw_data().empty());
+  BOOST_CHECK_EQUAL(result.data_location(), onnx::TensorProto::EXTERNAL);
+  std::map<std::string, std::string> fields;
+  for (const auto& entry : result.external_data()) fields[entry.key()] = entry.value();
+  BOOST_CHECK_EQUAL(fields.at("location"), "model.onnx.data");
+  BOOST_CHECK_EQUAL(fields.at("offset"), "0");
+  BOOST_CHECK_EQUAL(fields.at("length"), std::to_string(total));
+  BOOST_CHECK(source.materialPayloads.empty());
+  source.initializerRangeSource.reset();
+  source.materialManifest.reset();
+  manifest.reset();
+  range.reset();
+  BOOST_CHECK(weak.expired());
+}
+
+BOOST_AUTO_TEST_CASE(InitializerFileOwnerSurvivesUnlinkAndRejectsChangedOrInvalidFiles)
+{
+  char path[] = "/var/tmp/ndnsf-di-initializer-test-XXXXXX";
+  const int fd = ::mkstemp(path);
+  BOOST_REQUIRE_GE(fd, 0);
+  struct Cleanup {
+    int fd;
+    const char* path;
+    ~Cleanup() { ::close(fd); ::unlink(path); }
+  } cleanup{fd, path};
+  const std::vector<std::uint8_t> bytes{3, 7, 11, 19, 23};
+  BOOST_REQUIRE_EQUAL(::write(fd, bytes.data(), bytes.size()), bytes.size());
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(30), [] {}, 1024, 1024};
+  const auto expected = nativePlanningDigest(bytes.data(), bytes.size());
+  BOOST_CHECK_THROW(openNativeCanonicalInitializerFile(path, bytes.size() + 1, expected, control),
+                    std::exception);
+  BOOST_CHECK_THROW(openNativeCanonicalInitializerFile(path, bytes.size(),
+                    nativePlanningDigest("wrong"), control), std::exception);
+  auto owner = openNativeCanonicalInitializerFile(path, bytes.size(), expected, control);
+  BOOST_REQUIRE(owner);
+  int ownedFd = -1;
+  for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+    std::error_code error;
+    if (std::filesystem::read_symlink(entry.path(), error) == path && !error) {
+      const int candidate = std::stoi(entry.path().filename().string());
+      if (candidate != fd) {
+        BOOST_REQUIRE_EQUAL(ownedFd, -1);
+        ownedFd = candidate;
+      }
+    }
+  }
+  BOOST_REQUIRE_GE(ownedFd, 0);
+  BOOST_REQUIRE_EQUAL(::unlink(path), 0);
+  BOOST_CHECK(owner->read(0, bytes.size()) == bytes);
+  std::weak_ptr<const NativeCanonicalByteRangeSource> weak = owner;
+  BOOST_REQUIRE_EQUAL(::ftruncate(fd, bytes.size() - 1), 0);
+  BOOST_CHECK_THROW(owner->read(0, bytes.size()), std::exception);
+  owner.reset();
+  BOOST_CHECK(weak.expired());
+  errno = 0;
+  BOOST_CHECK_EQUAL(::fcntl(ownedFd, F_GETFD), -1);
+  BOOST_CHECK_EQUAL(errno, EBADF);
+}
+
+BOOST_AUTO_TEST_CASE(RangeFileMutationAfterAdmissionCannotPublishStaleMaterialDigest)
+{
+  Input input(true);
+  const auto bytes = input.source->initializerBytes->asVector();
+  char path[] = "/var/tmp/ndnsf-di-material-mutation-XXXXXX";
+  const int fd = ::mkstemp(path);
+  BOOST_REQUIRE_GE(fd, 0);
+  struct Cleanup {
+    int fd;
+    const char* path;
+    ~Cleanup() { ::close(fd); ::unlink(path); }
+  } cleanup{fd, path};
+  BOOST_REQUIRE_EQUAL(::write(fd, bytes.data(), bytes.size()), bytes.size());
+  const NativeAssemblyControl control{
+    input.control.deadline, [] {}, 1U << 20, 1U << 20};
+  input.source->initializerRangeSource = openNativeCanonicalInitializerFile(
+    path, bytes.size(), nativePlanningDigest(bytes.data(), bytes.size()), control);
+  input.source->initializerBytes.reset();
+  input.source->materialManifest = deriveNativeCanonicalMaterialManifest(*input.source, control);
+  input.model.canonicalGraphDigest = input.source->materialManifest->graphDigest;
+  BOOST_REQUIRE_EQUAL(::unlink(path), 0);
+  TransportFixture io;
+  auto transport = io.transport();
+  const auto begin = transport.begin;
+  transport.begin = [&, begin] {
+    const auto request = begin();
+    const std::uint8_t changed = bytes.front() ^ 1;
+    if (::pwrite(fd, &changed, 1, 0) != 1)
+      throw std::runtime_error("fixture same-size mutation failed");
+    return request;
+  };
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    std::move(transport), input.options, input.resolver());
+  BOOST_CHECK_EXCEPTION(publisher.prepare(input.model, input.control), std::runtime_error,
+    [] (const auto& error) {
+      return std::string(error.what()).find("MATERIAL_DIGEST_MISMATCH") != std::string::npos;
+    });
+  BOOST_CHECK_EQUAL(io.beginCalls, 1U);
+  BOOST_CHECK(io.payloads.empty());
+  BOOST_CHECK(io.labels.empty());
 }
 
 BOOST_AUTO_TEST_CASE(InlineInitializerUsesBoundedChunksAndReassemblesAfterSelection)
@@ -1012,6 +1750,56 @@ BOOST_AUTO_TEST_CASE(InlineInitializerUsesBoundedChunksAndReassemblesAfterSelect
   BOOST_REQUIRE_EQUAL(roundTrip.graph().initializer_size(), 1);
   BOOST_REQUIRE_EQUAL(roundTrip.graph().initializer(0).raw_data().size(), rawBytes);
   BOOST_CHECK_EQUAL(roundTrip.graph().initializer(0).raw_data(), raw);
+
+  // The production file-pair path must preserve logical initializer identity
+  // while keeping the graph small and delivering only bounded raw windows.
+  const auto inlineIdentity = canonicalOnnxSourceIdentity(source, control);
+  source.materialPayloads = manifest->payloads;
+  std::vector<std::uint8_t> sidecar;
+  std::size_t writes = 0;
+  const auto files = materializeNativeCanonicalModelFiles(source, {0}, {}, {}, control,
+    [&] (const auto& bytes) {
+      BOOST_CHECK_LE(bytes.size(), NativeCanonicalMaterialBundleMaxBytes);
+      sidecar.insert(sidecar.end(), bytes.begin(), bytes.end());
+      ++writes;
+    });
+  BOOST_CHECK_EQUAL(writes, 4U);
+  BOOST_CHECK_LT(files.modelBytes.size(), 4096U);
+  BOOST_CHECK_EQUAL(files.initializerBytes, rawBytes);
+  BOOST_CHECK_EQUAL(files.initializerDigest,
+                    nativePlanningDigest(sidecar.data(), sidecar.size()));
+  BOOST_REQUIRE_EQUAL(sidecar.size(), raw.size());
+  BOOST_CHECK(std::equal(sidecar.begin(), sidecar.end(),
+    reinterpret_cast<const std::uint8_t*>(raw.data())));
+  BOOST_CHECK(source.materialPayloads.empty());
+  onnx::ModelProto external;
+  BOOST_REQUIRE(external.ParseFromArray(files.modelBytes.data(),
+                                        static_cast<int>(files.modelBytes.size())));
+  const auto& weight = external.graph().initializer(0);
+  BOOST_CHECK_EQUAL(weight.data_location(), onnx::TensorProto::EXTERNAL);
+  BOOST_CHECK(weight.raw_data().empty());
+  std::map<std::string, std::string> ranges;
+  for (const auto& field : weight.external_data()) ranges[field.key()] = field.value();
+  BOOST_CHECK_EQUAL(ranges.at("location"), "model.onnx.data");
+  BOOST_CHECK_EQUAL(ranges.at("offset"), "0");
+  BOOST_CHECK_EQUAL(ranges.at("length"), std::to_string(rawBytes));
+  NativeCanonicalSource externalSource;
+  externalSource.modelBytes = files.modelBytes;
+  externalSource.initializerBytes = sidecar;
+  const auto externalIdentity = canonicalOnnxSourceIdentity(externalSource, control);
+  BOOST_CHECK_EQUAL(externalIdentity.graphDigest, inlineIdentity.graphDigest);
+  BOOST_CHECK_EQUAL(externalIdentity.initializerDigest, inlineIdentity.initializerDigest);
+
+  source.materialPayloads = manifest->payloads;
+  std::size_t failedWrites = 0;
+  BOOST_CHECK_EXCEPTION(materializeNativeCanonicalModelFiles(source, {0}, {}, {}, control,
+    [&] (const auto&) {
+      ++failedWrites;
+      throw std::runtime_error("fixture sidecar write failure");
+    }), std::runtime_error, [] (const auto& error) {
+      return std::string(error.what()) == "fixture sidecar write failure";
+    });
+  BOOST_CHECK_EQUAL(failedWrites, 1U);
 }
 
 BOOST_AUTO_TEST_CASE(InlineInitializerAtBundleBoundaryUsesChunks)
@@ -1075,6 +1863,24 @@ BOOST_AUTO_TEST_CASE(ModelIdentityBindsWeightOnlyQuantizationSubtype)
 
   auto decoded = NativeModelDescriptor::fromCanonicalJson(quantizedJson);
   BOOST_CHECK_EQUAL(decoded.quantizationSubtype, "weight_only_int8");
+  const auto int8Digest = model.modelDigest();
+  model.quantizationSubtype = "weight_only_int4";
+  const auto int4Json = model.canonicalJson();
+  BOOST_CHECK(int4Json.find("weight_only_int4") != std::string::npos);
+  BOOST_CHECK(model.modelDigest() != int8Digest);
+  BOOST_CHECK(int4Json != legacyJson);
+  decoded = NativeModelDescriptor::fromCanonicalJson(int4Json);
+  BOOST_CHECK_EQUAL(decoded.quantizationSubtype, "weight_only_int4");
+  BOOST_CHECK_EQUAL(decoded.modelDigest(), model.modelDigest());
+  const auto int4Digest = model.modelDigest();
+  model.quantizationSubtype = "dynamic_int8";
+  const auto dynamicJson = model.canonicalJson();
+  decoded = NativeModelDescriptor::fromCanonicalJson(dynamicJson);
+  BOOST_CHECK_EQUAL(decoded.quantizationSubtype, "dynamic_int8");
+  BOOST_CHECK_EQUAL(decoded.modelDigest(), model.modelDigest());
+  BOOST_CHECK(model.modelDigest() != int8Digest);
+  BOOST_CHECK(model.modelDigest() != int4Digest);
+  BOOST_CHECK(dynamicJson != legacyJson);
   model.quantizationSubtype = "unsupported";
   BOOST_CHECK_THROW(model.validate(), std::invalid_argument);
 }

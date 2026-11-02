@@ -22,6 +22,7 @@
 #include "RuntimeStatusStore.hpp"
 #include "EncryptedLargeDataRangeStore.hpp"
 #include "PublishedContentName.hpp"
+#include "control-byte-statistics.hpp"
 
 #include <functional>
 #include <atomic>
@@ -895,6 +896,14 @@ namespace ndn_service_framework{
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler);
 
+            ndn::Name RequestServiceTargeted(const ndn::Name& provider,
+                                 const ndn::Name& serviceName,
+                                 ndn_service_framework::RequestMessage requestMessage,
+                                 int timeoutMs,
+                                 TimeoutHandler onTimeout,
+                                 ResponseHandler onResponseHandler,
+                                 std::shared_ptr<ControlByteStatistics> controlStatistics);
+
             ndn::Name RequestService(const ndn::Name& serviceName,
                                  ndn_service_framework::RequestMessage requestMessage,
                                  int timeoutMs,
@@ -1076,7 +1085,9 @@ namespace ndn_service_framework{
                                              onStreamComplete,
                                          std::function<void(const StreamedInvocationError&)>
                                              onStreamError,
-                                         const std::vector<ndn::Name>& providerNames);
+                                         const std::vector<ndn::Name>& providerNames,
+                                         std::shared_ptr<ControlByteStatistics>
+                                             controlStatistics = {});
 
             bool CommitCollaborationPlan(const RequestId& requestId,
                                          const std::string& ackClosedDigest,
@@ -1509,6 +1520,7 @@ namespace ndn_service_framework{
 
             struct PendingCall
             {
+                std::shared_ptr<ControlByteStatistics> controlStatistics;
                 struct R1DecisionDelivery
                 {
                     ndn::Name providerName;

@@ -5,14 +5,59 @@ top = '..'
 import os
 
 def build(bld):
+    # SDK capability fixture: no NDNSF services or model weights are required.
+    if bld.env.HAVE_ONNXRUNTIME_CPP:
+        probe_env = bld.env.derive()
+        probe_rpath = []
+        probe_sdk = bld.options.ort_probe_sdk_prefix
+        if probe_sdk:
+            if (not os.path.isabs(probe_sdk) or
+                    not os.path.isfile(os.path.join(probe_sdk, 'include/onnxruntime_cxx_api.h')) or
+                    not os.path.isfile(os.path.join(probe_sdk, 'lib/libonnxruntime.so'))):
+                bld.fatal('ORT probe SDK must be an absolute existing include/lib prefix')
+            probe_env.INCLUDES_ONNXRUNTIME = [os.path.join(probe_sdk, 'include')]
+            probe_env.LIBPATH_ONNXRUNTIME = [os.path.join(probe_sdk, 'lib')]
+            probe_rpath = probe_env.LIBPATH_ONNXRUNTIME
+        bld.program(target='../spec220-ort-required-operators',
+                    name='spec220-ort-required-operators',
+                    source=[bld.path.find_node('fixtures/spec220/ort-required-operators.cpp')],
+                    env=probe_env, use='ONNX ONNXRUNTIME PROTOBUF', cxxflags=['-std=c++17'],
+                    rpath=probe_rpath,
+                    install_path=None)
+    # Sanitize the production collector itself, not just a fixture linked to
+    # an unsanitized shared library. These are lifecycle checks, not inference.
+    for suffix, sanitizer in (('asan', 'address,undefined'), ('tsan', 'thread')):
+        bld.program(target='../spec220-work-statistics-' + suffix,
+                    name='spec220-work-statistics-' + suffix,
+                    source=[bld.path.find_node('main.cpp'),
+                            bld.path.find_node('unit-tests/request-work-statistics.t.cpp'),
+                            bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.cpp')],
+                    includes=['..'], use='BOOST DL',
+                    defines=['SPEC220_COLLECTOR_ONLY'],
+                    cxxflags=['-std=c++17', '-O1', '-g1', '-fno-omit-frame-pointer',
+                              '-fsanitize=' + sanitizer],
+                    linkflags=['-fsanitize=' + sanitizer], install_path=None)
     offer_source = bld.srcnode.find_node(
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp')
     bld.program(target='../spec217-provider-offer-tests', name='spec217-provider-offer-tests',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/native-provider-offer-gpu.t.cpp'),
-                        offer_source],
+                        offer_source,
+                        bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.cpp')],
                 includes=['..'], use='BOOST OPENSSL DL',
-                cxxflags=['-std=c++17', '-O0', '-g0'], install_path=None)
+                cxxflags=['-std=c++17', '-O0', '-g0', '-pthread'],
+                linkflags=['-pthread'], install_path=None)
+    for suffix, sanitizer in (('asan', 'address,undefined'), ('tsan', 'thread')):
+        bld.program(target='../spec220-provider-query-' + suffix,
+                    name='spec220-provider-query-' + suffix,
+                    source=[bld.path.find_node('main.cpp'),
+                            bld.path.find_node('unit-tests/native-provider-offer-gpu.t.cpp'),
+                            offer_source,
+                            bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.cpp')],
+                    includes=['..'], use='BOOST OPENSSL DL',
+                    cxxflags=['-std=c++17', '-O1', '-g1', '-fno-omit-frame-pointer', '-pthread',
+                              '-fsanitize=' + sanitizer],
+                    linkflags=['-pthread', '-fsanitize=' + sanitizer], install_path=None)
     for name, library, version in (('cuda', 'cudart', '12'), ('driver', 'cuda', '1'),
                                    ('nvml', 'nvidia-ml', '1')):
         bld.shlib(name='spec217-' + name + '-query-fixture',
@@ -644,6 +689,39 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Source-defined state and resource contracts use the maintained native
+    # planning/publication fixtures. Sanitize the changed production units.
+    model_contract_sources = [
+        'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.cpp',
+        'NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.cpp']
+    for suffix in ('', '-asan'):
+        flags = ['-std=c++17', '-fPIC', '-O0', '-g1']
+        links = ['-Wl,--no-relax']
+        sources = [bld.path.find_node('main.cpp'),
+                   bld.path.find_node('unit-tests/di-native-canonical-publisher.t.cpp'),
+                   bld.path.find_node('integration-tests/ndnsf-di-native-assembly.t.cpp'),
+                   bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp'),
+                   bld.path.find_node('unit-tests/di-native-planning.t.cpp'),
+                   bld.path.find_node('unit-tests/spec220-onnx-reference.t.cpp'),
+                   bld.srcnode.find_node('examples/spec220-onnx-reference-oracle.cpp')]
+        if suffix:
+            flags += ['-fno-omit-frame-pointer', '-fsanitize=address,undefined']
+            links += ['-fsanitize=address,undefined']
+            sources += [bld.srcnode.find_node(name) for name in model_contract_sources]
+        bld.program(target='../spec220-model-contracts' + suffix,
+                    name='spec220-model-contracts' + suffix,
+                    source=sources, includes=framework_includes,
+                    use='ndnsf-distributed-inference ndnsf-distributed-repo ' +
+                        'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                    defines=['HAVE_TESTS'], cxxflags=flags, linkflags=links,
+                    rpath=[bld.bldnode.abspath()], install_path=None)
+
     # C05 names and lifecycle use the actual Core publishers/consumers and
     # existing Face/SVS harness, including original signed-packet serving.
     bld.program(target='../spec201-event-conversation',
@@ -780,10 +858,21 @@ def build(bld):
                 cxxflags=['-fPIC', '-O0', '-g0'], linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Request-owned observations exercise the same collector as installed providers.
+    bld.program(target='../spec220-work-statistics', name='spec220-work-statistics',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/request-work-statistics.t.cpp'),
+                        bld.path.find_node('unit-tests/di-native-client.t.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
+                linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Sealer/group-builder/serialized V3 epoch contract, linked to production.
     bld.program(target='../spec189-epoch-projection', name='spec189-epoch-projection',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-native-plan.t.cpp'),
+                        bld.path.find_node('unit-tests/distributed-inference-protected-runtime-grant.t.cpp'),
                         bld.path.find_node('unit-tests/di-native-plan-sealer.t.cpp'),
                         bld.path.find_node('unit-tests/di-native-v3-placement.t.cpp')],
                 includes=framework_includes,
@@ -831,6 +920,30 @@ def build(bld):
                 defines=['HAVE_TESTS'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Instrument the changed production codecs/builders, rather than merely
+    # linking a sanitized fixture to the ordinary production shared library.
+    compact_control_sources = [
+        'ProviderGroupCoordinator.cpp', 'NativeExecutionPlanJson.cpp',
+        'NativePlanProjectionBuilder.cpp', 'NativeGroupProjectionBuilder.cpp',
+        'ProtectedRuntime.cpp', 'NativeProtectedProvider.cpp', 'NativeRequestEnvelope.cpp']
+    bld.program(target='../spec220-compact-control-asan', name='spec220-compact-control-asan',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/distributed-inference-cross-provider-group.t.cpp'),
+                        bld.path.find_node('unit-tests/distributed-inference-native-plan.t.cpp'),
+                        bld.path.find_node('unit-tests/distributed-inference-protected-runtime-grant.t.cpp'),
+                        bld.path.find_node('unit-tests/di-native-client.t.cpp'),
+                        bld.path.find_node('unit-tests/di-native-v3-placement.t.cpp')] +
+                       [bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/' + name)
+                        for name in compact_control_sources],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' +
+                    framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-std=c++17', '-O0', '-g1', '-fno-omit-frame-pointer',
+                          '-fsanitize=address,undefined'],
+                linkflags=['-Wl,--no-relax', '-fsanitize=address,undefined'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Spec190 T003 materialized-role assembly regression.  This uses the
@@ -920,6 +1033,7 @@ def build(bld):
     bld.program(target='../spec189-core-assignment', name='spec189-core-assignment',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-di-core-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/di-native-requester-grant.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
@@ -1276,6 +1390,29 @@ def build(bld):
                 cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Request tensor-work scopes must run in the instrumented production owners.
+    bld.program(target='../spec220-tensor-work-asan', name='spec220-tensor-work-asan',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/di-onnxruntime-gpu-evidence.t.cpp'),
+                        bld.path.find_node('unit-tests/spec189-logits-dtype.t.cpp'),
+                        bld.path.find_node('unit-tests/spec189-epoch-finalization.t.cpp'),
+                        bld.srcnode.find_node(
+                            'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp'),
+                        bld.srcnode.find_node(
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp'),
+                        bld.srcnode.find_node(
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp'),
+                        bld.srcnode.find_node(
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' +
+                    framework_use + ' ONNXRUNTIME ONNX PROTOBUF',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-std=c++17', '-fPIC', '-O0', '-g1', '-fno-omit-frame-pointer',
+                          '-fsanitize=address,undefined'],
+                linkflags=['-Wl,--no-relax', '-fsanitize=address,undefined'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     bld.program(target='../unit-tests',
                 name='unit-tests',
                 # Share the production framework closure.  A hand-maintained
@@ -1421,18 +1558,23 @@ def build(bld):
     if not ndn_cxx_source_tree or not os.path.isfile(
             os.path.join(ndn_cxx_source_tree,
                          'ndn-cxx/security/pib/impl/pib-sqlite3.hpp')):
-        bld.fatal('spec192-repo-client requires the pinned ndn-cxx source tree '
-                  'for its remote public-certificate PIB fixture')
-    bld.program(target='../spec192-repo-client',
-                name='spec192-repo-client',
-                source=[bld.path.find_node('standalone/spec192-repo-client.cpp')],
-                includes=['..', '../ndn-service-framework',
-                          '../NDNSF-DistributedRepo/include',
-                          ndn_cxx_source_tree],
-                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
-                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
-                linkflags=['-Wl,--no-relax'],
-                rpath=[bld.bldnode.abspath()], install_path=None)
+        if bld.targets and 'spec192-repo-client' not in bld.targets.split(','):
+            bld.msg('Skipping spec192-repo-client',
+                    'the requested target does not need its unavailable pinned ndn-cxx source tree')
+        else:
+            bld.fatal('spec192-repo-client requires the pinned ndn-cxx source tree '
+                      'for its remote public-certificate PIB fixture')
+    else:
+        bld.program(target='../spec192-repo-client',
+                    name='spec192-repo-client',
+                    source=[bld.path.find_node('standalone/spec192-repo-client.cpp')],
+                    includes=['..', '../ndn-service-framework',
+                              '../NDNSF-DistributedRepo/include',
+                              ndn_cxx_source_tree],
+                    use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                    cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                    linkflags=['-Wl,--no-relax'],
+                    rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Separate test process for the original RepoNode object protocol.
     bld.program(target='../spec193-object-repo-server',

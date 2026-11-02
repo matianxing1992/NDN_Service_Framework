@@ -36,6 +36,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <condition_variable>
 #include <deque>
 #include <tuple>
@@ -93,6 +94,23 @@ namespace ndn_service_framework{
         std::string errorMessage;
     };
 
+    /** Request-owned observer for local work performed by Core callbacks. */
+    struct CollaborationLocalWorkObserver
+    {
+        using Operation = void (*)(void*);
+        using Observe = void (*)(const std::shared_ptr<void>& owner,
+                                 std::string_view phase,
+                                 Operation operation,
+                                 void* operationContext);
+        using AddCount = void (*)(const std::shared_ptr<void>& owner,
+                                  std::string_view name,
+                                  std::uint64_t value);
+
+        std::shared_ptr<void> owner;
+        Observe observe = nullptr;
+        AddCount addCount = nullptr;
+    };
+
     /** Native-only measurements for one collaboration object transfer. */
     struct CollaborationTransferMetrics
     {
@@ -103,6 +121,8 @@ namespace ndn_service_framework{
         std::optional<std::size_t> interestCount;
         std::optional<std::size_t> retryCount;
         std::optional<std::size_t> localCopyBytes;
+        /** Optional request-owned observer supplied before an exact Data fetch. */
+        CollaborationLocalWorkObserver localWorkObserver;
     };
 
     struct LargeDataResponsePublishResult
@@ -464,6 +484,32 @@ namespace ndn_service_framework{
                 NormalAndTargeted,
             };
 
+            enum class InputFetchDisposition
+            {
+                NOT_SCOPED,
+                RETRIEVED,
+                SHARED,
+                MISSING
+            };
+
+            /** Runtime observations only; never part of a signed assignment. */
+            struct CollaborationPreparationFetchReceipt
+            {
+                std::uint64_t assignmentBytes = 0;
+                std::uint64_t assignmentObjects = 0;
+                std::uint64_t scopeKeyBytes = 0;
+                std::uint64_t scopeKeyObjects = 0;
+                std::uint64_t artifactBytes = 0;
+                std::uint64_t artifactObjects = 0;
+                std::uint64_t inputBytes = 0;
+                std::uint64_t inputObjects = 0;
+                std::uint64_t inputPackets = 0;
+                InputFetchDisposition inputDisposition = InputFetchDisposition::NOT_SCOPED;
+                bool inputNestedInSelection = false;
+                bool inputNestedInRequest = false;
+                bool complete = false;
+            };
+
             struct CollaborationAssignment
             {
                 CollaborationRole role;
@@ -486,6 +532,7 @@ namespace ndn_service_framework{
                 std::chrono::steady_clock::time_point workDeadline =
                     std::chrono::steady_clock::time_point::min();
                 std::function<bool()> workCurrent;
+                std::optional<CollaborationPreparationFetchReceipt> preparationFetchReceipt;
             };
 
             struct CollaborationData
@@ -552,7 +599,8 @@ namespace ndn_service_framework{
 
                 void publish(KeyScope keyScope,
                              Topic topic,
-                             const ndn::Buffer& payload);
+                             const ndn::Buffer& payload,
+                             CollaborationLocalWorkObserver localWorkObserver = {});
                 /**
                  * Publish one exact-name segmented object for collaboration.
                  *
@@ -2174,7 +2222,8 @@ namespace ndn_service_framework{
                 CollaborationAssignment assignment,
                 std::function<void(bool, std::string,
                                    CollaborationAssignment)> onReady,
-                std::shared_ptr<RegistrationState> registrationState = nullptr);
+                std::shared_ptr<RegistrationState> registrationState = nullptr,
+                bool expectedScopedInput = false);
             // registrationState (spec182): non-null when the executing
             // request was bound to a scoped registration; a positive response
             // whose registration closed meanwhile degrades to an error (the
@@ -2218,7 +2267,8 @@ namespace ndn_service_framework{
                                           const std::string& producerRole,
                                           const std::string& keyScope,
                                           const ndn::Name& topic,
-                                          const ndn::Buffer& payload);
+                                          const ndn::Buffer& payload,
+                                          CollaborationLocalWorkObserver localWorkObserver = {});
             ndn::Name publishCollaborationLargeData(
                 const ndn::Name& requesterName,
                 const ndn::Name& requestId,
@@ -2371,6 +2421,7 @@ namespace ndn_service_framework{
                 std::function<void(std::exception_ptr)> onFirstReadStarted,
                 ExactDataFetchPhase phase,
                 std::function<bool()> onValidatedData,
+                CollaborationLocalWorkObserver localWorkObserver,
                 std::size_t maxOutstanding = 0);
             void publishCollaborationFinalResponse(
                 const ndn::Name& requesterName,
@@ -2663,6 +2714,14 @@ namespace ndn_service_framework{
             {
                 RequestKeyBundle keys;
                 RequestSecurityBinding binding;
+                std::uint64_t inputBytes = 0;
+                std::uint64_t inputPackets = 0;
+                std::uint64_t inputAttempt = 0;
+                std::size_t localRolesRemaining = 1;
+                bool inputObserved = false;
+                bool inputClaimed = false;
+                bool inputNestedInSelection = false;
+                bool inputNestedInRequest = false;
             };
             // One state entry is created only after a Selection envelope is
             // authenticated and consumed.  It is retained until the

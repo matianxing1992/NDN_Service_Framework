@@ -963,7 +963,8 @@ printf 'PYTHON:%s\\n' "$PYTHON_BIN"
 
 @pytest.mark.parametrize("case, message", [
     ("dependencies", None),
-    ("full", "recorded Waf build directory is no longer configured"),
+    ("full", None),
+    ("interrupted", None),
     ("foreign-root", "not recorded as owned by this checkout"),
     ("symlink", "build directory may not be a symlink"),
     ("symlink-slash", "build directory may not be a symlink"),
@@ -980,8 +981,12 @@ def test_owned_dependencies_only_build_root_reuse(tmp_path, case, message):
     original_marker = marker.read_bytes()
     assert not (build / "c4che/_cache.py").exists()
     env["NDNSF_REUSE_BUILD_DIR"] = "1"
-    if case == "full":
+    if case in {"full", "interrupted"}:
         prepare = prepare.replace("DEPS_ONLY=1", "DEPS_ONLY=0")
+        if case == "interrupted":
+            (build / "c4che").mkdir()
+            (build / "c4che/_cache.py").write_text("# interrupted configuration\n")
+            (build / "partial.o").write_bytes(b"")
     elif case == "foreign-root":
         foreign = tmp_path / "foreign"
         foreign.mkdir()
@@ -1000,7 +1005,9 @@ def test_owned_dependencies_only_build_root_reuse(tmp_path, case, message):
         assert result.returncode != 0
         assert message in result.stderr
     assert marker.read_bytes() == original_marker
-    assert not (build / "c4che/_cache.py").exists()
+    assert (build / "c4che/_cache.py").exists() == (case == "interrupted")
+    if case == "interrupted":
+        assert (build / "partial.o").read_bytes() == b""
 
 
 @pytest.mark.parametrize('receipt_matches', [False, True])

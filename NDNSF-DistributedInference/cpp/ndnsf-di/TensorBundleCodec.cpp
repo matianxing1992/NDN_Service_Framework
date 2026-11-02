@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 
 #include <algorithm>
 #include <array>
@@ -85,6 +86,8 @@ readScalar(const std::vector<std::uint8_t>& input, std::size_t& offset)
 void
 appendBytes(std::vector<std::uint8_t>& output, const std::uint8_t* data, std::size_t size)
 {
+  if (size == 0) return;
+  if (data == nullptr) throw std::invalid_argument("nonempty byte range has no storage");
   output.insert(output.end(), data, data + size);
 }
 
@@ -680,6 +683,8 @@ tensorElementByteSize(TensorElementType elementType)
       return 2;
     case TensorElementType::Int64:
       return 8;
+    case TensorElementType::Int32:
+      return 4;
     case TensorElementType::Bool:
       return 1;
     case TensorElementType::UInt8:
@@ -751,6 +756,14 @@ void
 validateNamedTensor(const NamedTensor& tensor)
 {
   validateTensorMetadata(tensor.name, tensor.elementType, tensor.shape, tensor.payload.size());
+}
+
+void
+validateNamedTensorView(const NamedTensorView& tensor)
+{
+  validateTensorMetadata(tensor.name, tensor.elementType, tensor.shape, tensor.payload.size());
+  if (!tensor.payload.empty() && tensor.payload.data() == nullptr)
+    throw std::invalid_argument("nonempty tensor view has no storage");
 }
 
 bool
@@ -839,15 +852,20 @@ tensorBundleEncodedSize(const std::vector<TensorBundleEncodingMember>& members)
   return bytes;
 }
 
+namespace {
+
+template<typename Tensor>
 std::vector<std::uint8_t>
-encodeTensorBundle(const std::vector<NamedTensor>& tensors)
+encodeTensorBundleImpl(const std::vector<Tensor>& tensors)
 {
   if (tensors.size() > MAX_TENSOR_COUNT)
     throw std::invalid_argument("tensor bundle tensor count exceeds limit");
   std::vector<TensorBundleEncodingMember> members;
   members.reserve(tensors.size());
   for (const auto& tensor : tensors) {
-    validateNamedTensor(tensor);
+    validateTensorMetadata(tensor.name, tensor.elementType, tensor.shape, tensor.payload.size());
+    if (!tensor.payload.empty() && tensor.payload.data() == nullptr)
+      throw std::invalid_argument("nonempty tensor payload has no storage");
     members.push_back({tensor.name.size(), tensor.shape.size(), tensor.payload.size()});
   }
   const auto encodedSize = tensorBundleEncodedSize(members);
@@ -874,6 +892,24 @@ encodeTensorBundle(const std::vector<NamedTensor>& tensors)
     appendBytes(output, tensor.payload.data(), tensor.payload.size());
   }
   return output;
+}
+
+} // namespace
+
+std::vector<std::uint8_t>
+encodeTensorBundle(const std::vector<NamedTensor>& tensors,
+                   const std::shared_ptr<NativeWorkStatistics>& workStatistics)
+{
+  NativeWorkScope work(workStatistics, "tensor-bundle-encode", NativeWorkKind::LOCAL);
+  return encodeTensorBundleImpl(tensors);
+}
+
+std::vector<std::uint8_t>
+encodeTensorBundleViews(const std::vector<NamedTensorView>& tensors,
+                        const std::shared_ptr<NativeWorkStatistics>& workStatistics)
+{
+  NativeWorkScope work(workStatistics, "tensor-bundle-encode", NativeWorkKind::LOCAL);
+  return encodeTensorBundleImpl(tensors);
 }
 
 namespace {
@@ -939,19 +975,26 @@ decodeTensorBundleImpl(const std::vector<std::uint8_t>& payload)
 } // namespace
 
 std::vector<NamedTensor>
-decodeTensorBundle(const std::vector<std::uint8_t>& payload)
+decodeTensorBundle(const std::vector<std::uint8_t>& payload,
+                   const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
+  NativeWorkScope work(workStatistics, "tensor-bundle-decode", NativeWorkKind::LOCAL);
   return decodeTensorBundleImpl<NamedTensor>(payload);
 }
 
 std::vector<NamedTensorView>
-decodeTensorBundleViews(const std::vector<std::uint8_t>& payload)
+decodeTensorBundleViews(const std::vector<std::uint8_t>& payload,
+                        const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
+  NativeWorkScope work(workStatistics, "tensor-bundle-decode", NativeWorkKind::LOCAL);
   return decodeTensorBundleImpl<NamedTensorView>(payload);
 }
 
-const NamedTensor&
-findTensor(const std::vector<NamedTensor>& tensors, const std::string& name)
+namespace {
+
+template<typename Tensor>
+const Tensor&
+findTensorImpl(const std::vector<Tensor>& tensors, const std::string& name)
 {
   for (const auto& tensor : tensors) {
     if (tensor.name == name) {
@@ -961,23 +1004,45 @@ findTensor(const std::vector<NamedTensor>& tensors, const std::string& name)
   throw std::out_of_range("tensor bundle has no tensor: " + name);
 }
 
-std::vector<NamedTensor>
-selectTensors(const std::vector<NamedTensor>& tensors,
-              const std::vector<std::string>& names)
+template<typename Tensor>
+std::vector<Tensor>
+selectTensorsImpl(const std::vector<Tensor>& tensors,
+                  const std::vector<std::string>& names)
 {
   if (names.empty()) {
     return tensors;
   }
-  std::vector<NamedTensor> selected;
+  std::vector<Tensor> selected;
   selected.reserve(names.size());
   std::set<std::string> seen;
   for (const auto& name : names) {
     if (!seen.insert(name).second) {
       continue;
     }
-    selected.push_back(findTensor(tensors, name));
+    selected.push_back(findTensorImpl(tensors, name));
   }
   return selected;
+}
+
+} // namespace
+
+const NamedTensor&
+findTensor(const std::vector<NamedTensor>& tensors, const std::string& name)
+{
+  return findTensorImpl(tensors, name);
+}
+
+std::vector<NamedTensor>
+selectTensors(const std::vector<NamedTensor>& tensors, const std::vector<std::string>& names)
+{
+  return selectTensorsImpl(tensors, names);
+}
+
+std::vector<NamedTensorView>
+selectTensorViews(const std::vector<NamedTensorView>& tensors,
+                  const std::vector<std::string>& names)
+{
+  return selectTensorsImpl(tensors, names);
 }
 
 TensorBundle
@@ -986,6 +1051,16 @@ makeEncodedTensorBundle(std::string name, const std::vector<NamedTensor>& tensor
   TensorBundle bundle;
   bundle.name = std::move(name);
   bundle.payload = encodeTensorBundle(tensors);
+  bundle.expectedBytes = bundle.payload.size();
+  return bundle;
+}
+
+TensorBundle
+makeEncodedTensorBundleViews(std::string name, const std::vector<NamedTensorView>& tensors)
+{
+  TensorBundle bundle;
+  bundle.name = std::move(name);
+  bundle.payload = encodeTensorBundleViews(tensors);
   bundle.expectedBytes = bundle.payload.size();
   return bundle;
 }

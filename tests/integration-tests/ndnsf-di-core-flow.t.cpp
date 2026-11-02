@@ -28,6 +28,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
@@ -2441,19 +2442,86 @@ BOOST_AUTO_TEST_CASE(ExactTensorDataUsesSignedConsumerPullAndSameNameRetry)
         }
       });
 
+  struct ExactFetchObservation
+  {
+    ndn::Face* face = nullptr;
+    std::shared_ptr<NativeWorkStatistics> statistics = makeNativeWorkStatistics();
+    std::vector<std::string> phases;
+    bool allOnFace = true;
+    std::size_t deferredCallbacks = 0;
+  };
+  auto observation = std::make_shared<ExactFetchObservation>();
+  observation->face = &consumerFace;
+  CollaborationTransferMetrics transferMetrics;
+  transferMetrics.localWorkObserver.owner = observation;
+  transferMetrics.localWorkObserver.observe =
+      [] (const std::shared_ptr<void>& owner,
+          std::string_view phase,
+          CollaborationLocalWorkObserver::Operation operation,
+          void* operationContext) {
+        auto state = std::static_pointer_cast<ExactFetchObservation>(owner);
+        state->allOnFace = state->allOnFace &&
+          state->face->getIoContext().get_executor().running_in_this_thread();
+        state->phases.emplace_back(phase);
+        NativeWorkScope work(state->statistics, phase, NativeWorkKind::LOCAL);
+        operation(operationContext);
+      };
+  transferMetrics.localWorkObserver.addCount =
+      [] (const std::shared_ptr<void>& owner,
+          std::string_view name,
+          std::uint64_t value) {
+        auto state = std::static_pointer_cast<ExactFetchObservation>(owner);
+        state->deferredCallbacks += value;
+        state->statistics->addCount(name, value);
+      };
+  const auto localWorkObserver = transferMetrics.localWorkObserver;
   auto fetched = std::async(std::launch::async, [&] {
     return consumerContext.fetchSignedExactData(
-        "epoch/group-1", manifestName, producer.getName(), 1000);
+        "epoch/group-1", manifestName, producer.getName(), 1000, {},
+        &transferMetrics);
   });
   environment.pumpUntil([&] {
     return fetched.wait_for(0ms) == std::future_status::ready;
   });
   const auto result = fetched.get();
   BOOST_REQUIRE(result);
+  BOOST_CHECK(!transferMetrics.localWorkObserver.owner);
   BOOST_CHECK_EQUAL_COLLECTIONS(result->begin(), result->end(),
                                 manifestWire.begin(), manifestWire.end());
   BOOST_CHECK_EQUAL(exactInterestCount, 1U);
   BOOST_CHECK(everyInterestWasExact);
+  BOOST_CHECK_LE(observation->deferredCallbacks, 1U);
+  BOOST_CHECK(observation->allOnFace);
+  BOOST_REQUIRE_EQUAL(observation->phases.size(), 3U);
+  BOOST_CHECK(std::find(observation->phases.begin(), observation->phases.end(),
+                        "core-exact-data-admission") != observation->phases.end());
+  BOOST_CHECK(std::find(observation->phases.begin(), observation->phases.end(),
+                        "core-exact-data-validator-call") != observation->phases.end());
+  BOOST_CHECK(std::find(observation->phases.begin(), observation->phases.end(),
+                        "core-exact-data-slot-finalize") != observation->phases.end());
+  const auto observationSnapshot = observation->statistics->snapshot();
+  BOOST_CHECK(observationSnapshot.complete);
+  BOOST_CHECK_EQUAL(observationSnapshot.activeSpans, 0U);
+  BOOST_CHECK_EQUAL(observationSnapshot.droppedSpans, 0U);
+  if (observation->deferredCallbacks != 0) {
+    BOOST_REQUIRE(observationSnapshot.counts.count(
+        "core.exact-data.deferred-validation-callbacks") > 0);
+    BOOST_CHECK_EQUAL(observationSnapshot.counts.at(
+        "core.exact-data.deferred-validation-callbacks"),
+        observation->deferredCallbacks);
+  }
+  BOOST_REQUIRE(observationSnapshot.phases.count(
+      "core-exact-data-admission") > 0);
+  BOOST_CHECK_EQUAL(observationSnapshot.phases.at(
+      "core-exact-data-admission").calls, 1U);
+  BOOST_REQUIRE(observationSnapshot.phases.count(
+      "core-exact-data-validator-call") > 0);
+  BOOST_CHECK_EQUAL(observationSnapshot.phases.at(
+      "core-exact-data-validator-call").calls, 1U);
+  BOOST_REQUIRE(observationSnapshot.phases.count(
+      "core-exact-data-slot-finalize") > 0);
+  BOOST_CHECK_EQUAL(observationSnapshot.phases.at(
+      "core-exact-data-slot-finalize").calls, 1U);
 
   ndn::time::milliseconds readinessLifetime{0};
   auto observeReadinessLifetime = consumerFace.onSendInterest.connect(
@@ -2486,14 +2554,18 @@ BOOST_AUTO_TEST_CASE(ExactTensorDataUsesSignedConsumerPullAndSameNameRetry)
           retryNames.push_back(interest.getName());
         }
       });
+  CollaborationTransferMetrics failedTransferMetrics;
+  failedTransferMetrics.localWorkObserver = localWorkObserver;
   auto missing = std::async(std::launch::async, [&] {
     return consumerContext.fetchSignedExactData(
-        "epoch/group-1", missingName, producer.getName(), 650);
+        "epoch/group-1", missingName, producer.getName(), 650, {},
+        &failedTransferMetrics);
   });
   environment.pumpUntil([&] {
     return missing.wait_for(0ms) == std::future_status::ready;
   });
   BOOST_CHECK(!missing.get());
+  BOOST_CHECK(!failedTransferMetrics.localWorkObserver.owner);
   BOOST_REQUIRE_GE(retryNames.size(), 2U);
   BOOST_CHECK(std::all_of(retryNames.begin(), retryNames.end(),
                           [&] (const ndn::Name& name) {
@@ -4885,6 +4957,8 @@ runProductionNativeD2bCase(bool tamperCapability,
   std::mutex responseNamesMutex;
   std::set<std::string> responseNames;
   std::atomic<size_t> uniqueResponsePublications{0};
+  std::atomic<size_t> successfulResponses{0};
+  std::atomic<size_t> deniedResponses{0};
   std::atomic<bool> ackObserved{false};
   std::atomic<bool> timedOut{false};
   std::atomic<bool> streamedPlanCommitted{false};
@@ -4972,6 +5046,11 @@ runProductionNativeD2bCase(bool tamperCapability,
       provider.setUseTokens(false);
     }
     provider.markHybridResponseKeyWrappedForTest(serviceName);
+    if (!streamed) {
+      const auto responseKey = provider.prepareHybridSendKeyForTest(serviceName, "RESPONSE");
+      environment.user().cacheHybridReceiveKeyForTest(
+        responseKey.keyId, responseKey.epochId, responseKey.key);
+    }
     const std::string role = index == 0 ? "/Backbone" : "/Head/Shard/0";
     std::vector<NativeModelRunnerSpec> runnerSpecs{
       makeRunnerSpec(index, role),
@@ -5024,7 +5103,8 @@ runProductionNativeD2bCase(bool tamperCapability,
     config.groupCoordinatorFactory =
       [&, index, localProvider = provider.getName().toUri()] (
           ServiceProvider::CollaborationContext& context,
-          const std::map<std::string, std::string>& fields) {
+          const std::map<std::string, std::string>& fields,
+          const std::shared_ptr<NativeWorkStatistics>& statistics) {
         ++coordinatorFactoryCalls[index];
         const auto field = fields.find("groupCapabilityV1");
         if (field == fields.end()) {
@@ -5037,6 +5117,7 @@ runProductionNativeD2bCase(bool tamperCapability,
           throw std::runtime_error("group capability request/plan mismatch");
         }
         auto options = makeD2bCoordinatorOptions();
+        options.workStatistics = statistics;
         options.localProvider = localProvider;
         auto coordinator = std::make_shared<ProviderGroupCoordinator>(
           std::move(options));
@@ -5355,7 +5436,10 @@ runProductionNativeD2bCase(bool tamperCapability,
         }),
       8000,
       [&] (const ndn::Name&) { timedOut = true; },
-      [&] (const ResponseMessage&) {},
+      [&] (const ResponseMessage& response) {
+        if (response.getStatus()) ++successfulResponses;
+        else ++deniedResponses;
+      },
       tlv::FirstResponding,
       requestId);
   }
@@ -5439,9 +5523,9 @@ runProductionNativeD2bCase(bool tamperCapability,
       return streamedComplete || streamedError || timedOut ||
              (tamperCapability && selectionFailed());
     }
-    return uniqueResponsePublications.load() == 1 || streamedComplete ||
+    return (!tamperCapability && uniqueResponsePublications.load() == 1) || streamedComplete ||
            streamedError || timedOut ||
-           (tamperCapability && selectionFailed());
+           (tamperCapability && selectionFailed() && deniedResponses.load() != 0);
   });
 
   BOOST_CHECK(ackObserved);
@@ -5469,7 +5553,15 @@ runProductionNativeD2bCase(bool tamperCapability,
   }
   else {
     BOOST_CHECK(selectionFailed());
-    BOOST_CHECK_EQUAL(uniqueResponsePublications.load(), 0U);
+    BOOST_CHECK_EQUAL(successfulResponses.load(), 0U);
+    BOOST_CHECK_EQUAL(deniedResponses.load(), 1U);
+    BOOST_CHECK_GT(uniqueResponsePublications.load(), 0U);
+    {
+      std::lock_guard<std::mutex> lock(*observedMutex);
+      BOOST_CHECK(observedRoles->empty());
+      BOOST_CHECK(observedInputs->empty());
+      BOOST_CHECK(observedOutputs->empty());
+    }
     BOOST_CHECK(!timedOut);
   }
   if (!tamperCapability && !useRealOnnx) {
@@ -5981,7 +6073,8 @@ runSpec175NativeTinyOneRoleCase(RequestStatisticsFault statisticsFault = Request
   handlerConfig.groupCoordinatorFactory =
     [providerName = providerName.toUri(), planDigest, statisticsFault] (
         ServiceProvider::CollaborationContext& context,
-        const std::map<std::string, std::string>& fields) {
+        const std::map<std::string, std::string>& fields,
+        const std::shared_ptr<NativeWorkStatistics>& statistics) {
       const auto field = fields.find("groupCapabilityV1");
       if (field == fields.end()) {
         throw std::runtime_error("Spec175 I01 assignment has no GroupCapabilityV1");
@@ -5993,6 +6086,7 @@ runSpec175NativeTinyOneRoleCase(RequestStatisticsFault statisticsFault = Request
         throw std::runtime_error("Spec175 I01 GroupCapabilityV1 binding mismatch");
       }
       auto options = makeD2bCoordinatorOptions();
+      options.workStatistics = statistics;
       options.localProvider = providerName;
       auto coordinator = std::make_shared<ProviderGroupCoordinator>(
         std::move(options));
@@ -6877,7 +6971,8 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     handlerConfig.groupCoordinatorFactory =
       [&, localProvider = environment.provider(index).getName().toUri()] (
           ServiceProvider::CollaborationContext& context,
-          const std::map<std::string, std::string>& fields) {
+          const std::map<std::string, std::string>& fields,
+          const std::shared_ptr<NativeWorkStatistics>& statistics) {
         const bool failFirst = caseOptions.fault ==
           Spec175NativeTinyFault::NativeFirstRoleFailure;
         const bool failFinal = caseOptions.fault ==
@@ -6900,6 +6995,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
             "Spec175 GroupCapabilityV1 binding mismatch");
         }
         auto options = makeD2bCoordinatorOptions();
+        options.workStatistics = statistics;
         options.localProvider = localProvider;
         auto coordinator = std::make_shared<ProviderGroupCoordinator>(
           std::move(options));
@@ -7023,7 +7119,8 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       handlerConfig.groupCoordinatorFactory =
         [&, localProvider = providerName] (
             ServiceProvider::CollaborationContext& context,
-            const std::map<std::string, std::string>& fields) {
+            const std::map<std::string, std::string>& fields,
+            const std::shared_ptr<NativeWorkStatistics>& statistics) {
           const auto field = fields.find("groupCapabilityV1");
           if (field == fields.end()) {
             throw std::runtime_error(
@@ -7037,6 +7134,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
               "Spec175 replacement GroupCapabilityV1 binding mismatch");
           }
           auto options = makeD2bCoordinatorOptions();
+          options.workStatistics = statistics;
           options.localProvider = localProvider;
           auto coordinator = std::make_shared<ProviderGroupCoordinator>(
             std::move(options));
@@ -8445,7 +8543,9 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       {"input_format", "OPAQUE"}, {"max_payload_bytes", 4096},
       {"splitter", {{"kind", "QWEN"}, {"layer_ranges", NativeJson::array({NativeJson::array({0, 2})})},
         {"artifact_digests_by_role", {{role, qwenArtifactDigest}}},
-        {"weight_bytes_by_role", {{role, 1}}}, {"roles", {role}}, {"tensor_degrees", {1}}}},
+        {"weight_bytes_by_role", {{role, 1}}}, {"roles", {role}}, {"tensor_degrees", {1}},
+        {"resources_by_role", {{role, nativeParseJson(NativeRoleResourceRequirement{
+          {"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}.canonicalJson())}}}}},
       {"node_mapping", {{"embedding", {0}}, {"layer-00", {1}}, {"layer-01", {2}},
         {"final-norm-head", {3, 4, 5, 6, 7, 8, 9}}}},
       {"state_inputs", stateInputs}, {"state_outputs", stateOutputs}};
@@ -8742,8 +8842,10 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
         const auto assignmentRoot = nativeParseJson(assignmentWire);
         std::istringstream input(assignmentWire);
         NativeSelectionProjectionV3 projection;
-        if (assignmentRoot.value("schema", std::string{}) ==
-            "ndnsf-di-selection-invocation-v1") {
+        const auto assignmentSchema = assignmentRoot.value("schema", std::string{});
+        if (assignmentSchema == "ndnsf-di-selection-invocation-v1" ||
+            assignmentSchema == "ndnsf-di-selection-invocation-v2" ||
+            assignmentSchema == "ndnsf-di-selection-invocation-v3") {
           const auto& source = assignmentRoot.at("fixed_role_source");
           const auto dataName = source.at("data_name").get<std::string>();
           const auto digest = source.at("plaintext_digest").get<std::string>();
@@ -9098,6 +9200,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   options.taskName = "task";
   options.timeoutMs = 20000;
   options.ackTimeoutMs = 3000;
+  if (exerciseReplacement)
+    options.workStatistics = std::make_shared<NativeWorkStatistics>();
   if (spec196TargetedPlacement) {
     options.providerNames = {ndn::Name(providerName), ndn::Name(alternateProviderName)};
     std::sort(options.providerNames.begin(), options.providerNames.end());
@@ -9327,6 +9431,12 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   if (repositoryInput)
     BOOST_REQUIRE(repositoryReferenceObserved->load(std::memory_order_relaxed));
   const auto firstResult = first.result(std::chrono::milliseconds(0));
+  if (exerciseReplacement) {
+    const auto counts = options.workStatistics->snapshot().counts;
+    BOOST_CHECK_EQUAL(counts.at("core.controlInventoryComplete"), 1U);
+    BOOST_CHECK_EQUAL(counts.at("core.requestPreparedCalls"), 2U);
+    BOOST_CHECK_GT(counts.at("core.requestPreparedBytes"), 0U);
+  }
   const auto firstJson = nativeParseJson(
     std::string(firstResult.payload.begin(), firstResult.payload.end()));
   BOOST_CHECK_EQUAL(firstJson.at("text").get<std::string>(), "ab");
@@ -10461,6 +10571,7 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
   std::atomic<bool> timedOut{false};
   std::atomic<bool> responseCallback{false};
   std::string responseText;
+  std::string responseError;
   std::mutex responseMutex;
 
   const auto artifactDigest = [] (size_t provider) {
@@ -10504,7 +10615,8 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
     config.groupCoordinatorFactory =
       [&, provider, localProvider = providerNames[provider].toUri()] (
           ServiceProvider::CollaborationContext& context,
-          const std::map<std::string, std::string>& fields) {
+          const std::map<std::string, std::string>& fields,
+          const std::shared_ptr<NativeWorkStatistics>& statistics) {
         ++coordinatorFactoryCalls[provider];
         auto decoded = ProviderGroupCoordinator::decodeCapability(
           bytesFromHex(fields.at("groupCapabilityV1")));
@@ -10513,6 +10625,7 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
           throw std::runtime_error("D2h group capability binding mismatch");
         }
         auto options = makeD2bCoordinatorOptions();
+        options.workStatistics = statistics;
         options.localProvider = localProvider;
         auto coordinator = std::make_shared<ProviderGroupCoordinator>(
           std::move(options));
@@ -10746,6 +10859,7 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
       const auto& payload = response.getPayload();
       std::lock_guard<std::mutex> lock(responseMutex);
       responseText.assign(payload.begin(), payload.end());
+      responseError = response.getErrorInfo();
       responseCallback = true;
     },
     tlv::FirstResponding,
@@ -10782,7 +10896,9 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h121ToOracleResponse)
   BOOST_CHECK(!timedOut);
   {
     std::lock_guard<std::mutex> lock(responseMutex);
-    BOOST_CHECK_EQUAL(responseText, "oracle:10.000000");
+    BOOST_CHECK_MESSAGE(responseText == "oracle:10.000000",
+                        "unexpected native result payload=" << responseText
+                        << " responseError=" << responseError);
   }
   {
     std::lock_guard<std::mutex> lock(*observedMutex);
@@ -11003,7 +11119,8 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
     config.groupCoordinatorFactory =
       [&, provider, localProvider = providerNames[provider].toUri()] (
           ServiceProvider::CollaborationContext& context,
-          const std::map<std::string, std::string>& fields) {
+          const std::map<std::string, std::string>& fields,
+          const std::shared_ptr<NativeWorkStatistics>& statistics) {
         ++coordinatorFactoryCalls[provider];
         auto decoded = ProviderGroupCoordinator::decodeCapability(
           bytesFromHex(fields.at("groupCapabilityV1")));
@@ -11012,6 +11129,7 @@ BOOST_AUTO_TEST_CASE(ProductionNativeHandlersRunD2h212ToCompleteOracleResponse)
           throw std::runtime_error("D2h 212 group capability binding mismatch");
         }
         auto options = makeD2bCoordinatorOptions();
+        options.workStatistics = statistics;
         options.localProvider = localProvider;
         auto coordinator = std::make_shared<ProviderGroupCoordinator>(
           std::move(options));
@@ -12090,8 +12208,9 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaborat
   environment.provider().cacheHybridReceiveKeyForTest(
       selectionKey.keyId, selectionKey.epochId, selectionKey.key);
 
+  constexpr int ACK_COLLECTION_MS = 200;
   CollaborationPlan plan;
-  plan.ackCollectionTimeMs = 30;
+  plan.ackCollectionTimeMs = ACK_COLLECTION_MS;
   plan.timeoutMs = 1000;
   plan.roles = roles;
   plan.participantSelector = std::make_shared<SameProviderMultiRoleSelection>();
@@ -12108,7 +12227,7 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaborat
       serviceName,
       ndn::Buffer(reinterpret_cast<const uint8_t*>(requestPayload.data()),
                   requestPayload.size()),
-      30,
+      ACK_COLLECTION_MS,
       1000,
       [&] (const CollaborationAckClosure& closure) {
         plan.participantSelector = std::make_shared<SameProviderMultiRoleSelection>();
@@ -12214,6 +12333,7 @@ BOOST_AUTO_TEST_CASE(CoreCommitAssignmentSizeBoundariesRoundTrip)
         bool retryThrew = false, retryCommitted = false, timedOut = false;
         bool completed = false;
         size_t selections = 0, handlers = 0;
+        size_t requestBytes = 0, selectionBytes = 0, referenceBytes = 0;
         std::string retryError;
         HybridMessageKey selectionKey;
         ndn::Buffer expected;
@@ -12237,6 +12357,14 @@ BOOST_AUTO_TEST_CASE(CoreCommitAssignmentSizeBoundariesRoundTrip)
           const auto& restored = context.assignment().assignmentPayload;
           BOOST_CHECK(restored == state.expected);
           BOOST_CHECK(!parseLargeDataReferencePayload(restored));
+          const auto& receipt = context.assignment().preparationFetchReceipt;
+          BOOST_REQUIRE(receipt);
+          BOOST_CHECK(receipt->complete);
+          BOOST_CHECK_EQUAL(receipt->assignmentBytes, test.bytes > 4096 ? test.bytes : 0U);
+          BOOST_CHECK_EQUAL(receipt->assignmentObjects, test.bytes > 4096 ? 1U : 0U);
+          BOOST_CHECK_EQUAL(receipt->inputBytes, 0U);
+          BOOST_CHECK(receipt->inputDisposition ==
+            ServiceProvider::InputFetchDisposition::NOT_SCOPED);
           context.publishFinalResponse(ndn::Buffer{0x6f, 0x6b});
         });
       environment.enableProductionIngressForTest();
@@ -12268,6 +12396,7 @@ BOOST_AUTO_TEST_CASE(CoreCommitAssignmentSizeBoundariesRoundTrip)
             ndn::span<const uint8_t>(aad.data(), aad.size()), plaintext));
           ServiceSelectionMessage selection;
           BOOST_REQUIRE(selection.WireDecode(ndn::Block(plaintext)));
+          state.selectionBytes += plaintext.size();
           BOOST_REQUIRE_EQUAL(selection.getProviderEntries().size(), 1U);
           CollaborationAssignmentEnvelope envelope;
           BOOST_REQUIRE(decodeCollaborationAssignmentEnvelope(
@@ -12284,6 +12413,7 @@ BOOST_AUTO_TEST_CASE(CoreCommitAssignmentSizeBoundariesRoundTrip)
             BOOST_CHECK_EQUAL(reference->plaintextSize, state.expected.size());
             BOOST_CHECK_EQUAL(reference->digest, sha256TensorBytes(state.expected));
             BOOST_CHECK_LT(envelope.opaquePayload.size(), 4096U);
+            state.referenceBytes += envelope.opaquePayload.size();
           }
         }, true);
       environment.user().setRequestPublisher(
@@ -12295,6 +12425,7 @@ BOOST_AUTO_TEST_CASE(CoreCommitAssignmentSizeBoundariesRoundTrip)
           BOOST_REQUIRE_EQUAL(parsed->requestId, requestId);
           BOOST_REQUIRE_EQUAL(parsed->requesterName, environment.user().getName());
           const auto block = request.WireEncode();
+          state.requestBytes += block.size();
           const auto encrypted = makeTestHybridPublication(requestName, serviceName, requestId,
             environment.user().getName(), "REQUEST", ndn::Buffer(block.data(), block.size()));
           environment.provider().cacheHybridReceiveKeyForTest(
@@ -12303,7 +12434,8 @@ BOOST_AUTO_TEST_CASE(CoreCommitAssignmentSizeBoundariesRoundTrip)
             ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
           environment.markRequestPublished(scope);
         });
-      const auto returnedId = environment.user().BeginCollaboration(
+      const auto inventory = std::make_shared<ControlByteStatistics>();
+      const auto returnedId = environment.user().BeginCollaborationWithProviders(
         serviceName, ndn::Buffer{0x01}, 200, 10000,
         [&] (const CollaborationAckClosure& closure) {
           state.ackClosed = true;
@@ -12368,7 +12500,8 @@ BOOST_AUTO_TEST_CASE(CoreCommitAssignmentSizeBoundariesRoundTrip)
         [&] (const ResponseMessage& response) {
           state.completed = response.getStatus() && response.getPayload() == ndn::Buffer{0x6f, 0x6b};
         },
-        [&] (const ndn::Name&) { state.timedOut = true; }, requestId);
+        [&] (const ndn::Name&) { state.timedOut = true; }, requestId,
+        {}, RequestCapabilities(), std::nullopt, {}, {}, {}, {}, inventory);
       BOOST_REQUIRE_EQUAL(returnedId, requestId);
       const auto done = [&] { return state.completed || state.threw || state.timedOut; };
       for (size_t round = 0; round < 8 && !done(); ++round)
@@ -12401,6 +12534,27 @@ BOOST_AUTO_TEST_CASE(CoreCommitAssignmentSizeBoundariesRoundTrip)
           BOOST_CHECK_EQUAL(environment.user().getLargeDataServingMetricsForTest().publicationCount, 0U);
       }
       BOOST_CHECK(state.ackClosed);
+      const auto measured = inventory->seal();
+      BOOST_CHECK(measured.complete);
+      const auto entry = [&] (ControlByteKind kind) -> const ControlByteStatistics::Entry& {
+        return measured.entries[static_cast<size_t>(kind)];
+      };
+      BOOST_CHECK_EQUAL(entry(ControlByteKind::REQUEST_PREPARED).calls, 1U);
+      BOOST_CHECK_EQUAL(entry(ControlByteKind::REQUEST_PREPARED).bytes, state.requestBytes);
+      BOOST_CHECK_GE(entry(ControlByteKind::ACK_DECODED).calls, 1U);
+      BOOST_CHECK_EQUAL(entry(ControlByteKind::ACK_DECODE_FAILED).calls, 0U);
+      BOOST_CHECK_EQUAL(entry(ControlByteKind::SELECTION_PREPARED).calls, state.selections);
+      BOOST_CHECK_EQUAL(entry(ControlByteKind::SELECTION_PREPARED).bytes, state.selectionBytes);
+      BOOST_CHECK_EQUAL(entry(ControlByteKind::ASSIGNMENT_EXTERNAL_PLAINTEXT).bytes,
+                        !rejected && test.bytes > 4096 ? test.bytes : 0U);
+      BOOST_CHECK_EQUAL(entry(ControlByteKind::ASSIGNMENT_EXTERNAL_REFERENCE).bytes,
+                        state.referenceBytes);
+      if (!rejected && test.bytes <= 4096) {
+        // Plan preparation and final Selection preparation independently
+        // inspect the same inline representation; these are decisions.
+        BOOST_CHECK_EQUAL(entry(ControlByteKind::ASSIGNMENT_INLINE).calls, 2U);
+        BOOST_CHECK_EQUAL(entry(ControlByteKind::ASSIGNMENT_INLINE).bytes, 2 * test.bytes);
+      }
       environment.updateRequestResidue(scope, {});
       environment.resetRequest(scope);
     }
@@ -12623,6 +12777,151 @@ BOOST_AUTO_TEST_CASE(Spec196CoreTargetedResponseMergesIntoPlacementSnapshot)
                     "ACTIVE_PROBE_RTT");
   BOOST_CHECK_EQUAL(scoredRow.at("row").at("rtt_ms").get<double>(),
                     measuredRtt.at("value").get<double>());
+}
+
+BOOST_AUTO_TEST_CASE(Spec220CollaborationFacePublicationIsRequestObserved)
+{
+  using namespace ndn_service_framework;
+  test::BootstrapProfile profile;
+  profile.providerCount = 1;
+  test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == test::EnvironmentStatus::Ready);
+
+  auto& provider = environment.provider(0);
+  struct ObserverState
+  {
+    std::shared_ptr<NativeWorkStatistics> statistics =
+      std::make_shared<NativeWorkStatistics>();
+    std::mutex mutex;
+    std::condition_variable condition;
+    std::thread::id observedThread;
+    std::uint64_t completed = 0;
+  };
+  auto state = std::make_shared<ObserverState>();
+  ndn_service_framework::CollaborationLocalWorkObserver observer;
+  observer.owner = std::static_pointer_cast<void>(state);
+  observer.observe = [] (const std::shared_ptr<void>& owner,
+                         std::string_view phase,
+                         ndn_service_framework::CollaborationLocalWorkObserver::Operation operation,
+                         void* operationContext) {
+    auto observed = std::static_pointer_cast<ObserverState>(owner);
+    {
+      std::lock_guard<std::mutex> lock(observed->mutex);
+      observed->observedThread = std::this_thread::get_id();
+    }
+    NativeWorkScope work(observed->statistics, phase, NativeWorkKind::LOCAL);
+    operation(operationContext);
+  };
+  observer.addCount = [] (const std::shared_ptr<void>& owner,
+                          std::string_view name, std::uint64_t value) {
+    auto observed = std::static_pointer_cast<ObserverState>(owner);
+    observed->statistics->addCount(name, value);
+    if (name == "collaboration.publish.callbackCompleted") {
+      {
+        std::lock_guard<std::mutex> lock(observed->mutex);
+        observed->completed += value;
+      }
+      observed->condition.notify_all();
+    }
+  };
+
+  auto callbackEntered = std::make_shared<std::promise<void>>();
+  auto callbackEnteredFuture = callbackEntered->get_future();
+  auto releaseCallback = std::make_shared<std::promise<void>>();
+  const auto releaseCallbackFuture = releaseCallback->get_future().share();
+  std::atomic<bool> pumpDone{false};
+  std::thread pumpThread;
+  struct Cleanup
+  {
+    ndn_service_framework::ServiceProvider& provider;
+    std::shared_ptr<std::promise<void>> release;
+    std::atomic<bool>& pumpDone;
+    std::thread& pumpThread;
+    ~Cleanup()
+    {
+      try {
+        release->set_value();
+      }
+      catch (const std::future_error&) {
+      }
+      pumpDone.store(true, std::memory_order_release);
+      if (pumpThread.joinable()) pumpThread.join();
+      provider.setCollaborationPublicationInterceptorForTest({});
+    }
+  } cleanup{provider, releaseCallback, pumpDone, pumpThread};
+  provider.setCollaborationPublicationInterceptorForTest(
+    [callbackEntered, releaseCallbackFuture] (const ndn::Name&) {
+      callbackEntered->set_value();
+      releaseCallbackFuture.wait();
+      return false;
+    });
+
+  ndn_service_framework::ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "/spec220/role";
+  assignment.scopeKeys.emplace("spec220", ndn::Buffer(32, 0x5a));
+  ndn_service_framework::ServiceProvider::CollaborationContext context(
+    provider, environment.user().getName(), ndn::Name("/spec220/publish-observer"),
+    RequestMessage(), assignment);
+
+  pumpThread = std::thread([&] {
+    environment.pumpUntil([&] {
+      return pumpDone.load(std::memory_order_acquire);
+    });
+  });
+  context.publish("spec220", ndn::Name("/spec220/callback"),
+                  ndn::Buffer{'x'}, observer);
+  const auto entered = callbackEnteredFuture.wait_for(std::chrono::seconds(5)) ==
+    std::future_status::ready;
+  auto pending = state->statistics->snapshot();
+  BOOST_CHECK(entered);
+  BOOST_CHECK_EQUAL(pending.counts.at("collaboration.publish.callbackSubmitted"), 1U);
+  BOOST_CHECK_EQUAL(pending.counts.count("collaboration.publish.callbackCompleted"), 0U);
+  if (entered) {
+    BOOST_CHECK_EQUAL(pending.activeSpans, 1U);
+    BOOST_CHECK(!pending.complete);
+  }
+
+  try {
+    releaseCallback->set_value();
+  }
+  catch (const std::future_error&) {
+  }
+  {
+    std::unique_lock<std::mutex> lock(state->mutex);
+    state->condition.wait_for(lock, std::chrono::seconds(5), [&] {
+      return state->completed == 1;
+    });
+  }
+  const auto completed = state->statistics->snapshot();
+  BOOST_CHECK_EQUAL(state->completed, 1U);
+  BOOST_CHECK(completed.complete);
+  BOOST_CHECK_EQUAL(completed.activeSpans, 0U);
+  BOOST_REQUIRE_EQUAL(completed.phases.count("collaboration-face-publish"), 1U);
+  BOOST_CHECK(completed.phases.at("collaboration-face-publish").kind ==
+              NativeWorkKind::LOCAL);
+  BOOST_CHECK_EQUAL(completed.phases.at("collaboration-face-publish").calls, 1U);
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    BOOST_CHECK_NE(state->observedThread, std::this_thread::get_id());
+  }
+
+  auto unobservedCallback = std::make_shared<std::promise<void>>();
+  auto unobservedFuture = unobservedCallback->get_future();
+  provider.setCollaborationPublicationInterceptorForTest(
+    [unobservedCallback] (const ndn::Name&) {
+      unobservedCallback->set_value();
+      return false;
+    });
+  context.publish("spec220", ndn::Name("/spec220/no-observer"), ndn::Buffer{'y'});
+  BOOST_CHECK(unobservedFuture.wait_for(std::chrono::seconds(5)) ==
+              std::future_status::ready);
+  const auto unchanged = state->statistics->snapshot();
+  BOOST_CHECK_EQUAL(unchanged.counts.at("collaboration.publish.callbackSubmitted"), 1U);
+  BOOST_CHECK_EQUAL(unchanged.counts.at("collaboration.publish.callbackCompleted"), 1U);
+  BOOST_CHECK_EQUAL(unchanged.phases.at("collaboration-face-publish").calls, 1U);
+  pumpDone.store(true, std::memory_order_release);
+  pumpThread.join();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

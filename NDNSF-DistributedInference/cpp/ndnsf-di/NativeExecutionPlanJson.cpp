@@ -4,7 +4,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include <ndn-cxx/encoding/tlv.hpp>
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
@@ -277,6 +279,10 @@ NativeJson jsonValue(const NativeRoleDataflowContractV3& value)
   result["wait_for"] = jsonArray(value.waitFor);
   result["terminal_response_owner"] = value.terminalResponseOwner;
   result["dataflow_digest"] = value.dataflowDigest;
+  if (value.endpointRange) {
+    result["endpoint_range"] = {{"epoch_count", value.endpointRange->epochCount},
+                                {"operation_stride", value.endpointRange->operationStride}};
+  }
   return result;
 }
 
@@ -908,12 +914,46 @@ readinessFromV3Json(const boost::property_tree::ptree& node)
   return readiness;
 }
 
-void validateNativeRoleDataflowContractV3(const NativeRoleDataflowContractV3& dataflow)
+} // namespace
+
+void
+validateNativeRoleDataflowContractV3(const NativeRoleDataflowContractV3& dataflow)
 {
   if (dataflow.requestId.empty() || dataflow.attempt == 0 ||
       !isSha256Digest(dataflow.planDigest) || dataflow.role.empty() ||
       !isSha256Digest(dataflow.dataflowDigest)) {
     throw std::invalid_argument("invalid V3 role dataflow contract");
+  }
+
+  if (dataflow.endpointRange) {
+    const auto& range = *dataflow.endpointRange;
+    if (range.epochCount < 2 || range.epochCount > MAX_NATIVE_GENERATED_TOKENS + 1 ||
+        range.operationStride == 0 || range.operationStride > (1U << 20))
+      throw std::invalid_argument("invalid compact generation endpoint range");
+    for (const auto* endpoints : {&dataflow.mayPublish, &dataflow.mustFetch}) {
+      std::size_t logicalSlots = 0;
+      for (const auto& endpoint : *endpoints) {
+        const auto count = endpoint.sourceKind == "ROLE" ? range.epochCount : 1;
+        if (count > ((1U << 20) / 128) - logicalSlots)
+          throw std::invalid_argument("generation endpoint expansion exceeds wire bounds");
+        logicalSlots += count;
+        if (endpoint.sourceKind == "ROLE" &&
+            (endpoint.namingOperationStride != range.operationStride ||
+             endpoint.round >= range.operationStride || range.epochCount - 1 >
+               (std::numeric_limits<std::uint64_t>::max() - endpoint.round) /
+                 range.operationStride))
+          throw std::invalid_argument("generation base endpoint exceeds its range");
+        const auto certified = NativePlanProjectionBuilder::deriveGenerationEndpoint(
+          endpoint, range, 0);
+        if (certified.endpointDigest != endpoint.endpointDigest ||
+            certified.manifestDigest != endpoint.manifestDigest)
+          throw std::invalid_argument("generation base endpoint digest mismatch");
+      }
+    }
+    auto recipe = jsonValue(dataflow);
+    recipe.erase("dataflow_digest");
+    if (nativePlanningDigest(nativeCanonicalJson(recipe)) != dataflow.dataflowDigest)
+      throw std::invalid_argument("compact generation dataflow digest mismatch");
   }
 
   std::set<std::string> endpointDigests;
@@ -954,9 +994,17 @@ void validateNativeRoleDataflowContractV3(const NativeRoleDataflowContractV3& da
   }
 }
 
+namespace {
+
 void validateTensorNamingStrideContract(const NativeRoleDataflowContractV3& flow,
   const NativeGenerationExecutionContractV1& generation, bool boundEpochs = true)
 {
+  if (flow.endpointRange && (!generation.enabled ||
+      generation.maxGeneratedTokens == 0 ||
+      generation.maxGeneratedTokens > MAX_NATIVE_GENERATED_TOKENS ||
+      flow.endpointRange->epochCount != generation.maxGeneratedTokens + 1 ||
+      flow.endpointRange->operationStride != generation.streamingOperationStride))
+    throw std::invalid_argument("endpoint range differs from its signed generation contract");
   for (const auto* endpoints : {&flow.mayPublish, &flow.mustFetch}) {
     for (const auto& endpoint : *endpoints) {
       const bool role = endpoint.sourceKind == "ROLE";
@@ -987,6 +1035,13 @@ dataflowFromV3Json(const boost::property_tree::ptree& node)
   dataflow.terminalResponseOwner =
     node.get<bool>("terminal_response_owner", false);
   dataflow.dataflowDigest = node.get<std::string>("dataflow_digest", "");
+  if (const auto range = node.get_child_optional("endpoint_range")) {
+    if (range->size() != 2 || !range->get_child_optional("epoch_count") ||
+        !range->get_child_optional("operation_stride"))
+      throw std::invalid_argument("invalid compact endpoint range fields");
+    dataflow.endpointRange = NativeGenerationEndpointRangeV1{
+      range->get<std::uint64_t>("epoch_count"), range->get<std::uint64_t>("operation_stride")};
+  }
   validateNativeRoleDataflowContractV3(dataflow);
   return dataflow;
 }
@@ -1440,8 +1495,12 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   const std::string& selectedRole,
   const NativeSelectionProjectionV3* generated = nullptr,
   bool generatedHere = false,
-  const NativeFixedRoleAssignmentV1* fixedAssignment = nullptr)
+  const NativeFixedRoleAssignmentV1* fixedAssignment = nullptr,
+  bool allowCompactProjection = false)
 {
+  const bool rangeInvocation = typedRoot.value("schema", std::string{}) ==
+    "ndnsf-di-selection-invocation-v3";
+  const auto invocationVersion = rangeInvocation ? 3 : 1;
   if (fixedAssignment) {
     validateNativeSelectionInvocationBindingShapeV1(typedRoot);
     if (!typedRoot.contains("fixed_role_ref") ||
@@ -1449,7 +1508,7 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
         typedRoot.at("fixed_role_ref").get<std::string>() != fixedAssignment->digest() ||
         !typedRoot.contains("schema_version") ||
         !typedRoot.at("schema_version").is_number_integer() ||
-        typedRoot.at("schema_version") != NativeJson(1) ||
+        typedRoot.at("schema_version") != NativeJson(invocationVersion) ||
         typedRoot.contains("roles") || typedRoot.contains("assembly") ||
         typedRoot.contains("assembly_same_as_role")) {
       throw std::invalid_argument("invalid cached role invocation reference");
@@ -1458,6 +1517,9 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   else if (typedRoot.contains("fixed_role_ref")) {
     throw std::invalid_argument("cached role invocation requires its validated owner");
   }
+  if (!fixedAssignment && !allowCompactProjection &&
+      root.get_child_optional("dataflow.endpoint_range"))
+    throw std::invalid_argument("compact endpoint ranges require a V3 fixed invocation");
   if (typedRoot.contains("assembly_same_as_role")) {
     const auto& marker = typedRoot.at("assembly_same_as_role");
     if (!marker.is_boolean() || !marker.get<bool>() || typedRoot.contains("assembly") ||
@@ -1474,13 +1536,15 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
       throw std::invalid_argument("compact Selection has no unique legacy role");
     expandedTree.put_child("assembly", roles->front().second);
     auto projection = decodeSelectionProjectionV3(expanded, expandedTree,
-      selectedRole, generated, generatedHere);
+      selectedRole, generated, generatedHere, fixedAssignment, allowCompactProjection);
     projection.compactAssembly = true;
     return projection;
   }
   if (root.get<std::string>("schema", "") !=
-        (fixedAssignment ? "ndnsf-di-selection-invocation-v1" : "ndnsf-di-selection-v3") ||
-      root.get<int>("schema_version", 0) != (fixedAssignment ? 1 : 3)) {
+        (fixedAssignment ? (rangeInvocation ? "ndnsf-di-selection-invocation-v3" :
+                                             "ndnsf-di-selection-invocation-v1") :
+                           "ndnsf-di-selection-v3") ||
+      root.get<int>("schema_version", 0) != (fixedAssignment ? invocationVersion : 3)) {
     throw std::invalid_argument("V3 Selection projection schema mismatch");
   }
 
@@ -2010,7 +2074,8 @@ void validateGeneratedSelectionValue(
   const NativeJson& value, const NativeSelectionProjectionV3& generated, bool generatedHere)
 {
   if (std::locale() != std::locale::classic()) {
-    decodeSelectionProjectionV3(value, legacyTreeFromValue(value), generated.executionRole.roleId);
+    decodeSelectionProjectionV3(value, legacyTreeFromValue(value), generated.executionRole.roleId,
+      nullptr, false, nullptr, generated.dataflow.endpointRange.has_value());
     return;
   }
   boost::property_tree::ptree root;
@@ -2031,7 +2096,8 @@ void validateGeneratedSelectionValue(
       fillLegacyTreeFromValue(it.value(), child->second);
     }
   }
-  decodeSelectionProjectionV3(value, root, generated.executionRole.roleId, &generated, generatedHere);
+  decodeSelectionProjectionV3(value, root, generated.executionRole.roleId, &generated, generatedHere,
+    nullptr, generated.dataflow.endpointRange.has_value());
 }
 
 } // namespace
@@ -2175,6 +2241,13 @@ bool sameFixedEndpointAtRound(const NativeTensorEndpointV3& left, const NativeTe
 void collapseFixedRoleEpochs(NativeFixedExecutionTemplateV1& fixed)
 {
   const auto& generation = fixed.generation;
+  if (fixed.dataflow.endpointRange) {
+    validateNativeRoleDataflowContractV3(fixed.dataflow);
+    validateTensorNamingStrideContract(fixed.dataflow, generation);
+    fixed.dataflow.endpointRange.reset();
+    fixed.expandRoleEpochs = true;
+    return;
+  }
   if (!generation.enabled || generation.streamingOperationStride == 0) return;
   const auto epochs = generation.maxGeneratedTokens + 1;
   const auto stride = generation.streamingOperationStride;
@@ -2258,6 +2331,7 @@ NativeFixedExecutionTemplateV1 normalizeExecutionTemplate(NativeFixedExecutionTe
     dependency.expectedBytes = 0;
   }
   auto& flow = value.dataflow;
+  flow.endpointRange.reset();
   flow.requestId = "/fixed-template";
   flow.attempt = 1;
   flow.planDigest = fixedTemplateDigestPlaceholder();
@@ -2458,19 +2532,33 @@ NativeJson dataflowBindingsJson(const NativeRoleDataflowContractV3& flow)
 {
   auto readiness = NativeJson::array();
   for (const auto& wait : flow.waitFor) readiness.push_back(wait.endpointDigests);
-  return NativeJson{{"may_publish", endpointBindingsJson(flow.mayPublish)},
+  NativeJson result{{"may_publish", endpointBindingsJson(flow.mayPublish)},
     {"must_fetch", endpointBindingsJson(flow.mustFetch)}, {"wait_for", std::move(readiness)},
     {"dataflow_digest", flow.dataflowDigest}};
+  if (flow.endpointRange)
+    result["endpoint_range"] = {{"epoch_count", flow.endpointRange->epochCount},
+                                {"operation_stride", flow.endpointRange->operationStride}};
+  return result;
 }
 
 NativeRoleDataflowContractV3 bindFixedTemplateDataflow(
   const NativeJson& bindings, const NativeSelectionProjectionV3& context,
   const NativeFixedExecutionTemplateV1& fixed)
 {
-  requireOnlyBindingKeys(bindings, {"may_publish", "must_fetch", "wait_for", "dataflow_digest"});
-  if (bindings.size() != 4) throw std::invalid_argument("invocation dataflow binding fields mismatch");
+  const bool compact = bindings.contains("endpoint_range");
+  requireOnlyBindingKeys(bindings,
+    {"may_publish", "must_fetch", "wait_for", "dataflow_digest", "endpoint_range"});
+  if (bindings.size() != (compact ? 5U : 4U))
+    throw std::invalid_argument("invocation dataflow binding fields mismatch");
   auto flow = fixed.dataflow;
-  if (fixed.expandRoleEpochs) expandFixedRoleEpochs(flow, context.generationContract);
+  if (compact) {
+    const auto& range = bindings.at("endpoint_range");
+    if (!fixed.expandRoleEpochs)
+      throw std::invalid_argument("endpoint range has no fixed generation template");
+    flow.endpointRange = NativeGenerationEndpointRangeV1{
+      unsignedBinding(range, "epoch_count"), unsignedBinding(range, "operation_stride")};
+  }
+  else if (fixed.expandRoleEpochs) expandFixedRoleEpochs(flow, context.generationContract);
   flow.requestId = context.requestId;
   flow.attempt = context.attempt;
   flow.planDigest = context.planDigest;
@@ -2531,7 +2619,7 @@ NativeRoleDataflowContractV3 bindFixedTemplateDataflow(
         throw std::invalid_argument("fixed readiness slot is missing");
       const auto offset = expandedEndpointOffset(fixed.dataflow.mustFetch,
         std::distance(fixed.dataflow.mustFetch.begin(), found),
-        fixed.expandRoleEpochs ? context.generationContract.maxGeneratedTokens + 1 : 1);
+        fixed.expandRoleEpochs && !compact ? context.generationContract.maxGeneratedTokens + 1 : 1);
       if (current[slot] != flow.mustFetch.at(offset).endpointDigest)
         throw std::invalid_argument("invocation readiness changed its fixed slot");
     }
@@ -2660,6 +2748,50 @@ NativeJson expandInvocationBindings(const NativeJson& value)
     throw std::invalid_argument("expanded invocation exceeds wire bound");
   return expanded;
 }
+
+std::size_t
+rangeInvocationLogicalSize(const NativeJson& value)
+{
+  constexpr std::size_t LIMIT = 4U << 20;
+  auto legacy = value;
+  legacy["schema"] = "ndnsf-di-selection-invocation-v1";
+  legacy["schema_version"] = 1;
+  const auto epochs = unsignedBinding(legacy.at("dataflow").at("endpoint_range"), "epoch_count");
+  legacy["dataflow"].erase("endpoint_range");
+  auto size = nativeCanonicalJson(legacy).size();
+  if (size > LIMIT)
+    throw std::invalid_argument("expanded invocation exceeds wire bound");
+  for (const auto* key : {"may_publish", "must_fetch"}) {
+    const auto& bindings = legacy.at("dataflow").at(key);
+    const auto baseBytes = nativeCanonicalJson(bindings).size();
+    std::size_t expandedBytes = 2;
+    std::size_t entries = 0;
+    const auto add = [&](std::size_t bytes, std::uint64_t count = 1) {
+      if (count && bytes > (LIMIT - expandedBytes) / count)
+        throw std::invalid_argument("expanded endpoint bindings exceed wire bound");
+      expandedBytes += bytes * count;
+    };
+    for (const auto& binding : bindings) {
+      const auto count = binding.contains("tensor_digest") ? 1 : epochs;
+      add(nativeCanonicalJson(binding).size());
+      if (count > 1) {
+        auto later = binding;
+        later.erase("prefetch_bundle_bytes");
+        later.erase("prefetch_segment_bytes");
+        add(nativeCanonicalJson(later).size(), count - 1);
+      }
+      if (count > LIMIT - entries)
+        throw std::invalid_argument("expanded endpoint count exceeds wire bound");
+      entries += count;
+    }
+    if (entries) add(entries - 1);
+    size -= baseBytes;
+    if (expandedBytes > LIMIT - size)
+      throw std::invalid_argument("expanded invocation exceeds wire bound");
+    size += expandedBytes;
+  }
+  return size;
+}
 } // namespace
 
 void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
@@ -2668,6 +2800,11 @@ void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
     validateNativeSelectionInvocationBindingShapeV1(expandInvocationBindings(value));
     return;
   }
+  const bool rangeInvocation = value.value("schema", std::string{}) ==
+    "ndnsf-di-selection-invocation-v3";
+  if (rangeInvocation && (!value.contains("schema_version") ||
+      !value.at("schema_version").is_number_integer() || value.at("schema_version") != 3))
+    throw std::invalid_argument("invalid range invocation transport version");
   const auto& dependencies = value.at("dependencies");
   if (!dependencies.is_array()) throw std::invalid_argument("invocation dependencies must be an array");
   for (const auto& binding : dependencies) {
@@ -2679,10 +2816,24 @@ void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
       throw std::invalid_argument("invocation feedback scope is invalid");
   }
   const auto& flow = value.at("dataflow");
-  requireOnlyBindingKeys(flow, {"may_publish", "must_fetch", "wait_for", "dataflow_digest"});
-  if (flow.size() != 4 || !flow.at("dataflow_digest").is_string() ||
+  requireOnlyBindingKeys(flow,
+    {"may_publish", "must_fetch", "wait_for", "dataflow_digest", "endpoint_range"});
+  if (flow.contains("endpoint_range") != rangeInvocation ||
+      flow.size() != (rangeInvocation ? 5U : 4U) || !flow.at("dataflow_digest").is_string() ||
       !flow.at("wait_for").is_array())
     throw std::invalid_argument("invocation dataflow binding fields mismatch");
+  if (rangeInvocation) {
+    const auto& range = flow.at("endpoint_range");
+    requireOnlyBindingKeys(range, {"epoch_count", "operation_stride"});
+    const auto count = unsignedBinding(range, "epoch_count");
+    const auto stride = unsignedBinding(range, "operation_stride");
+    if (range.size() != 2 || count < 2 || count > MAX_NATIVE_GENERATED_TOKENS + 1 ||
+        stride == 0 || stride > (1U << 20) ||
+        !value.contains("generation_contract") ||
+        unsignedBinding(value.at("generation_contract"), "max_generated_tokens") != count - 1 ||
+        !isSha256Digest(flow.at("dataflow_digest").get<std::string>()))
+      throw std::invalid_argument("invalid range invocation generation binding");
+  }
   for (const auto& wait : flow.at("wait_for")) {
     if (!wait.is_array()) throw std::invalid_argument("invocation readiness bindings must be arrays");
     for (const auto& digest : wait)
@@ -2697,6 +2848,10 @@ void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
         "inline_first_segment"});
       for (const auto* field : {"producer_namespace", "requester", "group_id", "group_epoch", "manifest_digest", "endpoint_digest"})
         if (!binding.at(field).is_string()) throw std::invalid_argument("invocation endpoint binding must be a string");
+      if (rangeInvocation &&
+          (!isSha256Digest(binding.at("manifest_digest").get<std::string>()) ||
+           !isSha256Digest(binding.at("endpoint_digest").get<std::string>())))
+        throw std::invalid_argument("range invocation endpoint digest is invalid");
       for (const auto* field : {"microbatch", "segment_count", "no_progress_deadline_ms", "hard_deadline_ms"})
         unsignedBinding(binding, field);
       for (const auto* field : {"tensor_digest", "layout_digest", "target_layout_digest"})
@@ -2716,9 +2871,16 @@ void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
     requireOnlyBindingKeys(value.at("generation_contract"), {"max_generated_tokens", "sampling_digest", "sampling_mode",
       "sampling_temperature", "sampling_top_k", "sampling_top_p", "sampling_repetition_penalty", "sampling_seed",
       "stop_strings", "generation_id", "committed_prefix_token_ids"});
+  if (rangeInvocation) {
+    if (nativeCanonicalJson(value).size() > (4U << 20))
+      throw std::invalid_argument("range invocation exceeds wire bound");
+    (void)rangeInvocationLogicalSize(value);
+  }
 }
 
-std::string nativeSelectionProjectionV3ToJson(const NativeSelectionProjectionV3& value)
+namespace {
+NativeJson
+selectionProjectionValue(const NativeSelectionProjectionV3& value)
 {
   auto root = selectionInvocationFields(value);
   root["roles"] = NativeJson::array({jsonValue(value.selectedRoleContract())});
@@ -2729,6 +2891,15 @@ std::string nativeSelectionProjectionV3ToJson(const NativeSelectionProjectionV3&
     root.erase("assembly");
     root["assembly_same_as_role"] = true;
   }
+  return root;
+}
+} // namespace
+
+std::string nativeSelectionProjectionV3ToJson(const NativeSelectionProjectionV3& value)
+{
+  if (value.dataflow.endpointRange)
+    throw std::invalid_argument("legacy Selection cannot carry compact endpoint ranges");
+  const auto root = selectionProjectionValue(value);
   const auto wire = nativeCanonicalJson(root);
   // Keep the production decoder's complete role, grant and endpoint binding
   // checks, reusing the generated value instead of parsing our own wire twice.
@@ -2771,8 +2942,13 @@ bool NativeFixedRoleAssignmentV1::matchesExecutionTemplate(const NativeSelection
   else if (projection.providerOwnership() != fixed.providerByRole) return false;
   for (std::size_t index = 0; index < fixed.dependencies.size(); ++index)
     if (!sameFixedDependency(projection.plan.dependencies[index], fixed.dependencies[index])) return false;
-  const auto epochs = fixed.expandRoleEpochs ? projection.generationContract.maxGeneratedTokens + 1 : 1;
-  if (fixed.expandRoleEpochs && (epochs < 2 || epochs > 1026)) return false;
+  const auto generationEpochs = fixed.expandRoleEpochs ?
+    projection.generationContract.maxGeneratedTokens + 1 : 1;
+  if (fixed.expandRoleEpochs && (generationEpochs < 2 || generationEpochs > 1026)) return false;
+  if (current.endpointRange && (!fixed.expandRoleEpochs ||
+      current.endpointRange->epochCount != generationEpochs ||
+      current.endpointRange->operationStride != fixed.generation.streamingOperationStride)) return false;
+  const auto epochs = current.endpointRange ? 1 : generationEpochs;
   const auto sameEndpoints = [&](const auto& expanded, const auto& base) {
     if (expanded.size() != expandedEndpointOffset(base, base.size(), epochs)) return false;
     std::size_t index = 0;
@@ -2810,7 +2986,10 @@ nativeFixedRoleAssignmentV1FromProjection(NativeSelectionProjectionV3 projection
 {
   // Cold-only proof of the full wire contract. This token grants no execution
   // authority; the Provider must still verify every current invocation.
-  (void)nativeSelectionProjectionV3ToJson(projection);
+  if (projection.dataflow.endpointRange)
+    validateGeneratedSelectionValue(selectionProjectionValue(projection), projection, true);
+  else
+    (void)nativeSelectionProjectionV3ToJson(projection);
   // The projection's public owner can originate from a mutable shared_ptr.
   // Freeze our own cold snapshot so a foreign alias cannot change its digest.
   auto role = std::make_shared<const NativeSelectionRoleV3>(projection.selectedRoleContract());
@@ -2973,8 +3152,9 @@ makeSelectionInvocationValue(
                cachedRole.adapterId, cachedRole.adapterVersion))
     throw std::invalid_argument("invocation cannot reuse a different execution role");
   auto root = selectionInvocationFields(projection, true);
-  root["schema"] = "ndnsf-di-selection-invocation-v1";
-  root["schema_version"] = 1;
+  root["schema"] = projection.dataflow.endpointRange ?
+    "ndnsf-di-selection-invocation-v3" : "ndnsf-di-selection-invocation-v1";
+  root["schema_version"] = projection.dataflow.endpointRange ? 3 : 1;
   root["fixed_role_ref"] = fixedAssignment.digest();
   if (source) {
     validateFixedRoleSource(*source);
@@ -2993,6 +3173,8 @@ std::string nativeSelectionInvocationV1ToJson(
   const NativeFixedRoleAssignmentV1& fixedAssignment,
   const NativeFixedRoleSourceV1* source)
 {
+  if (projection.dataflow.endpointRange)
+    throw std::invalid_argument("legacy invocation cannot carry compact endpoint ranges");
   return nativeCanonicalJson(makeSelectionInvocationValue(projection, fixedAssignment, source));
 }
 
@@ -3002,6 +3184,8 @@ nativeSelectionInvocationV2ToJson(
   const NativeFixedRoleAssignmentV1& fixedAssignment,
   const NativeFixedRoleSourceV1* source)
 {
+  if (projection.dataflow.endpointRange)
+    throw std::invalid_argument("legacy invocation cannot carry compact endpoint ranges");
   auto root = makeSelectionInvocationValue(projection, fixedAssignment, source);
   const bool measure = detail::nativePhaseStarted().enabled;
   // Reject at the producer before publication if the reader's expanded bound
@@ -3025,6 +3209,20 @@ nativeSelectionInvocationV2ToJson(
       " group_capability_hex_bytes=" + std::to_string(projection.groupCapabilityV1.size()));
   }
   return wire;
+}
+
+std::string
+nativeSelectionInvocationV3ToJson(
+  const NativeSelectionProjectionV3& projection,
+  const NativeFixedRoleAssignmentV1& fixedAssignment,
+  const NativeFixedRoleSourceV1* source)
+{
+  if (!projection.dataflow.endpointRange)
+    throw std::invalid_argument("range invocation requires compact endpoint ranges");
+  const auto root = makeSelectionInvocationValue(projection, fixedAssignment, source);
+  // Both producer and consumer use the same bounded logical allocation guard.
+  validateNativeSelectionInvocationBindingShapeV1(root);
+  return nativeCanonicalJson(root);
 }
 
 NativeSelectionProjectionV3 nativeSelectionInvocationV1FromJson(
@@ -3058,21 +3256,31 @@ void NativeFixedRoleAssignmentCache::validateScope(
   }
 }
 
-void NativeFixedRoleAssignmentCache::pruneExpired(std::chrono::steady_clock::time_point now)
+void NativeFixedRoleAssignmentCache::pruneExpired(std::chrono::steady_clock::time_point now,
+  const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  // A serving lease may supply a release callback; do not classify it as pure local work.
+  NativeWorkScope release(statistics, "fixed-cache-release", NativeWorkKind::UNCLASSIFIED);
   for (auto it = m_entries.begin(); it != m_entries.end();) {
-    if (it->second.expires <= now) it = m_entries.erase(it);
+    if (it->second.expires <= now) {
+      it = m_entries.erase(it);
+      if (statistics) statistics->addCount("fixedRole.cacheEntriesErased", 1);
+    }
     else ++it;
   }
 }
 
 std::shared_ptr<const NativeFixedRoleAssignmentV1> NativeFixedRoleAssignmentCache::find(
   const std::string& requester, const std::string& service,
-  const std::string& provider, const std::string& role, const std::string& digest)
+  const std::string& provider, const std::string& role, const std::string& digest,
+  const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  NativeWorkScope work(statistics, "fixed-cache-lookup", NativeWorkKind::LOCAL);
   validateScope(requester, service);
+  NativeWorkScope wait(statistics, "fixed-cache-lock", NativeWorkKind::WAIT);
   std::lock_guard<std::mutex> lock(m_mutex);
-  pruneExpired(std::chrono::steady_clock::now());
+  wait.finish();
+  pruneExpired(std::chrono::steady_clock::now(), statistics);
   const auto it = m_entries.find(Key{requester, service, provider, role});
   return it != m_entries.end() && it->second.assignment && it->second.assignment->digest() == digest
     ? it->second.assignment : nullptr;
@@ -3080,11 +3288,15 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> NativeFixedRoleAssignmentCach
 
 std::shared_ptr<const NativeFixedRoleAssignmentV1> NativeFixedRoleAssignmentCache::findMatching(
   const std::string& requester, const std::string& service,
-  const std::string& provider, const NativeSelectionRoleV3& role)
+  const std::string& provider, const NativeSelectionRoleV3& role,
+  const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  NativeWorkScope work(statistics, "fixed-cache-lookup", NativeWorkKind::LOCAL);
   validateScope(requester, service);
+  NativeWorkScope wait(statistics, "fixed-cache-lock", NativeWorkKind::WAIT);
   std::lock_guard<std::mutex> lock(m_mutex);
-  pruneExpired(std::chrono::steady_clock::now());
+  wait.finish();
+  pruneExpired(std::chrono::steady_clock::now(), statistics);
   const auto it = m_entries.find(Key{requester, service, provider, role.selectedRole});
   return it != m_entries.end() && it->second.assignment && sameAssembly(role, *it->second.assignment->roleOwner())
     ? it->second.assignment : nullptr;
@@ -3092,11 +3304,15 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> NativeFixedRoleAssignmentCach
 
 std::shared_ptr<const NativeFixedRoleAssignmentV1> NativeFixedRoleAssignmentCache::findMatching(
   const std::string& requester, const std::string& service,
-  const NativeSelectionProjectionV3& projection)
+  const NativeSelectionProjectionV3& projection,
+  const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  NativeWorkScope work(statistics, "fixed-cache-lookup", NativeWorkKind::LOCAL);
   validateScope(requester, service);
+  NativeWorkScope wait(statistics, "fixed-cache-lock", NativeWorkKind::WAIT);
   std::lock_guard<std::mutex> lock(m_mutex);
-  pruneExpired(std::chrono::steady_clock::now());
+  wait.finish();
+  pruneExpired(std::chrono::steady_clock::now(), statistics);
   const auto it = m_entries.find(Key{requester, service, projection.provider, projection.selectedRoleContract().selectedRole});
   return it != m_entries.end() && it->second.assignment && it->second.assignment->matchesExecutionTemplate(projection)
     ? it->second.assignment : nullptr;
@@ -3104,24 +3320,30 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> NativeFixedRoleAssignmentCach
 
 std::shared_ptr<const NativeFixedRoleAssignmentV1> NativeFixedRoleAssignmentCache::remember(
   const std::string& requester, const std::string& service,
-  std::shared_ptr<const NativeFixedRoleAssignmentV1> assignment)
+  std::shared_ptr<const NativeFixedRoleAssignmentV1> assignment,
+  const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  NativeWorkScope work(statistics, "fixed-cache-install", NativeWorkKind::UNCLASSIFIED);
   validateScope(requester, service);
   if (!assignment) throw std::invalid_argument("fixed role cache cannot install a null owner");
+  NativeWorkScope wait(statistics, "fixed-cache-lock", NativeWorkKind::WAIT);
   std::lock_guard<std::mutex> lock(m_mutex);
+  wait.finish();
   const auto now = std::chrono::steady_clock::now();
-  pruneExpired(now);
+  pruneExpired(now, statistics);
   const Key key{requester, service, assignment->provider(), assignment->roleOwner()->selectedRole};
   const auto existing = m_entries.find(key);
   if (existing != m_entries.end()) {
     if (existing->second.assignment && existing->second.assignment->digest() == assignment->digest())
       return existing->second.assignment;
     m_entries.erase(existing);
+    if (statistics) statistics->addCount("fixedRole.cacheEntriesErased", 1);
   }
   while (m_entries.size() >= m_capacity) {
     const auto oldest = std::min_element(m_entries.begin(), m_entries.end(),
       [](const auto& left, const auto& right) { return left.second.expires < right.second.expires; });
     m_entries.erase(oldest);
+    if (statistics) statistics->addCount("fixedRole.cacheEntriesErased", 1);
   }
   m_entries.emplace(key, Entry{assignment, now + m_retention, {}, {}});
   return assignment;
@@ -3129,11 +3351,15 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> NativeFixedRoleAssignmentCach
 
 std::shared_ptr<const NativeFixedRoleSourceV1> NativeFixedRoleAssignmentCache::source(
   const std::string& requester, const std::string& service,
-  const NativeFixedRoleAssignmentV1& assignment)
+  const NativeFixedRoleAssignmentV1& assignment,
+  const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  NativeWorkScope work(statistics, "fixed-cache-lookup", NativeWorkKind::LOCAL);
   validateScope(requester, service);
+  NativeWorkScope wait(statistics, "fixed-cache-lock", NativeWorkKind::WAIT);
   std::lock_guard<std::mutex> lock(m_mutex);
-  pruneExpired(std::chrono::steady_clock::now());
+  wait.finish();
+  pruneExpired(std::chrono::steady_clock::now(), statistics);
   const auto it = m_entries.find(Key{requester, service, assignment.provider(), assignment.roleOwner()->selectedRole});
   return it != m_entries.end() && it->second.assignment && it->second.assignment->digest() == assignment.digest()
     ? it->second.source : nullptr;
@@ -3141,13 +3367,17 @@ std::shared_ptr<const NativeFixedRoleSourceV1> NativeFixedRoleAssignmentCache::s
 
 std::shared_ptr<const NativeFixedRoleSourceV1> NativeFixedRoleAssignmentCache::rememberSource(
   const std::string& requester, const std::string& service,
-  const NativeFixedRoleAssignmentV1& assignment, NativeFixedRoleSourceV1 source)
+  const NativeFixedRoleAssignmentV1& assignment, NativeFixedRoleSourceV1 source,
+  const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  NativeWorkScope work(statistics, "fixed-cache-install", NativeWorkKind::UNCLASSIFIED);
   validateScope(requester, service);
   nativeValidateFixedRoleSourceProducer(source, requester, assignment.roleOwner()->selectedRole);
   auto published = std::make_shared<const NativeFixedRoleSourceV1>(std::move(source));
+  NativeWorkScope wait(statistics, "fixed-cache-lock", NativeWorkKind::WAIT);
   std::lock_guard<std::mutex> lock(m_mutex);
-  pruneExpired(std::chrono::steady_clock::now());
+  wait.finish();
+  pruneExpired(std::chrono::steady_clock::now(), statistics);
   const auto it = m_entries.find(Key{requester, service, assignment.provider(), assignment.roleOwner()->selectedRole});
   if (it == m_entries.end() || !it->second.assignment || it->second.assignment->digest() != assignment.digest()) {
     // A concurrent model change may replace the slot while publication runs.
@@ -3159,31 +3389,41 @@ std::shared_ptr<const NativeFixedRoleSourceV1> NativeFixedRoleAssignmentCache::r
 }
 
 std::shared_ptr<const NativeFixedPlacementCoreV1> NativeFixedRoleAssignmentCache::placementCore(
-  const std::string& requester, const std::string& service)
+  const std::string& requester, const std::string& service,
+  const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  NativeWorkScope work(statistics, "fixed-cache-lookup", NativeWorkKind::LOCAL);
   validateScope(requester, service);
+  NativeWorkScope wait(statistics, "fixed-cache-lock", NativeWorkKind::WAIT);
   std::lock_guard<std::mutex> lock(m_mutex);
-  pruneExpired(std::chrono::steady_clock::now());
+  wait.finish();
+  pruneExpired(std::chrono::steady_clock::now(), statistics);
   const auto found = m_entries.find(Key{requester, service, "", ""});
   return found == m_entries.end() ? nullptr : found->second.placementCore;
 }
 
 void NativeFixedRoleAssignmentCache::rememberPlacementCore(const std::string& requester,
-  const std::string& service, std::shared_ptr<const NativeFixedPlacementCoreV1> owner)
+  const std::string& service, std::shared_ptr<const NativeFixedPlacementCoreV1> owner,
+  const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  NativeWorkScope work(statistics, "fixed-cache-install", NativeWorkKind::UNCLASSIFIED);
   validateScope(requester, service);
   if (!owner) throw std::invalid_argument("fixed core cache cannot install a null owner");
+  NativeWorkScope wait(statistics, "fixed-cache-lock", NativeWorkKind::WAIT);
   std::lock_guard<std::mutex> lock(m_mutex);
+  wait.finish();
   const auto now = std::chrono::steady_clock::now();
-  pruneExpired(now);
+  pruneExpired(now, statistics);
   const Key key{requester, service, "", ""};
   const auto found = m_entries.find(key);
   if (found != m_entries.end() && found->second.placementCore == owner) return;
-  m_entries.erase(key);
+  if (m_entries.erase(key) != 0 && statistics)
+    statistics->addCount("fixedRole.cacheEntriesErased", 1);
   while (m_entries.size() >= m_capacity) {
     const auto oldest = std::min_element(m_entries.begin(), m_entries.end(),
       [](const auto& left, const auto& right) { return left.second.expires < right.second.expires; });
     m_entries.erase(oldest);
+    if (statistics) statistics->addCount("fixedRole.cacheEntriesErased", 1);
   }
   m_entries.emplace(key, Entry{{}, now + m_retention, {}, std::move(owner)});
 }
@@ -3287,14 +3527,24 @@ validateNativeSelectionProjectionSetV3(
   }
   const auto& first = projections.front();
   std::set<std::string> roles;
-  using Publisher = std::pair<const NativeTensorEndpointV3*,
-                              const NativeGenerationExecutionContractV1*>;
+  struct Publisher
+  {
+    const NativeTensorEndpointV3* endpoint;
+    const NativeGenerationExecutionContractV1* generation;
+    const NativeGenerationEndpointRangeV1* range;
+  };
   std::map<std::string, std::vector<Publisher>> publishers;
   std::map<std::string, std::set<std::string>> edges;
   std::map<std::string, std::size_t> incoming;
   std::size_t terminalOwners = 0;
 
   for (const auto& projection : projections) {
+    if (projection.dataflow.endpointRange.has_value() != first.dataflow.endpointRange.has_value())
+      throw std::invalid_argument("projection set mixes compact and expanded endpoints");
+    if (projection.dataflow.endpointRange) {
+      validateNativeRoleDataflowContractV3(projection.dataflow);
+      validateTensorNamingStrideContract(projection.dataflow, projection.generationContract);
+    }
     const auto& role = projection.executionRole.roleId;
     if (projection.requestId != first.requestId ||
         projection.attempt != first.attempt ||
@@ -3308,7 +3558,8 @@ validateNativeSelectionProjectionSetV3(
     incoming.emplace(role, 0);
     terminalOwners += projection.dataflow.terminalResponseOwner ? 1 : 0;
     for (const auto& endpoint : projection.dataflow.mayPublish) {
-      publishers[endpoint.endpointDigest].emplace_back(&endpoint, &projection.generationContract);
+      publishers[endpoint.endpointDigest].push_back({&endpoint, &projection.generationContract,
+        projection.dataflow.endpointRange ? &*projection.dataflow.endpointRange : nullptr});
     }
   }
   if (terminalOwners != 1) {
@@ -3326,15 +3577,24 @@ validateNativeSelectionProjectionSetV3(
       if (found == publishers.end() || found->second.size() != 1 ||
           endpoint.producerRole.empty() ||
           roles.count(endpoint.producerRole) == 0 ||
-          !sameTensorEndpoint(endpoint, *found->second.front().first)) {
+          !sameTensorEndpoint(endpoint, *found->second.front().endpoint)) {
         throw std::invalid_argument(
           "V3 mustFetch has no exact single mayPublish owner");
+      }
+      const auto& publisher = found->second.front();
+      if (projection.dataflow.endpointRange) {
+        const auto& range = *projection.dataflow.endpointRange;
+        if (!publisher.range || range.epochCount != publisher.range->epochCount ||
+            range.operationStride != publisher.range->operationStride ||
+            nativeGenerationJson(projection.generationContract) !=
+              nativeGenerationJson(*publisher.generation))
+          throw std::invalid_argument("paired compact endpoints have unequal generation ranges");
       }
       if (endpoint.operation == "TOKEN_FEEDBACK") {
         // Feedback is still signed and has one exact publisher above. It
         // belongs to the next epoch, not the initial readiness DAG.
         const auto& generation = projection.generationContract;
-        const auto& producerGeneration = *found->second.front().second;
+        const auto& producerGeneration = *publisher.generation;
         if (nativeGenerationJson(generation) != nativeGenerationJson(producerGeneration) ||
             !generation.enabled || !generation.streamingOperationStride ||
             generation.streamingOperationStride > (1U << 20) ||
@@ -3383,7 +3643,27 @@ roleSpecFromSelectionProjectionV3Impl(
   std::uint64_t sequence,
   bool validateGenerationContract)
 {
-  const auto& dataflow = projection.dataflow;
+  std::optional<NativeRoleDataflowContractV3> currentFlow;
+  if (projection.dataflow.endpointRange) {
+    if (validateGenerationContract) {
+      validateNativeRoleDataflowContractV3(projection.dataflow);
+      validateTensorNamingStrideContract(projection.dataflow, projection.generationContract);
+    }
+    currentFlow = projection.dataflow;
+    const auto derive = [&](auto& endpoints) {
+      std::vector<NativeTensorEndpointV3> current;
+      current.reserve(endpoints.size());
+      for (const auto& endpoint : endpoints) {
+        if (endpoint.sourceKind != "ROLE" && sequence != 0) continue;
+        current.push_back(NativePlanProjectionBuilder::deriveGenerationEndpoint(
+          endpoint, *projection.dataflow.endpointRange, sequence));
+      }
+      endpoints = std::move(current);
+    };
+    derive(currentFlow->mayPublish);
+    derive(currentFlow->mustFetch);
+  }
+  const auto& dataflow = currentFlow ? *currentFlow : projection.dataflow;
   const auto& generation = projection.generationContract;
   if ((!generation.enabled && sequence != 0) ||
       (generation.enabled && (generation.streamingOperationStride == 0 ||
@@ -3414,7 +3694,7 @@ roleSpecFromSelectionProjectionV3Impl(
         if (transfer.second.size() != generation.maxGeneratedTokens + 1)
           throw std::invalid_argument("V3 generation endpoint epochs are incomplete");
     };
-    if (validateGenerationContract) {
+    if (validateGenerationContract && !projection.dataflow.endpointRange) {
       verifyEpochs(dataflow.mayPublish);
       verifyEpochs(dataflow.mustFetch);
     }
@@ -3627,9 +3907,13 @@ NativeSelectionProjectionRoleFactory::NativeSelectionProjectionRoleFactory(
 }
 
 RoleSpec
-NativeSelectionProjectionRoleFactory::operator()(std::uint64_t sequence) const
+NativeSelectionProjectionRoleFactory::operator()(
+  std::uint64_t sequence, const std::shared_ptr<NativeWorkStatistics>& statistics) const
 {
+  NativeWorkScope lockWork(statistics, "epoch-role-factory-lock", NativeWorkKind::WAIT);
   std::lock_guard<std::mutex> lock(m_state->mutex);
+  lockWork.finish();
+  NativeWorkScope bindWork(statistics, "epoch-role-factory-decode", NativeWorkKind::LOCAL);
   if (!m_state->validated) {
     auto first = roleSpecFromSelectionProjectionV3Impl(
       m_state->projection, m_state->localProvider, 0, true);

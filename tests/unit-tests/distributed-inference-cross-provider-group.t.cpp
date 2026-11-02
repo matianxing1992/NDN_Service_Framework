@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollectiveControl.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 
 #include <boost/test/unit_test.hpp>
@@ -95,6 +96,45 @@ makeGroupOperation()
   return operation;
 }
 
+// Independent V1 reference writer. Do not call the production serializer or
+// its compact-run iterator: this fixes the legacy field order and integer wire.
+ProviderGroupBytes
+legacyCapabilityBytes(const GroupCapabilityV1& value,
+                      const std::vector<GroupOperationV1>& operations)
+{
+  ProviderGroupBytes bytes;
+  const auto word = [&](std::uint64_t number) {
+    for (int shift = 56; shift >= 0; shift -= 8)
+      bytes.push_back(static_cast<std::uint8_t>(number >> shift));
+  };
+  const auto text = [&](const std::string& string) {
+    word(string.size());
+    bytes.insert(bytes.end(), string.begin(), string.end());
+  };
+  text("GroupCapabilityV1");
+  text(value.requestId); text(value.attemptId); text(value.planDigest); text(value.groupId);
+  word(value.epoch); word(value.orderedMembers.size());
+  for (const auto& member : value.orderedMembers) {
+    text(member.provider); word(member.rank); text(member.offerDigest); text(member.endpointPrefix);
+  }
+  word(operations.size());
+  for (const auto& operation : operations) {
+    word(operation.operationIndex); text(operation.kind);
+    word(operation.producerRanks.size());
+    for (const auto& rank : operation.producerRanks) text(rank);
+    word(operation.consumerRanks.size());
+    for (const auto& rank : operation.consumerRanks) text(rank);
+    text(operation.tensorLayoutDigest); word(operation.maxBytes); word(operation.maxSegments);
+  }
+  word(value.maxInflightBytes); word(value.noProgressMs); word(value.hardDeadlineMs);
+  text(value.epochKeyId); word(value.wrappedEpochKeyDigestByProvider.size());
+  for (const auto& commitment : value.wrappedEpochKeyDigestByProvider) {
+    text(commitment.first); text(commitment.second);
+  }
+  text(value.capabilityDigest);
+  return bytes;
+}
+
 } // namespace
 
 
@@ -127,6 +167,111 @@ sealCryptoFixture(ProviderGroupCoordinator& owner, const GroupOperationV1& opera
 }
 
 BOOST_AUTO_TEST_SUITE(DistributedInferenceCrossProviderGroup)
+
+BOOST_AUTO_TEST_CASE(CapabilityWorkObserversExcludeCallbacksAndReleaseOwner)
+{
+  NativeWorkClock now{0, 0};
+  auto statistics = std::make_shared<NativeWorkStatistics>([&] { return now; });
+  const auto advance = [&] (std::int64_t wall) {
+    now.wallNs += wall;
+    now.threadCpuNs += wall / 10;
+  };
+  auto options = makeCoordinatorOptions();
+  const auto random = options.randomBytes;
+  const auto wrap = options.wrapEpochKey;
+  const auto sign = options.signCapability;
+  options.randomBytes = [&, random] (std::size_t size) {
+    advance(100);
+    return random(size);
+  };
+  options.wrapEpochKey = [&, wrap] (const auto& provider, const auto& key) {
+    advance(200);
+    return wrap(provider, key);
+  };
+  options.signCapability = [&, sign] (const auto& bytes) {
+    advance(300);
+    return sign(bytes);
+  };
+  const auto create = [] (ProviderGroupCoordinator& owner) {
+    return owner.createCapabilityFromRuns(
+      "/request/observed", "attempt-1", "sha256:plan", "group-1", 9,
+      {{"/provider/P0", 0, "offer-0", "/provider/P0/NDNSF-DI"},
+       {"/provider/P1", 1, "offer-1", "/provider/P1/NDNSF-DI"}},
+      {{makeGroupOperation(), 2, 8}}, 32, 100, 500);
+  };
+  ProviderGroupCoordinator plain(options);
+  const auto expected = create(plain);
+  options.workStatistics = statistics;
+  ProviderGroupCoordinator producer(options);
+  const auto actual = create(producer);
+  BOOST_CHECK(ProviderGroupCoordinator::encodeCapability(actual) ==
+              ProviderGroupCoordinator::encodeCapability(expected));
+
+  auto consumerOptions = makeCoordinatorOptions();
+  consumerOptions.workStatistics = statistics;
+  consumerOptions.localProvider = "/provider/P1";
+  consumerOptions.unwrapEpochKey = [&] (const auto&, const auto& wrapped) {
+    advance(400);
+    return ProviderGroupBytes(wrapped.end() - 32, wrapped.end());
+  };
+  const auto verify = consumerOptions.verifyCapability;
+  consumerOptions.verifyCapability = [&, verify] (const auto& bytes, const auto& signature) {
+    advance(500);
+    return verify(bytes, signature);
+  };
+  ProviderGroupCoordinator consumer(consumerOptions);
+  consumer.installCapability(actual.projectForProvider("/provider/P1"), {}, true);
+  const auto operation = actual.operation(12);
+  const auto sealed = sealCryptoFixture(producer, operation, "0", "source", "target",
+                                        "tensor", {{1, 2, 3}}, 1000);
+  BOOST_REQUIRE_EQUAL(sealed.segments.size(), 1U);
+  BOOST_CHECK(consumer.openSegment(sealed.manifest, sealed.segments.front(),
+                                  sealed.segments.front().dataName) == ProviderGroupBytes({1, 2, 3}));
+  const auto observed = statistics->snapshot();
+  BOOST_CHECK(observed.complete);
+  BOOST_CHECK_EQUAL(observed.activeSpans, 0U);
+  BOOST_CHECK_EQUAL(observed.phases.at("group-key-random").exclusiveWallNs, 100U);
+  BOOST_CHECK_EQUAL(observed.phases.at("group-key-wrap").exclusiveWallNs, 400U);
+  BOOST_CHECK_EQUAL(observed.phases.at("group-capability-sign").exclusiveWallNs, 300U);
+  BOOST_CHECK_EQUAL(observed.phases.at("group-key-unwrap").exclusiveWallNs, 400U);
+  BOOST_CHECK_EQUAL(observed.phases.at("group-capability-verify").exclusiveWallNs, 500U);
+  BOOST_CHECK_EQUAL(observed.phases.at("group-capability-build").exclusiveWallNs, 0U);
+  BOOST_CHECK_EQUAL(observed.phases.at("group-capability-install").exclusiveWallNs, 0U);
+  BOOST_CHECK(observed.phases.at("group-key-lock").kind == NativeWorkKind::WAIT);
+  BOOST_CHECK_GT(observed.phases.at("group-operation-lookup").calls, 0U);
+  for (const auto& phase : observed.phases) {
+    if (phase.second.kind == NativeWorkKind::LOCAL) {
+      BOOST_CHECK_EQUAL(phase.second.exclusiveWallNs, 0U);
+      BOOST_REQUIRE(phase.second.exclusiveThreadCpuNs);
+      BOOST_CHECK_EQUAL(*phase.second.exclusiveThreadCpuNs, 0U);
+    }
+  }
+  const std::weak_ptr<NativeWorkStatistics> weak = statistics;
+  statistics.reset();
+  BOOST_CHECK(weak.expired());
+  const auto later = sealCryptoFixture(producer, actual.operation(4), "0", "source", "target",
+                                       "after-collector", {{4, 5, 6}}, 1001);
+  BOOST_REQUIRE_EQUAL(later.segments.size(), 1U);
+  BOOST_CHECK(consumer.openSegment(later.manifest, later.segments.front(),
+                                  later.segments.front().dataName) == ProviderGroupBytes({4, 5, 6}));
+
+  auto failedStatistics = std::make_shared<NativeWorkStatistics>([&] { return now; });
+  auto rejecting = options;
+  rejecting.workStatistics = failedStatistics;
+  rejecting.wrapEpochKey = [&] (const auto&, const auto&) -> ProviderGroupBytes {
+    advance(700);
+    throw std::runtime_error("intentional wrap failure");
+  };
+  ProviderGroupCoordinator failure(rejecting);
+  BOOST_CHECK_EXCEPTION(create(failure), std::runtime_error, [] (const auto& error) {
+    return std::string(error.what()) == "intentional wrap failure";
+  });
+  const auto failed = failedStatistics->snapshot();
+  BOOST_CHECK(failed.complete);
+  BOOST_CHECK_EQUAL(failed.activeSpans, 0U);
+  BOOST_CHECK_EQUAL(failed.phases.at("group-key-wrap").exclusiveWallNs, 700U);
+  BOOST_CHECK_EQUAL(failed.phases.at("group-capability-build").exclusiveWallNs, 0U);
+}
 
 BOOST_AUTO_TEST_CASE(SegmentRoundTripAuthenticatesAndDecrypts)
 {
@@ -243,7 +388,41 @@ BOOST_AUTO_TEST_CASE(RepeatedEpochCapabilityRetainsCanonicalAuthorityInCompactWi
     const auto decoded = ProviderGroupCoordinator::decodeCapability(wire);
     BOOST_CHECK(decoded.canonicalBytes(true) == capability.canonicalBytes(true));
     BOOST_CHECK(decoded.sealerSignature == capability.sealerSignature);
-    BOOST_CHECK_EQUAL(decoded.permittedOperations.size(), epochs * 2);
+    BOOST_CHECK_EQUAL(decoded.operationCount(), epochs * 2);
+    BOOST_CHECK(decoded.permittedOperations.empty());
+    BOOST_REQUIRE_EQUAL(decoded.operationRuns.size(), 2U);
+    ProviderGroupCoordinator runProducer(makeCoordinatorOptions());
+    const auto runCapability = runProducer.createCapabilityFromRuns(
+      capability.requestId, capability.attemptId, capability.planDigest, capability.groupId,
+      capability.epoch, capability.orderedMembers, decoded.operationRuns,
+      capability.maxInflightBytes, capability.noProgressMs, capability.hardDeadlineMs)
+        .projectForProvider("/provider/P0");
+    BOOST_CHECK(runCapability.canonicalBytes(true) == capability.canonicalBytes(true));
+    BOOST_CHECK(ProviderGroupCoordinator::encodeCapability(runCapability) == wire);
+    ProviderGroupCoordinator runConsumer(makeCoordinatorOptions());
+    runConsumer.installCapability(decoded, std::vector<uint8_t>(32, 0x5a), true);
+    for (const auto epoch : {0U, static_cast<unsigned>(epochs / 2),
+                             static_cast<unsigned>(epochs - 1)}) {
+      for (unsigned direction = 0; direction != 2; ++direction) {
+        const auto index = direction + epoch * 4;
+        BOOST_CHECK_EQUAL(decoded.operation(index).operationIndex, index);
+        BOOST_CHECK_EQUAL(decoded.operation(index).kind,
+                          direction ? "TOKEN_FEEDBACK" : "ALL_GATHER");
+        const auto operation = decoded.operation(index);
+        const auto sealed = sealCryptoFixture(runProducer, operation,
+          direction ? "1" : "0", "src-layout", "dst-layout",
+          "tensor-" + std::to_string(index), {{1, 2, 3}}, 1000);
+        BOOST_REQUIRE_EQUAL(sealed.segments.size(), 1U);
+        const auto expectedName = ndn::Name(direction ? "/provider/P1" : "/provider/P0")
+          .append("NDNSF-DI").append("crypto-fixture").append(runCapability.capabilityDigest)
+          .append("1000").append("tensor-" + std::to_string(index)).appendSegment(0);
+        BOOST_CHECK(ndn::Name(sealed.segments.front().dataName) == expectedName);
+        BOOST_CHECK(runConsumer.openSegment(sealed.manifest, sealed.segments.front(),
+                      expectedName.toUri(ndn::name::UriFormat::CANONICAL)) ==
+                    ProviderGroupBytes({1, 2, 3}));
+      }
+    }
+    BOOST_CHECK_THROW(decoded.operation(2), std::invalid_argument);
     std::size_t cursor = 0;
     const auto readWord = [&] {
       BOOST_REQUIRE_LE(cursor + 8, wire.size());
@@ -302,6 +481,71 @@ BOOST_AUTO_TEST_CASE(RepeatedEpochCapabilityRetainsCanonicalAuthorityInCompactWi
     truncated.resize(truncated.size() / 2);
     BOOST_CHECK_THROW(ProviderGroupCoordinator::decodeCapability(truncated), std::invalid_argument);
   }
+}
+
+BOOST_AUTO_TEST_CASE(LazyCapabilityRejectsAmbiguousRunsAndPreservesIrregularOrder)
+{
+  auto first = makeGroupOperation();
+  first.operationIndex = 40;
+  auto second = first;
+  second.operationIndex = 4;
+  std::vector<GroupOperationV1> expanded{first};
+  for (unsigned offset = 0; offset != 3; ++offset) {
+    auto operation = second;
+    operation.operationIndex += 12 * offset;
+    expanded.push_back(operation);
+  }
+  const std::vector<GroupMemberV1> members{
+    {"/provider/P0", 0, "offer-0", "/provider/P0/NDNSF-DI"},
+    {"/provider/P1", 1, "offer-1", "/provider/P1/NDNSF-DI"}};
+  ProviderGroupCoordinator explicitOwner(makeCoordinatorOptions());
+  const auto explicitCapability = explicitOwner.createCapability("/request/irregular",
+    "attempt-1", "sha256:plan", "group-1", 9, members, expanded, 32, 100, 500);
+  ProviderGroupCoordinator runOwner(makeCoordinatorOptions());
+  const auto capability = runOwner.createCapabilityFromRuns("/request/irregular",
+    "attempt-1", "sha256:plan", "group-1", 9, members,
+    {{first, 1, 0}, {second, 3, 12}}, 32, 100, 500);
+  BOOST_CHECK(capability.canonicalBytes(true) == explicitCapability.canonicalBytes(true));
+  const auto independent = legacyCapabilityBytes(explicitCapability, expanded);
+  BOOST_CHECK(explicitCapability.canonicalBytes(true) == independent);
+  BOOST_CHECK(capability.canonicalBytes(true) == independent);
+  for (const auto& operation : expanded) {
+    const auto actual = capability.operation(operation.operationIndex);
+    BOOST_CHECK_EQUAL(actual.operationIndex, operation.operationIndex);
+    BOOST_CHECK_EQUAL(actual.tensorLayoutDigest, operation.tensorLayoutDigest);
+  }
+  BOOST_CHECK_THROW(capability.operation(5), std::invalid_argument);
+  for (unsigned invalid = 0; invalid != 7; ++invalid) {
+    auto malformed = capability;
+    auto& run = malformed.operationRuns.back();
+    switch (invalid) {
+      case 0: run.count = 0; break;
+      case 1: run.stride = 0; break;
+      case 2: run.first.operationIndex = UINT64_MAX; break;
+      case 3: run.count = (1U << 20) + 1ULL; break;
+      case 4: malformed.permittedOperations = expanded; break;
+      case 5: run.first.operationIndex = 40; break;
+      case 6: run.first.producerRanks = {"foreign-rank"}; break;
+    }
+    BOOST_CHECK_THROW(malformed.validate(), std::invalid_argument);
+  }
+  auto singletonStride = capability;
+  singletonStride.operationRuns.front().stride = 1;
+  BOOST_CHECK_THROW(singletonStride.validate(), std::invalid_argument);
+  auto oversized = capability;
+  oversized.operationRuns = {{second, 1U << 20, 1}};
+  BOOST_CHECK_THROW(oversized.canonicalBytes(), std::invalid_argument);
+  auto oversizedHeader = capability;
+  oversizedHeader.requestId.assign((16U << 20) + 1, 'x');
+  BOOST_CHECK_THROW(oversizedHeader.canonicalBytes(), std::invalid_argument);
+  const auto headerBytes = legacyCapabilityBytes(capability, {}).size();
+  const auto operationBytes = legacyCapabilityBytes(capability, {second}).size() - headerBytes;
+  auto boundary = capability;
+  const auto count = ((16U << 20) - headerBytes) / operationBytes;
+  boundary.operationRuns = {{second, count, 1}};
+  BOOST_CHECK_EQUAL(boundary.canonicalBytes(true).size(), headerBytes + count * operationBytes);
+  ++boundary.operationRuns.front().count;
+  BOOST_CHECK_THROW(boundary.canonicalBytes(true), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(CoordinatorSealsAndVerifiesBoundedOperation)

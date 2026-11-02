@@ -246,6 +246,8 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
     {"splitter", {{"kind", "QWEN"}, {"layer_ranges", {{0, 1}}},
                    {"artifact_digests_by_role", {{role, digest("reference-artifact")}}},
                    {"weight_bytes_by_role", {{role, 1}}}, {"roles", {role}},
+                   {"resources_by_role", {{role, nativeParseJson(NativeRoleResourceRequirement{
+                     {"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}.canonicalJson())}}},
                    {"tensor_degrees", {1}}, {"input_ingress_role", role},
                    {"result_egress_role", role}}},
     {"node_mapping", NativeJson::object()}, {"state_inputs", NativeJson::object()},
@@ -266,6 +268,7 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
     {"sourceGraph", {{"graphDigest", descriptor.graphDigest}, {"nodes", encodedNodes},
                       {"modelOutputs", NativeJson::array()}, {"graphMetadataJson", "{}"},
                       {"canonicalNodeIndices", canonicalNodeIndices},
+                      {"initializerConsumers", NativeJson::object()},
                       {"canonicalIdentity", {{"graphDigest", canonicalGraphDigest},
                                               {"initializerDigest", ""}}}}}});
 
@@ -303,8 +306,10 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
   preparedMetadata = nativeCanonicalJson(profileMetadata);
 
   NativePreparedCanonicalPublication publication;
-  publication.sourceDataName = "/qwen/reference/source";
-  publication.rootDataName = "/qwen/reference/artifacts/manifest";
+  publication.sourceDataName = ndn::Name("/qwen/reference/source").toUri(
+    ndn::name::UriFormat::CANONICAL);
+  publication.rootDataName = ndn::Name("/qwen/reference/artifacts/manifest").toUri(
+    ndn::name::UriFormat::CANONICAL);
   publication.canonicalManifestJson = "{}";
   publication.manifestDigest = digest("{}");
   publication.preparedMetadataJson = preparedMetadata;
@@ -621,8 +626,8 @@ BOOST_AUTO_TEST_CASE(Spec189PreparationMemorySnapshotCoversOwnersAndCancellation
                                         const NativeInspectedModel&,
                                         const NativeRequestControl&) {
     NativePreparedCanonicalPublication publication;
-    publication.sourceDataName = "/fixture/source";
-    publication.rootDataName = "/fixture/root";
+    publication.sourceDataName = ndn::Name("/fixture/source").toUri(ndn::name::UriFormat::CANONICAL);
+    publication.rootDataName = ndn::Name("/fixture/root").toUri(ndn::name::UriFormat::CANONICAL);
     publication.canonicalManifestJson = "{}";
     publication.manifestDigest = nativePlanningDigest("{}");
     publication.publishedBytes = 123;

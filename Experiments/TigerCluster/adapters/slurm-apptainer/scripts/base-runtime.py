@@ -316,6 +316,11 @@ def prepare(lock_path, wheels):
     (MANIFEST / 'numpy-private-libraries.json').write_text(json.dumps(numpy_files, indent=2))
     (MANIFEST / 'python-routes.json').write_text(json.dumps(
         python_routes(site, lock['pythonStartupHooks']), indent=2))
+    compile_native_smoke()
+    remove(Path('/build-input'))
+
+
+def compile_native_smoke():
     # This is an SDK/loader test, not a DI request-chain qualification.
     source = MANIFEST / 'base-smoke.cpp'
     source.write_text('#include <ndn-cxx/name.hpp>\n#include <onnxruntime_cxx_api.h>\n'
@@ -333,7 +338,15 @@ def prepare(lock_path, wheels):
         'linker': run('/usr/bin/ld', '--version'),
         'packages': run('/usr/bin/dpkg-query', '-W', '-f=${Package}=${Version}\n')}, indent=2))
     subprocess.run(command, check=True)
-    remove(Path('/build-input'))
+
+
+def rebuild_native_smoke():
+    """Recompile the existing base ABI consumer after an isolated runtime upgrade."""
+    require(os.geteuid() == 0 and Path('/.singularity.d').is_dir(),
+            'BASE_CONTAINER_ROOT_REQUIRED')
+    compile_native_smoke()
+    shutil.copy2(__file__, MANIFEST / 'base-runtime.py')
+    return verify()
 
 
 def verify():
@@ -378,13 +391,15 @@ def verify():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('prepare', 'verify', 'repair-framework-headers',
-                                          'repair-application-metadata'))
+                                          'repair-application-metadata', 'rebuild-native-smoke'))
     parser.add_argument('--lock', type=Path)
     parser.add_argument('--wheels', type=Path)
     args = parser.parse_args()
     if args.action == 'prepare':
         require(args.lock is not None and args.wheels is not None, 'BASE_INPUTS_REQUIRED')
         prepare(args.lock, args.wheels)
+    elif args.action == 'rebuild-native-smoke':
+        rebuild_native_smoke()
     elif args.action == 'repair-framework-headers':
         repair_framework_headers()
     elif args.action == 'repair-application-metadata':

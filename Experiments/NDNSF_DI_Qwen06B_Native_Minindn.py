@@ -47,6 +47,7 @@ from cryptography.hazmat.backends import default_backend
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "Experiments"))
 from native_resource_guard import run_guarded, validate_limits
+from native_model_metadata import manifest_quantization_subtype
 from native_install_candidate import validate_spec201_candidate
 ROLE_PREFIX = "/LLM/Pipeline/Stage/"
 SERVICE = "/AI/LLM/Pipeline/QwenNative"
@@ -887,8 +888,7 @@ def manifest_eos_token_ids(model_manifest: dict) -> list[int]:
 def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dict],
                             max_tokens: int, tokenizer_digest: str,
                             resident_session: bool = False):
-    raw_quantization = str(model_manifest.get("quantization", "none")).lower()
-    quantization = "weight_only_int8" if raw_quantization == "int8" else raw_quantization
+    quantization = manifest_quantization_subtype(model_manifest)
     eos_token_ids = manifest_eos_token_ids(model_manifest)
     state_pairs = canonical_qwen_state_successor_pairs(stages)
     roles = [str(stage["role"]) for stage in stages]
@@ -1862,6 +1862,9 @@ def main(argv=None, *, _supervised=False) -> int:
         help="diagnostic mode: after authenticated Selection, Providers read the verified system-wide source cache and skip Repo material fetch")
     parser.add_argument("--resident-session", action="store_true",
                         help="request the bounded CPU ONNX resident-session cache for this candidate")
+    parser.add_argument("--role-resources", type=Path,
+                        help="per-role native resource profiles; otherwise use model manifest "
+                             "roleResourceRequirements (budgets are operator assertions)")
     parser.add_argument("--encrypted-repository-path", type=Path, default=None,
                         help="optional empty run-scoped ciphertext Repo directory on a separate filesystem")
     parser.add_argument("--request-options-transport",
@@ -2097,12 +2100,9 @@ def main(argv=None, *, _supervised=False) -> int:
         raise SystemExit(f"unsupported {MODEL_FAMILY} precision: {precision}")
     if MODEL_FAMILY == "llama" and precision != "float32":
         raise SystemExit("SMOLLM2_CPU_FLOAT32_REQUIRED")
-    quantization = str(model_manifest.get("quantization", "none")).lower()
-    if quantization not in {"none", "int8"}:
-        raise SystemExit(f"unsupported {MODEL_FAMILY} quantization: {quantization}")
-    if quantization == "int8" and precision != "float32":
+    quantization_subtype = manifest_quantization_subtype(model_manifest)
+    if quantization_subtype in {"dynamic_int8", "weight_only_int8"} and precision != "float32":
         raise SystemExit("INT8_PUBLIC_CONTRACT_MUST_BE_FLOAT32")
-    quantization_subtype = "weight_only_int8" if quantization == "int8" else "none"
     graph_digest = qwen_graph_digest(model_name, revision, precision, ranges)
     adapter = {
         "name": MODEL_FAMILY, "version": "1", "state_digest": digest_text(f"{MODEL_FAMILY}-native-state"),
@@ -2118,8 +2118,8 @@ def main(argv=None, *, _supervised=False) -> int:
     }
     model_descriptor = {
         "model_name": model_name,
-        "content_digest": digest_text(f"{model_name}:{revision}:weights:{quantization}"),
-        "semantics_digest": digest_text(f"{model_name}:{revision}:semantics:{quantization}"),
+        "content_digest": digest_text(f"{model_name}:{revision}:weights:{quantization_subtype}"),
+        "semantics_digest": digest_text(f"{model_name}:{revision}:semantics:{quantization_subtype}"),
         "graph_digest": graph_digest, "model_format": "onnx", "precision": precision,
         "adapter": adapter, "source_revision": revision,
         **({"quantization_subtype": quantization_subtype}
@@ -2310,6 +2310,9 @@ def main(argv=None, *, _supervised=False) -> int:
         except (ValueError, KeyError, TypeError, ImportError) as error:
             print(f"SPEC196_TRANSFER_PROFILE_UNKNOWN reason={type(error).__name__}:{error}",
                   flush=True)
+    resource_profile_path = getattr(args, "role_resources", None)
+    role_resources = (json.loads(resource_profile_path.read_text()) if resource_profile_path
+                      else model_manifest.get("roleResourceRequirements", {}))
     catalog = {
         "schema": "ndnsf-di-native-request-catalog-v1", "model": model_descriptor,
         "source": {"data_name": f"/catalog/{MODEL_FAMILY}/source", "digest": source_digest,
@@ -2345,6 +2348,10 @@ def main(argv=None, *, _supervised=False) -> int:
         "splitter": {"kind": MODEL_FAMILY.upper(), "model_family": MODEL_FAMILY, "layer_ranges": ranges,
                      "artifact_digests_by_role": {stage["role"]: stage["sha256"] for stage in stages},
                      "weight_bytes_by_role": {stage["role"]: stage["bytes"] for stage in stages},
+                     # Native preparation validates this profile against the
+                     # checked source. ONNX descriptor length is not resident
+                     # initializer memory when weights use external data.
+                     "resources_by_role": role_resources,
                      "roles": [stage["role"] for stage in stages],
                      "tensor_degrees": [1] * len(stages),
                      "input_ingress_role": stages[0]["role"],

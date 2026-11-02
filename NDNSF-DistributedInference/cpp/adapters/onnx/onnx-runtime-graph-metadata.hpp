@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 
 namespace ndnsf::di::detail {
@@ -17,6 +18,8 @@ struct OnnxRuntimeGraphMetadata
   std::map<std::string, std::string> modelNodes;
   std::map<std::string, std::string> optionalModelNodes;
   std::map<std::string, std::string> modelNodeAliases;
+  /** Exact GQA v1 scalar graph inputs; seed only local one-token warmup. */
+  std::set<std::string> attentionWarmupLengthInputs;
   std::array<std::uint64_t, 7> sourceFileStamp{};
 };
 
@@ -24,7 +27,7 @@ struct OnnxRuntimeGraphMetadata
  * Unsupported projections return an empty inventory and cannot relax admission.
  */
 OnnxRuntimeGraphMetadata
-inspectOnnxRuntimeGraphMetadata(const std::string& modelPath);
+inspectOnnxRuntimeGraphMetadata(const std::string& modelPath, bool collectHostMetadata = true);
 
 /** Reject replacement between graph inspection and ORT session creation. */
 void

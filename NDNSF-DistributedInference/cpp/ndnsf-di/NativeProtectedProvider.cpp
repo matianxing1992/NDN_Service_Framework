@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include <ndn-cxx/name.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
@@ -96,7 +97,9 @@ void installNativeProviderGroupCoordinatorFactory(
      providerCertName = ndn::Name(providerCertificateName),
      expectedPlanDigest = config.planDigest, keyChain] (
         ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
-        const std::map<std::string, std::string>& fields) {
+        const std::map<std::string, std::string>& fields,
+        const std::shared_ptr<NativeWorkStatistics>& statistics) {
+      NativeWorkScope factoryWork(statistics, "group-factory-decode", NativeWorkKind::LOCAL);
       const auto field = fields.find("groupCapabilityV1");
       if (field == fields.end()) {
         if (requiresGroupCapability) {
@@ -128,6 +131,7 @@ void installNativeProviderGroupCoordinatorFactory(
           "NDNSF_DATA_V1 capability omits the local Provider endpoint");
       }
       ProviderGroupCoordinatorOptions groupOptions;
+      groupOptions.workStatistics = statistics;
       groupOptions.localProvider = localProvider;
       groupOptions.unwrapEpochKey =
         [keyChain, providerCertName, localProvider] (
@@ -167,9 +171,14 @@ void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config)
   config.protectedRuntimeFactory = [boot, modelFamily, grantFetcher] (
       ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
       const NativeSelectionProjectionV3& projection,
-      const std::shared_ptr<ProviderGroupCoordinator>& group) {
-    auto keys = loadNativeProtectedGrantConfig(ctx.localProvider().toUri(), modelFamily,
-                                              projection.selectedRoleContract().protectionEpoch);
+      const std::shared_ptr<ProviderGroupCoordinator>& group,
+      const std::shared_ptr<NativeWorkStatistics>& statistics) {
+    auto keys = [&] {
+      NativeWorkScope configWork(statistics, "protected-grant-config", NativeWorkKind::UNCLASSIFIED);
+      return loadNativeProtectedGrantConfig(ctx.localProvider().toUri(), modelFamily,
+                                            projection.selectedRoleContract().protectionEpoch);
+    }();
+    NativeWorkScope bindingWork(statistics, "protected-binding-build", NativeWorkKind::LOCAL);
     keys.modelManifestDigest = projection.selectedRoleContract().modelManifestDigest;
     keys.publicationIdentity = ctx.requesterName().toUri(ndn::name::UriFormat::CANONICAL);
     if (keys.modelManifestDigest.empty())
@@ -196,6 +205,8 @@ void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config)
     binding.providerBootId = boot;
     binding.fencingToken = nativeProtectedFencingToken(projection, boot, fields);
     binding.expiresAtMs = projection.deadlineMs;
+    if (projection.dataflow.endpointRange)
+      binding.compactDataflow = projection.dataflow;
     for (const auto& endpoint : projection.dataflow.mayPublish) {
       binding.mayPublishEndpointDigests.insert(endpoint.endpointDigest);
       binding.mayPublishConsumerByEndpoint[endpoint.endpointDigest] = endpoint.consumerRole;
@@ -217,7 +228,8 @@ void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config)
       return fetchNativeProtectedGrant(name, limit, cancelled);
     };
     auto runtime = std::make_shared<ProtectedRuntime>(binding, std::move(keys));
-    runtime->verifyGrant(binding, now);
+    bindingWork.finish();
+    runtime->verifyGrant(binding, now, statistics);
     return runtime;
   };
 }

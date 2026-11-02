@@ -6700,7 +6700,11 @@ namespace ndn_service_framework
                 prepareBasicProfileReference(requestMessage, serviceName);
             }
         }
-        requestMessage.WireEncode().data();
+        const auto& preparedRequest = requestMessage.WireEncode();
+        if (pendingIt != m_pendingCalls.end() && pendingIt->second.controlStatistics) {
+            pendingIt->second.controlStatistics->record(
+                ControlByteKind::REQUEST_PREPARED, preparedRequest.size());
+        }
 
         ndn::Name requestName =
             ndn_service_framework::makeRequestNameV2(identity,
@@ -8784,6 +8788,30 @@ namespace ndn_service_framework
             return ndn::Buffer(reinterpret_cast<const uint8_t*>(discovery.data()),
                                discovery.size());
         }
+
+        void
+        recordRequestInputMode(const std::shared_ptr<ControlByteStatistics>& statistics,
+                               const RequestMessage& prepared, bool scoped,
+                               bool explicitDiscovery, std::size_t originalBytes) noexcept
+        {
+            if (!statistics) return;
+            auto kind = ControlByteKind::REQUEST_INPUT_INLINE_MODE;
+            std::uint64_t removedBytes = 0;
+            if (scoped) {
+                if (explicitDiscovery) {
+                    kind = ControlByteKind::REQUEST_INPUT_EXPLICIT_DISCOVERY_MODE;
+                }
+                else if (prepared.getPayloadSize() != 0) {
+                    kind = ControlByteKind::REQUEST_INPUT_SANITIZED_MODE;
+                    if (prepared.getPayloadSize() > originalBytes) statistics->invalidate();
+                    else removedBytes = originalBytes - prepared.getPayloadSize();
+                }
+                else {
+                    kind = ControlByteKind::REQUEST_INPUT_EMPTY_DISCOVERY_MODE;
+                }
+            }
+            statistics->record(kind, removedBytes);
+        }
     }
 
     bool ServiceUser::prepareRequestScopedRequest(
@@ -9757,6 +9785,10 @@ namespace ndn_service_framework
                 ndn::Buffer encryptedPayload(encryptedWire.data(), encryptedWire.size());
                 publishSignedAppData(inputName, encryptedPayload,
                                      ndn::time::milliseconds(lifetimeMs));
+                if (pendingCall.controlStatistics) {
+                    pendingCall.controlStatistics->record(
+                        ControlByteKind::REQUEST_INPUT_PACKET_PUBLISHED, plaintext.size());
+                }
                 if (detail::hasOptionalInlineTargetedInput(pendingCall.requestMessage) &&
                     offer.hasField("inlineSignedInputV1") &&
                     offer.getField("inlineSignedInputV1") == "optional") {
@@ -9798,6 +9830,10 @@ namespace ndn_service_framework
                         m_IMS.insert(*data, ndn::time::milliseconds(lifetimeMs));
                     }
                     m_face.put(*data);
+                    if (pendingCall.controlStatistics) {
+                        pendingCall.controlStatistics->record(
+                            ControlByteKind::REQUEST_INPUT_PACKET_PUBLISHED, length);
+                    }
                 }
                 NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_INPUT_SEGMENTS requestId="
                              << requestId.toUri()
@@ -9806,6 +9842,10 @@ namespace ndn_service_framework
                              << " plaintextBytes=" << plaintext.size()
                              << " chunkBytes=" << inputChunkBytes
                              << " segments=" << segmentCount);
+            }
+            if (pendingCall.controlStatistics) {
+                pendingCall.controlStatistics->record(ControlByteKind::REQUEST_INPUT_PUBLISHED,
+                                                      plaintext.size());
             }
             // The Selection envelope authenticates the stable object
             // binding.  Per-segment AAD is derived only while encrypting
@@ -9880,6 +9920,18 @@ namespace ndn_service_framework
                                       TimeoutHandler onTimeout,
                                       ResponseHandler onResponseHandler)
     {
+        return RequestServiceTargeted(provider, serviceName, std::move(requestMessage),
+            timeoutMs, std::move(onTimeout), std::move(onResponseHandler), {});
+    }
+
+    ndn::Name ServiceUser::RequestServiceTargeted(const ndn::Name& provider,
+                                      const ndn::Name& serviceName,
+                                      ndn_service_framework::RequestMessage requestMessage,
+                                      int timeoutMs,
+                                      TimeoutHandler onTimeout,
+                                      ResponseHandler onResponseHandler,
+                                      std::shared_ptr<ControlByteStatistics> controlStatistics)
+    {
         if (provider.empty()) {
             return ndn::Name();
         }
@@ -9924,6 +9976,8 @@ namespace ndn_service_framework
         if (!prepareRequestControllerVersion(requestMessage, serviceName, requestId)) {
             return ndn::Name();
         }
+        const bool explicitDiscovery = requestMessage.hasDiscoveryPayload();
+        const auto originalPayloadBytes = requestMessage.getPayloadSize();
         ndn::Buffer requestScopedPlaintext;
         const bool requestScopedConfidentiality = prepareRequestScopedRequest(
             requestMessage, serviceName, requestId, requestScopedPlaintext);
@@ -10035,6 +10089,9 @@ namespace ndn_service_framework
         PendingCall pendingCall;
         pendingCall.providers = {provider};
         pendingCall.serviceName = serviceName;
+        pendingCall.controlStatistics = std::move(controlStatistics);
+        recordRequestInputMode(pendingCall.controlStatistics, requestMessage,
+                               requestScopedConfidentiality, explicitDiscovery, originalPayloadBytes);
         pendingCall.requestMessage = requestMessage;
         pendingCall.requestScopedPlaintext = std::move(requestScopedPlaintext);
         pendingCall.requestScopedConfidentiality = requestScopedConfidentiality;
@@ -10594,7 +10651,8 @@ namespace ndn_service_framework
         std::function<void(const ndn::Buffer&)> onStreamEvent,
         std::function<void(const ndn::Buffer&)> onStreamComplete,
         std::function<void(const StreamedInvocationError&)> onStreamError,
-        const std::vector<ndn::Name>& providerNames)
+        const std::vector<ndn::Name>& providerNames,
+        std::shared_ptr<ControlByteStatistics> controlStatistics)
     {
         if (!onAckClosed || ackCollectionTimeMs <= 0 ||
             timeoutMs <= ackCollectionTimeMs) {
@@ -10665,11 +10723,16 @@ namespace ndn_service_framework
             throw std::runtime_error(
                 "deferred collaboration ControllerVersion is not ready");
         }
+        const bool explicitDiscovery = requestMessage.hasDiscoveryPayload();
+        const auto originalPayloadBytes = requestMessage.getPayloadSize();
         ndn::Buffer requestScopedPlaintext;
         const bool requestScopedConfidentiality = prepareRequestScopedRequest(
             requestMessage, service, requestId, requestScopedPlaintext);
 
         PendingCall pendingCall;
+        pendingCall.controlStatistics = std::move(controlStatistics);
+        recordRequestInputMode(pendingCall.controlStatistics, requestMessage,
+                               requestScopedConfidentiality, explicitDiscovery, originalPayloadBytes);
         pendingCall.providers = providerNames;
         pendingCall.serviceName = service;
         pendingCall.requestMessage = std::move(requestMessage);
@@ -11310,6 +11373,16 @@ namespace ndn_service_framework
             }
         }
         const auto& effectiveResponse = deliveredResponse;
+        const auto controlStatistics = pendingCall->second.controlStatistics;
+        if (controlStatistics && controlStatistics->capturesResponseBytes()) {
+            try {
+                controlStatistics->record(ControlByteKind::RESPONSE_DECODED,
+                                          effectiveResponse.WireEncode().size());
+            }
+            catch (...) {
+                controlStatistics->invalidate();
+            }
+        }
 
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_DONE timestamp_us="
                   << nowMicroseconds()
@@ -13403,14 +13476,21 @@ namespace ndn_service_framework
         const ndn::Name& serviceName,
         const ndn::Name& requestId,
         CollaborationAssignmentEnvelope& envelope,
-        std::vector<LargeDataPublishResult>* transaction = nullptr)
+        std::vector<LargeDataPublishResult>* transaction = nullptr,
+        const std::shared_ptr<ControlByteStatistics>& controlStatistics = {})
     {
         if (envelope.opaquePayload.size() > 4 * 1024 * 1024) {
             throw std::length_error(
                 "collaboration assignment exceeds external Data bound");
         }
-        if (parseLargeDataReferencePayload(envelope.opaquePayload) ||
-            envelope.opaquePayload.size() <= 4096) {
+        if (parseLargeDataReferencePayload(envelope.opaquePayload)) {
+            if (controlStatistics) controlStatistics->record(
+                ControlByteKind::ASSIGNMENT_EXISTING_REFERENCE, envelope.opaquePayload.size());
+            return false;
+        }
+        if (envelope.opaquePayload.size() <= 4096) {
+            if (controlStatistics) controlStatistics->record(
+                ControlByteKind::ASSIGNMENT_INLINE, envelope.opaquePayload.size());
             return false;
         }
         PreparedServiceRequest context;
@@ -13427,6 +13507,10 @@ namespace ndn_service_framework
             throw std::runtime_error(
                 "failed to externalize collaboration assignment: " + published.errorMessage);
         }
+        if (controlStatistics) {
+            controlStatistics->record(ControlByteKind::ASSIGNMENT_EXTERNAL_PLAINTEXT,
+                                      envelope.opaquePayload.size());
+        }
         if (transaction) transaction->push_back(published);
         LargeDataReference reference;
         reference.dataName = published.encryptedDataName;
@@ -13436,6 +13520,10 @@ namespace ndn_service_framework
         reference.encrypted = true;
         reference.digest = digest;
         envelope.opaquePayload = encodeLargeDataReferencePayload(reference);
+        if (controlStatistics) {
+            controlStatistics->record(ControlByteKind::ASSIGNMENT_EXTERNAL_REFERENCE,
+                                      envelope.opaquePayload.size());
+        }
         NDN_LOG_INFO("NDNSF_COLLAB_ASSIGNMENT_EXTERNALIZED requestId="
                      << requestId.toUri()
                      << " providerName=" << providerName.toUri()
@@ -13470,6 +13558,9 @@ namespace ndn_service_framework
                 error.what());
         }
 
+        const auto pending = m_pendingCalls.find(requestId);
+        const auto controlStatistics = pending == m_pendingCalls.end() ? nullptr :
+                                       pending->second.controlStatistics;
         bool externalized = false;
         for (auto& item : assignmentItems) {
             CollaborationAssignmentEnvelope envelope;
@@ -13490,7 +13581,8 @@ namespace ndn_service_framework
                 continue;
             }
             if (!externalizeCollaborationEnvelope(
-                    *this, providerName, serviceName, requestId, envelope)) {
+                    *this, providerName, serviceName, requestId, envelope,
+                    nullptr, controlStatistics)) {
                 continue;
             }
             item = encodeCollaborationAssignmentEnvelope(envelope);
@@ -13697,7 +13789,8 @@ namespace ndn_service_framework
                         envelope.opaquePayload = std::move(assignment);
                         externalizeCollaborationEnvelope(
                             *this, storedAck.providerName, storedAck.serviceName,
-                            storedAck.requestId, envelope, &publications.objects);
+                            storedAck.requestId, envelope, &publications.objects,
+                            pendingCall.controlStatistics);
                         assignment =
                             encodeCollaborationAssignmentEnvelope(envelope);
                     }
@@ -15228,7 +15321,17 @@ void ServiceUser::decodeRequestAck(
         boost::asio::post(m_face.getIoContext(),
             [this, providerName, serviceName, requestID,
              authenticationEvidence, readerObservation,
+             decodedBytes = raw->size(),
              AckMessage = std::move(AckMessage), error = std::move(error)]() mutable {
+                const auto pending = m_pendingCalls.find(requestID);
+                if (pending != m_pendingCalls.end() && pending->second.controlStatistics &&
+                    (readerObservation == 0 || isBasicReaderObservationCurrent(
+                        requestID, providerName, readerObservation))) {
+                    pending->second.controlStatistics->record(
+                        error.empty() ? ControlByteKind::ACK_DECODED :
+                                        ControlByteKind::ACK_DECODE_FAILED,
+                        decodedBytes);
+                }
                 if (!error.empty()) {
                     NDN_LOG_ERROR("RequestAckMessage decode failed: " << error);
                     if (readerObservation != 0) {
@@ -15986,8 +16089,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
             if (pendingIt->second.selectionRequiredProviders.empty())
                 pendingIt->second.selectionRequiredProviders.push_back(providerName);
         }
-        if (selectionMessage.WireEncode().size() > 16 * 1024 * 1024)
+        const auto& preparedSelection = selectionMessage.WireEncode();
+        if (preparedSelection.size() > 16 * 1024 * 1024)
             throw std::runtime_error("prepared Selection exceeds 16MiB invocation bound");
+        if (pendingIt->second.controlStatistics) {
+            pendingIt->second.controlStatistics->record(
+                ControlByteKind::SELECTION_PREPARED, preparedSelection.size());
+        }
         pendingIt->second.preparedSelectionsByProvider.emplace(providerName.toUri(), selectionMessage);
         pendingIt->second.selectionPreparationContextsByProvider.emplace(providerName.toUri(),
             selectionRetryContext(requestId, providerName));

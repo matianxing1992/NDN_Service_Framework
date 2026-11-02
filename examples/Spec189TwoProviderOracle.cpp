@@ -16,6 +16,7 @@
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "Spec189MaterialFetchOracle.hpp"
 #include "Spec189ProviderStageOracle.hpp"
+#include "spec220-onnx-reference-oracle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -32,6 +33,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 #include <sys/stat.h>
@@ -1262,7 +1264,7 @@ validateMiniNdn(const NativeJson& state, const NativeJson& config,
 
 NativeJson
 validateDeployment(const std::filesystem::path& statePath, bool requireMultiToken,
-                   bool requireDistributedGpu = false)
+                   bool requireDistributedGpu = false, bool modelReference = false)
 {
   const auto state = readJson(statePath);
   const bool slurm = state.contains("job_id");
@@ -1332,11 +1334,96 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       chainFailure("deployment-statistics-path");
     boundRequester.erase("statistics_file");
   }
-  if (!turns.is_array() || turns.size() < 2 || turns.size() > 8 ||
+  if (!turns.is_array() || turns.size() < 2 ||
       conversation.at("turn").at("mode") != "FULL_CONTEXT" ||
       request.at("generation_mode") != "TOKEN_STREAMING" ||
       config.at("requester") != boundRequester)
     chainFailure("deployment-turn-configuration");
+  const bool groupedTurns = turns.at(0).contains("conversation_id");
+  std::set<std::string> conversationIds;
+  std::vector<std::filesystem::path> readOnlyTurnPaths;
+  std::vector<std::filesystem::path> outputTurnPaths;
+  const auto turnPath = [&] (const NativeJson& value) {
+    std::filesystem::path path(value.get<std::string>());
+    if (path.is_relative())
+      path = requesterRoot / path;
+    std::error_code error;
+    auto canonical = std::filesystem::weakly_canonical(
+      std::filesystem::absolute(path), error);
+    if (error)
+      chainFailure("deployment-turn-path-resolution");
+    return canonical;
+  };
+  const auto sameTurnPath = [&] (const std::filesystem::path& first,
+                                 const std::filesystem::path& second) {
+    if (first == second)
+      return true;
+    std::error_code error;
+    const bool firstExists = std::filesystem::exists(first, error);
+    if (error)
+      chainFailure("deployment-turn-path-inspection");
+    const bool secondExists = std::filesystem::exists(second, error);
+    if (error)
+      chainFailure("deployment-turn-path-inspection");
+    if (!firstExists || !secondExists)
+      return false;
+    const bool equivalent = std::filesystem::equivalent(first, second, error);
+    if (error)
+      chainFailure("deployment-turn-path-comparison");
+    return equivalent;
+  };
+  for (const auto& turn : turns) {
+    const bool hasConversationId = turn.contains("conversation_id");
+    if (hasConversationId != groupedTurns)
+      chainFailure("deployment-turn-conversation-id-coverage");
+    if (groupedTurns && (!turn.at("conversation_id").is_string() ||
+                         turn.at("conversation_id").get<std::string>().empty()))
+      chainFailure("deployment-turn-conversation-id");
+    readOnlyTurnPaths.push_back(turnPath(turn.at("input_file")));
+    readOnlyTurnPaths.push_back(turnPath(turn.at("options_file")));
+  }
+  if (groupedTurns) {
+    const auto& conversationTurn = conversation.at("turn");
+    if (turns.size() > 10 || turns.size() % 2 != 0 ||
+        conversationTurn.contains("conversation_id") ||
+        conversationTurn.contains("parent_state_file") ||
+        conversationTurn.contains("parent_checkpoint_digest") ||
+        conversation.contains("checkpoint_output_file"))
+      chainFailure("deployment-independent-conversation-configuration");
+    const auto statisticsPath = turnPath(NativeJson(requesterStatisticsPath));
+    for (const auto& source : readOnlyTurnPaths) {
+      if (sameTurnPath(statisticsPath, source))
+        chainFailure("deployment-turn-statistics-path-collision");
+    }
+    outputTurnPaths.push_back(statisticsPath);
+    for (unsigned round = 0; round < turns.size(); round += 2) {
+      const auto& firstId = turns.at(round).at("conversation_id").get<std::string>();
+      const auto& secondId = turns.at(round + 1).at("conversation_id").get<std::string>();
+      if (firstId != secondId || !conversationIds.insert(firstId).second)
+        chainFailure("deployment-independent-conversation-groups");
+    }
+  }
+  else if (turns.size() > 8) {
+    chainFailure("deployment-turn-configuration");
+  }
+  for (const auto& turn : turns) {
+    if (groupedTurns && !turn.contains("checkpoint_output_file"))
+      chainFailure("deployment-independent-conversation-checkpoint-path");
+    for (const auto* field : {"output_file", "checkpoint_output_file"}) {
+      if (!turn.contains(field))
+        continue;
+      const auto path = turnPath(turn.at(field));
+      for (const auto& source : readOnlyTurnPaths) {
+        if (sameTurnPath(path, source))
+          chainFailure("deployment-turn-output-path-collision");
+      }
+      for (const auto& previous : outputTurnPaths) {
+        if (sameTurnPath(path, previous))
+          chainFailure("deployment-turn-output-path-collision");
+      }
+      outputTurnPaths.push_back(path);
+    }
+  }
   const auto rounds = static_cast<unsigned>(turns.size());
   const auto requester = readStatistics(requesterStatisticsPath,
     "ndnsf-di-native-requester-statistics-v1", rounds, false);
@@ -1384,6 +1471,8 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   std::set<std::string> requests;
   std::uint64_t previousFinish = 0;
   for (unsigned round = 0; round < rounds; ++round) {
+    if (groupedTurns && round % 2 == 0)
+      prefix.clear();
     const auto& row = requester.requests.at(round);
     const auto requestId = row.at("requestId").get<std::string>();
     const auto plan = row.at("planDigest").get<std::string>();
@@ -1426,13 +1515,24 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     if (inputTensors != 1) chainFailure("deployment-input-token-count");
     for (const auto& token : output.at("tokenIds")) prefix.push_back(token.get<std::int64_t>());
     const auto checkpoint = readJson(turn.at("checkpoint_output_file").get<std::string>());
+    const auto contextEpoch = groupedTurns ? round % 2 + 1 : round + 1;
+    const auto parentContextEpoch = groupedTurns ? round % 2 : round;
+    const auto configuredConversationId = conversation.at("turn").value(
+      "conversation_id", std::string{});
+    const auto expectedConversationId = groupedTurns
+      ? turn.at("conversation_id").get<std::string>()
+      : !configuredConversationId.empty() ? configuredConversationId
+        : (round == 0 ? checkpoint : initial).at("conversationId").get<std::string>();
+    if (expectedConversationId.size() < 16 ||
+        expectedConversationId.find_first_of("/\\") != std::string::npos)
+      chainFailure("deployment-checkpoint-conversation-id");
     if (checkpoint.at("schema") != "ndnsf-di-conversation-checkpoint-v1" ||
         nonnegativeInteger(checkpoint.at("version")) != 1 ||
-        nonnegativeInteger(checkpoint.at("contextEpoch")) != round + 1 ||
-        nonnegativeInteger(checkpoint.at("parentContextEpoch")) != round ||
+        nonnegativeInteger(checkpoint.at("contextEpoch")) != contextEpoch ||
+        nonnegativeInteger(checkpoint.at("parentContextEpoch")) != parentContextEpoch ||
         nonnegativeInteger(checkpoint.at("prefixTokenCount")) != prefix.size() ||
         checkpoint.at("logicalPrefixDigest") != ndnsf::di::nativeConversationPrefixDigest(prefix) ||
-        checkpoint.at("conversationId") != conversation.at("turn").at("conversation_id") ||
+        checkpoint.at("conversationId") != expectedConversationId ||
         checkpoint.at("serviceName") != owner.at("service_name") ||
         checkpoint.at("serviceName") != request.at("service") ||
         checkpoint.at("requesterIdentity") != owner.at("requester_identity") ||
@@ -1487,16 +1587,27 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     if (publishers != 1 || !receipts.is_object() || receipts.size() != roles.size())
       chainFailure("deployment-stream-role-coverage");
     results.push_back({{"requestId", requestId}, {"planDigest", plan},
-      {"generatedTokens", tokenTotal}, {"contextEpoch", round + 1},
+      {"generatedTokens", tokenTotal}, {"contextEpoch", contextEpoch},
       {"prefixTokens", prefix.size()}, {"finishReason", generation.at("finishReason")}});
   }
-  return NativeJson{{"scope", "deployment-quiet-execution"}, {"bootId", boot},
+  NativeJson receipt{{"scope", "deployment-quiet-execution"}, {"bootId", boot},
     {"platform", slurm ? "slurm-apptainer" : minindn ? "minindn" : "single-host"},
     {"gpuNodes", gpuNodes}, {"distributedGpu", requireDistributedGpu ? "VERIFIED" : "NOT_REQUIRED"},
     {"configurationSha256", digest}, {"rounds", results}, {"cleanup", "ZERO_NONFORCED"},
     {"materialFetch", "NOT_EVALUATED"}, {"grantAudit", "NOT_EVALUATED"},
     {"placementAudit", "NOT_EVALUATED"}, {"restoreAudit", "NOT_EVALUATED"},
     {"checkpointAuthentication", "NOT_EVALUATED"}, {"fullPathQualification", "NOT_RUN"}};
+  if (modelReference) {
+    std::set<std::string> versions;
+    for (const auto& provider : providers)
+      for (const auto& row : provider.requests)
+        versions.insert(row.at("finalExecutionEvidence").at("runtimeVersion").get<std::string>());
+    if (versions.size() != 1) chainFailure("reference-provider-runtime-version");
+    receipt["modelReference"] = spec220::oracle::validateOnnxReference(
+      requesterConfig, *versions.begin());
+    receipt["scope"] = "deployment-unsplit-model-reference";
+  }
+  return receipt;
 }
 
 NativeJson validateRounds(const std::filesystem::path& root, unsigned rounds,
@@ -1899,13 +2010,13 @@ main(int argc, char** argv)
                  " --quiet-performance] [--require-multi-token] [--rounds 1..8]"
                  " --run-root DIRECTORY\n"
               << "       " << argv[0] << " --deployment-state FILE [--require-multi-token]"
-                 " [--require-distributed-gpu]\n"
+                 " [--require-distributed-gpu] [--model-reference]\n"
               << "       " << argv[0] << " --repo-lifecycle --repo-root DIRECTORY\n";
     return 0;
   }
   bool placementOnly = false, cacheCompatibility = false, expectedRevocationFailure = false,
        multiToken = false, repoLifecycle = false, invalidOptions = false,
-       quietPerformance = false, distributedGpu = false;
+       quietPerformance = false, distributedGpu = false, modelReference = false;
   unsigned rounds = 1;
   bool roundsSeen = false;
   const char* runRootArg = nullptr;
@@ -1920,6 +2031,7 @@ main(int argc, char** argv)
       expectedRevocationFailure = true;
     else if (option == "--require-multi-token" && !multiToken) multiToken = true;
     else if (option == "--require-distributed-gpu" && !distributedGpu) distributedGpu = true;
+    else if (option == "--model-reference" && !modelReference) modelReference = true;
     else if (option == "--repo-lifecycle" && !repoLifecycle) repoLifecycle = true;
     else if (option == "--run-root" && !runRootArg && i + 1 < argc) runRootArg = argv[++i];
     else if (option == "--repo-root" && !repoRootArg && i + 1 < argc) repoRootArg = argv[++i];
@@ -1933,7 +2045,7 @@ main(int argc, char** argv)
     }
     else invalidOptions = true;
   }
-  if (invalidOptions || (distributedGpu && !deploymentStateArg) ||
+  if (invalidOptions || ((distributedGpu || modelReference) && !deploymentStateArg) ||
       (deploymentStateArg && (repoLifecycle || repoRootArg || runRootArg || placementOnly ||
         cacheCompatibility || expectedRevocationFailure || quietPerformance || roundsSeen)) ||
       (repoLifecycle && (repoRootArg == nullptr || runRootArg != nullptr ||
@@ -1949,15 +2061,16 @@ main(int argc, char** argv)
                  " --quiet-performance] [--require-multi-token] [--rounds 1..8]"
                  " --run-root DIRECTORY\n"
               << "       " << argv[0] << " --deployment-state FILE [--require-multi-token]"
-                 " [--require-distributed-gpu]\n"
+                 " [--require-distributed-gpu] [--model-reference]\n"
               << "       " << argv[0] << " --repo-lifecycle --repo-root DIRECTORY\n";
     return 2;
   }
   try {
     if (deploymentStateArg) {
       const auto receipt = validateDeployment(
-        std::filesystem::absolute(deploymentStateArg), multiToken, distributedGpu);
-      std::cout << "SPEC217_CPP_DEPLOYMENT_EXECUTION_PASS "
+        std::filesystem::absolute(deploymentStateArg), multiToken, distributedGpu, modelReference);
+      std::cout << (modelReference ? "SPEC220_CPP_MODEL_REFERENCE_PASS " :
+                                    "SPEC217_CPP_DEPLOYMENT_EXECUTION_PASS ")
                 << ndnsf::di::nativeCanonicalJson(receipt) << '\n';
       return 0;
     }

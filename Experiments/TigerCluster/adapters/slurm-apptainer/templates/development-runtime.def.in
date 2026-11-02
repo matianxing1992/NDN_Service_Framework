@@ -22,7 +22,8 @@ Stage: builder
     export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/venv/bin:/opt/ndnsf-di/current/bin
     export CC=/usr/bin/gcc
     export CXX=/usr/bin/g++
-    export CXXFLAGS="-B/usr/bin -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES"
+    # Custom flags replace Waf's release defaults, so retain optimization explicitly.
+    export CXXFLAGS="-O2 -B/usr/bin -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES"
     export LDFLAGS="-B/usr/bin"
     export PYTHONNOUSERSITE=1
     export LD_LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib
@@ -168,6 +169,21 @@ PY
       --onnx-prefix=/opt/onnx \
       --nac-abe-prefix=/opt/ndn-base \
       --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
+    python3 - <<'PY'
+import ast
+import json
+from pathlib import Path
+
+lines = Path('build/c4che/_cache.py').read_text().splitlines()
+flags_line, = [line for line in lines if line.startswith('CXXFLAGS = ')]
+flags = ast.literal_eval(flags_line.split(' = ', 1)[1])
+optimization = [flag for flag in flags if flag.startswith('-O')]
+assert optimization and optimization[-1] == '-O2', 'NDNSF_RUNTIME_NOT_OPTIMIZED'
+path = Path('/opt/ndnsf-stage/manifest/container-configure-closure.json')
+body = json.loads(path.read_text())
+body['cxxFlags'] = flags
+path.write_text(json.dumps(body, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+PY
     # Waf owns native install names, public headers, symlinks and pkg-config.
     # DESTDIR stages that exact payload without changing its final prefix.
     # Disable the Repo development-only editable pip hook; bindings are built

@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -354,6 +355,12 @@ sessionIdentity(const NativeModelRunnerSpec& spec,
     frame(key);
     frame(metadata({key}));
   }
+  if (!metadata({"assembledFileSetDigest"}).empty()) {
+    frame("assembledArtifactSchema");
+    frame(metadata({"assembledArtifactSchema"}));
+    frame("assembledFileSetDigest");
+    frame(metadata({"assembledFileSetDigest"}));
+  }
   const auto bytes = canonical.str();
   return sha256TensorBytes(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
 }
@@ -468,17 +475,19 @@ makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
 {
   Ort::SessionOptions options;
   options.SetIntraOpNumThreads(1);
-  // The assembly worker already validates and emits the canonical graph with
-  // optimizations disabled.  Do not retain a second optimized graph copy in
-  // each resident role session while the request keeps both sessions alive.
-  options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_DISABLE_ALL);
+  // CPU kernels prepare constant weights once instead of converting them on
+  // every token. Keep the bounded CUDA session policy separate from CPU tuning.
+  if (selection.selectedProvider == "cpu") {
+    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+  }
+  else {
+    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_DISABLE_ALL);
+    options.AddConfigEntry("session.disable_prepacking", "1");
+  }
   // Qwen's KV/state dimensions change between prefill and decode.  A session
   // memory pattern learned from the warmup shape can retain a larger plan
   // than the next token needs while both role sessions remain resident.
   options.DisableMemPattern();
-  // A second prepacked weight copy is unnecessary for this bounded
-  // model-runner and overlaps with another Provider during cold assembly.
-  options.AddConfigEntry("session.disable_prepacking", "1");
   const auto profilePrefix = runnerMetadataValue(
     spec, {"providerProfilePrefix", "provider_profile_prefix"});
   if (!profilePrefix.empty()) {
@@ -771,6 +780,8 @@ toOnnxElementType(TensorElementType type)
       return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
     case TensorElementType::Int64:
       return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64;
+    case TensorElementType::Int32:
+      return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32;
     case TensorElementType::Bool:
       return ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL;
     case TensorElementType::UInt8:
@@ -789,6 +800,8 @@ fromOnnxElementType(ONNXTensorElementDataType type)
       return TensorElementType::Float16;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
       return TensorElementType::Int64;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
+      return TensorElementType::Int32;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
       return TensorElementType::Bool;
     default:
@@ -983,13 +996,12 @@ class OnnxRuntimeModelRunner::SharedSession
 public:
   explicit SharedSession(const NativeModelRunnerSpec& spec)
     : selection(resolveRuntimeProviderSelection(spec))
-    , graphMetadata(selection.selectedProvider == "cuda" &&
+    , graphMetadata(detail::inspectOnnxRuntimeGraphMetadata(spec.path,
+                    selection.selectedProvider == "cuda" &&
                     spec.metadata.count("evidence.providerBootId") != 0 &&
                     !runnerMetadataBool(spec, {"allowCpuFallback", "allow_cpu_fallback"}) &&
                     !runnerMetadataValue(
-                      spec, {"providerProfilePrefix", "provider_profile_prefix"}).empty() ?
-                      detail::inspectOnnxRuntimeGraphMetadata(spec.path) :
-                      detail::OnnxRuntimeGraphMetadata{})
+                      spec, {"providerProfilePrefix", "provider_profile_prefix"}).empty()))
     , sessionOptions(makeSessionOptions(selection, spec, graphMetadata))
     , session(ortEnv(), spec.path.c_str(), sessionOptions)
   {
@@ -1386,6 +1398,12 @@ OnnxRuntimeModelRunner::warmup()
     tensor.payload.assign(
       elementCount(tensor.shape) * tensorElementByteSize(tensor.elementType),
       0);
+    if (m_impl->sharedSession->graphMetadata.attentionWarmupLengthInputs.count(inputName)) {
+      if (tensor.elementType != TensorElementType::Int32 || tensor.payload.size() != 4)
+        throw std::invalid_argument("attention warmup length must be one Int32 scalar");
+      const std::int32_t length = 1;
+      std::memcpy(tensor.payload.data(), &length, sizeof(length));
+    }
     warmup.inputsByScope.emplace(
       inputName, makeEncodedTensorBundle(inputName, {std::move(tensor)}));
   }
@@ -1462,6 +1480,8 @@ OnnxRuntimeModelRunner::runStreamed(const RoleExecutionContext& ctx)
 std::map<std::string, TensorBundle>
 OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
 {
+  NativeWorkScope adapterWork(ctx.workStatistics, "onnx-adapter", NativeWorkKind::UNCLASSIFIED);
+  NativeWorkScope lockWork(ctx.workStatistics, "onnx-session-lock", NativeWorkKind::WAIT);
   // The CUDA state map below is part of the persistent session transaction.
   // Serialize transitions so concurrent requests cannot observe or replace
   // one another's recurrent state.
@@ -1476,9 +1496,17 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       firstProfileRunLock.unlock();
     }
   }
+  lockWork.finish();
   const auto collectStart = std::chrono::steady_clock::now();
-  RoleExecutionContext effectiveContext = ctx;
-  effectiveContext.inputsByScope = applyCertifiedTensorRedistributions(ctx);
+  NativeWorkScope contextWork(ctx.workStatistics, "onnx-input-context", NativeWorkKind::LOCAL);
+  std::optional<RoleExecutionContext> redistributedContext;
+  if (std::any_of(ctx.inputEdgesByScope.begin(), ctx.inputEdgesByScope.end(),
+                  [] (const auto& input) { return !input.second.redistributions.empty(); })) {
+    redistributedContext.emplace(ctx);
+    redistributedContext->inputsByScope = applyCertifiedTensorRedistributions(ctx);
+  }
+  const auto& effectiveContext = redistributedContext ? *redistributedContext : ctx;
+  contextWork.finish();
   Ort::AllocatorWithDefaultOptions allocator;
   Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(
     OrtAllocatorType::OrtArenaAllocator,
@@ -1663,10 +1691,12 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
         inputBundle = &zeroState;
       }
     }
+    const auto expectedType = tensorInfo.GetElementType();
+    NativeWorkScope tensorWork(ctx.workStatistics, "onnx-input-tensor", NativeWorkKind::LOCAL);
     auto tensor = tensorForInput(*inputBundle, inputName, inputShapes.back());
     validateNamedTensor(tensor);
     const auto onnxType = toOnnxElementType(tensor.elementType);
-    if (tensorInfo.GetElementType() != onnxType) {
+    if (expectedType != onnxType) {
       throw std::invalid_argument("ONNX Runtime input dtype mismatch for " + inputName);
     }
     if (!tensor.shape.empty()) {
@@ -1697,6 +1727,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     }
 
     inputNamePtrs.push_back(inputName.c_str());
+    tensorWork.finish();
     inputValues.push_back(Ort::Value::CreateTensor(
       memoryInfo,
       inputBuffers.back().data(),
@@ -1793,6 +1824,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     logRuntimePhase("di-provider", "ortRunBegin", effectiveContext.requestId,
                     phaseAttempt, phaseFields);
     {
+      NativeWorkScope backendWork(ctx.workStatistics, "onnx-run-envelope", NativeWorkKind::BACKEND);
       ScopedBackendExecutionTiming timing(m_impl->runtimeMetrics, effectiveContext);
       m_impl->session.Run(Ort::RunOptions{nullptr}, *ioBinding);
       // The engine interval ends only when device outputs are ready. Leaving
@@ -1813,6 +1845,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     logRuntimePhase("di-provider", "ortRunBegin", effectiveContext.requestId,
                     phaseAttempt, phaseFields);
     {
+      NativeWorkScope backendWork(ctx.workStatistics, "onnx-run-envelope", NativeWorkKind::BACKEND);
       ScopedBackendExecutionTiming timing(m_impl->runtimeMetrics, effectiveContext);
       outputs = m_impl->session.Run(
         Ort::RunOptions{nullptr},
@@ -1859,15 +1892,25 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     {"executionDelayMs", "execution_delay_ms", "roleExecutionDelayMs",
      "role_execution_delay_ms"});
   if (executionDelayMs > 0.0) {
+    NativeWorkScope delayWork(ctx.workStatistics, "onnx-configured-delay", NativeWorkKind::WAIT);
     std::this_thread::sleep_for(
       std::chrono::duration<double, std::milli>(executionDelayMs));
   }
   const auto delayDone = std::chrono::steady_clock::now();
 
-  std::vector<NamedTensor> namedOutputs;
+  NativeWorkScope outputWork(ctx.workStatistics, "onnx-output-convert", NativeWorkKind::LOCAL);
+  std::vector<NamedTensorView> namedOutputs;
   namedOutputs.reserve(outputs.size());
+  std::vector<NamedTensor> auxiliaryOutputs;
+  const auto appendOwnedOutput = [&] (NamedTensor tensor) {
+    auxiliaryOutputs.push_back(std::move(tensor));
+    const auto& owned = auxiliaryOutputs.back();
+    namedOutputs.push_back({owned.name, owned.elementType, owned.shape,
+      ndn::span<const std::uint8_t>(owned.payload.data(), owned.payload.size())});
+  };
   std::vector<std::vector<std::uint8_t>> outputHostBuffers;
   outputHostBuffers.reserve(outputs.size());
+  std::uint64_t borrowedOutputBytes = 0;
   for (std::size_t i = 0; i < outputs.size(); ++i) {
     auto& value = outputs[i];
     if (!value.IsTensor()) {
@@ -1884,6 +1927,8 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
         m_impl->statefulIo->stateOutputNames.end();
     const void* hostData = value.GetTensorRawData();
     if (stateOutput) {
+      NativeWorkScope stateWork(ctx.workStatistics, "onnx-output-state",
+                                NativeWorkKind::UNCLASSIFIED);
       // The next epoch asks for the corresponding *_in tensor.  Store the
       // device allocation under that successor input name; retaining it under
       // *_out makes every lookup miss and silently reintroduces a host upload.
@@ -1911,13 +1956,20 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       hostData = outputHostBuffers.back().data();
     }
     else {
+      if (value.GetTensorMemoryInfo().GetDeviceType() != OrtMemoryInfoDeviceType_CPU) {
+        NativeWorkScope copyWork(ctx.workStatistics, "onnx-output-device-copy",
+                                 NativeWorkKind::UNCLASSIFIED);
+        outputHostBuffers.emplace_back(count * tensorElementByteSize(elementType), 0);
+        copyOrtTensorToHost(value, outputHostBuffers.back().data(), outputHostBuffers.back().size());
+        hostData = outputHostBuffers.back().data();
+      }
       m_impl->runtimeMetrics.activationOutputBytes += outputBytes;
       if (deviceResidentState) {
         m_impl->runtimeMetrics.activationDeviceToHostBytes += outputBytes;
       }
     }
     const auto* data = static_cast<const std::uint8_t*>(hostData);
-    NamedTensor tensor;
+    NamedTensorView tensor;
     tensor.name = metadataValue(
       m_spec,
       {"outputAlias." + outputNames[i], "output_alias." + outputNames[i]});
@@ -1926,25 +1978,27 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     }
     tensor.elementType = elementType;
     tensor.shape = tensorInfo.GetShape();
-    tensor.payload.assign(data, data + count * tensorElementByteSize(elementType));
-    validateNamedTensor(tensor);
+    tensor.payload = ndn::span<const std::uint8_t>(
+      data, count * tensorElementByteSize(elementType));
+    validateNamedTensorView(tensor);
+    borrowedOutputBytes += tensor.payload.size();
     namedOutputs.push_back(std::move(tensor));
   }
   for (const auto& name : metadataNames(
          m_spec, {"passthroughTensors", "passthrough_tensors"})) {
     const auto duplicate = std::find_if(
-      namedOutputs.begin(), namedOutputs.end(), [&name] (const NamedTensor& tensor) {
+      namedOutputs.begin(), namedOutputs.end(), [&name] (const NamedTensorView& tensor) {
         return tensor.name == name;
       });
     if (duplicate == namedOutputs.end()) {
       try {
-        namedOutputs.push_back(passthroughTensorFor(effectiveContext, name));
+        appendOwnedOutput(passthroughTensorFor(effectiveContext, name));
       }
       catch (const std::out_of_range&) {
         const auto causal = causalPositionInputs.find(name);
         if (causal == causalPositionInputs.end())
           throw;
-        namedOutputs.push_back(tensorForInput(causal->second, name, {}));
+        appendOwnedOutput(tensorForInput(causal->second, name, {}));
       }
     }
   }
@@ -1959,7 +2013,9 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     const auto scope = outputScopeFor(m_spec, namedOutputs.front().name, 0);
     TensorBundle bundle;
     bundle.name = namedOutputs.front().name;
-    bundle.payload = namedOutputs.front().payload;
+    if (!namedOutputs.front().payload.empty()) {
+      bundle.payload.assign(namedOutputs.front().payload.begin(), namedOutputs.front().payload.end());
+    }
     bundle.expectedBytes = bundle.payload.size();
     result.emplace(scope, std::move(bundle));
   }
@@ -1981,9 +2037,9 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       padding.shape = {static_cast<std::int64_t>((padBytes + sizeof(float) - 1) /
                                                  sizeof(float))};
       padding.payload.assign(padding.shape.front() * sizeof(float), 0);
-      namedOutputs.push_back(std::move(padding));
+      appendOwnedOutput(std::move(padding));
     }
-    TensorBundle bundle = makeEncodedTensorBundle("onnx-output-bundle", namedOutputs);
+    TensorBundle bundle = makeEncodedTensorBundleViews("onnx-output-bundle", namedOutputs);
     const auto bundleScope = metadataValue(
       m_spec,
       {"outputBundleScope", "output_bundle_scope", "outputScope", "output_scope"});
@@ -2034,12 +2090,39 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
   const auto kvOutputNames = metadataNames(
     m_spec, {"kvOutputTensors", "kv_output_tensors"});
   if (!kvOutputNames.empty()) {
-    auto kvTensors = selectTensors(namedOutputs, kvOutputNames);
+    auto kvTensors = selectTensorViews(namedOutputs, kvOutputNames);
     const auto kvScope = metadataValue(
       m_spec, {"kvOutputScope", "kv_output_scope"});
     result.emplace(
       kvScope.empty() ? "kv-state" : kvScope,
-      makeEncodedTensorBundle("kv-state", kvTensors));
+      makeEncodedTensorBundleViews("kv-state", kvTensors));
+  }
+  outputWork.finish();
+  if (ctx.workStatistics) {
+    std::uint64_t auxiliaryBytes = 0;
+    for (const auto& tensor : auxiliaryOutputs) auxiliaryBytes += tensor.payload.size();
+    std::uint64_t finalBytes = 0;
+    for (const auto& output : result) finalBytes += output.second.payload.size();
+    ctx.workStatistics->addCount("onnx.outputBorrowedPayloadBytes", borrowedOutputBytes);
+    ctx.workStatistics->addCount("onnx.outputOrtIntermediateCopyBytes", 0);
+    ctx.workStatistics->addCount("onnx.outputAuxiliaryBytes", auxiliaryBytes);
+    ctx.workStatistics->addCount("onnx.outputFinalBytes", finalBytes);
+  }
+  {
+    // Ort input wrappers must release borrowed context buffers before host
+    // cleanup. Their destruction may call the backend allocator.
+    NativeWorkScope inputRelease(ctx.workStatistics, "onnx-input-release",
+                                 NativeWorkKind::UNCLASSIFIED);
+    ioBinding.reset();
+    inputValues.clear();
+  }
+  {
+    NativeWorkScope hostCleanup(ctx.workStatistics, "onnx-host-cleanup", NativeWorkKind::LOCAL);
+    std::vector<NamedTensorView>{}.swap(namedOutputs);
+    std::vector<NamedTensor>{}.swap(auxiliaryOutputs);
+    std::vector<std::vector<std::uint8_t>>{}.swap(outputHostBuffers);
+    std::vector<std::vector<std::uint8_t>>{}.swap(inputBuffers);
+    redistributedContext.reset();
   }
   const auto packageDone = std::chrono::steady_clock::now();
   if (runtimeTimingEnabled()) {

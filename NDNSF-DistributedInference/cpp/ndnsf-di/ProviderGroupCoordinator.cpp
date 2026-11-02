@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 
@@ -299,6 +300,108 @@ sameOperationParameters(const GroupOperationV1& a, const GroupOperationV1& b)
 }
 
 void
+appendCapabilityOperation(Bytes& output, const GroupOperationV1& operation)
+{
+  appendU64(output, operation.operationIndex);
+  appendString(output, operation.kind);
+  appendStrings(output, operation.producerRanks);
+  appendStrings(output, operation.consumerRanks);
+  appendString(output, operation.tensorLayoutDigest);
+  appendU64(output, operation.maxBytes);
+  appendU64(output, operation.maxSegments);
+}
+
+std::uint64_t
+operationEncodedSize(const GroupOperationV1& operation)
+{
+  constexpr std::uint64_t LIMIT = 16U << 20;
+  std::uint64_t size = 7 * sizeof(std::uint64_t);
+  const auto add = [&](std::uint64_t bytes) {
+    if (bytes > LIMIT - size)
+      throw std::invalid_argument("GroupCapability operation exceeds wire bound");
+    size += bytes;
+  };
+  add(operation.kind.size());
+  add(operation.tensorLayoutDigest.size());
+  for (const auto& rank : operation.producerRanks) {
+    add(sizeof(std::uint64_t));
+    add(rank.size());
+  }
+  for (const auto& rank : operation.consumerRanks) {
+    add(sizeof(std::uint64_t));
+    add(rank.size());
+  }
+  return size;
+}
+
+std::size_t
+canonicalCapabilitySize(const GroupCapabilityV1& capability, bool includeDigest)
+{
+  constexpr std::uint64_t LIMIT = 16U << 20;
+  std::uint64_t size = 0;
+  const auto add = [&](std::uint64_t bytes) {
+    if (bytes > LIMIT - size)
+      throw std::invalid_argument("GroupCapability expanded fields exceed wire bound");
+    size += bytes;
+  };
+  const auto string = [&](const std::string& value) {
+    if (value.size() > MAX_STRING_BYTES)
+      throw std::invalid_argument("GroupCapability string exceeds bound");
+    add(sizeof(std::uint64_t));
+    add(value.size());
+  };
+  string("GroupCapabilityV1");
+  string(capability.requestId);
+  string(capability.attemptId);
+  string(capability.planDigest);
+  string(capability.groupId);
+  add(2 * sizeof(std::uint64_t)); // Epoch and member count.
+  for (const auto& member : capability.orderedMembers) {
+    string(member.provider);
+    add(sizeof(std::uint64_t));
+    string(member.offerDigest);
+    string(member.endpointPrefix);
+  }
+  capability.operationCount();
+  add(sizeof(std::uint64_t));
+  const auto operation = [&](const GroupOperationV1& value, std::uint64_t count) {
+    const auto bytes = operationEncodedSize(value);
+    if (bytes > (LIMIT - size) / count)
+      throw std::invalid_argument("GroupCapability expanded operations exceed wire bound");
+    add(bytes * count);
+  };
+  for (const auto& value : capability.permittedOperations) operation(value, 1);
+  for (const auto& run : capability.operationRuns) operation(run.first, run.count);
+  add(3 * sizeof(std::uint64_t));
+  string(capability.epochKeyId);
+  add(sizeof(std::uint64_t));
+  for (const auto& commitment : capability.wrappedEpochKeyDigestByProvider) {
+    string(commitment.first);
+    string(commitment.second);
+  }
+  if (includeDigest) string(capability.capabilityDigest);
+  return size;
+}
+
+template<typename Visitor>
+void
+visitCapabilityOperations(const GroupCapabilityV1& capability, Visitor&& visitor)
+{
+  if (capability.operationRuns.empty()) {
+    for (const auto& operation : capability.permittedOperations) visitor(operation);
+  }
+  else {
+    for (const auto& run : capability.operationRuns) {
+      auto operation = run.first;
+      for (std::uint64_t offset = 0; offset < run.count; ++offset) {
+        operation.operationIndex = run.first.operationIndex + offset * run.stride;
+        visitor(operation);
+      }
+    }
+  }
+}
+
+void
 appendCapabilityOperations(Bytes& output, const std::vector<GroupOperationV1>& operations,
                            bool compact)
 {
@@ -324,29 +427,64 @@ appendCapabilityOperations(Bytes& output, const std::vector<GroupOperationV1>& o
     }
     appendU64(output, runs.size());
   }
-  const auto append = [&](const GroupOperationV1& operation) {
-    appendU64(output, operation.operationIndex);
-    appendString(output, operation.kind);
-    appendStrings(output, operation.producerRanks);
-    appendStrings(output, operation.consumerRanks);
-    appendString(output, operation.tensorLayoutDigest);
-    appendU64(output, operation.maxBytes);
-    appendU64(output, operation.maxSegments);
-  };
   if (compact) {
     for (const auto& [first, count] : runs) {
       appendU64(output, count);
       appendU64(output, count > 1
         ? operations[first + 1].operationIndex - operations[first].operationIndex : 0);
-      append(operations[first]);
+      appendCapabilityOperation(output, operations[first]);
     }
   }
   else {
-    for (const auto& operation : operations) append(operation);
+    for (const auto& operation : operations) appendCapabilityOperation(output, operation);
   }
 }
 
 } // namespace
+
+std::size_t
+GroupCapabilityV1::operationCount() const
+{
+  constexpr std::size_t LIMIT = 1U << 20;
+  if (!permittedOperations.empty() && !operationRuns.empty())
+    throw std::invalid_argument("GroupCapability has two operation representations");
+  if (operationRuns.empty()) {
+    if (permittedOperations.size() > LIMIT)
+      throw std::invalid_argument("too many GroupCapabilityV1 operations");
+    return permittedOperations.size();
+  }
+  std::size_t count = 0;
+  for (const auto& run : operationRuns) {
+    if (run.count == 0 || run.count > LIMIT - count ||
+        (run.count == 1 ? run.stride != 0 : run.stride == 0) ||
+        (run.count > 1 && run.stride >
+          (std::numeric_limits<std::uint64_t>::max() - run.first.operationIndex) /
+            (run.count - 1)))
+      throw std::invalid_argument("invalid GroupCapability operation run");
+    count += run.count;
+  }
+  return count;
+}
+
+GroupOperationV1
+GroupCapabilityV1::operation(std::uint64_t index) const
+{
+  operationCount();
+  for (const auto& operation : permittedOperations) {
+    if (operation.operationIndex == index) return operation;
+  }
+  for (const auto& run : operationRuns) {
+    if (index < run.first.operationIndex) continue;
+    const auto offset = index - run.first.operationIndex;
+    if (offset == 0 || (run.stride && offset % run.stride == 0 &&
+                       offset / run.stride < run.count)) {
+      auto result = run.first;
+      result.operationIndex = index;
+      return result;
+    }
+  }
+  throw std::invalid_argument("operation is not permitted by capability");
+}
 
 void
 GroupCapabilityV1::validate() const
@@ -356,7 +494,7 @@ GroupCapabilityV1::validate() const
   requireNonEmpty(planDigest, "planDigest");
   requireNonEmpty(groupId, "groupId");
   requireNonEmpty(epochKeyId, "epochKeyId");
-  if (epoch == 0 || orderedMembers.empty() || permittedOperations.empty() ||
+  if (epoch == 0 || orderedMembers.empty() || operationCount() == 0 ||
       maxInflightBytes == 0 || noProgressMs == 0 || hardDeadlineMs < noProgressMs ||
       sealerSignature.empty()) {
     throw std::invalid_argument("invalid GroupCapabilityV1 bounds or signature");
@@ -376,10 +514,7 @@ GroupCapabilityV1::validate() const
   for (const auto rank : ranks) {
     memberRanks.insert(std::to_string(rank));
   }
-  if (permittedOperations.size() > (1U << 20)) {
-    throw std::invalid_argument("too many GroupCapabilityV1 operations");
-  }
-  for (const auto& operation : permittedOperations) {
+  visitCapabilityOperations(*this, [&](const auto& operation) {
     requireNonEmpty(operation.kind, "operation.kind");
     requireNonEmpty(operation.tensorLayoutDigest, "operation.tensorLayoutDigest");
     if (operation.maxBytes == 0 || operation.maxSegments == 0 ||
@@ -401,7 +536,7 @@ GroupCapabilityV1::validate() const
       throw std::invalid_argument(
         "GroupCapabilityV1 operation rank is not a unique group member");
     }
-  }
+  });
   if (capabilityDigest.empty() ||
       wrappedEpochKeyDigestByProvider.size() != providers.size() ||
       wrappedEpochKeyByProvider.empty() ||
@@ -434,7 +569,9 @@ GroupCapabilityV1::canonicalBytes(bool includeDigest) const
 ProviderGroupBytes
 GroupCapabilityV1::encodeFields(bool includeDigest, bool compactOperations) const
 {
+  const auto canonicalSize = canonicalCapabilitySize(*this, includeDigest);
   Bytes output;
+  if (!compactOperations) output.reserve(canonicalSize);
   appendString(output, compactOperations ? "GroupCapabilityV2" : "GroupCapabilityV1");
   appendString(output, requestId);
   appendString(output, attemptId);
@@ -448,7 +585,26 @@ GroupCapabilityV1::encodeFields(bool includeDigest, bool compactOperations) cons
     appendString(output, member.offerDigest);
     appendString(output, member.endpointPrefix);
   }
-  appendCapabilityOperations(output, permittedOperations, compactOperations);
+  const auto count = operationCount();
+  if (operationRuns.empty()) {
+    appendCapabilityOperations(output, permittedOperations, compactOperations);
+  }
+  else {
+    appendU64(output, count);
+    if (compactOperations) {
+      appendU64(output, operationRuns.size());
+      for (const auto& run : operationRuns) {
+        appendU64(output, run.count);
+        appendU64(output, run.stride);
+        appendCapabilityOperation(output, run.first);
+      }
+    }
+    else {
+      visitCapabilityOperations(*this, [&](const auto& operation) {
+        appendCapabilityOperation(output, operation);
+      });
+    }
+  }
   appendU64(output, maxInflightBytes);
   appendU64(output, noProgressMs);
   appendU64(output, hardDeadlineMs);
@@ -600,6 +756,30 @@ ProviderGroupCoordinator::runtimeKeyActive(const RuntimeKeySnapshot& snapshot) c
 
 GroupCapabilityV1
 ProviderGroupCoordinator::createCapability(
+  std::string requestId, std::string attemptId, std::string planDigest,
+  std::string groupId, std::uint64_t epoch, std::vector<GroupMemberV1> orderedMembers,
+  std::vector<GroupOperationV1> permittedOperations, std::uint64_t maxInflightBytes,
+  std::uint64_t noProgressMs, std::uint64_t hardDeadlineMs)
+{
+  return createCapabilityImpl(std::move(requestId), std::move(attemptId),
+    std::move(planDigest), std::move(groupId), epoch, std::move(orderedMembers),
+    std::move(permittedOperations), {}, maxInflightBytes, noProgressMs, hardDeadlineMs);
+}
+
+GroupCapabilityV1
+ProviderGroupCoordinator::createCapabilityFromRuns(
+  std::string requestId, std::string attemptId, std::string planDigest,
+  std::string groupId, std::uint64_t epoch, std::vector<GroupMemberV1> orderedMembers,
+  std::vector<GroupOperationRunV1> operationRuns, std::uint64_t maxInflightBytes,
+  std::uint64_t noProgressMs, std::uint64_t hardDeadlineMs)
+{
+  return createCapabilityImpl(std::move(requestId), std::move(attemptId),
+    std::move(planDigest), std::move(groupId), epoch, std::move(orderedMembers), {},
+    std::move(operationRuns), maxInflightBytes, noProgressMs, hardDeadlineMs);
+}
+
+GroupCapabilityV1
+ProviderGroupCoordinator::createCapabilityImpl(
   std::string requestId,
   std::string attemptId,
   std::string planDigest,
@@ -607,10 +787,13 @@ ProviderGroupCoordinator::createCapability(
   std::uint64_t epoch,
   std::vector<GroupMemberV1> orderedMembers,
   std::vector<GroupOperationV1> permittedOperations,
+  std::vector<GroupOperationRunV1> operationRuns,
   std::uint64_t maxInflightBytes,
   std::uint64_t noProgressMs,
   std::uint64_t hardDeadlineMs)
 {
+  const auto statistics = m_options.workStatistics.lock();
+  NativeWorkScope buildWork(statistics, "group-capability-build", NativeWorkKind::LOCAL);
   if (!m_options.wrapEpochKey) {
     throw std::invalid_argument(
       "ProviderGroupCoordinator requires epoch-key wrapping");
@@ -627,16 +810,23 @@ ProviderGroupCoordinator::createCapability(
   m_capability.epoch = epoch;
   m_capability.orderedMembers = std::move(orderedMembers);
   m_capability.permittedOperations = std::move(permittedOperations);
+  m_capability.operationRuns = std::move(operationRuns);
   m_capability.maxInflightBytes = maxInflightBytes;
   m_capability.noProgressMs = noProgressMs;
   m_capability.hardDeadlineMs = hardDeadlineMs;
-  m_epochKey = m_options.randomBytes(KEY_BYTES);
+  m_epochKey = [&] {
+    NativeWorkScope callback(statistics, "group-key-random", NativeWorkKind::UNCLASSIFIED);
+    return m_options.randomBytes(KEY_BYTES);
+  }();
   if (m_epochKey.size() != KEY_BYTES) {
     throw std::runtime_error("epoch key generator returned the wrong size");
   }
   m_capability.epochKeyId = hex(m_epochKey);
   for (const auto& member : m_capability.orderedMembers) {
-    auto wrapped = m_options.wrapEpochKey(member.provider, m_epochKey);
+    auto wrapped = [&] {
+      NativeWorkScope callback(statistics, "group-key-wrap", NativeWorkKind::UNCLASSIFIED);
+      return m_options.wrapEpochKey(member.provider, m_epochKey);
+    }();
     if (wrapped.empty()) {
       throw std::runtime_error("epoch key wrapping returned an empty envelope");
     }
@@ -647,7 +837,10 @@ ProviderGroupCoordinator::createCapability(
   m_capability.capabilityDigest = hex(m_capability.canonicalBytes(false));
   const auto capabilityBytes = m_capability.canonicalBytes(true);
   m_capability.sealerSignature = m_options.signCapability
-    ? m_options.signCapability(capabilityBytes)
+    ? [&] {
+        NativeWorkScope callback(statistics, "group-capability-sign", NativeWorkKind::UNCLASSIFIED);
+        return m_options.signCapability(capabilityBytes);
+      }()
     : hmac(m_epochKey, capabilityBytes);
   if (m_capability.sealerSignature.empty()) {
     throw std::runtime_error("capability signer returned an empty signature");
@@ -668,6 +861,8 @@ ProviderGroupCoordinator::installCapability(GroupCapabilityV1 capability,
                                              ProviderGroupBytes epochKey,
                                              bool verifySignature)
 {
+  const auto statistics = m_options.workStatistics.lock();
+  NativeWorkScope installWork(statistics, "group-capability-install", NativeWorkKind::LOCAL);
   capability.validate();
   if (!m_options.localProvider.empty() &&
       (capability.wrappedEpochKeyByProvider.size() != 1 ||
@@ -687,7 +882,10 @@ ProviderGroupCoordinator::installCapability(GroupCapabilityV1 capability,
     if (it == capability.wrappedEpochKeyByProvider.end()) {
       throw std::invalid_argument("capability has no wrapped key for localProvider");
     }
-    epochKey = m_options.unwrapEpochKey(m_options.localProvider, it->second);
+    epochKey = [&] {
+      NativeWorkScope callback(statistics, "group-key-unwrap", NativeWorkKind::UNCLASSIFIED);
+      return m_options.unwrapEpochKey(m_options.localProvider, it->second);
+    }();
   }
   if (epochKey.size() != KEY_BYTES) {
     cleanse(epochKey);
@@ -700,7 +898,11 @@ ProviderGroupCoordinator::installCapability(GroupCapabilityV1 capability,
   if (verifySignature) {
     const auto capabilityBytes = capability.canonicalBytes(true);
     const auto verified = m_options.verifyCapability
-      ? m_options.verifyCapability(capabilityBytes, capability.sealerSignature)
+      ? [&] {
+          NativeWorkScope callback(statistics, "group-capability-verify",
+                                   NativeWorkKind::UNCLASSIFIED);
+          return m_options.verifyCapability(capabilityBytes, capability.sealerSignature);
+        }()
       : [&] {
           const auto expected = hmac(epochKey, capabilityBytes);
           return expected.size() == capability.sealerSignature.size() &&
@@ -857,10 +1059,11 @@ ProviderGroupCoordinator::decodeCapability(const ProviderGroupBytes& wire)
   if (runCount == 0 || runCount > operationCount)
     throw std::invalid_argument("GroupCapability operation run count exceeds bound");
   std::uint64_t operationBudget = 16U << 20;
+  std::uint64_t decodedCount = 0;
   for (std::uint64_t index = 0; index < runCount; ++index) {
     const auto count = compact ? cursor.readU64() : 1;
     const auto stride = compact ? cursor.readU64() : 0;
-    if (count == 0 || count > operationCount - capability.permittedOperations.size() ||
+    if (count == 0 || count > operationCount - decodedCount ||
         (count == 1 ? stride != 0 : stride == 0))
       throw std::invalid_argument("invalid GroupCapability operation run");
     GroupOperationV1 operation;
@@ -890,19 +1093,15 @@ ProviderGroupCoordinator::decodeCapability(const ProviderGroupBytes& wire)
     if (count > 1 && stride >
         (std::numeric_limits<std::uint64_t>::max() - operation.operationIndex) / (count - 1))
       throw std::invalid_argument("GroupCapability operation run overflows");
-    Bytes expanded;
-    appendCapabilityOperations(expanded, {operation}, false);
-    const auto bytesPerOperation = expanded.size() - sizeof(std::uint64_t);
+    const auto bytesPerOperation = operationEncodedSize(operation);
     if (bytesPerOperation > operationBudget / count)
       throw std::invalid_argument("GroupCapability expanded operations exceed wire bound");
     operationBudget -= bytesPerOperation * count;
-    for (std::uint64_t offset = 0; offset < count; ++offset) {
-      auto current = operation;
-      current.operationIndex += offset * stride;
-      capability.permittedOperations.push_back(std::move(current));
-    }
+    decodedCount += count;
+    if (compact) capability.operationRuns.push_back({std::move(operation), count, stride});
+    else capability.permittedOperations.push_back(std::move(operation));
   }
-  if (capability.permittedOperations.size() != operationCount)
+  if (decodedCount != operationCount)
     throw std::invalid_argument("GroupCapability expanded operation count mismatch");
 
   capability.maxInflightBytes = cursor.readU64();
@@ -950,18 +1149,12 @@ ProviderGroupCoordinator::decodeCapability(const ProviderGroupBytes& wire)
   return capability;
 }
 
-const GroupOperationV1&
+GroupOperationV1
 ProviderGroupCoordinator::findOperation(std::uint64_t operationIndex) const
 {
-  const auto it = std::find_if(m_capability.permittedOperations.begin(),
-                               m_capability.permittedOperations.end(),
-                               [operationIndex] (const auto& operation) {
-                                 return operation.operationIndex == operationIndex;
-                               });
-  if (it == m_capability.permittedOperations.end()) {
-    throw std::invalid_argument("operation is not permitted by capability");
-  }
-  return *it;
+  NativeWorkScope lookup(m_options.workStatistics.lock(), "group-operation-lookup",
+                         NativeWorkKind::LOCAL);
+  return m_capability.operation(operationIndex);
 }
 
 CollectiveOperationManifestV1
@@ -1644,7 +1837,11 @@ ProviderGroupCoordinator::terminalReason() const noexcept
 void
 ProviderGroupCoordinator::clearEpochKey() noexcept
 {
+  const auto statistics = m_options.workStatistics.lock();
+  NativeWorkScope lockWait(statistics, "group-key-lock", NativeWorkKind::WAIT);
   std::lock_guard<std::mutex> lock(m_stateMutex);
+  lockWait.finish();
+  NativeWorkScope clearWork(statistics, "group-key-clear", NativeWorkKind::LOCAL);
   clearEpochKeyLocked();
 }
 

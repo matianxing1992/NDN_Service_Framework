@@ -123,7 +123,8 @@ std::optional<NativeJson> bindNativeRequestTransferProfileV1(
  * delegated to an advisory geometry estimator. */
 std::optional<NativeJson> bindNativeRequestTransferProfileV1(
   const NativeJson& profile, const std::string& sourceDigest,
-  const NativeEncodedRequest& request, const NativeConversationTurn* turn);
+  const NativeEncodedRequest& request, const NativeConversationTurn* turn,
+  const std::shared_ptr<NativeWorkStatistics>& workStatistics = {});
 
 /** Same source-bound estimate including the actual tensor-bundle framing.
  * Does not predict a producer's chunk policy or unresolved dimensions. */

@@ -11,11 +11,13 @@
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <boost/scope_exit.hpp>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -35,12 +37,14 @@
 #include <string>
 #include <sys/types.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
+#include <fcntl.h>
 
 namespace ndnsf::di {
 
@@ -327,8 +331,10 @@ readBuffer(const std::filesystem::path& path, std::uint64_t maxBytes)
 }
 
 std::string
-sha256File(const std::filesystem::path& path, std::uint64_t maxBytes)
+sha256File(const std::filesystem::path& path, std::uint64_t maxBytes,
+           const std::function<void()>& requireActive = {})
 {
+  if (requireActive) requireActive();
   std::error_code error;
   const auto size = std::filesystem::file_size(path, error);
   if (error || size == 0 || size > maxBytes)
@@ -340,6 +346,7 @@ sha256File(const std::filesystem::path& path, std::uint64_t maxBytes)
   std::array<std::uint8_t, 1U << 20> buffer{};
   std::uint64_t total = 0;
   while (input) {
+    if (requireActive) requireActive();
     input.read(reinterpret_cast<char*>(buffer.data()),
                static_cast<std::streamsize>(buffer.size()));
     const auto count = static_cast<std::size_t>(input.gcount());
@@ -355,6 +362,7 @@ sha256File(const std::filesystem::path& path, std::uint64_t maxBytes)
   }
   if (!input.eof() || total != size)
     throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_FILE_UNREADABLE");
+  if (requireActive) requireActive();
   auto hex = digest.toString();
   std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char ch) {
     return static_cast<char>(std::tolower(ch));
@@ -645,6 +653,67 @@ writeSharedAssembledModel(const std::filesystem::path& cacheRoot,
   std::filesystem::create_hard_link(model, destination);
 }
 
+constexpr const char* ASSEMBLED_FILE_SET_SCHEMA = "ndnsf-di-assembled-onnx-v2";
+
+std::string
+assembledFileSetDigest(const std::string& graphDigest, std::uint64_t graphBytes,
+                       const std::string& initializerDigest, std::uint64_t initializerBytes)
+{
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-assembled-file-set-v1"},
+    {"members", NativeJson::array({
+      NativeJson{{"name", "model.onnx"}, {"bytes", graphBytes}, {"digest", graphDigest}},
+      NativeJson{{"name", "model.onnx.data"}, {"bytes", initializerBytes},
+                 {"digest", initializerDigest}}})}}));
+}
+
+template<typename Read>
+void
+bindAssembledFileSetMetadataImpl(Read&& read, NativeModelRunnerSpec& spec)
+{
+  const auto schema = read("schema").value_or("");
+  if (schema == "ndnsf-di-assembled-onnx-v1") {
+    for (const auto* key : {"assembledFileSetDigest", "externalInitializerDigest",
+                            "externalInitializerBytes", "assembledModelBytes"}) {
+      if (read(key))
+        throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_SCHEMA_MISMATCH");
+    }
+    return;
+  }
+  if (schema != ASSEMBLED_FILE_SET_SCHEMA)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_SCHEMA_MISMATCH");
+  spec.metadata["assembledArtifactSchema"] = schema;
+  for (const auto* key : {"assembledModelDigest", "assembledFileSetDigest",
+                          "externalInitializerDigest", "externalInitializerBytes",
+                          "assembledModelBytes"}) {
+    const auto value = read(key).value_or("");
+    if (value.empty()) throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_METADATA_MISSING");
+    spec.metadata[key] = value;
+  }
+}
+
+void
+bindAssembledFileSetMetadata(const boost::property_tree::ptree& manifest,
+                             NativeModelRunnerSpec& spec)
+{
+  bindAssembledFileSetMetadataImpl([&] (const char* key) -> std::optional<std::string> {
+    const auto found = manifest.get_optional<std::string>(key);
+    return found ? std::optional<std::string>(*found) : std::nullopt;
+  }, spec);
+}
+
+void
+bindAssembledFileSetMetadata(const NativeJson& manifest, NativeModelRunnerSpec& spec)
+{
+  bindAssembledFileSetMetadataImpl([&] (const char* key) -> std::optional<std::string> {
+    const auto found = manifest.find(key);
+    if (found == manifest.end()) return std::nullopt;
+    if (found->is_string()) return found->get<std::string>();
+    if (found->is_number_unsigned()) return std::to_string(found->get<std::uint64_t>());
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_METADATA_INVALID");
+  }, spec);
+}
+
 std::string
 protectedAssembledCacheKey(const NativeSelectionProjectionV3& projection,
                            const std::string& roleAssemblySpecDigest,
@@ -760,6 +829,72 @@ eraseProtectedPlaintextCacheDirectory(const std::filesystem::path& directory) no
 }
 
 } // namespace
+
+std::uint64_t
+validateNativeAssembledArtifactFiles(const NativeModelRunnerSpec& spec,
+                                     const std::filesystem::path& cacheRoot,
+                                     std::uint64_t maxBytes, bool verifyContents,
+                                     const std::function<void()>& requireActive)
+{
+  if (requireActive) requireActive();
+  const auto graph = std::filesystem::path(spec.path);
+  requireAssemblyDirectoryUnderCacheRoot(cacheRoot, graph);
+  std::error_code error;
+  const auto graphBytes = std::filesystem::file_size(graph, error);
+  if (error || maxBytes == 0 || graphBytes == 0 || graphBytes > maxBytes ||
+      !std::filesystem::is_regular_file(graph, error) || error)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_GRAPH_INVALID");
+  const auto schema = spec.metadata.find("assembledArtifactSchema");
+  if (schema == spec.metadata.end()) {
+    for (const auto* key : {"assembledFileSetDigest", "externalInitializerDigest",
+                            "externalInitializerBytes", "assembledModelBytes"}) {
+      if (spec.metadata.count(key) != 0)
+        throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_METADATA_MISSING");
+    }
+    return graphBytes;
+  }
+  if (schema->second != ASSEMBLED_FILE_SET_SCHEMA || graph.filename() != "model.onnx")
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_SCHEMA_MISMATCH");
+  if (std::filesystem::is_symlink(std::filesystem::symlink_status(graph)))
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_GRAPH_INVALID");
+  const auto value = [&] (const char* key) -> const std::string& {
+    const auto found = spec.metadata.find(key);
+    if (found == spec.metadata.end() || found->second.empty())
+      throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_METADATA_MISSING");
+    return found->second;
+  };
+  const auto sizeValue = [&] (const char* key) {
+    const auto& text = value(key);
+    if (text.front() == '0' ||
+        !std::all_of(text.begin(), text.end(), [] (unsigned char ch) {
+          return ch >= '0' && ch <= '9';
+        }))
+      throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_SIZE_INVALID");
+    return static_cast<std::uint64_t>(std::stoull(text));
+  };
+  const auto initializerBytes = sizeValue("externalInitializerBytes");
+  const auto& graphDigest = value("assembledModelDigest");
+  const auto& initializerDigest = value("externalInitializerDigest");
+  const auto& setDigest = value("assembledFileSetDigest");
+  if (sizeValue("assembledModelBytes") != graphBytes || initializerBytes > maxBytes - graphBytes ||
+      !isSha256Digest(graphDigest) || !isSha256Digest(initializerDigest) ||
+      !isSha256Digest(setDigest) ||
+      assembledFileSetDigest(graphDigest, graphBytes, initializerDigest, initializerBytes) != setDigest)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_IDENTITY_INVALID");
+  const auto initializer = graph.parent_path() / "model.onnx.data";
+  requireAssemblyDirectoryUnderCacheRoot(cacheRoot, initializer);
+  if (std::filesystem::is_symlink(std::filesystem::symlink_status(initializer)))
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_INITIALIZER_INVALID");
+  const auto actualBytes = std::filesystem::file_size(initializer, error);
+  if (error || actualBytes != initializerBytes ||
+      !std::filesystem::is_regular_file(initializer, error) || error ||
+      (verifyContents && (sha256File(graph, maxBytes, requireActive) != graphDigest ||
+                          sha256File(initializer, initializerBytes, requireActive) !=
+                            initializerDigest)))
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_INITIALIZER_INVALID");
+  if (requireActive) requireActive();
+  return graphBytes + initializerBytes;
+}
 
 struct NativePersistentRecipeResidencyIndex::State
 {
@@ -901,6 +1036,14 @@ NativePersistentRecipeResidencyIndex::record(
     }
 
     const auto candidate = identity.candidateArtifact();
+    const auto fileSetDigest = jsonString(manifest, "assembledFileSetDigest");
+    if (jsonString(manifest, "schema") == ASSEMBLED_FILE_SET_SCHEMA) {
+      NativeModelRunnerSpec fileSet;
+      fileSet.path = (directory / "model.onnx").string();
+      bindAssembledFileSetMetadata(manifest, fileSet);
+      validateNativeAssembledArtifactFiles(fileSet, m_state->cacheRoot,
+        std::numeric_limits<std::uint64_t>::max(), false);
+    }
     const auto indexPath = persistentResidencyIndexPath(m_state->indexRoot, candidate);
     NativeJson index = NativeJson{{"schema", PersistentResidencySchema},
       {"candidate_artifact", candidate}, {"entries", NativeJson::array()}};
@@ -928,7 +1071,8 @@ NativePersistentRecipeResidencyIndex::record(
         return jsonString(item, "directory") == relativeText &&
           item.contains("device_set") && item.at("device_set") == identity.deviceSet;
       });
-    if (existing == entries.end()) {
+    const bool newEntry = existing == entries.end();
+    if (newEntry) {
       if (entries.size() >= MaxPersistentResidencyEntries) {
         m_state->complete = false;
         return false;
@@ -937,6 +1081,9 @@ NativePersistentRecipeResidencyIndex::record(
         {"device_set", identity.deviceSet},
         {"recipe_digest", jsonString(manifest, "recipeDigest")}});
     }
+    auto& recorded = newEntry ? entries.back() : *existing;
+    if (!fileSetDigest.empty()) recorded["assembled_file_set_digest"] = fileSetDigest;
+    else recorded.erase("assembled_file_set_digest");
     const auto serialized = nativeCanonicalJson(index);
     if (serialized.size() > MaxPersistentResidencyIndexBytes) {
       m_state->complete = false;
@@ -1050,6 +1197,16 @@ NativePersistentRecipeResidencyIndex::queryPlacementResidencyV4(
             continue;
         }
         requireAssemblyDirectoryUnderCacheRoot(m_state->cacheRoot, modelPath);
+        const auto fileSetDigest = jsonString(manifest, "assembledFileSetDigest");
+        if (jsonString(manifest, "schema") == ASSEMBLED_FILE_SET_SCHEMA) {
+          if (jsonString(item, "assembled_file_set_digest") != fileSetDigest)
+            throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_INDEX_MISMATCH");
+          NativeModelRunnerSpec fileSet;
+          fileSet.path = modelPath.string();
+          bindAssembledFileSetMetadata(manifest, fileSet);
+          validateNativeAssembledArtifactFiles(fileSet, m_state->cacheRoot,
+            std::numeric_limits<std::uint64_t>::max(), false);
+        }
         NativeProviderResidencyIdentityV4 identity{
           candidate.at("artifact_digest").get<std::string>(),
           candidate.at("model_manifest_digest").get<std::string>(),
@@ -1064,7 +1221,8 @@ NativePersistentRecipeResidencyIndex::queryPlacementResidencyV4(
           result.rows.clear();
           return result;
         }
-        const auto relativeText = relative.generic_string();
+        const auto relativeText = relative.generic_string() +
+          (fileSetDigest.empty() ? std::string{} : "|" + fileSetDigest);
         const auto generationDigest = sha256Hex(
           std::vector<std::uint8_t>(relativeText.begin(), relativeText.end()));
         auto row = identity.makeRow(
@@ -1734,9 +1892,11 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
          firstString(manifest, {"keyReferenceDigest"}) !=
            keyReferenceDigest) ||
         !isSha256Digest(assembledDigest) ||
-        ((!protectedRole || persistentPlaintextArtifact) &&
+        (firstString(manifest, {"schema"}) != ASSEMBLED_FILE_SET_SCHEMA &&
+          (!protectedRole || persistentPlaintextArtifact) &&
           (options.verifyCachedArtifactDigest || reboundPublication) &&
-          sha256File(modelPath, projection.assemblyContract().maxAssembledBytes) != assembledDigest)) {
+          sha256File(modelPath, projection.assemblyContract().maxAssembledBytes,
+            [&] { requireActiveAssembly(options, projection.deadlineMs); }) != assembledDigest)) {
       discardCorruptEntry(directory);
       return std::nullopt;
     }
@@ -1778,6 +1938,13 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     };
     if (!protectedRole || persistentPlaintextArtifact)
       spec.metadata["assembledCachePath"] = modelPath.string();
+    bindAssembledFileSetMetadata(manifest, spec);
+    if (!spec.path.empty()) {
+      validateNativeAssembledArtifactFiles(spec, options.cacheDir,
+        projection.assemblyContract().maxAssembledBytes,
+        options.verifyCachedArtifactDigest || reboundPublication,
+        [&] { requireActiveAssembly(options, projection.deadlineMs); });
+    }
     if (protectedRole) {
       if (persistentPlaintextArtifact) {
         spec.metadata["protectedCacheHit"] = "true";
@@ -2331,6 +2498,9 @@ prepareNativeCanonicalOnnxRole(
     const auto rootFile = rootPath / "root.json";
     const auto sourceFile = rootPath / "canonical.onnx";
     NativeCanonicalSource canonicalSource;
+    NativeCanonicalMaterializedFiles materializedFiles;
+    const auto initializerFile = rootPath / "model.onnx.data";
+    std::shared_ptr<const NativeCanonicalByteRangeSource> initializerFileOwner;
     struct CanonicalSourceScrubber
     {
       NativeCanonicalSource& source;
@@ -2398,6 +2568,29 @@ prepareNativeCanonicalOnnxRole(
     assemblyControl.maxAssembledBytes = projection.assemblyContract().maxAssembledBytes;
     assemblyControl.requireActive = [&] {
       requireActiveAssembly(options, projection.deadlineMs);
+    };
+    const auto writeMaterial = [&] (int fd, const std::uint8_t* bytes, std::uint64_t size) {
+      std::uint64_t written = 0;
+      unsigned interrupted = 0;
+      while (written < size) {
+        assemblyControl.requireActive();
+        ssize_t count = -1;
+        int writeError = 0;
+        storeWhileAuthorized([&] {
+          if (std::chrono::steady_clock::now() >= assemblyControl.deadline)
+            throw std::runtime_error("DI_NATIVE_ASSEMBLY_TIMEOUT: material write");
+          count = ::write(fd, bytes + written,
+            static_cast<std::size_t>(std::min(NativeCanonicalMaterialBundleMaxBytes,
+                                             size - written)));
+          writeError = errno;
+        });
+        if (count < 0 && writeError == EINTR && ++interrupted <= 3) continue;
+        if (count <= 0)
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_SPOOL_WRITE_FAILED");
+        written += static_cast<std::uint64_t>(count);
+        interrupted = 0;
+      }
+      assemblyControl.requireActive();
     };
     const auto materialManifestName = metadata
       ? firstString(*metadata, {"materialManifestDataName", "material_manifest_data_name"})
@@ -2471,6 +2664,8 @@ prepareNativeCanonicalOnnxRole(
       logMaterialFetch(kind, dataName,
                        fetched && !fetched->empty() ? "returned" : "empty",
                        &fetched, digest);
+      std::vector<std::uint8_t> emptyFetched;
+      NativePlaintextBufferGuard fetchedGuard{fetched ? *fetched : emptyFetched};
       if (!fetched || fetched->empty() || fetched->size() != expectedBytes ||
           fetched->size() > projection.assemblyContract().maxSourceBytes)
         throw std::runtime_error(std::string("DI_CANONICAL_") + kind + "_UNAVAILABLE");
@@ -2480,7 +2675,7 @@ prepareNativeCanonicalOnnxRole(
       logMaterialFetch(kind, dataName, "verified", &fetched, digest);
       logAssemblyProgressLine(projection, "OBJECT_READ_DONE", 0.25,
                               static_cast<std::uint64_t>(fetched->size()), kind);
-      return std::vector<std::uint8_t>(fetched->begin(), fetched->end());
+      return std::move(*fetched);
     };
 
     if (materialMetadataPresent) {
@@ -2666,86 +2861,102 @@ prepareNativeCanonicalOnnxRole(
       // the same working-set ceiling while it is being authenticated.
       std::uint64_t selectedMaterialBytes = std::max(materialMetadataBytes,
                                                      parseReservation);
-      // Keep one authenticated bundle allocation and expose selected chunks as
-      // shared ranges.  Copying every 1 MiB chunk into materialPayloads would
-      // retain the bundle cache and a second full initializer at the same time.
-      std::map<std::string, std::shared_ptr<std::vector<std::uint8_t>>> fetchedBundles;
-      std::set<std::string> countedBundles;
+      // Group by serving object so each authenticated bundle can be released
+      // before fetching the next one. Selected slices live in the existing
+      // private staging directory instead of retaining every bundle on heap.
+      std::map<std::string, std::vector<std::string>> payloadsByObject;
+      for (const auto& item : selectedObjects)
+        payloadsByObject[item.second.dataName].push_back(item.first);
+      const auto spoolPath = rootPath / "material.spool";
+      int spoolFd = -1;
+      BOOST_SCOPE_EXIT_ALL(&spoolFd) {
+        if (spoolFd >= 0) ::close(spoolFd);
+      };
+      storeWhileAuthorized([&] {
+        spoolFd = ::open(spoolPath.c_str(),
+          O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        if (spoolFd < 0)
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_SPOOL_CREATE_FAILED");
+      });
+      ndn::util::Sha256 spoolHash;
+      std::uint64_t spoolBytes = 0;
       std::size_t selectedMaterialIndex = 0;
-      for (const auto& payloadId : selectedIds) {
+      for (const auto& group : payloadsByObject) {
         assemblyControl.requireActive();
-        const auto object = selectedObjects.find(payloadId);
-        const auto reference = std::find_if(materialManifest->references.begin(),
-          materialManifest->references.end(), [&] (const auto& candidate) {
-            return candidate.payloadId == payloadId ||
-              std::find(candidate.chunkPayloadIds.begin(), candidate.chunkPayloadIds.end(),
-                        payloadId) != candidate.chunkPayloadIds.end();
-          });
-        if (reference == materialManifest->references.end())
-          throw std::runtime_error("DI_CANONICAL_MATERIAL_REFERENCE_MISSING");
-        const bool chunkPayload = reference->payloadId != payloadId;
-        if ((!chunkPayload && (reference->digest != object->second.digest ||
-                               reference->bytes != object->second.bytes)) ||
-            (chunkPayload && object->second.bytes > NativeCanonicalMaterialBundleMaxBytes))
-          throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_MISMATCH");
-        std::vector<std::uint8_t> bytes;
-        std::shared_ptr<const std::vector<std::uint8_t>> backing;
-        std::size_t backingOffset = 0;
-        std::size_t backingSize = 0;
-        if (!object->second.bundleDigest.empty()) {
-          if (countedBundles.find(object->second.dataName) == countedBundles.end()) {
-            if (object->second.bundleBytes > NativeCanonicalMaterialBundleMaxBytes ||
-                selectedMaterialBytes > projection.assemblyContract().maxAssembledBytes ||
-                object->second.bundleBytes >
-                  projection.assemblyContract().maxAssembledBytes - selectedMaterialBytes)
-              throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
-            selectedMaterialBytes += object->second.bundleBytes;
-            countedBundles.insert(object->second.dataName);
-          }
-          auto bundle = fetchedBundles.find(object->second.dataName);
-          if (bundle == fetchedBundles.end()) {
-            auto fetched = fetchPlainObject(object->second.dataName,
-                                            object->second.bundleDigest,
-                                            object->second.bundleBytes,
-                                            "material-bundle");
-            auto owned = std::make_shared<std::vector<std::uint8_t>>(std::move(fetched));
-            bundle = fetchedBundles.emplace(object->second.dataName, std::move(owned)).first;
-          }
-          const auto& bundleBytes = bundle->second;
-          if (object->second.bundleOffset > bundleBytes->size() ||
-              object->second.bytes > bundleBytes->size() - object->second.bundleOffset)
+        const auto& firstObject = selectedObjects.at(group.second.front());
+        const bool bundled = !firstObject.bundleDigest.empty();
+        const auto fetchedBytes = bundled ? firstObject.bundleBytes : firstObject.bytes;
+        if ((bundled && fetchedBytes > NativeCanonicalMaterialBundleMaxBytes) ||
+            selectedMaterialBytes > assemblyControl.maxAssembledBytes ||
+            fetchedBytes > assemblyControl.maxAssembledBytes - selectedMaterialBytes)
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
+        selectedMaterialBytes += fetchedBytes;
+        auto fetched = fetchPlainObject(group.first,
+          bundled ? firstObject.bundleDigest : firstObject.digest, fetchedBytes,
+          bundled ? "material-bundle" : "material-payload");
+        NativePlaintextBufferGuard fetchedGuard{fetched};
+        for (const auto& payloadId : group.second) {
+          assemblyControl.requireActive();
+          const auto object = selectedObjects.find(payloadId);
+          const auto reference = std::find_if(materialManifest->references.begin(),
+            materialManifest->references.end(), [&] (const auto& candidate) {
+              return candidate.payloadId == payloadId ||
+                std::find(candidate.chunkPayloadIds.begin(), candidate.chunkPayloadIds.end(),
+                          payloadId) != candidate.chunkPayloadIds.end();
+            });
+          if (reference == materialManifest->references.end())
+            throw std::runtime_error("DI_CANONICAL_MATERIAL_REFERENCE_MISSING");
+          const bool chunkPayload = reference->payloadId != payloadId;
+          if ((!chunkPayload && (reference->digest != object->second.digest ||
+                                 reference->bytes != object->second.bytes)) ||
+              (chunkPayload && object->second.bytes > NativeCanonicalMaterialBundleMaxBytes))
+            throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_MISMATCH");
+          const auto& item = object->second;
+          if ((bundled && (item.bundleDigest != firstObject.bundleDigest ||
+                           item.bundleBytes != fetchedBytes)) ||
+              (!bundled && (item.digest != firstObject.digest || item.bytes != fetchedBytes)))
+            throw std::runtime_error("DI_CANONICAL_MATERIAL_BUNDLE_IDENTITY_MISMATCH");
+          const auto sliceOffset = bundled ? item.bundleOffset : 0;
+          if (sliceOffset > fetched.size() || item.bytes > fetched.size() - sliceOffset)
             throw std::runtime_error("DI_CANONICAL_MATERIAL_BUNDLE_RANGE_INVALID");
-          backing = bundle->second;
-          backingOffset = static_cast<std::size_t>(object->second.bundleOffset);
-          backingSize = static_cast<std::size_t>(object->second.bytes);
-          if (sha256Hex(ndn::span<const std::uint8_t>(
-                bundleBytes->data() + backingOffset, backingSize)) != object->second.digest)
+          const auto* slice = fetched.data() + static_cast<std::size_t>(sliceOffset);
+          if (sha256Hex(ndn::span<const std::uint8_t>(slice, item.bytes)) != item.digest)
             throw std::runtime_error("DI_CANONICAL_MATERIAL_PAYLOAD_DIGEST_MISMATCH");
-          logMaterialFetchRange("material-payload", ndn::Name(object->second.dataName),
-                                "verified", backingSize, object->second.digest,
-                                object->second.digest);
-        }
-        else {
-          if (selectedMaterialBytes > projection.assemblyContract().maxAssembledBytes ||
-              object->second.bytes >
-                projection.assemblyContract().maxAssembledBytes - selectedMaterialBytes)
+          if (spoolBytes > assemblyControl.maxAssembledBytes ||
+              item.bytes > assemblyControl.maxAssembledBytes - spoolBytes)
             throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
-          selectedMaterialBytes += object->second.bytes;
-          bytes = fetchPlainObject(object->second.dataName, object->second.digest,
-                                   object->second.bytes, "material-payload");
+          writeMaterial(spoolFd, slice, item.bytes);
+          spoolHash.update(ndn::span<const std::uint8_t>(slice, item.bytes));
+          NativeCanonicalSource::MaterialPayload payload;
+          payload.payloadId = payloadId;
+          payload.digest = item.digest;
+          payload.rangeOffset = spoolBytes;
+          payload.rangeSize = item.bytes;
+          canonicalSource.materialPayloads.push_back(std::move(payload));
+          spoolBytes += item.bytes;
+          logMaterialFetchRange("material-payload", ndn::Name(item.dataName),
+                                "verified", item.bytes, item.digest, item.digest);
+          ++selectedMaterialIndex;
+          const double materialProgress = selectedIds.empty() ? 0.55 :
+            0.25 + 0.40 * static_cast<double>(selectedMaterialIndex) /
+              static_cast<double>(selectedIds.size());
+          reportProgress("MATERIAL_PAYLOAD_VERIFIED", materialProgress);
         }
-        canonicalSource.materialPayloads.push_back({payloadId, object->second.digest,
-                                                     std::move(bytes), std::move(backing),
-                                                     backingOffset, backingSize});
-        ++selectedMaterialIndex;
-        const double materialProgress = selectedIds.empty() ? 0.55 :
-          0.25 + 0.40 * static_cast<double>(selectedMaterialIndex) /
-            static_cast<double>(selectedIds.size());
-        reportProgress("MATERIAL_PAYLOAD_VERIFIED", materialProgress);
       }
-      // The assembled source retains only selected slices; do not keep the
-      // shared bundle buffers alive through worker execution.
-      fetchedBundles.clear();
+      const auto closeStatus = ::close(spoolFd);
+      spoolFd = -1;
+      if (closeStatus != 0)
+        throw std::runtime_error("DI_CANONICAL_MATERIAL_SPOOL_CLOSE_FAILED");
+      auto spoolDigest = spoolHash.toString();
+      std::transform(spoolDigest.begin(), spoolDigest.end(), spoolDigest.begin(),
+        [] (unsigned char value) { return static_cast<char>(std::tolower(value)); });
+      auto spoolControl = assemblyControl;
+      spoolControl.maxSourceBytes = assemblyControl.maxAssembledBytes;
+      auto spoolOwner = openNativeCanonicalInitializerFile(
+        spoolPath.string(), spoolBytes, "sha256:" + spoolDigest, spoolControl);
+      for (auto& payload : canonicalSource.materialPayloads)
+        payload.rangeSource = spoolOwner;
+      payloadsByObject.clear();
       selectedObjects.clear();
       canonicalSource.materialManifest = std::move(materialManifest);
       canonicalSource.materializedRole = true;
@@ -2754,24 +2965,52 @@ prepareNativeCanonicalOnnxRole(
       canonicalSource.materializedGraphDigest = projection.assemblyContract().graphDigest;
       canonicalSource.materializedInitializerDigest =
         projection.assemblyContract().canonicalInitializerDigest;
-      canonicalSource.modelBytes = materializeNativeCanonicalModel(
+      int initializerFd = -1;
+      BOOST_SCOPE_EXIT_ALL(&initializerFd) {
+        if (initializerFd >= 0) ::close(initializerFd);
+      };
+      materializedFiles = materializeNativeCanonicalModelFiles(
         canonicalSource, projection.assemblyContract().nodeIndices,
         projection.assemblyContract().expectedInputs, projection.assemblyContract().expectedOutputs,
-        assemblyControl);
-      // materializeNativeCanonicalModel has consumed the selected payloads
-      // and copied the required initializer ranges into the role model.  Do
-      // not retain those source slices while deriving the role identity or
-      // writing/staging the model: that would overlap the model-sized
-      // protobuf with a second model-sized material buffer.
+        assemblyControl, [&] (const auto& bytes) {
+          assemblyControl.requireActive();
+          if (initializerFd < 0) {
+            storeWhileAuthorized([&] {
+              initializerFd = ::open(initializerFile.c_str(),
+                O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+              if (initializerFd < 0)
+                throw std::runtime_error("DI_CANONICAL_INITIALIZER_FILE_CREATE_FAILED");
+            });
+          }
+          writeMaterial(initializerFd, bytes.data(), bytes.size());
+        });
+      canonicalSource.modelBytes = std::move(materializedFiles.modelBytes);
+      if (initializerFd >= 0) {
+        const auto closeStatus = ::close(initializerFd);
+        initializerFd = -1;
+        if (closeStatus != 0)
+          throw std::runtime_error("DI_CANONICAL_INITIALIZER_FILE_CLOSE_FAILED");
+        auto initializerControl = assemblyControl;
+        initializerControl.maxSourceBytes = assemblyControl.maxAssembledBytes;
+        initializerFileOwner = openNativeCanonicalInitializerFile(
+          initializerFile.string(), materializedFiles.initializerBytes,
+          materializedFiles.initializerDigest, initializerControl);
+        canonicalSource.initializerRangeSource = initializerFileOwner;
+      }
+      // The file materializer consumed selected payloads and streamed large
+      // initializers into the independently owned sidecar. Release the input
+      // spool before deriving identity; it is not the runner's weight file.
       std::vector<NativeCanonicalSource::MaterialPayload>{}.swap(
         canonicalSource.materialPayloads);
+      spoolOwner.reset();
+      storeWhileAuthorized([&] {
+        if (eraseProtectedSourceFile) eraseProtectedSourceFile(spoolPath);
+        else std::filesystem::remove(spoolPath);
+      });
       canonicalSource.materialManifest.reset();
-      // materializeNativeCanonicalModel has authenticated and copied the
-      // selected initializer payloads into the role model as ordinary
-      // TensorProto data.  The full canonical initializer is therefore no
-      // longer an input to the worker; retaining it here would keep the
-      // complete 1.5 GiB source alive beside the materialized role and the
-      // worker's protobuf/ORT copies.
+      // The selected sidecar supersedes any complete source initializer.
+      // Keep only its range owner through parent identity admission; the
+      // graph-only worker never receives the original initializer vector.
       if (canonicalSource.initializerBytes) {
         auto& initializerBytes = canonicalSource.initializerBytes->asVector();
         if (!initializerBytes.empty())
@@ -2925,6 +3164,10 @@ prepareNativeCanonicalOnnxRole(
         workerRecipe.materializedRole = true;
         workerRecipe.recipeDigest = nativePlanningDigest(
           canonicalNativeOnnxRecipeJson(workerRecipe));
+        // The parent has admitted the complete file pair above. This worker
+        // certifies only the bounded graph file; it never consumes weights.
+        // The independent sidecar owner remains alive through finalization.
+        canonicalSource.initializerRangeSource.reset();
         // The materialized role has already been durably staged as
         // canonical.onnx.  Pass that immutable file by descriptor so the
         // worker does not receive another anonymous model-sized vector; the
@@ -2993,7 +3236,15 @@ prepareNativeCanonicalOnnxRole(
     // key reference must not become the disk cache identity.
     const bool persistentPlaintextArtifact = protectedRole;
     std::ostringstream manifest;
-    manifest << "{\"schema\":\"ndnsf-di-assembled-onnx-v1\",\"modelName\":"
+    const bool hasExternalInitializer = materializedFiles.initializerBytes != 0;
+    const auto graphBytes = static_cast<std::uint64_t>(modelBytes.size());
+    const auto fileSetDigest = hasExternalInitializer
+      ? assembledFileSetDigest(assembled.modelDigest, graphBytes,
+          materializedFiles.initializerDigest, materializedFiles.initializerBytes)
+      : std::string{};
+    manifest << "{\"schema\":" << jsonEscape(hasExternalInitializer
+                 ? ASSEMBLED_FILE_SET_SCHEMA : "ndnsf-di-assembled-onnx-v1")
+             << ",\"modelName\":"
              << jsonEscape(modelName) << ",\"modelDigest\":"
              << jsonEscape(modelDigest) << ",\"assembledModelDigest\":"
              << jsonEscape(assembled.modelDigest) << ",\"modelManifestDigest\":"
@@ -3026,7 +3277,15 @@ prepareNativeCanonicalOnnxRole(
              << ",\"padding\":" << jsonEscape(projection.assemblyContract().padding)
              << ",\"nodeCount\":" << assembled.nodeCount
              << ",\"onnxChecker\":\"NATIVE_STRUCTURAL_CHECK\",\"onnxRuntimeLoad\":\"PENDING_NATIVE_PROVIDER\",\"signer\":"
-             << jsonEscape(options.providerIdentity) << "}";
+             << jsonEscape(options.providerIdentity);
+    if (hasExternalInitializer) {
+      manifest << ",\"assembledModelBytes\":" << graphBytes
+               << ",\"externalInitializerBytes\":" << materializedFiles.initializerBytes
+               << ",\"externalInitializerDigest\":"
+               << jsonEscape(materializedFiles.initializerDigest)
+               << ",\"assembledFileSetDigest\":" << jsonEscape(fileSetDigest);
+    }
+    manifest << "}";
     const auto manifestText = manifest.str();
     std::vector<std::uint8_t> manifestBytes(manifestText.begin(), manifestText.end());
     if (manifestBytes.empty() || manifestBytes.size() > MaxAssemblyMetadataBytes) {
@@ -3158,6 +3417,23 @@ prepareNativeCanonicalOnnxRole(
     if (!protectedRole && !std::filesystem::exists(finalModel)) {
       writeSharedAssembledModel(options.cacheDir, finalModel, modelBytes, digest);
     }
+    if (hasExternalInitializer) {
+      const auto finalInitializer = finalDir / "model.onnx.data";
+      requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, finalInitializer);
+      if (std::filesystem::exists(finalInitializer)) {
+        if (std::filesystem::is_symlink(std::filesystem::symlink_status(finalInitializer)) ||
+            std::filesystem::file_size(finalInitializer) != materializedFiles.initializerBytes ||
+            sha256File(finalInitializer, projection.assemblyContract().maxAssembledBytes,
+                       assemblyControl.requireActive) !=
+              materializedFiles.initializerDigest)
+          throw std::runtime_error("DI_NATIVE_ASSEMBLY_INITIALIZER_CACHE_CONFLICT");
+      }
+      else {
+        // Move the inode out of the request's plaintext lease. A hard link
+        // would let later staging zeroization corrupt the persistent member.
+        storeWhileAuthorized([&] { std::filesystem::rename(initializerFile, finalInitializer); });
+      }
+    }
     if (std::filesystem::exists(finalManifest) &&
         readFile(finalManifest, MaxAssemblyMetadataBytes) != manifestBytes) {
       throw std::runtime_error("DI_NATIVE_ASSEMBLY_MANIFEST_CACHE_CONFLICT");
@@ -3214,6 +3490,15 @@ prepareNativeCanonicalOnnxRole(
           ? "cache-compatibility-local-source"
           : "canonical-root-post-selection")},
     };
+    if (hasExternalInitializer) {
+      spec.metadata["assembledArtifactSchema"] = ASSEMBLED_FILE_SET_SCHEMA;
+      spec.metadata["assembledModelBytes"] = std::to_string(graphBytes);
+      spec.metadata["externalInitializerBytes"] = std::to_string(materializedFiles.initializerBytes);
+      spec.metadata["externalInitializerDigest"] = materializedFiles.initializerDigest;
+      spec.metadata["assembledFileSetDigest"] = fileSetDigest;
+      validateNativeAssembledArtifactFiles(spec, options.cacheDir,
+        projection.assemblyContract().maxAssembledBytes, true, assemblyControl.requireActive);
+    }
     // Carry the authenticated generation contract into the runner spec. The
     // provider-side preparation hook narrows the successor map to this local
     // role before the runner is constructed; keeping the projection fields on

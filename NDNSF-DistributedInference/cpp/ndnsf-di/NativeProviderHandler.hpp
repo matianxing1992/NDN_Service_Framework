@@ -103,6 +103,7 @@ struct NativeRequestStatistics
   std::vector<NativeEpochCoordinatorResult::RuntimeMetricsObservation> runtimeMetrics;
   std::vector<NativeEpochCoordinatorResult::CacheObservation> cacheObservations;
   std::optional<ExecutionEvidence> finalExecutionEvidence;
+  std::shared_ptr<class NativeWorkStatistics> workStatistics;
 };
 
 /** Render metadata only, preserving missing clocks and per-call identities. */
@@ -114,7 +115,8 @@ struct NativeProviderHandlerConfig
   using ProviderGroupCoordinatorFactory = std::function<
     std::shared_ptr<ProviderGroupCoordinator>(
       ndn_service_framework::ServiceProvider::CollaborationContext&,
-      const std::map<std::string, std::string>&)>;
+      const std::map<std::string, std::string>&,
+      const std::shared_ptr<NativeWorkStatistics>&)>;
   using RunnerPreparationFactory = std::function<NativeModelRunnerSpec(
     ndn_service_framework::ServiceProvider::CollaborationContext&,
     const NativeSelectionProjectionV3&,
@@ -134,7 +136,8 @@ struct NativeProviderHandlerConfig
   using ProtectedRuntimeFactory = std::function<std::shared_ptr<ProtectedRuntime>(
     ndn_service_framework::ServiceProvider::CollaborationContext&,
     const NativeSelectionProjectionV3&,
-    const std::shared_ptr<ProviderGroupCoordinator>&)>;
+    const std::shared_ptr<ProviderGroupCoordinator>&,
+    const std::shared_ptr<NativeWorkStatistics>&)>;
   // Optional exact-name grant transport.  An empty callback keeps the
   // production NDN transport; deployment/test adapters may provide the same
   // bounded, cancellation-aware fetch without replacing the runtime factory.
@@ -335,7 +338,8 @@ validateProtectedRuntimeBinding(
   const ProtectedRuntime& runtime,
   const std::shared_ptr<ProviderGroupCoordinator>& groupCoordinator,
   const std::string& expectedProviderBootId,
-  const std::string& expectedFencingToken);
+  const std::string& expectedFencingToken,
+  const std::shared_ptr<NativeWorkStatistics>& statistics = {});
 
 struct NativeProviderExecutionControlResult
 {

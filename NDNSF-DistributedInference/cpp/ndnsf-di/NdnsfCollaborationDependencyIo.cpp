@@ -3,7 +3,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/collaboration-work-observer.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
 
 #include <ndn-cxx/util/scope.hpp>
@@ -45,7 +47,8 @@ isCanonicalYoloMergeInput(const DependencyEdge& edge)
 
 void
 validateCanonicalYoloMergeInput(const DependencyEdge& edge,
-                                const TensorBundle& bundle)
+                                const TensorBundle& bundle,
+                                const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
   if (!isCanonicalYoloMergeInput(edge)) {
     return;
@@ -54,7 +57,9 @@ validateCanonicalYoloMergeInput(const DependencyEdge& edge,
     throw std::runtime_error(
       "YOLO_MERGE_DEPENDENCY_NOT_ENCODED: " + edge.tensors.front());
   }
-  const auto tensors = decodeTensorBundle(bundle.payload);
+  NativeWorkScope work(workStatistics, "dependency-merge-validation",
+                       NativeWorkKind::LOCAL);
+  const auto tensors = decodeTensorBundle(bundle.payload, workStatistics);
   auto expectedNames = edge.bundleTensorNames.empty() ?
     edge.tensors : edge.bundleTensorNames;
   auto actualNames = std::vector<std::string>{};
@@ -196,19 +201,13 @@ producerRankForEdge(const GroupCapabilityV1& capability,
   return edge.collectiveProducerRank;
 }
 
-const GroupOperationV1&
+GroupOperationV1
 operationForEdge(const GroupCapabilityV1& capability,
-              std::uint64_t operationIndex)
+                 std::uint64_t operationIndex,
+                 const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
-  const auto found = std::find_if(
-    capability.permittedOperations.begin(), capability.permittedOperations.end(),
-    [operationIndex] (const auto& operation) {
-      return operation.operationIndex == operationIndex;
-    });
-  if (found == capability.permittedOperations.end()) {
-    throw std::runtime_error("NDNSF_DATA_V1 operation is not permitted");
-  }
-  return *found;
+  NativeWorkScope work(workStatistics, "group-operation-lookup", NativeWorkKind::LOCAL);
+  return capability.operation(operationIndex);
 }
 
 bool
@@ -369,13 +368,15 @@ NdnsfCollaborationDependencyIo::NdnsfCollaborationDependencyIo(
   int freshnessMs,
   std::shared_ptr<ProviderGroupCoordinator> groupCoordinator,
   std::shared_ptr<ProtectedRuntime> protectedRuntime,
-  std::size_t prefetchWorkerCount)
+  std::size_t prefetchWorkerCount,
+  std::shared_ptr<NativeWorkStatistics> workStatistics)
   : m_ctx(ctx)
   , m_fetchTimeoutMs(fetchTimeoutMs)
   , m_maxSegmentSize(maxSegmentSize)
   , m_freshnessMs(freshnessMs)
   , m_groupCoordinator(std::move(groupCoordinator))
   , m_protectedRuntime(std::move(protectedRuntime))
+  , m_workStatistics(std::move(workStatistics))
 {
   if (prefetchWorkerCount != 0) {
     m_prefetchWorkers = std::make_unique<ndn_service_framework::BoundedWorkerPool>(
@@ -433,6 +434,8 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
     }
   };
   auto fetch = [this, sessionId, edge, cancelled, reportFirstRead] {
+   NativeWorkScope workerWork(m_workStatistics, "dependency-prefetch-worker",
+                              NativeWorkKind::LOCAL);
    try {
     if (cancelled->load(std::memory_order_acquire)) {
       throw std::runtime_error("dependency prefetch was cancelled");
@@ -446,7 +449,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
     if (m_protectedRuntime) {
       m_protectedRuntime->authorizeDataflow(
         ProtectedDataflowDirection::Fetch, edge.endpointDigest,
-        edge.producerRole, edge.consumerRole, nowEpochMs());
+        edge.producerRole, edge.consumerRole, nowEpochMs(), edge.round, m_workStatistics);
     }
     CollaborationTransferMetrics transportMetrics;
     if (edge.useNdnsfDataV1) {
@@ -456,7 +459,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
       }
       const auto& capability = m_groupCoordinator->capability();
       const auto& operation = operationForEdge(
-        capability, edge.collectiveOperationIndex);
+        capability, edge.collectiveOperationIndex, m_workStatistics);
       if (operation.kind != edge.operationKind)
         throw std::invalid_argument("tensor operation differs from the signed capability");
       const auto producerRank = producerRankForEdge(capability, edge);
@@ -510,6 +513,11 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           const auto bounded = static_cast<int>(std::min<std::uint64_t>(
             remaining, fetchBudget));
           CollaborationTransferMetrics segmentMetrics;
+          segmentMetrics.localWorkObserver =
+            detail::makeCollaborationWorkObserver(m_workStatistics);
+          NativeWorkScope fetchWait(m_workStatistics,
+                                    "dependency-exact-data-fetch-wait",
+                                    NativeWorkKind::WAIT);
           auto content = m_ctx.fetchSignedExactData(
             edge.transportScope.empty() ? edge.scope : edge.transportScope,
             name,
@@ -524,6 +532,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
             initialProducerReadiness
               ? ndn_service_framework::ServiceProvider::ExactDataFetchPhase::AwaitPublication
               : ndn_service_framework::ServiceProvider::ExactDataFetchPhase::Published);
+          fetchWait.finish();
           if (!content) {
             if (cancelled->load(std::memory_order_acquire)) {
               throw std::runtime_error(
@@ -581,6 +590,9 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
            speculativeDeadline, speculativeExpired,
            coordinator = m_groupCoordinator](const ndn::Name& dataName,
                                              bool producerReadiness = false) {
+            NativeWorkScope segmentWorkerWork(
+              m_workStatistics, "dependency-segment-fetch-worker",
+              NativeWorkKind::LOCAL);
             const auto remaining = remainingDeadlineMs(hardDeadline);
             if (remaining == 0 || cancelled->load(std::memory_order_acquire) ||
                 batchCancelled->load(std::memory_order_acquire) || coordinator->terminal() ||
@@ -604,6 +616,11 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
             SegmentFetchResult result;
             try {
               const auto fetchTiming = detail::nativePhaseStarted();
+              result.metrics.localWorkObserver =
+                detail::makeCollaborationWorkObserver(m_workStatistics);
+              NativeWorkScope fetchWait(m_workStatistics,
+                                        "dependency-segment-fetch-wait",
+                                        NativeWorkKind::WAIT);
               auto content = m_ctx.fetchSignedExactData(
                 edge.transportScope.empty() ? edge.scope : edge.transportScope,
                 dataName, ndn::Name(producerMember->provider),
@@ -620,6 +637,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
                 producerReadiness
                   ? ndn_service_framework::ServiceProvider::ExactDataFetchPhase::AwaitPublication
                   : ndn_service_framework::ServiceProvider::ExactDataFetchPhase::Published);
+              fetchWait.finish();
               if (!content) {
                 throw std::runtime_error(
                   "failed to fetch signed exact Data: " + dataName.toUri());
@@ -828,12 +846,17 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           // manifest below instead of discarding a useful same-count batch.
           const bool matches = manifest.segmentCount == prefetchCount;
           if (matches) {
-            while (speculativeWhole->wait_for(std::chrono::milliseconds(5)) !=
-                   std::future_status::ready) {
-              if (cancelled->load(std::memory_order_acquire) ||
-                  m_groupCoordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0 ||
-                  speculativeExpired())
-                throw std::runtime_error("NDNSF_DATA_V1 speculative batch fetch aborted");
+            {
+              NativeWorkScope wait(m_workStatistics,
+                                   "dependency-speculative-batch-wait",
+                                   NativeWorkKind::WAIT);
+              while (speculativeWhole->wait_for(std::chrono::milliseconds(5)) !=
+                     std::future_status::ready) {
+                if (cancelled->load(std::memory_order_acquire) ||
+                    m_groupCoordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0 ||
+                    speculativeExpired())
+                  throw std::runtime_error("NDNSF_DATA_V1 speculative batch fetch aborted");
+              }
             }
             auto result = speculativeWhole->get();
             const auto expectedContents = manifest.segmentCount -
@@ -929,12 +952,17 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
             fetched.received = true;
           }
           else if (index == 0 && speculativeFirstStarted) {
-            while (speculativeFirst->wait_for(std::chrono::milliseconds(5)) !=
+            {
+              NativeWorkScope wait(m_workStatistics,
+                                   "dependency-first-segment-wait",
+                                   NativeWorkKind::WAIT);
+              while (speculativeFirst->wait_for(std::chrono::milliseconds(5)) !=
                      std::future_status::ready) {
-              if (cancelled->load(std::memory_order_acquire) ||
-                  m_groupCoordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0 ||
-                  speculativeExpired()) {
-                throw std::runtime_error("NDNSF_DATA_V1 segment fetch aborted");
+                if (cancelled->load(std::memory_order_acquire) ||
+                    m_groupCoordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0 ||
+                    speculativeExpired()) {
+                  throw std::runtime_error("NDNSF_DATA_V1 segment fetch aborted");
+                }
               }
             }
             auto firstResult = speculativeFirst->get();
@@ -983,13 +1011,18 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           else {
             if (batchOffset == batchWires.size()) {
               if (!pendingBatch || !batchWires.empty()) fetchBatch(index, false);
-              while (pendingBatch->wait_for(std::chrono::milliseconds(5)) !=
+              {
+                NativeWorkScope wait(m_workStatistics,
+                                     "dependency-next-batch-wait",
+                                     NativeWorkKind::WAIT);
+                while (pendingBatch->wait_for(std::chrono::milliseconds(5)) !=
                        std::future_status::ready) {
-                if (cancelled->load(std::memory_order_acquire) ||
-                    m_groupCoordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0 ||
-                    SteadyClock::now().time_since_epoch().count() >=
-                      batchProgressDeadline->load(std::memory_order_acquire)) {
-                  throw std::runtime_error("NDNSF_DATA_V1 batch fetch aborted");
+                  if (cancelled->load(std::memory_order_acquire) ||
+                      m_groupCoordinator->terminal() || remainingDeadlineMs(hardDeadline) == 0 ||
+                      SteadyClock::now().time_since_epoch().count() >=
+                        batchProgressDeadline->load(std::memory_order_acquire)) {
+                    throw std::runtime_error("NDNSF_DATA_V1 batch fetch aborted");
+                  }
                 }
               }
               auto batchResult = pendingBatch->get();
@@ -1221,7 +1254,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
         bundle.expectedSegments = manifest.segmentCount;
         bundle.expectedBytes = bundle.payload.size();
         attachTransferObservation(edge, bundle, "receive", transportMetrics);
-        validateCanonicalYoloMergeInput(edge, bundle);
+        validateCanonicalYoloMergeInput(edge, bundle, m_workStatistics);
         detail::logNativeWorkPhase(edge.requestId, "tensor_reconstruct_validate",
                                   reconstructTiming, edge.consumerRole);
         logDependencyObject(sessionId, edge, "fetch-exact-ndn",
@@ -1259,7 +1292,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
     bundle.expectedSegments = edge.expectedSegments;
     bundle.expectedBytes = edge.expectedBytes;
     attachTransferObservation(edge, bundle, "receive", transportMetrics);
-    validateCanonicalYoloMergeInput(edge, bundle);
+    validateCanonicalYoloMergeInput(edge, bundle, m_workStatistics);
     logDependencyObject(sessionId, edge, "fetch", bundle.payload.size(), "ok");
     logDependencyStageMarker("complete", sessionId, edge,
                              m_ctx.localProvider().toUri());
@@ -1341,7 +1374,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
   if (m_protectedRuntime) {
     m_protectedRuntime->authorizeDataflow(
       ProtectedDataflowDirection::Publish, edge.endpointDigest,
-      edge.producerRole, edge.consumerRole, nowEpochMs());
+      edge.producerRole, edge.consumerRole, nowEpochMs(), edge.round, m_workStatistics);
   }
   if (edge.useNdnsfDataV1) {
     if (!m_groupCoordinator || !m_groupCoordinator->hasCapability()) {
@@ -1350,7 +1383,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
     }
     const auto& capability = m_groupCoordinator->capability();
     const auto& operation = operationForEdge(
-      capability, edge.collectiveOperationIndex);
+      capability, edge.collectiveOperationIndex, m_workStatistics);
     if (operation.kind != edge.operationKind)
       throw std::invalid_argument("tensor operation differs from the signed capability");
     const auto producerRank = producerRankForEdge(capability, edge);

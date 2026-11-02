@@ -47,18 +47,20 @@ NativeCanonicalRolePreparer::NativeCanonicalRolePreparer(NativeInspectedModel mo
   control.requireActive();
   m_model.validate();
   const auto& p = m_profile;
-  if (source.modelBytes.empty() || source.modelBytes.size() != m_model.canonicalSourceBytes ||
-      source.modelBytes.size() > p.maxSourceBytes ||
-      nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) != m_model.canonicalSourceDigest ||
-      source.initializerBytes.has_value() != (m_model.canonicalInitializerBytes != 0) ||
-      (source.initializerBytes && (source.initializerBytes->size() != m_model.canonicalInitializerBytes ||
-        source.initializerBytes->size() > p.maxSourceBytes ||
-        nativePlanningDigest(source.initializerBytes->data(), source.initializerBytes->size()) !=
-          m_model.canonicalInitializerObjectDigest)))
-    throw std::invalid_argument("native role source differs from inspected catalog");
   auto bounded = control;
   bounded.maxSourceBytes = std::min(control.maxSourceBytes, p.maxSourceBytes);
   bounded.maxAssembledBytes = std::min(control.maxAssembledBytes, p.maxAssembledBytes);
+  if (source.modelBytes.empty() || source.modelBytes.size() != m_model.canonicalSourceBytes ||
+      source.modelBytes.size() > p.maxSourceBytes ||
+      nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) != m_model.canonicalSourceDigest ||
+      (source.initializerBytes || source.initializerRangeSource) !=
+        (m_model.canonicalInitializerBytes != 0) ||
+      ((source.initializerBytes || source.initializerRangeSource) &&
+       (nativeCanonicalInitializerByteSize(source) != m_model.canonicalInitializerBytes ||
+        nativeCanonicalInitializerByteSize(source) > p.maxSourceBytes ||
+        nativeCanonicalInitializerDigest(source, bounded) !=
+          m_model.canonicalInitializerObjectDigest)))
+    throw std::invalid_argument("native role source differs from inspected catalog");
   m_sourceGraph = inspectNativeOnnxSourceGraph(source, m_model.descriptor, bounded);
   checkOnnxAssemblerDescriptorBinding(p.assemblerDescriptorDigest, source, bounded);
   validateFrozen(control);
@@ -91,6 +93,18 @@ void NativeCanonicalRolePreparer::validateFrozen(const NativeAssemblyControl& co
        m_sourceGraph.canonicalIdentity.initializerDigest != m_model.canonicalInitializerDigest) ||
       m_sourceGraph.graph.nodes.size() > p.maxNodes || m_sourceGraph.graphMetadataJson.empty())
     throw std::invalid_argument("native role canonical source identity or node bound differs");
+  const auto metadata = nativeParseJson(m_sourceGraph.graphMetadataJson);
+  const auto initializers = metadata.at("initializers").get<std::vector<std::string>>();
+  if (m_sourceGraph.initializerConsumers.size() != initializers.size())
+    throw std::invalid_argument("native initializer ownership is incomplete; reprepare source");
+  for (const auto& name : initializers) {
+    const auto found = m_sourceGraph.initializerConsumers.find(name);
+    if (found == m_sourceGraph.initializerConsumers.end() ||
+        std::any_of(found->second.begin(), found->second.end(), [&](auto index) {
+          return index >= m_sourceGraph.graph.nodes.size();
+        }))
+      throw std::invalid_argument("native initializer ownership differs from source graph");
+  }
   if (m_mapping.empty()) {
     if (m_sourceGraph.graph.graphDigest != m_model.graph.graphDigest)
       throw std::invalid_argument("native semantic graph requires an explicit ONNX node mapping");
@@ -120,10 +134,24 @@ NativeRequestPreparation::RolePort NativeCanonicalRolePreparer::rolePort() const
 
 NativeSplitCandidate NativeCanonicalRolePreparer::bindStateContracts(const NativeInspectedModel& model,
   const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
-  const NativeRequestControl& control) const
+  const NativeRequestControl& control, NativeStateContractBinding binding) const
 {
   control.requireActive();
   candidate.validate(m_model.graph);
+  const bool sourceDefined = binding == NativeStateContractBinding::SOURCE;
+  if (!sourceDefined && binding != NativeStateContractBinding::DECLARED)
+    throw std::invalid_argument("unknown native state contract binding");
+  if (sourceDefined) {
+    for (const auto* side : {&mapping.inputs, &mapping.outputs}) {
+      if (side->size() != candidate.executionPlan.roles.size())
+        throw std::invalid_argument("source state mapping has an incomplete role cover");
+      for (const auto& role : candidate.executionPlan.roles) {
+        const auto found = side->find(role);
+        if (found == side->end() || found->second.empty())
+          throw std::invalid_argument("source state mapping omits a role state contract");
+      }
+    }
+  }
   // Reuse the checked source-boundary producer without treating abstract
   // state shapes as concrete export shapes. This temporary candidate is never
   // published or returned, and all non-state identity checks still run.
@@ -136,36 +164,50 @@ NativeSplitCandidate NativeCanonicalRolePreparer::bindStateContracts(const Nativ
   auto result = candidate;
   const auto bind = [&](const auto& declared, const NativeStateTensorMapping::Roles& mapped,
                         auto& destination, bool input) {
-    if (declared.size() != mapped.size())
+    if (!sourceDefined && declared.size() != mapped.size())
       throw std::invalid_argument("native state mapping has an incomplete role cover");
     destination.clear();
-    for (const auto& item : declared) {
+    const auto bindRole = [&](const std::string& roleName,
+                              const std::vector<NativeTensorContract>* expected) {
       control.requireActive();
-      const auto found = mapped.find(item.first);
-      if (found == mapped.end() || found->second.size() != item.second.size())
+      const auto found = mapped.find(roleName);
+      if (found == mapped.end() || (expected && found->second.size() != expected->size()))
         throw std::invalid_argument("native state mapping has an incomplete semantic cover");
       const auto role = std::find_if(roles.begin(), roles.end(), [&](const auto& value) {
-        return value.role == item.first && value.rank == 0;
+        return value.role == roleName && value.rank == 0;
       });
       if (role == roles.end()) throw std::invalid_argument("native state mapping has a foreign role");
       const auto& boundary = input ? role->expectedInputs : role->expectedOutputs;
-      auto& contracts = destination[item.first];
+      auto& contracts = destination[roleName];
       std::set<std::string> used;
-      for (const auto& semantic : item.second) {
-        const auto names = found->second.find(semantic.name);
-        if (names == found->second.end() || names->second.empty())
+      const auto append = [&](const std::string& semanticName, const std::string* expectedDtype) {
+        const auto names = found->second.find(semanticName);
+        if (semanticName.empty() || names == found->second.end() || names->second.empty())
           throw std::invalid_argument("native state mapping omits a semantic state");
         for (const auto& name : names->second) {
           const auto actual = std::find_if(boundary.begin(), boundary.end(), [&](const auto& value) {
             return value.name == name;
           });
-          if (actual == boundary.end() || actual->dtype != semantic.dtype || !used.insert(name).second)
+          if (actual == boundary.end() ||
+              (expectedDtype && actual->dtype != *expectedDtype) || !used.insert(name).second)
             throw std::invalid_argument("native state mapping differs from the source boundary");
           const auto& size = metadata.at("tensors").at(name).at("sizeBytes");
           contracts.push_back({actual->name, actual->dtype, actual->shape,
             size.is_null() ? std::nullopt : std::optional<std::uint64_t>(size.template get<std::uint64_t>())});
         }
+      };
+      if (expected) {
+        for (const auto& semantic : *expected) append(semantic.name, &semantic.dtype);
       }
+      else {
+        for (const auto& semantic : found->second) append(semantic.first, nullptr);
+      }
+    };
+    if (sourceDefined) {
+      for (const auto& item : mapped) bindRole(item.first, nullptr);
+    }
+    else {
+      for (const auto& item : declared) bindRole(item.first, &item.second);
     }
   };
   bind(candidate.roleStateInputsByRole, mapping.inputs, result.roleStateInputsByRole, true);
@@ -243,6 +285,29 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
     const auto degree = degreeEntry == candidate.tensorDegreesByRole.end() ? 1 : degreeEntry->second;
     if (!degree || degree > 1024) throw std::invalid_argument("native role degree is invalid");
     const auto& requirement = candidate.requirementsByRole.at(name);
+    // This is a source-derived lower bound, not backend peak memory. Rank
+    // sharding and native postprocessing do not load this full ONNX weight set.
+    if (degree == 1 && !(name == candidate.resultEgressRole &&
+                        candidate.mergeKind == "NATIVE_POSTPROCESS")) {
+      std::uint64_t consumedBytes = 0;
+      for (const auto& initializer : initializers) {
+        const auto& initializerConsumers = m_sourceGraph.initializerConsumers;
+        const auto consumers = initializerConsumers.find(initializer);
+        if (consumers == initializerConsumers.end()) continue;
+        const auto& users = consumers->second;
+        if (std::none_of(users.begin(), users.end(), [&](auto node) { return owned.count(node); }))
+          continue;
+        const auto& bytes = metadata.at("tensors").at(initializer).at("sizeBytes");
+        if (!bytes.is_number_unsigned())
+          throw std::invalid_argument("native role initializer memory is unknown");
+        const auto count = bytes.get<std::uint64_t>();
+        if (count > std::numeric_limits<std::uint64_t>::max() - consumedBytes)
+          throw std::overflow_error("native role initializer memory exceeds uint64");
+        consumedBytes += count;
+      }
+      if (!requirement.weightBytes || *requirement.weightBytes < consumedBytes)
+        throw std::invalid_argument("native role weight budget is below its consumed initializers");
+    }
     const auto peak = requirement.estimatedPeakGpuMemoryBytes();
     if (!peak) throw std::invalid_argument("native role requires a known runtime memory bound");
     const auto artifacts = candidate.rankArtifactDigestsByRole.find(name);

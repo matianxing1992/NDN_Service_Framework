@@ -66,18 +66,25 @@ struct CountingStore : RepoStoreBackend
   explicit CountingStore(std::shared_ptr<RepoStoreBackend> store) : delegate(std::move(store)) {}
   std::shared_ptr<RepoStoreBackend> delegate;
   mutable size_t enumerations = 0;
+  mutable size_t usageScans = 0;
   void put(const RepoObjectManifest& m, std::vector<uint8_t> p) override { delegate->put(m, std::move(p)); }
   void putManifest(const RepoObjectManifest& m) override { delegate->putManifest(m); }
   StoredObject get(const std::string& n) const override { return delegate->get(n); }
   bool has(const std::string& n) const override { return delegate->has(n); }
   bool erase(const std::string& n) override { return delegate->erase(n); }
   size_t size() const override { return delegate->size(); }
-  uint64_t usedBytes() const override { return delegate->usedBytes(); }
+  uint64_t usedBytes() const override
+  {
+    ++usageScans;
+    return delegate->usedBytes();
+  }
   std::vector<RepoObjectManifest> listManifests() const override
   {
     ++enumerations;
     return delegate->listManifests();
   }
+  bool hasCommittedPayload(const RepoObjectManifest& manifest) const override
+  { return delegate->hasCommittedPayload(manifest); }
   void putRange(const RepoObjectManifest& m, RepoByteRange r, const std::vector<uint8_t>& p) override
   { delegate->putRange(m, r, p); }
   void commitRanges(const RepoObjectManifest& m) override { delegate->commitRanges(m); }
@@ -527,16 +534,84 @@ struct AdmissionFile
 BOOST_AUTO_TEST_CASE(PacketFileAdmissionBoundsCatalogScans)
 {
   Fixture fixture;
-  auto store = std::make_shared<CountingStore>(fixture.store("admission"));
+  auto tiered = makeTieredRepoStore(fixture.store("admission"), 0, "filesystem");
+  auto store = std::make_shared<CountingStore>(tiered);
   RepoCore repo(fixture.capability(), store);
-  repo.putDataPacket(packetName().toUri(), packet(packetName()));
+  const auto standaloneWire = packet(packetName());
+  repo.putDataPacket(packetName().toUri(), standaloneWire);
   AdmissionFile incoming(fixture, "batch", 32);
   store->enumerations = 0;
+  store->usageScans = 0;
   repo.commitOriginalPacketFile(incoming.manifest, incoming.path);
   BOOST_CHECK_GT(store->enumerations, 0U);
   BOOST_CHECK_LE(store->enumerations, 8U);
+  BOOST_CHECK_EQUAL(store->usageScans, 0U);
+  auto expected = fixture.capability();
+  expected.usedBytes = standaloneWire.size() + incoming.manifest.size;
+  expected.freeBytes -= expected.usedBytes;
+  const auto actualCapability = repo.handleCapability();
+  BOOST_CHECK_EQUAL(std::string(actualCapability.begin(), actualCapability.end()),
+                    expected.toJson());
   for (const auto& item : incoming.packets)
     BOOST_CHECK(repo.getDataPacket(item.first.toUri()) == item.second);
+}
+
+BOOST_AUTO_TEST_CASE(PacketFileAdmissionPreservesDeduplicatedCapacity)
+{
+  Fixture fixture;
+  auto tiered = makeTieredRepoStore(fixture.store("deduplicated"), 0, "filesystem");
+  auto store = std::make_shared<CountingStore>(tiered);
+  AdmissionFile incoming(fixture, "deduplicated", 4);
+  std::ifstream input(incoming.path, std::ios::binary);
+  BOOST_REQUIRE(input.good());
+  std::vector<uint8_t> payload(incoming.manifest.size);
+  input.read(reinterpret_cast<char*>(payload.data()),
+             static_cast<std::streamsize>(payload.size()));
+  BOOST_REQUIRE_EQUAL(input.gcount(), static_cast<std::streamsize>(payload.size()));
+
+  RepoObjectManifest existing;
+  existing.objectType = "opaque-payload";
+  existing.objectName = "/repo/existing-payload";
+  existing.size = incoming.manifest.size;
+  existing.sha256 = incoming.manifest.sha256;
+  store->put(existing, std::move(payload));
+
+  RepoCore repo(fixture.capability(), store);
+  store->usageScans = 0;
+  repo.commitOriginalPacketFile(incoming.manifest, incoming.path);
+
+  BOOST_CHECK_GT(store->usageScans, 0U);
+  const auto actualCapability = repo.handleCapability();
+  auto expected = fixture.capability();
+  expected.usedBytes = incoming.manifest.size;
+  expected.freeBytes -= expected.usedBytes;
+  BOOST_CHECK_EQUAL(std::string(actualCapability.begin(), actualCapability.end()),
+                    expected.toJson());
+}
+
+BOOST_AUTO_TEST_CASE(PacketFileAdmissionAccountsForOrphanedDigest)
+{
+  Fixture fixture;
+  auto tiered = makeTieredRepoStore(fixture.store("orphaned"), 0, "filesystem");
+  auto store = std::make_shared<CountingStore>(tiered);
+  AdmissionFile incoming(fixture, "orphaned", 4);
+  const auto payloadPath = fixture.root / "orphaned" / "payloads" / "sha256" /
+                           incoming.manifest.sha256.substr(0, 2) /
+                           incoming.manifest.sha256;
+  std::filesystem::create_directories(payloadPath.parent_path());
+  std::filesystem::copy_file(incoming.path, payloadPath);
+
+  RepoCore repo(fixture.capability(), store);
+  store->usageScans = 0;
+  repo.commitOriginalPacketFile(incoming.manifest, incoming.path);
+
+  BOOST_CHECK_GT(store->usageScans, 0U);
+  const auto actualCapability = repo.handleCapability();
+  auto expected = fixture.capability();
+  expected.usedBytes = incoming.manifest.size;
+  expected.freeBytes -= expected.usedBytes;
+  BOOST_CHECK_EQUAL(std::string(actualCapability.begin(), actualCapability.end()),
+                    expected.toJson());
 }
 
 BOOST_AUTO_TEST_CASE(PacketFileAdmissionRejectsExternalCatalogChange)

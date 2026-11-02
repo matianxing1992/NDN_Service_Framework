@@ -22,6 +22,16 @@
 
 namespace ndnsf::di {
 
+/** Validate the complete local assembled artifact and return its charged bytes.
+ * File-pair metadata binds the fixed graph/sidecar names, lengths and digests.
+ * verifyContents follows the existing trusted-cache/full-digest policy.
+ */
+std::uint64_t
+validateNativeAssembledArtifactFiles(const NativeModelRunnerSpec& spec,
+                                     const std::filesystem::path& cacheRoot,
+                                     std::uint64_t maxBytes, bool verifyContents,
+                                     const std::function<void()>& requireActive = {});
+
 /** Bounded identity index for persistent recipe-addressed ONNX artifacts. */
 class NativePersistentRecipeResidencyIndex
 {

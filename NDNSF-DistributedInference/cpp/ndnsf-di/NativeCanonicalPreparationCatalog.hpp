@@ -46,7 +46,8 @@ public:
   NativeCanonicalPublicationOptions publicationFor(const NativeModelDescriptor& model) const;
   NativeSplitCandidate bindStateContracts(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
-    const NativeRequestControl& control) const;
+    const NativeRequestControl& control,
+    NativeStateContractBinding binding = NativeStateContractBinding::DECLARED) const;
   std::vector<NativeSelectionRoleV3> prepareRoles(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeRequestControl& control) const;
   std::shared_ptr<NativeRequestPreparation> makePreparation(

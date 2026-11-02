@@ -23,6 +23,8 @@
 
 namespace ndnsf::di {
 
+class NativeWorkStatistics;
+
 struct NativeAssemblyTensorContractV3
 {
   std::string name;
@@ -269,7 +271,14 @@ nativeSelectionInvocationV2ToJson(
   const NativeFixedRoleAssignmentV1& fixedAssignment,
   const NativeFixedRoleSourceV1* source = nullptr);
 
-/** Decode V1 owner bindings from either supported invocation transport version. */
+/** Encode a fixed-template generation recipe without future endpoint bindings. */
+std::string
+nativeSelectionInvocationV3ToJson(
+  const NativeSelectionProjectionV3& projection,
+  const NativeFixedRoleAssignmentV1& fixedAssignment,
+  const NativeFixedRoleSourceV1* source = nullptr);
+
+/** Decode owner bindings from V1, V2 or V3 invocation transport. */
 NativeSelectionProjectionV3 nativeSelectionInvocationV1FromJson(
   std::istream& input, const std::string& selectedRole,
   const NativeFixedRoleAssignmentV1& fixedAssignment);
@@ -289,32 +298,40 @@ public:
   std::shared_ptr<const NativeFixedRoleAssignmentV1> find(
     const std::string& requester, const std::string& service,
     const std::string& provider, const std::string& role,
-    const std::string& digest);
+    const std::string& digest,
+    const std::shared_ptr<NativeWorkStatistics>& statistics = {});
 
   std::shared_ptr<const NativeFixedRoleAssignmentV1> findMatching(
     const std::string& requester, const std::string& service,
-    const std::string& provider, const NativeSelectionRoleV3& role);
+    const std::string& provider, const NativeSelectionRoleV3& role,
+    const std::shared_ptr<NativeWorkStatistics>& statistics = {});
   std::shared_ptr<const NativeFixedRoleAssignmentV1> findMatching(
     const std::string& requester, const std::string& service,
-    const NativeSelectionProjectionV3& projection);
+    const NativeSelectionProjectionV3& projection,
+    const std::shared_ptr<NativeWorkStatistics>& statistics = {});
 
   // Installation follows the caller's current authorization checks.
   std::shared_ptr<const NativeFixedRoleAssignmentV1> remember(
     const std::string& requester, const std::string& service,
-    std::shared_ptr<const NativeFixedRoleAssignmentV1> assignment);
+    std::shared_ptr<const NativeFixedRoleAssignmentV1> assignment,
+    const std::shared_ptr<NativeWorkStatistics>& statistics = {});
 
   void clear();
   std::shared_ptr<const NativeFixedPlacementCoreV1> placementCore(
-    const std::string& requester, const std::string& service);
+    const std::string& requester, const std::string& service,
+    const std::shared_ptr<NativeWorkStatistics>& statistics = {});
   void rememberPlacementCore(const std::string& requester, const std::string& service,
-    std::shared_ptr<const NativeFixedPlacementCoreV1> owner);
+    std::shared_ptr<const NativeFixedPlacementCoreV1> owner,
+    const std::shared_ptr<NativeWorkStatistics>& statistics = {});
 
   std::shared_ptr<const NativeFixedRoleSourceV1> source(
     const std::string& requester, const std::string& service,
-    const NativeFixedRoleAssignmentV1& assignment);
+    const NativeFixedRoleAssignmentV1& assignment,
+    const std::shared_ptr<NativeWorkStatistics>& statistics = {});
   std::shared_ptr<const NativeFixedRoleSourceV1> rememberSource(
     const std::string& requester, const std::string& service,
-    const NativeFixedRoleAssignmentV1& assignment, NativeFixedRoleSourceV1 source);
+    const NativeFixedRoleAssignmentV1& assignment, NativeFixedRoleSourceV1 source,
+    const std::shared_ptr<NativeWorkStatistics>& statistics = {});
 
 private:
   using Key = std::tuple<std::string, std::string, std::string, std::string>;
@@ -324,7 +341,8 @@ private:
     std::shared_ptr<const NativeFixedRoleSourceV1> source;
     std::shared_ptr<const NativeFixedPlacementCoreV1> placementCore;
   };
-  void pruneExpired(std::chrono::steady_clock::time_point now);
+  void pruneExpired(std::chrono::steady_clock::time_point now,
+                    const std::shared_ptr<NativeWorkStatistics>& statistics);
   static void validateScope(const std::string& requester, const std::string& service);
   std::size_t m_capacity;
   std::chrono::milliseconds m_retention;
@@ -389,7 +407,8 @@ public:
     std::string localProvider);
 
   RoleSpec
-  operator()(std::uint64_t sequence) const;
+  operator()(std::uint64_t sequence,
+             const std::shared_ptr<NativeWorkStatistics>& statistics = {}) const;
 
 private:
   struct State;

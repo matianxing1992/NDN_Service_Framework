@@ -2,6 +2,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
+#include <ndn-cxx/util/sha256.hpp>
+
 // Spec 182 unifies the DI ONNX world on the official 1.17 full-protobuf
 // headers (ONNX_USE_LITE_PROTO=OFF) installed by the configured ONNX prefix;
 // the previous vendored lite trio no longer exists in this tree.
@@ -17,6 +19,7 @@
 #include <google/protobuf/io/zero_copy_stream_impl.h>
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
 #include <openssl/sha.h>
 
 #include <algorithm>
@@ -34,10 +37,12 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -45,6 +50,72 @@ namespace ndnsf::di {
 namespace {
 
 [[noreturn]] void fail(const char* code);
+
+class NativeShapeSchemaRegistry final : public onnx::ISchemaRegistry
+{
+public:
+  explicit NativeShapeSchemaRegistry(const onnx::ModelProto& model)
+  {
+    for (const auto& function : model.functions()) {
+      if (function.domain() == "com.microsoft" && function.name() == "MatMulNBits")
+        m_hasLocalNBits = true;
+    }
+    m_nBits.SetName("MatMulNBits").SetDomain("com.microsoft").SinceVersion(1)
+      .Input(0, "A", "Activation", "T")
+      .Input(1, "B", "Packed weights", "TQ")
+      .Input(2, "scales", "Block scales", "T")
+      .Input(3, "zero_points", "Optional zero points", "TZ", onnx::OpSchema::Optional)
+      .Input(4, "g_idx", "Optional group indices", "tensor(int32)", onnx::OpSchema::Optional)
+      .Input(5, "bias", "Optional bias", "T", onnx::OpSchema::Optional)
+      .Output(0, "Y", "Matrix product", "T")
+      .TypeConstraint("T", {"tensor(float)", "tensor(float16)"}, "Activation type")
+      .TypeConstraint("TQ", {"tensor(uint8)"}, "Packed weights")
+      .TypeConstraint("TZ", {"tensor(uint8)", "tensor(float)", "tensor(float16)"},
+                      "Zero-point representation")
+      .TypeAndShapeInferenceFunction([] (onnx::InferenceContext& context) {
+        onnx::propagateElemTypeFromInputToOutput(context, 0, 0);
+        const auto* k = context.getAttribute("K");
+        const auto* n = context.getAttribute("N");
+        if (k == nullptr || n == nullptr || k->type() != onnx::AttributeProto::INT ||
+            n->type() != onnx::AttributeProto::INT || k->i() <= 0 || n->i() <= 0)
+          fail_shape_inference("MatMulNBits requires positive K and N");
+        if (!onnx::hasInputShape(context, 0))
+          fail_shape_inference("MatMulNBits activation rank is unknown");
+        const auto& input = onnx::getInputShape(context, 0);
+        if (input.dim_size() < 2)
+          fail_shape_inference("MatMulNBits activation rank must be at least two");
+        const auto& width = input.dim(input.dim_size() - 1);
+        if (width.has_dim_value() && width.dim_value() != k->i())
+          fail_shape_inference("MatMulNBits activation width differs from K");
+        auto output = input;
+        auto* last = output.mutable_dim(output.dim_size() - 1);
+        last->clear_dim_param();
+        last->set_dim_value(n->i());
+        onnx::updateOutputShape(context, 0, output);
+      });
+    m_nBits.Finalize();
+  }
+
+  const onnx::OpSchema*
+  GetSchema(const std::string& name, const int version,
+            const std::string& domain) const override
+  {
+    if (!m_hasLocalNBits && name == "MatMulNBits" && domain == "com.microsoft" && version == 1)
+      return &m_nBits;
+    return onnx::OpSchemaRegistry::Instance()->GetSchema(name, version, domain);
+  }
+
+private:
+  onnx::OpSchema m_nBits;
+  bool m_hasLocalNBits = false;
+};
+
+void
+inferNativeShapes(onnx::ModelProto& model)
+{
+  const NativeShapeSchemaRegistry registry(model);
+  onnx::shape_inference::InferShapes(model, &registry);
+}
 
 std::string digest(const std::uint8_t* data, std::size_t size)
 {
@@ -194,6 +265,50 @@ void checkActive(const NativeAssemblyControl& control)
   control.requireActive();
 }
 
+std::string
+digestInitializerRange(const NativeCanonicalSource& source, std::uint64_t offset,
+                       std::uint64_t length, const NativeAssemblyControl& control)
+{
+  checkActive(control);
+  const auto size = nativeCanonicalInitializerByteSize(source);
+  if (control.maxSourceBytes == 0 || size > control.maxSourceBytes ||
+      offset > size || length > size - offset)
+    fail("INITIALIZER_RANGE");
+  auto context = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>(
+    EVP_MD_CTX_new(), EVP_MD_CTX_free);
+  if (!context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1)
+    fail("INITIALIZER_DIGEST");
+  for (std::uint64_t consumed = 0; consumed < length;) {
+    checkActive(control);
+    const auto count = std::min(NativeCanonicalMaterialBundleMaxBytes, length - consumed);
+    if (source.initializerRangeSource) {
+      const auto bytes = readNativeCanonicalInitializerRange(source, offset + consumed,
+                                                             count, control);
+      if (EVP_DigestUpdate(context.get(), bytes.data(), bytes.size()) != 1)
+        fail("INITIALIZER_DIGEST");
+    }
+    else {
+      if (!source.initializerBytes ||
+          EVP_DigestUpdate(context.get(), source.initializerBytes->data() +
+            static_cast<std::size_t>(offset + consumed), static_cast<std::size_t>(count)) != 1)
+        fail("INITIALIZER_DIGEST");
+    }
+    consumed += count;
+  }
+  std::array<unsigned char, EVP_MAX_MD_SIZE> hash{};
+  unsigned hashSize = 0;
+  if (EVP_DigestFinal_ex(context.get(), hash.data(), &hashSize) != 1 ||
+      hashSize != SHA256_DIGEST_LENGTH)
+    fail("INITIALIZER_DIGEST");
+  checkActive(control);
+  std::string result = "sha256:";
+  for (unsigned i = 0; i < hashSize; ++i) {
+    result += "0123456789abcdef"[hash[i] >> 4];
+    result += "0123456789abcdef"[hash[i] & 0x0f];
+  }
+  return result;
+}
+
 std::uint64_t checkedAdd(std::uint64_t left, std::uint64_t right)
 {
   if (right > std::numeric_limits<std::uint64_t>::max() - left) {
@@ -201,6 +316,69 @@ std::uint64_t checkedAdd(std::uint64_t left, std::uint64_t right)
   }
   return left + right;
 }
+
+class InitializerFileRangeSource final : public NativeCanonicalByteRangeSource
+{
+public:
+  InitializerFileRangeSource(const std::string& path, std::uint64_t bytes)
+    : m_size(bytes)
+  {
+    m_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (m_fd < 0) fail("INITIALIZER_FILE");
+    if (!validFile()) {
+      ::close(m_fd);
+      m_fd = -1;
+      fail("INITIALIZER_FILE");
+    }
+  }
+
+  ~InitializerFileRangeSource() override
+  {
+    if (m_fd >= 0) ::close(m_fd);
+  }
+
+  InitializerFileRangeSource(const InitializerFileRangeSource&) = delete;
+  InitializerFileRangeSource& operator=(const InitializerFileRangeSource&) = delete;
+
+  std::uint64_t
+  size() const noexcept override
+  {
+    return m_size;
+  }
+
+  std::vector<std::uint8_t>
+  read(std::uint64_t offset, std::uint64_t length) const override
+  {
+    if (offset > m_size || length > m_size - offset ||
+        length > NativeCanonicalMaterialBundleMaxBytes || !validFile())
+      fail("INITIALIZER_RANGE");
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(length));
+    std::size_t received = 0;
+    unsigned interrupted = 0;
+    while (received < bytes.size()) {
+      const auto count = ::pread(m_fd, bytes.data() + received, bytes.size() - received,
+                                 static_cast<off_t>(offset + received));
+      if (count < 0 && errno == EINTR && ++interrupted <= 3) continue;
+      if (count <= 0) fail("INITIALIZER_FILE");
+      received += static_cast<std::size_t>(count);
+      interrupted = 0;
+    }
+    if (!validFile()) fail("INITIALIZER_FILE");
+    return bytes;
+  }
+
+private:
+  bool
+  validFile() const noexcept
+  {
+    struct stat status{};
+    return m_fd >= 0 && ::fstat(m_fd, &status) == 0 && S_ISREG(status.st_mode) &&
+      status.st_size > 0 && static_cast<std::uint64_t>(status.st_size) == m_size;
+  }
+
+  int m_fd = -1;
+  const std::uint64_t m_size;
+};
 
 /**
  * Keep the certified model on disk while ONNX Runtime constructs its own
@@ -699,7 +877,8 @@ void materializeShapeInferenceInitializers(
   const onnx::ModelProto& sourceModel,
   const std::vector<std::uint8_t>* externalBytes,
   const NativeAssemblyControl& control,
-  std::uint64_t* materializedBudget);
+  std::uint64_t* materializedBudget,
+  const NativeCanonicalSource* externalSource = nullptr);
 
 void materializeSelectedExternalInitializers(
   onnx::ModelProto& model,
@@ -884,7 +1063,7 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
       materializeShapeInferenceInitializers(
         original, original, externalBytes, sourceControl, nullptr);
       try {
-        onnx::shape_inference::InferShapes(original);
+        inferNativeShapes(original);
       }
       catch (const std::exception& error) {
         failGraph("shape-inference", error);
@@ -1659,7 +1838,7 @@ struct ExternalByteRange
 };
 
 ExternalByteRange validatedExternalByteRange(const onnx::TensorProto& tensor,
-                                             const std::vector<std::uint8_t>& bytes)
+                                             std::uint64_t bytes)
 {
   if (tensor.data_location() != onnx::TensorProto::EXTERNAL)
     fail("EXTERNAL_BINDING");
@@ -1693,18 +1872,27 @@ ExternalByteRange validatedExternalByteRange(const onnx::TensorProto& tensor,
     component = slash + 1;
   }
   const auto offset = offsetText.empty() ? 0 : parseUint(offsetText, "OFFSET");
-  if (offset > bytes.size()) fail("EXTERNAL_RANGE");
-  std::uint64_t length = bytes.size() - offset;
+  if (offset > bytes) fail("EXTERNAL_RANGE");
+  std::uint64_t length = bytes - offset;
   if (!lengthText.empty()) {
     length = parseUint(lengthText, "LENGTH");
     // ONNX 1.17 treats an explicit zero length as the remainder of the
     // authenticated external file. Keep this rule identical to inlining.
-    if (length == 0) length = bytes.size() - offset;
+    if (length == 0) length = bytes - offset;
   }
-  if (length > bytes.size() - offset ||
-      length > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+  if (length > bytes - offset)
     fail("EXTERNAL_RANGE");
   return {offset, length};
+}
+
+ExternalByteRange
+validatedExternalByteRange(const onnx::TensorProto& tensor,
+                           const std::vector<std::uint8_t>& bytes)
+{
+  const auto range = validatedExternalByteRange(tensor, bytes.size());
+  if (range.length > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+    fail("EXTERNAL_RANGE");
+  return range;
 }
 
 void inlineValidatedExternals(const std::vector<onnx::TensorProto*>& tensors,
@@ -1730,23 +1918,67 @@ void inlineValidatedExternals(const std::vector<onnx::TensorProto*>& tensors,
   }
 }
 
+void
+inlineValidatedExternals(const std::vector<onnx::TensorProto*>& tensors,
+                         const NativeCanonicalSource& source,
+                         const NativeAssemblyControl* control,
+                         std::uint64_t* copiedBytes = nullptr)
+{
+  if (!source.initializerRangeSource) {
+    if (!source.initializerBytes) fail("EXTERNAL_BINDING");
+    inlineValidatedExternals(tensors, source.initializerBytes->asVector(), control, copiedBytes);
+    return;
+  }
+  if (control == nullptr) fail("SOURCE_OWNERSHIP");
+  std::uint64_t localBytes = 0;
+  auto& total = copiedBytes ? *copiedBytes : localBytes;
+  for (auto* tensor : tensors) {
+    checkActive(*control);
+    if (tensor->data_location() != onnx::TensorProto::EXTERNAL) continue;
+    const auto range = validatedExternalByteRange(*tensor, nativeCanonicalInitializerByteSize(source));
+    if (range.length > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+      fail("EXTERNAL_RANGE");
+    total = checkedAdd(total, range.length);
+    if (control->maxAssembledBytes == 0 || total > control->maxAssembledBytes)
+      fail("MATERIAL_LIMIT");
+    auto* raw = tensor->mutable_raw_data();
+    raw->clear();
+    raw->reserve(static_cast<std::size_t>(range.length));
+    for (std::uint64_t offset = 0; offset < range.length;) {
+      const auto length = std::min(NativeCanonicalMaterialBundleMaxBytes, range.length - offset);
+      const auto bytes = readNativeCanonicalInitializerRange(source, range.offset + offset,
+                                                            length, *control);
+      raw->append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+      offset += length;
+    }
+    tensor->clear_external_data();
+    tensor->set_data_location(onnx::TensorProto::DEFAULT);
+    checkActive(*control);
+  }
+}
+
 onnx::TensorProto materializeExternalTensor(
   const onnx::TensorProto& tensor,
   const std::vector<std::uint8_t>* externalBytes,
-  const NativeAssemblyControl* control = nullptr)
+  const NativeAssemblyControl* control = nullptr,
+  const NativeCanonicalSource* externalSource = nullptr)
 {
   if (tensor.data_location() != onnx::TensorProto::EXTERNAL)
     fail("EXTERNAL_BINDING");
-  if (externalBytes == nullptr)
+  if (externalBytes == nullptr && externalSource == nullptr)
     fail("EXTERNAL_BINDING");
   auto result = tensor;
   std::vector<onnx::TensorProto*> tensors{&result};
-  inlineValidatedExternals(tensors, *externalBytes, control);
+  if (externalSource != nullptr)
+    inlineValidatedExternals(tensors, *externalSource, control);
+  else
+    inlineValidatedExternals(tensors, *externalBytes, control);
   return result;
 }
 
+template<typename InitializerSource>
 void inlineDeepExternals(onnx::ModelProto& model,
-                         const std::vector<std::uint8_t>& bytes,
+                         const InitializerSource& bytes,
                          const NativeAssemblyControl* control,
                          std::uint64_t* materializedBudget = nullptr)
 {
@@ -1786,9 +2018,11 @@ void materializeShapeInferenceInitializers(
   const onnx::ModelProto& sourceModel,
   const std::vector<std::uint8_t>* externalBytes,
   const NativeAssemblyControl& control,
-  std::uint64_t* materializedBudget = nullptr)
+  std::uint64_t* materializedBudget,
+  const NativeCanonicalSource* externalSource)
 {
-  if (externalBytes == nullptr) return;
+  if (externalBytes == nullptr &&
+      (externalSource == nullptr || !externalSource->initializerRangeSource)) return;
   struct ShapePolicyKey {
     std::string domain;
     std::string opType;
@@ -1850,6 +2084,11 @@ void materializeShapeInferenceInitializers(
                            "LayerNormalization", "RotaryEmbedding", "SkipLayerNormalization",
                            "SkipSimplifiedLayerNormalization"})
       shapeIndependent(domain, op);
+  // MatMulNBits v1 derives its output extent from A and the N attribute,
+  // not from packed weight, scale, or zero-point values.
+  policies[{"com.microsoft", "MatMulNBits", 1}] = {};
+  // CausalConvWithState v1 uses weight dimensions, not weight or bias values.
+  policies[{"com.microsoft", "CausalConvWithState", 1}] = {};
   std::unordered_set<std::string> externalInitializers;
   for (const auto& initializer : sourceModel.graph().initializer())
     if (initializer.data_location() == onnx::TensorProto::EXTERNAL)
@@ -1917,7 +2156,8 @@ void materializeShapeInferenceInitializers(
     if (required.count(sourceInitializer.name()) == 0 ||
         sourceInitializer.data_location() != onnx::TensorProto::EXTERNAL)
       continue;
-    auto material = materializeExternalTensor(sourceInitializer, externalBytes, &control);
+    auto material = materializeExternalTensor(sourceInitializer, externalBytes, &control,
+                                               externalSource);
     *materializedBytes = checkedAdd(*materializedBytes,
                                    static_cast<std::uint64_t>(material.ByteSizeLong()));
     if (control.maxAssembledBytes == 0 || *materializedBytes > control.maxAssembledBytes)
@@ -1977,12 +2217,13 @@ onnx::ModelProto ownedSourceModel(const NativeCanonicalSource& source,
     fail("SOURCE_LIMIT");
   if (modelFile != nullptr && !source.modelBytes.empty())
     fail("SOURCE_OWNERSHIP");
-  if (source.initializerBytes &&
-      (source.initializerBytes->empty() ||
-       source.initializerBytes->size() > control.maxSourceBytes ||
-       source.initializerBytes->size() >
-         static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
-       checkedAdd(sourceBytes, source.initializerBytes->size()) >
+  const auto initializerBytes = nativeCanonicalInitializerByteSize(source);
+  const bool hasInitializer = source.initializerBytes || source.initializerRangeSource;
+  if (hasInitializer &&
+      (initializerBytes > control.maxSourceBytes ||
+       (!source.initializerRangeSource && initializerBytes >
+         static_cast<std::uint64_t>(std::numeric_limits<int>::max())) ||
+       checkedAdd(sourceBytes, initializerBytes) >
          checkedAdd(control.maxSourceBytes, control.maxSourceBytes)))
     fail("INITIALIZER_LIMIT");
 
@@ -2004,13 +2245,23 @@ onnx::ModelProto ownedSourceModel(const NativeCanonicalSource& source,
     externalTensors.begin(), externalTensors.end(), [] (const onnx::TensorProto* tensor) {
       return tensor->data_location() == onnx::TensorProto::EXTERNAL;
     });
-  if (hasExternal != source.initializerBytes.has_value()) fail("EXTERNAL_BINDING");
-  if (source.initializerBytes) {
+  if (hasExternal != hasInitializer) fail("EXTERNAL_BINDING");
+  if (hasInitializer) {
     validateAndPinLocation(externalTensors);
-    if (inlineExternal)
-      inlineValidatedExternals(externalTensors, *source.initializerBytes, &control);
-    else
-      inlineDeepExternals(model, *source.initializerBytes, &control, materializedBudget);
+    if (source.initializerBytes && source.initializerRangeSource)
+      (void)nativeCanonicalInitializerDigest(source, control);
+    if (source.initializerRangeSource) {
+      if (inlineExternal)
+        inlineValidatedExternals(externalTensors, source, &control);
+      else
+        inlineDeepExternals(model, source, &control, materializedBudget);
+    }
+    else {
+      if (inlineExternal)
+        inlineValidatedExternals(externalTensors, *source.initializerBytes, &control);
+      else
+        inlineDeepExternals(model, *source.initializerBytes, &control, materializedBudget);
+    }
   }
   checkActive(control);
   return model;
@@ -2114,7 +2365,8 @@ struct TensorIndexEntry
 std::vector<TensorIndexEntry> buildTensorIndex(
   const onnx::ModelProto& model,
   const std::vector<std::uint8_t>* externalBytes = nullptr,
-  const NativeAssemblyControl* control = nullptr)
+  const NativeAssemblyControl* control = nullptr,
+  const NativeCanonicalSource* externalSource = nullptr)
 {
   std::vector<TensorIndexEntry> entries;
   entries.reserve(static_cast<std::size_t>(model.graph().initializer_size()));
@@ -2127,7 +2379,7 @@ std::vector<TensorIndexEntry> buildTensorIndex(
     const auto* material = &initializer;
     std::optional<onnx::TensorProto> externalMaterial;
     if (initializer.data_location() == onnx::TensorProto::EXTERNAL) {
-      if (externalBytes == nullptr) fail("EXTERNAL_BINDING");
+      if (externalBytes == nullptr && externalSource == nullptr) fail("EXTERNAL_BINDING");
       // External numeric raw_data is already the canonical little-endian
       // payload.  Hash the authenticated range directly instead of creating
       // a temporary TensorProto, serializing it, parsing it again and copying
@@ -2138,21 +2390,30 @@ std::vector<TensorIndexEntry> buildTensorIndex(
           initializer.data_type() != onnx::TensorProto::UINT4) {
         const auto count = tensorElementCount(initializer);
         const auto expected = rawByteLength(initializer.data_type(), count);
-        const auto range = validatedExternalByteRange(initializer, *externalBytes);
-        if (range.length != expected)
+        const auto range = externalSource
+          ? validatedExternalByteRange(initializer, nativeCanonicalInitializerByteSize(*externalSource))
+          : validatedExternalByteRange(initializer, *externalBytes);
+        if (range.length != expected || expected > std::numeric_limits<std::size_t>::max())
           failNormalization("INITIALIZER_ENCODING_INVALID");
         entry.dtype = dtypeLabel(initializer.data_type());
         entry.shape.reserve(static_cast<std::size_t>(initializer.dims_size()));
         for (const auto dim : initializer.dims()) entry.shape.push_back(dim);
         entry.byteOrder = byteOrderOf(initializer.data_type());
         entry.byteLength = static_cast<std::size_t>(expected);
-        entry.contentDigest = digest(externalBytes->data() + range.offset,
-                                     static_cast<std::size_t>(expected));
+        if (externalSource != nullptr) {
+          if (control == nullptr) fail("SOURCE_OWNERSHIP");
+          entry.contentDigest = digestInitializerRange(*externalSource, range.offset, expected, *control);
+        }
+        else {
+          entry.contentDigest = digest(externalBytes->data() + range.offset,
+                                       static_cast<std::size_t>(expected));
+        }
         entries.push_back(std::move(entry));
         if (control != nullptr) checkActive(*control);
         continue;
       }
-      externalMaterial.emplace(materializeExternalTensor(initializer, externalBytes, control));
+      externalMaterial.emplace(materializeExternalTensor(initializer, externalBytes, control,
+                                                          externalSource));
       material = &*externalMaterial;
     }
     std::vector<std::uint8_t> serialized(static_cast<std::size_t>(material->ByteSizeLong()));
@@ -2426,6 +2687,14 @@ std::string NativeCanonicalSource::MaterialManifest::canonicalJson() const
 
 void NativeCanonicalSource::MaterialManifest::validate() const
 {
+  validate({});
+}
+
+void
+NativeCanonicalSource::MaterialManifest::validate(
+  const std::function<void()>& requireActive) const
+{
+  if (requireActive) requireActive();
   const auto validDigest = [] (const std::string& value) {
     return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
       std::all_of(value.begin() + 7, value.end(), [] (const char c) {
@@ -2443,6 +2712,7 @@ void NativeCanonicalSource::MaterialManifest::validate() const
   std::set<std::string> payloadIds;
   std::map<std::string, const MaterialPayload*> payloadById;
   for (const auto& payload : payloads) {
+    if (requireActive) requireActive();
     const bool invalidRange = payload.rangeSource &&
       (payload.rangeSize == 0 || payload.rangeOffset > payload.rangeSource->size() ||
        payload.rangeSize > payload.rangeSource->size() - payload.rangeOffset);
@@ -2461,9 +2731,10 @@ void NativeCanonicalSource::MaterialManifest::validate() const
         payload.byteSize() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
         !payloadIds.insert(payload.payloadId).second)
       throw std::invalid_argument("native canonical material payload is invalid");
-    const auto payloadBytes = payload.copyBytes();
+    const auto payloadBytes = payload.copyBytes(requireActive);
     if (nativePlanningDigest(payloadBytes.data(), payloadBytes.size()) != payload.digest)
       throw std::invalid_argument("native canonical material payload digest differs");
+    if (requireActive) requireActive();
     payloadById.emplace(payload.payloadId, &payload);
   }
   const auto templatePayload = payloadById.find(templatePayloadId);
@@ -2472,10 +2743,13 @@ void NativeCanonicalSource::MaterialManifest::validate() const
   std::set<std::string> referenceIds;
   std::set<std::string> referencedPayloadIds;
   std::set<std::string> directReferencePayloadIds;
-  for (const auto& reference : references)
+  for (const auto& reference : references) {
+    if (requireActive) requireActive();
     directReferencePayloadIds.insert(reference.payloadId);
+  }
   std::set<std::string> allChunkPayloadIds;
   for (const auto& reference : references) {
+    if (requireActive) requireActive();
     const bool hasChunks = !reference.chunkPayloadIds.empty();
     if (reference.payloadId.empty() ||
         (payloadsComplete && !payloadIds.count(reference.payloadId)) ||
@@ -2489,6 +2763,7 @@ void NativeCanonicalSource::MaterialManifest::validate() const
     referencedPayloadIds.insert(reference.payloadId);
     std::set<std::string> chunkIds;
     for (const auto& chunkId : reference.chunkPayloadIds) {
+      if (requireActive) requireActive();
       if (chunkId.empty() || chunkId == reference.payloadId || !chunkIds.insert(chunkId).second ||
           !allChunkPayloadIds.insert(chunkId).second ||
           directReferencePayloadIds.count(chunkId) != 0 ||
@@ -2527,6 +2802,79 @@ void NativeCanonicalSource::MaterialManifest::validate() const
   }
 }
 
+std::uint64_t
+nativeCanonicalInitializerByteSize(const NativeCanonicalSource& source)
+{
+  const auto bytes = source.initializerBytes
+    ? static_cast<std::uint64_t>(source.initializerBytes->size()) : 0;
+  if (source.initializerBytes && bytes == 0) fail("INITIALIZER_LIMIT");
+  if (!source.initializerRangeSource) return bytes;
+  const auto rangeBytes = source.initializerRangeSource->size();
+  if (rangeBytes == 0 || (source.initializerBytes && bytes != rangeBytes))
+    fail("INITIALIZER_RANGE");
+  return rangeBytes;
+}
+
+std::vector<std::uint8_t>
+readNativeCanonicalInitializerRange(const NativeCanonicalSource& source,
+                                    std::uint64_t offset, std::uint64_t length,
+                                    const NativeAssemblyControl& control)
+{
+  checkActive(control);
+  const auto size = nativeCanonicalInitializerByteSize(source);
+  if ((!source.initializerBytes && !source.initializerRangeSource) ||
+      control.maxSourceBytes == 0 || size > control.maxSourceBytes ||
+      offset > size || length > size - offset ||
+      length > NativeCanonicalMaterialBundleMaxBytes)
+    fail("INITIALIZER_RANGE");
+  if (length == 0) return {};
+  std::vector<std::uint8_t> bytes;
+  if (source.initializerRangeSource) {
+    bytes = source.initializerRangeSource->read(offset, length);
+    if (bytes.size() != length) fail("INITIALIZER_RANGE");
+    if (source.initializerBytes && !std::equal(bytes.begin(), bytes.end(),
+        source.initializerBytes->data() + static_cast<std::size_t>(offset)))
+      fail("INITIALIZER_RANGE");
+  }
+  else {
+    const auto* first = source.initializerBytes->data() + static_cast<std::size_t>(offset);
+    bytes.assign(first, first + static_cast<std::size_t>(length));
+  }
+  checkActive(control);
+  return bytes;
+}
+
+std::string
+nativeCanonicalInitializerDigest(const NativeCanonicalSource& source,
+                                 const NativeAssemblyControl& control)
+{
+  if (!source.initializerBytes && !source.initializerRangeSource) {
+    checkActive(control);
+    return {};
+  }
+  return digestInitializerRange(source, 0, nativeCanonicalInitializerByteSize(source), control);
+}
+
+std::shared_ptr<const NativeCanonicalByteRangeSource>
+openNativeCanonicalInitializerFile(const std::string& path, std::uint64_t bytes,
+                                   const std::string& expectedDigest,
+                                   const NativeAssemblyControl& control)
+{
+  checkActive(control);
+  if (bytes == 0 || control.maxSourceBytes == 0 || bytes > control.maxSourceBytes ||
+      expectedDigest.size() != 71 || expectedDigest.compare(0, 7, "sha256:") != 0 ||
+      !std::all_of(expectedDigest.begin() + 7, expectedDigest.end(), [] (char value) {
+        return std::string_view("0123456789abcdef").find(value) != std::string_view::npos;
+      }))
+    fail("INITIALIZER_FILE");
+  auto owner = std::make_shared<const InitializerFileRangeSource>(path, bytes);
+  NativeCanonicalSource source;
+  source.initializerRangeSource = owner;
+  if (nativeCanonicalInitializerDigest(source, control) != expectedDigest)
+    fail("INITIALIZER_DIGEST");
+  return owner;
+}
+
 std::shared_ptr<const NativeCanonicalSource::MaterialManifest>
 deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
                                       const NativeAssemblyControl& control)
@@ -2534,7 +2882,8 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
   checkActive(control);
   auto model = ownedSourceModel(source, control, false);
   const auto entries = buildTensorIndex(
-    model, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr, &control);
+    model, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr,
+    &control, &source);
   auto result = std::make_shared<NativeCanonicalSource::MaterialManifest>();
   std::uint64_t materialBytes = 0;
   const auto accountMaterial = [&] (std::size_t bytes) {
@@ -2574,9 +2923,9 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
     if (initializer.data_location() == onnx::TensorProto::EXTERNAL) {
       // Do not serialize a 300+ MiB TensorProto just to publish one weight.
       // Keep a small metadata header and address the authenticated raw range
-      // as bounded chunks.  Providers concatenate only the chunks selected
-      // by their role before constructing the final TensorProto.
-      if (!source.initializerBytes)
+      // as bounded chunks. Providers stream only their selected chunks to a
+      // role sidecar; the legacy vector materializer remains compatible.
+      if (!source.initializerBytes && !source.initializerRangeSource)
         fail("EXTERNAL_BINDING");
       auto header = initializer;
       header.clear_raw_data();
@@ -2594,32 +2943,23 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
       accountMaterial(headerBytes.size());
       result->payloads.push_back({headerPayloadId, headerDigest, headerBytes});
 
-      const auto offsetText = externalValue(initializer, "offset");
-      const auto lengthText = externalValue(initializer, "length");
-      const auto offset = offsetText.empty() ? std::uint64_t{0} : parseUint(offsetText, "OFFSET");
-      if (offset > source.initializerBytes->size())
-        fail("EXTERNAL_RANGE");
-      auto length = lengthText.empty()
-        ? static_cast<std::uint64_t>(source.initializerBytes->size()) - offset
-        : parseUint(lengthText, "LENGTH");
-      if (length == 0)
-        length = static_cast<std::uint64_t>(source.initializerBytes->size()) - offset;
-      if (length > source.initializerBytes->size() - offset)
-        fail("EXTERNAL_RANGE");
+      const auto range = validatedExternalByteRange(initializer,
+                                                    nativeCanonicalInitializerByteSize(source));
+      const auto offset = range.offset;
+      const auto length = range.length;
 
       std::vector<std::string> chunkPayloadIds;
       std::uint64_t consumed = 0;
       std::uint64_t chunkIndex = 0;
-      if (source.initializerRangeSource &&
-          source.initializerRangeSource->size() != source.initializerBytes->size())
-        fail("INITIALIZER_RANGE");
       while (consumed < length) {
         checkActive(control);
         const auto chunkBytes = static_cast<std::size_t>(std::min<std::uint64_t>(
           NativeCanonicalMaterialBundleMaxBytes, length - consumed));
-        const auto chunkOffset = static_cast<std::size_t>(offset + consumed);
-        const auto chunkDigest = digest(source.initializerBytes->data() + chunkOffset,
-                                        chunkBytes);
+        const auto chunkOffset = offset + consumed;
+        const auto chunkDigest = source.initializerRangeSource
+          ? digest(readNativeCanonicalInitializerRange(source, chunkOffset, chunkBytes, control))
+          : digest(source.initializerBytes->data() + static_cast<std::size_t>(chunkOffset),
+                   chunkBytes);
         const auto chunkPayloadId = headerPayloadId + "-chunk-" + std::to_string(chunkIndex++);
         accountMaterial(chunkBytes);
         NativeCanonicalSource::MaterialPayload chunk;
@@ -2627,12 +2967,12 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
         chunk.digest = chunkDigest;
         if (source.initializerRangeSource) {
           chunk.rangeSource = source.initializerRangeSource;
-          chunk.rangeOffset = static_cast<std::uint64_t>(chunkOffset);
+          chunk.rangeOffset = chunkOffset;
           chunk.rangeSize = chunkBytes;
         }
         else {
           chunk.backing = source.initializerBytes->shared();
-          chunk.backingOffset = chunkOffset;
+          chunk.backingOffset = static_cast<std::size_t>(chunkOffset);
           chunk.backingSize = chunkBytes;
         }
         result->payloads.push_back(std::move(chunk));
@@ -2741,7 +3081,7 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
   const auto materialManifestJson = result->canonicalJson();
   accountMaterial(materialManifestJson.size());
   result->manifestDigest = nativePlanningDigest(result->canonicalJson());
-  result->validate();
+  result->validate([&] { checkActive(control); });
   return result;
 }
 
@@ -2801,24 +3141,29 @@ parseNativeCanonicalMaterialManifest(const std::vector<std::uint8_t>& bytes)
   return result;
 }
 
+namespace {
 std::vector<std::uint8_t>
-materializeNativeCanonicalModel(NativeCanonicalSource& source,
+materializeCanonicalModel(NativeCanonicalSource& source,
                                 const std::vector<std::uint64_t>& nodeIndices,
                                 const std::vector<NativeAssemblyTensorContractV3>& expectedInputs,
                                 const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
-                                const NativeAssemblyControl& control)
+                                const NativeAssemblyControl& control,
+                                NativeCanonicalMaterializedFiles* files,
+                                const std::function<void(const std::vector<std::uint8_t>&)>& append)
 {
   checkActive(control);
+  const auto checkMaterialActive = [&] { checkActive(control); };
   if (!source.materialManifest || nodeIndices.empty())
     fail("MATERIAL_SELECTION");
-  source.materialManifest->validate();
+  source.materialManifest->validate(checkMaterialActive);
   std::map<std::string, NativeCanonicalSource::MaterialPayload*> payloads;
   for (auto& payload : source.materialPayloads) {
-    const auto payloadBytes = payload.copyBytes();
+    const auto payloadBytes = payload.copyBytes(checkMaterialActive);
     if (payload.payloadId.empty() || payload.empty() ||
         digest(payloadBytes.data(), payloadBytes.size()) != payload.digest ||
         payloads.count(payload.payloadId) != 0)
       fail("MATERIAL_PAYLOAD");
+    checkMaterialActive();
     payloads.emplace(payload.payloadId, &payload);
   }
   const auto referencesForPayload = [&] (const std::string& payloadId) {
@@ -2860,7 +3205,7 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
   const auto templatePayload = payloads.find(templateReference->payloadId);
   if (templatePayload == payloads.end())
     fail("MATERIAL_TEMPLATE");
-  const auto templateBytes = templatePayload->second->copyBytes();
+  const auto templateBytes = templatePayload->second->copyBytes(checkMaterialActive);
   onnx::ModelProto model;
   if (!model.ParseFromArray(templateBytes.data(),
                             static_cast<int>(templateBytes.size())) ||
@@ -2962,7 +3307,7 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
     const auto payload = payloads.find(reference->payloadId);
     if (payload == payloads.end())
       fail("MATERIAL_NODE");
-    const auto nodeBytes = payload->second->copyBytes();
+    const auto nodeBytes = payload->second->copyBytes(checkMaterialActive);
     onnx::NodeProto node;
     if (!node.ParseFromArray(nodeBytes.data(), static_cast<int>(nodeBytes.size())))
       fail("MATERIAL_NODE");
@@ -2999,11 +3344,19 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
         payload->second->release();
     }
   };
+  ndn::util::Sha256 sidecarHash;
+  const auto finishHash = [] (ndn::util::Sha256& hash) {
+    auto value = hash.toString();
+    std::transform(value.begin(), value.end(), value.begin(), [] (unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    return "sha256:" + value;
+  };
   const auto materializeInitializer = [&] (const auto& reference) {
     const auto header = payloads.find(reference.payloadId);
     if (header == payloads.end())
       fail("MATERIAL_INITIALIZER");
-    const auto headerBytes = header->second->copyBytes();
+    const auto headerBytes = header->second->copyBytes(checkMaterialActive);
     if (reference.chunkPayloadIds.empty()) {
       onnx::TensorProto initializer;
       if (!initializer.ParseFromArray(headerBytes.data(),
@@ -3030,6 +3383,44 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
       }
       rawBytes = checkedAdd(rawBytes, chunk->second->byteSize());
     }
+    if (files != nullptr && initializer.data_type() != onnx::TensorProto::INT4 &&
+        initializer.data_type() != onnx::TensorProto::UINT4 &&
+        initializer.data_type() != onnx::TensorProto::STRING) {
+      if (!append || rawBytes == 0 || control.maxAssembledBytes == 0 ||
+          rawBytes != rawByteLength(initializer.data_type(), tensorElementCount(initializer)) ||
+          files->initializerBytes > control.maxAssembledBytes ||
+          rawBytes > control.maxAssembledBytes - files->initializerBytes)
+        fail("MATERIAL_INITIALIZER");
+      const auto offset = files->initializerBytes;
+      ndn::util::Sha256 initializerHash;
+      for (const auto& chunkId : reference.chunkPayloadIds) {
+        checkActive(control);
+        const auto bytes = payloads.at(chunkId)->copyBytes(checkMaterialActive);
+        if (digest(bytes) != payloads.at(chunkId)->digest)
+          fail("MATERIAL_PAYLOAD");
+        append(bytes);
+        checkActive(control);
+        const auto view = ndn::span<const std::uint8_t>(bytes.data(), bytes.size());
+        initializerHash.update(view);
+        sidecarHash.update(view);
+        files->initializerBytes = checkedAdd(files->initializerBytes, bytes.size());
+        releaseMaterialPayload(chunkId);
+      }
+      if (finishHash(initializerHash) != reference.sharedDigest ||
+          files->initializerBytes - offset != rawBytes)
+        fail("MATERIAL_INITIALIZER");
+      initializer.clear_external_data();
+      initializer.set_data_location(onnx::TensorProto::EXTERNAL);
+      for (const auto& entry : std::vector<std::pair<std::string, std::string>>{
+             {"location", "model.onnx.data"}, {"offset", std::to_string(offset)},
+             {"length", std::to_string(rawBytes)}}) {
+        auto* field = initializer.add_external_data();
+        field->set_key(entry.first);
+        field->set_value(entry.second);
+      }
+      releaseMaterialPayload(reference.payloadId);
+      return initializer;
+    }
     const auto modelBytesBeforeInitializer = static_cast<std::uint64_t>(model.ByteSizeLong());
     const auto initializerHeaderBytes = static_cast<std::uint64_t>(initializer.ByteSizeLong());
     const auto finalModelWithoutRaw = checkedAdd(modelBytesBeforeInitializer,
@@ -3052,7 +3443,7 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
       const auto chunk = payloads.find(chunkId);
       if (chunk == payloads.end())
         fail("MATERIAL_INITIALIZER");
-      const auto chunkBytes = chunk->second->copyBytes();
+      const auto chunkBytes = chunk->second->copyBytes(checkMaterialActive);
       raw.insert(raw.end(), chunkBytes.begin(), chunkBytes.end());
       releaseMaterialPayload(chunkId);
     }
@@ -3097,7 +3488,38 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
   if (control.maxAssembledBytes == 0 || result.size() > control.maxAssembledBytes ||
       finalWorkingSet > control.maxAssembledBytes)
     fail("MATERIAL_LIMIT");
+  if (files != nullptr && files->initializerBytes != 0) {
+    if (files->initializerBytes > control.maxAssembledBytes - result.size())
+      fail("MATERIAL_LIMIT");
+    files->initializerDigest = finishHash(sidecarHash);
+  }
   return result;
+}
+} // namespace
+
+std::vector<std::uint8_t>
+materializeNativeCanonicalModel(NativeCanonicalSource& source,
+                                const std::vector<std::uint64_t>& nodeIndices,
+                                const std::vector<NativeAssemblyTensorContractV3>& expectedInputs,
+                                const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
+                                const NativeAssemblyControl& control)
+{
+  return materializeCanonicalModel(source, nodeIndices, expectedInputs, expectedOutputs,
+                                   control, nullptr, {});
+}
+
+NativeCanonicalMaterializedFiles
+materializeNativeCanonicalModelFiles(
+  NativeCanonicalSource& source, const std::vector<std::uint64_t>& nodeIndices,
+  const std::vector<NativeAssemblyTensorContractV3>& expectedInputs,
+  const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
+  const NativeAssemblyControl& control,
+  const std::function<void(const std::vector<std::uint8_t>&)>& appendInitializer)
+{
+  NativeCanonicalMaterializedFiles files;
+  files.modelBytes = materializeCanonicalModel(source, nodeIndices, expectedInputs, expectedOutputs,
+                                              control, &files, appendInitializer);
+  return files;
 }
 
 std::vector<std::uint8_t>
@@ -3113,7 +3535,7 @@ void validateNativeCanonicalMaterialManifest(
   const NativeCanonicalSource::MaterialManifest& manifest,
   const NativeAssemblyControl& control)
 {
-  manifest.validate();
+  manifest.validate([&] { checkActive(control); });
   std::uint64_t materialBudget = 0;
   for (const auto& payload : manifest.payloads)
     materialBudget = checkedAdd(materialBudget, payload.byteSize());
@@ -3123,7 +3545,8 @@ void validateNativeCanonicalMaterialManifest(
   checkActive(control);
   const auto model = ownedSourceModel(source, control, false);
   const auto entries = buildTensorIndex(
-    model, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr, &control);
+    model, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr,
+    &control, &source);
   if (manifest.sourceDigest != nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) ||
       manifest.graphDigest != sha256HexOf(graphFactsJson(model, entries)) ||
       manifest.initializerDigest != sha256HexOf(initializerContentJson(entries)))
@@ -3211,22 +3634,17 @@ void validateNativeCanonicalMaterialManifest(
         std::uint64_t offset = 0;
         std::uint64_t length = 0;
         const std::uint8_t* expectedBytes = nullptr;
+        bool expectedRange = false;
         if (sourceInitializer->data_location() == onnx::TensorProto::EXTERNAL) {
-          if (!source.initializerBytes)
+          if (!source.initializerBytes && !source.initializerRangeSource)
             throw std::invalid_argument("native canonical material initializer chunks are invalid");
-          const auto offsetText = externalValue(*sourceInitializer, "offset");
-          const auto lengthText = externalValue(*sourceInitializer, "length");
-          offset = offsetText.empty() ? std::uint64_t{0} : parseUint(offsetText, "OFFSET");
-          if (offset > source.initializerBytes->size())
-            throw std::invalid_argument("native canonical material initializer chunks are invalid");
-          length = lengthText.empty()
-            ? static_cast<std::uint64_t>(source.initializerBytes->size()) - offset
-            : parseUint(lengthText, "LENGTH");
-          if (length == 0)
-            length = static_cast<std::uint64_t>(source.initializerBytes->size()) - offset;
-          if (length > source.initializerBytes->size() - offset)
-            throw std::invalid_argument("native canonical material initializer chunks are invalid");
-          expectedBytes = source.initializerBytes->data() + offset;
+          const auto range = validatedExternalByteRange(*sourceInitializer,
+                                                        nativeCanonicalInitializerByteSize(source));
+          offset = range.offset;
+          length = range.length;
+          expectedRange = static_cast<bool>(source.initializerRangeSource);
+          if (!expectedRange)
+            expectedBytes = source.initializerBytes->data() + static_cast<std::size_t>(offset);
         }
         else {
           length = sourceInitializer->raw_data().size();
@@ -3240,9 +3658,16 @@ void validateNativeCanonicalMaterialManifest(
               chunk->byteSize() > NativeCanonicalMaterialBundleMaxBytes)
             throw std::invalid_argument("native canonical material initializer chunks are invalid");
           const auto chunkBytes = chunk->copyBytes();
-          if (total > length || chunk->byteSize() > length - total ||
-              !std::equal(chunkBytes.begin(), chunkBytes.end(), expectedBytes + total))
+          if (total > length || chunk->byteSize() > length - total)
             throw std::invalid_argument("native canonical material initializer chunks differ");
+          if (expectedRange) {
+            if (readNativeCanonicalInitializerRange(source, offset + total, chunk->byteSize(),
+                                                    control) != chunkBytes)
+              throw std::invalid_argument("native canonical material initializer chunks differ");
+          }
+          else if (!std::equal(chunkBytes.begin(), chunkBytes.end(), expectedBytes + total)) {
+            throw std::invalid_argument("native canonical material initializer chunks differ");
+          }
           total = checkedAdd(total, chunk->byteSize());
         }
         if (total != length)
@@ -3280,7 +3705,7 @@ void validateNativeCanonicalMaterialReferenceIndex(
   checkActive(control);
   if (manifest.payloadsComplete)
     throw std::invalid_argument("native canonical material index is complete");
-  manifest.validate();
+  manifest.validate([&] { checkActive(control); });
   const auto identity = canonicalOnnxSourceIdentity(source, control);
   if (manifest.sourceDigest != nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) ||
       manifest.graphDigest != identity.graphDigest || manifest.initializerDigest != identity.initializerDigest)
@@ -3310,7 +3735,8 @@ canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
 {
   const auto model = ownedSourceModel(source, control, false);
   const auto entries = buildTensorIndex(
-    model, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr, &control);
+    model, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr,
+    &control, &source);
   checkActive(control);
   NativeOnnxIdentity identity;
   identity.graphDigest = sha256HexOf(graphFactsJson(model, entries));
@@ -3328,15 +3754,16 @@ inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
   std::uint64_t materializedBudget = 0;
   const auto original = ownedSourceModel(source, control, false, &materializedBudget);
   const auto entries = buildTensorIndex(
-    original, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr, &control);
+    original, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr,
+    &control, &source);
   NativeOnnxGraphInspection result;
   result.canonicalIdentity = {sha256HexOf(graphFactsJson(original, entries)),
                               sha256HexOf(initializerContentJson(entries))};
   auto inferred = original;
   materializeShapeInferenceInitializers(
     inferred, original, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr, control,
-    &materializedBudget);
-  try { onnx::shape_inference::InferShapes(inferred); }
+    &materializedBudget, &source);
+  try { inferNativeShapes(inferred); }
   catch (const std::exception&) {
     // Python infer_shapes returns a copy. A failed C++ inference may have
     // partially mutated its argument, so restore the original before fallback.
@@ -3394,6 +3821,7 @@ inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
     for (const auto dim : tensor.dims()) shape.push_back(dim);
     tensors[tensor.name()] = tensorInfo(tensor.name(), tensor.data_type(), shape);
     initializers.insert(tensor.name());
+    result.initializerConsumers.emplace(tensor.name(), std::vector<std::uint64_t>{});
   }
   std::vector<std::string> inputs, outputs;
   for (const auto& value : graph.input()) if (!initializers.count(value.name())) inputs.push_back(value.name());
@@ -3412,6 +3840,9 @@ inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
     const auto id = "onnx-node-" + std::to_string(index);
     const auto name = node.name().empty() ? std::to_string(index) + ":" + node.op_type() : node.name();
     std::vector<std::string> in, out;
+    for (const auto& value : node.input()) {
+      if (initializers.count(value)) result.initializerConsumers[value].push_back(index);
+    }
     for (const auto& value : node.input()) if (!value.empty() && !initializers.count(value)) {
       in.push_back(value); consumers[value].push_back(index);
     }

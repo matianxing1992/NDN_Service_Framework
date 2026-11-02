@@ -4,15 +4,20 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <deque>
 #include <limits>
+#include <ndn-cxx/util/logger.hpp>
 #include <stdexcept>
 #include <utility>
 
 namespace ndnsf::di {
+
+NDN_LOG_INIT(ndnsf.di.Spec220PreparationTrace);
+
 namespace {
 
 bool digest(const std::string& value)
@@ -38,6 +43,11 @@ void requireActive(std::chrono::steady_clock::time_point deadline,
     throw std::runtime_error("DI_NATIVE_PREPARATION_CANCELLED");
   if (std::chrono::steady_clock::now() >= deadline)
     throw std::runtime_error("DI_NATIVE_PREPARATION_TIMEOUT");
+}
+
+void logSpec220PreparationStage(const char* stage)
+{
+  NDN_LOG_DEBUG(std::string("SPEC220_PREP_STAGE preparation-cache.") + stage);
 }
 
 void validateSpecIdentity(const PreparationSpec& spec)
@@ -397,6 +407,7 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   const PreparationSpec& spec, std::chrono::steady_clock::time_point deadline,
   PreparationSpec::MemorySnapshot* memorySnapshot) const
 {
+  logSpec220PreparationStage("build-package.begin");
   if (!memorySnapshot)
     throw std::invalid_argument("preparation memory snapshot is missing");
   requireActive(deadline, spec.cancelled);
@@ -425,9 +436,11 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
 
   std::optional<NativePreparedCanonicalPublication> preparedPublication;
   if (spec.lookupPrepared) {
+    logSpec220PreparationStage("prepared-lookup.begin");
     preparedPublication = spec.lookupPrepared(spec, deadline);
     if (preparedPublication)
       preparedPublication->validate();
+    logSpec220PreparationStage("prepared-lookup.complete");
   }
   const bool publicationRepairRequired = preparedPublication &&
     !preparedPublication->missingDataNames.empty();
@@ -445,8 +458,10 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     // root. Canonical model and initializer bytes are not reread.
     source.materialManifest = preparedPublication->materialManifest;
     source.preparedMetadataJson = preparedPublication->preparedMetadataJson;
+    logSpec220PreparationStage("catalog-load-reference-hit.begin");
     catalog = NativeRequestCatalog::load(spec.catalogConfigurationJson,
                                          std::move(source), control);
+    logSpec220PreparationStage("catalog-load-reference-hit.complete");
     memory.sourceBytes = 0;
     memory.initializerBytes = 0;
     updatePeak();
@@ -454,7 +469,9 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   else {
     if (!spec.loadSource)
       throw std::invalid_argument("preparation source loader is missing for a cold or partial path");
+    logSpec220PreparationStage("source-load.begin");
     source = spec.loadSource(spec, deadline);
+    logSpec220PreparationStage("source-load.complete");
     // Partial publication repair must rebuild a complete material manifest
     // from bounded canonical source bytes; reference-only metadata is for a
     // complete hit only.
@@ -469,8 +486,10 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     memory.sourceBytes = source.modelBytes.size();
     memory.initializerBytes = source.initializerBytes ? source.initializerBytes->size() : 0;
     updatePeak();
+    logSpec220PreparationStage("catalog-load-source.begin");
     catalog = NativeRequestCatalog::load(spec.catalogConfigurationJson,
                                          std::move(source), control);
+    logSpec220PreparationStage("catalog-load-source.complete");
     // NativeRequestCatalog construction is the source-backed split/planning
     // boundary.  A complete reference-only hit takes the branch above and
     // must not claim this expensive preparation stage.
@@ -500,8 +519,10 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
       // Validate the canonical ONNX graph separately from the adapter's
       // planning graph. This catches a semantic graph accidentally being used
       // as source identity and also validates any pinned initializer object.
+      logSpec220PreparationStage("source-graph-inspection.begin");
       const auto sourceIdentity = inspectNativeOnnxSourceGraph(
         *preparedSource, descriptor, control);
+      logSpec220PreparationStage("source-graph-inspection.complete");
       if (sourceIdentity.canonicalIdentity.graphDigest != catalog.model.canonicalGraphDigest)
         throw std::invalid_argument("prepared model canonical graph identity differs");
       if (catalog.model.canonicalInitializerBytes != 0 &&
@@ -642,8 +663,10 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     memory.exportCount = 1;
     NativeRequestControl publicationControl{
       "prepare/" + spec.key, 1, deadline, spec.cancelled};
+    logSpec220PreparationStage("publication.begin");
     preparedPublication = spec.preparePublication(*catalog.preparation,
                                                   catalog.model, publicationControl);
+    logSpec220PreparationStage("publication.complete");
     publicationControl.requireActive();
     preparedPublication->validate();
     if (!preparedPublication->missingDataNames.empty())
@@ -666,12 +689,14 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   if (!completePreparedHit)
     memory.packageCount = 1;
   const bool releaseTransientSource = preparedPublication.has_value();
+  logSpec220PreparationStage("package-construction.begin");
   auto package = std::make_shared<PreparedModelPackage>(
     PreparedModelPackage{std::move(catalog), std::move(registration), manifest,
                          std::move(capabilities), keyDigest, retained,
                          std::make_shared<NativePreSplitFirstPlacement>(),
                          spec.runtimeBinding, std::move(modelReference),
                          preparedPublication});
+  logSpec220PreparationStage("package-construction.complete");
   // Catalog construction and prepare-time publication may transiently need
   // the canonical bytes. The published package carries only identity,
   // receipt and lease state; release the source owner before returning it so
@@ -683,6 +708,7 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   updatePeak();
   memory.sourceOwnerReleased = releaseTransientSource;
   publicationGuard.committed = true;
+  logSpec220PreparationStage("build-package.complete");
   return package;
 }
 
@@ -690,6 +716,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
                                              CachePolicy policy,
                                              std::chrono::steady_clock::time_point deadline)
 {
+  logSpec220PreparationStage("prepare-single.begin");
   validateSpecIdentity(spec);
   const auto key = makePreparationKey(spec);
   if (deadline == std::chrono::steady_clock::time_point{})
@@ -709,6 +736,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
     std::lock_guard<std::mutex> lock(m_mutex);
     auto found = m_entries.find(key);
     if (found != m_entries.end() && policy != CachePolicy::Refresh) {
+      logSpec220PreparationStage("prepare-single.cache-hit");
       found->second.lastUse = m_nextUse++;
       auto lease = found->second.lease;
       PreparationReceipt receipt{PreparationReceipt::Origin::CacheHit,
@@ -783,6 +811,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
     reservationHeld = true;
     ++m_parseCount;
   }
+  logSpec220PreparationStage("prepare-single.reserved");
   const auto started = std::chrono::steady_clock::now();
   PreparationSpec::MemorySnapshot memory;
   bool memoryCommitted = false;
@@ -817,7 +846,9 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
     memory.publicationRollbackAttempted = true;
   };
   try {
+    logSpec220PreparationStage("prepare-single.build-package.begin");
     package = buildPackage(spec, deadline, &memory);
+    logSpec220PreparationStage("prepare-single.build-package.complete");
     requireActive(deadline, spec.cancelled);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - started);
@@ -943,6 +974,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
     publicationCommitted = true;
     memoryCommitted = true;
     memory.cacheEntryCommitted = true;
+    logSpec220PreparationStage("prepare-single.cache-entry-committed");
     const auto origin = policy == CachePolicy::Refresh
       ? PreparationReceipt::Origin::Refreshed : PreparationReceipt::Origin::Fetched;
     const auto manifestDigest = package->catalog.model.modelManifestDigest;

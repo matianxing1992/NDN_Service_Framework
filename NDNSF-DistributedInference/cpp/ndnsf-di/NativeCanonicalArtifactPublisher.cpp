@@ -1075,18 +1075,25 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
   m_cache->sourceVerifications.fetch_add(1, std::memory_order_relaxed);
   control.requireActive();
   const bool materialBacked = source && static_cast<bool>(source->materialManifest);
+  if (source && source->initializerRangeSource && !source->initializerBytes && !materialBacked)
+    throw std::invalid_argument("range-only prepared source requires a material manifest");
+  const NativeAssemblyControl sourceControl{
+    control.deadline, [&control] { control.requireActive(); },
+    std::max(model.canonicalSourceBytes, model.canonicalInitializerBytes),
+    m_options.maxPublicationBytes};
   if (!source || (!materialBacked && source->modelBytes.empty()) ||
       (!materialBacked && (source->modelBytes.size() != model.canonicalSourceBytes ||
        nativePlanningDigest(source->modelBytes.data(), source->modelBytes.size()) !=
          model.canonicalSourceDigest ||
-       source->initializerBytes.has_value() != (model.canonicalInitializerBytes != 0) ||
-       (source->initializerBytes &&
-        (source->initializerBytes->size() != model.canonicalInitializerBytes ||
-         nativePlanningDigest(source->initializerBytes->data(), source->initializerBytes->size()) !=
+       (source->initializerBytes || source->initializerRangeSource) !=
+         (model.canonicalInitializerBytes != 0) ||
+       ((source->initializerBytes || source->initializerRangeSource) &&
+        (nativeCanonicalInitializerByteSize(*source) != model.canonicalInitializerBytes ||
+         nativeCanonicalInitializerDigest(*source, sourceControl) !=
            model.canonicalInitializerObjectDigest)))))
     throw std::invalid_argument("native prepared publication source differs from inspection");
   if (source->materialManifest) {
-    source->materialManifest->validate();
+    source->materialManifest->validate([&] { control.requireActive(); });
     if (!source->modelBytes.empty()) {
       const auto sourceLimit = std::max(model.canonicalSourceBytes,
                                         model.canonicalInitializerBytes);
@@ -1293,6 +1300,8 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
           logPublicationPhase(control.requestId, "material_read", payloadReadStarted);
           if (payloadBytes.size() != payload.byteSize())
             throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_RANGE_SIZE");
+          if (nativePlanningDigest(payloadBytes.data(), payloadBytes.size()) != payload.digest)
+            throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_DIGEST_MISMATCH");
           bundle.insert(bundle.end(), payloadBytes.begin(), payloadBytes.end());
           pending.push_back({index, offset});
         }

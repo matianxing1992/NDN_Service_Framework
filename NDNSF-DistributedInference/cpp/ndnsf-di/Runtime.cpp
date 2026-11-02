@@ -10,6 +10,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
 #include "ndn-service-framework/OperationRuntime.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
@@ -19,6 +20,7 @@
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
+#include <ndn-cxx/util/logger.hpp>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -41,6 +43,9 @@
 #include <vector>
 
 namespace ndnsf::di {
+
+NDN_LOG_INIT(ndnsf.di.Spec220PreparationTrace);
+
 namespace {
 
 constexpr std::size_t MAX_RUNTIME_CONFIG_BYTES = 4 * 1024 * 1024;
@@ -72,6 +77,11 @@ const NativeJson& requiredObject(const NativeJson& root, const char* name)
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "configuration",
                   std::string("native runtime configuration requires object ") + name);
   return root.at(name);
+}
+
+void logSpec220PreparationStage(const char* stage)
+{
+  NDN_LOG_DEBUG(std::string("SPEC220_PREP_STAGE user-prepare.") + stage);
 }
 
 std::string requiredString(const NativeJson& object, const char* name)
@@ -1375,6 +1385,7 @@ Conversation User::openConversation(const PreparedModel& model,
 
 PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& options) const
 {
+  logSpec220PreparationStage("begin");
   if (!m_state)
     throw DiError("RUNTIME_CLOSED", "local", "preparation", "User has no Runtime state");
   std::shared_ptr<ModelPreparationCache> cache;
@@ -1399,11 +1410,13 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
     m_state->preparationInFlight.fetch_add(1, std::memory_order_acq_rel);
     ticket.armed = true;
   }
+  logSpec220PreparationStage("runtime-state-captured");
   if (!cache)
     throw DiError("RUNTIME_CLOSED", "local", "preparation", "preparation owner is unavailable");
   auto spec = preparationSpec(frozen, modelKey, m_state->config.repositorySourceLoader,
                               m_state->config.repositorySourceProvider,
                               m_state->config.repositoryArtifactPublisher);
+  logSpec220PreparationStage("spec-built");
   spec.runtimeBinding = m_state->runtimeBinding;
   if (m_state->config.repositorySourceProvider) {
     const auto provider = m_state->config.repositorySourceProvider;
@@ -1502,13 +1515,16 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
     return std::shared_ptr<void>(guard, static_cast<void*>(guard.get()));
   };
   try {
+    logSpec220PreparationStage("cache-prepare.begin");
     auto prepared = cache->prepare(spec, options.cache, options.timeout);
+    logSpec220PreparationStage("cache-prepare.complete");
     {
       std::lock_guard<std::mutex> lock(m_state->mutex);
       if (m_state->phase != detail::RuntimeState::Phase::Open)
         throw DiError("RUNTIME_CLOSED", "local", "preparation",
                       "Runtime closed before preparation could be returned");
     }
+    logSpec220PreparationStage("complete");
     return prepared;
   }
   catch (const DiError&) {

@@ -8,6 +8,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/control-byte-inventory.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
 #include <atomic>
@@ -287,6 +289,7 @@ struct NativeInferenceHandle::Operation
   NativeModelRef model;
   NativeApplicationInput input;
   NativeRequestOptions options;
+  std::shared_ptr<ndn_service_framework::ControlByteStatistics> controlStatistics;
   // Exactly one strategy-port bundle is captured by an operation.  The
   // concrete owner pointers below only keep the selected vtable alive for the
   // legacy/cooperative adapters; planning consumes the single type-erased
@@ -667,6 +670,14 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
           ? conversationTurn->parent.conversationId : std::string("none")},
        {"inferenceEpoch", std::to_string(terminalAttempt)},
        {"contextEpoch", contextEpoch}});
+  }
+  // Seal Core's bounded inventory before either result readers or event
+  // observers can serialize the request statistics. Recovery shares this
+  // owner; later cleanup and late packets are outside the terminal inventory.
+  if (operation->controlStatistics && operation->options.workStatistics) {
+    const auto inventory = operation->controlStatistics->seal();
+    (void)detail::mergeControlByteInventory(*operation->options.workStatistics, inventory,
+                                          detail::ControlInventoryScope::MAIN);
   }
   // Publish the terminal frame before completing the Core state. Core wakes a
   // pending reader during complete/fail; publishing first prevents an EOF
@@ -1986,7 +1997,8 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
     recovery.recoveryRequestId, 2, operation->wireDeadlineMs, recovery,
     providers, inventory, probeAllowlist,
     operation->runtime ? operation->runtime->requesterIdentity : std::string{},
-    operation->runtime ? operation->runtime->optionsTransport : std::string("INLINE"));
+    operation->runtime ? operation->runtime->optionsTransport : std::string("INLINE"),
+    operation->options.workStatistics);
   if (oldConversationTurn && conversations) {
     try {
       replacementConversationTurn = conversations->replaceAttempt(
@@ -2189,7 +2201,8 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             logRuntimeEvidence(record.str());
           }
           NativeRequestControl control{coreRequestId, sourceAttempt, operation->deadline,
-            [flag = operation->cancelled] { return flag->load(); }};
+            [flag = operation->cancelled] { return flag->load(); },
+            operation->options.workStatistics};
           if (!runtime || !inspected || !strategies.enumerate || !strategies.proposeRoles ||
               (cooperativeStrategies ? (!cooperativeSplitter || !cooperativePlacement) :
                                        (!legacySplitter || !legacyPlacement)) ||
@@ -2521,7 +2534,8 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         static_cast<int>(operation->coreOptions.ackTimeoutMs),
         static_cast<int>(operation->coreOptions.timeoutMs), ackClosed, response, timeout,
         ndn::Name(coreRequestId), std::move(ackCoverage), capabilities, operation->options.stream,
-        streamEvent, streamComplete, streamError, operation->options.providerNames);
+        streamEvent, streamComplete, streamError, operation->options.providerNames,
+        operation->controlStatistics);
     }
     catch (const NativeDiError& error) { failOperation(operation, error, sourceAttempt); }
     catch (...) { failOperation(operation, NativeDiError(
@@ -2631,7 +2645,8 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
                                    operation->strategies.splitterIdentity,
                                    operation->options.providerNames),
         operation->runtime ? operation->runtime->requesterIdentity : std::string{},
-    operation->runtime ? operation->runtime->optionsTransport : std::string("INLINE"));
+    operation->runtime ? operation->runtime->optionsTransport : std::string("INLINE"),
+    operation->options.workStatistics);
     }
     catch (const std::exception& error) {
       std::string detail = "native request contract encoding failed";
@@ -3061,6 +3076,7 @@ NativeInferenceClient::NativeInferenceClient(
     const NativeSelectionProjectionV3& projection, const NativeFixedRoleAssignmentV1& fixed,
     const NativeRequestControl& control) {
     control.requireActive();
+    NativeWorkScope encodingWork(control.workStatistics, "fixed-source-encode", NativeWorkKind::LOCAL);
     const auto wire = nativeFixedRoleAssignmentV1ToJson(fixed);
     if (wire.size() > (4U << 20))
       throw std::invalid_argument("fixed role recovery source exceeds wire limit");
@@ -3068,16 +3084,28 @@ NativeInferenceClient::NativeInferenceClient(
     context.serviceName = ndn::Name(service);
     context.requestId = ndn::Name(projection.requestId);
     ndn_service_framework::LargeDataPublishOptions publication;
-    publication.retention = user->supportsDurableEncryptedLargeData()
+    NativeWorkScope storeCapabilities(control.workStatistics, "fixed-source-store-capabilities",
+                                      NativeWorkKind::UNCLASSIFIED);
+    const bool durable = user->supportsDurableEncryptedLargeData();
+    storeCapabilities.finish();
+    publication.retention = durable
       ? ndn_service_framework::EncryptedLargeDataRetention::Durable
       : ndn_service_framework::EncryptedLargeDataRetention::Transient;
     publication.publicationIdentity = nativePlanningDigest(wire);
     publication.contentName = nativeFixedRoleSourceContentName(projection, fixed);
+    const std::vector<std::uint8_t> payload(wire.begin(), wire.end());
+    encodingWork.finish();
+    if (control.workStatistics)
+      control.workStatistics->addCount("fixedSource.publicationAttempts", 1);
     const auto published = user->publishEncryptedLargeDataFromWorker(
-      context, std::vector<std::uint8_t>(wire.begin(), wire.end()),
+      context, payload,
       "di-fixed-role-" + fixed.digest().substr(7), ndn::DEFAULT_FRESHNESS_PERIOD,
       publication,
       [control] { control.requireActive(); });
+    if (control.workStatistics && published.success) {
+      control.workStatistics->addCount("fixedSource.publishedPlaintextBytes", wire.size());
+      control.workStatistics->addCount("fixedSource.publishedObjects", 1);
+    }
     control.requireActive();
     if (!published.success || !published.servingLease)
       throw std::runtime_error("fixed role source publication failed: " + published.errorMessage);
@@ -3181,6 +3209,15 @@ NativeInferenceHandle NativeInferenceClient::requestImpl(
     operation->model = model;
     operation->input = input;
     operation->options = options;
+    if (options.workStatistics) {
+      try {
+        operation->controlStatistics =
+          std::make_shared<ndn_service_framework::ControlByteStatistics>();
+      }
+      catch (...) {
+        options.workStatistics->addCount("core.controlInventoryComplete", 0);
+      }
+    }
     operation->strategies = std::move(strategies);
     operation->legacySplitter = std::move(legacySplitter);
     operation->legacyPlacement = std::move(legacyPlacement);

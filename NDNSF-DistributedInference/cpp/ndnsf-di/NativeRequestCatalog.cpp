@@ -16,29 +16,50 @@
 namespace ndnsf::di {
 namespace {
 
-void expandStateContractsFromCatalog(NativeSplitCandidate& candidate,
-                                     const NativeStateTensorMapping& mapping,
-                                     const NativeModelDescriptor& model)
+std::map<std::string, NativeRoleResourceRequirement>
+resourceProfilesFromCatalog(const NativeJson& split, const std::vector<std::string>& roles,
+                            const std::vector<std::string>& allowedBackends)
 {
-  const auto expand = [&model] (const NativeStateTensorMapping::Roles& mapped,
-                                auto& declared) {
-    if (mapped.empty()) return;
-    for (const auto& item : mapped) {
-      const auto found = declared.find(item.first);
-      if (found == declared.end() || item.second.size() == found->second.size())
-        continue;
-      std::vector<NativeTensorContract> replacement;
-      for (const auto& semantic : item.second) {
-        for (const auto& name : semantic.second)
-          replacement.push_back({name, model.precision,
-            {"batch", "heads", "sequence", "head-dimension"}, std::nullopt});
-      }
-      if (!replacement.empty()) found->second = std::move(replacement);
+  const auto profiles = split.find("resources_by_role");
+  if (roles.empty() || std::set<std::string>(roles.begin(), roles.end()).size() != roles.size() ||
+      profiles == split.end() || !profiles->is_object() || profiles->size() != roles.size())
+    throw std::invalid_argument("native transformer requires explicit per-role resource profiles");
+  std::map<std::string, NativeRoleResourceRequirement> result;
+  for (const auto& role : roles) {
+    if (role.empty()) throw std::invalid_argument("native role resource identity is empty");
+    const auto entry = profiles->find(role);
+    if (entry == profiles->end() || !entry->is_object() || entry->size() != 7 ||
+        !entry->contains("backends") || !entry->at("backends").is_array() ||
+        !entry->contains("safety_margin") || !entry->at("safety_margin").is_number())
+      throw std::invalid_argument("native role resource profile is incomplete");
+    NativeRoleResourceRequirement profile;
+    for (const auto& backend : entry->at("backends")) {
+      if (!backend.is_string())
+        throw std::invalid_argument("native role resource backend must be a string");
+      const auto name = backend.get<std::string>();
+      if (name.empty() || std::find(allowedBackends.begin(), allowedBackends.end(), name) ==
+                            allowedBackends.end() ||
+          std::find(profile.backends.begin(), profile.backends.end(), name) != profile.backends.end())
+        throw std::invalid_argument("native role resource backend is unsupported or repeated");
+      profile.backends.push_back(name);
     }
-  };
-  expand(mapping.inputs, candidate.roleStateInputsByRole);
-  expand(mapping.outputs, candidate.roleStateOutputsByRole);
-  candidate.candidateDigest = candidate.computedDigest();
+    const auto bytes = [&](const char* key) {
+      const auto value = entry->find(key);
+      if (value == entry->end() || !value->is_number_unsigned())
+        throw std::invalid_argument("native role resource budget is unknown or not uint64");
+      return value->get<std::uint64_t>();
+    };
+    profile.weightBytes = bytes("weight_bytes");
+    profile.workspaceBytes = bytes("workspace_bytes");
+    profile.kvBytes = bytes("kv_bytes");
+    profile.activationBytes = bytes("activation_bytes");
+    profile.transientBytes = bytes("transient_bytes");
+    profile.safetyMargin = entry->at("safety_margin").get<double>();
+    if (!profile.estimatedPeakGpuMemoryBytes())
+      throw std::invalid_argument("native role resource peak is unknown");
+    result.emplace(role, std::move(profile));
+  }
+  return result;
 }
 
 NativeJson tensorContractJson(const NativeTensorContract& value)
@@ -95,6 +116,7 @@ std::string preparedMetadataJson(const NativeInspectedModel& model,
                       {"modelOutputs", std::move(outputs)},
                       {"graphMetadataJson", sourceGraph.graphMetadataJson},
                       {"canonicalNodeIndices", std::move(nodeIndices)},
+                      {"initializerConsumers", sourceGraph.initializerConsumers},
                       {"canonicalIdentity", {{"graphDigest", sourceGraph.canonicalIdentity.graphDigest},
                                                {"initializerDigest", sourceGraph.canonicalIdentity.initializerDigest}}}}}
   });
@@ -117,6 +139,19 @@ NativeOnnxGraphInspection sourceGraphFromPreparedMetadata(const NativeJson& meta
     result.graph.modelOutputs.push_back(tensorContractFromJson(output));
   for (const auto& item : encoded.at("canonicalNodeIndices").items())
     result.canonicalNodeIndices[item.key()] = item.value().get<std::uint64_t>();
+  if (!encoded.contains("initializerConsumers") ||
+      !encoded.at("initializerConsumers").is_object())
+    throw std::invalid_argument("native prepared metadata requires initializer ownership; reprepare source");
+  for (const auto& item : encoded.at("initializerConsumers").items()) {
+    if (!item.value().is_array())
+      throw std::invalid_argument("native prepared initializer consumers must be an array");
+    auto& consumers = result.initializerConsumers[item.key()];
+    for (const auto& index : item.value()) {
+      if (!index.is_number_unsigned() || index.get<std::uint64_t>() >= result.graph.nodes.size())
+        throw std::invalid_argument("native prepared initializer consumer is outside source graph");
+      consumers.push_back(index.get<std::uint64_t>());
+    }
+  }
   const auto& identity = encoded.at("canonicalIdentity");
   result.canonicalIdentity.graphDigest = identity.at("graphDigest").get<std::string>();
   result.canonicalIdentity.initializerDigest = identity.at("initializerDigest").get<std::string>();
@@ -318,6 +353,13 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   NativeCanonicalCatalogEntry entry;
   auto& model = entry.model;
   model.descriptor = NativeModelDescriptor::fromCanonicalJson(nativeCanonicalJson(root.at("model")));
+  const auto& split = root.at("splitter");
+  const auto splitterKind = split.at("kind").get<std::string>();
+  const bool sourceDefined = splitterKind == "QWEN" || splitterKind == "LLAMA";
+  const auto resourceProfiles = sourceDefined
+    ? resourceProfilesFromCatalog(split, split.at("roles").get<std::vector<std::string>>(),
+                                  model.descriptor.adapter.backends)
+    : std::map<std::string, NativeRoleResourceRequirement>{};
   const auto& sourceConfig = root.at("source");
   const bool referenceOnly = source.modelBytes.empty() && !source.preparedMetadataJson.empty();
   model.canonicalSourceName = sourceConfig.at("data_name").get<std::string>();
@@ -345,16 +387,17 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     model.canonicalSourceBytes = source.modelBytes.size();
     if (nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) != model.canonicalSourceDigest)
       throw std::invalid_argument("request source bytes differ from pinned digest");
-    if (source.initializerBytes) {
-      model.canonicalInitializerBytes = source.initializerBytes->size();
+    if (source.initializerBytes || source.initializerRangeSource) {
+      model.canonicalInitializerBytes = nativeCanonicalInitializerByteSize(source);
       model.canonicalInitializerObjectDigest = sourceConfig.at("initializer_digest").get<std::string>();
-      if (nativePlanningDigest(source.initializerBytes->data(), source.initializerBytes->size()) !=
+      if (nativeCanonicalInitializerDigest(source, control) !=
           model.canonicalInitializerObjectDigest)
         throw std::invalid_argument("request initializer bytes differ from pinned digest");
     }
     else if (sourceConfig.contains("initializer_digest"))
       throw std::invalid_argument("pinned initializer object is missing");
-    if (source.initializerBytes && model.descriptor.modelFormat == "onnx") {
+    if ((source.initializerBytes || source.initializerRangeSource) &&
+        model.descriptor.modelFormat == "onnx") {
       // The catalog pins the fetched external object above. Assembly recipes
       // bind a separate digest over normalized ONNX initializer contents.
       model.canonicalInitializerDigest = canonicalOnnxSourceIdentity(
@@ -431,8 +474,6 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     }
   }
   NativeRequestCatalog result;
-  const auto& split = root.at("splitter");
-  const auto splitterKind = split.at("kind").get<std::string>();
   if (splitterKind == "QWEN" || splitterKind == "LLAMA") {
     const auto modelFamily = splitterKind == "LLAMA" ? "llama" : "qwen";
     auto strategy = std::make_shared<qwen::NativeQwenLayerSplit>(
@@ -501,9 +542,13 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     result.model.descriptor, result.model.graph, preparationBudget, extensionControl);
   preparedCandidates.reserve(enumerated.size());
   for (auto candidate : enumerated) {
-    expandStateContractsFromCatalog(candidate, result.stateMapping, result.model.descriptor);
+    if (sourceDefined) {
+      candidate.requirementsByRole = resourceProfiles;
+      candidate.candidateDigest = candidate.computedDigest();
+    }
     auto bound = result.preparation->bindStateContracts(
-      result.model, candidate, result.stateMapping, planningControl);
+      result.model, candidate, result.stateMapping, planningControl,
+      sourceDefined ? NativeStateContractBinding::SOURCE : NativeStateContractBinding::DECLARED);
     auto roles = result.preparation->prepareRoles(result.model, bound, planningControl);
     preparedCandidates.push_back({std::move(bound), std::move(roles)});
   }

@@ -2,13 +2,17 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
 #include <atomic>
+#include <memory>
 
 namespace ndn_service_framework { class ServiceUser; }
 namespace ndnsf::di {
+class NativeWorkStatistics;
+
 struct NativeGrantControl
 {
   std::chrono::system_clock::time_point deadline;
   std::shared_ptr<const std::atomic<bool>> cancelled;
+  std::shared_ptr<NativeWorkStatistics> workStatistics = {};
   void check() const;
 };
 

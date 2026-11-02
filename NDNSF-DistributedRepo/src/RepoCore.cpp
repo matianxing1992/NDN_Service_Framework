@@ -347,7 +347,11 @@ RepoCore::commitRangesLocked(const RepoObjectManifest& manifest)
     oldSize = previous.segmentCount > 1 || !previous.packetNames.empty()
                 ? 0 : previous.size;
   }
+  bool payloadAlreadyCommitted = false;
   try {
+    if (commitManifest.objectType == "original-packet-set") {
+      payloadAlreadyCommitted = m_store->hasCommittedPayload(commitManifest);
+    }
     m_store->commitRanges(commitManifest);
     // A successful backend commit is the durable-manifest contract.  The
     // lookup normally confirms the exact stored value; if a transient read
@@ -360,7 +364,11 @@ RepoCore::commitRangesLocked(const RepoObjectManifest& manifest)
     catch (...) {
     }
     rememberCatalogChange(durable, "AVAILABLE");
-    refreshCapabilityUsageAfterCommit(oldSize, durable.size);
+    if (commitManifest.objectType == "original-packet-set" &&
+        !payloadAlreadyCommitted)
+      updateCapabilityUsage(oldSize, durable.size);
+    else
+      refreshCapabilityUsageAfterCommit(oldSize, durable.size);
     clearRangeReservation(manifest.objectName);
     return durable;
   }
@@ -372,7 +380,11 @@ RepoCore::commitRangesLocked(const RepoObjectManifest& manifest)
       RepoObjectManifest durable;
       if (isAmbiguousCommitError(e) &&
           recoverAmbiguousCommit(manifest.objectName, durable)) {
-        refreshCapabilityUsageAfterCommit(oldSize, durable.size);
+        if (commitManifest.objectType == "original-packet-set" &&
+            !payloadAlreadyCommitted)
+          updateCapabilityUsage(oldSize, durable.size);
+        else
+          refreshCapabilityUsageAfterCommit(oldSize, durable.size);
         clearRangeReservation(manifest.objectName);
         return durable;
       }

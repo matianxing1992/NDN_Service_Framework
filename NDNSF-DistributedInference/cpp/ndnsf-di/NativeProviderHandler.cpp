@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/collaboration-work-observer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
@@ -12,6 +13,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "request-work-statistics.hpp"
 
 #include "ndn-service-framework/utils.hpp"
 
@@ -74,7 +76,8 @@ decodeNativeProviderAssignment(const ndn::Buffer& payload,
     const auto schema = root.get<std::string>("schema", "");
     const auto schemaVersion = root.get<int>("schema_version", 0);
     const bool referenced = (schema == "ndnsf-di-selection-invocation-v1" && schemaVersion == 1) ||
-      (schema == "ndnsf-di-selection-invocation-v2" && schemaVersion == 2);
+      (schema == "ndnsf-di-selection-invocation-v2" && schemaVersion == 2) ||
+      (schema == "ndnsf-di-selection-invocation-v3" && schemaVersion == 3);
     if (!referenced && (schema != "ndnsf-di-selection-v3" || schemaVersion != 3)) {
       throw std::invalid_argument(
         "V3 Selection projection schema mismatch: schema=" + schema +
@@ -1090,7 +1093,8 @@ logProviderCapacity(const std::string& sessionId,
 std::map<std::string, TensorBundle>
 initialInputsFromRequest(ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
                          const ndn_service_framework::RequestMessage& request,
-                         bool applicationInputAuthorized)
+                         bool applicationInputAuthorized,
+                         const std::shared_ptr<NativeWorkStatistics>& statistics = {})
 {
   // Apply the ownership check at the fetch boundary, before reading any
   // request bytes or invoking the repository. Fault injection calls this
@@ -1143,6 +1147,10 @@ initialInputsFromRequest(ndn_service_framework::ServiceProvider::CollaborationCo
         }
         else if (transport == "INLINE") {
           const auto encoded = root.get<std::string>("input_payload_b64", "");
+          if (statistics) {
+            statistics->addCount("request.encodedInputValueBytes", encoded.size());
+            statistics->addCount("request.inputEnvelopeRepresentationBytes", wire.size());
+          }
           if (encoded.empty()) {
             payload = ndn::Buffer{};
           }
@@ -1323,13 +1331,15 @@ kvBindingFromAssignment(const NativeModelRunnerSpec& spec,
 void
 injectCachedKvInputs(std::map<std::string, TensorBundle>& inputs,
                      const NativeModelRunnerSpec& spec,
-                     const TensorBundle& cached)
+                     const TensorBundle& cached,
+                     const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
+  NativeWorkScope work(workStatistics, "provider-kv-cache-bind", NativeWorkKind::LOCAL);
   const auto mapping = nativeProviderFieldValue(spec.metadata, {"kvTensorMap"});
   if (mapping.empty() || !isEncodedTensorBundle(cached.payload)) {
     throw std::invalid_argument("KV_STATE_UNAVAILABLE");
   }
-  const auto tensors = decodeTensorBundle(cached.payload);
+  const auto tensors = decodeTensorBundle(cached.payload, workStatistics);
   std::size_t start = 0;
   while (start < mapping.size()) {
     const auto end = mapping.find(',', start);
@@ -1403,7 +1413,10 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
     auto roleSpec = executionAttempt
       ? roleSpecFor(plan, item.first, *executionAttempt, assignment, localProvider)
       : roleSpecFor(plan, item.first, sessionId, assignment, localProvider);
+    NativeWorkScope roleWait(roleSpec.workStatistics, "provider-role-join",
+                             NativeWorkKind::WAIT);
     auto result = item.second.get();
+    roleWait.finish();
     if (result.runner && selectionProjection && runnerReusePublisher) {
       runnerReusePublisher(*selectionProjection, protectedRuntime, result.runner);
     }
@@ -1890,8 +1903,10 @@ validateProtectedRuntimeBinding(
   const ProtectedRuntime& runtime,
   const std::shared_ptr<ProviderGroupCoordinator>& groupCoordinator,
   const std::string& expectedProviderBootId,
-  const std::string& expectedFencingToken)
+  const std::string& expectedFencingToken,
+  const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  NativeWorkScope bindingWork(statistics, "protected-binding-validate", NativeWorkKind::LOCAL);
   const auto& binding = runtime.binding();
   std::set<std::string> mayPublish;
   std::set<std::string> mustFetch;
@@ -1927,6 +1942,9 @@ validateProtectedRuntimeBinding(
       binding.grantDigest != projection.grantDigest ||
       binding.providerBootId != expectedProviderBootId ||
       binding.fencingToken != expectedFencingToken ||
+      binding.compactDataflow.has_value() != projection.dataflow.endpointRange.has_value() ||
+      (binding.compactDataflow &&
+       binding.compactDataflow->dataflowDigest != projection.dataflow.dataflowDigest) ||
       binding.mayPublishEndpointDigests != mayPublish ||
       binding.mustFetchEndpointDigests != mustFetch ||
       binding.mayPublishConsumerByEndpoint != mayPublishConsumers ||
@@ -2169,6 +2187,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
     std::exception_ptr statisticsError;
     if (statisticsObserver && *statisticsObserver) {
       requestStatistics.emplace();
+      requestStatistics->workStatistics = makeNativeWorkStatistics();
       requestStatistics->startedProcessCpuNs = detail::nativeProcessCpuTimeNs();
       requestStatistics->startedSteadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -2208,7 +2227,34 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         }
       }
     };
+    const auto workStatistics = requestStatistics ? requestStatistics->workStatistics : nullptr;
+    NativeWorkScope handlerWork(workStatistics, "provider-handler", NativeWorkKind::UNCLASSIFIED);
     try {
+      if (workStatistics) {
+        const auto& receipt = ctx.assignment().preparationFetchReceipt;
+        workStatistics->addCount("core.preparationReceiptPresent", receipt ? 1 : 0);
+        if (receipt) {
+          workStatistics->addCount("core.assignmentRetrievedBytes", receipt->assignmentBytes);
+          workStatistics->addCount("core.assignmentRetrievedObjects", receipt->assignmentObjects);
+          workStatistics->addCount("core.scopeKeyRetrievedBytes", receipt->scopeKeyBytes);
+          workStatistics->addCount("core.scopeKeyRetrievedObjects", receipt->scopeKeyObjects);
+          workStatistics->addCount("core.artifactRetrievedBytes", receipt->artifactBytes);
+          workStatistics->addCount("core.artifactRetrievedObjects", receipt->artifactObjects);
+          workStatistics->addCount("core.requestInputRetrievedBytes", receipt->inputBytes);
+          workStatistics->addCount("core.requestInputRetrievedObjects", receipt->inputObjects);
+          workStatistics->addCount("core.requestInputRetrievedPackets", receipt->inputPackets);
+          using InputDisposition = ndn_service_framework::ServiceProvider::InputFetchDisposition;
+          workStatistics->addCount("core.requestInputShared",
+            receipt->inputDisposition == InputDisposition::SHARED ? 1 : 0);
+          workStatistics->addCount("core.requestInputMissing",
+            receipt->inputDisposition == InputDisposition::MISSING ? 1 : 0);
+          workStatistics->addCount("core.requestInputNestedInSelection",
+            receipt->inputNestedInSelection ? 1 : 0);
+          workStatistics->addCount("core.requestInputNestedInRequest",
+            receipt->inputNestedInRequest ? 1 : 0);
+          workStatistics->addCount("core.preparationReceiptComplete", receipt->complete ? 1 : 0);
+        }
+      }
       logRuntimePhase("di-provider", "nativeHandlerEntered", ctx.sessionId(), {},
         {{"executionRole", "provider-admission"},
          {"providerName", ctx.localProvider().toUri()}, {"modelRole", ctx.role()}});
@@ -2272,16 +2318,22 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
            {"providerName", ctx.localProvider().toUri()}, {"modelRole", role}});
       }
       const auto assignmentDecodeStarted = detail::nativePhaseStarted();
+      NativeWorkScope assignmentWork(workStatistics, "selection-assignment-decode",
+                                     NativeWorkKind::UNCLASSIFIED);
       std::shared_ptr<const NativeFixedRoleAssignmentV1> referencedFixed;
       if (jsonAssignment) {
+        NativeWorkScope ingressWork(workStatistics, "selection-ingress-parse",
+                                    NativeWorkKind::LOCAL);
         const auto header = nativeParseJson(assignmentText);
         const auto invocationSchema = header.value("schema", std::string{});
         const bool compactInvocation = invocationSchema == "ndnsf-di-selection-invocation-v2";
-        if (invocationSchema == "ndnsf-di-selection-invocation-v1" || compactInvocation) {
+        const bool rangeInvocation = invocationSchema == "ndnsf-di-selection-invocation-v3";
+        if (invocationSchema == "ndnsf-di-selection-invocation-v1" || compactInvocation ||
+            rangeInvocation) {
           validateNativeSelectionInvocationBindingShapeV1(header);
           const auto ref = header.at("fixed_role_ref").get<std::string>();
           if (!header.at("schema_version").is_number_integer() ||
-              header.at("schema_version") != NativeJson(compactInvocation ? 2 : 1) ||
+              header.at("schema_version") != NativeJson(rangeInvocation ? 3 : compactInvocation ? 2 : 1) ||
               header.at("provider").get<std::string>() != ctx.localProvider().toUri() ||
               header.at("request_id").get<std::string>() != ctx.sessionId() ||
               !header.at("execution_role").is_object() || header.at("execution_role").size() != 1 ||
@@ -2311,10 +2363,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             sourceDeadline = std::min(sourceDeadline,
               ingressSteadyNow + ctx.streamRemainingDeadline());
           }
+          ingressWork.finish();
           referencedFixed = state->fixedRoleAssignments.find(
             ctx.requesterName().toUri(), ctx.assignment().service.toUri(),
-            ctx.localProvider().toUri(), role, ref);
+            ctx.localProvider().toUri(), role, ref, workStatistics);
+          if (workStatistics)
+            workStatistics->addCount(referencedFixed ? "fixedRole.cacheHits" : "fixedRole.cacheMisses", 1);
           if (!referencedFixed) {
+            NativeWorkScope sourceReference(workStatistics, "fixed-source-reference",
+                                            NativeWorkKind::LOCAL);
             const auto& source = header.at("fixed_role_source");
             const auto dataName = source.at("data_name").get<std::string>();
             const auto digest = source.at("plaintext_digest").get<std::string>();
@@ -2330,7 +2387,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               throw std::invalid_argument("fixed source bounds are invalid");
             nativeValidateFixedRoleSourceProducer(
               NativeFixedRoleSourceV1{dataName, digest, bytes, {}}, ctx.requesterName().toUri(), role);
+            sourceReference.finish();
+            NativeWorkScope sourceWait(workStatistics, "fixed-source-fetch", NativeWorkKind::WAIT);
             const auto data = ctx.fetchEncryptedLargeDataCurrent(ndn::Name(dataName), sourceDeadline);
+            sourceWait.finish();
+            NativeWorkScope sourceDecode(workStatistics, "fixed-source-decode", NativeWorkKind::LOCAL);
+            if (workStatistics && data) {
+              workStatistics->addCount("fixedSource.fetchedPlaintextBytes", data->size());
+              workStatistics->addCount("fixedSource.fetchedObjects", 1);
+            }
             if (!data || data->size() != bytes ||
                 nativePlanningDigest(data->data(), data->size()) != digest)
               throw std::invalid_argument("fixed source fetch or plaintext commitment failed");
@@ -2339,6 +2404,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             if (referencedFixed->digest() != ref || referencedFixed->provider() != ctx.localProvider().toUri() ||
                 referencedFixed->roleOwner()->selectedRole != role)
               throw std::invalid_argument("fixed source role identity differs from invocation");
+            sourceDecode.finish();
             logRuntimeEvidence("NDNSF_DI_FIXED_ROLE_SOURCE_FETCH requestId=" + ctx.sessionId() +
               " role=" + role + " bytes=" + std::to_string(bytes));
           }
@@ -2348,8 +2414,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           }
         }
       }
+      NativeWorkScope decodeWork(workStatistics, "selection-codec-decode", NativeWorkKind::LOCAL);
       auto decodedAssignment = decodeNativeProviderAssignment(
         ctx.assignment().assignmentPayload, role, referencedFixed.get());
+      decodeWork.finish();
+      assignmentWork.finish();
       if (jsonAssignment) {
         detail::logNativeWorkPhase(ctx.sessionId(), "selection_assignment_decode",
                                   assignmentDecodeStarted, role);
@@ -2479,12 +2548,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                   ctx.localProvider().toUri(), role);
         groupCoordinatorFuture = std::async(
           std::launch::async,
-          [groupFactory, &ctx, groupFields] () mutable {
-            return groupFactory(ctx, groupFields);
+          [groupFactory, &ctx, groupFields, workStatistics] () mutable {
+            return groupFactory(ctx, groupFields, workStatistics);
           });
       }
       else if (config.groupCoordinatorFactory) {
-        groupCoordinator = config.groupCoordinatorFactory(ctx, assignmentFields);
+        groupCoordinator = config.groupCoordinatorFactory(ctx, assignmentFields, workStatistics);
       }
       if (selectionProjection &&
           selectionProjection->selectedRoleContract().protectionEpoch != "plaintext-v1") {
@@ -2495,14 +2564,17 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         logProviderBoundaryStdout("PROTECTED_RUNTIME_FACTORY_BEGIN", stageRequestId,
                                   ctx.localProvider().toUri(), role);
         protectedRuntime = config.protectedRuntimeFactory(
-          ctx, *selectionProjection, groupCoordinator);
+          ctx, *selectionProjection, groupCoordinator, workStatistics);
         logProviderBoundaryStdout("PROTECTED_RUNTIME_FACTORY_DONE", stageRequestId,
                                   ctx.localProvider().toUri(), role);
         if (groupCoordinatorFuture.valid()) {
           // This is the authorization join: no binding validation, assembly,
           // runner creation, or execution can proceed with a missing or failed
           // request-scoped coordinator.
-          groupCoordinator = groupCoordinatorFuture.get();
+          {
+            NativeWorkScope groupWait(workStatistics, "protected-group-join", NativeWorkKind::WAIT);
+            groupCoordinator = groupCoordinatorFuture.get();
+          }
           logProviderBoundaryStdout("GROUP_COORDINATOR_FACTORY_DONE", stageRequestId,
                                     ctx.localProvider().toUri(), role);
         }
@@ -2519,7 +2591,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                   ctx.localProvider().toUri(), role);
           if (const auto error = validateProtectedRuntimeBinding(
               *selectionProjection, *protectedRuntime, groupCoordinator,
-              config.providerBootId, fencingToken)) {
+              config.providerBootId, fencingToken, workStatistics)) {
           logProviderStageMarker("GRANT_REJECTED", stageRequestId,
                                  ctx.localProvider().toUri(), role,
                                  requestPlanDigest, "failed", *error,
@@ -2553,7 +2625,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       const auto makeNetworkIo = [&] (std::size_t prefetchWorkerCount) {
         return std::make_shared<NdnsfCollaborationDependencyIo>(
           ctx, timeoutBudget.dependencyFetchMs, config.maxSegmentSize,
-          config.freshnessMs, groupCoordinator, protectedRuntime, prefetchWorkerCount);
+          config.freshnessMs, groupCoordinator, protectedRuntime, prefetchWorkerCount, workStatistics);
       };
       std::shared_ptr<DependencyIo> io;
       const auto assignmentExecutionPolicy = nativeProviderFieldValue(
@@ -2696,11 +2768,13 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         const auto service = ctx.assignment().service.toUri();
         auto fixed = referencedFixed
           ? state->fixedRoleAssignments.find(requester, service, referencedFixed->provider(),
-              referencedFixed->roleOwner()->selectedRole, referencedFixed->digest())
-          : state->fixedRoleAssignments.findMatching(requester, service, *selectionProjection);
+              referencedFixed->roleOwner()->selectedRole, referencedFixed->digest(), workStatistics)
+          : state->fixedRoleAssignments.findMatching(requester, service, *selectionProjection,
+              workStatistics);
         if (!fixed) {
           fixed = state->fixedRoleAssignments.remember(requester, service,
-            referencedFixed ? referencedFixed : nativeFixedRoleAssignmentV1FromProjection(*selectionProjection));
+            referencedFixed ? referencedFixed : nativeFixedRoleAssignmentV1FromProjection(*selectionProjection),
+            workStatistics);
         }
         selectionProjection->fixedRoleOwner = fixed->roleOwner();
         selectionProjection->fixedExecutionTemplateOwner = fixed->executionTemplate();
@@ -2804,11 +2878,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         std::ostringstream readyWire;
         boost::property_tree::write_json(readyWire, ready, false);
         const auto readyPayload = readyWire.str();
+        NativeWorkScope publishSubmit(workStatistics,
+          "conversation-control-publish-submit", NativeWorkKind::UNCLASSIFIED);
         ctx.publish(
           config.conversationStateKeyScope,
           ndn::Name("/ndnsf-di/conversation/ready"),
           ndn::Buffer(reinterpret_cast<const std::uint8_t*>(readyPayload.data()),
-                      readyPayload.size()));
+                      readyPayload.size()),
+          detail::makeCollaborationWorkObserver(workStatistics));
+        publishSubmit.finish();
         std::ostringstream record;
         record << "NDNSF_DI_CONVERSATION_STATE"
                << " event=state-ready-published"
@@ -3127,11 +3205,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           "adapter=" + adapterIdentity + ";" +
           "artifactDigest=" + artifactDigest + ";";
         const auto publishReadiness = [&] {
+          NativeWorkScope publishSubmit(workStatistics,
+            "conversation-control-publish-submit", NativeWorkKind::UNCLASSIFIED);
           ctx.publish(
             readinessScope,
             readinessTopic,
             ndn::Buffer(reinterpret_cast<const std::uint8_t*>(localPayload.data()),
-                        localPayload.size()));
+                        localPayload.size()),
+            detail::makeCollaborationWorkObserver(workStatistics));
+          publishSubmit.finish();
         };
         publishReadiness();
 
@@ -3155,9 +3237,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           }
           const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             barrierDeadline - std::chrono::steady_clock::now()).count();
+          NativeWorkScope readinessWait(workStatistics, "provider-readiness-wait",
+                                         NativeWorkKind::WAIT);
           const auto items = ctx.waitFor(
             readinessScope, readinessTopic, 1,
             static_cast<int>(std::max<long long>(1, std::min<long long>(100, remaining))));
+          readinessWait.finish();
           for (const auto& item : items) {
             const std::string payload(item.payload.begin(), item.payload.end());
             const auto fields = parseNativeProviderAssignmentFields(item.payload);
@@ -3209,7 +3294,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             observed[memberId] = payload;
           }
           if (observed.size() < expectedReadinessCount) {
+            NativeWorkScope readinessBackoff(workStatistics,
+              "provider-readiness-backoff", NativeWorkKind::WAIT);
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            readinessBackoff.finish();
           }
         }
         if (observed.size() != expectedReadinessCount) {
@@ -3381,7 +3469,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           }
         }
         initialInputs = initialInputsFromRequest(
-          ctx, request, !selectionProjection || hasApplicationInput);
+          ctx, request, !selectionProjection || hasApplicationInput, workStatistics);
         if (selectionProjection && hasApplicationInput) {
           const auto requestInput = initialInputs.find("request-input");
           if (requestInput == initialInputs.end()) {
@@ -3436,7 +3524,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       if (cachedKvState) {
         const auto* runnerSpec = runnerSpecForRole(state->runnerSpecs, role);
         try {
-          injectCachedKvInputs(initialInputs, *runnerSpec, *cachedKvState);
+          injectCachedKvInputs(initialInputs, *runnerSpec, *cachedKvState, workStatistics);
         }
         catch (const std::exception&) {
           completeExecutionLease();
@@ -3524,6 +3612,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         NativeEpochCoordinatorConfig coordinatorConfig{
           state->runtime, executionPlan, assignment, io};
         coordinatorConfig.sessionId = executionSessionId;
+        coordinatorConfig.workStatistics = workStatistics;
         coordinatorConfig.requestId = executionAttempt
           ? executionAttempt->requestId : ctx.sessionId();
         coordinatorConfig.attemptEpoch = executionAttempt
@@ -3542,15 +3631,17 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 return edge.operationKind == "TOKEN_FEEDBACK";
               })};
         if (selectionProjection) {
+          NativeWorkScope factoryBuild(workStatistics, "epoch-role-factory-build",
+                                       NativeWorkKind::LOCAL);
           const auto projection = *selectionProjection;
           const auto assignmentForCoordinator = assignment;
           const auto providerName = ctx.localProvider().toUri();
           const auto roleFactory = std::make_shared<
             NativeSelectionProjectionRoleFactory>(projection, providerName);
           coordinatorConfig.roleSpecFactory =
-            [projection, assignmentForCoordinator, roleFactory]
+            [projection, assignmentForCoordinator, roleFactory, workStatistics]
             (std::size_t sequence) {
-              auto projected = (*roleFactory)(sequence);
+              auto projected = (*roleFactory)(sequence, workStatistics);
               // Cross-role feedback is a signed C04 endpoint in the role
               // factory. Only an exact same-role loop remains local control
               // carried by the sealed plan and served by LocalDependencyIo.
@@ -3779,10 +3870,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           const auto receiptJson = receipt.toJson();
           ndn::Name receiptTopic("/ndnsf-di/conversation/receipt");
           receiptTopic.append(ndn::Name(finalized.role));
+          NativeWorkScope publishSubmit(workStatistics,
+            "conversation-control-publish-submit", NativeWorkKind::UNCLASSIFIED);
           ctx.publish(
             config.conversationStateKeyScope,
             std::move(receiptTopic),
-            ndn::Buffer(receiptJson.begin(), receiptJson.end()));
+            ndn::Buffer(receiptJson.begin(), receiptJson.end()),
+            detail::makeCollaborationWorkObserver(workStatistics));
+          publishSubmit.finish();
           std::ostringstream record;
           record << "NDNSF_DI_CONVERSATION_STATE"
                  << " event=staged-receipt-published"
@@ -3829,9 +3924,13 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 {"providerBootId", identity.providerBootId}, {"cacheEpoch", identity.cacheEpoch}};
               ack[committed ? "committed" : "rolledBack"] = true;
               const auto wire = nativeCanonicalJson(ack);
+              NativeWorkScope publishSubmit(workStatistics,
+                "conversation-control-publish-submit", NativeWorkKind::UNCLASSIFIED);
               ctx.publish(config.conversationStateKeyScope,
                 ndn::Name(committed ? "/ndnsf-di/conversation/commit" : "/ndnsf-di/conversation/rollback"),
-                ndn::Buffer(wire.begin(), wire.end()));
+                ndn::Buffer(wire.begin(), wire.end()),
+                detail::makeCollaborationWorkObserver(workStatistics));
+              publishSubmit.finish();
             };
             const auto logControl = [&](const char* event,
                                         const std::string& action,
@@ -3878,9 +3977,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               }
               const auto remaining = static_cast<int>(std::max<std::uint64_t>(
                 1, std::min<std::uint64_t>(100, controlDeadline - now)));
+              NativeWorkScope controlWait(workStatistics, "provider-control-wait",
+                                          NativeWorkKind::WAIT);
               const auto controls = ctx.waitFor(
                 config.conversationStateKeyScope, controlTopic,
                 nextControlCount, remaining);
+              controlWait.finish();
               if (!controls.empty()) {
                 if (controls.size() == std::numeric_limits<std::size_t>::max()) {
                   throw std::runtime_error("PROVIDER_CONVERSATION_CONTROL_HISTORY_OVERFLOW");
@@ -4130,7 +4232,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         }
 
         for (auto& localRole : localRoles) {
+          NativeWorkScope roleWait(workStatistics, "provider-role-join",
+                                   NativeWorkKind::WAIT);
           auto result = localRole.second.get();
+          roleWait.finish();
           const auto& executedRoleSpec = localRole.first;
           if (result.runner && selectionProjection &&
               config.runnerReusePublisher) {
@@ -4265,7 +4370,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         if (waitConversationPromotion) {
           logRuntimePhase("di-provider", "conversationPromotionWaitBegin", stageRequestId,
             stageAttemptEpoch, completionTimingFields);
+          NativeWorkScope promotionWait(workStatistics,
+            "provider-conversation-promotion-wait", NativeWorkKind::WAIT);
           waitConversationPromotion();
+          promotionWait.finish();
           logRuntimePhase("di-provider", "conversationPromotionWaitEnd", stageRequestId,
             stageAttemptEpoch, completionTimingFields);
         }
@@ -4325,7 +4433,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           // Provider-side execution slot; terminal ownership remains with the
           // final role and the shared streamed lifecycle.
           if (waitConversationPromotion) {
+            NativeWorkScope promotionWait(workStatistics,
+              "provider-conversation-promotion-wait", NativeWorkKind::WAIT);
             waitConversationPromotion();
+            promotionWait.finish();
           }
           if (selectionProjection) {
             logProviderStageMarker("EXECUTION_COMPLETED", stageRequestId,

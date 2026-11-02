@@ -79,6 +79,7 @@ struct TwoRolePlacement
       {{first, digest("first-artifact")}, {second, digest("second-artifact")}},
       {{first, 1}, {second, 1}}, {first, second}, {1, 1});
     candidate = splitter.enumerate(snapshot.model, snapshot.graph, {}).front();
+    fixture::assignPlacementFixtureResourceBudgets(candidate);
     snapshot.offers = {
       {"provider-a", digest("offer-a"), {first}, {"onnxruntime"}, {},
         4ULL << 30, 1, true, true},
@@ -87,6 +88,29 @@ struct TwoRolePlacement
     };
   }
 };
+
+void
+checkQwenPlannerMigration(NativeSplitCandidate& actual, const NativeJson& frozen,
+                          const NativeGraphSnapshot& snapshot)
+{
+  // Preserve the historical full-identity oracle as a decoder/serialization
+  // check. New abstract state defaults have their independent assertions below.
+  auto legacy = fixture::candidateFromJson(frozen);
+  legacy.candidateDigest = legacy.computedDigest();
+  BOOST_CHECK_EQUAL(legacy.canonicalJson(), nativeCanonicalJson(frozen));
+  BOOST_CHECK_NO_THROW(legacy.validate(snapshot));
+  fixture::assignPlacementFixtureResourceBudgets(actual);
+  BOOST_CHECK_NO_THROW(actual.validate(snapshot));
+  auto currentFields = nativeParseJson(actual.canonicalJson());
+  auto frozenFields = frozen;
+  for (const auto* key : {"role_state_inputs_by_role", "role_state_outputs_by_role"}) {
+    currentFields.erase(key);
+    frozenFields.erase(key);
+  }
+  BOOST_CHECK(currentFields == frozenFields);
+  BOOST_CHECK_EQUAL(actual.candidateDigest, actual.computedDigest());
+  BOOST_CHECK(actual.candidateDigest != legacy.computedDigest());
+}
 
 } // namespace
 
@@ -118,22 +142,45 @@ BOOST_AUTO_TEST_CASE(QwenLayerSplitProducesCanonicalRankOneCandidate)
     BOOST_CHECK(candidate.requirementsByRole.at(roles[i]).backends == std::vector<std::string>({"onnxruntime"}));
     const auto& inputs = candidate.roleStateInputsByRole.at(roles[i]);
     const auto& outputs = candidate.roleStateOutputsByRole.at(roles[i]);
-    BOOST_REQUIRE_EQUAL(inputs.size(), 3);
-    BOOST_REQUIRE_EQUAL(outputs.size(), 3);
-    const std::vector<std::string> names{"attention_kv", "recurrent_state", "convolution_state"};
-    const std::vector<std::vector<std::string>> shapes{
-      {"layers", "heads", "sequence", "head-dimension"}, {"layers", "hidden"}, {"layers", "channels", "kernel"}};
-    for (std::size_t state = 0; state < names.size(); ++state) {
-      BOOST_CHECK_EQUAL(inputs[state].name, names[state] + "_in");
-      BOOST_CHECK_EQUAL(outputs[state].name, names[state] + "_out");
+    const std::vector<std::vector<std::string>> suffixes{
+      {"key.0", "value.0", "key.1", "value.1"}, {"key.2", "value.2"}, {"key.3", "value.3"}};
+    const std::vector<std::string> shape{"batch", "heads", "sequence", "head-dimension"};
+    BOOST_REQUIRE_EQUAL(inputs.size(), suffixes[i].size());
+    BOOST_REQUIRE_EQUAL(outputs.size(), suffixes[i].size());
+    for (std::size_t state = 0; state < suffixes[i].size(); ++state) {
+      BOOST_CHECK_EQUAL(inputs[state].name, "past_" + suffixes[i][state]);
+      BOOST_CHECK_EQUAL(outputs[state].name, "present_" + suffixes[i][state]);
       BOOST_CHECK_EQUAL(inputs[state].dtype, modelDescriptor.precision);
       BOOST_CHECK_EQUAL(outputs[state].dtype, modelDescriptor.precision);
       BOOST_CHECK(!inputs[state].estimatedBytes && !outputs[state].estimatedBytes);
-      BOOST_REQUIRE_EQUAL(inputs[state].shape.size(), shapes[state].size());
-      BOOST_REQUIRE_EQUAL(outputs[state].shape.size(), shapes[state].size());
-      for (std::size_t axis = 0; axis < shapes[state].size(); ++axis) {
-        BOOST_CHECK_EQUAL(std::get<std::string>(inputs[state].shape[axis]), shapes[state][axis]);
-        BOOST_CHECK_EQUAL(std::get<std::string>(outputs[state].shape[axis]), shapes[state][axis]);
+      BOOST_REQUIRE_EQUAL(inputs[state].shape.size(), shape.size());
+      BOOST_REQUIRE_EQUAL(outputs[state].shape.size(), shape.size());
+      for (std::size_t axis = 0; axis < shape.size(); ++axis) {
+        BOOST_CHECK_EQUAL(std::get<std::string>(inputs[state].shape[axis]), shape[axis]);
+        BOOST_CHECK_EQUAL(std::get<std::string>(outputs[state].shape[axis]), shape[axis]);
+      }
+    }
+    const auto& resources = candidate.requirementsByRole.at(roles[i]);
+    BOOST_CHECK(!resources.workspaceBytes);
+    BOOST_CHECK(!resources.kvBytes);
+    BOOST_CHECK(!resources.activationBytes);
+    BOOST_CHECK(!resources.transientBytes);
+    BOOST_CHECK(!resources.estimatedPeakGpuMemoryBytes());
+  }
+  for (const auto& name : {"Qwen3-0.6B", "Qwen3.6-27B", "Qwen-configuration-fixture"}) {
+    auto renamed = modelDescriptor;
+    renamed.modelName = name;
+    const auto renamedCandidates = splitter.enumerate(renamed, graphSnapshot,
+      NativeCandidateBudget{2, 100, 1});
+    BOOST_REQUIRE_EQUAL(renamedCandidates.size(), 1U);
+    for (const auto& role : roles) {
+      const auto& expected = candidate.roleStateInputsByRole.at(role);
+      const auto& actual = renamedCandidates.front().roleStateInputsByRole.at(role);
+      BOOST_REQUIRE_EQUAL(expected.size(), actual.size());
+      for (std::size_t index = 0; index < actual.size(); ++index) {
+        BOOST_CHECK_EQUAL(actual[index].name, expected[index].name);
+        BOOST_CHECK_EQUAL(actual[index].dtype, expected[index].dtype);
+        BOOST_CHECK(actual[index].shape == expected[index].shape);
       }
     }
   }
@@ -177,7 +224,34 @@ BOOST_AUTO_TEST_CASE(SmolLm2LlamaLayerSplitProducesDynamicPastContract)
 
 BOOST_AUTO_TEST_CASE(SmolLm2LlamaCatalogRoutesToNativePlanner)
 {
-  const auto sourceText = fixture::makeQwenNativeConfigOnnxSource();
+  // This is a routing fixture, not a real SmolLM inference artifact. Give
+  // both decoder roles their own source-defined state boundary.
+  onnx::ModelProto nativeSource;
+  BOOST_REQUIRE(nativeSource.ParseFromString(fixture::makeQwenNativeConfigOnnxSource()));
+  // This routing source otherwise has no weights. Give one owned node a
+  // real four-byte scalar so the restored weight-floor negative has an oracle.
+  BOOST_REQUIRE_EQUAL(nativeSource.graph().node(1).name(), "layer-00");
+  auto* weight = nativeSource.mutable_graph()->add_initializer();
+  weight->set_name("route_weight");
+  weight->set_data_type(onnx::TensorProto::FLOAT);
+  weight->add_float_data(1.0F);
+  nativeSource.mutable_graph()->mutable_node(1)->set_op_type("Add");
+  nativeSource.mutable_graph()->mutable_node(1)->add_input("route_weight");
+  for (const std::string family : {"attention_kv", "recurrent_state", "convolution_state"}) {
+    for (const bool output : {false, true}) {
+      auto* value = output ? nativeSource.mutable_graph()->add_output()
+                           : nativeSource.mutable_graph()->add_input();
+      value->set_name("stage0_" + family + (output ? "_out" : "_in"));
+      auto* tensor = value->mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(onnx::TensorProto::FLOAT);
+      tensor->mutable_shape()->add_dim()->set_dim_value(1);
+    }
+    auto* node = nativeSource.mutable_graph()->add_node();
+    node->set_op_type("Identity");
+    node->add_input("stage0_" + family + "_in");
+    node->add_output("stage0_" + family + "_out");
+  }
+  const auto sourceText = nativeSource.SerializeAsString();
   const std::vector<std::uint8_t> sourceBytes(sourceText.begin(), sourceText.end());
   const auto graphDigest = digest("smollm2-catalog-graph");
   auto descriptor = model("llama", "SmolLM2-135M", graphDigest);
@@ -225,11 +299,25 @@ BOOST_AUTO_TEST_CASE(SmolLm2LlamaCatalogRoutesToNativePlanner)
     {"artifact_digests_by_role", {{roles[0], digest("smollm2-artifact-0")},
                                    {roles[1], digest("smollm2-artifact-1")}}},
     {"weight_bytes_by_role", {{roles[0], 1}, {roles[1], 1}}},
+    {"resources_by_role", {
+      {roles[0], nativeParseJson(NativeRoleResourceRequirement{
+        {"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}.canonicalJson())},
+      {roles[1], nativeParseJson(NativeRoleResourceRequirement{
+        {"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}.canonicalJson())}}},
     {"roles", roles}, {"tensor_degrees", {1, 1}},
     {"input_ingress_role", roles[0]}, {"result_egress_role", roles[1]}};
   configuration["node_mapping"] = NativeJson{
-    {"embedding", {0}}, {"layer-00", {1}}, {"layer-01", {2}},
-    {"final-norm-head", {3, 4, 5, 6}}};
+    {"embedding", {0}}, {"layer-00", {1, 10, 11, 12}}, {"layer-01", {2}},
+    {"final-norm-head", {3, 4, 5, 6, 7, 8, 9}}};
+  for (const std::string family : {"attention_kv", "recurrent_state", "convolution_state"}) {
+    for (std::size_t stage = 0; stage != 2; ++stage) {
+      const auto prefix = stage == 0 ? "stage0_" : "";
+      configuration["state_inputs"][roles[stage]][family + "_in"] =
+        NativeJson::array({prefix + family + "_in"});
+      configuration["state_outputs"][roles[stage]][family + "_out"] =
+        NativeJson::array({prefix + family + "_out"});
+    }
+  }
   NativeCanonicalSource source;
   source.modelBytes = sourceBytes;
   BOOST_TEST_CHECKPOINT("before Smol catalog load");
@@ -243,6 +331,63 @@ BOOST_AUTO_TEST_CASE(SmolLm2LlamaCatalogRoutesToNativePlanner)
   BOOST_CHECK_EQUAL(candidates.front().executionPlan.modelFamily, "llama");
   BOOST_CHECK_EQUAL(candidates.front().executionPlan.dependencies.front().topicPrefix,
                     "/NDNSF/DI/LLAMA");
+  NativeCanonicalSource reference;
+  const auto verifiedSource = loaded.preparation->sourceRefFor(loaded.model.descriptor);
+  BOOST_REQUIRE(verifiedSource);
+  BOOST_REQUIRE(verifiedSource->materialManifest);
+  reference.preparedMetadataJson = verifiedSource->preparedMetadataJson;
+  auto referenceMaterials = std::make_shared<NativeCanonicalSource::MaterialManifest>(
+    *verifiedSource->materialManifest);
+  referenceMaterials->payloads.clear();
+  referenceMaterials->payloadsComplete = false;
+  referenceMaterials->validate();
+  reference.materialManifest = referenceMaterials;
+  BOOST_REQUIRE(!reference.preparedMetadataJson.empty());
+  BOOST_CHECK_NO_THROW(NativeRequestCatalog::load(configuration.dump(), reference, control));
+  auto underweight = configuration;
+  for (const auto& role : roles)
+    underweight["splitter"]["resources_by_role"][role]["weight_bytes"] = 3;
+  BOOST_CHECK_THROW(NativeRequestCatalog::load(underweight.dump(), reference, control),
+                    std::invalid_argument);
+  const auto prepared = nativeParseJson(reference.preparedMetadataJson);
+  BOOST_REQUIRE(!prepared.at("sourceGraph").at("initializerConsumers").empty());
+  BOOST_CHECK(prepared.at("sourceGraph").at("initializerConsumers").at("route_weight") ==
+              NativeJson::array({1}));
+  for (int failure = 0; failure < 4; ++failure) {
+    auto bad = prepared;
+    auto& graph = bad["sourceGraph"];
+    if (failure == 0) graph.erase("initializerConsumers");
+    if (failure == 1) graph["initializerConsumers"] = NativeJson::object();
+    if (failure == 2) graph["initializerConsumers"].begin().value() = {-1};
+    if (failure == 3) graph["initializerConsumers"].begin().value() = {1000000};
+    auto broken = reference;
+    broken.preparedMetadataJson = nativeCanonicalJson(bad);
+    BOOST_CHECK_THROW(NativeRequestCatalog::load(configuration.dump(), broken, control),
+                      std::invalid_argument);
+  }
+  for (int failure = 0; failure != 11; ++failure) {
+    auto bad = configuration;
+    auto& profiles = bad["splitter"]["resources_by_role"];
+    auto& profile = profiles[roles.front()];
+    if (failure == 0) bad["splitter"].erase("resources_by_role");
+    if (failure == 1) profiles["foreign-role"] = profile;
+    if (failure == 2) profile.erase("workspace_bytes");
+    if (failure == 3) profile["workspace_bytes"] = nullptr;
+    if (failure == 4) profile["weight_bytes"] = -1;
+    if (failure == 5) profile["weight_bytes"] = true;
+    if (failure == 6) profile["weight_bytes"] = 1.5;
+    if (failure == 7) {
+      profile["weight_bytes"] = std::numeric_limits<std::uint64_t>::max();
+      profile["workspace_bytes"] = 1;
+    }
+    if (failure == 8) profile["backends"] = {"onnxruntime", "onnxruntime"};
+    if (failure == 9) profile["backends"] = {"unsupported-backend"};
+    if (failure == 10) profile["backends"] = {""};
+    if (failure == 7)
+      BOOST_CHECK_THROW(NativeRequestCatalog::load(bad.dump(), source, control), std::overflow_error);
+    else
+      BOOST_CHECK_THROW(NativeRequestCatalog::load(bad.dump(), source, control), std::invalid_argument);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(QwenLayerSplitRejectsInvalidRankAndGraph)
@@ -623,8 +768,9 @@ BOOST_AUTO_TEST_CASE(PreSplitPlacementFiltersAndDeterministicallyBindsOneProvide
   const std::string role = "/LLM/Pipeline/Stage/0";
   qwen::NativeQwenLayerSplit splitter(
     {{0, 1}}, {{role, digest("artifact")}}, {{role, 1}}, {role}, {1});
-  const auto candidate = splitter.enumerate(modelDescriptor, graphSnapshot,
+  auto candidate = splitter.enumerate(modelDescriptor, graphSnapshot,
                                              NativeCandidateBudget{1, 100, 1}).front();
+  fixture::assignPlacementFixtureResourceBudgets(candidate);
   NativePlanningSnapshot snapshot;
   snapshot.model = modelDescriptor;
   snapshot.graph = graphSnapshot;
@@ -677,9 +823,10 @@ BOOST_AUTO_TEST_CASE(PreSplitPlacementTieBreakResidencyThenBytesThenProvider)
   const std::string role = "/LLM/Pipeline/Stage/0";
   qwen::NativeQwenLayerSplit splitter(
     {{0, 1}}, {{role, digest("artifact")}}, {{role, 1}}, {role}, {1});
-  const auto candidate = splitter.enumerate(modelDescriptor, graphSnapshot,
+  auto candidate = splitter.enumerate(modelDescriptor, graphSnapshot,
                                              NativeCandidateBudget{1, 100, 1}).front();
-  // qwen requirements fix workspace+activation+transient at ~2.36 GiB after
+  fixture::assignPlacementFixtureResourceBudgets(candidate);
+  // This fixture pins workspace+activation+transient at ~2.36 GiB after
   // the 1.10 safety margin; offers below that are filtered out, not ranked.
   const auto gb = [] (std::uint64_t value) {
     return value * 1024ULL * 1024ULL * 1024ULL;
@@ -742,8 +889,9 @@ BOOST_AUTO_TEST_CASE(PreSplitPlacementFiltersIneligibleOffersAndRejectsEmpty)
   const std::string role = "/LLM/Pipeline/Stage/0";
   qwen::NativeQwenLayerSplit splitter(
     {{0, 1}}, {{role, digest("artifact")}}, {{role, 1}}, {role}, {1});
-  const auto candidate = splitter.enumerate(modelDescriptor, graphSnapshot,
+  auto candidate = splitter.enumerate(modelDescriptor, graphSnapshot,
                                              NativeCandidateBudget{1, 100, 1}).front();
+  fixture::assignPlacementFixtureResourceBudgets(candidate);
   const auto gb = [] (std::uint64_t value) {
     return value * 1024ULL * 1024ULL * 1024ULL;
   };
@@ -1110,9 +1258,9 @@ BOOST_AUTO_TEST_CASE(CompleteCandidateIdentityMatchesMaintainedPython)
         qwen::NativeQwenLayerSplit splitter({{0, 1}, {1, 2}},
           {{"front", digest("qwen-front")}, {"end", digest("qwen-end")}},
           {{"front", 1}, {"end", 1}}, {"front", "end"}, {1, 1});
-        const auto actual = splitter.enumerate(candidate.model, snapshot, {}).front();
-        BOOST_CHECK_EQUAL(actual.canonicalJson(), row.at("canonical_json").get<std::string>());
-        BOOST_CHECK_EQUAL(actual.candidateDigest, candidate.candidateDigest);
+        auto actual = splitter.enumerate(candidate.model, snapshot, {}).front();
+        checkQwenPlannerMigration(actual,
+          nativeParseJson(row.at("canonical_json").get<std::string>()), snapshot);
       }
       BOOST_CHECK_NO_THROW(candidate.validate(snapshot));
       BOOST_CHECK_EQUAL(candidate.canonicalJson(), row.at("canonical_json").get<std::string>());
@@ -1248,10 +1396,12 @@ BOOST_AUTO_TEST_CASE(QwenMetadataBuildsMaintainedGraphAndCandidate)
       value["edge_id"] = edge.id; value["producer"] = edge.producer; value["consumers"] = edge.consumers;
       BOOST_CHECK(value == expected.at("edges").at(i));
     }
-    const auto candidates = splitter.enumerateFromMetadata(descriptor, "pinned-r1", 100, {});
+    auto candidates = splitter.enumerateFromMetadata(descriptor, "pinned-r1", 100, {});
     BOOST_REQUIRE_EQUAL(candidates.size(), 1);
-    BOOST_CHECK(candidates.front().canonicalJson() == row.at("candidate_json").get<std::string>());
-    BOOST_CHECK_EQUAL(candidates.front().candidateDigest, row.at("candidate_digest").get<std::string>());
+    const auto frozen = nativeParseJson(row.at("candidate_json").get<std::string>());
+    BOOST_CHECK_EQUAL(fixture::candidateFromJson(frozen).computedDigest(),
+                      row.at("candidate_digest").get<std::string>());
+    checkQwenPlannerMigration(candidates.front(), frozen, inspected);
     BOOST_CHECK_THROW(splitter.inspectGraph(descriptor, "foreign", 100), std::invalid_argument);
     BOOST_CHECK_THROW(splitter.inspectGraph(descriptor, "", 100), std::invalid_argument);
     BOOST_CHECK_THROW(splitter.inspectGraph(descriptor, "pinned-r1", inspected.nodes.size() - 1), std::invalid_argument);

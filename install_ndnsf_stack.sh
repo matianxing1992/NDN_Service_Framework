@@ -922,10 +922,8 @@ def build_marker(args: argparse.Namespace) -> None:
     if args.verify:
         if not marker.is_file() or json.loads(marker.read_text(encoding="utf-8")) != expected:
             raise ValueError(f"build directory is not recorded as owned by this checkout: {build}")
-        if not args.dependencies_only and (
-            not (build / "c4che/_cache.py").is_file() or not list(build.glob(".wafpickle-*"))
-        ):
-            raise ValueError(f"recorded Waf build directory is no longer configured: {build}")
+        # Every native install configures Waf again. An interrupted first build may
+        # not have saved its cache or task database; ownership still permits recovery.
         print(f"Verified reusable NDNSF build directory: {build}")
         return
     if marker.exists():

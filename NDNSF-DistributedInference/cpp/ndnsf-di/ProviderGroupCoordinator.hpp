@@ -17,6 +17,8 @@
 
 namespace ndnsf::di {
 
+class NativeWorkStatistics;
+
 using ProviderGroupBytes = std::vector<std::uint8_t>;
 
 struct GroupMemberV1
@@ -36,6 +38,13 @@ struct GroupOperationV1
   std::string tensorLayoutDigest;
   std::uint64_t maxBytes = 0;
   std::uint64_t maxSegments = 0;
+};
+
+struct GroupOperationRunV1
+{
+  GroupOperationV1 first;
+  std::uint64_t count = 1;
+  std::uint64_t stride = 0;
 };
 
 /**
@@ -61,6 +70,12 @@ struct GroupCapabilityV1
   std::map<std::string, ProviderGroupBytes> wrappedEpochKeyByProvider;
   std::string capabilityDigest;
   ProviderGroupBytes sealerSignature;
+
+  // One active representation; V2 preserves authenticated logical order lazily.
+  std::vector<GroupOperationRunV1> operationRuns;
+
+  std::size_t operationCount() const;
+  GroupOperationV1 operation(std::uint64_t operationIndex) const;
 
   void validate() const;
   ProviderGroupBytes canonicalBytes(bool includeDigest = false) const;
@@ -134,6 +149,8 @@ struct ProviderGroupCoordinatorOptions
   // request, attempt, group, epoch, and operation bindings.
   std::size_t maxSegments = 1U << 20;
   std::uint64_t maxInflightBytes = 64ULL << 20;
+  /** Request observation owner; the coordinator never extends its lifetime. */
+  std::weak_ptr<NativeWorkStatistics> workStatistics;
 };
 
 struct SealedCollectiveOperationV1
@@ -167,6 +184,18 @@ public:
                    std::uint64_t maxInflightBytes,
                    std::uint64_t noProgressMs,
                    std::uint64_t hardDeadlineMs);
+
+  GroupCapabilityV1
+  createCapabilityFromRuns(std::string requestId,
+                          std::string attemptId,
+                          std::string planDigest,
+                          std::string groupId,
+                          std::uint64_t epoch,
+                          std::vector<GroupMemberV1> orderedMembers,
+                          std::vector<GroupOperationRunV1> operationRuns,
+                          std::uint64_t maxInflightBytes,
+                          std::uint64_t noProgressMs,
+                          std::uint64_t hardDeadlineMs);
 
   void
   installCapability(GroupCapabilityV1 capability,
@@ -316,7 +345,15 @@ private:
   bool deadlineExpiredLocked(std::uint64_t nowMs) const;
   void terminateLocked(std::string reason, bool cancelled);
   void clearEpochKeyLocked() noexcept;
-  const GroupOperationV1& findOperation(std::uint64_t operationIndex) const;
+  GroupOperationV1 findOperation(std::uint64_t operationIndex) const;
+  GroupCapabilityV1
+  createCapabilityImpl(std::string requestId, std::string attemptId,
+                       std::string planDigest, std::string groupId, std::uint64_t epoch,
+                       std::vector<GroupMemberV1> orderedMembers,
+                       std::vector<GroupOperationV1> permittedOperations,
+                       std::vector<GroupOperationRunV1> operationRuns,
+                       std::uint64_t maxInflightBytes, std::uint64_t noProgressMs,
+                       std::uint64_t hardDeadlineMs);
   void validateManifestAgainstCapability(
     const CollectiveOperationManifestV1& manifest) const;
   DataSegmentReplayWindow& replayWindow(

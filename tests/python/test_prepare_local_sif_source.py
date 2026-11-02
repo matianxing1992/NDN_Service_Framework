@@ -44,6 +44,9 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     assert "pythonWrapper/src/ndnsf/_ndnsf.cpp" in names
     assert "examples/App_ServiceController.cpp" in names
     assert "examples/DI_NativeArtifactAuthority.cpp" in names
+    assert "examples/spec220-onnx-reference-oracle.cpp" in names
+    assert "examples/spec220-onnx-reference-oracle.hpp" in names
+    assert "tests/fixtures/spec220/ort-required-operators.cpp" in names
     assert "NDNSF-DistributedRepo/wscript" in names
     assert "libndn-service-framework.pc.in" in names
     assert "packaging/ndnsf-di-container/jobs/spec175/workload.json" in names

@@ -150,8 +150,8 @@ struct NativeCanonicalSource
     std::vector<std::uint8_t> bytes;
 
     // A producer may authenticate and publish a bounded view of an immutable
-    // source object instead of copying the range into bytes.  Consumer-fetched
-    // payloads continue to use bytes, so this is wire/internal compatible.
+    // source object instead of copying the range into bytes. Byte-owned
+    // payloads remain available for compatibility.
     std::shared_ptr<const std::vector<std::uint8_t>> backing;
     std::size_t backingOffset = 0;
     std::size_t backingSize = 0;
@@ -164,7 +164,7 @@ struct NativeCanonicalSource
     std::size_t stringSize = 0;
 
     // A producer may retain only an authenticated bounded range reader after
-    // source inspection.  Consumer-fetched payloads remain byte-owned.
+    // source inspection. Consumers may likewise retain verified spool ranges.
     std::shared_ptr<const NativeCanonicalByteRangeSource> rangeSource;
     std::uint64_t rangeOffset = 0;
     std::uint64_t rangeSize = 0;
@@ -187,13 +187,36 @@ struct NativeCanonicalSource
     }
     std::vector<std::uint8_t> copyBytes() const
     {
+      return copyBytes({});
+    }
+    /** Invoke the synchronous owner fence between bounded file reads; never retain it. */
+    std::vector<std::uint8_t> copyBytes(const std::function<void()>& requireActive) const
+    {
+      if (requireActive) requireActive();
       if (rangeSource) {
         if (rangeOffset > rangeSource->size() ||
             rangeSize > rangeSource->size() - rangeOffset)
           throw std::out_of_range("native canonical material range is out of bounds");
-        auto result = rangeSource->read(rangeOffset, rangeSize);
-        if (result.size() != rangeSize)
-          throw std::runtime_error("native canonical material range has unexpected size");
+        if (rangeSize <= NativeCanonicalMaterialBundleMaxBytes) {
+          auto result = rangeSource->read(rangeOffset, rangeSize);
+          if (result.size() != rangeSize)
+            throw std::runtime_error("native canonical material range has unexpected size");
+          if (requireActive) requireActive();
+          return result;
+        }
+        std::vector<std::uint8_t> result;
+        if (rangeSize > result.max_size())
+          throw std::length_error("native canonical material range is too large");
+        result.reserve(static_cast<std::size_t>(rangeSize));
+        for (std::uint64_t copied = 0; copied < rangeSize;) {
+          const auto length = std::min(NativeCanonicalMaterialBundleMaxBytes, rangeSize - copied);
+          const auto chunk = rangeSource->read(rangeOffset + copied, length);
+          if (chunk.size() != length)
+            throw std::runtime_error("native canonical material range has unexpected size");
+          if (requireActive) requireActive();
+          result.insert(result.end(), chunk.begin(), chunk.end());
+          copied += length;
+        }
         return result;
       }
       if (!backing)
@@ -248,6 +271,7 @@ struct NativeCanonicalSource
 
     std::string canonicalJson() const;
     void validate() const;
+    void validate(const std::function<void()>& requireActive) const;
   };
 
   std::vector<std::uint8_t> modelBytes;
@@ -313,6 +337,30 @@ struct NativeAssemblyControl
   std::uint64_t maxAssembledBytes = 0;
 };
 
+/** Physical external object size; conflicting vector/range ownership is rejected. */
+std::uint64_t
+nativeCanonicalInitializerByteSize(const NativeCanonicalSource& source);
+
+/** Read at most one material window, checking both representations when present. */
+std::vector<std::uint8_t>
+readNativeCanonicalInitializerRange(const NativeCanonicalSource& source,
+                                    std::uint64_t offset, std::uint64_t length,
+                                    const NativeAssemblyControl& control);
+
+/** Stream the original external object's SHA256; absent material returns empty. */
+std::string
+nativeCanonicalInitializerDigest(const NativeCanonicalSource& source,
+                                 const NativeAssemblyControl& control);
+
+/** Open and hash a regular file; returned owner keeps a read-only fd after unlink.
+ * The caller owns the path and may remove it after this function succeeds.
+ * ONNX-declared paths are never opened by this interface.
+ */
+std::shared_ptr<const NativeCanonicalByteRangeSource>
+openNativeCanonicalInitializerFile(const std::string& path, std::uint64_t bytes,
+                                   const std::string& digest,
+                                   const NativeAssemblyControl& control);
+
 struct NativeCertifiedAssembly
 {
   std::vector<std::uint8_t> modelBytes;
@@ -361,6 +409,8 @@ struct NativeOnnxGraphInspection
   std::map<std::string, std::uint64_t> canonicalNodeIndices;
   std::string graphMetadataJson;
   NativeOnnxIdentity canonicalIdentity;
+  // Source-only ownership facts, outside the frozen planning metadata/identity.
+  std::map<std::string, std::vector<std::uint64_t>> initializerConsumers;
 };
 
 /** Inspect owned ONNX bytes using official shape inference and the maintained
@@ -431,6 +481,29 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
                                 const std::vector<NativeAssemblyTensorContractV3>& expectedInputs,
                                 const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
                                 const NativeAssemblyControl& control);
+
+struct NativeCanonicalMaterializedFiles
+{
+  std::vector<std::uint8_t> modelBytes;
+  std::uint64_t initializerBytes = 0;
+  std::string initializerDigest;
+};
+
+/**
+ * Rebuild the selected graph while streaming large numeric initializers to
+ * model.onnx.data. The synchronous sink receives at most one material window;
+ * its caller owns the file, authorization fences and failure cleanup. The
+ * returned graph names only that fixed relative file. Small/legacy packed
+ * initializers retain their inline representation.
+ */
+NativeCanonicalMaterializedFiles
+materializeNativeCanonicalModelFiles(
+  NativeCanonicalSource& source,
+  const std::vector<std::uint64_t>& nodeIndices,
+  const std::vector<NativeAssemblyTensorContractV3>& expectedInputs,
+  const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
+  const NativeAssemblyControl& control,
+  const std::function<void(const std::vector<std::uint8_t>&)>& appendInitializer);
 
 /** Compatibility entry for producer/fixture callers that retain the source
  * graph boundary.  Provider post-Selection assembly must use the overload

@@ -7,6 +7,7 @@
 #include "ProducerDataNaming.hpp"
 #include "ProtectedBlobManifest.hpp"
 #include "ImmutableProtectedPublicationStore.hpp"
+#include "TimelineTrace.hpp"
 #include <ndn-cxx/security/pib/key.hpp>
 
 #include <boost/asio/dispatch.hpp>
@@ -24,10 +25,12 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <new>
 #include <optional>
 #include <random>
 #include <sstream>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -54,6 +57,28 @@ namespace ndn_service_framework
 
     namespace
     {
+        template<typename Work>
+        void
+        runWithLocalWorkObserver(
+            const CollaborationLocalWorkObserver& observer,
+            std::string_view phase,
+            Work&& work)
+        {
+            // The operation context borrows this stack frame, so an observer
+            // must invoke it synchronously and exactly once.
+            if (observer.observe == nullptr || !observer.owner) {
+                std::forward<Work>(work)();
+                return;
+            }
+
+            using WorkType = std::remove_reference_t<Work>;
+            observer.observe(observer.owner, phase,
+                [] (void* context) {
+                    (*static_cast<WorkType*>(context))();
+                },
+                &work);
+        }
+
         bool
         isSpec192SelectedRequestTraceEnabled()
         {
@@ -842,6 +867,104 @@ namespace ndn_service_framework
                 pos = end + 1;
             }
             return fields;
+        }
+
+        bool
+        isStructuredCollaborationPayload(const ndn::Buffer& payload)
+        {
+          try {
+            const auto items = decodeOpaqueAssignmentSet(payload);
+            if (items.empty()) return false;
+            for (const auto& item : items) {
+              CollaborationAssignmentEnvelope envelope;
+              if (!decodeCollaborationAssignmentEnvelope(item, envelope)) return false;
+            }
+            return true;
+          }
+          catch (const std::exception&) {
+            return false;
+          }
+        }
+
+        std::vector<std::string>
+        rolesFromAssignmentPayload(const ndn::Buffer& payload)
+        {
+          std::vector<std::string> roles;
+          std::vector<ndn::Buffer> items;
+          try { items = decodeOpaqueAssignmentSet(payload); }
+          catch (const std::exception&) { return roles; }
+          for (const auto& item : items) {
+            CollaborationAssignmentEnvelope envelope;
+            try {
+              if (decodeCollaborationAssignmentEnvelope(item, envelope)) {
+                if (!envelope.role.empty()) roles.push_back(envelope.role);
+                continue;
+              }
+            }
+            catch (const std::exception&) {
+              // Assignment admission remains responsible for malformed envelopes.
+            }
+            const auto fields = parseSemicolonFields(item);
+            const auto role = fields.find("role");
+            if (role != fields.end() && !role->second.empty()) roles.push_back(role->second);
+          }
+          return roles;
+        }
+
+        std::vector<ndn::Buffer>
+        collaborationRolePayloads(const ndn::Buffer& payload, bool structured)
+        {
+          std::vector<ndn::Buffer> roles;
+          bool v3AssignmentSet = structured;
+          if (structured) {
+            for (const auto& item : decodeOpaqueAssignmentSet(payload)) {
+              CollaborationAssignmentEnvelope envelope;
+              if (!decodeCollaborationAssignmentEnvelope(item, envelope)) {
+                v3AssignmentSet = false;
+                continue;
+              }
+              roles.push_back(item);
+              const auto& opaque = envelope.opaquePayload;
+              const auto first = std::find_if_not(opaque.begin(), opaque.end(),
+                [] (unsigned char value) {
+                  return value == ' ' || value == '\t' || value == '\r' || value == '\n';
+                });
+              const auto reference = parseLargeDataReferencePayload(opaque);
+              const bool inlineV3 = first != opaque.end() && *first == '{';
+              const bool externalV3 = reference && reference->encrypted &&
+                reference->objectType == "application/vnd.ndnsf.collaboration-assignment-v1";
+              if (!inlineV3 && !externalV3) v3AssignmentSet = false;
+            }
+          }
+          if (!v3AssignmentSet || roles.empty()) return {payload};
+          return roles;
+        }
+
+        void
+        applyCollaborationSelectionMetadata(ServiceProvider::CollaborationAssignment& assignment,
+                                            const ServiceSelectionMessage& selection,
+                                            bool includeShared)
+        {
+          for (const auto& entry : selection.getProviderEntries()) {
+            for (const auto& role : rolesFromAssignmentPayload(entry.assignmentPayload))
+              assignment.roleProviders[role] = entry.providerName;
+          }
+          if (!includeShared || selection.getAssignmentPayload().empty()) return;
+          for (const auto& field : parseSemicolonFields(selection.getAssignmentPayload())) {
+            static const std::string PREFIX = "scopeKeyData.";
+            static const std::string ROLE_PROVIDER_PREFIX = "roleProvider.";
+            if (field.first.rfind(ROLE_PROVIDER_PREFIX, 0) == 0 &&
+                !field.first.substr(ROLE_PROVIDER_PREFIX.size()).empty() && !field.second.empty()) {
+              assignment.roleProviders[field.first.substr(ROLE_PROVIDER_PREFIX.size())] =
+                ndn::Name(field.second);
+            }
+            else if (assignment.scopeKeys.empty() && assignment.scopeKeyDataNames.empty() &&
+                     field.first.rfind(PREFIX, 0) == 0 &&
+                     !field.first.substr(PREFIX.size()).empty() && !field.second.empty()) {
+              assignment.scopeKeyDataNames[field.first.substr(PREFIX.size())] =
+                ndn::Name(field.second);
+            }
+          }
         }
 
         bool
@@ -6325,14 +6448,16 @@ namespace ndn_service_framework
     void ServiceProvider::CollaborationContext::publish(
         KeyScope keyScope,
         Topic topic,
-        const ndn::Buffer& payload)
+        const ndn::Buffer& payload,
+        CollaborationLocalWorkObserver localWorkObserver)
     {
         m_provider.publishCollaborationData(m_requesterName,
                                             m_requestId,
                                             m_assignment.role,
                                             keyScope,
                                             topic,
-                                            payload);
+                                            payload,
+                                            std::move(localWorkObserver));
     }
 
     ndn::Name ServiceProvider::CollaborationContext::publishLarge(
@@ -6667,7 +6792,7 @@ namespace ndn_service_framework
         return m_provider.startCollaborationSignedExactDataBatch(
             m_requestId, keyScope, dataNames, expectedProducer, timeoutMs,
             std::move(shouldCancel), std::move(onFirstReadStarted), phase,
-            std::move(onValidatedData));
+            std::move(onValidatedData), {});
     }
 
     ServiceProvider::ExactDataFetchOperation
@@ -6685,7 +6810,7 @@ namespace ndn_service_framework
         return m_provider.startCollaborationSignedExactDataBatch(
             m_requestId, keyScope, dataNames, expectedProducer, timeoutMs,
             std::move(shouldCancel), std::move(onFirstReadStarted), phase,
-            std::move(onValidatedData), maxOutstanding);
+            std::move(onValidatedData), {}, maxOutstanding);
     }
 
     void ServiceProvider::CollaborationContext::subscribe(
@@ -7582,9 +7707,19 @@ namespace ndn_service_framework
         // Face loop and queues otherwise, so neither path races SVS state.
         auto completion = std::make_shared<std::promise<void>>();
         auto future = completion->get_future();
+        struct CommitTiming
+        {
+          std::array<uint64_t, 6> points{};
+          ndn::Name requestId;
+          uint64_t attempt = 0;
+        };
+        const auto timing = phaseTimingEnvEnabled() ? std::make_shared<CommitTiming>() : nullptr;
+        const auto cursor = event.cursor;
+        if (timing) timing->points[0] = timelineSteadyMicroseconds();
         m_face.getIoContext().dispatch(
-            [this, completion, event = std::move(event), retentionMs] () mutable {
+            [this, completion, timing, event = std::move(event), retentionMs] () mutable {
                 try {
+                    if (timing) timing->points[1] = timelineSteadyMicroseconds();
                     // ndn-cxx's IMS retains Data through enable_shared_from_this;
                     // keep the decoded packet heap-owned while inserting it.
                     auto data = std::make_shared<ndn::Data>();
@@ -7604,6 +7739,11 @@ namespace ndn_service_framework
                                                        ProtectedTransition::STREAM_EVENT)) {
                         throw std::runtime_error(
                             "stream event rejected by Controller revocation state");
+                    }
+                    if (timing) {
+                      timing->requestId = parsedEvent->requestId;
+                      timing->attempt = parsedEvent->attemptEpoch;
+                      timing->points[2] = timelineSteadyMicroseconds();
                     }
 
                     StreamRetentionInterceptorForTest retentionInterceptor;
@@ -7645,6 +7785,7 @@ namespace ndn_service_framework
                             NDN_LOG_INFO("NDNSF_STREAM_RETENTION_EXPIRED name="
                                          << retainedEventName);
                         });
+                    if (timing) timing->points[3] = timelineSteadyMicroseconds();
 
                     StreamPublicationInterceptorForTest interceptor;
                     {
@@ -7662,6 +7803,7 @@ namespace ndn_service_framework
                     if (seqNo == 0) {
                         throw std::runtime_error("SVS rejected streamed event publication");
                     }
+                    if (timing) timing->points[4] = timelineSteadyMicroseconds();
                     if (std::getenv("SPEC175_TRACE") != nullptr) {
                         NDN_LOG_INFO("SPEC175_TRACE stream-event-committed name="
                                      << data->getName()
@@ -7686,6 +7828,25 @@ namespace ndn_service_framework
                 "stream event publication timed out on Provider Face event loop");
         }
         future.get();
+        // Successful future completion synchronizes all callback-owned samples.
+        // On timeout/failure, do not read a possibly still-running callback.
+        if (timing && timing->points[4] != 0) {
+          timing->points[5] = timelineSteadyMicroseconds();
+          try {
+            constexpr std::array<const char*, 5> steps = {
+              "face_queue", "face_decode_authorize", "face_retain", "face_svs",
+              "worker_resume"};
+            for (std::size_t i = 0; i < steps.size(); ++i) {
+              logPhaseTiming("stream-publication", "eventMeasure", timing->requestId,
+                {{"attempt", std::to_string(timing->attempt)},
+                 {"cursor", std::to_string(cursor)}, {"step", steps[i]},
+                 {"duration_us", std::to_string(timing->points[i + 1] - timing->points[i])}});
+            }
+          }
+          catch (...) {
+            // Diagnostic output cannot change the committed event result.
+          }
+        }
     }
 
     bool
@@ -9074,6 +9235,12 @@ namespace ndn_service_framework
         };
         assignment.workDeadline = workFence.deadline;
         assignment.workCurrent = current;
+        const bool expectedScopedInput = [&] {
+            if (!requestMessage.hasRequestCapabilities()) return false;
+            const auto& capabilities = requestMessage.getRequestCapabilities();
+            return capabilities.hasField("RequestScopedConfidentialityV1") &&
+                capabilities.getField("RequestScopedConfidentialityV1") == "required";
+        }();
         prepareCollaborationAssignmentAsync(
             requesterName,
             requestId,
@@ -9233,7 +9400,7 @@ namespace ndn_service_framework
                         selectionDigest);
                 }
             },
-            registrationState);
+            registrationState, expectedScopedInput);
         return true;
     }
 
@@ -9763,7 +9930,8 @@ namespace ndn_service_framework
         const auto dispatchPlaintext =
             [this, requesterName, providerName, serviceName, requestId,
              requestMessage, selectionMessage, assignmentPayloadCopy,
-             selectionDigest, targetedTokenConsumed, acceptedRegistration](ndn::Buffer plaintext) {
+             selectionDigest, targetedTokenConsumed, acceptedRegistration,
+             inputKeyId = keys.keyId](ndn::Buffer plaintext, std::uint64_t inputPackets) {
                 // Data signature/name, AEAD and nonce replay checks completed.
                 // This is input readiness, not authorization to execute a handler.
                 logScopedInputStage("SCOPED_INPUT_READY", requesterName,
@@ -9773,7 +9941,8 @@ namespace ndn_service_framework
                             [this, requesterName, providerName, serviceName,
                              requestId, requestMessage, selectionMessage,
                              assignmentPayloadCopy, plaintext = std::move(plaintext),
-                             selectionDigest, targetedTokenConsumed, acceptedRegistration]() mutable {
+                             selectionDigest, targetedTokenConsumed, acceptedRegistration,
+                             inputKeyId, inputPackets]() mutable {
                                 logScopedInputStage("SCOPED_INPUT_DISPATCH_ENTER", requesterName,
                                                     providerName, serviceName, requestId,
                                                     selectionMessage.getAttempt());
@@ -9801,6 +9970,28 @@ namespace ndn_service_framework
                                             readyRequest, "Protected Targeted authority changed before execution",
                                             selectionDigest);
                                         return;
+                                    }
+                                }
+                                const ndn::Name inputKey = ndn::Name(requesterName)
+                                    .append(serviceName).append(requestId);
+                                {
+                                    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                                    const auto input = m_requestScopedInvocations.find(inputKey);
+                                    if (input != m_requestScopedInvocations.end() &&
+                                        input->second.keys.keyId == inputKeyId &&
+                                        input->second.binding.requestId == requestId &&
+                                        input->second.binding.serviceName == serviceName &&
+                                        input->second.binding.attempt == selectionMessage.getAttempt()) {
+                                        auto& receipt = input->second;
+                                        receipt.inputBytes = plaintext.size();
+                                        receipt.inputPackets = inputPackets;
+                                        receipt.inputAttempt = selectionMessage.getAttempt();
+                                        receipt.inputObserved = true;
+                                        receipt.inputNestedInSelection =
+                                            selectionMessage.hasInlineSignedInputData();
+                                        receipt.inputNestedInRequest = !receipt.inputNestedInSelection &&
+                                            detail::hasOptionalInlineTargetedInput(requestMessage) &&
+                                            requestMessage.getPayloadSize() != 0;
                                     }
                                 }
                                 readyRequest.setPayload(plaintext, plaintext.size());
@@ -9845,34 +10036,10 @@ namespace ndn_service_framework
                                     // streamed requests and unstructured
                                     // assignments remain fail-closed when the
                                     // Selection grant is absent.
-                                    const auto hasStructuredAssignment =
-                                        [](const ndn::Buffer& payload) {
-                                            std::vector<ndn::Buffer> items;
-                                            try {
-                                                items = decodeOpaqueAssignmentSet(payload);
-                                            }
-                                            catch (const std::exception&) {
-                                                return false;
-                                            }
-                                            if (items.empty()) return false;
-                                            for (const auto& item : items) {
-                                                CollaborationAssignmentEnvelope envelope;
-                                                try {
-                                                    if (!decodeCollaborationAssignmentEnvelope(
-                                                            item, envelope)) {
-                                                        return false;
-                                                    }
-                                                }
-                                                catch (const std::exception&) {
-                                                    return false;
-                                                }
-                                            }
-                                            return true;
-                                        };
                                     const bool hasGrant =
                                         selectionMessage.hasStreamEventKeyGrant();
                                     const bool canRunWithoutGrant =
-                                        hasStructuredAssignment(assignmentPayloadCopy);
+                                        isStructuredCollaborationPayload(assignmentPayloadCopy);
                                     if ((!hasGrant && !canRunWithoutGrant) ||
                                         (hasGrant && !initializeStreamPublisher(
                                             requesterName, providerName, serviceName,
@@ -9890,18 +10057,33 @@ namespace ndn_service_framework
                                     m_collaborationServices.find(serviceName);
                                 if (collaboration != m_collaborationServices.end()) {
                                     try {
-                                        auto assignment = parseCollaborationAssignment(
-                                            serviceName, assignmentPayloadCopy);
-                                        assignment.selectionDigest = selectionDigest;
-                                        assignment.ownsStreamTerminal =
-                                            readyRequest.hasStreamRequestOptions() &&
-                                            selectionMessage.hasStreamEventKeyGrant();
-                                        if (dispatchCollaborationExecutionAsync(
-                                                requesterName, providerName, serviceName,
-                                                requestId, readyRequest,
-                                                std::move(assignment), selectionDigest)) {
-                                            return;
+                                        const bool structured =
+                                            isStructuredCollaborationPayload(assignmentPayloadCopy);
+                                        const auto rolePayloads = collaborationRolePayloads(
+                                            assignmentPayloadCopy, structured);
+                                        {
+                                            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                                            const auto input = m_requestScopedInvocations.find(inputKey);
+                                            if (input != m_requestScopedInvocations.end())
+                                                input->second.localRolesRemaining = rolePayloads.size();
                                         }
+                                        bool dispatched = false;
+                                        for (const auto& rolePayload : rolePayloads) {
+                                            auto assignment = parseCollaborationAssignment(
+                                                serviceName, rolePayload);
+                                            applyCollaborationSelectionMetadata(assignment,
+                                                selectionMessage, structured ||
+                                                m_opaqueSelectionParticipants.count(serviceName) != 0);
+                                            assignment.selectionDigest = selectionDigest;
+                                            assignment.ownsStreamTerminal =
+                                                readyRequest.hasStreamRequestOptions() &&
+                                                selectionMessage.hasStreamEventKeyGrant();
+                                            dispatched = dispatchCollaborationExecutionAsync(
+                                                requesterName, providerName, serviceName, requestId,
+                                                readyRequest, std::move(assignment), selectionDigest) ||
+                                                dispatched;
+                                        }
+                                        if (dispatched) return;
                                     }
                                     catch (const std::exception& error) {
                                         publishExecutionFailureOnEventLoop(
@@ -9991,7 +10173,7 @@ namespace ndn_service_framework
                     return;
                 }
                 if (completed->exchange(true)) return;
-                dispatchPlaintext(std::move(plaintext));
+                dispatchPlaintext(std::move(plaintext), envelopes.size());
             };
 
         const auto startSegmentedFetch =
@@ -10267,6 +10449,15 @@ namespace ndn_service_framework
     {
         const auto pendingKey = ndn::Name(requesterName)
             .append(serviceName).append(requestId);
+        {
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            const auto input = m_requestScopedInvocations.find(pendingKey);
+            if (input != m_requestScopedInvocations.end() &&
+                input->second.localRolesRemaining > 1) {
+                --input->second.localRolesRemaining;
+                return;
+            }
+        }
         NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=COLLAB_ROLE_COMPLETE "
                       << "timestamp_us=" << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
@@ -10302,7 +10493,8 @@ namespace ndn_service_framework
         const std::string& producerRole,
         const std::string& keyScope,
         const ndn::Name& topic,
-        const ndn::Buffer& payload)
+        const ndn::Buffer& payload,
+        CollaborationLocalWorkObserver localWorkObserver)
     {
         const uint64_t sequence =
             m_collaborationSequence.fetch_add(1, std::memory_order_relaxed);
@@ -10356,7 +10548,8 @@ namespace ndn_service_framework
                                   scopeKey = std::move(scopeKey),
                                   plaintext = payload,
                                   message = std::move(message),
-                                  collaborationAuthTrace]() mutable {
+                                  collaborationAuthTrace,
+                                  localWorkObserver = std::move(localWorkObserver)]() mutable {
             HybridMessageEnvelope envelope;
             const std::string keyId = "collab|" + requestId.toUri(ndn::name::UriFormat::CANONICAL) + "|" +
                                       message.getKeyScope();
@@ -10407,40 +10600,60 @@ namespace ndn_service_framework
                 error = e.what();
             }
 
+            if (localWorkObserver.owner && localWorkObserver.addCount) {
+                localWorkObserver.addCount(localWorkObserver.owner,
+                    "collaboration.publish.callbackSubmitted", 1);
+            }
             boost::asio::post(m_face.getIoContext(),
                 [this, name, encoded = std::move(encoded),
                  requestId, collaborationAuthTrace,
+                 localWorkObserver = std::move(localWorkObserver),
                  error = std::move(error)]() mutable {
-                    if (!error.empty()) {
-                        NDN_LOG_ERROR("Collaboration data encryption failed for "
-                                      << name.toUri() << ": " << error);
-                        return;
+                    const auto addCount = [&localWorkObserver] (std::string_view count) {
+                        if (localWorkObserver.owner && localWorkObserver.addCount) {
+                            localWorkObserver.addCount(localWorkObserver.owner, count, 1);
+                        }
+                    };
+                    try {
+                        runWithLocalWorkObserver(localWorkObserver,
+                            "collaboration-face-publish", [&] {
+                                if (!error.empty()) {
+                                    NDN_LOG_ERROR("Collaboration data encryption failed for "
+                                                  << name.toUri() << ": " << error);
+                                    return;
+                                }
+                                ndn::Block block(encoded);
+                                if (collaborationAuthTrace) {
+                                    NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=svs_publish_begin"
+                                                 << " provider=" << identity.toUri()
+                                                 << " requestId=" << requestId.toUri()
+                                                 << " dataName=" << name.toUri());
+                                }
+                                CollaborationPublicationInterceptorForTest interceptor;
+                                {
+                                    std::lock_guard<std::mutex> lock(
+                                        m_collaborationPublicationInterceptorMutex);
+                                    interceptor = m_collaborationPublicationInterceptorForTest;
+                                }
+                                if (interceptor && !interceptor(name)) {
+                                    NDN_LOG_INFO("NDNSF_COLLAB_TEST_PUBLICATION_SUPPRESSED name="
+                                                 << name);
+                                    return;
+                                }
+                                publishSvs(m_svsps, name, block);
+                                if (collaborationAuthTrace) {
+                                    NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=svs_publish_done"
+                                                 << " provider=" << identity.toUri()
+                                                 << " requestId=" << requestId.toUri()
+                                                 << " dataName=" << name.toUri());
+                                }
+                            });
                     }
-                    ndn::Block block(encoded);
-                    if (collaborationAuthTrace) {
-                        NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=svs_publish_begin"
-                                     << " provider=" << identity.toUri()
-                                     << " requestId=" << requestId.toUri()
-                                     << " dataName=" << name.toUri());
+                    catch (...) {
+                        addCount("collaboration.publish.callbackFailed");
+                        throw;
                     }
-                    CollaborationPublicationInterceptorForTest interceptor;
-                    {
-                        std::lock_guard<std::mutex> lock(
-                            m_collaborationPublicationInterceptorMutex);
-                        interceptor = m_collaborationPublicationInterceptorForTest;
-                    }
-                    if (interceptor && !interceptor(name)) {
-                        NDN_LOG_INFO("NDNSF_COLLAB_TEST_PUBLICATION_SUPPRESSED name="
-                                     << name);
-                        return;
-                    }
-                    publishSvs(m_svsps, name, block);
-                    if (collaborationAuthTrace) {
-                        NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=svs_publish_done"
-                                     << " provider=" << identity.toUri()
-                                     << " requestId=" << requestId.toUri()
-                                     << " dataName=" << name.toUri());
-                    }
+                    addCount("collaboration.publish.callbackCompleted");
                 });
         };
         // Control-plane records are commonly published by a collaboration
@@ -11708,9 +11921,16 @@ namespace ndn_service_framework
         auto operation = startCollaborationSignedExactDataBatch(
             requestId, keyScope, dataNames, expectedProducer, timeoutMs,
             std::move(shouldCancel), std::move(onFirstReadStarted), phase,
-            std::move(onValidatedData));
+            std::move(onValidatedData),
+            metrics == nullptr ? CollaborationLocalWorkObserver{} :
+              metrics->localWorkObserver);
         auto result = operation.get();
-        if (!result) return std::nullopt;
+        if (!result) {
+            if (metrics != nullptr) {
+                metrics->localWorkObserver = {};
+            }
+            return std::nullopt;
+        }
         if (metrics) *metrics = std::move(result->metrics);
         return std::move(result->contents);
     }
@@ -11726,6 +11946,7 @@ namespace ndn_service_framework
         std::function<void(std::exception_ptr)> onFirstReadStarted,
         ExactDataFetchPhase phase,
         std::function<bool()> onValidatedData,
+        CollaborationLocalWorkObserver localWorkObserver,
         std::size_t maxOutstanding)
     {
         auto operation = std::make_shared<ExactDataFetchOperation::Impl>();
@@ -11835,7 +12056,8 @@ namespace ndn_service_framework
         };
         std::weak_ptr<ExactDataFetchOperation::Impl> weakOperation = operation;
         auto finishSlot = [this, state, reportFirstRead, cancelPending, weakOperation,
-                           requestId, keyScope, firstName = dataNames.front()]
+                           localWorkObserver, requestId, keyScope,
+                           firstName = dataNames.front()]
                       (std::size_t index, ndn::Buffer content, std::string error) {
             std::exception_ptr firstReadError;
             if (!error.empty()) {
@@ -11906,27 +12128,31 @@ namespace ndn_service_framework
                 // Fence every callback before releasing/moving owned results.
                 if (completed) state->completed.store(true);
             }
-            for (auto& handle : pending) cancelPending(std::move(handle));
-            if (completed) {
-                reportFirstRead(std::move(firstReadError));
-                state->result.set_value(std::move(result));
-            }
-            else if (nextIndex < state->slots.size()) {
-                // Reuse the existing Face-owned expressions. A completed,
-                // validated slot releases one credit, without a batch barrier.
-                try {
-                    boost::asio::post(m_face.getIoContext(), [weakOperation, nextIndex] {
-                        if (const auto owner = weakOperation.lock()) {
-                            (*owner->expressions[nextIndex])();
-                        }
-                    });
+            auto finalize = [&] {
+                for (auto& handle : pending) cancelPending(std::move(handle));
+                if (completed) {
+                    reportFirstRead(std::move(firstReadError));
                 }
-                catch (...) {
-                    if (const auto owner = weakOperation.lock()) {
-                        owner->abort("exact Data refill dispatch failed");
+                else if (nextIndex < state->slots.size()) {
+                    // Reuse the existing Face-owned expressions. A completed,
+                    // validated slot releases one credit, without a batch barrier.
+                    try {
+                        boost::asio::post(m_face.getIoContext(), [weakOperation, nextIndex] {
+                            if (const auto owner = weakOperation.lock()) {
+                                (*owner->expressions[nextIndex])();
+                            }
+                        });
+                    }
+                    catch (...) {
+                        if (const auto owner = weakOperation.lock()) {
+                            owner->abort("exact Data refill dispatch failed");
+                        }
                     }
                 }
-            }
+            };
+            runWithLocalWorkObserver(localWorkObserver,
+                                     "core-exact-data-slot-finalize", finalize);
+            if (completed) state->result.set_value(std::move(result));
         };
         // The returned operation owns callbacks until completion/cancellation.
         // Individual callbacks borrow the fixed slots through shared state.
@@ -11982,7 +12208,8 @@ namespace ndn_service_framework
             };
             *express = [this, state, slot, finish, retry, dataName, expectedProducer,
                         requestId, keyScope, interestLifetimeMs, shouldCancel,
-                        reportFirstRead, cancelPending, phase, weakRetry, onValidatedData] {
+                        reportFirstRead, cancelPending, phase, weakRetry, onValidatedData,
+                        localWorkObserver] {
                 if (state->completed.load() || slot->completed.load()) {
                     return;
                 }
@@ -12012,7 +12239,7 @@ namespace ndn_service_framework
                     pending = m_face.expressInterest(
                     interest,
                     [this, state, slot, finish, dataName, expectedProducer, requestId,
-                     keyScope, onValidatedData]
+                     keyScope, onValidatedData, localWorkObserver]
                     (const ndn::Interest&, const ndn::Data& data) {
                         if (state->completed.load() || slot->completed.load()) {
                             return;
@@ -12035,60 +12262,192 @@ namespace ndn_service_framework
                         }
                         state->wireBytes.fetch_add(data.wireEncode().size(),
                                                    std::memory_order_relaxed);
-                        auto onValidatedExactData =
-                            [state, slot, finish, dataName, expectedProducer, requestId,
-                             keyScope, onValidatedData]
-                            (const ndn::Data& validated) {
-                                if (state->completed.load() || slot->completed.load()) return;
-                                if (validated.getName() != dataName ||
-                                    !isSignedByIdentity(validated,
-                                                        expectedProducer)) {
-                                    finish({}, "exact Data signer mismatch for " +
-                                               dataName.toUri());
+                        struct ValidationCompletion
+                        {
+                            std::mutex mutex;
+                            bool callReturned = false;
+                            bool callbackCompleted = false;
+                            ndn::Buffer content;
+                            std::string error;
+                        };
+                        const bool canObserveValidation =
+                            localWorkObserver.observe != nullptr &&
+                            static_cast<bool>(localWorkObserver.owner);
+                        std::shared_ptr<ValidationCompletion> validationCompletion;
+                        if (canObserveValidation) {
+                            try {
+                                validationCompletion =
+                                    std::make_shared<ValidationCompletion>();
+                            }
+                            catch (const std::bad_alloc&) {
+                                if (localWorkObserver.addCount != nullptr) {
+                                    localWorkObserver.addCount(
+                                        localWorkObserver.owner,
+                                        "core.exact-data.validation-observation-unavailable",
+                                        1);
+                                }
+                            }
+                        }
+                        const auto validationCallObserver = validationCompletion
+                            ? localWorkObserver : CollaborationLocalWorkObserver{};
+                        const auto validationCallThread = std::this_thread::get_id();
+                        auto completeValidation =
+                            [finish, validationCompletion, validationCallThread,
+                             localWorkObserver]
+                            (ndn::Buffer content, std::string error) {
+                                if (!validationCompletion) {
+                                    finish(std::move(content), std::move(error));
                                     return;
                                 }
-                                if (onValidatedData) {
-                                    try {
-                                        if (!onValidatedData()) {
-                                            finish({}, "exact Data progress rejected for " + dataName.toUri());
+                                bool buffered = false;
+                                bool deferred = false;
+                                {
+                                    std::lock_guard<std::mutex> lock(
+                                        validationCompletion->mutex);
+                                    if (!validationCompletion->callReturned) {
+                                        if (validationCompletion->callbackCompleted) return;
+                                        buffered = true;
+                                        deferred = std::this_thread::get_id() !=
+                                            validationCallThread;
+                                        validationCompletion->callbackCompleted = true;
+                                        validationCompletion->content =
+                                            std::move(content);
+                                        validationCompletion->error = std::move(error);
+                                    }
+                                    else {
+                                        deferred = true;
+                                    }
+                                }
+                                if (deferred) {
+                                    if (localWorkObserver.addCount != nullptr &&
+                                        localWorkObserver.owner) {
+                                        localWorkObserver.addCount(
+                                            localWorkObserver.owner,
+                                            "core.exact-data.deferred-validation-callbacks",
+                                            1);
+                                    }
+                                }
+                                if (!buffered) {
+                                    finish(std::move(content), std::move(error));
+                                }
+                            };
+                        auto completeInlineValidation =
+                            [finish, validationCompletion] {
+                                if (!validationCompletion) return;
+                                std::optional<ndn::Buffer> content;
+                                std::string error;
+                                bool callbackCompleted = false;
+                                {
+                                    std::lock_guard<std::mutex> lock(
+                                        validationCompletion->mutex);
+                                    validationCompletion->callReturned = true;
+                                    callbackCompleted =
+                                        validationCompletion->callbackCompleted;
+                                    if (callbackCompleted) {
+                                        content.emplace(std::move(
+                                            validationCompletion->content));
+                                        error = std::move(
+                                            validationCompletion->error);
+                                    }
+                                }
+                                if (callbackCompleted) {
+                                    finish(std::move(*content), std::move(error));
+                                }
+                            };
+                        auto onValidatedExactData =
+                            [state, slot, dataName, expectedProducer, requestId,
+                             keyScope, onValidatedData, completeValidation,
+                             localWorkObserver]
+                            (const ndn::Data& validated) {
+                                if (state->completed.load() || slot->completed.load()) return;
+                                ndn::Buffer content;
+                                std::string error;
+                                bool shouldComplete = false;
+                                auto admit = [&] {
+                                    if (state->completed.load() ||
+                                        slot->completed.load()) {
+                                        return;
+                                    }
+                                    shouldComplete = true;
+                                    if (validated.getName() != dataName ||
+                                        !isSignedByIdentity(validated,
+                                                            expectedProducer)) {
+                                        error = "exact Data signer mismatch for " +
+                                            dataName.toUri();
+                                        return;
+                                    }
+                                    if (onValidatedData) {
+                                        try {
+                                            if (!onValidatedData()) {
+                                                error = "exact Data progress rejected for " +
+                                                    dataName.toUri();
+                                                return;
+                                            }
+                                        }
+                                        catch (...) {
+                                            error = "exact Data progress callback failed for " +
+                                                dataName.toUri();
                                             return;
                                         }
                                     }
-                                    catch (...) {
-                                        finish({}, "exact Data progress callback failed for " + dataName.toUri());
-                                        return;
-                                    }
+                                    const auto& value = validated.getContent();
+                                    const auto verifiedUs = std::chrono::duration_cast<
+                                        std::chrono::microseconds>(
+                                        std::chrono::system_clock::now().time_since_epoch()).count();
+                                    NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=COLLAB_DATA_VERIFIED"
+                                                  << " timestamp_us=" << verifiedUs
+                                                  << " requestId=" << requestId.toUri()
+                                                  << " keyScope=" << keyScope
+                                                  << " dataName=" << dataName.toUri()
+                                                  << " producer=" << expectedProducer.toUri()
+                                                  << " bytes=" << value.value_size());
+                                    content = ndn::Buffer(value.value_begin(),
+                                                          value.value_end());
+                                };
+                                runWithLocalWorkObserver(localWorkObserver,
+                                    "core-exact-data-admission", admit);
+                                if (shouldComplete) {
+                                    completeValidation(std::move(content),
+                                                       std::move(error));
                                 }
-                                const auto& content = validated.getContent();
-                                const auto verifiedUs = std::chrono::duration_cast<
-                                    std::chrono::microseconds>(
-                                    std::chrono::system_clock::now().time_since_epoch()).count();
-                                NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=COLLAB_DATA_VERIFIED"
-                                              << " timestamp_us=" << verifiedUs
-                                              << " requestId=" << requestId.toUri()
-                                              << " keyScope=" << keyScope
-                                              << " dataName=" << dataName.toUri()
-                                              << " producer=" << expectedProducer.toUri()
-                                              << " bytes=" << content.value_size());
-                                finish(ndn::Buffer(content.value_begin(),
-                                                   content.value_end()), {});
                             };
-                        auto onRejectedExactData = [finish, dataName]
+                        auto onRejectedExactData = [state, slot, dataName,
+                            completeValidation, localWorkObserver]
                             (const ndn::Data&,
                              const ndn::security::ValidationError& error) {
-                                finish({}, "exact Data signature validation failed for " +
-                                           dataName.toUri() + ": " + error.getInfo());
+                                if (state->completed.load() || slot->completed.load()) return;
+                                std::string reason;
+                                auto reject = [&] {
+                                    reason = "exact Data signature validation failed for " +
+                                        dataName.toUri() + ": " + error.getInfo();
+                                };
+                                runWithLocalWorkObserver(localWorkObserver,
+                                    "core-exact-data-admission", reject);
+                                completeValidation({}, std::move(reason));
                             };
                         // Exact Data already arrives on the Face owner. Keep the
                         // complete validator path without posting it back there.
-                        if (m_face.getIoContext().get_executor().running_in_this_thread()) {
-                            validator->validateDataOnFace(data,
-                                std::move(onValidatedExactData), std::move(onRejectedExactData));
+                        auto validate = [&] {
+                            if (m_face.getIoContext().get_executor().running_in_this_thread()) {
+                                validator->validateDataOnFace(data,
+                                    std::move(onValidatedExactData),
+                                    std::move(onRejectedExactData));
+                            }
+                            else {
+                                validator->validate(data,
+                                    std::move(onValidatedExactData),
+                                    std::move(onRejectedExactData));
+                            }
+                        };
+                        try {
+                            runWithLocalWorkObserver(validationCallObserver,
+                                "core-exact-data-validator-call", validate);
                         }
-                        else {
-                            validator->validate(data,
-                                std::move(onValidatedExactData), std::move(onRejectedExactData));
+                        catch (...) {
+                            completeInlineValidation();
+                            throw;
                         }
+                        completeInlineValidation();
                     },
                     [retry, attempt](const ndn::Interest&, const ndn::lp::Nack&) {
                         (*retry)("Nack", attempt);
@@ -13466,7 +13825,8 @@ namespace ndn_service_framework
         CollaborationAssignment assignment,
         std::function<void(bool, std::string,
                            CollaborationAssignment)> onReady,
-        std::shared_ptr<RegistrationState> registrationState)
+        std::shared_ptr<RegistrationState> registrationState,
+        bool expectedScopedInput)
     {
         struct FetchState
         {
@@ -13487,6 +13847,11 @@ namespace ndn_service_framework
         auto state = std::make_shared<FetchState>();
         state->requestId = requestId;
         state->assignment = std::move(assignment);
+        state->assignment.preparationFetchReceipt.emplace();
+        if (expectedScopedInput) {
+            state->assignment.preparationFetchReceipt->inputDisposition =
+                InputFetchDisposition::MISSING;
+        }
         state->onReady = std::move(onReady);
 
         if (auto reference = parseLargeDataReferencePayload(
@@ -13597,6 +13962,34 @@ namespace ndn_service_framework
             getControllerVersion(state->assignment.service),
             registrationState);
 
+        // Capture admitted input before asynchronous assignment retrieval:
+        // an already-running sibling may complete and retire pending input state.
+        if (expectedScopedInput && state->fence.current()) {
+            auto& receipt = *state->assignment.preparationFetchReceipt;
+            const auto inputKey = ndn::Name(requesterName)
+                .append(state->assignment.service).append(requestId);
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            const auto input = m_requestScopedInvocations.find(inputKey);
+            if (input != m_requestScopedInvocations.end() && input->second.inputObserved &&
+                input->second.binding.requestId == requestId &&
+                input->second.binding.serviceName == state->assignment.service &&
+                input->second.inputAttempt == input->second.binding.attempt) {
+                auto& observed = input->second;
+                receipt.inputNestedInSelection = observed.inputNestedInSelection;
+                receipt.inputNestedInRequest = observed.inputNestedInRequest;
+                if (observed.inputClaimed) {
+                    receipt.inputDisposition = InputFetchDisposition::SHARED;
+                }
+                else {
+                    receipt.inputDisposition = InputFetchDisposition::RETRIEVED;
+                    receipt.inputBytes = observed.inputBytes;
+                    receipt.inputPackets = observed.inputPackets;
+                    receipt.inputObjects = 1;
+                    observed.inputClaimed = true;
+                }
+            }
+        }
+
         std::map<KeyScope, ndn::Name> keysToFetch;
         bool needsArtifactFetch = false;
         {
@@ -13671,6 +14064,10 @@ namespace ndn_service_framework
                                                 item.message);
             }
 
+            if (!state->failed && state->fence.current()) {
+                auto& receipt = *state->assignment.preparationFetchReceipt;
+                receipt.complete = receipt.inputDisposition != InputFetchDisposition::MISSING;
+            }
             state->onReady(!state->failed, state->error,
                            std::move(state->assignment));
         };
@@ -13796,6 +14193,9 @@ namespace ndn_service_framework
                                                keyScope;
                                return;
                            }
+                           auto& receipt = *state->assignment.preparationFetchReceipt;
+                           receipt.scopeKeyBytes += buffer.size();
+                           ++receipt.scopeKeyObjects;
                            state->fetchedKeys[keyScope] = std::move(buffer);
                        });
         }
@@ -13803,6 +14203,9 @@ namespace ndn_service_framework
         if (needsArtifactFetch) {
             startFetch(state->assignment.artifactDataName,
                        [state](ndn::Buffer buffer) {
+                           auto& receipt = *state->assignment.preparationFetchReceipt;
+                           receipt.artifactBytes = buffer.size();
+                           receipt.artifactObjects = 1;
                            state->fetchedArtifact = std::move(buffer);
                        });
         }
@@ -13822,6 +14225,9 @@ namespace ndn_service_framework
                                    "digest mismatch";
                                return;
                            }
+                           auto& receipt = *state->assignment.preparationFetchReceipt;
+                           receipt.assignmentBytes = buffer.size();
+                           receipt.assignmentObjects = 1;
                            state->assignment.assignmentPayload = std::move(buffer);
                        });
         }
@@ -19653,38 +20059,6 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         std::string derivedRoleProviderFields;
         std::string receivedProviderToken = message.getProviderToken();
         std::string receivedProviderTokenProofHash;
-        const auto rolesFromAssignmentPayload = [](const ndn::Buffer& payload) {
-            std::vector<std::string> roles;
-            std::vector<ndn::Buffer> assignmentItems;
-            try {
-                assignmentItems = decodeOpaqueAssignmentSet(payload);
-            }
-            catch (const std::exception&) {
-                return roles;
-            }
-            for (const auto& item : assignmentItems) {
-                CollaborationAssignmentEnvelope envelope;
-                try {
-                    if (decodeCollaborationAssignmentEnvelope(item, envelope)) {
-                        if (!envelope.role.empty()) {
-                            roles.push_back(envelope.role);
-                        }
-                        continue;
-                    }
-                }
-                catch (const std::exception&) {
-                    // Selection metadata derivation is best-effort. The
-                    // common assignment parser will reject malformed
-                    // envelopes before execution.
-                }
-                const auto fields = parseSemicolonFields(item);
-                const auto roleIt = fields.find("role");
-                if (roleIt != fields.end() && !roleIt->second.empty()) {
-                    roles.push_back(roleIt->second);
-                }
-            }
-            return roles;
-        };
         const auto hasStructuredAssignmentEnvelope =
             [](const ndn::Buffer& payload) {
                 std::vector<ndn::Buffer> assignmentItems;
@@ -19707,32 +20081,6 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     }
                 }
                 return false;
-            };
-        const auto isStructuredAssignmentPayload =
-            [](const ndn::Buffer& payload) {
-                std::vector<ndn::Buffer> assignmentItems;
-                try {
-                    assignmentItems = decodeOpaqueAssignmentSet(payload);
-                }
-                catch (const std::exception&) {
-                    return false;
-                }
-                if (assignmentItems.empty()) {
-                    return false;
-                }
-                for (const auto& item : assignmentItems) {
-                    CollaborationAssignmentEnvelope envelope;
-                    try {
-                        if (!decodeCollaborationAssignmentEnvelope(item,
-                                                                     envelope)) {
-                            return false;
-                        }
-                    }
-                    catch (const std::exception&) {
-                        return false;
-                    }
-                }
-                return true;
             };
         // One or more CollaborationAssignmentEnvelope values are already
         // canonical binary metadata. Do not route a single-envelope Provider
@@ -19760,7 +20108,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 receivedProviderTokenProofHash = entry.providerTokenHash;
                 effectiveAssignmentPayload = entry.assignmentPayload;
                 structuredAssignmentPayload =
-                    isStructuredAssignmentPayload(effectiveAssignmentPayload);
+                    isStructuredCollaborationPayload(effectiveAssignmentPayload);
                 break;
             }
             if (!hasLocalProviderEntry) {
@@ -20790,43 +21138,8 @@ opaque_selection_committed:
                 // local role. Dispatch those envelopes separately; legacy
                 // binary/semicolon assignment sets still represent one local
                 // execution context and must retain their existing behavior.
-                std::vector<ndn::Buffer> rolePayloads;
-                bool v3AssignmentSet = structuredAssignmentPayload;
-                if (structuredAssignmentPayload) {
-                    for (const auto& item :
-                         decodeOpaqueAssignmentSet(effectiveAssignmentPayload)) {
-                        CollaborationAssignmentEnvelope envelope;
-                        if (decodeCollaborationAssignmentEnvelope(item, envelope)) {
-                            rolePayloads.push_back(item);
-                            const auto opaqueText = std::string(
-                                reinterpret_cast<const char*>(
-                                  envelope.opaquePayload.data()),
-                                envelope.opaquePayload.size());
-                            const auto first = opaqueText.find_first_not_of(
-                                " \t\r\n");
-                            const auto reference =
-                                parseLargeDataReferencePayload(
-                                    envelope.opaquePayload);
-                            const bool inlineV3 =
-                                first != std::string::npos &&
-                                opaqueText[first] == '{';
-                            const bool externalV3 =
-                                reference && reference->encrypted &&
-                                reference->objectType ==
-                                  "application/vnd.ndnsf.collaboration-assignment-v1";
-                            if (!inlineV3 && !externalV3) {
-                                v3AssignmentSet = false;
-                            }
-                        }
-                        else {
-                            v3AssignmentSet = false;
-                        }
-                    }
-                }
-                if (!v3AssignmentSet || rolePayloads.empty()) {
-                    rolePayloads.clear();
-                    rolePayloads.push_back(effectiveAssignmentPayload);
-                }
+                const auto rolePayloads = collaborationRolePayloads(
+                    effectiveAssignmentPayload, structuredAssignmentPayload);
                 bool dispatchedAny = false;
                 for (const auto& rolePayload : rolePayloads) {
                     auto assignment =
@@ -20834,43 +21147,8 @@ opaque_selection_committed:
                     assignment.ownsStreamTerminal =
                         selectedRequest.hasStreamRequestOptions() &&
                         message.hasStreamEventKeyGrant();
-                    // The Provider-entry projection is Core-owned metadata. It
-                    // remains available even when the application registers an
-                    // opaque Selection participant; the participant still sees
-                    // only its exact envelope opaquePayload below.
-                    for (const auto& entry : message.getProviderEntries()) {
-                        for (const auto& entryRole :
-                             rolesFromAssignmentPayload(entry.assignmentPayload)) {
-                            assignment.roleProviders[entryRole] = entry.providerName;
-                        }
-                    }
-                    // Structured deferred assignments carry exact
-                    // provider-scoped scope-key references in their envelope.
-                    if ((hasOpaqueParticipant || structuredAssignmentPayload) &&
-                        !sharedAssignmentPayload.empty()) {
-                        for (const auto& field :
-                             parseSemicolonFields(sharedAssignmentPayload)) {
-                            static const std::string prefix = "scopeKeyData.";
-                            static const std::string roleProviderPrefix =
-                                "roleProvider.";
-                            if (field.first.rfind(roleProviderPrefix, 0) == 0 &&
-                                !field.first.substr(roleProviderPrefix.size()).empty() &&
-                                !field.second.empty()) {
-                                assignment.roleProviders[
-                                    field.first.substr(roleProviderPrefix.size())] =
-                                      ndn::Name(field.second);
-                            }
-                            else if (assignment.scopeKeys.empty() &&
-                                     assignment.scopeKeyDataNames.empty() &&
-                                     field.first.rfind(prefix, 0) == 0 &&
-                                     !field.first.substr(prefix.size()).empty() &&
-                                     !field.second.empty()) {
-                                assignment.scopeKeyDataNames[
-                                    field.first.substr(prefix.size())] =
-                                      ndn::Name(field.second);
-                            }
-                        }
-                    }
+                    applyCollaborationSelectionMetadata(assignment, message,
+                        hasOpaqueParticipant || structuredAssignmentPayload);
                     assignment.selectionDigest = selectionDigest;
                     dispatchedAny = dispatchCollaborationExecutionAsync(
                         requesterName, providerName, serviceName, requestId,

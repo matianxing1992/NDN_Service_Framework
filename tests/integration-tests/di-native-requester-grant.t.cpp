@@ -18,6 +18,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include <openssl/evp.h>
 #include <future>
 #include "ndnsf-integration-fixture.hpp"
@@ -322,19 +323,24 @@ BOOST_AUTO_TEST_CASE(ConcreteIssuerUsesCoreWorkerPublicationAndProviderUnwrap)
   auto user = std::shared_ptr<ndn_service_framework::ServiceUser>(&environment.user(), [](auto*) {});
   const auto publish = NativeAuthenticatedGrantClient::publishThroughCore(user);
   NativeGrantControl control{std::chrono::system_clock::now() + std::chrono::seconds(3), {}};
+  control.workStatistics = makeNativeWorkStatistics();
   std::optional<ndn::Data> data;
   auto observer = environment.userFace().onSendData.connect([&](const ndn::Data& value) {
-    if (value.getName().toUri() == grant.grantName) data = value;
+    if (value.getName() == ndn::Name(grant.grantName)) data = value;
   });
   auto result = std::async(std::launch::async, [&] { return publish(grant.grantName, grant.wireJson, control); });
   environment.pumpUntil([&] {
     return data && result.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
   });
-  BOOST_CHECK_EQUAL(result.get(), grant.grantName);
+  BOOST_CHECK_EQUAL(ndn::Name(result.get()), ndn::Name(grant.grantName));
   BOOST_REQUIRE(data);
   BOOST_CHECK(data->getFreshnessPeriod() > ndn::time::milliseconds::zero());
   const auto& content = data->getContent();
   const std::string wire(reinterpret_cast<const char*>(content.value()), content.value_size());
+  const auto publicationStatistics = control.workStatistics->snapshot();
+  BOOST_REQUIRE(publicationStatistics.complete);
+  BOOST_CHECK_EQUAL(publicationStatistics.counts.at("grant.corePublishedBytes"), wire.size());
+  BOOST_CHECK_EQUAL(publicationStatistics.counts.at("grant.corePublishedObjects"), 1U);
   std::string authorityPublic(32, '\0'); std::size_t size = authorityPublic.size();
   BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(config.authorityPrivateKey.get(),
     reinterpret_cast<unsigned char*>(authorityPublic.data()), &size), 1);
@@ -415,6 +421,7 @@ BOOST_AUTO_TEST_CASE(Spec184AuthorityIoOwnership)
   request.protectionEpoch = "spec184-epoch";
   request.issuedAtMs = nowMs();
   NativeGrantControl control{std::chrono::system_clock::now() + std::chrono::seconds(5), {}};
+  control.workStatistics = makeNativeWorkStatistics();
   std::thread::id workerThread;
   auto result = std::async(std::launch::async, [&] {
     workerThread = std::this_thread::get_id();
@@ -440,6 +447,35 @@ BOOST_AUTO_TEST_CASE(Spec184AuthorityIoOwnership)
     std::lock_guard<std::mutex> lock(sendMutex);
     BOOST_CHECK_NE(sendThread, workerThread);
   }
+  BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0);
+  const auto successful = control.workStatistics->snapshot();
+  BOOST_REQUIRE(successful.complete);
+  BOOST_CHECK_EQUAL(successful.counts.at("grant.authorityCoreCalls"), 1U);
+  BOOST_CHECK_EQUAL(successful.counts.at("grant.authorityResponseObservedCalls"), 1U);
+  BOOST_CHECK_EQUAL(successful.counts.at("grant.core.controlInventorySnapshots"), 1U);
+  BOOST_CHECK_EQUAL(successful.counts.at("grant.core.controlInventoryComplete"), 1U);
+  BOOST_CHECK_EQUAL(successful.counts.at("grant.core.responseDecodedCalls"), 1U);
+  BOOST_CHECK_GT(successful.counts.at("grant.core.responseDecodedBytes"),
+                 nativeKeyGrantJson(expectedGrant).size());
+
+  // Reuse the request collector for another real Core child that cannot
+  // dispatch. Complete snapshot counts alone must not certify a response.
+  auto malformedIssue = NativeAuthenticatedGrantClient::issueThroughCore(
+    user, "/bad/%ZZ", authorityService.toUri());
+  auto failed = std::async(std::launch::async, [&] {
+    return malformedIssue(request, "{\"manifest\":1}", nowMs() + 60'000, control);
+  });
+  environment.pumpUntil([&] {
+    return failed.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  });
+  BOOST_CHECK_THROW(failed.get(), std::exception);
+  const auto combined = control.workStatistics->snapshot();
+  BOOST_REQUIRE(combined.complete);
+  BOOST_CHECK_EQUAL(combined.counts.at("grant.authorityCoreCalls"), 2U);
+  BOOST_CHECK_EQUAL(combined.counts.at("grant.authorityResponseObservedCalls"), 1U);
+  BOOST_CHECK_EQUAL(combined.counts.at("grant.core.controlInventorySnapshots"), 2U);
+  BOOST_CHECK_EQUAL(combined.counts.at("grant.core.controlInventoryComplete"), 2U);
+  BOOST_CHECK_EQUAL(combined.counts.at("grant.core.responseDecodedCalls"), 1U);
   BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0);
 }
 

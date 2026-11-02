@@ -6,6 +6,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
@@ -1255,8 +1256,12 @@ main(int argc, char** argv)
     auto options = parseArgs(argc, argv);
     ndnsf::di::detail::configureSynchronousLogging(std::clog);
     std::shared_ptr<ndnsf::di::detail::StatisticsFile> statisticsOutput;
-    if (!options.statisticsFile.empty())
+    std::shared_ptr<ndnsf::di::detail::StatisticsFile> ackStatisticsOutput;
+    if (!options.statisticsFile.empty()) {
       statisticsOutput = std::make_shared<ndnsf::di::detail::StatisticsFile>(options.statisticsFile);
+      ackStatisticsOutput = std::make_shared<ndnsf::di::detail::StatisticsFile>(
+        options.statisticsFile + ".ack.jsonl");
+    }
     const auto staleAfter = std::chrono::milliseconds(std::max<std::int64_t>(
       10 * 60 * 1000,
       static_cast<std::int64_t>(options.assemblyTimeoutMs) + 60 * 1000));
@@ -1535,23 +1540,47 @@ main(int argc, char** argv)
         std::function<void(const ExecutionEvidence&)>>();
       telemetryCollector->start();
       if (nativeOfferConfig) {
+        if (ackStatisticsOutput) {
+          nativeOfferConfig->workObserver =
+            [statisticsOutput = ackStatisticsOutput, providerName = options.providerName, providerBootId](
+              const std::string& requestId, const NativeWorkStatisticsSnapshot& statistics) {
+              const auto domain = nativeWorkClockDomain();
+              statisticsOutput->write(nativeCanonicalJson(NativeJson{
+                {"schema", "ndnsf-di-native-ack-statistics-v1"}, {"type", "ack-offer"},
+                {"requestId", requestId}, {"provider", providerName},
+                {"providerBootId", providerBootId},
+                {"clockDomain", domain ? NativeJson(*domain) : NativeJson(nullptr)},
+                {"workStatistics", nativeParseJson(nativeWorkStatisticsToJson(statistics))}}));
+            };
+        }
         const std::weak_ptr<NativeProviderTelemetryCollector> weakTelemetry = telemetryCollector;
+        std::vector<std::shared_ptr<CudaDeviceMemoryQuery>> deviceQueries;
+        const bool needsGpuResources = options.offerBackend.find("cuda") != std::string::npos ||
+          std::any_of(options.offerDevices.begin(), options.offerDevices.end(),
+            [] (const auto& device) { return device.rfind("cuda:", 0) == 0; });
+        for (const auto& device : options.offerDevices) {
+          if (!needsGpuResources) break;
+          if (device.rfind("cuda:", 0) != 0)
+            throw std::runtime_error("GPU_RESOURCE_DEVICE_INVALID");
+          const auto text = device.substr(5);
+          std::size_t consumed = 0;
+          const auto ordinal = std::stoi(text, &consumed);
+          if (consumed != text.size() || std::to_string(ordinal) != text)
+            throw std::runtime_error("GPU_RESOURCE_DEVICE_INVALID");
+          deviceQueries.push_back(std::make_shared<CudaDeviceMemoryQuery>(ordinal));
+        }
         nativeOfferConfig->observeResources =
-          [weakTelemetry, devices = options.offerDevices] (std::uint64_t nowMs) {
+          [weakTelemetry, deviceQueries = std::move(deviceQueries)] (
+              std::uint64_t nowMs, const std::shared_ptr<NativeWorkStatistics>& statistics) {
             const auto telemetry = weakTelemetry.lock();
             if (!telemetry) throw std::runtime_error("GPU_RESOURCE_OWNER_CLOSED");
             const auto snapshot = telemetry->snapshot();
+            NativeWorkScope collection(statistics, "gpu-resource-collection", NativeWorkKind::LOCAL);
             std::vector<NativeDeviceResourceObservationV3> resources;
-            for (const auto& device : devices) {
-              if (device.rfind("cuda:", 0) != 0)
-                throw std::runtime_error("GPU_RESOURCE_DEVICE_INVALID");
-              const auto text = device.substr(5);
-              std::size_t consumed = 0;
-              const auto ordinal = std::stoi(text, &consumed);
-              if (consumed != text.size() || std::to_string(ordinal) != text)
-                throw std::runtime_error("GPU_RESOURCE_DEVICE_INVALID");
-              resources.push_back(queryCudaDeviceMemory(ordinal, nowMs,
-                std::max<std::uint64_t>(1, snapshot.sequence), snapshot.capacity.activeWorkerCount));
+            for (const auto& query : deviceQueries) {
+              resources.push_back(query->query(nowMs,
+                std::max<std::uint64_t>(1, snapshot.sequence), snapshot.capacity.activeWorkerCount,
+                statistics));
             }
             return resources;
           };

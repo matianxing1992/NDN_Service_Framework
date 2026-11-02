@@ -92,7 +92,8 @@ trustSchema()
 
 ProviderConfig
 makeConfig(const std::string& providerName = "/spec185/provider",
-           const std::string& serviceName = "/Inference/Spec185Provider")
+           const std::string& serviceName = "/Inference/Spec185Provider",
+           const std::string& artifactCacheDir = {})
 {
   const auto trust = trustSchema().string();
   std::vector<std::string> values{
@@ -100,6 +101,10 @@ makeConfig(const std::string& providerName = "/spec185/provider",
     "--controller", "/spec185/controller", "--trust-schema", trust,
     "--service", serviceName, "--role", "/Backbone",
     "--workers", "1"};
+  if (!artifactCacheDir.empty()) {
+    values.push_back("--artifact-cache-dir");
+    values.push_back(artifactCacheDir);
+  }
   std::vector<const char*> argv;
   argv.reserve(values.size());
   for (const auto& value : values)
@@ -759,7 +764,8 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
      verificationTimeMs = nowMs] (
       ndn_service_framework::ServiceProvider::CollaborationContext& context,
       const NativeSelectionProjectionV3& projection,
-      const std::shared_ptr<ProviderGroupCoordinator>&) {
+      const std::shared_ptr<ProviderGroupCoordinator>&,
+      const std::shared_ptr<NativeWorkStatistics>&) {
       ProtectedRuntimeBindingV1 binding;
       binding.provider = projection.provider;
       binding.role = projection.executionRole.roleId;
@@ -2414,6 +2420,21 @@ BOOST_AUTO_TEST_CASE(ProtectedSelectionBindingRejectsProviderEpochAndGrantSubsti
 
 BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcrossIndependentGrants)
 {
+  auto pattern = (std::filesystem::temp_directory_path() /
+    "ndnsf-spec185-protected-cache-XXXXXX").string();
+  std::vector<char> directoryPattern(pattern.begin(), pattern.end());
+  directoryPattern.push_back('\0');
+  const auto directory = ::mkdtemp(directoryPattern.data());
+  BOOST_REQUIRE(directory != nullptr);
+  struct CacheDirectory
+  {
+    std::filesystem::path path;
+    ~CacheDirectory()
+    {
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+    }
+  } cacheDirectory{directory};
   // This fixture deliberately leaves RunnerPreparationFactory empty so the
   // Provider facade executes its production canonical-root/source assembler
   // and ProviderArtifactCache path.  The runner itself remains a deterministic
@@ -2446,10 +2467,27 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
   const auto sourceIdentity = providerAssemblySourceIdentity(source);
   const auto profileDigest = std::string("sha256:") + std::string(64, 'b');
   const auto rootName = ndn::Name("/spec185/provider/cache/root");
-  const auto sourceDataName = ndn::Name(requesterName)
-    .append("NDNSF").append("LARGE-DATA").append(serviceName)
-    .append("spec185-provider-cache-source").appendVersion();
-  const auto sourceName = sourceDataName;
+  const auto assignmentKey = environment.user().prepareHybridSendKeyForTest(
+    serviceName, "REQUEST-LARGE");
+  environment.provider().cacheHybridReceiveKeyForTest(
+    assignmentKey.keyId, assignmentKey.epochId, assignmentKey.key);
+  const auto publicationContext = environment.user().prepareServiceRequest(serviceName.toUri());
+  std::vector<ndn_service_framework::LargeDataPublishResult> publications;
+  publications.reserve(3);
+  // This thread owns User Face; reuse Core naming, signing, crypto and serving.
+  const auto publishLarge = [&] (const std::string& label,
+                                 const std::vector<std::uint8_t>& payload) {
+    BOOST_REQUIRE(publications.size() < 3U);
+    auto published = environment.user().publishEncryptedLargeData(
+      publicationContext, payload, label, ndn::time::milliseconds(60000), true);
+    BOOST_REQUIRE_MESSAGE(published.success, published.errorMessage);
+    BOOST_REQUIRE(published.servingLease);
+    BOOST_REQUIRE(requesterName.isPrefixOf(published.encryptedDataName));
+    const auto name = published.encryptedDataName;
+    publications.push_back(std::move(published));
+    return name;
+  };
+  const auto sourceName = publishLarge("spec185-provider-cache-source", source);
   const auto rootText = std::string(
     "{\"artifactProfileDigest\":\"") + profileDigest +
     "\",\"metadata\":{\"canonicalSourceBytes\":" +
@@ -2461,47 +2499,6 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
     "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}";
   const std::vector<std::uint8_t> rootPayload(rootText.begin(), rootText.end());
   const auto rootDigest = providerAssemblyDigest(rootPayload);
-
-  // Publish one exact-name encrypted source object through the same DummyFace
-  // and Segmenter path used by the existing assignment-fetch tests.
-  auto publishLarge = [&] (const ndn::Name& dataName,
-                           const std::vector<std::uint8_t>& payload) {
-    HybridMessageCrypto crypto;
-    HybridCryptoCounters counters;
-    const auto key = crypto.getOrCreateSendKey(
-      serviceName, requesterName, std::string("/SERVICE") + serviceName.toUri(),
-      "REQUEST-LARGE", counters);
-    const auto associatedDataText = dataName.toUri() + "|REQUEST-LARGE|" +
-                                    serviceName.toUri();
-    const ndn::Buffer associatedData(
-      reinterpret_cast<const std::uint8_t*>(associatedDataText.data()),
-      associatedDataText.size());
-    const auto encrypted = hybridAesGcmEncrypt(
-      key.key,
-      ndn::span<const std::uint8_t>(payload.data(), payload.size()),
-      ndn::span<const std::uint8_t>(associatedData.data(), associatedData.size()));
-    HybridMessageEnvelope envelope;
-    envelope.setKeyId(key.keyId);
-    envelope.setEpochId(key.epochId);
-    envelope.setMessageType("REQUEST-LARGE");
-    envelope.setNonce(encrypted.nonce);
-    envelope.setCipherText(encrypted.ciphertext);
-    envelope.setAuthTag(encrypted.tag);
-    const auto wireBlock = envelope.WireEncode();
-    ndn::Segmenter segmenter(
-      environment.keyChain(), ndn::security::signingWithSha256());
-    const auto segments = segmenter.segment(
-      ndn::span<const std::uint8_t>(wireBlock.data(), wireBlock.size()),
-      dataName, 4096, ndn::time::milliseconds(60000));
-    BOOST_REQUIRE(!segments.empty());
-    environment.provider().cacheHybridReceiveKeyForTest(
-      key.keyId, key.epochId, key.key);
-    for (const auto& data : segments) {
-      environment.user().cacheDataForTest(*data, ndn::time::milliseconds(60000));
-      environment.userFace().put(*data);
-    }
-  };
-  publishLarge(sourceDataName, source);
 
   struct IssuedGrant
   {
@@ -2589,7 +2586,8 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
      recipientSeed = std::string(32, 'r'), protectionEpoch, providerBootId] (
       ndn_service_framework::ServiceProvider::CollaborationContext& context,
       const NativeSelectionProjectionV3& projection,
-      const std::shared_ptr<ProviderGroupCoordinator>&) {
+      const std::shared_ptr<ProviderGroupCoordinator>&,
+      const std::shared_ptr<NativeWorkStatistics>&) {
       const auto grant = grantWires->find(projection.grantDigest);
       if (grant == grantWires->end())
         throw std::runtime_error("provider cache test grant is not registered");
@@ -2624,7 +2622,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
   auto facade = Provider::fromServiceProviderForTest(
     environment.providerFace(), environment.provider(), environment.keyChain(),
     providerCertificate, providerCertificate,
-    makeConfig(providerName.toUri(), serviceName.toUri()),
+    makeConfig(providerName.toUri(), serviceName.toUri(), cacheDirectory.path.string()),
     runnerFactory, {}, std::move(protectedRuntimeFactory));
   environment.enableProductionIngressForTest();
   auto registration = facade.serve({serviceName.toUri(), {"/Backbone"}});
@@ -2635,12 +2633,6 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
   environment.user().cacheHybridReceiveKeyForTest(responseKey.keyId, responseKey.epochId, responseKey.key);
   const auto selectionKey = environment.user().prepareHybridSendKeyForTest(serviceName, "SELECTION");
   environment.provider().cacheHybridReceiveKeyForTest(selectionKey.keyId, selectionKey.epochId, selectionKey.key);
-  // The assignment envelope can be externalized independently of the model
-  // source published by publishLarge, which owns a different crypto instance.
-  const auto assignmentKey = environment.user().prepareHybridSendKeyForTest(serviceName, "REQUEST-LARGE");
-  environment.provider().cacheHybridReceiveKeyForTest(
-    assignmentKey.keyId, assignmentKey.epochId, assignmentKey.key);
-
   struct Probe
   {
     std::mutex mutex;
@@ -2755,10 +2747,8 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
     auto projection = makeProjection(requestId, issued.grant);
     const auto projectionText = nativeSelectionProjectionV3ToJson(projection);
     BOOST_TEST_MESSAGE("protected-cache assignment bytes=" << projectionText.size());
-    auto rootDataName = ndn::Name(requesterName);
-    rootDataName.append("NDNSF").append("LARGE-DATA").append(serviceName)
-      .append(requestId).append("root").appendVersion();
-    publishLarge(rootDataName, rootPayload);
+    const auto rootDataName = publishLarge(
+      "spec185-provider-cache-root-" + std::to_string(publications.size()), rootPayload);
     auto probe = std::make_shared<Probe>();
     {
       std::lock_guard<std::mutex> lock(probeMutex);

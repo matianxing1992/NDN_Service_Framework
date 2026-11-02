@@ -9,12 +9,15 @@
 #include <cstdint>
 #include <initializer_list>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace ndnsf::di {
+
+class NativeWorkStatistics;
 
 enum class TensorElementType : std::uint32_t
 {
@@ -23,6 +26,7 @@ enum class TensorElementType : std::uint32_t
   Int64 = 3,
   Bool = 4,
   UInt8 = 5,
+  Int32 = 6,
 };
 
 struct NamedTensor
@@ -33,7 +37,7 @@ struct NamedTensor
   std::vector<std::uint8_t> payload;
 };
 
-/** Metadata owns its storage; payload borrows an unchanged encoded buffer. */
+/** Metadata owns its storage; payload borrows unchanged host-readable storage. */
 struct NamedTensorView
 {
   std::string name;
@@ -173,10 +177,20 @@ makeFloat32Tensor(std::string name,
                   const std::vector<std::uint8_t>& payload);
 
 std::vector<std::uint8_t>
-encodeTensorBundle(const std::vector<NamedTensor>& tensors);
+encodeTensorBundle(const std::vector<NamedTensor>& tensors,
+                   const std::shared_ptr<NativeWorkStatistics>& workStatistics = {});
+
+/** Validate borrowed payloads and synchronously copy them into owned wire bytes. */
+std::vector<std::uint8_t>
+encodeTensorBundleViews(const std::vector<NamedTensorView>& tensors,
+                        const std::shared_ptr<NativeWorkStatistics>& workStatistics = {});
+
+void
+validateNamedTensorView(const NamedTensorView& tensor);
 
 std::vector<NamedTensor>
-decodeTensorBundle(const std::vector<std::uint8_t>& payload);
+decodeTensorBundle(const std::vector<std::uint8_t>& payload,
+                   const std::shared_ptr<NativeWorkStatistics>& workStatistics = {});
 
 /**
  * Validate the complete bundle without copying tensor payloads.
@@ -184,7 +198,8 @@ decodeTensorBundle(const std::vector<std::uint8_t>& payload);
  * This is codec validation only, not signature or execution admission.
  */
 std::vector<NamedTensorView>
-decodeTensorBundleViews(const std::vector<std::uint8_t>& payload);
+decodeTensorBundleViews(const std::vector<std::uint8_t>& payload,
+                        const std::shared_ptr<NativeWorkStatistics>& workStatistics = {});
 
 std::vector<NamedTensorView>
 decodeTensorBundleViews(std::vector<std::uint8_t>&&) = delete;
@@ -199,8 +214,16 @@ std::vector<NamedTensor>
 selectTensors(const std::vector<NamedTensor>& tensors,
               const std::vector<std::string>& names);
 
+std::vector<NamedTensorView>
+selectTensorViews(const std::vector<NamedTensorView>& tensors,
+                  const std::vector<std::string>& names);
+
 TensorBundle
 makeEncodedTensorBundle(std::string name, const std::vector<NamedTensor>& tensors);
+
+/** Borrow only for this call; the returned bundle owns every payload byte. */
+TensorBundle
+makeEncodedTensorBundleViews(std::string name, const std::vector<NamedTensorView>& tensors);
 
 TensorBundle
 selectTensorBundle(std::string name,

@@ -105,6 +105,7 @@ FILES = (
     "tests/integration-tests/ndnsf-integration-fixture.cpp",
     "tests/fixtures/spec182/native-model-fixture.hpp",
     "tests/fixtures/spec182/native-qwen-config.hpp",
+    "tests/fixtures/spec220/ort-required-operators.cpp",
 )
 NDN_SVS_FILES = (
     "waf",

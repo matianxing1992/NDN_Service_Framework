@@ -3,8 +3,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/control-byte-inventory.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include <openssl/evp.h>
+#include <boost/scope_exit.hpp>
 #include <algorithm>
 #include <condition_variable>
 #include <mutex>
@@ -50,6 +52,10 @@ NativeAuthenticatedGrantClient::Publish corePublisher(
         control.check();
         published = user->publishSignedAppData(ndn::Name(name),
           ndn::Buffer(wire.begin(), wire.end()), kGrantFreshness).toUri();
+        if (control.workStatistics) {
+          control.workStatistics->addCount("grant.corePublishedBytes", wire.size());
+          control.workStatistics->addCount("grant.corePublishedObjects", 1);
+        }
       } catch (...) { error = std::current_exception(); }
       std::lock_guard<std::mutex> lock(pending->mutex);
       if (pending->abandoned.load()) return;
@@ -93,6 +99,7 @@ NativeAuthenticatedGrantClient::Issue coreIssue(
       bool done = false;
       std::exception_ptr error;
       ndn_service_framework::ResponseMessage response;
+      bool responseObserved = false;
     };
     auto pending = std::make_shared<Pending>();
     struct Abandon {
@@ -100,8 +107,33 @@ NativeAuthenticatedGrantClient::Issue coreIssue(
       ~Abandon() { state->abandoned.store(true); }
     } abandon{pending};
 
+    const auto coreStatistics = control.workStatistics
+      ? std::make_shared<ndn_service_framework::ControlByteStatistics>(true) : nullptr;
+    if (control.workStatistics)
+      control.workStatistics->addCount("grant.authorityCoreCalls", 1);
+    BOOST_SCOPE_EXIT_ALL(&) {
+      if (coreStatistics) {
+        bool responseObserved = false;
+        try {
+          std::lock_guard<std::mutex> lock(pending->mutex);
+          responseObserved = pending->responseObserved;
+        }
+        catch (...) {
+          coreStatistics->invalidate();
+        }
+        control.workStatistics->addCount("grant.authorityResponseObservedCalls",
+                                         responseObserved ? 1 : 0);
+        (void)detail::mergeControlByteInventory(*control.workStatistics, coreStatistics->seal(),
+                                               detail::ControlInventoryScope::GRANT_AUTHORITY);
+      }
+    };
+
     NativeGrantAuthorityRequest authorityRequest{request, expiresAtMs, publishedManifestJson};
     const auto wire = nativeGrantAuthorityRequestJson(authorityRequest);
+    if (control.workStatistics) {
+      control.workStatistics->addCount("grant.authorityRequestJsonBytes", wire.size());
+      control.workStatistics->addCount("grant.authorityRequestJsonObjects", 1);
+    }
     ndn_service_framework::RequestMessage message;
     ndn::Buffer payload(reinterpret_cast<const std::uint8_t*>(wire.data()), wire.size());
     message.setPayload(payload, payload.size());
@@ -134,6 +166,7 @@ NativeAuthenticatedGrantClient::Issue coreIssue(
       std::lock_guard<std::mutex> lock(pending->mutex);
       if (pending->abandoned.load() || pending->done) return;
       pending->response = response;
+      pending->responseObserved = true;
       pending->done = true;
       pending->changed.notify_all();
     };
@@ -165,7 +198,7 @@ NativeAuthenticatedGrantClient::Issue coreIssue(
     if (queueStarted.enabled) queueStarted.wall = std::chrono::steady_clock::now();
     user->postToIo([user, pending, authorityIdentity = std::move(authorityIdentity),
                     authorityService = std::move(authorityService), message = std::move(message),
-                    timeoutMs, control, timeoutHandler, responseHandler,
+                    timeoutMs, control, coreStatistics, timeoutHandler, responseHandler,
                     completeWithError, queueStarted,
                     traceRequestId = std::move(traceRequestId),
                      traceProvider = std::move(traceProvider),
@@ -181,7 +214,7 @@ NativeAuthenticatedGrantClient::Issue coreIssue(
         control.check();
         const auto requestId = user->RequestServiceTargeted(
           ndn::Name(authorityIdentity), ndn::Name(authorityService), std::move(message),
-          timeoutMs, timeoutHandler, responseHandler);
+          timeoutMs, timeoutHandler, responseHandler, coreStatistics);
         admissionFinished = true;
         detail::logNativeWorkPhase(traceRequestId, "grant_authority_io_admission",
                                    admissionStarted, traceProvider, attempt);
@@ -333,6 +366,12 @@ NativeGrantBinding NativeAuthenticatedGrantClient::acquireWithScope(
   const std::string& role, const NativeGrantLeaseScope* leaseScope) const
 {
   control.check();
+  NativeWorkScope grantWork(control.workStatistics, "grant-acquire", NativeWorkKind::LOCAL);
+  if (control.workStatistics) control.workStatistics->addCount("grant.acquireCalls", 1);
+  const auto grantNow = [&] {
+    NativeWorkScope clockWork(control.workStatistics, "grant-clock", NativeWorkKind::UNCLASSIFIED);
+    return m_clock();
+  };
   auto phaseStarted = detail::nativePhaseStarted();
   const auto view = NativePlanSealer::grantView(core, offer, security, role);
   detail::logNativeWorkPhase(core.requestId, "grant_view", phaseStarted, role, core.attempt);
@@ -360,7 +399,7 @@ NativeGrantBinding NativeAuthenticatedGrantClient::acquireWithScope(
   request.requesterIdentity = m_requester; request.providerIdentity = view.provider;
   request.requestId = requestId; request.attempt = attempt;
   request.planCoreDigest = planCoreDigest; request.modelManifestDigest = view.modelManifestDigest;
-  request.protectionEpoch = view.protectionEpoch; request.issuedAtMs = m_clock();
+  request.protectionEpoch = view.protectionEpoch; request.issuedAtMs = grantNow();
   const auto roleDigest = core.fixedCoreOwner ? core.fixedCoreOwner->roleDigest(view.role)
     : nativePlanningDigest(nativeCanonicalJson(nativeAssemblyJson(core.roleContracts().at(view.role))));
   request.grantViewDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
@@ -385,17 +424,28 @@ NativeGrantBinding NativeAuthenticatedGrantClient::acquireWithScope(
     catch (...) {
     }
   }
-  const auto grant = m_issue(request, core.artifacts.canonicalManifestJson,
-                             expiresAtMs, control);
+  if (control.workStatistics) control.workStatistics->addCount("grant.issueAttemptCalls", 1);
+  const auto grant = [&] {
+    NativeWorkScope issueWork(control.workStatistics, "grant-issue", NativeWorkKind::UNCLASSIFIED);
+    return m_issue(request, core.artifacts.canonicalManifestJson, expiresAtMs, control);
+  }();
   control.check();
   detail::logNativeWorkPhase(core.requestId, "grant_authority_issue_wait", phaseStarted, role, core.attempt);
   phaseStarted = detail::nativePhaseStarted();
   detail::verifyNativeIssuedGrant(grant, request, m_authority, m_authorityPublicKey,
-    m_clock(), expiresAtMs);
+    grantNow(), expiresAtMs);
   control.check();
   detail::logNativeWorkPhase(core.requestId, "grant_verify", phaseStarted, role, core.attempt);
   phaseStarted = detail::nativePhaseStarted();
-  const auto name = m_publish(grant.grantName, grant.wireJson, control);
+  if (control.workStatistics) {
+    control.workStatistics->addCount("grant.publishAttemptBytes", grant.wireJson.size());
+    control.workStatistics->addCount("grant.publishAttemptCalls", 1);
+  }
+  const auto name = [&] {
+    NativeWorkScope publishWork(control.workStatistics, "grant-publish",
+                                NativeWorkKind::UNCLASSIFIED);
+    return m_publish(grant.grantName, grant.wireJson, control);
+  }();
   control.check();
   detail::logNativeWorkPhase(core.requestId, "grant_publish_wait", phaseStarted, role, core.attempt);
   if (ndn::Name(name) != ndn::Name(grant.grantName))

@@ -167,6 +167,15 @@ approval again or hide an exception in a special-case branch.
    relevant negative/recovery cases; do not substitute an experiment-only bypass
    or a reimplementation of production logic for that evidence. Distinguish
    static review, build, smoke tests and real end-to-end qualification.
+   For changes to mechanisms shared by CPU and CUDA, first pass focused C++
+   checks and a small installed MiniNDN CPU cold/warm run before deploying the
+   changed NDNSF applications to Tiger or starting GPU inference. Reuse validated
+   local inputs and the shortest meaningful workload. Record cold/warm wall time,
+   CPU time when available, source/config identity, pass/fail and the first failure
+   boundary in the existing task/evidence record; compare with a matched CPU
+   baseline when one exists. Reserve the full matched performance matrix for
+   qualification. GPU-specific runtime, device and kernel changes still require
+   their corresponding container/device checks.
 
 9. **Source-first static diagnosis.** Before a substantive code change or expensive
    build/experiment, inspect the actual caller, owner, inputs, outputs, state

@@ -170,6 +170,9 @@ readProjection(CodedInputStream& input)
     else if (field == onnx::ModelProto::kOpsetImportFieldNumber && (tag & 7) == 2) {
       readMessage(input, *model.add_opset_import(), budget);
     }
+    else if (field == onnx::ModelProto::kFunctionsFieldNumber) {
+      throw UnsupportedProjection();
+    }
     else if (field == onnx::ModelProto::kGraphFieldNumber && (tag & 7) == 2) {
       require(!foundGraph);
       foundGraph = true;
@@ -249,6 +252,34 @@ isStructuralInput(const std::string& op, int index)
   if (op == "Pad") return index == 1;
   if (op == "Resize") return index == 3;
   return false;
+}
+
+std::set<std::string>
+attentionWarmupLengthInputs(const onnx::ModelProto& model)
+{
+  std::size_t imports = 0;
+  for (const auto& entry : model.opset_import()) {
+    if (entry.domain() == "com.microsoft") {
+      if (entry.version() != 1) return {};
+      ++imports;
+    }
+  }
+  if (imports != 1) return {};
+  std::set<std::string> scalarInputs;
+  for (const auto& input : model.graph().input()) {
+    if (!input.has_type() || !input.type().has_tensor_type()) continue;
+    const auto& type = input.type().tensor_type();
+    if (type.elem_type() == onnx::TensorProto::INT32 && type.has_shape() &&
+        type.shape().dim_size() == 0)
+      scalarInputs.insert(input.name());
+  }
+  std::set<std::string> result;
+  for (const auto& node : model.graph().node()) {
+    if (node.domain() == "com.microsoft" && node.op_type() == "GroupQueryAttention" &&
+        node.input_size() > 6 && scalarInputs.count(node.input(6)))
+      result.insert(node.input(6));
+  }
+  return result;
 }
 
 OnnxRuntimeGraphMetadata
@@ -413,7 +444,7 @@ classify(onnx::ModelProto& model)
 } // namespace
 
 OnnxRuntimeGraphMetadata
-inspectOnnxRuntimeGraphMetadata(const std::string& modelPath)
+inspectOnnxRuntimeGraphMetadata(const std::string& modelPath, bool collectHostMetadata)
 {
   std::unique_ptr<std::FILE, decltype(&std::fclose)> file(
     std::fopen(modelPath.c_str(), "rb"), &std::fclose);
@@ -430,7 +461,17 @@ inspectOnnxRuntimeGraphMetadata(const std::string& modelPath)
     auto model = readProjection(input);
     require(input.BytesUntilLimit() == 0);
     input.PopLimit(limit);
-    result = classify(model);
+    const auto warmupInputs = attentionWarmupLengthInputs(model);
+    if (collectHostMetadata) {
+      try {
+        result = classify(model);
+      }
+      catch (const std::exception&) {
+        // A warmup fact cannot relax CUDA placement for a nonstandard graph.
+        result = {};
+      }
+    }
+    result.attentionWarmupLengthInputs = warmupInputs;
   }
   catch (const std::exception&) {
     // Unsupported graphs retain the original strict CPU-fallback rejection.
@@ -447,7 +488,7 @@ void
 verifyOnnxRuntimeGraphMetadataSource(const std::string& modelPath,
                                     const OnnxRuntimeGraphMetadata& metadata)
 {
-  if (metadata.hostMetadataNodes.empty()) return;
+  if (metadata.hostMetadataNodes.empty() && metadata.attentionWarmupLengthInputs.empty()) return;
   struct stat status{};
   if (stat(modelPath.c_str(), &status) != 0 || !S_ISREG(status.st_mode) ||
       fileStamp(status) != metadata.sourceFileStamp)

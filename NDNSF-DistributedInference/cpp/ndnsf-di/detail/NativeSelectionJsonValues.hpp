@@ -12,6 +12,9 @@ NativeJson nativeDependenciesJson(const std::vector<NativeDependencySpec>& depen
 NativeJson nativeGenerationJson(const NativeGenerationExecutionContractV1& generation);
 NativeJson nativeEndpointJson(const NativeTensorEndpointV3& endpoint);
 NativeJson nativeDataflowJson(const NativeRoleDataflowContractV3& dataflow);
+/** Validate the complete current flow, including its compact recipe commitment. */
+void
+validateNativeRoleDataflowContractV3(const NativeRoleDataflowContractV3& dataflow);
 NativeJson nativeDeviceBindingJson(const NativeDeviceBindingV3& binding);
 void validateNativeAssembly(const NativeSelectionRoleV3& role);
 namespace detail {

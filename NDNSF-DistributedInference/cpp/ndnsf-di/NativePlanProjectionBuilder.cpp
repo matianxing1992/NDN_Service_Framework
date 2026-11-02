@@ -1,7 +1,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include <ndn-cxx/encoding/tlv.hpp>
 #include <algorithm>
 #include <cctype>
@@ -170,7 +172,7 @@ bool cpu(std::string value)
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return std::tolower(c); });
   return value == "cpu" || (value.size() >= 4 && value.substr(value.size() - 4) == "-cpu");
 }
-void certifyEndpoint(NativeTensorEndpointV3& endpoint)
+void certifyEndpointImpl(NativeTensorEndpointV3& endpoint)
 {
   if (endpoint.sourceKind == "ROLE")
     endpoint.manifestDigest = hash(NativeJson{{"requestId", endpoint.requestId}, {"attempt", endpoint.attempt},
@@ -183,6 +185,37 @@ void certifyEndpoint(NativeTensorEndpointV3& endpoint)
   value.erase("endpoint_digest"); value.erase("consumer_role");
   endpoint.endpointDigest = hash(value);
 }
+}
+
+void
+NativePlanProjectionBuilder::certifyEndpoint(NativeTensorEndpointV3& endpoint)
+{
+  certifyEndpointImpl(endpoint);
+}
+
+NativeTensorEndpointV3
+NativePlanProjectionBuilder::deriveGenerationEndpoint(
+  const NativeTensorEndpointV3& base, const NativeGenerationEndpointRangeV1& range,
+  std::uint64_t sequence)
+{
+  if (range.epochCount < 2 || range.epochCount > MAX_NATIVE_GENERATED_TOKENS + 1 ||
+      range.operationStride == 0 || range.operationStride > (1U << 20) ||
+      sequence >= range.epochCount ||
+      (base.sourceKind != "ROLE" && sequence != 0) ||
+      (base.sourceKind == "ROLE" && (base.namingOperationStride != range.operationStride ||
+        base.round >= range.operationStride || range.epochCount - 1 >
+          (std::numeric_limits<std::uint64_t>::max() - base.round) / range.operationStride)))
+    throw std::invalid_argument("generation endpoint range or sequence is invalid");
+  auto endpoint = base;
+  if (endpoint.sourceKind == "ROLE") {
+    endpoint.round += sequence * range.operationStride;
+    if (sequence != 0) {
+      endpoint.prefetchBundleBytes = 0;
+      endpoint.prefetchSegmentBytes = 0;
+    }
+  }
+  certifyEndpoint(endpoint);
+  return endpoint;
 }
 
 std::map<std::string, NativeRoleProjectionInputs> NativePlanProjectionBuilder::build(
@@ -507,7 +540,7 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
   for (auto& item : result) item.second.dataflow.terminalResponseOwner = item.first == terminals.front();
   detail::logNativeWorkPhase(core.requestId, cachedLayout ? "projection_layout_rebind" : "projection_layout_build", geometryTiming);
   const auto certifyTiming = detail::nativePhaseStarted();
-  certify(result, sealed);
+  certify(result, sealed, context.workStatistics);
   detail::logNativeWorkPhase(core.requestId, "projection_layout_certify", certifyTiming);
   if (context.layoutOwner) {
     if (newLayout) *context.layoutOwner = std::move(newLayout);
@@ -521,8 +554,10 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
 }
 
 void NativePlanProjectionBuilder::certify(std::map<std::string, NativeRoleProjectionInputs>& result,
-                                         const NativeSealedPlan& sealed)
+                                         const NativeSealedPlan& sealed,
+                                         const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
+  NativeWorkScope certifyWork(statistics, "projection-certify", NativeWorkKind::LOCAL);
   const auto& core = sealed.core;
   std::vector<NativeSelectionProjectionV3> validation;
   for (auto& item : result) {
@@ -561,6 +596,25 @@ void NativePlanProjectionBuilder::certify(std::map<std::string, NativeRoleProjec
     value.executionRole = item.second.executionRole;
     value.generationContract = core.generationContract;
     value.dataflow = dataflow; validation.push_back(std::move(value));
+  }
+  if (statistics) {
+    std::uint64_t records = 0, slots = 0, future = 0;
+    const auto count = [&] (const NativeRoleDataflowContractV3& flow) {
+      for (const auto* endpoints : {&flow.mayPublish, &flow.mustFetch}) {
+        records += endpoints->size();
+        slots += endpoints->capacity();
+        for (const auto& endpoint : *endpoints) {
+          if (core.generationContract.enabled && endpoint.sourceKind == "ROLE" &&
+              endpoint.round >= core.generationContract.streamingOperationStride)
+            ++future;
+        }
+      }
+    };
+    for (const auto& item : result) count(item.second.dataflow);
+    for (const auto& item : validation) count(item.dataflow);
+    statistics->observeMaximum("peak.projection.liveEndpointRecords", records);
+    statistics->observeMaximum("peak.projection.liveEndpointSlots", slots);
+    statistics->observeMaximum("peak.projection.liveFutureEndpointRecords", future);
   }
   validateNativeSelectionProjectionSetV3(validation);
 }

@@ -2,6 +2,12 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 
+#include <memory>
+
+namespace ndnsf::di {
+class NativeWorkStatistics;
+}
+
 namespace ndnsf::di::detail {
 
 // Deployment opt-in; the public encoder always retains INLINE wire parity.
@@ -13,7 +19,8 @@ NativeEncodedRequest encodeNativeRequestEnvelopeForRuntime(
   const std::vector<std::string>& candidateProviders,
   const std::optional<NativeCandidateArtifactInventoryV4>& candidateArtifactInventory,
   const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist,
-  std::string requesterIdentity, const std::string& optionsTransport);
+  std::string requesterIdentity, const std::string& optionsTransport,
+  const std::shared_ptr<NativeWorkStatistics>& statistics = {});
 
 // Returns true only for the explicit Selection generation mode. Throws for
 // an invalid native mode or a deployment that has not enabled that mode.

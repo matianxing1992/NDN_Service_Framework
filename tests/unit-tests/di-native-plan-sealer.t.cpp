@@ -88,9 +88,10 @@ OneRolePlan oneRolePlan(const std::string& tag, const std::string& ackDigest,
   qwen::NativeQwenLayerSplit splitter(
     {{0, 1}}, {{result.role, digest(tag + "-artifact")}}, {{result.role, 1}},
     {result.role}, {1});
-  const auto candidate =
+  auto candidate =
     splitter.enumerate(modelDescriptor, graphSnapshot,
                        NativeCandidateBudget{1, 100, 1}).front();
+  fixture::assignPlacementFixtureResourceBudgets(candidate);
   result.candidate = candidate;
   result.snapshot.model = modelDescriptor;
   result.snapshot.graph = graphSnapshot;

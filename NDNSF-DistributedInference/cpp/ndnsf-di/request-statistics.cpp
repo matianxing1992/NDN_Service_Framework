@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "request-work-statistics.hpp"
 
 namespace ndnsf::di {
 namespace {
@@ -81,6 +82,11 @@ nativeRequestStatisticsToJson(const NativeRequestStatistics& statistics)
       {"decodeStateHit", observation.decodeStateHit},
       {"conversationStateHit", observation.conversationStateHit}});
   }
+  const auto clockDomain = nativeWorkClockDomain();
+  result["clockDomain"] = clockDomain ? NativeJson(*clockDomain) : NativeJson(nullptr);
+  result["workStatistics"] = statistics.workStatistics
+    ? nativeParseJson(nativeWorkStatisticsToJson(statistics.workStatistics->snapshot()))
+    : NativeJson(nullptr);
   return result.dump();
 }
 

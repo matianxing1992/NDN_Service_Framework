@@ -37,6 +37,8 @@ struct InputFetchTiming
   std::shared_ptr<StageTransferObservation> transferObservation;
   std::chrono::steady_clock::time_point prefetchStartedAt;
   std::chrono::steady_clock::time_point fetchCompletedAt;
+  // Only the caller-supplied branch lacks the original fetch interval.
+  bool preSatisfied = false;
 };
 
 struct OutputPublishTiming
@@ -52,6 +54,7 @@ struct OutputPublishTiming
   bool publishDeferred = false;
   std::chrono::steady_clock::time_point outputReadyAt;
   std::chrono::steady_clock::time_point publishDoneAt;
+  std::chrono::steady_clock::time_point publishStartedAt;
 };
 
 struct ProviderRoleResult

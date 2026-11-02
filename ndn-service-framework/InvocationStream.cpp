@@ -3,6 +3,9 @@
 #include "HybridMessageCrypto.hpp"
 #include "NDNSFMessages.hpp"
 #include "ProducerDataNaming.hpp"
+#include "TimelineTrace.hpp"
+
+#include <ndn-cxx/util/scope.hpp>
 
 #include <algorithm>
 #include <iomanip>
@@ -1430,12 +1433,16 @@ makeEventNameWithDigest(const StreamBinding& binding, const StreamDigest& digest
 
 std::optional<ParsedInvocationEventName>
 parseEventNameWithDigest(const ndn::Name& name, const StreamBinding& binding,
-                         const StreamDigest& digest)
+                         const StreamDigest& digest, const ndn::Name* prefix = nullptr)
 {
   try {
     if (name.empty() || name[-1].type() != ndn::tlv::SequenceNumNameComponent) return std::nullopt;
     const auto cursor = name[-1].toSequenceNumber();
-    if (cursor == 0 || name != makeEventNameWithDigest(binding, digest, cursor)) return std::nullopt;
+    if (cursor == 0) return std::nullopt;
+    auto expected = prefix ? ndn::Name(*prefix).appendSequenceNumber(cursor)
+                           : makeEventNameWithDigest(binding, digest, cursor);
+    checkNamingNameSize(expected);
+    if (name != expected) return std::nullopt;
     ParsedInvocationEventName parsed;
     parsed.producer = binding.producer;
     parsed.requester = binding.requester;
@@ -1561,12 +1568,16 @@ StreamEventPublisher::StreamEventPublisher(
     throw std::invalid_argument("stream event key does not match commitment");
   }
   bindingDigest_ = computeStreamBindingDigest(binding_);
+  m_eventNamePrefix = makeEventNameWithDigest(binding_, bindingDigest_, 1).getPrefix(-1);
+  m_eventKeyId = "NDNSF-STREAM-V1-" + toLowerHex(ndn::span<const uint8_t>(
+    binding_.eventKeyCommitment.data(), binding_.eventKeyCommitment.size()));
+  m_streamEpochText = std::to_string(binding_.streamEpoch);
 }
 
 std::optional<ParsedInvocationEventName>
 StreamEventPublisher::parseEventName(const ndn::Name& name) const
 {
-  return parseEventNameWithDigest(name, binding_, bindingDigest_);
+  return parseEventNameWithDigest(name, binding_, bindingDigest_, &m_eventNamePrefix);
 }
 
 void
@@ -1584,12 +1595,36 @@ std::optional<PublishedStreamEvent>
 StreamEventPublisher::encodeAndSign(const InvocationEventMessage& event,
                                     uint64_t cursor) const
 {
+  const bool measured = phaseTimingEnvEnabled();
+  std::array<uint64_t, 6> marks{};
+  if (measured) marks[0] = timelineSteadyMicroseconds();
+  const auto report = ndn::make_scope_exit([&] {
+    if (!measured) return;
+    try {
+      constexpr std::array<const char*, 5> steps = {
+        "event_encode", "event_encrypt", "event_envelope", "event_sign", "event_wire"};
+      for (std::size_t i = 0; i < steps.size(); ++i) {
+        if (marks[i + 1] == 0) break;
+        logPhaseTiming("stream-publication", "eventMeasure", binding_.requestId,
+          {{"attempt", std::to_string(binding_.attemptEpoch)},
+           {"cursor", std::to_string(cursor)}, {"step", steps[i]},
+           {"duration_us", std::to_string(marks[i + 1] - marks[i])}});
+      }
+    }
+    catch (...) {
+      // Optional timing never changes event admission or error propagation.
+    }
+  });
   event.validate();
-  const auto dataName = makeEventNameWithDigest(binding_, bindingDigest_, cursor);
+  if (cursor == 0) throw std::invalid_argument("stream event cursor must be positive");
+  auto dataName = m_eventNamePrefix;
+  dataName.appendSequenceNumber(cursor);
+  checkNamingNameSize(dataName);
   const auto plaintextBlock = event.wireEncode();
   if (plaintextBlock.size() > options_.maxEventWireBytes) {
     return std::nullopt;
   }
+  if (measured) marks[1] = timelineSteadyMicroseconds();
   const auto& bindingDigest = bindingDigest_;
   StreamDigest eventKeyDigest{};
   std::copy(eventKey_.begin(), eventKey_.end(), eventKeyDigest.begin());
@@ -1601,13 +1636,11 @@ StreamEventPublisher::encodeAndSign(const InvocationEventMessage& event,
     eventKey_, ndn::span<const uint8_t>(nonce.data(), nonce.size()),
     ndn::span<const uint8_t>(plaintextBlock.data(), plaintextBlock.size()),
     ndn::span<const uint8_t>(associatedData.data(), associatedData.size()));
+  if (measured) marks[2] = timelineSteadyMicroseconds();
 
   HybridMessageEnvelope envelope;
-  envelope.setKeyId("NDNSF-STREAM-V1-" +
-                   toLowerHex(ndn::span<const uint8_t>(
-                     binding_.eventKeyCommitment.data(),
-                     binding_.eventKeyCommitment.size())));
-  envelope.setEpochId(std::to_string(binding_.streamEpoch));
+  envelope.setKeyId(m_eventKeyId);
+  envelope.setEpochId(m_streamEpochText);
   envelope.setMessageType("EVENT");
   envelope.setNonce(encrypted.nonce);
   envelope.setCipherText(encrypted.ciphertext);
@@ -1616,7 +1649,9 @@ StreamEventPublisher::encodeAndSign(const InvocationEventMessage& event,
   ndn::Data data(dataName);
   data.setFreshnessPeriod(ndn::time::milliseconds(options_.retentionMs));
   data.setContent(envelope.WireEncode());
+  if (measured) marks[3] = timelineSteadyMicroseconds();
   keyChain_.sign(data, signingInfo_);
+  if (measured) marks[4] = timelineSteadyMicroseconds();
   const auto wire = data.wireEncode();
 
   PublishedStreamEvent result;
@@ -1624,6 +1659,7 @@ StreamEventPublisher::encodeAndSign(const InvocationEventMessage& event,
   result.cursor = cursor;
   result.terminal = event.terminal;
   result.signedWire = ndn::Buffer(wire.begin(), wire.end());
+  if (measured) marks[5] = timelineSteadyMicroseconds();
   return result;
 }
 
@@ -1666,10 +1702,13 @@ std::optional<PublishedStreamEvent>
 StreamEventPublisher::makeAndRetain(InvocationEventMessage event,
                                     std::chrono::steady_clock::time_point deadline)
 {
+  const bool measured = phaseTimingEnvEnabled();
+  const auto admissionStarted = measured ? timelineSteadyMicroseconds() : 0;
   if (!admissionQueue_.waitPush(event, deadline)) {
     failProviderLocked();
     return std::nullopt;
   }
+  const auto admittedAt = measured ? timelineSteadyMicroseconds() : 0;
 
   const auto cursor = nextCursor_;
   // Cursor/transcript ownership is committed only after queue admission. If
@@ -1692,6 +1731,16 @@ StreamEventPublisher::makeAndRetain(InvocationEventMessage event,
     retained_[encoded->name.toUri()] = Retained{
       *encoded, std::chrono::steady_clock::now() +
         std::chrono::milliseconds(options_.retentionMs)};
+    if (measured) {
+      try {
+        logPhaseTiming("stream-publication", "eventMeasure", binding_.requestId,
+          {{"attempt", std::to_string(binding_.attemptEpoch)},
+           {"cursor", std::to_string(cursor)}, {"step", "admission_queue"},
+           {"duration_us", std::to_string(admittedAt - admissionStarted)}});
+      }
+      catch (...) {
+      }
+    }
     return encoded;
   }
   catch (const std::exception& error) {
@@ -1713,6 +1762,27 @@ std::optional<PublishedStreamEvent>
 StreamEventPublisher::publish(const ndn::Buffer& payload,
                               std::chrono::steady_clock::time_point deadline)
 {
+  const bool measured = phaseTimingEnvEnabled();
+  std::array<uint64_t, 5> marks{};
+  if (measured) marks[0] = timelineSteadyMicroseconds();
+  uint64_t measuredCursor = 0;
+  const auto report = ndn::make_scope_exit([&] {
+    if (!measured) return;
+    try {
+      constexpr std::array<const char*, 4> steps = {
+        "publisher_lock_prepare", "publisher_encode_retain", "publisher_emit", "publisher_release"};
+      for (std::size_t i = 0; i < steps.size(); ++i) {
+        if (marks[i + 1] == 0) break;
+        logPhaseTiming("stream-publication", "eventMeasure", binding_.requestId,
+          {{"attempt", std::to_string(binding_.attemptEpoch)},
+           {"cursor", std::to_string(measuredCursor)}, {"step", steps[i]},
+           {"duration_us", std::to_string(marks[i + 1] - marks[i])}});
+      }
+    }
+    catch (...) {
+      // Timing cannot change publisher state or exceptions.
+    }
+  });
   std::optional<PublishedStreamEvent> result;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1721,6 +1791,7 @@ StreamEventPublisher::publish(const ndn::Buffer& payload,
         nextCursor_ > options_.maxEvents) {
       return std::nullopt;
     }
+    if (measured) measuredCursor = nextCursor_;
     InvocationEventMessage event;
     event.bindingDigest = bindingDigest_;
     event.cursor = nextCursor_;
@@ -1733,17 +1804,21 @@ StreamEventPublisher::publish(const ndn::Buffer& payload,
       failProviderLocked();
       return std::nullopt;
     }
+    if (measured) marks[1] = timelineSteadyMicroseconds();
     result = makeAndRetain(std::move(event), deadline);
+    if (measured) marks[2] = timelineSteadyMicroseconds();
   }
   if (result) {
     bool emitted = true;
     try {
       emit(*result);
+      if (measured) marks[3] = timelineSteadyMicroseconds();
     }
     catch (const std::exception& error) {
       emitted = false;
     }
     releaseAdmission();
+    if (measured && marks[3] != 0) marks[4] = timelineSteadyMicroseconds();
     if (!emitted) {
       std::lock_guard<std::mutex> lock(mutex_);
       failProviderLocked();

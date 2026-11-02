@@ -1,7 +1,9 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/spec220/transfer-receipt.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include <array>
 #include <condition_variable>
 #include <cstring>
@@ -31,12 +33,18 @@ public:
       std::lock_guard<std::mutex> lock(mutex);
       fetchedEdges.push_back(edge);
     }
-    return std::async(std::launch::async, [this, name = edge.plannedDataName] {
+    return std::async(std::launch::async, [this, edge] {
       std::unique_lock<std::mutex> lock(mutex);
-      if (!changed.wait_for(lock, std::chrono::seconds(5), [&] { return objects.count(name); })) {
+      if (!changed.wait_for(lock, std::chrono::seconds(5), [&] {
+            return objects.count(edge.plannedDataName);
+          })) {
         throw std::runtime_error("epoch fixture fetch timeout");
       }
-      return objects.at(name);
+      auto received = objects.at(edge.plannedDataName);
+      if (observeTransfers) {
+        received.transferObservation = fixture::makeTransportReceipt(edge, received, "receive");
+      }
+      return received;
     });
   }
   void publishOutput(const std::string&, const DependencyEdge& edge, const TensorBundle& bundle) override
@@ -45,7 +53,12 @@ public:
     publishedEdges.push_back(edge);
     if (failFinalPublish && edge.plannedDataName == "/test/activation/1")
       throw std::runtime_error("fixture finalization publish failure");
-    if (!objects.emplace(edge.plannedDataName, bundle).second)
+    auto stored = bundle;
+    if (observeTransfers) {
+      stored.transferObservation = fixture::makeTransportReceipt(edge, stored, "send");
+      bundle.transferObservation = stored.transferObservation;
+    }
+    if (!objects.emplace(edge.plannedDataName, std::move(stored)).second)
       throw std::runtime_error("immutable epoch object overwritten");
     changed.notify_all();
   }
@@ -55,6 +68,7 @@ public:
   std::vector<DependencyEdge> fetchedEdges;
   std::vector<DependencyEdge> publishedEdges;
   bool failFinalPublish = false;
+  bool observeTransfers = false;
 };
 DecodeStateIdentityV1 identityFor(unsigned stage)
 {
@@ -89,6 +103,13 @@ BOOST_AUTO_TEST_CASE(Spec189TwoRoleFinalizationCarriesRealActivation)
   unsigned events = 0;
   auto io = std::make_shared<EpochIo>();
   io->failFinalPublish = failure == 4;
+  io->observeTransfers = failure == 0 || failure == 1 || failure == 2 || failure == 7;
+  std::array<std::shared_ptr<NativeWorkStatistics>, 2> work;
+  if (io->observeTransfers) {
+    work = {{makeNativeWorkStatistics(), makeNativeWorkStatistics()}};
+    BOOST_REQUIRE(work[0]);
+    BOOST_REQUIRE(work[1]);
+  }
   NativeProviderRuntime first(1), last(1);
   NativeExecutionPlan plan;
   plan.roles = {"/Stage/0", "/Stage/1"};
@@ -140,6 +161,7 @@ BOOST_AUTO_TEST_CASE(Spec189TwoRoleFinalizationCarriesRealActivation)
     }, executionEvidenceFromRunnerSpec(spec, RunnerKind::WiringOnly, "fixture", "cpu", "cpu0"));
     runtime.registerRunner(spec, runner);
     NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+    config.workStatistics = work[stage];
     config.sessionId = "session"; config.requestId = "request"; config.role = spec.role;
     config.localProvider = identity.providerIdentity; config.lineagePlanDigest = hash('0');
     config.maxEpochs = 1; config.checkpointFinalize = failure != 7;
@@ -204,6 +226,21 @@ BOOST_AUTO_TEST_CASE(Spec189TwoRoleFinalizationCarriesRealActivation)
     continue;
   }
   if (failure >= 1 && failure <= 4) {
+    if (io->observeTransfers) {
+      for (std::size_t stage = 0; stage < work.size(); ++stage) {
+        const auto snapshot = work[stage]->snapshot();
+        BOOST_REQUIRE(snapshot.complete);
+        BOOST_CHECK_EQUAL(snapshot.activeSpans, 0U);
+        const auto wait = snapshot.phases.find("role-runtime-worker-wait");
+        const auto completion = snapshot.phases.find("role-runtime-state-completion");
+        BOOST_REQUIRE(wait != snapshot.phases.end());
+        BOOST_REQUIRE(completion != snapshot.phases.end());
+        BOOST_CHECK(wait->second.kind == NativeWorkKind::WAIT);
+        BOOST_CHECK(completion->second.kind == NativeWorkKind::UNCLASSIFIED);
+        BOOST_CHECK_GE(wait->second.calls, calls[stage]);
+        BOOST_CHECK_EQUAL(completion->second.calls, wait->second.calls);
+      }
+    }
     BOOST_CHECK_EQUAL(events, 1);
     BOOST_CHECK(!lastResult);
     const auto failingStage = failure == 2 ? 1U : 0U;
@@ -238,6 +275,49 @@ BOOST_AUTO_TEST_CASE(Spec189TwoRoleFinalizationCarriesRealActivation)
   }
   BOOST_CHECK_EQUAL(events, 1);
   // Both coordinators have joined: no IO writer can race these observations.
+  if (io->observeTransfers) {
+    std::map<std::string, std::uint64_t> publications;
+    std::size_t fetches = 0;
+    for (std::size_t stage = 0; stage < work.size(); ++stage) {
+      const auto& owner = work[stage];
+      const auto snapshot = owner->snapshot();
+      BOOST_REQUIRE(snapshot.complete);
+      BOOST_CHECK_EQUAL(snapshot.activeSpans, 0U);
+      const auto wait = snapshot.phases.find("role-runtime-worker-wait");
+      const auto completion = snapshot.phases.find("role-runtime-state-completion");
+      BOOST_REQUIRE(wait != snapshot.phases.end());
+      BOOST_REQUIRE(completion != snapshot.phases.end());
+      BOOST_CHECK(wait->second.kind == NativeWorkKind::WAIT);
+      BOOST_CHECK(completion->second.kind == NativeWorkKind::UNCLASSIFIED);
+      BOOST_CHECK_EQUAL(wait->second.calls, calls[stage]);
+      BOOST_CHECK_EQUAL(completion->second.calls, calls[stage]);
+      for (const auto& transfer : snapshot.transfers) {
+        if (transfer.point == NativeTransferPoint::OUTPUT_PUBLICATION) {
+          BOOST_REQUIRE(publications.emplace(transfer.plannedDataName,
+                                             transfer.inferenceEpoch).second);
+          BOOST_CHECK_GT(transfer.outputReadySteadyNs, 0);
+          BOOST_CHECK_LE(transfer.outputReadySteadyNs, transfer.startedSteadyNs);
+          BOOST_CHECK_GE(transfer.finishedSteadyNs, transfer.startedSteadyNs);
+        }
+      }
+    }
+    BOOST_CHECK_EQUAL(publications.size(), io->publishedEdges.size());
+    BOOST_CHECK_EQUAL(publications.at("/test/activation/0"), 0U);
+    BOOST_CHECK_EQUAL(publications.at("/test/activation/1"), 1U);
+    BOOST_CHECK_EQUAL(publications.at("/test/feedback/1"), 1U);
+    for (const auto& owner : work) {
+      for (const auto& transfer : owner->snapshot().transfers) {
+        if (transfer.point == NativeTransferPoint::COORDINATOR_FETCH) {
+          ++fetches;
+          BOOST_REQUIRE(publications.count(transfer.plannedDataName));
+          BOOST_CHECK_EQUAL(transfer.inferenceEpoch, publications.at(transfer.plannedDataName));
+          BOOST_CHECK_GT(transfer.startedSteadyNs, 0);
+          BOOST_CHECK_GE(transfer.finishedSteadyNs, transfer.startedSteadyNs);
+        }
+      }
+    }
+    BOOST_CHECK_EQUAL(fetches, failure == 7 ? 2U : 3U);
+  }
   for (const auto* edges : {&io->fetchedEdges, &io->publishedEdges}) {
     unsigned feedbackCount = 0, pipelineCount = 0;
     for (const auto& edge : *edges) {

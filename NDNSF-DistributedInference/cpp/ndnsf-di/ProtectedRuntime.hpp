@@ -2,6 +2,7 @@
 #define NDNSF_DISTRIBUTED_INFERENCE_PROTECTED_RUNTIME_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 
 #include <cstdint>
 #include <condition_variable>
@@ -18,6 +19,7 @@
 namespace ndnsf::di {
 
 class ProtectedRuntime;
+class NativeWorkStatistics;
 
 enum class ProtectedRuntimeState
 {
@@ -97,6 +99,8 @@ struct ProtectedRuntimeBindingV1
   std::set<std::string> mustFetchEndpointDigests;
   std::map<std::string, std::string> mayPublishConsumerByEndpoint;
   std::map<std::string, std::string> mustFetchProducerByEndpoint;
+  // Request-owned immutable recipe, never an expanded or mutable epoch whitelist.
+  std::optional<NativeRoleDataflowContractV3> compactDataflow;
 
   void validate() const;
   bool exactlyMatches(const ProtectedRuntimeBindingV1& other) const noexcept;
@@ -130,6 +134,9 @@ struct ProtectedResidentIdentityV1
   std::string grantDigest;
   std::string fencingToken;
   std::uint64_t revocationSequence = 1;
+
+  // Optional physical graph/sidecar binding; logical revocation scope stays shared.
+  std::string assembledFileSetDigest;
 
   void validate() const;
   std::string canonical() const;
@@ -221,7 +228,8 @@ public:
 
   // Verify the fetched payload against the sealed reference and configured issuer.
   void verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
-                   std::uint64_t nowMs);
+                   std::uint64_t nowMs,
+                   const std::shared_ptr<NativeWorkStatistics>& statistics = {});
   void withContentKey(std::uint64_t nowMs,
                       const std::function<void(const std::vector<std::uint8_t>&)>& consume);
   // Binding structural consistency ONLY (no execution authority).
@@ -231,7 +239,9 @@ public:
                          const std::string& endpointDigest,
                          const std::string& producerRole,
                          const std::string& consumerRole,
-                         std::uint64_t nowMs);
+                         std::uint64_t nowMs,
+                         std::optional<std::uint64_t> round = std::nullopt,
+                         const std::shared_ptr<NativeWorkStatistics>& statistics = {});
   void registerHostPlaintextLease(std::string leaseId, Zeroizer zeroizer);
   void registerDevicePlaintextLease(std::string leaseId, Zeroizer zeroizer);
   void cancel(std::string reason);

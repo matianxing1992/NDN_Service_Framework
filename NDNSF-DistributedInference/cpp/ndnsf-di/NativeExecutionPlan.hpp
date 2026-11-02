@@ -194,6 +194,12 @@ struct NativeReadinessPredicateV3
   std::size_t quorum = 0;
 };
 
+struct NativeGenerationEndpointRangeV1
+{
+  std::uint64_t epochCount = 0;
+  std::uint64_t operationStride = 0;
+};
+
 struct NativeRoleDataflowContractV3
 {
   std::string requestId;
@@ -205,6 +211,8 @@ struct NativeRoleDataflowContractV3
   std::vector<NativeReadinessPredicateV3> waitFor;
   bool terminalResponseOwner = false;
   std::string dataflowDigest;
+  // Present only for a V3 invocation; endpoint vectors contain base slots.
+  std::optional<NativeGenerationEndpointRangeV1> endpointRange;
 };
 
 /** A Provider-local CPU or exactly-one-device binding for one role. */

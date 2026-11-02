@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include <algorithm>
 #include <limits>
@@ -118,6 +119,16 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
     }
   }
   auto projections = NativePlanProjectionBuilder::buildFromValidatedSealed(sealed, candidate, offers, context);
+  const auto endpointSlots = [&] (bool capacity) {
+    std::uint64_t count = 0;
+    for (const auto& projection : projections) {
+      const auto& flow = projection.second.dataflow;
+      count += capacity ? flow.mayPublish.capacity() + flow.mustFetch.capacity()
+                        : flow.mayPublish.size() + flow.mustFetch.size();
+    }
+    return count;
+  };
+  const auto baseEndpointSlots = context.workStatistics ? endpointSlots(false) : 0;
   for (const auto& role : projections) for (const auto& endpoint : role.second.dataflow.mayPublish) {
     // Feedback's existing signed operation index is installed below.
     if (endpoint.operation == "TOKEN_FEEDBACK") continue;
@@ -156,7 +167,7 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
   }
   for (auto& pair : groups) {
     auto& group = pair.second;
-    std::vector<GroupOperationV1> operations;
+    std::vector<GroupOperationRunV1> operations;
     const auto& generation = core.generationContract;
     const auto stride = generation.streamingOperationStride;
     if (group.operations.empty() || (generation.enabled && (!stride || stride < group.operations.size() ||
@@ -182,23 +193,38 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
       }
       if (generation.enabled && op.index >= stride)
         throw std::invalid_argument("group operation exceeds generation stride");
-      for (std::uint64_t epoch = 0; epoch < epochs; ++epoch)
-        operations.push_back({op.index + epoch * stride, op.kind,
+      operations.push_back({{op.index, op.kind,
           {op.producers.begin(), op.producers.end()}, {op.consumers.begin(), op.consumers.end()},
-          hash(NativeJson{{"source", op.source}, {"target", op.target}}), maxBytes, context.maxSegments});
+          hash(NativeJson{{"source", op.source}, {"target", op.target}}), maxBytes,
+          context.maxSegments}, epochs, epochs > 1 ? stride : 0});
     }
     std::vector<GroupMemberV1> members;
     for (const auto& provider : group.providers)
       members.push_back({provider, group.rank.at(provider), keys.offer(provider).observation().offerDigest, keys.endpoint(provider)});
     auto options = keys.options(); options.maxSegments = context.maxSegments; options.maxInflightBytes = maxBytes;
+    options.workStatistics = context.workStatistics;
     ProviderGroupCoordinator coordinator(options);
-    const auto capability = coordinator.createCapability(core.requestId, "attempt-" + std::to_string(core.attempt),
+    const auto capability = coordinator.createCapabilityFromRuns(core.requestId, "attempt-" + std::to_string(core.attempt),
       sealed.planDigest, pair.first, 1, std::move(members), std::move(operations), maxBytes,
       context.noProgressMs, core.expiresAtMs - context.nowMs);
     for (auto& projection : projections) {
       const auto& provider = core.assignment.providerByRole.at(projection.first);
       if (!group.rank.count(provider)) continue;
-      const auto wire = ProviderGroupCoordinator::encodeCapability(capability.projectForProvider(provider));
+      const auto wire = [&](const GroupCapabilityV1& projected) {
+        if (context.workStatistics) {
+          const auto futureRecords = [&](const GroupCapabilityV1& value) {
+            const auto count = value.permittedOperations.size();
+            return count > group.operations.size() ? count - group.operations.size() : 0;
+          };
+          const auto& owned = coordinator.capability();
+          context.workStatistics->observeMaximum("peak.groupCapability.explicitFutureRecords",
+            futureRecords(owned) + futureRecords(capability) + futureRecords(projected));
+          context.workStatistics->observeMaximum("peak.groupCapability.explicitAllocatedSlots",
+            owned.permittedOperations.capacity() + capability.permittedOperations.capacity() +
+              projected.permittedOperations.capacity());
+        }
+        return ProviderGroupCoordinator::encodeCapability(projected);
+      }(capability.projectForProvider(provider));
       if (wire.size() > (1U << 20)) throw std::invalid_argument("group capability exceeds Selection wire bound");
       projection.second.groupCapabilityV1 = ndn_service_framework::selectionGatedHex(wire);
     }
@@ -229,7 +255,20 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
     if (core.generationContract.enabled) {
       const auto epochs = core.generationContract.maxGeneratedTokens + 1;
       const auto stride = core.generationContract.streamingOperationStride;
-      const auto expand = [epochs, stride](std::vector<NativeTensorEndpointV3>& endpoints) {
+      if (context.compactGenerationEndpoints) {
+        const auto hasRole = [](const auto& endpoints) {
+          return std::any_of(endpoints.begin(), endpoints.end(), [](const auto& endpoint) {
+            return endpoint.sourceKind == "ROLE";
+          });
+        };
+        if (hasRole(projection.second.dataflow.mayPublish) ||
+            hasRole(projection.second.dataflow.mustFetch)) {
+          projection.second.dataflow.endpointRange =
+            NativeGenerationEndpointRangeV1{epochs, stride};
+        }
+        continue;
+      }
+      const auto expand = [&](std::vector<NativeTensorEndpointV3>& endpoints) {
         // Bound allocation before materializing the exact signed endpoint set.
         // Every serialized endpoint occupies more than 128 bytes. This is an
         // allocation bound, not proof of the complete Selection wire size.
@@ -256,12 +295,23 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
             endpoints.push_back(std::move(derived));
           }
         }
+        if (context.workStatistics) {
+          context.workStatistics->observeMaximum("peak.projection.liveEndpointRecords",
+            endpointSlots(false) + base.size());
+          context.workStatistics->observeMaximum("peak.projection.liveEndpointSlots",
+            endpointSlots(true) + base.capacity());
+        }
       };
       expand(projection.second.dataflow.mayPublish);
       expand(projection.second.dataflow.mustFetch);
     }
   }
-  NativePlanProjectionBuilder::certify(projections, sealed);
+  NativePlanProjectionBuilder::certify(projections, sealed, context.workStatistics);
+  if (context.workStatistics) {
+    context.workStatistics->observeMaximum("peak.projection.futureEndpointRecords",
+      endpointSlots(false) - baseEndpointSlots);
+    context.workStatistics->observeMaximum("peak.projection.allocatedEndpointSlots", endpointSlots(true));
+  }
   return projections;
 }
 } // namespace ndnsf::di

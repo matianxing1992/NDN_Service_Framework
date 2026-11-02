@@ -4,6 +4,8 @@
 
 namespace ndnsf::di {
 
+class NativeWorkStatistics;
+
 struct NativeDependencyProjectionBinding
 {
   std::string groupId, groupEpoch;
@@ -32,6 +34,8 @@ struct NativeProjectionContext
   std::map<std::size_t, NativeTensorPrefetchEstimate> tensorPrefetchByDependency;
   bool inlineFirstSegment = false;
   std::shared_ptr<const NativeStaticProjectionLayout>* layoutOwner = nullptr;
+  bool compactGenerationEndpoints = false;
+  std::shared_ptr<NativeWorkStatistics> workStatistics;
 };
 
 class NativePlanProjectionBuilder final
@@ -45,7 +49,13 @@ public:
     const std::vector<NativeAdmittedOfferV3>& offers, const NativeProjectionContext& context);
   /** Refresh all endpoint, readiness and dataflow bindings after authorized remapping. */
   static void certify(std::map<std::string, NativeRoleProjectionInputs>& projections,
-                      const NativeSealedPlan& sealed);
+                      const NativeSealedPlan& sealed,
+                      const std::shared_ptr<NativeWorkStatistics>& statistics = {});
+  static void certifyEndpoint(NativeTensorEndpointV3& endpoint);
+  static NativeTensorEndpointV3
+  deriveGenerationEndpoint(const NativeTensorEndpointV3& base,
+                           const NativeGenerationEndpointRangeV1& range,
+                           std::uint64_t sequence);
 
 private:
   friend class NativeGroupProjectionBuilder;

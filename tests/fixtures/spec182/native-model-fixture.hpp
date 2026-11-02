@@ -5,6 +5,22 @@
 
 namespace ndnsf::di::fixture {
 
+/** Explicit synthetic budgets for the placement/ranking fixtures only.
+ * These preserve their frozen offer-filter thresholds, not model estimates.
+ */
+inline void
+assignPlacementFixtureResourceBudgets(NativeSplitCandidate& candidate)
+{
+  for (auto& item : candidate.requirementsByRole) {
+    item.second.workspaceBytes = 1ULL << 30;
+    item.second.kvBytes = 0;
+    item.second.activationBytes = 512ULL << 20;
+    item.second.transientBytes = 512ULL << 20;
+    item.second.safetyMargin = 1.1;
+  }
+  candidate.candidateDigest = candidate.computedDigest();
+}
+
 // Explicit test capabilities only. Production inspection must supply its
 // actual adapter descriptor; no runtime fallback synthesizes these fields.
 inline NativeAdapterDescriptor modelAdapter(const std::string& name,

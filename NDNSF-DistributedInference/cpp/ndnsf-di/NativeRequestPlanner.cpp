@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
@@ -679,40 +680,6 @@ NativeJson snapshotAckTelemetry(
   return result;
 }
 
-void expandStateContractsFromCatalog(NativeSplitCandidate& candidate,
-                                     const NativeStateTensorMapping& mapping,
-                                     const NativeModelDescriptor& model)
-{
-  const auto expand = [&model] (const NativeStateTensorMapping::Roles& mapped,
-                                auto& declared) {
-    if (mapped.empty()) return;
-    for (const auto& item : mapped) {
-      const auto found = declared.find(item.first);
-      if (found == declared.end() || item.second.size() == found->second.size()) {
-        continue;
-      }
-      std::vector<NativeTensorContract> replacement;
-      for (const auto& semantic : item.second) {
-        for (const auto& name : semantic.second) {
-          replacement.push_back({name, model.precision,
-                                 {"batch", "heads", "sequence", "head-dimension"},
-                                 std::nullopt});
-        }
-      }
-      if (!replacement.empty()) {
-        found->second = std::move(replacement);
-      }
-    }
-  };
-  expand(mapping.inputs, candidate.roleStateInputsByRole);
-  expand(mapping.outputs, candidate.roleStateOutputsByRole);
-  // The mapped tensor names are part of SplitCandidate's authenticated
-  // identity. Recompute the digest before the catalog binder validates the
-  // candidate; otherwise a legitimate dynamic-past mapping is rejected as a
-  // foreign candidate after this local expansion.
-  candidate.candidateDigest = candidate.computedDigest();
-}
-
 void requireObject(const NativeJson& value, const char* field)
 {
   if (!value.is_object())
@@ -1295,6 +1262,8 @@ NativePlannedRequest planNativeRequestImpl(
   NativeOfferDecodeCache* decodeCache = nullptr)
 {
   const detail::ScopedFixedAssignmentWork fixedWork(control.requestId, "user-plan");
+  NativeWorkScope planningWork(control.workStatistics, "request-planning",
+                               NativeWorkKind::UNCLASSIFIED);
   const auto contextCopyTiming = planPhaseStarted();
   control.requireActive();
   runtime.budget.validate();
@@ -1393,7 +1362,8 @@ NativePlannedRequest planNativeRequestImpl(
     if (requestTransferProfile.is_null()) {
       for (const auto& profile : runtime.planningCache->requestTransferProfiles) {
         if (auto bound = bindNativeRequestTransferProfileV1(
-              profile, model.canonicalSourceDigest, encoded, conversationTurn)) {
+              profile, model.canonicalSourceDigest, encoded, conversationTurn,
+              control.workStatistics)) {
           requestTransferProfile = std::move(*bound);
           requestTransferProfile["request_contract_digest"] = encoded.requestContractDigest;
           break;
@@ -1549,9 +1519,13 @@ NativePlannedRequest planNativeRequestImpl(
       NativeRequestPreparation::validateRoles(model, candidate, roles);
     }
     else {
-      expandStateContractsFromCatalog(*candidateCopy, runtime.stateMapping, model.descriptor);
-      if (runtime.catalog)
-        *candidateCopy = runtime.catalog->bindStateContracts(model, candidate, runtime.stateMapping, control);
+      if (runtime.catalog) {
+        const bool sourceDefined = candidate.executionPlan.modelFamily == "qwen" ||
+                                   candidate.executionPlan.modelFamily == "llama";
+        *candidateCopy = runtime.catalog->bindStateContracts(model, candidate,
+          runtime.stateMapping, control,
+          sourceDefined ? NativeStateContractBinding::SOURCE : NativeStateContractBinding::DECLARED);
+      }
       roles = preparation.prepareRoles(model, candidate, control);
     }
     logPlanPhase(control.requestId, "candidate_role_copy", candidateCopyTiming);
@@ -1605,7 +1579,8 @@ NativePlannedRequest planNativeRequestImpl(
     // Pin one immutable cache candidate through the current publication and
     // sealing checks; replacement of the shared cache cannot change it.
     const auto previousFixedCore = runtime.fixedRoleAssignments
-      ? runtime.fixedRoleAssignments->placementCore(runtime.requesterIdentity, runtime.contract.serviceName)
+      ? runtime.fixedRoleAssignments->placementCore(runtime.requesterIdentity,
+          runtime.contract.serviceName, control.workStatistics)
       : std::shared_ptr<const NativeFixedPlacementCoreV1>{};
     if (previousFixedCore)
       validateNativeRolePlacementWithFixedCore(proposal, roles, *previousFixedCore, offers, epochMs());
@@ -1779,7 +1754,7 @@ NativePlannedRequest planNativeRequestImpl(
       const auto& previous = sealing.previousFixedCore;
       core = NativePlanSealer::shareFixedCore(std::move(core), previous);
       runtime.fixedRoleAssignments->rememberPlacementCore(runtime.requesterIdentity, runtime.contract.serviceName,
-        core.fixedCoreOwner);
+        core.fixedCoreOwner, control.workStatistics);
       logRuntimeEvidence("NDNSF_DI_FIXED_CORE_OWNER requestId=" + control.requestId +
         " reused=" + (previous == core.fixedCoreOwner ? "1" : "0") +
         " sealed_from_cache=" + (core.reusedFixedCore ? "1" : "0"));
@@ -1831,7 +1806,13 @@ NativePlannedRequest planNativeRequestImpl(
     }
     std::vector<NativeGrantBinding> grants;
     NativeGrantControl grantControl{std::chrono::system_clock::time_point(
-      std::chrono::milliseconds(core.expiresAtMs)), cancelled};
+      std::chrono::milliseconds(core.expiresAtMs)), cancelled, control.workStatistics};
+    if (control.workStatistics) {
+      control.workStatistics->addCount("grant.leaseHitRoles",
+                                       reusedGrantLease ? execution.roles.size() : 0);
+      control.workStatistics->addCount("grant.leaseMissRoles",
+                                       reusedGrantLease ? 0 : execution.roles.size());
+    }
     phaseStarted = planPhaseStarted();
     if (reusedGrantLease) {
       grants = grantLease->grants;
@@ -1870,7 +1851,10 @@ NativePlannedRequest planNativeRequestImpl(
       std::exception_ptr firstGrantError;
       for (std::size_t index = 0; index < grantFutures.size(); ++index) {
         try {
+      NativeWorkScope grantWait(control.workStatistics, "request-grant-join",
+                                NativeWorkKind::WAIT);
           grants[index] = grantFutures[index].get();
+      grantWait.finish();
         }
         catch (...) {
           if (!firstGrantError)
@@ -1930,6 +1914,9 @@ NativePlannedRequest planNativeRequestImpl(
       }
     }
     std::map<std::string, NativeRoleProjectionInputs> projections;
+    projection.compactGenerationEndpoints = static_cast<bool>(runtime.fixedRoleSourcePublisher);
+    projection.workStatistics = control.workStatistics;
+    NativeWorkScope projectionWork(control.workStatistics, "projection-build", NativeWorkKind::LOCAL);
     phaseStarted = planPhaseStarted();
     if (execution.dependencies.empty())
       projections = NativePlanProjectionBuilder::build(ownedSealed, candidate, offers, projection);
@@ -1940,9 +1927,22 @@ NativePlannedRequest planNativeRequestImpl(
       NativeGroupKeyAdmission keys(admission, selectedAcks, context, epochMs());
       projections = NativeGroupProjectionBuilder::build(ownedSealed, candidate, keys, projection);
     }
+    projectionWork.finish();
+    if (control.workStatistics) {
+      for (const auto& item : projections) {
+        control.workStatistics->addCount("projection.publishEndpointSlots",
+                                         item.second.dataflow.mayPublish.size());
+        control.workStatistics->addCount("projection.fetchEndpointSlots",
+                                         item.second.dataflow.mustFetch.size());
+        control.workStatistics->addCount("projection.capabilityHexEncodedBytes",
+                                         item.second.groupCapabilityV1.size());
+      }
+    }
     logPlanPhase(control.requestId, "projection_build", phaseStarted);
     result.grantLease = grantLease;
     if (conversationTurn) {
+      NativeWorkScope bindingWork(control.workStatistics, "conversation-projection-bind",
+                                  NativeWorkKind::LOCAL);
       phaseStarted = planPhaseStarted();
       bindConversationProjections(projections, result.sealed, *conversationTurn,
         encoded.requestContractDigest, runtime.contract.serviceName,
@@ -1955,6 +1955,8 @@ NativePlannedRequest planNativeRequestImpl(
     plan.timeoutMs = static_cast<int>(options.timeoutMs);
     std::vector<ndn_service_framework::SelectedParticipant> selected;
     std::map<std::string, std::vector<std::uint8_t>> roleWires;
+    NativeWorkScope selectionWork(control.workStatistics, "selection-build",
+                                  NativeWorkKind::LOCAL);
     if (!runtime.fixedRoleSourcePublisher) {
       roleWires = NativePlanSealer::projectAndEncodeAll(ownedSealed, projections);
     }
@@ -1965,33 +1967,49 @@ NativePlannedRequest planNativeRequestImpl(
         control.requireActive();
         const auto& provider = core.assignment.providerByRole.at(role);
         auto fixed = runtime.fixedRoleAssignments->findMatching(
-          runtime.requesterIdentity, runtime.contract.serviceName, provider, core.roleContracts().at(role));
+          runtime.requesterIdentity, runtime.contract.serviceName, provider,
+          core.roleContracts().at(role), control.workStatistics);
         auto invocation = NativePlanSealer::projectInvocation(
           ownedSealed, provider, projections.at(role), fixed.get());
         if (fixed && !fixed->matchesExecutionTemplate(invocation)) fixed.reset();
         const bool hit = bool(fixed);
         if (!fixed) {
           fixed = runtime.fixedRoleAssignments->remember(runtime.requesterIdentity,
-            runtime.contract.serviceName, nativeFixedRoleAssignmentV1FromProjection(invocation));
+            runtime.contract.serviceName, nativeFixedRoleAssignmentV1FromProjection(invocation),
+            control.workStatistics);
           invocation.fixedRoleOwner = fixed->roleOwner();
           invocation.fixedExecutionTemplateOwner = fixed->executionTemplate();
           invocation.selectedRole = {};
           invocation.assembly = {};
         }
         auto source = runtime.fixedRoleAssignments->source(
-          runtime.requesterIdentity, runtime.contract.serviceName, *fixed);
+          runtime.requesterIdentity, runtime.contract.serviceName, *fixed, control.workStatistics);
+        if (control.workStatistics) {
+          control.workStatistics->addCount(hit ? "fixedRole.cacheHits" : "fixedRole.cacheMisses", 1);
+          control.workStatistics->addCount(source ? "fixedSource.cacheHits" : "fixedSource.cacheMisses", 1);
+        }
         if (!source) {
+          NativeWorkScope publicationWork(control.workStatistics, "fixed-source-publication",
+                                          NativeWorkKind::UNCLASSIFIED);
           auto published = runtime.fixedRoleSourcePublisher(invocation, *fixed, control);
+          publicationWork.finish();
           control.requireActive();
           source = runtime.fixedRoleAssignments->rememberSource(runtime.requesterIdentity,
-            runtime.contract.serviceName, *fixed, std::move(published));
+            runtime.contract.serviceName, *fixed, std::move(published), control.workStatistics);
         }
-        const auto wire = nativeSelectionInvocationV2ToJson(invocation, *fixed, source.get());
+        NativeWorkScope encodingWork(control.workStatistics, "selection-codec-encode",
+                                     NativeWorkKind::LOCAL);
+        const auto wire = invocation.dataflow.endpointRange ?
+          nativeSelectionInvocationV3ToJson(invocation, *fixed, source.get()) :
+          nativeSelectionInvocationV2ToJson(invocation, *fixed, source.get());
+        encodingWork.finish();
         if (wire.size() > (4U << 20))
           throw std::invalid_argument("invocation exceeds external assignment wire limit");
         roleWires.emplace(role, std::vector<std::uint8_t>(wire.begin(), wire.end()));
         result.fixedRoleSources.push_back(source);
         result.fixedAssignments.push_back(fixed);
+        NativeWorkScope evidenceWork(control.workStatistics, "runtime-evidence",
+                                     NativeWorkKind::UNCLASSIFIED);
         logRuntimeEvidence("NDNSF_DI_FIXED_ROLE_USER requestId=" + control.requestId +
           " role=" + role + " cacheHit=" + (hit ? "1" : "0") + " digest=" + fixed->digest());
       }
@@ -2006,6 +2024,11 @@ NativePlannedRequest planNativeRequestImpl(
       spec.role = role; spec.service = ndn::Name(runtime.contract.serviceName);
       spec.requiredArtifact = ndn::Name(core.artifacts.artifactNameByRole.at(role));
       spec.assignmentPayload.swap(roleWires.at(role));
+      if (control.workStatistics) {
+        control.workStatistics->addCount("selection.assignmentPlaintextBytes",
+                                         spec.assignmentPayload.size());
+        control.workStatistics->addCount("selection.assignmentObjects", 1);
+      }
       spec.terminalResponseOwner = projections.at(role).dataflow.terminalResponseOwner;
       if (spec.terminalResponseOwner) result.terminalProvider = provider;
       ndn_service_framework::SelectedParticipant participant;
@@ -2017,6 +2040,7 @@ NativePlannedRequest planNativeRequestImpl(
       plan.roles.push_back(std::move(spec));
       selected.push_back(std::move(participant));
     }
+    selectionWork.finish();
     logPlanPhase(control.requestId, "selection_roles_build", phaseStarted);
     phaseStarted = planPhaseStarted();
     std::map<std::string, std::set<std::string>> scopes;
@@ -2065,8 +2089,11 @@ std::optional<NativeJson> bindNativeRequestTransferProfileV1(
 
 std::optional<NativeJson> bindNativeRequestTransferProfileV1(
   const NativeJson& profile, const std::string& sourceDigest,
-  const NativeEncodedRequest& request, const NativeConversationTurn* turn)
+  const NativeEncodedRequest& request, const NativeConversationTurn* turn,
+  const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
+  NativeWorkScope bindWork(workStatistics, "request-profile-bind",
+                           NativeWorkKind::LOCAL);
   try {
     if (request.recovery || !isDigestValue(sourceDigest) ||
         !isDigestValue(request.logicalInputDigest) ||
@@ -2119,7 +2146,7 @@ std::optional<NativeJson> bindNativeRequestTransferProfileV1(
     if (payload.size() > (16ULL << 20) ||
         nativePlanningDigest(payload.data(), payload.size()) != request.logicalInputDigest)
       return std::nullopt;
-    const auto tensors = decodeTensorBundle(payload);
+    const auto tensors = decodeTensorBundle(payload, workStatistics);
     std::map<std::string, std::int64_t> values;
     for (auto it = constants.begin(); it != constants.end(); ++it) {
       if (it.key().empty() || it.key().size() > 128 || !it.value().is_number_integer())

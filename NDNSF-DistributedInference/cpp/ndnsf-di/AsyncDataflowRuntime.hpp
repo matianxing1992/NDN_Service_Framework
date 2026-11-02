@@ -153,6 +153,8 @@ struct RoleSpec
   // Request-scoped inference epoch. Epoch zero is prefill; every later epoch
   // must consume the Provider-owned state committed by its direct predecessor.
   std::uint64_t inferenceEpoch = 0;
+  // Observation owner only; never serialized or included in execution/cache identity.
+  std::shared_ptr<class NativeWorkStatistics> workStatistics;
   // Canonical model-token lineage shared by every role in this inference
   // epoch. The worker binds edge-local producer/consumer fields before
   // publishing it inside the encrypted dependency payload.
@@ -186,6 +188,8 @@ struct RoleSpec
 struct RoleExecutionContext
 {
   using StreamEventSink = std::function<bool(const std::vector<std::uint8_t>&)>;
+
+  std::shared_ptr<class NativeWorkStatistics> workStatistics;
 
   std::string sessionId;
   std::string role;

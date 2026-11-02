@@ -51,6 +51,7 @@ struct NativeEpochCoordinatorConfig
   NativeExecutionPlan plan;
   NativeProviderAssignment assignment;
   std::shared_ptr<DependencyIo> io;
+  std::shared_ptr<class NativeWorkStatistics> workStatistics;
   std::string sessionId;
   std::string requestId;
   std::uint64_t attemptEpoch = 1;

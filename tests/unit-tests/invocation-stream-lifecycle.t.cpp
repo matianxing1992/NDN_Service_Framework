@@ -332,6 +332,8 @@ BOOST_AUTO_TEST_CASE(StreamEventPublisherEncryptsSignsRetainsAndRepublishesExact
     payload, std::chrono::steady_clock::now() + std::chrono::seconds(1));
   BOOST_REQUIRE(first);
   BOOST_CHECK_EQUAL(first->cursor, 1);
+  BOOST_CHECK(first->name == makeInvocationEventName(binding, first->cursor));
+  BOOST_REQUIRE(publisher.parseEventName(first->name));
   BOOST_CHECK_EQUAL(publisher.nextCursor(), 2);
   BOOST_CHECK_EQUAL(publisher.retainedCount(), 1);
   BOOST_CHECK(publisher.highWaterMark() <= options.publisherQueueCapacity);
@@ -373,6 +375,7 @@ BOOST_AUTO_TEST_CASE(StreamEventPublisherEncryptsSignsRetainsAndRepublishesExact
     std::chrono::steady_clock::now() + std::chrono::seconds(1));
   BOOST_REQUIRE(completion);
   BOOST_CHECK_EQUAL(completion->finalCursor, 2);
+  BOOST_CHECK(completion->endEventName == makeInvocationEventName(binding, 2));
   BOOST_CHECK_EQUAL(published.size(), 3); // first publish, exact retry, End
   BOOST_CHECK(lifecycle->terminalAuthority()->state() == StreamTerminalState::Completed);
   BOOST_CHECK(!publisher.finish(

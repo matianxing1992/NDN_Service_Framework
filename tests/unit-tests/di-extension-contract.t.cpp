@@ -278,6 +278,7 @@ BOOST_AUTO_TEST_CASE(CooperativePlannerInvokesStrategyAndStopsBeforeSelection)
   descriptor.graphDigest = oracle.at("graph_digest");
   graph.graphDigest = descriptor.graphDigest;
   auto candidate = nativeSplitter.enumerate(descriptor, graph, {1, 1000, 1}).front();
+  fixture::assignPlacementFixtureResourceBudgets(candidate);
   candidate.splitter = {"test-cooperative-splitter", "1", digest("test-cooperative-splitter"), true};
   candidate.candidateDigest = candidate.computedDigest();
   const auto strictBudgetCandidate = candidate;

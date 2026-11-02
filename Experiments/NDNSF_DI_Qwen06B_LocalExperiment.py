@@ -35,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "Experiments") not in sys.path:
     sys.path.insert(0, str(ROOT / "Experiments"))
 from native_resource_guard import run_guarded, validate_limits
+from native_model_metadata import manifest_quantization_subtype
 from native_placement_evidence import (
     collect_native_placement_evidence, native_placement_request_ids,
 )
@@ -79,8 +80,7 @@ def normalized_model_identity(manifest: dict[str, Any]) -> dict[str, str]:
         "dtype": str(manifest.get("dtype", "")),
         "modelFormat": str(manifest.get("modelFormat", "onnx")),
         "quantization": quantization,
-        "quantizationSubtype": (
-            "weight_only_int8" if quantization == "int8" else quantization),
+        "quantizationSubtype": manifest_quantization_subtype(manifest),
     }
 
 
@@ -863,6 +863,9 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
         "transferProfileAnalyser": {
             "path": str(ROOT / "Experiments/native_qwen_transfer_profile.py"),
             "sha256": sha256_file(ROOT / "Experiments/native_qwen_transfer_profile.py")},
+        "modelMetadata": {
+            "path": str(ROOT / "Experiments/native_model_metadata.py"),
+            "sha256": sha256_file(ROOT / "Experiments/native_model_metadata.py")},
         "resourceGuard": {"sha256": sha256_file(ROOT / "Experiments/native_resource_guard.py"),
                           "limits": validate_limits(profile.get("resourceLimits"))},
         "profile": {"path": str(args.profile.resolve()), "sha256": profile_sha,

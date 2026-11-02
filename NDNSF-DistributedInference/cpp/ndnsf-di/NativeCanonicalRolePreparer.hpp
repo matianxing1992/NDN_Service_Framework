@@ -4,6 +4,9 @@
 
 namespace ndnsf::di {
 
+/** Explicitly choose declared semantic types or the inspected source boundary. */
+enum class NativeStateContractBinding { DECLARED, SOURCE };
+
 struct NativeRoleRecipeProfile
 {
   std::string artifactProfileDigest, assemblerDescriptorDigest, backendAbi;
@@ -31,10 +34,14 @@ public:
   NativeCanonicalRolePreparer(NativeInspectedModel model, NativeOnnxGraphInspection sourceGraph,
     NativeRoleRecipeProfile profile, const NativeAssemblyControl& control, NodeMap mapping = {});
   NativeRequestPreparation::RolePort rolePort() const;
-  // Before candidate selection only: returns a new, fully digested candidate.
+  /** Before candidate selection only: returns a new, fully digested candidate.
+   * DECLARED preserves semantic cover/type checks. SOURCE uses the explicit
+   * mapping and checked boundary types without trusting abstract placeholders.
+   */
   NativeSplitCandidate bindStateContracts(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
-    const NativeRequestControl& control) const;
+    const NativeRequestControl& control,
+    NativeStateContractBinding binding = NativeStateContractBinding::DECLARED) const;
   std::vector<NativeSelectionRoleV3> prepare(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeRequestControl& control) const;
 

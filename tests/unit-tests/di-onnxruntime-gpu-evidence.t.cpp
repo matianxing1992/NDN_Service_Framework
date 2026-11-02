@@ -2,9 +2,11 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-runtime-graph-metadata.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 
 #include <onnx/onnx_pb.h>
 
@@ -20,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -273,6 +276,329 @@ makeCoordinatorMetadataSpec(const std::filesystem::path& path,
 
 BOOST_AUTO_TEST_SUITE(DiOnnxRuntimeGpuEvidence)
 
+BOOST_AUTO_TEST_CASE(GroupedAttentionWarmupUsesGraphLengthWithoutChangingRequests)
+{
+  GraphMetadataFixture fixture;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(18);
+  auto* contrib = model.add_opset_import();
+  contrib->set_domain("com.microsoft");
+  contrib->set_version(1);
+  auto* graph = model.mutable_graph();
+  graph->set_name("grouped-attention-warmup");
+  const auto addValue = [] (onnx::ValueInfoProto* value, const std::string& name,
+                           int type, std::initializer_list<std::int64_t> shape) {
+    value->set_name(name);
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(type);
+    auto* dimensions = tensor->mutable_shape();
+    for (auto size : shape) dimensions->add_dim()->set_dim_value(size);
+  };
+  for (const auto* name : {"query", "key", "value"})
+    addValue(graph->add_input(), name, onnx::TensorProto::FLOAT, {1, 1, 8});
+  addValue(graph->add_input(), "lengths", onnx::TensorProto::INT32, {1});
+  addValue(graph->add_input(), "total", onnx::TensorProto::INT32, {});
+  addValue(graph->add_output(), "output", onnx::TensorProto::FLOAT, {1, 1, 8});
+  addValue(graph->add_output(), "present_key", onnx::TensorProto::FLOAT, {1, 1, 1, 8});
+  addValue(graph->add_output(), "present_value", onnx::TensorProto::FLOAT, {1, 1, 1, 8});
+  auto* attention = graph->add_node();
+  attention->set_name("attention");
+  attention->set_domain("com.microsoft");
+  attention->set_op_type("GroupQueryAttention");
+  for (const auto* name : {"query", "key", "value", "", "", "lengths", "total"})
+    attention->add_input(name);
+  for (const auto* name : {"output", "present_key", "present_value"})
+    attention->add_output(name);
+  for (const auto* name : {"num_heads", "kv_num_heads"}) {
+    auto* attribute = attention->add_attribute();
+    attribute->set_name(name);
+    attribute->set_type(onnx::AttributeProto::INT);
+    attribute->set_i(1);
+  }
+  NativeModelRunnerSpec spec;
+  spec.role = "/Grouped/Attention";
+  spec.backend = "onnxruntime-cpu";
+  spec.path = fixture.write(model);
+  spec.metadata = {{"inputNames", "query,key,value,lengths,total"},
+    {"outputNames", "output,present_key,present_value"},
+    {"forceOutputBundle", "true"}, {"outputBundleScope", "gqa"}};
+  const auto facts = detail::inspectOnnxRuntimeGraphMetadata(spec.path, false);
+  BOOST_CHECK(facts.attentionWarmupLengthInputs == std::set<std::string>({"total"}));
+  BOOST_CHECK(facts.hostMetadataNodes.empty());
+  const auto strict = detail::inspectOnnxRuntimeGraphMetadata(spec.path);
+  BOOST_CHECK(strict.attentionWarmupLengthInputs == facts.attentionWarmupLengthInputs);
+  BOOST_CHECK(strict.hostMetadataNodes.empty());
+  {
+    auto unsupported = model;
+    unsupported.mutable_opset_import(1)->set_version(2);
+    GraphMetadataFixture wrongVersion;
+    BOOST_CHECK(detail::inspectOnnxRuntimeGraphMetadata(wrongVersion.write(unsupported), false)
+                  .attentionWarmupLengthInputs.empty());
+    unsupported = model;
+    unsupported.mutable_graph()->mutable_node(0)->set_domain("foreign");
+    GraphMetadataFixture wrongDomain;
+    BOOST_CHECK(detail::inspectOnnxRuntimeGraphMetadata(wrongDomain.write(unsupported), false)
+                  .attentionWarmupLengthInputs.empty());
+    unsupported = model;
+    auto* function = unsupported.add_functions();
+    function->set_domain("com.microsoft");
+    function->set_name("GroupQueryAttention");
+    GraphMetadataFixture localFunction;
+    BOOST_CHECK(detail::inspectOnnxRuntimeGraphMetadata(localFunction.write(unsupported), false)
+                  .attentionWarmupLengthInputs.empty());
+  }
+  OnnxRuntimeModelRunner runner(spec);
+  std::vector<NamedTensor> inputs{
+    {"query", TensorElementType::Float32, {1, 1, 8}, float32Payload({0, 0, 0, 0, 0, 0, 0, 0})},
+    {"key", TensorElementType::Float32, {1, 1, 8}, float32Payload({0, 0, 0, 0, 0, 0, 0, 0})},
+    {"value", TensorElementType::Float32, {1, 1, 8}, float32Payload({1, 2, 3, 4, 5, 6, 7, 8})},
+    {"lengths", TensorElementType::Int32, {1}, {0, 0, 0, 0}},
+    {"total", TensorElementType::Int32, {}, {1, 0, 0, 0}}};
+  RoleExecutionContext context;
+  context.sessionId = "grouped-attention";
+  context.role = spec.role;
+  context.inputsByScope.emplace("activation", makeEncodedTensorBundle("activation", inputs));
+  const auto output = runner.run(context);
+  const auto tensors = decodeTensorBundle(output.at("gqa").payload);
+  BOOST_CHECK(findTensor(tensors, "output").payload == inputs[2].payload);
+  inputs.back().payload = {0, 0, 0, 0};
+  context.inputsByScope.at("activation") = makeEncodedTensorBundle("activation", inputs);
+  BOOST_CHECK_THROW(runner.run(context), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(Int32AuxiliaryTensorsKeepExactValuesAcrossCpuExecution)
+{
+  GraphMetadataFixture fixture;
+  auto model = makeShapeMetadataModel();
+  auto& graph = *model.mutable_graph();
+  graph.clear_node();
+  graph.mutable_input(0)->mutable_type()->mutable_tensor_type()->set_elem_type(
+    onnx::TensorProto::INT32);
+  graph.mutable_output(0)->mutable_type()->mutable_tensor_type()->set_elem_type(
+    onnx::TensorProto::INT32);
+  auto* identity = graph.add_node();
+  identity->set_op_type("Identity");
+  identity->add_input("input");
+  identity->add_output("output");
+  NativeModelRunnerSpec spec;
+  spec.role = "/Int32/Auxiliary";
+  spec.backend = "onnxruntime-cpu";
+  spec.path = fixture.write(model);
+  spec.metadata = {{"inputNames", "input"}, {"outputNames", "output"},
+    {"forceOutputBundle", "true"}, {"outputBundleScope", "int32-output"}};
+  OnnxRuntimeModelRunner runner(spec);
+  // Independent little-endian INT32_MIN, -1, 0, INT32_MAX values.
+  const std::vector<std::uint8_t> values{
+    0, 0, 0, 128, 255, 255, 255, 255, 0, 0, 0, 0, 255, 255, 255, 127};
+  const auto int32Type = static_cast<TensorElementType>(6);
+  RoleExecutionContext context;
+  context.sessionId = "int32-auxiliary";
+  context.role = spec.role;
+  context.inputsByScope.emplace("activation", makeEncodedTensorBundle("activation", {
+    {"input", int32Type, {2, 2}, values}}));
+  const auto outputs = runner.run(context);
+  const auto tensors = decodeTensorBundle(outputs.at("int32-output").payload);
+  BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+  BOOST_CHECK_EQUAL(tensors[0].name, "output");
+  BOOST_CHECK_EQUAL(static_cast<std::uint32_t>(tensors[0].elementType), 6U);
+  BOOST_CHECK(tensors[0].shape == std::vector<std::int64_t>({2, 2}));
+  BOOST_CHECK(tensors[0].payload == values);
+  BOOST_CHECK_EQUAL(tensorElementByteSize(int32Type), 4U);
+  auto malformed = values;
+  malformed.pop_back();
+  BOOST_CHECK_THROW(encodeTensorBundle({{"input", int32Type, {2, 2}, malformed}}),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(encodeTensorBundle({{"input", static_cast<TensorElementType>(7),
+                                        {2, 2}, values}}), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NBitsEightBitCpuMatchesIndependentBlockDequantization)
+{
+  GraphMetadataFixture fixture;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(13);
+  auto* contrib = model.add_opset_import();
+  contrib->set_domain("com.microsoft");
+  contrib->set_version(1);
+  auto& graph = *model.mutable_graph();
+  graph.set_name("spec220-q8-layout");
+  const auto addValue = [] (auto* value, const char* name, std::int64_t columns) {
+    value->set_name(name);
+    auto* type = value->mutable_type()->mutable_tensor_type();
+    type->set_elem_type(onnx::TensorProto::FLOAT);
+    type->mutable_shape()->add_dim()->set_dim_value(1);
+    type->mutable_shape()->add_dim()->set_dim_value(columns);
+  };
+  addValue(graph.add_input(), "input", 35);
+  addValue(graph.add_output(), "output", 3);
+  auto* node = graph.add_node();
+  node->set_domain("com.microsoft");
+  node->set_op_type("MatMulNBits");
+  for (const char* input : {"input", "B", "scales"}) node->add_input(input);
+  node->add_output("output");
+  for (const auto& field : std::map<std::string, int>{
+         {"K", 35}, {"N", 3}, {"bits", 8}, {"block_size", 32}, {"accuracy_level", 0}}) {
+    auto* attr = node->add_attribute();
+    attr->set_name(field.first);
+    attr->set_type(onnx::AttributeProto::INT);
+    attr->set_i(field.second);
+  }
+  // N columns, two K blocks, 32 bytes per block. Tail lanes dequantize to zero.
+  std::vector<std::uint8_t> packed(3 * 2 * 32, 128);
+  const std::vector<float> scales{0.125f, 0.25f, 0.5f, 0.125f, 1.0f, 1.0f};
+  const auto encodeFloats = [] (const std::vector<float>& values) {
+    std::vector<std::uint8_t> bytes;
+    for (const float value : values) {
+      const auto item = float32Payload({value});
+      bytes.insert(bytes.end(), item.begin(), item.end());
+    }
+    return bytes;
+  };
+  for (std::size_t n = 0; n < 3; ++n) {
+    for (std::size_t k = 0; k < 35; ++k) {
+      const int value = n == 0 ? static_cast<int>(k % 9) - 4 :
+        (n == 1 ? 2 * (static_cast<int>(k % 7) - 3) : 0);
+      packed[n * 64 + k] = static_cast<std::uint8_t>(value + 128);
+    }
+  }
+  auto* weight = graph.add_initializer();
+  weight->set_name("B");
+  weight->set_data_type(onnx::TensorProto::UINT8);
+  for (const int dim : {3, 2, 32}) weight->add_dims(dim);
+  weight->set_raw_data(packed.data(), packed.size());
+  auto* scale = graph.add_initializer();
+  scale->set_name("scales");
+  scale->set_data_type(onnx::TensorProto::FLOAT);
+  scale->add_dims(3);
+  scale->add_dims(2);
+  const auto scaleBytes = encodeFloats(scales);
+  scale->set_raw_data(scaleBytes.data(), scaleBytes.size());
+  NativeModelRunnerSpec spec;
+  spec.role = "/NBits/Cpu";
+  spec.backend = "onnxruntime-cpu";
+  spec.metadata = {{"inputNames", "input"}, {"outputNames", "output"}, {"outputScope", "raw"}};
+  spec.path = fixture.write(model);
+  {
+    OnnxRuntimeModelRunner runner(spec);
+    for (const float factor : {1.0f, -2.0f}) {
+      std::vector<float> input(35);
+      for (std::size_t k = 0; k < input.size(); ++k)
+        input[k] = factor * static_cast<float>(static_cast<int>(k % 5) - 2);
+      std::vector<float> expected(3, 0.0f);
+      for (std::size_t n = 0; n < 3; ++n)
+        for (std::size_t k = 0; k < input.size(); ++k)
+          expected[n] += input[k] * (static_cast<int>(packed[n * 64 + k]) - 128) *
+            scales[n * 2 + k / 32];
+      RoleExecutionContext context;
+      context.sessionId = "nbits-cpu";
+      context.role = spec.role;
+      context.inputsByScope.emplace("activation", makeEncodedTensorBundle("activation", {
+        {"input", TensorElementType::Float32, {1, 35}, encodeFloats(input)}}));
+      const auto result = runner.run(context);
+      BOOST_REQUIRE(result.count("raw") == 1U);
+      BOOST_REQUIRE_EQUAL(result.at("raw").payload.size(), 3 * sizeof(float));
+      std::vector<float> actual(3);
+      std::memcpy(actual.data(), result.at("raw").payload.data(), result.at("raw").payload.size());
+      for (std::size_t n = 0; n < actual.size(); ++n)
+        BOOST_CHECK_SMALL(actual[n] - expected[n], 0.0001f);
+    }
+  }
+  weight->set_dims(2, 31);
+  spec.path = fixture.write(model);
+  BOOST_CHECK_THROW(OnnxRuntimeModelRunner{spec}, std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(ExternalMaterializedWeightsMatchInlineCpuAndRetainDirectory)
+{
+  GraphMetadataFixture inlineFixture;
+  auto pairFixture = std::make_shared<GraphMetadataFixture>();
+  const auto pairDirectory = pairFixture->directory;
+  std::weak_ptr<GraphMetadataFixture> weakDirectory = pairFixture;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(18);
+  auto& graph = *model.mutable_graph();
+  const auto addValue = [] (auto* value, const char* name, std::int64_t columns) {
+    value->set_name(name);
+    auto* type = value->mutable_type()->mutable_tensor_type();
+    type->set_elem_type(onnx::TensorProto::FLOAT);
+    type->mutable_shape()->add_dim()->set_dim_value(1);
+    type->mutable_shape()->add_dim()->set_dim_value(columns);
+  };
+  addValue(graph.add_input(), "input", 1024);
+  addValue(graph.add_output(), "output", 257);
+  auto* node = graph.add_node();
+  node->set_op_type("MatMul");
+  node->add_input("input");
+  node->add_input("weight");
+  node->add_output("output");
+  const auto floats = [] (std::size_t count, float value) {
+    const auto one = float32Payload({value});
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(count * one.size());
+    for (std::size_t i = 0; i < count; ++i) bytes.insert(bytes.end(), one.begin(), one.end());
+    return bytes;
+  };
+  const auto weights = floats(1024U * 257U, 2.0f / 1024.0f);
+  auto* weight = graph.add_initializer();
+  weight->set_name("weight");
+  weight->set_data_type(onnx::TensorProto::FLOAT);
+  weight->add_dims(1024);
+  weight->add_dims(257);
+  weight->set_raw_data(weights.data(), weights.size());
+  NativeModelRunnerSpec spec;
+  spec.role = "/FilePair/Cpu";
+  spec.backend = "onnxruntime-cpu";
+  spec.metadata = {{"inputNames", "input"}, {"outputNames", "output"}, {"outputScope", "raw"}};
+  spec.path = inlineFixture.write(model);
+  OnnxRuntimeModelRunner reference(spec);
+  NativeCanonicalSource source;
+  const auto wire = model.SerializeAsString();
+  source.modelBytes.assign(wire.begin(), wire.end());
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 8U << 20, 16U << 20};
+  source.materialManifest = deriveNativeCanonicalMaterialManifest(source, control);
+  source.materialPayloads = source.materialManifest->payloads;
+  std::ofstream sidecar(pairDirectory / "model.onnx.data", std::ios::binary);
+  const auto files = materializeNativeCanonicalModelFiles(source, {0}, {}, {}, control,
+    [&] (const auto& bytes) {
+      sidecar.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+      if (!sidecar.good()) throw std::runtime_error("fixture sidecar write failed");
+    });
+  sidecar.close();
+  BOOST_REQUIRE_EQUAL(files.initializerBytes, weights.size());
+  BOOST_REQUIRE_LT(files.modelBytes.size(), 4096U);
+  spec.path = (pairDirectory / "model.onnx").string();
+  {
+    std::ofstream output(spec.path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(files.modelBytes.data()), files.modelBytes.size());
+    BOOST_REQUIRE(output.good());
+  }
+  spec.lifetime = pairFixture;
+  {
+    OnnxRuntimeModelRunner runner(spec);
+    spec.lifetime.reset();
+    pairFixture.reset();
+    BOOST_CHECK(!weakDirectory.expired());
+    for (const float input : {1.0f, 2.0f}) {
+      RoleExecutionContext context;
+      context.sessionId = "external-material-cpu";
+      context.role = spec.role;
+      context.inputsByScope.emplace("activation", makeEncodedTensorBundle("activation", {
+        {"input", TensorElementType::Float32, {1, 1024}, floats(1024, input)}}));
+      const auto actual = runner.run(context);
+      const auto expected = reference.run(context);
+      BOOST_REQUIRE(actual.count("raw") == 1U && expected.count("raw") == 1U);
+      BOOST_CHECK(actual.at("raw").payload == expected.at("raw").payload);
+      BOOST_CHECK(actual.at("raw").payload == floats(257, 2.0f * input));
+    }
+  }
+  BOOST_CHECK(weakDirectory.expired());
+  BOOST_CHECK(!std::filesystem::exists(pairDirectory));
+}
+
 BOOST_AUTO_TEST_CASE(ShapeConstantsMustRemainModelMaterialDuringWarmup)
 {
   GraphMetadataFixture fixture;
@@ -321,15 +647,232 @@ BOOST_AUTO_TEST_CASE(ShapeConstantsMustRemainModelMaterialDuringWarmup)
   RoleExecutionContext context;
   context.sessionId = "normalized-shape-constant";
   context.role = spec.role;
+  context.requestId = "tensor-accounting-request";
+  context.providerBootId = "tensor-accounting-boot";
+  context.attemptEpoch = 1;
+  context.workStatistics = makeNativeWorkStatistics();
+  BOOST_REQUIRE(context.workStatistics);
   std::vector<float> values(128, 3.5f);
   std::vector<std::uint8_t> payload(values.size() * sizeof(float));
   std::memcpy(payload.data(), values.data(), payload.size());
   context.inputsByScope.emplace("hidden", makeEncodedTensorBundle(
     "hidden", {NamedTensor{"hidden", TensorElementType::Float32, {1, 128}, payload}}));
+  const auto originalInput = context.inputsByScope.at("hidden").payload;
   const auto output = decodeOutput(runner.run(context));
   BOOST_REQUIRE_EQUAL(output.size(), 1);
   BOOST_CHECK(output.front().shape == std::vector<int64_t>({1, 1, 1, 128}));
   BOOST_CHECK(output.front().payload == payload);
+  BOOST_CHECK(context.inputsByScope.at("hidden").payload == originalInput);
+  values.assign(128, 7.25f);
+  std::memcpy(payload.data(), values.data(), payload.size());
+  context.inputsByScope.at("hidden") = makeEncodedTensorBundle(
+    "hidden", {NamedTensor{"hidden", TensorElementType::Float32, {1, 128}, payload}});
+  const auto secondInput = context.inputsByScope.at("hidden").payload;
+  ++context.inferenceEpoch;
+  const auto secondOutput = decodeOutput(runner.run(context));
+  BOOST_REQUIRE_EQUAL(secondOutput.size(), 1U);
+  BOOST_CHECK(secondOutput.front().payload == payload);
+  BOOST_CHECK(context.inputsByScope.at("hidden").payload == secondInput);
+  const auto work = context.workStatistics->snapshot();
+  BOOST_REQUIRE(work.complete);
+  BOOST_CHECK_EQUAL(work.activeSpans, 0U);
+  for (const auto* phase : {"onnx-input-context", "onnx-input-tensor", "onnx-output-convert"}) {
+    BOOST_REQUIRE(work.phases.count(phase) == 1U);
+    BOOST_CHECK(work.phases.at(phase).kind == NativeWorkKind::LOCAL);
+    BOOST_CHECK_EQUAL(work.phases.at(phase).calls, 2U);
+  }
+  BOOST_REQUIRE(work.phases.count("onnx-run-envelope") == 1U);
+  BOOST_CHECK(work.phases.at("onnx-run-envelope").kind == NativeWorkKind::BACKEND);
+  BOOST_CHECK_EQUAL(work.phases.at("onnx-run-envelope").calls, 2U);
+  BOOST_CHECK_EQUAL(work.counts.at("onnx.outputBorrowedPayloadBytes"), 2U * payload.size());
+  BOOST_CHECK_EQUAL(work.counts.at("onnx.outputOrtIntermediateCopyBytes"), 0U);
+  const auto metrics = runner.runtimeMetricsSnapshot();
+  BOOST_REQUIRE(metrics && metrics->lastBackendExecution);
+  BOOST_CHECK(metrics->lastBackendExecution->completed);
+  BOOST_CHECK_EQUAL(metrics->lastBackendExecution->inferenceEpoch, context.inferenceEpoch);
+  BOOST_CHECK_GE(metrics->lastBackendExecution->finishedSteadyNs,
+                 metrics->lastBackendExecution->startedSteadyNs);
+  context.inputsByScope.at("hidden").payload.pop_back();
+  BOOST_CHECK_THROW(runner.run(context), std::exception);
+  const auto failed = context.workStatistics->snapshot();
+  BOOST_CHECK(failed.complete);
+  BOOST_CHECK_EQUAL(failed.activeSpans, 0U);
+  BOOST_CHECK_EQUAL(failed.phases.at("onnx-run-envelope").calls, 2U);
+}
+
+BOOST_AUTO_TEST_CASE(BorrowedOrtOutputsKeepAuxiliaryWireAndIndependentLifetime)
+{
+  GraphMetadataFixture fixture;
+  auto model = makeShapeMetadataModel();
+  auto& graph = *model.mutable_graph();
+  graph.clear_node();
+  auto* identity = graph.add_node();
+  identity->set_op_type("Identity");
+  identity->add_input("input");
+  identity->add_output("output");
+  *graph.add_output() = graph.output(0);
+  graph.mutable_output(1)->set_name("negative");
+  auto* negative = graph.add_node();
+  negative->set_op_type("Neg");
+  negative->add_input("input");
+  negative->add_output("negative");
+  auto* mask = graph.add_input();
+  *mask = graph.input(0);
+  mask->set_name("mask");
+  mask->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::BOOL);
+  NativeModelRunnerSpec spec;
+  spec.role = "/Borrowed/Outputs";
+  spec.backend = "onnxruntime-cpu";
+  spec.path = fixture.write(model);
+  spec.metadata = {{"inputNames", "input,mask"}, {"outputNames", "output,negative"},
+    {"outputAlias.output", "positive"}, {"outputBundleScope", "converted"},
+    {"passthroughTensors", "mask"}, {"outputBundlePadBytes", "8"},
+    {"outputBundlePadTensor", "padding"}, {"kvOutputTensors", "negative,positive,negative"},
+    {"kvOutputScope", "kv"}};
+  auto runner = std::make_unique<OnnxRuntimeModelRunner>(spec);
+  RoleExecutionContext context;
+  context.sessionId = "borrowed-outputs";
+  context.role = spec.role;
+  context.workStatistics = makeNativeWorkStatistics();
+  BOOST_REQUIRE(context.workStatistics);
+  context.inputsByScope.emplace("activation", makeEncodedTensorBundle("activation", {
+    {"input", TensorElementType::Float32, {2, 2}, float32Payload({1, 2, 3, 4})},
+    {"mask", TensorElementType::Bool, {2, 2}, {1, 0, 1, 0}}}));
+  const auto inputBefore = context.inputsByScope.at("activation").payload;
+  const auto first = runner->run(context);
+  const std::vector<NamedTensor> expected{
+    {"positive", TensorElementType::Float32, {2, 2}, float32Payload({1, 2, 3, 4})},
+    {"negative", TensorElementType::Float32, {2, 2}, float32Payload({-1, -2, -3, -4})},
+    {"mask", TensorElementType::Bool, {2, 2}, {1, 0, 1, 0}},
+    {"padding", TensorElementType::Float32, {2}, std::vector<std::uint8_t>(8, 0)}};
+  BOOST_REQUIRE(first.count("converted") == 1U && first.count("kv") == 1U);
+  BOOST_CHECK(first.at("converted").payload == encodeTensorBundle(expected));
+  BOOST_CHECK(first.at("kv").payload == encodeTensorBundle({expected[1], expected[0]}));
+  BOOST_CHECK(context.inputsByScope.at("activation").payload == inputBefore);
+  context.inputsByScope.at("activation") = makeEncodedTensorBundle("activation", {
+    {"input", TensorElementType::Float32, {2, 2}, float32Payload({5, 6, 7, 8})},
+    {"mask", TensorElementType::Bool, {2, 2}, {0, 1, 0, 1}}});
+  const auto second = runner->run(context);
+  auto expectedSecond = expected;
+  expectedSecond[0].payload = float32Payload({5, 6, 7, 8});
+  expectedSecond[1].payload = float32Payload({-5, -6, -7, -8});
+  expectedSecond[2].payload = {0, 1, 0, 1};
+  BOOST_CHECK(second.at("converted").payload == encodeTensorBundle(expectedSecond));
+  BOOST_CHECK(first.at("converted").payload == encodeTensorBundle(expected));
+  const auto measured = context.workStatistics->snapshot();
+  BOOST_CHECK_EQUAL(measured.counts.at("onnx.outputBorrowedPayloadBytes"), 64U);
+  BOOST_CHECK_EQUAL(measured.counts.at("onnx.outputOrtIntermediateCopyBytes"), 0U);
+  BOOST_CHECK_EQUAL(measured.counts.at("onnx.outputAuxiliaryBytes"), 24U);
+  BOOST_CHECK(measured.complete);
+  BOOST_CHECK_EQUAL(measured.activeSpans, 0U);
+  BOOST_CHECK(measured.phases.at("onnx-host-cleanup").kind == NativeWorkKind::LOCAL);
+  BOOST_CHECK_EQUAL(measured.phases.at("onnx-host-cleanup").calls, 2U);
+  BOOST_CHECK(measured.phases.at("onnx-input-release").kind == NativeWorkKind::UNCLASSIFIED);
+  BOOST_CHECK_EQUAL(measured.phases.at("onnx-input-release").calls, 2U);
+  auto missing = context;
+  missing.inputsByScope.at("activation") = makeEncodedTensorBundle("activation", {
+    {"input", TensorElementType::Float32, {2, 2}, float32Payload({1, 2, 3, 4})}});
+  BOOST_CHECK_THROW(runner->run(missing), std::out_of_range);
+  runner.reset();
+  BOOST_CHECK(first.at("converted").payload == encodeTensorBundle(expected));
+  BOOST_CHECK(second.at("converted").payload == encodeTensorBundle(expectedSecond));
+}
+
+BOOST_AUTO_TEST_CASE(BorrowedOrtFloat16RawOutputRemainsOwned)
+{
+  GraphMetadataFixture fixture;
+  auto model = makeShapeMetadataModel();
+  auto& graph = *model.mutable_graph();
+  graph.clear_node();
+  graph.mutable_input(0)->mutable_type()->mutable_tensor_type()->set_elem_type(
+    onnx::TensorProto::FLOAT16);
+  graph.mutable_output(0)->mutable_type()->mutable_tensor_type()->set_elem_type(
+    onnx::TensorProto::FLOAT16);
+  auto* identity = graph.add_node();
+  identity->set_op_type("Identity");
+  identity->add_input("input");
+  identity->add_output("output");
+  NativeModelRunnerSpec spec;
+  spec.role = "/Borrowed/Half";
+  spec.backend = "onnxruntime-cpu";
+  spec.path = fixture.write(model);
+  spec.metadata = {{"inputNames", "input"}, {"outputNames", "output"}, {"outputScope", "raw"}};
+  auto runner = std::make_unique<OnnxRuntimeModelRunner>(spec);
+  RoleExecutionContext context;
+  context.sessionId = "borrowed-half";
+  context.role = spec.role;
+  const std::vector<std::uint8_t> half{0, 60, 0, 64, 0, 66, 0, 68};
+  context.inputsByScope.emplace("activation", makeEncodedTensorBundle("activation", {
+    {"input", TensorElementType::Float16, {2, 2}, half}}));
+  const auto output = runner->run(context);
+  runner.reset();
+  BOOST_REQUIRE(output.count("raw") == 1U);
+  BOOST_CHECK(!isEncodedTensorBundle(output.at("raw").payload));
+  BOOST_CHECK(output.at("raw").payload == half);
+}
+
+BOOST_AUTO_TEST_CASE(BorrowedOrtContextRetainsCertifiedRedistribution)
+{
+  GraphMetadataFixture fixture;
+  auto model = makeShapeMetadataModel();
+  auto& graph = *model.mutable_graph();
+  graph.clear_node();
+  auto* identity = graph.add_node();
+  identity->set_op_type("Identity");
+  identity->add_input("input");
+  identity->add_output("output");
+  NativeModelRunnerSpec spec;
+  spec.role = "S1R1";
+  spec.backend = "onnxruntime-cpu";
+  spec.path = fixture.write(model);
+  spec.metadata = {{"inputNames", "input"}, {"outputNames", "output"}, {"outputScope", "raw"}};
+  OnnxRuntimeModelRunner runner(spec);
+  RoleExecutionContext context;
+  context.sessionId = "borrowed-scatter";
+  context.role = spec.role;
+  context.workStatistics = makeNativeWorkStatistics();
+  BOOST_REQUIRE(context.workStatistics);
+  context.inputsByScope.emplace("activation", makeEncodedTensorBundle("activation", {
+    {"input", TensorElementType::Float32, {2, 4},
+     float32Payload({1, 2, 3, 4, 5, 6, 7, 8})}}));
+  const auto original = context.inputsByScope.at("activation").payload;
+  RedistributionSpec redistribution;
+  redistribution.producerRanks = {0};
+  redistribution.consumerRanks = {1, 2};
+  redistribution.tensor = "input";
+  redistribution.operation = "SCATTER";
+  redistribution.axis = 1;
+  redistribution.epoch = "epoch-1";
+  redistribution.integrityDigest = "sha256:" + std::string(64, 'a');
+  redistribution.sourceLayoutDigest = "sha256:" + std::string(64, 'b');
+  redistribution.targetLayoutDigest = "sha256:" + std::string(64, 'c');
+  redistribution.temporaryMemoryBytes = 32;
+  redistribution.completeOutput = true;
+  DependencyEdge edge;
+  edge.scope = "activation";
+  edge.transportScope = "activation";
+  edge.producerRole = "S0R0";
+  edge.consumerRole = spec.role;
+  edge.redistributionProducerRank = 0;
+  edge.redistributionConsumerRank = 2;
+  edge.redistributions = {redistribution};
+  context.inputEdgesByScope.emplace("activation", edge);
+  const auto result = runner.run(context);
+  BOOST_REQUIRE(result.count("raw") == 1U);
+  BOOST_CHECK(result.at("raw").payload == float32Payload({3, 4, 7, 8}));
+  BOOST_CHECK(context.inputsByScope.at("activation").payload == original);
+  context.inputsByScope.at("activation") = makeEncodedTensorBundle("activation", {
+    {"input", TensorElementType::Float32, {2, 4},
+     float32Payload({9, 10, 11, 12, 13, 14, 15, 16})}});
+  const auto changedInput = context.inputsByScope.at("activation").payload;
+  const auto second = runner.run(context);
+  BOOST_CHECK(second.at("raw").payload == float32Payload({11, 12, 15, 16}));
+  BOOST_CHECK(result.at("raw").payload == float32Payload({3, 4, 7, 8}));
+  BOOST_CHECK(context.inputsByScope.at("activation").payload == changedInput);
+  const auto measured = context.workStatistics->snapshot();
+  BOOST_CHECK(measured.complete);
+  BOOST_CHECK_EQUAL(measured.activeSpans, 0U);
+  BOOST_CHECK_EQUAL(measured.phases.at("onnx-host-cleanup").calls, 2U);
 }
 
 BOOST_AUTO_TEST_CASE(CudaSelectionRejectsFallbackAndCpuOnlyAllocation)

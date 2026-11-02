@@ -8,7 +8,10 @@
 #include <openssl/evp.h>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "tests/integration-tests/isolated-test-trust.hpp"
 
 #include <boost/test/unit_test.hpp>
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
@@ -101,6 +104,7 @@ public:
 struct ClientStateFixture {
   ndn::security::KeyChain keyChain{"pib-memory:", "tpm-memory:"};
   ndn::DummyClientFace face{keyChain};
+  std::unique_ptr<ndn_service_framework::test::IsolatedTestTrust> trust;
   std::shared_ptr<ndn_service_framework::test::LocalServiceUser> user;
   std::shared_ptr<NativeAdapterRegistry> adapters = std::make_shared<NativeAdapterRegistry>();
   std::shared_ptr<ClientTestAdapter> clientAdapter;
@@ -117,8 +121,10 @@ struct ClientStateFixture {
     using namespace ndn_service_framework::test;
     auto cert = makeRsaIdentity(keyChain, ndn::Name("/client-test/user"));
     auto aa = makeRsaIdentity(keyChain, ndn::Name("/client-test/aa"));
+    trust = std::make_unique<IsolatedTestTrust>(
+      std::initializer_list<ndn::security::Certificate>{cert, aa});
     user = std::make_shared<LocalServiceUser>(face, ndn::Name("/client-test"), cert, aa,
-                                             "examples/trust-any.conf");
+                                             trust->schemaPath());
     clientAdapter = std::make_shared<ClientTestAdapter>();
     adapters->registerAdapter(clientAdapter);
     adapters->freeze();
@@ -309,6 +315,95 @@ BOOST_AUTO_TEST_CASE(RequestEnvelopeMatchesSdkIdentityAndNativeProviderInput)
   BOOST_CHECK_THROW(encodeNativeRequestEnvelope(model, input, contract, "/r", 1, 10000), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(RequestEnvelopeWorkObservationsPreserveWireAndCountRepresentations)
+{
+  NativeRequestContract contract{"/di/infer", "task", model.adapterId,
+    model.adapter.descriptorDigest(), nativePlanningDigest("composition"), nativePlanningDigest("task")};
+  contract.generationMode = "TOKEN_STREAMING";
+  contract.tokenizerDigest = nativePlanningDigest("tokenizer");
+  NativeApplicationInput input;
+  input.taskName = "task";
+  input.inputSchemaDigest = model.adapter.inputSchemaDigest;
+  input.optionsSchemaDigest = model.adapter.optionsSchemaDigest;
+  input.payload = {0, 1, 255, 2, 3};
+  input.options = {'{', '}'};
+  const auto encode = [&] (const NativeApplicationInput& value, const std::string& mode,
+                           const std::shared_ptr<NativeWorkStatistics>& statistics,
+                           const std::optional<NativeGenerationRecovery>& recovery = std::nullopt) {
+    return detail::encodeNativeRequestEnvelopeForRuntime(model, value, contract,
+      recovery ? recovery->recoveryRequestId : "/request/1", recovery ? 2 : 1, 10000,
+      recovery, {}, std::nullopt, std::nullopt, {}, mode, statistics);
+  };
+  for (const bool referenced : {false, true}) {
+    auto value = input;
+    if (referenced) {
+      value.transportMode = NativeInputTransportMode::RepositoryReference;
+      value.payload.clear();
+      value.repositoryReference = nativeCanonicalJson({
+        {"dataName", "/client-test/user/input/v=1"}, {"encrypted", true},
+        {"plaintextSize", 5}, {"authorizationScope", "scope"}, {"protectionEpoch", "epoch-1"},
+        {"manifestDigest", nativePlanningDigest("manifest")},
+        {"ciphertextDigest", nativePlanningDigest("ciphertext")}});
+    }
+    for (const std::string mode : {"INLINE", "SELECTION_GENERATION_V1"}) {
+      auto statistics = makeNativeWorkStatistics();
+      BOOST_REQUIRE(statistics);
+      const std::weak_ptr<NativeWorkStatistics> owner = statistics;
+      const auto expected = encode(value, mode, {});
+      const auto encoded = encode(value, mode, statistics);
+      BOOST_CHECK(encoded.wire == expected.wire);
+      BOOST_CHECK_EQUAL(encoded.requestContractDigest, expected.requestContractDigest);
+      const auto json = nativeParseJson(std::string(encoded.wire.begin(), encoded.wire.end()));
+      BOOST_CHECK_EQUAL(json.at("input_payload_b64").get<std::string>(),
+                        referenced ? "" : "AAH/AgM=");
+      BOOST_CHECK_EQUAL(json.at("options_payload_b64").get<std::string>(),
+                        mode == "INLINE" ? "e30=" : "");
+      const auto work = statistics->snapshot();
+      BOOST_CHECK(work.complete);
+      BOOST_CHECK_EQUAL(work.activeSpans, 0U);
+      BOOST_CHECK(work.phases.at("request-envelope-encode").kind == NativeWorkKind::LOCAL);
+      BOOST_CHECK_EQUAL(work.counts.at("request.successfulEnvelopeEncodes"), 1U);
+      BOOST_CHECK_EQUAL(work.counts.at("request.envelopeRepresentationBytes"), encoded.wire.size());
+      BOOST_CHECK_EQUAL(work.counts.at("request.encodedInputValueBytes"), referenced ? 0U : 8U);
+      BOOST_CHECK_EQUAL(work.counts.at("request.encodedOptionsValueBytes"), mode == "INLINE" ? 4U : 0U);
+      BOOST_CHECK_EQUAL(work.counts.at("request.envelopeControlRepresentationBytes"),
+                        encoded.wire.size() - (referenced ? 0U : 8U));
+      BOOST_CHECK_EQUAL(work.counts.at(mode == "INLINE" ? "request.inlineOptionsEnvelopeEncodes" :
+                        "request.selectionOptionsEnvelopeEncodes"), 1U);
+      statistics.reset();
+      BOOST_CHECK(owner.expired());
+    }
+  }
+  auto statistics = makeNativeWorkStatistics();
+  BOOST_REQUIRE(statistics);
+  const auto original = encode(input, "INLINE", statistics);
+  NativeGenerationRecovery recovery;
+  recovery.generationId = std::string(32, 'a');
+  recovery.originalRequestId = "/request/1";
+  recovery.recoveryRequestId = "/request/recovery";
+  recovery.originalInputManifestDigest = original.inputManifestDigest;
+  recovery.priorPlanDigest = nativePlanningDigest("prior-plan");
+  recovery.failedProvider = "/provider/1";
+  recovery.committedTokenIds = {1, 2};
+  const auto expectedRecovery = encode(input, "INLINE", {}, recovery);
+  const auto encodedRecovery = encode(input, "INLINE", statistics, recovery);
+  BOOST_CHECK(encodedRecovery.wire == expectedRecovery.wire);
+  const auto recovered = statistics->snapshot();
+  BOOST_CHECK_EQUAL(recovered.counts.at("request.successfulEnvelopeEncodes"), 2U);
+  BOOST_CHECK_EQUAL(recovered.counts.at("request.encodedInputValueBytes"), 16U);
+  BOOST_CHECK_EQUAL(recovered.counts.at("request.envelopeControlRepresentationBytes"),
+                    original.wire.size() + encodedRecovery.wire.size() - 16U);
+  auto failedStatistics = makeNativeWorkStatistics();
+  BOOST_REQUIRE(failedStatistics);
+  auto tooLarge = input;
+  tooLarge.options.assign(16U * 1024U * 1024U, 'x');
+  BOOST_CHECK_THROW(encode(tooLarge, "INLINE", failedStatistics), std::invalid_argument);
+  const auto failed = failedStatistics->snapshot();
+  BOOST_CHECK(failed.complete);
+  BOOST_CHECK_EQUAL(failed.activeSpans, 0U);
+  BOOST_CHECK(failed.counts.empty());
+}
+
 BOOST_AUTO_TEST_CASE(ConfiguredClientClosesEmptyAckAndCancelsActualCorePendingCall)
 {
   // Exercise the public runtime constructor and worker/Core callbacks. Only
@@ -414,8 +509,27 @@ BOOST_AUTO_TEST_CASE(ConfiguredClientClosesEmptyAckAndCancelsActualCorePendingCa
     NativeInferenceClient client(user, configuredAdapters, runtime, preparation, admission);
     NativeRequestOptions requestOptions;
     requestOptions.applicationRequestId = "qwen-wire-id";
+    requestOptions.workStatistics = std::make_shared<NativeWorkStatistics>();
+    auto publishedBytes = std::make_shared<std::atomic<std::uint64_t>>(0);
+    user->setRequestPublisher(
+      [publishedBytes] (const auto&, const auto&, const auto&, const auto&,
+                        const ndn_service_framework::RequestMessage& message, size_t) {
+        publishedBytes->fetch_add(message.WireEncode().size());
+      });
     auto handle = client.request(model, application, std::make_shared<ClientTestSplit>(),
       std::make_shared<NativePreSplitFirstPlacement>(), requestOptions);
+    const auto terminalObserved = std::make_shared<std::promise<bool>>();
+    auto terminalFuture = terminalObserved->get_future();
+    handle.observe(
+      [statistics = requestOptions.workStatistics, terminalObserved]
+      (const NativeInferenceEvent& event) {
+        if (!event.terminal) return;
+        const auto counts = statistics->snapshot().counts;
+        const auto complete = counts.find("core.controlInventoryComplete");
+        const auto calls = counts.find("core.requestPreparedCalls");
+        terminalObserved->set_value(complete != counts.end() && complete->second == 1 &&
+                                    calls != counts.end() && calls->second == 1);
+      });
     BOOST_CHECK_EQUAL(handle.applicationRequestId(), "qwen-wire-id");
     const ndn::Name id(handle.requestId());
     BOOST_REQUIRE(pumpUntil([&] { return user->hasPendingCall(id) || handle.status() != NativeRequestStatus::Pending; }));
@@ -427,6 +541,11 @@ BOOST_AUTO_TEST_CASE(ConfiguredClientClosesEmptyAckAndCancelsActualCorePendingCa
       user->postToIo([&, id] { BOOST_CHECK(user->closeDeferredAcksForTest(id)); });
     }
     BOOST_REQUIRE(pumpUntil([&] { return handle.status() != NativeRequestStatus::Pending && !user->hasPendingCall(id); }));
+    BOOST_REQUIRE(terminalFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+    BOOST_CHECK(terminalFuture.get());
+    const auto terminalCounts = requestOptions.workStatistics->snapshot().counts;
+    BOOST_CHECK_EQUAL(terminalCounts.at("core.requestPreparedBytes"), publishedBytes->load());
+    BOOST_CHECK_GT(publishedBytes->load(), 0U);
     if (cancel) {
       BOOST_CHECK(handle.status() == NativeRequestStatus::Cancelled);
       BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(0)), NativeDiError,
@@ -441,6 +560,7 @@ BOOST_AUTO_TEST_CASE(ConfiguredClientClosesEmptyAckAndCancelsActualCorePendingCa
     handle.cancel(); // Repeated terminal actions must not recreate Core state.
     face.getIoContext().restart(); face.getIoContext().poll();
     BOOST_CHECK(!user->hasPendingCall(id));
+    BOOST_CHECK(requestOptions.workStatistics->snapshot().counts == terminalCounts);
   }
 }
 

@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include <openssl/evp.h>
 #include <ndn-cxx/name.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -239,8 +240,10 @@ NativeEncodedRequest encodeNativeRequestEnvelopeImpl(
   const std::vector<std::string>& candidateProviders,
   const std::optional<NativeCandidateArtifactInventoryV4>& candidateArtifactInventory,
   const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist,
-  std::string requesterIdentity, bool selectionGenerationOptions)
+  std::string requesterIdentity, bool selectionGenerationOptions,
+  const std::shared_ptr<NativeWorkStatistics>& statistics = {})
 {
+  NativeWorkScope encodingWork(statistics, "request-envelope-encode", NativeWorkKind::LOCAL);
   if (selectionGenerationOptions && contract.generationMode != "TOKEN_STREAMING")
     throw std::invalid_argument("Selection generation options require TOKEN_STREAMING");
   model.validate();
@@ -463,6 +466,17 @@ NativeEncodedRequest encodeNativeRequestEnvelopeImpl(
   if (wire.size() > MAX_WIRE) throw std::invalid_argument("DI request envelope exceeds limit");
   result.wire.assign(wire.begin(), wire.end());
   result.requestContractDigest = nativePlanningDigest(wire);
+  if (statistics) {
+    const auto inputBytes = envelope.at("input_payload_b64").get_ref<const std::string&>().size();
+    const auto optionsBytes = envelope.at("options_payload_b64").get_ref<const std::string&>().size();
+    statistics->addCount("request.envelopeRepresentationBytes", wire.size());
+    statistics->addCount("request.encodedInputValueBytes", inputBytes);
+    statistics->addCount("request.encodedOptionsValueBytes", optionsBytes);
+    statistics->addCount("request.envelopeControlRepresentationBytes", wire.size() - inputBytes);
+    statistics->addCount("request.successfulEnvelopeEncodes", 1);
+    statistics->addCount(selectionGenerationOptions
+      ? "request.selectionOptionsEnvelopeEncodes" : "request.inlineOptionsEnvelopeEncodes", 1);
+  }
   return result;
 }
 
@@ -492,13 +506,14 @@ NativeEncodedRequest encodeNativeRequestEnvelopeForRuntime(
   const std::vector<std::string>& candidateProviders,
   const std::optional<NativeCandidateArtifactInventoryV4>& candidateArtifactInventory,
   const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist,
-  std::string requesterIdentity, const std::string& optionsTransport)
+  std::string requesterIdentity, const std::string& optionsTransport,
+  const std::shared_ptr<NativeWorkStatistics>& statistics)
 {
   if (optionsTransport != "INLINE" && optionsTransport != "SELECTION_GENERATION_V1")
     throw std::invalid_argument("unsupported native request options transport");
   return encodeNativeRequestEnvelopeImpl(model, input, contract, requestId, attempt,
     deadlineMs, recovery, candidateProviders, candidateArtifactInventory,
-    probeAllowlist, std::move(requesterIdentity), optionsTransport != "INLINE");
+    probeAllowlist, std::move(requesterIdentity), optionsTransport != "INLINE", statistics);
 }
 
 bool requiresSelectionGenerationOptions(const std::string& requestWire,

@@ -26,15 +26,75 @@ Backend durations from separate hosts are cumulative service time; their sum
 does not establish a cross-host wall-time partition. Preserve per-request and
 per-epoch measurements when reporting delivery or scheduling overhead.
 
+Native actors with `statistics_file` configured also emit bounded request-owned
+work statistics independently of diagnostic logging. The requester records its
+submission boundary; providers record exact backend receipts and separate tensor
+publication, fetch-consumption and admission observations. ACK observations use
+the provider's `<statistics-file>.ack.jsonl` sidecar. Analyze these with
+`tools/ndnsf-di/analyze_invocation_timing.py --statistics FILE...`, repeating
+`--expected-role ROLE` for every role in the frozen deployment. Use
+`--format markdown` for timing tables. Missing or ambiguous coverage remains
+UNKNOWN; differing clock domains cannot establish startup or delivery latency.
+Local-work coverage is currently partial. Fetch consumption includes scheduling,
+and wall time minus backend service time is not network time.
+
+CPU role sessions use one intra-op thread, BASIC graph optimization and default
+weight prepacking. Budget preparation time and resident memory for prepacked
+weights; disabling prepacking can force quantized operators onto slower paths.
+CUDA retains its separate bounded session policy. A quantization label alone
+does not establish which optimized kernel a particular model/runtime can use.
+
+CPU and CUDA deployments may select different model representations through the
+existing deployment catalog. Sharing applications and a SIF does not require
+sharing quantized weights or ONNX operators. Set
+`requester.catalog.model.quantization_subtype` and
+`requester.catalog.recipe.quantization` to the same explicit representation:
+`none`, `dynamic_int8`, `weight_only_int8`, or `weight_only_int4`. Dynamic INT8
+typically uses `DynamicQuantizeLinear`/`MatMulInteger`; weight-only INT8 is a
+different representation. Configure the matching source graph/weights, identities,
+role resources and backend together; changing the label does not convert a model.
+Different artifacts have different identities and cannot reuse each other's KV
+or prepared-model cache entries. Execution still checks the selected backend's
+actual operator support; there is no implicit CPU/CUDA fallback or best-format claim.
+
+For the historical stage-manifest experiment entrypoints, use the explicit
+representation as `quantization`. The legacy value `int8` now requires
+`quantizationSubtype` to be `dynamic_int8` or `weight_only_int8`; an ambiguous INT8
+manifest is rejected instead of being silently labelled weight-only INT8.
+
+## Native transformer catalog contracts
+
+QWEN/LLAMA catalog preparation binds state names, shapes and dtypes from the
+checked ONNX role boundary using the explicit `state_inputs`/`state_outputs`
+mapping. Model size/name and weight precision do not determine state types.
+Direct declared-contract binding retains its semantic/type mismatch checks.
+
+Each `splitter.resources_by_role[ROLE]` uses the existing native resource schema:
+`backends` (distinct supported backend names), `weight_bytes`, `workspace_bytes`,
+`kv_bytes`, `activation_bytes`, `transient_bytes` (nonnegative UInt64 integers),
+and `safety_margin` (finite and at least 1). Every role and field is required;
+unknown budgets are rejected rather than replaced by zero. The native Qwen
+experiment generator copies this profile from manifest `roleResourceRequirements`
+or `--role-resources FILE`. Old catalogs must supply explicit profiles.
+
+Prepared metadata must also retain source initializer ownership under
+`sourceGraph.initializerConsumers`. Older receipts without these facts fail closed and require
+preparing the pinned source again. This does not change model or graph content identities.
+
+Preparation checks a lower bound from consumed source initializers for unsharded
+ONNX roles. This excludes backend workspace and tensor-valued Constant attributes;
+other component budgets remain operator assertions for the configured workload,
+not validated context-dependent memory estimates. Rank-sharded and native
+postprocessing roles do not use this unsharded initializer check.
+
 ## Preferred user API (Spec 116)
 
 Native warm invocations retain their authenticated fixed-role reference.
-Invocation transport V2 writes common endpoint binding fields once, while
-generation-specific commitments remain in each entry. Providers expand the
-bounded representation before applying the existing V1 semantic checks. Group
-capability transport V2 similarly folds regular operation runs and restores the
-unchanged canonical signed capability before admission. Updated readers accept
-both old and new transports; emitting V2 requires updated Providers.
+Invocation transport V3 retains base endpoints and a signed generation range,
+deriving only the requested epoch while preserving endpoint and authorization
+checks. Updated readers also accept V1/V2; V3 requires updated Providers. Group
+capability transport V2 retains operation runs without expanding a future-operation
+vector; canonical signed V1 bytes and irregular legacy operation sets are preserved.
 Small transient Core control publications retain their bounded private files
 and original signed packets instead of adding a copy to the model Repo store.
 Durable publication and model-sized transient publication keep their Repo paths.

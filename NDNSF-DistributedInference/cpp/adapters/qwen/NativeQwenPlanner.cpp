@@ -196,37 +196,24 @@ NativeQwenLayerSplit::enumerateImpl(const NativeModelDescriptor& model,
     const auto& artifact = m_artifactDigestsByRole.at(role);
     std::vector<NativeTensorContract> stateInputs;
     std::vector<NativeTensorContract> stateOutputs;
-    // The real Qwen3-0.6B export exposes one dynamic-past KV pair per decoder
-    // layer. Keep the historical three-family contract for the small Qwen
-    // fixture so existing generic streaming tests remain compatible; the
-    // authenticated catalog mapping expands only the real export contract.
-    const bool dynamicPast = m_modelFamily == "llama" ||
-      model.modelName.find("Qwen3-0.6B") != std::string::npos;
-    if (dynamicPast) {
-      for (std::size_t layer = m_layerRanges[i].first;
-           layer < m_layerRanges[i].second; ++layer) {
-        const auto suffix = std::to_string(layer);
-        stateInputs.push_back({"past_key." + suffix, model.precision,
-                               {"batch", "heads", "sequence", "head-dimension"},
-                               std::nullopt});
-        stateInputs.push_back({"past_value." + suffix, model.precision,
-                               {"batch", "heads", "sequence", "head-dimension"},
-                               std::nullopt});
-        stateOutputs.push_back({"present_key." + suffix, model.precision,
-                                {"batch", "heads", "sequence", "head-dimension"},
-                                std::nullopt});
-        stateOutputs.push_back({"present_value." + suffix, model.precision,
-                                {"batch", "heads", "sequence", "head-dimension"},
-                                std::nullopt});
-      }
-    }
-    else {
-      for (const auto& family : {"attention_kv", "recurrent_state", "convolution_state"}) {
-        stateInputs.push_back({std::string(family) + "_in", model.precision,
-                               {"batch", "sequence", "hidden"}, std::nullopt});
-        stateOutputs.push_back({std::string(family) + "_out", model.precision,
-                                {"batch", "sequence", "hidden"}, std::nullopt});
-      }
+    // Abstract planning placeholders are independent of model size/name.
+    // Catalog preparation replaces them from the checked source boundary;
+    // they do not assert the state layout of a hybrid transformer export.
+    for (std::size_t layer = m_layerRanges[i].first;
+         layer < m_layerRanges[i].second; ++layer) {
+      const auto suffix = std::to_string(layer);
+      stateInputs.push_back({"past_key." + suffix, model.precision,
+                             {"batch", "heads", "sequence", "head-dimension"},
+                             std::nullopt});
+      stateInputs.push_back({"past_value." + suffix, model.precision,
+                             {"batch", "heads", "sequence", "head-dimension"},
+                             std::nullopt});
+      stateOutputs.push_back({"present_key." + suffix, model.precision,
+                              {"batch", "heads", "sequence", "head-dimension"},
+                              std::nullopt});
+      stateOutputs.push_back({"present_value." + suffix, model.precision,
+                              {"batch", "heads", "sequence", "head-dimension"},
+                              std::nullopt});
     }
     for (std::size_t layer = m_layerRanges[i].first; layer < m_layerRanges[i].second; ++layer) {
       if (control) control->requireActive();
@@ -240,8 +227,8 @@ NativeQwenLayerSplit::enumerateImpl(const NativeModelDescriptor& model,
     candidate.tensorDegreesByRole[role] = 1;
     candidate.requirementsByRole[role] = {
       {"onnxruntime"},
-      m_weightBytesByRole.at(role), 1024ULL * 1024ULL * 1024ULL, 0,
-      512ULL * 1024ULL * 1024ULL, 512ULL * 1024ULL * 1024ULL, 1.10};
+      m_weightBytesByRole.at(role), std::nullopt, std::nullopt,
+      std::nullopt, std::nullopt, 1.10};
   }
   candidate.estimatedCosts = {{"role_count", std::uint64_t(m_roles.size())},
     {"rank_count", std::uint64_t(m_roles.size())}, {"decoder_layers", std::uint64_t(m_layerRanges.back().second)},

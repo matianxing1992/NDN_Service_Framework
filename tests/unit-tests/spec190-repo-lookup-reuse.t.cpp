@@ -160,6 +160,8 @@ NativeJson catalogFor(const NativeModelDescriptor& model, const std::string& pro
     {"splitter", {{"kind", "QWEN"}, {"layer_ranges", {{0, 1}}},
                    {"artifact_digests_by_role", {{"stage-0", digest("stage")}}},
                    {"weight_bytes_by_role", {{"stage-0", 1}}},
+                   {"resources_by_role", {{"stage-0", nativeParseJson(NativeRoleResourceRequirement{
+                     {"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}.canonicalJson())}}},
                    {"roles", {"stage-0"}}, {"tensor_degrees", {1}},
                    {"input_ingress_role", "stage-0"}, {"result_egress_role", "stage-0"}}},
     {"node_mapping", NativeJson::object()}, {"state_inputs", NativeJson::object()},

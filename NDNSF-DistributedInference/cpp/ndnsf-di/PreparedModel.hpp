@@ -119,6 +119,8 @@ struct RequestOptions
   std::string outputMode = "FULL";
   std::optional<GenerationOptions> generation;
   std::optional<StreamOptions> stream;
+  /** Optional request-owned observations; has no protocol or cache authority. */
+  std::shared_ptr<class NativeWorkStatistics> workStatistics;
 };
 
 struct Result
