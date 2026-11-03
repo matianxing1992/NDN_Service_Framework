@@ -12,6 +12,8 @@
 namespace ndnsf::di {
 
 struct NativeConversationTurn;
+struct NativeKvOwnerKeyOperations;
+class NativeConversationCoordinator;
 
 /** Type-erased cooperative ports captured by one request operation. */
 struct NativeStrategyPorts
@@ -43,6 +45,8 @@ struct NativeRequestRuntime
   std::shared_ptr<const NativeAuthenticatedGrantClient> grants;
   std::shared_ptr<const NativeCanonicalPreparationCatalog> catalog;
   std::shared_ptr<const NativePreparedPlanningCache> planningCache;
+  std::shared_ptr<const NativeKvOwnerKeyOperations> kvOwnerKeys;
+  std::weak_ptr<NativeConversationCoordinator> conversationOwner;
   NativeStateTensorMapping stateMapping;
   std::uint64_t noProgressMs = 5000;
   std::size_t maxSegments = 4096;
@@ -54,6 +58,10 @@ struct NativeRequestRuntime
     const NativeRequestControl&)> fixedRoleSourcePublisher;
 };
 
+std::shared_ptr<const ndn_service_framework::ParticipantSelectionPolicy>
+nativeFrozenParticipantSelection(
+  std::vector<ndn_service_framework::SelectedParticipant> selected);
+
 /** Parse an operator-owned runtime policy and bind it to an already checked
  * catalog and native grant owner. JSON carries policy only; catalog/source
  * and key material remain owned by their native loaders. */
@@ -61,6 +69,12 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
   const std::string& configurationJson,
   const NativeRequestCatalog& catalog,
   std::shared_ptr<const NativeAuthenticatedGrantClient> grants);
+
+struct NativeConversationRecoveryExpectationV1
+{
+  NativeSelectionProjectionV3 projection;
+  std::string admittedBootEpoch;
+};
 
 struct NativePlannedRequest
 {
@@ -77,6 +91,9 @@ struct NativePlannedRequest
   // A committed request keeps its assignment for every token, even if a later
   // request replaces the reusable cache entry.
   std::vector<std::shared_ptr<const NativeFixedRoleAssignmentV1>> fixedAssignments;
+  // Original branch's immutable selected-role expectations for READY admission.
+  std::map<std::string, NativeConversationRecoveryExpectationV1> recoveryExpectations;
+  std::shared_ptr<const NativeJson> recoveryParent;
 };
 
 /** The exact first-pass intent plus responses received before the attempt deadline. */

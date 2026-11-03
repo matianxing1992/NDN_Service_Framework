@@ -2,7 +2,16 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp"
 
+#include <ndn-cxx/name.hpp>
+
 namespace ndnsf::di {
+struct NativeRecipientKeyMaterialV1
+{
+  ndn::Name certificateName;
+  std::string publicKeyDigest;
+  ProviderGroupBytes publicKey;
+};
+
 /** Immutable key offers extracted from the same Core-authenticated ACK as V3.
  * Group membership/operation authorization remains the sealed-plan owner's job.
  */
@@ -14,12 +23,13 @@ public:
     const NativeOfferBindingContext& context, std::uint64_t nowMs);
   const NativeAdmittedOfferV3& offer(const std::string& provider) const;
   const std::string& endpoint(const std::string& provider) const;
+  const NativeRecipientKeyMaterialV1& recipient(const std::string& provider) const;
   ProviderGroupCoordinatorOptions options() const;
 private:
   struct Entry {
     NativeAdmittedOfferV3 offer;
     std::string endpoint;
-    ProviderGroupBytes publicKey;
+    NativeRecipientKeyMaterialV1 recipient;
   };
   std::shared_ptr<const std::map<std::string, Entry>> m_entries;
 };

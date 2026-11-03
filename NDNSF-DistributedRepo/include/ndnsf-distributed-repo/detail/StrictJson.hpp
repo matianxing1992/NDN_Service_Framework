@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -14,12 +15,13 @@ namespace ndnsf_distributed_repo::detail {
 
 struct JsonValue
 {
-  enum class Kind { Null, Boolean, Unsigned, String, Array, Object };
+  enum class Kind { Null, Boolean, Unsigned, String, Array, Object, Signed };
   using Object = std::map<std::string, JsonValue>;
 
   Kind kind = Kind::Null;
   bool boolean = false;
   uint64_t number = 0;
+  int64_t signedNumber = 0;
   std::string string;
   std::vector<JsonValue> array;
   Object object;
@@ -237,6 +239,7 @@ private:
       return JsonValue{};
     }
     if (ch >= '0' && ch <= '9') return parseUnsigned();
+    if (ch == '-') return parseSigned();
     fail("unsupported value type");
   }
 
@@ -260,11 +263,29 @@ private:
     if (m_cursor < m_input.size() &&
         (m_input[m_cursor] == '.' || m_input[m_cursor] == 'e' ||
          m_input[m_cursor] == 'E' || m_input[m_cursor] == '+')) {
-      fail("only unsigned integer numbers are accepted");
+      fail("only integer numbers are accepted");
     }
     JsonValue value;
     value.kind = JsonValue::Kind::Unsigned;
     value.number = number;
+    return value;
+  }
+
+  JsonValue parseSigned()
+  {
+    ++m_cursor;
+    if (m_cursor == m_input.size() || m_input[m_cursor] < '0' || m_input[m_cursor] > '9') {
+      fail("invalid signed integer");
+    }
+    const auto magnitude = parseUnsigned().number;
+    constexpr uint64_t MINIMUM_MAGNITUDE = uint64_t{1} << 63;
+    if (magnitude > MINIMUM_MAGNITUDE) {
+      fail("signed integer overflow");
+    }
+    JsonValue value;
+    value.kind = JsonValue::Kind::Signed;
+    value.signedNumber = magnitude == MINIMUM_MAGNITUDE ? std::numeric_limits<int64_t>::min()
+      : -static_cast<int64_t>(magnitude);
     return value;
   }
 
@@ -395,6 +416,8 @@ renderJson(const JsonValue& value)
     return value.boolean ? "true" : "false";
   case JsonValue::Kind::Unsigned:
     return std::to_string(value.number);
+  case JsonValue::Kind::Signed:
+    return std::to_string(value.signedNumber);
   case JsonValue::Kind::String:
     return quoteJson(value.string);
   case JsonValue::Kind::Array: {

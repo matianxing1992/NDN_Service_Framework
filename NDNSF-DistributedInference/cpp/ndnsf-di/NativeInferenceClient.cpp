@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
@@ -9,6 +10,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-owner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/control-byte-inventory.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
@@ -22,6 +24,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <string_view>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
@@ -63,6 +66,237 @@ hasAuthenticatedResponseSigner(
   catch (const std::exception&) {
     return false;
   }
+}
+
+std::string
+newHandoffOperationId()
+{
+  std::array<unsigned char, 16> bytes{};
+  if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+    throw NativeDiError("HANDOFF_ID_ALLOCATION_FAILED", "local", "handoff",
+                        "conversation handoff operation ID allocation failed");
+  static constexpr char hex[] = "0123456789abcdef";
+  std::string result = "handoff-";
+  result.reserve(result.size() + bytes.size() * 2);
+  for (const auto byte : bytes) {
+    result.push_back(hex[byte >> 4]);
+    result.push_back(hex[byte & 0x0f]);
+  }
+  return result;
+}
+
+std::string
+nativeRoleMapDigest(const std::map<std::string, std::string>& providersByRole)
+{
+  NativeJson roles = NativeJson::array();
+  for (const auto& [role, provider] : providersByRole)
+    roles.push_back(NativeJson::array({role, provider}));
+  return nativePlanningDigest(nativeCanonicalJson(roles));
+}
+
+bool
+isCanonicalHandoffDigest(const std::string& digest)
+{
+  return digest.size() == 71 && digest.compare(0, 7, "sha256:") == 0 &&
+    std::all_of(digest.begin() + 7, digest.end(), [](unsigned char value) {
+      return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
+    });
+}
+
+std::uint64_t
+handoffDeadlineUnixMs(std::chrono::steady_clock::time_point deadline)
+{
+  const auto nowSteady = std::chrono::steady_clock::now();
+  if (deadline <= nowSteady)
+    throw NativeDiError("HANDOFF_DEADLINE_EXPIRED", "conversation", "handoff",
+                        "conversation handoff deadline has expired");
+  const auto remaining = deadline - nowSteady;
+  auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count();
+  if (std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::milliseconds(remainingMs)) < remaining)
+    ++remainingMs;
+  const auto nowSystem = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  if (nowSystem <= 0 || remainingMs <= 0 ||
+      static_cast<std::uint64_t>(nowSystem) >
+        std::numeric_limits<std::uint64_t>::max() - static_cast<std::uint64_t>(remainingMs))
+    throw NativeDiError("INVALID_HANDOFF_DEADLINE", "local", "handoff",
+                        "conversation handoff deadline cannot be represented on the wire");
+  return static_cast<std::uint64_t>(nowSystem) + static_cast<std::uint64_t>(remainingMs);
+}
+
+struct NativeHandoffPendingResponse
+{
+  std::mutex mutex;
+  std::condition_variable changed;
+  bool dispatchFinished = false;
+  bool dispatchAccepted = false;
+  bool dispatchAbandoned = false;
+  std::exception_ptr dispatchError;
+  bool complete = false;
+  bool success = false;
+  bool timedOut = false;
+  std::string error;
+  std::vector<std::uint8_t> payload;
+};
+
+std::shared_ptr<NativeHandoffPendingResponse>
+dispatchHandoffWire(
+  const std::shared_ptr<ndn_service_framework::ServiceUser>& user,
+  const ndn::Name& provider,
+  const ndn::Name& service,
+  const std::string& wire,
+  const char* capability,
+  std::chrono::steady_clock::time_point deadline)
+{
+  if (!user || provider.empty() || service.empty())
+    throw NativeDiError("INVALID_HANDOFF_TARGET", "local", "handoff",
+                        "conversation handoff requires a Provider, service, and ServiceUser");
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+    deadline - std::chrono::steady_clock::now());
+  if (remaining.count() <= 0)
+    throw NativeDiError("HANDOFF_DEADLINE_EXPIRED", "conversation", "handoff",
+                        "conversation handoff deadline expired before targeted dispatch");
+  if (wire.empty() || wire.size() > (128U << 10) ||
+      (std::string_view(capability) != "NativeConversationHandoffV1" &&
+       std::string_view(capability) != "NativeConversationHandoffV2"))
+    throw NativeDiError("INVALID_HANDOFF_WIRE", "local", "handoff",
+                        "targeted handoff control has invalid wire or capability");
+  auto pending = std::make_shared<NativeHandoffPendingResponse>();
+  ndn_service_framework::RequestMessage request;
+  ndn::Buffer payload(wire.begin(), wire.end());
+  request.setPayload(payload, payload.size());
+  // Handoff replies carry Owner publication references and can exceed the
+  // inline response threshold. Do not depend on a Controller default to
+  // establish the per-invocation response key for this targeted control call.
+  // Request-scoped input moves the JSON body out of the bootstrap Request, so
+  // the Provider uses this authenticated capability to route its ACK decision
+  // to the handoff control path before the encrypted input is fetched.
+  ndn_service_framework::RequestCapabilities capabilities;
+  capabilities.setField("RequestScopedConfidentialityV1", "required");
+  capabilities.setField(capability, "required");
+  request.setRequestCapabilities(std::move(capabilities));
+  // RequestServiceTargeted owns Face-side admission state and timers. Keep
+  // dispatch on the User Face thread, then wait only for that admission result
+  // here; the Provider response remains asynchronous in `pending`.
+  user->postToIo([user, provider, service, request = std::move(request), pending, deadline]() mutable {
+    {
+      std::lock_guard<std::mutex> lock(pending->mutex);
+      if (pending->dispatchAbandoned) return;
+    }
+    std::exception_ptr dispatchError;
+    bool dispatchAccepted = false;
+    try {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+      if (remaining.count() <= 0)
+        throw NativeDiError("HANDOFF_DEADLINE_EXPIRED", "conversation", "handoff",
+                            "conversation handoff deadline expired before targeted dispatch");
+      // Bound Core's pending request by the same absolute handoff deadline.
+      const auto timeoutMs = static_cast<int>(std::min<std::int64_t>(
+        remaining.count(), std::numeric_limits<int>::max()));
+      const auto requestName = user->RequestServiceTargeted(provider, service, std::move(request), timeoutMs,
+        [pending](const ndn::Name&) {
+          std::lock_guard<std::mutex> lock(pending->mutex);
+          if (pending->complete) return;
+          pending->complete = true;
+          pending->timedOut = true;
+          pending->error = "targeted conversation handoff request timed out";
+          pending->changed.notify_all();
+        },
+        [pending, expectedProvider = provider.toUri()]
+        (const ndn_service_framework::ResponseMessage& response) {
+          std::vector<std::uint8_t> bytes;
+          std::string error;
+          if (!response.getStatus())
+            error = response.getErrorInfo().empty() ? "targeted handoff request was rejected"
+                                                    : response.getErrorInfo();
+          else if (!hasAuthenticatedResponseSigner(response, expectedProvider))
+            error = "targeted handoff response signer does not match the selected Provider";
+          else {
+            const auto received = response.getPayload();
+            if (received.empty() || received.size() > (128U << 10))
+              error = "targeted handoff reply is empty or exceeds its wire bound";
+            else
+              bytes.assign(received.begin(), received.end());
+          }
+          std::lock_guard<std::mutex> lock(pending->mutex);
+          if (pending->complete) return;
+          pending->complete = true;
+          pending->success = error.empty();
+          pending->error = std::move(error);
+          pending->payload = std::move(bytes);
+          pending->changed.notify_all();
+        });
+      if (requestName.empty())
+        throw NativeDiError("HANDOFF_DISPATCH_FAILED", "conversation", "handoff",
+                            "Core rejected the targeted handoff request before dispatch");
+      dispatchAccepted = true;
+    }
+    catch (...) { dispatchError = std::current_exception(); }
+    {
+      std::lock_guard<std::mutex> lock(pending->mutex);
+      pending->dispatchAccepted = dispatchAccepted;
+      pending->dispatchError = dispatchError;
+      pending->dispatchFinished = true;
+    }
+    pending->changed.notify_all();
+  });
+  std::unique_lock<std::mutex> lock(pending->mutex);
+  if (!pending->changed.wait_until(lock, deadline, [&] { return pending->dispatchFinished; })) {
+    pending->dispatchAbandoned = true;
+    throw NativeDiError("HANDOFF_DEADLINE_EXPIRED", "conversation", "handoff",
+                        "conversation handoff deadline expired before targeted dispatch");
+  }
+  if (pending->dispatchError) std::rethrow_exception(pending->dispatchError);
+  if (!pending->dispatchAccepted)
+    throw NativeDiError("HANDOFF_DISPATCH_FAILED", "conversation", "handoff",
+                        "Core rejected the targeted handoff request before dispatch");
+  return pending;
+}
+
+std::shared_ptr<NativeHandoffPendingResponse>
+dispatchHandoffControl(
+  const std::shared_ptr<ndn_service_framework::ServiceUser>& user,
+  const ndn::Name& provider,
+  const ndn::Name& service,
+  const NativeConversationHandoffControlV1& control,
+  std::chrono::steady_clock::time_point deadline)
+{
+  return dispatchHandoffWire(user, provider, service,
+    nativeCanonicalJson(nativeConversationHandoffControlV1ToJson(control)),
+    "NativeConversationHandoffV1", deadline);
+}
+
+std::string
+awaitHandoffResponse(const std::shared_ptr<NativeHandoffPendingResponse>& pending,
+                     std::chrono::steady_clock::time_point deadline,
+                     const std::function<bool()>& cancelled = {})
+{
+  if (!pending)
+    throw NativeDiError("HANDOFF_DISPATCH_FAILED", "conversation", "handoff",
+                        "targeted handoff request has no pending response owner");
+  std::unique_lock<std::mutex> lock(pending->mutex);
+  while (!pending->complete) {
+    if (cancelled && cancelled())
+      throw NativeDiError("CANCELLED", "conversation", "handoff",
+                          "conversation handoff was cancelled");
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline)
+      throw NativeDiError("HANDOFF_DEADLINE_EXPIRED", "conversation", "handoff",
+                          "conversation handoff deadline expired while awaiting a Provider");
+    pending->changed.wait_until(lock, std::min(deadline, now + std::chrono::milliseconds(25)));
+  }
+  if (!pending->success && pending->error == "BUDGET_EXCEEDED")
+    throw NativeDiError("BUDGET_EXCEEDED", "resource", "handoff",
+                        "Provider handoff exceeds a configured resource limit");
+  if (pending->timedOut)
+    throw NativeDiError("HANDOFF_PROVIDER_TIMEOUT", "conversation", "targeted",
+                        pending->error);
+  if (!pending->success)
+    throw NativeDiError("HANDOFF_PROVIDER_REQUEST_FAILED", "conversation", "targeted",
+                        pending->error.empty() ? "targeted handoff request failed" : pending->error);
+  return std::string(pending->payload.begin(), pending->payload.end());
 }
 
 std::string
@@ -164,56 +398,6 @@ defaultClock()
   return [] { return std::chrono::steady_clock::now(); };
 }
 
-ProviderConversationStateReceiptV1
-parseConversationReceipt(const NativeJson& value)
-{
-  static const std::set<std::string> fields = {
-    "adapterDigest", "cacheEpoch", "conversationId", "expiresAtMs",
-    "graphSemanticDigest", "layoutDigest", "modelDigest",
-    "originGenerationId", "originRequestId", "parentContextEpoch",
-    "planRoleMapDigest", "positionDigest", "prefixDigest", "prefixTokenCount",
-    "providerBootId", "providerIdentity", "receiptDigest", "requesterIdentity",
-    "roleName", "roleSplitDigest", "schema", "securityDomainDigest",
-    "serviceName", "signature", "stateComponentDigests", "stateSchemaDigest",
-    "successorContextEpoch",
-  };
-  if (!value.is_object() || value.value("schema", std::string{}) !=
-        "ndnsf-di-provider-conversation-receipt-v1")
-    throw std::invalid_argument("conversation receipt schema mismatch");
-  std::set<std::string> seen;
-  for (const auto& item : value.items()) seen.insert(item.key());
-  if (seen != fields) throw std::invalid_argument("conversation receipt field set mismatch");
-  ProviderConversationStateReceiptV1 result;
-  result.conversationId = value.at("conversationId").get<std::string>();
-  result.parentContextEpoch = value.at("parentContextEpoch").get<std::uint64_t>();
-  result.successorContextEpoch = value.at("successorContextEpoch").get<std::uint64_t>();
-  result.originRequestId = value.at("originRequestId").get<std::string>();
-  result.originGenerationId = value.at("originGenerationId").get<std::string>();
-  result.serviceName = value.at("serviceName").get<std::string>();
-  result.requesterIdentity = value.at("requesterIdentity").get<std::string>();
-  result.securityDomainDigest = value.at("securityDomainDigest").get<std::string>();
-  result.modelDigest = value.at("modelDigest").get<std::string>();
-  result.graphSemanticDigest = value.at("graphSemanticDigest").get<std::string>();
-  result.adapterDigest = value.at("adapterDigest").get<std::string>();
-  result.roleName = value.at("roleName").get<std::string>();
-  result.roleSplitDigest = value.at("roleSplitDigest").get<std::string>();
-  result.layoutDigest = value.at("layoutDigest").get<std::string>();
-  result.planRoleMapDigest = value.at("planRoleMapDigest").get<std::string>();
-  result.providerIdentity = value.at("providerIdentity").get<std::string>();
-  result.providerBootId = value.at("providerBootId").get<std::string>();
-  result.cacheEpoch = value.at("cacheEpoch").get<std::uint64_t>();
-  result.prefixDigest = value.at("prefixDigest").get<std::string>();
-  result.prefixTokenCount = value.at("prefixTokenCount").get<std::uint32_t>();
-  result.positionDigest = value.at("positionDigest").get<std::string>();
-  result.stateSchemaDigest = value.at("stateSchemaDigest").get<std::string>();
-  result.stateComponentDigests = value.at("stateComponentDigests").get<std::vector<std::string>>();
-  result.expiresAtMs = value.at("expiresAtMs").get<std::uint64_t>();
-  result.validate();
-  if (value.at("receiptDigest") != result.computedDigest() ||
-      !value.at("signature").is_string() || !value.at("signature").get<std::string>().empty())
-    throw std::invalid_argument("conversation receipt digest or signature field mismatch");
-  return result;
-}
 
 NativeJson
 conversationControlJson(const char* action,
@@ -342,6 +526,11 @@ struct NativeInferenceHandle::Operation
   std::chrono::steady_clock::time_point deadline{};
   std::function<void()> cancelDeadline;
   std::function<void()> cancelBootstrapRetry;
+  std::function<void()> cancelRecoveryRetry;
+  std::shared_ptr<const std::map<std::string, NativeConversationRecoveryExpectationV1>> recoveryExpectations;
+  std::map<std::string, NativeConversationStateReadyV2> recoveryReadyByRole;
+  bool recoveryPending = false;
+  bool recoveryActivated = false;
   std::uint64_t staleCallbacks = 0;    // late/duplicate terminal attempts: counted, never resurrecting
   std::uint64_t deliveryOverflows = 0; // reliable stream publication failures (internal)
   std::uint64_t nextEventSequence = 0;
@@ -368,6 +557,9 @@ struct NativeInferenceHandle::Operation
       ++staleCallbacks;
       return false;
     }
+    if (recoveryPending && !recoveryActivated)
+      throw NativeDiError("NATIVE_CONVERSATION_RECOVERY_NOT_ACTIVATED", "provider", "stream-accept",
+                          "generation event preceded all-role recovery activation", requestId, attempt);
     const auto reject = [&](const char* message) {
       throw NativeDiError("StreamEventLineageMismatch", "provider", "stream-accept",
                           message, requestId, attempt);
@@ -446,6 +638,9 @@ struct NativeInferenceHandle::Operation
       ++staleCallbacks;
       return false;
     }
+    if (recoveryPending && !recoveryActivated)
+      throw NativeDiError("NATIVE_CONVERSATION_RECOVERY_NOT_ACTIVATED", "provider", "stream-final",
+                          "generation final preceded all-role recovery activation", requestId, attempt);
     if (payload.size() > (64U << 20))
       throw NativeDiError("StreamFinalMismatch", "provider", "stream-final",
                           "generation final exceeds wire bound", requestId, attempt);
@@ -544,6 +739,43 @@ publishEvent(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
 // a Core callback landing after the terminal — is counted as stale and
 // consumed; it can never resurrect or replace the recorded outcome.  Callers
 // must not hold the operation lock.
+using RecoveryExpectations =
+  std::shared_ptr<const std::map<std::string, NativeConversationRecoveryExpectationV1>>;
+
+// Runs on the Core Face before its request keys are erased. This is best effort,
+// not a remote acknowledgment; the Provider's original deadline still fences work.
+void publishRecoveryCancellation(const std::shared_ptr<ndn_service_framework::ServiceUser>& user,
+                                 const RecoveryExpectations& expectations) noexcept
+{
+  if (!user || !expectations) return;
+  for (const auto& item : *expectations) {
+    try {
+      const auto& projection = item.second.projection;
+      if (!projection.conversationStateReference || !projection.conversationTurnBinding ||
+          !projection.protectedKvRestore) continue;
+      NativeConversationRecoveryCancelV1 cancel;
+      cancel.requestId = projection.requestId; cancel.attemptEpoch = projection.attempt;
+      cancel.generationId = projection.generationContract.generationId;
+      cancel.planDigest = projection.planDigest; cancel.parent = *projection.conversationStateReference;
+      cancel.providerIdentity = projection.provider; cancel.providerBootId = item.second.admittedBootEpoch;
+      cancel.parent.expiresAtMs = std::min({cancel.parent.expiresAtMs, projection.deadlineMs,
+        projection.protectedKvRestore->at("expiresAtMs").get<std::uint64_t>(),
+        projection.conversationTurnBinding->retentionDeadlineMs});
+      const auto now = static_cast<std::uint64_t>(std::max<std::int64_t>(0,
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count()));
+      nativeValidateConversationRecoveryCancelV1(cancel, projection, item.second.admittedBootEpoch, now);
+      const auto wire = nativeConversationCanonicalJson(nativeConversationRecoveryCancelV1ToJson(cancel));
+      user->publishCollaborationData(ndn::Name(projection.provider), ndn::Name(projection.requestId),
+        kConversationStateScope, ndn::Name("/ndnsf-di/conversation/recovery-cancel"),
+        ndn::Buffer(wire.begin(), wire.end()));
+    }
+    catch (...) {
+      // A failed role send must not prevent other sends or terminal cleanup.
+    }
+  }
+}
+
 bool
 markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
              NativeRequestStatus terminal,
@@ -555,6 +787,8 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   std::function<void()> cancelDeadline;
   std::function<void()> cancelBootstrapRetry;
   bool cancelCore = false;
+  std::function<void()> cancelRecoveryRetry;
+  RecoveryExpectations cancelledRecovery;
   std::vector<std::string> releaseScopes;
   std::shared_ptr<NativeConversationCoordinator> conversations;
   std::optional<NativeConversationTurn> conversationTurn;
@@ -601,6 +835,8 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     conversationTurn = operation->conversationTurn;
     terminalAttempt = operation->attempt;
     conversationCommitted = operation->conversationCommitted;
+    if (terminal != NativeRequestStatus::Succeeded && !conversationCommitted)
+      cancelledRecovery = operation->recoveryExpectations;
     if (operation->options.conversation && operation->options.conversation->onTerminal)
       conversationTerminal = operation->options.conversation->onTerminal;
     deferConversationCleanup = operation->conversationTransactionActive;
@@ -625,6 +861,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     operation->phase = DiRequestPhase::Terminal;
     cancelDeadline = std::move(operation->cancelDeadline);
     cancelBootstrapRetry = std::move(operation->cancelBootstrapRetry);
+    cancelRecoveryRetry = std::move(operation->cancelRecoveryRetry);
   }
   // Conversation rollback is part of the internal terminal transition. It
   // must finish before either the event reader or result waiter can observe a
@@ -722,6 +959,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   unregisterOperation(operation);
   if (cancelDeadline) cancelDeadline();
   if (cancelBootstrapRetry) cancelBootstrapRetry();
+  if (cancelRecoveryRetry) cancelRecoveryRetry();
   if (cancelCore && !deferConversationCleanup) {
     const auto user = operation->user;
     const auto id = ndn::Name(operation->coreRequestId);
@@ -729,9 +967,10 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     const auto operationRuntime = operation->operationRuntime;
     if (cleanupState)
       cleanupState->pending.fetch_add(1, std::memory_order_acq_rel);
-    auto cleanup = [user, id, scopes = std::move(releaseScopes), cleanupState,
+    auto cleanup = [user, id, scopes = std::move(releaseScopes), cleanupState, cancelledRecovery,
                     operationRuntime] {
       try {
+        publishRecoveryCancellation(user, cancelledRecovery);
         user->CancelCollaboration(id);
         // A conversation commit may still need the request-scope key for
         // ROLLBACK/FINALIZE. The transaction owner clears it after its callback
@@ -845,6 +1084,139 @@ void enqueueOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& o
     if (!operation->cancelled->load()) failOperation(operation, NativeDiError(
       "NATIVE_REQUEST_DISPATCH_FAILED", "local", boundary, "request worker is unavailable",
       operation->requestId, operation->attempt));
+  }
+}
+
+void pollConversationRecovery(
+  const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+  std::uint64_t sourceAttempt)
+{
+  try {
+    using Expectations = std::map<std::string, NativeConversationRecoveryExpectationV1>;
+    std::shared_ptr<const Expectations> expected;
+    std::string coreRequest;
+    {
+      std::lock_guard<std::mutex> lock(operation->mutex);
+      if (operation->cancelled->load() || operation->attempt != sourceAttempt ||
+          operation->phase != DiRequestPhase::Committed || !operation->recoveryPending ||
+          operation->recoveryActivated)
+        return;
+      expected = operation->recoveryExpectations;
+      coreRequest = operation->coreRequestId;
+    }
+    if (!operation->coreState || !operation->coreState->isPending()) return;
+    if (std::chrono::steady_clock::now() >= operation->deadline)
+      throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "conversation", "recovery-ready",
+        "all-role recovery readiness exceeded the original deadline", operation->requestId, sourceAttempt);
+    if (!expected || expected->empty())
+      throw std::runtime_error("recovery barrier has no immutable selected-role expectations");
+    const ndn::Name readyTopic("/ndnsf-di/conversation/ready");
+    const auto records = operation->user->waitForVerifiedCollaborationData(
+      ndn::Name(coreRequest), kConversationStateScope, readyTopic, 1, 20, true);
+    const auto nowMs = static_cast<std::uint64_t>(std::max<std::int64_t>(0,
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count()));
+    std::map<std::string, NativeConversationStateReadyV2> observed;
+    for (const auto& record : records) {
+      const auto role = expected->find(record.producerRole);
+      if (record.requestId != ndn::Name(coreRequest) || record.keyScope != kConversationStateScope ||
+          record.topic != readyTopic || role == expected->end())
+        throw std::runtime_error("recovery READY transport or selected-role binding mismatch");
+      auto ready = nativeConversationStateReadyV2FromJson(
+        std::string(record.payload.begin(), record.payload.end()));
+      nativeValidateConversationStateReadyV2(ready, role->second.projection,
+        role->second.admittedBootEpoch, record.producer.toUri(), record.producerRole, nowMs);
+      const auto [found, inserted] = observed.emplace(record.producerRole, ready);
+      if (!inserted && found->second.readyDigest != ready.readyDigest)
+        throw std::runtime_error("conflicting recovery READY for one selected role");
+    }
+    {
+      std::lock_guard<std::mutex> lock(operation->mutex);
+      if (operation->cancelled->load() || operation->attempt != sourceAttempt ||
+          operation->phase != DiRequestPhase::Committed || operation->recoveryExpectations != expected)
+        return;
+      for (const auto& [role, ready] : observed) {
+        const auto [found, inserted] = operation->recoveryReadyByRole.emplace(role, ready);
+        if (!inserted && found->second.readyDigest != ready.readyDigest)
+          throw std::runtime_error("conflicting recovery READY across poll rounds");
+      }
+      observed = operation->recoveryReadyByRole;
+    }
+    if (observed.size() != expected->size()) {
+      auto ticket = operation->operationRuntime->acquire();
+      const auto weak = std::weak_ptr<NativeInferenceHandle::Operation>(operation);
+      auto cancelRetry = operation->operationRuntime->scheduleAt(ticket,
+        std::min(operation->deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(20)),
+        [weak, sourceAttempt] {
+          if (const auto current = weak.lock()) {
+            {
+              std::lock_guard<std::mutex> lock(current->mutex);
+              if (current->attempt != sourceAttempt || current->cancelled->load()) return;
+              current->cancelRecoveryRetry = {};
+            }
+            enqueueOperation(current, [current, sourceAttempt] {
+              pollConversationRecovery(current, sourceAttempt);
+            }, "recovery-ready");
+          }
+        });
+      bool retained = false;
+      {
+        std::lock_guard<std::mutex> lock(operation->mutex);
+        if (!operation->cancelled->load() && operation->attempt == sourceAttempt &&
+            operation->phase == DiRequestPhase::Committed && operation->recoveryExpectations == expected) {
+          operation->cancelRecoveryRetry = cancelRetry;
+          retained = true;
+        }
+      }
+      if (!retained && cancelRetry) cancelRetry();
+      return;
+    }
+    const auto setDigest = nativeConversationRecoveryReadySetDigest(observed);
+    const auto expiry = std::min_element(observed.begin(), observed.end(),
+      [](const auto& a, const auto& b) { return a.second.parent.expiresAtMs < b.second.parent.expiresAtMs; })
+        ->second.parent.expiresAtMs;
+    for (const auto& [role, ready] : observed) {
+      {
+        std::lock_guard<std::mutex> lock(operation->mutex);
+        if (operation->cancelled->load() || operation->attempt != sourceAttempt ||
+            operation->phase != DiRequestPhase::Committed || operation->recoveryExpectations != expected)
+          return;
+      }
+      if (std::chrono::steady_clock::now() >= operation->deadline)
+        throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "conversation", "recovery-activate",
+          "recovery activation exceeded the original deadline", operation->requestId, sourceAttempt);
+      NativeConversationRecoveryActivationV1 activation;
+      activation.requestId = ready.requestId; activation.attemptEpoch = ready.attemptEpoch;
+      activation.generationId = ready.generationId; activation.planDigest = ready.planDigest;
+      activation.conversationId = ready.parent.conversationId; activation.contextEpoch = ready.parent.contextEpoch;
+      activation.serviceName = ready.parent.serviceName; activation.planRoleMapDigest = ready.parent.planRoleMapDigest;
+      activation.checkpointDigest = ready.parent.checkpointDigest; activation.roleName = role;
+      activation.readyDigest = ready.readyDigest; activation.readySetDigest = setDigest; activation.expiresAtMs = expiry;
+      const auto activationNowMs = static_cast<std::uint64_t>(std::max<std::int64_t>(0,
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count()));
+      nativeValidateConversationRecoveryActivationV1(activation, ready, activationNowMs);
+      const auto wire = nativeConversationCanonicalJson(nativeConversationRecoveryActivationV1ToJson(activation));
+      if (!operation->user->publishCollaborationData(ndn::Name(expected->at(role).projection.provider),
+            ndn::Name(coreRequest), kConversationStateScope,
+            ndn::Name("/ndnsf-di/conversation/recovery-activate"), ndn::Buffer(wire.begin(), wire.end())))
+        throw std::runtime_error("recovery activation publication was rejected");
+    }
+    // Token/response/final bodies use this same serial worker. They may already
+    // be queued, but cannot check acceptance until the entire set is published.
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    if (!operation->cancelled->load() && operation->attempt == sourceAttempt &&
+        operation->phase == DiRequestPhase::Committed && operation->recoveryExpectations == expected)
+      operation->recoveryActivated = true;
+  }
+  catch (const NativeDiError& error) { failOperation(operation, error, sourceAttempt); }
+  catch (const std::exception& error) {
+    failOperation(operation, NativeDiError("NATIVE_CONVERSATION_RECOVERY_FAILED", "conversation",
+      "recovery-ready", error.what(), operation->requestId, sourceAttempt), sourceAttempt);
+  }
+  catch (...) {
+    failOperation(operation, NativeDiError("NATIVE_CONVERSATION_RECOVERY_FAILED", "conversation",
+      "recovery-ready", "recovery barrier failed", operation->requestId, sourceAttempt), sourceAttempt);
   }
 }
 
@@ -1543,6 +1915,7 @@ void finishConversationTransaction(
   std::vector<std::string> scopes;
   bool clearScopes = false;
   bool cancelCore = false;
+  RecoveryExpectations cancelledRecovery;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
     if (!operation->conversationTransactionActive) return;
@@ -1550,6 +1923,8 @@ void finishConversationTransaction(
     clearScopes = operation->conversationCleanupDeferred;
     operation->conversationCleanupDeferred = false;
     cancelCore = operation->conversationCancelDeferred;
+    if (cancelCore && !operation->conversationCommitted)
+      cancelledRecovery = operation->recoveryExpectations;
     operation->conversationCancelDeferred = false;
     if (clearScopes && operation->planned) {
       for (const auto& scope : operation->planned->corePlan.keyScopes)
@@ -1565,9 +1940,10 @@ void finishConversationTransaction(
     cleanupState = operation->ioCleanupState;
     if (cleanupState)
       cleanupState->pending.fetch_add(1, std::memory_order_acq_rel);
-    auto cleanup = [user, id, scopes = std::move(scopes), cancelCore, cleanupState,
+    auto cleanup = [user, id, scopes = std::move(scopes), cancelCore, cleanupState, cancelledRecovery,
                     operationRuntime] {
       try {
+        publishRecoveryCancellation(user, cancelledRecovery);
         if (cancelCore) user->CancelCollaboration(id);
         for (const auto& scope : scopes)
           user->clearVerifiedCollaborationData(id, scope);
@@ -1632,7 +2008,7 @@ collectConversationReceipts(
     }
     ProviderConversationStateReceiptV1 receipt;
     try {
-      receipt = parseConversationReceipt(nativeParseJson(
+      receipt = nativeReadProviderConversationStateReceipt(nativeParseJson(
         std::string(record.payload.begin(), record.payload.end())));
     }
     catch (const std::exception&) {
@@ -1960,6 +2336,8 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
   NativeApplicationInput input;
   std::vector<std::string> oldScopes;
   std::string oldRequest;
+  RecoveryExpectations oldRecovery;
+  std::function<void()> cancelOldRecovery;
   std::optional<NativeConversationTurn> oldConversationTurn;
   std::optional<NativeConversationTurn> replacementConversationTurn;
   std::shared_ptr<NativeConversationCoordinator> conversations;
@@ -2024,6 +2402,12 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         operation->conversationTurn = std::move(replacementConversationTurn);
       }
       operation->phase = DiRequestPhase::New;
+      oldRecovery = operation->recoveryExpectations;
+      cancelOldRecovery = std::move(operation->cancelRecoveryRetry);
+      operation->recoveryExpectations.reset();
+      operation->recoveryReadyByRole.clear();
+      operation->recoveryPending = false;
+      operation->recoveryActivated = false;
       operation->planned.reset();
       operation->coreActive = false;
       operation->options.stream->attemptEpoch = operation->options.stream->streamEpoch = 2;
@@ -2043,8 +2427,11 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
     return false;
   }
   const auto user = operation->user;
-  user->postToIo([user, oldRequest, oldScopes = std::move(oldScopes)] {
+  if (cancelOldRecovery) cancelOldRecovery();
+  user->postToIo([user, owner = operation->ownerLease, oldRequest, oldRecovery,
+                  oldScopes = std::move(oldScopes)] {
     const ndn::Name id(oldRequest);
+    publishRecoveryCancellation(user, oldRecovery);
     user->CancelCollaboration(id);
     for (const auto& scope : oldScopes) user->clearVerifiedCollaborationData(id, scope);
   });
@@ -2260,6 +2647,10 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
               plannedConversationTurn = conversations->bindAttemptPlanRoleMap(
                 *plannedConversationTurn, planned.sealed.core.assignment.providerByRole);
             }
+            else if (plannedConversationTurn->protectedKvReferences) {
+              plannedConversationTurn = conversations->bindRecoveryPlanRoleMap(
+                *plannedConversationTurn, planned.sealed.core.assignment.providerByRole);
+            }
             else if (plannedConversationTurn->parent.planRoleMapDigest.empty()) {
               plannedConversationTurn = conversations->bindInitialPlanRoleMap(
                 *plannedConversationTurn, planned.sealed.core.assignment.providerByRole);
@@ -2272,6 +2663,9 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
               conversations->bindGrantLease(*plannedConversationTurn, *planned.grantLease);
             }
           }
+          const auto expectedRecovery = planned.recoveryExpectations.empty() ? nullptr :
+            std::make_shared<const std::map<std::string, NativeConversationRecoveryExpectationV1>>(
+              planned.recoveryExpectations);
           const auto corePlan = planned.corePlan;
           const auto sealedPlanDigest = planned.sealed.planDigest;
           const auto manifestDigest = planned.sealed.core.artifacts.manifestDigest;
@@ -2287,6 +2681,10 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             if (!operation->cancelled->load() && operation->attempt == sourceAttempt &&
                 operation->phase == DiRequestPhase::Planning && sameTurn) {
               operation->planned = std::move(planned);
+              operation->recoveryExpectations = expectedRecovery;
+              operation->recoveryReadyByRole.clear();
+              operation->recoveryPending = bool(expectedRecovery);
+              operation->recoveryActivated = false;
               if (plannedConversationTurn)
                 operation->conversationTurn = std::move(plannedConversationTurn);
               published = true;
@@ -2328,9 +2726,17 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
                          << " manifestJson=" << manifestJson;
                 logRuntimeEvidence(record.str());
               }
-              std::lock_guard<std::mutex> lock(operation->mutex);
-            if (!operation->cancelled->load() && operation->attempt == sourceAttempt)
-                operation->phase = DiRequestPhase::Committed;
+              bool recover = false;
+              {
+                std::lock_guard<std::mutex> lock(operation->mutex);
+                if (!operation->cancelled->load() && operation->attempt == sourceAttempt) {
+                  operation->phase = DiRequestPhase::Committed;
+                  recover = operation->recoveryPending;
+                }
+              }
+              if (recover) enqueueOperation(operation, [operation, sourceAttempt] {
+                pollConversationRecovery(operation, sourceAttempt);
+              }, "recovery-ready");
             }
             catch (const NativeDiError& error) { failOperation(operation, error, sourceAttempt); }
             catch (const std::exception& error) {
@@ -2707,6 +3113,14 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
         std::lock_guard<std::mutex> lock(operation->mutex);
       if (!operation->cancelled->load()) {
           operation->conversationTurn = turn;
+          if (turn.protectedKvReferences) {
+            // Durable explicit placement supersedes the old model's discovery
+            // pins. An empty next map deliberately performs fresh discovery.
+            std::set<ndn::Name> targets;
+            for (const auto& item : turn.providersByRole)
+              targets.emplace(item.second);
+            operation->options.providerNames.assign(targets.begin(), targets.end());
+          }
           installed = true;
         }
       }
@@ -3131,11 +3545,13 @@ NativeInferenceClient::NativeInferenceClient(
   , m_preparation(std::move(preparation))
   , m_admission(std::move(admission))
   , m_operationRuntime(ndn_service_framework::OperationRuntime::create(testPort.submitHook))
+  , m_handoffWorkerGate(std::make_shared<HandoffWorkerClientGate>())
   , m_requestOwnerScope(testPort.submitHook ? std::string{} : processRequestOwnerScope())
   , m_now(testPort.now ? testPort.now : defaultClock())
   , m_operationRegistry(std::make_shared<NativeOperationRegistry>())
   , m_schedule(testPort.scheduleHook)
 {
+  m_handoffWorkerGate->client = this;
   m_ioCleanupState = std::make_shared<NativeIoCleanupState>();
   if (!m_user || !m_adapters) {
     throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "constructor",
@@ -3145,6 +3561,11 @@ NativeInferenceClient::NativeInferenceClient(
 
 NativeInferenceClient::~NativeInferenceClient() noexcept
 {
+  {
+    std::lock_guard<std::mutex> lock(m_handoffWorkerGate->mutex);
+    m_handoffWorkerGate->client = nullptr;
+  }
+  m_operationRuntime->deferJoinOnDestroy();
   close();
 }
 
@@ -3476,9 +3897,734 @@ NativeInferenceHandle NativeInferenceClient::requestCooperative(
                      std::move(splitStrategy), std::move(placementStrategy), options);
 }
 
+NativeWithdrawalQueryReplyV1 NativeInferenceClient::queryProviderWithdrawalIntent(
+  const std::string& conversationId,
+  const std::string& expectedCheckpointDigest,
+  const std::string& providerIdentity,
+  std::chrono::steady_clock::time_point deadline)
+{
+  if (!m_user || !m_conversations || !m_requestContract ||
+      m_requestContract->serviceName.empty())
+    throw NativeDiError("WITHDRAWAL_QUERY_CONFIGURATION_INVALID", "local", "withdrawal",
+                        "authenticated Owner, service and Producer trust are required");
+  if (m_user->isOnIoThread())
+    throw NativeDiError("WITHDRAWAL_QUERY_FACE_THREAD", "local", "withdrawal",
+                        "Owner query must run away from the User Face thread");
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_closed)
+      throw NativeDiError("RUNTIME_CLOSED", "local", "withdrawal",
+                          "native inference client is closed");
+  }
+  if (deadline <= std::chrono::steady_clock::now() ||
+      deadline - std::chrono::steady_clock::now() > std::chrono::minutes(10) ||
+      !isCanonicalHandoffDigest(expectedCheckpointDigest))
+    throw NativeDiError("WITHDRAWAL_QUERY_BINDING_INVALID", "conversation", "withdrawal",
+                        "query deadline and checkpoint must be current and bounded");
+  const ndn::Name provider(providerIdentity);
+  const ndn::Name service(m_requestContract->serviceName);
+  if (provider.empty() || service.empty() ||
+      provider.toUri(ndn::name::UriFormat::ALTERNATE) != providerIdentity ||
+      service.toUri(ndn::name::UriFormat::ALTERNATE) != m_requestContract->serviceName)
+    throw NativeDiError("WITHDRAWAL_QUERY_TARGET_INVALID", "local", "withdrawal",
+                        "query Provider and service must have canonical names");
+  const auto current = m_conversations->find(conversationId);
+  if (!current || current->serviceName != m_requestContract->serviceName ||
+      current->checkpoint.conversationId != conversationId ||
+      current->checkpoint.checkpointDigest != expectedCheckpointDigest ||
+      current->checkpoint.providersByRole.empty())
+    throw NativeDiError("WITHDRAWAL_QUERY_CHECKPOINT_CHANGED", "conversation", "withdrawal",
+                        "query must bind the current committed conversation");
+  const auto owner = m_user->getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  if (!m_runtime || owner != m_runtime->requesterIdentity)
+    throw NativeDiError("WITHDRAWAL_QUERY_OWNER_MISMATCH", "authorization", "withdrawal",
+                        "query Owner must match the committed conversation");
+  NativeJson sourceBinding = NativeJson::array();
+  std::vector<std::string> localRoles;
+  for (const auto& [role, source] : current->checkpoint.providersByRole) {
+    sourceBinding.push_back(NativeJson::array({role, source}));
+    if (source == providerIdentity)
+      localRoles.push_back(role);
+  }
+  if (localRoles.empty() || localRoles.size() > 64 ||
+      current->checkpoint.providersByRole.size() > 64)
+    throw NativeDiError("WITHDRAWAL_QUERY_SOURCE_MISMATCH", "conversation", "withdrawal",
+                        "query Provider is not in the committed source role map");
+  NativeWithdrawalQueryV1 query;
+  query.conversationId = conversationId;
+  query.checkpointDigest = expectedCheckpointDigest;
+  query.deadlineMs = handoffDeadlineUnixMs(deadline);
+  const auto wire = nativeCanonicalJson(nativeWithdrawalQueryV1ToJson(query));
+  auto pending = dispatchHandoffWire(m_user, provider, service, wire,
+                                     "NativeConversationHandoffV2", deadline);
+  auto reply = nativeWithdrawalQueryReplyV1FromJson(
+    awaitHandoffResponse(pending, deadline));
+  if (reply.query.conversationId != query.conversationId ||
+      reply.query.checkpointDigest != query.checkpointDigest ||
+      reply.query.deadlineMs != query.deadlineMs)
+    throw NativeDiError("WITHDRAWAL_QUERY_REPLY_MISMATCH", "conversation", "withdrawal",
+                        "Provider reply changed the authenticated query binding");
+  if (reply.status != NativeWithdrawalQueryStatusV1::Intent)
+    return reply;
+  const auto& intent = *reply.intent;
+  if (intent.ownerIdentity != owner ||
+      intent.serviceName != m_requestContract->serviceName ||
+      intent.conversationId != conversationId ||
+      intent.checkpointDigest != expectedCheckpointDigest ||
+      intent.sourceRoleMapDigest != nativePlanningDigest(nativeCanonicalJson(sourceBinding)) ||
+      intent.localRoles != localRoles || intent.deadlineMs < query.deadlineMs)
+    throw NativeDiError("WITHDRAWAL_INTENT_BINDING_MISMATCH", "authorization", "withdrawal",
+                        "Provider intent does not match the Owner's committed source state");
+  nativeValidateWithdrawalIntentProofV1(reply.originalProofWire, provider, intent,
+    static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()),
+    [user = m_user, &provider, deadline](const ndn::Data& data,
+                                       const ndn::Name& expected) {
+      const auto& wire = data.wireEncode();
+      return expected == provider && user->validateProducerPacketWireUntil(
+        std::vector<std::uint8_t>(wire.begin(), wire.end()), expected, deadline);
+    });
+  const auto latest = m_conversations->find(conversationId);
+  if (!latest || latest->checkpoint.checkpointDigest != expectedCheckpointDigest ||
+      latest->checkpoint.providersByRole != current->checkpoint.providersByRole)
+    throw NativeDiError("WITHDRAWAL_QUERY_CHECKPOINT_CHANGED", "conversation", "withdrawal",
+                        "committed source state changed while awaiting withdrawal intent");
+  return reply;
+}
+
+ConversationHandoffHandle NativeInferenceClient::switchConversationProviders(
+  const std::string& conversationId,
+  const std::string& expectedCheckpointDigest,
+  const std::map<std::string, std::string>& sourceProvidersByRole,
+  const std::map<std::string, std::string>& destinationProvidersByRole,
+  const std::map<std::string, NativeRemoteProtectedKvRoleTrustPolicyV1>& trustedSourcePolicyByRole,
+  std::chrono::steady_clock::time_point deadline)
+{
+  return startConversationSave(conversationId, expectedCheckpointDigest,
+    sourceProvidersByRole, destinationProvidersByRole,
+    trustedSourcePolicyByRole, std::nullopt, deadline);
+}
+
+ConversationHandoffHandle NativeInferenceClient::saveConversationForWithdrawal(
+  const std::string& conversationId,
+  const std::string& expectedCheckpointDigest,
+  const std::map<std::string, std::string>& sourceProvidersByRole,
+  const std::map<std::string, NativeRemoteProtectedKvRoleTrustPolicyV1>& trustedSourcePolicyByRole,
+  const std::string& withdrawingProviderIdentity,
+  const NativeWithdrawalQueryReplyV1& intentReply,
+  std::chrono::steady_clock::time_point deadline)
+{
+  HandoffRegistration::WithdrawalBinding binding;
+  binding.providerIdentity = withdrawingProviderIdentity;
+  binding.reply = intentReply;
+  return startConversationSave(conversationId, expectedCheckpointDigest,
+    sourceProvidersByRole, {}, trustedSourcePolicyByRole,
+    std::move(binding), deadline);
+}
+
+ConversationHandoffHandle NativeInferenceClient::startConversationSave(
+  const std::string& conversationId,
+  const std::string& expectedCheckpointDigest,
+  const std::map<std::string, std::string>& sourceProvidersByRole,
+  const std::map<std::string, std::string>& destinationProvidersByRole,
+  const std::map<std::string, NativeRemoteProtectedKvRoleTrustPolicyV1>& trustedSourcePolicyByRole,
+  std::optional<HandoffRegistration::WithdrawalBinding> withdrawal,
+  std::chrono::steady_clock::time_point deadline)
+{
+  if (!m_user || !m_conversations || !m_requestContract ||
+      !m_runtime || !m_ownerLease || !m_runtime->kvOwnerKeys ||
+      !m_runtime->kvOwnerKeys->unwrap || m_conversations->journalRoot().empty() ||
+      m_requestContract->serviceName.empty())
+    throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "handoff",
+                        "Provider switching requires the authenticated Owner, service, and conversation coordinator");
+  if (deadline <= std::chrono::steady_clock::now() ||
+      deadline - std::chrono::steady_clock::now() > std::chrono::minutes(10))
+    throw NativeDiError("INVALID_HANDOFF_DEADLINE", "conversation", "handoff",
+                        "Provider-switch deadline must be in the future and within ten minutes");
+
+  const auto current = m_conversations->find(conversationId);
+  if (!current || current->checkpoint.checkpointDigest != expectedCheckpointDigest ||
+      current->checkpoint.providersByRole != sourceProvidersByRole)
+    throw NativeDiError("CONVERSATION_HANDOFF_CONFLICT", "conversation", "handoff",
+                        "source role map or checkpoint changed before Provider switching began");
+  if (!isCanonicalHandoffDigest(expectedCheckpointDigest))
+    throw NativeDiError("INVALID_HANDOFF_CHECKPOINT", "conversation", "handoff",
+                        "conversation handoff requires a canonical SHA-256 checkpoint digest");
+  const auto ownerIdentity = m_user->getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  if (ownerIdentity != m_runtime->requesterIdentity ||
+      current->serviceName != m_requestContract->serviceName)
+    throw NativeDiError("HANDOFF_OWNER_MISMATCH", "authorization", "handoff",
+                        "authenticated Owner and service do not match the conversation binding");
+  const auto& checkpoint = current->checkpoint;
+  std::set<std::string> expectedRoles(checkpoint.expectedRoles.begin(),
+                                      checkpoint.expectedRoles.end());
+  if (conversationId.size() < 16 || conversationId.size() > 256 ||
+      conversationId.find_first_of("/\\") != std::string::npos ||
+      expectedCheckpointDigest.empty() || expectedRoles.empty() || expectedRoles.size() > 64 ||
+      expectedRoles.size() != checkpoint.expectedRoles.size() ||
+      sourceProvidersByRole.size() != expectedRoles.size() ||
+      destinationProvidersByRole.size() != (withdrawal ? 0U : expectedRoles.size()) ||
+      trustedSourcePolicyByRole.size() != expectedRoles.size())
+    throw NativeDiError("INVALID_HANDOFF_ROLE_MAP", "conversation", "handoff",
+                        "handoff maps must exactly cover the committed checkpoint roles");
+
+  std::set<std::string> sourceProviders;
+  std::set<std::string> destinationProviders;
+  for (const auto& role : expectedRoles) {
+    const auto source = sourceProvidersByRole.find(role);
+    const auto destination = destinationProvidersByRole.find(role);
+    const auto policy = trustedSourcePolicyByRole.find(role);
+    if (source == sourceProvidersByRole.end() ||
+        (!withdrawal && destination == destinationProvidersByRole.end()) ||
+        policy == trustedSourcePolicyByRole.end() || source->second.empty() ||
+        (!withdrawal && destination->second.empty()) || source->second.size() > 4096 ||
+        (!withdrawal && destination->second.size() > 4096) ||
+        ndn::Name(source->second).toUri(ndn::name::UriFormat::ALTERNATE) != source->second ||
+        (!withdrawal && ndn::Name(destination->second).toUri(ndn::name::UriFormat::ALTERNATE) !=
+                          destination->second))
+      throw NativeDiError("INVALID_HANDOFF_ROLE_MAP", "conversation", "handoff",
+                          "handoff role map contains a noncanonical Provider name or missing role");
+    sourceProviders.insert(source->second);
+    if (!withdrawal)
+      destinationProviders.insert(destination->second);
+    const auto& trusted = policy->second;
+    if (trusted.target.repoNode.empty() || trusted.target.providerIdentity.empty() ||
+        trusted.target.servicePrefix.empty() || trusted.target.repoNode.size() > 4096 ||
+        trusted.target.providerIdentity.size() > 4096 || trusted.target.servicePrefix.size() > 4096 ||
+        ndn::Name(trusted.target.repoNode).toUri(ndn::name::UriFormat::ALTERNATE) != trusted.target.repoNode ||
+        ndn::Name(trusted.target.providerIdentity).toUri(ndn::name::UriFormat::ALTERNATE) != trusted.target.providerIdentity ||
+        ndn::Name(trusted.target.servicePrefix).toUri(ndn::name::UriFormat::ALTERNATE) !=
+          trusted.target.servicePrefix)
+      throw NativeDiError("INVALID_HANDOFF_TRUST_POLICY", "conversation", "handoff",
+                          "each source role requires a complete pinned Repo and Producer trust policy");
+  }
+  if ((!withdrawal && destinationProviders.empty()) || destinationProviders.size() > 16 ||
+      sourceProviders.empty() || sourceProviders.size() > 16 ||
+      (!withdrawal && destinationProvidersByRole == sourceProvidersByRole))
+    throw NativeDiError("INVALID_HANDOFF_DESTINATION", "conversation", "handoff",
+                        "destination Providers must differ from the source roster and stay within bounds");
+
+  const ndn::Name serviceName(m_requestContract->serviceName);
+  if (serviceName.empty() ||
+      serviceName.toUri(ndn::name::UriFormat::ALTERNATE) != m_requestContract->serviceName)
+    throw NativeDiError("INVALID_HANDOFF_SERVICE", "local", "handoff",
+                        "the configured service name is not canonical");
+
+  NativeJson sourceBinding = NativeJson::array();
+  NativeJson destinationBinding = NativeJson::array();
+  NativeJson trustBinding = NativeJson::array();
+  for (const auto& [role, provider] : sourceProvidersByRole)
+    sourceBinding.push_back(NativeJson::array({role, provider}));
+  for (const auto& [role, provider] : destinationProvidersByRole)
+    destinationBinding.push_back(NativeJson::array({role, provider}));
+  for (const auto& [role, policy] : trustedSourcePolicyByRole) {
+    trustBinding.push_back(NativeJson::array({role, policy.target.repoNode,
+      policy.target.providerIdentity, policy.target.servicePrefix}));
+  }
+  NativeJson withdrawalBinding = nullptr;
+  if (withdrawal) {
+    const auto& reply = withdrawal->reply;
+    const ndn::Name withdrawingProvider(withdrawal->providerIdentity);
+    if (reply.status != NativeWithdrawalQueryStatusV1::Intent || !reply.intent ||
+        withdrawingProvider.empty() ||
+        withdrawingProvider.toUri(ndn::name::UriFormat::ALTERNATE) !=
+          withdrawal->providerIdentity ||
+        reply.query.conversationId != conversationId ||
+        reply.query.checkpointDigest != expectedCheckpointDigest)
+      throw NativeDiError("WITHDRAWAL_INTENT_INVALID", "authorization", "withdrawal",
+                          "save requires an authenticated current Provider intent");
+    const auto& intent = *reply.intent;
+    std::vector<std::string> localRoles;
+    for (const auto& [role, source] : sourceProvidersByRole)
+      if (source == withdrawal->providerIdentity)
+        localRoles.push_back(role);
+    if (localRoles.empty() || intent.ownerIdentity != ownerIdentity ||
+        intent.serviceName != m_requestContract->serviceName ||
+        intent.conversationId != conversationId ||
+        intent.checkpointDigest != expectedCheckpointDigest ||
+        intent.sourceRoleMapDigest != nativeRoleMapDigest(sourceProvidersByRole) ||
+        intent.localRoles != localRoles ||
+        intent.deadlineMs < handoffDeadlineUnixMs(deadline))
+      throw NativeDiError("WITHDRAWAL_INTENT_BINDING_MISMATCH", "authorization", "withdrawal",
+                          "intent must bind the complete current source roster and deadline");
+    withdrawalBinding = NativeJson{
+      {"provider", withdrawal->providerIdentity},
+      {"intent", nativeWithdrawalIntentV1ToJson(intent)},
+      {"proofDigest", nativePlanningDigest(std::string(
+        reply.originalProofWire.begin(), reply.originalProofWire.end()))}};
+  }
+  const auto bindingDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"conversationId", conversationId}, {"checkpointDigest", expectedCheckpointDigest},
+    {"source", sourceBinding}, {"destination", destinationBinding},
+    {"trust", trustBinding}, {"withdrawal", withdrawalBinding},
+    {"deadlineTicks", std::to_string(deadline.time_since_epoch().count())}}));
+
+  auto registration = std::make_shared<HandoffRegistration>();
+  registration->bindingDigest = bindingDigest;
+  registration->checkpointDigest = expectedCheckpointDigest;
+  registration->sourceProvidersByRole = sourceProvidersByRole;
+  registration->destinationProvidersByRole = destinationProvidersByRole;
+  registration->trustedSourcePolicyByRole = trustedSourcePolicyByRole;
+  registration->withdrawal = std::move(withdrawal);
+  registration->deadline = deadline;
+  auto handle = ConversationHandoffHandle::create(newHandoffOperationId());
+  registration->handle = std::make_shared<ConversationHandoffHandle>(handle);
+  handle.setCoreIoThreadProbe([user = m_user] { return user->isOnIoThread(); });
+  const std::weak_ptr<HandoffRegistration> weakRegistration = registration;
+  handle.setCancel([weakRegistration] {
+    const auto currentRegistration = weakRegistration.lock();
+    if (!currentRegistration) return false;
+    std::lock_guard<std::mutex> lock(currentRegistration->mutex);
+    if (currentRegistration->settled || currentRegistration->commitReleased)
+      return false;
+    currentRegistration->cancellationRequested = true;
+    return true;
+  });
+  auto boundaryGate = std::make_shared<NativeConversationHandoffBoundaryGateV1>(
+    std::vector<std::string>(sourceProviders.begin(), sourceProviders.end()), deadline);
+  const auto operationId = handle.operationId();
+  const auto sourceRoleMapDigest = nativeRoleMapDigest(sourceProvidersByRole);
+  const auto destinationRoleMapDigest = nativeRoleMapDigest(destinationProvidersByRole);
+  const auto deadlineMs = handoffDeadlineUnixMs(deadline);
+  const auto user = m_user;
+  const auto coreOwner = m_ownerLease;
+  const auto ownerKeys = m_runtime->kvOwnerKeys;
+  const auto coordinator = m_conversations;
+  const auto service = serviceName;
+
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_closed)
+      throw NativeDiError("RUNTIME_CLOSED", "local", "handoff",
+                          "native inference client is closed");
+    const auto existing = m_handoffRegistrations.find(conversationId);
+    if (existing != m_handoffRegistrations.end()) {
+      const auto& prior = existing->second;
+      if (prior->bindingDigest != bindingDigest)
+        throw NativeDiError("CONVERSATION_HANDOFF_CONFLICT", "conversation", "handoff",
+                            "a different Provider switch is already active for this conversation");
+      return *prior->handle;
+    }
+    m_handoffRegistrations.emplace(conversationId, registration);
+  }
+  std::shared_ptr<ndn_service_framework::OperationRuntime::WorkTicket> ticket;
+  try {
+    ticket = std::make_shared<ndn_service_framework::OperationRuntime::WorkTicket>(
+      m_operationRuntime->acquire());
+    m_operationRuntime->post(*ticket,
+      [workerGate = m_handoffWorkerGate, ticket, registration, boundaryGate,
+       user, coreOwner, ownerKeys, coordinator, service,
+       conversationId, operationId, sourceRoleMapDigest, destinationRoleMapDigest,
+       deadlineMs, ownerIdentity, sourceProviders] {
+        const auto isCancelled = [registration] {
+          std::lock_guard<std::mutex> lock(registration->mutex);
+          return registration->cancellationRequested;
+        };
+        auto makeControl = [&](NativeConversationHandoffActionV1 action,
+                               std::optional<NativeDurableStorageGrantSubmissionV1> submission = std::nullopt) {
+          NativeConversationHandoffControlV1 control;
+          control.action = action;
+          control.operationId = operationId;
+          control.conversationId = conversationId;
+          control.checkpointDigest = registration->checkpointDigest;
+          control.sourceRoleMapDigest = sourceRoleMapDigest;
+          control.destinationRoleMapDigest = destinationRoleMapDigest;
+          control.deadlineMs = deadlineMs;
+          control.grantSubmission = std::move(submission);
+          return control;
+        };
+        auto dispatch = [&](const std::string& provider,
+                            NativeConversationHandoffActionV1 action,
+                            std::optional<NativeDurableStorageGrantSubmissionV1> submission = std::nullopt) {
+          auto control = makeControl(action, std::move(submission));
+          std::shared_ptr<NativeHandoffPendingResponse> pending;
+          if (registration->withdrawal) {
+            NativeConversationHandoffControlV2 event;
+            event.control = control;
+            event.sourceProvidersByRole = registration->sourceProvidersByRole;
+            event.trigger = NativeConversationSaveTriggerV2::WithdrawalSave;
+            event.withdrawingProviderIdentity =
+              registration->withdrawal->providerIdentity;
+            event.withdrawalIntent = registration->withdrawal->reply.intent;
+            event.withdrawalProofWire =
+              registration->withdrawal->reply.originalProofWire;
+            pending = dispatchHandoffWire(user, ndn::Name(provider), service,
+              nativeCanonicalJson(nativeConversationHandoffControlV2ToJson(event)),
+              "NativeConversationHandoffV2", registration->deadline);
+          }
+          else {
+            pending = dispatchHandoffControl(user, ndn::Name(provider), service,
+              control, registration->deadline);
+          }
+          return std::make_pair(std::move(control), std::move(pending));
+        };
+        auto receive = [&](const std::pair<NativeConversationHandoffControlV1,
+                                            std::shared_ptr<NativeHandoffPendingResponse>>& request,
+                           bool observeCancellation = true) {
+          const auto wire = awaitHandoffResponse(request.second, registration->deadline,
+            observeCancellation ? std::function<bool()>(isCancelled) : std::function<bool()>{});
+          auto reply = nativeConversationHandoffReplyV1FromJson(wire);
+          nativeValidateConversationHandoffReplyBindingV1(request.first, reply);
+          return reply;
+        };
+        auto sendAndReceive = [&](const std::string& provider,
+                                  NativeConversationHandoffActionV1 action,
+                                  std::optional<NativeDurableStorageGrantSubmissionV1> submission = std::nullopt,
+                                  bool observeCancellation = true) {
+          const auto request = dispatch(provider, action, std::move(submission));
+          return receive(request, observeCancellation);
+        };
+        auto settleCancellation = [&] {
+          bool allCancelled = true;
+          for (const auto& provider : sourceProviders) {
+            try {
+              const auto reply = sendAndReceive(provider, NativeConversationHandoffActionV1::Cancel,
+                                                std::nullopt, false);
+              allCancelled = allCancelled &&
+                reply.state == NativeConversationHandoffStateV1::Cancelled;
+            }
+            catch (...) {
+              allCancelled = false;
+            }
+          }
+          return allCancelled;
+        };
+        auto eraseRegistration = [&] {
+          std::lock_guard<std::mutex> gateLock(workerGate->mutex);
+          auto* client = workerGate->client;
+          if (!client)
+            return;
+          std::lock_guard<std::mutex> lock(client->m_mutex);
+          const auto found = client->m_handoffRegistrations.find(conversationId);
+          if (found != client->m_handoffRegistrations.end() && found->second == registration)
+            client->m_handoffRegistrations.erase(found);
+        };
+
+        bool boundaryReleased = false;
+        try {
+          if (registration->withdrawal) {
+            const auto& departure = *registration->withdrawal;
+            const auto provider = ndn::Name(departure.providerIdentity);
+            const auto now = static_cast<std::uint64_t>(
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+            nativeValidateWithdrawalIntentProofV1(departure.reply.originalProofWire,
+              provider, *departure.reply.intent, now,
+              [user, deadline = registration->deadline](const ndn::Data& data,
+                                                      const ndn::Name& expected) {
+                const auto& wire = data.wireEncode();
+                return user->validateProducerPacketWireUntil(
+                  std::vector<std::uint8_t>(wire.begin(), wire.end()), expected, deadline);
+              });
+          }
+          std::map<std::string,
+            std::pair<NativeConversationHandoffControlV1,
+                      std::shared_ptr<NativeHandoffPendingResponse>>> begins;
+          for (const auto& provider : sourceProviders)
+            begins.emplace(provider, dispatch(provider, NativeConversationHandoffActionV1::Begin));
+
+          std::map<std::string, NativeConversationHandoffReplyV1> states;
+          for (const auto& [provider, request] : begins)
+            states.emplace(provider, receive(request));
+
+          std::map<std::string, NativeDurableStorageGrantSubmissionV1> grantsByProvider;
+          auto satisfyGrantChallenge = [&](const std::string& provider,
+                                           const NativeDurableStorageGrantChallengeV1& challenge) {
+            if (challenge.operationId != operationId ||
+                challenge.checkpointDigest != registration->checkpointDigest ||
+                challenge.roleMapDigest != sourceRoleMapDigest || challenge.roles.empty())
+              throw NativeDiError("HANDOFF_GRANT_CHALLENGE_MISMATCH", "provider", "grant",
+                "Provider grant challenge does not match the immutable handoff event");
+            std::set<std::string> expectedRoles;
+            for (const auto& [role, selected] : registration->sourceProvidersByRole)
+              if (selected == provider) expectedRoles.insert(role);
+            if (challenge.roles.size() != expectedRoles.size())
+              throw NativeDiError("HANDOFF_GRANT_ROLE_SET_MISMATCH", "provider", "grant",
+                "Provider challenge does not cover exactly its source roles");
+            for (const auto& role : challenge.roles) {
+              const auto policy = registration->trustedSourcePolicyByRole.find(role.roleName);
+              if (expectedRoles.erase(role.roleName) != 1 ||
+                  policy == registration->trustedSourcePolicyByRole.end() ||
+                  policy->second.target.repoNode != role.repoTarget.repoNode ||
+                  policy->second.target.providerIdentity != role.repoTarget.providerIdentity ||
+                  policy->second.target.servicePrefix != role.repoTarget.servicePrefix ||
+                  role.writerIdentity != provider || role.manifestName.empty())
+                throw NativeDiError("HANDOFF_GRANT_TARGET_MISMATCH", "provider", "grant",
+                  "Source challenge differs from the pinned role and Repo target");
+            }
+            if (!expectedRoles.empty())
+              throw NativeDiError("HANDOFF_GRANT_ROLE_SET_MISMATCH", "provider", "grant",
+                "Provider challenge omitted a source role");
+            NativeDurableStorageGrantSubmissionV1 submission;
+            submission.operationId = operationId;
+            submission.checkpointDigest = registration->checkpointDigest;
+            submission.snapshotDigest = challenge.snapshotDigest;
+            submission.roleMapDigest = challenge.roleMapDigest;
+            for (const auto& role : challenge.roles) {
+              if (isCancelled())
+                throw NativeDiError("CANCELLED", "conversation", "grant",
+                  "handoff cancelled before the complete grant set");
+              submission.grants.push_back(nativeGrantKvRoleStorage(*user, operationId, role,
+                deadlineMs, registration->deadline));
+            }
+            nativeValidateDurableStorageGrantSubmissionV1(challenge, submission, ownerIdentity);
+            return submission;
+          };
+
+          std::set<std::string> boundaryReadyProviders;
+          auto observeReply = [&](const std::string& provider,
+                                  NativeConversationHandoffReplyV1 reply) {
+            if (reply.state == NativeConversationHandoffStateV1::GrantRequired) {
+              if (!reply.grantChallenge)
+                throw NativeDiError("HANDOFF_GRANT_CHALLENGE_MISSING", "provider", "grant",
+                                    "Provider requested a grant without a typed challenge");
+              auto existingGrant = grantsByProvider.find(provider);
+              auto submission = existingGrant == grantsByProvider.end()
+                ? satisfyGrantChallenge(provider, *reply.grantChallenge)
+                : existingGrant->second;
+              const auto grantReply = sendAndReceive(provider,
+                NativeConversationHandoffActionV1::Grant, submission);
+              grantsByProvider[provider] = std::move(submission);
+              states[provider] = grantReply;
+              return;
+            }
+            if (reply.state == NativeConversationHandoffStateV1::BoundaryReady) {
+              if (!grantsByProvider.count(provider))
+                throw NativeDiError("HANDOFF_BOUNDARY_BEFORE_GRANT", "provider", "handoff",
+                                    "Provider reached its packet boundary before exact Repo grants were submitted");
+              if (!boundaryGate->reportBoundaryReady(provider))
+                throw NativeDiError("CANCELLED", "conversation", "handoff",
+                                    "handoff was cancelled before the all-Provider boundary");
+              boundaryReadyProviders.insert(provider);
+            }
+            else if (reply.state == NativeConversationHandoffStateV1::Cancelled)
+              throw NativeDiError("CANCELLED", "provider", "handoff",
+                                  "a source Provider cancelled the handoff before COMMIT");
+            else if (reply.state == NativeConversationHandoffStateV1::Saved ||
+                     reply.state == NativeConversationHandoffStateV1::CancelClosed)
+              throw NativeDiError("HANDOFF_INVALID_PROVIDER_STATE", "provider", "handoff",
+                                  "Provider returned a state that is invalid before global COMMIT");
+            states[provider] = std::move(reply);
+          };
+
+          for (auto& [provider, reply] : states)
+            observeReply(provider, std::move(reply));
+          while (boundaryReadyProviders.size() != sourceProviders.size()) {
+            if (isCancelled())
+              throw NativeDiError("CANCELLED", "conversation", "handoff",
+                                  "conversation handoff was cancelled before the all-Provider boundary");
+            for (const auto& provider : sourceProviders) {
+              if (boundaryReadyProviders.count(provider)) continue;
+              const auto reply = sendAndReceive(provider, NativeConversationHandoffActionV1::Poll);
+              observeReply(provider, reply);
+            }
+            if (boundaryReadyProviders.size() != sourceProviders.size())
+              std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          }
+
+          {
+            std::lock_guard<std::mutex> lock(registration->mutex);
+            if (registration->cancellationRequested || !boundaryGate->releaseCommit()) {
+              (void)boundaryGate->cancel();
+              throw NativeDiError("CANCELLED", "conversation", "handoff",
+                                  "handoff cancellation won before the global COMMIT barrier");
+            }
+            registration->commitReleased = true;
+            boundaryReleased = true;
+          }
+
+          std::map<std::string,
+            std::pair<NativeConversationHandoffControlV1,
+                      std::shared_ptr<NativeHandoffPendingResponse>>> commits;
+          for (const auto& provider : sourceProviders)
+            commits.emplace(provider, dispatch(provider, NativeConversationHandoffActionV1::Commit));
+          std::map<std::string, bool> saved;
+          std::map<std::string, NativeJson> referencesByRole;
+          auto acceptSaved = [&](const std::string& provider,
+                                 const NativeConversationHandoffReplyV1& reply) {
+            if (reply.state != NativeConversationHandoffStateV1::Saved) return false;
+            std::set<std::string> expectedProviderRoles;
+            for (const auto& [role, selectedProvider] : registration->sourceProvidersByRole)
+              if (selectedProvider == provider) expectedProviderRoles.insert(role);
+            if (reply.ownerReferencesByRole.size() != expectedProviderRoles.size())
+              throw NativeDiError("HANDOFF_SAVED_ROLE_SET_MISMATCH", "provider", "handoff",
+                                  "Provider saved reply does not cover exactly its source roles");
+            for (const auto& [role, reference] : reply.ownerReferencesByRole) {
+              if (expectedProviderRoles.erase(role) != 1 || !reference.is_object() ||
+                  !referencesByRole.emplace(role, reference).second)
+                throw NativeDiError("HANDOFF_SAVED_ROLE_SET_MISMATCH", "provider", "handoff",
+                                    "Provider saved reply contains a duplicate, foreign, or malformed role reference");
+            }
+            if (!expectedProviderRoles.empty())
+              throw NativeDiError("HANDOFF_SAVED_ROLE_SET_MISMATCH", "provider", "handoff",
+                                  "Provider saved reply omitted a source role reference");
+            saved[provider] = true;
+            return true;
+          };
+          for (const auto& [provider, request] : commits) {
+            const auto reply = receive(request, false);
+            saved[provider] = false;
+            (void)acceptSaved(provider, reply);
+            if (reply.state != NativeConversationHandoffStateV1::Saved &&
+                reply.state != NativeConversationHandoffStateV1::Pending &&
+                reply.state != NativeConversationHandoffStateV1::CancelClosed &&
+                reply.state != NativeConversationHandoffStateV1::BoundaryReady)
+              throw NativeDiError("HANDOFF_INVALID_PROVIDER_STATE", "provider", "handoff",
+                                  "Provider returned an invalid state after COMMIT");
+          }
+          while (std::any_of(saved.begin(), saved.end(),
+                             [](const auto& entry) { return !entry.second; })) {
+            for (const auto& provider : sourceProviders) {
+              if (saved[provider]) continue;
+              const auto reply = sendAndReceive(provider, NativeConversationHandoffActionV1::Poll,
+                                                std::nullopt, false);
+              if (!acceptSaved(provider, reply) &&
+                  reply.state != NativeConversationHandoffStateV1::Pending &&
+                  reply.state != NativeConversationHandoffStateV1::CancelClosed &&
+                  reply.state != NativeConversationHandoffStateV1::BoundaryReady)
+                throw NativeDiError("HANDOFF_INVALID_PROVIDER_STATE", "provider", "handoff",
+                                    "Provider returned an invalid post-COMMIT state");
+            }
+            if (std::any_of(saved.begin(), saved.end(),
+                            [](const auto& entry) { return !entry.second; }))
+              std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          }
+
+          const auto promoted = NativeKvHandoffOwner::verifyAndPromote(user, coreOwner,
+            registration, coordinator, ownerKeys, operationId, conversationId,
+            registration->checkpointDigest, NativeJson(referencesByRole),
+            registration->destinationProvidersByRole, registration->trustedSourcePolicyByRole,
+            registration->deadline, [isCancelled] {
+              if (isCancelled())
+                throw NativeDiError("CANCELLED", "conversation", "promotion",
+                  "handoff was cancelled before durable promotion");
+            });
+          if (registration->withdrawal) {
+            if (!promoted.protectedKvReferences ||
+                promoted.protectedKvReferences->size() !=
+                  registration->sourceProvidersByRole.size())
+              throw NativeDiError("WITHDRAWAL_ROLE_SET_INCOMPLETE", "conversation", "withdrawal",
+                                  "Owner cannot confirm an incomplete durable role set");
+            const auto& intent = *registration->withdrawal->reply.intent;
+            NativeJson journalBody{{"checkpoint",
+              nativeConversationBase64Encode(promoted.checkpoint.wire)},
+              {"references", *promoted.protectedKvReferences}};
+            journalBody["nextTurnProvidersByRole"] = promoted.nextTurnProvidersByRole;
+            NativeWithdrawalConfirmV1 confirm;
+            confirm.withdrawalId = intent.withdrawalId;
+            confirm.registrationGeneration = intent.registrationGeneration;
+            confirm.conversationId = conversationId;
+            confirm.checkpointDigest = registration->checkpointDigest;
+            confirm.operationId = operationId;
+            confirm.completeRoleSetDigest = nativePlanningDigest(
+              nativeCanonicalJson(*promoted.protectedKvReferences));
+            // The journal appends the same canonical payload only after its
+            // encrypted transaction is durable. Bind confirmation to it.
+            confirm.journalDigest = nativePlanningDigest(
+              nativeConversationCanonicalJson(journalBody));
+            confirm.deadlineMs = intent.deadlineMs;
+            const auto confirmWire = nativeConversationCanonicalJson(
+              nativeWithdrawalConfirmV1ToJson(confirm));
+            for (;;) {
+              const auto attemptDeadline = std::min(registration->deadline,
+                std::chrono::steady_clock::now() + std::chrono::seconds(2));
+              try {
+                auto pendingConfirm = dispatchHandoffWire(user,
+                  ndn::Name(registration->withdrawal->providerIdentity), service,
+                  confirmWire, "NativeConversationHandoffV2", attemptDeadline);
+                const auto confirmReply = nativeWithdrawalConfirmReplyV1FromJson(
+                  awaitHandoffResponse(pendingConfirm, attemptDeadline));
+                if (nativeWithdrawalConfirmV1ToJson(confirmReply.confirm) !=
+                    nativeWithdrawalConfirmV1ToJson(confirm))
+                  throw NativeDiError("WITHDRAWAL_CONFIRM_REPLY_MISMATCH", "provider", "withdrawal",
+                                      "Provider confirmation reply changed the durable binding");
+                break;
+              }
+              catch (const NativeDiError& error) {
+                if ((error.code() != "HANDOFF_PROVIDER_TIMEOUT" &&
+                     error.code() != "HANDOFF_DEADLINE_EXPIRED") ||
+                    std::chrono::steady_clock::now() >= registration->deadline)
+                  throw;
+              }
+            }
+          }
+          {
+            std::lock_guard<std::mutex> lock(registration->mutex);
+            registration->settled = true;
+          }
+          eraseRegistration();
+          if (registration->withdrawal)
+            registration->handle->setSavedWithoutPlacement();
+          else
+            registration->handle->setPromoted();
+        }
+        catch (...) {
+          const auto failure = std::current_exception();
+          bool cancellationRequested = false;
+          {
+            std::lock_guard<std::mutex> lock(registration->mutex);
+            cancellationRequested = registration->cancellationRequested;
+            if (!registration->commitReleased)
+              (void)boundaryGate->cancel();
+            registration->settled = true;
+          }
+          const bool cancellationSettled = !boundaryReleased && settleCancellation();
+          eraseRegistration();
+          if (cancellationRequested && cancellationSettled)
+            registration->handle->setCancelled();
+          else
+            registration->handle->setFailed(failure);
+        }
+      });
+  }
+  catch (...) {
+    {
+      std::lock_guard<std::mutex> lock(registration->mutex);
+      registration->settled = true;
+    }
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      const auto found = m_handoffRegistrations.find(conversationId);
+      if (found != m_handoffRegistrations.end() && found->second == registration)
+        m_handoffRegistrations.erase(found);
+    }
+    handle.setFailed(std::current_exception());
+    throw;
+  }
+  return handle;
+}
+
+void NativeInferenceClient::registerDepartureWatchLifecycle(
+  std::weak_ptr<void> owner, std::function<void()> cancel,
+  std::function<bool(std::chrono::milliseconds)> drain,
+  std::function<bool()> isQuiescent,
+  std::function<void(std::function<void()>)> setNotifier)
+{
+  if (owner.expired() || !cancel || !drain || !isQuiescent || !setNotifier)
+    throw NativeDiError("INVALID_DEPARTURE_WATCH", "local", "watch",
+                        "departure watch lifecycle is incomplete");
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_closed)
+    throw NativeDiError("RUNTIME_CLOSED", "local", "watch",
+                        "native inference client is closed");
+  m_departureWatches.erase(std::remove_if(m_departureWatches.begin(),
+    m_departureWatches.end(), [](const auto& entry) { return entry.owner.expired(); }),
+    m_departureWatches.end());
+  setNotifier(m_drainNotifier);
+  m_departureWatches.push_back({std::move(owner), std::move(cancel), std::move(drain),
+                                std::move(isQuiescent), std::move(setNotifier)});
+}
+
+bool NativeInferenceClient::isCoreIoThread() const noexcept
+{
+  return m_user && m_user->isOnIoThread();
+}
+
 void NativeInferenceClient::close() noexcept
 {
   std::vector<std::shared_ptr<NativeInferenceHandle::Operation>> operations;
+  std::vector<std::shared_ptr<HandoffRegistration>> handoffs;
+  std::vector<DepartureWatchLifecycle> watches;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_closed) return;
@@ -3498,6 +4644,9 @@ void NativeInferenceClient::close() noexcept
         operations.push_back(operation);
       }
     }
+    for (const auto& entry : m_handoffRegistrations)
+      handoffs.push_back(entry.second);
+    watches = m_departureWatches;
     m_closedOperations = operations;
     m_operations.clear();
   }
@@ -3506,6 +4655,12 @@ void NativeInferenceClient::close() noexcept
   for (const auto& operation : operations) {
     cancelOperation(operation);
   }
+  for (const auto& handoff : handoffs) {
+    if (handoff && handoff->handle)
+      (void)handoff->handle->cancel();
+  }
+  for (const auto& watch : watches)
+    if (watch.cancel) watch.cancel();
   // The Core runtime owns the request worker, timers, and notification
   // deliveries.  Closing it rejects new work and lets existing callbacks
   // converge through its join/drain barrier.
@@ -3515,6 +4670,8 @@ void NativeInferenceClient::close() noexcept
 void NativeInferenceClient::failIo(const std::string& reason) noexcept
 {
   std::vector<std::shared_ptr<NativeInferenceHandle::Operation>> operations;
+  std::vector<std::shared_ptr<HandoffRegistration>> handoffs;
+  std::vector<DepartureWatchLifecycle> watches;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_closed)
@@ -3535,9 +4692,18 @@ void NativeInferenceClient::failIo(const std::string& reason) noexcept
         operations.push_back(operation);
       }
     }
+    for (const auto& entry : m_handoffRegistrations)
+      handoffs.push_back(entry.second);
+    watches = m_departureWatches;
     m_closedOperations = operations;
     m_operations.clear();
   }
+  for (const auto& handoff : handoffs) {
+    if (handoff && handoff->handle)
+      (void)handoff->handle->cancel();
+  }
+  for (const auto& watch : watches)
+    if (watch.cancel) watch.cancel();
   for (const auto& operation : operations)
     logClientLifecyclePhase(operation, "closeBegin");
   for (const auto& operation : operations) {
@@ -3568,6 +4734,18 @@ bool NativeInferenceClient::drain(std::chrono::milliseconds timeout)
       std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
     if (!m_operationRuntime || !m_operationRuntime->drain(remaining))
       return false;
+    std::vector<DepartureWatchLifecycle> watches;
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      watches = m_departureWatches;
+    }
+    for (const auto& watch : watches) {
+      if (watch.owner.expired()) continue;
+      const auto now = std::chrono::steady_clock::now();
+      const auto watchRemaining = now >= deadline ? std::chrono::milliseconds(0) :
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+      if (!watch.drain || !watch.drain(watchRemaining)) return false;
+    }
     if (m_ioCleanupState) {
       std::unique_lock<std::mutex> lock(m_ioCleanupState->mutex);
       if (!m_ioCleanupState->condition.wait_until(lock, deadline, [this] {
@@ -3592,6 +4770,13 @@ bool NativeInferenceClient::drain(std::chrono::milliseconds timeout)
     }
     for (const auto& operation : drained)
       logClientLifecyclePhase(operation, "drainEnd");
+    {
+      const auto now = std::chrono::steady_clock::now();
+      const auto remaining = now >= deadline ? std::chrono::milliseconds(0) :
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+      if (!m_operationRuntime->joinAfterDrain(remaining))
+        return false;
+    }
     return true;
   }
   catch (const ndn_service_framework::OperationError& error) {
@@ -3603,6 +4788,14 @@ bool NativeInferenceClient::drain(std::chrono::milliseconds timeout)
 
 void NativeInferenceClient::setDrainNotifier(std::function<void()> notifier)
 {
+  std::vector<DepartureWatchLifecycle> watches;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_drainNotifier = notifier;
+    watches = m_departureWatches;
+  }
+  for (const auto& watch : watches)
+    if (!watch.owner.expired()) watch.setNotifier(notifier);
   if (m_ioCleanupState) {
     std::lock_guard<std::mutex> lock(m_ioCleanupState->mutex);
     m_ioCleanupState->notifyOwner = notifier;
@@ -3612,9 +4805,17 @@ void NativeInferenceClient::setDrainNotifier(std::function<void()> notifier)
 
 bool NativeInferenceClient::isQuiescent() const noexcept
 {
-  return (!m_operationRuntime || m_operationRuntime->isQuiescent()) &&
-         (!m_ioCleanupState ||
-          m_ioCleanupState->pending.load(std::memory_order_acquire) == 0);
+  if ((m_operationRuntime && !m_operationRuntime->isQuiescent()) ||
+      (m_ioCleanupState &&
+       m_ioCleanupState->pending.load(std::memory_order_acquire) != 0))
+    return false;
+  try {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& watch : m_departureWatches)
+      if (!watch.owner.expired() && !watch.isQuiescent()) return false;
+    return true;
+  }
+  catch (...) { return false; }
 }
 
 bool NativeInferenceClient::isWorkerThread() const noexcept

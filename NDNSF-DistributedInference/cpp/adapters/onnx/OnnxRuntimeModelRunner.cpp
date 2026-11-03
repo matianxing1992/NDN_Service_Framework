@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/CudaDeviceIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-runtime-graph-metadata.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
@@ -15,6 +16,7 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -383,6 +385,8 @@ public:
   using CudaMalloc = int (*)(void**, std::size_t);
   using CudaMemcpy = int (*)(void*, const void*, std::size_t, int);
   using CudaFree = int (*)(void*);
+  using CudaGetDevice = int (*)(int*);
+  using CudaSetDevice = int (*)(int);
 
   CudaRuntimeApi()
   {
@@ -398,12 +402,16 @@ public:
     m_malloc = reinterpret_cast<CudaMalloc>(dlsym(m_handle, "cudaMalloc"));
     m_memcpy = reinterpret_cast<CudaMemcpy>(dlsym(m_handle, "cudaMemcpy"));
     m_free = reinterpret_cast<CudaFree>(dlsym(m_handle, "cudaFree"));
+    m_getDevice = reinterpret_cast<CudaGetDevice>(dlsym(m_handle, "cudaGetDevice"));
+    m_setDevice = reinterpret_cast<CudaSetDevice>(dlsym(m_handle, "cudaSetDevice"));
     if (m_malloc == nullptr || m_memcpy == nullptr || m_free == nullptr) {
       dlclose(m_handle);
       m_handle = nullptr;
       m_malloc = nullptr;
       m_memcpy = nullptr;
       m_free = nullptr;
+      m_getDevice = nullptr;
+      m_setDevice = nullptr;
     }
   }
 
@@ -418,6 +426,24 @@ public:
   }
 
   bool available() const { return m_handle != nullptr; }
+
+  bool
+  canSelectDevice() const
+  {
+    return available() && m_getDevice != nullptr && m_setDevice != nullptr;
+  }
+
+  int
+  getDevice(int* device) const
+  {
+    return canSelectDevice() ? m_getDevice(device) : -1;
+  }
+
+  int
+  setDevice(int device) const
+  {
+    return canSelectDevice() ? m_setDevice(device) : -1;
+  }
 
   int malloc(void** pointer, std::size_t bytes) const
   {
@@ -440,6 +466,8 @@ private:
   CudaMalloc m_malloc = nullptr;
   CudaMemcpy m_memcpy = nullptr;
   CudaFree m_free = nullptr;
+  CudaGetDevice m_getDevice = nullptr;
+  CudaSetDevice m_setDevice = nullptr;
 };
 
 constexpr int cudaMemcpyHostToDevice = 1;
@@ -2490,6 +2518,299 @@ OnnxRuntimeModelRunner::supportsConversationStateTransfer() const
   return m_impl != nullptr && m_impl->statefulIo.has_value();
 }
 
+namespace {
+
+void
+checkPortableOperation(const NativePortableKvLimitsV1& limits)
+{
+  if (limits.maxPayloadBytes == 0 || limits.maxEncodedBytes < limits.maxPayloadBytes)
+    throw std::invalid_argument("portable-kv-invalid-limits");
+  if (limits.cancelled && limits.cancelled())
+    throw std::runtime_error("portable-kv-cancelled");
+}
+
+bool
+sameConversationHandle(const NativeConversationStateHandleV1& a,
+                       const NativeConversationStateHandleV1& b)
+{
+  return a.conversationKey == b.conversationKey && a.logicalBytes == b.logicalBytes &&
+    a.opaque.providerIdentity == b.opaque.providerIdentity &&
+    a.opaque.providerBootId == b.opaque.providerBootId &&
+    a.opaque.sessionId == b.opaque.sessionId && a.opaque.role == b.opaque.role &&
+    a.opaque.token == b.opaque.token &&
+    a.opaque.stateInferenceEpoch == b.opaque.stateInferenceEpoch;
+}
+
+void
+checkPortableRunnerIdentity(const NativeModelRunnerSpec& spec,
+                            const DecodeStateIdentityV1& identity)
+{
+  identity.validate();
+  if (identity.roleName != spec.role ||
+      identity.providerIdentity != runnerMetadataValue(spec,
+        {"providerIdentity", "provider_identity", "evidence.providerName", "providerName", "provider_name"}) ||
+      identity.providerBootId != runnerMetadataValue(spec,
+        {"providerBootId", "provider_boot_id", "evidence.providerBootId"}))
+    throw std::invalid_argument("portable-kv-runner-identity-mismatch");
+}
+
+std::string
+portableStateIoDigest(const StatefulOnnxIoContractV1& io)
+{
+  NativeJson pairs = NativeJson::array();
+  for (const auto& output : io.stateOutputNames)
+    pairs.push_back(NativeJson{{"input", io.stateInputForOutput(output)}, {"output", output}});
+  auto families = io.stateFamilies;
+  // An explicit map implementing the legacy pairs has the same semantics.
+  const std::vector<std::string> legacy{"attention_kv", "recurrent_state", "convolution_state"};
+  if (families.empty() && std::all_of(legacy.begin(), legacy.end(), [&](const auto& family) {
+      const auto output = family + "_out";
+      return std::find(io.stateOutputNames.begin(), io.stateOutputNames.end(), output) != io.stateOutputNames.end() &&
+             io.stateInputForOutput(output) == family + "_in";
+    })) families = legacy;
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-portable-state-io-v1"}, {"version", 1},
+    {"inputs", io.stateInputNames}, {"outputs", io.stateOutputNames},
+    {"families", families}, {"successors", pairs}}));
+}
+
+std::uint64_t
+portableTensorBytes(TensorElementType type, const std::vector<std::int64_t>& shape)
+{
+  if (shape.size() > 16) throw std::invalid_argument("portable-kv-rank-exceeded");
+  std::uint64_t count = 1;
+  for (const auto dim : shape) {
+    if (dim < 0 || dim > (std::int64_t{1} << 31) ||
+        (dim != 0 && count > std::numeric_limits<std::uint64_t>::max() / static_cast<std::uint64_t>(dim)))
+      throw std::invalid_argument("portable-kv-shape-overflow");
+    count *= static_cast<std::uint64_t>(dim);
+  }
+  const auto width = tensorElementByteSize(type);
+  if (count > std::numeric_limits<std::uint64_t>::max() / width)
+    throw std::invalid_argument("portable-kv-byte-overflow");
+  return count * width;
+}
+
+} // namespace
+
+bool
+OnnxRuntimeModelRunner::supportsPortableConversationState() const
+{
+  if (!supportsConversationStateTransfer() || m_impl->statefulIo->stateInputNames.empty()) return false;
+  try {
+    const auto& io = *m_impl->statefulIo;
+    for (const auto& name : io.stateInputNames) {
+      const auto input = std::find(io.inputNames.begin(), io.inputNames.end(), name);
+      if (input == io.inputNames.end()) return false;
+      const auto type = m_impl->session.GetInputTypeInfo(static_cast<std::size_t>(input - io.inputNames.begin()));
+      (void)fromOnnxElementType(type.GetTensorTypeAndShapeInfo().GetElementType());
+    }
+    if (m_impl->selection.selectedProvider == "cpu") return true;
+    if (m_impl->selection.selectedProvider == "cuda") return CudaRuntimeApi{}.canSelectDevice();
+  }
+  catch (...) { }
+  return false;
+}
+
+NativePortableKvSnapshotV1
+OnnxRuntimeModelRunner::exportConversationState(
+  const NativeConversationStateHandleV1& state,
+  const DecodeStateIdentityV1& committedIdentity,
+  const NativePortableKvLimitsV1& limits)
+{
+  checkPortableOperation(limits);
+  state.validate();
+  checkPortableRunnerIdentity(m_spec, committedIdentity);
+  if (!supportsPortableConversationState()) throw std::runtime_error("portable-kv-unsupported");
+  std::lock_guard<std::mutex> lock(m_impl->executionMutex);
+  const auto handle = m_impl->stateHandleByConversation.find(state.conversationKey);
+  if (handle == m_impl->stateHandleByConversation.end() || !sameConversationHandle(handle->second, state) ||
+      state.opaque.providerIdentity != committedIdentity.providerIdentity ||
+      state.opaque.providerBootId != committedIdentity.providerBootId ||
+      state.opaque.role != committedIdentity.roleName ||
+      state.opaque.stateInferenceEpoch != committedIdentity.stateInferenceEpoch)
+    throw std::invalid_argument("portable-kv-origin-handle-mismatch");
+  const auto device = m_impl->deviceStateByConversation.find(state.conversationKey);
+  const auto cpu = m_impl->residentHostStateByConversation.find(state.conversationKey);
+  const auto host = m_impl->hostStateByConversation.find(state.conversationKey);
+  const unsigned tiers = (device != m_impl->deviceStateByConversation.end()) +
+                         (cpu != m_impl->residentHostStateByConversation.end()) +
+                         (host != m_impl->hostStateByConversation.end());
+  if (tiers != 1) throw std::runtime_error("portable-kv-source-tier-invalid");
+  const auto* ortState = device != m_impl->deviceStateByConversation.end() ? &device->second :
+                        cpu != m_impl->residentHostStateByConversation.end() ? &cpu->second : nullptr;
+  const auto& names = m_impl->statefulIo->stateInputNames;
+  if (names.size() > 256) throw std::invalid_argument("portable-kv-component-count-exceeded");
+  if ((ortState ? ortState->size() : host->second.size()) != names.size())
+    throw std::runtime_error("portable-kv-source-component-set-invalid");
+  NativePortableKvSnapshotV1 snapshot;
+  snapshot.originIdentity = committedIdentity;
+  snapshot.stateIoDigest = portableStateIoDigest(*m_impl->statefulIo);
+  // Preflight every component before allocating any tensor payload.
+  for (const auto& name : names) {
+    checkPortableOperation(limits);
+    NativePortableKvComponentV1 component;
+    component.inputName = name;
+    if (ortState) {
+      const auto found = ortState->find(name);
+      if (found == ortState->end() || !found->second.IsTensor())
+        throw std::runtime_error("portable-kv-source-component-missing");
+      const auto info = found->second.GetTensorTypeAndShapeInfo();
+      component.elementType = fromOnnxElementType(info.GetElementType());
+      component.shape = info.GetShape();
+    }
+    else {
+      const auto found = host->second.find(name);
+      if (found == host->second.end()) throw std::runtime_error("portable-kv-source-component-missing");
+      component.elementType = found->second.elementType;
+      component.shape = found->second.shape;
+    }
+    component.payloadBytes = portableTensorBytes(component.elementType, component.shape);
+    if (!ortState && host->second.at(name).payload.size() != component.payloadBytes)
+      throw std::runtime_error("portable-kv-source-byte-mismatch");
+    const auto wireBytes = tensorBundleEncodedSize({{name.size(), component.shape.size(), component.payloadBytes}});
+    if (component.payloadBytes > limits.maxPayloadBytes - snapshot.logicalBytes ||
+        wireBytes > limits.maxEncodedBytes - snapshot.encodedBytes)
+      throw std::invalid_argument("portable-kv-budget-exceeded");
+    snapshot.logicalBytes += component.payloadBytes;
+    snapshot.encodedBytes += wireBytes;
+    snapshot.components.push_back(std::move(component));
+  }
+  if (snapshot.logicalBytes != state.logicalBytes) throw std::runtime_error("portable-kv-source-byte-mismatch");
+  for (auto& component : snapshot.components) {
+    checkPortableOperation(limits);
+    NamedTensor tensor{component.inputName, component.elementType, component.shape, {}};
+    tensor.payload.resize(static_cast<std::size_t>(component.payloadBytes));
+    if (ortState) {
+      if (!tensor.payload.empty()) {
+        copyOrtTensorToHost(ortState->at(component.inputName), tensor.payload.data(), tensor.payload.size());
+        if (device != m_impl->deviceStateByConversation.end())
+          m_impl->runtimeMetrics.stateDeviceToHostBytes += tensor.payload.size();
+      }
+    }
+    else tensor.payload = host->second.at(component.inputName).payload;
+    std::vector<NamedTensor> scratch;
+    scratch.emplace_back(std::move(tensor));
+    component.tensorWire = encodeTensorBundle(scratch);
+    component.contentDigest = sha256TensorBytes(component.tensorWire);
+  }
+  validateNativePortableKvSnapshot(snapshot, limits);
+  return snapshot;
+}
+
+NativeConversationStateHandleV1
+OnnxRuntimeModelRunner::importConversationState(
+  const NativePortableKvSnapshotV1& snapshot,
+  const DecodeStateIdentityV1& destinationIdentity,
+  const std::string& destinationConversationKey,
+  const NativePortableKvLimitsV1& limits)
+{
+  validateNativePortableKvSnapshot(snapshot, limits);
+  checkPortableRunnerIdentity(m_spec, destinationIdentity);
+  if (!supportsPortableConversationState()) throw std::runtime_error("portable-kv-unsupported");
+  if (destinationConversationKey.empty() || !nativePortableKvIdentityCompatible(snapshot.originIdentity, destinationIdentity))
+    throw std::invalid_argument("portable-kv-destination-incompatible");
+  std::lock_guard<std::mutex> lock(m_impl->executionMutex);
+  const auto& io = *m_impl->statefulIo;
+  if (snapshot.stateIoDigest != portableStateIoDigest(io) || snapshot.components.size() != io.stateInputNames.size())
+    throw std::invalid_argument("portable-kv-state-io-mismatch");
+  for (std::size_t i = 0; i < snapshot.components.size(); ++i) {
+    checkPortableOperation(limits);
+    const auto& component = snapshot.components[i];
+    if (component.inputName != io.stateInputNames[i]) throw std::invalid_argument("portable-kv-component-order-mismatch");
+    const auto input = std::find(io.inputNames.begin(), io.inputNames.end(), component.inputName);
+    if (input == io.inputNames.end()) throw std::invalid_argument("portable-kv-component-input-missing");
+    const auto type = m_impl->session.GetInputTypeInfo(static_cast<std::size_t>(input - io.inputNames.begin()));
+    const auto info = type.GetTensorTypeAndShapeInfo();
+    const auto shape = info.GetShape();
+    if (fromOnnxElementType(info.GetElementType()) != component.elementType || shape.size() != component.shape.size())
+      throw std::invalid_argument("portable-kv-component-schema-mismatch");
+    for (std::size_t axis = 0; axis < shape.size(); ++axis)
+      if (shape[axis] >= 0 && shape[axis] != component.shape[axis])
+        throw std::invalid_argument("portable-kv-component-shape-mismatch");
+  }
+  const auto& key = destinationConversationKey;
+  const auto& session = destinationIdentity.requestId;
+  if (m_impl->deviceStateByConversation.count(key) || m_impl->residentHostStateByConversation.count(key) ||
+      m_impl->hostStateByConversation.count(key) || m_impl->externalDeviceAllocationsByConversation.count(key) ||
+      m_impl->stateHandleByConversation.count(key) || m_impl->deviceStateBySession.count(session) ||
+      m_impl->hostStateBySession.count(session) || m_impl->stateHandleBySession.count(session) ||
+      m_impl->conversationBindingBySession.count(session))
+    throw std::runtime_error("portable-kv-destination-collision");
+  NativeConversationStateHandleV1 result;
+  result.opaque.providerIdentity = destinationIdentity.providerIdentity;
+  result.opaque.providerBootId = destinationIdentity.providerBootId;
+  result.opaque.sessionId = session;
+  result.opaque.role = destinationIdentity.roleName;
+  result.opaque.stateInferenceEpoch = destinationIdentity.stateInferenceEpoch;
+  const bool deviceResident = m_impl->selection.selectedProvider == "cuda";
+  static std::atomic<std::uint64_t> importSequence{0};
+  result.opaque.token = std::string(deviceResident ? "ndnsf-device-state-v1:" : "ndnsf-resident-state-v1:") +
+                        "import:" + std::to_string(cacheIdentity()) + ":" +
+                        std::to_string(++importSequence);
+  result.conversationKey = key;
+  result.logicalBytes = static_cast<std::size_t>(snapshot.logicalBytes);
+  result.validate();
+  CudaRuntimeApi cuda;
+  Ort::AllocatorWithDefaultOptions allocator;
+  std::map<std::string, Ort::Value> tensors;
+  std::map<std::string, void*> allocations;
+  struct Cleanup {
+    CudaRuntimeApi& cuda;
+    std::map<std::string, Ort::Value>& tensors;
+    std::map<std::string, void*>& allocations;
+    int priorDevice = 0;
+    bool deviceSelected = false;
+    ~Cleanup() {
+      tensors.clear();
+      freeCudaPointers(cuda, allocations);
+      if (deviceSelected) (void)cuda.setDevice(priorDevice);
+    }
+  } cleanup{cuda, tensors, allocations};
+  std::optional<Ort::MemoryInfo> deviceMemory;
+  if (deviceResident) {
+    const auto deviceId = std::stoi(m_impl->selection.deviceId);
+    if (!cuda.canSelectDevice() || cuda.getDevice(&cleanup.priorDevice) != 0 ||
+        cuda.setDevice(deviceId) != 0)
+      throw std::runtime_error("portable-kv-cuda-unavailable");
+    cleanup.deviceSelected = true;
+    deviceMemory.emplace("Cuda", OrtAllocatorType::OrtDeviceAllocator, deviceId, OrtMemTypeDefault);
+  }
+  for (const auto& component : snapshot.components) {
+    checkPortableOperation(limits);
+    auto decoded = decodeTensorBundle(component.tensorWire);
+    const auto& tensor = decoded.front();
+    Ort::Value value{nullptr};
+    if (deviceResident) {
+      auto raw = allocations.emplace(component.inputName, nullptr).first;
+      if (!tensor.payload.empty() &&
+          (cuda.malloc(&raw->second, tensor.payload.size()) != 0 || raw->second == nullptr ||
+           cuda.memcpy(raw->second, tensor.payload.data(), tensor.payload.size(), cudaMemcpyHostToDevice) != 0))
+        throw std::runtime_error("portable-kv-cuda-copy-failed");
+      value = Ort::Value::CreateTensor(*deviceMemory, raw->second, tensor.payload.size(),
+        tensor.shape.data(), tensor.shape.size(), toOnnxElementType(tensor.elementType));
+    }
+    else {
+      value = Ort::Value::CreateTensor(allocator, tensor.shape.data(), tensor.shape.size(), toOnnxElementType(tensor.elementType));
+      if (!tensor.payload.empty()) std::memcpy(value.GetTensorMutableRawData(), tensor.payload.data(), tensor.payload.size());
+    }
+    tensors.emplace(component.inputName, std::move(value));
+  }
+  checkPortableOperation(limits);
+  try {
+    if (deviceResident) {
+      m_impl->deviceStateByConversation.emplace(key, std::move(tensors));
+      m_impl->externalDeviceAllocationsByConversation.emplace(key, std::move(allocations));
+    }
+    else m_impl->residentHostStateByConversation.emplace(key, std::move(tensors));
+    m_impl->stateHandleByConversation.emplace(key, result);
+  }
+  catch (...) { m_impl->releaseConversationLocked(key); throw; }
+  if (deviceResident) m_impl->runtimeMetrics.stateHostToDeviceBytes += snapshot.logicalBytes;
+  return result;
+}
+
+
 std::optional<NativeConversationStateHandleV1>
 OnnxRuntimeModelRunner::promoteSessionStateToConversation(
   const std::string& sessionId,
@@ -2879,6 +3200,32 @@ OnnxRuntimeModelRunner::supportsConversationStateTransfer() const
 {
   return false;
 }
+
+bool
+OnnxRuntimeModelRunner::supportsPortableConversationState() const
+{
+  return false;
+}
+
+NativePortableKvSnapshotV1
+OnnxRuntimeModelRunner::exportConversationState(
+  const NativeConversationStateHandleV1& state,
+  const DecodeStateIdentityV1& identity,
+  const NativePortableKvLimitsV1& limits)
+{
+  return NativeModelRunner::exportConversationState(state, identity, limits);
+}
+
+NativeConversationStateHandleV1
+OnnxRuntimeModelRunner::importConversationState(
+  const NativePortableKvSnapshotV1& snapshot,
+  const DecodeStateIdentityV1& identity,
+  const std::string& key,
+  const NativePortableKvLimitsV1& limits)
+{
+  return NativeModelRunner::importConversationState(snapshot, identity, key, limits);
+}
+
 
 std::optional<NativeConversationStateHandleV1>
 OnnxRuntimeModelRunner::promoteSessionStateToConversation(

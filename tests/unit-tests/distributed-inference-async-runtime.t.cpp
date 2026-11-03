@@ -3553,7 +3553,8 @@ BOOST_AUTO_TEST_CASE(KvStateStorePinsAndAtomicallyRollsBackCandidates)
 
 BOOST_AUTO_TEST_CASE(ConversationStateStoreSeparatesCrossRequestState)
 {
-  ConversationStateStore store(4, 1, 4, 1, 1'000);
+  const auto storeOwner = std::make_shared<ConversationStateStore>(4, 1, 4, 1, 1'000);
+  auto& store = *storeOwner;
   store.setProviderBinding("/provider/A", "boot-a", 7);
   const auto origin = exactStateIdentity();
   const auto binding = exactConversationBinding(origin, 1, 10'000);
@@ -4365,6 +4366,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
     return true;
   };
 
+  auto readyConfig = config;
   const auto result = runNativeEpochCoordinator(std::move(config));
   BOOST_CHECK_EQUAL(calls.load(), 2U);
   BOOST_CHECK(restored.load());
@@ -4376,6 +4378,36 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
   BOOST_CHECK_EQUAL(result.cacheObservations.front().prefixWorkAvoided, 3U);
   BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().hits, 1U);
   BOOST_CHECK_EQUAL(runtime.decodeStateSnapshot().entries, 0U);
+
+  // Port the source branch's READY-pin execution case. Keep this mainline's
+  // synchronous completion path while consuming the same production lease.
+  readyConfig.sessionId = "session-c";
+  readyConfig.requestId = "request-c";
+  readyConfig.stateIdentityTemplate = exactStateIdentity("request-c", 1, "generation-c");
+  readyConfig.prepareRunner = {};
+  auto cancelledConfig = readyConfig;
+  readyConfig.firstEpochConversationUse = runtime.acquireConversationUse(binding, 300);
+  BOOST_REQUIRE(readyConfig.firstEpochConversationUse);
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 1U);
+  const auto readyResult = runNativeEpochCoordinator(std::move(readyConfig));
+  BOOST_CHECK_EQUAL(calls.load(), 3U);
+  BOOST_CHECK_EQUAL(events, 2U);
+  BOOST_REQUIRE_EQUAL(readyResult.cacheObservations.size(), 1U);
+  BOOST_CHECK(readyResult.cacheObservations.front().conversationStateHit);
+  BOOST_CHECK_EQUAL(readyResult.cacheObservations.front().actualNewInputExtent, 2U);
+  BOOST_CHECK_EQUAL(readyResult.cacheObservations.front().representedPrefixTokenCount, 5U);
+  BOOST_CHECK_EQUAL(readyResult.cacheObservations.front().prefixWorkAvoided, 3U);
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 0U);
+  BOOST_CHECK_EQUAL(runtime.decodeStateSnapshot().entries, 0U);
+
+  cancelledConfig.firstEpochConversationUse = runtime.acquireConversationUse(binding, 400);
+  BOOST_REQUIRE(cancelledConfig.firstEpochConversationUse);
+  cancelledConfig.stopCheck = [] {
+    return std::optional<NativeEpochStopReason>{NativeEpochStopReason::Cancelled};
+  };
+  BOOST_CHECK_THROW(runNativeEpochCoordinator(std::move(cancelledConfig)), std::runtime_error);
+  BOOST_CHECK_EQUAL(calls.load(), 3U);
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().pinnedEntries, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorOverlapsRunnerPreparationWithInputWait)

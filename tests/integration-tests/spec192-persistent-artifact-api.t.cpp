@@ -1,6 +1,9 @@
 #include "tests/boost-test.hpp"
 #include "tests/fixtures/spec202-syscall-fault.hpp"
+#include "tests/unit-tests/native-protected-kv-fixture.hpp"
 #include "ndnsf-integration-fixture.hpp"
+
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-packets.hpp"
 
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
@@ -8,10 +11,12 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
+#include "NDNSF-DistributedRepo/src/face-data-reference-fetcher.hpp"
 #include "ndn-service-framework/NDNSFMessages.hpp"
 #include "ndn-service-framework/utils.hpp"
 
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-svs/security-options.hpp>
 #include <ndn-svs/svspubsub.hpp>
 
@@ -46,6 +51,7 @@ namespace {
 
 namespace fs = std::filesystem;
 namespace repo = ndnsf_distributed_repo;
+namespace di = ndnsf::di;
 using namespace std::chrono_literals;
 
 class TempRoot
@@ -2685,6 +2691,364 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   });
   BOOST_CHECK_EQUAL(lossReread.toJson(), lossStatus.toJson());
   BOOST_CHECK(lossCatalog.lookupAggregateReceipt(lossStatus.receiptId) == lossAggregate);
+}
+
+BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticatedRepoServices)
+{
+  TempRoot temporary;
+  const ndn::Name servicePrefix("/NDNSF/Repo/owner-client");
+  BootstrapProfile profile;
+  profile.groupPrefix = "/ndnsf/spec221/client/group";
+  profile.syncPrefix = "/ndnsf/spec221/client/sync";
+  profile.userIdentity = "/test/user/spec221/client";
+  profile.providerIdentity = "/test/provider/spec221/client";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
+  profile.attributeAuthority = "/test/aa/spec221/client";
+  profile.providerCount = 3;
+  profile.providerCanActAsUser = true;
+  profile.validateSvsPackets = true;
+  const std::vector<std::string> operations{
+    "USER_STORAGE_GRANT", "USER_STORAGE_LIST", "USER_STORAGE_USAGE", "USER_STORAGE_DELETE",
+    "INSERT", "MANIFEST"};
+  profile.serviceName = repoService(servicePrefix, operations.front());
+  for (size_t i = 1; i < operations.size(); ++i) {
+    profile.additionalServices.push_back(repoService(servicePrefix, operations[i]));
+  }
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  auto sourceWriter = makeRepoPublisherUser(environment, 0, servicePrefix, operations);
+  auto secondOwner = makeRepoPublisherUser(environment, 2, servicePrefix, operations);
+  // The full packet index requires Core's protected segmented response path.
+  // Model the configured Controller state through maintained admission APIs;
+  // never raise the inline threshold or synthesize an authenticated response.
+  const auto controller = profile.attributeAuthority;
+  environment.user().fetchPermissionsFromController(controller);
+  sourceWriter->fetchPermissionsFromController(controller);
+  secondOwner->fetchPermissionsFromController(controller);
+  const auto statusNow = static_cast<uint64_t>(std::chrono::duration_cast<
+    std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto controllerCertificate = environment.keyChain().getPib().getIdentity(controller)
+    .getDefaultKey().getDefaultCertificate();
+  for (const auto& operation : operations) {
+    PolicyStatusData status;
+    status.setServiceName(repoService(servicePrefix, operation));
+    status.setControllerVersion(ControllerVersion{statusNow, 1});
+    status.setValidity(statusNow - 1000, statusNow + 120000);
+    status.setPolicyDigest("sha256:" + std::string(64, '0'));
+    status.setControllerCertificate(controllerCertificate.getName());
+    status.setAbePublicParametersName(environment.attributeAuthorityPublicParametersName());
+    status.setAbePublicParametersDigest(environment.attributeAuthorityPublicParametersDigest());
+    BOOST_REQUIRE(environment.user().installControllerStatus(status));
+    BOOST_REQUIRE(sourceWriter->installControllerStatus(status));
+    BOOST_REQUIRE(secondOwner->installControllerStatus(status));
+    for (size_t i = 0; i < environment.providerCount(); ++i)
+      BOOST_REQUIRE(environment.provider(i).installControllerStatus(status));
+  }
+  environment.pumpUntilWithAttributeAuthority([] { return false; });
+  BOOST_REQUIRE(environment.user().hasRequestScopedDefault());
+  BOOST_REQUIRE(sourceWriter->hasRequestScopedDefault());
+  BOOST_REQUIRE(secondOwner->hasRequestScopedDefault());
+  const auto sourceIdentity = environment.provider(0).getName();
+  const auto producer = environment.keyChain().getPib().getIdentity(sourceIdentity)
+    .getDefaultKey().getDefaultCertificate();
+  const auto owner = profile.userIdentity.toUri(ndn::name::UriFormat::ALTERNATE);
+  const repo::RepoArtifactTarget target{"/logical/spec221/client",
+    environment.provider(1).getName().toUri(ndn::name::UriFormat::ALTERNATE),
+    servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
+  repo::StorageCapability capability;
+  capability.repoNode = target.repoNode;
+  capability.repoMode = "persistent";
+  capability.freeBytes = 4 * 1024 * 1024;
+  auto node = std::make_shared<repo::RepoNode>(servicePrefix, capability,
+    std::make_shared<repo::FilesystemRepoStoreBackend>(
+      (temporary.path() / "objects").string(), 4 * 1024 * 1024, 1024, "owner-client",
+      repo::FilesystemRecoveryPolicy::KEEP_UNCONFIRMED),
+    target.repoNode, target.providerIdentity, (temporary.path() / "metadata.sqlite3").string());
+  node->registerServices(environment.provider(1));
+  node->registerOriginalDataServing(environment.providerFace(1));
+  node->setDataReferenceSpoolFetcher(repo::detail::FaceDataReferenceFetcher(
+    environment.providerFace(1), 1s, 10s));
+  environment.enableProductionIngressForTest();
+  environment.pumpUntilWithAttributeAuthority([&] {
+    return node->isOriginalDataServingReady();
+  });
+
+  // Exercise the same signed encrypted-KV representation that the DI caller
+  // projects into Repo's transport-neutral original-packet transaction.
+  auto state = di::test::protectedKv::sample();
+  state.originIdentity.providerIdentity = sourceIdentity.toUri();
+  state.originIdentity.requestId = ndn::Name(profile.userIdentity).append("request").append("9")
+    .toUri();
+  const auto plain = temporary.path() / "portable-kv";
+  const auto cipher = temporary.path() / "protected-kv";
+  const auto restored = temporary.path() / "restored-kv";
+  const di::NativePortableKvCheckpointLimitsV1 portableLimits{{400000, 450000, {}},
+    8192, 500000};
+  const di::NativeProtectedKvCheckpointLimitsV1 protectedLimits{500000, 600000, {}};
+  di::nativeExportPrivatePortableKvCheckpoint(plain, state, portableLimits);
+  const auto expectedPlain = di::test::protectedKv::read(plain);
+  const auto ownerCertificate = environment.keyChain().getPib()
+    .getIdentity(profile.userIdentity).getDefaultKey().getDefaultCertificate();
+  const auto protectedReference = di::nativeProtectPortableKvCheckpoint(plain, cipher,
+    ownerCertificate, sourceIdentity, di::test::protectedKv::hash("repo-checkpoint"),
+    protectedLimits);
+  const auto expectedCipher = di::test::protectedKv::read(cipher);
+  const di::NativeProtectedKvPacketLimits packetLimits{protectedLimits, 1000000, 128};
+  // Direct Context construction is a fixture boundary, not model admission.
+  // Actual signing still uses the production owner-thread/current-work bridge.
+  ServiceProvider::CollaborationAssignment sourceAssignment;
+  sourceAssignment.role = state.originIdentity.roleName;
+  sourceAssignment.service = repoService(servicePrefix, "INSERT");
+  sourceAssignment.workDeadline = std::chrono::steady_clock::now() + 30s;
+  sourceAssignment.workCurrent = [&] {
+    return environment.provider(0).hasProviderPermissionForService(
+      repoService(servicePrefix, "INSERT"));
+  };
+  ServiceProvider::CollaborationContext sourceContext(environment.provider(0),
+    profile.userIdentity, ndn::Name(state.originIdentity.requestId), {}, sourceAssignment);
+  const auto packets = runWithFacePump(environment, [&] {
+    return di::nativePrepareProtectedKvPackets(cipher, protectedReference,
+      producer, packetLimits, [&](ndn::Data& data) {
+        if (!sourceContext.signProducerPacketCurrent(data, sourceAssignment.workDeadline))
+          throw std::runtime_error("current Source signing failed");
+      }, [&] {
+        if (!sourceAssignment.workCurrent() || !sourceContext.hasCurrentWorkAuthority() ||
+            std::chrono::steady_clock::now() >= sourceAssignment.workDeadline)
+          throw std::runtime_error("Source publication authority expired");
+      });
+  });
+
+  repo::RepoUserStorageInsertRequest insert;
+  insert.operationId = "client-original";
+  insert.generation = 1;
+  auto& reference = insert.reference;
+  reference.objectName = packets.rootName.toUri(ndn::name::UriFormat::ALTERNATE);
+  reference.dataPrefix = sourceIdentity.toUri(ndn::name::UriFormat::ALTERNATE);
+  reference.packetSetMetadata.emplace();
+  auto& metadata = *reference.packetSetMetadata;
+  metadata.objectName = reference.objectName;
+  metadata.objectType = "original-packet-set";
+  for (const auto& name : packets.packetNames)
+    metadata.packetNames.push_back(name.toUri(ndn::name::UriFormat::ALTERNATE));
+  std::vector<std::vector<uint8_t>> expectedWires;
+  for (const auto& wire : packets.packetWires)
+    expectedWires.emplace_back(wire.begin(), wire.end());
+  std::vector<uint8_t> aggregate;
+  for (const auto& wire : expectedWires) {
+    aggregate.insert(aggregate.end(), wire.begin(), wire.end());
+  }
+  metadata.size = reference.expectedSize = aggregate.size();
+  metadata.sha256 = reference.expectedSha256 = sha256(aggregate);
+  BOOST_CHECK_EQUAL(aggregate.size(), packets.wireBytes);
+  BOOST_CHECK_EQUAL("sha256:" + reference.expectedSha256, packets.wireDigest);
+
+  const auto ownerCall = [&](ServiceUser& caller, auto start) {
+    auto result = std::make_shared<std::promise<ResponseMessage>>();
+    auto ready = result->get_future();
+    const auto deadline = std::chrono::steady_clock::now() + 20s;
+    caller.postToIo([&, start, result] {
+      try {
+        const auto requestId = start([result](const ndn::Name&) {
+          result->set_exception(std::make_exception_ptr(std::runtime_error("owner-call-timeout")));
+        }, [result](const ResponseMessage& response) { result->set_value(response); });
+        if (requestId.empty()) throw std::runtime_error("owner-call-not-admitted");
+      }
+      catch (...) { result->set_exception(std::current_exception()); }
+    });
+    return runWithFacePump(environment, [&] {
+      if (ready.wait_until(deadline) != std::future_status::ready)
+        throw std::runtime_error("owner-call-callback-deadline");
+      return ready.get();
+    });
+  };
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  const repo::RepoUserStorageGrantRequest grant{1, "client-grant", reference.dataPrefix,
+    reference.objectName, static_cast<uint64_t>(now) + 120000};
+  const auto responseString = [](const ResponseMessage& reply) {
+    const auto payload = reply.getPayload();
+    return std::string(payload.begin(), payload.end());
+  };
+  auto response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
+    return repo::RepoClient::requestUserStorageGrant(environment.user(), target, grant, 15000,
+      std::move(timeout), std::move(complete));
+  });
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  const auto granted = repo::RepoUserStorageGrantReply::fromJson(responseString(response));
+  BOOST_CHECK_EQUAL(granted.grant.ownerIdentity, owner);
+  auto wrongTarget = target;
+  wrongTarget.repoNode += "/wrong";
+  response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
+    return repo::RepoClient::requestUserStorageGrant(environment.user(), wrongTarget,
+      grant, 15000, std::move(timeout), std::move(complete));
+  });
+  BOOST_CHECK(!response.getStatus());
+  insert.storageBinding = {1, owner, grant.grantId, granted.grant.ownerEpoch};
+  const auto verify = [producer](const ndn::Data& data) {
+    return ndn::security::verifySignature(data, producer);
+  };
+  BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
+    return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
+      [] { return std::optional<std::vector<uint8_t>>{}; }, verify, 250, 15000);
+  }), std::invalid_argument);
+  BOOST_CHECK(node->list().empty());
+  size_t position = 0;
+  const auto nextPacket = [&]() -> std::optional<std::vector<uint8_t>> {
+    if (position == expectedWires.size()) return std::nullopt;
+    return expectedWires[position++];
+  };
+  const auto inserted = runWithFacePump(environment, [&] {
+    return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
+      nextPacket, verify, 250, 15000);
+  });
+  BOOST_REQUIRE_EQUAL(inserted.lifecycleState, "COMMITTED");
+  // commitUserStorageOriginalPackets has stopped its Source filter.
+  // Remove the original files before the independent Owner retrieval.
+  BOOST_REQUIRE(fs::remove(plain));
+  BOOST_REQUIRE(fs::remove(cipher));
+  // Owner is permitted to invoke MANIFEST, but is not the delegated Source writer.
+  BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
+    return repo::RepoClient::requestSelectedService(environment.user(),
+      environment.provider(1).getName(), repoService(servicePrefix, "MANIFEST"),
+      repo::encodeUserStorageInsertRequest(insert), 250, 15000);
+  }), std::runtime_error);
+  response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
+    return repo::RepoClient::requestUserStorageUsage(environment.user(), target, {}, 15000,
+      std::move(timeout), std::move(complete));
+  });
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  BOOST_CHECK(repo::RepoUserStorageUsageReply::fromJson(responseString(response))
+    .usage.committedBytes > aggregate.size());
+  response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
+    return repo::RepoClient::requestUserStorageList(environment.user(), target, {}, 15000,
+      std::move(timeout), std::move(complete));
+  });
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  BOOST_REQUIRE_EQUAL(repo::RepoUserStorageListReply::fromJson(responseString(response))
+    .objects.size(), 1U);
+  // Exercise authenticated ACK readiness beyond the former 200ms profile.
+  // The declared maximum is not a sleep: Core still closes on first trusted coverage.
+  repo::RepoUserStoragePacketSetFetchLimits handoffLimits;
+  handoffLimits.ackCollectionTimeMs = 1000;
+  environment.provider(1).setAckThreads(1);
+  environment.provider(1).setAckStrategyHandler(repoService(servicePrefix, "USER_STORAGE_LIST"),
+    ServiceProvider::AckStrategyHandler([](const RequestMessage&) {
+      std::this_thread::sleep_for(250ms);
+      ServiceProvider::AckDecision ready;
+      ready.status = true;
+      ready.message = "delayed authenticated Repo ready";
+      return ready;
+    }));
+  auto verified = runWithFacePump(environment, [&] {
+    return repo::RepoClient::fetchOriginalDataPacketSetFromUserStorage(environment.user(),
+      target, reference.objectName, verify, 15000, handoffLimits);
+  });
+  BOOST_CHECK(verified.packetWires() == expectedWires);
+  BOOST_CHECK_EQUAL(verified.claim().object.wireSha256, reference.expectedSha256);
+  BOOST_CHECK_EQUAL(verified.manifest().size, aggregate.size());
+  std::vector<ndn::Buffer> recoveredWires;
+  for (const auto& wire : verified.packetWires())
+    recoveredWires.emplace_back(wire.begin(), wire.end());
+  runWithFacePump(environment, [&] {
+    di::nativeMaterializeProtectedKvPackets(recoveredWires, protectedReference,
+      packets.rootName, cipher, packetLimits,
+      [&](const ndn::Buffer& wire, const ndn::Name& producerIdentity) {
+        return environment.provider(2).validateProducerPacketWireUntil(wire, producerIdentity,
+          std::chrono::steady_clock::now() + 5s);
+      }, [] {});
+    return true;
+  });
+  BOOST_CHECK_EQUAL(di::test::protectedKv::read(cipher), expectedCipher);
+  di::nativeRecoverProtectedPortableKvCheckpoint(cipher, restored, protectedReference,
+    ownerCertificate, environment.keyChain(), protectedLimits);
+  BOOST_CHECK_EQUAL(di::test::protectedKv::read(restored), expectedPlain);
+  const auto recovered = di::nativeReadPrivatePortableKvCheckpoint(restored, portableLimits);
+  BOOST_REQUIRE_EQUAL(recovered.components.size(), state.components.size());
+  BOOST_CHECK(recovered.components.front().tensorWire == state.components.front().tensorWire);
+  auto renewal = grant;
+  renewal.grantId = "renewed-source-grant";
+  response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
+    return repo::RepoClient::requestUserStorageGrant(environment.user(), target, renewal, 15000,
+      std::move(timeout), std::move(complete));
+  });
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  const auto renewedGrant = repo::RepoUserStorageGrantReply::fromJson(responseString(response));
+  auto renewedInsert = insert;
+  renewedInsert.operationId = "renewed-source-operation";
+  renewedInsert.storageBinding.grantId = renewal.grantId;
+  renewedInsert.storageBinding.ownerEpoch = renewedGrant.grant.ownerEpoch;
+  position = 0;
+  const auto renewed = runWithFacePump(environment, [&] {
+    return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, renewedInsert,
+      nextPacket, verify, 250, 15000);
+  });
+  BOOST_CHECK_EQUAL(renewed.operationId, inserted.operationId);
+  auto otherGrant = grant;
+  otherGrant.grantId = "second-owner-grant";
+  response = ownerCall(*secondOwner, [&](auto timeout, auto complete) {
+    return repo::RepoClient::requestUserStorageGrant(*secondOwner, target, otherGrant, 15000,
+      std::move(timeout), std::move(complete));
+  });
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  const auto otherGranted = repo::RepoUserStorageGrantReply::fromJson(responseString(response));
+  auto sharedInsert = insert;
+  sharedInsert.operationId = "second-owner-original";
+  sharedInsert.storageBinding = {1,
+    secondOwner->getName().toUri(ndn::name::UriFormat::ALTERNATE), otherGrant.grantId,
+    otherGranted.grant.ownerEpoch};
+  position = 0;
+  const auto shared = runWithFacePump(environment, [&] {
+    return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, sharedInsert,
+      nextPacket, verify, 250, 15000);
+  });
+  BOOST_CHECK_EQUAL(shared.operationId, inserted.operationId);
+  BOOST_CHECK_NE(shared.operationId, sharedInsert.operationId);
+  BOOST_CHECK_EQUAL(node->core().list().size(), 1U);
+  auto otherVerified = runWithFacePump(environment, [&] {
+    return repo::RepoClient::fetchOriginalDataPacketSetFromUserStorage(*secondOwner,
+      target, reference.objectName, verify, 15000, handoffLimits);
+  });
+  BOOST_CHECK(otherVerified.packetWires() == expectedWires);
+  auto changed = verified.claim();
+  ++changed.object.generation;
+  BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
+    return repo::RepoClient::revalidateCurrentUserStorageClaim(
+      environment.user(), target, changed, 15000, handoffLimits);
+  }), std::runtime_error);
+  auto limits = handoffLimits;
+  limits.maxPacketCount = 1;
+  BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
+    return repo::RepoClient::fetchOriginalDataPacketSetFromUserStorage(environment.user(),
+      target, reference.objectName, verify, 15000, limits);
+  }), std::runtime_error);
+  const repo::RepoUserStorageDeleteRequest cleanup{1, "client-cleanup", reference.objectName,
+    granted.grant.ownerEpoch};
+  response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
+    return repo::RepoClient::requestUserStorageDelete(environment.user(), target, cleanup, 15000,
+      std::move(timeout), std::move(complete));
+  });
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  BOOST_CHECK_EQUAL(repo::RepoUserStorageDeleteReply::fromJson(responseString(response)).state,
+    "DELETED");
+  BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
+    return repo::RepoClient::revalidateCurrentUserStorageClaim(
+      environment.user(), target, verified.claim(), 15000, handoffLimits);
+  }), std::runtime_error);
+  BOOST_CHECK(node->core().has(reference.objectName));
+  response = ownerCall(*secondOwner, [&](auto timeout, auto complete) {
+    auto otherCleanup = cleanup;
+    otherCleanup.cleanupId = "second-owner-cleanup";
+    otherCleanup.ownerEpoch = otherGranted.grant.ownerEpoch;
+    return repo::RepoClient::requestUserStorageDelete(*secondOwner, target, otherCleanup, 15000,
+      std::move(timeout), std::move(complete));
+  });
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  BOOST_CHECK_EQUAL(repo::RepoUserStorageDeleteReply::fromJson(responseString(response)).state,
+    "DELETED");
+  BOOST_CHECK(node->core().list().empty());
+  node->stopOriginalPacketOperations();
 }
 
 BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)

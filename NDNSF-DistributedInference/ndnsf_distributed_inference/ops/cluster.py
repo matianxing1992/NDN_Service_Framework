@@ -123,6 +123,10 @@ def _snapshot(state, root=None):
     for row in state['launches']:
         valid = _valid_intent(row, state)
         actual = owned_state(row.get('proof')) if valid and row.get('proof') else 'UNKNOWN'
+        if valid and actual == 'EXITED' and _withdrawal_matches(row, row.get('withdrawal')):
+            actual = 'WITHDRAWN'
+        elif valid and actual == 'EXITED' and _operator_stop_complete(row):
+            actual = 'OPERATOR_STOPPED'
         if valid and row.get('spawn_failed') and not row.get('proof'):
             actual = 'EXITED'
         rows.append({'id': row.get('id', 'UNKNOWN'), 'kind': row.get('kind', 'UNKNOWN'), 'state': actual})
@@ -133,7 +137,8 @@ def _snapshot(state, root=None):
     elif status in ('STARTING', 'SERVICES_READY', 'REQUEST_RUNNING', 'STOPPING') and (
             root is None or not _operation_active(root, state)):
         status = 'UNKNOWN'
-    elif status == 'COMPLETE' and any(row['state'] != 'RUNNING' for row in services):
+    elif status == 'COMPLETE' and any(row['state'] not in ('RUNNING', 'WITHDRAWN', 'OPERATOR_STOPPED')
+                                      for row in services):
         status = 'DEGRADED'
     if state.get('facility'):
         if state['facility'].get('status') == 'UNKNOWN':
@@ -422,17 +427,120 @@ def _ready(row, actor, state):
                 continue
             if item.get('event') != 'NDNSF_DEPLOYMENT_READY':
                 continue
-            return (item.get('actor_id') == actor['id'] and item.get('boot_id') == state['boot_id'] and
+            valid = (item.get('actor_id') == actor['id'] and item.get('boot_id') == state['boot_id'] and
                     item.get('config_sha256') == state['configuration_sha256'] and
                     type(item.get('pid')) is int and item['pid'] == row['proof']['pid'] and
                     bool(item.get('native_boot_id')) and
                     _name(item.get('identity'), 'readiness.identity') == _name(actor['identity'], 'actor.identity'))
+            if valid:
+                row['native_boot_id'] = item['native_boot_id']
+                row['native_identity'] = actor['identity']
+            return valid
     return False
+
+
+def _withdrawal_matches(row, item):
+    """Observe a native terminal event; this does not decide or authorize a handoff."""
+    if row.get('kind') != 'provider' or not isinstance(item, dict):
+        return False
+    try:
+        operation = item.get('withdrawal_id')
+        return (item.get('event') == 'NDNSF_DEPLOYMENT_WITHDRAWN' and
+                item.get('actor_id') == row['id'] and
+                item.get('boot_id') == row['bindings']['NDNSF_DEPLOYMENT_BOOT_ID'] and
+                item.get('config_sha256') == row['bindings']['NDNSF_DEPLOYMENT_CONFIG_SHA256'] and
+                type(item.get('pid')) is int and item['pid'] == row['proof']['pid'] and
+                bool(row.get('native_boot_id')) and
+                item.get('native_boot_id') == row['native_boot_id'] and
+                _name(item.get('identity'), 'withdrawal.identity') ==
+                _name(row['native_identity'], 'native.identity') and
+                isinstance(operation, str) and 0 < len(operation) <= 128 and
+                _identifier(operation, 'withdrawal.id') == operation)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _provider_withdrawal_complete(actor, row):
+    if actor['kind'] != 'provider' or row.get('native_identity') != actor['identity']:
+        return False
+    if _withdrawal_matches(row, row.get('withdrawal')):
+        return True
+    try:
+        with Path(row['log']).open('rb') as stream:
+            raw = stream.read(1024 * 1024 + 1)
+    except OSError:
+        return False
+    if len(raw) > 1024 * 1024:
+        return False
+    for line in raw.splitlines():
+        if not line.startswith(b'{') or len(line) > 4096:
+            continue
+        try:
+            item = json.loads(line)
+        except (ValueError, UnicodeError):
+            continue
+        if _withdrawal_matches(row, item):
+            row['withdrawal'] = item
+            return True
+    return False
+
+
+def _provider_stop_request(row):
+    return {'actor_id': row['id'], 'bindings': row['bindings'], 'proof': row['proof']}
+
+
+def _operator_stop_complete(row):
+    """A process-management receipt is distinct from a native KV withdrawal."""
+    stop = row.get('operator_stop', {})
+    if not isinstance(stop, dict) or not isinstance(stop.get('result', {}), dict):
+        return False
+    result = stop.get('result', {})
+    return (row.get('kind') == 'provider' and bool(row.get('proof')) and
+            stop.get('request') == _provider_stop_request(row) and
+            result.get('status') == 'ZERO' and result.get('forced') is False and
+            type(result.get('exitCode')) is int and result['exitCode'] == 0)
+
+
+def _provider_stop_path(root, state, actor_id):
+    return root / ('stop-provider-' + state['boot_id'] + '-' + actor_id + '.json')
+
+
+def _consume_provider_stops(root, state, children):
+    if state['status'] != 'REQUEST_RUNNING':
+        return
+    for actor, child, row in children:
+        if actor['kind'] != 'provider' or _operator_stop_complete(row):
+            continue
+        path = _provider_stop_path(root, state, actor['id'])
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                info.st_mode & 0o777 != 0o600 or info.st_size > 4096):
+            raise ClusterError('unsafe Provider stop request')
+        request = _read_json(path)
+        if (not _valid_intent(row, state) or not row.get('proof') or
+                request != _provider_stop_request(row)):
+            raise ClusterError('Provider stop request binding mismatch')
+        if child.poll() is not None or owned_state(row['proof']) != 'RUNNING':
+            raise ClusterError('Provider exited before operator stop:' + actor['id'])
+        row['operator_stop'] = {'request': request}
+        write_json(root / 'state.json', state)
+        result = stop_owned(row['proof'])
+        row['operator_stop']['result'] = result
+        state.setdefault('cleanup', []).append(dict(result, id=actor['id']))
+        write_json(root / 'state.json', state)
+        if not _operator_stop_complete(row):
+            raise ClusterError('Provider operator stop failed:' + actor['id'])
 
 
 def _check_running(children):
     for actor, child, row in children:
         if actor['kind'] != 'requester' and child.poll() is not None:
+            if child.returncode == 0 and (_provider_withdrawal_complete(actor, row) or
+                                          _operator_stop_complete(row)):
+                continue
             raise ClusterError('CHILD_EXIT:' + actor['id'] + ':' + str(child.returncode))
 
 
@@ -676,6 +784,7 @@ def _up(source, root, timeout, debug=False, timing=False):
         def guard():
             nonlocal last_budget
             _cancelled(root, state)
+            _consume_provider_stops(root, state, children)
             _check_running(children)
             if time.monotonic() >= deadline:
                 raise ClusterError('DEPLOYMENT_TIMEOUT:' + state['status'])
@@ -819,7 +928,48 @@ def _up(source, root, timeout, debug=False, timing=False):
             return result
 
 
-def run_cluster(action, path, timeout=1800, *, debug=False, timing=False):
+def _stop_provider(root, state, actor_id, timeout):
+    actor_id = _identifier(actor_id, 'actor.id')
+    config = _read_json(Path(state['evidence_root']) / 'configuration.json')
+    actor = next((row for row in config['actors'] if row['id'] == actor_id), None)
+    row = next((row for row in state['launches'] if row['id'] == actor_id), None)
+    if (not actor or actor['kind'] != 'provider' or actor.get('external') or
+            not row or not _valid_intent(row, state) or not row.get('proof')):
+        raise ClusterError('actor stop requires a managed local Provider')
+    request = _provider_stop_request(row)
+    if _operator_stop_complete(row):
+        return {'status': 'ACTOR_STOPPED', 'actor_id': actor_id,
+                'boot_id': state['boot_id'], 'stop': row['operator_stop'],
+                'kv_safety': 'NOT_EVALUATED'}
+    if state['status'] != 'REQUEST_RUNNING' or not _operation_active(root, state):
+        raise ClusterError('actor stop requires an active local request operation')
+    if owned_state(row['proof']) != 'RUNNING':
+        raise ClusterError('Provider exited before operator stop:' + actor_id)
+    if len(json.dumps(request).encode()) > 4096:
+        raise ClusterError('Provider stop request exceeds byte limit')
+    write_json(_provider_stop_path(root, state, actor_id), request)
+    deadline = time.monotonic() + min(timeout, 60)
+    while True:
+        if _operator_stop_complete(row):
+            return {'status': 'ACTOR_STOPPED', 'actor_id': actor_id,
+                    'boot_id': state['boot_id'], 'stop': row['operator_stop'],
+                    'kv_safety': 'NOT_EVALUATED'}
+        if state['status'] != 'REQUEST_RUNNING' or not _operation_active(root, state):
+            raise ClusterError('actor stop requires an active local request operation')
+        if time.monotonic() >= deadline:
+            raise ClusterError('Provider operator stop acknowledgement timed out')
+        time.sleep(0.1)
+        current = _read_state(root)
+        if (not current or current['boot_id'] != state['boot_id'] or
+                current['configuration_sha256'] != state['configuration_sha256']):
+            raise ClusterError('operation changed during Provider stop')
+        state = current
+        row = next((item for item in state['launches'] if item['id'] == actor_id), None)
+        if not row or _provider_stop_request(row) != request:
+            raise ClusterError('Provider process changed during stop')
+
+
+def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_id=None):
     """Run the host operation or inspect/close its persisted owned processes."""
     if type(timeout) not in (int, float) or not 0 < timeout <= 3600:
         raise ClusterError('timeout must be in (0,3600] seconds')
@@ -827,6 +977,8 @@ def run_cluster(action, path, timeout=1800, *, debug=False, timing=False):
         raise ClusterError('debug must be a boolean and only applies to up')
     if type(timing) is not bool or (timing and action != 'up'):
         raise ClusterError('timing must be a boolean and only applies to up')
+    if actor_id is not None and action != 'down':
+        raise ClusterError('actor selection only applies to down')
     source, root = _locator(path)
     if action == 'up':
         def terminate(signum, frame):
@@ -840,12 +992,18 @@ def run_cluster(action, path, timeout=1800, *, debug=False, timing=False):
         _private_directory(root)
     state = _read_state(root)
     if state and state['schema'] == 'ndnsf-di-slurm-operation-v1':
+        if actor_id is not None:
+            raise ClusterError('actor stop is only supported by the local deployment owner')
         from .slurm import run_slurm
         return run_slurm(action, source, root, timeout, debug)
     if action == 'status' or state is None:
+        if actor_id is not None:
+            raise ClusterError('actor stop requires an existing local deployment')
         return _snapshot(state, root)
     if action != 'down':
         raise ClusterError('unsupported cluster action')
+    if actor_id is not None:
+        return _stop_provider(root, state, actor_id, timeout)
     write_json(root / 'cancel.json', {'boot_id': state['boot_id']})
     deadline = time.monotonic() + min(timeout, 60)
     while True:

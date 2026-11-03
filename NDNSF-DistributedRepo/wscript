@@ -11,6 +11,7 @@ def build(bld):
         'src/ArtifactRepositoryApi.cpp',
         'src/ArtifactTransfer.cpp',
         'src/ArtifactTypes.cpp',
+        'src/face-data-reference-fetcher.cpp',
         'src/LegacyRepoImporter.cpp',
         'src/PersistentRepoServerConfig.cpp',
         'src/backends/FilesystemArtifactStore.cpp',
@@ -29,6 +30,7 @@ def build(bld):
               source=repo_sources,
               cxxflags=['-fPIC'],
               includes=['include', '..'],
+              export_includes=['include'],
               use='ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
               install_path='${LIBDIR}')
 

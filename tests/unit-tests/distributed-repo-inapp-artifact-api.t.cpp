@@ -688,8 +688,10 @@ BOOST_AUTO_TEST_CASE(FutureSchemaAllowsReadOnlyReuseWithoutPublishingOrMutation)
     auto repository = ArtifactRepositoryApi::makeInApp(makeConfig(root));
     BOOST_REQUIRE(repository.publishFile(source.string(), reference).receipt);
   }
-  executeSql(root / "metadata.sqlite3",
-             "UPDATE repo_meta SET value='16' WHERE key='schema_generation'");
+  const auto futureSchemaSql = "UPDATE repo_meta SET value='" +
+    std::to_string(REPO_ARTIFACT_SCHEMA_GENERATION + 1) +
+    "' WHERE key='schema_generation'";
+  executeSql(root / "metadata.sqlite3", futureSchemaSql.c_str());
   const auto before = snapshotDatabaseAndSidecars(root / "metadata.sqlite3");
 
   {

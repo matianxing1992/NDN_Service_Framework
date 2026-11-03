@@ -7,6 +7,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-handoff.hpp"
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ExecutionLease.hpp"
@@ -24,6 +25,11 @@
 #include <vector>
 
 namespace ndnsf::di {
+
+class NativeProtectedKvPublicationV1;
+struct NativeDurableStorageOwner;
+struct NativeProtectedKvCheckpointReferenceV1;
+struct NativeProtectedKvCheckpointLimitsV1;
 
 /**
  * Request-local monotonicity gate for authenticated conversation controls.
@@ -183,6 +189,8 @@ struct NativeProviderHandlerConfig
   // host therefore uses the same ServiceProvider identity and boot epoch.
   std::string localProviderName;
   std::string providerBootId;
+  // Immutable service-owned Repo/credential/workspace policy for KV recovery.
+  std::shared_ptr<const NativeProviderHandoffConfig> handoff;
   std::string planDigest;
   // T011's Y-N-I mutation is injected at the native Provider boundary.  It
   // is empty for every ordinary deployment and cannot alter the authenticated
@@ -447,10 +455,54 @@ makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config);
 struct NativeProviderCollaborationRuntime
 {
   ndn_service_framework::ServiceProvider::CollaborationHandler handler;
+  // The original worker-only publication seam uses this host's Producer.
+  // Private packet/codec implementation types do not enter installed SDK includes.
+  std::function<NativeProtectedKvPublicationV1(
+    const ndn::Name&, const ndn::Name&, const ndn::Name&,
+    const std::filesystem::path&, const NativeProtectedKvCheckpointReferenceV1&,
+    const NativeDurableStorageOwner&, const NativeProtectedKvCheckpointLimitsV1&,
+    const std::function<void()>&)> publishProtectedKvCheckpoint;
   std::function<ProviderRoleWorkerSnapshot()> capacitySnapshot;
   std::function<ProviderDecodeStateSnapshot()> decodeStateSnapshot;
   std::function<ConversationStateSnapshot()> conversationStateSnapshot;
+  // Trusted save owner; this closure retains the actual Handler Runtime.
+  std::function<NativePortableKvSnapshotV1(const ConversationStateReferenceV1&,
+    const NativePortableKvLimitsV1&, std::uint64_t)> exportCommittedConversationState;
+  // Event owners use these same-Runtime operations to fence admissions,
+  // atomically pin the affected committed set and export rows without
+  // reacquiring snapshot ownership.
+  std::function<std::optional<ConversationStateStore::SaveFence>(
+    const std::string&, const std::string&, const std::string&)>
+      beginConversationSaveFence;
+  std::function<std::optional<ConversationStateStore::SaveFence>(
+    const std::string&, const std::string&, std::uint64_t)> beginServiceWithdrawalSaveFence;
+  std::function<std::optional<ConversationStateStore::SaveFence>(
+    const std::string&, std::uint64_t)>
+    beginProviderWithdrawalSaveFence;
+  std::function<std::optional<ConversationStateStore::SaveFence>(
+    const ConversationStateStore::SaveFence&, const std::string&,
+    const std::string&, std::uint64_t)>
+    borrowServiceWithdrawalSaveFence;
+  std::function<bool(const ConversationStateStore::SaveFence&,
+    const std::string&, const std::string&, std::uint64_t)>
+    matchesServiceWithdrawalSaveFence;
+  std::function<std::optional<ConversationStateStore::SaveFence>(
+    const ConversationStateStore::SaveFence&, const std::string&,
+    const std::string&, const std::string&, const std::string&,
+    std::uint64_t)>
+    borrowConversationWithdrawalSaveFence;
+  std::function<bool(const ConversationStateStore::SaveFence&)>
+    isSaveFenceQuiescent;
+  std::function<ConversationStateStore::SaveBatchResult(
+    const ConversationStateStore::SaveFence&,
+    ConversationSaveBatchLimitsV1, std::uint64_t)>
+      tryAcquireCommittedSaveBatch;
+  std::function<NativePortableKvSnapshotV1(
+    const ConversationStateStore::SaveBatch&, std::size_t,
+    const NativePortableKvLimitsV1&, std::uint64_t)>
+      exportCommittedSaveBatchRow;
   std::vector<ExecutionEvidence> executionEvidence;
+
 };
 
 NativeProviderCollaborationRuntime

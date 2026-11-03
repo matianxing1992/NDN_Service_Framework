@@ -2441,7 +2441,8 @@ struct ArtifactRepositoryApi::Impl
       , limits(std::move(config.limits))
       , availabilityFreshnessMs(config.availabilityFreshnessMs)
       , ownership((rootPath / "metadata.sqlite3").string(), ownerId)
-      , metadataStore((rootPath / "metadata.sqlite3").string(), true, 15, true)
+      , metadataStore((rootPath / "metadata.sqlite3").string(), true,
+                      REPO_ARTIFACT_SCHEMA_GENERATION, true)
       , payloadStore(rootPath.string(), MAX_STORE_RANGE_BYTES,
                      metadataStore.artifactWritesEnabled())
     {

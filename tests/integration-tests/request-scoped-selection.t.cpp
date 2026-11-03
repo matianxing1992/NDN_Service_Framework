@@ -1532,6 +1532,89 @@ BOOST_AUTO_TEST_CASE(ProtectedTargetedInlineRejectsUntrustedSignedInput)
   }
 }
 
+BOOST_AUTO_TEST_CASE(Spec212TargetedDrainWaitsForCoreCompletionFinalizer)
+{
+  test::BootstrapProfile profile;
+  profile.providerCount = 1;
+  test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  const auto service = environment.profile().serviceName;
+  auto status = makeCurrentStatus(service, 1);
+  status.setAbePublicParametersName(environment.attributeAuthorityPublicParametersName());
+  status.setAbePublicParametersDigest(environment.attributeAuthorityPublicParametersDigest());
+  BOOST_REQUIRE(environment.user().installControllerStatus(status));
+  BOOST_REQUIRE(environment.provider().installControllerStatus(status));
+  environment.user().setUseTokens(true);
+  environment.provider().setUseTokens(true);
+  environment.provider().setHandlerThreads(0);
+
+  std::mutex completionMutex;
+  ServiceProvider::AsyncTargetedCompletion heldCompletion;
+  bool handlerEntered = false;
+  auto registration = environment.provider().addScopedTargetedService(
+    service,
+    [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+         const ndn::Name&, const RequestMessage&,
+         ServiceProvider::AsyncTargetedCompletion complete) {
+      std::lock_guard<std::mutex> lock(completionMutex);
+      heldCompletion = std::move(complete);
+      handlerEntered = true;
+    });
+  auto waitForCallbacks = registration.makeTargetedHandlerDrainWaiter();
+  environment.enableProductionIngressForTest();
+
+  RequestCapabilities capabilities;
+  capabilities.setField("RequestScopedConfidentialityV1", "required");
+  RequestMessage request;
+  request.setRequestCapabilities(capabilities);
+  ndn::Buffer input{'d', 'r', 'a', 'i', 'n'};
+  request.setPayload(input, input.size());
+  const auto requestId = environment.user().RequestServiceTargeted(
+    environment.provider().getName(), service, request, 5000,
+    [] (const ndn::Name&) {},
+    [] (const ResponseMessage&) {});
+  BOOST_REQUIRE(!requestId.empty());
+  environment.pumpUntil([&] {
+    std::lock_guard<std::mutex> lock(completionMutex);
+    return handlerEntered;
+  });
+  {
+    std::lock_guard<std::mutex> lock(completionMutex);
+    BOOST_REQUIRE(handlerEntered);
+    BOOST_REQUIRE(static_cast<bool>(heldCompletion));
+  }
+
+  registration.close();
+  auto draining = std::async(std::launch::async, [&] {
+    return waitForCallbacks(std::chrono::seconds(2));
+  });
+  BOOST_CHECK(draining.wait_for(std::chrono::milliseconds(50)) ==
+              std::future_status::timeout);
+
+  ServiceProvider::AsyncTargetedCompletion complete;
+  {
+    std::lock_guard<std::mutex> lock(completionMutex);
+    complete = heldCompletion;
+  }
+  ResponseMessage response;
+  response.setStatus(true);
+  ndn::Buffer output{'o', 'k'};
+  response.setPayload(output, output.size());
+  complete(std::move(response));
+
+  // The Core completion is posted to the Provider Face. Without pumping that
+  // Face, the registration lease must remain active through the finalizer.
+  BOOST_CHECK(draining.wait_for(std::chrono::milliseconds(50)) ==
+              std::future_status::timeout);
+  environment.pumpUntil([&] {
+    return draining.wait_for(std::chrono::milliseconds(0)) ==
+           std::future_status::ready;
+  });
+  BOOST_REQUIRE(draining.wait_for(std::chrono::milliseconds(0)) ==
+                std::future_status::ready);
+  BOOST_CHECK(draining.get());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::integration_test

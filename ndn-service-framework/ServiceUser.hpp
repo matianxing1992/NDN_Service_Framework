@@ -297,6 +297,7 @@ namespace ndn_service_framework{
     class ServiceUser
     {
         friend struct test::InvocationNamesOracle;
+        friend struct test::ProducerPacketValidationOracle;
         public:
             /** Queue work on this user's existing Face I/O context.
              * Never invokes inline or starts an event loop. The application
@@ -304,9 +305,26 @@ namespace ndn_service_framework{
              * own owners and contain its asynchronous exceptions. */
             void postToIo(std::function<void()> task) const;
 
+            /** Post work on the configured Face with one of 16 operation leases.
+             * Retain the returned lease in asynchronous state until all callbacks
+             * drain. Throws at capacity. Queued work retains its own lease and
+             * never captures this User; the application keeps the Face alive.
+             */
+            [[nodiscard]] std::shared_ptr<void>
+            postToIoWithFace(std::function<void(ndn::Face&)> task) const;
+
             /** True while this thread executes the existing Face context.
              * Blocking application waits must be rejected on that thread. */
             bool isOnIoThread() const;
+
+            /** Validate original Producer Data with this User's configured trust policy.
+             * Standard certificates retain their exact subject and configured issuer rules.
+             * Run on an application worker while the Face remains active. Sixteen pending
+             * validations, the immutable deadline and shutdown bound this operation.
+             * This authenticates objects only, never service or execution authority. */
+            bool validateProducerPacketWireUntil(const std::vector<uint8_t>& wire,
+                const ndn::Name& producer, std::chrono::steady_clock::time_point deadline);
+            void stopProducerPacketValidation() noexcept;
 
             using AcksHandler =
                 std::function<std::vector<ndn_service_framework::RequestAckMessage>(
@@ -1965,6 +1983,8 @@ namespace ndn_service_framework{
             }
 
             ndn::Face& m_face;
+            std::shared_ptr<std::atomic<size_t>> m_faceOperationCount =
+                std::make_shared<std::atomic<size_t>>(0);
             ndn::Scheduler m_scheduler;
             // Retry callbacks retain only a weak reference to this route owner.
             std::shared_ptr<ndn::ScopedRegisteredPrefixHandle> m_identityRegistration;

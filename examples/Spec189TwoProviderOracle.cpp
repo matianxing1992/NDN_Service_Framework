@@ -746,7 +746,7 @@ struct StatisticsRows
 
 StatisticsRows
 readStatistics(const std::filesystem::path& path, const std::string& schema,
-               unsigned rounds, bool provider)
+               unsigned rounds, bool provider, bool sparse = false)
 {
   if (!std::filesystem::is_regular_file(path) ||
       std::filesystem::file_size(path) > 64U * 1024U * 1024U)
@@ -773,12 +773,14 @@ readStatistics(const std::filesystem::path& path, const std::string& schema,
       if (rows.provider.empty() || rows.boot.empty()) chainFailure("statistics-ready-binding");
     }
     else {
-      if (row.value("type", "") != "request" || rows.requests.size() >= rounds)
+      if (row.value("type", "") != "request" ||
+          rows.requests.size() >= rounds * (sparse ? 64U : 1U))
         chainFailure("statistics-request-count");
       rows.requests.push_back(row);
     }
   }
-  if (!input.eof() || rows.requests.size() != rounds || (provider && ready != 1))
+  if (!input.eof() || (!sparse && rows.requests.size() != rounds) ||
+      (provider && ready != 1))
     chainFailure("statistics-request-count");
   return rows;
 }
@@ -1319,13 +1321,16 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   const auto& conversation = requesterConfig.at("conversation");
   const auto& owner = conversation.at("owner");
   const auto& request = requesterConfig.at("request");
-  const auto& placement = requesterConfig.at("fixed_placement").at("role_providers");
-  NativeJson roleMap = NativeJson::array();
-  if (!placement.is_object() || placement.empty()) chainFailure("deployment-role-map");
-  for (auto item = placement.begin(); item != placement.end(); ++item)
-    roleMap.push_back(NativeJson::array({item.key(), item.value()}));
-  const auto roleMapDigest = ndnsf::di::nativePlanningDigest(
-    ndnsf::di::nativeCanonicalJson(roleMap));
+  const bool handoff = requesterConfig.contains("kv_handoff");
+  NativeJson placement = handoff ? NativeJson::object() :
+    requesterConfig.at("fixed_placement").at("role_providers");
+  if (!handoff && (!placement.is_object() || placement.empty()))
+    chainFailure("deployment-role-map");
+  if (handoff && (requesterConfig.contains("fixed_placement") ||
+      !requesterConfig.at("kv_handoff").at("roles").is_object() ||
+      requesterConfig.at("kv_handoff").at("roles").empty() ||
+      nonnegativeInteger(requesterConfig.at("kv_handoff").at("after_turn")) >= turns.size() - 1))
+    chainFailure("deployment-handoff-configuration");
   auto boundRequester = requesterConfig;
   const auto requesterStatisticsPath = requesterConfig.at("statistics_file").get<std::string>();
   if (!config.at("requester").contains("statistics_file")) {
@@ -1448,7 +1453,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       ? actor.at("parameters").value("statistics-file", (actorRoot(id) / (id + "-statistics.jsonl")).string())
       : (actorRoot(id) / (id + "-statistics.jsonl")).string();
     providers.push_back(readStatistics(statisticsPath,
-      "ndnsf-di-native-request-statistics-v1", rounds, true));
+      "ndnsf-di-native-request-statistics-v1", rounds, true, handoff));
     providers.back().actor = id;
     if (slurm) {
       providers.back().host = roleReceipts.at(id).at("host").get<std::string>();
@@ -1469,6 +1474,8 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   NativeJson initial;
   std::vector<std::int64_t> prefix;
   std::set<std::string> requests;
+  std::set<const NativeJson*> consumedObservations;
+  NativeJson initialPlacement;
   std::uint64_t previousFinish = 0;
   for (unsigned round = 0; round < rounds; ++round) {
     if (groupedTurns && round % 2 == 0)
@@ -1479,6 +1486,65 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     if (nonnegativeInteger(row.at("turn")) != round || row.at("completed") != true || plan.empty() ||
         requestId.empty() || !requests.insert(requestId).second)
       chainFailure("deployment-request-incomplete");
+    std::vector<std::pair<const StatisticsRows*, const NativeJson*>> observations;
+    NativeJson observedPlacement = NativeJson::object();
+    for (const auto& provider : providers) {
+      for (std::size_t index = 0; index < provider.requests.size(); ++index) {
+        const auto& observation = provider.requests.at(index);
+        if ((!handoff && index != round) ||
+            (handoff && observation.at("requestId") != requestId))
+          continue;
+        const auto role = observation.at("role").get<std::string>();
+        if (role.empty() || observedPlacement.contains(role) ||
+            !consumedObservations.insert(&observation).second)
+          chainFailure("deployment-checkpoint-role-coverage");
+        observedPlacement[role] = provider.provider;
+        observations.emplace_back(&provider, &observation);
+      }
+    }
+    if (handoff) {
+      const auto& control = requesterConfig.at("kv_handoff");
+      const auto& expectedRoles = control.at("roles");
+      if (observedPlacement.size() != expectedRoles.size())
+        chainFailure("deployment-handoff-role-coverage");
+      for (auto role = expectedRoles.begin(); role != expectedRoles.end(); ++role) {
+        if (!observedPlacement.contains(role.key()))
+          chainFailure("deployment-handoff-role-coverage");
+      }
+      if (round == 0) {
+        initialPlacement = observedPlacement;
+        if (request.contains("provider_names") && !request.at("provider_names").empty()) {
+          for (const auto& provider : observedPlacement) {
+            if (std::find(request.at("provider_names").begin(),
+                          request.at("provider_names").end(), provider) ==
+                request.at("provider_names").end())
+              chainFailure("deployment-handoff-initial-provider");
+          }
+        }
+      }
+      if (round <= nonnegativeInteger(control.at("after_turn"))) {
+        if (observedPlacement != initialPlacement)
+          chainFailure("deployment-handoff-early-placement-change");
+      }
+      else if (control.value("wait_for_departure", false)) {
+        if (observedPlacement == initialPlacement)
+          chainFailure("deployment-handoff-placement-unchanged");
+      }
+      else {
+        for (auto role = expectedRoles.begin(); role != expectedRoles.end(); ++role) {
+          if (observedPlacement.at(role.key()) != role.value().at("destination_provider"))
+            chainFailure("deployment-handoff-destination");
+        }
+      }
+      placement = observedPlacement;
+    }
+    if (observedPlacement != placement)
+      chainFailure("deployment-role-map");
+    NativeJson roleMap = NativeJson::array();
+    for (auto role = placement.begin(); role != placement.end(); ++role)
+      roleMap.push_back(NativeJson::array({role.key(), role.value()}));
+    const auto roleMapDigest = ndnsf::di::nativePlanningDigest(
+      ndnsf::di::nativeCanonicalJson(roleMap));
     const auto interval = *statisticsInterval(row, "startedSteadyNs", "finishedSteadyNs");
     if (interval.first < previousFinish) chainFailure("deployment-turn-order");
     previousFinish = interval.second;
@@ -1551,15 +1617,17 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     if (round == 0) initial = checkpoint;
     for (const auto* key : {"modelContractDigest", "securityDomainDigest", "planRoleMapDigest"}) {
       if (!checkpoint.at(key).is_string() || checkpoint.at(key).get<std::string>().empty() ||
-          checkpoint.at(key) != initial.at(key))
+          ((!handoff || std::string(key) != "planRoleMapDigest") &&
+           checkpoint.at(key) != initial.at(key)))
         chainFailure("deployment-checkpoint-contract");
     }
     const auto& receipts = checkpoint.at("roleReceiptDigests");
     std::set<std::string> roles;
     unsigned publishers = 0;
     std::optional<std::uint64_t> attempt;
-    for (const auto& provider : providers) {
-      const auto& observation = provider.requests.at(round);
+    for (const auto& observed : observations) {
+      const auto& provider = *observed.first;
+      const auto& observation = *observed.second;
       validateProviderStatistics(provider, observation, requestId, plan, provider.provider);
       const auto devices = gpuUuids.find(provider.actor);
       if (devices != gpuUuids.end())
@@ -1589,6 +1657,12 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     results.push_back({{"requestId", requestId}, {"planDigest", plan},
       {"generatedTokens", tokenTotal}, {"contextEpoch", contextEpoch},
       {"prefixTokens", prefix.size()}, {"finishReason", generation.at("finishReason")}});
+  }
+  for (const auto& provider : providers) {
+    for (const auto& observation : provider.requests) {
+      if (!consumedObservations.count(&observation))
+        chainFailure("deployment-unconsumed-provider-request");
+    }
   }
   NativeJson receipt{{"scope", "deployment-quiet-execution"}, {"bootId", boot},
     {"platform", slurm ? "slurm-apptainer" : minindn ? "minindn" : "single-host"},

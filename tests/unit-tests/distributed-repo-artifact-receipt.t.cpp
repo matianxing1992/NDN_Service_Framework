@@ -6,6 +6,7 @@
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
+#include "tests/fixtures/fixed-keychain-trust.hpp"
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 
@@ -618,7 +619,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   ndn_service_framework::ServiceProvider provider(
     ndn_service_framework::ServiceProvider::LocalMockTag{}, face,
     ndn::Name("/spec192/group"), providerCert, authorityCert,
-    std::filesystem::absolute("examples/trust-any.conf").string());
+    writeFixedKeychainTrust(temporary.path(), keyChain));
 
   const ndn::Name servicePrefix(RepoClient::DEFAULT_SERVICE_NAME);
   const std::string logicalRepo = "/logical/repo-a";
@@ -635,7 +636,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
     metadataPath);
   node->registerServices(provider);
   SqliteArtifactMetadataStore durableCatalog(metadataPath, false, 15);
-  BOOST_CHECK_EQUAL(durableCatalog.schemaGeneration(), 15U);
+  BOOST_CHECK_EQUAL(durableCatalog.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
 
   const std::vector<uint8_t> directBytes{0x10, 0x20, 0x30, 0x40};
   const auto directReference = makeReference("PUBLISH_STATUS-direct-store", directBytes);
@@ -954,7 +955,7 @@ BOOST_AUTO_TEST_CASE(RangeAbortIsOwnerBoundAndExpiredStagingReleasesCapacity)
   ndn_service_framework::ServiceProvider provider(
     ndn_service_framework::ServiceProvider::LocalMockTag{}, face,
     ndn::Name("/spec192/group-abort"), providerCert, authorityCert,
-    std::filesystem::absolute("examples/trust-any.conf").string());
+    writeFixedKeychainTrust(temporary.path(), keyChain));
 
   const ndn::Name servicePrefix(RepoClient::DEFAULT_SERVICE_NAME);
   const std::string logicalRepo = "/logical/range-abort";
@@ -1358,7 +1359,7 @@ BOOST_AUTO_TEST_CASE(ServerAndClientDefaultsAndOverrideKeepRegisteredStatusPrefi
   ndn_service_framework::ServiceProvider provider(
     ndn_service_framework::ServiceProvider::LocalMockTag{}, face,
     ndn::Name("/spec192/group"), providerCert, authorityCert,
-    std::filesystem::absolute("examples/trust-any.conf").string());
+    writeFixedKeychainTrust(temporary.path(), keyChain));
 
   serverConfig.servicePrefix = ndn::Name("/spec192/custom-repo/v2");
   clientConfig.servicePrefix = serverConfig.servicePrefix;

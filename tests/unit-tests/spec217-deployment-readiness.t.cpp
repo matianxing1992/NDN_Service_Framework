@@ -106,6 +106,31 @@ BOOST_AUTO_TEST_CASE(PartialAndInvalidBindingsEmitNoReadyRecord)
   BOOST_CHECK(bytes.empty());
 }
 
+BOOST_AUTO_TEST_CASE(WithdrawalRetainsLaunchAndNativeBindingsAndRequiresOperation)
+{
+  const std::string sha(64, 'b');
+  test::ScopedEnvironmentValue actor("NDNSF_DEPLOYMENT_ACTOR_ID", "provider-1");
+  test::ScopedEnvironmentValue boot("NDNSF_DEPLOYMENT_BOOT_ID", "launch-123");
+  test::ScopedEnvironmentValue digest("NDNSF_DEPLOYMENT_CONFIG_SHA256", sha.c_str());
+  ReadinessOutput output;
+  BOOST_CHECK_THROW(ndnsf::di::detail::emitDeploymentWithdrawal(
+    "/provider", "native-boot", ""), std::invalid_argument);
+  BOOST_CHECK_THROW(ndnsf::di::detail::emitDeploymentWithdrawal(
+    "/provider", "native-boot", "invalid\noperation"), std::invalid_argument);
+  ndnsf::di::detail::emitDeploymentWithdrawal("/provider", "native-boot", "withdraw-123");
+  const auto bytes = output.read();
+  const auto record = ndnsf::di::NativeJson::parse(bytes);
+  BOOST_CHECK_EQUAL(record.at("event").get<std::string>(), "NDNSF_DEPLOYMENT_WITHDRAWN");
+  BOOST_CHECK_EQUAL(record.at("actor_id").get<std::string>(), "provider-1");
+  BOOST_CHECK_EQUAL(record.at("boot_id").get<std::string>(), "launch-123");
+  BOOST_CHECK_EQUAL(record.at("config_sha256").get<std::string>(), sha);
+  BOOST_CHECK_EQUAL(record.at("identity").get<std::string>(), "/provider");
+  BOOST_CHECK_EQUAL(record.at("native_boot_id").get<std::string>(), "native-boot");
+  BOOST_CHECK_EQUAL(record.at("withdrawal_id").get<std::string>(), "withdraw-123");
+  BOOST_CHECK_EQUAL(record.at("pid").get<int>(), ::getpid());
+  BOOST_CHECK_EQUAL(std::count(bytes.begin(), bytes.end(), '\n'), 1);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::tests

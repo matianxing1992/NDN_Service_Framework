@@ -103,6 +103,8 @@ struct NativeConversationJournal::Impl
   std::vector<NativeJson> records;
   mutable std::mutex mutex;
   bool poisoned = false;
+  void appendTransaction(const std::vector<NativeJson>& appended, std::uint64_t nowMs);
+  std::vector<NativeJson> readConversations(std::uint64_t nowMs) const;
 };
 
 NativeConversationJournal::NativeConversationJournal(NativeConversationJournalConfig config)
@@ -245,9 +247,18 @@ void NativeConversationJournal::appendConversation(
     {"wireDigest", wireDigest}, {"payloadDigest", "sha256:" + sha(plaintext)}, {"expiresAtMs", expiry}};
   if (nativeInitialPromptTokenCount) indexPayload["nativeInitialPromptTokenCount"] = *nativeInitialPromptTokenCount;
   auto index = makeRecord("conversation-checkpoint", std::move(indexPayload), nowMs);
+  state.appendTransaction({envelope, index}, nowMs);
+}
+
+void NativeConversationJournal::Impl::appendTransaction(
+  const std::vector<NativeJson>& appended, std::uint64_t nowMs)
+{
+  auto& state = *this;
+  require(!state.poisoned && state.usage <= state.config.quotaBytes,
+    "conversation journal unavailable");
   auto nextRecords = state.records;
-  nextRecords.push_back(envelope); nextRecords.push_back(index);
-  const auto transaction = makeRecord("journal-transaction", {{"records", {envelope, index}}}, nowMs);
+  nextRecords.insert(nextRecords.end(), appended.begin(), appended.end());
+  const auto transaction = makeRecord("journal-transaction", {{"records", appended}}, nowMs);
   const auto wire = transaction.dump(-1, ' ', true) + "\n";
   require(wire.size() <= state.config.quotaBytes - state.usage, "conversation journal quota exceeded");
   std::size_t written = 0;
@@ -273,15 +284,70 @@ std::vector<NativeJson> NativeConversationJournal::readConversations(std::uint64
 {
   const auto& state = *m_impl;
   std::lock_guard<std::mutex> guard(state.mutex);
+  return state.readConversations(nowMs);
+}
+
+void NativeConversationJournal::appendProtectedKvSet(
+  const std::string& checkpointWire, const NativeJson& references, std::uint64_t nowMs,
+  const std::map<std::string, std::string>& nextProvidersByRole)
+{
+  auto& state = *m_impl;
+  std::lock_guard<std::mutex> guard(state.mutex);
+  const auto checkpoint = nativeParseJson(checkpointWire);
+  const auto conversation = checkpoint.at("conversationId").get<std::string>();
+  const auto bodies = state.readConversations(nowMs);
+  const auto latest = std::find_if(bodies.rbegin(), bodies.rend(), [&](const auto& body) {
+    return body.at("transcript").at("conversationId") == conversation;
+  });
+  require(latest != bodies.rend() && latest->at("checkpointWire") == checkpointWire &&
+    latest->contains("providersByRole"), "conversation KV durable parent changed");
+  const auto sources = latest->at("providersByRole").get<std::map<std::string, std::string>>();
+  nativeValidateProtectedKvReferences(references, checkpoint, sources);
+  nativeValidateKvNextPlacement(nextProvidersByRole, checkpoint);
+  if (latest->contains("protectedKvReferences")) {
+    require(latest->at("protectedKvReferences") == references, "conversation KV set changed");
+    if (latest->value("nextTurnProvidersByRole", std::map<std::string, std::string>{}) ==
+        nextProvidersByRole) return;
+  }
+  const auto expiry = checkpoint.at("expiresAtMs").get<std::uint64_t>();
+  require(expiry > nowMs, "conversation KV parent expired");
+  const auto envelopeId = "conversation-kv-" + sha(conversation) + "-" +
+    std::to_string(checkpoint.at("contextEpoch").get<std::uint64_t>()) + "-" +
+    sha(nativeConversationCanonicalJson(NativeJson{
+      {"references", references}, {"nextTurnProvidersByRole", nextProvidersByRole}}));
+  NativeJson body{{"checkpoint", nativeConversationBase64Encode(checkpointWire)},
+    {"references", references}, {"nextTurnProvidersByRole", nextProvidersByRole}};
+  const auto plaintext = nativeConversationCanonicalJson(body);
+  const auto encoded = nativeSealConversationEnvelope(
+    plaintext, envelopeId, expiry, state.config.keys.front());
+  const auto wireDigest = "sha256:" + sha(encoded);
+  const auto envelope = makeRecord("protected-envelope", {{"request_id", envelopeId},
+    {"expires_at_ms", expiry}, {"wire_digest", wireDigest},
+    {"encoded", nativeConversationBase64Encode(encoded)}}, nowMs);
+  const auto index = makeRecord("conversation-kv-checkpoint", {{"conversationId", conversation},
+    {"contextEpoch", checkpoint.at("contextEpoch")},
+    {"checkpointDigest", checkpoint.at("checkpointDigest")}, {"expiresAtMs", expiry},
+    {"envelopeId", envelopeId}, {"wireDigest", wireDigest},
+    {"payloadDigest", "sha256:" + sha(plaintext)}}, nowMs);
+  state.appendTransaction({envelope, index}, nowMs);
+}
+
+std::vector<NativeJson>
+NativeConversationJournal::Impl::readConversations(std::uint64_t nowMs) const
+{
+  const auto& state = *this;
   require(!state.poisoned && nowMs > 0, "conversation journal unavailable");
   std::map<std::string, NativeJson> envelopes;
+  std::map<std::string, NativeJson> heads;
   std::vector<NativeJson> result;
   for (const auto& record : state.records) {
     const auto& payload = record.at("payload");
     if (record.at("kind") == "protected-envelope") {
       envelopes[payload.at("request_id").get<std::string>()] = payload;
     }
-    else if (record.at("kind") == "conversation-checkpoint") {
+    else if (record.at("kind") == "conversation-checkpoint" ||
+             record.at("kind") == "conversation-kv-checkpoint") {
+      const bool kv = record.at("kind") == "conversation-kv-checkpoint";
       const auto id = payload.at("envelopeId").get<std::string>();
       const auto it = envelopes.find(id);
       require(it != envelopes.end(), "conversation committed envelope missing");
@@ -294,9 +360,12 @@ std::vector<NativeJson> NativeConversationJournal::readConversations(std::uint64
       if (payload.contains("payloadDigest"))
         require(payload.at("payloadDigest") == "sha256:" + sha(plaintext), "conversation payload digest mismatch");
       auto body = nativeParseJson(plaintext);
-      require(body.is_object() && body.contains("checkpoint") && body.contains("transcript") &&
-              (body.size() == 2 || (body.size() == 3 && body.contains("providersByRole") &&
-                                    body.at("providersByRole").is_object())),
+      require(body.is_object() && body.contains("checkpoint") && (kv ?
+        (body.size() == 3 && body.contains("references") && body.at("references").is_object() &&
+         body.contains("nextTurnProvidersByRole") && body.at("nextTurnProvidersByRole").is_object()) :
+        (body.contains("transcript") && (body.size() == 2 ||
+          (body.size() == 3 && body.contains("providersByRole") &&
+           body.at("providersByRole").is_object())))),
               "conversation journal body malformed");
       const auto checkpointWire = nativeConversationBase64Decode(body.at("checkpoint").get<std::string>());
       const auto checkpoint = nativeParseJson(checkpointWire);
@@ -304,6 +373,32 @@ std::vector<NativeJson> NativeConversationJournal::readConversations(std::uint64
         require(checkpoint.at(field) == payload.at(field), "conversation journal index binding mismatch");
       require(checkpoint.at("expiresAtMs") == nativeParseJson(encoded).at("expiresAtMs"),
               "conversation envelope lifetime mismatch");
+      const auto conversation = checkpoint.at("conversationId").get<std::string>();
+      if (kv) {
+        const auto head = heads.find(conversation);
+        require(head != heads.end() && head->second.at("checkpointWire") == checkpointWire &&
+          head->second.contains("providersByRole"), "conversation KV restored parent changed");
+        const auto& references = body.at("references");
+        nativeValidateProtectedKvReferences(references, checkpoint,
+          head->second.at("providersByRole").get<std::map<std::string, std::string>>());
+        const auto next = body.at("nextTurnProvidersByRole").get<
+          std::map<std::string, std::string>>();
+        nativeValidateKvNextPlacement(next, checkpoint);
+        if (head->second.contains("protectedKvReferences"))
+          require(head->second.at("protectedKvReferences") == references,
+            "conversation KV restored set changed");
+        head->second["protectedKvReferences"] = references;
+        head->second["nextTurnProvidersByRole"] = next;
+        if (checkpoint.at("expiresAtMs").get<std::uint64_t>() > nowMs) {
+          const auto target = std::find_if(result.rbegin(), result.rend(), [&](const auto& prior) {
+            return prior.at("checkpointWire") == checkpointWire;
+          });
+          require(target != result.rend(), "conversation KV restored checkpoint missing");
+          (*target)["protectedKvReferences"] = references;
+          (*target)["nextTurnProvidersByRole"] = next;
+        }
+        continue;
+      }
       std::optional<std::size_t> nativeInitialPromptTokenCount;
       if (payload.contains("nativeInitialPromptTokenCount")) {
         const auto& count = payload.at("nativeInitialPromptTokenCount");
@@ -314,6 +409,8 @@ std::vector<NativeJson> NativeConversationJournal::readConversations(std::uint64
         body["nativeInitialPromptTokenCount"] = *nativeInitialPromptTokenCount;
       }
       nativeValidateConversationTranscript(body.at("transcript"), checkpoint, nativeInitialPromptTokenCount);
+      body["checkpointWire"] = checkpointWire;
+      heads[conversation] = body;
       if (checkpoint.at("expiresAtMs").get<std::uint64_t>() <= nowMs) {
         // An expired successor is still the durable head. Do not resurrect an
         // older epoch whose receipt happened to promise a longer lifetime.
@@ -322,7 +419,6 @@ std::vector<NativeJson> NativeConversationJournal::readConversations(std::uint64
         }), result.end());
         continue;
       }
-      body["checkpointWire"] = checkpointWire;
       result.push_back(std::move(body));
     }
   }

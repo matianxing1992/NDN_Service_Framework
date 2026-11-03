@@ -12,9 +12,10 @@
 
 namespace ndnsf::di::detail {
 
-/** Report the actual native readiness boundary to the owning deployment process. */
+/** Emit the two native service lifecycle boundaries with their launch binding. */
 inline void
-emitDeploymentReadiness(const std::string& identity, const std::string& nativeBootId)
+emitDeploymentLifecycle(const std::string& identity, const std::string& nativeBootId,
+  const std::string& withdrawalId)
 {
   const char* actor = ::getenv("NDNSF_DEPLOYMENT_ACTOR_ID");
   const char* boot = ::getenv("NDNSF_DEPLOYMENT_BOOT_ID");
@@ -33,10 +34,17 @@ emitDeploymentReadiness(const std::string& identity, const std::string& nativeBo
       std::string(digest).size() != 64 ||
       std::string(digest).find_first_not_of("0123456789abcdef") != std::string::npos)
     throw std::invalid_argument("invalid managed deployment readiness binding");
-  auto line = NativeJson({{"event", "NDNSF_DEPLOYMENT_READY"}, {"actor_id", actor},
+  if (!withdrawalId.empty() && !token(withdrawalId.c_str()))
+    throw std::invalid_argument("invalid managed deployment withdrawal identity");
+  auto record = NativeJson({{"event", withdrawalId.empty()
+                            ? "NDNSF_DEPLOYMENT_READY" : "NDNSF_DEPLOYMENT_WITHDRAWN"},
+                          {"actor_id", actor},
                           {"boot_id", boot}, {"config_sha256", digest},
                           {"identity", identity}, {"native_boot_id", nativeBootId},
-                          {"pid", ::getpid()}}).dump() + "\n";
+                          {"pid", ::getpid()}});
+  if (!withdrawalId.empty())
+    record["withdrawal_id"] = withdrawalId;
+  const auto line = record.dump() + "\n";
   if (identity.empty() || nativeBootId.empty() || line.size() > 4096)
     throw std::invalid_argument("invalid native deployment readiness identity or size");
   ssize_t count;
@@ -45,6 +53,23 @@ emitDeploymentReadiness(const std::string& identity, const std::string& nativeBo
   } while (count < 0 && errno == EINTR);
   if (count < 0 || static_cast<std::size_t>(count) != line.size())
     throw std::runtime_error("cannot publish managed deployment readiness");
+}
+
+/** Report actual native readiness to the owning deployment process. */
+inline void
+emitDeploymentReadiness(const std::string& identity, const std::string& nativeBootId)
+{
+  emitDeploymentLifecycle(identity, nativeBootId, {});
+}
+
+/** Report a non-forced Provider withdrawal only after its owners have drained. */
+inline void
+emitDeploymentWithdrawal(const std::string& identity, const std::string& nativeBootId,
+  const std::string& withdrawalId)
+{
+  if (withdrawalId.empty())
+    throw std::invalid_argument("managed withdrawal requires an operation identity");
+  emitDeploymentLifecycle(identity, nativeBootId, withdrawalId);
 }
 
 } // namespace ndnsf::di::detail

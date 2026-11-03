@@ -390,6 +390,38 @@ encodeDataReferenceRequest(const RepoDataReference& reference)
 }
 
 std::vector<uint8_t>
+encodeUserStorageInsertRequest(const RepoUserStorageInsertRequest& request)
+{
+  static constexpr uint8_t MAGIC[] = {'R', 'P', 'O', 'I', '1', '\n'};
+  if (request.schemaVersion != 1 || request.operationId.empty() ||
+      request.operationId.size() > 256 || request.operationId.find('\0') != std::string::npos ||
+      request.generation == 0) {
+    throw std::invalid_argument("repo-user-storage-insert-request-invalid");
+  }
+  if (!request.reference.packetSetMetadata) {
+    throw std::invalid_argument("repo-user-storage-insert-requires-exact-packets");
+  }
+  request.reference.validateExactPacketSet();
+  const auto reference = request.reference.toJson();
+  const auto binding = request.storageBinding.toJson();
+  if (reference.size() > MAX_STORE_MANIFEST_BYTES || binding.size() > 16U * 1024U)
+    throw std::invalid_argument("repo-user-storage-insert-request-too-large");
+
+  std::vector<uint8_t> encoded(std::begin(MAGIC), std::end(MAGIC));
+  const auto appendString = [&encoded] (const std::string& value) {
+    appendFramedLine(encoded, value.size());
+    encoded.insert(encoded.end(), value.begin(), value.end());
+  };
+  appendString(request.operationId);
+  appendFramedLine(encoded, request.generation);
+  appendString(reference);
+  appendString(binding);
+  if (encoded.size() > MAX_RANGE_FRAME_BYTES)
+    throw std::invalid_argument("repo-user-storage-insert-request-too-large");
+  return encoded;
+}
+
+std::vector<uint8_t>
 encodeStatusRequest(const std::string& operationId)
 {
   return toBytes(operationId);
@@ -519,11 +551,53 @@ parseDataReferenceJson(const std::string& referenceJson)
   reference.expectedSha256 = extractJsonString(referenceJson, "expectedSha256");
   reference.expectedSize = extractJsonUInt(referenceJson, "expectedSize", 0);
   reference.storeWirePackets = extractJsonBool(referenceJson, "storeWirePackets", true);
+  const auto packetSetMetadata = extractJsonString(referenceJson, "packetSetMetadata");
+  if (!packetSetMetadata.empty()) {
+    if (packetSetMetadata.size() > MAX_STORE_MANIFEST_BYTES) {
+      throw std::invalid_argument("repo-exact-packet-metadata-too-large");
+    }
+    reference.packetSetMetadata = parseManifestJson(packetSetMetadata);
+  }
   reference.objectType = extractJsonString(referenceJson, "objectType");
   if (reference.objectType.empty()) {
     reference.objectType = "ndn-segmented-data";
   }
   return reference;
+}
+
+RepoUserStorageInsertRequest
+decodeUserStorageInsertRequest(const std::vector<uint8_t>& request)
+{
+  static constexpr uint8_t MAGIC[] = {'R', 'P', 'O', 'I', '1', '\n'};
+  if (request.size() < sizeof(MAGIC) || request.size() > MAX_RANGE_FRAME_BYTES ||
+      !std::equal(std::begin(MAGIC), std::end(MAGIC), request.begin())) {
+    throw std::invalid_argument("repo-user-storage-insert-request-invalid");
+  }
+  size_t cursor = sizeof(MAGIC);
+  const auto takeString = [&request, &cursor] (size_t maximum, const char* field) {
+    const auto length = readFramedLine(request, cursor, field);
+    if (length == 0 || length > maximum || length > request.size() - cursor)
+      throw std::invalid_argument(std::string("repo-user-storage-insert-request-invalid-") + field);
+    std::string value(reinterpret_cast<const char*>(request.data() + cursor), length);
+    cursor += length;
+    return value;
+  };
+
+  RepoUserStorageInsertRequest decoded;
+  decoded.operationId = takeString(256, "operation-id");
+  decoded.generation = readFramedLine(request, cursor, "generation");
+  const auto referenceWire = takeString(MAX_STORE_MANIFEST_BYTES, "reference");
+  const auto bindingWire = takeString(16U * 1024U, "binding");
+  if (cursor != request.size() || decoded.generation == 0 ||
+      decoded.operationId.find('\0') != std::string::npos)
+    throw std::invalid_argument("repo-user-storage-insert-request-invalid-trailing-or-generation");
+  decoded.reference = parseDataReferenceJson(referenceWire);
+  decoded.storageBinding = RepoUserStorageBinding::fromJson(bindingWire);
+  // One bounded re-encoding checks both JSON fields and decimal frame spelling.
+  if (encodeUserStorageInsertRequest(decoded) != request) {
+    throw std::invalid_argument("repo-user-storage-insert-request-noncanonical");
+  }
+  return decoded;
 }
 
 RepoOperationStatus

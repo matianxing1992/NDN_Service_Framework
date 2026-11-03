@@ -1042,10 +1042,18 @@ def build(bld):
             excl=[
                 'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
                 'NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.cpp',
+                ('NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-save-no-repo.cpp'
+                 if 'repo' in bld.env.NDNSF_COMPONENTS else
+                 'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-save-repo.cpp'),
+                *([] if 'repo' in bld.env.NDNSF_COMPONENTS else
+                  ['NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-owner-repo.cpp',
+                   'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-publication-repo.cpp',
+                   'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore-repo.cpp']),
             ])
         bld.objects(target='ndnsf-di-core-objects', source=di_core_sources,
                     includes=['.', 'ndn-service-framework'],
-                    use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL',
+                    use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL' +
+                        (' ndnsf-distributed-repo' if 'repo' in bld.env.NDNSF_COMPONENTS else ''),
                     cxxflags=['-fPIC'])
         bld.objects(
             target='ndnsf-di-adapter-onnx-objects',
@@ -1076,6 +1084,8 @@ def build(bld):
             bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp') + \
             bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
         di_library_use = 'ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB DL'
+        if 'repo' in bld.env.NDNSF_COMPONENTS:
+            di_library_use += ' ndnsf-distributed-repo'
         if bld.env.HAVE_ONNXRUNTIME_CPP:
             di_library_use += ' ONNXRUNTIME'
         if bld.env.enable_shared:
@@ -1152,6 +1162,14 @@ def build(bld):
                 excl=[
                     'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp',
                     'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/portable-kv-checkpoint.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-checkpoint.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-packets.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-save.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-publication.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-owner.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore-provider.hpp',
                     'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp',
                     'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp',
                     'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp',
@@ -1194,19 +1212,25 @@ def build(bld):
                 package_include_paths.append(include_path)
                 package_include_flags.extend(['-isystem', include_path])
     package_extra_includes = ' '.join(package_include_flags)
+    # subst signatures track template names; bind the lowercase paths explicitly
+    # instead of relying on its untracked fallback to uppercase environment keys.
+    package_install_paths = dict(prefix=bld.env.PREFIX, exec_prefix=bld.env.EXEC_PREFIX,
+                                 libdir=bld.env.LIBDIR, includedir=bld.env.INCLUDEDIR)
 
     if 'di' in bld.env.NDNSF_COMPONENTS:
         bld(features='subst',
             source='NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in',
             target='ndnsf-distributed-inference.pc',
             install_path='${LIBDIR}/pkgconfig',
-            VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes)
+            VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes,
+            **package_install_paths)
 
     bld(features='subst',
         source='libndn-service-framework.pc.in',
         target='libndn-service-framework.pc',
         install_path='${LIBDIR}/pkgconfig',
-        VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes)
+        VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes,
+        **package_install_paths)
 
     # A selected-target install still needs the public header installation
     # tasks. Waf otherwise posts only the explicitly named native targets and

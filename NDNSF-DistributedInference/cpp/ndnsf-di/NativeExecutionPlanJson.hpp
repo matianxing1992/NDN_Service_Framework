@@ -142,6 +142,9 @@ struct NativeSelectionProjectionV3
   NativeGenerationExecutionContractV1 generationContract;
   std::optional<ConversationStateReferenceV1> conversationStateReference;
   std::optional<ConversationTurnBindingV1> conversationTurnBinding;
+  // Optional bounded native recovery contract, admitted with this Selection.
+  // It carries encrypted material references, never execution permission.
+  std::optional<NativeJson> protectedKvRestore;
   NativeExecutionPlan plan;
 
   // A protected grant may be bound to a process-local conversation lease.

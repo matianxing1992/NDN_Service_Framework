@@ -11,7 +11,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-owner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/private-buffer-wiper.hpp"
+#include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/OperationRuntime.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/common.hpp"
@@ -31,6 +34,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -1036,6 +1040,126 @@ void ensureRuntimeCoreTransport(const std::shared_ptr<detail::RuntimeState>& sta
   }
 }
 
+std::shared_ptr<const NativeKvOwnerKeyOperations>
+makeKvOwnerKeyOperations(const std::shared_ptr<detail::CoreRuntimeOwner>& owner)
+{
+  auto keys = std::make_shared<NativeKvOwnerKeyOperations>();
+  keys->certificate = owner->requesterCertificate;
+  keys->unwrap = [weakOwner = std::weak_ptr<detail::CoreRuntimeOwner>(owner)](
+    const NativeProtectedKvCheckpointReferenceV1& reference, const ndn::Buffer& wrapped,
+    std::chrono::steady_clock::time_point deadline, std::function<void()> requireCurrent) {
+    const auto retained = weakOwner.lock();
+    if (!retained || !retained->serviceUser || !retained->keyChain || !requireCurrent ||
+        retained->serviceUser->isOnIoThread())
+      throw DiError("UNSUPPORTED_CAPABILITY", "conversation", "owner-key",
+        "Owner key unwrap requires the running Owner Face");
+    struct Secret
+    {
+      ndn::Buffer bytes;
+      detail::PrivateBufferWiper wipe{bytes};
+    };
+    struct Completion
+    {
+      std::atomic<bool> abandoned{false};
+      std::promise<std::shared_ptr<Secret>> result;
+    };
+    auto completion = std::make_shared<Completion>();
+    auto ready = completion->result.get_future();
+    const auto current = [retained, completion, requireCurrent, deadline] {
+      requireCurrent();
+      if (retained->closed.load() || retained->ioFailed.load() || completion->abandoned.load() ||
+          std::chrono::steady_clock::now() >= deadline)
+        throw DiError("HANDOFF_CANCELLED", "conversation", "owner-key",
+          "Owner key operation closed or reached its original deadline");
+    };
+    current();
+    const auto lease = retained->serviceUser->postToIoWithFace(
+      [retained, completion, reference, wrapped, current](ndn::Face&) {
+        try {
+          current();
+          if (reference.ownerIdentity != retained->requesterCertificate.getIdentity())
+            throw std::invalid_argument("KV encryption Owner differs from Runtime");
+          const auto certificate = retained->keyChain->getPib()
+            .getIdentity(reference.ownerIdentity)
+            .getKey(ndn::security::extractKeyNameFromCertName(reference.ownerCertificateName))
+            .getCertificate(reference.ownerCertificateName);
+          const auto& wire = certificate.wireEncode();
+          if (nativePlanningDigest(wire.data(), wire.size()) != reference.ownerCertificateDigest)
+            throw std::invalid_argument("KV encryption certificate commitment differs");
+          auto secret = std::make_shared<Secret>();
+          secret->bytes = ndn_service_framework::unwrapSelectionGatedInputKey(wrapped,
+            certificate.getName(), *retained->keyChain);
+          current();
+          completion->result.set_value(std::move(secret));
+        }
+        catch (...) { completion->result.set_exception(std::current_exception()); }
+      });
+    if (ready.wait_until(deadline) != std::future_status::ready) {
+      completion->abandoned.store(true);
+      throw DiError("TIMEOUT", "conversation", "owner-key",
+        "Owner key operation reached its original deadline");
+    }
+    auto secret = ready.get();
+    current();
+    // Transfer directly to the recovery helper's wiping guard. AES/file work
+    // stays on this caller; only RSA/PIB access ran on the actual Face owner.
+    return std::move(secret->bytes);
+  };
+  keys->wrap = [weakOwner = std::weak_ptr<detail::CoreRuntimeOwner>(owner)](
+    const NativeProtectedKvCheckpointReferenceV1& reference, const ndn::Buffer& publicKey,
+    const NativeProtectedKvRecipientBindingV1& binding,
+    std::chrono::steady_clock::time_point deadline, std::function<void()> requireCurrent) {
+    const auto retained = weakOwner.lock();
+    if (!retained || !retained->serviceUser || !retained->keyChain || !requireCurrent ||
+        retained->serviceUser->isOnIoThread())
+      throw DiError("UNSUPPORTED_CAPABILITY", "conversation", "recipient-key",
+        "recipient key wrapping requires the running Owner Face");
+    struct Completion
+    {
+      std::atomic<bool> abandoned{false};
+      std::promise<ndn_service_framework::RecipientEncryptedAssignment> result;
+    };
+    auto completion = std::make_shared<Completion>();
+    auto ready = completion->result.get_future();
+    const auto current = [retained, completion, requireCurrent, deadline] {
+      requireCurrent();
+      if (retained->closed.load() || retained->ioFailed.load() || completion->abandoned.load() ||
+          std::chrono::steady_clock::now() >= deadline)
+        throw DiError("HANDOFF_CANCELLED", "conversation", "recipient-key",
+          "Owner key operation closed or reached its original deadline");
+    };
+    current();
+    const auto lease = retained->serviceUser->postToIoWithFace(
+      [retained, completion, reference, publicKey, binding, current](ndn::Face&) {
+        try {
+          current();
+          if (reference.ownerIdentity != retained->requesterCertificate.getIdentity())
+            throw std::invalid_argument("KV encryption Owner differs from Runtime");
+          // A durable checkpoint may still name an older certificate of this
+          // actual Owner. Resolve it in the owned PIB; never infer another key.
+          const auto certificate = retained->keyChain->getPib()
+            .getIdentity(reference.ownerIdentity)
+            .getKey(ndn::security::extractKeyNameFromCertName(reference.ownerCertificateName))
+            .getCertificate(reference.ownerCertificateName);
+          auto capsule = nativeWrapProtectedKvKeyForRecipient(reference, certificate,
+            *retained->keyChain, publicKey, binding, current);
+          current();
+          completion->result.set_value(std::move(capsule));
+        }
+        catch (...) {
+          completion->result.set_exception(std::current_exception());
+        }
+      });
+    if (ready.wait_until(deadline) != std::future_status::ready) {
+      completion->abandoned.store(true);
+      throw DiError("TIMEOUT", "conversation", "recipient-key",
+        "Owner key operation reached its original deadline");
+    }
+    return ready.get();
+  };
+  return keys;
+}
+
 std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
   const std::shared_ptr<detail::RuntimeState>& state,
   const std::shared_ptr<const PreparedModelPackage>& package)
@@ -1131,8 +1255,12 @@ std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
   if (registration == state->models.end())
     throw DiError("MODEL_NOT_FOUND", "local", "request", "prepared model registration is not retained");
   const auto runtimeJson = requestRuntimeConfiguration(registration->second, *package);
-  const auto runtime = nativeRequestRuntimeFromJson(
+  auto runtime = nativeRequestRuntimeFromJson(
     nativeCanonicalJson(runtimeJson), package->catalog, state->grants);
+  runtime.conversationOwner = state->conversations;
+  if (state->conversations && state->coreOwner->keyChain &&
+      !state->coreOwner->requesterCertificate.getName().empty())
+    runtime.kvOwnerKeys = makeKvOwnerKeyOperations(state->coreOwner);
   auto preparation = package->catalog.preparation->makePreparation(
     state->coreUser, runtime.contract.serviceName, package->preparedPublication);
   auto client = std::make_shared<NativeInferenceClient>(

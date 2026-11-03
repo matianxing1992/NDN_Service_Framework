@@ -8,10 +8,12 @@
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,6 +23,60 @@ namespace ndnsf::di {
 // NativeInferenceProvider.cpp; it is opaque to callers and reached only
 // through NativeInferenceProvider members.
 class HostState;
+class NativeLocalWithdrawalState;
+class NativeWithdrawalCommitGate;
+class NativeWithdrawalWireBudget;
+
+enum class NativeWithdrawalFailurePolicyV1 { Abort, ForceUnsaved };
+enum class NativeWithdrawalStatusV1 {
+  Quiescing, AwaitingOwners, Saving, Confirmed, Closed, Aborted,
+  Failed, ForcedUnsaved
+};
+
+struct NativeWithdrawalOptionsV1
+{
+  std::chrono::steady_clock::time_point deadline;
+  std::chrono::steady_clock::time_point drainDeadline;
+  NativeWithdrawalFailurePolicyV1 failurePolicy = NativeWithdrawalFailurePolicyV1::Abort;
+  std::size_t maxConversations = 0;
+  std::uint64_t maxTotalBytes = 0;
+  std::string persistencePolicyId;
+};
+
+struct NativeWithdrawalConversationResultV1
+{
+  std::string ownerIdentity, serviceName, conversationId, checkpointDigest;
+  std::string operationId, classification, reason;
+};
+
+struct NativeWithdrawalResultV1
+{
+  std::string withdrawalId;
+  NativeWithdrawalScopeV1 scope = NativeWithdrawalScopeV1::Service;
+  bool closed = false;
+  bool forced = false;
+  std::string reason;
+  std::vector<NativeWithdrawalConversationResultV1> conversationResults;
+};
+
+/** Local operator handle. result() may block and must be called away from the
+ * Provider Face and withdrawal worker threads. A wait timeout leaves the
+ * operation running and never implies ForceUnsaved. */
+class NativeWithdrawalHandle
+{
+public:
+  NativeWithdrawalHandle() noexcept = default;
+  bool valid() const noexcept;
+  const std::string& operationId() const noexcept;
+  NativeWithdrawalStatusV1 status() const;
+  NativeWithdrawalResultV1 result(std::chrono::milliseconds waitTimeout) const;
+  bool cancel() noexcept;
+private:
+  explicit NativeWithdrawalHandle(std::shared_ptr<NativeLocalWithdrawalState> state);
+  std::shared_ptr<NativeLocalWithdrawalState> m_state;
+  friend class NativeServiceRegistration;
+  friend class NativeInferenceProvider;
+};
 
 // Native service definition consumed by NativeInferenceProvider::serve.
 // serviceName/allowedRoles come from a verified native plan; ackHandler
@@ -28,16 +84,47 @@ class HostState;
 // (empty means the host accepts by default).
 struct NativeServiceDefinition
 {
+  using AsyncTargetedRequestHandlerFactory =
+    std::function<ndn_service_framework::ServiceProvider::AsyncTargetedRequestHandler(
+      const NativeProviderCollaborationRuntime&,
+      NativeConversationHandoffOwnerContextResolverV1)>;
+
   std::string serviceName;
   std::vector<std::string> allowedRoles;
   // Optional per-service ACK strategy. Empty means the host accepts the
   // collaboration ACK by default; the Core admission/permission gates stay
-  // authoritative either way.
+  // authoritative either way. With a handoffOwnerContextResolver, a canonical
+  // targeted-bootstrap handoff control receives an internal positive ACK so
+  // the model-offer callback does not interpret the control payload as an
+  // inference request; Core still performs targeted selection and authorization.
   ndn_service_framework::ServiceProvider::AckStrategyHandler ackHandler;
   // Async variant for request-scoped telemetry or other bounded ACK work.
   // Core supplies authenticated outer identity, registration generation,
   // cancellation, and a non-extendable local deadline.
   ndn_service_framework::ServiceProvider::AsyncAckStrategyHandler asyncAckHandler;
+  // Optional authenticated targeted control requests (for example an
+  // explicit conversation handoff request) share this collaboration
+  // registration's permission and lifetime generation. The factory receives
+  // this service's actual runtime so event callbacks can retain its Store and
+  // save-batch operations. Do not install a second targeted registration for
+  // the same inference service.
+  AsyncTargetedRequestHandlerFactory asyncTargetedRequestHandlerFactory;
+  // The factory may use this resolver for authenticated handoff events. It is
+  // invoked per event with Core's requester/service identities and the
+  // immutable operation ID; it must verify the Owner certificate against the
+  // Provider's configured trust profile and return that call's storage owner,
+  // original packet store, bounded publication policy, and per-role Repo
+  // route context. The Owner still checks its pinned Repo trust policy before
+  // issuing any grant. The factory
+  // receives the function object by value so an async handler can own it;
+  // state captured by reference inside the callable must still outlive its use.
+  NativeConversationHandoffOwnerContextResolverV1 handoffOwnerContextResolver;
+  // Same transport inputs also serve the installed target-side recovery path.
+  std::shared_ptr<const NativeProviderHandoffConfig> handoff;
+  // Local orderly withdrawal is disabled unless this operator-supplied ID is
+  // configured together with the authenticated Owner context resolver.
+  // withdraw() must present this exact ID; it is never taken from wire input.
+  std::string withdrawalPersistencePolicyId;
   // Optional observation seam invoked once after the native runtime is
   // assembled and before its collaboration registration is installed. The
   // caller may capture runtime capacity/evidence snapshots for readiness or
@@ -58,10 +145,11 @@ makeNativePlacementMeasurementTargetedHandler(
 // Prepare/Commit/Renew while Abort/Release keep routing), then closes the
 // Core scoped registration (new ACKs/Selections/queued executions become
 // invalid immediately; the entry is retired by Core on the serialized Face
-// path). Closing does not destroy a running handler: in-flight roles finish
-// through their existing cancellation/deadline/cleanup paths and the shared
-// Provider/Face/lease table stays available to the host's other services.
-// The destructor closes the registration as well (idempotent, noexcept).
+// path). For handoff work, close() requests cancellation but does not wait.
+// Call drain() from a non-Face, non-handoff-worker thread while the Provider's
+// Face is still running and before destroying the Provider/Face. drain() waits
+// for accepted handoff work and its callbacks to settle; false means the
+// timeout elapsed and the caller may retry. The destructor only closes.
 class NativeServiceRegistration
 {
 public:
@@ -73,7 +161,9 @@ public:
   NativeServiceRegistration& operator=(const NativeServiceRegistration&) = delete;
   ~NativeServiceRegistration() noexcept;
 
+  NativeWithdrawalHandle withdraw(const NativeWithdrawalOptionsV1& options);
   void close() noexcept;
+  bool drain(std::chrono::milliseconds timeout);
   bool closed() const noexcept;
   bool valid() const noexcept;
   std::uint64_t generation() const noexcept;
@@ -81,8 +171,16 @@ public:
 
 private:
   struct State;
-  explicit NativeServiceRegistration(std::shared_ptr<State> state);
+  explicit NativeServiceRegistration(std::shared_ptr<State> state,
+                                     bool closeOnDestroy = true);
+  NativeWithdrawalHandle withdrawPrepared(
+    const NativeWithdrawalOptionsV1& options,
+    std::optional<ConversationStateStore::SaveFence> preparedFence,
+    std::string preparedId,
+    std::shared_ptr<NativeWithdrawalCommitGate> parentCommitGate = {},
+    std::shared_ptr<NativeWithdrawalWireBudget> parentWireBudget = {});
   std::shared_ptr<State> m_state;
+  bool m_closeOnDestroy = true;
   friend class NativeInferenceProvider;
 };
 
@@ -114,7 +212,9 @@ public:
 
   NativeServiceRegistration serve(const NativeServiceDefinition& service,
                                   const NativeProviderHandlerConfig& config);
+  NativeWithdrawalHandle withdraw(const NativeWithdrawalOptionsV1& options);
   void stop() noexcept;
+  bool drain(std::chrono::milliseconds timeout);
 
 private:
   std::shared_ptr<ndn_service_framework::ServiceProvider> m_provider;

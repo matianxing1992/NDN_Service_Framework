@@ -438,6 +438,16 @@ struct RepoArtifactTarget
   }
 };
 
+/** Exact storage selectors; authentication comes from Core, not these fields. */
+struct RepoUserStorageBinding
+{
+  uint32_t schemaVersion = 1;
+  std::string ownerIdentity;
+  std::string grantId;
+  uint64_t ownerEpoch = 0;
+  std::string toJson() const;
+  static RepoUserStorageBinding fromJson(const std::string& wire);
+};
 struct PublishOperationIntent
 {
   uint32_t schemaVersion = 1;

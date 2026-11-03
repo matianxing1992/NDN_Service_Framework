@@ -54,8 +54,10 @@ NativeGroupKeyAdmission::NativeGroupKeyAdmission(const NativeOfferAdmission& adm
     require(publicKey.getKeyType() == ndn::KeyType::RSA, "recipient-key-type");
     // No mutable alias to ACK fields or the caller's key map survives admission.
     const auto provider = observed.provider;
+    NativeRecipientKeyMaterialV1 recipient{ndn::Name(cert), field("recipientCertDigest"),
+      ProviderGroupBytes(decoded.begin(), decoded.end())};
     require(entries->emplace(provider, Entry{std::move(admitted), std::move(prefix),
-      ProviderGroupBytes(decoded.begin(), decoded.end())}).second);
+      std::move(recipient)}).second);
   }
   m_entries = std::move(entries);
 }
@@ -68,12 +70,17 @@ const std::string& NativeGroupKeyAdmission::endpoint(const std::string& provider
 {
   return m_entries->at(provider).endpoint;
 }
+const NativeRecipientKeyMaterialV1&
+NativeGroupKeyAdmission::recipient(const std::string& provider) const
+{
+  return m_entries->at(provider).recipient;
+}
 ProviderGroupCoordinatorOptions NativeGroupKeyAdmission::options() const
 {
   ProviderGroupCoordinatorOptions options;
   options.wrapEpochKey = [entries = m_entries](const std::string& provider, const ProviderGroupBytes& key) {
     if (key.size() != 32) throw std::invalid_argument("group epoch key must be 32 bytes");
-    const auto& publicKey = entries->at(provider).publicKey;
+    const auto& publicKey = entries->at(provider).recipient.publicKey;
     const auto wrapped = ndn_service_framework::wrapSelectionGatedInputKey(
       ndn::Buffer(key.begin(), key.end()), publicKey);
     return ProviderGroupBytes(wrapped.begin(), wrapped.end());

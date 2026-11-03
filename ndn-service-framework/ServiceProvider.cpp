@@ -9,6 +9,7 @@
 #include "ImmutableProtectedPublicationStore.hpp"
 #include "TimelineTrace.hpp"
 #include <ndn-cxx/security/pib/key.hpp>
+#include <ndn-cxx/security/transform/public-key.hpp>
 
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/post.hpp>
@@ -39,6 +40,7 @@
 #include <ndn-cxx/security/interest-signer.hpp>
 #include <ndn-cxx/security/transform/public-key.hpp>
 #include <ndn-cxx/util/sha256.hpp>
+#include <openssl/crypto.h>
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -4538,6 +4540,7 @@ namespace ndn_service_framework
 
     ServiceProvider::~ServiceProvider()
     {
+        stopProducerPacketValidation();
         {
             std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
             m_policyStatusFetchInFlight.clear();
@@ -5723,7 +5726,7 @@ namespace ndn_service_framework
         }
         // Closing becomes observable by any dispatch thread the moment the
         // atomic flips; only the Core-entry cleanup below is Face-bound.
-        state->closed.store(true);
+        state->markClosed();
         state->cancelPendingAcks();
         auto control = m_control.lock();
         if (control == nullptr) {
@@ -5753,6 +5756,22 @@ namespace ndn_service_framework
                               // Handler owners are destroyed here, strictly
                               // after the control lock is released.
                           });
+    }
+
+    ServiceProvider::ServiceRegistration::TargetedHandlerDrainWaiter
+    ServiceProvider::ServiceRegistration::makeTargetedHandlerDrainWaiter() const
+    {
+        const auto state = std::atomic_load(&m_state);
+        if (!state)
+            return [](std::chrono::milliseconds) { return true; };
+        return [state](std::chrono::milliseconds timeout) {
+            if (timeout.count() < 0)
+                throw std::invalid_argument("targeted handler drain timeout is negative");
+            std::unique_lock<std::mutex> lock(state->targetedHandlerMutex);
+            return state->targetedHandlersDrained.wait_for(lock, timeout, [&state] {
+                return state->activeTargetedHandlers == 0;
+            });
+        };
     }
 
     bool
@@ -5815,13 +5834,13 @@ namespace ndn_service_framework
     {
         for (auto& item : m_services) {
             if (item.second.registrationState != nullptr) {
-                item.second.registrationState->closed.store(true);
+                item.second.registrationState->markClosed();
                 item.second.registrationState->cancelPendingAcks();
             }
         }
         for (auto& item : m_collaborationServices) {
             if (item.second.registrationState != nullptr) {
-                item.second.registrationState->closed.store(true);
+                item.second.registrationState->markClosed();
                 item.second.registrationState->cancelPendingAcks();
             }
         }
@@ -6430,6 +6449,182 @@ namespace ndn_service_framework
     {
         return m_workAuthorityRevoked &&
             !m_workAuthorityRevoked->load(std::memory_order_acquire);
+    }
+
+    bool
+    ServiceProvider::CollaborationContext::consumeRecipientAssignmentCurrent(
+      const RecipientEncryptedAssignment& capsule, const ndn::Name& expectedCertificate,
+      const std::string& expectedPublicKeyDigest, const ndn::Buffer& associatedData,
+      std::chrono::steady_clock::time_point deadline,
+      const std::function<void(const ndn::Buffer&)>& consume)
+    {
+      if (expectedCertificate.empty() || expectedCertificate.wireEncode().size() > 4096 ||
+          expectedPublicKeyDigest.size() != 71 || associatedData.empty() ||
+          associatedData.size() > 65536 || capsule.getVersion() != 1 ||
+          capsule.getFields().size() != 10 || !capsule.hasField("schemaVersion") ||
+          capsule.getField("schemaVersion") != "1") {
+        return false;
+      }
+      for (const auto& field : capsule.getFields()) {
+        if (field.first.size() > 64 || field.second.size() > 4096) return false;
+      }
+      return consumeCurrentCrypto(deadline, 2048,
+        [capsule, expectedCertificate, expectedPublicKeyDigest, associatedData]
+        (ServiceProvider& owner, ndn::Buffer& plaintext) {
+          const auto publicKey = owner.identityCert.getPublicKey();
+          const ndn::Buffer publicBytes(publicKey.data(), publicKey.size());
+          if (owner.identityCert.getName() != expectedCertificate ||
+              sha256DigestString(publicBytes) != expectedPublicKeyDigest) return false;
+          const auto& keys = owner.m_testSigningKeyChain
+            ? *owner.m_testSigningKeyChain : owner.m_keyChain;
+          return decryptRecipientAssignment(capsule, owner.identity, expectedCertificate,
+            keys, associatedData, plaintext);
+        }, consume);
+    }
+
+    bool
+    ServiceProvider::CollaborationContext::signProducerPacketCurrent(
+      ndn::Data& data, std::chrono::steady_clock::time_point deadline)
+    {
+      deadline = std::min(deadline, m_assignment.workDeadline);
+      const auto current = currentWorkPredicate(deadline);
+      return m_provider.signProducerDataUntil(data, deadline, [current] {
+        if (!current())
+          throw std::runtime_error("COLLABORATION_WORK_AUTHORITY_EXPIRED");
+      });
+    }
+
+    bool
+    ServiceProvider::CollaborationContext::consumeCurrentCrypto(
+      std::chrono::steady_clock::time_point deadline, std::size_t maxOutputBytes,
+      std::function<bool(ServiceProvider&, ndn::Buffer&)> operation,
+      const std::function<void(const ndn::Buffer&)>& consume)
+    {
+      deadline = std::min(deadline, m_assignment.workDeadline);
+      return m_provider.consumeProducerCryptoUntil(deadline, maxOutputBytes,
+        currentWorkPredicate(deadline), std::move(operation), consume);
+    }
+
+    bool
+    ServiceProvider::signProducerDataUntil(
+      ndn::Data& data, std::chrono::steady_clock::time_point deadline,
+      const std::function<void()>& requireCurrent)
+    {
+      if (!requireCurrent || identity.empty() || !identity.isPrefixOf(data.getName()) ||
+          data.getName().size() <= identity.size() ||
+          data.getName().wireEncode().size() > ndn::MAX_NDN_PACKET_SIZE ||
+          data.getMetaInfo().wireEncode().size() > ndn::MAX_NDN_PACKET_SIZE ||
+          data.getContent().size() > ndn::MAX_NDN_PACKET_SIZE) return false;
+      const auto current = [deadline, requireCurrent] {
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        try {
+          requireCurrent();
+          return true;
+        }
+        catch (...) {
+          return false;
+        }
+      };
+      ndn::Data unsignedData(data.getName());
+      unsignedData.setMetaInfo(data.getMetaInfo());
+      unsignedData.setContent(data.getContent());
+      std::optional<ndn::Data> signedData;
+      const bool accepted = consumeProducerCryptoUntil(deadline, ndn::MAX_NDN_PACKET_SIZE,
+        current, [unsignedData = std::move(unsignedData)]
+        (ServiceProvider& owner, ndn::Buffer& wire) mutable {
+          if (owner.identity.empty() || !owner.identity.isPrefixOf(unsignedData.getName()) ||
+              owner.signingCert.getIdentity() != owner.identity) return false;
+          auto& keys = owner.m_testSigningKeyChain ? *owner.m_testSigningKeyChain : owner.m_keyChain;
+          keys.sign(unsignedData, owner.m_signingInfo);
+          const auto& block = unsignedData.wireEncode();
+          if (block.size() > ndn::MAX_NDN_PACKET_SIZE) return false;
+          wire.assign(block.begin(), block.end());
+          return true;
+        }, [&](const ndn::Buffer& wire) {
+          signedData.emplace(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+        });
+      if (!accepted || !signedData) return false;
+      data = std::move(*signedData);
+      return true;
+    }
+
+    bool
+    ServiceProvider::consumeProducerCryptoUntil(
+      std::chrono::steady_clock::time_point deadline, std::size_t maxOutputBytes,
+      const std::function<bool()>& current,
+      std::function<bool(ServiceProvider&, ndn::Buffer&)> operation,
+      const std::function<void(const ndn::Buffer&)>& consume)
+    {
+      auto& io = m_face.getIoContext();
+      if (io.get_executor().running_in_this_thread() || !consume || !operation || !current ||
+          std::chrono::steady_clock::now() >= deadline || !current() ||
+          maxOutputBytes == 0 || maxOutputBytes > ndn::MAX_NDN_PACKET_SIZE) return false;
+      const auto pending = m_pendingContextCrypto;
+      auto count = pending->load();
+      do {
+        if (count >= 16) return false;
+      } while (!pending->compare_exchange_weak(count, count + 1));
+      const auto slot = std::shared_ptr<void>(pending.get(), [pending](void*) { --*pending; });
+      struct Secret
+      {
+        ndn::Buffer bytes;
+        ~Secret()
+        {
+          bytes.resize(bytes.capacity());
+          if (!bytes.empty()) OPENSSL_cleanse(bytes.data(), bytes.size());
+        }
+      };
+      struct Consumption
+      {
+        std::mutex mutex;
+        std::condition_variable wake;
+        bool done = false;
+        std::shared_ptr<Secret> plaintext;
+      };
+      const auto state = std::make_shared<Consumption>();
+      const auto finish = [state](std::shared_ptr<Secret> plaintext) {
+        {
+          std::lock_guard<std::mutex> lock(state->mutex);
+          if (state->done) return;
+          state->plaintext = std::move(plaintext);
+          state->done = true;
+        }
+        state->wake.notify_one();
+      };
+      boost::asio::post(io, [control = m_registrationControl, state, slot,
+        current, operation = std::move(operation), maxOutputBytes, finish] {
+        try {
+          {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (state->done) return;
+          }
+          if (!current()) { finish({}); return; }
+          auto* owner = control->acquireOwner();
+          if (!owner) { finish({}); return; }
+          const auto lease = std::shared_ptr<void>(owner,
+            [control](void*) { control->releaseOwner(); });
+          auto plaintext = std::make_shared<Secret>();
+          if (!operation(*owner, plaintext->bytes) || plaintext->bytes.size() > maxOutputBytes ||
+              !current()) {
+            finish({}); return;
+          }
+          finish(std::move(plaintext));
+        }
+        catch (...) { finish({}); }
+      });
+      std::shared_ptr<Secret> plaintext;
+      {
+        std::unique_lock<std::mutex> lock(state->mutex);
+        while (!state->done) {
+          if (io.stopped() || !current()) { state->done = true; return false; }
+          state->wake.wait_until(lock, std::min(deadline,
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(20)));
+        }
+        plaintext = std::move(state->plaintext);
+      }
+      if (!plaintext || !current()) return false;
+      consume(plaintext->bytes);
+      return current();
     }
 
     void ServiceProvider::CollaborationContext::fail(const std::string& reason)
@@ -7147,6 +7342,27 @@ namespace ndn_service_framework
     size_t ServiceProvider::getHandlerQueueDepth() const
     {
         return m_handlerPool.getQueueSize();
+    }
+
+    bool
+    ServiceProvider::validateProducerPacketWireUntil(
+      const std::vector<uint8_t>& wire, const ndn::Name& producer,
+      std::chrono::steady_clock::time_point deadline)
+    {
+      // Inline network handlers would block their own certificate retrieval.
+      if (!validator || (!m_isLocalMock && (getHandlerThreads() == 0 ||
+          m_face.getIoContext().get_executor().running_in_this_thread()))) {
+        return false;
+      }
+      return validator->validateProducerPacketWireUntil(wire, producer, deadline);
+    }
+
+    void
+    ServiceProvider::stopProducerPacketValidation() noexcept
+    {
+      if (validator) {
+        validator->stopProducerPacketValidation();
+      }
     }
 
     void ServiceProvider::setAckThreads(size_t n)
@@ -8699,6 +8915,45 @@ namespace ndn_service_framework
             return true;
         }
         if (service->second.asyncTargetedRequestHandler) {
+            if (registrationState &&
+                !registrationState->tryBeginTargetedHandler()) {
+                publishExecutionFailureOnEventLoop(
+                    requesterIdentity, identity, serviceName, requestId,
+                    requestMessage,
+                    "Service registration closed before targeted handler admission");
+                return true;
+            }
+            struct TargetedHandlerCallLease
+            {
+                std::shared_ptr<RegistrationState> state;
+                std::atomic<bool> released{false};
+
+                explicit TargetedHandlerCallLease(
+                    std::shared_ptr<RegistrationState> value)
+                    : state(std::move(value)) {}
+
+                void release() noexcept
+                {
+                    if (state &&
+                        !released.exchange(true, std::memory_order_acq_rel))
+                        state->finishTargetedHandler();
+                }
+
+                ~TargetedHandlerCallLease()
+                {
+                    release();
+                }
+            };
+            std::shared_ptr<TargetedHandlerCallLease> targetedHandlerCallLease;
+            try {
+                targetedHandlerCallLease =
+                    std::make_shared<TargetedHandlerCallLease>(registrationState);
+            }
+            catch (...) {
+                if (registrationState)
+                    registrationState->finishTargetedHandler();
+                throw;
+            }
             const ndn::Name pendingKey = ndn::Name(requesterIdentity)
                                              .append(serviceName).append(requestId);
             const std::string fenceError =
@@ -8722,43 +8977,59 @@ namespace ndn_service_framework
             auto completion = [completionState, weakControl,
                                requesterIdentity, serviceName, requestId,
                                requestMessage, selectionDigest,
-                               registrationState](
+                               registrationState, targetedHandlerCallLease](
                                   ResponseMessage response) mutable {
                 if (completionState->exchange(true, std::memory_order_acq_rel))
                     return;
                 const auto control = weakControl.lock();
-                if (!control)
+                if (!control) {
+                    targetedHandlerCallLease->release();
                     return;
+                }
                 auto* const owner = control->acquireOwner();
-                if (owner == nullptr)
+                if (owner == nullptr) {
+                    targetedHandlerCallLease->release();
                     return;
+                }
                 const auto releaseOwner = [](RegistrationControl* value) {
                     value->releaseOwner();
                 };
                 std::unique_ptr<RegistrationControl, decltype(releaseOwner)>
                     ownerLease(control.get(), releaseOwner);
-                boost::asio::post(owner->m_face.getIoContext(),
-                    [weakControl, requesterIdentity, serviceName, requestId,
-                     requestMessage, response = std::move(response),
-                     selectionDigest, registrationState]() mutable {
-                        const auto control = weakControl.lock();
-                        if (!control)
-                            return;
-                        auto* const owner = control->acquireOwner();
-                        if (owner == nullptr)
-                            return;
-                        const auto releaseOwner = [](RegistrationControl* value) {
-                            value->releaseOwner();
-                        };
-                        std::unique_ptr<RegistrationControl,
-                                        decltype(releaseOwner)>
-                            ownerLease(control.get(), releaseOwner);
-                        owner->finishRequestExecutionOnEventLoop(
-                            requesterIdentity, owner->identity, serviceName,
-                            requestId, requestMessage, std::move(response),
-                            selectionDigest,
-                            registrationState);
-                    });
+                try {
+                    boost::asio::post(owner->m_face.getIoContext(),
+                        [weakControl, requesterIdentity, serviceName, requestId,
+                         requestMessage, response = std::move(response),
+                         selectionDigest, registrationState,
+                         targetedHandlerCallLease]() mutable {
+                            struct ReleaseTargetedHandlerLease
+                            {
+                                std::shared_ptr<TargetedHandlerCallLease> lease;
+                                ~ReleaseTargetedHandlerLease() { lease->release(); }
+                            } release{targetedHandlerCallLease};
+                            const auto control = weakControl.lock();
+                            if (!control)
+                                return;
+                            auto* const owner = control->acquireOwner();
+                            if (owner == nullptr)
+                                return;
+                            const auto releaseOwner = [](RegistrationControl* value) {
+                                value->releaseOwner();
+                            };
+                            std::unique_ptr<RegistrationControl,
+                                            decltype(releaseOwner)>
+                                ownerLease(control.get(), releaseOwner);
+                            owner->finishRequestExecutionOnEventLoop(
+                                requesterIdentity, owner->identity, serviceName,
+                                requestId, requestMessage, std::move(response),
+                                selectionDigest,
+                                registrationState);
+                        });
+                }
+                catch (...) {
+                    targetedHandlerCallLease->release();
+                    throw;
+                }
             };
             try {
                 service->second.asyncTargetedRequestHandler(

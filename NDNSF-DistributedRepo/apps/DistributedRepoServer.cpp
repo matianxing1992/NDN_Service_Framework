@@ -3,6 +3,7 @@
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
+#include "../src/face-data-reference-fetcher.hpp"
 
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
@@ -80,7 +81,8 @@ main(int argc, char* argv[])
       ndnsf_distributed_repo::makeFilesystemRepoStore(
         repoStoreRoot, 16 * 1024 * 1024,
         config.largeObjectThresholdBytes,
-        config.repoNode + "|" + config.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE)),
+        config.repoNode + "|" + config.providerIdentity.toUri(ndn::name::UriFormat::ALTERNATE),
+        ndnsf_distributed_repo::FilesystemRecoveryPolicy::KEEP_UNCONFIRMED),
       config.memoryCacheBytes, "filesystem", config.largeObjectThresholdBytes);
     // Filesystem availability already excludes the persistent store's bytes.
     // RepoCore accepts total capacity as freeBytes + usedBytes on startup.
@@ -105,6 +107,9 @@ main(int argc, char* argv[])
       config.databasePath.string() + ".artifact-v2.sqlite",
       ndnsf_distributed_repo::ArtifactLimits{},
       config.availabilityFreshnessMs);
+    repo->setDataReferenceSpoolFetcher(ndnsf_distributed_repo::detail::FaceDataReferenceFetcher(
+      face, std::chrono::milliseconds(config.requestTimeoutMs),
+      std::chrono::milliseconds(config.requestTimeoutMs)));
     ndn_service_framework::ServiceProvider provider(
       face,
       config.groupPrefix,
@@ -115,6 +120,7 @@ main(int argc, char* argv[])
     repo->registerServices(provider, publisherUser,
                            config.ackCollectionTimeMs,
                            config.requestTimeoutMs);
+    repo->registerOriginalDataServing(face);
     provider.init();
     provider.fetchPermissionsFromController(config.authorityIdentity);
 
@@ -125,7 +131,7 @@ main(int argc, char* argv[])
       // The manager's fresh owned log binds this marker to its PID/launch.
       // Construction alone does not prove Controller permission or NAC readiness.
       const auto ready = [&] {
-        return provider.isRequestDecryptionReady() &&
+        return repo->isOriginalDataServingReady() && provider.isRequestDecryptionReady() &&
           provider.hasProviderPermissionForService(
             ndnsf_distributed_repo::makeRepoServiceName(config.servicePrefix, "STORE")) &&
           provider.hasProviderPermissionForService(

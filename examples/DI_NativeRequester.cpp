@@ -109,6 +109,50 @@ relativeTo(const std::filesystem::path& base, const std::string& value)
   return path.is_absolute() ? path : base / path;
 }
 
+struct KvHandoffOptions
+{
+  std::size_t afterTurn = 0;
+  std::chrono::milliseconds timeout{120000};
+  bool waitForDeparture = false;
+  std::map<std::string, std::string> destinations;
+  std::map<std::string, NativeRemoteProtectedKvRoleTrustPolicyV1> trust;
+};
+
+KvHandoffOptions
+readKvHandoffOptions(const ptree& value)
+{
+  KvHandoffOptions result;
+  result.afterTurn = value.get<std::size_t>("after_turn");
+  const auto timeout = value.get<int>("timeout_ms", 120000);
+  if (timeout <= 0 || timeout > 600000)
+    throw std::invalid_argument("kv_handoff timeout_ms must be in [1,600000]");
+  result.timeout = std::chrono::milliseconds(timeout);
+  result.waitForDeparture = value.get<bool>("wait_for_departure", false);
+  for (const auto& entry : value.get_child("roles")) {
+    if (entry.first.empty() || result.trust.size() >= 64)
+      throw std::invalid_argument("kv_handoff requires bounded, named roles");
+    const auto& role = entry.second;
+    NativeRemoteProtectedKvRoleTrustPolicyV1 trust;
+    trust.target.repoNode = role.get<std::string>("repo_node");
+    trust.target.providerIdentity = role.get<std::string>("repo_provider_identity");
+    trust.target.servicePrefix = role.get<std::string>("repo_service_prefix");
+    if (trust.target.repoNode.empty() || trust.target.providerIdentity.empty() ||
+        trust.target.servicePrefix.empty())
+      throw std::invalid_argument("kv_handoff requires a complete Repo target");
+    if (!result.waitForDeparture) {
+      const auto destination = role.get<std::string>("destination_provider");
+      if (destination.empty() || ndn::Name(destination).empty() ||
+          !result.destinations.emplace(entry.first, destination).second)
+        throw std::invalid_argument("kv_handoff has an invalid destination");
+    }
+    if (!result.trust.emplace(entry.first, std::move(trust)).second)
+      throw std::invalid_argument("kv_handoff has an invalid or duplicate role");
+  }
+  if (result.trust.empty())
+    throw std::invalid_argument("kv_handoff requires at least one role");
+  return result;
+}
+
 std::vector<std::uint8_t>
 readOptions(const ptree& request, const std::filesystem::path& base)
 {
@@ -341,20 +385,24 @@ streamEventText(const Event& event)
 
 void
 waitForTestStreamBarrier(const ptree& config, const std::filesystem::path& base,
-                         std::size_t turnIndex, std::size_t observedEvents)
+                         std::size_t turnIndex, std::size_t observedEvents,
+                         const char* configurationKey = "test_stream_barrier")
 {
   if (turnIndex != 0 || observedEvents != 1)
     return;
-  const auto barrier = config.get_child_optional("test_stream_barrier");
+  const auto barrier = config.get_child_optional(configurationKey);
   if (!barrier)
     return;
   if (!config.get<bool>("test_only", false))
-    throw std::invalid_argument("test_stream_barrier requires test_only=true");
+    throw std::invalid_argument(std::string(configurationKey) + " requires test_only=true");
   const auto readyValue = barrier->get_optional<std::string>("ready_file");
   const auto releaseValue = barrier->get_optional<std::string>("release_file");
   const auto timeoutMs = barrier->get<std::uint64_t>("timeout_ms", 10000);
+  const std::uint64_t timeoutLimitMs =
+    std::string(configurationKey) == "test_handoff_barrier" &&
+    config.get<bool>("kv_handoff.wait_for_departure", false) ? 650000 : 60000;
   if (!readyValue || !releaseValue || readyValue->empty() || releaseValue->empty() ||
-      timeoutMs == 0 || timeoutMs > 60000)
+      timeoutMs == 0 || timeoutMs > timeoutLimitMs)
     throw std::invalid_argument("test_stream_barrier is invalid");
   const auto ready = relativeTo(base, *readyValue);
   const auto release = relativeTo(base, *releaseValue);
@@ -826,6 +874,15 @@ run(int argc, char** argv)
   PrepareOptions prepareOptions;
   prepareOptions.timeout = runtimeConfig.preparationJobTimeout;
   logSpec220PreparationStage("runtime-open.begin");
+  std::optional<KvHandoffOptions> kvHandoff;
+  if (const auto handoffConfig = config.get_child_optional("kv_handoff")) {
+    kvHandoff = readKvHandoffOptions(*handoffConfig);
+    if (groupedTurns || !config.get_child_optional("conversation") || turns.size() < 2 ||
+        kvHandoff->afterTurn >= turns.size() - 1)
+      throw std::invalid_argument("kv_handoff requires a conversation and a following turn");
+    if (config.get_child_optional("fixed_placement"))
+      throw std::invalid_argument("kv_handoff requires live compatible-Provider placement");
+  }
   auto runtime = Runtime::open(std::move(runtimeConfig));
   logSpec220PreparationStage("runtime-open.complete");
   std::shared_ptr<const PlacementStrategy> requestPlacementStrategy;
@@ -955,7 +1012,60 @@ run(int argc, char** argv)
   std::vector<std::int64_t> streamExpected;
   if (const auto oracle = config.get_child_optional("stream_oracle"))
     streamExpected = integerArray(*oracle, "token_ids");
+  std::optional<ConversationHandoffHandle> providerSwitch;
+  const auto finishProviderSwitch = [&] {
+    if (providerSwitch) {
+      providerSwitch->result(std::chrono::seconds(5));
+      std::cout << "NATIVE_KV_HANDOFF_APPEND_SUCCEEDED operation="
+                << providerSwitch->operationId() << std::endl;
+      providerSwitch.reset();
+    }
+  };
   for (std::size_t turnIndex = 0; turnIndex < turns.size(); ++turnIndex) {
+    finishProviderSwitch();
+    if (kvHandoff && turnIndex == kvHandoff->afterTurn + 1) {
+      const auto deadline = std::chrono::steady_clock::now() + kvHandoff->timeout;
+      if (kvHandoff->waitForDeparture) {
+        NativeDepartureWatchOptionsV1 watchOptions;
+        watchOptions.deadline = deadline;
+        watchOptions.saveTimeout = kvHandoff->timeout;
+        watchOptions.trustedSourcePolicyByRole = kvHandoff->trust;
+        auto watch = conversation->watchProviderDeparture(watchOptions);
+        std::cout << "NATIVE_KV_DEPARTURE_WATCH_READY index=" << kvHandoff->afterTurn << std::endl;
+        while (watch.status() == NativeDepartureWatchStatusV1::Watching ||
+               watch.status() == NativeDepartureWatchStatusV1::Saving) {
+          if (interrupted || std::chrono::steady_clock::now() >= deadline) {
+            watch.close();
+            throw std::runtime_error("KV departure watch interrupted or timed out");
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        const auto saved = watch.result(std::chrono::milliseconds(0));
+        watch.close();
+        if (saved.status != NativeDepartureWatchStatusV1::Saved)
+          throw std::runtime_error("KV departure save failed: " + saved.reason);
+        std::cout << "NATIVE_KV_DEPARTURE_SAVED operation=" << saved.saveOperationId << std::endl;
+      }
+      else {
+        providerSwitch = conversation->switchProviders(
+          kvHandoff->destinations, kvHandoff->trust, deadline);
+        while (providerSwitch->status() == ConversationHandoffStatus::Pending) {
+          if (interrupted || std::chrono::steady_clock::now() >= deadline) {
+            providerSwitch->cancel();
+            throw std::runtime_error("KV Provider switch interrupted or timed out");
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        if (providerSwitch->status() != ConversationHandoffStatus::PromotedAwaitingAppend)
+          providerSwitch->result(std::chrono::milliseconds(0));
+        std::cout << "NATIVE_KV_HANDOFF_PROMOTED operation="
+                  << providerSwitch->operationId() << std::endl;
+      }
+      // An initial source-only filter must not constrain the continuation.
+      // Conversation supplies the authenticated destination map after a switch.
+      options.providerNames.clear();
+      waitForTestStreamBarrier(config, base, 0, 1, "test_handoff_barrier");
+    }
     const auto& turn = turns[turnIndex];
     if (groupedTurns && (!activeConversationId ||
                          *activeConversationId != *turn.conversationId)) {
@@ -1192,6 +1302,7 @@ run(int argc, char** argv)
     }
     statisticsCompleted = true;
   }
+  finishProviderSwitch();
   if (turns.size() > 1 && diagnosticOutputEnabled())
     std::cout << "NATIVE_CONVERSATION_TURNS_SUCCEEDED count=" << turns.size() << '\n';
   if (groupedTurns && conversation) {

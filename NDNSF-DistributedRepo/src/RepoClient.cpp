@@ -1,5 +1,6 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
+#include "face-data-reference-fetcher.hpp"
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
@@ -10,20 +11,237 @@
 #include <ndn-cxx/encoding/block.hpp>
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/util/segmenter.hpp>
+#include <ndn-cxx/util/sha256.hpp>
+#include <ndn-cxx/util/scope.hpp>
+
+#include <boost/asio/post.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <future>
+#include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <utility>
 
 namespace ndnsf_distributed_repo {
+
+namespace {
+std::string
+toLowerHex(std::string value)
+{
+  std::transform(value.begin(), value.end(), value.begin(), [] (unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return value;
+}
+
+void
+validateUserStorageClientTarget(const RepoArtifactTarget& target, int timeoutMs)
+{
+  if (timeoutMs <= 0) throw std::invalid_argument("repo-user-storage-invalid: timeout");
+  for (const auto* value : {&target.repoNode, &target.providerIdentity, &target.servicePrefix}) {
+    if (value->empty() || value->size() > 4096 || value->front() != '/')
+      throw std::invalid_argument("repo-user-storage-invalid: target");
+    const ndn::Name name(*value);
+    if (name.empty() || name.toUri(ndn::name::UriFormat::ALTERNATE) != *value)
+      throw std::invalid_argument("repo-user-storage-invalid: target");
+  }
+}
+
+bool
+sameUserStorageClaim(const RepoUserStorageClaim& a, const RepoUserStorageClaim& b)
+{
+  return a.repoNode == b.repoNode && a.ownerIdentity == b.ownerIdentity &&
+    a.grantId == b.grantId && a.ownerEpoch == b.ownerEpoch &&
+    a.object.objectName == b.object.objectName && a.object.wireSha256 == b.object.wireSha256 &&
+    a.object.generation == b.object.generation &&
+    a.object.payloadWireBytes == b.object.payloadWireBytes &&
+    a.object.manifestBytes == b.object.manifestBytes && a.state == b.state &&
+    a.cleanupId == b.cleanupId && a.committedAtMs == b.committedAtMs &&
+    a.deletedAtMs == b.deletedAtMs;
+}
+
+RepoUserStorageClaim
+findCurrentUserStorageClaim(ndn_service_framework::ServiceUser& owner,
+  const RepoArtifactTarget& target, const std::string& objectName,
+  const RepoUserStoragePacketSetFetchLimits& limits,
+  std::chrono::steady_clock::time_point deadline, uint64_t& listingWireBytes)
+{
+  const auto ownerIdentity = owner.getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  const auto provider = ndn::Name(target.providerIdentity);
+  const auto listService = makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST");
+  const auto remainingTimeoutMs = [&] {
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deadline - std::chrono::steady_clock::now()).count();
+    if (remaining <= limits.ackCollectionTimeMs)
+      throw std::runtime_error("repo-user-storage-claim-deadline");
+    return static_cast<int>(std::min<int64_t>(remaining, std::numeric_limits<int>::max()));
+  };
+  std::string cursor;
+  uint64_t scannedObjects = 0;
+  for (uint32_t pageIndex = 0; pageIndex < limits.maxListingPagesPerScan; ++pageIndex) {
+    RepoUserStorageListRequest request;
+    request.afterObjectName = cursor;
+    request.limit = limits.listingPageSize;
+    const auto response = RepoClient::requestSelectedService(owner, provider, listService,
+      toBytes(request.toJson()), limits.ackCollectionTimeMs,
+      remainingTimeoutMs());
+    if (response.size() > limits.maxListingWireBytes - listingWireBytes)
+      throw std::runtime_error("repo-user-storage-list-byte-budget-exceeded");
+    listingWireBytes += response.size();
+    const auto responseText = toString(response);
+    auto reply = RepoUserStorageListReply::fromJson(responseText);
+    reply.validateExpected(target, ownerIdentity, request);
+    if (reply.toJson() != responseText || reply.objects.size() > request.limit ||
+        reply.objects.size() > limits.maxListedObjectsPerScan - scannedObjects) {
+      throw std::runtime_error("repo-user-storage-list-page-invalid");
+    }
+    scannedObjects += reply.objects.size();
+
+    std::string previousName = cursor;
+    std::optional<RepoUserStorageClaim> match;
+    bool passedTarget = false;
+    for (const auto& claim : reply.objects) {
+      validateRepoUserStorageObject(claim.object);
+      if (claim.repoNode != target.repoNode || claim.ownerIdentity != ownerIdentity ||
+          claim.object.objectName <= previousName) {
+        throw std::runtime_error("repo-user-storage-list-order-or-scope-invalid");
+      }
+      previousName = claim.object.objectName;
+      if (claim.object.objectName == objectName) match = claim;
+      else if (claim.object.objectName > objectName) passedTarget = true;
+    }
+    if (match) {
+      if (match->state != RepoUserStorageClaimState::COMMITTED ||
+          match->grantId.empty() || match->ownerEpoch == 0 ||
+          match->object.manifestBytes == 0 || match->object.payloadWireBytes == 0) {
+        throw std::runtime_error("repo-user-storage-claim-not-currently-committed");
+      }
+      if (std::chrono::steady_clock::now() >= deadline)
+        throw std::runtime_error("repo-user-storage-claim-deadline");
+      return *match;
+    }
+    if (passedTarget) break;
+    if (reply.nextAfterObjectName.empty()) break;
+    if (reply.objects.empty() || reply.nextAfterObjectName != previousName ||
+        reply.nextAfterObjectName <= cursor) {
+      throw std::runtime_error("repo-user-storage-list-cursor-invalid");
+    }
+    cursor = reply.nextAfterObjectName;
+  }
+  throw std::runtime_error("repo-user-storage-current-claim-not-found-within-bounds");
+}
+
+template<typename Validator>
+ndn_service_framework::ServiceUser::ResponseHandler
+checkedUserStorageResponse(Validator validate,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return [validate = std::move(validate), onResponse = std::move(onResponse)](
+    const ndn_service_framework::ResponseMessage& response) {
+    if (!onResponse) return;
+    if (!response.getStatus()) { onResponse(response); return; }
+    std::optional<ndn_service_framework::ResponseMessage> invalid;
+    try {
+      const auto payload = response.getPayload();
+      validate(std::string(payload.begin(), payload.end()));
+    }
+    catch (const std::exception& e) {
+      invalid.emplace();
+      invalid->setStatus(false);
+      invalid->setErrorInfo(e.what());
+      ndn::Buffer payload(reinterpret_cast<const uint8_t*>(e.what()), std::strlen(e.what()));
+      invalid->setPayload(payload, payload.size());
+    }
+    // A user callback exception must not be treated as validation failure or
+    // cause the callback to run a second time.
+    onResponse(invalid ? *invalid : response);
+  };
+}
+} // namespace
+
+ndn::Name
+RepoClient::requestUserStorageGrant(ndn_service_framework::ServiceUser& user,
+  const RepoArtifactTarget& target, const RepoUserStorageGrantRequest& request,
+  int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  validateUserStorageClientTarget(target, timeoutMs);
+  const auto payload = toBytes(request.toJson());
+  const auto owner = user.getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  auto checked = checkedUserStorageResponse([target, owner, request](const std::string& wire) {
+    RepoUserStorageGrantReply::fromJson(wire).validateExpected(target, owner, request);
+  }, std::move(onResponse));
+  return user.RequestService(std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
+    makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
+    makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
+    ndn_service_framework::tlv::FirstResponding);
+}
+
+ndn::Name
+RepoClient::requestUserStorageList(ndn_service_framework::ServiceUser& user,
+  const RepoArtifactTarget& target, const RepoUserStorageListRequest& request,
+  int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  validateUserStorageClientTarget(target, timeoutMs);
+  const auto payload = toBytes(request.toJson());
+  const auto owner = user.getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  auto checked = checkedUserStorageResponse([target, owner, request](const std::string& wire) {
+    RepoUserStorageListReply::fromJson(wire).validateExpected(target, owner, request);
+  }, std::move(onResponse));
+  return user.RequestService(std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
+    makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
+    makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
+    ndn_service_framework::tlv::FirstResponding);
+}
+
+ndn::Name
+RepoClient::requestUserStorageDelete(ndn_service_framework::ServiceUser& user,
+  const RepoArtifactTarget& target, const RepoUserStorageDeleteRequest& request,
+  int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  validateUserStorageClientTarget(target, timeoutMs);
+  const auto payload = toBytes(request.toJson());
+  const auto owner = user.getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  auto checked = checkedUserStorageResponse([target, owner, request](const std::string& wire) {
+    RepoUserStorageDeleteReply::fromJson(wire).validateExpected(target, owner, request);
+  }, std::move(onResponse));
+  return user.RequestService(std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
+    makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_DELETE"),
+    makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
+    ndn_service_framework::tlv::FirstResponding);
+}
+
+ndn::Name
+RepoClient::requestUserStorageUsage(ndn_service_framework::ServiceUser& user,
+  const RepoArtifactTarget& target, const RepoUserStorageUsageRequest& request,
+  int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  validateUserStorageClientTarget(target, timeoutMs);
+  const auto payload = toBytes(request.toJson());
+  const auto owner = user.getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  auto checked = checkedUserStorageResponse([target, owner](const std::string& wire) {
+    RepoUserStorageUsageReply::fromJson(wire).validateExpected(target, owner);
+  }, std::move(onResponse));
+  return user.RequestService(std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
+    makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_USAGE"),
+    makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
+    ndn_service_framework::tlv::FirstResponding);
+}
 
 std::vector<uint8_t>
 RepoClient::fetchOriginalDataPacket(
@@ -167,6 +385,624 @@ RepoClient::fetchOriginalDataPacket(
     }
   }
   throw std::runtime_error("repo-original-data-unavailable: " + lastError);
+}
+
+std::vector<uint8_t>
+RepoClient::fetchOriginalDataPacketFromUserStorage(
+  ndn_service_framework::ServiceUser& user,
+  const RepoArtifactTarget& target,
+  const ndn::Name& dataName,
+  uint64_t expectedWireBytes,
+  const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
+  int timeoutMs)
+{
+  validateUserStorageClientTarget(target, timeoutMs);
+  if (dataName.empty() || expectedWireBytes == 0 ||
+      expectedWireBytes > ndn::MAX_NDN_PACKET_SIZE ||
+      !verifyProducerSignature) {
+    throw std::invalid_argument("repo-user-storage-packet-request-invalid");
+  }
+  if (user.isOnIoThread()) {
+    throw std::logic_error(
+      "repo-user-storage-packet-request-on-io-thread: blocking packet fetch cannot run on the Face I/O thread");
+  }
+
+  struct FetchState
+  {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool done = false;
+    std::string error;
+    std::vector<uint8_t> wire;
+    std::optional<ndn::PendingInterestHandle> pending;
+    std::shared_ptr<void> faceOperationLease;
+  };
+
+  const auto state = std::make_shared<FetchState>();
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMs);
+  ndn::Interest interest(dataName);
+  interest.setCanBePrefix(false);
+  interest.setMustBeFresh(true);
+  interest.setForwardingHint({ndn::Name(target.providerIdentity)});
+  interest.setInterestLifetime(ndn::time::milliseconds(timeoutMs));
+
+  const auto finish = [state, deadline] (std::string error, std::vector<uint8_t> wire) {
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (state->done) return;
+      if (std::chrono::steady_clock::now() >= deadline) {
+        error = "repo-user-storage-packet-deadline";
+        wire.clear();
+      }
+      state->error = std::move(error);
+      state->wire = std::move(wire);
+      state->pending.reset();
+      state->done = true;
+    }
+    state->condition.notify_all();
+  };
+
+  auto lease = user.postToIoWithFace(
+    [state, interest = std::move(interest), dataName, expectedWireBytes, finish, deadline]
+    (ndn::Face& face) mutable {
+      std::unique_lock<std::mutex> lock(state->mutex);
+      if (state->done) return;
+      if (std::chrono::steady_clock::now() >= deadline) {
+        lock.unlock();
+        finish("repo-user-storage-packet-deadline", {});
+        return;
+      }
+      try {
+        state->pending.emplace(face.expressInterest(
+          interest,
+          [dataName, expectedWireBytes, finish] (const ndn::Interest&, const ndn::Data& data) {
+            if (data.getName() != dataName) {
+              finish("repo-user-storage-packet-name-mismatch", {});
+              return;
+            }
+            const auto& block = data.wireEncode();
+            if (block.size() != expectedWireBytes) {
+              finish("repo-user-storage-packet-size-mismatch", {});
+              return;
+            }
+            finish({}, std::vector<uint8_t>(block.begin(), block.end()));
+          },
+          [finish] (const ndn::Interest&, const ndn::lp::Nack&) {
+            finish("repo-user-storage-packet-nack", {});
+          },
+          [finish] (const ndn::Interest&) {
+            finish("repo-user-storage-packet-timeout", {});
+          }));
+      }
+      catch (const std::exception& e) {
+        lock.unlock();
+        finish(std::string("repo-user-storage-packet-express-failed: ") + e.what(), {});
+      }
+      catch (...) {
+        lock.unlock();
+        finish("repo-user-storage-packet-express-failed", {});
+      }
+    });
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->faceOperationLease = std::move(lease);
+  }
+
+  std::vector<uint8_t> wire;
+  std::string fetchError;
+  {
+    std::unique_lock<std::mutex> lock(state->mutex);
+    if (!state->condition.wait_until(lock, deadline, [&] { return state->done; })) {
+      state->done = true;
+      state->error = "repo-user-storage-packet-deadline";
+      user.postToIo([state] {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        if (state->pending) {
+          state->pending->cancel();
+          state->pending.reset();
+        }
+      });
+    }
+    fetchError = state->error;
+    wire = std::move(state->wire);
+  }
+  if (!fetchError.empty()) {
+    throw std::runtime_error(fetchError);
+  }
+  if (wire.size() != expectedWireBytes) {
+    throw std::runtime_error("repo-user-storage-packet-size-mismatch");
+  }
+
+  ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
+  block.parse();
+  const ndn::Data data(block);
+  if (data.getName() != dataName || !verifyProducerSignature(data)) {
+    throw std::runtime_error("repo-user-storage-packet-producer-signature-invalid");
+  }
+  if (std::chrono::steady_clock::now() >= deadline)
+    throw std::runtime_error("repo-user-storage-packet-deadline");
+  return wire;
+}
+
+std::vector<std::vector<uint8_t>>
+RepoClient::fetchOriginalDataPacketSet(
+  ndn_service_framework::ServiceUser& user, const RepoDataReference& reference,
+  const std::function<bool(const ndn::Data&)>& verifyProducerSignature, int timeoutMs,
+  RepoUserStoragePacketSetFetchLimits limits, const std::function<void()>& requireCurrent)
+{
+  if (user.isOnIoThread())
+    throw std::logic_error("repo-original-packet-set-on-io-thread");
+  reference.validateExactPacketSet();
+  if (!verifyProducerSignature || timeoutMs <= 0 || !reference.packetSetMetadata ||
+      limits.maxPacketCount == 0 || limits.maxPacketCount > 65536 ||
+      limits.maxPacketWireBytes == 0 || limits.maxPacketWireBytes > REPO_USER_STORAGE_LIMIT_BYTES ||
+      reference.expectedSize > limits.maxPacketWireBytes ||
+      reference.packetSetMetadata->packetNames.size() > limits.maxPacketCount)
+    throw std::invalid_argument("repo-original-packet-set-budget-invalid");
+  const auto& metadata = *reference.packetSetMetadata;
+  if (metadata.packetOffsets.size() != metadata.packetNames.size() + 1 ||
+      metadata.packetOffsets.front() != 0 || metadata.packetOffsets.back() != reference.expectedSize)
+    throw std::invalid_argument("repo-original-packet-set-offsets-invalid");
+  for (size_t i = 0; i < metadata.packetNames.size(); ++i) {
+    if (metadata.packetOffsets[i + 1] <= metadata.packetOffsets[i] ||
+        metadata.packetOffsets[i + 1] - metadata.packetOffsets[i] > ndn::MAX_NDN_PACKET_SIZE)
+      throw std::invalid_argument("repo-original-packet-set-offsets-invalid");
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  const auto current = [&] {
+    if (requireCurrent) requireCurrent();
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw std::runtime_error("repo-original-packet-set-deadline");
+  };
+  current();
+  struct FaceBinding
+  {
+    std::mutex mutex;
+    std::condition_variable condition;
+    ndn::Face* face = nullptr;
+  };
+  auto binding = std::make_shared<FaceBinding>();
+  auto lease = user.postToIoWithFace([binding](ndn::Face& face) {
+    {
+      std::lock_guard<std::mutex> lock(binding->mutex);
+      binding->face = &face;
+    }
+    binding->condition.notify_all();
+  });
+  ndn::Face* face = nullptr;
+  {
+    std::unique_lock<std::mutex> lock(binding->mutex);
+    if (!binding->condition.wait_until(lock, deadline, [&] { return binding->face != nullptr; }))
+      throw std::runtime_error("repo-original-packet-set-face-deadline");
+    face = binding->face;
+  }
+  current();
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+    deadline - std::chrono::steady_clock::now());
+  if (remaining <= std::chrono::milliseconds::zero())
+    throw std::runtime_error("repo-original-packet-set-deadline");
+  detail::FaceDataReferenceFetcher fetcher(*face, remaining, remaining, 16, std::move(lease));
+  const auto spool = fetcher(reference);
+  current();
+  if (spool->packetCount() != metadata.packetNames.size() ||
+      spool->totalWireBytes() != reference.expectedSize)
+    throw std::runtime_error("repo-original-packet-set-size-mismatch");
+  std::vector<std::vector<uint8_t>> wires;
+  wires.reserve(metadata.packetNames.size());
+  ndn::util::Sha256 digest;
+  for (size_t i = 0; i < metadata.packetNames.size(); ++i) {
+    current();
+    auto wire = spool->readPacket(i);
+    if (wire.size() != metadata.packetOffsets[i + 1] - metadata.packetOffsets[i])
+      throw std::runtime_error("repo-original-packet-set-packet-size-mismatch");
+    digest.update(ndn::span<const uint8_t>(wire.data(), wire.size()));
+    wires.push_back(std::move(wire));
+  }
+  if (toLowerHex(digest.toString()) != reference.expectedSha256)
+    throw std::runtime_error("repo-original-packet-set-ordered-digest-mismatch");
+  // Certificate packets may appear last in the immutable wire order.
+  for (const bool certificates : {true, false}) {
+    for (const auto& wire : wires) {
+      current();
+      ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
+      block.parse();
+      const ndn::Data data(block);
+      if (ndn::security::Certificate::isValidName(data.getName()) == certificates &&
+          !verifyProducerSignature(data))
+        throw std::runtime_error("repo-original-packet-set-producer-signature-invalid");
+    }
+  }
+  current();
+  return wires;
+}
+
+VerifiedRepoUserStoragePacketSetV1
+RepoClient::fetchOriginalDataPacketSetFromUserStorage(
+  ndn_service_framework::ServiceUser& owner,
+  const RepoArtifactTarget& target,
+  const std::string& objectName,
+  const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
+  int timeoutMs,
+  RepoUserStoragePacketSetFetchLimits limits)
+{
+  validateUserStorageClientTarget(target, timeoutMs);
+  if (owner.getName().empty() || objectName.empty() || objectName.size() > 4096 ||
+      !verifyProducerSignature || limits.listingPageSize == 0 ||
+      limits.listingPageSize > 100 || limits.maxListingPagesPerScan == 0 ||
+      limits.maxListingPagesPerScan > 4096 || limits.maxListedObjectsPerScan == 0 ||
+      limits.maxListedObjectsPerScan > 1000000 || limits.maxListingWireBytes == 0 ||
+      limits.maxListingWireBytes > (64ULL << 20) || limits.maxPacketCount == 0 ||
+      limits.maxPacketCount > 65536 || limits.maxPacketWireBytes == 0 ||
+      limits.maxPacketWireBytes > REPO_USER_STORAGE_LIMIT_BYTES ||
+      limits.maxManifestWireBytes == 0 || limits.maxManifestWireBytes > (16ULL << 20) ||
+      limits.ackCollectionTimeMs <= 0 || timeoutMs <= limits.ackCollectionTimeMs) {
+    throw std::invalid_argument("repo-user-storage-packet-set-request-invalid");
+  }
+  if (owner.isOnIoThread()) {
+    throw std::logic_error(
+      "repo-user-storage-packet-set-on-io-thread: blocking packet-set fetch cannot run on the Face I/O thread");
+  }
+  const ndn::Name expectedObjectName(objectName);
+  if (expectedObjectName.empty() ||
+      expectedObjectName.toUri(ndn::name::UriFormat::ALTERNATE) != objectName) {
+    throw std::invalid_argument("repo-user-storage-packet-set-object-name-invalid");
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMs);
+  const auto remainingTimeoutMs = [&] {
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deadline - std::chrono::steady_clock::now()).count();
+    if (remaining <= limits.ackCollectionTimeMs)
+      throw std::runtime_error("repo-user-storage-packet-set-deadline");
+    return static_cast<int>(std::min<int64_t>(remaining, std::numeric_limits<int>::max()));
+  };
+  const auto provider = ndn::Name(target.providerIdentity);
+  const auto servicePrefix = ndn::Name(target.servicePrefix);
+  const auto manifestService = makeRepoServiceName(servicePrefix, "MANIFEST");
+  uint64_t listingWireBytes = 0;
+
+  const auto listClaim = [&] {
+    return findCurrentUserStorageClaim(owner, target, objectName, limits, deadline,
+                                      listingWireBytes);
+  };
+
+  const auto initialClaim = listClaim();
+  const auto manifestResponse = requestSelectedService(owner, provider, manifestService,
+    toBytes(objectName), limits.ackCollectionTimeMs, remainingTimeoutMs());
+  if (manifestResponse.empty() || manifestResponse.size() > limits.maxManifestWireBytes ||
+      manifestResponse.size() != initialClaim.object.manifestBytes) {
+    throw std::runtime_error("repo-user-storage-manifest-size-mismatch");
+  }
+  const auto manifestText = toString(manifestResponse);
+  const auto manifest = parseManifestJson(manifestText);
+  const auto throwManifestClaimMismatch = [] (const char* field) {
+    throw std::runtime_error(
+      std::string("repo-user-storage-manifest-claim-mismatch:") + field);
+  };
+  if (manifest.toJson() != manifestText)
+    throwManifestClaimMismatch("noncanonical-json");
+  const ndn::Name manifestObjectName(manifest.objectName);
+  if (manifestObjectName != expectedObjectName)
+    throwManifestClaimMismatch("object-name");
+  if (manifest.objectName != manifestObjectName.toUri(ndn::name::UriFormat::CANONICAL) &&
+      manifest.objectName != manifestObjectName.toUri(ndn::name::UriFormat::ALTERNATE))
+    throwManifestClaimMismatch("object-name-uri-format");
+  if (manifest.objectType != "original-packet-set")
+    throwManifestClaimMismatch("object-type");
+  if (manifest.lifecycleState != "COMMITTED")
+    throwManifestClaimMismatch("lifecycle-state");
+  if (manifest.generation != initialClaim.object.generation)
+    throwManifestClaimMismatch("generation");
+  if (manifest.sha256 != initialClaim.object.wireSha256)
+    throwManifestClaimMismatch("wire-digest");
+  if (manifest.size != initialClaim.object.payloadWireBytes)
+    throwManifestClaimMismatch("payload-size");
+  if (manifest.size > limits.maxPacketWireBytes)
+    throwManifestClaimMismatch("packet-wire-limit");
+  if (manifest.packetNames.empty())
+    throwManifestClaimMismatch("empty-packet-names");
+  if (manifest.packetNames.size() > limits.maxPacketCount)
+    throwManifestClaimMismatch("packet-count-limit");
+  if (manifest.packetOffsets.size() != manifest.packetNames.size() + 1)
+    throwManifestClaimMismatch("packet-offset-count");
+  if (manifest.packetOffsets.front() != 0)
+    throwManifestClaimMismatch("first-packet-offset");
+  if (manifest.packetOffsets.back() != manifest.size)
+    throwManifestClaimMismatch("final-packet-offset");
+  if (ndn::Name(manifest.packetNames.front()) != expectedObjectName)
+    throwManifestClaimMismatch("root-packet-name");
+
+  std::set<ndn::Name> uniquePacketNames;
+  for (const auto& packetNameText : manifest.packetNames) {
+    const ndn::Name packetName(packetNameText);
+    if (packetName.empty() ||
+        (packetName.toUri(ndn::name::UriFormat::CANONICAL) != packetNameText &&
+         packetName.toUri(ndn::name::UriFormat::ALTERNATE) != packetNameText) ||
+        !uniquePacketNames.insert(packetName).second) {
+      throw std::runtime_error("repo-user-storage-manifest-packet-name-invalid");
+    }
+  }
+  for (std::size_t i = 0; i + 1 < manifest.packetOffsets.size(); ++i) {
+    if (manifest.packetOffsets[i + 1] <= manifest.packetOffsets[i] ||
+        manifest.packetOffsets[i + 1] - manifest.packetOffsets[i] > ndn::MAX_NDN_PACKET_SIZE) {
+      throw std::runtime_error("repo-user-storage-manifest-packet-offset-invalid");
+    }
+  }
+
+  RepoDataReference original;
+  original.objectName = objectName;
+  original.dataPrefix = manifest.dataPrefix;
+  original.expectedSize = manifest.size;
+  original.expectedSha256 = manifest.sha256;
+  original.forwardingHint = provider.toUri();
+  original.packetSetMetadata = manifest;
+  auto packetWires = fetchOriginalDataPacketSet(owner, original, verifyProducerSignature,
+                                              remainingTimeoutMs(), limits);
+
+  const auto currentClaim = listClaim();
+  if (!sameUserStorageClaim(initialClaim, currentClaim))
+    throw std::runtime_error("repo-user-storage-owner-claim-changed-during-fetch");
+
+  return VerifiedRepoUserStoragePacketSetV1(target, initialClaim, manifest,
+                                             std::move(packetWires));
+}
+
+RepoUserStorageClaim
+RepoClient::revalidateCurrentUserStorageClaim(
+  ndn_service_framework::ServiceUser& owner,
+  const RepoArtifactTarget& target,
+  const RepoUserStorageClaim& expectedClaim,
+  int timeoutMs,
+  RepoUserStoragePacketSetFetchLimits limits)
+{
+  validateUserStorageClientTarget(target, timeoutMs);
+  if (owner.getName().empty())
+    throw std::invalid_argument("repo-user-storage-claim-revalidation-owner-invalid");
+  if (owner.isOnIoThread())
+    throw std::logic_error(
+      "repo-user-storage-claim-revalidation-on-io-thread: blocking claim recheck cannot run on the Face I/O thread");
+  if (limits.listingPageSize == 0 || limits.listingPageSize > 100 ||
+      limits.maxListingPagesPerScan == 0 || limits.maxListingPagesPerScan > 4096 ||
+      limits.maxListedObjectsPerScan == 0 || limits.maxListedObjectsPerScan > 1000000 ||
+      limits.maxListingWireBytes == 0 || limits.maxListingWireBytes > (64ULL << 20) ||
+      limits.ackCollectionTimeMs <= 0 || timeoutMs <= limits.ackCollectionTimeMs ||
+      expectedClaim.state != RepoUserStorageClaimState::COMMITTED ||
+      expectedClaim.repoNode != target.repoNode ||
+      expectedClaim.ownerIdentity != owner.getName().toUri(ndn::name::UriFormat::ALTERNATE) ||
+      expectedClaim.grantId.empty() || expectedClaim.ownerEpoch == 0 ||
+      expectedClaim.object.objectName.empty() || expectedClaim.object.manifestBytes == 0 ||
+      expectedClaim.object.payloadWireBytes == 0) {
+    throw std::invalid_argument("repo-user-storage-claim-revalidation-request-invalid");
+  }
+  validateRepoUserStorageObject(expectedClaim.object);
+
+  const auto expectedObjectName = ndn::Name(expectedClaim.object.objectName);
+  if (expectedObjectName.empty() ||
+      expectedObjectName.toUri(ndn::name::UriFormat::ALTERNATE) != expectedClaim.object.objectName) {
+    throw std::invalid_argument("repo-user-storage-claim-revalidation-object-invalid");
+  }
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMs);
+  uint64_t listingWireBytes = 0;
+  const auto current = findCurrentUserStorageClaim(owner, target, expectedClaim.object.objectName,
+    limits, deadline, listingWireBytes);
+  if (!sameUserStorageClaim(expectedClaim, current))
+    throw std::runtime_error("repo-user-storage-owner-claim-changed-after-semantic-validation");
+  return current;
+}
+
+RepoObjectManifest
+RepoClient::commitUserStorageOriginalPackets(
+  ndn_service_framework::ServiceUser& writer, const RepoArtifactTarget& target,
+  const RepoUserStorageInsertRequest& request,
+  const std::function<std::optional<std::vector<uint8_t>>()>& nextOriginalPacket,
+  const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
+  int ackCollectionTimeMs, int timeoutMs, const std::function<void()>& requireCurrent)
+{
+  validateUserStorageClientTarget(target, timeoutMs);
+  if (writer.isOnIoThread())
+    throw std::logic_error("repo-original-publication-on-face-thread");
+  if (!nextOriginalPacket || !verifyProducerSignature || ackCollectionTimeMs <= 0 ||
+      timeoutMs <= ackCollectionTimeMs || !request.reference.packetSetMetadata ||
+      request.reference.expectedSize == 0 ||
+      request.reference.expectedSize > REPO_USER_STORAGE_LIMIT_BYTES)
+    throw std::invalid_argument("repo-original-publication-invalid");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  const auto current = [&] {
+    if (requireCurrent) requireCurrent();
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw std::runtime_error("repo-original-publication-deadline");
+  };
+  const auto remaining = [&] {
+    current();
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deadline - std::chrono::steady_clock::now()).count();
+    if (milliseconds <= ackCollectionTimeMs)
+      throw std::runtime_error("repo-original-publication-deadline");
+    return static_cast<int>(milliseconds);
+  };
+  current();
+  const auto& names = request.reference.packetSetMetadata->packetNames;
+  constexpr size_t MAX_PACKET_COUNT = 65536;
+  constexpr size_t MAX_PACKET_INDEX_BYTES = 1U << 20;
+  if (names.empty() || names.size() > MAX_PACKET_COUNT)
+    throw std::invalid_argument("repo-original-publication-packet-budget");
+  size_t nameBytes = 0;
+  for (const auto& name : names) {
+    if (name.empty() || name.size() > 4096 || name.size() > MAX_PACKET_INDEX_BYTES - nameBytes)
+      throw std::invalid_argument("repo-original-publication-index-budget");
+    nameBytes += name.size();
+  }
+  const auto encoded = encodeUserStorageInsertRequest(request);
+  const auto producer = writer.getName();
+  const ndn::Name prefix(request.reference.dataPrefix);
+  if (producer.empty() || !producer.isPrefixOf(prefix))
+    throw std::invalid_argument("repo-original-publication-producer-mismatch");
+
+  struct Publication
+  {
+    std::atomic<bool> stopped{false};
+    std::atomic<size_t> pending{0};
+    std::map<ndn::Name, size_t> index;
+    std::shared_ptr<detail::FaceDataReferencePacketSpool> spool;
+    ndn::ScopedInterestFilterHandle filter;
+    std::shared_ptr<void> faceLease;
+    ndn::Face* face = nullptr;
+  };
+  struct PacketReplyLease
+  {
+    std::shared_ptr<Publication> owner;
+    ~PacketReplyLease() { --owner->pending; }
+  };
+  auto publication = std::make_shared<Publication>();
+  auto stop = ndn::make_scope_exit([&] {
+    publication->stopped.store(true);
+    if (!publication->faceLease) return;
+    try {
+      writer.postToIo([publication] { publication->filter.cancel(); });
+    }
+    catch (...) {
+      // Scoped cancellation remains the final release path if posting fails.
+    }
+  });
+  auto admitted = std::make_shared<std::promise<void>>();
+  auto admissionReady = admitted->get_future();
+  publication->faceLease = writer.postToIoWithFace(
+    [publication, admitted, deadline](ndn::Face& face) {
+      try {
+        if (publication->stopped.load() || std::chrono::steady_clock::now() >= deadline)
+          throw std::runtime_error("repo-original-publication-admission-deadline");
+        publication->face = &face;
+        admitted->set_value();
+      }
+      catch (...) { admitted->set_exception(std::current_exception()); }
+    });
+  if (admissionReady.wait_until(deadline) != std::future_status::ready)
+    throw std::runtime_error("repo-original-publication-admission-deadline");
+  admissionReady.get();
+  current();
+  publication->spool = std::make_shared<detail::FaceDataReferencePacketSpool>(
+    names.size(), request.reference.expectedSize);
+  ndn::util::Sha256 digest;
+  std::vector<uint64_t> offsets{0};
+  for (size_t i = 0; i < names.size(); ++i) {
+    current();
+    const auto wire = nextOriginalPacket();
+    current();
+    if (!wire || wire->empty() || wire->size() > ndn::MAX_NDN_PACKET_SIZE)
+      throw std::invalid_argument("repo-original-publication-missing-or-oversized-packet");
+    const ndn::Data data{ndn::Block(ndn::span<const uint8_t>(wire->data(), wire->size()))};
+    if (data.wireEncode().size() != wire->size() || data.getName() != ndn::Name(names[i]) ||
+        !prefix.isPrefixOf(data.getName()) || !verifyProducerSignature(data) ||
+        !publication->index.emplace(data.getName(), i).second)
+      throw std::invalid_argument("repo-original-publication-packet-invalid");
+    current();
+    publication->spool->append(i, *wire);
+    digest.update(ndn::span<const uint8_t>(wire->data(), wire->size()));
+    offsets.push_back(offsets.back() + wire->size());
+  }
+  if (nextOriginalPacket())
+    throw std::invalid_argument("repo-original-publication-extra-packet");
+  current();
+  publication->spool->finalize();
+  if (publication->spool->totalWireBytes() != request.reference.expectedSize ||
+      toLowerHex(digest.toString()) != request.reference.expectedSha256)
+    throw std::invalid_argument("repo-original-publication-digest-or-size-mismatch");
+
+  auto installed = std::make_shared<std::promise<void>>();
+  auto ready = installed->get_future();
+  writer.postToIo(
+    [publication, installed, prefix, deadline] {
+      try {
+        if (publication->stopped.load() || std::chrono::steady_clock::now() >= deadline)
+          throw std::runtime_error("repo-original-publication-install-deadline");
+        auto& face = *publication->face;
+        const std::weak_ptr<Publication> weak = publication;
+        // The Producer already owns its route. This filter is local only.
+        publication->filter = face.setInterestFilter(ndn::InterestFilter(prefix),
+          [weak, &face, deadline](const ndn::InterestFilter&, const ndn::Interest& interest) {
+            const auto state = weak.lock();
+            if (!state || state->stopped.load() || interest.getCanBePrefix() ||
+                std::chrono::steady_clock::now() >= deadline) return;
+            const auto found = state->index.find(interest.getName());
+            if (found == state->index.end()) return;
+            constexpr size_t MAX_PENDING_REPLIES = 64;
+            auto count = state->pending.load();
+            do {
+              if (count >= MAX_PENDING_REPLIES) return;
+            } while (!state->pending.compare_exchange_weak(count, count + 1));
+            std::shared_ptr<PacketReplyLease> reply;
+            try {
+              reply = std::make_shared<PacketReplyLease>();
+              reply->owner = state;
+              const auto wire = state->spool->readPacket(found->second);
+              if (state->stopped.load() || std::chrono::steady_clock::now() >= deadline) return;
+              face.put(ndn::Data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))));
+              // Retain the admission/spool through the queued put callback.
+              boost::asio::post(face.getIoContext(), [reply] {});
+            }
+            catch (...) {
+              if (!reply) --state->pending;
+              // Timeout/retry exposes a failed read; never substitute another packet.
+            }
+          });
+        installed->set_value();
+      }
+      catch (...) { installed->set_exception(std::current_exception()); }
+    });
+  if (ready.wait_until(deadline) != std::future_status::ready)
+    throw std::runtime_error("repo-original-publication-install-deadline");
+  ready.get();
+  current();
+  const auto provider = ndn::Name(target.providerIdentity);
+  const auto servicePrefix = ndn::Name(target.servicePrefix);
+  const auto status = parseOperationStatusJson(toString(requestSelectedService(writer, provider,
+    makeRepoServiceName(servicePrefix, "INSERT"), encoded, ackCollectionTimeMs, remaining())));
+  if (status.operationId != request.operationId || status.operation != "INSERT" ||
+      status.state != "DONE" || ndn::Name(status.objectName) != ndn::Name(request.reference.objectName))
+    throw std::runtime_error("repo-original-publication-insert-not-confirmed: " + status.message);
+
+  const auto readManifest = [&] {
+    current();
+    const auto wire = requestSelectedService(writer, provider,
+      makeRepoServiceName(servicePrefix, "MANIFEST"), encoded, ackCollectionTimeMs, remaining());
+    if (wire.empty() || wire.size() > MAX_PACKET_INDEX_BYTES)
+      throw std::runtime_error("repo-original-publication-manifest-budget");
+    const auto manifest = parseManifestJson(toString(wire));
+    if (manifest.toJson() != toString(wire) || manifest.objectType != "original-packet-set" ||
+        manifest.lifecycleState != "COMMITTED" || manifest.operationId.empty() ||
+        ndn::Name(manifest.objectName) != ndn::Name(request.reference.objectName) ||
+        manifest.generation != request.generation || manifest.size != request.reference.expectedSize ||
+        manifest.sha256 != request.reference.expectedSha256 || manifest.packetOffsets != offsets ||
+        manifest.packetNames.size() != names.size())
+      throw std::runtime_error("repo-original-publication-manifest-mismatch");
+    for (size_t i = 0; i < names.size(); ++i) {
+      if (ndn::Name(manifest.packetNames[i]) != ndn::Name(names[i]))
+        throw std::runtime_error("repo-original-publication-packet-order-mismatch");
+    }
+    current();
+    return manifest;
+  };
+  const auto manifest = readManifest();
+  auto readback = request.reference;
+  readback.packetSetMetadata = manifest;
+  readback.forwardingHint = provider.toUri();
+  RepoUserStoragePacketSetFetchLimits fetchLimits;
+  fetchLimits.maxPacketCount = 65536;
+  fetchLimits.maxPacketWireBytes = request.reference.expectedSize;
+  const auto packets = fetchOriginalDataPacketSet(writer, readback, verifyProducerSignature,
+                                                 remaining(), fetchLimits, current);
+  for (size_t i = 0; i < names.size(); ++i) {
+    current();
+    if (packets[i] != publication->spool->readPacket(i))
+      throw std::runtime_error("repo-original-publication-readback-mismatch");
+  }
+  if (readManifest().toJson() != manifest.toJson())
+    throw std::runtime_error("repo-original-publication-claim-changed");
+  current();
+  return manifest;
 }
 
 namespace {

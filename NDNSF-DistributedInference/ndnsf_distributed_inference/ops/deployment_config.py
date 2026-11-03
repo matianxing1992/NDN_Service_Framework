@@ -475,7 +475,8 @@ def _translate_native(config, by_kind, resolve):
         _fail("artifact_authority", "external Authority cannot own native process inputs")
     if not requester_external:
         _translate_requester(requester, network, security, controller, requester_identity,
-                             authority_identity, paths, bind)
+                             authority_identity, paths, bind,
+                             allow_test_barriers=config['platform']['kind'] == 'minindn')
         known_providers = {_name(actor["identity"], "provider.identity") for actor in by_kind["provider"]}
         request = requester["request"]
         if "provider_names" in request:
@@ -509,7 +510,7 @@ def _translate_native(config, by_kind, resolve):
                 "enable-admission-lease", "require-execution-lease", "execution-policy", "admission-lease-ttl-ms",
                 "grant-authority-public-key", "recipient-key-map", "repo-fetch-timeout-ms",
                 "assembly-timeout-ms",
-                "conversation-retention-ms"})
+                "conversation-retention-ms", "kv-handoff-config"})
             grant_fields = {"grant-authority-public-key", "recipient-key-map"}
             if parameters.keys() & grant_fields and not grant_fields <= parameters.keys():
                 _fail("provider.parameters", "grant public hint and recipient key map are required together")
@@ -543,18 +544,46 @@ def _translate_native(config, by_kind, resolve):
                 _fail("provider.parameters.execution-policy", "unsupported native execution policy")
             if parameters.get("execution-policy") == "LEGACY_READY_SET_V1" and not parameters.get("require-execution-lease"):
                 _fail("provider.parameters.execution-policy", "legacy policy requires execution lease")
-            paths(parameters, ("selection-offer-key-file",), "provider.parameters")
+            paths(parameters, ("selection-offer-key-file", "kv-handoff-config"), "provider.parameters")
             paths(parameters, ("artifact-cache-dir",), "provider.parameters", exists=False, directory=True)
             paths(parameters, ("statistics-file",), "provider.parameters", exists=False)
         elif parameters:
             _fail("actor.parameters", "role parameters belong in common/native configuration")
+    barrier_outputs = {requester[key][field]
+                       for key in ('test_stream_barrier', 'test_handoff_barrier') if key in requester
+                       for field in ('ready_file', 'release_file')}
+    barrier_locations = {'requester.' + key + '.' + field
+                         for key in ('test_stream_barrier', 'test_handoff_barrier')
+                         for field in ('ready_file', 'release_file')}
+    for path, _, location in writes:
+        if path in barrier_outputs and location not in barrier_locations:
+            _fail(location, 'barrier path overlaps another output')
     return writes
 
 
 def _translate_requester(requester, network, security, controller, requester_identity,
-                         authority_identity, paths, bind):
-    if "test_stream_barrier" in requester:
-        _fail("requester.test_stream_barrier", "experiment harness field is not a deployment input")
+                         authority_identity, paths, bind, *, allow_test_barriers=False):
+    barrier_paths = set()
+    for key in ('test_stream_barrier', 'test_handoff_barrier'):
+        if key not in requester:
+            continue
+        location = 'requester.' + key
+        if not allow_test_barriers or requester.get('test_only') is not True:
+            _fail(location, 'experiment harness field requires explicit MiniNDN test_only=true')
+        barrier = _object(requester[key], location,
+                          {'ready_file', 'release_file', 'timeout_ms'},
+                          {'ready_file', 'release_file', 'timeout_ms'})
+        handoff = _object(requester.get('kv_handoff', {}), 'requester.kv_handoff')
+        maximum = (650000 if key == 'test_handoff_barrier' and
+                   handoff.get('wait_for_departure') is True else 60000)
+        if _integer(barrier['timeout_ms'], location + '.timeout_ms') > maximum:
+            _fail(location + '.timeout_ms', 'exceeds native barrier limit')
+        paths(barrier, ('ready_file', 'release_file'), location, exists=False)
+        for field in ('ready_file', 'release_file'):
+            path = barrier[field]
+            if path in barrier_paths:
+                _fail(location + '.' + field, 'barrier output paths must be distinct')
+            barrier_paths.add(path)
     _array(requester.get("turns"), "requester.turns", True)
     _bind(requester, "schema", "ndnsf-di-native-requester-v1", "requester.schema")
     core = requester.setdefault("core", {})

@@ -1753,6 +1753,165 @@ BOOST_AUTO_TEST_CASE(AuthenticatedLineageCannotEnterStandaloneStreamedLoop)
     });
 }
 
+BOOST_AUTO_TEST_CASE(PortableCpuStateContinuesAfterSourceRelease)
+{
+  const auto fixture = findSpec175Fixture();
+  BOOST_REQUIRE_MESSAGE(!fixture.empty(), "stateful ONNX fixture required");
+  const std::string role = "/LLM/Pipeline/Stage/0";
+  auto sourceSpec = makeStatefulSpec(fixture / "role-0.onnx", role);
+  sourceSpec.metadata["providerIdentity"] = "/spec221/source";
+  sourceSpec.metadata["providerBootId"] = "source-boot";
+  auto destinationSpec = sourceSpec;
+  destinationSpec.metadata["providerIdentity"] = "/spec221/destination";
+  destinationSpec.metadata["providerBootId"] = "destination-boot";
+  OnnxRuntimeModelRunner source(sourceSpec);
+  OnnxRuntimeModelRunner destination(destinationSpec);
+  OnnxRuntimeModelRunner baseline(sourceSpec);
+  BOOST_REQUIRE(source.supportsPortableConversationState());
+  BOOST_REQUIRE(destination.supportsPortableConversationState());
+  RoleExecutionContext context;
+  context.requestId = "/spec221/source-request";
+  context.sessionId = "source-session";
+  context.providerBootId = "source-boot";
+  context.role = role;
+  context.attemptEpoch = 1;
+  context.streamingStateExecution = true;
+  auto reference = context;
+  reference.sessionId = "reference-session";
+  for (std::uint64_t epoch = 0; epoch < 3; ++epoch) {
+    context.inferenceEpoch = reference.inferenceEpoch = epoch;
+    context.inputsByScope = {{"input_ids", makeInputIds(3 + epoch)}};
+    reference.inputsByScope = context.inputsByScope;
+    source.run(context);
+    baseline.run(reference);
+  }
+  const auto handle = source.promoteSessionStateToConversation(
+    context.sessionId, "source-conversation");
+  BOOST_REQUIRE(handle);
+  const auto digest = "sha256:" + std::string(64, 'a');
+  DecodeStateIdentityV1 origin;
+  origin.modelDigest = origin.graphSemanticDigest = origin.artifactDigest = digest;
+  origin.adapterDigest = origin.tokenizerDigest = origin.runnerDigest = digest;
+  origin.roleName = role;
+  origin.roleSplitDigest = origin.prefixDigest = origin.positionDigest = digest;
+  origin.layerEnd = 1;
+  origin.prefixTokenCount = 3;
+  origin.precision = "float32";
+  origin.layoutDigest = origin.stateSchemaDigest = origin.runtimeAbiDigest = digest;
+  origin.stateComponentDigests = {digest};
+  origin.securityDomainDigest = digest;
+  origin.providerIdentity = "/spec221/source";
+  origin.providerBootId = "source-boot";
+  origin.stateInferenceEpoch = handle->opaque.stateInferenceEpoch;
+  origin.predecessorInferenceEpoch = origin.stateInferenceEpoch - 1;
+  origin.requestId = context.requestId;
+  origin.generationId = "source-generation";
+  const NativePortableKvLimitsV1 limits{1U << 20, 2U << 20, {}};
+  const auto snapshot = source.exportConversationState(*handle, origin, limits);
+  BOOST_REQUIRE_EQUAL(snapshot.components.size(), 3U);
+  BOOST_CHECK_EQUAL(snapshot.logicalBytes, handle->logicalBytes);
+  auto small = limits;
+  small.maxPayloadBytes = snapshot.logicalBytes - 1;
+  BOOST_CHECK_THROW(source.exportConversationState(*handle, origin, small),
+                    std::invalid_argument);
+  auto target = origin;
+  target.providerIdentity = "/spec221/destination";
+  target.providerBootId = "destination-boot";
+  target.requestId = "/spec221/destination-request";
+  target.generationId = "destination-generation";
+  target.cacheEpoch = 7;
+  auto wrongIo = snapshot;
+  wrongIo.stateIoDigest = "sha256:" + std::string(64, 'b');
+  BOOST_CHECK_THROW(destination.importConversationState(wrongIo, target, "destination", limits),
+                    std::invalid_argument);
+  auto wrongOrder = snapshot;
+  std::swap(wrongOrder.components[0], wrongOrder.components[1]);
+  BOOST_CHECK_THROW(destination.importConversationState(wrongOrder, target, "destination", limits),
+                    std::invalid_argument);
+  for (const auto& shape : {std::vector<std::int64_t>{1, 16},
+                           std::vector<std::int64_t>{16}}) {
+    auto wrongShape = snapshot;
+    auto& component = wrongShape.components.front();
+    const auto tensor = decodeTensorBundle(component.tensorWire).front();
+    component.shape = shape;
+    component.tensorWire = encodeTensorBundle({
+      NamedTensor{component.inputName, component.elementType, shape, tensor.payload}});
+    component.contentDigest = sha256TensorBytes(component.tensorWire);
+    wrongShape.encodedBytes = 0;
+    for (const auto& value : wrongShape.components) {
+      wrongShape.encodedBytes += value.tensorWire.size();
+    }
+    BOOST_CHECK_THROW(destination.importConversationState(wrongShape, target, "destination", limits),
+                      std::invalid_argument);
+  }
+  auto wrongType = snapshot;
+  auto& typedComponent = wrongType.components.front();
+  const auto typedPayload = decodeTensorBundle(typedComponent.tensorWire).front().payload;
+  typedComponent.elementType = TensorElementType::Int32;
+  typedComponent.tensorWire = encodeTensorBundle({NamedTensor{
+    typedComponent.inputName, typedComponent.elementType, typedComponent.shape, typedPayload}});
+  typedComponent.contentDigest = sha256TensorBytes(typedComponent.tensorWire);
+  BOOST_CHECK_THROW(destination.importConversationState(wrongType, target, "destination", limits),
+                    std::invalid_argument);
+  auto incompatible = target;
+  incompatible.modelDigest = "sha256:" + std::string(64, 'b');
+  BOOST_CHECK_THROW(destination.importConversationState(snapshot, incompatible, "destination", limits),
+                    std::invalid_argument);
+  auto corrupt = snapshot;
+  corrupt.components.front().tensorWire.back() ^= 1;
+  BOOST_CHECK_THROW(destination.importConversationState(corrupt, target, "destination", limits),
+                    std::invalid_argument);
+  // Sweep the bounded cancellation checkpoints, including allocation/copy,
+  // without depending on their exact count. Every failed import must permit
+  // an immediate retry under the same key and leave no published state.
+  unsigned cancelledAttempts = 0;
+  bool reachedUncancelledImport = false;
+  for (unsigned threshold = 1; threshold <= 64; ++threshold) {
+    unsigned checks = 0;
+    auto cancelled = limits;
+    cancelled.cancelled = [&checks, threshold] { return ++checks >= threshold; };
+    try {
+      const auto state = destination.importConversationState(
+        snapshot, target, "destination", cancelled);
+      BOOST_REQUIRE(destination.releaseConversationState(state));
+      reachedUncancelledImport = true;
+      break;
+    }
+    catch (const std::runtime_error& error) {
+      BOOST_CHECK(std::string(error.what()).find("cancel") != std::string::npos);
+      const auto retry = destination.importConversationState(
+        snapshot, target, "destination", limits);
+      BOOST_REQUIRE(destination.releaseConversationState(retry));
+      ++cancelledAttempts;
+    }
+  }
+  BOOST_REQUIRE(reachedUncancelledImport);
+  BOOST_CHECK_GT(cancelledAttempts, snapshot.components.size());
+  const auto imported = destination.importConversationState(snapshot, target, "destination", limits);
+  BOOST_CHECK_THROW(destination.importConversationState(snapshot, target, "destination", limits),
+                    std::runtime_error);
+  BOOST_REQUIRE(source.releaseConversationState(*handle));
+  source.releaseSessionState(context.sessionId);
+  BOOST_REQUIRE(destination.restoreConversationState(imported, "destination-session"));
+  auto continued = context;
+  continued.requestId = target.requestId;
+  continued.providerBootId = target.providerBootId;
+  continued.sessionId = "destination-session";
+  continued.inferenceEpoch = 0;
+  continued.inputsByScope = {{"input_ids", makeInputIds(9)}};
+  reference.inferenceEpoch = 3;
+  reference.inputsByScope = continued.inputsByScope;
+  const auto actual = decodeOutput(destination.run(continued));
+  const auto expected = decodeOutput(baseline.run(reference));
+  BOOST_CHECK(findTensor(actual, "hidden_out").payload ==
+              findTensor(expected, "hidden_out").payload);
+  BOOST_CHECK_GT(destination.runtimeMetricsSnapshot()->stateInputHits, 0U);
+  destination.releaseSessionState(continued.sessionId);
+  baseline.releaseSessionState(reference.sessionId);
+  BOOST_CHECK(destination.releaseConversationState(imported));
+  BOOST_CHECK(!destination.releaseConversationState(imported));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndnsf::di::tests

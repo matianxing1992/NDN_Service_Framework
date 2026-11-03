@@ -2,11 +2,19 @@
 #define NDNSF_DI_NATIVE_CONVERSATION_CONTINUATION_HPP
 
 #include <cstdint>
+#include <chrono>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
 namespace ndnsf::di {
+
+struct ConversationHandoffOptions
+{
+  std::string repoNode, repoProvider, repoServicePrefix;
+  std::chrono::milliseconds timeout{120000};
+};
 
 /** Complete native continuation value shared by the client and coordinator. */
 struct NativeConversationContinuation
@@ -26,6 +34,8 @@ struct NativeConversationContinuation
   std::string generationId;
   std::vector<std::int64_t> canonicalTokenIds;
   std::vector<std::string> expectedRoles;
+  // Owner-derived placement expectation; process-local and not a wire field.
+  std::map<std::string, std::string> expectedProvidersByRole;
   // Process-local lifecycle hook. It is intentionally outside the wire
   // continuation contract and runs before the native operation exposes its
   // terminal result. Conversation uses it to release its serial-turn gate

@@ -3014,6 +3014,7 @@ namespace ndn_service_framework
 
     ServiceUser::~ServiceUser()
     {
+        stopProducerPacketValidation();
         {
             std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
             m_policyStatusFetchInFlight.clear();
@@ -10614,10 +10615,59 @@ namespace ndn_service_framework
         boost::asio::post(m_face.getIoContext(), std::move(task));
     }
 
+  std::shared_ptr<void>
+  ServiceUser::postToIoWithFace(std::function<void(ndn::Face&)> task) const
+  {
+    if (!task) {
+      throw std::invalid_argument("ServiceUser Face task must not be empty");
+    }
+    struct OperationLease
+    {
+      explicit OperationLease(std::shared_ptr<std::atomic<size_t>> counter)
+        : count(std::move(counter))
+      {
+        constexpr size_t MAX_PENDING_FACE_OPERATIONS = 16;
+        auto value = count->load();
+        do {
+          if (value >= MAX_PENDING_FACE_OPERATIONS) {
+            throw std::runtime_error("service-user-face-operation-capacity");
+          }
+        } while (!count->compare_exchange_weak(value, value + 1));
+      }
+
+      ~OperationLease()
+      {
+        count->fetch_sub(1);
+      }
+
+      std::shared_ptr<std::atomic<size_t>> count;
+    };
+    auto lease = std::make_shared<OperationLease>(m_faceOperationCount);
+    boost::asio::post(m_face.getIoContext(),
+      [face = &m_face, task = std::move(task), lease] { task(*face); });
+    return lease;
+  }
+
     bool ServiceUser::isOnIoThread() const
     {
         return m_face.getIoContext().get_executor().running_in_this_thread();
     }
+
+  bool
+  ServiceUser::validateProducerPacketWireUntil(const std::vector<uint8_t>& wire,
+    const ndn::Name& producer, std::chrono::steady_clock::time_point deadline)
+  {
+    return validator && !isOnIoThread() &&
+      validator->validateProducerPacketWireUntil(wire, producer, deadline);
+  }
+
+  void
+  ServiceUser::stopProducerPacketValidation() noexcept
+  {
+    if (validator) {
+      validator->stopProducerPacketValidation();
+    }
+  }
 
     ndn::Name ServiceUser::BeginCollaboration(
         const ServiceName& service,

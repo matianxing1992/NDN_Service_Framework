@@ -40,6 +40,8 @@ def build_parser():
                                  help='enable NDN diagnostic logs for this boot')
             command.add_argument('--timing', action='store_true',
                                  help='enable native phase measurements for this boot')
+        if name == 'down':
+            command.add_argument('--actor', help='stop one managed local Provider; does not save KV state')
     for name in ("validate","resolve","plan","apply","status","wait","rollback","drain","delete"):
         item=sub.add_parser(name); item.add_argument("target")
         if name in {"apply", "rollback", "drain", "delete"}:
@@ -85,9 +87,12 @@ def main(argv=None, *, deployment_factory=None, client_factory=None):
                 result = check_deployment(args.config)
             else:
                 from .cluster import run_cluster
+                options = {}
+                if getattr(args, 'actor', None) is not None:
+                    options['actor_id'] = args.actor
                 result = run_cluster(args.cluster_command, args.config, args.timeout,
                                      debug=getattr(args, 'debug', False),
-                                     timing=getattr(args, 'timing', False))
+                                     timing=getattr(args, 'timing', False), **options)
         except KeyboardInterrupt as error:
             from .trust_resources import describe_failure
             parser.exit(130, describe_failure(error) + '\n')
@@ -96,7 +101,8 @@ def main(argv=None, *, deployment_factory=None, client_factory=None):
             parser.error(describe_failure(error))
         print(json.dumps(result, sort_keys=True))
         return 0 if (args.cluster_command != 'up' or not result.get('failure')) and result.get('status') in {
-            'CONFIGURATION_CHECKED', 'COMPLETE', 'STOPPED', 'ABSENT', 'SERVICES_READY'} else 1
+            'CONFIGURATION_CHECKED', 'COMPLETE', 'STOPPED', 'ABSENT', 'SERVICES_READY',
+            'ACTOR_STOPPED'} else 1
     if not args.state_root:
         parser.error("--state-root is required for legacy commands")
     from ..app_sdk.runtime_journal import (

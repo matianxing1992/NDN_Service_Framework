@@ -66,7 +66,10 @@
 
 
 namespace ndn_service_framework{
-    namespace test { struct InvocationNamesOracle; }
+    namespace test {
+      struct InvocationNamesOracle;
+      struct ProducerPacketValidationOracle;
+    }
 
   /** Configured ndn-cxx validation with pinned, currently valid trust anchors. */
   class TrustSchemaValidator : public ndn::security::Validator
@@ -490,6 +493,8 @@ namespace ndn_service_framework{
     class MessageValidator : public ndn::svs::BaseValidator,
                              public std::enable_shared_from_this<MessageValidator>
     {
+        friend struct ServiceProviderTestAccess;
+        friend struct test::ProducerPacketValidationOracle;
     public:
         MessageValidator(std::string trustSchemaPath,
                          std::optional<ndn::Name> = std::nullopt,
@@ -532,6 +537,18 @@ namespace ndn_service_framework{
         {
             return m_producerSigners.allowsValidatedSigner(data, producer);
         }
+
+        /** Bounded original-wire validation with the configured trust and namespace policy.
+         * Call outside the callback Face thread. A certificate binds its exact subject;
+         * successful validation seeds a candidate, never a new trust anchor. The shared
+         * validator must outlive admission; queued callbacks retain their own lease.
+         * This grants neither service permission nor storage/execution authority. */
+        bool
+        validateProducerPacketWireUntil(const std::vector<uint8_t>& wire,
+          const ndn::Name& producer, std::chrono::steady_clock::time_point deadline);
+
+        void
+        stopProducerPacketValidation() noexcept;
 
         /**
          * @brief Validate Data through the configured trust schema only.
@@ -850,6 +867,20 @@ namespace ndn_service_framework{
 
     private:
         NDN_LOG_MEMBER_DECL();
+        struct ProducerPacketValidationControl
+        {
+          std::mutex mutex;
+          std::condition_variable wake;
+          bool stopping = false;
+          size_t outstanding = 0;
+        };
+        struct ProducerPacketValidationWaiter
+        {
+          bool complete = false;
+          bool accepted = false;
+        };
+        std::shared_ptr<ProducerPacketValidationControl> m_producerPacketValidationControl =
+          std::make_shared<ProducerPacketValidationControl>();
         ndn::Face m_face;
         TrustSchemaValidator m_validator;
         ProducerSignerPolicy m_producerSigners;

@@ -7,6 +7,7 @@
 #include <fstream>
 #include <limits>
 #include <set>
+#include <type_traits>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -241,8 +242,14 @@ NativeConversationTurn NativeConversationCoordinator::beginTurn(
     const auto current = s.records.find(c.conversationId);
     require(current != s.records.end(), "conversation transcript unavailable");
     turn.providersByRole = current->second.checkpoint.providersByRole;
+    if (current->second.protectedKvReferences) {
+      turn.protectedKvReferences = current->second.protectedKvReferences;
+      turn.sourceProvidersByRole = turn.providersByRole;
+      turn.providersByRole = current->second.nextTurnProvidersByRole;
+    }
     const auto lease = s.grantLeases.find(c.conversationId);
-    if (lease != s.grantLeases.end()) turn.grantLease = lease->second;
+    if (lease != s.grantLeases.end() && !turn.protectedKvReferences)
+      turn.grantLease = lease->second;
     const auto previous = current->second.checkpoint.transcript.at("canonicalTokenIds").get<std::vector<std::int64_t>>();
     require(prefix(previous, c.canonicalTokenIds) && previous.size() < c.canonicalTokenIds.size(),
       "conversation append prefix mismatch");
@@ -346,6 +353,79 @@ NativeConversationTurn NativeConversationCoordinator::bindAttemptPlanRoleMap(
   pending.turn.parent.planRoleMapDigest = digest;
   pending.turn.providersByRole = providersByRole;
   return pending.turn;
+}
+
+NativeConversationTurn
+NativeConversationCoordinator::bindRecoveryPlanRoleMap(
+  const NativeConversationTurn& turn,
+  const std::map<std::string, std::string>& providersByRole) const
+{
+  auto& s = *m_impl;
+  std::lock_guard<std::mutex> guard(s.mutex);
+  auto& pending = s.find(turn);
+  const auto head = s.records.find(turn.parent.conversationId);
+  require(pending.turn.attempt == 1 && !pending.prepared && !pending.committing &&
+    pending.turn.protectedKvReferences && head != s.records.end() &&
+    head->second.protectedKvReferences == pending.turn.protectedKvReferences &&
+    head->second.checkpoint.checkpointDigest == pending.turn.parent.parentCheckpointDigest,
+    "conversation recovery parent changed");
+  const auto cp = nativeReadConversationCheckpoint(head->second.checkpoint.wire,
+    s.config.authenticationKeys, s.config.nowMs());
+  nativeValidateProtectedKvReferences(*pending.turn.protectedKvReferences, cp,
+    head->second.checkpoint.providersByRole);
+  nativeValidateKvNextPlacement(providersByRole, cp);
+  require(!providersByRole.empty() &&
+    (head->second.nextTurnProvidersByRole.empty() ||
+     head->second.nextTurnProvidersByRole == providersByRole),
+    "conversation recovery target changed");
+  NativeJson roles = NativeJson::array();
+  for (const auto& item : providersByRole)
+    roles.push_back(NativeJson::array({item.first, item.second}));
+  pending.turn.parent.planRoleMapDigest = nativePlanningDigest(nativeCanonicalJson(roles));
+  pending.turn.providersByRole = providersByRole;
+  return pending.turn;
+}
+
+void
+NativeConversationCoordinator::promoteProtectedKvSet(
+  const std::string& conversationId, const std::string& expectedCheckpointDigest,
+  const NativeJson& references, const std::map<std::string, std::string>& nextProviders,
+  const std::function<void()>& requireCurrent)
+{
+  require(static_cast<bool>(requireCurrent), "conversation save current guard required");
+  auto& s = *m_impl;
+  std::lock_guard<std::mutex> guard(s.mutex);
+  const auto found = s.records.find(conversationId);
+  require(s.config.journal && found != s.records.end() &&
+    found->second.checkpoint.checkpointDigest == expectedCheckpointDigest &&
+    found->second.retentionDeadlineMs > s.config.nowMs(),
+    "conversation save checkpoint changed or expired");
+  for (const auto& item : s.pending)
+    require(item.second.turn.parent.conversationId != conversationId,
+      "conversation save requires an idle parent");
+  const auto cp = nativeReadConversationCheckpoint(found->second.checkpoint.wire,
+    s.config.authenticationKeys, s.config.nowMs());
+  nativeValidateProtectedKvReferences(references, cp, found->second.checkpoint.providersByRole);
+  nativeValidateKvNextPlacement(nextProviders, cp);
+  if (found->second.protectedKvReferences)
+    require(*found->second.protectedKvReferences == references, "conversation saved set changed");
+  auto next = found->second;
+  next.protectedKvReferences = references;
+  next.nextTurnProvidersByRole = nextProviders;
+  requireCurrent();
+  // Cancellation after this admission cannot turn a durable append into rollback.
+  // Both readers and other commits remain behind this coordinator lock.
+  s.config.journal->appendProtectedKvSet(next.checkpoint.wire, references,
+    s.config.nowMs(), nextProviders);
+  static_assert(std::is_nothrow_move_assignable_v<NativeConversationRecord>);
+  found->second = std::move(next);
+  s.grantLeases.erase(conversationId);
+}
+
+std::filesystem::path
+NativeConversationCoordinator::journalRoot() const
+{
+  return m_impl->config.journal ? m_impl->config.journal->stateRoot() : std::filesystem::path{};
 }
 
 void NativeConversationCoordinator::bindGrantLease(
@@ -581,9 +661,25 @@ void NativeConversationCoordinator::restore()
       require(!record.checkpoint.providersByRole.empty(), "conversation local placement is empty");
       validateLocalPlacement(record.checkpoint.providersByRole, cp);
     }
+    if (body.contains("protectedKvReferences")) {
+      nativeValidateProtectedKvReferences(body.at("protectedKvReferences"), cp,
+        record.checkpoint.providersByRole);
+      record.protectedKvReferences = body.at("protectedKvReferences");
+      record.nextTurnProvidersByRole = body.at("nextTurnProvidersByRole").get<
+        std::map<std::string, std::string>>();
+      nativeValidateKvNextPlacement(record.nextTurnProvidersByRole, cp);
+    }
     const auto found = restored.find(record.checkpoint.conversationId);
     if (found != restored.end()) {
-      if (found->second.checkpoint.wire == wire) continue;
+      if (found->second.checkpoint.wire == wire) {
+        if (record.protectedKvReferences) {
+          require(!found->second.protectedKvReferences ||
+            found->second.protectedKvReferences == record.protectedKvReferences,
+            "conversation restored saved set changed");
+          found->second = std::move(record);
+        }
+        continue;
+      }
       require(found->second.checkpoint.successorContextEpoch == record.checkpoint.parentContextEpoch &&
         prefix(found->second.checkpoint.transcript.at("canonicalTokenIds").get<std::vector<std::int64_t>>(),
           record.checkpoint.transcript.at("canonicalTokenIds").get<std::vector<std::int64_t>>()),

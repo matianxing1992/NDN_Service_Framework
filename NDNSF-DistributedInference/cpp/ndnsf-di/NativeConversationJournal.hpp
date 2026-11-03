@@ -33,6 +33,9 @@ public:
                           const NativeJson& transcript, std::uint64_t nowMs,
                           std::optional<std::size_t> nativeInitialPromptTokenCount = std::nullopt,
                           const std::map<std::string, std::string>& providersByRole = {});
+  void appendProtectedKvSet(const std::string& checkpointWire, const NativeJson& references,
+                           std::uint64_t nowMs,
+                           const std::map<std::string, std::string>& nextProvidersByRole);
 
 private:
   struct Impl;

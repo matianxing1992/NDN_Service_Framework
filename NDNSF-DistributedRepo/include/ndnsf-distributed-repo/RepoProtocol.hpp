@@ -11,6 +11,16 @@
 
 namespace ndnsf_distributed_repo {
 
+/** Storage selectors only; the writer identity comes from authenticated Core context. */
+struct RepoUserStorageInsertRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string operationId;
+  uint64_t generation = 0;
+  RepoDataReference reference;
+  RepoUserStorageBinding storageBinding;
+};
+
 ndn::Name
 makeRepoServiceName(const ndn::Name& prefix, const std::string& operation);
 
@@ -45,6 +55,12 @@ encodeDataReferenceRequest(const RepoDataReference& reference);
 
 std::vector<uint8_t>
 encodeStatusRequest(const std::string& operationId);
+
+std::vector<uint8_t>
+encodeUserStorageInsertRequest(const RepoUserStorageInsertRequest& request);
+
+RepoUserStorageInsertRequest
+decodeUserStorageInsertRequest(const std::vector<uint8_t>& request);
 
 std::vector<uint8_t>
 encodeCatalogDeltaRequest(uint64_t sinceEpoch);

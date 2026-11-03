@@ -4,6 +4,8 @@
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 
+#include <ndn-cxx/interest.hpp>
+
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -13,6 +15,8 @@
 #include <vector>
 
 namespace ndnsf_distributed_repo {
+
+struct RepoUserStorageWrite;
 
 class RepoCore
 {
@@ -39,6 +43,10 @@ public:
   std::vector<RepoObjectManifest> list() const;
 
   bool remove(const std::string& objectName);
+  /** Trusted caller holds physical writer/Owner fences; no permission is granted here. */
+  bool canRemoveUserStorageObject(const RepoUserStorageObject& expected) const;
+  bool removeUserStorageObject(const RepoUserStorageObject& expected);
+  bool confirmUserStorageRemoval(const RepoUserStorageObject& expected);
 
   RepoObjectManifest putManifest(const RepoObjectManifest& manifest);
 
@@ -59,11 +67,17 @@ public:
                                        RepoByteRange range) const;
   bool removeIfCurrent(const RepoObjectManifest& expected);
   bool abortRangesIfOwned(const RepoObjectManifest& expected);
+  /** Exact Core and backend staging proof; caller retains Owner/epoch checks. */
+  bool abortUserStorageRangesIfOwned(const RepoObjectManifest& expected);
+  bool abortFailedRangesIfOwned(const RepoObjectManifest& expected);
+  bool abortUserStorageWriteRangesIfOwned(const RepoUserStorageWrite& expected);
   /** Drop idle range staging and its capacity reservation. */
   uint64_t reapExpiredRangeReservations(std::chrono::steady_clock::duration idleTimeout);
   void putRangeIfAbsent(const RepoObjectManifest& manifest, RepoByteRange range,
                         const std::vector<uint8_t>& bytes);
   RepoObjectManifest commitRangesIfOwned(const RepoObjectManifest& manifest);
+  /** Reconfirm exact publication and directory durability without granting access. */
+  RepoObjectManifest confirmDurablePublicationIfCurrent(const RepoObjectManifest& expected);
 
   RepoObjectManifest putDataPacket(const std::string& dataName,
                                    const std::vector<uint8_t>& wire,
@@ -76,6 +90,10 @@ public:
                                                   const std::string& providerIdentity);
 
   std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
+  std::vector<uint8_t> getDataPacket(const std::string& dataName,
+    const std::function<bool(const RepoObjectManifest&)>& acceptObject) const;
+  std::vector<uint8_t> getDataPacket(const ndn::Interest& interest,
+    const std::function<bool(const RepoObjectManifest&)>& acceptObject = {}) const;
 
   /** Return only a receipt embedded at the original Data commit boundary. */
   RepoWriteReceipt getDataPacketReceipt(const std::string& dataName,
@@ -88,8 +106,24 @@ public:
     return m_store->supportsRange() && m_store->supportsManifestLookup();
   }
 
+  bool supportsOwnedOriginalPacketTransactions() const noexcept
+  {
+    return supportsOriginalPacketTransactions() && m_store->supportsUserStorageRecovery();
+  }
+
   RepoObjectManifest commitOriginalPacketFile(
     const RepoObjectManifest& manifest, const std::filesystem::path& file,
+    const std::function<void()>& requireActive = {});
+
+  using OriginalPacketRangeReader =
+    std::function<std::vector<uint8_t>(uint64_t offset, std::size_t length)>;
+
+  /** Commit immutable original packets from a caller-owned, synchronous source.
+   * The reader must return exactly the requested range and remain valid until return.
+   * This provides storage integrity, not Producer authentication or Owner permission.
+   */
+  RepoObjectManifest commitOriginalPacketReader(
+    const RepoObjectManifest& manifest, const OriginalPacketRangeReader& readRange,
     const std::function<void()>& requireActive = {});
 
   std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request);
@@ -144,10 +178,15 @@ public:
 
 private:
   RepoObjectManifest describeDataPacket(const std::string& name) const;
+  RepoObjectManifest commitOriginalPacketReaderImpl(
+    const RepoObjectManifest& manifest, const OriginalPacketRangeReader& readRange,
+    const std::function<void()>& requireActive, const std::filesystem::path& sourceFile);
   std::optional<std::pair<RepoObjectManifest, size_t>> findPacketRecord(
-    const ndn::Name& name) const;
+    const ndn::Name& name,
+    const std::function<bool(const RepoObjectManifest&)>& acceptObject = {}) const;
   std::string resolveObjectKey(const std::string& objectName) const;
   std::vector<uint8_t> deleteLocked(const std::string& objectName);
+  bool canRemoveUserStorageObjectLocked(const RepoUserStorageObject& expected) const;
   void putRangeLocked(const RepoObjectManifest&, RepoByteRange, const std::vector<uint8_t>&);
   // Caller holds m_mutex and has checked immutable-packet admission.
   void putAdmittedRangeLocked(const RepoObjectManifest&, RepoByteRange, const std::vector<uint8_t>&);
@@ -171,6 +210,8 @@ private:
                                          uint64_t newSize) noexcept;
 
   void clearRangeReservation(const std::string& objectName);
+  bool abortUserStorageRangesIfOwnedLocked(const RepoObjectManifest& expected);
+  bool abortFailedOwnedRangeIfUncommittedLocked(const RepoObjectManifest& expected);
 
 private:
   StorageCapability m_capability;

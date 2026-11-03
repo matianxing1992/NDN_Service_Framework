@@ -1,4 +1,5 @@
 #include "ndnsf-distributed-repo/RepoCore.hpp"
+#include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
@@ -183,6 +184,56 @@ RepoCore::remove(const std::string& objectName)
   return toString(handleDelete(toBytes(objectName))) == "deleted";
 }
 
+bool
+RepoCore::confirmUserStorageRemoval(const RepoUserStorageObject& expected)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!canRemoveUserStorageObjectLocked(expected) ||
+      !m_store->confirmUserStorageRemoval(expected)) {
+    return false;
+  }
+  refreshCapabilityUsage();
+  return true;
+}
+
+bool
+RepoCore::removeUserStorageObject(const RepoUserStorageObject& expected)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!canRemoveUserStorageObjectLocked(expected)) return false;
+  if (m_store->probeObjectMetadata(expected.objectName).manifestPresent)
+    (void)deleteLocked(expected.objectName);
+  if (!m_store->confirmUserStorageRemoval(expected)) return false;
+  refreshCapabilityUsage(); // Confirmation may have removed a previously charged orphan.
+  return true;
+}
+
+bool
+RepoCore::canRemoveUserStorageObject(const RepoUserStorageObject& expected) const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return canRemoveUserStorageObjectLocked(expected);
+}
+
+bool
+RepoCore::canRemoveUserStorageObjectLocked(const RepoUserStorageObject& expected) const
+{
+  validateRepoUserStorageObject(expected);
+  for (const auto& reservation : m_rangeReservations) {
+    if (reservation.first == expected.objectName || reservation.second.digest == expected.wireSha256)
+      return false;
+  }
+  if (!m_store->canRemoveUserStorageObject(expected)) return false;
+  const auto probe = m_store->probeObjectMetadata(expected.objectName);
+  if (probe.manifestPresent) {
+    if (!probe.manifestMeasurementAvailable || probe.manifest.objectName != expected.objectName ||
+        probe.manifest.sha256 != expected.wireSha256 || probe.manifest.generation != expected.generation ||
+        probe.manifest.size != expected.payloadWireBytes || probe.manifestWireBytes != expected.manifestBytes)
+      return false;
+  }
+  return true;
+}
+
 RepoObjectManifest
 RepoCore::putManifest(const RepoObjectManifest& manifest)
 {
@@ -277,12 +328,14 @@ RepoCore::putAdmittedRangeLocked(const RepoObjectManifest& manifest, RepoByteRan
     found->second.lastActivity = std::chrono::steady_clock::now();
   }
   catch (...) {
-    try {
-      m_store->abortRanges(manifest.objectName);
+    if (!rangeManifest.operationId.empty()) {
+      (void)abortFailedOwnedRangeIfUncommittedLocked(rangeManifest);
     }
-    catch (...) {
+    else {
+      // Trusted-local legacy writes do not carry an owned transaction identity.
+      try { m_store->abortRanges(manifest.objectName); } catch (...) {}
+      clearRangeReservation(manifest.objectName);
     }
-    clearRangeReservation(manifest.objectName);
     // A failed finalize/metadata publication may have left a physical
     // payload residue even after the best-effort abort.  Reconcile the
     // capacity view before exposing the failure to the next caller.
@@ -299,6 +352,25 @@ RepoCore::commitRanges(const RepoObjectManifest& manifest)
     throw std::invalid_argument("repo-original-packets-require-atomic-packet-api");
   std::lock_guard<std::mutex> lock(m_mutex);
   return commitRangesLocked(manifest);
+}
+
+RepoObjectManifest
+RepoCore::confirmDurablePublicationIfCurrent(const RepoObjectManifest& expected)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if ((expected.objectType != "original-packet-set" &&
+       expected.objectType != "encrypted-large-data-envelope") ||
+      expected.generation == 0 || expected.operationId.empty() ||
+      !m_store->has(expected.objectName) ||
+      !m_store->getManifest(expected.objectName).hasSameMetadata(expected))
+    throw std::runtime_error("repo-publication-identity-mismatch");
+  const auto reservation = m_rangeReservations.find(expected.objectName);
+  if (reservation != m_rangeReservations.end() &&
+      (reservation->second.generation != expected.generation ||
+       reservation->second.canonicalIdentity != expected.toJson()))
+    throw std::runtime_error("repo-publication-identity-mismatch");
+  if (expected.objectType == "original-packet-set") validatePacketIndex(expected);
+  return commitRangesLocked(expected);
 }
 
 RepoObjectManifest
@@ -378,7 +450,20 @@ RepoCore::commitRangesLocked(const RepoObjectManifest& manifest)
     }
     catch (const std::exception& e) {
       RepoObjectManifest durable;
-      if (isAmbiguousCommitError(e) &&
+      bool settled = commitManifest.operationId.empty();
+      if (!settled && isAmbiguousCommitError(e)) {
+        try {
+          const auto recovered = m_store->getManifest(commitManifest.objectName);
+          if (recovered.hasSameMetadata(commitManifest)) {
+            m_store->commitRanges(commitManifest);
+            settled = true;
+          }
+        }
+        catch (...) {
+          // Visible metadata does not confirm a failed directory fsync.
+        }
+      }
+      if (settled && isAmbiguousCommitError(e) &&
           recoverAmbiguousCommit(manifest.objectName, durable)) {
         if (commitManifest.objectType == "original-packet-set" &&
             !payloadAlreadyCommitted)
@@ -389,16 +474,16 @@ RepoCore::commitRangesLocked(const RepoObjectManifest& manifest)
         return durable;
       }
     }
-    // Commit failures must close both sides of the Core/backend reservation.
-    // The backend also removes an unreferenced finalized payload when its
-    // manifest publication failed; this call is idempotent for a durable
-    // manifest that was already published.
-    try {
-      m_store->abortRanges(manifest.objectName);
-    }
     catch (...) {
+      // Non-standard failures need the same guarded rollback confirmation.
     }
-    clearRangeReservation(manifest.objectName);
+    if (!commitManifest.operationId.empty()) {
+      (void)abortFailedOwnedRangeIfUncommittedLocked(commitManifest);
+    }
+    else {
+      try { m_store->abortRanges(manifest.objectName); } catch (...) {}
+      clearRangeReservation(manifest.objectName);
+    }
     m_catalogReconciliationRequired = true;
     refreshCapabilityUsageAfterCommit(oldSize, oldSize);
     throw;
@@ -469,6 +554,99 @@ RepoCore::abortRangesIfOwned(const RepoObjectManifest& expected)
   return true;
 }
 
+bool
+RepoCore::abortUserStorageRangesIfOwned(const RepoObjectManifest& expected)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return abortUserStorageRangesIfOwnedLocked(expected);
+}
+
+bool
+RepoCore::abortUserStorageWriteRangesIfOwned(const RepoUserStorageWrite& expected)
+{
+  validateRepoUserStorageObject(expected.object);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (expected.state != RepoUserStorageWriteState::CANCELLED || expected.reservedBytes != 0 ||
+      expected.operationId.empty() || expected.grant.repoNode != m_capability.repoNode ||
+      expected.grant.ownerIdentity.empty() || expected.grant.grantId.empty() ||
+      expected.grant.writerIdentity.empty() || expected.grant.ownerEpoch == 0 ||
+      expected.grant.objectName != expected.object.objectName)
+    return false;
+  const auto owned = m_rangeReservations.find(expected.object.objectName);
+  if (owned == m_rangeReservations.end()) return false;
+  const auto manifest = parseManifestJson(owned->second.canonicalIdentity);
+  if (manifest.toJson() != owned->second.canonicalIdentity ||
+      manifest.operationId != expected.operationId || manifest.objectName != expected.object.objectName ||
+      manifest.sha256 != expected.object.wireSha256 || manifest.generation != expected.object.generation ||
+      manifest.size != expected.object.payloadWireBytes ||
+      owned->second.canonicalIdentity.size() != expected.object.manifestBytes)
+    return false;
+  return abortUserStorageRangesIfOwnedLocked(manifest);
+}
+
+bool
+RepoCore::abortFailedRangesIfOwned(const RepoObjectManifest& expected)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return abortFailedOwnedRangeIfUncommittedLocked(expected);
+}
+
+bool
+RepoCore::abortUserStorageRangesIfOwnedLocked(const RepoObjectManifest& expected)
+{
+  if (expected.generation == 0 || expected.operationId.empty()) return false;
+  const auto owned = m_rangeReservations.find(expected.objectName);
+  if (owned == m_rangeReservations.end() || owned->second.canonicalIdentity != expected.toJson())
+    return false;
+  for (const auto& reservation : m_rangeReservations) {
+    if (reservation.first != expected.objectName && reservation.second.digest == expected.sha256)
+      return false;
+  }
+  if (!m_store->abortUserStorageRangesIfOwned(expected)) return false;
+  clearRangeReservation(expected.objectName);
+  return true;
+}
+
+bool
+RepoCore::abortFailedOwnedRangeIfUncommittedLocked(const RepoObjectManifest& expected)
+{
+  try {
+    if (expected.generation == 0 || expected.operationId.empty()) return false;
+    const auto owned = m_rangeReservations.find(expected.objectName);
+    if (owned != m_rangeReservations.end() && owned->second.canonicalIdentity != expected.toJson())
+      return false;
+    for (const auto& reservation : m_rangeReservations) {
+      if (reservation.first != expected.objectName && reservation.second.digest == expected.sha256)
+        return false;
+    }
+    // Stage absence cannot prove rollback after a manifest was published.
+    // Probe the backend directly: the caller already holds the Core mutex.
+    const auto probe = m_store->probeObjectMetadata(expected.objectName);
+    const bool present = m_store->has(expected.objectName);
+    if (present != probe.manifestPresent) {
+      m_catalogReconciliationRequired = true;
+      return false;
+    }
+    if (present && (!probe.manifestMeasurementAvailable ||
+                    ndn::Name(probe.manifest.objectName) != ndn::Name(expected.objectName) ||
+                    (probe.manifest.operationId == expected.operationId &&
+                     probe.manifest.generation == expected.generation))) {
+      m_catalogReconciliationRequired = true;
+      return false;
+    }
+    // A measured different transaction's committed bytes remain untouched.
+    if (m_store->abortFailedRangesIfOwned(expected)) {
+      clearRangeReservation(expected.objectName);
+      return true;
+    }
+  }
+  catch (...) {
+    // Cleanup uncertainty must retain capacity without replacing the original error.
+  }
+  m_catalogReconciliationRequired = true;
+  return false;
+}
+
 uint64_t
 RepoCore::reapExpiredRangeReservations(std::chrono::steady_clock::duration idleTimeout)
 {
@@ -481,6 +659,19 @@ RepoCore::reapExpiredRangeReservations(std::chrono::steady_clock::duration idleT
   for (auto reservation = m_rangeReservations.begin();
        reservation != m_rangeReservations.end();) {
     if (reservation->second.lastActivity > expiredBefore) {
+      ++reservation;
+      continue;
+    }
+    try {
+      const auto expected = parseManifestJson(reservation->second.canonicalIdentity);
+      if (!expected.operationId.empty()) {
+        ++reservation; // The protected helper may erase this reservation.
+        if (abortFailedOwnedRangeIfUncommittedLocked(expected)) ++reaped;
+        continue;
+      }
+    }
+    catch (...) {
+      m_catalogReconciliationRequired = true;
       ++reservation;
       continue;
     }
@@ -677,8 +868,15 @@ RepoCore::importLegacyDataPacketReceipt(const std::string& dataName,
 std::vector<uint8_t>
 RepoCore::getDataPacket(const std::string& dataName) const
 {
+  return getDataPacket(dataName, {});
+}
+
+std::vector<uint8_t>
+RepoCore::getDataPacket(const std::string& dataName,
+  const std::function<bool(const RepoObjectManifest&)>& acceptObject) const
+{
   const ndn::Name name(dataName);
-  const auto record = findPacketRecord(name);
+  const auto record = findPacketRecord(name, acceptObject);
   if (!record) {
     throw std::runtime_error("repo object is not an exact NDN Data packet: " + dataName);
   }
@@ -692,6 +890,70 @@ RepoCore::getDataPacket(const std::string& dataName) const
   if (data.getName() != name)
     throw std::runtime_error("repo-original-packet-name-mismatch");
   return wire;
+}
+
+std::vector<uint8_t>
+RepoCore::getDataPacket(
+  const ndn::Interest& interest,
+  const std::function<bool(const RepoObjectManifest&)>& acceptObject) const
+{
+  auto indexedName = interest.getName();
+  const bool implicitDigest = !indexedName.empty() && indexedName[-1].isImplicitSha256Digest();
+  if (implicitDigest) {
+    indexedName = indexedName.getPrefix(-1);
+  }
+  if (!interest.getCanBePrefix() || implicitDigest) {
+    auto wire = getDataPacket(indexedName.toUri(), acceptObject);
+    const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+    if (interest.matchesData(data)) {
+      return wire;
+    }
+    throw std::runtime_error("repo-original-packet-interest-mismatch");
+  }
+  // SegmentFetcher starts with an object/locator prefix. Read the admitted
+  // holder itself: a second exact lookup could select a different owner.
+  for (const auto& manifest : m_store->listManifests()) {
+    if (manifest.objectType != "ndn-data-wire" && manifest.objectType != "original-packet-set") {
+      continue;
+    }
+    const bool packetSet = manifest.objectType == "original-packet-set";
+    if (packetSet) {
+      validatePacketIndex(manifest);
+    }
+    const auto names = packetSet ? manifest.packetNames : std::vector<std::string>{manifest.objectName};
+    bool admitted = false;
+    for (size_t index = 0; index < names.size(); ++index) {
+      const ndn::Name name(names[index]);
+      if (!indexedName.isPrefixOf(name)) {
+        continue;
+      }
+      // Object bootstrap is narrower than directory/Producer enumeration.
+      const auto suffix = name.size() - indexedName.size();
+      const bool direct = suffix == 1 && (name[-1].isSegment() || name[-1].isVersion());
+      const bool committed = suffix == 2 && name[-2].type() == 8 &&
+        name[-2].value_size() == 32 && name[-1].isSegment();
+      if (suffix != 0 && !direct && !committed) {
+        continue;
+      }
+      if (!admitted) {
+        if (acceptObject && !acceptObject(manifest)) {
+          break;
+        }
+        admitted = true;
+      }
+      auto wire = packetSet ? m_store->getRange(manifest.objectName,
+          {manifest.packetOffsets[index], manifest.packetOffsets[index + 1] - manifest.packetOffsets[index]})
+        : m_store->get(manifest.objectName).payload;
+      const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+      if (data.getName() != name) {
+        throw std::runtime_error("repo-original-packet-name-mismatch");
+      }
+      if (interest.matchesData(data)) {
+        return wire;
+      }
+    }
+  }
+  throw std::runtime_error("repo-original-packet-interest-not-found");
 }
 
 RepoWriteReceipt
@@ -758,24 +1020,36 @@ RepoCore::hasDataPacket(const std::string& dataName) const
 }
 
 std::optional<std::pair<RepoObjectManifest, size_t>>
-RepoCore::findPacketRecord(const ndn::Name& name) const
+RepoCore::findPacketRecord(const ndn::Name& name,
+  const std::function<bool(const RepoObjectManifest&)>& acceptObject) const
 {
   const auto key = name.toUri(ndn::name::UriFormat::CANONICAL);
   if (m_store->has(key)) {
     const auto manifest = m_store->getManifest(key);
-    if (manifest.objectType == "ndn-data-wire") return std::make_pair(manifest, 0);
-    if (manifest.objectType != "original-packet-set") return std::nullopt;
+    if (manifest.objectType == "ndn-data-wire") {
+      if (!acceptObject || acceptObject(manifest)) {
+        return std::make_pair(manifest, 0);
+      }
+    }
+    else if (manifest.objectType != "original-packet-set") {
+      return std::nullopt;
+    }
   }
   const auto alternate = name.toUri(ndn::name::UriFormat::ALTERNATE);
   if (alternate != key && m_store->has(alternate)) {
     const auto legacy = m_store->getManifest(alternate);
-    if (legacy.objectType == "ndn-data-wire") return std::make_pair(legacy, 0);
+    if (legacy.objectType == "ndn-data-wire" && (!acceptObject || acceptObject(legacy))) {
+      return std::make_pair(legacy, 0);
+    }
   }
   for (const auto& manifest : m_store->listManifests()) {
     if (manifest.objectType != "original-packet-set") continue;
     const auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(), key);
     if (found != manifest.packetNames.end()) {
       validatePacketIndex(manifest);
+      if (acceptObject && !acceptObject(manifest)) {
+        continue;
+      }
       return std::make_pair(manifest, static_cast<size_t>(found - manifest.packetNames.begin()));
     }
   }
@@ -812,6 +1086,37 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
     throw std::invalid_argument("repo-original-packet-transaction-invalid");
   std::ifstream input(file, std::ios::binary);
   if (!input) throw std::runtime_error("repo-original-packet-input-unreadable");
+  const OriginalPacketRangeReader readRange = [&input](uint64_t offset, std::size_t length) {
+    input.clear();
+    input.seekg(static_cast<std::streamoff>(offset));
+    std::vector<uint8_t> bytes(length);
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(length));
+    if (!input) {
+      throw std::runtime_error("repo-original-packet-input-truncated");
+    }
+    return bytes;
+  };
+  return commitOriginalPacketReaderImpl(manifest, readRange, requireActive, file);
+}
+
+RepoObjectManifest
+RepoCore::commitOriginalPacketReader(const RepoObjectManifest& manifest,
+                                     const OriginalPacketRangeReader& readRange,
+                                     const std::function<void()>& requireActive)
+{
+  return commitOriginalPacketReaderImpl(manifest, readRange, requireActive, {});
+}
+
+RepoObjectManifest
+RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
+                                         const OriginalPacketRangeReader& readRange,
+                                         const std::function<void()>& requireActive,
+                                         const std::filesystem::path& sourceFile)
+{
+  validatePacketIndex(manifest);
+  if (manifest.operationId.empty() || !m_store->supportsRange() || !readRange) {
+    throw std::invalid_argument("repo-original-packet-transaction-invalid");
+  }
   std::lock_guard<std::mutex> lock(m_mutex);
   if (requireActive) requireActive();
   std::optional<RepoObjectManifest> existing;
@@ -904,7 +1209,8 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
                      << " observedUnique=" << observedNames.size()
                      << " incomingPrefix=" << safePrefix(manifest.objectName, 160)
                      << " affectedPrefix=" << (affected ? safePrefix(*affected, 160) : "none")
-                     << " inputFile=" << safePrefix(file.string(), 240)
+                     << " inputFile=" << safePrefix(
+                          sourceFile.empty() ? "range-reader" : sourceFile.string(), 240)
                      << " field=" << field << " firstDifference=" << difference
                      << " expectedBytes=" << (before ? before->size() : 0)
                      << " observedBytes=" << (after ? after->size() : 0));
@@ -930,9 +1236,10 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
   for (size_t i = 0; i < manifest.packetNames.size(); ++i) {
     if (requireActive) requireActive();
     const auto length = manifest.packetOffsets[i + 1] - manifest.packetOffsets[i];
-    std::vector<uint8_t> wire(length);
-    input.read(reinterpret_cast<char*>(wire.data()), wire.size());
-    if (!input) throw std::runtime_error("repo-original-packet-input-truncated");
+    const auto wire = readRange(manifest.packetOffsets[i], static_cast<std::size_t>(length));
+    if (wire.size() != length) {
+      throw std::runtime_error("repo-original-packet-input-truncated");
+    }
     const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
     if (data.getName() != ndn::Name(manifest.packetNames[i]) || data.wireEncode().size() != wire.size())
       throw std::invalid_argument("repo-data-name-mismatch");
@@ -953,15 +1260,15 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
   // Reuse that admission result rather than rescanning for every range window.
   if (indexedPacketNames.count(manifest.objectName))
     throw std::runtime_error("repo-original-packet-is-immutable");
-  input.clear();
-  input.seekg(0);
   try {
     constexpr uint64_t window = 1U << 20;
     for (uint64_t offset = 0; offset < manifest.size;) {
       if (requireActive) requireActive();
-      std::vector<uint8_t> bytes(std::min(window, manifest.size - offset));
-      input.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
-      if (!input) throw std::runtime_error("repo-original-packet-input-truncated");
+      const auto length = static_cast<std::size_t>(std::min(window, manifest.size - offset));
+      const auto bytes = readRange(offset, length);
+      if (bytes.size() != length) {
+        throw std::runtime_error("repo-original-packet-input-truncated");
+      }
       putAdmittedRangeLocked(manifest, {offset, bytes.size()}, bytes);
       offset += bytes.size();
     }
@@ -969,8 +1276,21 @@ RepoCore::commitOriginalPacketFile(const RepoObjectManifest& manifest,
     return commitRangesLocked(manifest);
   }
   catch (...) {
-    try { m_store->abortRanges(manifest.objectName); } catch (...) {}
-    clearRangeReservation(manifest.objectName);
+    try {
+      const auto reservation = m_rangeReservations.find(manifest.objectName);
+      if (reservation != m_rangeReservations.end()) {
+        const auto expected = parseManifestJson(reservation->second.canonicalIdentity);
+        auto submitted = manifest;
+        if (submitted.generation == 0) submitted.generation = expected.generation;
+        if (submitted.hasSameMetadata(expected)) {
+          (void)abortFailedOwnedRangeIfUncommittedLocked(expected);
+        }
+      }
+    }
+    catch (...) {
+      // Keep the original transaction failure and uncertain capacity reservation.
+    }
+    m_catalogReconciliationRequired = true;
     throw;
   }
 }

@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,8 @@ struct ConversationStateBinding
   // Origin request/generation are retained for audit, but are intentionally
   // ignored by conversation-store equality for a fresh resumed Request.
   DecodeStateIdentityV1 identity;
+  // Exact earlier origin stays distinct from this Provider's fresh import incarnation.
+  std::optional<DecodeStateIdentityV1> importedOriginIdentity;
 
   void
   validate() const;
@@ -35,6 +38,10 @@ struct ConversationStateBinding
   bool
   operator==(const ConversationStateBinding& other) const;
 };
+
+bool
+nativeConversationStateAllowsContinuation(
+  const ConversationStateBinding& binding, const DecodeStateIdentityV1& current);
 
 /** Compact role-local parent-state reference carried by one Selection. */
 struct ConversationStateReferenceV1

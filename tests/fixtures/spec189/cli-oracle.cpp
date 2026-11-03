@@ -635,7 +635,10 @@ int main(int argc, char** argv)
         const auto suffix = round ? "-1" : "";
         const auto legacy = readJsonFile(root / "requester" /
           (std::string("config") + suffix + ".json"));
-        if (round == 0) requesterConfig = legacy;
+        if (round == 0) {
+          requesterConfig = legacy;
+          requesterConfig["conversation"]["turn"]["conversation_id"] = "fixture-conversation";
+        }
         NativeJson turn;
         for (const auto& item : std::vector<std::pair<std::string, std::string>>{
                {"options_file", std::string("options") + suffix + ".json"},
@@ -655,6 +658,7 @@ int main(int argc, char** argv)
         const auto output = readJsonFile(turn.at("output_file").get<std::string>());
         for (const auto& token : output.at("tokenIds")) prefix.push_back(token.get<std::int64_t>());
         auto checkpoint = readJsonFile(turn.at("checkpoint_output_file").get<std::string>());
+        checkpoint["conversationId"] = "fixture-conversation";
         checkpoint["logicalPrefixDigest"] = ndnsf::di::nativeConversationPrefixDigest(prefix);
         checkpoint["prefixTokenCount"] = prefix.size();
         checkpoint["planRoleMapDigest"] = ndnsf::di::nativePlanningDigest(
@@ -734,6 +738,150 @@ int main(int argc, char** argv)
     check("", "", "", deployment);
     deploymentFixture(false, "client");
     check("", "", "", deployment);
+    const auto handoffFixture = [&](bool departure = false, bool colocated = false,
+                                    bool wrongDestination = false) {
+      deploymentFixture();
+      auto config = readJsonFile(root / "configuration.json");
+      auto requester = readJsonFile(root / "requester.json");
+      requester.erase("fixed_placement");
+      requester["request"]["provider_names"] = NativeJson::array({
+        "/example/ndnsf-qwen06b/provider-0", "/example/ndnsf-qwen06b/provider-1"});
+      requester["kv_handoff"] = {{"after_turn", 0}, {"wait_for_departure", departure},
+        {"roles", NativeJson::object()}};
+      NativeJson roleMap = NativeJson::array();
+      for (unsigned p = 0; p < 2; ++p) {
+        const auto source = "provider-" + std::to_string(p);
+        const auto backup = "backup-" + std::to_string(p);
+        const auto identity = "/example/ndnsf-qwen06b/" + backup;
+        const auto role = "role" + std::to_string(p);
+        const auto executionIdentity = colocated && p == 1
+          ? "/example/ndnsf-qwen06b/backup-0" : identity;
+        requester["kv_handoff"]["roles"][role] = {{"destination_provider",
+          wrongDestination && p == 0 ? "/example/ndnsf-qwen06b/provider-0" : executionIdentity}};
+        roleMap.push_back(NativeJson::array({role, executionIdentity}));
+        config["actors"].push_back({{"id", backup}, {"kind", "provider"},
+                                    {"identity", identity}});
+        std::ifstream input(root / (source + "-statistics.jsonl"));
+        std::string ready, first, second;
+        std::getline(input, ready);
+        std::getline(input, first);
+        std::getline(input, second);
+        input.close();
+        const auto sourceReady = NativeJson::parse(ready);
+        auto backupReady = sourceReady;
+        backupReady["provider"] = identity;
+        backupReady["providerBootId"] = "backup-boot-" + std::to_string(p);
+        second = replaceAll(second, sourceReady.at("provider").get<std::string>(),
+                            executionIdentity);
+        second = replaceAll(second, sourceReady.at("providerBootId").get<std::string>(),
+                            colocated && p == 1 ? "backup-boot-0" :
+                              backupReady.at("providerBootId").get<std::string>());
+        write(root / (source + "-statistics.jsonl"), ready + "\n" + first + "\n");
+        write(root / (backup + "-statistics.jsonl"), backupReady.dump() + "\n" +
+              (colocated && p == 1 ? "" : second + "\n"));
+        if (colocated && p == 1) {
+          std::ofstream append(root / "backup-0-statistics.jsonl", std::ios::app);
+          append << second << '\n';
+        }
+      }
+      auto checkpoint = readJsonFile(root / "requester/conversation-state-1.json");
+      checkpoint["planRoleMapDigest"] = ndnsf::di::nativePlanningDigest(
+        ndnsf::di::nativeCanonicalJson(roleMap));
+      checkpoint.erase("signature");
+      checkpoint.erase("checkpointDigest");
+      checkpoint["checkpointDigest"] = ndnsf::di::nativePlanningDigest(
+        ndnsf::di::nativeConversationCanonicalJson(checkpoint));
+      checkpoint["signature"] = std::string(64, 'a');
+      write(root / "requester/conversation-state-1.json", checkpoint.dump());
+      config["requester"] = requester;
+      config["requester"].erase("statistics_file");
+      const auto digest = ndnsf::di::nativePlanningDigest(
+        ndnsf::di::nativeCanonicalJson(config)).substr(7);
+      write(root / "configuration.json", config.dump());
+      write(root / "requester.json", requester.dump());
+      auto state = readJsonFile(root / "deployment-state.json");
+      state["configuration_sha256"] = digest;
+      state["launches"] = NativeJson::array();
+      state["cleanup"] = NativeJson::array();
+      for (const auto& actor : config.at("actors")) {
+        const auto id = actor.at("id");
+        NativeJson bindings{{"NDNSF_DEPLOYMENT_ACTOR_ID", id},
+          {"NDNSF_DEPLOYMENT_BOOT_ID", "fixture-boot"},
+          {"NDNSF_DEPLOYMENT_CONFIG_SHA256", digest}};
+        state["launches"].push_back({{"id", id}, {"bindings", bindings},
+                                    {"proof", {{"bindings", bindings}}}});
+        state["cleanup"].push_back({{"id", id}, {"status", "ZERO"}, {"forced", false}});
+      }
+      write(root / "deployment-state.json", state.dump());
+    };
+    handoffFixture();
+    check("", "", "", deployment);
+    handoffFixture(true);
+    check("", "", "", deployment);
+    handoffFixture(false, true);
+    check("", "", "", deployment);
+    handoffFixture(false, false, true);
+    check("", "", "deployment-handoff-destination", deployment);
+    const auto mutateHandoffRow = [&](const std::function<void(NativeJson&)>& change) {
+      handoffFixture();
+      const auto path = root / "backup-0-statistics.jsonl";
+      std::ifstream input(path);
+      std::string ready, request;
+      std::getline(input, ready);
+      std::getline(input, request);
+      input.close();
+      auto row = NativeJson::parse(request);
+      change(row);
+      write(path, ready + "\n" + row.dump() + "\n");
+    };
+    mutateHandoffRow([](NativeJson& row) { row["requestId"] = "unrelated-request"; });
+    check("", "", "deployment-handoff-role-coverage", deployment);
+    mutateHandoffRow([](NativeJson& row) { row["role"] = "role1"; });
+    check("", "", "deployment-checkpoint-role-coverage", deployment);
+    mutateHandoffRow([](NativeJson& row) { row["planDigest"] = "wrong-plan"; });
+    check("", "", "statistics-binding", deployment);
+    mutateHandoffRow([](NativeJson& row) { row["completionAdmitted"] = false; });
+    check("", "", "statistics-incomplete-request", deployment);
+    handoffFixture();
+    auto wrongHandoffCheckpoint = readJsonFile(root / "requester/conversation-state-1.json");
+    wrongHandoffCheckpoint["planRoleMapDigest"] = "wrong-role-map";
+    write(root / "requester/conversation-state-1.json", wrongHandoffCheckpoint.dump());
+    check("", "", "deployment-checkpoint-binding", deployment);
+    deploymentFixture();
+    {
+      const auto path = root / "provider-0-statistics.jsonl";
+      std::ifstream input(path);
+      std::string ready, first, second;
+      std::getline(input, ready);
+      std::getline(input, first);
+      std::getline(input, second);
+      input.close();
+      write(path, ready + "\n" + second + "\n" + first + "\n");
+    }
+    check("", "", "statistics-binding", deployment);
+    handoffFixture();
+    {
+      const auto path = root / "backup-0-statistics.jsonl";
+      std::ifstream input(path);
+      std::string ready;
+      std::getline(input, ready);
+      input.close();
+      write(path, ready + "\n");
+    }
+    check("", "", "deployment-handoff-role-coverage", deployment);
+    handoffFixture();
+    {
+      const auto path = root / "provider-0-statistics.jsonl";
+      std::ifstream input(path);
+      std::string ready, first;
+      std::getline(input, ready);
+      std::getline(input, first);
+      input.close();
+      auto extra = NativeJson::parse(first);
+      extra["requestId"] = "unrelated-request";
+      write(path, ready + "\n" + first + "\n" + extra.dump() + "\n");
+    }
+    check("", "", "deployment-unconsumed-provider-request", deployment);
     const auto mutateDeployment = [&](const std::string& name, const std::string& reason,
                                       const std::function<void(NativeJson&)>& change) {
       deploymentFixture();

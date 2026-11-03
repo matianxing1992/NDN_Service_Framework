@@ -1198,13 +1198,15 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         config.stateInputNames.empty() ||
         config.conversationStateBinding->identity.roleName != config.role ||
         !config.stateIdentityTemplate ||
-        config.conversationStateBinding->identity.requestId ==
-          config.stateIdentityTemplate->requestId ||
-        config.conversationStateBinding->identity.generationId ==
-          config.stateIdentityTemplate->generationId) {
+        !nativeConversationStateAllowsContinuation(
+          *config.conversationStateBinding, *config.stateIdentityTemplate)) {
       throw std::invalid_argument(
         "native conversation continuation requires a fresh stateful request");
     }
+  }
+  if (config.firstEpochConversationUse &&
+      (!config.conversationStateBinding || config.prepareRunner)) {
+    throw std::invalid_argument("READY use requires a resolved conversation without preparation");
   }
   if (config.maxCheckpointFinalizeTokens == 0 ||
       config.maxCheckpointFinalizeTokens > 32) {
@@ -1401,9 +1403,18 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         throwIfStopped(stopCheck, executionGuard);
       };
     traceEpoch("role_submit_begin", config.role, epoch);
-    auto roleResult = config.runtime.executeRole(
-      config.sessionId, executable, config.io, config.prepareRunner,
-      std::move(inputs), {}, stopGuard);
+    ProviderRoleResult roleResult;
+    if (epoch == 0 && config.firstEpochConversationUse) {
+      auto use = std::move(*config.firstEpochConversationUse);
+      config.firstEpochConversationUse.reset();
+      roleResult = config.runtime.executeRoleWithConversationUse(
+        config.sessionId, executable, config.io, std::move(use), std::move(inputs), {}, stopGuard);
+    }
+    else {
+      roleResult = config.runtime.executeRole(
+        config.sessionId, executable, config.io, config.prepareRunner,
+        std::move(inputs), {}, stopGuard);
+    }
     traceEpoch("role_done", config.role, epoch);
     try {
       throwIfStopped(config);

@@ -1,4 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-owner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
 #include "request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
@@ -1037,10 +1039,19 @@ void bindConversationProjections(
   if (!unboundInitialPlan && expected != actual)
     throw std::invalid_argument("conversation turn role set does not match placement");
   const auto roleMapDigest = conversationRoleMapDigest(providersByRole);
+  const bool recovery = turn.protectedKvReferences.has_value();
+  NativeJson parentCheckpoint;
+  if (recovery) {
+    parentCheckpoint = nativeParseJson(turn.parent.parentCheckpointWire);
+    nativeValidateProtectedKvReferences(*turn.protectedKvReferences, parentCheckpoint,
+      turn.sourceProvidersByRole);
+    if (parentCheckpoint.at("checkpointDigest") != turn.parent.parentCheckpointDigest)
+      throw std::invalid_argument("conversation recovery parent differs from owned turn");
+  }
   // Attempt 1 must use the parent's immutable placement. A replacement may
   // switch to an alternate Provider; the coordinator binds that new map after
   // planning while retaining the old map for the parent CAS.
-  if (turn.attempt == 1 && !unboundInitialPlan &&
+  if (turn.attempt == 1 && !unboundInitialPlan && !recovery &&
       roleMapDigest != turn.parent.planRoleMapDigest) {
     try {
       std::ostringstream diagnostic;
@@ -1100,7 +1111,8 @@ void bindConversationProjections(
       reference.conversationId = binding.conversationId;
       reference.contextEpoch = binding.parentContextEpoch;
       reference.serviceName = binding.serviceName;
-      reference.planRoleMapDigest = binding.planRoleMapDigest;
+      reference.planRoleMapDigest = recovery
+        ? parentCheckpoint.at("planRoleMapDigest").get<std::string>() : binding.planRoleMapDigest;
       reference.checkpointDigest = binding.parentCheckpointDigest;
       reference.roleName = role;
       const auto receipt = parentReceipts.find(role);
@@ -1113,6 +1125,12 @@ void bindConversationProjections(
     }
   }
 }
+}
+
+std::shared_ptr<const ndn_service_framework::ParticipantSelectionPolicy>
+nativeFrozenParticipantSelection(std::vector<ndn_service_framework::SelectedParticipant> selected)
+{
+  return std::make_shared<const FrozenSelection>(std::move(selected));
 }
 
 NativeRequestRuntime nativeRequestRuntimeFromJson(
@@ -1914,19 +1932,23 @@ NativePlannedRequest planNativeRequestImpl(
       }
     }
     std::map<std::string, NativeRoleProjectionInputs> projections;
+    const bool restoring = conversationTurn && conversationTurn->protectedKvReferences;
     projection.compactGenerationEndpoints = static_cast<bool>(runtime.fixedRoleSourcePublisher);
     projection.workStatistics = control.workStatistics;
     NativeWorkScope projectionWork(control.workStatistics, "projection-build", NativeWorkKind::LOCAL);
     phaseStarted = planPhaseStarted();
-    if (execution.dependencies.empty())
-      projections = NativePlanProjectionBuilder::build(ownedSealed, candidate, offers, projection);
-    else {
+    std::unique_ptr<NativeGroupKeyAdmission> recipientKeys;
+    if (!execution.dependencies.empty() || restoring) {
       std::vector<ndn_service_framework::AckSelectionCandidate> selectedAcks;
       for (const auto& ack : closure.candidates)
         if (core.offerDigestByProvider.count(ack.providerName.toUri())) selectedAcks.push_back(ack);
-      NativeGroupKeyAdmission keys(admission, selectedAcks, context, epochMs());
-      projections = NativeGroupProjectionBuilder::build(ownedSealed, candidate, keys, projection);
+      recipientKeys = std::make_unique<NativeGroupKeyAdmission>(admission, selectedAcks,
+        context, epochMs());
     }
+    if (execution.dependencies.empty())
+      projections = NativePlanProjectionBuilder::build(ownedSealed, candidate, offers, projection);
+    else
+      projections = NativeGroupProjectionBuilder::build(ownedSealed, candidate, *recipientKeys, projection);
     projectionWork.finish();
     if (control.workStatistics) {
       for (const auto& item : projections) {
@@ -1948,6 +1970,49 @@ NativePlannedRequest planNativeRequestImpl(
         encoded.requestContractDigest, runtime.contract.serviceName,
         core.assignment.providerByRole);
       logPlanPhase(control.requestId, "conversation_projection_binding", phaseStarted);
+    }
+    if (restoring) {
+      if (!runtime.kvOwnerKeys || !runtime.kvOwnerKeys->wrap || !recipientKeys)
+        throw std::invalid_argument("conversation recovery Owner key port unavailable");
+      const auto expected = std::make_shared<const NativeJson>(*conversationTurn->protectedKvReferences);
+      result.recoveryParent = expected;
+      const auto current = [weakOwner = runtime.conversationOwner, expected, control,
+                            conversation = conversationTurn->parent.conversationId,
+                            checkpoint = conversationTurn->parent.parentCheckpointDigest] {
+        control.requireActive();
+        const auto owner = weakOwner.lock();
+        const auto head = owner ? owner->find(conversation) : std::nullopt;
+        if (!head || head->checkpoint.checkpointDigest != checkpoint ||
+            !head->protectedKvReferences || *head->protectedKvReferences != *expected)
+          throw std::runtime_error("conversation recovery current parent changed");
+      };
+      current();
+      for (auto& item : projections) {
+        current();
+        const auto& provider = core.assignment.providerByRole.at(item.first);
+        const auto grant = std::find_if(result.sealed.grants.begin(), result.sealed.grants.end(),
+          [&](const auto& value) { return value.provider == provider && value.role == item.first; });
+        if (grant == result.sealed.grants.end())
+          throw std::invalid_argument("conversation recovery role grant missing");
+        const auto saved = nativeReadSavedKvRole(expected->at(item.first));
+        const auto& key = recipientKeys->recipient(provider);
+        const auto projected = NativePlanSealer::project(result.sealed, provider, item.second);
+        const auto expires = std::min({wireDeadlineMs, core.expiresAtMs,
+          conversationTurn->parent.retentionDeadlineMs, grant->expiresAtMs,
+          recipientKeys->offer(provider).observation().expiresAtMs});
+        const auto binding = nativeKvRestoreRecipientBinding(projected,
+          ndn::Name(runtime.requesterIdentity), ndn::Name(runtime.contract.serviceName),
+          key.certificateName, key.publicKeyDigest, expires, epochMs());
+        const auto capsule = runtime.kvOwnerKeys->wrap(saved.protection,
+          ndn::Buffer(key.publicKey.begin(), key.publicKey.end()), binding, control.deadline, current);
+        current();
+        item.second.protectedKvRestore = nativeKvRestoreToJson(saved, capsule, binding);
+        (void)nativeReadKvRestore(*item.second.protectedKvRestore, projected,
+          ndn::Name(runtime.requesterIdentity), ndn::Name(runtime.contract.serviceName), epochMs());
+        result.recoveryExpectations.emplace(item.first, NativeConversationRecoveryExpectationV1{
+          NativePlanSealer::project(result.sealed, provider, item.second),
+          recipientKeys->offer(provider).observation().bootEpoch});
+      }
     }
     phaseStarted = planPhaseStarted();
     auto& plan = result.corePlan;
@@ -2054,7 +2119,7 @@ NativePlannedRequest planNativeRequestImpl(
     if (conversationTurn) {
       plan.keyScopes.push_back({"ndnsf-di-conversation-state-v1", execution.roles});
     }
-    plan.participantSelector = std::make_shared<const FrozenSelection>(std::move(selected));
+    plan.participantSelector = nativeFrozenParticipantSelection(std::move(selected));
     control.requireActive();
     logPlanPhase(control.requestId, "core_plan_finalize", phaseStarted);
     return result;

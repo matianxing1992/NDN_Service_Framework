@@ -26,6 +26,168 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_operator_stop_uses_actual_owned_process_receipt(ops, tmp_path, monkeypatch):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    bindings = dict(NDNSF_DEPLOYMENT_ACTOR_ID='source', NDNSF_DEPLOYMENT_BOOT_ID='boot-123',
+                    NDNSF_DEPLOYMENT_CONFIG_SHA256='a' * 64)
+    script = ('import signal,sys,time; '
+              'signal.signal(signal.SIGTERM,lambda *args:sys.exit(0)); '
+              'print("ready",flush=True); time.sleep(30)')
+    child = subprocess.Popen([sys.executable, '-c', script], env=dict(os.environ, **bindings),
+                             start_new_session=True, stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == 'ready'
+        proof = cluster.process_identity(child.pid)
+        assert proof and proof['bindings'] == bindings
+        row = dict(id='source', kind='provider', bindings=bindings, proof=proof,
+                   expected_exe=proof['exe'])
+        actor = dict(id='source', kind='provider', identity='/source', external=False)
+        state = dict(schema='ndnsf-di-host-operation-v1', deployment_id=tmp_path.name,
+                     status='REQUEST_RUNNING', boot_id='boot-123',
+                     configuration_sha256='a' * 64, launches=[row], evidence_root=str(tmp_path))
+        cluster.write_json(tmp_path / 'configuration.json', dict(actors=[actor]))
+        cluster.write_json(tmp_path / 'state.json', state)
+        persist = cluster.write_json
+        read_state = cluster._read_state
+        owner_state = copy.deepcopy(state)
+        owner_row = owner_state['launches'][0]
+        commands = []
+        reads = []
+        def read_ack(root):
+            reads.append(root)
+            return read_state(root)
+        def owner_guard_after_publication(path, value):
+            persist(path, value)
+            if path.name.startswith('stop-provider-'):
+                commands.append(value)
+                cluster._consume_provider_stops(tmp_path, owner_state, [(actor, child, owner_row)])
+        monkeypatch.setattr(cluster, 'write_json', owner_guard_after_publication)
+        monkeypatch.setattr(cluster, '_read_state', read_ack)
+        monkeypatch.setattr(cluster, '_operation_active', lambda root, state: True)
+        first = cluster._stop_provider(tmp_path, state, 'source', 1)
+        assert first['status'] == 'ACTOR_STOPPED'
+        assert len(commands) == 1
+        assert reads
+        assert 'operator_stop' not in row
+        state, row = owner_state, owner_row
+        assert row['operator_stop']['result']['exitCode'] == 0
+        assert cluster._operator_stop_complete(row)
+        cluster._check_running([(actor, child, row)])
+        assert 'withdrawal' not in row
+        monkeypatch.setattr(cluster, 'stop_owned', lambda proof: pytest.fail('duplicate stop'))
+        cluster._consume_provider_stops(tmp_path, state, [(actor, child, row)])
+        result = cluster._stop_provider(tmp_path, state, 'source', 1)
+        assert result['status'] == 'ACTOR_STOPPED'
+        assert result['kv_safety'] == 'NOT_EVALUATED'
+        assert len(commands) == 1
+    finally:
+        if child.poll() is None:
+            os.killpg(child.pid, signal.SIGKILL)
+            child.wait(timeout=5)
+        child.stdout.close()
+
+
+@pytest.mark.parametrize('failure', ['boot', 'proof', 'already-exited', 'forced', 'nonzero'])
+def test_operator_stop_rejects_invalid_or_unsuccessful_stops(ops, tmp_path, monkeypatch, failure):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    bindings = dict(NDNSF_DEPLOYMENT_ACTOR_ID='source', NDNSF_DEPLOYMENT_BOOT_ID='boot-123',
+                    NDNSF_DEPLOYMENT_CONFIG_SHA256='a' * 64)
+    row = dict(id='source', kind='provider', bindings=bindings,
+               proof=dict(pid=123, exe='/usr/bin/python3', bindings=bindings),
+               expected_exe='/usr/bin/python3', log=str(tmp_path / 'unused.log'))
+    actor = dict(id='source', kind='provider', identity='/source')
+    state = dict(status='REQUEST_RUNNING', boot_id='boot-123',
+                 configuration_sha256='a' * 64, launches=[row])
+    request = copy.deepcopy(cluster._provider_stop_request(row))
+    if failure == 'boot':
+        request['bindings']['NDNSF_DEPLOYMENT_BOOT_ID'] = 'stale'
+    if failure == 'proof':
+        request['proof']['pid'] = 456
+    cluster.write_json(cluster._provider_stop_path(tmp_path, state, 'source'), request)
+    child = SimpleNamespace(returncode=0 if failure == 'already-exited' else None)
+    child.poll = lambda: child.returncode
+    monkeypatch.setattr(cluster, 'owned_state', lambda proof: 'RUNNING')
+    calls = []
+    def stop(proof):
+        calls.append(proof)
+        # Popen may report zero after stop_owned's waitpid; the receipt still governs.
+        child.returncode = 0
+        return dict(status='ZERO', forced=failure == 'forced', exitCode=4 if failure == 'nonzero' else 0)
+    monkeypatch.setattr(cluster, 'stop_owned', stop)
+    with pytest.raises(cluster.ClusterError):
+        cluster._consume_provider_stops(tmp_path, state, [(actor, child, row)])
+    assert bool(calls) == (failure in ('forced', 'nonzero'))
+    assert not cluster._operator_stop_complete(row)
+    if failure in ('boot', 'proof'):
+        cluster._check_running([(actor, child, row)])
+    else:
+        with pytest.raises(cluster.ClusterError, match='CHILD_EXIT'):
+            cluster._check_running([(actor, child, row)])
+
+
+@pytest.mark.parametrize('kind,external', [('requester', False), ('repo', False), ('provider', True)])
+def test_operator_stop_rejects_nonmanaged_provider(ops, tmp_path, kind, external):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    cluster.write_json(tmp_path / 'configuration.json', {
+        'actors': [dict(id='actor', kind=kind, external=external)]})
+    state = dict(evidence_root=str(tmp_path), launches=[])
+    with pytest.raises(cluster.ClusterError, match='managed local Provider'):
+        cluster._stop_provider(tmp_path, state, 'actor', 1)
+    assert not (tmp_path / 'cancel.json').exists()
+
+
+def test_operator_stop_cli_preserves_default_down_and_rejects_remote(ops, tmp_path, monkeypatch):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    cli = importlib.import_module('_spec217_ops.cli')
+    original = cluster.run_cluster
+    calls = []
+    def run(action, path, timeout, **options):
+        calls.append((action, options))
+        return {'status': 'ACTOR_STOPPED' if options.get('actor_id') else 'STOPPED'}
+    monkeypatch.setattr(cluster, 'run_cluster', run)
+    assert cli.main(['cluster', 'down', '--config', 'fixture', '--actor', 'source']) == 0
+    assert calls[-1][1]['actor_id'] == 'source'
+    assert cli.main(['cluster', 'down', '--config', 'fixture']) == 0
+    assert 'actor_id' not in calls[-1][1]
+    monkeypatch.setattr(cluster, '_locator', lambda path: (Path('fixture'), tmp_path))
+    monkeypatch.setattr(cluster, '_private_directory', lambda root: None)
+    monkeypatch.setattr(cluster, '_read_state', lambda root: {'schema': 'ndnsf-di-slurm-operation-v1'})
+    with pytest.raises(cluster.ClusterError, match='local deployment owner'):
+        original('down', 'fixture', actor_id='source')
+    assert not (tmp_path / 'cancel.json').exists()
+
+
+@pytest.mark.parametrize('change', ['none', 'missing', 'missing-log', 'boot', 'config', 'pid', 'identity',
+                                  'native-boot', 'operation', 'nonzero', 'actor-kind'])
+def test_source_exit_requires_exact_native_withdrawal_binding(ops, tmp_path, change):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    actor = dict(id='source', kind='provider', identity='/source')
+    bindings = dict(NDNSF_DEPLOYMENT_ACTOR_ID='source', NDNSF_DEPLOYMENT_BOOT_ID='boot-123',
+                    NDNSF_DEPLOYMENT_CONFIG_SHA256='a' * 64)
+    row = dict(id='source', kind='provider', bindings=bindings, proof=dict(pid=123),
+               native_boot_id='native-123', native_identity='/source', log=str(tmp_path / 'source.log'))
+    event = dict(event='NDNSF_DEPLOYMENT_WITHDRAWN', actor_id='source', boot_id='boot-123',
+                 config_sha256='a' * 64, pid=123, identity='/source', native_boot_id='native-123',
+                 withdrawal_id='withdraw-123')
+    field = {'boot': 'boot_id', 'config': 'config_sha256', 'pid': 'pid', 'identity': 'identity',
+             'native-boot': 'native_boot_id', 'operation': 'withdrawal_id'}.get(change)
+    if field:
+        event[field] = 124 if field == 'pid' else '/wrong' if field == 'identity' else ''
+    if change == 'actor-kind':
+        actor['kind'] = row['kind'] = 'repo'
+    Path(row['log']).write_text('' if change == 'missing' else json.dumps(event) + '\n')
+    if change == 'missing-log':
+        Path(row['log']).unlink()
+    code = 2 if change == 'nonzero' else 0
+    child = SimpleNamespace(returncode=code, poll=lambda: code)
+    if change == 'none':
+        cluster._check_running([(actor, child, row)])
+        assert row['withdrawal'] == event
+    else:
+        with pytest.raises(cluster.ClusterError, match='CHILD_EXIT:source:'):
+            cluster._check_running([(actor, child, row)])
+
+
 @pytest.mark.parametrize('change', ['none', 'launch', 'allocation', 'symlink', 'active',
                                   'nonterminal', 'foreign-boot', 'foreign-config', 'integer-proof'])
 def test_cancel_before_allocation_requires_bound_scheduler_proof(ops, tmp_path, monkeypatch, change):
@@ -437,6 +599,50 @@ def minindn_deployment(deployment):
     for actor in config['actors']:
         actor['node'] = 'b' if actor['id'] == 'p1' else 'a'
     return base, config
+
+
+@pytest.mark.parametrize('departure', [False, True])
+def test_native_qualification_barriers_require_explicit_minindn_mode(ops, minindn_deployment, departure):
+    parser, _ = ops
+    root, config = minindn_deployment
+    requester = config['requester']
+    requester['test_only'] = True
+    requester['kv_handoff'] = {'wait_for_departure': departure}
+    requester['test_stream_barrier'] = dict(ready_file='cold-ready', release_file='cold-release',
+                                             timeout_ms=30000)
+    requester['test_handoff_barrier'] = dict(ready_file='handoff-ready', release_file='handoff-release',
+                                              timeout_ms=650000 if departure else 60000)
+    resolved = parser.load_deployment(write_config(root, config))
+    assert resolved['requester']['test_stream_barrier']['ready_file'] == str(root / 'cold-ready')
+    assert not (root / 'cold-ready').exists()
+    # Call the same translator gate without requiring an unrelated host topology change.
+    with pytest.raises(parser.DeploymentConfigError, match='MiniNDN test_only'):
+        parser._translate_requester(requester, {}, {}, '', '', '', lambda *a, **k: None,
+                                    lambda *a, **k: None, allow_test_barriers=False)
+
+
+@pytest.mark.parametrize('change,message', [
+    (lambda c: c['requester'].pop('test_only'), 'MiniNDN test_only'),
+    (lambda c: c['requester'].update(test_only=1), 'MiniNDN test_only'),
+    (lambda c: c['requester']['test_stream_barrier'].update(timeout_ms=True), 'expected integer'),
+    (lambda c: c['requester']['test_stream_barrier'].update(timeout_ms=0), 'expected integer'),
+    (lambda c: c['requester']['test_stream_barrier'].update(timeout_ms=60001), 'native barrier limit'),
+    (lambda c: c['requester']['test_stream_barrier'].update(extra='unused'), 'unknown fields'),
+    (lambda c: c['requester']['test_stream_barrier'].pop('release_file'), 'missing fields'),
+    (lambda c: c['requester']['test_stream_barrier'].update(ready_file=''), 'nonempty text'),
+    (lambda c: c['requester']['test_stream_barrier'].update(release_file='cold-ready'), 'distinct'),
+    (lambda c: c['requester']['test_stream_barrier'].update(ready_file='key.pem'), 'protected input'),
+    (lambda c: c['requester']['test_stream_barrier'].update(
+        ready_file=c['requester']['turns'][0]['output_file']), 'another output'),
+])
+def test_native_qualification_barriers_reject_unsafe_inputs(ops, minindn_deployment, change, message):
+    parser, _ = ops
+    root, config = minindn_deployment
+    config['requester'].update(test_only=True, test_stream_barrier={
+        'ready_file': 'cold-ready', 'release_file': 'cold-release', 'timeout_ms': 30000})
+    change(config)
+    with pytest.raises(parser.DeploymentConfigError, match=message):
+        parser.load_deployment(write_config(root, config))
 
 
 @pytest.mark.parametrize('change', ['none', 'digest', 'missing-node', 'same-socket', 'same-home', 'external-nfd'])
@@ -2286,7 +2492,7 @@ def _role_environment(monkeypatch, args, role_id):
 @pytest.mark.parametrize('mode', ['complete', 'wrong-ready', 'service-exit', 'service-stop',
                                  'timeout', 'identity-fail', 'residual-worker', 'cancel-ready',
                                  'cancel-pre-ready', 'cancel-requester', 'stale-cancel',
-                                 'malformed-cancel'])
+                                 'malformed-cancel', 'provider-withdrawn', 'withdrawal-wrong-boot'])
 def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_container, monkeypatch, mode):
     config, container, frozen, _, run = node_container
     node = importlib.import_module('_spec217_ops.node')
@@ -2308,7 +2514,8 @@ def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_conta
     ledger['files'][str(identity)]['installed']['sha256'] = hashlib.sha256(identity.read_bytes()).hexdigest()
     ledger_path.write_text(json.dumps(ledger))
     actor_id = ('p0' if mode in ('service-exit', 'service-stop', 'wrong-ready', 'cancel-ready',
-                               'cancel-pre-ready', 'stale-cancel', 'malformed-cancel') else 'requester')
+                               'cancel-pre-ready', 'stale-cancel', 'malformed-cancel',
+                               'provider-withdrawn', 'withdrawal-wrong-boot') else 'requester')
     assert run('--actor', actor_id).returncode == 0
     args = _role_args(config, frozen, actor=actor_id, timeout=0.4)
     args.timing = mode == 'complete'
@@ -2332,6 +2539,12 @@ def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_conta
             code = 'import time; ' + ('time.sleep(60)' if mode == 'timeout' else 'time.sleep(0.03)')
         if mode == 'service-stop':
             code += '; time.sleep(0.1); import signal; os.kill(os.getppid(),signal.SIGTERM); time.sleep(60)'
+        if mode in ('provider-withdrawn', 'withdrawal-wrong-boot'):
+            code += ('; time.sleep(0.1); item["event"]="NDNSF_DEPLOYMENT_WITHDRAWN"; '
+                     'item["withdrawal_id"]="withdraw-123"; ')
+            if mode == 'withdrawal-wrong-boot':
+                code += 'item["boot_id"]="wrong-boot"; '
+            code += 'print(json.dumps(item),flush=True)'
         if mode in ('cancel-ready', 'cancel-pre-ready', 'cancel-requester', 'stale-cancel',
                     'malformed-cancel'):
             marker = (frozen.parent / 'actors' / actor_id / 'runtime' /
@@ -2369,6 +2582,10 @@ def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_conta
     if mode == 'complete':
         assert result['readiness'] == 'FINITE_EXITED' and result['execution'] == 'COMPLETE'
         assert result['exit_code'] == 0 and result['failure'] is None
+    elif mode == 'provider-withdrawn':
+        assert result['readiness'] == 'WITHDRAWN' and result['execution'] == 'SERVICE_STOPPED'
+        assert result['exit_code'] == 0 and result['failure'] is None
+        assert result['launches'][-1]['withdrawal']['withdrawal_id'] == 'withdraw-123'
     elif mode == 'service-stop':
         assert result['readiness'] == 'NATIVE_READY' and result['execution'] == 'SERVICE_STOPPED'
         assert result['exit_code'] == -signal.SIGTERM and result['failure'] is None

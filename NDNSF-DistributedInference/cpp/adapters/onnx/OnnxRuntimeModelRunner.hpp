@@ -194,6 +194,20 @@ public:
   bool
   supportsConversationStateTransfer() const final;
 
+  bool
+  supportsPortableConversationState() const final;
+
+  NativePortableKvSnapshotV1
+  exportConversationState(const NativeConversationStateHandleV1& state,
+                          const DecodeStateIdentityV1& committedIdentity,
+                          const NativePortableKvLimitsV1& limits) final;
+
+  NativeConversationStateHandleV1
+  importConversationState(const NativePortableKvSnapshotV1& snapshot,
+                          const DecodeStateIdentityV1& destinationIdentity,
+                          const std::string& destinationConversationKey,
+                          const NativePortableKvLimitsV1& limits) final;
+
   std::optional<NativeConversationStateHandleV1>
   promoteSessionStateToConversation(const std::string& sessionId,
                                     const std::string& conversationKey) final;

@@ -595,6 +595,25 @@ namespace ndn_service_framework{
                 bool revokeCurrentWorkAuthority() noexcept;
                 /** Query whether this dispatch still authorizes new work commits. */
                 bool hasCurrentWorkAuthority() const noexcept;
+                /** Unwrap one bounded application capsule on the KeyChain owner
+                 * thread under this dispatch's current authority. Worker-only;
+                 * consume borrows the secret synchronously on the calling worker
+                 * and must not retain it. The application supplies exact AAD and
+                 * validates its request/role/attempt binding before this call.
+                 * This operation grants no additional execution permission. */
+                bool consumeRecipientAssignmentCurrent(
+                    const RecipientEncryptedAssignment& capsule,
+                    const ndn::Name& expectedCertificate,
+                    const std::string& expectedPublicKeyDigest,
+                    const ndn::Buffer& associatedData,
+                    std::chrono::steady_clock::time_point deadline,
+                    const std::function<void(const ndn::Buffer&)>& consume);
+                /** Sign one bounded application Data under this Provider's
+                 * complete prefix. Worker-only; the actual KeyChain operation
+                 * runs on Face under current dispatch authority. This does not
+                 * publish Data. Failure preserves the caller's original Data. */
+                bool signProducerPacketCurrent(ndn::Data& data,
+                    std::chrono::steady_clock::time_point deadline);
                 void fail(const std::string& reason);
 
                 void publish(KeyScope keyScope,
@@ -877,6 +896,10 @@ namespace ndn_service_framework{
                     std::chrono::steady_clock::time_point deadline);
                 std::function<bool()> currentWorkPredicate(
                     std::chrono::steady_clock::time_point deadline) const;
+                bool consumeCurrentCrypto(std::chrono::steady_clock::time_point deadline,
+                    std::size_t maxOutputBytes,
+                    std::function<bool(ServiceProvider&, ndn::Buffer&)> operation,
+                    const std::function<void(const ndn::Buffer&)>& consume);
                 // Retain the complete signed batch before any serving side effect.
                 bool publishOwnedExactData(KeyScope keyScope,
                     const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
@@ -1102,6 +1125,14 @@ namespace ndn_service_framework{
             ndn::Name getSigningKeyName() const;
             ndn::Name getSigningCertificateName() const;
 
+            /** Sign Producer-owned Data from a trusted worker without a collaboration.
+             * The guard and deadline bound local publication work, not service permission.
+             * Uses the existing bounded Face owner; failure preserves the caller's Data.
+             */
+            bool signProducerDataUntil(ndn::Data& data,
+                std::chrono::steady_clock::time_point deadline,
+                const std::function<void()>& requireCurrent);
+
             /** Create the sole Core-owned semantic-name live-stream publisher. */
             std::shared_ptr<LiveStreamPublisher>
             createLiveStream(const LiveStreamDefinition& definition);
@@ -1164,6 +1195,18 @@ namespace ndn_service_framework{
             void setHandlerThreads(size_t n);
             size_t getHandlerThreads() const;
             size_t getHandlerQueueDepth() const;
+            /** Validate original Data with the configured trust and Producer policy.
+             * Standard certificates instead bind the exact subject to producer
+             * and validate the issuer through that same configured trust schema.
+             * Accepted certificates seed candidates, never new trust anchors.
+             * Network callers run on a handler worker, never the Face thread.
+             * Admission is bounded; shutdown or deadline expiration rejects the packet.
+             * This validates an object, not service permission or storage authorization.
+             */
+            bool validateProducerPacketWireUntil(
+              const std::vector<uint8_t>& wire, const ndn::Name& producer,
+              std::chrono::steady_clock::time_point deadline);
+            void stopProducerPacketValidation() noexcept;
             void setAckThreads(size_t n);
             size_t getAckThreads() const;
             size_t getAckQueueDepth() const;
@@ -1832,8 +1875,33 @@ namespace ndn_service_framework{
                 ndn::Name serviceName;
                 uint64_t generation = 0;
                 std::atomic<bool> closed{false};
+                std::mutex targetedHandlerMutex;
+                std::condition_variable targetedHandlersDrained;
+                std::size_t activeTargetedHandlers = 0;
                 std::mutex ackCancellationMutex;
                 std::vector<std::weak_ptr<std::atomic<bool>>> ackCancellations;
+
+                bool tryBeginTargetedHandler()
+                {
+                    std::lock_guard<std::mutex> lock(targetedHandlerMutex);
+                    if (closed.load(std::memory_order_relaxed))
+                        return false;
+                    ++activeTargetedHandlers;
+                    return true;
+                }
+
+                void finishTargetedHandler() noexcept
+                {
+                    std::lock_guard<std::mutex> lock(targetedHandlerMutex);
+                    if (activeTargetedHandlers > 0 && --activeTargetedHandlers == 0)
+                        targetedHandlersDrained.notify_all();
+                }
+
+                void markClosed() noexcept
+                {
+                    std::lock_guard<std::mutex> lock(targetedHandlerMutex);
+                    closed.store(true, std::memory_order_release);
+                }
 
                 void trackAckCancellation(
                     const std::shared_ptr<std::atomic<bool>>& cancellation)
@@ -1901,6 +1969,10 @@ namespace ndn_service_framework{
                 ~ServiceRegistration();
 
                 void close() noexcept;
+                /** Capture before close; wait off the Face thread until callbacks drain. */
+                using TargetedHandlerDrainWaiter =
+                    std::function<bool(std::chrono::milliseconds)>;
+                TargetedHandlerDrainWaiter makeTargetedHandlerDrainWaiter() const;
                 bool closed() const noexcept;
                 bool valid() const noexcept;
                 uint64_t generation() const noexcept;
@@ -2159,6 +2231,11 @@ namespace ndn_service_framework{
                 const RequestMessage& requestMessage,
                 const ServiceSelectionMessage& selectionMessage,
                 const ndn::Buffer& assignmentPayload);
+            bool consumeProducerCryptoUntil(
+                std::chrono::steady_clock::time_point deadline, std::size_t maxOutputBytes,
+                const std::function<bool()>& current,
+                std::function<bool(ServiceProvider&, ndn::Buffer&)> operation,
+                const std::function<void(const ndn::Buffer&)>& consume);
             void finishDecodedRequestOnEventLoop(
                 const ndn::Name& requesterIdentity,
                 const ndn::Name& serviceName,
@@ -2493,6 +2570,9 @@ namespace ndn_service_framework{
             mutable std::mutex m_collaborationPublicationInterceptorMutex;
             CollaborationPublicationInterceptorForTest m_collaborationPublicationInterceptorForTest;
             std::shared_ptr<MessageValidator> validator;
+            // Includes timed-out Context crypto until its Face callback drains.
+            std::shared_ptr<std::atomic<size_t>> m_pendingContextCrypto =
+              std::make_shared<std::atomic<size_t>>(0);
             std::unique_ptr<SecurityProfileStore> m_securityProfiles;
             std::shared_ptr<const SecurityProfileStore::Record> m_localSecurityProfile;
             std::shared_ptr<const SecurityProfileStore::Record> ensurePublishedSecurityProfile();

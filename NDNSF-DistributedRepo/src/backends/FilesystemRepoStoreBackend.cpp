@@ -2,6 +2,7 @@
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp"
 
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
+#include "ndnsf-distributed-repo/detail/StrictJson.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -23,6 +24,19 @@ namespace ndnsf_distributed_repo {
 namespace {
 
 namespace fs = std::filesystem;
+
+bool
+directoryPresentForUserRemoval(const fs::path& path, bool allowMissing = false)
+{
+  std::error_code error;
+  const auto status = fs::symlink_status(path, error);
+  if (error && error != std::errc::no_such_file_or_directory)
+    throw std::runtime_error("repo-user-storage-removal-directory-failed: " + error.message());
+  if (!fs::exists(status) && allowMissing) return false;
+  if (fs::is_symlink(status) || !fs::is_directory(status))
+    throw std::runtime_error("repo-user-storage-removal-directory-invalid");
+  return true;
+}
 
 std::atomic<uint64_t> g_metadataTempSequence{0};
 std::mutex g_ioHooksMutex;
@@ -313,12 +327,26 @@ detail::installFilesystemRepoStoreIoHooks(detail::FilesystemRepoStoreIoHooks hoo
 FilesystemRepoStoreBackend::FilesystemRepoStoreBackend(
   std::string rootPath, uint64_t maxRangeBytes,
   uint64_t vectorCompatibilityThreshold, std::string ownerId)
+  : FilesystemRepoStoreBackend(std::move(rootPath), maxRangeBytes,
+      vectorCompatibilityThreshold, std::move(ownerId), FilesystemRecoveryPolicy::RECLAIM_ORPHANS)
+{
+}
+
+FilesystemRepoStoreBackend::FilesystemRepoStoreBackend(
+  std::string rootPath, uint64_t maxRangeBytes,
+  uint64_t vectorCompatibilityThreshold, std::string ownerId,
+  FilesystemRecoveryPolicy recoveryPolicy)
   : m_rootPath(prepareBackendRoot(std::move(rootPath)))
   , m_maxRangeBytes(maxRangeBytes)
   , m_vectorCompatibilityThreshold(vectorCompatibilityThreshold)
+  , m_recoveryPolicy(recoveryPolicy)
   , m_ownership(m_rootPath, std::move(ownerId))
   , m_payloadStore(m_rootPath, maxRangeBytes)
 {
+  if (recoveryPolicy != FilesystemRecoveryPolicy::RECLAIM_ORPHANS &&
+      recoveryPolicy != FilesystemRecoveryPolicy::KEEP_UNCONFIRMED) {
+    throw std::invalid_argument("repo-file-recovery-policy-invalid");
+  }
   if (m_vectorCompatibilityThreshold == 0) {
     throw std::invalid_argument(
       "repo-file-vector-threshold-invalid: threshold must be positive");
@@ -327,6 +355,12 @@ FilesystemRepoStoreBackend::FilesystemRepoStoreBackend(
   ensurePrivateDirectory(fs::path(m_rootPath) / "manifests");
   ensurePrivateDirectory(fs::path(m_rootPath) / "data-receipts");
   recoverOrphans();
+}
+
+bool
+FilesystemRepoStoreBackend::supportsUserStorageRecovery() const noexcept
+{
+  return m_recoveryPolicy == FilesystemRecoveryPolicy::KEEP_UNCONFIRMED;
 }
 
 void
@@ -521,6 +555,76 @@ FilesystemRepoStoreBackend::erase(const std::string& objectName)
   return true;
 }
 
+bool
+FilesystemRepoStoreBackend::canRemoveUserStorageObject(const RepoUserStorageObject& expected) const
+{
+  validateRepoUserStorageObject(expected);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return canRemoveUserStorageObjectUnlocked(expected);
+}
+
+bool
+FilesystemRepoStoreBackend::canRemoveUserStorageObjectUnlocked(
+  const RepoUserStorageObject& expected) const
+{
+  const auto root = fs::path(m_rootPath);
+  directoryPresentForUserRemoval(root);
+  for (const auto* name : {"manifests", "staging", "payloads", "data-receipts"})
+    directoryPresentForUserRemoval(root / name);
+  directoryPresentForUserRemoval(root / "payloads" / "sha256");
+  directoryPresentForUserRemoval(root / "payloads" / "sha256" / expected.wireSha256.substr(0, 2), true);
+  directoryPresentForUserRemoval(receiptDirectory(expected.objectName, expected.wireSha256), true);
+  for (const auto& reservation : m_reservations) {
+    if (reservation.first == expected.objectName || reservation.second.digest == expected.wireSha256)
+      return false;
+  }
+  const auto prefix = expected.wireSha256 + ".";
+  for (const auto& entry : fs::directory_iterator(root / "staging")) {
+    if (entry.path().filename().string().compare(0, prefix.size(), prefix) == 0)
+      return false; // Includes untracked restart staging and sidecars of every generation.
+  }
+  return true;
+}
+
+bool
+FilesystemRepoStoreBackend::confirmUserStorageRemoval(const RepoUserStorageObject& expected)
+{
+  validateRepoUserStorageObject(expected);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!canRemoveUserStorageObjectUnlocked(expected)) {
+    return false;
+  }
+  std::error_code error;
+  // Validate every retained directory before abort or remove can follow a link.
+  directoryPresentForUserRemoval(fs::path(m_rootPath));
+  directoryPresentForUserRemoval(fs::path(m_rootPath) / "manifests");
+  directoryPresentForUserRemoval(fs::path(m_rootPath) / "staging");
+  directoryPresentForUserRemoval(fs::path(m_rootPath) / "payloads");
+  directoryPresentForUserRemoval(fs::path(m_rootPath) / "payloads" / "sha256");
+  RepoObjectManifest removed;
+  removed.objectName = expected.objectName;
+  removed.sha256 = expected.wireSha256;
+  removed.size = expected.payloadWireBytes;
+  removed.generation = expected.generation;
+  const auto reference = artifactReference(removed);
+  const auto payload = fs::path(m_payloadStore.committedPath(reference));
+  const bool shardPresent = directoryPresentForUserRemoval(payload.parent_path(), true);
+  const auto metadata = fs::symlink_status(manifestPath(expected.objectName), error);
+  if (error && error != std::errc::no_such_file_or_directory)
+    throw std::runtime_error("repo-user-storage-removal-probe-failed: " + error.message());
+  if (fs::exists(metadata)) return false; // Includes a dangling symlink entry.
+  // Retry can finish a prior ambiguous metadata erase before quota is released.
+  fsyncDirectory(fs::path(m_rootPath) / "manifests");
+  m_payloadStore.abort(reference, expected.generation);
+  if (!isDigestReferencedUnlocked(expected.wireSha256, expected.objectName)) {
+    fs::remove(payload, error);
+    if (error)
+      throw std::runtime_error("repo-user-storage-removal-payload-failed: " + error.message());
+    fsyncDirectory(shardPresent ? payload.parent_path() : payload.parent_path().parent_path());
+  }
+  return true;
+}
+
 size_t
 FilesystemRepoStoreBackend::size() const
 {
@@ -563,47 +667,62 @@ FilesystemRepoStoreBackend::usedBytes() const
 {
   std::lock_guard<std::mutex> lock(m_mutex);
   uint64_t total = 0;
-  const fs::path payloadRoot = fs::path(m_rootPath) / "payloads";
-  std::error_code rootError;
-  const auto rootStatus = fs::symlink_status(payloadRoot, rootError);
-  if (rootError == std::errc::no_such_file_or_directory) {
-    return 0;
+  std::vector<fs::path> roots{fs::path(m_rootPath) / "payloads"};
+  if (m_recoveryPolicy == FilesystemRecoveryPolicy::KEEP_UNCONFIRMED) {
+    roots.push_back(fs::path(m_rootPath) / "staging");
   }
-  if (rootError || fs::is_symlink(rootStatus) || !fs::is_directory(rootStatus)) {
-    throw std::runtime_error("repo-file-payload-root-invalid: " + payloadRoot.string());
-  }
-  for (const auto& entry : fs::recursive_directory_iterator(payloadRoot)) {
-    std::error_code statusError;
-    const auto status = fs::symlink_status(entry.path(), statusError);
-    if (statusError) {
-      throw std::runtime_error("repo-file-payload-stat-failed: " +
-                               statusError.message());
-    }
-    if (fs::is_symlink(status)) {
-      throw std::runtime_error("repo-file-payload-symlink-forbidden: " +
-                               entry.path().string());
-    }
-    if (!fs::is_regular_file(status)) {
+  for (const auto& root : roots) {
+    std::error_code rootError;
+    const auto rootStatus = fs::symlink_status(root, rootError);
+    if (rootError == std::errc::no_such_file_or_directory) {
       continue;
     }
-    const int fd = ::open(entry.path().c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) {
-      throwSystem("repo-file-size-query-failed", "open", entry.path());
+    if (rootError || fs::is_symlink(rootStatus) || !fs::is_directory(rootStatus)) {
+      throw std::runtime_error("repo-file-payload-root-invalid: " + root.string());
     }
-    struct stat fileStatus {};
-    if (::fstat(fd, &fileStatus) != 0 || !S_ISREG(fileStatus.st_mode) ||
-        fileStatus.st_size < 0) {
-      const int saved = errno;
+    for (const auto& entry : fs::recursive_directory_iterator(root)) {
+      std::error_code statusError;
+      const auto status = fs::symlink_status(entry.path(), statusError);
+      if (statusError) {
+        throw std::runtime_error("repo-file-payload-stat-failed: " + statusError.message());
+      }
+      if (fs::is_symlink(status)) {
+        throw std::runtime_error("repo-file-payload-symlink-forbidden: " + entry.path().string());
+      }
+      if (!fs::is_regular_file(status)) {
+        continue;
+      }
+      if (root.filename() == "staging") {
+        const auto filename = entry.path().filename().string();
+        const bool tracked = std::any_of(m_reservations.begin(), m_reservations.end(),
+          [&filename](const auto& reservation) {
+            const auto part = reservation.second.digest + "." +
+              std::to_string(reservation.second.generation) + ".part";
+            return filename == part || filename == part + ".ranges" ||
+                   filename == part + ".finalize-intent";
+          });
+        if (tracked) {
+          continue; // The active transaction already reserves its full logical size.
+        }
+      }
+      const int fd = ::open(entry.path().c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+      if (fd < 0) {
+        throwSystem("repo-file-size-query-failed", "open", entry.path());
+      }
+      struct stat metadata {};
+      if (::fstat(fd, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0) {
+        const int saved = errno;
+        ::close(fd);
+        errno = saved;
+        throwSystem("repo-file-size-query-failed", "stat", entry.path());
+      }
+      const auto bytes = static_cast<uint64_t>(metadata.st_size);
       ::close(fd);
-      errno = saved;
-      throwSystem("repo-file-size-query-failed", "stat", entry.path());
+      if (bytes > std::numeric_limits<uint64_t>::max() - total) {
+        return std::numeric_limits<uint64_t>::max();
+      }
+      total += bytes;
     }
-    const auto bytes = static_cast<uint64_t>(fileStatus.st_size);
-    ::close(fd);
-    if (bytes > std::numeric_limits<uint64_t>::max() - total) {
-      return std::numeric_limits<uint64_t>::max();
-    }
-    total += bytes;
   }
   return total;
 }
@@ -685,6 +804,10 @@ FilesystemRepoStoreBackend::putRange(const RepoObjectManifest& manifest,
     }
   }
   catch (...) {
+    if (!canonicalManifest.operationId.empty()) {
+      (void)abortFailedRangesIfOwnedUnlocked(canonicalManifest);
+      throw;
+    }
     // A failed range closes this staging attempt.  Do not leave a reservation
     // or an apparently resumable partial object owned by the failed caller.
     // The cleanup is best effort; recoverOrphans() remains the restart barrier
@@ -733,6 +856,10 @@ FilesystemRepoStoreBackend::commitRanges(const RepoObjectManifest& manifest)
     if (!hadReservation) {
       return;
     }
+    if (!canonicalManifest.operationId.empty()) {
+      (void)abortFailedRangesIfOwnedUnlocked(canonicalManifest);
+      return;
+    }
     try {
       m_payloadStore.abort(reference, generation);
     }
@@ -768,6 +895,9 @@ FilesystemRepoStoreBackend::commitRanges(const RepoObjectManifest& manifest)
       m_payloadStore.flush(reference, generation);
       m_payloadStore.finalize(reference, generation);
     }
+    const auto payload = m_payloadStore.inspectCommitted(reference);
+    if (!payload.exists || !payload.regularFile || payload.sizeBytes != manifest.size)
+      throw std::runtime_error("repo-file-committed-payload-invalid");
     RepoObjectManifest durable = manifest;
     if (durable.generation == 0) {
       durable.generation = generation;
@@ -834,6 +964,11 @@ FilesystemRepoStoreBackend::probeObjectMetadata(
   try {
     result.manifest = readManifestUnlocked(objectName);
     result.manifestPresent = true;
+    const auto path = manifestPath(objectName);
+    if (!fs::is_regular_file(path))
+      throw std::runtime_error("repo-file-manifest-measurement-unavailable");
+    result.manifestWireBytes = fs::file_size(path);
+    result.manifestMeasurementAvailable = true;
   }
   catch (const std::out_of_range&) {
     return result;
@@ -935,6 +1070,157 @@ FilesystemRepoStoreBackend::abortRanges(const std::string& objectName)
   releaseReservationUnlocked(objectName);
 }
 
+bool
+FilesystemRepoStoreBackend::abortUserStorageRangesIfOwned(const RepoObjectManifest& expected)
+{
+  validateManifestForPayload(expected);
+  if (expected.generation == 0 || expected.operationId.empty()) return false;
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return abortUserStorageRangesIfOwnedUnlocked(expected);
+}
+
+bool
+FilesystemRepoStoreBackend::abortUserStorageRangesIfOwnedUnlocked(const RepoObjectManifest& expected)
+{
+  const auto root = fs::path(m_rootPath);
+  directoryPresentForUserRemoval(root);
+  directoryPresentForUserRemoval(root / "staging");
+  const auto owned = m_reservations.find(expected.objectName);
+  if (owned != m_reservations.end() && owned->second.canonicalIdentity != expected.toJson())
+    return false;
+  for (const auto& reservation : m_reservations) {
+    if (reservation.first != expected.objectName && reservation.second.digest == expected.sha256)
+      return false;
+  }
+  const auto reference = artifactReference(expected);
+  const auto staging = m_payloadStore.stagingPath(reference, expected.generation);
+  const auto prefix = expected.sha256 + ".";
+  for (const auto& entry : fs::directory_iterator(root / "staging")) {
+    if (entry.path().filename().string().compare(0, prefix.size(), prefix) != 0) continue;
+    // No in-memory ownership can be inferred from an orphan's digest/name.
+    if (owned == m_reservations.end()) return false;
+    const auto path = entry.path().string();
+    if (path != staging && path != staging + ".ranges" && path != staging + ".finalize-intent")
+      return false;
+    std::error_code error;
+    const auto status = entry.symlink_status(error);
+    if (error) throw std::runtime_error("repo-user-storage-abort-probe-failed: " + error.message());
+    if (fs::is_symlink(status) || !fs::is_regular_file(status)) return false;
+  }
+  // Existing payload-store abort removes exactly these sidecars and fsyncs
+  // staging before either reservation is released. It never removes payloads.
+  m_payloadStore.abort(reference, expected.generation);
+  releaseReservationUnlocked(expected.objectName);
+  return true;
+}
+
+bool
+FilesystemRepoStoreBackend::abortFailedRangesIfOwned(const RepoObjectManifest& expected)
+{
+  validateManifestForPayload(expected);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return abortFailedRangesIfOwnedUnlocked(expected);
+}
+
+bool
+FilesystemRepoStoreBackend::abortFailedRangesIfOwnedUnlocked(const RepoObjectManifest& expected) noexcept
+{
+  try {
+    if (expected.generation == 0 || expected.operationId.empty()) return false;
+    const auto owned = m_reservations.find(expected.objectName);
+    if (owned != m_reservations.end() && owned->second.canonicalIdentity != expected.toJson())
+      return false;
+    const auto root = fs::path(m_rootPath);
+    for (const auto* directory : {"manifests", "staging", "payloads"})
+      directoryPresentForUserRemoval(root / directory);
+    directoryPresentForUserRemoval(root);
+    directoryPresentForUserRemoval(root / "payloads" / "sha256");
+    directoryPresentForUserRemoval(root / "payloads" / "sha256" / expected.sha256.substr(0, 2), true);
+    std::error_code error;
+    const auto metadata = fs::symlink_status(manifestPath(expected.objectName), error);
+    if (error && error != std::errc::no_such_file_or_directory) return false;
+    if (fs::exists(metadata)) {
+      if (!fs::is_regular_file(metadata)) return false;
+      const auto current = readManifestUnlocked(expected.objectName);
+      if (current.operationId == expected.operationId && current.generation == expected.generation)
+        return false;
+    }
+    // Inspect every readable catalog row; conservative uncertainty is not sharing proof.
+    const bool shared = hasVerifiedCommittedDigestReferenceUnlocked(expected);
+    const auto payload = m_payloadStore.inspectCommitted(artifactReference(expected));
+    if (payload.exists && (!payload.regularFile || payload.sizeBytes != expected.size || !shared))
+      return false;
+    // Missing reservation is safe only when the existing primitive proves no digest stages.
+    return abortUserStorageRangesIfOwnedUnlocked(expected);
+  }
+  catch (...) {
+    return false; // Preserve the caller's original error and reservation on uncertainty.
+  }
+}
+
+RepoObjectManifest
+FilesystemRepoStoreBackend::readCheckedManifestUnlocked(const fs::path& path) const
+{
+  if (!fs::is_regular_file(fs::symlink_status(path))) {
+    throw std::runtime_error("repo-file-recovery-manifest-not-regular");
+  }
+  const auto wire = readText(path);
+  const auto json = detail::parseJson(wire, 16U * 1024U * 1024U);
+  const auto& document = detail::requireObject(json);
+  const auto text = [&] (const char* key, const std::string& fallback = "") {
+    return document.count(key) == 0 ? fallback :
+      detail::member(document, key, detail::JsonValue::Kind::String).string;
+  };
+  const auto number = [&] (const char* key, uint64_t fallback = 0) {
+    return document.count(key) == 0 ? fallback :
+      detail::member(document, key, detail::JsonValue::Kind::Unsigned).number;
+  };
+  std::vector<std::string> packetNames;
+  if (document.count("packetNames") != 0) {
+    const auto& names = detail::member(document, "packetNames", detail::JsonValue::Kind::Array);
+    for (const auto& name : names.array) {
+      if (name.kind != detail::JsonValue::Kind::String) {
+        throw std::runtime_error("repo-file-recovery-packet-index-invalid");
+      }
+      packetNames.push_back(name.string);
+    }
+  }
+  const auto manifest = parseManifestJson(wire);
+  if (manifest.objectName.empty() || manifest.objectName.front() != '/' ||
+      manifest.objectName != text("objectName") || manifest.sha256 != text("sha256") ||
+      manifest.size != number("size") || manifest.objectType != text("objectType", "object") ||
+      manifest.generation != number("generation") ||
+      manifest.operationId != text("operationId") ||
+      manifest.segmentCount != number("segmentCount", 1) ||
+      manifest.packetNames != packetNames || path != manifestPath(manifest.objectName)) {
+    throw std::runtime_error("repo-file-recovery-manifest-mismatch");
+  }
+  if (!isMetadataOnly(manifest) || !manifest.sha256.empty()) {
+    validateManifestForPayload(manifest);
+  }
+  return manifest;
+}
+
+bool
+FilesystemRepoStoreBackend::hasVerifiedCommittedDigestReferenceUnlocked(
+  const RepoObjectManifest& expected) const
+{
+  bool shared = false;
+  for (const auto& entry : fs::directory_iterator(fs::path(m_rootPath) / "manifests")) {
+    if (entry.path().extension() != ".json") {
+      continue;
+    }
+    const auto manifest = readCheckedManifestUnlocked(entry.path());
+    if (manifest.sha256 == expected.sha256 && !isMetadataOnly(manifest)) {
+      if (manifest.size != expected.size) {
+        throw std::runtime_error("repo-file-rollback-shared-size-conflict");
+      }
+      shared = true;
+    }
+  }
+  return shared;
+}
+
 uint64_t
 FilesystemRepoStoreBackend::recoverOrphans()
 {
@@ -962,7 +1248,10 @@ FilesystemRepoStoreBackend::recoverOrphans()
       continue;
     }
     try {
-      durableDigests.insert(parseManifestJson(readText(entry.path())).sha256);
+      const auto manifest = readCheckedManifestUnlocked(entry.path());
+      if (!manifest.sha256.empty()) {
+        durableDigests.insert(manifest.sha256);
+      }
     }
     catch (const std::exception&) {
       // A malformed sidecar is retained for operator diagnosis; it is not
@@ -983,7 +1272,8 @@ FilesystemRepoStoreBackend::recoverOrphans()
       throw std::runtime_error("repo-file-recovery-staging-entry-invalid: " +
                                entry.path().string());
     }
-    if (fs::is_regular_file(entryStatus)) {
+    if (fs::is_regular_file(entryStatus) &&
+        m_recoveryPolicy == FilesystemRecoveryPolicy::RECLAIM_ORPHANS) {
       std::error_code error;
       if (fs::remove(entry.path(), error) && !error) {
         ++removed;
@@ -1010,7 +1300,8 @@ FilesystemRepoStoreBackend::recoverOrphans()
       if (!fs::is_regular_file(entryStatus)) {
         continue;
       }
-      if (durableDigests.count(entry.path().filename().string()) == 0) {
+      if (durableDigests.count(entry.path().filename().string()) == 0 &&
+          m_recoveryPolicy == FilesystemRecoveryPolicy::RECLAIM_ORPHANS) {
         std::error_code error;
         if (fs::remove(entry.path(), error) && !error) {
           ++removed;
@@ -1222,6 +1513,15 @@ makeFilesystemRepoStore(const std::string& rootPath, uint64_t maxRangeBytes,
 {
   return std::make_shared<FilesystemRepoStoreBackend>(
     rootPath, maxRangeBytes, vectorCompatibilityThreshold, std::move(ownerId));
+}
+
+std::shared_ptr<RepoStoreBackend>
+makeFilesystemRepoStore(const std::string& rootPath, uint64_t maxRangeBytes,
+                        uint64_t vectorCompatibilityThreshold, std::string ownerId,
+                        FilesystemRecoveryPolicy recoveryPolicy)
+{
+  return std::make_shared<FilesystemRepoStoreBackend>(rootPath, maxRangeBytes,
+    vectorCompatibilityThreshold, std::move(ownerId), recoveryPolicy);
 }
 
 } // namespace ndnsf_distributed_repo

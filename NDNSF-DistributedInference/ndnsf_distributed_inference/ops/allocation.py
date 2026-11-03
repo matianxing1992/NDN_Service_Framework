@@ -341,9 +341,21 @@ def run_allocation(args, config):
             if time.monotonic() >= deadline:
                 raise cluster.ClusterError('ALLOCATION_TIMEOUT')
             for child, role in services:
+                value = read_role(args, role)
+                if (role['kind'] == 'provider' and value and not value['failure'] and
+                        value['execution'] == 'SERVICE_STOPPED' and
+                        value['readiness'] == 'WITHDRAWN' and value['exit_code'] == 0):
+                    native = next((row for row in value['launches'] if row['id'] == role['id']), {})
+                    if (native.get('native_identity') == role['identity'] and
+                            cluster._withdrawal_matches(native, native.get('withdrawal')) and
+                            native['bindings']['NDNSF_DEPLOYMENT_BOOT_ID'] == value['boot_id'] and
+                            native['bindings']['NDNSF_DEPLOYMENT_CONFIG_SHA256'] ==
+                            value['configuration_sha256'] and
+                            (child.poll() is None or (child.returncode == 0 and
+                                                     value['status'] == 'STOPPED'))):
+                        continue
                 if child.poll() is not None:
                     raise cluster.ClusterError('ALLOCATION_SERVICE_EXIT:' + role['id'])
-                value = read_role(args, role)
                 if not value or value['failure'] or value['execution'] != 'RUNNING':
                     raise cluster.ClusterError('ALLOCATION_SERVICE_NOT_RUNNING:' + role['id'])
 

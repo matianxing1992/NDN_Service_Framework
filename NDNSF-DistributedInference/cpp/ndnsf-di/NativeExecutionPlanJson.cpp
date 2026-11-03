@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
@@ -1917,6 +1918,8 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     }
     projection.conversationTurnBinding = std::move(binding);
   }
+  if (typedRoot.contains("protected_kv_restore"))
+    projection.protectedKvRestore = typedRoot.at("protected_kv_restore");
   if (projection.conversationStateReference) {
     if (!projection.conversationTurnBinding ||
         projection.conversationStateReference->conversationId !=
@@ -1925,8 +1928,9 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
           projection.conversationTurnBinding->parentContextEpoch ||
         projection.conversationStateReference->serviceName !=
           projection.conversationTurnBinding->serviceName ||
-        projection.conversationStateReference->planRoleMapDigest !=
-          projection.conversationTurnBinding->planRoleMapDigest ||
+        (!projection.protectedKvRestore &&
+         projection.conversationStateReference->planRoleMapDigest !=
+           projection.conversationTurnBinding->planRoleMapDigest) ||
         projection.conversationStateReference->checkpointDigest !=
           projection.conversationTurnBinding->parentCheckpointDigest) {
       throw std::invalid_argument(
@@ -2041,6 +2045,11 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
           projection.deviceBinding.offerScopedDeviceHandle))) {
     throw std::invalid_argument(
       "V3 Selection role/assembly/dataflow/device binding mismatch");
+  }
+  if (projection.protectedKvRestore) {
+    const auto saved = nativeReadSavedKvRole(projection.protectedKvRestore->at("savedRole"));
+    (void)nativeReadKvRestore(*projection.protectedKvRestore, projection,
+      saved.protection.ownerIdentity, ndn::Name(saved.receipt.serviceName), 0);
   }
   return projection;
 }
@@ -2662,6 +2671,7 @@ NativeJson selectionInvocationFields(const NativeSelectionProjectionV3& value,
     ? generationBindingsJson(value.generationContract) : jsonValue(value.generationContract);
   if (value.conversationStateReference) root["conversation_state_reference"] = jsonValue(*value.conversationStateReference);
   if (value.conversationTurnBinding) root["conversation_turn_binding"] = jsonValue(*value.conversationTurnBinding);
+  if (value.protectedKvRestore) root["protected_kv_restore"] = *value.protectedKvRestore;
   if (value.hasGrantBinding) {
     root["grant_binding"] = {{"provider", value.provider}, {"request_id", value.requestId},
       {"attempt", value.attempt}, {"plan_core_digest", value.planCoreDigest},

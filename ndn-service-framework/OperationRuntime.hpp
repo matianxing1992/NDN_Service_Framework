@@ -156,6 +156,8 @@ struct RuntimeState
   std::size_t active = 0;
   bool closed = false;
   bool drained = false;
+  bool workerExited = false;
+  bool deferJoinOnDestroy = false;
   std::thread worker;
   std::thread::id workerId;
   std::function<void(std::function<void()>)> submitHook;
@@ -272,6 +274,9 @@ public:
   /** Stop accepting tickets and allow already queued work to settle. */
   void close() noexcept;
 
+  /** Let the join reaper wait when the final owner may run on a callback thread. */
+  void deferJoinOnDestroy() noexcept;
+
   /** Wake drain waiters whose owner supplies an external readiness predicate. */
   void notifyWaiters() noexcept;
 
@@ -283,6 +288,9 @@ public:
 
   /** Close and wait for all tickets, queued work, and timers to settle. */
   bool drain(std::chrono::milliseconds timeout);
+
+  /** After owner barriers drain, wait for the worker to exit and join it. */
+  bool joinAfterDrain(std::chrono::milliseconds timeout);
 
   /** Register a non-business drain notification. */
   OperationSubscription
@@ -328,6 +336,7 @@ private:
   static void runWorker(const std::shared_ptr<detail::RuntimeState>& state) noexcept;
 
   std::shared_ptr<detail::RuntimeState> m_state;
+  std::mutex m_workerJoinMutex;
 
   template<typename Result, typename Event> friend class OperationState;
   template<typename Event> friend class OperationReader;

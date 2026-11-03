@@ -811,6 +811,7 @@ NativeSelectionProjectionV3 makeProjection(
   projection.groupCapabilityV1 = inputs.groupCapabilityV1;
   projection.conversationStateReference = inputs.conversationStateReference;
   projection.conversationTurnBinding = inputs.conversationTurnBinding;
+  projection.protectedKvRestore = inputs.protectedKvRestore;
   projection.hasGrantBinding = grant != sealed.grants.end();
   if (grant != sealed.grants.end()) {
     projection.grantName = grant->grantName;

@@ -250,6 +250,11 @@ def run_role(args):
                     save()
                 if code is not None:
                     state['exit_code'] = code
+                    if (actor and code == 0 and
+                            cluster._provider_withdrawal_complete(actor, row)):
+                        state.update(readiness='WITHDRAWN', execution='SERVICE_STOPPED')
+                        save()
+                        break
                     if kind != 'requester' or code != 0:
                         raise cluster.ClusterError('NATIVE_CHILD_EXIT:' + role_id + ':' + str(code))
                     state.update(readiness='FINITE_EXITED', execution='COMPLETE',
@@ -270,9 +275,12 @@ def run_role(args):
                 terminal = next((item for item in state['cleanup'] if item['id'] == role_id), {})
                 if state['exit_code'] is None:
                     state['exit_code'] = terminal.get('exitCode')
-                if kind == 'requester' and state['execution'] == 'COMPLETE' and (
+                if ((kind == 'requester' and state['execution'] == 'COMPLETE') or
+                        state['readiness'] == 'WITHDRAWN') and (
                         terminal.get('status') != 'ZERO' or terminal.get('forced')):
-                    state.update(execution='FAILED', failure='REQUESTER_GROUP_CLEANUP:' +
+                    boundary = ('PROVIDER_WITHDRAWAL_GROUP_CLEANUP:' if kind == 'provider'
+                                else 'REQUESTER_GROUP_CLEANUP:')
+                    state.update(execution='FAILED', failure=boundary +
                                  terminal.get('status', 'UNKNOWN'))
                 save()
             finally:

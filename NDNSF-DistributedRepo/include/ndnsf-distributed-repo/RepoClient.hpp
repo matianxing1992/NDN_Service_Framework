@@ -13,6 +13,8 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <utility>
 
 namespace ndn_service_framework {
 class LocalServiceRegistry;
@@ -29,6 +31,55 @@ struct OriginalDataReplica
   ndn::Name servicePrefix;
 };
 
+struct RepoUserStoragePacketSetFetchLimits
+{
+  uint32_t listingPageSize = 100;
+  // Applied independently to the initial claim scan and the final recheck.
+  uint32_t maxListingPagesPerScan = 128;
+  uint64_t maxListedObjectsPerScan = 12800;
+  // Applies cumulatively across both scans.
+  uint64_t maxListingWireBytes = 16ULL << 20;
+  uint32_t maxPacketCount = 4096;
+  uint64_t maxPacketWireBytes = 64ULL << 20;
+  uint64_t maxManifestWireBytes = 4ULL << 20;
+  int ackCollectionTimeMs = 200;
+};
+
+/**
+ * Immutable transport result for one exact, currently committed Owner claim.
+ * RepoClient mints this only after matching the manifest to that claim, fetching
+ * every indexed original Data packet, checking the ordered wire digest, and
+ * observing the same claim again. It does not validate protected-KV semantics
+ * or grant execution authority.
+ */
+class VerifiedRepoUserStoragePacketSetV1
+{
+public:
+  VerifiedRepoUserStoragePacketSetV1(VerifiedRepoUserStoragePacketSetV1&&) noexcept = default;
+  VerifiedRepoUserStoragePacketSetV1& operator=(VerifiedRepoUserStoragePacketSetV1&&) noexcept = default;
+  VerifiedRepoUserStoragePacketSetV1(const VerifiedRepoUserStoragePacketSetV1&) = delete;
+  VerifiedRepoUserStoragePacketSetV1& operator=(const VerifiedRepoUserStoragePacketSetV1&) = delete;
+
+  const RepoArtifactTarget& target() const noexcept { return m_target; }
+  const RepoUserStorageClaim& claim() const noexcept { return m_claim; }
+  const RepoObjectManifest& manifest() const noexcept { return m_manifest; }
+  const std::vector<std::vector<uint8_t>>& packetWires() const noexcept { return m_packetWires; }
+
+private:
+  VerifiedRepoUserStoragePacketSetV1(RepoArtifactTarget target,
+    RepoUserStorageClaim claim, RepoObjectManifest manifest,
+    std::vector<std::vector<uint8_t>> packetWires)
+    : m_target(std::move(target)), m_claim(std::move(claim)),
+      m_manifest(std::move(manifest)), m_packetWires(std::move(packetWires))
+  {}
+
+  RepoArtifactTarget m_target;
+  RepoUserStorageClaim m_claim;
+  RepoObjectManifest m_manifest;
+  std::vector<std::vector<uint8_t>> m_packetWires;
+  friend class RepoClient;
+};
+
 struct StoreOptions
 {
   std::string objectType = "object";
@@ -42,6 +93,30 @@ class RepoClient
 public:
   static constexpr const char* DEFAULT_SERVICE_NAME = "/NDNSF/DistributedRepo/Object/v1";
 
+  /** Target tuple is frozen by selection; user supplies the authenticated owner. */
+  static ndn::Name requestUserStorageGrant(
+    ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
+    const RepoUserStorageGrantRequest& request, int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  static ndn::Name requestUserStorageList(
+    ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
+    const RepoUserStorageListRequest& request, int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  static ndn::Name requestUserStorageUsage(
+    ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
+    const RepoUserStorageUsageRequest& request, int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  /** PENDING retains charge; only a bound DELETED reply confirms cleanup. */
+  static ndn::Name requestUserStorageDelete(
+    ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
+    const RepoUserStorageDeleteRequest& request, int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
   /** Query each Repo's stored Data receipt and current location before an
    * original-name Interest. Producer trust is mandatory and caller-owned.
    */
@@ -52,6 +127,74 @@ public:
     const std::vector<OriginalDataReplica>& replicas,
     const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
     int timeoutMs);
+
+  /** Fetch one exact packet from a current user-storage packet set.
+   * The caller must bind the complete set to the Owner listing and verify its
+   * aggregate wire digest. Producer trust is mandatory and caller-owned.
+   * This uses the Owner's existing Face, blocks outside its I/O thread, and
+   * requires the Owner Face event loop to remain active during the fetch.
+   */
+  static std::vector<uint8_t> fetchOriginalDataPacketFromUserStorage(
+    ndn_service_framework::ServiceUser& user,
+    const RepoArtifactTarget& target,
+    const ndn::Name& dataName,
+    uint64_t expectedWireBytes,
+    const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
+    int timeoutMs);
+
+  /** Retrieve an explicitly indexed immutable set through the existing User Face.
+   * Reference routing/byte commitments do not grant storage or execution authority.
+   * Checks the complete ordered digest, then verifies standard certificates before
+   * ordinary Data with the caller's configured Producer policy. Returned order and
+   * wire bytes are unchanged. Call off Face and retain its owner until callbacks drain.
+   * The original deadline bounds an in-progress fetch; current-work checks gate
+   * admission, packet validation and return. No Owner claim is minted by this API. */
+  static std::vector<std::vector<uint8_t>> fetchOriginalDataPacketSet(
+    ndn_service_framework::ServiceUser& user, const RepoDataReference& reference,
+    const std::function<bool(const ndn::Data&)>& verifyProducerSignature, int timeoutMs,
+    RepoUserStoragePacketSetFetchLimits limits = {},
+    const std::function<void()>& requireCurrent = {});
+
+  /**
+   * Page the authenticated Owner listing for one exact claim, fetch its Repo
+   * manifest and every original packet from the selected Provider, then
+   * revalidate the Owner claim. Producer trust is caller-owned. Packet Interests
+   * use the Owner's existing Face; this blocks outside its I/O thread and
+   * requires the Owner Face event loop to remain active during the fetch.
+   */
+  static VerifiedRepoUserStoragePacketSetV1 fetchOriginalDataPacketSetFromUserStorage(
+    ndn_service_framework::ServiceUser& owner,
+    const RepoArtifactTarget& target,
+    const std::string& objectName,
+    const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
+    int timeoutMs,
+    RepoUserStoragePacketSetFetchLimits limits = {});
+
+  /** Re-read one exact Owner claim after caller-side semantic validation.
+   * Returns only when the complete committed claim tuple is unchanged. This is
+   * a bounded observation, not a durability lease, and must not run on the
+   * ServiceUser Face I/O thread.
+   */
+  static RepoUserStorageClaim revalidateCurrentUserStorageClaim(
+    ndn_service_framework::ServiceUser& owner,
+    const RepoArtifactTarget& target,
+    const RepoUserStorageClaim& expectedClaim,
+    int timeoutMs,
+    RepoUserStoragePacketSetFetchLimits limits = {});
+
+  /** Commit an exact signed packet set using a current Owner grant.
+   * Serves a bounded private spool only through the writer's existing route.
+   * Confirms INSERT by writer-bound manifest and complete original-wire readback.
+   * The caller keeps writer and its running Face alive; never call on that Face.
+   * On ambiguous failure the Owner retains cleanup/reconciliation responsibility.
+   */
+  static RepoObjectManifest commitUserStorageOriginalPackets(
+    ndn_service_framework::ServiceUser& writer, const RepoArtifactTarget& target,
+    const RepoUserStorageInsertRequest& request,
+    const std::function<std::optional<std::vector<uint8_t>>()>& nextOriginalPacket,
+    const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
+    int ackCollectionTimeMs, int timeoutMs,
+    const std::function<void()>& requireCurrent = {});
 
   static RepoObjectManifest put(RepoNode& node,
                                 const std::string& objectName,

@@ -60,6 +60,11 @@ def build(bld):
     # Reuse the production scheduler: the core-flow fixture is a large C++
     # translation unit and must compile exclusively under the host budget.
     Context.load_module(str(Path(source_root) / 'wscript'))
+    bld.program(target='installed-kv-handoff-api', source='installed-kv-handoff-api.cpp',
+                includes=[str(runtime / 'include')],
+                use='REPO NDNSF CORE OPENSSL SQLITE',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib'), str(bld.env.NAC_LIBDIR)], install_path=None)
     bld.program(target='installed-deployment-oracle',
                 source='../../examples/Spec189TwoProviderOracle.cpp',
                 includes=[str(runtime / 'include'), source_root,

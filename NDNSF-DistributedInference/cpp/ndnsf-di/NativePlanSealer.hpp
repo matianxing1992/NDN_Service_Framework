@@ -113,6 +113,7 @@ struct NativeRoleProjectionInputs
   std::string groupCapabilityV1;
   std::optional<ConversationStateReferenceV1> conversationStateReference;
   std::optional<ConversationTurnBindingV1> conversationTurnBinding;
+  std::optional<NativeJson> protectedKvRestore;
 };
 
 struct NativeProviderGrantView

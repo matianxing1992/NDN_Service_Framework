@@ -16,6 +16,9 @@
 
 namespace ndnsf_distributed_repo {
 
+/** Startup policy is selected by the owning deployment, before any recovery runs. */
+enum class FilesystemRecoveryPolicy { RECLAIM_ORPHANS, KEEP_UNCONFIRMED };
+
 /**
  * RepoStoreBackend authority backed by the streaming artifact payload store.
  *
@@ -33,6 +36,10 @@ public:
     uint64_t maxRangeBytes = 16 * 1024 * 1024,
     uint64_t vectorCompatibilityThreshold = 1 * 1024 * 1024,
     std::string ownerId = "filesystem-repo");
+  FilesystemRepoStoreBackend(std::string rootPath, uint64_t maxRangeBytes,
+    uint64_t vectorCompatibilityThreshold, std::string ownerId,
+    FilesystemRecoveryPolicy recoveryPolicy);
+  bool supportsUserStorageRecovery() const noexcept override;
 
   void put(const RepoObjectManifest& manifest,
            std::vector<uint8_t> payload) override;
@@ -62,6 +69,10 @@ public:
   bool supportsRange() const noexcept override;
   uint64_t fullCopyFallbackCount() const noexcept override;
   void abortRanges(const std::string& objectName) override;
+  bool abortUserStorageRangesIfOwned(const RepoObjectManifest& expected) override;
+  bool abortFailedRangesIfOwned(const RepoObjectManifest& expected) override;
+  bool canRemoveUserStorageObject(const RepoUserStorageObject& expected) const override;
+  bool confirmUserStorageRemoval(const RepoUserStorageObject& expected) override;
   bool supportsManifestLookup() const noexcept override;
 
   /** Remove uncommitted staging files and committed payloads with no manifest. */
@@ -99,11 +110,17 @@ private:
   static bool isMetadataOnly(const RepoObjectManifest& manifest) noexcept;
   void reserveDiskUnlocked(const RepoObjectManifest& manifest);
   void releaseReservationUnlocked(const std::string& objectName);
+  bool canRemoveUserStorageObjectUnlocked(const RepoUserStorageObject& expected) const;
+  bool abortUserStorageRangesIfOwnedUnlocked(const RepoObjectManifest& expected);
+  bool abortFailedRangesIfOwnedUnlocked(const RepoObjectManifest& expected) noexcept;
+  bool hasVerifiedCommittedDigestReferenceUnlocked(const RepoObjectManifest& expected) const;
+  RepoObjectManifest readCheckedManifestUnlocked(const std::filesystem::path& path) const;
 
 private:
   std::string m_rootPath;
   uint64_t m_maxRangeBytes;
   uint64_t m_vectorCompatibilityThreshold;
+  FilesystemRecoveryPolicy m_recoveryPolicy;
   BackendOwnershipLease m_ownership;
   mutable FilesystemArtifactPayloadStore m_payloadStore;
   mutable std::mutex m_mutex;
@@ -120,6 +137,11 @@ makeFilesystemRepoStore(const std::string& rootPath,
                         uint64_t maxRangeBytes = 16 * 1024 * 1024,
                         uint64_t vectorCompatibilityThreshold = 1 * 1024 * 1024,
                         std::string ownerId = "filesystem-repo");
+
+std::shared_ptr<RepoStoreBackend>
+makeFilesystemRepoStore(const std::string& rootPath, uint64_t maxRangeBytes,
+                        uint64_t vectorCompatibilityThreshold, std::string ownerId,
+                        FilesystemRecoveryPolicy recoveryPolicy);
 
 } // namespace ndnsf_distributed_repo
 

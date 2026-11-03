@@ -3,6 +3,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePortableKv.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderResidencyV4.hpp"
 
 #include <cstdint>
@@ -190,6 +191,28 @@ public:
   /** Whether this runner can retain conversation state without a bundle. */
   virtual bool
   supportsConversationStateTransfer() const;
+
+  /** Whether complete typed conversation tensors can be transferred. */
+  virtual bool
+  supportsPortableConversationState() const;
+
+  /** Export committed state under mandatory allocation/cancellation bounds.
+   * Returned process-local plaintext must be protected before publication.
+   * The caller retains the runner and its state owner throughout this call.
+   */
+  virtual NativePortableKvSnapshotV1
+  exportConversationState(const NativeConversationStateHandleV1& state,
+                          const DecodeStateIdentityV1& committedIdentity,
+                          const NativePortableKvLimitsV1& limits);
+
+  /** Atomically install state under a fresh, locally authorized identity.
+   * Unsupported adapters reject; failure must not publish a partial handle.
+   */
+  virtual NativeConversationStateHandleV1
+  importConversationState(const NativePortableKvSnapshotV1& snapshot,
+                          const DecodeStateIdentityV1& destinationIdentity,
+                          const std::string& destinationConversationKey,
+                          const NativePortableKvLimitsV1& limits);
 
   /** Move request-local adapter state into a Provider-owned conversation key. */
   virtual std::optional<NativeConversationStateHandleV1>

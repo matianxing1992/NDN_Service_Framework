@@ -16,6 +16,7 @@
 
 namespace ndnsf::di {
 class NativeDiError;
+class NativeKvHandoffOwner;
 
 struct NativeConversationConfig
 {
@@ -48,6 +49,8 @@ struct NativeConversationTurn
   std::map<std::string, std::string> providersByRole;
   // Process-local authorization only; never journaled or restored.
   std::optional<NativeGrantLease> grantLease;
+  std::optional<NativeJson> protectedKvReferences;
+  std::map<std::string, std::string> sourceProvidersByRole;
 };
 
 struct NativeCompletedAttempt
@@ -100,6 +103,8 @@ struct NativeConversationRecord
   std::string planRoleMapDigest;
   std::string requestContractDigest;
   std::uint64_t retentionDeadlineMs = 0;
+  std::optional<NativeJson> protectedKvReferences;
+  std::map<std::string, std::string> nextTurnProvidersByRole;
 };
 
 class NativeConversationCoordinator
@@ -130,6 +135,9 @@ public:
   NativeConversationTurn bindAttemptPlanRoleMap(
     const NativeConversationTurn& turn,
     const std::map<std::string, std::string>& providersByRole) const;
+  NativeConversationTurn bindRecoveryPlanRoleMap(
+    const NativeConversationTurn& turn,
+    const std::map<std::string, std::string>& providersByRole) const;
   void bindGrantLease(const NativeConversationTurn& turn,
                       const NativeGrantLease& lease) const;
   NativeConversationCheckpoint prepareCheckpoint(
@@ -140,8 +148,14 @@ public:
   void restore();
 
   std::optional<NativeConversationRecord> find(const std::string& conversationId) const;
+  std::filesystem::path journalRoot() const;
 
 private:
+  friend class NativeKvHandoffOwner;
+  void promoteProtectedKvSet(
+    const std::string& conversationId, const std::string& expectedCheckpointDigest,
+    const NativeJson& references, const std::map<std::string, std::string>& nextProviders,
+    const std::function<void()>& requireCurrent);
   struct Impl;
   std::unique_ptr<Impl> m_impl;
 };

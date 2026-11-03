@@ -22,6 +22,125 @@
 
 namespace ndn_service_framework {
 
+bool
+MessageValidator::validateProducerPacketWireUntil(
+  const std::vector<uint8_t>& wire, const ndn::Name& producer,
+  std::chrono::steady_clock::time_point deadline)
+{
+  const auto validationOwner = weak_from_this().lock();
+  if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE || producer.empty() ||
+      !validationOwner || deadline <= std::chrono::steady_clock::now() ||
+      (m_callbackIo && m_callbackIo->get_executor().running_in_this_thread())) {
+    return false;
+  }
+  const auto control = m_producerPacketValidationControl;
+  auto waiter = std::make_shared<ProducerPacketValidationWaiter>();
+  struct PendingSlot
+  {
+    std::shared_ptr<ProducerPacketValidationControl> control;
+    bool counted = false;
+
+    ~PendingSlot()
+    {
+      if (!counted) {
+        return;
+      }
+      {
+        std::lock_guard<std::mutex> lock(control->mutex);
+        --control->outstanding;
+      }
+      control->wake.notify_all();
+    }
+  };
+  auto slot = std::make_shared<PendingSlot>();
+  slot->control = control;
+  {
+    std::lock_guard<std::mutex> lock(control->mutex);
+    constexpr size_t MAX_PENDING_VALIDATIONS = 16;
+    if (control->stopping || control->outstanding >= MAX_PENDING_VALIDATIONS) {
+      return false;
+    }
+    ++control->outstanding;
+    slot->counted = true;
+  }
+  try {
+    const ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
+    block.parse();
+    const ndn::Data data(block);
+    if (data.wireEncode().size() != wire.size()) {
+      return false;
+    }
+    if (ndn::security::Certificate::isValidName(data.getName())) {
+      const ndn::security::Certificate certificate(data);
+      if (certificate.getIdentity() != producer || !certificate.getValidityPeriod().isValid()) {
+        return false;
+      }
+      ndn::security::transform::PublicKey publicKey;
+      publicKey.loadPkcs8(certificate.getPublicKey());
+    }
+    validationOwner->validateWithConfiguredTrustSchema(data,
+      [control, waiter, slot, validationOwner, producer](const ndn::Data& validated) {
+        bool accepted = false;
+        try {
+          if (ndn::security::Certificate::isValidName(validated.getName())) {
+            ndn::security::Certificate certificate(validated);
+            // Certificates retain their standard subject Name; the configured
+            // schema, not application Producer delegation, authorizes the issuer.
+            accepted = certificate.getIdentity() == producer &&
+                       certificate.getValidityPeriod().isValid();
+            if (accepted) {
+              validationOwner->getConfiguredValidatorForSegmentFetcher()
+                .cacheUnverifiedCert(std::move(certificate));
+            }
+          }
+          else {
+            accepted = validationOwner->isProducerSignerAuthorized(validated, producer);
+          }
+        }
+        catch (const std::exception&) {
+          accepted = false;
+        }
+        {
+          std::lock_guard<std::mutex> lock(control->mutex);
+          waiter->accepted = !control->stopping && accepted;
+          waiter->complete = true;
+        }
+        control->wake.notify_all();
+      },
+      [control, waiter, slot](const ndn::Data&,
+                              const ndn::security::ValidationError&) {
+        {
+          std::lock_guard<std::mutex> lock(control->mutex);
+          waiter->accepted = false;
+          waiter->complete = true;
+        }
+        control->wake.notify_all();
+      });
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+  std::unique_lock<std::mutex> lock(control->mutex);
+  if (!control->wake.wait_until(lock, deadline, [&] {
+        return control->stopping || waiter->complete;
+      })) {
+    return false;
+  }
+  return !control->stopping && waiter->accepted &&
+         std::chrono::steady_clock::now() <= deadline;
+}
+
+void
+MessageValidator::stopProducerPacketValidation() noexcept
+{
+  const auto control = m_producerPacketValidationControl;
+  {
+    std::lock_guard<std::mutex> lock(control->mutex);
+    control->stopping = true;
+  }
+  control->wake.notify_all();
+}
+
 class EncapsulatedMessageValidator final : public ndn::svs::BaseValidator
 {
 public:
