@@ -48,7 +48,7 @@ constexpr Limit LIMITS[] = {
   {"maxQueuedWindows", 1, 2},
   {"maxInFlightWindows", 1, 1},
   {"workerTimeoutMs", 1, 30000},
-  {"runDeadlineMs", 1, 900000},
+  {"runDeadlineMs", 1, 1200000},
   {"maxChildLogBytes", 1, 16 * 1024 * 1024},
   {"maxRetainedTransactionWindows", 1, 120},
 };
