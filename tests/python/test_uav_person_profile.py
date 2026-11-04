@@ -23,6 +23,19 @@ DETECTOR_DIGEST = re.search(r'PERSON_DETECTOR_PROFILE_DIGEST = "([^"]+)"', DETEC
 
 
 class PersonProfileTests(unittest.TestCase):
+    def test_bounded_slow_cpu_demo_deadline(self):
+        wire = GOLDEN.replace(b'"runDeadlineMs":900000', b'"runDeadlineMs":1200000')
+        parsed = profile_module.parse_person_profile(wire)
+        self.assertEqual(parsed.limits["runDeadlineMs"], 1_200_000)
+        self.assertEqual(parsed.canonical_bytes, wire)
+        self.assertNotEqual(parsed.digest, DIGEST)
+        self.assertEqual(profile_module.parse_person_profile(GOLDEN).digest, DIGEST)
+        for invalid in (1_200_001, True):
+            value = json.loads(wire)
+            value["limits"]["runDeadlineMs"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                profile_module.parse_person_profile(json.dumps(value).encode())
+
     def test_reid_preprocess_identity_and_closed_mode(self):
         gap = profile_module.parse_person_profile(GOLDEN)
         self.assertEqual(gap.reid_preprocess_id,

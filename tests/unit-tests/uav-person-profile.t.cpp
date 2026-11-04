@@ -30,6 +30,22 @@ replaceOne(std::string input, const std::string& from, const std::string& to)
 
 BOOST_AUTO_TEST_SUITE(UavPersonProfile)
 
+BOOST_AUTO_TEST_CASE(BoundedSlowCpuDemoDeadline)
+{
+  const std::string original(PERSON_PROFILE_GOLDEN);
+  const auto wire = replaceOne(original, "\"runDeadlineMs\":900000",
+                               "\"runDeadlineMs\":1200000");
+  const auto profile = parseUavPersonTrackingProfile(wire);
+  BOOST_CHECK_EQUAL(profile.limits.at("runDeadlineMs"), 1200000);
+  BOOST_CHECK_EQUAL(profile.canonicalJson, wire);
+  BOOST_CHECK(profile.profileDigest != std::string(PERSON_PROFILE_DIGEST));
+  BOOST_CHECK_EQUAL(parseUavPersonTrackingProfile(original).profileDigest,
+                    std::string(PERSON_PROFILE_DIGEST));
+  BOOST_CHECK_THROW(parseUavPersonTrackingProfile(replaceOne(
+    wire, "\"runDeadlineMs\":1200000", "\"runDeadlineMs\":1200001")),
+    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(Nms50CanonicalIdentity)
 {
   const auto wire = replaceOne(std::string(PERSON_DETECTOR_PROFILE_GOLDEN),

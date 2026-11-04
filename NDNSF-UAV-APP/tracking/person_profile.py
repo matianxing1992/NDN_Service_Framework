@@ -32,7 +32,7 @@ LIMIT_BOUNDS = {
     "maxQueuedWindows": (1, 2),
     "maxInFlightWindows": (1, 1),
     "workerTimeoutMs": (1, 30_000),
-    "runDeadlineMs": (1, 900_000),
+    "runDeadlineMs": (1, 1_200_000),
     "maxChildLogBytes": (1, 16 * 1024 * 1024),
     "maxRetainedTransactionWindows": (1, 120),
 }
