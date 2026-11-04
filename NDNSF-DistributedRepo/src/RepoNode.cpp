@@ -292,7 +292,7 @@ RepoNode::measurePersistentUserStorageObject(const RepoObjectManifest& manifest,
   const auto probe = m_core.probeObjectMetadata(manifest.objectName);
   if (!probe.manifestPresent || !probe.manifestMeasurementAvailable ||
       !probe.payloadMetadataAvailable || !probe.payloadRepresentationValid ||
-      probe.manifest.toJson() != manifest.toJson()) {
+      !probe.manifest.hasSameMetadata(manifest)) {
     throw std::runtime_error("repo-user-storage-inventory-conflict: physical measurement unavailable");
   }
   std::string digest;

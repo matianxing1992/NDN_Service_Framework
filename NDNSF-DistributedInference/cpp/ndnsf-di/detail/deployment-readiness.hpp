@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <cerrno>
+#include <cstdint>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -15,7 +16,7 @@ namespace ndnsf::di::detail {
 /** Emit the two native service lifecycle boundaries with their launch binding. */
 inline void
 emitDeploymentLifecycle(const std::string& identity, const std::string& nativeBootId,
-  const std::string& withdrawalId)
+  const std::string& withdrawalId, std::uint64_t stopGraceMs = 0)
 {
   const char* actor = ::getenv("NDNSF_DEPLOYMENT_ACTOR_ID");
   const char* boot = ::getenv("NDNSF_DEPLOYMENT_BOOT_ID");
@@ -44,6 +45,11 @@ emitDeploymentLifecycle(const std::string& identity, const std::string& nativeBo
                           {"pid", ::getpid()}});
   if (!withdrawalId.empty())
     record["withdrawal_id"] = withdrawalId;
+  if (stopGraceMs != 0) {
+    if (!withdrawalId.empty() || stopGraceMs > 615000)
+      throw std::invalid_argument("invalid managed deployment stop grace");
+    record["stop_grace_ms"] = stopGraceMs;
+  }
   const auto line = record.dump() + "\n";
   if (identity.empty() || nativeBootId.empty() || line.size() > 4096)
     throw std::invalid_argument("invalid native deployment readiness identity or size");
@@ -57,9 +63,10 @@ emitDeploymentLifecycle(const std::string& identity, const std::string& nativeBo
 
 /** Report actual native readiness to the owning deployment process. */
 inline void
-emitDeploymentReadiness(const std::string& identity, const std::string& nativeBootId)
+emitDeploymentReadiness(const std::string& identity, const std::string& nativeBootId,
+  std::uint64_t stopGraceMs = 0)
 {
-  emitDeploymentLifecycle(identity, nativeBootId, {});
+  emitDeploymentLifecycle(identity, nativeBootId, {}, stopGraceMs);
 }
 
 /** Report a non-forced Provider withdrawal only after its owners have drained. */

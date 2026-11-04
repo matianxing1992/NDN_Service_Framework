@@ -1,11 +1,15 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "tests/fixtures/fixed-keychain-trust.hpp"
+#include "tests/unit-tests/native-protected-kv-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-save.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-publication.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-owner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-packets.hpp"
 
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/RepoNode.hpp"
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 
 #include <filesystem>
 #include <functional>
@@ -57,6 +61,55 @@ struct TransportFixture
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec221KvSave)
+
+BOOST_AUTO_TEST_CASE(KvOriginalPacketReferenceSelectsTheExactRepoPacketPath)
+{
+  di::test::protectedKv::Fixture fixture;
+  const auto protectedReference = fixture.protect();
+  const auto certificate = fixture.ownerKeys.createIdentity(protectedReference.producerPrefix,
+    ndn::RsaKeyParams(2048)).getDefaultKey().getDefaultCertificate();
+  const di::NativeProtectedKvPacketLimits limits{fixture.limits, 1000000, 128};
+  const auto packets = di::nativePrepareProtectedKvPackets(fixture.cipher, protectedReference,
+    certificate, limits, [&](ndn::Data& data) {
+      fixture.ownerKeys.sign(data, ndn::security::signingByCertificate(certificate));
+    }, [] {});
+  const auto reference = di::nativeKvPacketReference(packets, certificate.getIdentity());
+  std::vector<std::vector<std::uint8_t>> wires;
+  for (const auto& wire : packets.packetWires)
+    wires.emplace_back(wire.begin(), wire.end());
+  BOOST_REQUIRE(reference.packetSetMetadata);
+  BOOST_CHECK(reference.packetSetMetadata->dataPrefix.empty());
+  BOOST_CHECK_EQUAL(reference.packetSetMetadata->envelopeBytes, 0U);
+  BOOST_CHECK(ndn::Name(reference.dataPrefix) == certificate.getIdentity());
+
+  ndnsf_distributed_repo::StorageCapability capability;
+  capability.repoNode = "/repo/kv";
+  capability.freeBytes = 1U << 20;
+  const auto makeNode = [&](const char* label) {
+    return std::make_unique<ndnsf_distributed_repo::RepoNode>(ndn::Name("/repo/service"),
+      capability, ndnsf_distributed_repo::makeFilesystemRepoStore(
+        (fixture.directory / label).string(), 1U << 20, 1U << 20));
+  };
+  auto oldReference = reference;
+  oldReference.packetSetMetadata->dataPrefix = reference.dataPrefix;
+  const auto rejected = makeNode("old-marking");
+  const auto oldStatus = rejected->insertWirePackets(oldReference, wires);
+  BOOST_CHECK_EQUAL(oldStatus.state, "FAILED");
+  BOOST_CHECK_EQUAL(oldStatus.message, "BLOB_MANIFEST_ENVELOPE_INVALID");
+  BOOST_CHECK(rejected->core().list().empty());
+
+  const auto node = makeNode("exact-kv");
+  BOOST_CHECK_EQUAL(node->insertWirePackets(reference, wires).state, "DONE");
+  for (std::size_t i = 0; i < packets.packetNames.size(); ++i)
+    BOOST_CHECK(node->getDataPacket(packets.packetNames[i].toUri()) == wires[i]);
+  auto corrupted = wires;
+  corrupted.back().back() ^= 1;
+  BOOST_CHECK_EQUAL(node->insertWirePackets(reference, corrupted).state, "FAILED");
+  for (std::size_t i = 0; i < packets.packetNames.size(); ++i)
+    BOOST_CHECK(node->getDataPacket(packets.packetNames[i].toUri()) == wires[i]);
+  BOOST_CHECK_THROW(di::nativeKvPacketReference(packets, ndn::Name("/other/producer")),
+                    std::invalid_argument);
+}
 
 BOOST_AUTO_TEST_CASE(OwnerReadBudgetBoundsTheCompleteRoleSetBeforeTransport)
 {

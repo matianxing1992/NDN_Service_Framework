@@ -222,19 +222,64 @@ BOOST_AUTO_TEST_CASE(ExactIndexPreservesManifestSegmentsAndAuxiliaryNames)
   BOOST_CHECK_THROW(fetcher(invalid), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(RetransmitsLostInitialWindowWithoutChangingOriginalPackets)
+{
+  FacePump pump;
+  const ndn::Name prefix("/producer/kv/lost-window");
+  std::vector<ndn::Data> packets;
+  RepoDataReference reference;
+  reference.dataPrefix = prefix.toUri();
+  reference.hasFinalSegment = true;
+  reference.finalSegment = 31;
+  for (unsigned i = 0; i < 32; ++i) {
+    packets.push_back(makeData(ndn::Name(prefix).appendSegment(i), i));
+    reference.expectedSize += wireOf(packets.back()).size();
+  }
+  std::map<unsigned, std::vector<ndn::Interest::Nonce>> nonces;
+  auto connection = pump.face.onSendInterest.connect([&] (const ndn::Interest& interest) {
+    const auto index = static_cast<unsigned>(interest.getName()[-1].toSegment());
+    auto& attempts = nonces[index];
+    attempts.push_back(interest.getNonce());
+    if (index >= 1 && index <= 14 && attempts.size() == 1)
+      return;
+    pump.face.receive(packets.at(index));
+  });
+  FacePumpStop stop{pump};
+  const detail::FaceDataReferenceFetcher fetcher(pump.face, 40ms, 1s, 16);
+  const auto result = fetcher(reference);
+  pump.stop();
+  BOOST_REQUIRE_EQUAL(result->packetCount(), packets.size());
+  for (unsigned i = 0; i < packets.size(); ++i) {
+    BOOST_CHECK(result->readPacket(i) == wireOf(packets[i]));
+    BOOST_REQUIRE_EQUAL(nonces[i].size(), i >= 1 && i <= 14 ? 2U : 1U);
+    if (nonces[i].size() == 2)
+      BOOST_CHECK(nonces[i][0] != nonces[i][1]);
+  }
+  BOOST_CHECK_EQUAL(pump.face.getNPendingInterests(), 0U);
+}
+
 BOOST_AUTO_TEST_CASE(CancelsOtherPendingInterestsAfterNack)
 {
   FacePump pump;
   const ndn::Name dataPrefix("/producer/kvcache/snapshot/v1");
   std::atomic<unsigned> interestCount{0};
+  std::atomic<unsigned> firstCount{0}, siblingCount{0}, nextCount{0};
+  std::atomic<bool> lifetimeBounded{true};
   auto connection = pump.face.onSendInterest.connect(
     [&] (const ndn::Interest& interest) {
       interestCount.fetch_add(1);
+      if (interest.getInterestLifetime() > ndn::time::seconds(1))
+        lifetimeBounded.store(false);
       if (interest.getName().get(-1).toSegment() == 7) {
+        ++firstCount;
         ndn::lp::Nack nack(interest);
         nack.setReason(ndn::lp::NackReason::NO_ROUTE);
         pump.face.receive(nack);
       }
+      else if (interest.getName().get(-1).toSegment() == 8)
+        ++siblingCount;
+      else
+        ++nextCount;
     });
 
   FacePumpStop stop{pump};
@@ -245,9 +290,13 @@ BOOST_AUTO_TEST_CASE(CancelsOtherPendingInterestsAfterNack)
   reference.hasFinalSegment = true;
   reference.expectedSize = 300;
 
-  const detail::FaceDataReferenceFetcher fetcher(pump.face, 1s, 2s, 2);
+  const detail::FaceDataReferenceFetcher fetcher(pump.face, 5s, 2s, 2);
   BOOST_CHECK_THROW(fetcher(reference), std::runtime_error);
-  BOOST_CHECK_EQUAL(interestCount.load(), 2);
+  BOOST_CHECK_EQUAL(interestCount.load(), 4);
+  BOOST_CHECK_EQUAL(firstCount.load(), 3);
+  BOOST_CHECK_EQUAL(siblingCount.load(), 1);
+  BOOST_CHECK_EQUAL(nextCount.load(), 0);
+  BOOST_CHECK(lifetimeBounded.load());
 
   auto pendingPromise = std::make_shared<std::promise<std::size_t>>();
   auto pending = pendingPromise->get_future();
@@ -256,6 +305,29 @@ BOOST_AUTO_TEST_CASE(CancelsOtherPendingInterestsAfterNack)
   });
   BOOST_REQUIRE(pending.wait_for(1s) == std::future_status::ready);
   BOOST_CHECK_EQUAL(pending.get(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(PersistentPacketLossStopsAfterThreeAttemptsAndReleasesPending)
+{
+  FacePump pump;
+  std::atomic<unsigned> attempts{0};
+  auto connection = pump.face.onSendInterest.connect([&] (const ndn::Interest&) { ++attempts; });
+  FacePumpStop stop{pump};
+  RepoDataReference reference;
+  reference.dataPrefix = "/producer/kv/unavailable";
+  reference.expectedSize = 100;
+  const detail::FaceDataReferenceFetcher fetcher(pump.face, 30ms, 1s, 1);
+  BOOST_CHECK_EXCEPTION(fetcher(reference), std::runtime_error, [] (const auto& error) {
+    return std::string(error.what()) == "repo-original-packet-timeout";
+  });
+  BOOST_CHECK_EQUAL(attempts.load(), 3);
+  auto promise = std::make_shared<std::promise<std::size_t>>();
+  auto pending = promise->get_future();
+  boost::asio::post(pump.io, [promise, face = &pump.face] {
+    promise->set_value(face->getNPendingInterests());
+  });
+  BOOST_REQUIRE(pending.wait_for(1s) == std::future_status::ready);
+  BOOST_CHECK_EQUAL(pending.get(), 0U);
 }
 
 BOOST_AUTO_TEST_CASE(RejectsInvalidReferenceAndBoundsUnavailableProducer)

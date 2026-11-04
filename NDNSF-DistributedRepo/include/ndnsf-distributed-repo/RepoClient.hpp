@@ -493,6 +493,20 @@ public:
     int timeoutMs,
     std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted = {});
 
+  /** Check caller-owned cancellation before dispatch and while waiting.
+   * A thrown probe abandons the local request; an emitted operation may still
+   * have committed remotely and must not be treated as rolled back.
+   */
+  static std::vector<uint8_t> requestSelectedService(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& providerIdentity,
+    const ndn::Name& serviceName,
+    const std::vector<uint8_t>& payload,
+    int ackCollectionTimeMs,
+    int timeoutMs,
+    std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted,
+    const std::function<void()>& requireCurrent);
+
   static ndn::Name requestCommitRanges(
     ndn_service_framework::ServiceUser& user,
     const ndn::Name& repoServicePrefix,

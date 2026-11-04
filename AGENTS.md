@@ -189,6 +189,14 @@ approval again or hide an exception in a special-case branch.
    rather than blindly repeating full builds or experiments. After a failure,
    retain the first boundary and revise the affected static check before retrying.
    Keep this review within the existing work unit, not a new report bureaucracy.
+   Before fixing any bug, first inspect the corresponding implementation,
+   previous fixes and regression tests on the `KVCache` branch. Pin the inspected
+   commit and distinguish an omitted port, an interface-adaptation error and a
+   case the branch did not cover. Reuse its established logic and preserve the
+   relevant test contracts; do not redesign a solved state machine. If there is
+   no corresponding implementation, record the searched scope and then proceed
+   from current source evidence. Do not claim an original regression is covered
+   by a different test boundary merely because both tests pass.
 
 10. **Minimum sufficient design; no speculative engineering.** First establish
     whether new code is necessary. Prefer, in order, an existing project path,

@@ -207,6 +207,18 @@ struct NativeProviderHandoffOperation
       throw std::runtime_error("HANDOFF_DEADLINE_EXPIRED");
   }
 
+  void recordPhase(const char* phase) const noexcept
+  {
+    try {
+      logRuntimeEvidence("NDNSF_DI_HANDOFF_PHASE phase=" + std::string(phase) +
+        " operation=" + control.operationId +
+        " source=" + provider.toUri(ndn::name::UriFormat::ALTERNATE));
+    }
+    catch (...) {
+      // Missing diagnostics cannot change the transaction or prove zero work.
+    }
+  }
+
   void setOwnerContext(NativeConversationHandoffOwnerContextV1 value)
   {
     std::lock_guard<std::mutex> lock(mutex);
@@ -328,6 +340,7 @@ struct NativeProviderHandoffOperation
     if (onCommitReleased)
       onCommitReleased(control);
     commitReleased = true;
+    recordPhase("COMMIT_ACCEPTED");
     condition.notify_all();
     return makeReplyLocked(NativeConversationHandoffActionV1::Commit);
   }
@@ -363,7 +376,9 @@ struct NativeProviderHandoffOperation
       std::rethrow_exception(publicationError);
     if (!failure.empty() || cancelled || HandoffClock::now() >= deadline)
       throw std::runtime_error("HANDOFF_BOUNDARY_NOT_ACTIVE");
-    parkedRoles.insert(role);
+    const auto inserted = parkedRoles.insert(role).second;
+    if (inserted && parkedRoles.size() == roles.size())
+      recordPhase("BOUNDARY_READY");
     condition.notify_all();
     if (!condition.wait_until(lock, deadline, [this] {
           return commitReleased || cancelled || !failure.empty() || publicationError;
@@ -1435,6 +1450,7 @@ private:
           [this, operation, barrier, owner = std::move(owner), protectedLimits,
            privateMaterial, role, requestId, current]() mutable {
             try {
+              operation->recordPhase("PUBLICATION_ACTIVE");
               auto publication = m_runtime.publishProtectedKvCheckpoint(
                 operation->requester, operation->service, requestId,
                 privateMaterial.protectedPath, privateMaterial.reference, owner,
@@ -1489,6 +1505,7 @@ private:
       if (references.size() != roles.size())
         throw std::runtime_error("HANDOFF_SAVED_ROLE_SET_MISMATCH");
       operation->finishSaved(std::move(references));
+      operation->recordPhase("SAVED");
       abortBarrier.completed = true;
     }
     catch (const std::exception& e) {

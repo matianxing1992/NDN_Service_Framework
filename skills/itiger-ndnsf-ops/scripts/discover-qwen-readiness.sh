@@ -13,7 +13,6 @@ root="/project/${USER}/ndnsf-di"
 printf "SECTION=IDENTITY\nUSER=%s\nHOST=%s\n" "$USER" "$(hostname)"
 printf "SECTION=PROJECT\nPROJECT_ROOT=%s\n" "$root"
 df -hT "/project/${USER}" 2>&1
-du -sh "$root" 2>&1
 printf "SECTION=QUOTA\n"
 quota -s 2>&1
 if command -v lfs >/dev/null 2>&1; then

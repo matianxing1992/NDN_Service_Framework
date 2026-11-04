@@ -447,6 +447,8 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
                 # BackendOwnershipLease uses the canonical backend path plus this suffix.
                 lock = Path(str(_canonical(requester[key]['path'])) + '.authority.lock')
                 add(lock, writable=True, create_file=True)
+        if 'source_cache_path' in requester.get('repository', {}):
+            add(requester['repository']['source_cache_path'], writable=True, directory=True)
         for turn in requester['turns']:
             for key in ('input_file', 'options_file'):
                 add(turn[key])

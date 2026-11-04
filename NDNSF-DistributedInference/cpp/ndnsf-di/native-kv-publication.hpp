@@ -17,9 +17,20 @@
 #include <utility>
 #include <vector>
 
+namespace ndnsf_distributed_repo {
+struct RepoDataReference;
+}
+
 namespace ndnsf::di {
 
 struct NativeProviderCollaborationRuntime;
+struct NativeProtectedKvPacketSet;
+
+/** Describe the original KV packet set without claiming a Core transport envelope.
+ * This internal Repo-enabled leaf preserves names, order, wire digest and Producer scope.
+ */
+ndnsf_distributed_repo::RepoDataReference
+nativeKvPacketReference(const NativeProtectedKvPacketSet& packets, const ndn::Name& producer);
 
 std::pair<NativePortableKvCheckpointLimitsV1, NativeProtectedKvCheckpointLimitsV1>
 nativeKvPublicationLimits(const NativeProviderHandoffConfig& config,

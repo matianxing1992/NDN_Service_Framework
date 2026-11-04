@@ -822,8 +822,14 @@ run(int argc, char** argv)
         path.string(), 1U << 20, 1U << 20, "native-requester-canonical"));
     auto sourceOwner = std::make_shared<ndnsf_distributed_repo::RepoSourceProvider>(
       std::move(repo));
+    auto sourceCachePath = std::filesystem::path(
+      repository->get<std::string>("source_cache_path", (path / "native-artifact-api").string()));
+    if (sourceCachePath.empty())
+      throw std::invalid_argument("repository.source_cache_path must not be empty");
+    if (sourceCachePath.is_relative())
+      sourceCachePath = base / sourceCachePath;
     runtimeConfig.repositorySourceProvider = std::make_shared<NativeRepoSourceOwner>(
-      path / "native-artifact-api", base,
+      std::move(sourceCachePath), base,
       ndn::Name(config.get<std::string>("core.requester_identity")), std::move(sourceOwner));
   }
   if (const auto compatibility = config.get_child_optional("cache_compatibility")) {
@@ -1051,7 +1057,9 @@ run(int argc, char** argv)
           kvHandoff->destinations, kvHandoff->trust, deadline);
         while (providerSwitch->status() == ConversationHandoffStatus::Pending) {
           if (interrupted || std::chrono::steady_clock::now() >= deadline) {
-            providerSwitch->cancel();
+            const auto accepted = providerSwitch->cancel();
+            std::cout << "NATIVE_KV_HANDOFF_CANCEL_REQUESTED accepted="
+                      << (accepted ? 1 : 0) << std::endl;
             throw std::runtime_error("KV Provider switch interrupted or timed out");
           }
           std::this_thread::sleep_for(std::chrono::milliseconds(20));

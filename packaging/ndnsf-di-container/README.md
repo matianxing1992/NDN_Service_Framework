@@ -1,5 +1,12 @@
 # NDNSF-DI Runtime Package
 
+On Tiger, run builds, model preparation/inference and large data validation in a
+Slurm compute allocation, including interactive work. The shared login node is
+for light editing, preparing/submitting jobs and bounded status queries. A
+"local host" build below refers to a development host, not permission to build
+on the cluster login node. See the [Tiger login-node and recovery policy](../../NDNSF-DistributedInference/README.md#tiger-login-node-and-recovery-policy)
+for SSH incidents and verification of existing jobs and staged-out artifacts.
+
 **Current design update (2026-09-08):** Spec182 adopts a stable base SIF plus a
 versioned external DI/UAV application bundle. This is accepted design with
 tooling migration still planned; follow the [layered delivery contract](../../specs/182-native-di-python-bindings/contracts/layered-runtime-delivery.md).

@@ -20,6 +20,10 @@ failure log 和持久 evidence。缺少可选历史文件不阻断无关工作�
 仅整理或交付源码时，只整理、固定和发布输入；不要自行启动宿主或容器编译、unit/integration、MiniNDN或集群测试。发现ABI变化时写清接收方重建要求，不把本机补测变成交付条件。不要按 Qwen/YOLO 划分长期机器职责。
 已有授权直接完成；缺少运行授权时，先完成可审阅的 definition、输入清单、profile 和确切命令。
 
+Tiger 登录节点仅用于轻量编辑、准备/提交作业和状态查询。模型导出、推理、
+镜像构建及大规模数据扫描/完整摘要校验须通过 Slurm 在计算节点执行，包括交互运行。
+SSH 故障公告、恢复检查和跨作业存储判断见下方 portable-deployment 参考。
+
 ## Repository Routing
 
 | Work | Read / reuse from repo root |

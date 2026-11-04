@@ -959,7 +959,8 @@ RepoClient::commitUserStorageOriginalPackets(
   const auto provider = ndn::Name(target.providerIdentity);
   const auto servicePrefix = ndn::Name(target.servicePrefix);
   const auto status = parseOperationStatusJson(toString(requestSelectedService(writer, provider,
-    makeRepoServiceName(servicePrefix, "INSERT"), encoded, ackCollectionTimeMs, remaining())));
+    makeRepoServiceName(servicePrefix, "INSERT"), encoded, ackCollectionTimeMs, remaining(),
+    {}, current)));
   if (status.operationId != request.operationId || status.operation != "INSERT" ||
       status.state != "DONE" || ndn::Name(status.objectName) != ndn::Name(request.reference.objectName))
     throw std::runtime_error("repo-original-publication-insert-not-confirmed: " + status.message);
@@ -967,7 +968,8 @@ RepoClient::commitUserStorageOriginalPackets(
   const auto readManifest = [&] {
     current();
     const auto wire = requestSelectedService(writer, provider,
-      makeRepoServiceName(servicePrefix, "MANIFEST"), encoded, ackCollectionTimeMs, remaining());
+      makeRepoServiceName(servicePrefix, "MANIFEST"), encoded, ackCollectionTimeMs, remaining(),
+      {}, current);
     if (wire.empty() || wire.size() > MAX_PACKET_INDEX_BYTES)
       throw std::runtime_error("repo-original-publication-manifest-budget");
     const auto manifest = parseManifestJson(toString(wire));
@@ -1832,6 +1834,21 @@ RepoClient::requestSelectedService(
   int timeoutMs,
   std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted)
 {
+  return requestSelectedService(user, providerIdentity, serviceName, payload,
+    ackCollectionTimeMs, timeoutMs, std::move(requestMayHaveBeenEmitted), {});
+}
+
+std::vector<uint8_t>
+RepoClient::requestSelectedService(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& providerIdentity,
+  const ndn::Name& serviceName,
+  const std::vector<uint8_t>& payload,
+  int ackCollectionTimeMs,
+  int timeoutMs,
+  std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted,
+  const std::function<void()>& requireCurrent)
+{
   if (providerIdentity.empty() || serviceName.empty() || ackCollectionTimeMs <= 0 ||
       timeoutMs <= ackCollectionTimeMs) {
     throw std::invalid_argument("repo-selected-request-invalid: Provider, service, or deadline is invalid");
@@ -1840,6 +1857,8 @@ RepoClient::requestSelectedService(
     throw std::logic_error(
       "repo-selected-request-on-io-thread: blocking selected requests cannot run on the Face I/O thread");
   }
+  if (requireCurrent)
+    requireCurrent();
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(timeoutMs);
   const std::string timeoutError =
@@ -2126,8 +2145,25 @@ RepoClient::requestSelectedService(
     }
   }
   std::unique_lock<std::mutex> lock(result->mutex);
-  const bool completed = result->condition.wait_until(
-    lock, deadline, [&] { return result->done; });
+  std::exception_ptr interruption;
+  bool completed = false;
+  if (!requireCurrent) {
+    completed = result->condition.wait_until(lock, deadline, [&] { return result->done; });
+  }
+  else {
+    while (!result->done && std::chrono::steady_clock::now() < deadline) {
+      lock.unlock();
+      try { requireCurrent(); }
+      catch (...) { interruption = std::current_exception(); }
+      lock.lock();
+      if (interruption)
+        break;
+      result->condition.wait_until(lock,
+        std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(10)),
+        [&] { return result->done; });
+    }
+    completed = result->done && !interruption;
+  }
   if (!completed) {
     startState->abandoned.store(true, std::memory_order_release);
     auto expectedCommitState = SelectedRequestStart::CommitState::Available;
@@ -2149,6 +2185,8 @@ RepoClient::requestSelectedService(
   if (!completed) {
     result->condition.notify_all();
   }
+  if (interruption)
+    std::rethrow_exception(interruption);
   if (!error.empty()) throw std::runtime_error(error);
   return responsePayload;
 }

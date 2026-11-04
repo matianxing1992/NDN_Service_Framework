@@ -1385,6 +1385,16 @@ def build(bld):
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Offline assertions against actual native handoff failure journals and Repo.
+    bld.program(target='../spec221-handoff-failure-oracle',
+                name='spec221-handoff-failure-oracle',
+                source=[bld.path.find_node('fixtures/spec221/kv-failure-oracle.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' +
+                    framework_use + ' ONNXRUNTIME sqlite3',
+                cxxflags=['-fPIC', '-O0', '-g0'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Exercise ORT conversion/state behavior through the production DI library.
     bld.program(target='../spec199-activation-conversion',
                 name='spec199-activation-conversion',

@@ -236,6 +236,7 @@ struct Options
   std::string roles = "all";
   std::string artifactReferencesPath;
   std::string artifactCacheDir = "/tmp/ndnsf-di-native-artifacts";
+  int artifactCacheMaxMiB = 8192;
   std::string cacheCompatibilitySourceDir;
   // Deployment-local standalone tokenizer.  It is deliberately configured
   // outside the Selection wire contract and bound to the authenticated
@@ -848,6 +849,14 @@ parseArgs(int argc, char** argv)
     else if (arg == "--artifact-cache-dir") {
       options.artifactCacheDir = readValue();
     }
+    else if (arg == "--artifact-cache-max-mib") {
+      const auto value = readValue();
+      if (value.empty() || !std::all_of(value.begin(), value.end(), [] (unsigned char c) {
+            return c >= '0' && c <= '9';
+          }))
+        throw std::invalid_argument(arg + " must be a positive integer in MiB");
+      options.artifactCacheMaxMiB = parsePositiveInt(value, arg);
+    }
     else if (arg == "--cache-compatibility-source-dir") {
       options.cacheCompatibilitySourceDir = readValue();
     }
@@ -1242,6 +1251,7 @@ printUsage(const char* program)
     << "[--trust-schema <path>] [--bootstrap-token <token>] "
     << "[--artifact-references <json>] "
     << "[--artifact-cache-dir <dir>] [--repo-service <service>] "
+    << "[--artifact-cache-max-mib <positive-MiB>] "
     << "[--cache-compatibility-source-dir <verified-cache-dir>] "
     << "[--tokenizer-json <path>] "
     << "[--statistics-file <jsonl-path>] "
@@ -1427,7 +1437,8 @@ main(int argc, char** argv)
     // This is logical admission accounting for the signed assembly limits,
     // not a request to retain another model-sized buffer in the template
     // cache.  Qwen's maxSourceBytes + maxAssembledBytes exceeds 1 GiB.
-    artifactCacheConfig.maxArtifactBytes = 8ULL << 30;
+    artifactCacheConfig.maxArtifactBytes =
+      static_cast<std::uint64_t>(options.artifactCacheMaxMiB) << 20;
     artifactCacheConfig.maxArtifactEntries = 8;
     artifactCacheConfig.assemblyJobTimeout =
       std::chrono::milliseconds(options.assemblyTimeoutMs);
@@ -2113,6 +2124,7 @@ main(int argc, char** argv)
       };
       auto installTask =
         [options,
+         withdrawalDrainTimeout,
          statisticsOutput,
          tensorSegmentBytes,
          plan,
@@ -2651,7 +2663,9 @@ main(int argc, char** argv)
             provisioningState->markReady(
               "native runtime ready; role assembly deferred until Selection");
             provider->updateNdnsdMeta("runtimeStatus", "ready");
-            ndnsf::di::detail::emitDeploymentReadiness(options.providerName, providerBootId);
+            // Include the two existing five-second cache drains after host drain.
+            ndnsf::di::detail::emitDeploymentReadiness(options.providerName, providerBootId,
+              static_cast<std::uint64_t>(withdrawalDrainTimeout.count()) + 10000);
             {
               std::ostringstream record;
               record << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"
@@ -2806,6 +2820,26 @@ main(int argc, char** argv)
       bool withdrawalReported = false;
       bool withdrawalFailed = false;
       bool forcedUnsavedExit = false;
+      const auto reportWithdrawal = [&] {
+        if (!withdrawal || withdrawalReported)
+          return;
+        const auto status = withdrawal->status();
+        if (status != NativeWithdrawalStatusV1::Closed &&
+            status != NativeWithdrawalStatusV1::Aborted &&
+            status != NativeWithdrawalStatusV1::Failed &&
+            status != NativeWithdrawalStatusV1::ForcedUnsaved)
+          return;
+        const auto result = withdrawal->result(std::chrono::seconds(1));
+        withdrawalReported = true;
+        withdrawalFailed = !result.closed;
+        forcedUnsavedExit = result.forced;
+        std::ostringstream record;
+        record << "NDNSF_DI_KV_WITHDRAWAL_RESULT operation=" << result.withdrawalId
+               << " scope=" << (withdrawProviderScope ? "provider" : "service")
+               << " closed=" << result.closed << " forced=" << result.forced
+               << " reason=" << result.reason;
+        logRuntimeEvidence(record.str());
+      };
       while (!provisionFailed->load(std::memory_order_acquire) &&
              g_shutdownRequested == 0) {
         if (g_withdrawRequested && provisioningDone->load(std::memory_order_acquire)) {
@@ -2834,25 +2868,9 @@ main(int argc, char** argv)
             logRuntimeEvidence("NDNSF_DI_KV_WITHDRAWAL_JOINED operation=" + withdrawal->operationId());
           }
         }
-        if (withdrawal && !withdrawalReported) {
-          const auto status = withdrawal->status();
-          if (status == NativeWithdrawalStatusV1::Closed ||
-              status == NativeWithdrawalStatusV1::Aborted ||
-              status == NativeWithdrawalStatusV1::Failed ||
-              status == NativeWithdrawalStatusV1::ForcedUnsaved) {
-            const auto result = withdrawal->result(std::chrono::seconds(1));
-            withdrawalReported = true;
-            withdrawalFailed = !result.closed;
-            forcedUnsavedExit = result.forced;
-            std::ostringstream record;
-            record << "NDNSF_DI_KV_WITHDRAWAL_RESULT operation=" << result.withdrawalId
-                   << " scope=" << (withdrawProviderScope ? "provider" : "service")
-                   << " closed=" << result.closed << " forced=" << result.forced
-                   << " reason=" << result.reason;
-            logRuntimeEvidence(record.str());
-            if (result.closed && withdrawProviderScope) break;
-          }
-        }
+        reportWithdrawal();
+        if (withdrawalReported && !withdrawalFailed && withdrawProviderScope)
+          break;
         if (options.runForMs &&
             std::chrono::steady_clock::now() >=
               serveStartedAt + std::chrono::milliseconds(*options.runForMs)) {
@@ -2893,6 +2911,7 @@ main(int argc, char** argv)
       }
       runLimitReached->store(true, std::memory_order_release);
       const bool residentCleanupOk = shutdownWithLiveFace();
+      reportWithdrawal();
       if (!provisionFailed->load(std::memory_order_acquire) && residentCleanupOk &&
           withdrawProviderScope && withdrawal && withdrawalReported &&
           !withdrawalFailed && !forcedUnsavedExit) {

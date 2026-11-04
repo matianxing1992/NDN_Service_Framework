@@ -177,7 +177,9 @@ public:
   }
 
 private:
+  friend struct RepoCorePacketIndexTestAccess;
   RepoObjectManifest describeDataPacket(const std::string& name) const;
+  void validateReadPacketIndex(const RepoObjectManifest& manifest) const;
   RepoObjectManifest commitOriginalPacketReaderImpl(
     const RepoObjectManifest& manifest, const OriginalPacketRangeReader& readRange,
     const std::function<void()>& requireActive, const std::filesystem::path& sourceFile);
@@ -234,6 +236,19 @@ private:
   };
   std::unordered_map<std::string, RangeReservation> m_rangeReservations;
   uint64_t m_reservedRangeBytes = 0;
+
+  struct PacketIndexProof
+  {
+    uint64_t size = 0;
+    std::vector<std::string> names;
+    std::vector<uint64_t> offsets;
+    size_t chargedBytes = 0;
+  };
+  // Structural proofs only. Every read still fetches current metadata and
+  // checks its current visibility/claims; this cache never admits an object.
+  mutable std::mutex m_packetIndexProofMutex;
+  mutable std::unordered_map<std::string, PacketIndexProof> m_packetIndexProofs;
+  mutable size_t m_packetIndexProofBytes = 0;
 };
 
 } // namespace ndnsf_distributed_repo

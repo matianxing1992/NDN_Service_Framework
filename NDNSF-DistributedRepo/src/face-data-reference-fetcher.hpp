@@ -76,6 +76,10 @@ private:
 class FaceDataReferenceFetcher
 {
 public:
+  /** Fetch exact original packets with at most three expressions per packet.
+   * Timeout/Nack retries use a fresh Nonce, a lifetime of at most one second,
+   * and the original total deadline. Window and admission bounds include retries.
+   */
   FaceDataReferenceFetcher(ndn::Face& face,
                            std::chrono::milliseconds interestLifetime,
                            std::chrono::milliseconds totalTimeout,

@@ -352,22 +352,43 @@ def _recover(row):
         row['proof'] = matches[0]
 
 
+def _provider_stop_grace(row):
+    grace = row.get('stop_grace_ms')
+    if row.get('kind') == 'provider' and grace is not None:
+        if type(grace) is not int or not 0 < grace <= 615000:
+            raise ValueError('invalid native Provider stop grace')
+        return grace / 1000
+    return None
+
+
+def _stop_launch(row):
+    grace = _provider_stop_grace(row)
+    if grace is not None:
+        return stop_owned(row.get('proof'), term_seconds=grace)
+    return stop_owned(row.get('proof'))
+
+
 def _close(state, root, facility=None):
-    actor_ids = [row.get('id', 'UNKNOWN') for row in reversed(state['launches'])]
+    # Providers may still be saving committed state. Keep their Repo, authority
+    # and transport dependencies available while they drain.
+    stop_priority = {'requester': 0, 'provider': 1, 'nfd': 3}
+    launches = sorted(reversed(state['launches']),
+                      key=lambda row: stop_priority.get(row.get('kind'), 2))
+    actor_ids = [row.get('id', 'UNKNOWN') for row in launches]
     previous = {row.get('id'): row for row in (state.get('cleanup') or [])
                 if isinstance(row, dict) and row.get('id') in actor_ids}
     cleanup_by_id = dict(previous)
     state.update(status='STOPPING', manager=process_identity(os.getpid()),
                  cleanup=[cleanup_by_id[key] for key in actor_ids if key in cleanup_by_id])
     write_json(root / 'state.json', state)
-    for row in reversed(state['launches']):
+    for row in launches:
         try:
             if not _valid_intent(row, state):
                 result = {'status': 'UNKNOWN', 'error': 'launch binding does not match this operation'}
             else:
                 _recover(row)
                 result = ({'status': 'ZERO'} if row.get('spawn_failed') and not row.get('proof')
-                          else stop_owned(row.get('proof')))
+                          else _stop_launch(row))
         except (OSError, ValueError, KeyError) as error:
             result = {'status': 'UNKNOWN', 'error': str(error)}
         actor_id = row.get('id', 'UNKNOWN')
@@ -433,6 +454,11 @@ def _ready(row, actor, state):
                     bool(item.get('native_boot_id')) and
                     _name(item.get('identity'), 'readiness.identity') == _name(actor['identity'], 'actor.identity'))
             if valid:
+                grace = item.get('stop_grace_ms')
+                if grace is not None:
+                    if type(grace) is not int or not 0 < grace <= 615000:
+                        return False
+                    row['stop_grace_ms'] = grace
                 row['native_boot_id'] = item['native_boot_id']
                 row['native_identity'] = actor['identity']
             return valid
@@ -467,10 +493,15 @@ def _provider_withdrawal_complete(actor, row):
         return True
     try:
         with Path(row['log']).open('rb') as stream:
-            raw = stream.read(1024 * 1024 + 1)
+            limit = 1024 * 1024
+            offset = max(0, stream.seek(0, os.SEEK_END) - limit)
+            stream.seek(max(0, offset - 1))
+            partial = offset > 0 and stream.read(1) != b'\n'
+            raw = stream.read(limit)
+            if partial:
+                # The terminal event is near EOF. Reject a truncated first line.
+                raw = raw.partition(b'\n')[2]
     except OSError:
-        return False
-    if len(raw) > 1024 * 1024:
         return False
     for line in raw.splitlines():
         if not line.startswith(b'{') or len(line) > 4096:
@@ -527,7 +558,7 @@ def _consume_provider_stops(root, state, children):
             raise ClusterError('Provider exited before operator stop:' + actor['id'])
         row['operator_stop'] = {'request': request}
         write_json(root / 'state.json', state)
-        result = stop_owned(row['proof'])
+        result = _stop_launch(row)
         row['operator_stop']['result'] = result
         state.setdefault('cleanup', []).append(dict(result, id=actor['id']))
         write_json(root / 'state.json', state)
@@ -947,8 +978,10 @@ def _stop_provider(root, state, actor_id, timeout):
         raise ClusterError('Provider exited before operator stop:' + actor_id)
     if len(json.dumps(request).encode()) > 4096:
         raise ClusterError('Provider stop request exceeds byte limit')
+    grace = _provider_stop_grace(row)
+    acknowledgement_budget = max(60, grace + 15) if grace is not None else 60
     write_json(_provider_stop_path(root, state, actor_id), request)
-    deadline = time.monotonic() + min(timeout, 60)
+    deadline = time.monotonic() + min(timeout, acknowledgement_budget)
     while True:
         if _operator_stop_complete(row):
             return {'status': 'ACTOR_STOPPED', 'actor_id': actor_id,

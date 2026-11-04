@@ -1,5 +1,23 @@
 # NDNSF-DistributedInference
 
+## Tiger login-node and recovery policy
+
+Use the shared Tiger login node for light editing, preparing/submitting jobs and
+bounded status queries. Run model training, export/quantization, CPU/GPU inference,
+SIF builds and large data processing through Slurm on compute nodes, including
+interactive work. Full hashes of model-sized files and recursive inventories of
+large caches also belong in a compute allocation. CPU-only preparation does not
+require reserving a GPU. A container or a small thread count does not change this
+placement requirement.
+
+When a cluster SSH incident is announced, retain the announcement's source and
+receipt date in the run record. Keep existing job IDs and reusable artifacts.
+Connection timeouts leave remote job state unknown; after access returns, check
+the original scheduler records, logs and actual output files before resubmitting.
+An SSH-based stage-out can fail independently of computation, so verify archived
+artifacts as well as job completion. An access notice does not establish an
+account ban or a model/runtime defect.
+
 ## Installed deployment timing
 
 Slurm resident steps expose the node's allocated CPU pool while retaining GPU
@@ -56,6 +74,31 @@ role resources and backend together; changing the label does not convert a model
 Different artifacts have different identities and cannot reuse each other's KV
 or prepared-model cache entries. Execution still checks the selected backend's
 actual operator support; there is no implicit CPU/CUDA fallback or best-format claim.
+
+Provider deployment parameters accept `artifact-cache-max-mib` (positive integer,
+default 8192), passed to the native `--artifact-cache-max-mib` option. This bounds
+logical artifact admission, including signed source and assembled byte limits
+plus metadata; it does not allocate that many bytes or replace device/RAM budgets.
+Size it explicitly for large models rather than weakening their signed limits.
+
+To reuse prepared models across experiments, keep `storage.repo_root`,
+`storage.cache_root`, requester repository paths and actor credential homes in
+persistent directories, separate from per-run state and evidence. Keep the model
+catalog, producer identities and protection context stable when only workload
+length changes. Check each path's backing filesystem, cross-node visibility,
+retention policy and quota separately. Slurm job-private `/tmp` is disposable;
+the name `/var/tmp` alone proves neither job-end deletion nor permanent/shared
+storage. A same-node cross-job persistence probe does not establish a retention
+guarantee. Node-local caches require placement on the same node. Restart reuse
+still validates objects and authorization, and a Provider restart must reload
+its backend session.
+`requester.repository.source_cache_path` optionally separates the raw source
+transfer cache from the persistent prepared Repo; its default remains
+`repository.path/native-artifact-api`. It may use disposable disk scratch when
+the prepared Repo is persistent. Source input files remain required. Original
+protected packet reuse also requires a compatible security context; restarting a
+Controller can change that context. Persistent directories alone do not prove
+that a later experiment avoids protected publication or preparation.
 
 For the historical stage-manifest experiment entrypoints, use the explicit
 representation as `quantization`. The legacy value `int8` now requires

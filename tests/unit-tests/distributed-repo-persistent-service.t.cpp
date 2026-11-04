@@ -120,6 +120,20 @@ struct ProducerPacketValidationOracle
 
 namespace ndnsf_distributed_repo {
 
+struct RepoCorePacketIndexTestAccess
+{
+  static void validate(RepoCore& core, const RepoObjectManifest& manifest)
+  {
+    core.validateReadPacketIndex(manifest);
+  }
+
+  static std::pair<size_t, size_t> measure(const RepoCore& core)
+  {
+    std::lock_guard<std::mutex> lock(core.m_packetIndexProofMutex);
+    return {core.m_packetIndexProofs.size(), core.m_packetIndexProofBytes};
+  }
+};
+
 struct RepoNodeTestAccess
 {
   static std::function<std::size_t()>
@@ -2780,6 +2794,120 @@ BOOST_AUTO_TEST_CASE(OwnedInsertValidatesPacketsCommitsClaimAndReopensOriginalWi
   BOOST_CHECK(listed.objects.front().state == RepoUserStorageClaimState::COMMITTED);
 }
 
+BOOST_AUTO_TEST_CASE(LargeOwnedPacketSetReadsOriginalWireAndRechecksDeletion)
+{
+  OwnedPacketFixture fixture;
+  auto& reference = fixture.request.reference;
+  auto& metadata = *reference.packetSetMetadata;
+  metadata.packetNames.clear();
+  metadata.packetOffsets = {0};
+  fixture.packets.clear();
+  fixture.original.clear();
+  const auto certificate = fixture.keys.getPib().getIdentity(ndn::Name("/provider/a"))
+    .getDefaultKey().getDefaultCertificate();
+  constexpr std::size_t PACKET_COUNT = 1000;
+  for (std::size_t i = 0; i < PACKET_COUNT; ++i) {
+    const auto name = i == 0 ? ndn::Name(reference.objectName) :
+      ndn::Name("/provider/a/kv").append(std::string(64, 'a')).append("packets")
+        .append(std::string(64, 'b')).appendSegment(i - 1);
+    ndn::Data data(name);
+    const std::vector<uint8_t> content(8, static_cast<uint8_t>(i));
+    data.setContent(ndn::span<const uint8_t>(content.data(), content.size()));
+    fixture.keys.sign(data, ndn::security::signingByCertificate(certificate));
+    const auto& wire = data.wireEncode();
+    metadata.packetNames.push_back(name.toUri(ndn::name::UriFormat::ALTERNATE));
+    fixture.packets.emplace_back(wire.begin(), wire.end());
+    fixture.original.insert(fixture.original.end(), wire.begin(), wire.end());
+    metadata.packetOffsets.push_back(fixture.original.size());
+  }
+  metadata.size = reference.expectedSize = fixture.original.size();
+  metadata.sha256 = reference.expectedSha256 = sha256(fixture.original);
+  const auto result = fixture.insert();
+  BOOST_REQUIRE_MESSAGE(result.state == "DONE", result.message);
+  const auto charged = fixture.usage().committedBytes;
+  const auto began = std::chrono::steady_clock::now();
+  bool exact = true;
+  for (std::size_t i = 0; i < PACKET_COUNT; ++i) {
+    const ndn::Interest interest(ndn::Name(metadata.packetNames[i]));
+    exact = (fixture.node->getDataPacket(interest) == fixture.packets[i]) && exact;
+  }
+  const auto seconds = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - began).count();
+  BOOST_TEST_MESSAGE("SPEC221_ORIGINAL_PACKET_READ packets=" << PACKET_COUNT
+    << " wireBytes=" << fixture.original.size() << " wallSeconds=" << seconds);
+  BOOST_CHECK(exact);
+  BOOST_CHECK_EQUAL(fixture.usage().committedBytes, charged);
+  const auto proof = RepoCorePacketIndexTestAccess::measure(fixture.node->core());
+  BOOST_CHECK_EQUAL(proof.first, 1U);
+  BOOST_CHECK_LE(proof.second, 8U * 1024U * 1024U);
+  const auto stored = fixture.node->getManifest(reference.objectName);
+  for (unsigned mutation = 0; mutation < 3; ++mutation) {
+    auto changed = stored;
+    if (mutation == 0) ++changed.size;
+    if (mutation == 1) changed.objectName += "/different";
+    if (mutation == 2) changed.objectType = "ndn-data-wire";
+    BOOST_CHECK_THROW(RepoCorePacketIndexTestAccess::validate(fixture.node->core(), changed),
+                      std::invalid_argument);
+  }
+  auto changed = stored;
+  changed.packetOffsets[500] = changed.packetOffsets[499];
+  BOOST_REQUIRE_EQUAL(changed.toJson().size(), stored.toJson().size());
+  const auto directory = fixture.temp.path() / "objects" / "manifests";
+  const auto manifestFile = std::filesystem::directory_iterator(directory)->path();
+  {
+    std::ofstream output(manifestFile, std::ios::binary | std::ios::trunc);
+    output << changed.toJson();
+  }
+  BOOST_CHECK_THROW(fixture.node->getDataPacket(ndn::Interest(ndn::Name(reference.objectName))),
+                    std::invalid_argument);
+  {
+    std::ofstream output(manifestFile, std::ios::binary | std::ios::trunc);
+    output << stored.toJson();
+  }
+  BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(ndn::Name(reference.objectName))) ==
+              fixture.packets.front());
+  BOOST_REQUIRE_EQUAL(fixture.erase("/owner/a", "large-reader-cleanup",
+    fixture.request.storageBinding.ownerEpoch).state, "DELETED");
+  BOOST_CHECK_THROW(fixture.node->getDataPacket(ndn::Interest(ndn::Name(reference.objectName))),
+                    std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(PacketIndexProofsHaveFixedEntryAndByteBounds)
+{
+  TempRoot temp;
+  StorageCapability capability;
+  capability.freeBytes = 1024 * 1024;
+  RepoCore core(capability,
+    makeFilesystemRepoStore((temp.path() / "objects").string(), 1024 * 1024, 1024));
+  for (unsigned i = 0; i < 25; ++i) {
+    RepoObjectManifest index;
+    index.objectName = ndn::Name("/producer/index").appendNumber(i)
+      .toUri(ndn::name::UriFormat::CANONICAL);
+    index.objectType = "original-packet-set";
+    index.size = 200;
+    index.packetNames = {index.objectName, ndn::Name(index.objectName).appendSegment(0)
+      .toUri(ndn::name::UriFormat::CANONICAL)};
+    index.packetOffsets = {0, 100, 200};
+    RepoCorePacketIndexTestAccess::validate(core, index);
+    const auto proof = RepoCorePacketIndexTestAccess::measure(core);
+    BOOST_CHECK_LE(proof.first, 16U);
+    BOOST_CHECK_LE(proof.second, 8U * 1024U * 1024U);
+  }
+  const auto before = RepoCorePacketIndexTestAccess::measure(core);
+  RepoObjectManifest large;
+  large.objectType = "original-packet-set";
+  large.packetOffsets = {0};
+  for (unsigned i = 0; i < 2200; ++i) {
+    large.packetNames.push_back(ndn::Name("/producer").append(std::string(4000, 'a'))
+      .appendSegment(i).toUri(ndn::name::UriFormat::CANONICAL));
+    large.packetOffsets.push_back(large.packetOffsets.back() + 5000);
+  }
+  large.objectName = large.packetNames.front();
+  large.size = large.packetOffsets.back();
+  RepoCorePacketIndexTestAccess::validate(core, large);
+  BOOST_CHECK(RepoCorePacketIndexTestAccess::measure(core) == before);
+}
+
 BOOST_AUTO_TEST_CASE(OwnedManifestReadbackBindsAuthenticatedWriterGrantAndPhysicalPacketTuple)
 {
   OwnedPacketFixture fixture;
@@ -3117,6 +3245,47 @@ BOOST_AUTO_TEST_CASE(PersistentOriginalFaceServesExactWireAndBoundsPendingWorkTh
   fixture.node.reset();
   BOOST_CHECK(pumpUntil([&] { return pending() == 0; }));
   BOOST_CHECK(received->empty());
+}
+
+BOOST_AUTO_TEST_CASE(SelectedRepoRequestCancellationAbandonsQueuedDispatchBeforeItsDeadline)
+{
+  ndn::DummyClientFace face(ndn::DummyClientFace::Options{true, true});
+  TempRoot temp;
+  ndn::KeyChain keys("pib-memory:spec221-selected-cancel", "tpm-memory:spec221-selected-cancel");
+  const auto owner = makeRsaIdentity(keys, ndn::Name("/owner/a"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/authority"));
+  ndn_service_framework::ServiceUser user(
+    ndn_service_framework::ServiceUser::LocalMockTag{}, face, ndn::Name("/group"),
+    owner, authority, writeFixedKeychainTrust(temp.path(), keys));
+  std::atomic<unsigned> probes{0};
+  std::atomic<bool> closed{false};
+  const auto emitted = std::make_shared<std::atomic<bool>>(false);
+  const auto began = std::chrono::steady_clock::now();
+  auto result = std::async(std::launch::async, [&] {
+    return RepoClient::requestSelectedService(user, ndn::Name("/repo/provider"),
+      ndn::Name("/SERVICE/repo/INSERT"), {1}, 10, 5000, emitted, [&] {
+        ++probes;
+        if (closed.load())
+          throw std::runtime_error("test-source-closed");
+      });
+  });
+  // Leave the Face paused so dispatch cannot complete or supply a response.
+  const auto probeDeadline = began + std::chrono::seconds(1);
+  while (probes.load() < 2 && std::chrono::steady_clock::now() < probeDeadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  BOOST_REQUIRE_GE(probes.load(), 2U);
+  closed.store(true);
+  BOOST_REQUIRE(result.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready);
+  BOOST_CHECK_EXCEPTION(result.get(), std::runtime_error, [] (const auto& error) {
+    return std::string(error.what()) == "test-source-closed";
+  });
+  BOOST_CHECK(!emitted->load());
+  // A late start callback must observe abandonment and cannot publish Selection.
+  face.getIoContext().restart();
+  face.getIoContext().poll();
+  BOOST_CHECK(!emitted->load());
+  BOOST_TEST_MESSAGE("SPEC221_SELECTED_RPC_CANCEL wallSeconds=" <<
+    std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count());
 }
 
 BOOST_AUTO_TEST_CASE(OwnerPacketClientUsesConfiguredFaceAndChecksWireSignerSizeAndDeadline)

@@ -26,6 +26,132 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_provider_close_honors_native_drain_budget_above_old_process_cap(ops, tmp_path):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    bindings = dict(NDNSF_DEPLOYMENT_ACTOR_ID='source', NDNSF_DEPLOYMENT_BOOT_ID='drain-boot',
+                    NDNSF_DEPLOYMENT_CONFIG_SHA256='a' * 64)
+    script = ('import signal,sys,time; signal.signal(signal.SIGTERM,lambda *args:sys.exit(0)); '
+              'print("ready",flush=True); time.sleep(30)')
+    child = subprocess.Popen([sys.executable, '-c', script], env=dict(os.environ, **bindings),
+                             start_new_session=True, stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == 'ready'
+        proof = cluster.process_identity(child.pid)
+        log = tmp_path / 'ready.log'
+        log.write_text(json.dumps(dict(event='NDNSF_DEPLOYMENT_READY', actor_id='source',
+            boot_id='drain-boot', config_sha256='a' * 64, identity='/source',
+            native_boot_id='native-boot', pid=child.pid, stop_grace_ms=135000)) + '\n')
+        row = dict(id='source', kind='provider', proof=proof, log=str(log))
+        assert cluster._ready(row, dict(id='source', kind='provider', identity='/source'),
+                              dict(boot_id='drain-boot', configuration_sha256='a' * 64))
+        assert row['stop_grace_ms'] == 135000
+        result = cluster._stop_launch(row)
+        assert result['status'] == 'ZERO' and result['exitCode'] == 0
+        assert not result['forced']
+    finally:
+        if child.poll() is None:
+            os.killpg(child.pid, signal.SIGKILL)
+            child.wait(timeout=5)
+        child.stdout.close()
+
+
+@pytest.mark.parametrize('grace', [0, -1, True, 615001, '135000'])
+def test_provider_ready_rejects_invalid_native_stop_budget(ops, tmp_path, grace):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    log = tmp_path / 'ready.log'
+    log.write_text(json.dumps(dict(event='NDNSF_DEPLOYMENT_READY', actor_id='source',
+        boot_id='drain-boot', config_sha256='a' * 64, identity='/source',
+        native_boot_id='native-boot', pid=123, stop_grace_ms=grace)) + '\n')
+    row = dict(id='source', kind='provider', proof=dict(pid=123), log=str(log))
+    assert not cluster._ready(row, dict(id='source', kind='provider', identity='/source'),
+                              dict(boot_id='drain-boot', configuration_sha256='a' * 64))
+    assert 'stop_grace_ms' not in row
+
+
+@pytest.mark.parametrize('timeout,completes', [(150, True), (50, False)])
+def test_operator_stop_observation_honors_declared_grace_and_caller_timeout(
+        ops, tmp_path, monkeypatch, timeout, completes):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    bindings = dict(NDNSF_DEPLOYMENT_ACTOR_ID='source', NDNSF_DEPLOYMENT_BOOT_ID='drain-boot',
+                    NDNSF_DEPLOYMENT_CONFIG_SHA256='a' * 64)
+    row = dict(id='source', kind='provider', bindings=bindings, stop_grace_ms=135000,
+               expected_exe='/usr/bin/python3',
+               proof=dict(pid=123, exe='/usr/bin/python3', bindings=bindings))
+    state = dict(status='REQUEST_RUNNING', boot_id='drain-boot', configuration_sha256='a' * 64,
+                 evidence_root=str(tmp_path), launches=[row])
+    cluster.write_json(tmp_path / 'configuration.json', dict(
+        actors=[dict(id='source', kind='provider', external=False)]))
+    clock = [0.0]
+    monkeypatch.setattr(cluster.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(cluster.time, 'sleep', lambda unused: clock.__setitem__(0, clock[0] + 31))
+    monkeypatch.setattr(cluster, '_operation_active', lambda *unused: True)
+    monkeypatch.setattr(cluster, 'owned_state', lambda proof: 'EXITED' if clock[0] >= 90 else 'RUNNING')
+    def observe(unused):
+        current = copy.deepcopy(state)
+        if clock[0] >= 90:
+            current['launches'][0]['operator_stop'] = dict(
+                request=cluster._provider_stop_request(row),
+                result=dict(status='ZERO', forced=False, exitCode=0))
+        return current
+    monkeypatch.setattr(cluster, '_read_state', observe)
+    if completes:
+        assert cluster._stop_provider(tmp_path, state, 'source', timeout)['status'] == 'ACTOR_STOPPED'
+        assert clock[0] == 93
+    else:
+        with pytest.raises(cluster.ClusterError, match='acknowledgement timed out'):
+            cluster._stop_provider(tmp_path, state, 'source', timeout)
+
+
+def test_close_keeps_repo_and_transport_alive_until_providers_exit(ops, tmp_path):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    children = {}
+    rows = {}
+    script = '''import os, signal, sys, time
+def close(*unused):
+    try:
+        for value in sys.argv[1:]:
+            os.kill(int(value), 0)
+    except ProcessLookupError:
+        sys.exit(7)
+    sys.exit(0)
+signal.signal(signal.SIGTERM, close)
+print('ready', flush=True)
+time.sleep(30)
+'''
+    try:
+        for actor_id, kind in [('nfd.a', 'nfd'), ('repo', 'repo'),
+                               ('source', 'provider'), ('backup', 'provider'),
+                               ('requester', 'requester')]:
+            bindings = dict(NDNSF_DEPLOYMENT_ACTOR_ID=actor_id,
+                            NDNSF_DEPLOYMENT_BOOT_ID='cleanup-boot',
+                            NDNSF_DEPLOYMENT_CONFIG_SHA256='a' * 64)
+            dependencies = [str(children[key].pid) for key in ('repo', 'nfd.a')] \
+                if kind == 'provider' else []
+            child = subprocess.Popen([sys.executable, '-c', script, *dependencies],
+                                     env=dict(os.environ, **bindings), start_new_session=True,
+                                     stdout=subprocess.PIPE, text=True)
+            children[actor_id] = child
+            assert child.stdout.readline().strip() == 'ready'
+            proof = cluster.process_identity(child.pid)
+            rows[actor_id] = dict(id=actor_id, kind=kind, bindings=bindings, proof=proof,
+                                  expected_exe=proof['exe'])
+        state = dict(schema='ndnsf-di-host-operation-v1', deployment_id='cleanup-fixture',
+                     status='REQUEST_RUNNING', boot_id='cleanup-boot',
+                     configuration_sha256='a' * 64, evidence_root=str(tmp_path),
+                     launches=[rows[key] for key in
+                               ('nfd.a', 'source', 'repo', 'backup', 'requester')])
+        result = cluster._close(state, tmp_path)
+        assert result['status'] == 'STOPPED'
+        assert all(row.get('exitCode') == 0 and not row['forced']
+                   for row in state['cleanup'])
+    finally:
+        for child in children.values():
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.wait(timeout=5)
+            child.stdout.close()
+
+
 def test_operator_stop_uses_actual_owned_process_receipt(ops, tmp_path, monkeypatch):
     cluster = importlib.import_module('_spec217_ops.cluster')
     bindings = dict(NDNSF_DEPLOYMENT_ACTOR_ID='source', NDNSF_DEPLOYMENT_BOOT_ID='boot-123',
@@ -158,7 +284,9 @@ def test_operator_stop_cli_preserves_default_down_and_rejects_remote(ops, tmp_pa
 
 
 @pytest.mark.parametrize('change', ['none', 'missing', 'missing-log', 'boot', 'config', 'pid', 'identity',
-                                  'native-boot', 'operation', 'nonzero', 'actor-kind'])
+                                  'native-boot', 'operation', 'nonzero', 'actor-kind',
+                                  'large-log', 'large-log-wrong-boot', 'partial-event',
+                                  'boundary-event'])
 def test_source_exit_requires_exact_native_withdrawal_binding(ops, tmp_path, change):
     cluster = importlib.import_module('_spec217_ops.cluster')
     actor = dict(id='source', kind='provider', identity='/source')
@@ -173,14 +301,23 @@ def test_source_exit_requires_exact_native_withdrawal_binding(ops, tmp_path, cha
              'native-boot': 'native_boot_id', 'operation': 'withdrawal_id'}.get(change)
     if field:
         event[field] = 124 if field == 'pid' else '/wrong' if field == 'identity' else ''
+    if change == 'large-log-wrong-boot':
+        event['boot_id'] = 'wrong'
     if change == 'actor-kind':
         actor['kind'] = row['kind'] = 'repo'
-    Path(row['log']).write_text('' if change == 'missing' else json.dumps(event) + '\n')
+    wire = json.dumps(event) + '\n'
+    if change in ('large-log', 'large-log-wrong-boot'):
+        wire = 'x' * (2 * 1024 * 1024) + '\n' + wire
+    elif change == 'partial-event':
+        wire = 'x' * (2 * 1024 * 1024) + wire + 'x' * (1024 * 1024 - len(wire))
+    elif change == 'boundary-event':
+        wire = 'x' * (2 * 1024 * 1024 - 1) + '\n' + wire + 'x' * (1024 * 1024 - len(wire))
+    Path(row['log']).write_text('' if change == 'missing' else wire)
     if change == 'missing-log':
         Path(row['log']).unlink()
     code = 2 if change == 'nonzero' else 0
     child = SimpleNamespace(returncode=code, poll=lambda: code)
-    if change == 'none':
+    if change in ('none', 'large-log', 'boundary-event'):
         cluster._check_running([(actor, child, row)])
         assert row['withdrawal'] == event
     else:
@@ -1279,7 +1416,8 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     config['actors'][-1]['parameters'] = {'grant-authority-public-key': 'key.pem',
         'recipient-key-map': 'recipients.json', 'enable-admission-lease': False,
         'allow-selection-generation-options': True, 'repo-fetch-timeout-ms': 900000,
-        'conversation-retention-ms': 3600000, 'assembly-timeout-ms': 900000}
+        'conversation-retention-ms': 3600000, 'assembly-timeout-ms': 900000,
+        'artifact-cache-max-mib': 131072}
     path = write_config(base, config)
     native = parser.load_deployment(path)
     cluster = importlib.import_module('_spec217_ops.cluster')
@@ -1298,6 +1436,7 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     assert argv[argv.index('--repo-fetch-timeout-ms') + 1] == '900000'
     assert argv[argv.index('--conversation-retention-ms') + 1] == '3600000'
     assert argv[argv.index('--assembly-timeout-ms') + 1] == '900000'
+    assert argv[argv.index('--artifact-cache-max-mib') + 1] == '131072'
     assert '--enable-admission-lease' not in argv
     assert '--recipient-key-map' not in argv
     assert '--grant-authority-public-key' not in argv
@@ -2267,6 +2406,38 @@ def test_requester_repo_locks_wait_for_complete_mount_admission(node_container, 
         assert not lock.exists()
     else:
         assert lock.read_bytes() == b'read-only declared input'
+
+
+def test_separate_source_cache_resolves_and_cannot_overwrite_inputs(ops, deployment):
+    parser, _ = ops
+    base, config = deployment
+    config['requester']['repository'] = {
+        'path': 'repo_root/canonical', 'source_cache_path': 'scratch_root/raw-source'}
+    native = parser.load_deployment(write_config(base, config))
+    assert native['requester']['repository']['source_cache_path'] == str(
+        base / 'scratch_root/raw-source')
+    config['requester']['repository']['source_cache_path'] = '.'
+    with pytest.raises(parser.DeploymentConfigError, match='output overlaps protected input'):
+        parser.load_deployment(write_config(base, config))
+
+
+@pytest.mark.parametrize('foreign', [False, True])
+def test_container_source_cache_mount(node_container, foreign):
+    config, _, frozen, capture, run = node_container
+    cache = Path(config['storage']['scratch_root']) / 'raw-source'
+    if foreign:
+        cache = Path(next(a for a in config['actors'] if a['id'] == 'p0')['credential_home'])
+    config['requester']['repository'] = {
+        'path': str(Path(config['storage']['repo_root']) / 'canonical'),
+        'source_cache_path': str(cache), 'max_bytes': 1024}
+    result = run('--actor', 'requester')
+    if foreign:
+        assert result.returncode != 0 and 'FOREIGN_CREDENTIAL_EXPOSURE' in result.stderr
+        assert not capture.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        argv = json.loads(capture.read_text())['argv']
+        assert str(cache) + ':' + str(cache) + ':rw' in argv
 
 
 def test_normalized_wrapper_scopes_multigpu_by_ordered_admitted_uuids(node_container):
@@ -4081,6 +4252,10 @@ def test_installed_slurm_caller_persists_intent_and_never_resubmits(
     (lambda c: c["actors"][-1].update(parameters={"repo-fetch-timeout-ms": True}), "expected integer"),
     (lambda c: c["actors"][-1].update(parameters={"repo-fetch-timeout-ms": 2147483648}), "native signed int"),
     (lambda c: c["actors"][-1].update(parameters={"assembly-timeout-ms": 0}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"artifact-cache-max-mib": 0}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"artifact-cache-max-mib": True}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"artifact-cache-max-mib": -1}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"artifact-cache-max-mib": 2147483648}), "native signed int MiB"),
     (lambda c: c["actors"][-1].update(parameters={"assembly-timeout-ms": True}), "expected integer"),
     (lambda c: c["actors"][-1].update(parameters={"assembly-timeout-ms": 3600001}), "native assembly limit"),
     (lambda c: c["actors"][-1].update(parameters={"conversation-retention-ms": 0}), "expected integer"),

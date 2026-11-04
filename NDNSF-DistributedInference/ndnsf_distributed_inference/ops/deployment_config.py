@@ -506,7 +506,8 @@ def _translate_native(config, by_kind, resolve):
             _object(parameters, "provider.parameters", {
                 "roles", "selection-offer-key-file", "offer-backend", "offer-can-provision",
                 "offer-has-model", "permission-wait-ms", "workers", "handler-threads", "ack-threads",
-                "artifact-cache-dir", "statistics-file", "allow-selection-generation-options",
+                "artifact-cache-dir", "artifact-cache-max-mib", "statistics-file",
+                "allow-selection-generation-options",
                 "enable-admission-lease", "require-execution-lease", "execution-policy", "admission-lease-ttl-ms",
                 "grant-authority-public-key", "recipient-key-map", "repo-fetch-timeout-ms",
                 "assembly-timeout-ms",
@@ -527,11 +528,13 @@ def _translate_native(config, by_kind, resolve):
                     _boolean(parameters[key], "provider.parameters." + key)
             for key in ("permission-wait-ms", "workers", "handler-threads", "ack-threads",
                         "admission-lease-ttl-ms", "repo-fetch-timeout-ms", "conversation-retention-ms",
-                        "assembly-timeout-ms"):
+                        "assembly-timeout-ms", "artifact-cache-max-mib"):
                 if key in parameters:
                     _integer(parameters[key], "provider.parameters." + key)
             if parameters.get("repo-fetch-timeout-ms", 1) > 2147483647:
                 _fail("provider.parameters.repo-fetch-timeout-ms", "exceeds native signed int timeout")
+            if parameters.get("artifact-cache-max-mib", 1) > 2147483647:
+                _fail("provider.parameters.artifact-cache-max-mib", "exceeds native signed int MiB limit")
             if parameters.get("conversation-retention-ms", 1) > 3600000:
                 _fail("provider.parameters.conversation-retention-ms", "exceeds native retention limit")
             if parameters.get("assembly-timeout-ms", 1) > 3600000:
@@ -614,6 +617,9 @@ def _translate_requester(requester, network, security, controller, requester_ide
     for key in ("repository", "encrypted_repository"):
         if key in requester:
             paths(requester[key], ("path",), "requester." + key, exists=False, directory=True)
+    if "source_cache_path" in requester.get("repository", {}):
+        paths(requester["repository"], ("source_cache_path",), "requester.repository",
+              exists=False, directory=True)
     paths(requester, ("statistics_file",), "requester", exists=False)
     for turn in requester["turns"]:
         _object(turn, "requester.turns", required={"input_file", "options_file", "output_file"})

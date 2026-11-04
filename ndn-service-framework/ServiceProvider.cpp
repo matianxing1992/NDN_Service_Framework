@@ -10093,12 +10093,19 @@ namespace ndn_service_framework
                             providerName, serviceName, requestId, inputAttempt);
         const ndn::Name pendingKey = ndn::Name(requesterName)
             .append(serviceName).append(requestId);
+        const auto acquireOwner = [control = m_registrationControl] {
+            const auto release = [control](RegistrationControl*) { control->releaseOwner(); };
+            return std::unique_ptr<RegistrationControl, decltype(release)>(
+                control->acquireOwner() ? control.get() : nullptr, release);
+        };
         auto completed = std::make_shared<std::atomic_bool>(false);
         const ndn::Buffer assignmentPayloadCopy = assignmentPayload;
 
         const auto finishFailure =
             [this, requesterName, providerName, serviceName, requestId,
-             requestMessage, selectionDigest, completed, inputAttempt](std::string reason) {
+             requestMessage, selectionDigest, completed, inputAttempt, acquireOwner](std::string reason) {
+                auto ownerLease = acquireOwner();
+                if (!ownerLease) return;
                 if (completed->exchange(true)) {
                     return;
                 }
@@ -10109,9 +10116,11 @@ namespace ndn_service_framework
                              << " providerName=" << providerName.toUri()
                              << " reason=" << reason);
                 boost::asio::post(m_face.getIoContext(),
-                    [this, requesterName, providerName, serviceName, requestId,
+                    [this, acquireOwner, requesterName, providerName, serviceName, requestId,
                      requestMessage, selectionDigest,
                      reason = std::move(reason)]() mutable {
+                        auto ownerLease = acquireOwner();
+                        if (!ownerLease) return;
                         publishExecutionFailureOnEventLoop(
                             requesterName, providerName, serviceName, requestId,
                             requestMessage,
@@ -10202,7 +10211,10 @@ namespace ndn_service_framework
             [this, requesterName, providerName, serviceName, requestId,
              requestMessage, selectionMessage, assignmentPayloadCopy,
              selectionDigest, targetedTokenConsumed, acceptedRegistration,
-             inputKeyId = keys.keyId](ndn::Buffer plaintext, std::uint64_t inputPackets) {
+             inputKeyId = keys.keyId, acquireOwner]
+            (ndn::Buffer plaintext, std::uint64_t inputPackets) {
+                auto ownerLease = acquireOwner();
+                if (!ownerLease) return;
                 // Data signature/name, AEAD and nonce replay checks completed.
                 // This is input readiness, not authorization to execute a handler.
                 logScopedInputStage("SCOPED_INPUT_READY", requesterName,
@@ -10213,7 +10225,9 @@ namespace ndn_service_framework
                              requestId, requestMessage, selectionMessage,
                              assignmentPayloadCopy, plaintext = std::move(plaintext),
                              selectionDigest, targetedTokenConsumed, acceptedRegistration,
-                             inputKeyId, inputPackets]() mutable {
+                             inputKeyId, inputPackets, acquireOwner]() mutable {
+                                auto ownerLease = acquireOwner();
+                                if (!ownerLease) return;
                                 logScopedInputStage("SCOPED_INPUT_DISPATCH_ENTER", requesterName,
                                                     providerName, serviceName, requestId,
                                                     selectionMessage.getAttempt());
@@ -10401,8 +10415,10 @@ namespace ndn_service_framework
             };
 
         const auto decryptEnvelopes =
-            [this, expected, keys, completed, finishFailure, dispatchPlaintext]
+            [this, expected, keys, completed, finishFailure, dispatchPlaintext, acquireOwner]
             (const std::vector<AeadEnvelope>& envelopes) {
+                auto ownerLease = acquireOwner();
+                if (!ownerLease) return;
                 constexpr std::size_t inputMaxSegments = 4096;
                 if (envelopes.empty() || envelopes.size() > inputMaxSegments) {
                     finishFailure("request-scoped input segment count is invalid");
@@ -10448,7 +10464,10 @@ namespace ndn_service_framework
             };
 
         const auto startSegmentedFetch =
-            [this, expected, requesterName, keys, completed, finishFailure, decryptEnvelopes]() {
+            [this, expected, requesterName, keys, completed, finishFailure, decryptEnvelopes,
+             acquireOwner]() {
+                auto ownerLease = acquireOwner();
+                if (!ownerLease) return;
                 ndn::Interest segmentInterest(expected.inputDataName);
                 segmentInterest.setCanBePrefix(true);
                 segmentInterest.setMustBeFresh(true);
@@ -10581,12 +10600,15 @@ namespace ndn_service_framework
             };
 
         const auto validateSingleInput =
-            [this, requesterName, expected, completed, finishFailure, decryptEnvelopes]
+            [this, requesterName, expected, completed, finishFailure, decryptEnvelopes, acquireOwner]
             (const ndn::Data& data, std::shared_ptr<const ndn::Data> owner) {
-                validator->validate(
+                auto ownerLease = acquireOwner();
+                if (!ownerLease) return;
+                const auto inputValidator = validator;
+                inputValidator->validate(
                     data,
                     [requesterName, expected, completed, finishFailure,
-                     decryptEnvelopes, owner](const ndn::Data& validated) {
+                     decryptEnvelopes, owner, inputValidator](const ndn::Data& validated) {
                         if (completed->load()) return;
                         if (validated.getName() != expected.inputDataName ||
                             !isSignedByIdentity(validated, requesterName)) {
@@ -10608,7 +10630,7 @@ namespace ndn_service_framework
                         }
                         decryptEnvelopes({std::move(envelope)});
                     },
-                    [finishFailure, owner](const ndn::Data&,
+                    [finishFailure, owner, inputValidator](const ndn::Data&,
                                           const ndn::security::ValidationError& error) {
                         finishFailure("input Data signature validation failed: " + error.getInfo());
                     });
@@ -10656,17 +10678,42 @@ namespace ndn_service_framework
             return;
         }
 
-        ndn::Interest interest(expected.inputDataName);
-        interest.setCanBePrefix(true);
-        interest.setMustBeFresh(true);
-        interest.setInterestLifetime(ndn::time::milliseconds(1000));
         NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_INPUT_FETCH requestId="
                      << requestId.toUri()
                      << " providerName=" << providerName.toUri()
                      << " dataName=" << expected.inputDataName.toUri());
         logScopedInputStage("SCOPED_INPUT_FETCH_BEGIN", requesterName,
                             providerName, serviceName, requestId, expected.attempt);
-        m_face.expressInterest(
+        // Preserve bounded acquisition when the first Interest is lost; retries
+        // must not extend the request key lifetime or outlive the Provider.
+        const auto fetchInput =
+            [this, expected, completed, finishFailure, validateSingleInput,
+             startSegmentedFetch, requestId, providerName, acquireOwner,
+             expiresAtMs = keys.expiresAtMs,
+             deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000)]
+            (const auto& self, unsigned attempt) -> void {
+            if (completed->load()) return;
+            auto ownerLease = acquireOwner();
+            if (!ownerLease) return;
+            const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            const auto nowMs = nowMilliseconds();
+            if (attempt >= 3 || remainingMs <= 0 || nowMs >= expiresAtMs) {
+                finishFailure("input Data fetch timeout");
+                return;
+            }
+            ndn::Interest interest(expected.inputDataName);
+            interest.setCanBePrefix(true);
+            interest.setMustBeFresh(true);
+            const auto keyLifetimeMs = std::min<uint64_t>(1000, expiresAtMs - nowMs);
+            interest.setInterestLifetime(ndn::time::milliseconds(
+                std::min<int64_t>(remainingMs, static_cast<int64_t>(keyLifetimeMs))));
+            if (attempt != 0) {
+                NDN_LOG_WARN("NDNSF_REQUEST_SCOPED_INPUT_RETRY requestId="
+                             << requestId.toUri() << " providerName=" << providerName.toUri()
+                             << " attempt=" << attempt + 1);
+            }
+            m_face.expressInterest(
             interest,
             [expected, completed, finishFailure, validateSingleInput,
              startSegmentedFetch](const ndn::Interest&, const ndn::Data& data) {
@@ -10687,9 +10734,11 @@ namespace ndn_service_framework
                 finishFailure("input Data Nack: " +
                               std::to_string(static_cast<int>(nack.getReason())));
             },
-            [finishFailure](const ndn::Interest&) {
-                finishFailure("input Data fetch timeout");
+            [self, attempt](const ndn::Interest&) {
+                self(self, attempt + 1);
             });
+        };
+        fetchInput(fetchInput, 0);
     }
 
     void ServiceProvider::publishExecutionFailureOnEventLoop(

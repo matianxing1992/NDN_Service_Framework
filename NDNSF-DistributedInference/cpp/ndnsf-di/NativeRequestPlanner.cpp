@@ -1996,7 +1996,8 @@ NativePlannedRequest planNativeRequestImpl(
           throw std::invalid_argument("conversation recovery role grant missing");
         const auto saved = nativeReadSavedKvRole(expected->at(item.first));
         const auto& key = recipientKeys->recipient(provider);
-        const auto projected = NativePlanSealer::project(result.sealed, provider, item.second);
+        const auto projected = NativePlanSealer::projectInvocation(
+          ownedSealed, provider, item.second);
         const auto expires = std::min({wireDeadlineMs, core.expiresAtMs,
           conversationTurn->parent.retentionDeadlineMs, grant->expiresAtMs,
           recipientKeys->offer(provider).observation().expiresAtMs});
@@ -2010,7 +2011,7 @@ NativePlannedRequest planNativeRequestImpl(
         (void)nativeReadKvRestore(*item.second.protectedKvRestore, projected,
           ndn::Name(runtime.requesterIdentity), ndn::Name(runtime.contract.serviceName), epochMs());
         result.recoveryExpectations.emplace(item.first, NativeConversationRecoveryExpectationV1{
-          NativePlanSealer::project(result.sealed, provider, item.second),
+          NativePlanSealer::projectInvocation(ownedSealed, provider, item.second),
           recipientKeys->offer(provider).observation().bootEpoch});
       }
     }

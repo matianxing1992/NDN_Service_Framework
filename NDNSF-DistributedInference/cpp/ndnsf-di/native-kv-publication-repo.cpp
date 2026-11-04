@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-publication.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-save.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-packets.hpp"
 
@@ -14,6 +15,34 @@
 #include <utility>
 
 namespace ndnsf::di {
+
+ndnsf_distributed_repo::RepoDataReference
+nativeKvPacketReference(const NativeProtectedKvPacketSet& packets, const ndn::Name& producer)
+{
+  if (packets.packetNames.size() != packets.packetWires.size())
+    throw std::invalid_argument("HANDOFF_PACKET_INDEX_SIZE_MISMATCH");
+  ndnsf_distributed_repo::RepoDataReference object;
+  object.objectName = packets.rootName.toUri(ndn::name::UriFormat::ALTERNATE);
+  object.dataPrefix = producer.toUri(ndn::name::UriFormat::ALTERNATE);
+  object.expectedSize = packets.wireBytes;
+  object.expectedSha256 = packets.wireDigest.substr(7);
+  object.packetSetMetadata.emplace();
+  auto& metadata = *object.packetSetMetadata;
+  metadata.objectName = object.objectName;
+  metadata.objectType = "original-packet-set";
+  metadata.size = object.expectedSize;
+  metadata.sha256 = object.expectedSha256;
+  // These are original NDKVE001 packets. Nonempty metadata.dataPrefix marks a
+  // Core ProtectedBlobManifest envelope and would select the wrong Repo decoder.
+  metadata.packetOffsets = {0};
+  for (std::size_t i = 0; i < packets.packetNames.size(); ++i) {
+    metadata.packetNames.push_back(packets.packetNames[i].toUri(ndn::name::UriFormat::ALTERNATE));
+    metadata.packetOffsets.push_back(metadata.packetOffsets.back() + packets.packetWires[i].size());
+  }
+  object.validateExactPacketSet();
+  return object;
+}
+
 namespace {
 
 void
@@ -89,23 +118,8 @@ publish(const std::shared_ptr<ndn_service_framework::ServiceProvider>& producer,
     requestId.toUri(ndn::name::UriFormat::ALTERNATE)).substr(7);
   insert.generation = 1;
   insert.storageBinding = {1, grant.ownerIdentity, grant.grantId, grant.ownerEpoch};
-  auto& object = insert.reference;
-  object.objectName = challenge.manifestName;
-  object.dataPrefix = producerUri;
-  object.expectedSize = packets.wireBytes;
-  object.expectedSha256 = packets.wireDigest.substr(7);
-  object.packetSetMetadata.emplace();
-  auto& metadata = *object.packetSetMetadata;
-  metadata.objectName = object.objectName;
-  metadata.dataPrefix = object.dataPrefix;
-  metadata.objectType = "original-packet-set";
-  metadata.size = object.expectedSize;
-  metadata.sha256 = object.expectedSha256;
-  metadata.packetOffsets = {0};
-  for (std::size_t i = 0; i < packets.packetNames.size(); ++i) {
-    metadata.packetNames.push_back(packets.packetNames[i].toUri(ndn::name::UriFormat::ALTERNATE));
-    metadata.packetOffsets.push_back(metadata.packetOffsets.back() + packets.packetWires[i].size());
-  }
+  insert.reference = nativeKvPacketReference(packets, producerName);
+  const auto& object = insert.reference;
   const auto verify = [&](const ndn::Data& packet) {
     const auto& wire = packet.wireEncode();
     return owner.publication.storageWriter->validateProducerPacketWireUntil(
@@ -120,13 +134,30 @@ publish(const std::shared_ptr<ndn_service_framework::ServiceProvider>& producer,
   const ndnsf_distributed_repo::RepoArtifactTarget target{
     owner.repoTarget.repoNode, owner.repoTarget.providerIdentity, owner.repoTarget.servicePrefix};
   std::size_t next = 0;
-  const auto committed = ndnsf_distributed_repo::RepoClient::commitUserStorageOriginalPackets(
-    *owner.publication.storageWriter, target, insert,
-    [&]() -> std::optional<std::vector<std::uint8_t>> {
-      if (next == packets.packetWires.size()) return std::nullopt;
-      return packets.packetWires[next++];
-    }, verify, std::min(1000, std::max(1, budget / 2)), budget, current);
-  require(committed.objectName == object.objectName && committed.size == object.expectedSize &&
+  const auto committed = [&] {
+    try {
+      return ndnsf_distributed_repo::RepoClient::commitUserStorageOriginalPackets(
+        *owner.publication.storageWriter, target, insert,
+        [&]() -> std::optional<std::vector<std::uint8_t>> {
+          if (next == packets.packetWires.size()) return std::nullopt;
+          return packets.packetWires[next++];
+        }, verify, std::min(1000, std::max(1, budget / 2)), budget, current);
+    }
+    catch (const std::exception& error) {
+      // Retain only an internal error code, never packet contents or exception detail.
+      std::string code(error.what());
+      code = code.substr(0, code.find(':'));
+      if (code.size() > 80 || code.rfind("repo-", 0) != 0 ||
+          !std::all_of(code.begin(), code.end(), [] (char c) {
+            return (c >= 'a' && c <= 'z') || c == '-';
+          }))
+        code = "UNCLASSIFIED_EXCEPTION";
+      logRuntimeEvidence("NDNSF_DI_HANDOFF_REPO_PUBLICATION_FAILED reasonCode=" + code);
+      throw;
+    }
+  }();
+  require(ndn::Name(committed.objectName) == ndn::Name(object.objectName) &&
+    committed.size == object.expectedSize &&
     committed.sha256 == object.expectedSha256, "HANDOFF_DURABLE_TUPLE_MISMATCH");
   current();
   NativeSavedKvRoleV1 saved;

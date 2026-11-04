@@ -114,63 +114,71 @@ struct FetchState : std::enable_shared_from_this<FetchState>
         ++inFlight;
       }
 
-      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-        deadline - std::chrono::steady_clock::now());
-      if (remaining <= std::chrono::milliseconds::zero()) {
-        fail("repo-original-packet-fetch-deadline");
-        return;
-      }
-      ndn::Interest interest(expectedPacketName(reference, index));
-      interest.setCanBePrefix(false);
-      interest.setMustBeFresh(false);
-      interest.setInterestLifetime(ndn::time::milliseconds(
-        std::min(interestLifetime, remaining).count()));
-      if (!reference.forwardingHint.empty()) {
-        interest.setForwardingHint({ndn::Name(reference.forwardingHint)});
-      }
-
-      const auto self = shared_from_this();
-      try {
-        std::lock_guard<std::mutex> lock(mutex);
-        if (done) {
-          return;
-        }
-        auto pending = pendingInterests.emplace(
-          index, ndn::PendingInterestHandle{}).first;
-        // expressInterest posts registration to the Face io_context. Keep the
-        // state lock until its handle is installed so an early callback or a
-        // sibling failure cannot remove a placeholder before registration.
-        pending->second = face.expressInterest(
-          interest,
-          [self, index] (const ndn::Interest&, const ndn::Data& data) {
-            boost::asio::post(self->strand, [self, index, data] {
-              self->onData(index, data);
-            });
-          },
-          [self, index] (const ndn::Interest&, const ndn::lp::Nack&) {
-            boost::asio::post(self->strand, [self, index] {
-              self->onFailure(index, "repo-original-packet-nack");
-            });
-          },
-          [self, index] (const ndn::Interest&) {
-            boost::asio::post(self->strand, [self, index] {
-              self->onFailure(index, "repo-original-packet-timeout");
-            });
-          });
-      }
-      catch (const std::exception&) {
-        onFailure(index, "repo-original-packet-interest-failed");
-        return;
-      }
+      expressPacket(index, 1);
     }
   }
 
   void
-  onData(std::size_t index, const ndn::Data& data)
+  expressPacket(std::size_t index, unsigned attempt)
+  {
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deadline - std::chrono::steady_clock::now());
+    if (remaining <= std::chrono::milliseconds::zero()) {
+      fail("repo-original-packet-fetch-deadline");
+      return;
+    }
+    ndn::Interest interest(expectedPacketName(reference, index));
+    interest.setCanBePrefix(false);
+    interest.setMustBeFresh(false);
+    interest.setInterestLifetime(ndn::time::milliseconds(
+      std::min({interestLifetime, remaining, std::chrono::milliseconds(1000)}).count()));
+    if (!reference.forwardingHint.empty()) {
+      interest.setForwardingHint({ndn::Name(reference.forwardingHint)});
+    }
+
+    const auto self = shared_from_this();
+    try {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (done) {
+        return;
+      }
+      auto pending = pendingInterests.emplace(
+        index, PendingPacket{}).first;
+      pending->second.attempt = attempt;
+      // expressInterest posts registration to the Face io_context. Keep the
+      // state lock until its handle is installed so an early callback or a
+      // sibling failure cannot remove a placeholder before registration.
+      pending->second.handle = face.expressInterest(
+        interest,
+        [self, index, attempt] (const ndn::Interest&, const ndn::Data& data) {
+          boost::asio::post(self->strand, [self, index, attempt, data] {
+            self->onData(index, attempt, data);
+          });
+        },
+        [self, index, attempt] (const ndn::Interest&, const ndn::lp::Nack&) {
+          boost::asio::post(self->strand, [self, index, attempt] {
+            self->onFailure(index, attempt, "repo-original-packet-nack");
+          });
+        },
+        [self, index, attempt] (const ndn::Interest&) {
+          boost::asio::post(self->strand, [self, index, attempt] {
+            self->onFailure(index, attempt, "repo-original-packet-timeout");
+          });
+        });
+    }
+    catch (const std::exception&) {
+      onFailure(index, attempt, "repo-original-packet-interest-failed");
+      return;
+    }
+  }
+
+  void
+  onData(std::size_t index, unsigned attempt, const ndn::Data& data)
   {
     {
       std::lock_guard<std::mutex> lock(mutex);
-      if (done || pendingInterests.find(index) == pendingInterests.end()) {
+      const auto pending = pendingInterests.find(index);
+      if (done || pending == pendingInterests.end() || pending->second.attempt != attempt) {
         return;
       }
       if (std::chrono::steady_clock::now() >= deadline) {
@@ -181,18 +189,18 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     std::vector<uint8_t> wire;
     try {
       if (data.getName() != expectedPacketName(reference, index)) {
-        onFailure(index, "repo-original-packet-name-mismatch");
+        onFailure(index, attempt, "repo-original-packet-name-mismatch");
         return;
       }
       const auto& block = data.wireEncode();
       if (block.size() == 0 || block.size() > ndn::MAX_NDN_PACKET_SIZE) {
-        onFailure(index, "repo-original-packet-wire-size-invalid");
+        onFailure(index, attempt, "repo-original-packet-wire-size-invalid");
         return;
       }
       wire.assign(block.begin(), block.end());
     }
     catch (const std::exception&) {
-      onFailure(index, "repo-original-packet-wire-encoding-failed");
+      onFailure(index, attempt, "repo-original-packet-wire-encoding-failed");
       return;
     }
 
@@ -202,7 +210,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
         return;
       }
       const auto pending = pendingInterests.find(index);
-      if (pending == pendingInterests.end()) {
+      if (pending == pendingInterests.end() || pending->second.attempt != attempt) {
         return;
       }
       pendingInterests.erase(pending);
@@ -227,9 +235,25 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   }
 
   void
-  onFailure(std::size_t, const std::string& message)
+  onFailure(std::size_t index, unsigned attempt, const std::string& message)
   {
-    fail(message);
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      const auto pending = pendingInterests.find(index);
+      if (done || pending == pendingInterests.end() || pending->second.attempt != attempt)
+        return;
+      constexpr unsigned MAX_ATTEMPTS = 3;
+      if (attempt >= MAX_ATTEMPTS || std::chrono::steady_clock::now() >= deadline ||
+          (message != "repo-original-packet-timeout" && message != "repo-original-packet-nack")) {
+        failLocked(message);
+        return;
+      }
+      pending->second.handle.cancel();
+      pendingInterests.erase(pending);
+    }
+    // Retransmission keeps the same immutable slot and window charge. A new
+    // Interest gets a fresh Nonce; stale callbacks cannot consume its attempt.
+    expressPacket(index, attempt + 1);
   }
 
   void
@@ -247,9 +271,9 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     }
     done = true;
     error = message;
-    for (auto& [index, handle] : pendingInterests) {
+    for (auto& [index, pending] : pendingInterests) {
       (void)index;
-      handle.cancel();
+      pending.handle.cancel();
     }
     pendingInterests.clear();
     spool.reset();
@@ -267,7 +291,12 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   std::mutex mutex;
   std::condition_variable condition;
   std::shared_ptr<FaceDataReferencePacketSpool> spool;
-  std::map<std::size_t, ndn::PendingInterestHandle> pendingInterests;
+  struct PendingPacket
+  {
+    ndn::PendingInterestHandle handle;
+    unsigned attempt = 0;
+  };
+  std::map<std::size_t, PendingPacket> pendingInterests;
   std::size_t nextPacket = 0;
   std::size_t inFlight = 0;
   std::size_t received = 0;

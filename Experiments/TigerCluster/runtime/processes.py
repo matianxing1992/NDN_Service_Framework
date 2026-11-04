@@ -222,8 +222,8 @@ def stop_owned(record, term_seconds=5, kill_seconds=5):
     result = {'pid': record.get('pid') if isinstance(record, dict) else None,
               'status': 'UNKNOWN', 'forced': False}
     try:
-        if any(type(value) not in (int, float) or not 0 <= value <= 60
-               for value in (term_seconds, kill_seconds)):
+        if (type(term_seconds) not in (int, float) or not 0 <= term_seconds <= 615 or
+                type(kill_seconds) not in (int, float) or not 0 <= kill_seconds <= 60):
             raise ValueError('cleanup intervals must be bounded seconds')
         if owned_state(record) == 'UNKNOWN':
             return result

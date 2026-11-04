@@ -10,7 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def invoke_provider(tmp_path, backend, execution_provider="cpu"):
+def invoke_provider(tmp_path, backend, execution_provider="cpu", extra_args=()):
     binary = Path(os.environ.get(
         "SPEC181_NATIVE_PROVIDER_BINARY",
         str(ROOT / "build-system-j2/examples/di-native-provider")))
@@ -38,7 +38,7 @@ def invoke_provider(tmp_path, backend, execution_provider="cpu"):
     result = subprocess.run([
         str(binary), "--check-only", "--plan", str(plan),
         "--manifest", str(manifest), "--service", service,
-        "--provider", "/spec181/provider", "--roles", "Compute"],
+        "--provider", "/spec181/provider", "--roles", "Compute", *extra_args],
         cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)
     (tmp_path / "stdout.log").write_text(result.stdout)
     (tmp_path / "stderr.log").write_text(result.stderr)
@@ -68,6 +68,21 @@ def test_unknown_backend_still_rejects(tmp_path):
     assert result.returncode != 0
     assert "no NativeModelRunner backend registered: unknown-backend" in combined_log
     assert "NDNSF_DI_NATIVE_PROVIDER_CHECK_OK" not in combined_log
+
+
+def test_large_explicit_artifact_budget_keeps_cpu_backend_usable(tmp_path):
+    result = invoke_provider(tmp_path, "onnxruntime-cpu",
+                             extra_args=("--artifact-cache-max-mib", "131072"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "NDNSF_DI_NATIVE_PROVIDER_CHECK_OK" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("budget", ["0", "-1", "true", "1GiB", "2147483648"])
+def test_invalid_artifact_budget_rejects_before_execution(tmp_path, budget):
+    result = invoke_provider(tmp_path, "onnxruntime-cpu",
+                             extra_args=("--artifact-cache-max-mib", budget))
+    assert result.returncode != 0
+    assert "NDNSF_DI_NATIVE_PROVIDER_CHECK_OK" not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("backend", ["onnxruntime-cpu", "onnxruntime-cuda"])

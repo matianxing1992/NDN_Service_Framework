@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <limits>
+#include <new>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -918,7 +919,7 @@ RepoCore::getDataPacket(
     }
     const bool packetSet = manifest.objectType == "original-packet-set";
     if (packetSet) {
-      validatePacketIndex(manifest);
+      validateReadPacketIndex(manifest);
     }
     const auto names = packetSet ? manifest.packetNames : std::vector<std::string>{manifest.objectName};
     bool admitted = false;
@@ -1046,7 +1047,7 @@ RepoCore::findPacketRecord(const ndn::Name& name,
     if (manifest.objectType != "original-packet-set") continue;
     const auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(), key);
     if (found != manifest.packetNames.end()) {
-      validatePacketIndex(manifest);
+      validateReadPacketIndex(manifest);
       if (acceptObject && !acceptObject(manifest)) {
         continue;
       }
@@ -1054,6 +1055,66 @@ RepoCore::findPacketRecord(const ndn::Name& name,
     }
   }
   return std::nullopt;
+}
+
+void
+RepoCore::validateReadPacketIndex(const RepoObjectManifest& manifest) const
+{
+  constexpr size_t MAX_PROOFS = 16;
+  constexpr size_t MAX_INDEX_BYTES = 8U * 1024U * 1024U;
+  // Do not reuse a publication/writer lock: callers may already own those.
+  // No storage call or visibility callback runs under this private cache lock.
+  const auto matches = [&manifest](const PacketIndexProof& proof) {
+    return manifest.objectType == "original-packet-set" && proof.size == manifest.size &&
+      proof.names == manifest.packetNames && proof.offsets == manifest.packetOffsets;
+  };
+  {
+    std::lock_guard<std::mutex> lock(m_packetIndexProofMutex);
+    const auto found = m_packetIndexProofs.find(manifest.objectName);
+    if (found != m_packetIndexProofs.end() && matches(found->second))
+      return;
+  }
+  validatePacketIndex(manifest);
+  size_t bytes = sizeof(PacketIndexProof) + sizeof(std::string) + 4 * sizeof(void*);
+  const auto charge = [&bytes](size_t amount) {
+    if (amount > MAX_INDEX_BYTES - bytes)
+      return false;
+    bytes += amount;
+    return true;
+  };
+  if (manifest.packetNames.size() > MAX_INDEX_BYTES / sizeof(std::string) ||
+      manifest.packetOffsets.size() > MAX_INDEX_BYTES / sizeof(uint64_t) ||
+      !charge(manifest.objectName.size() + 1) ||
+      !charge(manifest.packetNames.size() * sizeof(std::string)) ||
+      !charge(manifest.packetOffsets.size() * sizeof(uint64_t)))
+    return;
+  for (const auto& name : manifest.packetNames) {
+    if (!charge(name.size() + 1))
+      return;
+  }
+  std::lock_guard<std::mutex> lock(m_packetIndexProofMutex);
+  const auto found = m_packetIndexProofs.find(manifest.objectName);
+  if (found != m_packetIndexProofs.end()) {
+    if (matches(found->second))
+      return;
+    m_packetIndexProofBytes -= found->second.chargedBytes;
+    m_packetIndexProofs.erase(found);
+  }
+  if (m_packetIndexProofs.size() >= MAX_PROOFS ||
+      bytes > MAX_INDEX_BYTES - m_packetIndexProofBytes) {
+    m_packetIndexProofs.clear();
+    m_packetIndexProofBytes = 0;
+  }
+  try {
+    m_packetIndexProofs.emplace(manifest.objectName,
+      PacketIndexProof{manifest.size, manifest.packetNames, manifest.packetOffsets, bytes});
+    m_packetIndexProofBytes += bytes;
+  }
+  catch (const std::bad_alloc&) {
+    // Validation already succeeded; retaining its optimization is optional.
+    m_packetIndexProofs.clear();
+    m_packetIndexProofBytes = 0;
+  }
 }
 
 RepoObjectManifest

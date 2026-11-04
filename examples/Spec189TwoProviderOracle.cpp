@@ -1240,18 +1240,10 @@ validateMiniNdn(const NativeJson& state, const NativeJson& config,
   if (namespaces.size() != facility.at("nodes").size() || shells.size() != namespaces.size())
     chainFailure("deployment-minindn-namespace");
   std::map<std::string, std::string> expected;
-  std::set<std::string> participatingProviders, executionNamespaces;
-  for (const auto& provider : config.at("requester").at("fixed_placement").at("role_providers"))
-    participatingProviders.insert(provider.get<std::string>());
   for (const auto& actor : config.at("actors")) {
-    if (actor.at("kind") == "provider" &&
-        participatingProviders.count(actor.at("identity").get<std::string>()))
-      executionNamespaces.insert(namespaces.at(actor.at("node").get<std::string>()));
     expected.emplace(actor.at("id").get<std::string>(),
                      namespaces.at(actor.at("node").get<std::string>()));
   }
-  if (executionNamespaces.size() < 2)
-    chainFailure("deployment-minindn-execution-not-distributed");
   for (const auto& [id, value] : namespaces)
     expected.emplace("nfd." + id, value);
   for (const auto& launch : state.at("launches")) {
@@ -1322,9 +1314,10 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   const auto& owner = conversation.at("owner");
   const auto& request = requesterConfig.at("request");
   const bool handoff = requesterConfig.contains("kv_handoff");
-  NativeJson placement = handoff ? NativeJson::object() :
+  const bool automaticPlacement = !requesterConfig.contains("fixed_placement");
+  NativeJson placement = automaticPlacement ? NativeJson::object() :
     requesterConfig.at("fixed_placement").at("role_providers");
-  if (!handoff && (!placement.is_object() || placement.empty()))
+  if (!automaticPlacement && (!placement.is_object() || placement.empty()))
     chainFailure("deployment-role-map");
   if (handoff && (requesterConfig.contains("fixed_placement") ||
       !requesterConfig.at("kv_handoff").at("roles").is_object() ||
@@ -1453,7 +1446,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       ? actor.at("parameters").value("statistics-file", (actorRoot(id) / (id + "-statistics.jsonl")).string())
       : (actorRoot(id) / (id + "-statistics.jsonl")).string();
     providers.push_back(readStatistics(statisticsPath,
-      "ndnsf-di-native-request-statistics-v1", rounds, true, handoff));
+      "ndnsf-di-native-request-statistics-v1", rounds, true, automaticPlacement));
     providers.back().actor = id;
     if (slurm) {
       providers.back().host = roleReceipts.at(id).at("host").get<std::string>();
@@ -1491,8 +1484,8 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     for (const auto& provider : providers) {
       for (std::size_t index = 0; index < provider.requests.size(); ++index) {
         const auto& observation = provider.requests.at(index);
-        if ((!handoff && index != round) ||
-            (handoff && observation.at("requestId") != requestId))
+        if ((!automaticPlacement && index != round) ||
+            (automaticPlacement && observation.at("requestId") != requestId))
           continue;
         const auto role = observation.at("role").get<std::string>();
         if (role.empty() || observedPlacement.contains(role) ||
@@ -1538,8 +1531,34 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       }
       placement = observedPlacement;
     }
+    else if (automaticPlacement && round == 0) {
+      if (observedPlacement.empty())
+        chainFailure("deployment-role-map");
+      if (request.contains("provider_names") && !request.at("provider_names").empty()) {
+        for (const auto& provider : observedPlacement) {
+          if (std::find(request.at("provider_names").begin(),
+                        request.at("provider_names").end(), provider) ==
+              request.at("provider_names").end())
+            chainFailure("deployment-initial-provider");
+        }
+      }
+      placement = observedPlacement;
+    }
     if (observedPlacement != placement)
       chainFailure("deployment-role-map");
+    if (minindn) {
+      std::set<std::string> executionNamespaces;
+      for (const auto& observation : observations) {
+        for (const auto& actor : config.at("actors")) {
+          if (actor.at("id") == observation.first->actor)
+            executionNamespaces.insert(state.at("facility").at("nodes")
+              .at(actor.at("node").get<std::string>()).at("network_namespace")
+              .get<std::string>());
+        }
+      }
+      if (executionNamespaces.size() < 2)
+        chainFailure("deployment-minindn-execution-not-distributed");
+    }
     NativeJson roleMap = NativeJson::array();
     for (auto role = placement.begin(); role != placement.end(); ++role)
       roleMap.push_back(NativeJson::array({role.key(), role.value()}));

@@ -1254,6 +1254,15 @@ NdnsfIntegrationEnvironment::provider()
   return *m_provider;
 }
 
+void
+NdnsfIntegrationEnvironment::destroyProviderKeepingFaceForTest(size_t index)
+{
+  disconnectProviderTransportForTest(index);
+  disconnectProviderPeerTransportForTest();
+  if (index == 0) m_provider.reset();
+  else m_extraProviders.at(index - 1).reset();
+}
+
 ServiceProvider&
 NdnsfIntegrationEnvironment::provider(size_t index)
 {

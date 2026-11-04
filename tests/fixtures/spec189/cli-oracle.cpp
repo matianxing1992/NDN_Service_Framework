@@ -738,6 +738,48 @@ int main(int argc, char** argv)
     check("", "", "", deployment);
     deploymentFixture(false, "client");
     check("", "", "", deployment);
+    const auto automaticFixture = [&](bool wrongCandidate = false) {
+      deploymentFixture();
+      auto config = readJsonFile(root / "configuration.json");
+      auto requester = readJsonFile(root / "requester.json");
+      requester.erase("fixed_placement");
+      requester["request"]["provider_names"] = NativeJson::array({
+        "/example/ndnsf-qwen06b/provider-0",
+        wrongCandidate ? "/example/ndnsf-qwen06b/foreign" :
+                         "/example/ndnsf-qwen06b/provider-1"});
+      config["requester"] = requester;
+      config["requester"].erase("statistics_file");
+      const auto digest = ndnsf::di::nativePlanningDigest(
+        ndnsf::di::nativeCanonicalJson(config)).substr(7);
+      write(root / "configuration.json", config.dump());
+      write(root / "requester.json", requester.dump());
+      auto state = readJsonFile(root / "deployment-state.json");
+      state["configuration_sha256"] = digest;
+      for (auto& launch : state["launches"]) {
+        launch["bindings"]["NDNSF_DEPLOYMENT_CONFIG_SHA256"] = digest;
+        launch["proof"]["bindings"]["NDNSF_DEPLOYMENT_CONFIG_SHA256"] = digest;
+      }
+      write(root / "deployment-state.json", state.dump());
+    };
+    automaticFixture();
+    check("", "", "", deployment);
+    automaticFixture(true);
+    check("", "", "deployment-initial-provider", deployment);
+    automaticFixture();
+    {
+      const auto path = root / "provider-1-statistics.jsonl";
+      std::ifstream input(path);
+      std::string line, rows;
+      unsigned index = 0;
+      while (std::getline(input, line)) {
+        auto row = NativeJson::parse(line);
+        if (++index == 3) row["role"] = "changed-role";
+        rows += row.dump() + '\n';
+      }
+      input.close();
+      write(path, rows);
+    }
+    check("", "", "deployment-role-map", deployment);
     const auto handoffFixture = [&](bool departure = false, bool colocated = false,
                                     bool wrongDestination = false) {
       deploymentFixture();

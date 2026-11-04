@@ -3208,7 +3208,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
 
       if (selectionProjection && selectionProjection->protectedKvRestore) {
         if (!config.handoff || config.conversationStateKeyScope.empty() ||
-            !config.enableNativeEpochCoordinator)
+            !authenticatedGeneration.enabled)
           throw std::runtime_error("KV_RECOVERY_NOT_CONFIGURED");
         const auto trusted = trustedDecodeStateTemplateFor(*selectionProjection,
           readinessRunnerSpec, config.providerBootId);

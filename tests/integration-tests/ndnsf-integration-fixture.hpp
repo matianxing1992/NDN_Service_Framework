@@ -207,6 +207,7 @@ public:
   ServiceUser& user();
   ServiceProvider& provider();
   ServiceProvider& provider(size_t index);
+  void destroyProviderKeepingFaceForTest(size_t index);
   /** Detach one Provider's user-facing transport for live-loss tests. */
   void disconnectProviderTransportForTest(size_t index);
   /** Detach the default Provider-to-Provider mesh before installing a fault link. */
