@@ -4,6 +4,14 @@
 `NDNSF-DistributedRepo` 和 `NDNSF-DistributedInference` 同级，因为它是建立在通用
 NDNSF runtime 之上的应用层，而不是低层 core example。
 
+## 室内人体跨摄像头跟踪
+
+维护中的 MiniNDN 入口已支持 YOLO、ByteTrack 和预训练 OSNet 的 CPU 推理。
+三架来源 UAV 发布视频帧，计算 UAV 的原生 C++ 分配全局人体 ID，地面站显示经过验证的
+结果。模型与 profile 摘要、三路视频清单、准备、预检和启动命令统一见
+[CPU 操作说明](../Experiments/UAV/README.md#indoor-person-tracking-on-cpu)。
+固定摄像头回放用于模拟悬停 UAV 的开发链路；正式跨镜头精度和最终资格尚未完成。
+
 ## Spec191 真实数据多 UAV 协作跟踪 demo
 
 可复用的真实数据 demo 只有一个入口：

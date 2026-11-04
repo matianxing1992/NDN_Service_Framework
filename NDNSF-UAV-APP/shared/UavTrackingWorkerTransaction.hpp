@@ -2,6 +2,7 @@
 
 #include <ndn-cxx/encoding/buffer.hpp>
 
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -16,7 +17,12 @@ namespace ndnsf::examples::uav {
 class UavTrackingWorkerTransaction
 {
 public:
-  explicit UavTrackingWorkerTransaction(std::filesystem::path root);
+  /** Positive capacity uses a run-root/mission store; zero preserves legacy retention. */
+  explicit UavTrackingWorkerTransaction(std::filesystem::path root,
+                                       size_t maxRetainedWindows = 0);
+
+  /** Check run-wide disk slots. Caller serializes the shared run root through commit. */
+  void requireCapacity(const std::string& windowId) const;
 
   std::optional<ndn::Buffer>
   loadCommittedResult(const std::string& windowId, const std::string& inputDigest) const;
@@ -30,6 +36,7 @@ public:
 
 private:
   std::filesystem::path m_root;
+  size_t m_maxRetainedWindows;
 };
 
 } // namespace ndnsf::examples::uav

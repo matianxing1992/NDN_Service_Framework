@@ -64,6 +64,10 @@ struct ClockBinding
   uint64_t uncertaintyUs = 0;
 };
 
+/** Check that a declared common capture can result from an integer tick in this clock interval. */
+bool
+isCaptureTimeWithinClock(const ClockBinding& clock, uint64_t captureTimeUs);
+
 struct DataRef
 {
   std::string exactName;

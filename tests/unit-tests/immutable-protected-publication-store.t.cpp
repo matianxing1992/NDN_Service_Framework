@@ -3,6 +3,7 @@
 
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <future>
 #include <limits>
 
 namespace ndn_service_framework::test {
@@ -202,6 +203,176 @@ BOOST_AUTO_TEST_CASE(DefaultEntryLimitAndVersionExhaustionAreBounded)
   BOOST_CHECK_EQUAL(item.dataName.at(-1).toVersion(), std::numeric_limits<uint64_t>::max());
   last.rollback(item.ticket);
   BOOST_CHECK(last.begin(service, generation, semantic, digest, 32).status == Status::Capacity);
+}
+
+BOOST_AUTO_TEST_CASE(ExactNamesBindContentAndProtectionAndReuseOriginalPackets)
+{
+  Store store(producer, 1);
+  const auto name = ndn::Name(semantic).appendVersion(7);
+  const auto protection = "sha256:" + std::string(64, 'b');
+  const auto changed = "sha256:" + std::string(64, 'c');
+  const auto first = store.beginExact(name, digest, protection, 32, 1024);
+  BOOST_REQUIRE(first.status == Status::Reserved);
+  BOOST_CHECK_EQUAL(first.dataName, name);
+  BOOST_CHECK_EQUAL(store.reservedWireBytes(), 1024);
+  BOOST_CHECK(store.beginExact(name, digest, protection, 32, 1024).status == Status::Busy);
+  BOOST_CHECK(store.beginExact(name, digest, changed, 32, 1024).status ==
+              Status::IdentityConflict);
+  auto packets = complete(name);
+  const auto original = packets.front();
+  const auto wire = original->wireEncode();
+  BOOST_REQUIRE(store.commit(first.ticket, packets));
+  packets.clear();
+  const auto replay = store.beginExact(name, digest, protection, 32, 1024);
+  BOOST_REQUIRE(replay.status == Status::Reused);
+  BOOST_CHECK(replay.publication->packets.front() == original);
+  BOOST_CHECK(replay.publication->packets.front()->wireEncode() == wire);
+  BOOST_CHECK_EQUAL(replay.publication->protectionSha256, protection);
+  BOOST_CHECK(store.beginExact(name, changed, protection, 32, 1024).status ==
+              Status::IdentityConflict);
+  BOOST_CHECK(store.beginExact(name, digest, changed, 32, 1024).status ==
+              Status::IdentityConflict);
+  BOOST_CHECK(store.find(ndn::Interest(original->getFullName())) == original);
+  BOOST_CHECK_EQUAL(store.reservedWireBytes(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(ExactPreparationIsAtomicAndReleasesItsVariableReservation)
+{
+  Store store(producer, 1, Store::Limits{4, 2048, 256, 1024});
+  const auto name = ndn::Name(semantic).appendVersion(9);
+  const auto protection = "sha256:" + std::string(64, 'd');
+  auto item = store.beginExact(name, digest, protection, 32, 512);
+  BOOST_REQUIRE(item.status == Status::Reserved);
+  BOOST_CHECK_EQUAL(store.reservedWireBytes(), 512);
+  BOOST_CHECK(!store.commit(item.ticket, {packet(ndn::Name(name).appendSegment(0), 1)}));
+  BOOST_CHECK(!store.find(ndn::Interest(name).setCanBePrefix(true)));
+  store.rollback(item.ticket);
+  BOOST_CHECK_EQUAL(store.reservedWireBytes(), 0);
+  item = store.beginExact(name, digest, protection, 32, 1024);
+  auto mixed = complete(name);
+  mixed.push_back(packet(ndn::Name("/test/source/NDNSF/key")));
+  BOOST_CHECK(!store.commit(item.ticket, mixed));
+  BOOST_CHECK_EQUAL(store.size(), 0);
+  store.rollback(item.ticket);
+  item = store.beginExact(name, digest, protection, 32, 512);
+  BOOST_REQUIRE(store.commit(item.ticket, complete(name)));
+  BOOST_CHECK_EQUAL(store.reservedWireBytes(), 0);
+  BOOST_CHECK(store.beginExact(name, digest, "not-a-digest", 32, 512).status == Status::Invalid);
+  BOOST_CHECK(store.beginExact(name, digest, protection, 257, 512).status == Status::Invalid);
+  BOOST_CHECK(store.beginExact(name, digest, protection, 32, 1025).status == Status::Invalid);
+}
+
+BOOST_AUTO_TEST_CASE(ExactCapacityDenialNeverEvictsIdentityOrOriginalWire)
+{
+  const auto name = ndn::Name(semantic).appendVersion(10);
+  const auto protection = "sha256:" + std::string(64, 'e');
+  const auto packets = complete(name);
+  const auto bytes = packets.front()->wireEncode().size();
+  Store store(producer, 1, Store::Limits{1, bytes, 64, bytes});
+  const auto item = store.beginExact(name, digest, protection, 32, bytes);
+  BOOST_REQUIRE(item.status == Status::Reserved);
+  BOOST_REQUIRE(store.commit(item.ticket, packets));
+  BOOST_CHECK_EQUAL(store.retainedWireBytes(), bytes);
+  BOOST_CHECK(store.beginExact(ndn::Name(semantic).appendVersion(11), digest,
+                              protection, 32, bytes).status == Status::Capacity);
+  const auto replay = store.beginExact(name, digest, protection, 32, bytes);
+  BOOST_REQUIRE(replay.status == Status::Reused);
+  BOOST_CHECK(replay.publication->packets.front() == packets.front());
+  BOOST_CHECK(store.beginExact(name, digest, "sha256:" + std::string(64, 'f'),
+                              32, bytes).status == Status::IdentityConflict);
+  BOOST_CHECK_EQUAL(store.size(), 1);
+  BOOST_CHECK_EQUAL(store.reservedWireBytes(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(ExactDomainPreservesParentPolicyAndRejectsCrossDomainConflicts)
+{
+  Store store(producer, 1);
+  const auto name = ndn::Name(semantic).appendVersion(30);
+  const auto protection = "sha256:" + std::string(64, 'b');
+  const Store::Limits limits{2, 2048, 64, 1024};
+  const auto originals = complete(name);
+  const auto item = store.beginExact(limits, name, digest, protection, 32, 1024);
+  BOOST_REQUIRE(item.status == Status::Reserved);
+  BOOST_REQUIRE(store.commitExact(item.ticket, originals));
+  BOOST_CHECK(store.find(ndn::Interest(originals.front()->getFullName())) == originals.front());
+  BOOST_CHECK_EQUAL(store.size(), 0);
+  BOOST_CHECK_EQUAL(store.retainedWireBytes(), 0);
+  BOOST_CHECK_THROW(store.beginExact(Store::Limits{3, 2048, 64, 1024}, name,
+    digest, protection, 32, 1024), std::invalid_argument);
+
+  const auto legacy = store.begin(service, generation, semantic, digest, 32);
+  BOOST_REQUIRE(legacy.status == Status::Reserved);
+  auto mixed = complete(legacy.dataName);
+  mixed.push_back(packet(ndn::Name(name).appendSegment(0), 0, 32, 99));
+  BOOST_CHECK(!store.commit(legacy.ticket, mixed));
+  store.rollback(legacy.ticket);
+  BOOST_CHECK(store.find(ndn::Interest(originals.front()->getFullName())) == originals.front());
+
+  const auto valid = store.begin(service, generation, semantic, digest, 32);
+  BOOST_REQUIRE(valid.status == Status::Reserved);
+  BOOST_REQUIRE(store.commit(valid.ticket, complete(valid.dataName)));
+  BOOST_CHECK_THROW(store.beginExact(limits, valid.dataName, digest, protection, 32, 1024),
+                    std::invalid_argument);
+  BOOST_CHECK_EQUAL(store.size(), 1);
+}
+
+BOOST_AUTO_TEST_CASE(ConcurrentExactHitsKeepOneOriginalOwner)
+{
+  Store store(producer, 1);
+  const auto name = ndn::Name(semantic).appendVersion(40);
+  const auto protection = "sha256:" + std::string(64, 'c');
+  const Store::Limits limits{2, 2048, 64, 1024};
+  const auto originals = complete(name);
+  const auto item = store.beginExact(limits, name, digest, protection, 32, 1024);
+  BOOST_REQUIRE(item.status == Status::Reserved);
+  BOOST_REQUIRE(store.commitExact(item.ticket, originals));
+  std::vector<std::future<bool>> readers;
+  for (unsigned worker = 0; worker < 4; ++worker) {
+    readers.push_back(std::async(std::launch::async, [&] {
+      for (unsigned retry = 0; retry < 32; ++retry) {
+        const auto hit = store.beginExact(limits, name, digest, protection, 32, 1024);
+        if (hit.status != Status::Reused || hit.publication->packets.front() != originals.front() ||
+            store.find(ndn::Interest(originals.front()->getFullName())) != originals.front()) {
+          return false;
+        }
+      }
+      return true;
+    }));
+  }
+  for (auto& reader : readers) BOOST_CHECK(reader.get());
+  BOOST_CHECK(store.find(ndn::Interest(originals.front()->getFullName())) == originals.front());
+}
+
+BOOST_AUTO_TEST_CASE(ExactObjectKeyCommitsAtomicallyWithOriginalPackets)
+{
+  Store store(producer, 1);
+  const auto name = ndn::Name(producer).append("object").appendVersion(1);
+  const auto protection = "sha256:" + std::string(64, 'c');
+  const Store::Limits limits{2, 2048, 64, 1024};
+  const auto originals = complete(name);
+  const auto item = store.beginExact(limits, name, digest, protection, 32, 1024);
+  BOOST_REQUIRE(item.status == Status::Reserved);
+  for (size_t length : {31U, 33U}) {
+    ndn::Buffer malformed;
+    malformed.assign(length, 0x57);
+    BOOST_CHECK(!store.commitExact(item.ticket, originals, malformed));
+    BOOST_CHECK(!store.find(ndn::Interest(originals.front()->getName())));
+  }
+  const ndn::Buffer key(32, 0x57);
+  BOOST_REQUIRE(store.commitExact(item.ticket, originals, key));
+  const auto verify = [&] {
+    for (unsigned i = 0; i < 32; ++i) {
+      const auto hit = store.beginExact(limits, name, digest, protection, 32, 1024);
+      if (hit.status != Status::Reused || hit.publication->objectKey != key ||
+          hit.publication->packets.front() != originals.front()) return false;
+    }
+    return true;
+  };
+  auto first = std::async(std::launch::async, verify);
+  auto second = std::async(std::launch::async, verify);
+  BOOST_CHECK(first.get());
+  BOOST_CHECK(second.get());
+  BOOST_CHECK(store.find(ndn::Interest(originals.front()->getName())) == originals.front());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

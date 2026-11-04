@@ -2,9 +2,12 @@
 #include "isolated-test-trust.hpp"
 
 #include "ndn-service-framework/NDNSFMessages.hpp"
+#include "ndn-service-framework/common.hpp"
 #include "ndn-service-framework/utils.hpp"
 
 #include <nac-abe/common.hpp>
+#include <ndn-svs/sync-protocol.hpp>
+#include <ndn-svs/tlv.hpp>
 
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
@@ -25,6 +28,18 @@
 
 namespace ndn_service_framework::test {
 namespace {
+
+void
+damageSignature(ndn::Data& data)
+{
+  const auto signature = data.getSignatureValue();
+  ndn::Buffer bytes(signature.value(), signature.value() + signature.value_size());
+  if (bytes.empty()) {
+    throw std::logic_error("Cannot damage an empty signature");
+  }
+  bytes[0] ^= 1;
+  data.setSignatureValue(ndn::span<const uint8_t>(bytes.data(), bytes.size()));
+}
 
 ndn::svs::SecurityOptions
 makeSecurityOptions(ndn::KeyChain& keyChain, const ndn::security::Certificate& cert,
@@ -212,6 +227,9 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   m_attributeAuthorityFace = std::make_unique<ndn::DummyClientFace>(
       m_attributeAuthorityIo, *m_keyChain, faceOptions);
   m_svsOptions.useTimestamp = false;
+  if (m_profile.useProductionSvsTransportOptions) {
+    configureSvsPubSubOptionsFromEnvironment(m_svsOptions);
+  }
 
   const auto userCert = makeIdentity(*m_keyChain, m_profile.userIdentity);
   const auto providerCert = makeIdentity(*m_keyChain, m_profile.providerIdentity);
@@ -895,6 +913,17 @@ NdnsfIntegrationEnvironment::bridgeStats() const
   return m_bridgeStats;
 }
 
+size_t
+NdnsfIntegrationEnvironment::providerValidationFailureCountForTest() const
+{
+  const auto validator = std::dynamic_pointer_cast<MessageValidator>(
+    m_providerSecurityOptions->validator);
+  if (!validator) {
+    throw std::logic_error("Provider transport MessageValidator is not configured");
+  }
+  return validator->getFailureCountForTesting();
+}
+
 void
 NdnsfIntegrationEnvironment::deliverInterest(ndn::DummyClientFace& destination,
                                              const ndn::Interest& interest)
@@ -946,6 +975,77 @@ NdnsfIntegrationEnvironment::forwardInterest(ndn::DummyClientFace& destination,
     std::lock_guard<std::mutex> lock(m_bridgeMutex);
     faults = m_activeFaults;
     faultsEnabled = m_status == EnvironmentStatus::RequestActive;
+  }
+  if (faultsEnabled && userToProvider && faults.tamperSignaturePiggyPredicate &&
+      faults.tamperSignatureDataCount != 0) {
+    const auto options = m_userPubSub->getSyncProtocolOptions();
+    const auto prefix = ndn::svs::SyncProtocolCodec::makeSyncName(m_profile.syncPrefix,
+                                                               options.version);
+    if (options.version == ndn::svs::SvsProtocolVersion::V3 &&
+        prefix.isPrefixOf(interest.getName())) {
+      auto decoded = ndn::svs::SyncProtocolCodec::decode(interest, m_profile.syncPrefix,
+                                                      options.version);
+      bool matched = false;
+      for (auto& extension : decoded.extensions) {
+        if (extension.type() != ndn::svs::tlv::MappingData) continue;
+        extension.parse();
+        ndn::Block replacement(ndn::svs::tlv::MappingData);
+        for (const auto& child : extension.elements()) {
+          if (child.type() != ndn::tlv::Data) {
+            replacement.push_back(child);
+            continue;
+          }
+          ndn::Data inner(child);
+          if (!faults.tamperSignaturePiggyPredicate(inner)) {
+            replacement.push_back(child);
+            continue;
+          }
+          matched = true;
+          if (faults.signatureDataFault == SignatureDataFault::INNER_PROVIDER_SIGNER) {
+            const auto certificate = m_keyChain->getPib().getIdentity(m_profile.providerIdentity)
+              .getDefaultKey().getDefaultCertificate();
+            m_keyChain->sign(inner, ndn::security::signingByCertificate(certificate));
+          }
+          else if (faults.signatureDataFault == SignatureDataFault::INNER_SIGNATURE) {
+            damageSignature(inner);
+          }
+          replacement.push_back(inner.wireEncode());
+        }
+        replacement.encode();
+        extension = std::move(replacement);
+      }
+      if (matched) {
+        {
+          std::lock_guard<std::mutex> lock(m_bridgeMutex);
+          if (m_bridgeStats.tamperedSignatureDataPackets +
+              m_bridgeStats.tamperedSignaturePiggyPackets >= faults.tamperSignatureDataCount) {
+            ++m_bridgeStats.droppedPackets;
+            ++m_bridgeStats.signatureFaultBudgetDrops;
+            return;
+          }
+          ++m_bridgeStats.forwardedInterests;
+          ++m_bridgeStats.tamperedSignaturePiggyPackets;
+        }
+        const auto encoded = ndn::svs::SyncProtocolCodec::encode(
+          m_profile.syncPrefix, decoded.stateVector, decoded.extensions, options,
+          [&] (ndn::Data& carrier) {
+            if (faults.signatureDataFault == SignatureDataFault::OUTER_SIGNATURE) {
+              carrier = decoded.stateVectorData.value();
+              damageSignature(carrier);
+            }
+            else {
+              m_userSecurityOptions->dataSigner->sign(carrier);
+            }
+          });
+        auto tampered = interest;
+        tampered.setApplicationParameters(encoded.getApplicationParameters());
+        if (faults.inspectSignaturePiggyMutation) {
+          faults.inspectSignaturePiggyMutation(interest, tampered);
+        }
+        deliverInterest(destination, tampered);
+        return;
+      }
+    }
   }
   if (faultsEnabled && userToProvider && faults.dropStreamInterestPredicate &&
       faults.dropStreamInterestPredicate(interest)) {
@@ -1051,6 +1151,50 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
     std::lock_guard<std::mutex> lock(m_bridgeMutex);
     ++m_bridgeStats.droppedPackets;
     return;
+  }
+  if (faultsEnabled && userToProvider && faults.tamperSignatureDataCount != 0 &&
+      faults.tamperSignatureDataPredicate && faults.tamperSignatureDataPredicate(data)) {
+    bool tamper = false;
+    {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      if (m_bridgeStats.tamperedSignatureDataPackets +
+          m_bridgeStats.tamperedSignaturePiggyPackets >= faults.tamperSignatureDataCount) {
+        ++m_bridgeStats.droppedPackets;
+        ++m_bridgeStats.signatureFaultBudgetDrops;
+        return;
+      }
+      else {
+        ++m_bridgeStats.forwardedData;
+        ++m_bridgeStats.tamperedSignatureDataPackets;
+        tamper = true;
+      }
+    }
+    if (tamper) {
+      auto tampered = data;
+      if (faults.signatureDataFault != SignatureDataFault::OUTER_SIGNATURE) {
+        ndn::Data inner(data.getContent().blockFromValue());
+        const auto providerCertificate = m_keyChain->getPib().getIdentity(m_profile.providerIdentity)
+          .getDefaultKey().getDefaultCertificate();
+        const auto userCertificate = m_keyChain->getPib().getIdentity(m_profile.userIdentity)
+          .getDefaultKey().getDefaultCertificate();
+        if (faults.signatureDataFault == SignatureDataFault::INNER_PROVIDER_SIGNER) {
+          m_keyChain->sign(inner, ndn::security::signingByCertificate(providerCertificate));
+        }
+        else {
+          damageSignature(inner);
+        }
+        tampered.setContent(inner.wireEncode());
+        m_keyChain->sign(tampered, ndn::security::signingByCertificate(userCertificate));
+      }
+      else {
+        damageSignature(tampered);
+      }
+      if (faults.inspectSignatureDataMutation) {
+        faults.inspectSignatureDataMutation(tampered);
+      }
+      deliverData(destination, tampered);
+      return;
+    }
   }
   if (streamEvent && faults.tamperStreamDataCursor != 0 &&
       *streamEvent == faults.tamperStreamDataCursor) {

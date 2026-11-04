@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+from contextlib import closing, redirect_stderr
+import io
 import json
 import os
+import shutil
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -19,14 +24,19 @@ from Experiments.UAV.run_multicamera_tracking_demo import (
     TOPOLOGY,
     _has_all_markers_on_one_line,
     _minindn_space_delimiter_compat,
+    _provision_run_security,
+    _uav_socket_root,
+    _uav_unix_socket_path,
     _source_generation_ready_marker,
     _snapshot_observation_profile,
     _write_json,
+    _uav_run_ownership,
     _child_pythonpath,
     _application_library_environment_command,
     build_plan,
     main,
     preflight,
+    run,
 )
 from Experiments.UAV.tracking_artifacts import validate_video_reference_assets
 
@@ -37,6 +47,196 @@ MODEL = Path(os.environ.get("NDNSF_UAV_DEMO_MODEL", str(ASSETS / "3UAVs.pt")))
 
 
 class TrackingRunnerTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("ndnsec"), "installed ndnsec required for real PIB provisioning")
+    def test_shared_run_pib_reads_certificates_during_another_process_write(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            (output / "private").mkdir(mode=0o700)
+            (output / "private/config").mkdir(mode=0o700)
+            security = _provision_run_security(output)
+            self.assertTrue(security["credentialsPrepared"])
+            self.assertEqual(len(security["publicCertificates"]), 7)
+            public = {entry["path"]: Path(entry["path"]).read_bytes()
+                      for entry in security["publicCertificates"]}
+            expected = {base64.b64decode(payload) for payload in public.values()}
+            keychain = output / "private/keychain"
+            self.assertEqual(keychain.stat().st_mode & 0o777, 0o700)
+            database = keychain / "pib/pib.db"
+            with closing(sqlite3.connect(database, timeout=0)) as writer:
+                rows = writer.execute("SELECT certificate_data FROM certificates").fetchall()
+                self.assertEqual(len(rows), 13)
+                self.assertTrue(expected.issubset({row[0] for row in rows}))
+                digests = sorted(hashlib.sha256(row[0]).hexdigest() for row in rows)
+                defaults = writer.execute(
+                    "SELECT certificate_name FROM certificates WHERE is_default=1 ORDER BY id").fetchall()
+                self.assertEqual(len(defaults), 7)
+                writer.execute("BEGIN EXCLUSIVE")
+                try:
+                    reader = subprocess.run([
+                        sys.executable, "-c",
+                        "import hashlib,json,sqlite3,sys; "
+                        "db=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True,timeout=0); "
+                        "rows=db.execute('SELECT certificate_data FROM certificates').fetchall(); "
+                        "db.close(); "
+                        "print(json.dumps(sorted(hashlib.sha256(row[0]).hexdigest() for row in rows)))",
+                        str(database)], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(reader.returncode, 0, reader.stderr)
+                    self.assertEqual(json.loads(reader.stdout), digests)
+                finally:
+                    writer.rollback()
+                self.assertEqual(writer.execute(
+                    "SELECT certificate_name FROM certificates WHERE is_default=1 ORDER BY id").fetchall(),
+                    defaults)
+            self.assertEqual({path: Path(path).read_bytes() for path in public}, public)
+
+    def test_run_owned_nfd_and_display_sockets_fit_linux_unix_path_limit(self):
+        run_output = Path(
+            "/home/ndn/NDN/NDNSF_Data/chirla/spec219/seq020-eval-v1/"
+            "run-n1-cpu8490-mininet-v2")
+        socket_root = _uav_socket_root(run_output)
+        paths = [_uav_unix_socket_path(socket_root, name)
+                 for name in ("compute", "gs", "uav1", "uav2", "uav3", "display")]
+        self.assertTrue(all(len(os.fsencode(path)) <= 107 for path in paths))
+        self.assertEqual(paths[-1].name, "display.sock")
+        self.assertNotEqual(socket_root, _uav_socket_root(run_output.parent / "another-run"))
+        with self.assertRaisesRegex(RunnerError, "exceeds 107-byte limit"):
+            _uav_unix_socket_path(Path("/tmp") / ("x" * 100), "compute")
+
+    def _compatibility_plan(self, root: Path, *, legacy=True, trust_schema=None):
+        source = root / "source"
+        source.mkdir(exist_ok=True)
+        model = root / "model.pt"
+        model.write_bytes(b"wiring-only-model-placeholder")
+        passport = {"videos": [{"path": str(source / "uav1_1min.mp4")}],
+                    "scientificAccuracyClaimAllowed": False}
+        options = {} if trust_schema is None else {"trust_schema": trust_schema}
+        with patch("Experiments.UAV.run_multicamera_tracking_demo.validate_real_assets",
+                   return_value=passport):
+            return build_plan(source=source, model=model, output=root / "output",
+                              license_text="wiring-test-only", headless=True,
+                              legacy_mode=legacy, window_count=3, **options)
+
+    def test_both_default_modes_use_one_run_owned_fixed_root_policy(self):
+        for legacy in (True, False):
+            with self.subTest(legacy=legacy), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                plan = self._compatibility_plan(root, legacy=legacy)
+                security = plan["security"]
+                schema = Path(security["trustSchema"])
+                self.assertEqual(schema.parent, root / "output/private/config")
+                self.assertEqual(security["trustSchemaSource"], "maintained-fixed-root")
+                self.assertFalse(security["credentialsPrepared"])
+                self.assertIn(b'file-name "root.cert"', schema.read_bytes())
+                self.assertNotIn(b"type any", schema.read_bytes())
+                self.assertFalse((schema.parent / "root.cert").exists())
+                for process in plan["processes"]:
+                    command = process["command"]
+                    if "--trust-schema" in command:
+                        self.assertEqual(command[command.index("--trust-schema") + 1], str(schema))
+                controller = next(p for p in plan["processes"] if p["name"] == "controller")
+                self.assertIn("--no-demo-identities", controller["command"])
+
+    def test_default_plan_rejects_used_keychain_without_overwriting_prior_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan = self._compatibility_plan(root)
+            output = root / "output"
+            schema = Path(plan["security"]["trustSchema"])
+            schema.write_bytes(b"prior-run-policy-evidence")
+            manifest = output / "manifest.json"
+            manifest.write_bytes(b"prior-run-manifest-evidence")
+            keychain = output / "private/keychain"
+            keychain.mkdir()
+            (keychain / "owned").write_bytes(b"prior-run-keychain-evidence")
+            with self.assertRaisesRegex(RunnerError, "fresh run-owned keychain"):
+                self._compatibility_plan(root)
+            self.assertEqual(schema.read_bytes(), b"prior-run-policy-evidence")
+            self.assertEqual(manifest.read_bytes(), b"prior-run-manifest-evidence")
+            self.assertEqual((keychain / "owned").read_bytes(), b"prior-run-keychain-evidence")
+
+    def test_run_owner_rejects_second_cli_and_api_before_plan_or_credentials(self):
+        module = "Experiments.UAV.run_multicamera_tracking_demo."
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output"
+            with _uav_run_ownership(output), patch(module + "build_plan") as build, \
+                    patch(module + "_provision_run_security") as provision, \
+                    patch(module + "_run_minindn") as native:
+                with self.assertRaisesRegex(RunnerError, "already owned"):
+                    run({}, output, headless=True, wall_timeout_seconds=1)
+                with redirect_stderr(io.StringIO()):
+                    self.assertEqual(main(["--prepare", "--output-dir", str(output)]), 2)
+                build.assert_not_called()
+                provision.assert_not_called()
+                native.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "fixture failure"):
+                with _uav_run_ownership(output):
+                    raise ValueError("fixture failure")
+            with _uav_run_ownership(output):
+                pass  # Both normal and exceptional owners released their descriptors.
+
+    def test_managed_run_pins_public_certificates_before_native_launch(self):
+        module = "Experiments.UAV.run_multicamera_tracking_demo."
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan = self._compatibility_plan(root)
+            output = root / "output"
+            calls = []
+            def provision(_output):
+                calls.append("provision")
+                certificate = output / "private/config/root.cert"
+                certificate.write_bytes(b"wiring-only-public-certificate")
+                return {"credentialsPrepared": True, "publicCertificates": [{
+                    "path": str(certificate),
+                    "digest": "sha256:" + hashlib.sha256(certificate.read_bytes()).hexdigest()}]}
+            def native(*args, **kwargs):
+                calls.append("native")
+                stored = json.loads((output / "manifest.json").read_text())
+                self.assertEqual(stored["security"], plan["security"])
+                self.assertTrue(stored["security"]["credentialsPrepared"])
+                return 0
+            with patch(module + "preflight", return_value={"ok": True}), \
+                    patch(module + "_provision_run_security", side_effect=provision), \
+                    patch(module + "_prepare_source_frame_files", side_effect=lambda *a, **k:
+                          calls.append("frames")), patch(module + "_run_minindn", side_effect=native):
+                self.assertEqual(run(plan, output, headless=True, wall_timeout_seconds=1), 0)
+            self.assertEqual(calls, ["provision", "frames", "native"])
+
+    def test_changed_managed_policy_rejects_before_credentials_or_network(self):
+        module = "Experiments.UAV.run_multicamera_tracking_demo."
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan = self._compatibility_plan(root)
+            Path(plan["security"]["trustSchema"]).write_bytes(b"changed-policy")
+            with patch(module + "preflight", return_value={"ok": True}), \
+                    patch(module + "_provision_run_security") as provision, \
+                    patch(module + "_run_minindn") as native:
+                with self.assertRaisesRegex(RunnerError, "trust schema changed"):
+                    run(plan, root / "output", headless=True, wall_timeout_seconds=1)
+                provision.assert_not_called()
+                native.assert_not_called()
+
+    def test_explicit_policy_and_caller_credentials_are_not_replaced(self):
+        module = "Experiments.UAV.run_multicamera_tracking_demo."
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            schema = root / "deployment.conf"
+            original = b"trust-anchor { type file file-name deployment-root.cert }\n"
+            schema.write_bytes(original)
+            output = root / "output"
+            keychain = output / "private/keychain"
+            keychain.mkdir(parents=True)
+            marker = keychain / "caller-owned"
+            marker.write_bytes(b"caller-preprovisioned")
+            plan = self._compatibility_plan(root, trust_schema=schema)
+            with patch(module + "preflight", return_value={"ok": True}), \
+                    patch(module + "_provision_run_security") as provision, \
+                    patch(module + "_prepare_source_frame_files"), \
+                    patch(module + "_run_minindn", return_value=0):
+                self.assertEqual(run(plan, output, headless=True, wall_timeout_seconds=1), 0)
+                provision.assert_not_called()
+            self.assertEqual(schema.read_bytes(), original)
+            self.assertEqual(marker.read_bytes(), b"caller-preprovisioned")
+
     def test_default_application_loader_removes_inherited_library_path(self) -> None:
         with patch.dict(os.environ, {"LD_LIBRARY_PATH": "/tmp/obsolete-library-root"}):
             os.environ.pop("NDNSF_UAV_LIBRARY_PATH", None)
@@ -226,7 +426,8 @@ class TrackingRunnerTest(unittest.TestCase):
             model = root / "model.pt"
             model.write_bytes(b"model-checkpoint-placeholder")
             trust_schema = root / "deployment-trust.conf"
-            trust_bytes = b"trust-anchor { type any }\n"
+            # Pinning/forwarding only; native loading and certificate chains are separate checks.
+            trust_bytes = b"trust-anchor { type file file-name deployment-root.cert }\n"
             trust_schema.write_bytes(trust_bytes)
             with patch("Experiments.UAV.run_multicamera_tracking_demo.validate_real_assets",
                        return_value={"testAssets": True}):

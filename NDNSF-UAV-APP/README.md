@@ -5,6 +5,16 @@ kept beside `NDNSF-DistributedRepo` and `NDNSF-DistributedInference` because it
 is an application layer above the generic NDNSF runtime, not a low-level core
 example.
 
+## Indoor person tracking
+
+The maintained MiniNDN runner supports indoor person tracking with YOLO,
+ByteTrack and pretrained OSNet on CPU. Three source UAVs publish video frames;
+the compute UAV assigns native global IDs and the Ground Station displays
+validated results. See the [CPU input and launch instructions](../Experiments/UAV/README.md#indoor-person-tracking-on-cpu)
+for model/profile hashes, the three-view source manifest, preparation,
+preflight and run commands. Fixed-camera replay is a development simulation;
+formal cross-camera accuracy and final qualification remain incomplete.
+
 ## Spec191 real-data cooperative tracking demo
 
 The reusable real-data demo is maintained by the single entrypoint

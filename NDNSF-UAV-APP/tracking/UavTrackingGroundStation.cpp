@@ -4,6 +4,10 @@
 #include "../shared/UavProtocol.hpp"
 #include "../shared/UavSourceGeneration.hpp"
 #include "../shared/UavTrackingResultVerifier.hpp"
+#include "../shared/uav-person-computation.hpp"
+#include "../shared/uav-person-json.hpp"
+#include "../shared/uav-person-published-frame.hpp"
+#include "../shared/uav-person-trace.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
@@ -22,11 +26,13 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -37,6 +43,13 @@ namespace {
 
 std::atomic<bool> g_stop{false};
 std::atomic<bool> g_cancel_requested{false};
+std::atomic<bool> g_replay_requested{false};
+
+void
+onReplaySignal(int)
+{
+  g_replay_requested.store(true);
+}
 
 void
 onSignal(int)
@@ -101,7 +114,7 @@ parseFields(const ndn::Buffer& payload)
 }
 
 std::string
-sha256Text(const std::string& value)
+sha256Text(std::string_view value)
 {
   ndn::util::Sha256 digest;
   digest << value;
@@ -130,6 +143,62 @@ readMotionWindow(const std::string& directory, const std::string& window)
   return payload;
 }
 
+std::string
+readPersonConfiguration(const std::string& path, size_t maxBytes)
+{
+  if (!std::filesystem::is_regular_file(path)) {
+    throw std::invalid_argument("person configuration is not a regular file: " + path);
+  }
+  std::ifstream input(path, std::ios::binary);
+  if (!input) throw std::runtime_error("cannot read person configuration: " + path);
+  std::string text(maxBytes + 1, '\0');
+  input.read(text.data(), static_cast<std::streamsize>(text.size()));
+  text.resize(static_cast<size_t>(input.gcount()));
+  if (input.bad() || text.size() > maxBytes) {
+    throw std::invalid_argument("person configuration exceeds byte bound or cannot be read");
+  }
+  return text;
+}
+
+void
+writePersonArtifact(const std::filesystem::path& path, std::string_view bytes, bool replace = false)
+{
+  if (bytes.size() > 16 * 1024 * 1024 || std::filesystem::is_symlink(path)) {
+    throw std::invalid_argument("invalid person presentation artifact bound/path");
+  }
+  if (!replace && std::filesystem::exists(path)) {
+    if (std::string_view(readPersonConfiguration(path.string(), 16 * 1024 * 1024)) != bytes) {
+      throw std::runtime_error("refusing to replace a different person presentation artifact");
+    }
+    return;
+  }
+  std::filesystem::create_directories(path.parent_path());
+  const auto temporary = path.string() + ".tmp";
+  if (std::filesystem::is_symlink(temporary)) {
+    throw std::invalid_argument("person presentation temporary path is a symlink");
+  }
+  {
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    output.close();
+    if (!output) throw std::runtime_error("cannot write person presentation artifact");
+  }
+  std::filesystem::rename(temporary, path);
+}
+
+struct PersonFrameReadBatch
+{
+  std::array<uav::UavPersonFrameReadBinding, 3> bindings;
+  std::array<ndn::Buffer, 3> images;
+  std::array<bool, 3> received{};
+  std::string resultJson;
+  std::string resultDigest;
+  std::string resultName;
+  std::string responseProvider;
+  size_t remaining = 3;
+  bool terminal = false;
+};
+
 int
 run(int argc, char** argv)
 {
@@ -146,6 +215,45 @@ run(int argc, char** argv)
   const std::string observationSourceUav2 = option(argc, argv, "--source-uav2-id");
   const std::string observationSourceUav3 = option(argc, argv, "--source-uav3-id");
   const std::string sourceGenerationsPath = option(argc, argv, "--source-generations");
+  requireOptionValue(argc, argv, "--tracking-profile");
+  requireOptionValue(argc, argv, "--person-computation-manifest");
+  const auto trackingProfilePath = option(argc, argv, "--tracking-profile");
+  const auto computationManifestPath = option(argc, argv, "--person-computation-manifest");
+  requireOptionValue(argc, argv, "--person-presentation-dir");
+  const auto personPresentationDir = option(argc, argv, "--person-presentation-dir");
+  std::map<std::string, std::string> personRequestFields;
+  std::optional<uav::UavPersonTrackingResultExpectation> personExpectation;
+  if (!trackingProfilePath.empty() || !computationManifestPath.empty()) {
+    if (trackingProfilePath.empty() || computationManifestPath.empty() ||
+        observationSchema != "uav-observation-v2" || !motionDir.empty()) {
+      throw std::invalid_argument("person tracking requires profile, computation manifest and "
+                                  "observation-v2 inputs without motion-dir");
+    }
+    const auto profile = uav::parseUavPersonTrackingProfile(
+      readPersonConfiguration(trackingProfilePath, uav::MAX_PERSON_PROFILE_BYTES));
+    const auto manifest = uav::parseUavPersonComputationManifest(
+      readPersonConfiguration(computationManifestPath, uav::MAX_PERSON_COMPUTATION_BYTES), profile);
+    personRequestFields = uav::makeUavPersonRequestBindingFields(profile, manifest);
+    personExpectation = uav::UavPersonTrackingResultExpectation{profile, manifest.computationDigest};
+  }
+  const bool wrongPersonProfile = fault == "wrong-person-profile-binding";
+  const bool wrongPersonComputation = fault == "wrong-person-computation-binding";
+  if (wrongPersonProfile || wrongPersonComputation) {
+    if (!personExpectation) {
+      throw std::invalid_argument("person binding fault requires person tracking");
+    }
+    auto& digest = personRequestFields.at(wrongPersonProfile
+      ? "tracking_profile_digest" : "tracking_computation_digest");
+    // Change only the first hex character after the validated "sha256:" prefix.
+    digest.at(7) = digest.at(7) == '0' ? '1' : '0';
+  }
+  if (!personPresentationDir.empty() && !personExpectation) {
+    throw std::invalid_argument("person presentation requires the explicit person profile and manifest");
+  }
+  if ((fault == "replay-committed-window" || fault == "alter-committed-window") &&
+      (!personExpectation || personPresentationDir.empty())) {
+    throw std::invalid_argument("committed window replay requires person presentation");
+  }
   requireOptionValue(argc, argv, "--calibration-provider");
   const std::string calibrationProviderText = option(argc, argv, "--calibration-provider");
   const ndn::Name calibrationProvider(calibrationProviderText);
@@ -190,6 +298,7 @@ run(int argc, char** argv)
   else if (!sourceGenerationsPath.empty()) {
     throw std::invalid_argument("source generation manifest requires the observation request schema");
   }
+
   const std::array<std::string, 3> initialSourceIds{
     observationSourceUav1, observationSourceUav2, observationSourceUav3};
   std::optional<uav::UavSourceGenerationSchedule> sourceGenerations;
@@ -204,6 +313,32 @@ run(int argc, char** argv)
     }
   }
 
+  using PersonJson = uav::person_json::Json;
+  const std::filesystem::path presentationRoot(personPresentationDir);
+  if (!personPresentationDir.empty()) {
+    const auto contextPath = presentationRoot / "context.json";
+    if (std::filesystem::exists(presentationRoot) &&
+        !std::filesystem::is_empty(presentationRoot) && !std::filesystem::exists(contextPath)) {
+      throw std::invalid_argument("person presentation directory is nonempty and has no owner context");
+    }
+    PersonJson generations = PersonJson::array();
+    for (const auto& generation : sourceGenerations->generations) {
+      generations.push_back({{"firstWindowIndex", generation.firstWindowIndex},
+        {"sourceEpoch", generation.sourceEpoch}, {"sourceIds", generation.sourceIds}});
+    }
+    const auto& profile = personExpectation->profile;
+    const PersonJson context = {{"schema", "uav-person-display-context-v1"}, {"runId", runId},
+      {"missionId", missionId}, {"profileDigest", profile.profileDigest},
+      {"computationDigest", personExpectation->computationDigest},
+      {"requestedDevice", profile.requestedDevice}, {"windowCount", windowCount},
+      {"windowPrefix", windowPrefix},
+      {"maxFrameBytes", profile.limits.at("maxFrameBytes")},
+      {"maxFrameWidth", profile.limits.at("maxFrameWidth")},
+      {"maxFrameHeight", profile.limits.at("maxFrameHeight")},
+      {"maxPersonsPerFrame", profile.limits.at("maxPersonsPerFrame")},
+      {"generations", generations}};
+    writePersonArtifact(contextPath, context.dump());
+  }
   ndn::Face face;
   ndn::KeyChain keyChain;
   const auto userCert = getOrCreateIdentity(keyChain, userIdentity);
@@ -226,6 +361,23 @@ run(int argc, char** argv)
   };
   const ndn::Name computeProvider("/example/uav/compute");
   int exitCode = 0;
+  std::string lastGoodPresentation;
+  const auto publishPresentationFailure = [&] (size_t windowIndex, const std::string& reason) {
+    if (personPresentationDir.empty()) return;
+    g_stop.store(true);
+    try {
+      const PersonJson failure = {{"schema", "uav-person-display-v1"},
+        {"state", "failure"}, {"runId", runId}, {"missionId", missionId},
+        {"profileDigest", personExpectation->profile.profileDigest},
+        {"computationDigest", personExpectation->computationDigest},
+        {"windowId", windowPrefix + "-" + std::to_string(windowIndex)},
+        {"reason", reason.substr(0, 1024)}, {"lastGoodPresentation", lastGoodPresentation}};
+      writePersonArtifact(presentationRoot / "latest.json", failure.dump(), true);
+    }
+    catch (const std::exception& error) {
+      std::cerr << "SPEC219_PRESENTATION_WRITE_FAILED reason=" << error.what() << std::endl;
+    }
+  };
   ndn::Scheduler scheduler(face.getIoContext());
   std::optional<ndn::Name> activeRequestId;
   std::optional<ndn::Name> activeComputeProvider;
@@ -354,6 +506,7 @@ run(int argc, char** argv)
         if (activeRequestId && *activeRequestId == requestId) {
           activeRequestId.reset();
         }
+        publishPresentationFailure(windowIndex, "collaboration cancelled");
         std::cerr << "SPEC191_TRACKING_CANCELLED window=" << windowIndex
                   << " accepted=" << (cancelAccepted ? "true" : "false") << std::endl;
         exitCode = 1;
@@ -407,12 +560,23 @@ run(int argc, char** argv)
     });
   };
   const auto bootstrapStarted = std::chrono::steady_clock::now();
+  if (personExpectation) {
+    uav::emitUavPersonTrace({{"runId", runId}, {"missionId", missionId}}, "replay-origin");
+  }
+  std::optional<int64_t> presentationMediaOriginUs;
+  bool committedReplaySent = false;
+  bool alteredReplaySent = false;
+  bool replayWaiting = false;
+  std::chrono::steady_clock::time_point replayDeadline;
+  std::optional<std::string> committedReplayResult;
   auto beginWindow = std::make_shared<std::function<void(size_t)>>();
   *beginWindow = [&] (size_t windowIndex) {
+    activeWindowIndex = windowIndex;
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - bootstrapStarted).count();
     const auto fail = [&] (const std::string& reason) {
       std::cerr << "SPEC191_TRACKING_PLAN_FAILED reason=" << reason << std::endl;
+      publishPresentationFailure(windowIndex, reason);
       exitCode = 1;
       face.getIoContext().stop();
     };
@@ -465,6 +629,10 @@ run(int argc, char** argv)
       {"mission_id", missionId},
       {"window_id", windowId},
     };
+    requestFields.insert(personRequestFields.begin(), personRequestFields.end());
+    if (fault == "alter-committed-window" && alteredReplaySent) {
+      requestFields.emplace("f4_altered_frame", "1");
+    }
     if (!observationSchema.empty()) {
       requestFields.emplace("observation_schema", observationSchema);
       requestFields.emplace("source_epoch", std::to_string(windowGeneration.sourceEpoch));
@@ -540,6 +708,7 @@ run(int argc, char** argv)
               uav::fieldOr(fields, "input_uav3_digest", ""),
             };
             expected.computeProvider = *selectedComputeProvider;
+            expected.personTracking = personExpectation;
             uav::validateUavTrackingResultContext(
               uav::fieldOr(fields, "result_name", ""),
               uav::fieldOr(fields, "provider", ""), resultJson, expected);
@@ -584,9 +753,206 @@ run(int argc, char** argv)
             std::cerr << " reason=" << failureReason;
           }
           std::cerr << std::endl;
+          publishPresentationFailure(windowIndex, failureReason.empty()
+            ? "native result validation failed" : failureReason);
           exitCode = 1;
           activeRequestId.reset();
           face.getIoContext().stop();
+          return;
+        }
+        const auto advanceAfterPresentation = [&, windowIndex, beginWindow] {
+          if ((fault == "replay-committed-window" || fault == "alter-committed-window") &&
+              windowIndex == 0 &&
+              !committedReplaySent) {
+            committedReplaySent = true;
+            std::cout << "SPEC219_COMMITTED_WINDOW_REPLAY_REQUESTED window=window-0"
+                      << std::endl;
+            if (fault == "alter-committed-window") {
+              replayWaiting = true;
+              replayDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+              std::cout << "SPEC219_COMMITTED_WINDOW_REPLAY_READY checkpoint=original"
+                        << std::endl;
+            }
+            else {
+              scheduler.schedule(ndn::time::milliseconds(0), [beginWindow] {
+                (*beginWindow)(0);
+              });
+            }
+            return;
+          }
+          if (fault == "alter-committed-window" && windowIndex == 0 && !alteredReplaySent) {
+            alteredReplaySent = true;
+            replayWaiting = true;
+            replayDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+            std::cout << "SPEC219_COMMITTED_WINDOW_REPLAY_READY checkpoint=cached" << std::endl;
+            return;
+          }
+          if (windowIndex + 1 < windowCount) {
+            scheduler.schedule(ndn::time::milliseconds(0), [beginWindow, windowIndex] {
+              (*beginWindow)(windowIndex + 1);
+            });
+            return;
+          }
+          std::cout << "SPEC191_TRACKING_RESULT status=success window=" << windowIndex
+                    << " windows=" << windowCount << std::endl;
+          exitCode = 0;
+          g_stop.store(true);
+          face.getIoContext().stop();
+        };
+        if ((fault == "replay-committed-window" || fault == "alter-committed-window") &&
+            windowIndex == 0) {
+          if (alteredReplaySent) {
+            publishPresentationFailure(windowIndex, "altered committed window unexpectedly succeeded");
+            activeRequestId.reset();
+            exitCode = 1;
+            face.getIoContext().stop();
+            return;
+          }
+          if (!committedReplayResult) {
+            committedReplayResult = resultJson;
+          }
+          else if (committedReplaySent) {
+            if (resultJson != *committedReplayResult) {
+              publishPresentationFailure(windowIndex, "committed window replay changed result bytes");
+              activeRequestId.reset();
+              exitCode = 1;
+              face.getIoContext().stop();
+              return;
+            }
+            std::cout << "SPEC219_COMMITTED_WINDOW_REPLAY_VERIFIED window=window-0"
+                      << " result_digest=" << resultDigest << std::endl;
+            // Keep the first immutable presentation, including its timing.
+            activeRequestId.reset();
+            advanceAfterPresentation();
+            return;
+          }
+        }
+        if (!personPresentationDir.empty()) {
+          activeRequestId.reset();
+          auto batch = std::make_shared<PersonFrameReadBatch>();
+          batch->resultJson = resultJson;
+          batch->resultDigest = resultDigest;
+          batch->resultName = uav::fieldOr(fields, "result_name", "");
+          batch->responseProvider = uav::fieldOr(fields, "provider", "");
+          const auto failPresentation = [&, batch, windowIndex] (const std::string& reason) {
+            if (batch->terminal) return;
+            batch->terminal = true;
+            publishPresentationFailure(windowIndex, reason);
+            std::cerr << "SPEC219_PRESENTATION_FAILED window=" << windowIndex
+                      << " reason=" << reason << std::endl;
+            exitCode = 1;
+            g_stop.store(true);
+            face.getIoContext().stop();
+          };
+          try {
+            const auto result = uav::person_json::parseBounded(
+              resultJson, personExpectation->profile.limits.at("maxResultBytes"));
+            int64_t firstPts = std::numeric_limits<int64_t>::max();
+            for (size_t i = 0; i < 3; ++i) {
+              const auto& frame = result.at("frames").at(i);
+              auto& binding = batch->bindings[i];
+              binding.runId = runId;
+              binding.missionId = missionId;
+              binding.windowId = windowPrefix + "-" + std::to_string(windowIndex);
+              binding.cameraId = frame.at("cameraId").get<std::string>();
+              binding.sourceId = frame.at("sourceId").get<std::string>();
+              binding.sourceEpoch = frame.at("sourceEpoch").get<uint64_t>();
+              binding.sequence = frame.at("sequence").get<uint64_t>();
+              uav::emitUavPersonTrace({{"runId", runId}, {"missionId", missionId},
+                {"windowId", binding.windowId}, {"sequence", binding.sequence},
+                {"sourceEpoch", binding.sourceEpoch}, {"cameraId", binding.cameraId},
+                {"sourceId", binding.sourceId}, {"commonPtsUs", frame.at("commonPtsUs")}},
+                "received");
+              binding.frameName = frame.at("observation").at("imageRef").at("name")
+                                   .get<std::string>();
+              binding.inputDigest = frame.at("inputDigest").get<std::string>();
+              firstPts = std::min(firstPts, frame.at("commonPtsUs").get<int64_t>());
+            }
+            if (!presentationMediaOriginUs) presentationMediaOriginUs = firstPts;
+            for (size_t i = 0; i < 3; ++i) {
+              nsf::RequestMessage frameRequest;
+              auto payload = fieldsBuffer(uav::makeUavPersonFrameReadFields(batch->bindings[i]));
+              frameRequest.setPayload(payload, payload.size());
+              const auto requestId = user.RequestServiceTargeted(
+                sourceProviders[i], uav::SERVICE_TRACKING_SOURCE, frameRequest, 5000,
+                [&, batch, failPresentation, i] (const ndn::Name&) {
+                  boost::asio::post(face.getIoContext(), [batch, failPresentation, i] {
+                    if (!batch->terminal) {
+                      failPresentation("source FRAME read timed out for UAV" + std::to_string(i + 1));
+                    }
+                  });
+                },
+                [&, batch, failPresentation, advanceAfterPresentation, i, windowIndex]
+                (const nsf::ResponseMessage& response) {
+                  const auto status = response.getStatus();
+                  const auto bytes = response.getPayload();
+                  boost::asio::post(face.getIoContext(),
+                    [&, batch, failPresentation, advanceAfterPresentation, i, windowIndex,
+                     status, bytes] {
+                      if (batch->terminal || batch->received[i]) return;
+                      try {
+                        if (!status || bytes.empty() ||
+                            bytes.size() > personExpectation->profile.limits.at("maxFrameBytes") ||
+                            sha256Text(std::string_view(reinterpret_cast<const char*>(bytes.data()),
+                                                       bytes.size())) != batch->bindings[i].inputDigest) {
+                          throw std::invalid_argument("source FRAME response status/size/digest mismatch");
+                        }
+                        batch->images[i] = bytes;
+                        batch->received[i] = true;
+                        --batch->remaining;
+                        std::cout << "SPEC219_SOURCE_FRAME_RECEIVED window=" << windowIndex
+                                  << " camera=" << batch->bindings[i].cameraId
+                                  << " producer=" << sourceProviders[i].toUri()
+                                  << " frame_name=" << batch->bindings[i].frameName
+                                  << " digest=" << batch->bindings[i].inputDigest
+                                  << " bytes=" << bytes.size() << std::endl;
+                        if (batch->remaining != 0) return;
+                        PersonJson images = PersonJson::array();
+                        const auto relativeWindow = "window-" + std::to_string(windowIndex);
+                        for (size_t j = 0; j < 3; ++j) {
+                          const auto relativePath = relativeWindow + "/" +
+                            batch->bindings[j].cameraId + ".jpg";
+                          writePersonArtifact(presentationRoot / relativePath,
+                            std::string_view(reinterpret_cast<const char*>(batch->images[j].data()),
+                                             batch->images[j].size()));
+                          images.push_back({{"cameraId", batch->bindings[j].cameraId},
+                            {"path", relativePath}, {"inputDigest", batch->bindings[j].inputDigest}});
+                        }
+                        const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                          std::chrono::steady_clock::now() - bootstrapStarted).count();
+                        const PersonJson projection = {{"schema", "uav-person-display-v1"},
+                          {"state", "ready"}, {"runId", runId}, {"missionId", missionId},
+                          {"profileDigest", personExpectation->profile.profileDigest},
+                          {"computationDigest", personExpectation->computationDigest},
+                          {"resultJson", batch->resultJson}, {"resultDigest", batch->resultDigest},
+                          {"resultName", batch->resultName},
+                          {"responseProvider", batch->responseProvider},
+                          {"images", images}, {"gsElapsedUs", elapsedUs},
+                          {"mediaOriginUs", *presentationMediaOriginUs},
+                          {"timeBasis", "gs-bootstrap-elapsed-vs-first-common-media-pts"}};
+                        const auto serialized = projection.dump();
+                        const auto relativeManifest = relativeWindow + "/presentation.json";
+                        writePersonArtifact(presentationRoot / relativeManifest, serialized);
+                        writePersonArtifact(presentationRoot / "latest.json", serialized, true);
+                        lastGoodPresentation = relativeManifest;
+                        std::cout << "SPEC219_PRESENTATION_READY window=" << windowIndex
+                                  << " frames=3 manifest=" << relativeManifest << std::endl;
+                        advanceAfterPresentation();
+                        batch->terminal = true;
+                      }
+                      catch (const std::exception& error) {
+                        failPresentation(error.what());
+                      }
+                    });
+                });
+              if (requestId.empty()) {
+                throw std::runtime_error("source FRAME targeted request did not start");
+              }
+            }
+          }
+          catch (const std::exception& error) {
+            failPresentation(error.what());
+          }
           return;
         }
         if (windowIndex + 1 < windowCount) {
@@ -641,6 +1007,7 @@ run(int argc, char** argv)
           if (cancellationInProgress) return;
           std::cerr << "SPEC191_TRACKING_TIMEOUT window=" << windowIndex
                     << " request=" << requestId.toUri() << std::endl;
+          publishPresentationFailure(windowIndex, "collaboration timeout");
           activeRequestId.reset();
           exitCode = 1;
           face.getIoContext().stop();
@@ -651,6 +1018,7 @@ run(int argc, char** argv)
           if (cancellationInProgress) return;
           std::cerr << "SPEC191_TRACKING_PLAN_FAILED window=" << windowIndex
                     << " reason=" << reason << std::endl;
+          publishPresentationFailure(windowIndex, reason);
           activeRequestId.reset();
           exitCode = 1;
           face.getIoContext().stop();
@@ -662,6 +1030,11 @@ run(int argc, char** argv)
       auto plan = uav::UavTrackingCoordinator::makePlan(
         sourceProviders, computeProvider, assignment, 1000, requestTimeoutMs,
         calibrationProvider);
+      if (personExpectation) {
+        uav::emitUavPersonTrace({{"runId", runId}, {"missionId", missionId},
+          {"windowId", windowId}, {"sequence", windowIndex + 1},
+          {"sourceEpoch", windowGeneration.sourceEpoch}}, "window-request");
+      }
       const auto requestId = uav::UavTrackingCoordinator{}.begin(
         user, uav::SERVICE_TRACKING_WINDOW, request, std::move(plan),
         makeCallbacks());
@@ -690,11 +1063,34 @@ run(int argc, char** argv)
   std::signal(SIGINT, onSignal);
   std::signal(SIGTERM, onSignal);
   std::signal(SIGUSR1, onCancelSignal);
+  if (fault == "alter-committed-window") std::signal(SIGUSR2, onReplaySignal);
   std::cout << "SPEC191_TRACKING_GS_READY identity=" << userIdentity.toUri()
             << " service=" << uav::SERVICE_TRACKING_WINDOW.toUri() << std::endl;
   while (!g_stop.load() && face.getIoContext().stopped() == false) {
-    face.processEvents(ndn::time::milliseconds(100));
+    try {
+      face.processEvents(ndn::time::milliseconds(100));
+    }
+    catch (const std::exception& error) {
+      if (personPresentationDir.empty()) throw;
+      std::cerr << "SPEC219_PRESENTATION_RUNTIME_FAILED reason=" << error.what() << std::endl;
+      publishPresentationFailure(activeWindowIndex, error.what());
+      exitCode = 1;
+      face.getIoContext().stop();
+      break;
+    }
     face.getIoContext().restart();
+    if (replayWaiting) {
+      if (g_replay_requested.exchange(false)) {
+        replayWaiting = false;
+        scheduler.schedule(ndn::time::milliseconds(0), [beginWindow] { (*beginWindow)(0); });
+      }
+      else if (std::chrono::steady_clock::now() >= replayDeadline) {
+        publishPresentationFailure(0, "committed window replay observer deadline expired");
+        replayWaiting = false;
+        exitCode = 1;
+        face.getIoContext().stop();
+      }
+    }
     if (g_cancel_requested.exchange(false)) {
       if (activeRequestId) {
         cancelActiveCollaboration(*activeRequestId, activeWindowIndex);
@@ -708,6 +1104,11 @@ run(int argc, char** argv)
   if (cancellationAckThread.joinable()) cancellationAckThread.join();
   if (g_cancel_requested.exchange(false) && activeRequestId) {
     cancelActiveCollaboration(*activeRequestId, activeWindowIndex);
+  }
+  if (!personPresentationDir.empty() && exitCode == 0 &&
+      lastGoodPresentation != "window-" + std::to_string(windowCount - 1) + "/presentation.json") {
+    publishPresentationFailure(activeWindowIndex, "ground station stopped before all windows completed");
+    exitCode = 1;
   }
   std::cout << "SPEC191_TRACKING_GS_EXIT status=" << exitCode << std::endl;
   return exitCode;

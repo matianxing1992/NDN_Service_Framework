@@ -2,11 +2,15 @@
 
 #include "UavNames.hpp"
 #include "UavProtocol.hpp"
+#include "uav-person-json.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 
+#include <algorithm>
 #include <charconv>
+#include <cmath>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -15,8 +19,20 @@ namespace ndnsf::examples::uav {
 namespace {
 
 using boost::property_tree::ptree;
+using person_json::Json;
+using person_json::boolean;
+using person_json::exactKeys;
+using person_json::finiteNumber;
+using person_json::isDigest;
+using person_json::parseBounded;
+using person_json::reject;
+using person_json::text;
+using person_json::unsignedNumber;
 
 constexpr size_t MAX_JSON_NESTING_DEPTH = 64;
+constexpr std::array<const char*, 8> PERSON_ASSOCIATION_STATUSES = {
+  "UNTRACKED", "CONTINUED", "NO_CANDIDATE", "NO_FEATURE", "CLOCK_UNAVAILABLE", "AMBIGUOUS",
+  "COMPETITION", "MATCHED"};
 
 void
 requireJsonNestingBounded(const std::string& json)
@@ -131,7 +147,357 @@ requireCanonicalName(const std::string& value, const std::string& label)
   return name;
 }
 
+Json
+personLocalKey(const Json& track)
+{
+  return {{"cameraId", track.at("cameraId")}, {"sourceId", track.at("sourceId")},
+    {"sourceEpoch", track.at("sourceEpoch")}, {"trackerGeneration", track.at("trackerGeneration")},
+    {"byteTrackId", track.at("byteTrackId")}};
+}
+
+Json
+personEvent(const Json& track)
+{
+  return {{"cameraId", track.at("cameraId")}, {"byteTrackId", track.at("byteTrackId")},
+    {"globalId", track.at("globalId")}, {"status", track.at("associationStatus")},
+    {"distance", track.at("appearanceDistance")}, {"targetLocalKey", personLocalKey(track)},
+    {"ptsUs", track.at("ptsUs")}, {"origin", track.at("associationOrigin")}};
+}
+
+void
+validatePersonOrigin(const Json& track, const Json& frame, const Json& frames,
+                     const UavPersonTrackingProfile& profile,
+                     const UavTrackingResultExpectation& expected)
+{
+  const auto& origin = track.at("associationOrigin");
+  if (text(track.at("associationStatus")) != "MATCHED") {
+    if (!origin.is_null()) reject("person result origin without a match");
+    return;
+  }
+  exactKeys(origin, {"localKey", "ptsUs", "active"});
+  const auto& key = origin.at("localKey");
+  exactKeys(key, {"cameraId", "sourceId", "sourceEpoch", "trackerGeneration", "byteTrackId"});
+  const auto camera = text(key.at("cameraId"));
+  if (camera != "UAV1" && camera != "UAV2" && camera != "UAV3") {
+    reject("person result origin camera");
+  }
+  const auto index = static_cast<size_t>(camera.back() - '1');
+  const auto& source = frames.at(index);
+  if (text(key.at("sourceId")) != expected.sourceIds[index] ||
+      unsignedNumber(key.at("sourceEpoch")) != expected.sourceEpoch ||
+      unsignedNumber(key.at("trackerGeneration")) != unsignedNumber(source.at("trackerGeneration")) ||
+      unsignedNumber(key.at("byteTrackId")) == 0 || key.dump() == personLocalKey(track).dump()) {
+    reject("person result origin local/source binding");
+  }
+  const auto pts = unsignedNumber(origin.at("ptsUs"), std::numeric_limits<int64_t>::max());
+  const auto targetPts = unsignedNumber(track.at("ptsUs"), std::numeric_limits<int64_t>::max());
+  if (pts > targetPts) reject("person result future origin");
+  const auto gap = targetPts - pts;
+  if (gap > profile.limits.at("galleryTtlUs")) reject("person result expired origin");
+  const bool active = boolean(origin.at("active"));
+  const auto targetCamera = text(track.at("cameraId"));
+  if (camera == targetCamera) {
+    if (active || gap > profile.limits.at("maxTransitionUs")) {
+      reject("person result same-camera origin eligibility");
+    }
+    return;
+  }
+  const auto maxSkew = profile.limits.at("maxClockSkewUs");
+  const auto targetUncertainty = unsignedNumber(frame.at("clockUncertaintyUs"));
+  if (!boolean(frame.at("clockAvailable")) || !boolean(source.at("clockAvailable")) ||
+      targetUncertainty > maxSkew ||
+      unsignedNumber(source.at("clockUncertaintyUs")) > maxSkew - targetUncertainty) {
+    reject("person result origin clock eligibility");
+  }
+  const auto pair = std::minmax(camera, targetCamera);
+  const bool overlap = profile.overlappingCameras.at({pair.first, pair.second});
+  if (active ? (!overlap || gap > maxSkew) :
+      (gap > profile.limits.at("maxTransitionUs") ||
+       (!overlap && gap < profile.limits.at("minTransitionUs")))) {
+    reject("person result cross-camera origin eligibility");
+  }
+  // Only the native owner can establish historical existence/activity of this signed witness.
+}
+
+void
+validatePersonReference(const Json& reference, const ndn::Name& name, const std::string& digest,
+                         const ndn::Name& producer)
+{
+  exactKeys(reference, {"name", "digest", "producerIdentity"});
+  if (text(reference.at("name")) != name.toUri() ||
+      text(reference.at("digest")) != digest || !isDigest(digest) ||
+      text(reference.at("producerIdentity")) != producer.toUri()) {
+    reject("person result original reference binding");
+  }
+}
+
+void
+validatePersonResult(const std::string& resultJson, const UavTrackingResultExpectation& expected)
+{
+  const auto& person = *expected.personTracking;
+  const auto profile = parseUavPersonTrackingProfile(person.profile.canonicalJson);
+  if (!isDigest(person.computationDigest)) reject("person result expected computation digest");
+  const auto wire = parseBounded(resultJson, profile.limits.at("maxResultBytes"));
+  exactKeys(wire, {"schema", "terminal", "runId", "missionId", "windowId", "sequence",
+    "trackingMode", "profileDigest", "computationDigest", "detectorDigest", "reidDigest",
+    "preprocessId", "requestedDevice", "actualDetectorDevice", "detectorModelDevice",
+    "detectorInputDevice", "actualReidDevice", "reidModelDevice", "reidInputDevice",
+    "reidInferenceBatches", "frames", "associationEvents", "limits", "counters", "timing"});
+  if (text(wire.at("schema")) != "uav-person-tracking-result-v1" ||
+      !boolean(wire.at("terminal")) || text(wire.at("runId")) != expected.runId ||
+      text(wire.at("missionId")) != expected.missionId ||
+      text(wire.at("windowId")) != expected.windowId ||
+      unsignedNumber(wire.at("sequence")) != expected.sequence ||
+      text(wire.at("trackingMode")) != "indoor-person-reid" ||
+      text(wire.at("profileDigest")) != profile.profileDigest ||
+      text(wire.at("computationDigest")) != person.computationDigest ||
+      text(wire.at("detectorDigest")) != profile.detectorDigest ||
+      text(wire.at("reidDigest")) != profile.reidDigest ||
+      text(wire.at("preprocessId")) != profile.reidPreprocessId) {
+    reject("person result computation/context binding");
+  }
+  for (const auto* key : {"requestedDevice", "actualDetectorDevice", "detectorModelDevice",
+                          "detectorInputDevice", "reidModelDevice"}) {
+    if (text(wire.at(key)) != profile.requestedDevice) reject("person result model device");
+  }
+  const auto batches = unsignedNumber(wire.at("reidInferenceBatches"),
+    3 * profile.limits.at("maxPersonsPerFrame"));
+  const auto reidDevice = batches ? profile.requestedDevice : "not-run";
+  if (text(wire.at("actualReidDevice")) != reidDevice ||
+      text(wire.at("reidInputDevice")) != reidDevice) reject("person result ReID device");
+  const auto canonicalProfile = Json::parse(profile.canonicalJson);
+  if (wire.at("limits").dump() != canonicalProfile.at("limits").dump()) {
+    reject("person result frozen limits");
+  }
+  const auto& counters = wire.at("counters");
+  exactKeys(counters, {"gallerySize", "localKeyCount", "watermarkUs"});
+  unsignedNumber(counters.at("gallerySize"), profile.limits.at("maxGlobalIdentities"));
+  unsignedNumber(counters.at("localKeyCount"), profile.limits.at("maxLocalKeys"));
+  const auto watermark = unsignedNumber(counters.at("watermarkUs"),
+    std::numeric_limits<int64_t>::max());
+  const auto& timing = wire.at("timing");
+  exactKeys(timing, {"modelWindowNs"});
+  unsignedNumber(timing.at("modelWindowNs"));
+  const auto& frames = wire.at("frames");
+  if (!frames.is_array() || frames.size() != 3) reject("person result three frames required");
+  Json events = Json::array();
+  uint64_t maximumPts = 0;
+  for (size_t index = 0; index < 3; ++index) {
+    const auto& frame = frames[index];
+    exactKeys(frame, {"cameraId", "sourceId", "sourceEpoch", "trackerGeneration", "sequence",
+      "inputDigest", "commonPtsUs", "width", "height", "clockAvailable", "clockUncertaintyUs",
+      "geometryStatus", "observationName", "observationDigest", "observation", "tracks",
+      "lostByteTrackIds"});
+    const auto camera = "UAV" + std::to_string(index + 1);
+    const auto generation = unsignedNumber(frame.at("trackerGeneration"));
+    if (text(frame.at("cameraId")) != camera ||
+        text(frame.at("sourceId")) != expected.sourceIds[index] ||
+        unsignedNumber(frame.at("sourceEpoch")) != expected.sourceEpoch || generation == 0 ||
+        unsignedNumber(frame.at("sequence")) != expected.sequence ||
+        text(frame.at("inputDigest")) != expected.inputDigests[index] ||
+        text(frame.at("geometryStatus")) != "UNKNOWN") reject("person result frame binding");
+    const auto pts = unsignedNumber(frame.at("commonPtsUs"), std::numeric_limits<int64_t>::max());
+    maximumPts = std::max(maximumPts, pts);
+    const auto width = unsignedNumber(frame.at("width"), profile.limits.at("maxFrameWidth"));
+    const auto height = unsignedNumber(frame.at("height"), profile.limits.at("maxFrameHeight"));
+    if (width == 0 || height == 0) reject("person result frame dimensions");
+    boolean(frame.at("clockAvailable"));
+    unsignedNumber(frame.at("clockUncertaintyUs"));
+    const auto producer = droneIdentity(camera);
+    const auto observationName = makeUavObservationDataName(
+      producer, camera, expected.sourceEpoch, expected.sequence, "OBSERVATION", 1);
+    const auto imageName = makeUavObservationDataName(
+      producer, camera, expected.sourceEpoch, expected.sequence, "FRAME", 1);
+    const auto observationDigest = text(frame.at("observationDigest"));
+    if (text(frame.at("observationName")) != observationName.toUri() ||
+        !isDigest(observationDigest)) reject("person result observation binding");
+    const auto& observation = frame.at("observation");
+    exactKeys(observation, {"schema", "sourceId", "sourceEpoch", "sequence", "observationRef",
+                            "imageRef"});
+    if (text(observation.at("schema")) != "uav-observation-v2" ||
+        text(observation.at("sourceId")) != expected.sourceIds[index] ||
+        unsignedNumber(observation.at("sourceEpoch")) != expected.sourceEpoch ||
+        unsignedNumber(observation.at("sequence")) != expected.sequence) {
+      reject("person result observation source");
+    }
+    validatePersonReference(observation.at("observationRef"), observationName, observationDigest,
+                             producer);
+    validatePersonReference(observation.at("imageRef"), imageName, expected.inputDigests[index],
+                             producer);
+    const auto& tracks = frame.at("tracks");
+    if (!tracks.is_array() || tracks.size() > profile.limits.at("maxPersonsPerFrame")) {
+      reject("person result track count");
+    }
+    std::set<uint64_t> localIds;
+    std::set<uint64_t> globalIds;
+    uint64_t previousLocal = 0;
+    for (const auto& track : tracks) {
+      exactKeys(track, {"cameraId", "sourceId", "sourceEpoch", "trackerGeneration", "localId",
+        "byteTrackId", "globalId", "class", "confidence", "box", "ptsUs", "associationStatus",
+        "appearanceDistance", "associationOrigin"});
+      if (text(track.at("cameraId")) != camera ||
+          text(track.at("sourceId")) != expected.sourceIds[index] ||
+          unsignedNumber(track.at("sourceEpoch")) != expected.sourceEpoch ||
+          unsignedNumber(track.at("trackerGeneration")) != generation ||
+          unsignedNumber(track.at("ptsUs"), std::numeric_limits<int64_t>::max()) != pts ||
+          text(track.at("class")) != "person") reject("person result local/source binding");
+      const auto confidence = finiteNumber(track.at("confidence"));
+      if (confidence < 0 || confidence > 1) reject("person result confidence");
+      const auto& box = track.at("box");
+      if (!box.is_array() || box.size() != 4) reject("person result box dimensions");
+      std::array<uint64_t, 4> bounds;
+      for (size_t i = 0; i < 4; ++i) {
+        bounds[i] = unsignedNumber(box[i], i % 2 == 0 ? width : height);
+      }
+      if (bounds[0] >= bounds[2] || bounds[1] >= bounds[3]) reject("person result empty box");
+      const auto status = text(track.at("associationStatus"));
+      if (std::find(PERSON_ASSOCIATION_STATUSES.begin(),
+                    PERSON_ASSOCIATION_STATUSES.end(), status) ==
+            PERSON_ASSOCIATION_STATUSES.end() ||
+          track.at("localId").dump() != track.at("byteTrackId").dump()) {
+        reject("person result identity/status");
+      }
+      uint64_t localId = 0;
+      if (track.at("byteTrackId").is_null()) {
+        if (!track.at("globalId").is_null() || status != "UNTRACKED") {
+          reject("invented untracked ID");
+        }
+      }
+      else {
+        localId = unsignedNumber(track.at("byteTrackId"));
+        const auto globalId = unsignedNumber(track.at("globalId"));
+        if (localId == 0 || globalId == 0 || status == "UNTRACKED" ||
+            !localIds.insert(localId).second || !globalIds.insert(globalId).second) {
+          reject("person result duplicate/zero local/global ID");
+        }
+      }
+      if (localId < previousLocal) reject("person result local-key order");
+      previousLocal = localId;
+      const bool requiresDistance = status == "MATCHED" || status == "AMBIGUOUS" ||
+        status == "COMPETITION";
+      if (batches == 0 && (requiresDistance || status == "NO_CANDIDATE" ||
+                           status == "CLOCK_UNAVAILABLE")) {
+        reject("person result feature decision without inference");
+      }
+      if (requiresDistance == track.at("appearanceDistance").is_null()) {
+        reject("person result distance/status");
+      }
+      if (requiresDistance) {
+        const auto distance = finiteNumber(track.at("appearanceDistance"));
+        const auto maximum = static_cast<double>(profile.limits.at("maxCosineDistancePpm")) / 1e6;
+        if (distance < 0 || distance > maximum) reject("person result cosine distance");
+      }
+      validatePersonOrigin(track, frame, frames, profile, expected);
+      events.push_back(personEvent(track));
+    }
+    const auto& lost = frame.at("lostByteTrackIds");
+    if (!lost.is_array() || lost.size() > profile.limits.at("maxBackendTracksPerCamera")) {
+      reject("person result lost count");
+    }
+    std::set<uint64_t> lostIds;
+    for (const auto& id : lost) {
+      const auto value = unsignedNumber(id);
+      if (value == 0 || localIds.count(value) || !lostIds.insert(value).second) {
+        reject("person result active/lost identity conflict");
+      }
+    }
+  }
+  if (watermark != maximumPts || wire.at("associationEvents").dump() != events.dump()) {
+    reject("person result event/watermark consistency");
+  }
+}
+
 } // namespace
+
+std::string
+makeUavPersonTrackingResultJson(const UavPersonWindowResult& result,
+                                const UavPersonBackendWindow& backend,
+                                const UavPersonTrackingProfile& inputProfile,
+                                const std::array<std::string, 3>& observationNames,
+                                const std::array<std::string, 3>& observationDigests)
+{
+  const auto profile = parseUavPersonTrackingProfile(inputProfile.canonicalJson);
+  if (!(result.context == backend.context) || backend.profileDigest != profile.profileDigest) {
+    reject("person result builder window/profile");
+  }
+  const auto& context = result.context;
+  Json frames = Json::array();
+  Json events = Json::array();
+  UavTrackingResultExpectation expected;
+  expected.runId = context.runId;
+  expected.missionId = context.missionId;
+  expected.windowId = context.windowId;
+  expected.sequence = context.sequence;
+  expected.sourceEpoch = context.frames[0].sourceEpoch;
+  expected.personTracking = UavPersonTrackingResultExpectation{profile, context.computationDigest};
+  for (size_t index = 0; index < 3; ++index) {
+    const auto& frame = context.frames[index];
+    expected.sourceIds[index] = frame.sourceId;
+    expected.inputDigests[index] = frame.inputDigest;
+    const auto producer = droneIdentity(frame.cameraId);
+    const auto imageName = makeUavObservationDataName(producer, frame.cameraId, frame.sourceEpoch,
+      frame.sequence, "FRAME", 1);
+    Json observation = {{"schema", "uav-observation-v2"}, {"sourceId", frame.sourceId},
+      {"sourceEpoch", frame.sourceEpoch}, {"sequence", frame.sequence},
+      {"observationRef", {{"name", observationNames[index]}, {"digest", observationDigests[index]},
+                           {"producerIdentity", producer.toUri()}}},
+      {"imageRef", {{"name", imageName.toUri()}, {"digest", frame.inputDigest},
+                     {"producerIdentity", producer.toUri()}}}};
+    Json tracks = Json::array();
+    for (const auto& track : result.tracks[index]) {
+      if (track.distance && !std::isfinite(*track.distance)) reject("nonfinite native distance");
+      Json row = {{"cameraId", track.key.cameraId}, {"sourceId", track.key.sourceId},
+        {"sourceEpoch", track.key.sourceEpoch}, {"trackerGeneration", track.key.trackerGeneration},
+        {"localId", track.key.byteTrackId ? Json(track.key.byteTrackId) : Json(nullptr)},
+        {"byteTrackId", track.key.byteTrackId ? Json(track.key.byteTrackId) : Json(nullptr)},
+        {"globalId", track.globalId ? Json(*track.globalId) : Json(nullptr)}, {"class", "person"},
+        {"confidence", track.confidence}, {"box", track.box}, {"ptsUs", track.commonPtsUs},
+        {"associationStatus", track.associationStatus},
+        {"appearanceDistance", track.distance ? Json(*track.distance) : Json(nullptr)},
+        {"associationOrigin", nullptr}};
+      if (track.associationOrigin) {
+        const auto& origin = *track.associationOrigin;
+        const auto& key = origin.key;
+        row["associationOrigin"] = {
+          {"localKey", {{"cameraId", key.cameraId}, {"sourceId", key.sourceId},
+            {"sourceEpoch", key.sourceEpoch}, {"trackerGeneration", key.trackerGeneration},
+            {"byteTrackId", key.byteTrackId}}},
+          {"ptsUs", origin.ptsUs}, {"active", origin.active}};
+      }
+      events.push_back(personEvent(row));
+      tracks.push_back(std::move(row));
+    }
+    frames.push_back({{"cameraId", frame.cameraId}, {"sourceId", frame.sourceId},
+      {"sourceEpoch", frame.sourceEpoch}, {"trackerGeneration", frame.trackerGeneration},
+      {"sequence", frame.sequence}, {"inputDigest", frame.inputDigest},
+      {"commonPtsUs", frame.commonPtsUs}, {"width", frame.width}, {"height", frame.height},
+      {"clockAvailable", frame.clockAvailable}, {"clockUncertaintyUs", frame.clockUncertaintyUs},
+      {"geometryStatus", "UNKNOWN"}, {"observationName", observationNames[index]},
+      {"observationDigest", observationDigests[index]}, {"observation", std::move(observation)},
+      {"tracks", std::move(tracks)}, {"lostByteTrackIds", backend.frames[index].lostByteTrackIds}});
+  }
+  Json wire = {{"schema", "uav-person-tracking-result-v1"}, {"terminal", true},
+    {"runId", context.runId}, {"missionId", context.missionId}, {"windowId", context.windowId},
+    {"sequence", context.sequence}, {"trackingMode", "indoor-person-reid"},
+    {"profileDigest", profile.profileDigest}, {"computationDigest", context.computationDigest},
+    {"detectorDigest", profile.detectorDigest}, {"reidDigest", profile.reidDigest},
+    {"preprocessId", profile.reidPreprocessId},
+    {"requestedDevice", backend.requestedDevice},
+    {"actualDetectorDevice", backend.actualDetectorDevice},
+    {"detectorModelDevice", backend.detectorModelDevice},
+    {"detectorInputDevice", backend.detectorInputDevice},
+    {"actualReidDevice", backend.actualReidDevice}, {"reidModelDevice", backend.reidModelDevice},
+    {"reidInputDevice", backend.reidInputDevice},
+    {"reidInferenceBatches", backend.reidInferenceBatches},
+    {"frames", std::move(frames)}, {"associationEvents", std::move(events)},
+    {"limits", Json::parse(profile.canonicalJson).at("limits")},
+    {"counters", {{"gallerySize", result.gallerySize}, {"localKeyCount", result.localKeyCount},
+                    {"watermarkUs", result.watermarkUs}}},
+    {"timing", {{"modelWindowNs", backend.modelWindowNs}}}};
+  auto encoded = wire.dump();
+  validatePersonResult(encoded, expected);
+  return encoded;
+}
 
 void
 validateUavTrackingResultContext(const std::string& resultName,
@@ -162,6 +528,11 @@ validateUavTrackingResultContext(const std::string& resultName,
       !isUavProviderMultiViewDataName(expected.computeProvider, namedResult, "RESULT",
                                       expected.missionId, expected.windowId)) {
     throw std::runtime_error("tracking result name does not match the request context");
+  }
+
+  if (expected.personTracking) {
+    validatePersonResult(resultJson, expected);
+    return;
   }
 
   requireJsonNestingBounded(resultJson);
