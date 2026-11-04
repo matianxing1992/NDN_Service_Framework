@@ -271,6 +271,58 @@ writeAll(int fd, const std::string& value)
 
 BOOST_AUTO_TEST_SUITE(UavObservationSourceTests)
 
+BOOST_AUTO_TEST_CASE(CommonCaptureMustMapWithinTheVerifiedClockInterval)
+{
+  auto binding = clock(2, 0);
+  binding.validFromUs = 10;
+  binding.validUntilUs = 20;
+  BOOST_CHECK(isCaptureTimeWithinClock(binding, 10));
+  BOOST_CHECK(isCaptureTimeWithinClock(binding, 20));
+  BOOST_CHECK(!isCaptureTimeWithinClock(binding, 9));
+  BOOST_CHECK(!isCaptureTimeWithinClock(binding, 21));
+  binding.a = 2.0;
+  binding.bUs = 100.0;
+  BOOST_CHECK(isCaptureTimeWithinClock(binding, 120));
+  BOOST_CHECK(isCaptureTimeWithinClock(binding, 140));
+  BOOST_CHECK(!isCaptureTimeWithinClock(binding, 119));
+  BOOST_CHECK(!isCaptureTimeWithinClock(binding, 141));
+  BOOST_CHECK(!isCaptureTimeWithinClock(binding, 121));
+  binding.validFromUs = 1;
+  binding.validUntilUs = 3;
+  binding.a = 0.5;
+  binding.bUs = 0.25;
+  BOOST_CHECK(isCaptureTimeWithinClock(binding, 1));
+  BOOST_CHECK(isCaptureTimeWithinClock(binding, 2));
+  BOOST_CHECK(!isCaptureTimeWithinClock(binding, 0));
+  BOOST_CHECK(!isCaptureTimeWithinClock(binding, 3));
+  auto negativeOffset = binding;
+  negativeOffset.validFromUs = 0;
+  negativeOffset.validUntilUs = 1;
+  negativeOffset.bUs = -0.2;
+  BOOST_CHECK(isCaptureTimeWithinClock(negativeOffset, 0));
+  BOOST_CHECK(!isCaptureTimeWithinClock(negativeOffset, 1));
+  const auto valid = binding;
+  for (const auto scale : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                            std::numeric_limits<double>::quiet_NaN()}) {
+    binding = valid;
+    binding.a = scale;
+    BOOST_CHECK(!isCaptureTimeWithinClock(binding, 1));
+  }
+  binding = valid;
+  binding.bUs = std::numeric_limits<double>::infinity();
+  BOOST_CHECK(!isCaptureTimeWithinClock(binding, 1));
+  binding = valid;
+  binding.validFromUs = 4;
+  BOOST_CHECK(!isCaptureTimeWithinClock(binding, 1));
+  binding = valid;
+  binding.clockEpoch = 0;
+  BOOST_CHECK(!isCaptureTimeWithinClock(binding, 1));
+  binding = valid;
+  binding.revision = 0;
+  BOOST_CHECK(!isCaptureTimeWithinClock(binding, 1));
+  BOOST_CHECK(!isCaptureTimeWithinClock(valid, std::numeric_limits<uint64_t>::max()));
+}
+
 BOOST_AUTO_TEST_CASE(DeclaredGapPreservesSurvivingKeysAndCaptureIntervals)
 {
   uint64_t steady = 0;

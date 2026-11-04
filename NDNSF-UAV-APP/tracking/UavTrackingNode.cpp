@@ -5,9 +5,15 @@
 #include "../shared/UavTrackingEvidenceStore.hpp"
 #include "../shared/UavTrackingResultVerifier.hpp"
 #include "../shared/UavTrackingWorkerTransaction.hpp"
+#include "../shared/uav-person-computation.hpp"
+#include "../shared/uav-person-published-frame.hpp"
+#include "../shared/uav-person-trace.hpp"
+#include "../shared/uav-person-window-admission.hpp"
+#include "../shared/uav-tracking-worker-process.hpp"
 #include "../shared/UavProtocol.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
+#include "ndn-service-framework/strict-json.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -22,17 +28,21 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <charconv>
 #include <cerrno>
 #include <cmath>
 #include <csignal>
 #include <cstdlib>
+#include <exception>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <link.h>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -43,6 +53,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <unistd.h>
 
 namespace nsf = ndn_service_framework;
@@ -53,6 +64,14 @@ namespace {
 ndn::Buffer fieldsBuffer(const uav::Fields& fields);
 
 std::atomic<bool> g_stop{false};
+std::atomic<bool> cacheProbeReleased{false};
+
+void
+onCacheProbeSignal(int)
+{
+  cacheProbeReleased.store(true);
+}
+
 std::mutex g_tracking_transaction_mutex;
 
 void
@@ -123,6 +142,9 @@ struct Options
   std::string frameFile;
   std::string frameDir;
   std::string model;
+  std::string trackingProfile;
+  std::string reidModel;
+  std::string describePersonComputation;
   std::string workerPython = "python3";
   std::string workerScript = "NDNSF-UAV-APP/tracking/tracking_worker.py";
   std::string display = "headless";
@@ -145,6 +167,15 @@ struct Options
 Options
 parseOptions(int argc, char** argv)
 {
+  for (const auto name : {"--tracking-profile", "--reid-model", "--describe-person-computation"}) {
+    for (int i = 1; i < argc; ++i) {
+      if (argv[i] == std::string_view(name) &&
+          (i + 1 >= argc || argv[i + 1][0] == '\0' ||
+           std::string_view(argv[i + 1]).substr(0, 2) == "--")) {
+        throw std::invalid_argument(std::string("missing value for ") + name);
+      }
+    }
+  }
   Options result;
   result.role = option(argc, argv, "--role");
   result.camera = option(argc, argv, "--camera");
@@ -152,6 +183,9 @@ parseOptions(int argc, char** argv)
   result.frameFile = option(argc, argv, "--frame-file");
   result.frameDir = option(argc, argv, "--frame-dir");
   result.model = option(argc, argv, "--model");
+  result.trackingProfile = option(argc, argv, "--tracking-profile");
+  result.reidModel = option(argc, argv, "--reid-model");
+  result.describePersonComputation = option(argc, argv, "--describe-person-computation");
   result.workerPython = option(argc, argv, "--worker-python", result.workerPython);
   result.workerScript = option(argc, argv, "--worker-script", result.workerScript);
   result.display = option(argc, argv, "--display", result.display);
@@ -169,6 +203,13 @@ parseOptions(int argc, char** argv)
   result.sourceEpoch = std::stoull(option(argc, argv, "--source-epoch", "1"));
   result.windowCount = static_cast<size_t>(std::stoul(option(argc, argv, "--window-count", "1")));
   result.fault = option(argc, argv, "--fault", "none");
+  if ((!result.trackingProfile.empty() || !result.reidModel.empty() ||
+       !result.describePersonComputation.empty()) &&
+      (result.role != "compute" || result.trackingProfile.empty() || result.reidModel.empty() ||
+       (!result.describePersonComputation.empty() && result.describePersonComputation != "stdout"))) {
+    throw std::invalid_argument("person mode requires compute role, profile and ReID model; "
+                                "--describe-person-computation accepts stdout only");
+  }
   if ((result.role != "source" && result.role != "compute") ||
       (result.role == "source" && (result.camera.empty() ||
                                     (result.videoSource.empty() && result.observationStreamDir.empty()) ||
@@ -398,19 +439,149 @@ jsonNumber(double value)
 std::string sha256(const ndn::Buffer& bytes);
 
 std::string
-sha256File(const std::filesystem::path& path)
+sha256File(const std::filesystem::path& path,
+           uint64_t maxBytes = std::numeric_limits<uint64_t>::max(),
+           const std::function<bool()>& stillAuthorized = {})
 {
   std::ifstream input(path, std::ios::binary);
   if (!input) throw std::runtime_error("cannot read pinned worker input: " + path.string());
   ndn::util::Sha256 digest;
   std::array<char, 64 * 1024> chunk{};
+  uint64_t totalBytes = 0;
   while (input) {
+    if (stillAuthorized && !stillAuthorized()) {
+      throw std::runtime_error("person artifact inspection cancelled");
+    }
     input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
     const auto count = input.gcount();
-    if (count > 0) digest << std::string(chunk.data(), static_cast<size_t>(count));
+    if (count > 0) {
+      if (static_cast<uint64_t>(count) > maxBytes - totalBytes) {
+        throw std::runtime_error("pinned worker input exceeds byte bound: " + path.string());
+      }
+      totalBytes += static_cast<uint64_t>(count);
+      digest << std::string(chunk.data(), static_cast<size_t>(count));
+    }
   }
   if (input.bad()) throw std::runtime_error("failed reading pinned worker input: " + path.string());
   return uav::canonicalSha256Digest(digest.toString());
+}
+
+std::string
+readPersonProfile(const std::filesystem::path& path)
+{
+  if (!std::filesystem::is_regular_file(path)) {
+    throw std::invalid_argument("person profile is not a regular file");
+  }
+  std::ifstream input(path, std::ios::binary);
+  std::string text(uav::MAX_PERSON_PROFILE_BYTES + 1, '\0');
+  if (!input) throw std::runtime_error("cannot read person profile");
+  input.read(text.data(), static_cast<std::streamsize>(text.size()));
+  text.resize(static_cast<size_t>(input.gcount()));
+  if (input.bad() || text.size() > uav::MAX_PERSON_PROFILE_BYTES) {
+    throw std::invalid_argument("person profile exceeds byte bound or cannot be read");
+  }
+  return text;
+}
+
+struct LoadedPersonComputation
+{
+  uav::UavPersonTrackingProfile profile;
+  uav::UavPersonComputationManifest manifest;
+};
+
+struct LoadedNativePaths
+{
+  std::set<std::string> libraries;
+  std::exception_ptr error;
+};
+
+int
+collectLoadedNativePath(dl_phdr_info* info, size_t, void* context) noexcept
+{
+  auto& paths = *static_cast<LoadedNativePaths*>(context);
+  try {
+    const std::string name = info->dlpi_name == nullptr ? "" : info->dlpi_name;
+    if (name.empty() || name == "linux-vdso.so.1") return 0;
+    paths.libraries.insert(std::filesystem::canonical(name).generic_string());
+    if (paths.libraries.size() >= 256) {
+      throw std::runtime_error("person native inventory exceeds 256 objects including executable");
+    }
+    return 0;
+  }
+  catch (...) {
+    paths.error = std::current_exception();
+    return 1;
+  }
+}
+
+LoadedPersonComputation
+loadPersonComputation(const Options& options,
+                      const std::function<bool()>& stillAuthorized = [] { return !g_stop.load(); })
+{
+  namespace json = ndn_service_framework::json;
+  using Kind = json::JsonValue::Kind;
+  LoadedPersonComputation result;
+  result.profile = uav::parseUavPersonTrackingProfile(readPersonProfile(options.trackingProfile));
+  uav::requireUavPersonWindowCapacity(result.profile, options.windowCount);
+  uint64_t totalBytes = 0;
+  const auto hashArtifact = [&] (const std::filesystem::path& path) {
+    if (!stillAuthorized()) throw std::runtime_error("person artifact inspection cancelled");
+    constexpr uint64_t MAX_ARTIFACT_BYTES = 1024ULL * 1024 * 1024;
+    if (!std::filesystem::is_regular_file(path)) {
+      throw std::invalid_argument("person artifact is not a regular file: " + path.string());
+    }
+    const auto size = std::filesystem::file_size(path);
+    if (size > MAX_ARTIFACT_BYTES || size > 4 * MAX_ARTIFACT_BYTES - totalBytes) {
+      throw std::invalid_argument("person artifact inventory exceeds byte bound");
+    }
+    totalBytes += size;
+    return sha256File(path, size, stillAuthorized);
+  };
+  if (hashArtifact(options.model) != result.profile.detectorDigest ||
+      hashArtifact(options.reidModel) != result.profile.reidDigest) {
+    throw std::invalid_argument("person model files do not match the tracking profile");
+  }
+  const auto workerDir = std::filesystem::path(options.workerScript).parent_path();
+  std::map<std::string, std::string> backend;
+  backend.emplace("tracking_worker.py", hashArtifact(options.workerScript));
+  for (const auto helper : {"person_reid.py", "person_profile.py", "observation_schema.py",
+                            "motion_schema.py", "motion_estimator.py", "byte_track_state.py",
+                            "person_runtime.py", "requirements-person.lock"}) {
+    backend.emplace(helper, hashArtifact(workerDir / helper));
+  }
+  const auto runtime = uav::runUavTrackingWorkerProcess(
+    {options.workerPython, (workerDir / "person_runtime.py").string(), "--lock",
+     (workerDir / "requirements-person.lock").string()},
+    std::chrono::seconds(60), 256 * 1024, stillAuthorized);
+  if (runtime.outcome != uav::UavTrackingWorkerOutcome::SUCCESS) {
+    throw std::runtime_error("person runtime inspection failed: " + runtime.stderrText.substr(0, 1024));
+  }
+  const auto diagnostic = json::parseJson(runtime.stdoutText, 256 * 1024);
+  const auto& root = json::requireObject(diagnostic);
+  json::requireExactKeys(root, {"schema", "pythonVersion", "lockDigest", "distributions", "artifacts"});
+  if (json::member(root, "schema", Kind::String).string != "uav-person-runtime-v1" ||
+      json::member(root, "lockDigest", Kind::String).string != backend.at("requirements-person.lock")) {
+    throw std::invalid_argument("person runtime schema or lock mismatch");
+  }
+  const auto& artifacts = json::member(root, "artifacts", Kind::Object).object;
+  const auto& byteTrack = json::member(artifacts, "byteTrackConfig", Kind::Object).object;
+  backend.emplace("bytetrack.yaml", json::member(byteTrack, "digest", Kind::String).string);
+  backend.emplace("runtime/fingerprint", sha256(bufferFrom(json::renderJson(diagnostic))));
+  backend.emplace("runtime/torchreid-source",
+                  sha256(bufferFrom("f8cd150fdf77e8d9e1ed143b7f308c2c609ded50")));
+  LoadedNativePaths paths;
+  if (dl_iterate_phdr(collectLoadedNativePath, &paths) != 0) {
+    if (paths.error) std::rethrow_exception(paths.error);
+    throw std::runtime_error("cannot enumerate person native artifacts");
+  }
+  const auto executable = std::filesystem::canonical("/proc/self/exe");
+  std::map<std::string, std::string> native;
+  native.emplace("executable:" + executable.generic_string(), hashArtifact(executable));
+  for (const auto& path : paths.libraries) {
+    native.emplace("library:" + path, hashArtifact(path));
+  }
+  result.manifest = uav::makeUavPersonComputationManifest(result.profile, backend, native);
+  return result;
 }
 
 template<typename Range, typename Encode>
@@ -818,6 +989,81 @@ jsonPositiveInteger(const JsonTree& object, const std::string& key)
   return value;
 }
 
+uint64_t
+personUnsignedField(const JsonTree& object, const std::string& key, uint64_t maximum)
+{
+  const auto text = jsonString(object, key);
+  uint64_t value = 0;
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+  if (parsed.ec != std::errc() || parsed.ptr != text.data() + text.size() || value > maximum) {
+    throw std::invalid_argument("invalid bounded person observation field: " + key);
+  }
+  return value;
+}
+
+std::string
+personBackendInputJson(const uav::UavPersonWindowContext& context,
+                       const std::string& previousBackendState)
+{
+  std::ostringstream out;
+  out << "{\"schema\":\"uav-person-backend-input-v1\",\"runId\":" << jsonQuote(context.runId)
+      << ",\"missionId\":" << jsonQuote(context.missionId)
+      << ",\"windowId\":" << jsonQuote(context.windowId)
+      << ",\"sequence\":" << context.sequence
+      << ",\"computationDigest\":" << jsonQuote(context.computationDigest) << ",\"frames\":[";
+  for (size_t i = 0; i < context.frames.size(); ++i) {
+    if (i != 0) out << ',';
+    const auto& frame = context.frames[i];
+    out << "{\"cameraId\":" << jsonQuote(frame.cameraId)
+        << ",\"sourceId\":" << jsonQuote(frame.sourceId)
+        << ",\"inputDigest\":" << jsonQuote(frame.inputDigest)
+        << ",\"sourceEpoch\":" << frame.sourceEpoch
+        << ",\"trackerGeneration\":" << frame.trackerGeneration
+        << ",\"sequence\":" << frame.sequence << ",\"commonPtsUs\":" << frame.commonPtsUs
+        << ",\"width\":" << frame.width << ",\"height\":" << frame.height << '}';
+  }
+  out << "],\"previousBackendState\":"
+      << (previousBackendState.empty() ? "null" : previousBackendState) << '}';
+  return out.str();
+}
+
+std::filesystem::path
+trackingWorkerRoot(const Options& options)
+{
+  const char* privateRoot = std::getenv("NDNSF_SPEC191_PRIVATE_DIR");
+  return (privateRoot != nullptr && *privateRoot != '\0'
+    ? std::filesystem::path(privateRoot)
+    : std::filesystem::temp_directory_path() / ("ndnsf-spec191-" + options.runId)) / "worker";
+}
+
+std::vector<std::string>
+personSessionArguments(const Options& options)
+{
+  const auto root = trackingWorkerRoot(options);
+  return {options.workerPython, options.workerScript, "--person-session",
+          "--model", options.model, "--reid-model", options.reidModel,
+          "--tracking-profile", options.trackingProfile,
+          "--input-dir", (root / "verified-input").string(),
+          "--person-window", (root / "person-backend-input.json").string(),
+          "--output-json", (root / "tracking-result.json").string(),
+          "--annotated-dir", (root / "annotated").string(),
+          "--run-id", options.runId, "--mission-id", options.runId,
+          "--window-id", "window-0", "--sequence", "1", "--pts-us", "0"};
+}
+
+std::string
+personSessionRequest(const uav::UavPersonWindowContext& context, const std::string& jobId)
+{
+  std::ostringstream out;
+  out << "{\"schema\":\"uav-person-worker-request-v1\",\"jobId\":" << jsonQuote(jobId)
+      << ",\"runId\":" << jsonQuote(context.runId)
+      << ",\"missionId\":" << jsonQuote(context.missionId)
+      << ",\"windowId\":" << jsonQuote(context.windowId)
+      << ",\"sequence\":" << context.sequence
+      << ",\"computationDigest\":" << jsonQuote(context.computationDigest) << "}\n";
+  return out.str();
+}
+
 struct VerifiedObservationReference
 {
   std::string category;
@@ -878,18 +1124,6 @@ std::string
 bufferText(const ndn::Buffer& bytes)
 {
   return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-}
-
-std::string
-shellQuote(const std::string& value)
-{
-  std::string quoted = "'";
-  for (const char character : value) {
-    if (character == '\'') quoted += "'\\''";
-    else quoted += character;
-  }
-  quoted += "'";
-  return quoted;
 }
 
 void
@@ -1031,6 +1265,22 @@ readObservationStream(const Options& options, const std::filesystem::path& path,
 int
 run(const Options& options)
 {
+  std::optional<LoadedPersonComputation> personComputation;
+  if (!options.trackingProfile.empty()) {
+    personComputation = loadPersonComputation(options);
+    if (!options.describePersonComputation.empty()) {
+      std::cout << personComputation->manifest.canonicalJson << std::endl;
+      return 0;
+    }
+  }
+  if (options.role == "compute" && options.fault == "user-cancel-before-person-commit" &&
+      !personComputation) {
+    throw std::invalid_argument("person precommit cancellation fault requires person computation");
+  }
+  if (options.role == "compute" && options.fault == "unauthorized-frame-cache" &&
+      !personComputation) {
+    throw std::invalid_argument("unauthorized cache fault requires person computation");
+  }
   if (options.trustSchema.empty() || !std::filesystem::is_regular_file(options.trustSchema)) {
     throw std::runtime_error("trust schema is not a regular file: " + options.trustSchema);
   }
@@ -1040,7 +1290,8 @@ run(const Options& options)
       !std::filesystem::is_regular_file(options.videoSource)) {
     throw std::runtime_error("source video is not a regular file: " + options.videoSource);
   }
-  if (!std::filesystem::is_regular_file(options.model)) {
+  if ((options.role == "compute" || options.observationStreamDir.empty()) &&
+      !std::filesystem::is_regular_file(options.model)) {
     throw std::runtime_error("tracking model is not a regular file: " + options.model);
   }
   const std::string modelDigest = options.role == "compute"
@@ -1068,6 +1319,10 @@ run(const Options& options)
 
   ndn::Face face;
   ndn::KeyChain keyChain;
+  // Provider drains its handlers before this root closes the child; Face/KeyChain outlive both.
+  const auto personWorkerSession = personComputation && options.role == "compute"
+    ? std::make_shared<uav::UavTrackingWorkerSession>(personSessionArguments(options),
+        personComputation->profile.limits.at("maxChildLogBytes")) : nullptr;
   const auto providerCert = getOrCreateIdentity(keyChain, identity);
   const auto controllerCert = getOrCreateIdentity(keyChain, ndn::Name(options.controller));
   nsf::CertificatePublisher certificatePublisher(face, keyChain, providerCert.getName());
@@ -1078,6 +1333,8 @@ run(const Options& options)
 
   const ndn::Name service = options.role == "source"
     ? uav::SERVICE_TRACKING_SOURCE : uav::SERVICE_TRACKING_COMPUTE;
+  const auto publishedFrameStore = options.role == "source" && !options.observationStreamDir.empty()
+    ? std::make_shared<uav::UavPersonPublishedFrameStore>(identity, options.camera) : nullptr;
   provider.addService(
     service,
     nsf::ServiceProvider::AckStrategyHandler(
@@ -1088,10 +1345,30 @@ run(const Options& options)
         return decision;
       }),
     nsf::ServiceProvider::RequestHandler(
-      [options, identity] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+      [options, identity, publishedFrameStore]
+      (const ndn::Name& requesterIdentity, const ndn::Name&, const ndn::Name&,
                            const ndn::Name&, const nsf::RequestMessage& request) {
         const auto input = payloadText(request);
         if (input.empty()) return makeError("empty Spec191 request payload");
+        if (options.role == "source") {
+          const auto fields = requestFields(request);
+          if (uav::fieldOr(fields, "schema", "") == "uav-person-source-frame-read-v1") {
+            try {
+              if (!publishedFrameStore) {
+                throw std::invalid_argument("source frame reads require observation-stream mode");
+              }
+              auto bytes = publishedFrameStore->read(fields, requesterIdentity);
+              nsf::ResponseMessage response;
+              response.setStatus(true);
+              response.setErrorInfo("No error");
+              response.setPayload(bytes, bytes.size());
+              return response;
+            }
+            catch (const std::exception& error) {
+              return makeError(error.what());
+            }
+          }
+        }
         std::ostringstream output;
         output << "schema=spec191-tracking-node-v1;runId=" << options.runId
                << ";provider=" << identity.toUri();
@@ -1110,6 +1387,7 @@ run(const Options& options)
     options.role == "source" ?
       std::vector<nsf::CollaborationRole>{"Camera-" + options.camera} :
       std::vector<nsf::CollaborationRole>{"Tracking-Compute"};
+  const auto personWindowAdmission = std::make_shared<uav::UavPersonWindowAdmission>();
   provider.addCollaborationHandler(
     uav::SERVICE_TRACKING_WINDOW, roles,
     nsf::ServiceProvider::AckStrategyHandler(
@@ -1119,7 +1397,8 @@ run(const Options& options)
         decision.message = "spec191-collaboration-ready";
         return decision;
       }),
-      [options, identity, sourceGenerations, modelDigest, workerImplementationDigest]
+      [options, identity, sourceGenerations, modelDigest, workerImplementationDigest,
+       personComputation, personWindowAdmission, publishedFrameStore, personWorkerSession]
       (nsf::ServiceProvider::CollaborationContext& context,
                          const nsf::RequestMessage& request) {
       const auto userCancellationReceived =
@@ -1152,11 +1431,28 @@ run(const Options& options)
         }
       };
       const auto fields = requestFields(request);
+      if (context.role() == "Tracking-Compute") {
+        try {
+          if (personComputation) {
+            uav::requireUavPersonRequestBindingFields(fields, personComputation->profile,
+                                                     personComputation->manifest);
+          }
+          else if (uav::hasUavPersonRequestBindingFields(fields)) {
+            throw std::invalid_argument("person request requires a locally configured person compute");
+          }
+        }
+        catch (const std::exception& error) {
+          failRole(error.what());
+          return;
+        }
+      }
       const auto mission = uav::fieldOr(fields, "mission_id", options.runId);
       const auto window = uav::fieldOr(fields, "window_id", "window-0");
       size_t index = 0;
       try {
-        index = windowIndex(window);
+        index = personComputation
+          ? uav::parseUavPersonWindowIndex(personComputation->profile, window)
+          : windowIndex(window);
       }
       catch (const std::exception& error) {
         failRole(error.what());
@@ -1180,6 +1476,10 @@ run(const Options& options)
       const auto motionDigest = uav::fieldOr(fields, "motion_window_digest", "");
       const auto observationSchema = uav::fieldOr(fields, "observation_schema", "");
       const bool useObservations = observationSchema == "uav-observation-v2";
+      if (personComputation && context.role() == "Tracking-Compute" && !useObservations) {
+        failRole("person tracking requires verified observation-v2 inputs");
+        return;
+      }
       if (!observationSchema.empty() && !useObservations) {
         failRole("unsupported observation request schema");
         return;
@@ -1222,7 +1522,18 @@ run(const Options& options)
         failRole("Spec191 collaboration requires mission_id and window_id");
         return;
       }
+      const uav::person_json::Json personTraceScope = {
+        {"runId", options.runId}, {"missionId", mission}, {"windowId", window},
+        {"sequence", index + 1}, {"sourceEpoch", observationEpoch}};
       if (context.role() == "Tracking-Compute") {
+        std::unique_lock<std::mutex> personWindowLock;
+        if (personComputation) {
+          personWindowLock = personWindowAdmission->tryAcquire();
+          if (!personWindowLock.owns_lock()) {
+            failRole("PERSON_COMPUTE_BUSY");
+            return;
+          }
+        }
         std::mutex workAuthorityCommitMutex;
         std::unique_ptr<UserCancellationMonitor> cancellationMonitor;
         if (useObservations) {
@@ -1254,15 +1565,45 @@ run(const Options& options)
         std::vector<std::string> observationSourceIds;
         std::vector<std::string> imageNames;
         std::vector<std::vector<VerifiedObservationReference>> observationReferences;
+        uav::UavPersonWindowContext personContext;
+        if (personComputation) {
+          personContext.runId = options.runId;
+          personContext.missionId = mission;
+          personContext.windowId = window;
+          personContext.sequence = index + 1;
+          personContext.computationDigest = personComputation->manifest.computationDigest;
+        }
         std::cout << "SPEC191_TRACKING_COMPUTE_WINDOW_START window=" << window << std::endl;
         for (const auto& camera : {std::string("UAV1"), std::string("UAV2"),
                                    std::string("UAV3")}) {
+          if (personComputation) {
+            auto trace = personTraceScope;
+            trace["cameraId"] = camera;
+            trace["sourceId"] = uav::fieldOr(fields, "source_uav" + camera.substr(3) + "_id", "");
+            uav::emitUavPersonTrace(std::move(trace), "fetch-start");
+          }
           const auto producer = uav::droneIdentity(camera);
           const auto dataName = useObservations
             ? uav::makeUavObservationDataName(
                 producer, camera, observationEpoch, index + 1, "FRAME", 1)
             : uav::makeUavEvidenceName(
                 producer, mission, window, camera + "-" + std::to_string(index + 1), 1);
+          if (options.fault == "unauthorized-frame-cache" && personComputation &&
+              camera == "UAV3" && index == 1) {
+            cacheProbeReleased.store(false);
+            std::cout << "SPEC219_UNAUTHORIZED_CACHE_FETCH_READY name=" << dataName.toUri()
+                      << std::endl;
+            const auto gateDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+            while (!cacheProbeReleased.load() && !g_stop.load() &&
+                   context.hasCurrentWorkAuthority() &&
+                   std::chrono::steady_clock::now() < gateDeadline) {
+              std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            if (!cacheProbeReleased.load() || !context.hasCurrentWorkAuthority()) {
+              failRole("unauthorized cache observer gate expired or authority revoked");
+              return;
+            }
+          }
           std::thread cancelTriggerThread;
           if (options.fault == "cancel-during-active-fetch" && camera == "UAV3") {
             cancelTriggerThread = std::thread([&context, window] {
@@ -1276,8 +1617,11 @@ run(const Options& options)
                         << std::endl;
             });
           }
-          const auto payload = context.fetchLargeFromProducerCurrent(
-            dataName, uav::TRACKING_INPUT_KEY_SCOPE, producer, 10000);
+          const auto payload = personComputation
+            ? context.fetchReusableLargeFromProducerCurrent(
+                dataName, uav::TRACKING_INPUT_KEY_SCOPE, producer, 10000)
+            : context.fetchLargeFromProducerCurrent(
+                dataName, uav::TRACKING_INPUT_KEY_SCOPE, producer, 10000);
           if (cancelTriggerThread.joinable()) cancelTriggerThread.join();
           if (!payload) {
             if (options.fault == "cancel-during-active-fetch" && camera == "UAV3") {
@@ -1291,6 +1635,10 @@ run(const Options& options)
             failRole("tracking image exceeds its declared size limit");
             return;
           }
+          if (personComputation &&
+              payload->size() > personComputation->profile.limits.at("maxFrameBytes")) {
+            throw std::invalid_argument("person frame exceeds its profile byte bound");
+          }
           digests.push_back(sha256(*payload));
           inputs.push_back(*payload);
           imageNames.push_back(dataName.toUri());
@@ -1303,8 +1651,11 @@ run(const Options& options)
             }
             const auto observationName = uav::makeUavObservationDataName(
               producer, camera, observationEpoch, index + 1, "OBSERVATION", 1);
-            const auto observationPayload = context.fetchLargeFromProducerCurrent(
-              observationName, "uav-tracking-observation", producer, 10000);
+            const auto observationPayload = personComputation
+              ? context.fetchReusableLargeFromProducerCurrent(
+                  observationName, "uav-tracking-observation", producer, 10000)
+              : context.fetchLargeFromProducerCurrent(
+                  observationName, "uav-tracking-observation", producer, 10000);
             if (!observationPayload) {
               failRole("tracking compute could not fetch " + observationName.toUri());
               return;
@@ -1426,9 +1777,13 @@ run(const Options& options)
               std::optional<ndn::Buffer> objectPayload;
               try {
                 if (category == "POSE") {
-                  objectPayload = context.fetchLargeFromProducerCurrent(
-                    dataRef.exactName, "uav-tracking-observation",
-                    dataRef.producerIdentity, 10000);
+                  objectPayload = personComputation
+                    ? context.fetchReusableLargeFromProducerCurrent(
+                        dataRef.exactName, "uav-tracking-observation",
+                        dataRef.producerIdentity, 10000)
+                    : context.fetchLargeFromProducerCurrent(
+                        dataRef.exactName, "uav-tracking-observation",
+                        dataRef.producerIdentity, 10000);
                 }
                 else {
                   objectPayload = context.fetchImmutableProtectedDataCurrent(
@@ -1573,6 +1928,63 @@ run(const Options& options)
                   camera + ".reference-POSE-" + std::to_string(poseIndex) + ".json")) return;
               ++poseIndex;
             }
+            if (personComputation) {
+              const auto& limits = personComputation->profile.limits;
+              auto& frame = personContext.frames[inputs.size() - 1];
+              frame.cameraId = camera;
+              frame.sourceId = sourceId;
+              frame.inputDigest = actualImageDigest;
+              frame.sourceEpoch = observationEpoch;
+              frame.trackerGeneration = 1;
+              frame.sequence = index + 1;
+              frame.commonPtsUs = static_cast<int64_t>(personUnsignedField(
+                observationTree, "captureTimeUs", std::numeric_limits<int64_t>::max()));
+              frame.clockUncertaintyUs = personUnsignedField(
+                observationTree, "timeUncertaintyUs", std::numeric_limits<uint64_t>::max());
+              frame.width = static_cast<int>(personUnsignedField(
+                observationTree, "width", limits.at("maxFrameWidth")));
+              frame.height = static_cast<int>(personUnsignedField(
+                observationTree, "height", limits.at("maxFrameHeight")));
+              if (frame.width == 0 || frame.height == 0) {
+                throw std::invalid_argument("person observation has empty image dimensions");
+              }
+              const auto clock = std::find_if(verifiedReferences.begin(), verifiedReferences.end(),
+                [] (const auto& reference) { return reference.category == "CLOCK"; });
+              if (clock == verifiedReferences.end()) {
+                throw std::invalid_argument("person observation has no verified clock");
+              }
+              const auto clockTree = parseJson(bufferText(clock->payload), "verified person CLOCK");
+              const auto scaleText = jsonString(clockTree, "a");
+              const auto offsetText = jsonString(clockTree, "bUs");
+              size_t scaleEnd = 0;
+              size_t offsetEnd = 0;
+              const auto scale = std::stod(scaleText, &scaleEnd);
+              const auto offset = std::stod(offsetText, &offsetEnd);
+              const auto validFrom = personUnsignedField(clockTree, "validFromUs",
+                                                         std::numeric_limits<int64_t>::max());
+              const auto validUntil = personUnsignedField(clockTree, "validUntilUs",
+                                                          std::numeric_limits<int64_t>::max());
+              uav::ClockBinding binding;
+              binding.revision = jsonPositiveInteger(clockTree, "revision");
+              binding.clockEpoch = jsonPositiveInteger(clockTree, "clockEpoch");
+              binding.clockId = jsonString(clockTree, "clockId");
+              binding.a = scale;
+              binding.bUs = offset;
+              binding.validFromUs = validFrom;
+              binding.validUntilUs = validUntil;
+              binding.uncertaintyUs = personUnsignedField(clockTree, "uncertaintyUs",
+                                                         frame.clockUncertaintyUs);
+              if (scaleEnd != scaleText.size() || offsetEnd != offsetText.size() ||
+                  !uav::isCaptureTimeWithinClock(binding, static_cast<uint64_t>(frame.commonPtsUs))) {
+                throw std::invalid_argument("person observation has an invalid clock binding");
+              }
+              frame.clockAvailable = true;
+              auto trace = personTraceScope;
+              trace["cameraId"] = camera;
+              trace["sourceId"] = sourceId;
+              trace["commonPtsUs"] = frame.commonPtsUs;
+              uav::emitUavPersonTrace(std::move(trace), "admitted");
+            }
             observationSourceIds.push_back(sourceId);
             observationNames.push_back(observationName.toUri());
             observationDigests.push_back(sha256(*observationPayload));
@@ -1580,11 +1992,7 @@ run(const Options& options)
             observationReferences.push_back(std::move(verifiedReferences));
           }
         }
-        const char* privateRoot = std::getenv("NDNSF_SPEC191_PRIVATE_DIR");
-        const auto workerRoot = (privateRoot != nullptr && *privateRoot != '\0'
-          ? std::filesystem::path(privateRoot)
-          : std::filesystem::temp_directory_path() / ("ndnsf-spec191-" + options.runId)) /
-          "worker";
+        const auto workerRoot = trackingWorkerRoot(options);
         const auto inputRoot = workerRoot / "verified-input";
         std::filesystem::create_directories(inputRoot);
         for (size_t index = 0; index < inputs.size(); ++index) {
@@ -1633,32 +2041,76 @@ run(const Options& options)
         const auto workerState = workerRoot / "tracking-state.json";
         const auto motionPath = workerRoot / "motion-window.json";
         const auto candidateState = workerRoot / "candidate-state" / (window + ".json");
+        const auto personInputPath = workerRoot / "person-backend-input.json";
         const auto resultName = uav::makeUavMultiViewResultName(
           identity, mission, window, index + 1, 1);
         if (!motionJson.empty()) {
           writeBytes(motionPath, bufferFrom(motionJson));
         }
-        const auto makeWorkerCommand = [&] (const std::optional<std::filesystem::path>& stateInput) {
-          return shellQuote(options.workerPython) + " " + shellQuote(options.workerScript) +
-            " --model " + shellQuote(options.model) +
-            " --input-dir " + shellQuote(inputRoot.string()) +
-            " --output-json " + shellQuote(workerOutput.string()) +
-            " --annotated-dir " + shellQuote((workerRoot / "annotated").string()) +
-            (stateInput ? " --state-file " + shellQuote(stateInput->string()) : std::string()) +
-            (useObservations ? " --candidate-state-file " + shellQuote(candidateState.string()) :
-                               std::string()) +
-            " --run-id " + shellQuote(options.runId) +
-            " --mission-id " + shellQuote(mission) +
-            " --window-id " + shellQuote(window) +
-            " --sequence " + std::to_string(index + 1) +
-            " --pts-us 0" +
-            (useObservations ? " --observation-dir " + shellQuote(inputRoot.string()) +
-               " --observation-manifest " + shellQuote(observationManifestPath.string()) :
-               std::string()) +
-            (motionJson.empty() ? std::string() :
-             " --motion-json " + shellQuote(motionPath.string()) +
-             " --motion-digest " + shellQuote(motionDigest) +
-             (index == 0 ? std::string() : " --fail-on-motion-unknown"));
+        const auto makeWorkerArguments = [&] (
+          const std::optional<std::filesystem::path>& stateInput) {
+          std::vector<std::string> arguments = {
+            options.workerPython, options.workerScript,
+            "--model", options.model,
+            "--input-dir", inputRoot.string(),
+            "--output-json", workerOutput.string(),
+            "--annotated-dir", (workerRoot / "annotated").string(),
+            "--run-id", options.runId,
+            "--mission-id", mission,
+            "--window-id", window,
+            "--sequence", std::to_string(index + 1),
+            "--pts-us", "0",
+          };
+          if (stateInput) {
+            arguments.insert(arguments.end(), {"--state-file", stateInput->string()});
+          }
+          if (useObservations) {
+            arguments.insert(arguments.end(), {
+              "--candidate-state-file", candidateState.string(),
+              "--observation-dir", inputRoot.string(),
+              "--observation-manifest", observationManifestPath.string(),
+            });
+          }
+          if (!motionJson.empty()) {
+            arguments.insert(arguments.end(), {
+              "--motion-json", motionPath.string(), "--motion-digest", motionDigest,
+            });
+            if (index != 0) {
+              arguments.push_back("--fail-on-motion-unknown");
+            }
+          }
+          return arguments;
+        };
+        const auto runWorker = [&] (const std::vector<std::string>& arguments,
+                                   const std::string& jobId = std::string()) {
+          const auto stillAuthorized = [&] {
+            return !g_stop.load() &&
+                   !userCancellationReceived->load(std::memory_order_acquire) &&
+                   context.hasCurrentWorkAuthority();
+          };
+          if (personComputation &&
+              loadPersonComputation(options, stillAuthorized).manifest.canonicalJson !=
+                personComputation->manifest.canonicalJson) {
+            personWorkerSession->close();
+            throw std::runtime_error("person computation artifacts changed after startup");
+          }
+          if (personComputation) uav::emitUavPersonTrace(personTraceScope, "worker-start");
+          auto status = personComputation
+            ? personWorkerSession->exchange(personSessionRequest(personContext, jobId),
+                "SPEC219_PERSON_SESSION_DONE jobId=" + jobId + "\n",
+                std::chrono::milliseconds(personComputation->profile.limits.at("workerTimeoutMs")),
+                stillAuthorized)
+            : uav::runUavTrackingWorkerProcess(arguments, std::chrono::milliseconds(30000),
+                16 * 1024 * 1024, stillAuthorized);
+          if (personComputation) uav::emitUavPersonTrace(personTraceScope, "worker-end");
+          std::cout << status.stdoutText;
+          std::cerr << status.stderrText;
+          if (status.outcome != uav::UavTrackingWorkerOutcome::SUCCESS) {
+            std::cerr << "TRACKING_WORKER_FAILED outcome=" << static_cast<int>(status.outcome)
+                      << " exit=" << status.exitCode << " system_error=" << status.systemError
+                      << std::endl;
+          }
+          return status;
         };
         ndn::Buffer result;
         if (useObservations) {
@@ -1668,6 +2120,9 @@ run(const Options& options)
                               << options.runId << '\n' << mission << '\n' << window << '\n'
                               << observationEpoch << '\n' << modelDigest << '\n'
                               << workerImplementationDigest << '\n';
+          if (personComputation) {
+            transactionIdentity << personComputation->manifest.computationDigest << '\n';
+          }
           for (size_t cameraIndex = 0; cameraIndex < 3; ++cameraIndex) {
             transactionIdentity << observationSourceIds[cameraIndex] << '\n'
                                 << digests[cameraIndex] << '\n'
@@ -1681,7 +2136,9 @@ run(const Options& options)
           }
           const auto inputDigest = sha256(bufferFrom(transactionIdentity.str()));
           const auto missionKey = sha256(bufferFrom(mission)).substr(7);
-          uav::UavTrackingWorkerTransaction transactions(workerRoot / "transactions" / missionKey);
+          uav::UavTrackingWorkerTransaction transactions(workerRoot / "transactions" / missionKey,
+            personComputation
+              ? personComputation->profile.limits.at("maxRetainedTransactionWindows") : 0);
           const auto validateResult = [&] (const ndn::Buffer& bytes) {
             uav::UavTrackingResultExpectation expected;
             expected.runId = options.runId;
@@ -1693,6 +2150,10 @@ run(const Options& options)
                                   observationSourceIds[2]};
             expected.inputDigests = {digests[0], digests[1], digests[2]};
             expected.computeProvider = identity;
+            if (personComputation) {
+              expected.personTracking = uav::UavPersonTrackingResultExpectation{
+                personComputation->profile, personComputation->manifest.computationDigest};
+            }
             validateUavTrackingResultContext(resultName.toUri(), identity.toUri(),
               bufferText(bytes), expected);
           };
@@ -1700,8 +2161,10 @@ run(const Options& options)
           if (cached) {
             result = *cached;
             validateResult(result);
+            if (personComputation) uav::emitUavPersonTrace(personTraceScope, "cached");
           }
           else {
+            transactions.requireCapacity(window);
             std::optional<std::filesystem::path> stateInput;
             if (index > 0) {
               stateInput = transactions.committedStatePath(
@@ -1714,13 +2177,44 @@ run(const Options& options)
             std::error_code ignored;
             std::filesystem::remove(workerOutput, ignored);
             std::filesystem::remove(candidateState, ignored);
-            const auto workerCommand = makeWorkerCommand(stateInput);
+            std::optional<uav::UavPersonTrackingEngine> personEngine;
+            if (personComputation) {
+              personEngine.emplace(personComputation->profile);
+              if (stateInput) {
+                personEngine->restoreState(bufferText(readBytes(stateInput->string())), personContext);
+              }
+              const auto input = personBackendInputJson(personContext, personEngine->backendStateJson());
+              if (input.size() > personComputation->profile.limits.at("maxSnapshotBytes")) {
+                throw std::invalid_argument("person backend input exceeds snapshot byte bound");
+              }
+              writeBytes(personInputPath, bufferFrom(input));
+            }
+            const auto workerArguments = personComputation
+              ? std::vector<std::string>() : makeWorkerArguments(stateInput);
             // Record the actual dispatch boundary in every mode so source
             // failures can be distinguished from worker execution failures.
             std::cout << "SPEC210_TRACKING_WORKER_INVOKED window="
                       << window << std::endl;
-            const int workerStatus = std::system(workerCommand.c_str());
-            if (workerStatus != 0 || !std::filesystem::is_regular_file(workerOutput) ||
+            const auto workerStatus = runWorker(workerArguments, inputDigest);
+            if (personComputation &&
+                workerStatus.outcome == uav::UavTrackingWorkerOutcome::SUCCESS &&
+                std::filesystem::is_regular_file(workerOutput)) {
+              const auto backend = uav::parseUavPersonBackendWindow(
+                bufferText(readBytes(workerOutput.string())), personContext, personComputation->profile);
+              uav::emitUavPersonTrace(personTraceScope, "association-start");
+              const auto decision = personEngine->processWindow(personContext, backend);
+              uav::emitUavPersonTrace(personTraceScope, "association-end");
+              result = bufferFrom(uav::makeUavPersonTrackingResultJson(
+                decision, backend, personComputation->profile,
+                {observationNames[0], observationNames[1], observationNames[2]},
+                {observationDigests[0], observationDigests[1], observationDigests[2]}));
+              validateResult(result);
+              std::filesystem::create_directories(candidateState.parent_path());
+              writeBytes(candidateState, bufferFrom(decision.candidateStateJson));
+              writeBytes(workerOutput, result);
+            }
+            if (workerStatus.outcome != uav::UavTrackingWorkerOutcome::SUCCESS ||
+                !std::filesystem::is_regular_file(workerOutput) ||
                 !std::filesystem::is_regular_file(candidateState)) {
               failRole("CPU tracking worker failed to produce a candidate result/state pair");
               return;
@@ -1728,6 +2222,19 @@ run(const Options& options)
             result = readBytes(workerOutput.string());
             validateResult(result);
             const auto candidateStateBytes = readBytes(candidateState.string());
+            if (options.fault == "user-cancel-before-person-commit" && index == 0) {
+              // Pause only the test ordering, outside the authority mutex.
+              // Cancellation must still revoke the actual context before commit.
+              std::cout << "SPEC219_PERSON_PRECOMMIT_READY window=" << window << std::endl;
+              const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+              while (!userCancellationReceived->load(std::memory_order_acquire) &&
+                     !g_stop.load() && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+              }
+              if (!userCancellationReceived->load(std::memory_order_acquire)) {
+                throw std::runtime_error("person precommit cancellation test gate was not cancelled");
+              }
+            }
             bool committed = false;
             {
               // The cancellation monitor takes the same mutex before
@@ -1739,20 +2246,24 @@ run(const Options& options)
                 [&context] { return context.hasCurrentWorkAuthority(); });
             }
             if (!committed) {
+              if (personWorkerSession) personWorkerSession->close();
               if (options.fault == "user-cancel-during-active-reference-fetch" ||
-                  options.fault == "user-cancel-after-source-switch-during-active-reference-fetch") {
+                  options.fault == "user-cancel-after-source-switch-during-active-reference-fetch" ||
+                  options.fault == "user-cancel-before-person-commit") {
                 std::cout << "SPEC210_USER_CANCEL_CANDIDATE_DISCARDED window="
                           << window << std::endl;
               }
               failRole("collaboration authority was revoked before tracker state commit");
               return;
             }
+            if (personComputation) uav::emitUavPersonTrace(personTraceScope, "committed");
           }
         }
         else {
-          const auto workerCommand = makeWorkerCommand(workerState);
-          const int workerStatus = std::system(workerCommand.c_str());
-          if (workerStatus != 0 || !std::filesystem::is_regular_file(workerOutput)) {
+          const auto workerArguments = makeWorkerArguments(workerState);
+          const auto workerStatus = runWorker(workerArguments);
+          if (workerStatus.outcome != uav::UavTrackingWorkerOutcome::SUCCESS ||
+              !std::filesystem::is_regular_file(workerOutput)) {
             failRole("CPU tracking worker failed");
             return;
           }
@@ -1767,8 +2278,9 @@ run(const Options& options)
           }
           return;
         }
-        const auto publishedResultName = context.publishLargeNamed(
-          "uav-tracking-result", resultName, result, 7000, 60000);
+        const auto publishedResultName = personComputation
+          ? context.publishReusableLargeNamed("uav-tracking-result", resultName, result, 7000, 60000)
+          : context.publishLargeNamed("uav-tracking-result", resultName, result, 7000, 60000);
         if (publishedResultName != resultName) {
           failRole("tracking result publication failed");
           return;
@@ -1903,6 +2415,7 @@ run(const Options& options)
           }
         }
         if (!terminalResponsePublished) {
+          if (personWorkerSession) personWorkerSession->close();
           if (!finishUserCancellation()) {
             failRole("collaboration authority was revoked before terminal result publication");
           }
@@ -1916,6 +2429,7 @@ run(const Options& options)
         return;
         }
         catch (const std::exception& error) {
+          if (personWorkerSession) personWorkerSession->close();
           failRole(std::string("tracking observation verification failed: ") + error.what());
           return;
         }
@@ -1955,6 +2469,14 @@ run(const Options& options)
         if (!options.observationStreamDir.empty()) {
           auto aligned = readObservationStream(options, framePath, window,
                                                expectedSourceIdentity);
+          if (uav::fieldOr(fields, "tracking_mode", "") == "indoor-person-reid") {
+            auto trace = personTraceScope;
+            trace["cameraId"] = options.camera;
+            trace["sourceId"] = sourceId;
+            trace["sourceEpoch"] = frame.sourceEpoch;
+            trace["commonPtsUs"] = aligned.captureTimeUs;
+            uav::emitUavPersonTrace(std::move(trace), "capture");
+          }
           frame.sequence = aligned.frame.key.sequence;
           frame.ptsUs = aligned.captureTimeUs;
           frame.width = aligned.frame.width;
@@ -1977,6 +2499,14 @@ run(const Options& options)
         if (options.fault == "bad-content" && options.camera == "UAV3" && index == 1 &&
             !frame.bytes.empty()) {
           frame.bytes[0] ^= 0xff;
+        }
+        if (options.fault == "alter-committed-window" && options.camera == "UAV3" &&
+            index == 0 && uav::fieldOr(fields, "tracking_mode", "") == "indoor-person-reid" &&
+            uav::fieldOr(fields, "f4_altered_frame", "") == "1") {
+          if (frame.bytes.empty()) throw std::runtime_error("altered replay needs a nonempty FRAME");
+          frame.bytes[0] ^= 1;
+          std::cout << "SPEC219_COMMITTED_WINDOW_ALTERED_FRAME camera=UAV3 window=window-0"
+                    << std::endl;
         }
         if ((options.fault == "duplicate-reference-pose" ||
              options.fault == "overlimit-reference-pose") &&
@@ -2110,6 +2640,8 @@ run(const Options& options)
           }
           frame.observationMetadata.replace(valueStart, valueEnd - valueStart, replacement);
         }
+        const bool reusablePersonObjects =
+          uav::fieldOr(fields, "tracking_mode", "") == "indoor-person-reid";
         uav::UavTrackingEvidenceStore store;
         std::string reason;
         const auto publishedIdentity = options.fault == "bad-identity" &&
@@ -2142,6 +2674,14 @@ run(const Options& options)
                     << " category=" << referenceFaultCategory << std::endl;
         }
         ndn::Name published;
+        if (uav::fieldOr(fields, "tracking_mode", "") == "indoor-person-reid") {
+          auto trace = personTraceScope;
+          trace["cameraId"] = options.camera;
+          trace["sourceId"] = sourceId;
+          trace["sourceEpoch"] = frame.sourceEpoch;
+          trace["commonPtsUs"] = frame.ptsUs;
+          uav::emitUavPersonTrace(std::move(trace), "publication-start");
+        }
         const size_t heldReferenceWindow = options.fault ==
             "user-cancel-after-source-switch-during-active-reference-fetch" ? 1 : 0;
         if (options.fault == "missing-reference-clock" && options.camera == "UAV3" &&
@@ -2155,7 +2695,7 @@ run(const Options& options)
           std::cout << "SPEC210_REFERENCE_OMITTED camera=UAV3 window=" << window
                     << " category=CLOCK" << std::endl;
           published = store.publish(context, uav::TRACKING_INPUT_KEY_SCOPE,
-                                    incompletePublication);
+                                    incompletePublication, 60000, reusablePersonObjects);
         }
         else if ((options.fault == "cancel-during-active-reference-fetch" ||
              options.fault == "user-cancel-during-active-reference-fetch" ||
@@ -2175,7 +2715,8 @@ run(const Options& options)
                            partialPublication.observationObjects.end(),
               [] (const auto& object) { return object.category == "POSE"; }),
             partialPublication.observationObjects.end());
-          published = store.publish(context, uav::TRACKING_INPUT_KEY_SCOPE, partialPublication);
+          published = store.publish(context, uav::TRACKING_INPUT_KEY_SCOPE,
+                                    partialPublication, 60000, reusablePersonObjects);
           std::cout << "SPEC210_ACTIVE_REFERENCE_SOURCE_HELD camera=UAV3 window="
                     << window << " category=POSE" << std::endl;
           const auto holdDuration = options.fault == "user-cancel-during-active-reference-fetch" ||
@@ -2184,9 +2725,12 @@ run(const Options& options)
           std::this_thread::sleep_for(holdDuration);
           for (const auto& pose : delayedPoses) {
             const ndn::Name poseName(pose.exactName);
-            const auto publishedPose = context.publishLargeNamed(
-              "uav-tracking-observation", poseName,
-              ndn::Buffer(pose.payload.begin(), pose.payload.end()), 1400, 60000);
+            const ndn::Buffer poseBytes(pose.payload.begin(), pose.payload.end());
+            const auto publishedPose = reusablePersonObjects
+              ? context.publishReusableLargeNamed(
+                  "uav-tracking-observation", poseName, poseBytes, 1400, 60000)
+              : context.publishLargeNamed(
+                  "uav-tracking-observation", poseName, poseBytes, 1400, 60000);
             if (publishedPose != poseName) {
               throw std::runtime_error("delayed POSE publication name changed");
             }
@@ -2203,11 +2747,32 @@ run(const Options& options)
                       << window << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(5));
           }
-          published = store.publish(context, uav::TRACKING_INPUT_KEY_SCOPE, *staged);
+          published = store.publish(context, uav::TRACKING_INPUT_KEY_SCOPE,
+                                    *staged, 60000, reusablePersonObjects);
         }
         if (published != staged->reference.exactDataName) {
           context.fail("source publication name changed");
           return;
+        }
+        if (publishedFrameStore &&
+            uav::fieldOr(fields, "tracking_mode", "") == "indoor-person-reid") {
+          uav::UavPersonFrameReadBinding binding;
+          binding.runId = options.runId;
+          binding.missionId = mission;
+          binding.windowId = window;
+          binding.cameraId = options.camera;
+          binding.sourceId = sourceId;
+          binding.sourceEpoch = frame.sourceEpoch;
+          binding.sequence = frame.sequence;
+          binding.frameName = published.toUri();
+          binding.inputDigest = sha256(staged->payload);
+          publishedFrameStore->retainPublished(binding, staged->payload, context.requesterName());
+          auto trace = personTraceScope;
+          trace["cameraId"] = options.camera;
+          trace["sourceId"] = sourceId;
+          trace["sourceEpoch"] = frame.sourceEpoch;
+          trace["commonPtsUs"] = frame.ptsUs;
+          uav::emitUavPersonTrace(std::move(trace), "published");
         }
         std::cout << "SPEC191_TRACKING_SOURCE_PUBLISHED camera=" << options.camera
                   << " window=" << window << " name=" << published.toUri() << std::endl;
@@ -2220,8 +2785,6 @@ run(const Options& options)
   provider.init();
   provider.fetchPermissionsFromController(ndn::Name(options.controller));
 
-  std::signal(SIGINT, onSignal);
-  std::signal(SIGTERM, onSignal);
   std::cout << "SPEC191_TRACKING_NODE_READY role=" << options.role
             << " identity=" << identity.toUri()
             << " service=" << service.toUri()
@@ -2239,8 +2802,14 @@ run(const Options& options)
 int
 main(int argc, char** argv)
 {
+  std::signal(SIGINT, onSignal);
+  std::signal(SIGTERM, onSignal);
   try {
-    return run(parseOptions(argc, argv));
+    const auto options = parseOptions(argc, argv);
+    if (options.fault == "unauthorized-frame-cache") {
+      std::signal(SIGUSR2, onCacheProbeSignal);
+    }
+    return run(options);
   }
   catch (const std::exception& error) {
     std::cerr << "UavTrackingNode error: " << error.what() << std::endl;

@@ -648,6 +648,12 @@ namespace ndn_service_framework{
                  * This is the preferred collaboration primitive when a plan or
                  * manifest already assigns the Data name, as in DI activation
                  * exchange. It is separate from the continuous stream substrate.
+                 * Exact repeats retain original signed packets. Changed content,
+                 * request/key binding, segmentation or freshness under the same
+                 * name throws invalid_argument. Provider-lifetime retention is
+                 * bounded to 8192 objects/128 MiB wire and 64 MiB plaintext per
+                 * object; conservative packet reservation can reject smaller
+                 * objects. Capacity or expired work returns an empty name.
                  */
                 ndn::Name publishLargeNamed(KeyScope keyScope,
                                             const ndn::Name& dataName,
@@ -660,6 +666,21 @@ namespace ndn_service_framework{
                                             size_t maxSegmentSize,
                                             int freshnessMs,
                                             CollaborationTransferMetrics* metrics);
+                /** Reuse immutable ciphertext across authorized invocations.
+                 * A private per-object key is granted only through this
+                 * invocation's scope. Same-name content/protection changes fail.
+                 * Retention shares the bounded exact-name publication owner.
+                 */
+                ndn::Name publishReusableLargeNamed(
+                    KeyScope keyScope, const ndn::Name& dataName, const ndn::Buffer& payload,
+                    size_t maxSegmentSize = 7000, int freshnessMs = 60000);
+                /** Fetch an original using its current request/scope-bound key
+                 * grant. Both transfers share one deadline, require the actual
+                 * Producer signer and stop when work authority is revoked.
+                 */
+                std::optional<ndn::Buffer> fetchReusableLargeFromProducerCurrent(
+                    const ndn::Name& dataName, KeyScope keyScope,
+                    const ndn::Name& expectedProducer, int timeoutMs);
                 /**
                  * Fetch one exact-name segmented collaboration object.
                  *
@@ -1053,6 +1074,8 @@ namespace ndn_service_framework{
             void cacheHybridReceiveKeyForTest(const std::string& keyId,
                                               const std::string& epochId,
                                               const ndn::Buffer& key);
+            /** Evict only a Producer-owned prefix in an explicit LocalMock fixture. */
+            size_t evictImsPrefixForTest(const ndn::Name& prefix);
             /** Deterministic publication boundaries for native race tests.
              * Configure only while the fixture is idle; hooks hold no authority
              * or controller lock and are empty in normal operation. */
@@ -2380,6 +2403,26 @@ namespace ndn_service_framework{
                 size_t maxSegmentSize,
                 int freshnessMs,
                 CollaborationTransferMetrics* metrics);
+            ndn::Name
+            publishCollaborationLargeDataNamedCurrent(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const ndn::Name& dataName,
+                const ndn::Buffer& payload,
+                size_t maxSegmentSize,
+                int freshnessMs,
+                CollaborationTransferMetrics* metrics,
+                const std::function<bool()>& current,
+                const std::shared_ptr<std::mutex>& authorityMutex);
+            ImmutableProtectedPublicationStore& getImmutablePublicationStore();
+            ndn::Name
+            publishCollaborationLargeDataNamedCurrent(
+                const ndn::Name& requestId, const std::string& keyScope,
+                const ndn::Name& dataName, const ndn::Buffer& payload,
+                size_t maxSegmentSize, int freshnessMs, CollaborationTransferMetrics* metrics,
+                const std::function<bool()>& current,
+                const std::shared_ptr<std::mutex>& authorityMutex,
+                const ndn::Name& reusableService);
             std::optional<ndn::Buffer> fetchCollaborationLargeData(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
@@ -2395,6 +2438,12 @@ namespace ndn_service_framework{
                 CollaborationTransferMetrics* metrics,
                 ndn::Name expectedProducer = {},
                 std::function<bool()> current = {});
+            std::optional<ndn::Buffer> fetchCollaborationLargeData(
+                const ndn::Name& requestId, const std::string& keyScope,
+                const ndn::Name& dataName, int timeoutMs, std::size_t expectedSegments,
+                CollaborationTransferMetrics* metrics, ndn::Name expectedProducer,
+                std::function<bool()> current, const ndn::Buffer& objectKey,
+                const ndn::Name& reusableService);
             bool publishCollaborationDataV1Segments(
                 const ndn::Name& requestId,
                 const std::string& keyScope,

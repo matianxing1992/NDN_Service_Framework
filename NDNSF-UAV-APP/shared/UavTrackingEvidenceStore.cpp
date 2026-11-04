@@ -134,10 +134,25 @@ UavTrackingEvidenceStore::publish(
   ndn_service_framework::ServiceProvider::CollaborationContext& context,
   const std::string& keyScope, const PublishedFrame& frame, int freshnessMs) const
 {
+  return publish(context, keyScope, frame, freshnessMs, false);
+}
+
+ndn::Name
+UavTrackingEvidenceStore::publish(
+  ndn_service_framework::ServiceProvider::CollaborationContext& context,
+  const std::string& keyScope, const PublishedFrame& frame,
+  int freshnessMs, bool reusable) const
+{
   if (frame.reference.exactDataName.empty() || frame.payload.empty() ||
       keyScope.empty() || freshnessMs <= 0) {
     throw std::invalid_argument("invalid staged evidence publication");
   }
+  const auto publishObject = [&] (const std::string& scope, const ndn::Name& name,
+                                  const ndn::Buffer& payload) {
+    return reusable
+      ? context.publishReusableLargeNamed(scope, name, payload, m_maxSegmentBytes, freshnessMs)
+      : context.publishLargeNamed(scope, name, payload, m_maxSegmentBytes, freshnessMs);
+  };
   for (const auto& object : frame.observationObjects) {
     const ndn::Name objectName(object.exactName);
     if (objectName.empty() || object.payload.empty() ||
@@ -157,9 +172,9 @@ UavTrackingEvidenceStore::publish(
       // Re-publishing here would re-encrypt one immutable name per request.
       continue;
     }
-    const auto publishedObject = context.publishLargeNamed(
+    const auto publishedObject = publishObject(
       "uav-tracking-observation", objectName,
-      ndn::Buffer(object.payload.begin(), object.payload.end()), m_maxSegmentBytes, freshnessMs);
+      ndn::Buffer(object.payload.begin(), object.payload.end()));
     if (publishedObject != objectName) {
       throw std::runtime_error("source observation dependency name changed");
     }
@@ -168,15 +183,14 @@ UavTrackingEvidenceStore::publish(
     if (frame.observationName.empty() || frame.observationDigest.empty()) {
       throw std::invalid_argument("staged observation sidecar is incomplete");
     }
-    const auto publishedObservation = context.publishLargeNamed(
+    const auto publishedObservation = publishObject(
       "uav-tracking-observation", frame.observationName,
-      frame.observationPayload, m_maxSegmentBytes, freshnessMs);
+      frame.observationPayload);
     if (publishedObservation != frame.observationName) {
       throw std::runtime_error("source observation sidecar name changed");
     }
   }
-  return context.publishLargeNamed(keyScope, frame.reference.exactDataName,
-                                   frame.payload, m_maxSegmentBytes, freshnessMs);
+  return publishObject(keyScope, frame.reference.exactDataName, frame.payload);
 }
 
 void
