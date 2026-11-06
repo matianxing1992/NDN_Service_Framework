@@ -2,6 +2,7 @@
 #define NDNSF_EXAMPLES_UAV_GROUND_STATION_RUNTIME_STATE_HPP
 
 #include "../shared/UavProtocol.hpp"
+#include "../tracking/uav-tracking-job.hpp"
 
 #include <cstdint>
 #include <algorithm>
@@ -217,6 +218,7 @@ struct GroundStationRuntimeState
   std::optional<MissionProgressState> missionProgress;
   std::vector<OperatorAuthorityAlert> operatorAuthorityAlerts;
   CollaborationView collaboration;
+  TrackingSnapshot tracking;
   uint64_t updatedMs = 0;
 
   const VehicleRuntimeState*

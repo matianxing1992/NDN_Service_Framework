@@ -32,6 +32,10 @@ struct UavSourceGenerationSchedule
 UavSourceGenerationSchedule
 loadUavSourceGenerationSchedule(const std::string& path, size_t expectedWindowCount);
 
+/** Validate already retrieved manifest bytes without reopening an immutable reference. */
+UavSourceGenerationSchedule
+parseUavSourceGenerationSchedule(const std::string& manifestText, size_t expectedWindowCount);
+
 /** Construct the backward-compatible, single-generation schedule. */
 UavSourceGenerationSchedule
 makeUavSourceGenerationSchedule(uint64_t sourceEpoch,

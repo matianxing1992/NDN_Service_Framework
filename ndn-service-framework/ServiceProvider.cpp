@@ -5799,6 +5799,24 @@ namespace ndn_service_framework
         };
     }
 
+    ServiceProvider::ServiceRegistration::CollaborationHandlerDrainWaiter
+    ServiceProvider::ServiceRegistration::makeCollaborationHandlerDrainWaiter() const
+    {
+        const auto state = std::atomic_load(&m_state);
+        if (!state) {
+            return [](std::chrono::milliseconds) { return true; };
+        }
+        return [state](std::chrono::milliseconds timeout) {
+            if (timeout.count() < 0) {
+                throw std::invalid_argument("collaboration handler drain timeout is negative");
+            }
+            std::unique_lock<std::mutex> lock(state->targetedHandlerMutex);
+            return state->targetedHandlersDrained.wait_for(lock, timeout, [&state] {
+                return state->activeCollaborationHandlers == 0;
+            });
+        };
+    }
+
     bool
     ServiceProvider::ServiceRegistration::closed() const noexcept
     {
@@ -6391,6 +6409,16 @@ namespace ndn_service_framework
         };
     }
 
+    std::function<bool()>
+    ServiceProvider::CollaborationContext::cancelWhenWorkNotCurrent(
+        std::function<bool()> external) const
+    {
+        const auto current = currentWorkPredicate(m_assignment.workDeadline);
+        return [current, external = std::move(external)] {
+            return !current() || (external && external());
+        };
+    }
+
     ImmutableProtectedDataResult
     ServiceProvider::CollaborationContext::publishImmutableProtectedData(
         const ndn::Name& semanticPrefix, const ndn::Buffer& payload)
@@ -6464,16 +6492,33 @@ namespace ndn_service_framework
     ServiceProvider::CollaborationContext::revokeCurrentWorkAuthority() noexcept
     {
         if (!m_workAuthorityCommitMutex) return false;
-        std::lock_guard<std::mutex> lock(*m_workAuthorityCommitMutex);
-        return m_workAuthorityRevoked &&
-            !m_workAuthorityRevoked->exchange(true, std::memory_order_acq_rel);
+        bool revoked = false;
+        {
+            std::lock_guard<std::mutex> lock(*m_workAuthorityCommitMutex);
+            revoked = m_workAuthorityRevoked &&
+                !m_workAuthorityRevoked->exchange(true, std::memory_order_acq_rel);
+        }
+        // Keep stream admission in Core and preserve lock order: never acquire
+        // the publisher/pending-request locks under the exact-publication lock.
+        // A failure here never restores exact-object work authority. Callers
+        // requiring a stream fence must also inspect streamCancelled().
+        try {
+            if (const auto publisher = streamPublisher())
+                publisher->fail("current work authority revoked");
+        }
+        catch (...) {}
+        return revoked;
     }
 
     bool
     ServiceProvider::CollaborationContext::hasCurrentWorkAuthority() const noexcept
     {
-        return m_workAuthorityRevoked &&
-            !m_workAuthorityRevoked->load(std::memory_order_acquire);
+        try {
+            return currentWorkPredicate(m_assignment.workDeadline)();
+        }
+        catch (...) {
+            return false;
+        }
     }
 
     bool
@@ -6939,8 +6984,10 @@ namespace ndn_service_framework
         int freshnessMs,
         CollaborationTransferMetrics* metrics)
     {
-        return m_provider.publishCollaborationSignedExactData(
-            m_requestId, std::move(keyScope), objects, freshnessMs, metrics);
+        return m_provider.publishCollaborationOwnedExactData(
+            m_requestId, keyScope, objects, freshnessMs, metrics, nullptr,
+            std::numeric_limits<std::size_t>::max(),
+            currentWorkPredicate(m_assignment.workDeadline), m_workAuthorityCommitMutex);
     }
 
     bool
@@ -6952,7 +6999,8 @@ namespace ndn_service_framework
         std::size_t maxWireBytes)
     {
         return m_provider.publishCollaborationOwnedExactData(
-            m_requestId, keyScope, objects, freshnessMs, metrics, &originals, maxWireBytes);
+            m_requestId, keyScope, objects, freshnessMs, metrics, &originals, maxWireBytes,
+            currentWorkPredicate(m_assignment.workDeadline), m_workAuthorityCommitMutex);
     }
 
     bool
@@ -6961,7 +7009,8 @@ namespace ndn_service_framework
         const std::vector<std::shared_ptr<const ndn::Data>>& originals,
         CollaborationTransferMetrics* metrics)
     {
-        return m_provider.replayCollaborationOwnedExactData(originals, metrics);
+        return m_provider.replayCollaborationOwnedExactData(originals, metrics,
+            currentWorkPredicate(m_assignment.workDeadline), m_workAuthorityCommitMutex);
     }
 
     std::optional<ndn::Buffer>
@@ -7019,7 +7068,7 @@ namespace ndn_service_framework
     {
         return m_provider.fetchCollaborationSignedExactData(
             m_requestId, std::move(keyScope), dataName,
-            expectedProducer, timeoutMs, std::move(shouldCancel), metrics,
+            expectedProducer, timeoutMs, cancelWhenWorkNotCurrent(std::move(shouldCancel)), metrics,
             std::move(onFirstReadStarted), phase);
     }
 
@@ -7036,7 +7085,8 @@ namespace ndn_service_framework
     {
         return m_provider.fetchCollaborationSignedExactDataBatch(
             m_requestId, keyScope, dataNames, expectedProducer, timeoutMs,
-            std::move(shouldCancel), metrics, std::move(onFirstReadStarted), phase);
+            cancelWhenWorkNotCurrent(std::move(shouldCancel)), metrics,
+            std::move(onFirstReadStarted), phase);
     }
 
     std::optional<std::vector<ndn::Buffer>>
@@ -7053,7 +7103,8 @@ namespace ndn_service_framework
     {
         return m_provider.fetchCollaborationSignedExactDataBatch(
             m_requestId, keyScope, dataNames, expectedProducer, timeoutMs,
-            std::move(shouldCancel), metrics, std::move(onFirstReadStarted), phase,
+            cancelWhenWorkNotCurrent(std::move(shouldCancel)), metrics,
+            std::move(onFirstReadStarted), phase,
             std::move(onValidatedData));
     }
 
@@ -7070,7 +7121,7 @@ namespace ndn_service_framework
     {
         return m_provider.startCollaborationSignedExactDataBatch(
             m_requestId, keyScope, dataNames, expectedProducer, timeoutMs,
-            std::move(shouldCancel), std::move(onFirstReadStarted), phase,
+            cancelWhenWorkNotCurrent(std::move(shouldCancel)), std::move(onFirstReadStarted), phase,
             std::move(onValidatedData), {});
     }
 
@@ -7088,7 +7139,7 @@ namespace ndn_service_framework
     {
         return m_provider.startCollaborationSignedExactDataBatch(
             m_requestId, keyScope, dataNames, expectedProducer, timeoutMs,
-            std::move(shouldCancel), std::move(onFirstReadStarted), phase,
+            cancelWhenWorkNotCurrent(std::move(shouldCancel)), std::move(onFirstReadStarted), phase,
             std::move(onValidatedData), {}, maxOutstanding);
     }
 
@@ -7708,6 +7759,16 @@ namespace ndn_service_framework
         }
         std::lock_guard<std::mutex> lock(m_selectionExecutionStatusMutex);
         auto& status = m_selectionExecutionStatuses[selectionDigest];
+        // Role retirement releases resources; it cannot turn a failed or
+        // cancelled shared selection into a successful execution. Keep this
+        // decision under the status owner lock, including multi-role cleanup.
+        if (state == SelectionExecutionState::Completed &&
+            (status.state == SelectionExecutionState::Failed ||
+             status.state == SelectionExecutionState::Rejected ||
+             status.state == SelectionExecutionState::Expired ||
+             status.state == SelectionExecutionState::Cancelled)) {
+            return;
+        }
         status.providerName = providerName;
         status.serviceName = serviceName;
         status.requestId = requestId;
@@ -9590,6 +9651,38 @@ namespace ndn_service_framework
         };
         assignment.workDeadline = workFence.deadline;
         assignment.workCurrent = current;
+        if (registrationState && !registrationState->tryBeginCollaborationHandler()) {
+            publishExecutionFailureOnEventLoop(
+                requesterName, providerName, serviceName, requestId, requestMessage,
+                "collaboration registration closed before preparation", selectionDigest);
+            return true;
+        }
+        struct CollaborationHandlerCallLease
+        {
+            std::shared_ptr<RegistrationState> state;
+
+            explicit CollaborationHandlerCallLease(std::shared_ptr<RegistrationState> value)
+                : state(std::move(value)) {}
+
+            ~CollaborationHandlerCallLease()
+            {
+                if (state) {
+                    state->finishCollaborationHandler();
+                }
+            }
+        };
+        std::shared_ptr<CollaborationHandlerCallLease> callLease;
+        try {
+            if (registrationState) {
+                callLease = std::make_shared<CollaborationHandlerCallLease>(registrationState);
+            }
+        }
+        catch (...) {
+            if (registrationState) {
+                registrationState->finishCollaborationHandler();
+            }
+            throw;
+        }
         const bool expectedScopedInput = [&] {
             if (!requestMessage.hasRequestCapabilities()) return false;
             const auto& capabilities = requestMessage.getRequestCapabilities();
@@ -9608,8 +9701,12 @@ namespace ndn_service_framework
              requestMessage,
              selectionDigest,
              current,
-             handler](bool ready, std::string error,
+             handler,
+             callLease = std::move(callLease)](bool ready, std::string error,
                       CollaborationAssignment assignment) mutable {
+                // Clear the retained callback's owner, but keep preparation
+                // counted until this callback has finished posting the task.
+                auto preparationLease = std::move(callLease);
                 const bool traceAssignmentFetch =
                     isTruthyEnv("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE");
                 if (traceAssignmentFetch) {
@@ -9649,7 +9746,8 @@ namespace ndn_service_framework
                      current,
                      stopping = m_fetchStopping,
                      assignment = std::move(assignment),
-                     handler]() mutable {
+                     handler,
+                     callLease = preparationLease]() mutable {
                         if (stopping->load()) return;
                         if (!current()) {
                             if (stopping->load()) return;
@@ -12155,6 +12253,20 @@ namespace ndn_service_framework
         std::vector<std::shared_ptr<const ndn::Data>>* originals,
         std::size_t maxWireBytes)
     {
+        return publishCollaborationOwnedExactData(requestId, keyScope, objects,
+            freshnessMs, metrics, originals, maxWireBytes, {}, {});
+    }
+
+    bool
+    ServiceProvider::publishCollaborationOwnedExactData(
+        const ndn::Name& requestId, const std::string& keyScope,
+        const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+        int freshnessMs, CollaborationTransferMetrics* metrics,
+        std::vector<std::shared_ptr<const ndn::Data>>* originals,
+        std::size_t maxWireBytes, const std::function<bool()>& current,
+        const std::shared_ptr<std::mutex>& authorityMutex)
+    {
+        if (m_fetchStopping->load() || (current && !current())) return false;
         if (objects.empty()) {
             NDN_LOG_ERROR("Exact collaboration publication is empty"
                           << " requestId=" << requestId.toUri()
@@ -12250,13 +12362,20 @@ namespace ndn_service_framework
                 throw std::length_error("exact signed tensor original cache capacity");
             totalWireBytes += item.wireSize;
         }
+        std::unique_lock<std::mutex> authorityLock;
+        if (authorityMutex) authorityLock = std::unique_lock<std::mutex>(*authorityMutex);
+        // Admit the whole batch before exposing any original, IMS entry or
+        // pending-Interest reply. Explicit Context revocation shares this lock.
+        if (m_fetchStopping->load() || (current && !current())) return false;
         if (originals != nullptr) {
             originals->clear();
             originals->reserve(prepared.size());
             for (const auto& item : prepared) originals->push_back(item.data);
         }
+        for (const auto& item : prepared) m_IMS.insert(*item.data, freshness);
+        if (authorityLock.owns_lock()) authorityLock.unlock();
+        // Face dispatch must not run under the Context authority mutex.
         for (const auto& item : prepared) {
-            m_IMS.insert(*item.data, freshness);
             satisfyPendingImsInterestsLocked(*item.data);
             NDN_LOG_DEBUG("NDNSF_DI_EXACT_DATA_PUBLISHED"
                           << " requestId=" << requestId.toUri()
@@ -12291,6 +12410,16 @@ namespace ndn_service_framework
         const std::vector<std::shared_ptr<const ndn::Data>>& originals,
         CollaborationTransferMetrics* metrics)
     {
+        return replayCollaborationOwnedExactData(originals, metrics, {}, {});
+    }
+
+    bool
+    ServiceProvider::replayCollaborationOwnedExactData(
+        const std::vector<std::shared_ptr<const ndn::Data>>& originals,
+        CollaborationTransferMetrics* metrics, const std::function<bool()>& current,
+        const std::shared_ptr<std::mutex>& authorityMutex)
+    {
+        if (m_fetchStopping->load() || (current && !current())) return false;
         if (originals.empty()) return false;
         std::size_t payloadBytes = 0, wireBytes = 0;
         std::unique_lock<std::mutex> immutableLock(_cache_mutex);
@@ -12310,10 +12439,13 @@ namespace ndn_service_framework
                 existing.wireEncode() != original->second->wireEncode())
                 throw std::invalid_argument("immutable exact original replay conflict");
         }
-        for (const auto& packet : originals) {
+        std::unique_lock<std::mutex> authorityLock;
+        if (authorityMutex) authorityLock = std::unique_lock<std::mutex>(*authorityMutex);
+        if (m_fetchStopping->load() || (current && !current())) return false;
+        for (const auto& packet : originals)
             m_IMS.insert(*packet, packet->getFreshnessPeriod());
-            satisfyPendingImsInterestsLocked(*packet);
-        }
+        if (authorityLock.owns_lock()) authorityLock.unlock();
+        for (const auto& packet : originals) satisfyPendingImsInterestsLocked(*packet);
         if (metrics) {
             metrics->actualDataName = originals.front()->getName().toUri();
             metrics->transportPayloadBytes = payloadBytes;
@@ -12789,7 +12921,7 @@ namespace ndn_service_framework
                     pending = m_face.expressInterest(
                     interest,
                     [this, state, slot, finish, dataName, expectedProducer, requestId,
-                     keyScope, onValidatedData, localWorkObserver]
+                     keyScope, shouldCancel, onValidatedData, localWorkObserver]
                     (const ndn::Interest&, const ndn::Data& data) {
                         if (state->completed.load() || slot->completed.load()) {
                             return;
@@ -12906,7 +13038,7 @@ namespace ndn_service_framework
                             };
                         auto onValidatedExactData =
                             [state, slot, dataName, expectedProducer, requestId,
-                             keyScope, onValidatedData, completeValidation,
+                             keyScope, shouldCancel, onValidatedData, completeValidation,
                              localWorkObserver]
                             (const ndn::Data& validated) {
                                 if (state->completed.load() || slot->completed.load()) return;
@@ -12919,6 +13051,18 @@ namespace ndn_service_framework
                                         return;
                                     }
                                     shouldComplete = true;
+                                    try {
+                                        if (shouldCancel && shouldCancel()) {
+                                            error = "exact Data cancelled before admission for " +
+                                                dataName.toUri();
+                                            return;
+                                        }
+                                    }
+                                    catch (...) {
+                                        error = "exact Data cancellation predicate failed for " +
+                                            dataName.toUri();
+                                        return;
+                                    }
                                     if (validated.getName() != dataName ||
                                         !isSignedByIdentity(validated,
                                                             expectedProducer)) {

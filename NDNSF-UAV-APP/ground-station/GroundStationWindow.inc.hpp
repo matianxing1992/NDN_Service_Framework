@@ -23,7 +23,9 @@ public:
                       std::vector<std::string> droneIds,
                       double groundStationMapLat,
                       double groundStationMapLon,
-                      uint64_t operatorAuthorityRefreshIntervalMs)
+                      uint64_t operatorAuthorityRefreshIntervalMs,
+                      GroundStationTrackingControls* trackingControls = nullptr,
+                      std::function<bool()> trackingStopRequested = {})
     : m_runtime(runtime)
     , m_box(Gtk::ORIENTATION_VERTICAL, 8)
     , m_patrolControls(Gtk::ORIENTATION_HORIZONTAL, 6)
@@ -511,13 +513,28 @@ public:
     m_scroll.set_hexpand(true);
     m_scroll.set_vexpand(true);
     m_scroll.add(m_box);
-    add(m_scroll);
+    m_tabs.append_page(m_scroll, "Flight");
+    if (trackingControls) {
+      m_trackingPanel = std::make_unique<GroundStationTrackingPanel>(
+        *trackingControls, std::move(trackingStopRequested));
+      m_tabs.append_page(*m_trackingPanel, "Tracking");
+    }
+    add(m_tabs);
     show_all_children();
+    if (trackingControls && !trackingControls->definitions().empty()) m_tabs.set_current_page(1);
     m_controlPanel.hide();
     if (auto* firstRow = m_vehicleList.get_row_at_index(0)) {
       m_vehicleList.select_row(*firstRow);
       updateVehicleRows();
     }
+    m_mapDispatcher.connect([this] {
+      std::function<void()> ready;
+      {
+        std::lock_guard<std::mutex> lock(m_mapReadyMutex);
+        ready = std::move(m_mapReady);
+      }
+      if (ready) ready();
+    });
     refreshMapTile();
 
     m_start.signal_clicked().connect([this] {
@@ -870,7 +887,7 @@ public:
         m_stats.set_text(stats);
       }
     });
-    Glib::signal_timeout().connect([this] {
+    m_telemetryPoll = Glib::signal_timeout().connect([this] {
       if (!m_droneIds.empty()) {
         const auto droneId = m_droneIds[m_telemetryPollIndex++ % m_droneIds.size()];
         m_runtime.requestTelemetryStatusForDrone(droneId);
@@ -1507,6 +1524,12 @@ public:
 
   ~GroundStationWindow() override
   {
+    m_telemetryPoll.disconnect();
+    m_mapStop = true;
+    if (m_mapThread.joinable()) {
+      m_mapThread.join();
+    }
+    m_mapReady = {};
     m_acceptFrames = false;
     if (m_runtime.isStreaming()) {
       m_runtime.stopVideo();
@@ -1528,6 +1551,9 @@ public:
   }
 
 private:
+#ifdef NDNSF_UAV_MAIN_APP_TEST_SEAM
+  friend struct GroundStationWindowTestAccess;
+#endif
   bool
   autoControlPrerequisiteSatisfied(const std::string& prerequisite,
                                    uint64_t startedMs,
@@ -4635,7 +4661,10 @@ private:
     m_mapRefreshPending = false;
     m_mapTileKey = tileKey;
     m_mapTileLoading = true;
-    std::thread([this, zoom, baseTileX, baseTileY, cropX, cropY,
+    if (m_mapThread.joinable()) {
+      m_mapThread.join();
+    }
+    m_mapThread = std::thread([this, zoom, baseTileX, baseTileY, cropX, cropY,
                  sourcePixelX, sourcePixelY, markers, generation] {
       struct LoadedTile
       {
@@ -4646,8 +4675,8 @@ private:
 
       std::vector<LoadedTile> tiles;
       bool ok = true;
-      for (int dy = 0; dy <= 1; ++dy) {
-        for (int dx = 0; dx <= 1; ++dx) {
+      for (int dy = 0; dy <= 1 && !m_mapStop.load(); ++dy) {
+        for (int dx = 0; dx <= 1 && !m_mapStop.load(); ++dx) {
           const auto tileX = baseTileX + dx;
           const auto tileY = baseTileY + dy;
           const auto tileKey = std::to_string(zoom) + "/" + std::to_string(tileX) +
@@ -4673,7 +4702,9 @@ private:
           }
         }
       }
-      Glib::signal_idle().connect_once([this, tiles, ok, baseTileX, baseTileY,
+      if (m_mapStop.load()) return;
+      std::lock_guard<std::mutex> lock(m_mapReadyMutex);
+      m_mapReady = [this, tiles, ok, baseTileX, baseTileY,
                                         cropX, cropY, sourcePixelX, sourcePixelY,
                                         markers, zoom, generation] {
         m_mapTileLoading = false;
@@ -4719,11 +4750,14 @@ private:
           NDN_LOG_WARN("GS_MAP_TILE_LOAD_FAILED " << e.what());
         }
         refreshPending();
-      });
-    }).detach();
+      };
+      m_mapDispatcher.emit();
+    });
   }
 
 private:
+  Gtk::Notebook m_tabs;
+  std::unique_ptr<GroundStationTrackingPanel> m_trackingPanel;
   GroundStationServiceContainer& m_runtime;
   Gtk::ScrolledWindow m_scroll;
   Gtk::Box m_box;
@@ -4865,6 +4899,12 @@ private:
   Gtk::Label m_stabilityInspector;
   Gtk::Image m_image;
   Gtk::Label m_stats;
+  sigc::connection m_telemetryPoll;
+  Glib::Dispatcher m_mapDispatcher;
+  std::mutex m_mapReadyMutex;
+  std::function<void()> m_mapReady;
+  std::thread m_mapThread;
+  std::atomic<bool> m_mapStop{false};
   Glib::Dispatcher m_statusDispatcher;
   Glib::Dispatcher m_frameDispatcher;
   Glib::Dispatcher m_gamepadDispatcher;

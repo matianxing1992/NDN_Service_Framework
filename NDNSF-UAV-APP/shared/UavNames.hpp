@@ -35,6 +35,8 @@ inline constexpr const char* TRACKING_CANCEL_SCHEMA = "uav-tracking-cancel-v1";
 inline const ndn::Name TRACKING_CANCEL_TOPIC("/UAV/Tracking/Cancel");
 inline constexpr const char* TRACKING_CANCEL_ACK_SCHEMA = "uav-tracking-cancel-ack-v1";
 inline const ndn::Name TRACKING_CANCEL_ACK_TOPIC("/UAV/Tracking/Cancel/Ack");
+inline constexpr const char* TRACKING_WORK_DRAINED_SCHEMA = "uav-tracking-work-drained-v1";
+inline const ndn::Name TRACKING_WORK_DRAINED_TOPIC("/UAV/Tracking/WorkDrained");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_LEASE("/UAV/GS/OperatorAuthority/Lease");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_REVOCATION("/UAV/GS/OperatorAuthority/Revocation");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_AUDIT("/UAV/GS/OperatorAuthority/Audit");

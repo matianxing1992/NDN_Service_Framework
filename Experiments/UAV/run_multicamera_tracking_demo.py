@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import copy
 from datetime import datetime, timezone
 import fcntl
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
@@ -35,6 +35,7 @@ import subprocess
 import sys
 import time
 from typing import TYPE_CHECKING, Any, Iterable, Sequence
+from types import MappingProxyType
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE = Path(os.environ.get(
@@ -45,6 +46,7 @@ DEFAULT_OBSERVATION_PROFILE = ROOT / "NDNSF-UAV-APP/configs/uav_observation_demo
 DEFAULT_TRUST_SCHEMA = ROOT / "examples/trust-schema.conf"
 TOPOLOGY = Path(__file__).with_name("topology.conf")
 MAX_REPLAY_WINDOWS = 600
+NFD_CS_MAX_PACKETS = 4096
 DEFAULT_SAMPLE_RATE_HZ = 5.0
 DEFAULT_FRAME_COUNT = 100
 MAX_UNIX_SOCKET_PATH_BYTES = 107
@@ -97,6 +99,181 @@ class ProcessSpec:
             # This is a directory contract, not a key or credential.
             "privateDir": str(self.private_dir),
         }
+
+
+# The maintained demo's actor configuration is shared by both application modes.
+TRACKING_ACTORS = MappingProxyType({
+    'controller': ('gs', '/example/uav/controller', 'controller'),
+    'ground-station': ('gs', '/example/uav/gs', 'ground-station'),
+    'uav1-camera': ('uav1', '/example/uav/drone/UAV1', 'uav1'),
+    'uav2-camera': ('uav2', '/example/uav/drone/UAV2', 'uav2'),
+    'uav3-camera': ('uav3', '/example/uav/drone/UAV3', 'uav3'),
+    'compute': ('compute', '/example/uav/compute', 'compute'),
+})
+
+
+def _actor_spec(name: str, root: Path, output: Path, command: tuple[str, ...]) -> ProcessSpec:
+    node, identity, private = TRACKING_ACTORS[name]
+    return ProcessSpec(name, node, identity, root, command, output / 'private' / private)
+
+
+def _required_native_programs(application_mode: str) -> tuple[str, ...]:
+    if application_mode == 'main':
+        return ('UavDroneApp', 'App_ServiceController', 'UavGroundStationApp')
+    if application_mode != 'compat':
+        raise RunnerError('application mode must be main or compat')
+    return REQUIRED_NATIVE_PROGRAMS
+
+
+def _main_asset(path: Path, *, interpreter: bool = False) -> dict[str, str]:
+    path = path.expanduser().absolute() if interpreter else path.expanduser().resolve(strict=True)
+    if not path.is_file() or path.is_symlink():
+        raise RunnerError(f'main assets require a regular file: {path}')
+    return {'path': str(path), 'digest': digest_file(path)}
+
+
+def _write_main_config(path: Path, value: dict[str, Any]) -> None:
+    payload = (json.dumps(value, indent=2, sort_keys=True) + '\n').encode()
+    if len(payload) > 256 * 1024:
+        raise RunnerError('native main configuration exceeds 256 KiB')
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+        raise RunnerError(f'main configuration cannot use a symlink: {path}')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open('xb') as stream:
+            stream.write(payload)
+    except FileExistsError:
+        if not path.is_file() or path.read_bytes() != payload:
+            raise RunnerError(f'prepared main configuration is immutable; use a fresh run: {path}')
+
+
+
+def _main_process_specs(root: Path, output: Path, *, model: Path, headless: bool,
+                        window_count: int, request_timeout_ms: int,
+                        source_ids: dict[str, str], source_epoch: int,
+                        observation_profile: dict[str, Any],
+                        source_generations_path: Path, trust_schema: Path,
+                        person_tracking: dict[str, Any] | None,
+                        worker_python: Path) -> list[ProcessSpec]:
+    output = output.resolve()
+    if (output / 'lifecycle.json').exists() or (output / 'main-network-attempt.json').exists():
+        raise RunnerError('main run already attempted network execution; use a fresh run')
+    if (not re.fullmatch(r'[A-Za-z0-9_.-]{1,119}', output.name) or output.name in {'.', '..'}):
+        raise RunnerError('main run id must fit its native tracking- wire mission binding')
+    if observation_profile.get('deliveryMode') != 'replay':
+        raise RunnerError('main application requires prepared replay streams')
+    _write_main_config(source_generations_path,
+        _source_generations(window_count, source_ids, source_epoch, ()))
+    generations = _main_asset(source_generations_path)
+    source_names = [f'uav{i}-camera' for i in range(1, 4)]
+    producers = [TRACKING_ACTORS[name][1] for name in source_names]
+    compute = TRACKING_ACTORS['compute'][1]
+    controller = TRACKING_ACTORS['controller'][1]
+    user = TRACKING_ACTORS['ground-station'][1]
+    group = controller.rsplit('/', 1)[0]
+    mode = 'person' if person_tracking is not None else 'vehicle'
+    config = output / 'private/config'
+    job_output = output / 'tracking'
+    profile = _main_asset(Path(person_tracking['profile'])) if person_tracking else None
+    computation = _main_asset(Path(person_tracking['computationManifest'])) if person_tracking else None
+    job = {'schema': 'uav-tracking-job-v1', 'jobId': output.name, 'runId': output.name,
+           'missionId': output.name, 'mode': mode, 'sources': [],
+           'compute': {'producerIdentity': compute, 'droneId': compute.rsplit('/', 1)[1]},
+           'calibrationIdentity': None, 'profile': profile, 'computationManifest': computation,
+           'outputDirectory': str(job_output), 'windowCount': window_count,
+           'deadlineMs': request_timeout_ms, 'requestTimeoutMs': request_timeout_ms}
+    for index, identity in enumerate(producers, 1):
+        camera = f'UAV{index}'
+        job['sources'].append({'cameraId': camera, 'sourceId': source_ids[camera],
+            'sourceEpoch': source_epoch, 'producerIdentity': identity,
+            'droneId': identity.rsplit('/', 1)[1], 'sourceManifest': generations})
+    job_path = config / 'main-tracking-job.json'
+    _write_main_config(job_path, job)
+    main_node = _installed_program('UavDroneApp')
+    main_gs = _installed_program('UavGroundStationApp')
+    controller_binary = _installed_program('App_ServiceController')
+    policy = root / 'Experiments/UAV/spec228.policies'
+    if not policy.is_file():
+        raise RunnerError('maintained main tracking policy is unavailable')
+    specs = [_actor_spec('controller', root, output,
+        (controller_binary, '--node', 'gs', '--controller-prefix', controller,
+         '--group-prefix', group, '--policy-file', str(policy), '--trust-schema', str(trust_schema),
+         '--no-demo-identities', '--ensure-identities', ','.join([*producers, compute, user])))]
+    gs_args = (main_gs, '--group-prefix', group, '--controller-prefix', controller,
+        '--ground-station-identity', user, '--trust-schema', str(trust_schema),
+        '--no-cert-dialog', '--target-drone', job['sources'][0]['droneId'],
+        '--patrol-drones', ','.join(source['droneId'] for source in job['sources']),
+        '--operator-id', user, '--operator-lease-drone', 'all', '--operator-lease-scope', 'control',
+        '--tracking-job-config', str(job_path), '--tracking-auto-start')
+    specs.append(_actor_spec('ground-station', root, output,
+                            (*gs_args, '--headless') if headless else gs_args))
+    for name in [*source_names, 'compute']:
+        identity = TRACKING_ACTORS[name][1]
+        is_compute = name == 'compute'
+        camera = '' if is_compute else f'UAV{source_names.index(name) + 1}'
+        run = {'runId': output.name, 'mode': mode, 'role': 'compute' if is_compute else 'source',
+            'cameraId': camera, 'sourceProducers': producers, 'computeProducer': compute,
+            'windowCount': window_count, 'requestTimeoutMs': request_timeout_ms,
+            'sourceGenerations': generations,
+            'observationStreamDirectory': '' if is_compute else str(output / 'private/observations' / camera),
+            'worldFrameId': observation_profile['worldFrameId'],
+            'acquisitionKind': observation_profile['acquisitionKind'],
+            'deliveryMode': 'replay',
+            'model': _main_asset(model) if is_compute else None,
+            'profile': profile if is_compute else None,
+            'reidModel': _main_asset(Path(person_tracking['reidModel'])) if is_compute and person_tracking else None,
+            'computationManifest': computation if is_compute else None,
+            'workerPython': _main_asset(Path(person_tracking['workerPython']) if person_tracking else worker_python,
+                                       interpreter=True) if is_compute else None,
+            'workerScript': _main_asset(_installed_tracking_script('tracking_worker.py')) if is_compute else None}
+        provider_path = config / f'main-{name}.json'
+        _, _, private = TRACKING_ACTORS[name]
+        catalog = {'schema': 'uav-tracking-provider-v1', 'producerIdentity': identity,
+            'droneId': identity.rsplit('/', 1)[1],
+            'ownedWorkspace': str(output / 'private' / private / 'tracking'), 'runs': [run]}
+        _write_main_config(provider_path, catalog)
+        specs.append(_actor_spec(name, root, output,
+            (main_node, '--headless', '--group-prefix', group, '--controller-prefix', controller,
+             '--drone-prefix', identity.rsplit('/', 1)[0], '--drone-id', catalog['droneId'],
+             '--trust-schema', str(trust_schema), '--flight-controller-backend', 'mock',
+             '--tracking-provider-config', str(provider_path))))
+    return specs
+
+
+def _main_plan_metadata(specs: Sequence[ProcessSpec], output: Path) -> dict[str, Any]:
+    by_name = {spec.name: spec for spec in specs}
+    gs = by_name['ground-station']
+    job_path = Path(gs.command[gs.command.index('--tracking-job-config') + 1])
+    job = json.loads(job_path.read_bytes())
+    providers = {}
+    files = {job_path, TOPOLOGY, Path(__file__).resolve(), ROOT / 'Experiments/UAV/spec228.policies',
+             Path(__file__).with_name('person_run_receipt.py'),
+             Path(__file__).with_name('person_run_resources.py')}
+    for name in ('uav1-camera', 'uav2-camera', 'uav3-camera', 'compute'):
+        spec = by_name[name]
+        path = Path(spec.command[spec.command.index('--tracking-provider-config') + 1])
+        providers[name] = _main_asset(path)
+        files.add(path)
+        value = json.loads(path.read_bytes())
+        for run in value['runs']:
+            for key in ('sourceGenerations', 'model', 'profile', 'reidModel', 'computationManifest',
+                        'workerPython', 'workerScript'):
+                if run[key] is not None:
+                    files.add(Path(run[key]['path']))
+    files.update(path for path in DEFAULT_TRACKING_LIBEXEC.glob('*.py') if path.is_file())
+    files.update(path for path in DEFAULT_TRACKING_LIBEXEC.glob('*.lock') if path.is_file())
+    for run in json.loads(Path(providers['compute']['path']).read_bytes())['runs']:
+        environment = Path(run['workerPython']['path']).parent.parent
+        files.update(path for path in (environment / 'pyvenv.cfg', environment / 'spec228-environment.json') if path.is_file())
+        files.update(path for path in environment.glob('lib/python*/site-packages/*.pth') if path.is_file())
+    for spec in specs:
+        files.add(Path(spec.command[0]).resolve(strict=True))
+    return {'applicationMode': 'main', 'trackingMain': {
+        'schema': 'uav-main-tracking-plan-v1', 'jobs': [_main_asset(job_path)],
+        'providerConfigs': providers, 'statusFile': str(Path(job['outputDirectory']) / 'tracking-status.json'),
+        'computeWorkspace': json.loads(Path(providers['compute']['path']).read_bytes())['ownedWorkspace'],
+        'frozenFiles': [_main_asset(path) for path in sorted(files)],
+        'sourceFiles': [], 'headless': '--headless' in gs.command}}
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -248,7 +425,11 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
                    trust_schema: Path,
                    external_source_adapter: Path | None = None,
                    observation_enabled: bool = True,
-                   person_tracking: dict[str, Any] | None = None) -> list[ProcessSpec]:
+                   person_tracking: dict[str, Any] | None = None,
+                   application_mode: str = "compat",
+                   worker_python: Path | None = None) -> list[ProcessSpec]:
+    if type(request_timeout_ms) is not int or not 1000 < request_timeout_ms <= 1200000:
+        raise RunnerError("tracking request budget must be within 1001..1200000 ms")
     if fault == "user-cancel-before-person-commit" and person_tracking is None:
         raise RunnerError("person precommit cancellation fault requires person tracking")
     if fault in PERSON_BINDING_FAULTS and person_tracking is None:
@@ -268,6 +449,18 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
             value = person_tracking.get(key)
             if not isinstance(value, str) or not Path(value).is_absolute():
                 raise RunnerError(f"person process path must be absolute: {key}")
+    _required_native_programs(application_mode)
+    if application_mode == "main":
+        if (fault != "none" or motion_dir is not None or external_source_adapter is not None or
+                not observation_enabled):
+            raise RunnerError("main mode requires replay without compatibility fault/legacy adapters")
+        return _main_process_specs(root, output, model=model, headless=headless,
+            window_count=window_count, request_timeout_ms=request_timeout_ms,
+            source_ids=source_ids, source_epoch=source_epoch,
+            observation_profile=observation_profile, source_generations_path=source_generations_path,
+            trust_schema=trust_schema, person_tracking=person_tracking,
+            worker_python=worker_python or Path(sys.executable))
+    node_budget_args = ("--request-timeout-ms", str(request_timeout_ms))
     common = ("--run-id", output.name, "--topology", str(TOPOLOGY),
               "--window-count", str(window_count))
     display = "headless" if headless else "windows"
@@ -385,7 +578,7 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
         # the launcher supplies one campaign-scoped PIB/TPM below so the
         # Controller can resolve and encrypt to the exact certificates used by
         # the providers and ground station.
-        ProcessSpec("controller", "gs", "/example/uav/controller", root,
+        _actor_spec("controller", root, output,
                     (controller, "--node", "gs", "--controller-prefix",
                      "/example/uav/controller", "--policy-file",
                      str(root / "Experiments/UAV/spec191.policies"),
@@ -394,46 +587,46 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
                      "--ensure-identities",
                      "/example/uav/drone/UAV1,/example/uav/drone/UAV2,"
                      "/example/uav/drone/UAV3,/example/uav/compute,/example/uav/gs",
-                     *common),
-                    output / "private/controller"),
-        ProcessSpec("ground-station", "gs", "/example/uav/gs", root,
+                     *common)
+                    ),
+        _actor_spec("ground-station", root, output,
                     (ground_station, "--node", "gs", "--display", display,
                      "--group-prefix", "/example/uav", "--controller-prefix",
                      "/example/uav/controller", *trust_args, *motion_args,
                      *observation_request_args,
                      *person_gs_args,
                      "--request-timeout-ms",
-                     str(request_timeout_ms), *common, *fault_args),
-                    output / "private/ground-station"),
-        ProcessSpec("uav1-camera", "uav1", "/example/uav/drone/UAV1", root,
-                    (tracking_node, "--role", "source", "--camera", "UAV1",
+                     str(request_timeout_ms), *common, *fault_args)
+                    ),
+        _actor_spec("uav1-camera", root, output,
+                    (tracking_node, *node_budget_args, "--role", "source", "--camera", "UAV1",
                      *video_args("UAV1"),
                      *source_frame_args("UAV1"),
                      *observation_args("UAV1"),
                      *motion_args,
                      *trust_args,
-                     *source_model_args, *common, *node_fault_args),
-                    output / "private/uav1"),
-        ProcessSpec("uav2-camera", "uav2", "/example/uav/drone/UAV2", root,
-                    (tracking_node, "--role", "source", "--camera", "UAV2",
+                     *source_model_args, *common, *node_fault_args)
+                    ),
+        _actor_spec("uav2-camera", root, output,
+                    (tracking_node, *node_budget_args, "--role", "source", "--camera", "UAV2",
                      *video_args("UAV2"),
                      *source_frame_args("UAV2"),
                      *observation_args("UAV2"),
                      *motion_args,
                      *trust_args,
-                     *source_model_args, *common, *node_fault_args),
-                    output / "private/uav2"),
-        ProcessSpec("uav3-camera", "uav3", "/example/uav/drone/UAV3", root,
-                    (tracking_node, "--role", "source", "--camera", "UAV3",
+                     *source_model_args, *common, *node_fault_args)
+                    ),
+        _actor_spec("uav3-camera", root, output,
+                    (tracking_node, *node_budget_args, "--role", "source", "--camera", "UAV3",
                      *video_args("UAV3"),
                      *source_frame_args("UAV3"),
                      *observation_args("UAV3"),
                      *motion_args,
                      *trust_args,
-                     *source_model_args, *common, *node_fault_args),
-                    output / "private/uav3"),
-        ProcessSpec("compute", "compute", "/example/uav/compute", root,
-                    (tracking_node, "--role", "compute", "--display", display,
+                     *source_model_args, *common, *node_fault_args)
+                    ),
+        _actor_spec("compute", root, output,
+                    (tracking_node, *node_budget_args, "--role", "compute", "--display", display,
                      "--model", str(model), "--worker-python", worker_python,
                      "--worker-script",
                      str(_installed_tracking_script("tracking_worker.py")),
@@ -441,8 +634,8 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
                      *observation_runtime_args,
                      *motion_args,
                      *trust_args,
-                     *common, *node_fault_args),
-                    output / "private/compute"),
+                     *common, *node_fault_args)
+                    ),
         ProcessSpec("compute-display", "compute", "/example/uav/compute/display", root,
                     (sys.executable, display_runner, "--socket",
                      str(display_socket),
@@ -466,9 +659,9 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
     return [specs[0], *pushers, *external_sources, *specs[1:]]
 
 
-def _check_python_dependencies() -> list[str]:
+def _check_python_dependencies(*, model_dependencies: bool = True) -> list[str]:
     missing: list[str] = []
-    for module in ("cv2", "numpy", "ultralytics", "lap"):
+    for module in (("cv2", "numpy", "ultralytics", "lap") if model_dependencies else ("cv2", "numpy")):
         try:
             __import__(module)
         except Exception as error:  # pragma: no cover - host-dependent
@@ -499,19 +692,22 @@ def _person_application_environment(output: Path) -> dict[str, str]:
 
 
 def _describe_person_computation(person_tracking: dict[str, Any], model: Path,
-                                 output: Path) -> dict[str, Any]:
+                                 output: Path, *,
+                                 application_mode: str = "compat") -> dict[str, Any]:
     """Snapshot the installed native inventory without starting an NDN application."""
     output = output.resolve()
     config = output / "private/config"
     config.mkdir(parents=True, exist_ok=True)
     descriptor = config / "person-computation.json"
     descriptor.unlink(missing_ok=True)
-    executable = Path(_installed_program("UavTrackingNode"))
+    _required_native_programs(application_mode)
+    executable = Path(_installed_program("UavDroneApp" if application_mode == "main" else "UavTrackingNode"))
     worker = _installed_tracking_script("tracking_worker.py")
     if (not executable.is_absolute() or not executable.is_file() or
             not worker.is_absolute() or not worker.is_file()):
         raise RunnerError("person description requires installed native Node and worker")
-    command = [str(executable), "--role", "compute", "--model", str(model.resolve()),
+    command = [str(executable), *([] if application_mode == "main" else ["--role", "compute"]),
+               "--model", str(model.resolve()),
                "--tracking-profile", person_tracking["profile"],
                "--reid-model", person_tracking["reidModel"],
                "--worker-python", person_tracking["workerPython"],
@@ -674,7 +870,14 @@ def build_plan(*, source: Path, model: Path, output: Path, license_text: str,
                source_switch_after_window: Sequence[int] = (),
                external_source_adapter: Path | None = None,
                trust_schema: Path = DEFAULT_TRUST_SCHEMA,
-               person_tracking: dict[str, Any] | None = None) -> dict[str, Any]:
+               person_tracking: dict[str, Any] | None = None,
+               application_mode: str = "compat",
+               worker_python: Path | None = None) -> dict[str, Any]:
+    _required_native_programs(application_mode)
+    if application_mode == "main" and (fault != "none" or legacy_mode or motion_fixture is not None or
+            motion_profile is not None or external_source_adapter is not None or
+            source_switch_after_window or observation_mode not in {"simulated", "replay"}):
+        raise RunnerError("main mode requires fixed prepared replay without compatibility faults")
     if (fault in PERSON_BINDING_FAULTS or fault == PERSON_SOURCE_EPOCH_RESTART_FAULT) and \
             person_tracking is None:
         raise RunnerError("person-specific fault requires person tracking")
@@ -686,7 +889,8 @@ def build_plan(*, source: Path, model: Path, output: Path, license_text: str,
             raise RunnerError("person mode owns replay inputs and fixed-root trust configuration")
         return _build_person_plan(person_tracking, model, output, headless=headless,
                                   run_seconds=run_seconds, window_count=window_count,
-                                  fault=fault, global_deadline_ms=global_deadline_ms)
+                                  fault=fault, global_deadline_ms=global_deadline_ms,
+                                  application_mode=application_mode)
     if window_count is not None and type(window_count) is not int:
         raise RunnerError("window_count must be an integer")
     model = model.expanduser().resolve()
@@ -848,14 +1052,16 @@ def build_plan(*, source: Path, model: Path, output: Path, license_text: str,
                            source_generations_path=source_generations_path,
                            trust_schema=trust_schema,
                            external_source_adapter=external_source_adapter,
-                           observation_enabled=not legacy_compatibility)
+                           observation_enabled=not legacy_compatibility,
+                           application_mode=application_mode, worker_python=worker_python)
     nodes = sorted(topology.nodes)
     if {item.node for item in specs} != set(nodes):
         raise RunnerError("process plan does not cover the exact topology nodes")
     if len(nodes) != 5 or "controller" in nodes:
         raise RunnerError("Controller must remain a gs-local process, not a MiniNDN node")
     return {
-        "schema": "spec191-uav-tracking-run/v1",
+        **(_main_plan_metadata(specs, output) if application_mode == "main" else {}),
+        "schema": "spec228-uav-main-tracking-run/v1" if application_mode == "main" else "spec191-uav-tracking-run/v1",
         "mode": "headless" if headless else "windows",
         "topology": {
             "path": str(TOPOLOGY),
@@ -930,6 +1136,7 @@ def build_plan(*, source: Path, model: Path, output: Path, license_text: str,
         } if not legacy_compatibility else {"enabled": False, "mode": "legacy"}),
         "processes": [item.public_dict() for item in specs],
         "settings": {
+            "nfdCsMaxPackets": NFD_CS_MAX_PACKETS,
             "sampleFps": sample_rate_hz,
             "sourceSeconds": 60.0,
             "windowSeconds": 1.0 / sample_rate_hz,
@@ -938,6 +1145,7 @@ def build_plan(*, source: Path, model: Path, output: Path, license_text: str,
             "fault": fault,
             "ackTimeoutMs": 1000,
             "globalDeadlineMs": global_deadline_ms,
+            "trackingHostRequestTimeoutMs": global_deadline_ms,
             "runSeconds": run_seconds,
             "retryReselection": False,
             "cpuOnly": True,
@@ -948,7 +1156,7 @@ def build_plan(*, source: Path, model: Path, output: Path, license_text: str,
 
 def _build_person_plan(person: dict[str, Any], model: Path, output: Path, *, headless: bool,
                        run_seconds: float, window_count: int | None, fault: str,
-                       global_deadline_ms: int) -> dict[str, Any]:
+                       global_deadline_ms: int, application_mode: str = "compat") -> dict[str, Any]:
     """Freeze the actual prepared source epoch and installed execution inputs."""
     from person_profile import load_person_profile, verify_person_model_files
 
@@ -1002,23 +1210,26 @@ def _build_person_plan(person: dict[str, Any], model: Path, output: Path, *, hea
         headless=headless, window_count=count, fault=fault, request_timeout_ms=global_deadline_ms,
         motion_dir=None, source_ids=receipt["sourceIds"], source_epoch=receipt["sourceEpoch"],
         observation_profile=observation, source_generations_path=generations_path,
-        trust_schema=trust_schema, person_tracking=person)
+        trust_schema=trust_schema, person_tracking=person, application_mode=application_mode)
     files = [receipt_path, Path(person["profile"]), Path(person["computationManifest"]),
              observation_path, generations_path, sampling_path, model.resolve(),
-             Path(person["reidModel"]), TOPOLOGY, ROOT / "Experiments/UAV/spec191.policies"]
+             Path(person["reidModel"]), TOPOLOGY,
+             ROOT / ("Experiments/UAV/spec228.policies" if application_mode == "main" else "Experiments/UAV/spec191.policies")]
     files.extend(Path(__file__).with_name(name) for name in (
         "run_multicamera_tracking_demo.py", "person_run_receipt.py", "person_run_resources.py", "tracking_artifacts.py",
         "tracking_topology.py", "motion_fixture.py"))
-    files.extend(Path(_installed_program(name)) for name in REQUIRED_NATIVE_PROGRAMS)
+    files.extend(Path(_installed_program(name)) for name in _required_native_programs(application_mode))
     files.extend(_installed_tracking_script(name) for name in (
         "tracking_worker.py", "tracking_display.py", "display_clock.py", "person_profile.py", "person_reid.py",
         "person_runtime.py", "requirements-person.lock", "byte_track_state.py",
-        "observation_source.py", "observation_schema.py", "motion_schema.py", "motion_estimator.py"))
+        "observation_source.py", "observation_schema.py", "motion_schema.py", "motion_estimator.py")
+        if application_mode != "main" or name != "tracking_display.py")
     files.extend(output / f"private/observations/{camera}/window-{index}.jsonl"
                  for camera in ("UAV1", "UAV2", "UAV3") for index in range(count))
     frozen = [{"path": str(path.resolve()), "digest": digest_file(path)} for path in files]
     return {
-        "schema": "spec219-uav-person-run/v1", "mode": "headless" if headless else "windows",
+        **(_main_plan_metadata(specs, output) if application_mode == "main" else {}),
+        "schema": "spec228-uav-main-tracking-run/v1" if application_mode == "main" else "spec219-uav-person-run/v1", "mode": "headless" if headless else "windows",
         "topology": {"path": str(TOPOLOGY), "nodes": sorted(topology.nodes),
                      "links": [list(link) for link in sorted(topology.links)],
                      "controllerHost": topology.controller_host, "computeHost": topology.compute_host},
@@ -1036,9 +1247,10 @@ def _build_person_plan(person: dict[str, Any], model: Path, output: Path, *, hea
                         "source": {"kind": "video-reference", "root": str(sampling_path.parent)},
                         "synchronizationQualification": receipt["synchronizationQualification"]},
         "processes": [spec.public_dict() for spec in specs],
-        "settings": {"sampleFps": 2, "sourceSeconds": run_seconds, "windowSeconds": .5,
+        "settings": {"nfdCsMaxPackets": NFD_CS_MAX_PACKETS, "sampleFps": 2, "sourceSeconds": run_seconds, "windowSeconds": .5,
                      "windowCount": count, "sourceSwitchAfterWindows": [], "fault": fault,
                      "ackTimeoutMs": 1000, "globalDeadlineMs": global_deadline_ms,
+                     "trackingHostRequestTimeoutMs": global_deadline_ms,
                      "runSeconds": run_seconds, "retryReselection": False,
                      "requestedDevice": profile.requested_device},
         "scientificAccuracyClaimAllowed": False,
@@ -1515,14 +1727,270 @@ def prepare_person_sources(source_manifest: Path, output: Path,
             raise
 
 
+def _verify_main_plan(plan: dict[str, Any], *, prepared: bool = False) -> None:
+    if plan.get('applicationMode') != 'main':
+        return
+    main = plan['trackingMain']
+    processes = {item['name']: item for item in plan['processes']}
+    if set(processes) != set(TRACKING_ACTORS) or len(plan['processes']) != len(processes):
+        raise RunnerError('main process plan must contain exactly the six maintained actors')
+    for name, spec in processes.items():
+        node, identity, _ = TRACKING_ACTORS[name]
+        executable = ('App_ServiceController' if name == 'controller' else
+                      'UavGroundStationApp' if name == 'ground-station' else 'UavDroneApp')
+        if (spec['node'] != node or spec['identity'] != identity or
+                Path(spec['command'][0]) != Path(_installed_program(executable))):
+            raise RunnerError(f'main actor executable/identity mismatch: {name}')
+    gs_command = processes['ground-station']['command']
+    controller_command = processes['controller']['command']
+    def argument(command, flag):
+        if command.count(flag) != 1 or command.index(flag) + 1 >= len(command):
+            raise RunnerError('missing/duplicate main command argument: ' + flag)
+        return command[command.index(flag) + 1]
+    if (argument(gs_command, '--ground-station-identity') != TRACKING_ACTORS['ground-station'][1] or
+            argument(controller_command, '--controller-prefix') != TRACKING_ACTORS['controller'][1] or
+            argument(gs_command, '--controller-prefix') != TRACKING_ACTORS['controller'][1]):
+        raise RunnerError('main command actor identity mismatch')
+    expected_jobs = [item['path'] for item in main['jobs']]
+    actual_jobs = [gs_command[index + 1] for index, flag in enumerate(gs_command[:-1])
+                   if flag == '--tracking-job-config']
+    if actual_jobs != expected_jobs or '--tracking-auto-start' not in gs_command:
+        raise RunnerError('main GS command job catalog mismatch')
+    trust = plan.get('security', {}).get('trustSchema')
+    if trust is not None and any(argument(item['command'], '--trust-schema') != trust
+                                 for item in processes.values()):
+        raise RunnerError('main command trust-schema mismatch')
+    if argument(controller_command, '--policy-file') != str(ROOT / 'Experiments/UAV/spec228.policies'):
+        raise RunnerError('main controller policy mismatch')
+    for item in [*main['frozenFiles'], *main['sourceFiles']]:
+        path = Path(item['path'])
+        if not path.is_file() or path.is_symlink() or digest_file(path) != item['digest']:
+            raise RunnerError(f'frozen main input changed: {path}')
+    if not 1 <= len(main['jobs']) <= 16:
+        raise RunnerError('main job catalog bound')
+    if set(main['providerConfigs']) != {'uav1-camera', 'uav2-camera', 'uav3-camera', 'compute'}:
+        raise RunnerError('main provider catalog requires all four actors')
+    for name, reference in main['providerConfigs'].items():
+        path = Path(reference['path'])
+        if digest_file(path) != reference['digest']:
+            raise RunnerError('main provider configuration changed')
+        catalog = json.loads(path.read_bytes())
+        command = processes[name]['command']
+        if (catalog['producerIdentity'] != processes[name]['identity'] or
+                command[command.index('--tracking-provider-config') + 1] != str(path) or
+                command[command.index('--drone-prefix') + 1] + '/' +
+                command[command.index('--drone-id') + 1] != catalog['producerIdentity']):
+            raise RunnerError('main provider config/actual actor identity mismatch')
+    for reference in main['jobs']:
+        if digest_file(Path(reference['path'])) != reference['digest']:
+            raise RunnerError('main job definition changed')
+    if prepared and not main['sourceFiles']:
+        raise RunnerError('main source files must be frozen after preparation')
+
+
+def _freeze_main_sources(plan: dict[str, Any]) -> None:
+    if plan.get('applicationMode') != 'main':
+        return
+    main = plan['trackingMain']
+    files = set()
+    for reference in main['providerConfigs'].values():
+        catalog = json.loads(Path(reference['path']).read_bytes())
+        for run in catalog['runs']:
+            if run['role'] == 'source':
+                directory = Path(run['observationStreamDirectory'])
+                for index in range(run['windowCount']):
+                    path = directory / f'window-{index}.jsonl'
+                    if not path.is_file() or path.is_symlink():
+                        raise RunnerError(f'main prepared source is missing: {path}')
+                    files.add(path)
+    if len(files) > 16 * 3 * MAX_REPLAY_WINDOWS:
+        raise RunnerError('main source snapshot count exceeds catalog bound')
+    snapshot = [_main_asset(path) for path in sorted(files)]
+    if main['sourceFiles'] and main['sourceFiles'] != snapshot:
+        raise RunnerError('prepared main source bytes changed')
+    main['sourceFiles'] = snapshot
+    _verify_main_plan(plan, prepared=True)
+
+
+
+def prepare_main_plan_sources(plan: dict[str, Any]) -> None:
+    """Prepare the existing replay adapter once, before composing native catalogs."""
+    _verify_main_plan(plan)
+    job = json.loads(Path(plan['trackingMain']['jobs'][0]['path']).read_bytes())
+    if len(plan['trackingMain']['jobs']) != 1:
+        raise RunnerError('prepare individual main plans before composing a sequence')
+    output = Path(job['outputDirectory']).parent
+    with _uav_run_ownership(output), (output / '.person-source.lock').open('a') as source_lock:
+        fcntl.flock(source_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if (output / 'lifecycle.json').exists() or (output / 'main-network-attempt.json').exists():
+            raise RunnerError('main input already attempted network execution')
+        if 'personTracking' in plan:
+            _verify_person_plan(plan)
+        elif not plan['trackingMain']['sourceFiles']:
+            observation = plan['observation']
+            profile = _snapshot_observation_profile(observation, output)
+            generations_path = Path(observation['sourceGenerationManifest'])
+            if digest_file(generations_path) != observation['sourceGenerationManifestSha256']:
+                raise RunnerError('main source generation changed before preparation')
+            generations = load_source_generation_manifest(generations_path, job['windowCount'])
+            _prepare_source_frame_files(Path(observation['source']['root']), output,
+                window_count=job['windowCount'], profile=profile,
+                source_ids=observation['sourceIds'], source_epoch=observation['sourceEpoch'],
+                source_generations=generations)
+        _freeze_main_sources(plan)
+        _write_json(output / 'manifest.json', plan)
+
+
+def _nfd_cache_packets(plan: dict[str, Any]) -> int:
+    value = plan.get("settings", {}).get("nfdCsMaxPackets")
+    if type(value) is not int or value != NFD_CS_MAX_PACKETS:
+        raise RunnerError("NFD cache size differs from the frozen 4096-packet profile")
+    return value
+
+
+def combine_main_plans(plans: Sequence[dict[str, Any]], *, output: Path,
+                       global_deadline_ms: int) -> dict[str, Any]:
+    """Compose prepared native catalogs; the maintained runner still owns every actor."""
+    if not 1 <= len(plans) <= 16 or type(global_deadline_ms) is not int or not 1000 < global_deadline_ms <= 1200000:
+        raise RunnerError('invalid main sequence count or frozen overall budget')
+    output = output.absolute()
+    if output.is_symlink() or output != output.resolve() or (output / 'lifecycle.json').exists():
+        raise RunnerError('main sequence requires a fresh canonical output directory')
+    first = plans[0]
+    jobs, frozen, sources, catalogs, run_ids, job_ids, outputs, epochs = [], {}, {}, {}, set(), set(), set(), set()
+    for plan in plans:
+        _nfd_cache_packets(plan)
+        _verify_main_plan(plan, prepared=True)
+        if len(plan['trackingMain']['jobs']) != 1 or plan['security'].get('credentialsPrepared'):
+            raise RunnerError('compose individual main plans before provisioning or network execution')
+        if (plan['topology'] != first['topology'] or plan['mode'] != first['mode'] or
+                plan['security']['trustSchemaDigest'] != first['security']['trustSchemaDigest']):
+            raise RunnerError('main sequence topology/display/trust root mismatch')
+        for left, right in zip(first['processes'], plan['processes']):
+            if any(left[key] != right[key] for key in ('name', 'node', 'identity', 'cwd')) or left['command'][0] != right['command'][0]:
+                raise RunnerError('main sequence actor/installed artifact mismatch')
+        reference = plan['trackingMain']['jobs'][0]
+        job = json.loads(Path(reference['path']).read_bytes())
+        child = Path(job['outputDirectory']).parent
+        if (child == output or child in output.parents or output in child.parents or
+                any((child / name).exists() for name in ('lifecycle.json', 'person-network-attempt.json', 'main-network-attempt.json'))):
+            raise RunnerError('main sequence child must be fresh and outside campaign output')
+        if (job['runId'] in run_ids or job['jobId'] in job_ids or job['outputDirectory'] in outputs or
+                job['deadlineMs'] > global_deadline_ms or job['requestTimeoutMs'] > global_deadline_ms):
+            raise RunnerError('main sequence repeats an identity or exceeds its frozen budget')
+        run_ids.add(job['runId']); job_ids.add(job['jobId']); outputs.add(job['outputDirectory'])
+        for source in job['sources']:
+            binding = (source['producerIdentity'], source['sourceEpoch'])
+            if binding in epochs:
+                raise RunnerError('main sequence reuses a Producer/source epoch')
+            epochs.add(binding)
+        jobs.append(reference)
+        extra = plan.get('personTracking', {}).get('frozenFiles', [])
+        for item in [*plan['trackingMain']['frozenFiles'], *extra]:
+            if item['path'] in frozen and frozen[item['path']]['digest'] != item['digest']:
+                raise RunnerError('main sequence frozen source/artifact mismatch')
+            frozen[item['path']] = item
+        for item in plan['trackingMain']['sourceFiles']:
+            sources[item['path']] = item
+        for name, ref in plan['trackingMain']['providerConfigs'].items():
+            catalog = json.loads(Path(ref['path']).read_bytes())
+            if name not in catalogs:
+                catalogs[name] = copy.deepcopy(catalog)
+                catalogs[name]['ownedWorkspace'] = str(output / 'private' / TRACKING_ACTORS[name][2] / 'tracking')
+            else:
+                catalogs[name]['runs'].extend(catalog['runs'])
+    result = copy.deepcopy(first)
+    result.pop('personTracking', None)
+    result['settings'].update(windowCount=sum(
+        json.loads(Path(ref['path']).read_bytes())['windowCount'] for ref in jobs),
+        globalDeadlineMs=global_deadline_ms,
+        trackingHostRequestTimeoutMs=global_deadline_ms, fault='none')
+    result['security'] = {'trustSchema': str(output / 'private/config/main-trust-schema.conf'),
+        'trustSchemaDigest': first['security']['trustSchemaDigest'],
+        'trustSchemaSource': 'maintained-fixed-root', 'credentialsPrepared': False}
+    _write_uav_trust_schema(Path(result['security']['trustSchema']))
+    if digest_file(Path(result['security']['trustSchema'])) != result['security']['trustSchemaDigest']:
+        raise RunnerError('main sequence trust bytes differ')
+    configs = {}
+    for spec in result['processes']:
+        name, command = spec['name'], spec['command']
+        spec['privateDir'] = str(output / 'private' / TRACKING_ACTORS[name][2])
+        command[command.index('--trust-schema') + 1] = result['security']['trustSchema']
+        if name in catalogs:
+            path = output / 'private/config' / f'main-{name}.json'
+            _write_main_config(path, catalogs[name])
+            command[command.index('--tracking-provider-config') + 1] = str(path)
+            configs[name] = _main_asset(path)
+            frozen[str(path)] = configs[name]
+        elif name == 'ground-station':
+            index = command.index('--tracking-job-config')
+            del command[index:index + 2]
+            for ref in jobs:
+                command.extend(('--tracking-job-config', ref['path']))
+    frozen[result['security']['trustSchema']] = _main_asset(Path(result['security']['trustSchema']))
+    result['trackingMain'].update(jobs=jobs, providerConfigs=configs,
+        computeWorkspace=catalogs['compute']['ownedWorkspace'],
+        frozenFiles=[frozen[path] for path in sorted(frozen)],
+        sourceFiles=[sources[path] for path in sorted(sources)], preparedSequence=True,
+        childRunRoots=sorted(str(Path(json.loads(Path(ref['path']).read_bytes())['outputDirectory']).parent) for ref in jobs))
+    _verify_main_plan(result, prepared=True)
+    return result
+
+
+def _mark_main_network_attempt(plan: dict[str, Any], output: Path) -> None:
+    roots = [output, *map(Path, plan['trackingMain'].get('childRunRoots', []))]
+    if any((root / 'main-network-attempt.json').exists() or (root / 'lifecycle.json').exists() for root in roots):
+        raise RunnerError('main network attempt already exists; use fresh run/source identities')
+    for root in roots:
+        with (root / 'main-network-attempt.json').open('x') as stream:
+            json.dump({'campaign': str(output), 'jobs': plan['trackingMain']['jobs'],
+                       'startedAt': datetime.now(timezone.utc).isoformat()}, stream)
+
+
+def _run_main_sequence(plan: dict[str, Any], output: Path, *, headless: bool,
+                       wall_timeout_seconds: float) -> int:
+    with ExitStack() as owners:
+        for child in map(Path, plan['trackingMain']['childRunRoots']):
+            owners.enter_context(_uav_run_ownership(child))
+            source_lock = owners.enter_context((child / '.person-source.lock').open('a'))
+            fcntl.flock(source_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if (child / 'person-network-attempt.json').exists():
+                raise RunnerError('main sequence input already attempted person execution')
+        _verify_main_plan(plan, prepared=True)
+        check = preflight(plan, run=True, headless=headless)
+        _write_json(output / 'preflight.json', check)
+        if not check['ok']:
+            return 2
+        _mark_main_network_attempt(plan, output)
+        plan['security'].update(_provision_run_security(output))
+        _write_json(output / 'manifest.json', plan)
+        code = _run_minindn(plan, output, wall_timeout_seconds=wall_timeout_seconds)
+        return _collect_main_run(plan, output, code)
+
+
 def preflight(plan: dict[str, Any], *, run: bool, headless: bool) -> dict[str, Any]:
     errors: list[str] = []
+    try:
+        _nfd_cache_packets(plan)
+    except RunnerError as error:
+        errors.append(str(error))
+    if plan.get("applicationMode") == "main":
+        try:
+            _verify_main_plan(plan)
+        except (OSError, ValueError, KeyError, RunnerError) as error:
+            errors.append("main execution preflight failed: " + str(error))
+    settings = plan.get("settings", {})
+    budget = settings.get("trackingHostRequestTimeoutMs")
+    if (type(budget) is not int or not 1000 < budget <= 1200000 or
+            budget != settings.get("globalDeadlineMs")):
+        errors.append("tracking host fence policy differs from the frozen request budget")
     device_probe = None
     resource_probe = None
     person = plan.get("personTracking")
     if person is None:
-        errors.extend(_check_python_dependencies())
-    if person is not None:
+        errors.extend(_check_python_dependencies(model_dependencies=False)
+                      if plan.get("applicationMode") == "main" else _check_python_dependencies())
+    if person is not None or plan.get("applicationMode") == "main":
         try:
             import psutil
             resource_probe = {"version": psutil.__version__, "path": psutil.__file__,
@@ -1530,6 +1998,7 @@ def preflight(plan: dict[str, Any], *, run: bool, headless: bool) -> dict[str, A
                               "launcherRssBytes": psutil.Process().memory_info().rss}
         except Exception as error:
             errors.append(f"person resource preflight failed: {type(error).__name__}: {error}")
+    if person is not None:
         try:
             _verify_person_plan(plan)
             env = dict(os.environ, **_person_application_environment(
@@ -1553,6 +2022,26 @@ def preflight(plan: dict[str, Any], *, run: bool, headless: bool) -> dict[str, A
                 raise RunnerError("backend device probe has missing, duplicate or mismatched result")
         except (OSError, ValueError, RunnerError, subprocess.TimeoutExpired) as error:
             errors.append("person execution preflight failed: " + str(error))
+    if plan.get("applicationMode") == "main":
+        try:
+            catalog = json.loads(Path(plan["trackingMain"]["providerConfigs"]["compute"]["path"]).read_bytes())
+            for candidate in catalog["runs"]:
+                script = ("import torch,ultralytics,lap; "
+                          "assert str(torch.empty(1,device='cpu').device)=='cpu'; ")
+                if candidate["mode"] == "person":
+                    script += "import torchreid; "
+                if not headless:
+                    if not os.environ.get("DISPLAY"):
+                        raise RunnerError("main GTK screenshots require an explicit X11 DISPLAY")
+                    script += ("from PIL import ImageGrab; import os; "
+                               "im=ImageGrab.grab(xdisplay=os.environ['DISPLAY']); assert im.width>0; ")
+                probe = subprocess.run([candidate["workerPython"]["path"], "-c", script],
+                    env=dict(os.environ, **_person_application_environment(Path(plan["processes"][0]["privateDir"]).parents[1])),
+                    capture_output=True, timeout=20)
+                if probe.returncode:
+                    raise RunnerError("main worker/device/X11 probe failed: " + probe.stderr[:1024].decode(errors="replace"))
+        except (OSError, ValueError, KeyError, RunnerError, subprocess.TimeoutExpired) as error:
+            errors.append("main execution preflight failed: " + str(error))
     observation = plan.get("observation", {})
     if (observation.get("enabled") and
             observation.get("source", {}).get("kind") == "external-fd" and
@@ -1566,7 +2055,7 @@ def preflight(plan: dict[str, Any], *, run: bool, headless: bool) -> dict[str, A
             errors.append(f"MiniNDN import unavailable: {type(error).__name__}: {error}")
         errors.extend(
             f"missing installed native binary/program: {name}"
-            for name in REQUIRED_NATIVE_PROGRAMS
+            for name in _required_native_programs(plan.get("applicationMode", "compat"))
             if shutil.which(name) is None)
         errors.extend(
             f"missing installed tracking script: {path}"
@@ -1576,7 +2065,8 @@ def preflight(plan: dict[str, Any], *, run: bool, headless: bool) -> dict[str, A
                          _installed_tracking_script("motion_schema.py"),
                          _installed_tracking_script("observation_schema.py"),
                          _installed_tracking_script("observation_source.py"))
-            if not path.is_file())
+            if not path.is_file() and not (plan.get("applicationMode") == "main" and
+                                          path.name == "tracking_display.py"))
         if observation.get("enabled") and observation.get("mode") != "live-push" and \
                 shutil.which("ffprobe") is None:
             errors.append("ffprobe is required to bind decoded replay frames to presentation timestamps")
@@ -1615,6 +2105,10 @@ class ProcessSupervisor:
             raise RunnerError(f"executable not found for {spec.name}: {command[0]}")
         command[0] = executable
         child_env = dict(env)
+        if Path(command[0]).name == "UavTrackingNode":
+            budget = (command[command.index("--request-timeout-ms") + 1]
+                      if "--request-timeout-ms" in command else "30000")
+            child_env["NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS"] = budget
         spec.private_dir.mkdir(parents=True, exist_ok=True)
         # Keep process-owned configuration/cache roots separate even when the
         # Controller and GS share the same MiniNDN node.  The native apps may
@@ -1654,6 +2148,160 @@ class ProcessSupervisor:
             log.close()
 
 
+def _read_main_status(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    with path.open('rb') as stream:
+        raw = stream.read(65537)
+    if not raw or len(raw) > 65536:
+        raise RunnerError('main status artifact exceeds its native bound')
+    value = json.loads(raw)
+    if value.get('schema') != 'uav-main-tracking-job-v1':
+        raise RunnerError('main status schema mismatch')
+    return value
+
+
+def _main_frame_shown(log: str, run_id: str, window: int, digest: str) -> bool:
+    return all(f'SPEC228_TRACKING_FRAME_SHOWN run={run_id} window={window} camera=UAV{i} result={digest}'
+               in log for i in range(1, 4))
+
+
+def _capture_main_screen(plan: dict[str, Any], output: Path, job: dict[str, Any],
+                         status: dict[str, Any], label: str) -> dict[str, Any] | None:
+    main = plan['trackingMain']
+    status_path = Path(job['outputDirectory']) / 'tracking-status.json'
+    keys = ('runId', 'generation', 'state', 'verifiedResultWindows', 'lastResultDigest')
+    before = _read_main_status(status_path)
+    if before is None or any(before.get(key) != status.get(key) for key in keys):
+        return None
+    compute = json.loads(Path(main['providerConfigs']['compute']['path']).read_bytes())
+    run = next(value for value in compute['runs'] if value['runId'] == job['runId'])
+    python = run['workerPython']['path']
+    directory = output / 'screenshots'
+    directory.mkdir(exist_ok=True)
+    candidate = directory / '.main-capture.png'
+    script = ('from PIL import ImageGrab; import sys; '
+              'im=ImageGrab.grab(xdisplay=sys.argv[1]); im.save(sys.argv[2],format="PNG")')
+    env = dict(os.environ, **_person_application_environment(output))
+    capture = subprocess.run([python, '-c', script, os.environ.get('DISPLAY', ''), str(candidate)],
+                             env=env, capture_output=True, timeout=10)
+    if capture.returncode:
+        raise RunnerError('actual main X11 screenshot failed: ' + capture.stderr[:1024].decode(errors='replace'))
+    after = _read_main_status(status_path)
+    if after is None or any(after.get(key) != before.get(key) for key in keys):
+        candidate.unlink(missing_ok=True)
+        return None
+    path = directory / f'{job["runId"]}-{label}.png'
+    if path.exists():
+        raise RunnerError('preserve existing main screenshot')
+    os.replace(candidate, path)
+    return {'path': str(path), 'digest': digest_file(path), 'label': label,
+            'runId': job['runId'], 'generation': status['generation'],
+            'windowIndex': status['verifiedResultWindows'] - 1,
+            'resultDigest': status['lastResultDigest'], 'nativeState': status['state'],
+            'capture': 'raw X11 screen from actual main GTK; no offline overlay or image editing'}
+
+
+def _observe_main_jobs(plan: dict[str, Any], output: Path, processes: list,
+                       run_deadline: float, resource_sampler: Any) -> int:
+    main = plan['trackingMain']
+    jobs = [json.loads(Path(item['path']).read_bytes()) for item in main['jobs']]
+    screenshots, observations = [], []
+    captured = set()
+    capture_attempts = {}
+    finished = set()
+    last_state = {}
+    while time.monotonic() < run_deadline:
+        if resource_sampler is not None:
+            resource_sampler.sample()
+        log_path = output / 'ground-station.log'
+        with log_path.open('rb') as stream:
+            stream.seek(max(0, log_path.stat().st_size - 256 * 1024))
+            log = stream.read(256 * 1024).decode(errors='replace')
+        failed = False
+        for index, job in enumerate(jobs):
+            status = _read_main_status(Path(job['outputDirectory']) / 'tracking-status.json')
+            if status is None:
+                continue
+            if status['runId'] != job['runId'] or status['jobId'] != job['jobId']:
+                raise RunnerError('main status does not belong to the prepared job')
+            state_key = (status['state'], status['cleanupState'])
+            if last_state.get(job['runId']) != state_key:
+                observations.append({'runId': job['runId'], 'state': status['state'],
+                    'cleanupState': status['cleanupState'],
+                    'nativeUpdatedMonotonicMs': status['updatedMonotonicMs'],
+                    'launcherObservedNs': time.monotonic_ns()})
+                last_state[job['runId']] = state_key
+            completed = status['verifiedResultWindows']
+            shown = completed > 0 and _main_frame_shown(
+                log, job['runId'], completed - 1, status['lastResultDigest'])
+            if (not main['headless'] and len(jobs) == 1 and status['state'] == 'RUNNING' and
+                    shown and (job['runId'], 'running') not in captured):
+                raw = json.loads((Path(job['outputDirectory']) / 'results' /
+                                  f'window-{completed - 1}.json').read_bytes())
+                if any(frame['tracks'] for frame in raw['frames']):
+                    key = (job['runId'], 'running')
+                    capture_attempts[key] = capture_attempts.get(key, 0) + 1
+                    if capture_attempts[key] > 3:
+                        raise RunnerError('main running screenshot changed across three bounded captures')
+                    shot = _capture_main_screen(plan, output, job, status, 'running')
+                    if shot:
+                        screenshots.append(shot)
+                        captured.add((job['runId'], 'running'))
+            if (not main['headless'] and len(jobs) == 1 and job['mode'] == 'person' and shown and
+                    status['state'] in ('RUNNING', 'COMPLETED') and
+                    (job['runId'], 'cross-camera-witness') not in captured):
+                from person_run_receipt import cross_camera_matches
+                raw = json.loads((Path(job['outputDirectory']) / 'results' /
+                                  f'window-{completed - 1}.json').read_bytes())
+                if cross_camera_matches(raw):
+                    key = (job['runId'], 'cross-camera-witness')
+                    capture_attempts[key] = capture_attempts.get(key, 0) + 1
+                    if capture_attempts[key] > 3:
+                        raise RunnerError('main witness changed across three bounded captures')
+                    shot = _capture_main_screen(plan, output, job, status, 'cross-camera-witness')
+                    if shot:
+                        screenshots.append(shot)
+                        captured.add(key)
+            if status['state'] in ('FAILED', 'CANCELLED') or status.get('ordinaryTelemetryFailed') is True:
+                failed = True
+            if (status['state'] == 'COMPLETED' and status['cleanupState'] == 'CLEAN' and
+                    status.get('ordinaryTelemetryComplete') is True and
+                    status.get('ordinaryTelemetryFailed') is False):
+                if completed != job['windowCount']:
+                    raise RunnerError('main completed with an incomplete verified result count')
+                if main['headless'] or shown:
+                    finished.add(job['runId'])
+                    if (not main['headless'] and index == len(jobs) - 1 and
+                            (job['runId'], 'terminal') not in captured):
+                        key = (job['runId'], 'terminal')
+                        capture_attempts[key] = capture_attempts.get(key, 0) + 1
+                        if capture_attempts[key] > 3:
+                            raise RunnerError('main terminal screenshot changed across three bounded captures')
+                        shot = _capture_main_screen(plan, output, job, status, 'terminal')
+                        if shot:
+                            screenshots.append(shot)
+                            captured.add((job['runId'], 'terminal'))
+        _write_json(output / 'main-observations.json', {'states': observations, 'screenshots': screenshots})
+        if failed:
+            _write_json(output / 'lifecycle.json', {'schema': 'spec228-main-lifecycle-v1',
+                'terminal': True, 'outcome': 'main-job-failed-or-cancelled'})
+            return 1
+        if len(finished) == len(jobs):
+            if not main['headless'] and (jobs[-1]['runId'], 'terminal') not in captured:
+                time.sleep(.05)
+                continue
+            _write_json(output / 'lifecycle.json', {'schema': 'spec228-main-lifecycle-v1',
+                'terminal': True, 'outcome': 'main-jobs-completed', 'completedRunIds': sorted(finished)})
+            return 0
+        for name, process, _ in processes:
+            if name == 'ground-station' and process.poll() is not None:
+                raise RunnerError('main GS exited before its native jobs completed')
+        time.sleep(.05)
+    raise RunnerError('main native jobs exceeded the frozen overall deadline')
+
+
+
 def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: float) -> int:
     """Run the exact five-node topology through MiniNDN/NFD.
 
@@ -1681,10 +2329,13 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
     started = time.monotonic()
     started_ns = time.monotonic_ns()
     person_mode = "personTracking" in plan
+    main_mode = plan.get("applicationMode") == "main"
     resource_sampler = None
-    if person_mode:
+    if person_mode or main_mode:
         from person_run_resources import PersonRunResources
-        resource_sampler = PersonRunResources(output.name, plan["personTracking"]["requestedDevice"])
+        resource_sampler = PersonRunResources(output.name,
+            plan["personTracking"]["requestedDevice"] if person_mode else "cpu",
+            sample_period_ns=200000000 if main_mode else 100000000)
     socket_root = _uav_socket_root(output)
     nfd_sockets = {
         node_name: _uav_unix_socket_path(socket_root, node_name)
@@ -1695,7 +2346,8 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
         socket_root.mkdir(mode=0o700)
     except FileExistsError as error:
         raise RunnerError("MiniNDN socket root already exists; run output cannot be reused") from error
-    display_name = "ground-station-display" if person_mode else "compute-display"
+    display_name = ("ground-station" if main_mode else
+                    "ground-station-display" if person_mode else "compute-display")
     run_deadline = started + wall_timeout_seconds
 
     def launch(spec: ProcessSpec) -> Any:
@@ -1716,7 +2368,7 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
             (shared_keychain / name).mkdir(parents=True, exist_ok=True)
         socket = nfd_sockets[node.name]
         child_ndn_log = os.environ.get("SPEC191_CHILD_NDN_LOG", "*=WARN").strip() or "*=WARN"
-        child_pythonpath = str(DEFAULT_TRACKING_LIBEXEC) if person_mode else _child_pythonpath()
+        child_pythonpath = str(DEFAULT_TRACKING_LIBEXEC) if person_mode or main_mode else _child_pythonpath()
         env = [
             f"export NDNSF_SPEC191_PRIVATE_DIR={shlex.quote(str(private))}",
             f"export HOME={shlex.quote(str(private / 'home'))}",
@@ -1746,6 +2398,19 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
             f"export NDN_LOG={shlex.quote(child_ndn_log)}",
             f"export NDNSF_SPEC191_RUN_ROOT={shlex.quote(str(output))}",
         ]
+        if spec.name in {"compute", "uav1-camera", "uav2-camera", "uav3-camera"}:
+            env.append("export NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS=" +
+                       str(plan["settings"]["trackingHostRequestTimeoutMs"]))
+        if main_mode:
+            # Dedicated replay actors own no desktop bus/portal daemons. Keep GTK
+            # local to the explicitly supplied X11 display and local config files.
+            env.extend([
+                "export DBUS_SESSION_BUS_ADDRESS=" + shlex.quote(
+                    "unix:path=" + str(output / "private/no-desktop-session-bus")),
+                "export NO_AT_BRIDGE=1", "export GTK_USE_PORTAL=0",
+                "export GSETTINGS_BACKEND=memory", "export GIO_USE_VFS=local",
+                "export GIO_USE_VOLUME_MONITOR=unix",
+            ])
         if plan["settings"]["fault"] in {
                 "user-cancel-terminal-response-race",
                 "user-cancel-terminal-response-cancel-wins-race",
@@ -1754,7 +2419,7 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
             env.append("export NDNSF_HANDLER_THREADS=2")
         if child_pythonpath:
             env.append(f"export PYTHONPATH={shlex.quote(child_pythonpath)}")
-        if person_mode:
+        if person_mode or main_mode:
             env.append("export PYTHONNOUSERSITE=1")
             if spec.name == "compute":
                 env.extend(f"export {key}={shlex.quote(value)}"
@@ -1778,7 +2443,7 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
                  *, same_line: bool = False) -> str:
         path = output / f"{name}.log"
         deadline = time.monotonic() + timeout
-        if person_mode:
+        if person_mode or main_mode:
             deadline = min(deadline, run_deadline)
         while time.monotonic() < deadline:
             if resource_sampler is not None:
@@ -1857,13 +2522,20 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
         app_nodes = list(ndn.net.hosts)
         if {node.name for node in app_nodes} != set(plan["topology"]["nodes"]):
             raise RunnerError("MiniNDN host set does not match the five-node manifest")
+        nfd_configs = {}
+        cache_packets = _nfd_cache_packets(plan)
         for node in app_nodes:
-            nfd = Nfd(node)
+            nfd = Nfd(node, csSize=cache_packets)
             old_socket = f"/run/nfd/{node.name}.sock"
             new_socket = str(nfd_sockets[node.name])
             conf_path = Path(nfd.confFile)
             conf_path.write_text(conf_path.read_text(encoding="utf-8").replace(
                 old_socket, new_socket), encoding="utf-8")
+            actual_cache = re.findall(r"^\s*cs_max_packets\s+([0-9]+)\b",
+                                      conf_path.read_text(encoding="utf-8"), re.MULTILINE)
+            if actual_cache != [str(cache_packets)]:
+                raise RunnerError("generated NFD cache configuration differs from the frozen profile")
+            nfd_configs[node.name] = {**_main_asset(conf_path), "csMaxPackets": cache_packets}
             Path(nfd.clientConf).write_text(f"transport=unix://{new_socket}\n",
                                             encoding="utf-8")
             nfd_apps.append(nfd)
@@ -1871,6 +2543,9 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
             if resource_sampler is not None:
                 resource_sampler.register("nfd-" + node.name, nfd.process.pid)
                 resource_sampler.sample(force=True)
+        _write_json(output / "network-settings.json", {
+            "schema": "spec228-uav-ndn-network-v1", "nfdCsMaxPackets": cache_packets,
+            "nodes": nfd_configs})
         for node in app_nodes:
             socket = nfd_sockets[node.name]
             deadline = time.monotonic() + 10
@@ -1957,12 +2632,16 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
         for name in ("uav1-camera", "uav2-camera", "uav3-camera", "compute"):
             launch(by_name[name])
         for name in ("uav1-camera", "uav2-camera", "uav3-camera", "compute"):
-            wait_for(name, ("SPEC191_TRACKING_NODE_READY",), 60)
-        if not person_mode:
+            wait_for(name, ("DRONE_HEADLESS_READY" if main_mode else "SPEC191_TRACKING_NODE_READY",), 60)
+        if not person_mode and not main_mode:
             launch(by_name[display_name])
             wait_for(display_name, ("DISPLAY_READY",), 30)
         launch(by_name["ground-station"])
-        wait_for("ground-station", ("SPEC191_TRACKING_GS_READY",), 30)
+        ready = ("GS_GUI_READY" if plan["mode"] == "windows" else "SPEC191_TRACKING_GS_REQUEST request=") \
+            if main_mode else "SPEC191_TRACKING_GS_READY"
+        wait_for("ground-station", (ready,), 30)
+        if main_mode:
+            return _observe_main_jobs(plan, output, processes, run_deadline, resource_sampler)
         if person_mode:
             launch(by_name[display_name])
             wait_for(display_name, ("DISPLAY_READY",), 30)
@@ -2257,7 +2936,7 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
                     process.send_signal(signal.SIGINT)
                 except ProcessLookupError:
                     pass
-        cleanup_deadline = time.monotonic() + 5
+        cleanup_deadline = time.monotonic() + (12 if main_mode else 5)
         for _name, process, _log in reversed(processes):
             try:
                 process.wait(timeout=max(.001, cleanup_deadline - time.monotonic()))
@@ -2277,7 +2956,7 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
                 pass
         for _name, _process, log in processes:
             log.close()
-        nfd_reap_deadline = cleanup_started_ns / 1_000_000_000 + 9
+        nfd_reap_deadline = cleanup_started_ns / 1_000_000_000 + (16 if main_mode else 9)
         for nfd in reversed(nfd_apps):
             process = nfd.process
             if process is not None:
@@ -2296,12 +2975,13 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
         except Exception as error:
             cleanup_errors.append(
                 f"NFD socket directory cleanup: {type(error).__name__}: {error}"[:512])
-        if person_mode:
-            _write_json(output / "person-resources.json", resource_sampler.finish())
+        if person_mode or main_mode:
+            resources = resource_sampler.finish()
+            _write_json(output / ("main-resources.json" if main_mode else "person-resources.json"), resources)
             from person_run_receipt import audit_person_processes
-            audit = audit_person_processes(output)
+            audit = audit_person_processes(output, resources["processes"])
             ended_ns = time.monotonic_ns()
-            _write_json(output / "person-cleanup.json", {
+            _write_json(output / ("main-cleanup.json" if main_mode else "person-cleanup.json"), {
                 "schema": "uav-person-cleanup-v1", "clockDomain": "CLOCK_MONOTONIC_NS",
                 "runStartedNs": started_ns, "cleanupStartedNs": cleanup_started_ns,
                 "cleanupEndedNs": ended_ns,
@@ -2326,6 +3006,10 @@ def _uav_run_ownership(output: Path):
 
 def run(plan: dict[str, Any], output: Path, *, headless: bool,
         wall_timeout_seconds: float) -> int:
+    if plan.get("trackingMain", {}).get("preparedSequence"):
+        with _uav_run_ownership(output):
+            return _run_main_sequence(plan, output.resolve(), headless=headless,
+                                      wall_timeout_seconds=wall_timeout_seconds)
     if "personTracking" in plan:
         return _run_person(plan, output.resolve(), headless=headless,
                            wall_timeout_seconds=wall_timeout_seconds)
@@ -2394,7 +3078,46 @@ def _run_tracking(plan: dict[str, Any], output: Path, *, headless: bool,
             missing.unlink()
         except FileNotFoundError:
             pass
-    return _run_minindn(plan, output, wall_timeout_seconds=wall_timeout_seconds)
+    if plan.get("applicationMode") == "main":
+        _freeze_main_sources(plan)
+        _mark_main_network_attempt(plan, output)
+        _write_json(output / "manifest.json", plan)
+    code = _run_minindn(plan, output, wall_timeout_seconds=wall_timeout_seconds)
+    if plan.get("applicationMode") == "main":
+        return _collect_main_run(plan, output, code)
+    return code
+
+
+def _collect_main_run(plan: dict[str, Any], output: Path, code: int) -> int:
+    from person_run_receipt import build_main_run_receipt
+    closure_verified = True
+    try:
+        _verify_main_plan(plan, prepared=True)
+        if "personTracking" in plan:
+            _verify_person_plan(plan)
+    except (OSError, ValueError, KeyError, RunnerError):
+        closure_verified = False
+    try:
+        receipt = build_main_run_receipt(output, plan, closure_verified=closure_verified)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        try:
+            lifecycle_path = output / "lifecycle.json"
+            with lifecycle_path.open("rb") as stream:
+                raw = stream.read(65537)
+            if len(raw) > 65536:
+                raise ValueError("lifecycle artifact exceeds bound")
+            lifecycle = json.loads(raw)
+        except (OSError, ValueError) as lifecycle_error:
+            lifecycle = {"terminal": False, "outcome": "missing-or-invalid-lifecycle",
+                         "error": str(lifecycle_error)[:512]}
+        receipt = {"schema": "uav-main-tracking-receipt-v1", "runId": output.name,
+            "applicationMode": "main", "complete": False,
+            "errors": ["receipt evidence missing/invalid: " + str(error)[:1024]],
+            "installedClosureVerified": closure_verified,
+            "lifecycle": lifecycle,
+            "scientificAccuracyClaimAllowed": False}
+    _write_json(output / "main-run-receipt.json", receipt)
+    return code if receipt["complete"] else 1
 
 
 def _run_person(plan: dict[str, Any], output: Path, *, headless: bool,
@@ -2420,7 +3143,13 @@ def _run_person(plan: dict[str, Any], output: Path, *, headless: bool,
         for certificate in security["publicCertificates"]:
             if digest_file(Path(certificate["path"])) != certificate["digest"]:
                 raise RunnerError("provisioned public certificate changed")
+        if plan.get("applicationMode") == "main":
+            _freeze_main_sources(plan)
+            _mark_main_network_attempt(plan, output)
+            _write_json(output / "manifest.json", plan)
         code = _run_minindn(plan, output, wall_timeout_seconds=wall_timeout_seconds)
+        if plan.get("applicationMode") == "main":
+            return _collect_main_run(plan, output, code)
         from person_run_receipt import build_person_run_receipt
         closure_verified = True
         try:
@@ -2434,6 +3163,8 @@ def _run_person(plan: dict[str, Any], output: Path, *, headless: bool,
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--application-mode", choices=("compat", "main"), default="compat",
+                        help="main runs the installed NDNSF-UAV GS/Drone containers and GTK Tracking tab")
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--tracking-profile", type=Path,
@@ -2442,7 +3173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="three distinct indoor videos and declared common media interval")
     parser.add_argument("--reid-model", type=Path, help="pretrained OSNet checkpoint for person mode")
     parser.add_argument("--worker-python", type=Path, default=Path(sys.executable),
-                        help="explicit installed model interpreter for person mode")
+                        help="explicit installed model interpreter for person or main vehicle mode")
     parser.add_argument("--license", default="")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--prepare", action="store_true")
@@ -2499,7 +3230,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                           "workerPython": str(args.worker_python.absolute())}
                 with (args.output_dir / ".person-source.lock").open("a") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    person.update(_describe_person_computation(person, args.model, args.output_dir))
+                    person.update(_describe_person_computation(person, args.model, args.output_dir,
+                        application_mode=args.application_mode))
             plan = build_plan(source=args.source, model=args.model, output=args.output_dir,
                               license_text=args.license, headless=args.headless,
                               run_seconds=args.run_seconds,
@@ -2512,7 +3244,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                               observation_mode=args.observation_mode,
                               source_switch_after_window=args.source_switch_after_window,
                               external_source_adapter=args.external_source_adapter,
-                              trust_schema=args.trust_schema, person_tracking=person)
+                              trust_schema=args.trust_schema, person_tracking=person,
+                              application_mode=args.application_mode, worker_python=args.worker_python)
             _write_json(args.output_dir / "manifest.json", plan)
             if args.prepare:
                 print(json.dumps({"ok": True, "manifest": str(args.output_dir / "manifest.json")},
@@ -2525,8 +3258,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     return 2
             return ((run if person is not None else _run_tracking)(
                         plan, args.output_dir, headless=args.headless,
-                        wall_timeout_seconds=(args.global_deadline_ms / 1000 if person is not None
-                                              else args.run_seconds)) if args.run else 0)
+                        wall_timeout_seconds=args.global_deadline_ms / 1000) if args.run else 0)
     except (RunnerError, OSError, ValueError) as error:
         print(f"Spec191 runner failed: {error}", file=sys.stderr)
         return 2

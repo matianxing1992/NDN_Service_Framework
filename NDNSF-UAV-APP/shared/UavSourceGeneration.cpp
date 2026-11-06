@@ -173,6 +173,16 @@ loadUavSourceGenerationSchedule(const std::string& path, size_t expectedWindowCo
 
   const std::string manifestText((std::istreambuf_iterator<char>(input)),
                                  std::istreambuf_iterator<char>());
+  return parseUavSourceGenerationSchedule(manifestText, expectedWindowCount);
+}
+
+UavSourceGenerationSchedule
+parseUavSourceGenerationSchedule(const std::string& manifestText, size_t expectedWindowCount)
+{
+  if (manifestText.empty() || manifestText.size() > MAX_MANIFEST_BYTES ||
+      expectedWindowCount == 0 || expectedWindowCount > MAX_WINDOWS) {
+    throw std::invalid_argument("source generation manifest byte/window limit");
+  }
   std::istringstream treeInput(manifestText);
   ptree root;
   boost::property_tree::read_json(treeInput, root);

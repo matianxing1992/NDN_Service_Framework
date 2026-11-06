@@ -620,9 +620,14 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   ServiceProvider::CollaborationAssignment producerAssignment;
   producerAssignment.role = endpoint.producerRole;
   producerAssignment.service = profile.serviceName;
+  // This transport fixture owns bounded authority; it does not test Core dispatch.
+  producerAssignment.workDeadline = std::chrono::steady_clock::now() + 90s;
+  producerAssignment.workCurrent = [] { return true; };
   ServiceProvider::CollaborationAssignment consumerAssignment;
   consumerAssignment.role = endpoint.consumerRole;
   consumerAssignment.service = profile.serviceName;
+  consumerAssignment.workDeadline = producerAssignment.workDeadline;
+  consumerAssignment.workCurrent = [] { return true; };
   ServiceProvider::CollaborationContext producerContext(
       producer, profile.userIdentity, requestId, RequestMessage(),
       producerAssignment);

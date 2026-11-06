@@ -1,4 +1,5 @@
-#pragma once
+#ifndef NDNSF_UAV_OBSERVATION_REF_VERIFIER_HPP
+#define NDNSF_UAV_OBSERVATION_REF_VERIFIER_HPP
 
 #include <ndn-cxx/name.hpp>
 
@@ -13,6 +14,11 @@ struct ParsedObservationReference
   ndn::Name producerIdentity;
   std::string contentSha256;
 };
+
+/** Bind a static revision prefix to its immutable payload before publication. */
+ndn::Name
+makeUavStaticObservationPrefix(const ndn::Name& revisionPrefix,
+                               const std::string& canonicalContentSha256);
 
 /** Parse and validate the canonical name, producer prefix, and SHA-256 fields. */
 ParsedObservationReference
@@ -34,3 +40,5 @@ validateObservationReference(const ParsedObservationReference& reference,
                              const std::string& category);
 
 } // namespace ndnsf::examples::uav
+
+#endif // NDNSF_UAV_OBSERVATION_REF_VERIFIER_HPP

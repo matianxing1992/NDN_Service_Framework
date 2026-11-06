@@ -1630,16 +1630,6 @@ main(int argc, char** argv)
       }
       provisioningState->setTelemetrySnapshotProvider(
         [telemetryCollector] { return telemetryCollector->snapshot(); });
-      if (options.enableAdmissionLease) {
-        provider->setGenericAdmissionLeaseRequired(ndn::Name(options.serviceName), true);
-        {
-          std::ostringstream record;
-          record << "NDNSF_DI_NATIVE_PROVIDER_ADMISSION_LEASE_REQUIRED"
-                   << " service=" << options.serviceName
-                   << " ttlMs=" << options.admissionLeaseTtlMs;
-          logRuntimeEvidence(record.str());
-        }
-      }
 
       // spec182 CD-014: the shared NativeInferenceProvider host owns the
       // single fixed execution-lease entry, the host-wide shared lease
@@ -2614,6 +2604,17 @@ main(int argc, char** argv)
             // event loop starts, so the Core scoped-registration thread
             // constraint holds and the main thread owns the registration.
             *registrationOut = providerHost->serve(nativeService, config);
+            // Configure the registered service before releasing the Face loop.
+            // A policy-only Core entry would prevent scoped registration.
+            if (options.enableAdmissionLease) {
+              provider->setGenericAdmissionLeaseRequired(
+                ndn::Name(options.serviceName), true);
+              std::ostringstream record;
+              record << "NDNSF_DI_NATIVE_PROVIDER_ADMISSION_LEASE_REQUIRED"
+                     << " service=" << options.serviceName
+                     << " ttlMs=" << options.admissionLeaseTtlMs;
+              logRuntimeEvidence(record.str());
+            }
             signalServeCompleted();
             {
               std::ostringstream record;

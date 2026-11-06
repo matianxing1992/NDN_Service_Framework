@@ -192,6 +192,10 @@ public:
   NdnsfIntegrationEnvironment(const NdnsfIntegrationEnvironment&) = delete;
   NdnsfIntegrationEnvironment& operator=(const NdnsfIntegrationEnvironment&) = delete;
 
+  /** Stop the User and its attached publication ingress while keeping the
+   * external Faces, providers, io_contexts and trust alive for late-data tests.
+   * Call only between Face pump turns, with no dedicated User I/O worker. */
+  void destroyUserForTest();
   void bootstrap();
   void pumpUntil(const std::function<bool()>& done);
   void pumpUntilReady();

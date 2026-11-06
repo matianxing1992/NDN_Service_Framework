@@ -294,10 +294,13 @@ namespace ndn_service_framework{
 
     using Timeout_Callback = std::function<void(const std::string & reason)>;
 
+    namespace test { struct LargeResponseFetchOracle; }
+
     class ServiceUser
     {
         friend struct test::InvocationNamesOracle;
         friend struct test::ProducerPacketValidationOracle;
+        friend struct test::LargeResponseFetchOracle;
         public:
             /** Queue work on this user's existing Face I/O context.
              * Never invokes inline or starts an event loop. The application
@@ -1107,6 +1110,19 @@ namespace ndn_service_framework{
                                          std::shared_ptr<ControlByteStatistics>
                                              controlStatistics = {});
 
+            /** Commit a plan against the immutable ACK closure.
+             * @param requestId Pending deferred invocation, owned by this User.
+             * @param ackClosedDigest Digest received in the ACK closure callback.
+             * @param plan Copied plan and shared selection policy for this invocation.
+             * @return Whether the plan was committed, including an identical replay.
+             * @throws std::invalid_argument If candidates, binding or plan are invalid.
+             * @throws std::logic_error For premature or conflicting commits.
+             * @throws std::runtime_error For expired or unauthorized execution.
+             * Required dependencies validate participant coverage; application
+             * handlers still admit concrete inputs before invoking computation.
+             * Thread safety: call on the owning Face I/O thread. Commitment does
+             * not prove that remote computation or cleanup has completed.
+             */
             bool CommitCollaborationPlan(const RequestId& requestId,
                                          const std::string& ackClosedDigest,
                                          CollaborationPlan plan);
@@ -1256,7 +1272,7 @@ namespace ndn_service_framework{
                                          const ndn_service_framework::ResponseMessage& responseMessage);
 
             // resolvedLargeResponse=true marks a Response whose payload was
-            // reconstructed by resolveLargeResponseReferencePayload; that
+            // reconstructed by the Face-owned large-response fetch/decode path; that
             // path already authenticated every segment against the
             // invocation binding, nonce registry, and reference digest, so
             // the envelope decrypt step is skipped here.
@@ -1276,12 +1292,6 @@ namespace ndn_service_framework{
 
             bool handleDecryptedResponseByName(const ndn::Name& responseName,
                                                const ndn::Block& responseBlock);
-
-            std::optional<ResponseMessage>
-            resolveLargeResponseReferencePayload(const ResponseMessage& responseMessage,
-                                                 const ndn::Name& responseName,
-                                                 const ndn::Name& serviceName,
-                                                 std::string& errorMessage);
 
             bool handleRequestAckByName(const ndn::Name& ackName,
                                         const ndn_service_framework::RequestAckMessage& ackMessage,
@@ -1494,6 +1504,28 @@ namespace ndn_service_framework{
             
 
         private:
+            /** One Face-owned fetch, stopped before its PendingCall releases keys.
+             * Teardown runs on Face or after the application's Face thread joins. */
+            struct LargeResponseFetch
+            {
+              ~LargeResponseFetch();
+              void stop();
+              bool terminal = false;
+              std::shared_ptr<ndn::SegmentFetcher> fetcher;
+              ndn::signal::ScopedConnection onComplete;
+              ndn::signal::ScopedConnection onError;
+              ndn::scheduler::ScopedEventId deadline;
+            };
+
+            void
+            startLargeResponseReferenceFetch(ResponseMessage response,
+                const ndn::Name& responseName, const ndn::Name& serviceName,
+                const ndn::Name& requestId, const ndn::Name& providerName);
+            std::optional<ResponseMessage>
+            decodeLargeResponseReferencePayload(const ResponseMessage& response,
+                const ndn::Name& responseName, const ndn::Name& serviceName,
+                const ndn::Buffer& encodedEnvelope, std::string& error);
+
             std::optional<RequestNameV2>
             resolvePendingPublicationContext(const ndn::Name& messageName) const;
 
@@ -1611,6 +1643,7 @@ namespace ndn_service_framework{
                 std::vector<ndn::Name> responseProviders;
                 std::vector<ndn::Name> responseDecryptProvidersInFlight;
                 std::vector<ndn::Name> largeResponseReferenceProvidersInFlight;
+                std::map<ndn::Name, std::shared_ptr<LargeResponseFetch>> largeResponseFetches;
                 ndn::Name selectedProvider;
                 std::map<std::string, std::string> providerTokens;
                 ndn::Buffer selectionGatedInputKey;

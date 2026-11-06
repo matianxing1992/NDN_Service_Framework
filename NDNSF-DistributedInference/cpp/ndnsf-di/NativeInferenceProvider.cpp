@@ -1819,6 +1819,8 @@ struct Target
   std::shared_ptr<NativeLocalWithdrawalState> withdrawal;
   ServiceProvider::ServiceRegistration::TargetedHandlerDrainWaiter
     targetedHandlerDrain;
+  ServiceProvider::ServiceRegistration::CollaborationHandlerDrainWaiter
+    collaborationHandlerDrain;
   std::shared_ptr<ExecutionLeaseService> lease;
   std::shared_ptr<std::atomic<bool>> draining;
   std::shared_ptr<std::atomic<bool>> admissionStopped;
@@ -1859,6 +1861,8 @@ struct NativeServiceRegistration::State
   std::weak_ptr<ServiceProvider> producer;
   ServiceProvider::ServiceRegistration::TargetedHandlerDrainWaiter
     targetedHandlerDrain;
+  ServiceProvider::ServiceRegistration::CollaborationHandlerDrainWaiter
+    collaborationHandlerDrain;
   std::shared_ptr<std::atomic<bool>> draining;
   std::shared_ptr<NativeProviderHandoffRegistry> handoffRegistry;
   std::weak_ptr<Target> target;
@@ -3548,6 +3552,14 @@ NativeServiceRegistration::drain(std::chrono::milliseconds timeout)
   if (m_state->targetedHandlerDrain &&
       !m_state->targetedHandlerDrain(targetedRemaining))
     return false;
+  const auto nowAfterTargeted = HandoffClock::now();
+  const auto collaborationRemaining = nowAfterTargeted >= deadline
+    ? std::chrono::milliseconds::zero()
+    : std::chrono::duration_cast<std::chrono::milliseconds>(deadline - nowAfterTargeted);
+  if (m_state->collaborationHandlerDrain &&
+      !m_state->collaborationHandlerDrain(collaborationRemaining)) {
+    return false;
+  }
   if (!m_state->handoffRegistry)
     return true;
   const auto now = HandoffClock::now();
@@ -3707,9 +3719,8 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
         "compute-slot range");
     }
 
-    // Same-name re-serve: an active target is refused; a draining (closed)
-    // record may be replaced below by a fresh registration that never reuses
-    // the old target's lease instance, draining fence, or bindings.
+    // A closed target keeps ownership of its Core work until both handler
+    // classes drain. Never hide a live predecessor by replacing its map entry.
     {
       std::lock_guard<std::mutex> routerLock(host->routerMutex);
       const auto existing = host->targets.find(service.serviceName);
@@ -3717,6 +3728,17 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
           !existing->second->draining->load(std::memory_order_relaxed)) {
         throw std::logic_error("native service is already registered: "
                                + service.serviceName);
+      }
+      if (existing != host->targets.end()) {
+        const auto& previous = existing->second;
+        const auto noWait = std::chrono::milliseconds::zero();
+        if ((previous->targetedHandlerDrain &&
+             !previous->targetedHandlerDrain(noWait)) ||
+            (previous->collaborationHandlerDrain &&
+             !previous->collaborationHandlerDrain(noWait))) {
+          throw std::logic_error("native service handlers are still draining: "
+                                 + service.serviceName);
+        }
       }
     }
 
@@ -3874,6 +3896,7 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
     target->runtime = runtime;
     target->withdrawalPersistencePolicyId = service.withdrawalPersistencePolicyId;
     target->targetedHandlerDrain = core->makeTargetedHandlerDrainWaiter();
+    target->collaborationHandlerDrain = core->makeCollaborationHandlerDrainWaiter();
     target->draining = draining;
     target->admissionStopped = admissionStopped;
     target->handoffRegistry = handoffRegistry;
@@ -3920,6 +3943,7 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
   state->producer = m_provider;
   if (core)
     state->targetedHandlerDrain = core->makeTargetedHandlerDrainWaiter();
+    state->collaborationHandlerDrain = core->makeCollaborationHandlerDrainWaiter();
   state->core = std::move(core);
   state->runtime = std::move(servedRuntime);
   state->draining = std::move(draining);
@@ -4373,6 +4397,14 @@ NativeInferenceProvider::drain(std::chrono::milliseconds timeout)
     if (target->targetedHandlerDrain &&
         !target->targetedHandlerDrain(remaining))
       return false;
+    now = HandoffClock::now();
+    remaining = now >= deadline
+      ? std::chrono::milliseconds::zero()
+      : std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+    if (target->collaborationHandlerDrain &&
+        !target->collaborationHandlerDrain(remaining)) {
+      return false;
+    }
     if (!target->handoffRegistry)
       continue;
     now = HandoffClock::now();

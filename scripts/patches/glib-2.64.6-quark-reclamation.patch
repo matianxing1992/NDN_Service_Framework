@@ -1,0 +1,45 @@
+--- a/glib/gquark.c
++++ b/glib/gquark.c
+@@ -270,14 +270,11 @@
+ g_quark_to_string (GQuark quark)
+ {
+   gchar* result = NULL;
+-  gchar **strings;
+-  guint seq_id;
+-
+-  seq_id = (guint) g_atomic_int_get (&quark_seq_id);
+-  strings = g_atomic_pointer_get (&quarks);
+-
+-  if (quark < seq_id)
+-    result = strings[quark];
++  /* Synchronize index lifetime with quark_new(); strings themselves stay interned. */
++  G_LOCK (quark_global);
++  if (quark < quark_seq_id)
++    result = quarks[quark];
++  G_UNLOCK (quark_global);
+ 
+   return result;
+ }
+@@ -288,6 +285,7 @@
+ {
+   GQuark quark;
+   gchar **quarks_new;
++  gchar **quarks_old;
+ 
+   if (quark_seq_id % QUARK_BLOCK_SIZE == 0)
+     {
+@@ -295,11 +293,10 @@
+       if (quark_seq_id != 0)
+         memcpy (quarks_new, quarks, sizeof (char *) * quark_seq_id);
+       memset (quarks_new + quark_seq_id, 0, sizeof (char *) * QUARK_BLOCK_SIZE);
+-      /* This leaks the old quarks array. Its unfortunate, but it allows
+-       * us to do lockless lookup of the arrays, and there shouldn't be that
+-       * many quarks in an app
+-       */
++      /* All readers hold quark_global; no lookup can retain the retired index. */
++      quarks_old = quarks;
+       g_atomic_pointer_set (&quarks, quarks_new);
++      g_free (quarks_old);
+     }
+ 
+   quark = quark_seq_id;
