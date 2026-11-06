@@ -19,7 +19,11 @@ MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 class PersonRunResources:
     """Owned by the existing runner; no background work or process control."""
 
-    def __init__(self, run_id: str, requested_device: str):
+    def __init__(self, run_id: str, requested_device: str, *,
+                 sample_period_ns: int = SAMPLE_PERIOD_NS):
+        if type(sample_period_ns) is not int or not SAMPLE_PERIOD_NS <= sample_period_ns <= 1000000000:
+            raise ValueError('resource sample period outside supported bounds')
+        self.sample_period_ns = sample_period_ns
         self.run_id = run_id
         self.requested_device = requested_device
         self.roots = {}
@@ -74,7 +78,7 @@ class PersonRunResources:
         if self._finished:
             return
         now = time.monotonic_ns()
-        if self._last_ns is not None and not force and now - self._last_ns < SAMPLE_PERIOD_NS:
+        if self._last_ns is not None and not force and now - self._last_ns < self.sample_period_ns:
             return
         self._last_ns = now
         if len(self.samples) >= MAX_SAMPLES:
@@ -144,7 +148,7 @@ class PersonRunResources:
         gaps = [b['monotonicNs'] - a['monotonicNs'] for a, b in zip(self.samples, self.samples[1:])]
         result = {'schema': 'uav-person-resources-v1', 'runId': self.run_id, 'missionId': self.run_id,
                 'clockDomain': 'CLOCK_MONOTONIC_NS', 'requestedDevice': self.requested_device,
-                'targetSamplePeriodNs': SAMPLE_PERIOD_NS,
+                'targetSamplePeriodNs': self.sample_period_ns,
                 'scope': 'registered application/NFD roots and observed descendants',
                 'measurement': 'sampled sum of RSS; shared pages may be counted by several processes',
                 'registeredRoots': {name: p.pid for name, p in self.roots.items()},

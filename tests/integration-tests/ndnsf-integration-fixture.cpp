@@ -467,6 +467,13 @@ NdnsfIntegrationEnvironment::~NdnsfIntegrationEnvironment()
   }
 }
 
+void
+NdnsfIntegrationEnvironment::destroyUserForTest()
+{
+  m_user.reset();
+  m_userPubSub.reset();
+}
+
 ndn::security::Certificate
 NdnsfIntegrationEnvironment::createTestIdentityCertificate(const ndn::Name& identity)
 {

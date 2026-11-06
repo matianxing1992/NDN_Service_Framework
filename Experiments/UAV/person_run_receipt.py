@@ -62,8 +62,19 @@ def _percentiles(values):
     return {"count": len(values), "p50": percentile(.5), "p95": percentile(.95), "max": values[-1]}
 
 
-def audit_person_processes(run_root: Path) -> dict[str, Any]:
-    """Read-only /proc scope check after cleanup; exclude this launcher and ancestors."""
+def audit_person_processes(run_root: Path, observed_processes=()) -> dict[str, Any]:
+    """Audit pinned run identities/markers; a shared cgroup is never ownership alone."""
+    import psutil
+
+    if not isinstance(observed_processes, (list, tuple)) or len(observed_processes) > 512:
+        raise ValueError("invalid bounded process identity registry")
+    registered = {}
+    for item in observed_processes:
+        pid, created = item.get("pid"), item.get("creationTimeUnixSeconds")
+        if (type(pid) is not int or pid <= 0 or type(created) not in (int, float) or
+                not math.isfinite(created) or created < 0):
+            raise ValueError("invalid process creation identity")
+        registered.setdefault(pid, set()).add(created)
     excluded, pid = set(), os.getpid()
     while pid and pid not in excluded:
         excluded.add(pid)
@@ -73,25 +84,63 @@ def audit_person_processes(run_root: Path) -> dict[str, Any]:
         except (OSError, ValueError, IndexError):
             break
     root = os.fsencode(str(run_root.resolve()))
-    remaining, errors = [], []
+    marker = b"NDNSF_SPEC191_RUN_ROOT=" + root
+    cgroup = _read_bytes(Path("/proc/self/cgroup"), 65536)
+    remaining, errors, zombies, seen_registered = [], [], [], set()
     for process in Path("/proc").iterdir():
         if not process.name.isdigit() or int(process.name) in excluded:
             continue
+        process_pid = int(process.name)
         try:
-            with (process / "cmdline").open("rb") as stream:
-                command = stream.read(65537)
-            args = command.split(b"\0")
-            if any(arg.split(b"=", 1)[-1] == root or
-                   arg.split(b"=", 1)[-1].startswith(root + b"/") for arg in args):
-                remaining.append({"pid": int(process.name),
-                                  "command": command[:4096].replace(b"\0", b" ").decode(errors="replace")})
-        except FileNotFoundError:
-            pass  # Process exited during the read.
-        except OSError as error:
+            before = _read_bytes(process / "stat", 65536).rsplit(b")", 1)[1].split()
+            created = psutil.Process(process_pid).create_time()
+            pinned = created in registered.get(process_pid, ())
+            terminal = before[0] in (b"Z", b"X")
+            if terminal:
+                # Linux releases controller membership and environ at exit. Only a
+                # previously observed PID/creation identity can own an unreaped task.
+                if not pinned:
+                    continue
+                command = b""
+            else:
+                if _read_bytes(process / "cgroup", 65536) != cgroup:
+                    continue  # Outer supervisors are outside this live launch scope.
+                if not pinned:
+                    environment = _read_bytes(process / "environ", 65536).split(b"\0")
+                    if marker not in environment:
+                        continue  # An argv path/shared cgroup cannot confer ownership.
+                command = _read_bytes(process / "cmdline", 65536)
+            after = _read_bytes(process / "stat", 65536).rsplit(b")", 1)[1].split()
+            if before[19] != after[19]:
+                continue
+            if pinned:
+                seen_registered.add((process_pid, created))
+            state = after[0].decode("ascii")
+            if state in ("Z", "X"):
+                zombies.append({"pid": process_pid, "creationTimeUnixSeconds": created,
+                                "state": state})
+            remaining.append({"pid": process_pid, "creationTimeUnixSeconds": created,
+                              "startTimeTicks": int(after[19]),
+                              "ownership": "pinned-identity" if pinned else "run-environment-marker",
+                              "state": state,
+                              "command": command[:4096].replace(b"\0", b" ").decode(errors="replace")})
+            if len(remaining) >= 512:
+                errors.append("remaining owned process bound reached")
+                break
+        except (FileNotFoundError, ProcessLookupError, psutil.NoSuchProcess):
+            pass
+        except (OSError, ValueError, IndexError, psutil.Error) as error:
             if len(errors) < 64:
                 errors.append(f"/proc/{process.name}: {type(error).__name__}")
     return {"remainingOwnedProcesses": len(remaining), "remaining": remaining,
-            "auditErrors": errors, "scope": "commands with exact run-root argument/path prefix"}
+            "liveOwnedProcesses": len(remaining) - len(zombies),
+            "unreapedOwnedProcesses": len(zombies), "zombies": zombies,
+            "exitedRegisteredProcessCount": sum(
+                (pid, created) not in seen_registered for pid, times in registered.items()
+                for created in times),
+            "auditErrors": errors,
+            "scope": "live: pinned PID/creation identity or exact run marker with matching cgroup; "
+                     "unreaped: pinned PID/creation identity, kernel may release cgroup/environ"}
 
 
 def collect_person_timing(run_root: Path, plan: Mapping[str, Any]) -> dict[str, Any]:
@@ -487,3 +536,273 @@ def build_person_run_receipt(run_root: Path, plan: Mapping[str, Any], *,
             "completeWindowTimingRecords": timing["completeWindowTimingRecords"],
             "timingQualified": timing["timingQualified"], "timing": timing,
             "qualification": "not-assessed; requires independent data/metrics/resources"}
+
+
+def validate_main_telemetry(document: Mapping[str, Any], job: Mapping[str, Any]) -> dict[str, Any]:
+    """Audit native phase/participant measurements without issuing a service request."""
+    if not isinstance(document, Mapping):
+        return {'complete': False, 'errors': ['ordinary telemetry journal must be an object'],
+                'reports': [], 'maxElapsedMs': None}
+    errors = []
+    expected = {(source['producerIdentity'], source['droneId']) for source in job['sources']}
+    expected.add((job['compute']['producerIdentity'], job['compute']['droneId']))
+    phases = (0, 1, 2) if job['windowCount'] > 1 else (0, 2)
+    if (document.get('schema') != 'uav-main-tracking-telemetry-v1' or
+            document.get('runId') != job['runId'] or document.get('clockDomain') != 'CLOCK_MONOTONIC_MS' or
+            document.get('complete') is not True or document.get('failed') is not False or
+            document.get('phaseStates') != ([2, 2, 2] if len(phases) == 3 else [2, 0, 2])):
+        errors.append('ordinary telemetry scope/phase completion mismatch')
+    reports = document.get('reports', [])
+    seen, times = {phase: set() for phase in phases}, {phase: [] for phase in phases}
+    if not isinstance(reports, list) or len(reports) != 4 * len(phases):
+        errors.append('ordinary telemetry report count mismatch')
+        reports = reports[:12] if isinstance(reports, list) else []
+    for report in reports:
+        try:
+            phase = _uint(report['phase'], 2)
+            if phase not in phases or report['runId'] != job['runId']:
+                raise ValueError('wrong phase/run')
+            participant = (report['producerIdentity'], report['droneId'])
+            if participant not in expected or participant in seen[phase] or report['verified'] is not True:
+                raise ValueError('unverified/repeated/wrong participant')
+            start, end = _uint(report['startedMonotonicMs']), _uint(report['completedMonotonicMs'])
+            if end < start or end - start > 2000 or report['elapsedMs'] != end - start:
+                raise ValueError('ordinary response exceeds frozen responsiveness deadline')
+            windows = _uint(report['verifiedWindowsAtRequest'], job['windowCount'])
+            state = report['nativeStateAtRequest']
+            if ((phase == 0 and (state not in ('PREPARING', 'RUNNING') or windows != 0)) or
+                    (phase == 1 and (state != 'RUNNING' or not 0 < windows < job['windowCount'])) or
+                    (phase == 2 and (state != 'COMPLETED' or windows != job['windowCount']))):
+                raise ValueError('ordinary probe was not taken during its declared native phase')
+            seen[phase].add(participant)
+            times[phase].append((start, end))
+        except (KeyError, ValueError, TypeError) as error:
+            errors.append('ordinary telemetry: ' + str(error))
+    previous_end = None
+    for phase in phases:
+        if seen[phase] != expected:
+            errors.append('ordinary telemetry phase has missing participants: ' + str(phase))
+        if times[phase]:
+            first = min(start for start, _ in times[phase])
+            last = max(end for _, end in times[phase])
+            if previous_end is not None and first < previous_end:
+                errors.append('ordinary phases overlapped or were reordered')
+            previous_end = last
+    return {'complete': not errors, 'errors': errors, 'reports': reports,
+            'maxElapsedMs': max((end - start for phase in times.values() for start, end in phase), default=None)}
+
+
+def cross_camera_matches(result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Report original algorithm events, without treating them as identity ground truth."""
+    matches = []
+    for event in result.get('associationEvents', []):
+        if not isinstance(event, Mapping):
+            raise ValueError('association event must be an object')
+        origin = event.get('origin') or {}
+        if not isinstance(origin, Mapping) or not isinstance(origin.get('localKey', {}), Mapping):
+            raise ValueError('association origin/localKey must be objects')
+        camera = origin.get('localKey', {}).get('cameraId')
+        if event.get('status') == 'MATCHED' and camera in ('UAV1', 'UAV2', 'UAV3') and camera != event.get('cameraId'):
+            matches.append(event)
+    return matches
+
+
+def validate_main_motion_csv(result: Mapping[str, Any], raw: bytes) -> None:
+    """Compare original native measurements and their CSV serialization field by field."""
+    import csv
+    import io
+    fields = ('schema sourceId cameraId sourceEpoch sequence localTrackId trackGeneration '
+        'globalId observationName observationDigest captureTimeUs estimateTimeUs rangeTimeUs '
+        'velocityEastMps velocityNorthMps speedMps courseDeg horizontalRangeM slantRangeM '
+        'sigmaSpeedMps sigmaCourseDeg sigmaRangeM speedStatus bearingStatus rangeStatus quality '
+        'reasonCodes acquisitionKind deliveryMode geometryValidity accuracyQualification '
+        'uncertaintyKind anchorKind calibrationRevision anchorApproximation').split()
+    try:
+        rows = list(csv.reader(io.StringIO(raw.decode()), strict=True))
+    except csv.Error as error:
+        raise ValueError('malformed native CSV: ' + str(error)) from error
+    measurements = result['motion']['measurements']
+    if not rows or rows[0] != fields or len(rows) != len(measurements) + 1:
+        raise ValueError('native CSV header/measurement count mismatch')
+    for cells, measurement in zip(rows[1:], measurements):
+        row = dict(measurement, **measurement['trackKey'])
+        row.update(sequence=measurement['frameKey']['sequence'],
+                   observationName=measurement['observationRef']['name'],
+                   observationDigest=measurement['observationRef']['digest'])
+        if len(cells) != len(fields):
+            raise ValueError('native CSV column count mismatch')
+        for key, cell in zip(fields, cells):
+            expected = row.get(key)
+            if expected is None:
+                valid = cell == ''
+            elif isinstance(expected, str):
+                valid = cell == expected
+            else:
+                try:
+                    value = json.loads(cell)
+                    valid = value == expected and (type(value) is bool) == (type(expected) is bool)
+                except (ValueError, TypeError):
+                    valid = False
+            if not valid:
+                raise ValueError('native CSV/JSON measurement mismatch: ' + key)
+
+
+def build_main_run_receipt(run_root: Path, plan: Mapping[str, Any], *,
+                           closure_verified: bool) -> dict[str, Any]:
+    """Account original native artifacts; this collector grants no execution authority."""
+    main = plan["trackingMain"]
+    errors, jobs, artifacts = [], [], []
+
+    def artifact(path, bound):
+        if path.is_symlink():
+            raise ValueError("receipt refuses symlink artifact: " + str(path))
+        raw = _read_bytes(path, bound)
+        reference = {"path": str(path), "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                     "bytes": len(raw)}
+        artifacts.append(reference)
+        return raw, reference
+
+    def observed_json(path, bound=65536):
+        try:
+            return _read_json(path, bound)
+        except (OSError, ValueError) as error:
+            errors.append("missing/invalid runtime evidence: " + str(path) + ": " + str(error))
+            return {}
+
+    lifecycle = observed_json(run_root / "lifecycle.json")
+    cleanup = observed_json(run_root / "main-cleanup.json")
+    observations = observed_json(run_root / "main-observations.json", 256 * 1024)
+    try:
+        log = _read_bytes(run_root / "ground-station.log", 64 * 1024 * 1024).decode(errors="replace")
+    except OSError:
+        log = ""
+        errors.append("main GS log absent")
+    compute = _read_json(Path(main["providerConfigs"]["compute"]["path"]), 256 * 1024)
+    resource_raw, resource_ref = artifact(run_root / "main-resources.json", 16 * 1024 * 1024)
+    resource = _decode(resource_raw)
+    try:
+        roots = {item["name"] for item in plan["processes"]} | {
+            "nfd-" + node for node in plan["topology"]["nodes"]}
+        resource_validation = validate_person_resources(resource,
+            {"runId": run_root.name, "missionId": run_root.name, "windows": []}, roots)
+        if resource.get("artifactTruncated"):
+            resource_validation["complete"] = False
+            resource_validation["errors"].append("resource artifact truncated")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        resource_validation = {"complete": False, "errors": [str(error)], "summary": None}
+    if not resource_validation["complete"]:
+        errors.append("resource measurements incomplete")
+    if not closure_verified:
+        errors.append("frozen installed/source closure changed")
+    if lifecycle.get("outcome") != "main-jobs-completed" or not lifecycle.get("terminal"):
+        errors.append("native jobs did not complete")
+    if (cleanup.get("remainingOwnedProcesses") != 0 or cleanup.get("unreapedOwnedProcesses") != 0 or
+            cleanup.get("cleanupErrors") or cleanup.get("auditErrors")):
+        errors.append("run cleanup incomplete")
+    if cleanup.get("applicationExitCodes", {}).get("ground-station") != 0:
+        errors.append("main GS did not exit cleanly after drain")
+    for definition in main["jobs"]:
+        job = _read_json(Path(definition["path"]), 256 * 1024)
+        root = Path(job["outputDirectory"])
+        status = observed_json(root / "tracking-status.json")
+        count = _uint(job["windowCount"], 600)
+        telemetry = validate_main_telemetry(observed_json(root / "tracking-telemetry.json"), job)
+        if not telemetry["complete"]:
+            errors.extend(job["runId"] + ": " + error for error in telemetry["errors"])
+        if (status.get("runId") != job["runId"] or status.get("jobId") != job["jobId"] or
+                status.get("wireMissionId") != "tracking-" + job["runId"] or
+                status.get("trackingMode") != job["mode"] or status.get("state") != "COMPLETED" or
+                status.get("cleanupState") != "CLEAN" or status.get("verifiedResultWindows") != count):
+            errors.append("native terminal/binding mismatch: " + job["runId"])
+        # A single host shutdown is recorded only for the last active job.
+        if definition == main["jobs"][-1] and status.get("hostShutdown") != "CLEAN":
+            errors.append("main host did not confirm work drain")
+        windows, displayed, csv_count, cross_matches = [], 0, 0, []
+        run = next(item for item in compute["runs"] if item["runId"] == job["runId"])
+        profile_key = run["profile"]["digest"][7:] if run["profile"] else "native-default"
+        worker_root = Path(compute["ownedWorkspace"]) / job["mode"] / profile_key / job["runId"]
+        for index in range(count):
+            try:
+                raw, ref = artifact(root / "results" / f"window-{index}.json", 8 * 1024 * 1024)
+                result = _decode(raw)
+                presentation_path = root / "presentation" / f"window-{index}" / "presentation.json"
+                presentation = _read_json(presentation_path, 9 * 1024 * 1024)
+                if (presentation["runId"] != job["runId"] or
+                        presentation["missionId"] != "tracking-" + job["runId"] or
+                        presentation["resultJson"].encode() != raw or
+                        presentation["resultDigest"] != ref["digest"] or
+                        presentation["responseProvider"] != job["compute"]["producerIdentity"] or
+                        result["runId"] != job["runId"] or result["sequence"] != index + 1):
+                    raise ValueError("result/presentation context mismatch")
+                cross_matches.extend({"windowIndex": index, "event": event}
+                                     for event in cross_camera_matches(result))
+                expected = {source["cameraId"]: source for source in job["sources"]}
+                images = {image["cameraId"]: image for image in presentation["images"]}
+                if set(images) != set(expected) or len(presentation["images"]) != 3:
+                    raise ValueError("three-camera presentation mismatch")
+                for camera, image in images.items():
+                    if image["path"] != f"window-{index}/{camera}.jpg":
+                        raise ValueError("presentation image path binding")
+                    _, image_ref = artifact(root / "presentation" / image["path"], 4 * 1024 * 1024)
+                    if image_ref["digest"] != image["inputDigest"]:
+                        raise ValueError("original JPEG digest mismatch")
+                    marker = (f"SPEC228_TRACKING_FRAME_SHOWN run={job['runId']} window={index} "
+                              f"camera={camera} result={ref['digest']}")
+                    displayed += marker in log
+                if job["mode"] == "vehicle":
+                    filename = f"motion-measurements-{index + 1:06d}.csv"
+                    if result.get("motionCsv") != filename:
+                        raise ValueError("native CSV identity mismatch")
+                    csv_raw, _ = artifact(worker_root / "annotated" / filename, 8 * 1024 * 1024)
+                    validate_main_motion_csv(result, csv_raw)
+                    csv_count += 1
+                windows.append({"index": index, "result": ref,
+                                "actualDevice": result.get("actualDevice", result.get("actualDetectorDevice"))})
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                errors.append(f"{job['runId']}/window-{index}: {error}")
+        shots = []
+        for shot in observations.get("screenshots", []):
+            if shot.get("runId") != job["runId"]:
+                continue
+            try:
+                png, ref = artifact(Path(shot["path"]), 32 * 1024 * 1024)
+                index = _uint(shot["windowIndex"], count - 1)
+                result_ref = next(w["result"] for w in windows if w["index"] == index)
+                if (png[:8] != b"\x89PNG\r\n\x1a\n" or ref["digest"] != shot["digest"] or
+                        shot["resultDigest"] != result_ref["digest"] or
+                        shot["generation"] != status["generation"] or
+                        shot["nativeState"] not in {"running": ("RUNNING",), "terminal": ("COMPLETED",),
+                            "cross-camera-witness": ("RUNNING", "COMPLETED")}[shot["label"]]):
+                    raise ValueError("actual screenshot/result binding mismatch")
+                if shot['label'] == 'cross-camera-witness' and not any(
+                        match['windowIndex'] == index for match in cross_matches):
+                    raise ValueError('screenshot has no original cross-camera MATCHED event')
+                shots.append(shot)
+            except (OSError, ValueError, KeyError, StopIteration) as error:
+                errors.append("screenshot: " + str(error))
+        full_count = 120 if job["mode"] == "person" else 100
+        full_gui = not main["headless"] and len(main["jobs"]) == 1 and count == full_count
+        if full_gui and (not {"running", "terminal"}.issubset({shot["label"] for shot in shots}) or displayed != 3 * count):
+            errors.append("full GUI draw/screenshot coverage incomplete")
+        if full_gui and cross_matches and not any(shot['label'] == 'cross-camera-witness' for shot in shots):
+            errors.append('observed cross-camera event has no actual GUI witness capture')
+        jobs.append({"runId": job["runId"], "mode": job["mode"], "nativeStatus": status,
+                     "plannedWindows": count, "verifiedWindows": len(windows),
+                     "drawnFrames": displayed, "nativeCsvFiles": csv_count,
+                     "windows": windows, "screenshots": shots, "ordinaryTelemetry": telemetry,
+                     "fullWorkload": count == full_count, "headless": main["headless"],
+                     "crossCameraMatches": cross_matches,
+                     "crossCameraWitnessLimitation": None if cross_matches else
+                         "No native cross-camera MATCHED event observed; cross-camera identity accuracy not established"})
+    return {"schema": "uav-main-tracking-receipt-v1", "runId": run_root.name,
+            "applicationMode": "main", "complete": not errors, "errors": errors,
+            "installedClosureVerified": closure_verified, "jobs": jobs,
+            "lifecycle": lifecycle, "cleanup": cleanup, "artifacts": artifacts,
+            "stateObservations": observations.get("states", []),
+            "resourceMeasurementsComplete": resource_validation["complete"],
+            "resourceErrors": resource_validation["errors"],
+            "resources": {"artifact": resource_ref, "sampleCount": len(resource.get("samples", [])),
+                          "sampledAggregatePeakRssBytes": resource.get("sampledAggregatePeakRssBytes"),
+                          "host": resource.get("host"), "measurement": "sampled; not continuous peak"},
+            "scientificAccuracyClaimAllowed": False,
+            "qualification": "execution evidence only; independent acceptance matrix still required"}

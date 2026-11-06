@@ -935,7 +935,7 @@ class TrackingEngine(ByteTrackStateCodec):
         # A separate model instance per camera prevents tracker state from
         # leaking between independent source streams.
         results = model.track(image, persist=True, tracker="bytetrack.yaml",
-                              conf=self.confidence, device="cpu", verbose=False)
+                              conf=self.confidence, device="cpu", max_det=300, verbose=False)
         names = getattr(model, "names", {})
         for result in results:
             boxes = getattr(result, "boxes", None)
@@ -1210,7 +1210,108 @@ def _run_person_session(arguments: argparse.Namespace) -> int:
             engine.close()
 
 
+def _run_vehicle_backend(arguments: argparse.Namespace, backend_factory=None) -> int:
+    """Return model/stock-tracker evidence; native code owns application decisions."""
+    from io import BytesIO
+    from PIL import Image
+
+    maximum_bytes = 8 * 1024 * 1024
+    if (arguments.tracking_profile or arguments.state_file or arguments.candidate_state_file
+            or arguments.motion_json or arguments.observation_dir or arguments.observation_manifest):
+        raise ValueError("native vehicle backend cannot consume Python application state/input")
+    with Path(arguments.vehicle_window).open("rb") as stream:
+        payload = stream.read(maximum_bytes + 1)
+    if len(payload) > maximum_bytes:
+        raise ValueError("vehicle backend input exceeds byte limit")
+    window = json.loads(payload, object_pairs_hook=_unique_person_pairs)
+    fields = {"schema", "runId", "missionId", "windowId", "sequence", "nativeDecisionDigest",
+              "frames", "previousBackendState"}
+    if (not isinstance(window, dict) or set(window) != fields
+            or window["schema"] != "uav-vehicle-backend-input-v1"
+            or window["runId"] != arguments.run_id or window["missionId"] != arguments.mission_id
+            or window["windowId"] != arguments.window_id or window["sequence"] != arguments.sequence
+            or type(window["sequence"]) is not int
+            or not isinstance(window["nativeDecisionDigest"], str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", window["nativeDecisionDigest"]) is None):
+        raise ValueError("vehicle backend context does not match native invocation")
+    frames = window["frames"]
+    if (not isinstance(frames, list) or len(frames) != len(CAMERAS)
+            or any(not isinstance(frame, dict) for frame in frames)
+            or [frame.get("cameraId") for frame in frames] != list(CAMERAS)):
+        raise ValueError("vehicle backend requires three canonical camera frames")
+    previous = window["previousBackendState"]
+    if (not isinstance(previous, dict) or set(previous) != {"schema", "cameras"}
+            or previous["schema"] != "uav-vehicle-backend-state-v1"
+            or not isinstance(previous["cameras"], dict) or set(previous["cameras"]) != set(CAMERAS)):
+        raise ValueError("invalid native vehicle backend state")
+    decoded = []
+    input_dir = Path(arguments.input_dir).resolve()
+    for frame in frames:
+        if (set(frame) != {"cameraId", "inputDigest", "width", "height"}
+                or any(type(frame[key]) is not int or frame[key] < 0 for key in ("width", "height"))
+                or not isinstance(frame["inputDigest"], str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", frame["inputDigest"]) is None):
+            raise ValueError("invalid native vehicle frame metadata")
+        with (input_dir / (frame["cameraId"] + ".jpg")).open("rb") as stream:
+            image_bytes = stream.read(maximum_bytes + 1)
+        if (not image_bytes or len(image_bytes) > maximum_bytes
+                or "sha256:" + hashlib.sha256(image_bytes).hexdigest() != frame["inputDigest"]):
+            raise ValueError("vehicle image byte limit/digest mismatch")
+        with Image.open(BytesIO(image_bytes)) as header:
+            width, height = header.size
+            if (header.format != "JPEG" or not 0 < width <= 8192 or not 0 < height <= 8192
+                    or width * height > 8192 * 8192
+                    or (frame["width"] and frame["width"] != width)
+                    or (frame["height"] and frame["height"] != height)):
+                raise ValueError("vehicle JPEG dimensions/format mismatch")
+        image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None or image.shape[:2] != (height, width):
+            raise ValueError("vehicle JPEG decode failed")
+        decoded.append((frame["cameraId"], image))
+    model = Path(arguments.model).resolve()
+    engine = (backend_factory or TrackingEngine)(model, confidence=arguments.confidence)
+    try:
+        engine.start({"device": "cpu", "modelPath": str(model)},
+                     [{"cameraId": camera} for camera in CAMERAS])
+        engine._byte_track_state = {camera: state for camera, state in previous["cameras"].items()
+                                    if state is not None}
+        outputs = []
+        cameras = {}
+        for camera, image in decoded:
+            detections = engine._detect(camera, image)
+            if len(detections) > 300:
+                raise ValueError("vehicle candidate detection limit")
+            outputs.append({"cameraId": camera, "width": image.shape[1], "height": image.shape[0],
+                            "detections": [{"box": list(box), "confidence": confidence,
+                                            "class": label, "byteTrackId": tracker_id}
+                                           for box, confidence, label, tracker_id in detections]})
+            model_instance = engine._models.get(camera)
+            trackers = getattr(getattr(model_instance, "predictor", None), "trackers", None)
+            if trackers is not None:
+                if len(trackers) != 1:
+                    raise ValueError("vehicle backend requires one stock tracker per camera")
+                cameras[camera] = engine._serialize_byte_tracker(trackers[0])
+            else:
+                cameras[camera] = None
+        result = {"schema": "uav-vehicle-backend-window-v1", "runId": arguments.run_id,
+                  "missionId": arguments.mission_id, "windowId": arguments.window_id,
+                  "sequence": arguments.sequence, "actualDevice": "cpu", "frames": outputs,
+                  "backendState": {"schema": "uav-vehicle-backend-state-v1", "cameras": cameras}}
+        wire = json.dumps(result, sort_keys=True, allow_nan=False).encode("utf-8")
+        if len(wire) > maximum_bytes:
+            raise ValueError("vehicle backend result exceeds byte limit")
+        output = Path(arguments.output_json)
+        temporary = output.with_name(output.name + ".tmp")
+        temporary.write_bytes(wire)
+        temporary.replace(output)
+        return 0
+    finally:
+        engine.close()
+
+
 def _run_cli(arguments: argparse.Namespace) -> int:
+    if getattr(arguments, "vehicle_window", None):
+        return _run_vehicle_backend(arguments)
     if getattr(arguments, "person_session", False):
         return _run_person_session(arguments)
     if arguments.tracking_profile:
@@ -1301,8 +1402,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tracking-profile")
     parser.add_argument("--reid-model")
     parser.add_argument("--person-window")
+    parser.add_argument("--vehicle-window")
     parser.add_argument("--person-session", action="store_true")
     args = parser.parse_args(argv)
+    if args.vehicle_window and (args.tracking_profile or args.person_session or args.person_window
+                               or args.reid_model or args.state_file or args.candidate_state_file
+                               or args.motion_json or args.observation_dir or args.observation_manifest
+                               or args.fail_on_motion_unknown):
+        parser.error("vehicle-window requires native-only backend input")
     if (args.reid_model or args.person_window or args.person_session) and not args.tracking_profile:
         parser.error("person backend arguments require --tracking-profile")
     if args.person_session and (not args.reid_model or not args.person_window or args.state_file

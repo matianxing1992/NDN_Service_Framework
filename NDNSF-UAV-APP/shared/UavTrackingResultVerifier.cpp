@@ -34,6 +34,22 @@ constexpr std::array<const char*, 8> PERSON_ASSOCIATION_STATUSES = {
   "UNTRACKED", "CONTINUED", "NO_CANDIDATE", "NO_FEATURE", "CLOCK_UNAVAILABLE", "AMBIGUOUS",
   "COMPETITION", "MATCHED"};
 
+ndn::Name
+sourceProducer(const UavTrackingResultExpectation& expected, size_t index)
+{
+  if (std::all_of(expected.sourceProviders.begin(), expected.sourceProviders.end(),
+                  [] (const ndn::Name& identity) { return identity.empty(); })) {
+    return droneIdentity("UAV" + std::to_string(index + 1));
+  }
+  std::set<ndn::Name> identities{expected.computeProvider};
+  for (const auto& identity : expected.sourceProviders) {
+    if (identity.empty() || !identities.insert(identity).second) {
+      throw std::invalid_argument("tracking result source Producer mapping is incomplete or duplicate");
+    }
+  }
+  return expected.sourceProviders.at(index);
+}
+
 void
 requireJsonNestingBounded(const std::string& json)
 {
@@ -303,7 +319,7 @@ validatePersonResult(const std::string& resultJson, const UavTrackingResultExpec
     if (width == 0 || height == 0) reject("person result frame dimensions");
     boolean(frame.at("clockAvailable"));
     unsignedNumber(frame.at("clockUncertaintyUs"));
-    const auto producer = droneIdentity(camera);
+    const auto producer = sourceProducer(expected, index);
     const auto observationName = makeUavObservationDataName(
       producer, camera, expected.sourceEpoch, expected.sequence, "OBSERVATION", 1);
     const auto imageName = makeUavObservationDataName(
@@ -416,6 +432,22 @@ makeUavPersonTrackingResultJson(const UavPersonWindowResult& result,
                                 const std::array<std::string, 3>& observationNames,
                                 const std::array<std::string, 3>& observationDigests)
 {
+  return makeUavPersonTrackingResultJson(result, backend, inputProfile, observationNames,
+    observationDigests, {droneIdentity("UAV1"), droneIdentity("UAV2"), droneIdentity("UAV3")});
+}
+
+std::string
+makeUavPersonTrackingResultJson(const UavPersonWindowResult& result,
+                                const UavPersonBackendWindow& backend,
+                                const UavPersonTrackingProfile& inputProfile,
+                                const std::array<std::string, 3>& observationNames,
+                                const std::array<std::string, 3>& observationDigests,
+                                const std::array<ndn::Name, 3>& sourceProducers)
+{
+  if (std::any_of(sourceProducers.begin(), sourceProducers.end(),
+                  [] (const ndn::Name& producer) { return producer.empty(); })) {
+    reject("person result builder requires explicit source Producers");
+  }
   const auto profile = parseUavPersonTrackingProfile(inputProfile.canonicalJson);
   if (!(result.context == backend.context) || backend.profileDigest != profile.profileDigest) {
     reject("person result builder window/profile");
@@ -430,11 +462,12 @@ makeUavPersonTrackingResultJson(const UavPersonWindowResult& result,
   expected.sequence = context.sequence;
   expected.sourceEpoch = context.frames[0].sourceEpoch;
   expected.personTracking = UavPersonTrackingResultExpectation{profile, context.computationDigest};
+  expected.sourceProviders = sourceProducers;
   for (size_t index = 0; index < 3; ++index) {
     const auto& frame = context.frames[index];
     expected.sourceIds[index] = frame.sourceId;
     expected.inputDigests[index] = frame.inputDigest;
-    const auto producer = droneIdentity(frame.cameraId);
+    const auto producer = sourceProducer(expected, index);
     const auto imageName = makeUavObservationDataName(producer, frame.cameraId, frame.sourceEpoch,
       frame.sequence, "FRAME", 1);
     Json observation = {{"schema", "uav-observation-v2"}, {"sourceId", frame.sourceId},
@@ -505,13 +538,18 @@ validateUavTrackingResultContext(const std::string& resultName,
                                  const std::string& resultJson,
                                  const UavTrackingResultExpectation& expected)
 {
+  const bool legacyVehicle = expected.vehicleTracking && !expected.vehicleTracking->observationMode;
   if (expected.runId.empty() || expected.missionId.empty() || expected.windowId.empty() ||
-      expected.sequence == 0 || expected.sourceEpoch == 0 || expected.computeProvider.empty() ||
-      resultJson.empty()) {
+      expected.sequence == 0 || (!legacyVehicle && expected.sourceEpoch == 0) ||
+      expected.computeProvider.empty() || resultJson.empty() ||
+      (expected.personTracking && expected.vehicleTracking)) {
     throw std::invalid_argument("tracking result expectation is incomplete");
   }
   for (size_t i = 0; i < expected.sourceIds.size(); ++i) {
-    if (expected.sourceIds[i].empty()) {
+    if (expected.vehicleTracking && expected.sourceProviders[i].empty()) {
+      throw std::invalid_argument("native vehicle result requires explicit original Producers");
+    }
+    if (!legacyVehicle && expected.sourceIds[i].empty()) {
       throw std::invalid_argument("tracking result source identity is incomplete");
     }
     requireDigest(expected.inputDigests[i], "input");
@@ -534,19 +572,49 @@ validateUavTrackingResultContext(const std::string& resultName,
     validatePersonResult(resultJson, expected);
     return;
   }
+  if (expected.vehicleTracking) {
+    const auto native = parseBounded(resultJson, 8 * 1024 * 1024);
+    for (const auto* field : {"schema", "runId", "missionId", "windowId", "decisionSchema",
+                               "nativeDecisionDigest", "actualDevice"}) text(native.at(field));
+    if (unsignedNumber(native.at("sequence")) != expected.sequence || !boolean(native.at("terminal"))) {
+      reject("native vehicle terminal/sequence type");
+    }
+    const auto& nativeFrames = native.at("frames");
+    if (!nativeFrames.is_array() || nativeFrames.size() != 3) reject("native vehicle frame count");
+    for (const auto& frame : nativeFrames) {
+      text(frame.at("cameraId"));
+      text(frame.at("inputDigest"));
+      if (unsignedNumber(frame.at("sequence")) != expected.sequence) reject("native frame sequence");
+      unsignedNumber(frame.at("ptsUs"), std::numeric_limits<int64_t>::max());
+      const auto width = unsignedNumber(frame.at("imageWidth"), 8192);
+      const auto height = unsignedNumber(frame.at("imageHeight"), 8192);
+      if (width == 0 || height == 0) reject("native vehicle dimensions");
+    }
+  }
 
   requireJsonNestingBounded(resultJson);
   std::istringstream input(resultJson);
   ptree result;
   boost::property_tree::read_json(input, result);
   requireUniqueKeys(result);
-  if (requiredScalar(result, "schema") != "spec210-tracking-result-v2" ||
+  if (requiredScalar(result, "schema") !=
+        (legacyVehicle ? "spec191-tracking-result-v1" : "spec210-tracking-result-v2") ||
       requiredScalar(result, "runId") != expected.runId ||
       requiredScalar(result, "missionId") != expected.missionId ||
       requiredScalar(result, "windowId") != expected.windowId ||
       requiredPositiveInteger(result, "sequence") != expected.sequence ||
       requiredScalar(result, "terminal") != "true") {
     throw std::runtime_error("tracking result header does not match the request context");
+  }
+  if (expected.vehicleTracking) {
+    const auto decisionDigest = requiredScalar(result, "nativeDecisionDigest");
+    requireDigest(decisionDigest, "native vehicle decision");
+    if (requiredScalar(result, "decisionSchema") != "uav-vehicle-native-decision-v1" ||
+        requiredScalar(result, "actualDevice") != "cpu" ||
+        (!expected.vehicleTracking->nativeDecisionDigest.empty() &&
+         decisionDigest != expected.vehicleTracking->nativeDecisionDigest)) {
+      throw std::runtime_error("tracking result native vehicle computation mismatch");
+    }
   }
 
   const auto& frames = requiredChild(result, "frames");
@@ -560,6 +628,20 @@ validateUavTrackingResultContext(const std::string& resultName,
     }
     const auto& frame = frameEntry.second;
     const std::string camera = "UAV" + std::to_string(index + 1);
+    if (legacyVehicle) {
+      const auto expectedImage = makeUavEvidenceName(sourceProducer(expected, index), expected.missionId,
+        expected.windowId, camera + "-" + std::to_string(expected.sequence), 1);
+      const auto& image = requiredChild(frame, "imageRef");
+      if (requiredScalar(frame, "cameraId") != camera ||
+          requiredPositiveInteger(frame, "sequence") != expected.sequence ||
+          requiredScalar(frame, "inputDigest") != expected.inputDigests[index] ||
+          requireCanonicalName(requiredScalar(image, "name"), "image") != expectedImage ||
+          requiredScalar(image, "digest") != expected.inputDigests[index]) {
+        throw std::runtime_error("legacy tracking result frame does not match original source Data");
+      }
+      ++index;
+      continue;
+    }
     if (requiredScalar(frame, "cameraId") != camera ||
         requiredPositiveInteger(frame, "sequence") != expected.sequence ||
         requiredScalar(frame, "sourceId") != expected.sourceIds[index] ||
@@ -567,9 +649,18 @@ validateUavTrackingResultContext(const std::string& resultName,
         requiredScalar(frame, "inputDigest") != expected.inputDigests[index]) {
       throw std::runtime_error("tracking result frame does not match its requested source");
     }
+    if (expected.vehicleTracking) {
+      const auto expectedImage = makeUavObservationDataName(sourceProducer(expected, index),
+        camera, expected.sourceEpoch, expected.sequence, "FRAME", 1);
+      const auto& image = requiredChild(frame, "imageRef");
+      if (requireCanonicalName(requiredScalar(image, "name"), "image") != expectedImage ||
+          requiredScalar(image, "digest") != expected.inputDigests[index]) {
+        throw std::runtime_error("native vehicle frame does not reference original source Data");
+      }
+    }
 
     const auto expectedObservationName = makeUavObservationDataName(
-      droneIdentity(camera), camera, expected.sourceEpoch, expected.sequence, "OBSERVATION", 1);
+      sourceProducer(expected, index), camera, expected.sourceEpoch, expected.sequence, "OBSERVATION", 1);
     const auto observationName = requiredScalar(frame, "observationName");
     const auto observationDigest = requiredScalar(frame, "observationDigest");
     requireDigest(observationDigest, "observation");

@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-cancellation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -532,6 +533,7 @@ struct NativeInferenceHandle::Operation
   bool recoveryPending = false;
   bool recoveryActivated = false;
   std::uint64_t staleCallbacks = 0;    // late/duplicate terminal attempts: counted, never resurrecting
+  NativeInferenceDiagnostics cancellationReceipt; // Protected by mutex.
   std::uint64_t deliveryOverflows = 0; // reliable stream publication failures (internal)
   std::uint64_t nextEventSequence = 0;
 
@@ -776,6 +778,54 @@ void publishRecoveryCancellation(const std::shared_ptr<ndn_service_framework::Se
   }
 }
 
+using NativeCancellationTargets =
+  std::map<std::string, std::pair<ndn::Name, detail::NativeCancellationBinding>>;
+
+void
+awaitNativeCancellation(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+                        const NativeCancellationTargets& targets)
+{
+  std::set<std::string> fenced;
+  std::set<std::string> drained;
+  const auto id = ndn::Name(targets.begin()->second.second.requestId);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  // Initial publication is serialized after any in-flight Core commit on its Face.
+  operation->user->postToIo([user = operation->user, targets, id] {
+    for (const auto& item : targets) {
+      try {
+        const auto wire = detail::nativeCancellationWire(item.second.second, "cancel");
+        user->publishCollaborationData(item.second.first, id, detail::NATIVE_CANCELLATION_SCOPE,
+          ndn::Name(detail::NATIVE_CANCELLATION_TOPIC), ndn::Buffer(wire.begin(), wire.end()));
+      }
+      catch (...) { /* Missing confirmation remains visible in the receipt. */ }
+    }
+  });
+  std::size_t inspected = 0;
+  while (drained.size() != targets.size() && std::chrono::steady_clock::now() < deadline) {
+    const auto records = operation->user->waitForVerifiedCollaborationData(id,
+      detail::NATIVE_CANCELLATION_SCOPE, ndn::Name(detail::NATIVE_CANCELLATION_PROOF_TOPIC),
+      1, 50, true);
+    inspected += records.size();
+    if (inspected > 64 * targets.size()) break;
+    for (const auto& record : records) {
+      const auto expected = targets.find(record.producerRole);
+      if (expected == targets.end() || record.producer != expected->second.first ||
+          record.requestId != id || record.keyScope != detail::NATIVE_CANCELLATION_SCOPE ||
+          record.topic != ndn::Name(detail::NATIVE_CANCELLATION_PROOF_TOPIC))
+        continue;
+      const auto phase = detail::nativeCancellationPhase(
+        std::string(record.payload.begin(), record.payload.end()), expected->second.second);
+      if (phase == "fenced") fenced.insert(expected->first);
+      else if (phase == "drained") drained.insert(expected->first);
+    }
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    operation->cancellationReceipt.cancellationFencedRoles = fenced.size();
+    operation->cancellationReceipt.cancellationDrainedRoles = drained.size();
+  }
+  std::lock_guard<std::mutex> lock(operation->mutex);
+  operation->cancellationReceipt.cancellationUnconfirmed = drained.size() != targets.size();
+}
+
 bool
 markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
              NativeRequestStatus terminal,
@@ -789,6 +839,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   bool cancelCore = false;
   std::function<void()> cancelRecoveryRetry;
   RecoveryExpectations cancelledRecovery;
+  NativeCancellationTargets cancellationTargets;
   std::vector<std::string> releaseScopes;
   std::shared_ptr<NativeConversationCoordinator> conversations;
   std::optional<NativeConversationTurn> conversationTurn;
@@ -857,6 +908,20 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     }
     if (operation->planned) {
       for (const auto& scope : operation->planned->corePlan.keyScopes) releaseScopes.push_back(scope.name);
+      if (terminal == NativeRequestStatus::Cancelled && !operation->conversationTurn &&
+          std::find(releaseScopes.begin(), releaseScopes.end(), detail::NATIVE_CANCELLATION_SCOPE) !=
+            releaseScopes.end()) {
+        for (const auto& item : operation->planned->sealed.core.assignment.providerByRole) {
+          cancellationTargets.emplace(item.first, std::make_pair(ndn::Name(item.second),
+            detail::NativeCancellationBinding{operation->coreRequestId, operation->attempt,
+              item.first, operation->planned->sealed.planDigest}));
+        }
+      }
+    }
+    if (terminal == NativeRequestStatus::Cancelled) {
+      operation->cancellationReceipt.cancellationRequested = true;
+      operation->cancellationReceipt.cancellationExpectedRoles = cancellationTargets.size();
+      operation->cancellationReceipt.cancellationUnconfirmed = true;
     }
     operation->phase = DiRequestPhase::Terminal;
     cancelDeadline = std::move(operation->cancelDeadline);
@@ -987,6 +1052,28 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
       if (operationRuntime)
         operationRuntime->notifyWaiters();
     };
+    if (!cancellationTargets.empty() && !inlineCoreCleanup && operationRuntime) {
+      try {
+        auto ticket = operationRuntime->acquire();
+        operationRuntime->post(ticket,
+          [operation, targets = std::move(cancellationTargets), cleanup, cleanupState] {
+            try { awaitNativeCancellation(operation, targets); }
+            catch (...) {
+              std::lock_guard<std::mutex> lock(operation->mutex);
+              operation->cancellationReceipt.cancellationUnconfirmed = true;
+            }
+            try { operation->user->postToIo(cleanup); }
+            catch (...) { notifyIoCleanupSettled(cleanupState); }
+          });
+        return true;
+      }
+      catch (...) {
+        // Runtime close must not strand the original Face cleanup or invent
+        // a remote receipt. The local terminal has already been delivered.
+        std::lock_guard<std::mutex> lock(operation->mutex);
+        operation->cancellationReceipt.cancellationUnconfirmed = true;
+      }
+    }
     if (inlineCoreCleanup && user->isOnIoThread()) {
       cleanup();
     }
@@ -3240,13 +3327,16 @@ NativeInferenceDiagnostics NativeInferenceHandle::diagnostics() const
   if (!m_operation)
     throw NativeDiError("INVALID_HANDLE", "local", "diagnostics",
                         "native inference handle is empty");
+  NativeInferenceDiagnostics snapshot;
   std::shared_ptr<ndn_service_framework::OperationState<NativeInferenceResult,
                                                         NativeInferenceEvent>> coreState;
   {
     std::lock_guard<std::mutex> lock(m_operation->mutex);
+    snapshot = m_operation->cancellationReceipt;
     coreState = m_operation->coreState;
   }
-  return NativeInferenceDiagnostics{coreState ? coreState->observationDropped() : 0};
+  snapshot.observationDropped = coreState ? coreState->observationDropped() : 0;
+  return snapshot;
 }
 
 NativeInferenceResult

@@ -69,6 +69,35 @@ struct ResultFixture
 
 BOOST_AUTO_TEST_SUITE(UavPersonResult)
 
+BOOST_AUTO_TEST_CASE(SerializerPreservesExplicitSourceProducers)
+{
+  ResultFixture fixture;
+  fixture.expected.sourceProviders = {ndn::Name("/lab/scout-a"), ndn::Name("/lab/scout-b"),
+                                      ndn::Name("/lab/scout-c")};
+  for (size_t i = 0; i < 3; ++i) {
+    fixture.observationNames[i] = makeUavObservationDataName(fixture.expected.sourceProviders[i],
+      "UAV" + std::to_string(i + 1), 1, 1, "OBSERVATION", 1).toUri();
+  }
+  const auto encoded = makeUavPersonTrackingResultJson(fixture.result, fixture.backend,
+    fixture.profile, fixture.observationNames, fixture.observationDigests,
+    fixture.expected.sourceProviders);
+  BOOST_CHECK_NO_THROW(fixture.validate(encoded));
+  const auto wire = Json::parse(encoded);
+  for (size_t i = 0; i < 3; ++i) {
+    BOOST_CHECK_EQUAL(wire["frames"][i]["observation"]["imageRef"]["producerIdentity"]
+      .get<std::string>(), fixture.expected.sourceProviders[i].toUri());
+  }
+  auto invalid = fixture.expected.sourceProviders;
+  invalid[1] = invalid[0];
+  BOOST_CHECK_THROW(makeUavPersonTrackingResultJson(fixture.result, fixture.backend,
+    fixture.profile, fixture.observationNames, fixture.observationDigests, invalid),
+    std::invalid_argument);
+  invalid = {};
+  BOOST_CHECK_THROW(makeUavPersonTrackingResultJson(fixture.result, fixture.backend,
+    fixture.profile, fixture.observationNames, fixture.observationDigests, invalid),
+    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(ExplicitMatchOriginAndTargetAreBoundToAdmittedRows)
 {
   const ResultFixture fixture;

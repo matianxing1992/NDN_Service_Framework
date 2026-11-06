@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -56,6 +57,17 @@ finiteNumber(const Json& value)
   const auto number = value.get<double>();
   if (!std::isfinite(number)) reject("nonfinite number");
   return number;
+}
+
+inline void
+finiteArray(const Json& wire, size_t length)
+{
+  if (!wire.is_array() || wire.size() != length) reject("array dimensions");
+  for (const auto& value : wire) {
+    if (std::abs(finiteNumber(value)) > std::numeric_limits<float>::max()) {
+      reject("array exceeds backend float32 range");
+    }
+  }
 }
 
 inline bool

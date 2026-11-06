@@ -2,6 +2,7 @@
 
 #include "../../NDNSF-UAV-APP/shared/UavNames.hpp"
 #include "../../NDNSF-UAV-APP/shared/UavProtocol.hpp"
+#include "../../NDNSF-UAV-APP/shared/uav-person-json.hpp"
 
 #include <boost/test/unit_test.hpp>
 
@@ -89,6 +90,38 @@ replaceSecond(std::string& value, const std::string& before, const std::string& 
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(UavTrackingResultVerifierTests)
+
+BOOST_AUTO_TEST_CASE(ExplicitConfiguredProducersAreRequiredForEachCamera)
+{
+  auto expected = expectation();
+  auto result = makeResultJson(expected);
+  for (size_t i = 0; i < 3; ++i) {
+    const auto before = "/example/uav/drone/UAV" + std::to_string(i + 1);
+    const auto after = "/lab/uav/source-" + std::to_string(i + 1);
+    expected.sourceProviders[i] = ndn::Name(after);
+    size_t position = 0;
+    while ((position = result.find(before, position)) != std::string::npos) {
+      result.replace(position, before.size(), after);
+      position += after.size();
+    }
+  }
+  const auto resultName = makeUavMultiViewResultName(
+    expected.computeProvider, expected.missionId, expected.windowId, expected.sequence, 1);
+  BOOST_CHECK_NO_THROW(validateUavTrackingResultContext(
+    resultName.toUri(), expected.computeProvider.toUri(), result, expected));
+  auto changed = expected;
+  changed.sourceProviders[1] = changed.sourceProviders[0];
+  BOOST_CHECK_THROW(validateUavTrackingResultContext(
+    resultName.toUri(), expected.computeProvider.toUri(), result, changed), std::invalid_argument);
+  changed = expected;
+  changed.sourceProviders[1] = ndn::Name();
+  BOOST_CHECK_THROW(validateUavTrackingResultContext(
+    resultName.toUri(), expected.computeProvider.toUri(), result, changed), std::invalid_argument);
+  changed = expected;
+  std::swap(changed.sourceProviders[0], changed.sourceProviders[1]);
+  BOOST_CHECK_THROW(validateUavTrackingResultContext(
+    resultName.toUri(), expected.computeProvider.toUri(), result, changed), std::runtime_error);
+}
 
 BOOST_AUTO_TEST_CASE(AcceptsResultBoundToSelectedRequestAndSources)
 {
@@ -179,6 +212,88 @@ BOOST_AUTO_TEST_CASE(AcceptsAllDemoCaptureSequencesIncludingBinaryColon)
     BOOST_CHECK_THROW(validateUavTrackingResultContext(
       wrongSequence.toUri(), expected.computeProvider.toUri(), json, expected), std::runtime_error);
   }
+}
+
+BOOST_AUTO_TEST_CASE(NativeVehicleAdmissionPinsDecisionAndOriginalFrames)
+{
+  using person_json::Json;
+  auto expected = expectation();
+  expected.vehicleTracking = UavVehicleTrackingResultExpectation{true,
+    "sha256:" + std::string(64, 'e')};
+  for (size_t i = 0; i < 3; ++i) {
+    expected.sourceProviders[i] = droneIdentity("UAV" + std::to_string(i + 1));
+  }
+  auto result = Json::parse(makeResultJson(expected));
+  result["decisionSchema"] = "uav-vehicle-native-decision-v1";
+  result["nativeDecisionDigest"] = expected.vehicleTracking->nativeDecisionDigest;
+  result["actualDevice"] = "cpu";
+  for (size_t i = 0; i < 3; ++i) {
+    auto& frame = result["frames"][i];
+    frame["ptsUs"] = 1000;
+    frame["imageWidth"] = 640;
+    frame["imageHeight"] = 480;
+    frame["imageRef"] = {{"name", makeUavObservationDataName(expected.sourceProviders[i],
+      "UAV" + std::to_string(i + 1), expected.sourceEpoch, expected.sequence, "FRAME", 1).toUri()},
+      {"digest", expected.inputDigests[i]}};
+  }
+  const auto name = makeUavMultiViewResultName(expected.computeProvider, expected.missionId,
+    expected.windowId, expected.sequence, 1).toUri();
+  auto check = [&] (const Json& value) {
+    validateUavTrackingResultContext(name, expected.computeProvider.toUri(), value.dump(), expected);
+  };
+  BOOST_CHECK_NO_THROW(check(result));
+  auto changed = result;
+  changed["nativeDecisionDigest"] = "sha256:" + std::string(64, 'f');
+  BOOST_CHECK_THROW(check(changed), std::runtime_error);
+  changed = result;
+  changed.erase("decisionSchema");
+  BOOST_CHECK_THROW(check(changed), std::exception);
+  changed = result;
+  changed["frames"][0]["imageRef"]["name"] = result["frames"][1]["imageRef"]["name"];
+  BOOST_CHECK_THROW(check(changed), std::runtime_error);
+  changed = result;
+  changed["frames"][0]["imageRef"]["digest"] = expected.inputDigests[1];
+  BOOST_CHECK_THROW(check(changed), std::runtime_error);
+  for (const auto& invalid : {Json("1000"), Json(-1), Json(1.5), Json(uint64_t(1) << 63)}) {
+    changed = result;
+    changed["frames"][0]["ptsUs"] = invalid;
+    BOOST_CHECK_THROW(check(changed), std::invalid_argument);
+  }
+  changed = result;
+  changed["frames"][0]["imageWidth"] = 0;
+  BOOST_CHECK_THROW(check(changed), std::invalid_argument);
+  expected.sourceProviders[1] = ndn::Name();
+  BOOST_CHECK_THROW(check(result), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(LegacyNativeVehicleStillRequiresItsOriginalEvidence)
+{
+  using person_json::Json;
+  auto expected = expectation();
+  expected.sourceEpoch = 0;
+  expected.sourceIds = {};
+  expected.vehicleTracking = UavVehicleTrackingResultExpectation{false, {}};
+  Json result = {{"schema", "spec191-tracking-result-v1"}, {"runId", expected.runId},
+    {"missionId", expected.missionId}, {"windowId", expected.windowId},
+    {"sequence", expected.sequence}, {"terminal", true}, {"actualDevice", "cpu"},
+    {"decisionSchema", "uav-vehicle-native-decision-v1"},
+    {"nativeDecisionDigest", "sha256:" + std::string(64, 'a')}, {"frames", Json::array()}};
+  for (size_t i = 0; i < 3; ++i) {
+    const auto camera = "UAV" + std::to_string(i + 1);
+    expected.sourceProviders[i] = droneIdentity(camera);
+    result["frames"].push_back({{"cameraId", camera}, {"sequence", expected.sequence},
+      {"ptsUs", 0}, {"imageWidth", 640}, {"imageHeight", 480},
+      {"inputDigest", expected.inputDigests[i]}, {"imageRef", {
+        {"name", makeUavEvidenceName(expected.sourceProviders[i], expected.missionId,
+          expected.windowId, camera + "-1", 1).toUri()}, {"digest", expected.inputDigests[i]}}}});
+  }
+  const auto name = makeUavMultiViewResultName(expected.computeProvider, expected.missionId,
+    expected.windowId, expected.sequence, 1).toUri();
+  BOOST_CHECK_NO_THROW(validateUavTrackingResultContext(name, expected.computeProvider.toUri(),
+                                                      result.dump(), expected));
+  result["frames"][0]["imageRef"]["name"] = "/unrelated/FRAME";
+  BOOST_CHECK_THROW(validateUavTrackingResultContext(name, expected.computeProvider.toUri(),
+                                                   result.dump(), expected), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

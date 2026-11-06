@@ -62,6 +62,17 @@ class PersonProcessTest(unittest.TestCase):
         self.assertNotIn("--reid-model", gs)
         self.assertIn("--no-demo-identities", specs["controller"].command)
 
+    def test_declared_request_budget_reaches_every_tracking_role(self):
+        specs = self.specs(request_timeout_ms=180000)
+        for name in ("ground-station", "compute", "uav1-camera", "uav2-camera", "uav3-camera"):
+            command = specs[name].command
+            self.assertEqual(command.count("--request-timeout-ms"), 1)
+            self.assertEqual(command[command.index("--request-timeout-ms") + 1], "180000")
+        self.assertNotIn("--request-timeout-ms", specs["controller"].command)
+        for invalid in (True, 1000, 1200001):
+            with self.subTest(invalid=invalid), self.assertRaises(RunnerError):
+                self.specs(request_timeout_ms=invalid)
+
     def test_renderer_reads_only_ground_station_projection(self):
         specs = self.specs()
         self.assertNotIn("compute-display", specs)
@@ -274,7 +285,9 @@ class PersonProcessTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             plan = dict(personTracking=dict(preparationReceipt=str(Path(temporary) / 'receipt.json'),
                         workerPython='/locked/bin/python', requestedDevice='cpu', frozenFiles=[]),
-                        topology=dict(nodes=['gs', 'compute', 'uav1', 'uav2', 'uav3']), processes=[])
+                        topology=dict(nodes=['gs', 'compute', 'uav1', 'uav2', 'uav3']), processes=[],
+                        settings=dict(globalDeadlineMs=60000, trackingHostRequestTimeoutMs=60000,
+                                      nfdCsMaxPackets=4096))
             with patch('run_multicamera_tracking_demo._check_python_dependencies') as host_models, \
                     patch('run_multicamera_tracking_demo.subprocess.run', return_value=
                           SimpleNamespace(returncode=0, stdout=b'Creating new settings\n'

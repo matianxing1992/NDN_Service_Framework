@@ -23,6 +23,38 @@
 #include <string>
 #include <vector>
 
+namespace ndn_service_framework::test {
+
+struct LargeResponseFetchOracle
+{
+  struct Observation
+  {
+    std::weak_ptr<void> owner;
+    std::weak_ptr<ndn::SegmentFetcher> fetcher;
+  };
+
+  static Observation observe(ServiceUser& user)
+  {
+    for (const auto& call : user.m_pendingCalls) {
+      for (const auto& item : call.second.largeResponseFetches) {
+        return {item.second, item.second->fetcher};
+      }
+    }
+    return {};
+  }
+
+  static void cancelThroughSharedTerminalCleanup(ServiceUser& user, const ndn::Name& requestId)
+  {
+    // CancelCollaboration's shared final step, without fabricating a collaboration
+    // assignment for this unary transport fixture. Public cancellation is covered
+    // separately by the MainApp production facade/native job fixtures.
+    user.erasePendingCallWithTrace(requestId, user.m_pendingCalls.find(requestId),
+                                  "caller_cancelled");
+  }
+};
+
+} // namespace ndn_service_framework::test
+
 namespace ndn_service_framework::integration_test {
 namespace {
 
@@ -301,13 +333,44 @@ publish(ndn::svs::SVSPubSub& pubSub, const ndn::Name& name,
 // request-scoped decrypt path.  Large responses additionally traverse the
 // Provider IMS segments and the User's SegmentFetcher reconstruction.
 void
-runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = false)
+runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = false,
+                           std::string terminalDuringFetch = {},
+                           size_t largeResponseBytes = 9000)
 {
+  // Callback dependencies outlive the environment and all of its worker teardown.
+  std::atomic<bool> releaseSegment{terminalDuringFetch.empty()};
+  std::atomic<size_t> heldSegments{0};
+  std::atomic<size_t> segmentInterests{0};
+  std::atomic<bool> responseReceived{false};
+  std::atomic<bool> requestTimedOut{false};
+  std::atomic<size_t> requestExecutions{0};
+  std::atomic<size_t> responseCallbacks{0};
+  std::atomic<size_t> timeoutCallbacks{0};
+  test::LargeResponseFetchOracle::Observation observed;
+  const std::string inputText = "full-runtime-secret-input";
+  const std::string responseText = useLargeResponse ?
+      std::string(largeResponseBytes, 'R') : "full-runtime-inline-response";
+
   test::BootstrapProfile profile;
   profile.providerCount = 2;
   test::NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
-  auto scope = environment.beginRequest("request-scoped-response-runtime");
+  test::FaultProfile faults;
+  faults.dropDataPredicate = [&] (const ndn::Data& data) {
+    const bool hold = !releaseSegment.load() &&
+      data.getName().toUri().find("/NDNSF/LARGE-RESPONSE/") != std::string::npos;
+    if (hold) ++heldSegments;
+    return hold;
+  };
+  auto scope = environment.beginRequest("request-scoped-response-runtime", faults);
+  environment.user().setHandlerThreads(0);
+  ndn::signal::ScopedConnection segmentInterestObserver =
+    environment.userFace().onSendInterest.connect(
+    [&] (const ndn::Interest& interest) {
+      if (interest.getName().toUri().find("/NDNSF/LARGE-RESPONSE/") != std::string::npos) {
+        ++segmentInterests;
+      }
+    });
 
   const auto serviceName = environment.profile().serviceName;
   const auto requesterName = environment.user().getName();
@@ -336,12 +399,6 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   // any request is published; otherwise the production ACK CK wrap finds an
   // empty parameter cache and drops the ACK.
   environment.pumpUntilWithAttributeAuthority([] { return false; });
-  std::atomic<bool> responseReceived{false};
-  std::atomic<bool> requestTimedOut{false};
-  std::atomic<size_t> requestExecutions{0};
-  const std::string inputText = "full-runtime-secret-input";
-  const std::string responseText = useLargeResponse ?
-      std::string(9000, 'R') : "full-runtime-inline-response";
 
   for (size_t index = 0; index < environment.providerCount(); ++index) {
     environment.provider(index).addService(
@@ -401,9 +458,15 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   ndn::Buffer input(reinterpret_cast<const uint8_t*>(inputText.data()), inputText.size());
   request.setPayload(input, input.size());
   const auto requestId = environment.user().RequestService(
-      providers, serviceName, request, revokeAfterExecution ? 800 : 5000,
-      [&] (const ndn::Name&) { requestTimedOut = true; },
+      providers, serviceName, request,
+      (revokeAfterExecution || terminalDuringFetch == "timeout") ? 800 : 5000,
+      [&] (const ndn::Name&) {
+        if (terminalDuringFetch == "timeout") BOOST_CHECK(observed.owner.expired());
+        ++timeoutCallbacks;
+        requestTimedOut = true;
+      },
       [&] (const ResponseMessage& response) {
+        ++responseCallbacks;
         const auto payload = response.getPayload();
         responseReceived = response.getStatus() &&
                            std::string(reinterpret_cast<const char*>(payload.data()),
@@ -411,6 +474,42 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
       },
       tlv::FirstResponding);
   BOOST_REQUIRE(!requestId.empty());
+
+  if (!terminalDuringFetch.empty()) {
+    environment.pumpUntil([&] {
+      observed = test::LargeResponseFetchOracle::observe(environment.user());
+      return heldSegments.load() != 0 && !observed.fetcher.expired();
+    });
+    BOOST_REQUIRE_GT(heldSegments.load(), 0);
+    BOOST_REQUIRE(!observed.owner.expired());
+    BOOST_REQUIRE(!observed.fetcher.expired());
+    if (terminalDuringFetch == "timeout") {
+      environment.pumpUntil([&] { return requestTimedOut.load(); });
+      BOOST_CHECK_EQUAL(timeoutCallbacks.load(), 1);
+      BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0);
+    }
+    else if (terminalDuringFetch == "cancel") {
+      test::LargeResponseFetchOracle::cancelThroughSharedTerminalCleanup(
+        environment.user(), requestId);
+      BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0);
+    }
+    else {
+      BOOST_REQUIRE_EQUAL(terminalDuringFetch, "destroy");
+      environment.destroyUserForTest();
+    }
+    releaseSegment = true;
+    const auto stoppedInterestCount = segmentInterests.load();
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+    environment.pumpUntil([&] { return std::chrono::steady_clock::now() >= until; });
+    BOOST_CHECK(observed.owner.expired());
+    BOOST_CHECK(observed.fetcher.expired());
+    BOOST_CHECK_EQUAL(segmentInterests.load(), stoppedInterestCount);
+    BOOST_CHECK_EQUAL(responseCallbacks.load(), 0);
+    BOOST_CHECK_EQUAL(timeoutCallbacks.load(), terminalDuringFetch == "timeout" ? 1 : 0);
+    environment.updateRequestResidue(scope, {});
+    environment.resetRequest(scope);
+    return;
+  }
 
   if (revokeAfterExecution) {
     // The Provider executed with the current-version material.  Only after
@@ -467,6 +566,26 @@ BOOST_AUTO_TEST_CASE(LargeResponseCompletesThroughProductionOnResponse)
 BOOST_AUTO_TEST_CASE(RevokedUserCannotReceiveLargeResponseAfterProviderExecution)
 {
   runFullRuntimeResponseCase(true, true);
+}
+
+BOOST_AUTO_TEST_CASE(LargeResponseAtActualFrameSizeCompletesWithZeroHandlerWorkers)
+{
+  runFullRuntimeResponseCase(true, false, {}, 1259436);
+}
+
+BOOST_AUTO_TEST_CASE(LargeResponseTimeoutStopsFetcherBeforeApplicationTerminalCallback)
+{
+  runFullRuntimeResponseCase(true, false, "timeout");
+}
+
+BOOST_AUTO_TEST_CASE(LargeResponseCancellationCleanupStopsFetcherBeforeKeyErasure)
+{
+  runFullRuntimeResponseCase(true, false, "cancel");
+}
+
+BOOST_AUTO_TEST_CASE(LargeResponseUserDestructionStopsFetcherWithExternalFaceStillAlive)
+{
+  runFullRuntimeResponseCase(true, false, "destroy");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

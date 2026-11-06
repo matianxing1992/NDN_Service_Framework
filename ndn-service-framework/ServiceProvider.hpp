@@ -47,6 +47,7 @@
 
 namespace ndnsf::di { class NdnsfCollaborationDependencyIo; }
 namespace ndn_service_framework::test { struct TensorOriginalOracle; }
+namespace ndn_service_framework::test { struct ExactPublicationOracle; }
 
 namespace ndn_service_framework{
 
@@ -590,8 +591,10 @@ namespace ndn_service_framework{
                 ImmutableProtectedDataResult publishImmutableProtectedData(
                     const ndn::Name& semanticPrefix, const ndn::Buffer& payload);
                 /** Revoke this dispatch's current-work authority from any
-                 * thread. Current-bound transfers stop; the caller still owns
-                 * the application-level failure/terminal response. */
+                 * thread. Current-bound transfers and stream publication stop;
+                 * this does not drain workers or send a terminal Response.
+                 * Returns whether authority was newly revoked. A caller requiring
+                 * a stream confirmation must also check streamCancelled(). */
                 bool revokeCurrentWorkAuthority() noexcept;
                 /** Query whether this dispatch still authorizes new work commits. */
                 bool hasCurrentWorkAuthority() const noexcept;
@@ -751,7 +754,9 @@ namespace ndn_service_framework{
                     DataV1SegmentNameFilter nameFilter = {});
                 /** Publish only the exact signed Data names authorized by a
                  * sealed V3 mayPublish contract. No SVS notification or
-                 * process-local sequence is introduced. */
+                 * process-local sequence is introduced. Current dispatch
+                 * authority is required again at publication commit; rejection
+                 * leaves originals, IMS and transfer metrics unchanged. */
                 bool publishSignedExactData(
                     KeyScope keyScope,
                     const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
@@ -912,11 +917,14 @@ namespace ndn_service_framework{
 
             private:
                 friend class ndnsf::di::NdnsfCollaborationDependencyIo;
+                friend struct test::ExactPublicationOracle;
                 std::optional<ndn::Buffer> fetchProtectedDataCurrent(
                     const ndn::Name& dataName, const ndn::Name& expectedProducer,
                     std::chrono::steady_clock::time_point deadline);
                 std::function<bool()> currentWorkPredicate(
                     std::chrono::steady_clock::time_point deadline) const;
+                std::function<bool()> cancelWhenWorkNotCurrent(
+                    std::function<bool()> external) const;
                 bool consumeCurrentCrypto(std::chrono::steady_clock::time_point deadline,
                     std::size_t maxOutputBytes,
                     std::function<bool(ServiceProvider&, ndn::Buffer&)> operation,
@@ -1901,6 +1909,7 @@ namespace ndn_service_framework{
                 std::mutex targetedHandlerMutex;
                 std::condition_variable targetedHandlersDrained;
                 std::size_t activeTargetedHandlers = 0;
+                std::size_t activeCollaborationHandlers = 0;
                 std::mutex ackCancellationMutex;
                 std::vector<std::weak_ptr<std::atomic<bool>>> ackCancellations;
 
@@ -1918,6 +1927,25 @@ namespace ndn_service_framework{
                     std::lock_guard<std::mutex> lock(targetedHandlerMutex);
                     if (activeTargetedHandlers > 0 && --activeTargetedHandlers == 0)
                         targetedHandlersDrained.notify_all();
+                }
+
+                bool tryBeginCollaborationHandler()
+                {
+                    std::lock_guard<std::mutex> lock(targetedHandlerMutex);
+                    if (closed.load(std::memory_order_relaxed)) {
+                        return false;
+                    }
+                    ++activeCollaborationHandlers;
+                    return true;
+                }
+
+                void finishCollaborationHandler() noexcept
+                {
+                    std::lock_guard<std::mutex> lock(targetedHandlerMutex);
+                    if (activeCollaborationHandlers > 0 &&
+                        --activeCollaborationHandlers == 0) {
+                        targetedHandlersDrained.notify_all();
+                    }
                 }
 
                 void markClosed() noexcept
@@ -1996,6 +2024,13 @@ namespace ndn_service_framework{
                 using TargetedHandlerDrainWaiter =
                     std::function<bool(std::chrono::milliseconds)>;
                 TargetedHandlerDrainWaiter makeTargetedHandlerDrainWaiter() const;
+                /** Capture before close; covers scoped preparation, queue and handler work.
+                 * Wait off the Face thread while its owner keeps processing events.
+                 * Detached Context operations and unrelated callbacks are not covered.
+                 */
+                using CollaborationHandlerDrainWaiter =
+                    std::function<bool(std::chrono::milliseconds)>;
+                CollaborationHandlerDrainWaiter makeCollaborationHandlerDrainWaiter() const;
                 bool closed() const noexcept;
                 bool valid() const noexcept;
                 uint64_t generation() const noexcept;
@@ -2479,9 +2514,21 @@ namespace ndn_service_framework{
                 int freshnessMs, CollaborationTransferMetrics* metrics,
                 std::vector<std::shared_ptr<const ndn::Data>>* originals,
                 std::size_t maxWireBytes);
+            bool publishCollaborationOwnedExactData(
+                const ndn::Name& requestId, const std::string& keyScope,
+                const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+                int freshnessMs, CollaborationTransferMetrics* metrics,
+                std::vector<std::shared_ptr<const ndn::Data>>* originals,
+                std::size_t maxWireBytes, const std::function<bool()>& current,
+                const std::shared_ptr<std::mutex>& authorityMutex);
             bool replayCollaborationOwnedExactData(
                 const std::vector<std::shared_ptr<const ndn::Data>>& originals,
                 CollaborationTransferMetrics* metrics);
+            bool replayCollaborationOwnedExactData(
+                const std::vector<std::shared_ptr<const ndn::Data>>& originals,
+                CollaborationTransferMetrics* metrics,
+                const std::function<bool()>& current,
+                const std::shared_ptr<std::mutex>& authorityMutex);
             std::optional<ndn::Buffer> fetchCollaborationSignedExactData(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
