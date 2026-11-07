@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-symmetric-crypto.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include <ndn-cxx/util/sha256.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -80,51 +81,13 @@ std::string contextBytes(const NativeAssembledEntryContext& value)
 
 Bytes hkdf(const Bytes& key, const std::string& info)
 {
-  Bytes out(32);
-  auto* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr);
-  if (!ctx) throw rejected("HKDF allocation failed");
-  std::size_t size = out.size();
-  const bool ok = EVP_PKEY_derive_init(ctx) > 0 &&
-    EVP_PKEY_CTX_set_hkdf_md(ctx, EVP_sha256()) > 0 &&
-    EVP_PKEY_CTX_set1_hkdf_key(ctx, key.data(), key.size()) > 0 &&
-    EVP_PKEY_CTX_add1_hkdf_info(ctx,
-      reinterpret_cast<const unsigned char*>(info.data()), info.size()) > 0 &&
-    EVP_PKEY_derive(ctx, out.data(), &size) > 0 && size == out.size();
-  EVP_PKEY_CTX_free(ctx);
-  if (!ok) {
-    OPENSSL_cleanse(out.data(), out.size());
-    throw rejected("assembled key derivation failed");
-  }
-  return out;
+  return detail::deriveSymmetricKey(key, info);
 }
 
 Bytes crypt(bool encrypt, const Bytes& key, const Bytes& nonce,
             const Bytes& input, const std::string& aad)
 {
-  if (key.size() != 32 || nonce.size() != 12 || input.size() > INT_MAX ||
-      (!encrypt && input.size() < 16)) throw rejected("assembled AEAD input is invalid");
-  const std::size_t body = encrypt ? input.size() : input.size() - 16;
-  Bytes out(body + 16);
-  auto* ctx = EVP_CIPHER_CTX_new();
-  if (!ctx) throw rejected("AEAD allocation failed");
-  int written = 0, final = 0;
-  bool ok = EVP_CipherInit_ex(ctx, EVP_aes_256_gcm(), nullptr,
-                              key.data(), nonce.data(), encrypt ? 1 : 0) == 1 &&
-            EVP_CipherUpdate(ctx, nullptr, &written,
-              reinterpret_cast<const unsigned char*>(aad.data()), aad.size()) == 1 &&
-            EVP_CipherUpdate(ctx, out.data(), &written, input.data(), body) == 1;
-  if (!encrypt) ok = ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16,
-                                              const_cast<unsigned char*>(input.data() + body)) == 1;
-  ok = ok && EVP_CipherFinal_ex(ctx, out.data() + written, &final) == 1;
-  if (encrypt) ok = ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16,
-                                             out.data() + body) == 1;
-  EVP_CIPHER_CTX_free(ctx);
-  if (!ok) {
-    OPENSSL_cleanse(out.data(), out.size());
-    throw rejected("assembled entry failed AEAD authentication");
-  }
-  out.resize(body + (encrypt ? 16 : 0));
-  return out;
+  return detail::cryptSymmetric(encrypt, key, nonce, input, aad);
 }
 
 std::string manifest(const NativeAssembledEntryContext& value,

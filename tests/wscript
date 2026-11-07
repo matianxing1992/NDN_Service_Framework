@@ -5,6 +5,22 @@ top = '..'
 import os
 
 def build(bld):
+    # Additive stored-model format: compile production codecs and the shared
+    # private-file writer directly, without another DI/Controller state machine.
+    for suffix in ('', '-asan'):
+        flags = ['-std=c++17', '-O0', '-g0']
+        links = []
+        if suffix:
+            flags += ['-fno-omit-frame-pointer', '-fsanitize=address,undefined']
+            links += ['-fsanitize=address,undefined']
+        bld.program(target='../spec222-stored-model-capability' + suffix,
+                    name='spec222-stored-model-capability' + suffix,
+                    source=[bld.path.find_node('main.cpp'),
+                            bld.path.find_node('unit-tests/stored-model-capability.t.cpp'),
+                            bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.cpp'),
+                            bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.cpp')],
+                    includes=['..'], use='NDN_CXX BOOST OPENSSL DL',
+                    cxxflags=flags, linkflags=links, install_path=None)
     # SDK capability fixture: no NDNSF services or model weights are required.
     if bld.env.HAVE_ONNXRUNTIME_CPP:
         probe_env = bld.env.derive()
