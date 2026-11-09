@@ -14,7 +14,6 @@ from pathlib import Path
 import re
 import stat
 import sys
-import sysconfig
 
 
 MAX_LOCK_BYTES = 256 * 1024
@@ -209,6 +208,28 @@ def _inspect_packages(versions: dict[str, str], distributions, prefix: Path) -> 
     return result
 
 
+def _loaded_python_library(maps_path: Path) -> Path | None:
+    # Distribution build variables can name a development-only symlink even
+    # when the running interpreter embeds Python and loads no libpython.
+    with maps_path.open() as stream:
+        text = stream.read(MAX_METADATA_BYTES + 1)
+    if len(text) > MAX_METADATA_BYTES:
+        raise ValueError("runtime mappings exceed byte limit")
+    name = re.compile(r"libpython" + re.escape(
+        f"{sys.version_info.major}.{sys.version_info.minor}") + r"\.so(?:\.[0-9]+)*$")
+    libraries = set()
+    for line in text.splitlines():
+        fields = line.split(None, 5)
+        if len(fields) == 6 and name.fullmatch(Path(fields[5]).name):
+            libraries.add(Path(fields[5]).resolve(strict=True))
+        elif len(fields) == 6 and fields[5].endswith(" (deleted)"):
+            if name.fullmatch(Path(fields[5][:-10]).name):
+                raise ValueError("loaded Python library was deleted")
+    if len(libraries) > 1:
+        raise ValueError("multiple loaded Python libraries")
+    return next(iter(libraries), None)
+
+
 def inspect_person_runtime(lock_path: Path) -> dict:
     """Return bounded current artifact fingerprints, without application identity fields."""
     if sys.prefix == sys.base_prefix:
@@ -224,9 +245,9 @@ def inspect_person_runtime(lock_path: Path) -> dict:
     budget = [sum(package["bytes"] for package in packages.values())]
     artifacts = {"pythonExecutable": Path(sys.executable).resolve(strict=True),
                  "venvConfig": prefix / "pyvenv.cfg"}
-    library = sysconfig.get_config_var("LDLIBRARY")
-    if library:
-        artifacts["pythonLibrary"] = Path(sysconfig.get_config_var("LIBDIR")) / library
+    library = _loaded_python_library(Path("/proc/self/maps"))
+    if library is not None:
+        artifacts["pythonLibrary"] = library
     ultralytics = next(d for d in distributions if _name(d.metadata["Name"]) == "ultralytics")
     artifacts["byteTrackConfig"] = Path(ultralytics.locate_file(
         "ultralytics/cfg/trackers/bytetrack.yaml")).resolve(strict=True)

@@ -150,6 +150,7 @@ struct JobFlowFixture : tracking_fixture::ConfigFixture
   ~JobFlowFixture()
   {
     stopAndDrainJob();
+    syntheticRegistrations.clear();
     // Join production handler workers before captured fixture inputs are destroyed.
     environment.reset();
   }
@@ -211,8 +212,13 @@ struct JobFlowFixture : tracking_fixture::ConfigFixture
             return response;
           }, nsf::ServiceProvider::ServiceInvocationMode::NormalAndTargeted);
       }
-      provider.addCollaborationHandler(SERVICE_TRACKING_WINDOW,
+      std::vector<ndn_service_framework::CollaborationRole> allowedRoles;
+      allowedRoles.push_back(i < 3 ? "Camera-UAV" + std::to_string(i + 1) :
+                                      "Tracking-Compute");
+      syntheticRegistrations.push_back(provider.addScopedCollaborationHandler(
+        SERVICE_TRACKING_WINDOW, std::move(allowedRoles),
         [this, rejectCompute, wrongFeedback, i] (const nsf::RequestMessage&) {
+          syntheticAcknowledgements.fetch_add(1, std::memory_order_relaxed);
           nsf::ServiceProvider::AckDecision decision;
           decision.status = !(rejectCompute && i == 3);
           Fields feedback{{"tracking_mode", wrongFeedback && i == 3 ? "person" : "vehicle"},
@@ -348,7 +354,7 @@ struct JobFlowFixture : tracking_fixture::ConfigFixture
             {"input_uav1_digest", imageDigests[0]},
             {"input_uav2_digest", imageDigests[1]},
             {"input_uav3_digest", imageDigests[2]}}));
-        });
+        }, ndn_service_framework::CollaborationAdmissionLimits{}));
     }
     // Legacy registrations install Request subscriptions during init().
     environment->enableProductionIngressForTest();
@@ -360,7 +366,9 @@ struct JobFlowFixture : tracking_fixture::ConfigFixture
   std::shared_ptr<std::atomic<bool>> sourceHeld = std::make_shared<std::atomic<bool>>(false);
   std::shared_ptr<std::atomic<bool>> computeResponseReady = std::make_shared<std::atomic<bool>>(false);
   std::atomic<size_t> executions{0};
+  std::atomic<size_t> syntheticAcknowledgements{0};
   std::unique_ptr<nsf::test::NdnsfIntegrationEnvironment> environment;
+  std::vector<nsf::ServiceProvider::ServiceRegistration> syntheticRegistrations;
   TrackingJobDefinition definition;
   TrackingSnapshot latest;
   std::vector<ndn::Name> completedRequests;

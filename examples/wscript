@@ -3,6 +3,12 @@ from waflib import Utils
 top = '..'
 
 def build(bld):
+    bld.program(name='spec226-input-admission-actor',
+                target='spec226-input-admission-actor',
+                source=['Spec226InputAdmissionActor.cpp'],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'], install_path='${BINDIR}')
     runtime_libdir = Utils.subst_vars('${LIBDIR}', bld.env)
     bld.program(name='App_ServiceController',
                 target='App_ServiceController',

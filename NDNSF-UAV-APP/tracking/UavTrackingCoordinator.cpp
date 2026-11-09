@@ -239,6 +239,7 @@ UavTrackingCoordinator::makePlan(const std::vector<ndn::Name>& sourceProviders,
     role.minProviders = 1;
     role.maxProviders = 1;
     role.terminalResponseOwner = false;
+    role.inputAdmissionProfile = "data-admission-v1";
     plan.roles.push_back(std::move(role));
   }
   ndn_service_framework::CollaborationRoleSpec compute;
@@ -249,6 +250,7 @@ UavTrackingCoordinator::makePlan(const std::vector<ndn::Name>& sourceProviders,
   compute.minProviders = 1;
   compute.maxProviders = 1;
   compute.terminalResponseOwner = true;
+  compute.inputAdmissionProfile = "data-admission-v1";
   plan.roles.push_back(std::move(compute));
 
   if (!calibrationProvider.empty()) {
@@ -261,6 +263,7 @@ UavTrackingCoordinator::makePlan(const std::vector<ndn::Name>& sourceProviders,
     calibration.minProviders = 1;
     calibration.maxProviders = 1;
     calibration.terminalResponseOwner = false;
+    calibration.inputAdmissionProfile = "data-admission-v1";
     plan.roles.push_back(std::move(calibration));
   }
 

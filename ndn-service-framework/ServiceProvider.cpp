@@ -1,5 +1,10 @@
 #include "ServiceProvider.hpp"
 #include "ServiceUser.hpp"
+#include "detail/collaboration-envelope.hpp"
+#include "detail/collaboration-input-budget.hpp"
+#include "detail/exact-data-window.hpp"
+#include "detail/finite-packet-layout.hpp"
+#include "detail/nac-consumer-transport.hpp"
 #include "NetworkProbeRate.hpp"
 #include "PeerProbeNaming.hpp"
 #include "exact-data-congestion-window.hpp"
@@ -9,6 +14,7 @@
 #include "ProducerDataNaming.hpp"
 #include "ProtectedBlobManifest.hpp"
 #include "ImmutableProtectedPublicationStore.hpp"
+#include "collaboration-input.hpp"
 #include "TimelineTrace.hpp"
 #include <ndn-cxx/security/pib/key.hpp>
 #include <ndn-cxx/security/transform/public-key.hpp>
@@ -136,6 +142,48 @@ namespace ndn_service_framework
 
     namespace
     {
+        bool
+        isHybridKeyBootstrapLocator(const ndn::Name& locator, const ndn::Name& producer)
+        {
+            try {
+                const auto base = makeProducerDataPrefix(producer, "KEY");
+                if (!base.isPrefixOf(locator) || locator.size() != base.size() + 7)
+                    return false;
+                const auto offset = base.size();
+                return locator[offset] == ndn::name::Component("kind=HYBRID-MESSAGE") &&
+                    locator[offset + 1] == ndn::name::Component("SCOPE") &&
+                    locator[offset + 2] == ndn::name::Component("SERVICE") &&
+                    locator[offset + 3].type() == ndn::tlv::GenericNameComponent &&
+                    locator[offset + 3].value_size() == 32 &&
+                    locator[offset + 4] == ndn::name::Component("EPOCH") &&
+                    locator[offset + 5].type() == ndn::tlv::GenericNameComponent &&
+                    locator[offset + 5].value_size() == 32 &&
+                    locator[offset + 6] == ndn::name::Component("OBJECT");
+            }
+            catch (const std::exception&) { return false; }
+        }
+
+        bool
+        matchesReadName(const ndn::Name& requested, const ndn::Data& packet,
+                        bool hybridKeyBootstrap)
+        {
+            if (!hybridKeyBootstrap) return packet.getName() == requested;
+            try {
+                const auto& name = packet.getName();
+                if (!requested.isPrefixOf(name) || name.size() != requested.size() + 2 ||
+                    name[-2].type() != ndn::tlv::GenericNameComponent ||
+                    name[-2].value_size() != 32 || !name[-1].isSegment() ||
+                    !packet.getFinalBlock() || !packet.getFinalBlock()->isSegment())
+                    return false;
+                const auto segment = name[-1].toSegment();
+                const auto final = packet.getFinalBlock()->toSegment();
+                return final < 128 && segment <= final &&
+                    name[-1] == ndn::name::Component::fromSegment(segment) &&
+                    *packet.getFinalBlock() == ndn::name::Component::fromSegment(final);
+            }
+            catch (const std::exception&) { return false; }
+        }
+
         template<typename Work>
         void
         runWithLocalWorkObserver(
@@ -1036,6 +1084,14 @@ namespace ndn_service_framework
                                             const ServiceSelectionMessage& selection,
                                             bool includeShared)
         {
+          if (selection.hasCollaborationDataflowMetadata()) {
+            const auto& metadata = selection.getCollaborationDataflowMetadata();
+            assignment.inputAdmissionProfile = metadata.profile;
+            assignment.selectedRoleProviders = metadata.roleBindings;
+            assignment.dependencyTransport.redundancy =
+              metadata.dependencyRecoveryProfile == "xor-packet-set-v1"
+                ? DependencyRedundancy::Xor : DependencyRedundancy::None;
+          }
           for (const auto& entry : selection.getProviderEntries()) {
             for (const auto& role : rolesFromAssignmentPayload(entry.assignmentPayload))
               assignment.roleProviders[role] = entry.providerName;
@@ -4078,7 +4134,11 @@ namespace ndn_service_framework
           trustSchemaPath, group_prefix, &face)),
         identityCert(encryptionCert),
         signingCert(signingCert),
-        nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
+        m_nacConsumerTransport(std::make_shared<detail::NacConsumerTransport>(m_face)),
+        m_nacConsumerFace(std::make_unique<ndn::Face>(
+            m_nacConsumerTransport, m_face.getIoContext(), m_keyChain)),
+        nacConsumer(*m_nacConsumerFace, m_keyChain, nac_validator,
+                    encryptionCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         random(ndn::random::getRandomNumberEngine()),
         // The io_context-aware IMS constructor enforces MustBeFresh. This is
@@ -4372,7 +4432,11 @@ namespace ndn_service_framework
         identityCert(encryptionCert),
         signingCert(signingCert),
         attrAuthorityCertificate(attrAuthorityCertificate),
-        nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
+        m_nacConsumerTransport(std::make_shared<detail::NacConsumerTransport>(m_face)),
+        m_nacConsumerFace(std::make_unique<ndn::Face>(
+            m_nacConsumerTransport, m_face.getIoContext(), m_keyChain)),
+        nacConsumer(*m_nacConsumerFace, m_keyChain, nac_validator,
+                    encryptionCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         random(ndn::random::getRandomNumberEngine()),
         m_IMS(m_face.getIoContext(), 50000),
@@ -4468,7 +4532,7 @@ namespace ndn_service_framework
         (void)key.getCertificate(signingCert.getName());
         m_testSigningKeyChain = &keyChain;
         m_testNacConsumer = std::make_unique<ndn::nacabe::Consumer>(
-            m_face, keyChain, nac_validator, identityCert,
+            *m_nacConsumerFace, keyChain, nac_validator, identityCert,
             attrAuthorityCertificate);
         m_testNacConsumer->obtainDecryptionKey();
         m_testNacProducer = std::make_unique<ndn::nacabe::CacheProducer>(
@@ -6286,6 +6350,60 @@ namespace ndn_service_framework
         return ServiceRegistration(std::move(state), m_registrationControl);
     }
 
+    ServiceProvider::ServiceRegistration
+    ServiceProvider::addScopedCollaborationHandler(
+        const ndn::Name& serviceName, std::vector<CollaborationRole> allowedRoles,
+        AckStrategyHandler ackHandler, CollaborationHandler handler,
+        CollaborationAdmissionLimits limits)
+    {
+        limits.validate();
+        if (!handler) throw std::invalid_argument("strict collaboration registration requires a handler");
+        auto registration = addScopedCollaborationHandler(serviceName,
+            std::move(allowedRoles), std::move(ackHandler), std::move(handler));
+        std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+        m_collaborationServices.at(serviceName).admissionLimits = limits;
+        return registration;
+    }
+
+    ServiceProvider::ServiceRegistration
+    ServiceProvider::addScopedAsyncCollaborationHandler(
+        const ndn::Name& serviceName, std::vector<CollaborationRole> allowedRoles,
+        AsyncAckStrategyHandler ackHandler, CollaborationHandler handler,
+        CollaborationAdmissionLimits limits)
+    {
+        limits.validate();
+        if (!handler) throw std::invalid_argument("strict collaboration registration requires a handler");
+        auto registration = addScopedAsyncCollaborationHandler(serviceName,
+            std::move(allowedRoles), std::move(ackHandler), std::move(handler));
+        std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+        m_collaborationServices.at(serviceName).admissionLimits = limits;
+        return registration;
+    }
+
+    ServiceProvider::ServiceRegistration
+    ServiceProvider::addScopedCollaborationHandler(
+        const ndn::Name& serviceName,
+        std::vector<CollaborationRole> allowedRoles,
+        AckStrategyHandler ackHandler,
+        AsyncAckStrategyHandler asyncAckHandler,
+        CollaborationHandler handler,
+        AsyncTargetedRequestHandler targetedHandler,
+        CollaborationAdmissionLimits limits)
+    {
+        limits.validate();
+        if (!handler) {
+            throw std::invalid_argument(
+                "strict collaboration registration requires a handler");
+        }
+        auto registration = addScopedCollaborationHandler(
+            serviceName, std::move(allowedRoles), std::move(ackHandler),
+            std::move(asyncAckHandler), std::move(handler),
+            std::move(targetedHandler));
+        std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+        m_collaborationServices.at(serviceName).admissionLimits = limits;
+        return registration;
+    }
+
     ServiceProvider::CollaborationContext::CollaborationContext(
         ServiceProvider& provider,
         ndn::Name requesterName,
@@ -6390,8 +6508,8 @@ namespace ndn_service_framework
         return it->second;
     }
 
-    std::optional<ndn::Buffer>
-    ServiceProvider::CollaborationContext::fetchEncryptedLargeData(
+    LargeDataFetchResult
+    ServiceProvider::CollaborationContext::fetchEncryptedLargeDataResult(
         const ndn::Name& dataName,
         const ndn::Name& serviceName)
     {
@@ -6413,6 +6531,17 @@ namespace ndn_service_framework
         if (!result.success) {
             NDN_LOG_ERROR("Failed to fetch encrypted large Data "
                           << dataName.toUri() << ": " << result.errorMessage);
+        }
+        return result;
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchEncryptedLargeData(
+        const ndn::Name& dataName,
+        const ndn::Name& serviceName)
+    {
+        auto result = fetchEncryptedLargeDataResult(dataName, serviceName);
+        if (!result.success) {
             return std::nullopt;
         }
         return std::optional<ndn::Buffer>(std::move(result.plaintext));
@@ -6558,6 +6687,7 @@ namespace ndn_service_framework
         const auto service = m_assignment.service;
         const auto operation = std::make_shared<ImmutablePublicationOperation>();
         operation->authorityMutex = m_workAuthorityCommitMutex;
+        operation->inBandXor = m_assignment.dependencyTransport.redundancy == DependencyRedundancy::Xor;
         const auto queuedHook = m_provider.m_testImmutablePublicationQueued;
         // No Context, provider pointer or stack reference is captured. The
         // existing owner-call barrier drains an entered callback at teardown;
@@ -6590,7 +6720,9 @@ namespace ndn_service_framework
         while (completed.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready) {
             if (stopping->load() || !current()) {
                 std::lock_guard<std::mutex> lock(*operation->authorityMutex);
-                if (operation->committed) return *operation->committed;
+                if (operation->committed) {
+                    return *operation->committed;
+                }
                 operation->abandoned = true;
                 return {false, {}, {}, "IMMUTABLE_PUBLICATION_AUTHORITY_EXPIRED"};
             }
@@ -6598,7 +6730,9 @@ namespace ndn_service_framework
         try {
             {
                 std::lock_guard<std::mutex> lock(*operation->authorityMutex);
-                if (operation->committed) return *operation->committed;
+                if (operation->committed) {
+                    return *operation->committed;
+                }
             }
             return completed.get();
         }
@@ -6891,7 +7025,12 @@ namespace ndn_service_framework
                                                         payload,
                                                         maxSegmentSize,
                                                         freshnessMs,
-                                                        metrics);
+                                                        metrics,
+                                                        m_assignment.dependencyTransport.redundancy,
+                                                        m_assignment.admissionLimits.value_or(
+                                                            CollaborationAdmissionLimits{}).maxRetainedBytes,
+                                                        currentWorkPredicate(m_assignment.workDeadline),
+                                                        m_workAuthorityCommitMutex);
     }
 
     ndn::Name ServiceProvider::CollaborationContext::publishLargeNamed(
@@ -6923,7 +7062,10 @@ namespace ndn_service_framework
         };
         return m_provider.publishCollaborationLargeDataNamedCurrent(
             m_requestId, keyScope, dataName, payload, maxSegmentSize, freshnessMs,
-            metrics, current, m_workAuthorityCommitMutex);
+            metrics, current, m_workAuthorityCommitMutex, {},
+            m_assignment.dependencyTransport.redundancy,
+            m_assignment.admissionLimits.value_or(
+                CollaborationAdmissionLimits{}).maxRetainedBytes);
     }
 
   ndn::Name
@@ -6938,20 +7080,28 @@ namespace ndn_service_framework
     }
     return m_provider.publishCollaborationLargeDataNamedCurrent(
       m_requestId, keyScope, dataName, payload, maxSegmentSize, freshnessMs,
-      nullptr, current, m_workAuthorityCommitMutex, m_assignment.service);
+      nullptr, current, m_workAuthorityCommitMutex, m_assignment.service,
+      m_assignment.dependencyTransport.redundancy,
+      m_assignment.admissionLimits.value_or(
+        CollaborationAdmissionLimits{}).maxRetainedBytes);
   }
 
   std::optional<ndn::Buffer>
   ServiceProvider::CollaborationContext::fetchReusableLargeFromProducerCurrent(
     const ndn::Name& dataName, KeyScope keyScope,
-    const ndn::Name& expectedProducer, int timeoutMs)
+    const ndn::Name& expectedProducer, int timeoutMs,
+    size_t maxPlaintextBytes, size_t maxSegments)
   {
+    constexpr size_t MAX_PLAINTEXT_BYTES = 64 * 1024 * 1024;
+    constexpr size_t MAX_SEGMENTS = 96 * 1024 * 1024 / ndn::MAX_NDN_PACKET_SIZE;
     const auto deadline = std::min(m_assignment.workDeadline,
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs));
     const auto current = currentWorkPredicate(deadline);
     if (timeoutMs <= 0 || m_assignment.service.empty() || expectedProducer.empty() ||
         !expectedProducer.isPrefixOf(dataName) || dataName.size() <= expectedProducer.size() ||
-        !dataName.at(-1).isVersion() || dataName.at(-1).toVersion() == 0 || !current()) {
+        !dataName.at(-1).isVersion() || dataName.at(-1).toVersion() == 0 ||
+        maxPlaintextBytes == 0 || maxPlaintextBytes > MAX_PLAINTEXT_BYTES ||
+        maxSegments == 0 || maxSegments > MAX_SEGMENTS || !current()) {
       return std::nullopt;
     }
     const auto remainingMs = [&] {
@@ -6964,7 +7114,7 @@ namespace ndn_service_framework
       expectedProducer, m_assignment.service, keyScope, dataName, m_requestId);
     auto grant = m_provider.fetchCollaborationLargeData(
       m_requestId, keyScope, grantName, budgetMs, 0, nullptr,
-      expectedProducer, current, false, 0, 0, {}, {}, m_assignment.service);
+      expectedProducer, current, false, 0, 0, {}, {}, m_assignment.service, 103, 1);
     if (!grant || grant->size() != 103 || !current()) return std::nullopt;
     ndn::Buffer objectKey(grant->begin(), grant->begin() + 32);
     const std::string digest(grant->begin() + 32, grant->end());
@@ -6976,8 +7126,10 @@ namespace ndn_service_framework
     if (budgetMs <= 0) return std::nullopt;
     auto result = m_provider.fetchCollaborationLargeData(
       m_requestId, keyScope, dataName, budgetMs, 0, nullptr,
-      expectedProducer, current, false, 0, 0, {}, objectKey, m_assignment.service);
-    if (!result || !current() || sha256DigestString(*result) != digest) return std::nullopt;
+      expectedProducer, current, false, 0, 0, {}, objectKey, m_assignment.service,
+      maxPlaintextBytes, maxSegments);
+    if (!result || result->size() > maxPlaintextBytes || !current() ||
+        sha256DigestString(*result) != digest) return std::nullopt;
     return result;
   }
 
@@ -7069,6 +7221,50 @@ namespace ndn_service_framework
         return result;
     }
 
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchLargeFromProducerCurrent(
+        const ndn::Name& dataName, KeyScope keyScope,
+        const ndn::Name& expectedProducer,
+        std::chrono::steady_clock::time_point requestedDeadline,
+        std::function<bool()> additionalCurrent,
+        CollaborationTransferMetrics* metrics)
+    {
+        if (expectedProducer.empty() || !expectedProducer.isPrefixOf(dataName) ||
+            dataName.size() <= expectedProducer.size()) {
+            NDN_LOG_ERROR("Current-work producer-bound fetch has invalid producer"
+                          << " requestId=" << m_requestId.toUri()
+                          << " producer=" << expectedProducer.toUri()
+                          << " dataName=" << dataName.toUri());
+            return std::nullopt;
+        }
+        const auto deadline = std::min(requestedDeadline, m_assignment.workDeadline);
+        const auto workCurrent = m_assignment.workCurrent;
+        const auto workAuthorityRevoked = m_workAuthorityRevoked;
+        const auto pendingKey = ndn::Name(m_requesterName)
+            .append(m_assignment.service).append(m_requestId);
+        const auto lifecycle = m_provider.getStreamLifecycle(pendingKey);
+        const auto current = [workCurrent, workAuthorityRevoked, deadline, lifecycle,
+                              additionalCurrent = std::move(additionalCurrent)] {
+            return workAuthorityRevoked &&
+                !workAuthorityRevoked->load(std::memory_order_acquire) &&
+                workCurrent && workCurrent() &&
+                std::chrono::steady_clock::now() < deadline &&
+                (!additionalCurrent || additionalCurrent()) &&
+                (!lifecycle || (
+                 !lifecycle->terminalAuthority()->isTerminal() &&
+                 !lifecycle->terminalAuthority()->isFenced()));
+        };
+        if (!current()) return std::nullopt;
+        const auto timeoutMs = static_cast<int>(std::max<int64_t>(1,
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count()));
+        auto result = m_provider.fetchCollaborationLargeData(
+            m_requestId, keyScope, dataName, timeoutMs, 0, metrics,
+            expectedProducer, current);
+        if (!result || !current()) return std::nullopt;
+        return result;
+    }
+
     bool
     ServiceProvider::CollaborationContext::publishDataV1Segments(
         KeyScope keyScope,
@@ -7123,11 +7319,38 @@ namespace ndn_service_framework
         int freshnessMs,
         CollaborationTransferMetrics* metrics)
     {
+        if (m_assignment.dependencyTransport.redundancy == DependencyRedundancy::Xor) {
+            std::vector<std::shared_ptr<const ndn::Data>> originals;
+            return publishOwnedExactData(keyScope, objects, freshnessMs, metrics, originals,
+                m_assignment.admissionLimits.value_or(
+                    CollaborationAdmissionLimits{}).maxRetainedBytes);
+        }
         return m_provider.publishCollaborationOwnedExactData(
             m_requestId, keyScope, objects, freshnessMs, metrics, nullptr,
             std::numeric_limits<std::size_t>::max(),
             currentWorkPredicate(m_assignment.workDeadline), m_workAuthorityCommitMutex);
     }
+
+    namespace {
+    void
+    recordFinitePublication(const std::vector<std::shared_ptr<const ndn::Data>>& originals,
+                            size_t sourceCount, CollaborationTransferMetrics& metrics)
+    {
+      metrics.recoveryMode = "xor-packet-set-v1";
+      metrics.recoveryGroupDataPackets = detail::DEPENDENCY_XOR_GROUP_SIZE;
+      size_t repairWireBytes = 0, sourcePayloadBytes = 0, sourceWireBytes = 0;
+      for (size_t i = 0; i < originals.size(); ++i) {
+        if (i < sourceCount) {
+          sourcePayloadBytes += originals[i]->getContent().value_size();
+          sourceWireBytes += originals[i]->wireEncode().size();
+        }
+        else repairWireBytes += originals[i]->wireEncode().size();
+      }
+      metrics.repairPublishedWireBytes = repairWireBytes;
+      metrics.transportPayloadBytes = sourcePayloadBytes;
+      metrics.metadataBytes = sourceWireBytes - sourcePayloadBytes;
+    }
+    } // namespace
 
     bool
     ServiceProvider::CollaborationContext::publishOwnedExactData(
@@ -7137,6 +7360,41 @@ namespace ndn_service_framework
         std::vector<std::shared_ptr<const ndn::Data>>& originals,
         std::size_t maxWireBytes)
     {
+        if (m_assignment.dependencyTransport.redundancy == DependencyRedundancy::Xor) {
+            if (!hasCurrentWorkAuthority() || !currentWorkPredicate(m_assignment.workDeadline)())
+                throw std::runtime_error("INPUT_AUTHORITY_EXPIRED");
+            if (objects.empty()) return false;
+            detail::FinitePacketLayout layout;
+            layout.objectName = objects.front().first;
+            layout.sourceCount = objects.size();
+            layout.framing = detail::FinitePacketLayout::Framing::NAMED_PACKETS;
+            std::vector<ndn::Data> staged;
+            staged.reserve(objects.size());
+            for (const auto& object : objects) {
+                staged.emplace_back(object.first);
+                staged.back().setFreshnessPeriod(ndn::time::milliseconds(
+                    freshnessMs <= 0 ? 60000 : freshnessMs));
+                staged.back().setContent(object.second);
+            }
+            auto& keyChain = m_provider.m_testSigningKeyChain ?
+                *m_provider.m_testSigningKeyChain : m_provider.m_keyChain;
+            auto prepared = detail::prepareFinitePacketSet(std::move(staged), layout,
+                m_provider.identity, [&](ndn::Data& packet) {
+                    keyChain.sign(packet, m_provider.m_signingInfo);
+                }, maxWireBytes, ndn::MAX_NDN_PACKET_SIZE);
+            if (!hasCurrentWorkAuthority() || !currentWorkPredicate(m_assignment.workDeadline)())
+                throw std::runtime_error("INPUT_AUTHORITY_EXPIRED");
+            // The maintained owner checks every immutable-name conflict before
+            // inserting anything. Retain originals for exact replay.
+            originals = std::move(prepared);
+            const auto current = currentWorkPredicate(m_assignment.workDeadline);
+            const bool published = m_provider.replayCollaborationOwnedExactData(
+                originals, metrics, current, m_workAuthorityCommitMutex);
+            if (published && metrics) {
+                recordFinitePublication(originals, objects.size(), *metrics);
+            }
+            return published;
+        }
         return m_provider.publishCollaborationOwnedExactData(
             m_requestId, keyScope, objects, freshnessMs, metrics, &originals, maxWireBytes,
             currentWorkPredicate(m_assignment.workDeadline), m_workAuthorityCommitMutex);
@@ -7148,8 +7406,23 @@ namespace ndn_service_framework
         const std::vector<std::shared_ptr<const ndn::Data>>& originals,
         CollaborationTransferMetrics* metrics)
     {
-        return m_provider.replayCollaborationOwnedExactData(originals, metrics,
-            currentWorkPredicate(m_assignment.workDeadline), m_workAuthorityCommitMutex);
+        std::optional<detail::FinitePacketLayout> layout;
+        if (m_assignment.dependencyTransport.redundancy == DependencyRedundancy::Xor) {
+            if (!hasCurrentWorkAuthority() || !currentWorkPredicate(m_assignment.workDeadline)())
+                throw std::runtime_error("INPUT_AUTHORITY_EXPIRED");
+            if (!originals.empty() && originals.front()) {
+                layout = detail::FinitePacketLayout::readFrom(*originals.front(),
+                    originals.front()->getName(), m_provider.identity);
+                if (layout && layout->totalPacketCount() != originals.size())
+                    throw std::invalid_argument("INPUT_PACKET_PLAN_INVALID");
+            }
+        }
+        const bool published = m_provider.replayCollaborationOwnedExactData(
+            originals, metrics, currentWorkPredicate(m_assignment.workDeadline),
+            m_workAuthorityCommitMutex);
+        if (published && layout && metrics)
+            recordFinitePublication(originals, layout->sourceCount, *metrics);
+        return published;
     }
 
     std::optional<ndn::Buffer>
@@ -9729,6 +10002,20 @@ namespace ndn_service_framework
         }
 
         const auto handler = service->second.handler;
+        if (!assignment.inputAdmissionProfile.empty()) {
+            const auto bindings = assignment.selectedRoleProviders.find(assignment.role);
+            if (assignment.inputAdmissionProfile != "data-admission-v1" ||
+                !service->second.admissionLimits ||
+                (assignment.dependencyTransport.redundancy != DependencyRedundancy::None &&
+                 assignment.dependencyTransport.redundancy != DependencyRedundancy::Xor) ||
+                bindings == assignment.selectedRoleProviders.end() ||
+                std::find(bindings->second.begin(), bindings->second.end(), identity) == bindings->second.end()) {
+                publishExecutionFailureOnEventLoop(requesterName, providerName, serviceName,
+                    requestId, requestMessage, "INPUT_PROFILE_UNSUPPORTED", selectionDigest);
+                return true;
+            }
+            assignment.admissionLimits = service->second.admissionLimits;
+        }
         const auto requestVersion = requestMessage.hasControllerVersion()
             ? std::optional<ControllerVersion>(requestMessage.getControllerVersion())
             : std::nullopt;
@@ -9802,10 +10089,11 @@ namespace ndn_service_framework
                 ? std::optional<ControllerVersion>(requestMessage.getControllerVersion())
                 : std::nullopt,
             registrationState);
-        const auto current = [workFence, requestMessage] {
+        const auto streamDeadline = requestMessage.hasStreamRequestOptions()
+            ? std::optional<uint64_t>(requestMessage.getStreamRequestOptions().deadlineEpochMs) : std::nullopt;
+        std::function<bool()> current = [workFence, streamDeadline] {
             return workFence.current() &&
-                (!requestMessage.hasStreamRequestOptions() ||
-                 requestMessage.getStreamRequestOptions().deadlineEpochMs > nowMilliseconds());
+                (!streamDeadline || *streamDeadline > nowMilliseconds());
         };
         assignment.workDeadline = workFence.deadline;
         assignment.workCurrent = current;
@@ -9840,6 +10128,34 @@ namespace ndn_service_framework
                 registrationState->finishCollaborationHandler();
             }
             throw;
+        }
+        {
+            std::shared_ptr<CollaborationInputRequestState> inputState;
+            {
+                std::lock_guard<std::mutex> lock(m_collaborationMutex);
+                auto& entry = m_collaborationInputRequests[requestId];
+                if (!entry) {
+                    entry = std::make_shared<CollaborationInputRequestState>();
+                    entry->bounded = assignment.admissionLimits.has_value();
+                    entry->requester = requesterName;
+                    entry->service = serviceName;
+                    entry->request = requestMessage;
+                    entry->selectionDigest = selectionDigest;
+                    if (assignment.admissionLimits) entry->limits = *assignment.admissionLimits;
+                    entry->current = current;
+                }
+                inputState = entry;
+            }
+            if (inputState->requester != requesterName || inputState->service != serviceName ||
+                inputState->bounded != assignment.admissionLimits.has_value()) {
+                publishExecutionFailureOnEventLoop(requesterName, providerName, serviceName,
+                    requestId, requestMessage, "INPUT_PROFILE_UNSUPPORTED", selectionDigest);
+                return true;
+            }
+            assignment.workCurrent = [current, failed = inputState->failed] {
+                return !failed->load(std::memory_order_acquire) && current();
+            };
+            current = assignment.workCurrent;
         }
         const bool expectedScopedInput = [&] {
             if (!requestMessage.hasRequestCapabilities()) return false;
@@ -10402,6 +10718,7 @@ namespace ndn_service_framework
                                            std::string("response publish failed: ") + e.what(),
                                            responseName);
             releaseR1Reservation("RESPONSE_PUBLISH_FAILED");
+            retireCollaborationInput(requestId);
             throw;
         }
         if (requestScopedResponse) {
@@ -10414,6 +10731,7 @@ namespace ndn_service_framework
             m_requestScopedNonceRegistry.invalidate(requestScopedState->keys.keyId);
         }
         releaseDataV1Subscriptions(requestId);
+        retireCollaborationInput(requestId);
     }
 
     void ServiceProvider::fetchRequestScopedInputAndDispatch(
@@ -11145,6 +11463,7 @@ namespace ndn_service_framework
         }
         releaseDataV1Subscriptions(requestId);
         cleanupPendingRequestState(pendingKey);
+        retireCollaborationInput(requestId);
     }
 
     void ServiceProvider::publishCollaborationData(
@@ -11349,8 +11668,13 @@ namespace ndn_service_framework
         const ndn::Buffer& payload,
         size_t maxSegmentSize,
         int freshnessMs,
-        CollaborationTransferMetrics* metrics)
+        CollaborationTransferMetrics* metrics, DependencyRedundancy redundancy,
+        size_t maxWireBytes, std::function<bool()> current,
+        std::shared_ptr<std::mutex> authorityMutex)
     {
+        if ((current && !current()) || m_fetchStopping->load() ||
+            (redundancy == DependencyRedundancy::Xor &&
+             (!current || payload.size() > maxWireBytes))) return {};
         const uint64_t sequence =
             m_collaborationSequence.fetch_add(1, std::memory_order_relaxed);
         ndn::Name name = makeCollaborationDataName(identity,
@@ -11400,17 +11724,36 @@ namespace ndn_service_framework
         auto& activeKeyChain = m_testSigningKeyChain ?
             *m_testSigningKeyChain : m_keyChain;
         ndn::Segmenter segmenter(activeKeyChain, m_signingInfo);
-        auto segments = segmenter.segment(
+        const auto sources = segmenter.segment(
             ndn::span<const uint8_t>(encoded.data(), encoded.size()),
             name,
             maxSegmentSize == 0 ? 7000 : maxSegmentSize,
             ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
+        std::vector<std::shared_ptr<const ndn::Data>> segments(sources.begin(), sources.end());
+        if (redundancy == DependencyRedundancy::Xor) {
+            detail::FinitePacketLayout layout;
+            layout.objectName = name;
+            layout.sourceCount = sources.size();
+            std::vector<ndn::Data> staged;
+            staged.reserve(sources.size());
+            for (const auto& packet : sources) staged.push_back(*packet);
+            segments = detail::prepareFinitePacketSet(std::move(staged), layout, identity,
+                [&](ndn::Data& packet) { activeKeyChain.sign(packet, m_signingInfo); },
+                maxWireBytes, ndn::MAX_NDN_PACKET_SIZE);
+        }
 
         const bool activePut =
             boolEnvOrDefault("NDNSF_COLLAB_LARGE_ACTIVE_PUT", true);
         const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
-        for (const auto& data : segments) {
-            insertDataIntoIMS(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
+        if (redundancy == DependencyRedundancy::Xor) {
+            if (!replayCollaborationOwnedExactData(
+                    segments, nullptr, current, authorityMutex))
+                return {};
+        }
+        else {
+            for (const auto& data : segments) {
+                insertDataIntoIMS(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
+            }
         }
         if (activePut) {
             std::vector<std::shared_ptr<const ndn::Data>> packets;
@@ -11447,6 +11790,8 @@ namespace ndn_service_framework
             metrics->retryCount = 0;
             metrics->localCopyBytes = encoded.size();
         }
+        if (metrics && redundancy == DependencyRedundancy::Xor)
+            recordFinitePublication(segments, sources.size(), *metrics);
         NDN_LOG_DEBUG("COLLAB_LARGE_PUBLISHED name=" << name.toUri()
                       << " plaintextBytes=" << payload.size()
                       << " segments=" << segments.size()
@@ -11504,7 +11849,7 @@ namespace ndn_service_framework
         auto& publications = getImmutablePublicationStore();
         const auto digest = sha256DigestString(payload);
         const auto admission = publications.begin(service, *generation, semanticPrefix,
-                                                   digest, payload.size());
+                                                   digest, payload.size(), operation->inBandXor);
         using Status = ImmutableProtectedPublicationStore::Status;
         if (admission.status == Status::Reused) {
             const auto receipt = std::make_shared<const ImmutableProtectedDataResult>(
@@ -11600,7 +11945,24 @@ namespace ndn_service_framework
                     originals.push_back(std::make_shared<const ndn::Data>(*packet));
                 }
             };
-            retain(contentPackets);
+            if (operation->inBandXor) {
+                detail::FinitePacketLayout layout;
+                layout.objectName = admission.dataName;
+                layout.sourceCount = contentPackets.size();
+                std::vector<ndn::Data> staged;
+                staged.reserve(contentPackets.size());
+                for (const auto& packet : contentPackets) staged.push_back(*packet);
+                auto& keyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+                auto finite = detail::prepareFinitePacketSet(std::move(staged), layout, identity,
+                    [&](ndn::Data& packet) { keyChain.sign(packet, m_signingInfo); },
+                    ImmutableProtectedPublicationStore::Limits{}.reservationBytes, ndn::MAX_NDN_PACKET_SIZE);
+                for (const auto& packet : finite) {
+                    if (!validator->isProducerSignerAuthorized(*packet, identity))
+                        throw std::runtime_error("immutable original Producer signer rejected");
+                }
+                originals.insert(originals.end(), finite.begin(), finite.end());
+            }
+            else retain(contentPackets);
             retain(wrappedPackets);
             retain(ckPackets);
             if (wrappedPackets.empty() || ckPackets.empty() || !current() || m_fetchStopping->load()) {
@@ -11666,7 +12028,8 @@ namespace ndn_service_framework
         CollaborationTransferMetrics* metrics)
     {
         return publishCollaborationLargeDataNamedCurrent(
-            requestId, keyScope, dataName, payload, maxSegmentSize, freshnessMs, metrics, {}, {});
+            requestId, keyScope, dataName, payload, maxSegmentSize, freshnessMs,
+            metrics, {}, {});
     }
 
     ndn::Name
@@ -11692,7 +12055,8 @@ namespace ndn_service_framework
       size_t maxSegmentSize, int freshnessMs, CollaborationTransferMetrics* metrics,
       const std::function<bool()>& current,
       const std::shared_ptr<std::mutex>& authorityMutex,
-      const ndn::Name& reusableService)
+      const ndn::Name& reusableService,
+      DependencyRedundancy redundancy, size_t maxWireBytes)
     {
       const bool reusable = !reusableService.empty();
       if (dataName.empty()) {
@@ -11711,13 +12075,16 @@ namespace ndn_service_framework
       constexpr size_t MAX_NAMED_PLAINTEXT_BYTES = 64 * 1024 * 1024;
       constexpr size_t MAX_NAMED_RESERVATION_BYTES = 96 * 1024 * 1024;
       constexpr size_t MAX_NAMED_OBJECTS = 8192;
+      const size_t wireLimit = std::min(maxWireBytes, MAX_NAMED_RESERVATION_BYTES);
       const size_t segmentBytes = maxSegmentSize == 0 ? 7000 : maxSegmentSize;
       const int effectiveFreshness = freshnessMs <= 0 ? 60000 : freshnessMs;
       if (requestId.empty() || dataName.size() <= identity.size() ||
         dataName.wireEncode().size() > 8192 || requestId.wireEncode().size() > 8192 ||
         keyScope.size() > 1024 || payload.size() > MAX_NAMED_PLAINTEXT_BYTES ||
         segmentBytes > ndn::MAX_NDN_PACKET_SIZE || (current && !current()) ||
-        m_fetchStopping->load()) {
+        m_fetchStopping->load() ||
+        (redundancy == DependencyRedundancy::Xor &&
+         (maxWireBytes == 0 || payload.size() > wireLimit))) {
         return {};
       }
       const std::string keyId = "collab-large|" + requestId.toUri() + "|" + keyScope;
@@ -11726,10 +12093,22 @@ namespace ndn_service_framework
       const size_t encodedBound = payload.size() + keyId.size() + 512;
       const size_t segmentCountBound = encodedBound / segmentBytes +
         (encodedBound % segmentBytes != 0);
-      if (segmentCountBound > MAX_NAMED_RESERVATION_BYTES / ndn::MAX_NDN_PACKET_SIZE) {
+      if (segmentCountBound == 0 ||
+          segmentCountBound > MAX_NAMED_RESERVATION_BYTES / ndn::MAX_NDN_PACKET_SIZE) {
         return {};
       }
-      const size_t reservationBytes = segmentCountBound * ndn::MAX_NDN_PACKET_SIZE;
+      size_t reservationBytes = segmentCountBound * ndn::MAX_NDN_PACKET_SIZE;
+      if (redundancy == DependencyRedundancy::Xor) {
+        const size_t repairCountBound = segmentCountBound / detail::DEPENDENCY_XOR_GROUP_SIZE +
+          (segmentCountBound % detail::DEPENDENCY_XOR_GROUP_SIZE != 0);
+        if (segmentCountBound > std::numeric_limits<size_t>::max() - repairCountBound) {
+          return {};
+        }
+        const size_t packetCountBound = segmentCountBound + repairCountBound;
+        if (packetCountBound > wireLimit / ndn::MAX_NDN_PACKET_SIZE) return {};
+        reservationBytes = packetCountBound * ndn::MAX_NDN_PACKET_SIZE;
+      }
+      if (reservationBytes == 0 || reservationBytes > MAX_NAMED_RESERVATION_BYTES) return {};
 
       ndn::Buffer scopeKey;
       {
@@ -11764,6 +12143,7 @@ namespace ndn_service_framework
       }
       appendField(std::to_string(segmentBytes));
       appendField(std::to_string(effectiveFreshness));
+      appendField(redundancy == DependencyRedundancy::Xor ? "xor-packet-set-v1" : "none");
       appendField(m_signingInfo.getSignerName().toUri());
       appendField(std::to_string(static_cast<int>(m_signingInfo.getSignerType())));
       const auto bindingText = binding.str();
@@ -11819,10 +12199,21 @@ namespace ndn_service_framework
           }
           auto& activeKeyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
           ndn::Segmenter segmenter(activeKeyChain, m_signingInfo);
-          const auto segments = segmenter.segment(
+          const auto sources = segmenter.segment(
             ndn::span<const uint8_t>(block.data(), block.size()), dataName,
             segmentBytes, ndn::time::milliseconds(effectiveFreshness));
-          packets.assign(segments.begin(), segments.end());
+          packets.assign(sources.begin(), sources.end());
+          if (redundancy == DependencyRedundancy::Xor) {
+            detail::FinitePacketLayout layout;
+            layout.objectName = dataName;
+            layout.sourceCount = sources.size();
+            std::vector<ndn::Data> staged;
+            staged.reserve(sources.size());
+            for (const auto& packet : sources) staged.push_back(*packet);
+            packets = detail::prepareFinitePacketSet(std::move(staged), layout, identity,
+              [&] (ndn::Data& packet) { activeKeyChain.sign(packet, m_signingInfo); },
+              wireLimit, ndn::MAX_NDN_PACKET_SIZE);
+          }
           if (reusable && (!validator ||
               std::any_of(packets.begin(), packets.end(), [&] (const auto& packet) {
                 return !validator->isProducerSignerAuthorized(*packet, identity);
@@ -11886,6 +12277,14 @@ namespace ndn_service_framework
         metrics->interestCount = 0;
         metrics->retryCount = 0;
         metrics->localCopyBytes = reused ? 0 : encodedBytes;
+      }
+      if (metrics && redundancy == DependencyRedundancy::Xor) {
+        const auto layout = detail::FinitePacketLayout::readFrom(
+          *packets.front(), dataName, identity);
+        if (!layout || layout->totalPacketCount() != packets.size()) {
+          throw std::runtime_error("immutable XOR publication has an invalid packet layout");
+        }
+        recordFinitePublication(packets, layout->sourceCount, *metrics);
       }
       if (reusable) {
         const auto digest = sha256DigestString(payload);
@@ -12639,14 +13038,13 @@ namespace ndn_service_framework
     {
         using Retry = std::function<void(const char*, std::size_t, bool)>;
         std::future<std::optional<ExactDataBatchResult>> result;
+        CollaborationTransferMetrics metrics;
         std::vector<std::shared_ptr<std::function<void()>>> expressions;
         std::vector<std::shared_ptr<Retry>> retries;
-        std::shared_ptr<std::function<void()>> pump;
-        ndn::scheduler::ScopedEventId networkEvent;
-        ndn::scheduler::ScopedEventId retryEvent;
         ndn::scheduler::ScopedEventId deadlineEvent;
         ndn::scheduler::ScopedEventId cancelEvent;
         std::shared_ptr<std::function<void()>> cancelPoll;
+        std::shared_ptr<std::function<void()>> recovery;
         std::function<void(const char*)> abort;
         std::chrono::steady_clock::time_point deadline;
     };
@@ -12684,6 +13082,12 @@ namespace ndn_service_framework
             m_impl->abort("hard wait deadline for exact Data batch");
         }
         return m_impl->result.get();
+    }
+
+    CollaborationTransferMetrics
+    ServiceProvider::ExactDataFetchOperation::metricsSnapshot() const
+    {
+        return m_impl ? m_impl->metrics : CollaborationTransferMetrics{};
     }
 
     void ServiceProvider::ExactDataFetchOperation::cancel()
@@ -12814,15 +13218,24 @@ namespace ndn_service_framework
         ExactDataFetchPhase phase,
         std::function<bool()> onValidatedData,
         CollaborationLocalWorkObserver localWorkObserver,
-        std::size_t maxOutstanding)
+        std::size_t maxOutstanding,
+        bool retainOriginalWire, std::size_t maxRetainedWireBytes,
+        std::function<void()> onReady, std::shared_ptr<std::atomic<bool>> signatureRejected,
+        std::vector<ndn::Name> authorizedLocations, ExactDataWireRecovery recoverMissing,
+        bool hybridKeyBootstrap, std::vector<std::size_t> optionalSlots,
+        ExactDataRecoveryReady recoveryReady)
     {
         auto operation = std::make_shared<ExactDataFetchOperation::Impl>();
         operation->deadline = std::chrono::steady_clock::now() +
             std::chrono::milliseconds(std::max(0, timeoutMs));
-        const auto rejected = [&operation] {
+        const auto rejected = [&operation, onReady] {
             std::promise<std::optional<ExactDataBatchResult>> result;
             operation->result = result.get_future();
             result.set_value(std::nullopt);
+            if (onReady) {
+                try { onReady(); }
+                catch (...) { NDN_LOG_ERROR("exact read completion notification failed"); }
+            }
             return ExactDataFetchOperation(operation);
         };
         if (phase != ExactDataFetchPhase::Published &&
@@ -12842,7 +13255,22 @@ namespace ndn_service_framework
             dataNames.begin(), dataNames.end(), [&uniqueNames](const ndn::Name& name) {
                 return name.empty() || !uniqueNames.insert(name).second;
             });
-        if (invalidNames || expectedProducer.empty() || timeoutMs <= 0) {
+        const bool invalidBootstrap = hybridKeyBootstrap &&
+            (dataNames.size() != 1 || !retainOriginalWire || recoverMissing ||
+             phase != ExactDataFetchPhase::Published ||
+             !isHybridKeyBootstrapLocator(dataNames.front(), expectedProducer));
+        std::set<std::size_t> uniqueOptional;
+        const bool invalidOptional =
+            (!optionalSlots.empty() && (!retainOriginalWire || !recoverMissing ||
+                                       !recoveryReady || hybridKeyBootstrap)) ||
+            (recoveryReady && (!recoverMissing || dataNames.size() > 65536)) ||
+            std::any_of(optionalSlots.begin(), optionalSlots.end(),
+                [&uniqueOptional, &dataNames](std::size_t index) {
+                    return index == 0 || index >= dataNames.size() ||
+                           !uniqueOptional.insert(index).second;
+                });
+        if (invalidNames || expectedProducer.empty() || timeoutMs <= 0 ||
+            invalidBootstrap || invalidOptional) {
             NDN_LOG_ERROR("Exact collaboration fetch arguments are invalid"
                           << " requestId=" << requestId.toUri()
                           << " keyScope=" << keyScope
@@ -12857,58 +13285,139 @@ namespace ndn_service_framework
             }
             return rejected();
         }
+        // Async slot callbacks outlive this call. Share one immutable owned
+        // name list across them rather than copying the full batch into every
+        // per-slot closure (which makes setup quadratic in the batch size).
+        auto ownedDataNames = std::make_shared<const std::vector<ndn::Name>>(dataNames);
 
         using ExactClock = std::chrono::steady_clock;
-        using NetworkPending = std::multimap<ExactClock::time_point, std::size_t>;
         struct ExactFetchSlot
         {
             std::atomic<bool> completed{false};
             std::atomic<std::size_t> attempts{0};
+            std::atomic<bool> networkCompleted{false};
+            std::atomic<bool> networkExhausted{false};
+            std::atomic<bool> recoveryAttempted{false};
+            std::atomic<bool> recoveryFailurePending{false};
+            std::atomic<bool> recovered{false};
+            std::atomic<bool> arqFallbackRecorded{false};
+            std::string recoveryTrigger;
+            std::string exhaustedError;
+            std::function<void()> retryAfterRecovery;
+            std::function<void(const ndn::Data&)> validateRecovered;
+            bool creditHeld = false;
+            bool optional = false;
+            bool recoveryQueued = false;
+            std::atomic<std::size_t> sentInterests{0};
+            bool retryQueued = false;
+            std::size_t lastRetryEnqueuedAttempt = 0;
             ndn::ScopedPendingInterestHandle pendingInterest;
             bool inFlight = false;
-            bool retryQueued = false;
             ExactClock::time_point sentAt, retryAt;
             std::optional<ExactClock::time_point> receivedAt;
-            std::optional<NetworkPending::iterator> networkEntry;
             std::uint64_t congestionMark = 0;
         };
         struct ExactFetchState
         {
-            ExactFetchState(std::size_t count, std::size_t limit, ndn::time::milliseconds rto)
-                : slots(count), content(count), remaining(count), congestion(limit, rto) {}
+            struct ReadyRecovery
+            {
+                std::size_t sourceSlot;
+                std::size_t repairSlot;
+                std::vector<std::size_t> snapshotSlots;
+            };
             std::atomic<bool> completed{false};
-            std::atomic<std::size_t> interestCount{0};
             std::atomic<std::size_t> wireBytes{0};
             std::atomic<std::size_t> issuedBarriers{0};
+            std::atomic<std::size_t> retainedWireBytes{0};
+            std::atomic<std::size_t> peakRetainedWireBytes{0};
+            std::size_t maxRetainedWireBytes = 0;
+            bool strict = false;
+            std::vector<ndn::Name> authorizedLocations;
             std::mutex mutex;
             std::promise<std::optional<ExactDataBatchResult>> result;
             std::vector<ExactFetchSlot> slots;
             std::vector<ndn::Buffer> content;
             std::size_t remaining;
+            std::size_t networkRemaining;
             std::size_t nextToIssue = 0;
             std::size_t initialWindowSize = 0;
+            std::size_t activeSlots = 0;
             std::size_t inFlight = 0;
             std::size_t peakInFlight = 0;
-            bool pumpQueued = false;
             std::optional<ExactClock::time_point> readySince;
-            NetworkPending networkPending;
-            std::deque<std::size_t> retryQueue;
             detail::ExactDataCongestionWindow congestion;
+            std::deque<std::size_t> retryQueue;
+            std::deque<ReadyRecovery> readyRecoverySlots;
+            std::size_t queuedSnapshotSlots = 0;
+            bool recoveryActive = false;
             std::string error;
             std::chrono::steady_clock::time_point deadline;
+            CollaborationTransferMetrics metrics;
+            std::size_t totalInterests() const noexcept
+            {
+                std::size_t total = 0;
+                for (const auto& slot : slots)
+                    total += slot.sentInterests.load(std::memory_order_relaxed);
+                return total;
+            }
+            void fillInterestMetrics(CollaborationTransferMetrics& target) const noexcept
+            {
+                target.originalInterests = 0;
+                target.originalRetries = 0;
+                target.repairInterests = 0;
+                target.repairRetries = 0;
+                for (const auto& slot : slots) {
+                    const auto sent = slot.sentInterests.load(std::memory_order_relaxed);
+                    auto& interests = slot.optional ? target.repairInterests : target.originalInterests;
+                    auto& retries = slot.optional ? target.repairRetries : target.originalRetries;
+                    interests += sent;
+                    retries += sent == 0 ? 0 : sent - 1;
+                }
+                target.interestCount = target.originalInterests + target.repairInterests;
+                target.retryCount = target.originalRetries + target.repairRetries;
+            }
+            bool hasRequiredData() const
+            {
+                for (std::size_t i = 0; i < slots.size(); ++i)
+                    if (!slots[i].optional && content[i].empty()) return false;
+                return true;
+            }
+            void recordPeakRetained(std::size_t bytes) noexcept
+            {
+                auto peak = peakRetainedWireBytes.load(std::memory_order_relaxed);
+                while (peak < bytes && !peakRetainedWireBytes.compare_exchange_weak(
+                           peak, bytes, std::memory_order_relaxed)) {}
+            }
+            ExactFetchState(std::size_t count, std::size_t capacity,
+                            ndn::time::milliseconds initialRto)
+                : slots(count), content(count), remaining(count), networkRemaining(count),
+                  congestion(capacity, initialRto) {}
         };
         const int interestLifetimeMs = std::max(
             50, std::min(timeoutMs,
                          intEnvOrDefault(
                            "NDNSF_DI_EXACT_INTEREST_LIFETIME_MS", 500)));
-        const auto windowLimit = maxOutstanding == 0 ? dataNames.size() :
-            std::min(maxOutstanding, dataNames.size());
-        auto state = std::make_shared<ExactFetchState>(dataNames.size(), windowLimit,
+        const auto capacity = std::min({dataNames.size(), std::size_t{256},
+            maxOutstanding == 0 ? std::size_t{128} : maxOutstanding});
+        auto state = std::make_shared<ExactFetchState>(dataNames.size(), capacity,
             ndn::time::milliseconds(std::min(timeoutMs, interestLifetimeMs)));
+        for (const auto index : optionalSlots) state->slots[index].optional = true;
+        state->remaining -= optionalSlots.size();
+        state->maxRetainedWireBytes = maxRetainedWireBytes;
+        state->strict = retainOriginalWire;
+        state->authorizedLocations = std::move(authorizedLocations);
         state->initialWindowSize = state->congestion.size();
+        state->activeSlots = state->initialWindowSize;
+        for (std::size_t i = 0; i < state->initialWindowSize; ++i)
+            state->slots[i].creditHeld = true;
+        state->nextToIssue = state->initialWindowSize;
         state->deadline = operation->deadline;
-        if (phase == ExactDataFetchPhase::Published) state->readySince = ExactClock::now();
+        state->metrics.actualDataName = dataNames.front().toUri();
+        state->metrics.recoveryMode = recoverMissing ?
+            (recoveryReady ? "xor-packet-set-v1" : "xor-wire-v1") : "none";
+        state->metrics.recoveryGroupDataPackets = recoverMissing ? 8 : 0;
         operation->result = state->result.get_future();
+        if (phase == ExactDataFetchPhase::Published) state->readySince = ExactClock::now();
 
         auto firstReadReported = std::make_shared<std::atomic<bool>>(false);
         auto reportFirstRead = [firstReadReported, onFirstReadStarted]
@@ -12939,33 +13448,49 @@ namespace ndn_service_framework
             });
         };
         std::weak_ptr<ExactDataFetchOperation::Impl> weakOperation = operation;
-        auto requestPump = [this, state, weakOperation] {
+        auto refill = std::make_shared<std::function<void()>>();
+        *refill = [this, state, weakOperation] {
+            std::vector<std::size_t> ready;
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
-                if (state->completed.load() || state->pumpQueued) return;
-                state->pumpQueued = true;
-            }
-            try {
-                boost::asio::post(m_face.getIoContext(), [state, weakOperation] {
-                    {
-                        std::lock_guard<std::mutex> lock(state->mutex);
-                        state->pumpQueued = false;
+                if (state->completed.load()) return;
+                while (state->activeSlots < state->congestion.size()) {
+                    std::size_t index;
+                    if (!state->retryQueue.empty()) {
+                        index = state->retryQueue.front();
+                        state->retryQueue.pop_front();
+                        state->slots[index].retryQueued = false;
+                        if (state->slots[index].completed.load() ||
+                            state->slots[index].networkCompleted.load()) continue;
                     }
+                    else if (state->nextToIssue < state->slots.size()) {
+                        index = state->nextToIssue++;
+                    }
+                    else break;
+                    state->slots[index].creditHeld = true;
+                    ++state->activeSlots;
+                    ready.push_back(index);
+                }
+            }
+            if (ready.empty()) return;
+            try {
+                boost::asio::post(m_face.getIoContext(), [weakOperation, ready] {
                     if (const auto owner = weakOperation.lock()) {
-                        if (!state->completed.load()) {
-                            try { (*owner->pump)(); }
-                            catch (...) { owner->abort("exact Data pump failed"); }
-                        }
+                        for (const auto index : ready) (*owner->expressions[index])();
                     }
                 });
             }
             catch (...) {
-                if (const auto owner = weakOperation.lock()) owner->abort("exact Data pump dispatch failed");
+                if (const auto owner = weakOperation.lock())
+                    owner->abort("exact Data refill dispatch failed");
             }
         };
+        auto advanceRecovery = std::make_shared<std::function<void()>>();
+        std::weak_ptr<std::function<void()>> weakAdvanceRecovery = advanceRecovery;
         auto finishSlot = [this, state, reportFirstRead, cancelPending, weakOperation,
-                           requestPump, windowLimit, localWorkObserver, requestId, keyScope,
-                           firstName = dataNames.front()]
+                           weakAdvanceRecovery, localWorkObserver, requestId, keyScope,
+                           ownedDataNames, recoverMissing, recoveryReady, shouldCancel,
+                           firstName = dataNames.front(), onReady, refill, capacity]
                       (std::size_t index, ndn::Buffer content, std::string error) {
             std::exception_ptr firstReadError;
             if (!error.empty()) {
@@ -12975,74 +13500,246 @@ namespace ndn_service_framework
             std::vector<ndn::ScopedPendingInterestHandle> pending;
             std::optional<ExactDataBatchResult> result;
             bool completed = false;
+            bool startRecovery = false;
+            std::function<void()> retryRecovery;
+            const auto recoveryRecord = [&]() -> CollaborationRecoveryMetric* {
+                if (index >= ownedDataNames->size()) return nullptr;
+                const auto name = (*ownedDataNames)[index].toUri();
+                const auto it = std::find_if(state->metrics.recovery.begin(),
+                    state->metrics.recovery.end(), [&name](const auto& record) {
+                        return record.objectName == name;
+                    });
+                return it == state->metrics.recovery.end() ? nullptr : &*it;
+            };
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
                 if (state->completed.load()) {
                     return;
                 }
-                if (index < state->slots.size() && state->slots[index].completed.load()) {
-                    return;
-                }
-                if (!error.empty()) {
-                    state->error = std::move(error);
+                if (index >= state->slots.size()) {
+                    state->error = error.empty() ? "invalid exact Data slot" : std::move(error);
                     completed = true;
                 }
-                else {
+                else if (state->slots[index].completed.load()) {
+                    return;
+                }
+                else if (!error.empty()) {
                     auto& slot = state->slots[index];
-                    const auto flight = state->inFlight;
                     if (slot.inFlight) {
                         slot.inFlight = false;
                         --state->inFlight;
                     }
                     slot.retryQueued = false;
-                    if (slot.networkEntry) {
-                        state->networkPending.erase(*slot.networkEntry);
-                        slot.networkEntry.reset();
-                    }
-                    if (slot.receivedAt) {
-                        std::optional<std::chrono::nanoseconds> sample;
-                        if (state->readySince && slot.sentAt >= *state->readySince &&
-                            slot.attempts.load(std::memory_order_relaxed) == 1) {
-                            sample = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                *slot.receivedAt - slot.sentAt);
+                    const bool recoveryExpired =
+                        error.find("expired") != std::string::npos ||
+                        error.find("deadline") != std::string::npos;
+                    if (recoveryExpired) state->metrics.deadlineExpired = 1;
+                    if (slot.recoveryFailurePending.exchange(false)) {
+                        auto* record = recoveryRecord();
+                        if (recoveryExpired) {
+                            if (record) record->terminalState = "expired";
                         }
-                        if (!state->readySince) state->readySince = *slot.receivedAt;
-                        state->congestion.acknowledge(index, slot.congestionMark, sample, flight);
+                        else {
+                            ++state->metrics.fecRejectedRepairs;
+                            if (record) record->terminalState = "repair-rejected";
+                        }
                     }
-                    state->content[index] = std::move(content);
-                    slot.completed.store(true);
-                    completed = --state->remaining == 0;
-                }
-                if (completed) {
-                    if (state->error.empty() && std::all_of(
-                            state->content.begin(), state->content.end(),
-                            [](const ndn::Buffer& wire) { return !wire.empty(); })) {
-                        result.emplace();
-                        std::size_t payloadBytes = 0;
-                        for (const auto& wire : state->content) payloadBytes += wire.size();
-                        result->contents = std::move(state->content);
-                        auto& metrics = result->metrics;
-                        metrics.actualDataName = firstName.toUri();
-                        metrics.transportPayloadBytes = payloadBytes;
-                        const auto wireBytes = state->wireBytes.load(std::memory_order_relaxed);
-                        const auto attempts = state->interestCount.load(std::memory_order_relaxed);
-                        metrics.wireBytes = wireBytes;
-                        metrics.metadataBytes = wireBytes >= payloadBytes ? wireBytes - payloadBytes : 0;
-                        metrics.interestCount = attempts;
-                        metrics.retryCount = attempts > state->slots.size() ? attempts - state->slots.size() : 0;
-                        metrics.localCopyBytes = payloadBytes;
+                    const bool exhausted = error.find(
+                        "strict exact Data attempt budget exhausted") == 0;
+                    const bool checkpoint = error ==
+                        "strict exact Data recovery checkpoint";
+                    const bool permissionFailure =
+                        error.find("current permission rejected") != std::string::npos ||
+                        error.find("current permission check failed") != std::string::npos ||
+                        error.find("exact Data progress rejected") != std::string::npos ||
+                        error.find("exact Data progress callback failed") != std::string::npos;
+                    const bool recoveryMayRetry = slot.recoveryAttempted &&
+                        !permissionFailure && slot.attempts.load(std::memory_order_relaxed) < 6 &&
+                        std::chrono::steady_clock::now() < state->deadline &&
+                        !(shouldCancel && shouldCancel());
+                    if (slot.optional && !permissionFailure && !recoveryExpired &&
+                        error.find("retained-byte limit") == std::string::npos &&
+                        !(shouldCancel && shouldCancel())) {
+                        if (!slot.networkCompleted.exchange(true)) --state->networkRemaining;
+                        if (slot.creditHeld) --state->activeSlots;
+                        slot.creditHeld = false;
+                        slot.completed.store(true);
+                        if (error.find("sign") != std::string::npos ||
+                            error.find("mismatch") != std::string::npos)
+                            ++state->metrics.fecRejectedRepairs;
+                        completed = state->remaining == 0;
+                        startRecovery = !completed &&
+                            (state->networkRemaining == 0 || !state->readyRecoverySlots.empty());
+                    }
+                    else if (recoveryMayRetry && slot.retryAfterRecovery) {
+                        if (auto* record = recoveryRecord())
+                            record->terminalState = "arq-fallback";
+                        slot.networkCompleted = false;
+                        slot.networkExhausted = false;
+                        slot.exhaustedError = error;
+                        state->recoveryActive = false;
+                        ++state->networkRemaining;
+                        if (!slot.creditHeld) ++state->activeSlots;
+                        slot.creditHeld = true;
+                        retryRecovery = slot.retryAfterRecovery;
+                    }
+                    else if (recoverMissing && state->strict &&
+                        !slot.recoveryAttempted && (checkpoint || exhausted) &&
+                        !slot.networkCompleted &&
+                        std::chrono::steady_clock::now() < state->deadline &&
+                        !(shouldCancel && shouldCancel())) {
+                        slot.networkCompleted = true;
+                        slot.networkExhausted = true;
+                        slot.exhaustedError = std::move(error);
+                        --state->networkRemaining;
+                        if (slot.creditHeld) --state->activeSlots;
+                        slot.creditHeld = false;
+                        startRecovery = state->networkRemaining == 0 ||
+                                        !state->readyRecoverySlots.empty();
                     }
                     else {
+                        if (auto* record = recoveryRecord()) {
+                            record->terminalState = recoveryExpired ? "expired" : "failed";
+                        }
+                        state->error = std::move(error);
+                        completed = true;
+                    }
+                }
+                else {
+                    auto& slot = state->slots[index];
+                    const auto inFlight = state->inFlight;
+                    if (slot.inFlight) {
+                        slot.inFlight = false;
+                        --state->inFlight;
+                    }
+                    slot.retryQueued = false;
+                    if (!slot.networkCompleted) {
+                        slot.networkCompleted = true;
+                        --state->networkRemaining;
+                        std::optional<std::chrono::nanoseconds> sample;
+                        if (slot.receivedAt) {
+                            if (state->readySince && slot.sentAt >= *state->readySince &&
+                                slot.attempts.load(std::memory_order_relaxed) == 1) {
+                                sample = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    *slot.receivedAt - slot.sentAt);
+                            }
+                            if (!state->readySince) state->readySince = *slot.receivedAt;
+                        }
+                        state->congestion.acknowledge(index, slot.congestionMark, sample,
+                                                      inFlight);
+                    }
+                    if (slot.creditHeld) --state->activeSlots;
+                    slot.creditHeld = false;
+                    state->content[index] = std::move(content);
+                    slot.completed.store(true);
+                    if (slot.recoveryFailurePending.exchange(false)) {
+                        if (slot.recovered.load()) {
+                            ++state->metrics.fecRecoveredPackets;
+                            if (auto* record = recoveryRecord()) {
+                                record->terminalState = "xor-recovered";
+                                record->recoveredBeforeOriginalRetry =
+                                    record->originalRetriesBeforeRecovery == 0;
+                            }
+                        }
+                        else {
+                            ++state->metrics.arqFallbacks;
+                            if (auto* record = recoveryRecord())
+                                record->terminalState = "original-arrived-during-recovery";
+                        }
+                    }
+                    else if (slot.arqFallbackRecorded.load() &&
+                             !slot.recovered.load()) {
+                        if (auto* record = recoveryRecord())
+                            record->terminalState = "arq-fallback-succeeded";
+                    }
+                    if (slot.recoveryAttempted) state->recoveryActive = false;
+                    if (!slot.optional) --state->remaining;
+                    completed = state->remaining == 0;
+                    if (!completed && recoveryReady) {
+                        try {
+                            std::vector<std::size_t> snapshotSlots;
+                            const auto ready = recoveryReady(index, state->content, snapshotSlots);
+                            if (ready && ready->first < state->slots.size() &&
+                                ready->second < state->slots.size() &&
+                                state->slots[ready->second].optional) {
+                                auto& missing = state->slots[ready->first];
+                                if (!missing.optional && !missing.completed.load() &&
+                                    !missing.recoveryAttempted.load() && !missing.recoveryQueued) {
+                                    std::sort(snapshotSlots.begin(), snapshotSlots.end());
+                                    const bool validSnapshot = !snapshotSlots.empty() &&
+                                        snapshotSlots.back() < state->slots.size() &&
+                                        std::adjacent_find(snapshotSlots.begin(), snapshotSlots.end()) ==
+                                            snapshotSlots.end() &&
+                                        std::binary_search(snapshotSlots.begin(), snapshotSlots.end(), ready->first) &&
+                                        std::binary_search(snapshotSlots.begin(), snapshotSlots.end(), ready->second) &&
+                                        snapshotSlots.size() <= state->slots.size() - state->queuedSnapshotSlots;
+                                    if (!validSnapshot)
+                                        throw std::invalid_argument("invalid recovery group snapshot");
+                                    missing.recoveryQueued = true;
+                                    state->queuedSnapshotSlots += snapshotSlots.size();
+                                    state->readyRecoverySlots.push_back({ready->first, ready->second,
+                                                                       std::move(snapshotSlots)});
+                                }
+                            }
+                        }
+                        catch (...) {
+                            state->error = "exact Data recovery readiness failed";
+                            completed = true;
+                        }
+                    }
+                    startRecovery = !completed &&
+                        (state->networkRemaining == 0 || !state->readyRecoverySlots.empty());
+                }
+                if (completed) {
+                    if (state->error.empty() && state->hasRequiredData()) {
+                        result.emplace();
+                        std::size_t payloadBytes = 0;
+                        result->contents.reserve(state->content.size());
+                        for (std::size_t i = 0; i < state->content.size(); ++i) {
+                            if (state->slots[i].optional) continue;
+                            payloadBytes += state->content[i].size();
+                            result->contents.push_back(std::move(state->content[i]));
+                        }
                         state->content.clear();
+                        state->readyRecoverySlots.clear();
+                        state->queuedSnapshotSlots = 0;
+                        auto& metrics = state->metrics;
+                        metrics.transportPayloadBytes = payloadBytes;
+                        const auto wireBytes = state->wireBytes.load(std::memory_order_relaxed);
+                        metrics.wireBytes = wireBytes;
+                        const auto sourceWire = wireBytes - std::min(wireBytes, metrics.repairWireBytes);
+                        metrics.metadataBytes = sourceWire >= payloadBytes ? sourceWire - payloadBytes : 0;
+                        state->fillInterestMetrics(metrics);
+                        metrics.localCopyBytes = payloadBytes;
+                        metrics.validatedOriginalWireBytes = payloadBytes;
+                        metrics.peakRetainedBytes = state->peakRetainedWireBytes.load(
+                            std::memory_order_relaxed);
+                        result->metrics = metrics;
+                    }
+                    else {
+                        std::size_t validatedBytes = 0;
+                        for (std::size_t i = 0; i < state->content.size(); ++i)
+                            if (!state->slots[i].optional) validatedBytes += state->content[i].size();
+                        state->metrics.transportPayloadBytes = validatedBytes;
+                        state->metrics.wireBytes = state->wireBytes.load(std::memory_order_relaxed);
+                        state->fillInterestMetrics(state->metrics);
+                        state->metrics.validatedOriginalWireBytes = validatedBytes;
+                        state->metrics.peakRetainedBytes = state->peakRetainedWireBytes.load(
+                            std::memory_order_relaxed);
+                        if (state->error.find("deadline") != std::string::npos ||
+                            state->error.find("expired") != std::string::npos)
+                            state->metrics.deadlineExpired = 1;
+                        state->content.clear();
+                        state->readyRecoverySlots.clear();
+                        state->queuedSnapshotSlots = 0;
                         NDN_LOG_ERROR("Exact collaboration fetch failed"
                                       << " requestId=" << requestId.toUri()
                                       << " keyScope=" << keyScope
                                       << " dataName=" << firstName.toUri()
-                                      << " attempts=" << state->interestCount.load(std::memory_order_relaxed)
+                                      << " attempts=" << state->totalInterests()
                                       << " error=" << (state->error.empty() ? "empty Data" : state->error));
                     }
                     pending.reserve(state->slots.size());
-                    state->networkPending.clear();
                     state->retryQueue.clear();
                     for (auto& member : state->slots) {
                         pending.push_back(std::move(member.pendingInterest));
@@ -13052,22 +13749,52 @@ namespace ndn_service_framework
                     pending.push_back(std::move(state->slots[index].pendingInterest));
                 }
                 // Fence every callback before releasing/moving owned results.
-                if (completed) state->completed.store(true);
+                if (completed) {
+                    state->completed.store(true);
+                    // Each slot owns its recovered-Data validator, whose
+                    // completion path refers back to this state. Break that
+                    // ownership cycle once the operation is terminal.
+                    for (auto& member : state->slots) {
+                        member.validateRecovered = {};
+                        member.retryAfterRecovery = {};
+                    }
+                }
             }
             auto finalize = [&] {
                 for (auto& handle : pending) cancelPending(std::move(handle));
                 if (completed) {
                     reportFirstRead(std::move(firstReadError));
                     if (const auto owner = weakOperation.lock()) {
-                        boost::asio::dispatch(m_face.getIoContext(), [owner] {
-                            owner->networkEvent.cancel();
-                            owner->retryEvent.cancel();
-                            owner->deadlineEvent.cancel();
-                            owner->cancelEvent.cancel();
-                        });
+                        owner->metrics = state->metrics;
+                        owner->recovery.reset();
                     }
                 }
-                else requestPump();
+                else if (retryRecovery) {
+                    try {
+                        boost::asio::post(m_face.getIoContext(),
+                            [retryRecovery = std::move(retryRecovery)] {
+                                retryRecovery();
+                            });
+                    }
+                    catch (...) {
+                        if (const auto owner = weakOperation.lock()) {
+                            owner->abort("exact Data ARQ fallback dispatch failed");
+                        }
+                    }
+                }
+                else (*refill)();
+                if (startRecovery) {
+                    try {
+                        boost::asio::post(m_face.getIoContext(), [weakAdvanceRecovery] {
+                            if (const auto recover = weakAdvanceRecovery.lock()) (*recover)();
+                        });
+                    }
+                    catch (...) {
+                        if (const auto owner = weakOperation.lock()) {
+                            owner->abort("exact Data recovery dispatch failed");
+                        }
+                    }
+                }
             };
             runWithLocalWorkObserver(localWorkObserver,
                                      "core-exact-data-slot-finalize", finalize);
@@ -13075,7 +13802,7 @@ namespace ndn_service_framework
                 NDN_LOG_WARN("NDNSF_EXACT_DATA_WINDOW name="
                     << firstName.toUri(ndn::name::UriFormat::CANONICAL)
                     << " initial=" << state->initialWindowSize
-                    << " limit=" << windowLimit
+                    << " limit=" << capacity
                     << " peak_inflight=" << state->peakInFlight
                     << " peak_cwnd=" << state->congestion.peakWindow()
                     << " final_cwnd=" << state->congestion.size()
@@ -13087,120 +13814,233 @@ namespace ndn_service_framework
             }
             if (completed && localWorkObserver.owner && localWorkObserver.addCount) {
                 try {
-                    for (const auto& [name, value] : std::array<std::pair<std::string_view, std::uint64_t>, 6>{{
+                    for (const auto& [name, value] :
+                         std::array<std::pair<std::string_view, std::uint64_t>, 6>{{
                            {"core.exact-data.batches", 1},
                            {"core.exact-data.peak-inflight.total", state->peakInFlight},
                            {"core.exact-data.congestion.losses", state->congestion.losses()},
                            {"core.exact-data.congestion.marks", state->congestion.marks()},
-                           {"core.exact-data.congestion.decreases", state->congestion.decreases()},
+                           {"core.exact-data.congestion.decreases",
+                            state->congestion.decreases()},
                            {"core.exact-data.rtt.samples", state->congestion.rttSamples()}}}) {
                         localWorkObserver.addCount(localWorkObserver.owner, name, value);
                     }
                 }
-                catch (...) { NDN_LOG_WARN("Exact Data window measurement unavailable"); }
+                catch (...) {
+                    NDN_LOG_WARN("Exact Data window measurement unavailable");
+                }
             }
-            if (completed) state->result.set_value(std::move(result));
+            if (completed) {
+                state->result.set_value(std::move(result));
+                if (onReady) {
+                    try { onReady(); }
+                    catch (...) { NDN_LOG_ERROR("exact read completion notification failed"); }
+                }
+            }
         };
-        operation->pump = std::make_shared<std::function<void()>>();
-        *operation->pump = [this, state, weakOperation, requestPump] {
-            const auto owner = weakOperation.lock();
-            if (!owner || state->completed.load()) return;
-            if (ExactClock::now() >= state->deadline) {
-                owner->abort("hard deadline for exact Data batch");
-                return;
-            }
-            std::vector<std::size_t> issue;
-            std::optional<ExactClock::time_point> retryDue;
+        *advanceRecovery = [this, state, ownedDataNames, recoverMissing,
+                            inBandRecovery = static_cast<bool>(recoveryReady),
+                            shouldCancel, finishSlot, cancelPending] {
+            std::size_t index = state->slots.size();
+            std::optional<std::size_t> repairIndex;
+            ndn::ScopedPendingInterestHandle pending;
+            std::vector<std::size_t> snapshotSlots;
+            std::vector<ndn::Buffer> originals;
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
-                if (state->completed.load()) return;
-                while (!state->retryQueue.empty() &&
-                       (!state->slots[state->retryQueue.front()].retryQueued ||
-                        state->slots[state->retryQueue.front()].completed.load()))
-                    state->retryQueue.pop_front();
-                while (state->inFlight < state->congestion.size()) {
-                    std::size_t index;
-                    if (!state->retryQueue.empty()) {
-                        index = state->retryQueue.front();
-                        auto& slot = state->slots[index];
-                        if (!slot.retryQueued || slot.completed.load()) {
-                            state->retryQueue.pop_front();
-                            continue;
-                        }
-                        if (slot.retryAt > ExactClock::now()) {
-                            retryDue = slot.retryAt;
+                if (state->completed.load() || state->recoveryActive) return;
+                while (!state->readyRecoverySlots.empty()) {
+                    auto candidate = std::move(state->readyRecoverySlots.front());
+                    state->readyRecoverySlots.pop_front();
+                    state->queuedSnapshotSlots -= candidate.snapshotSlots.size();
+                    auto& slot = state->slots[candidate.sourceSlot];
+                    slot.recoveryQueued = false;
+                    if (slot.completed.load() || slot.recoveryAttempted.load()) continue;
+                    index = candidate.sourceSlot;
+                    repairIndex = candidate.repairSlot;
+                    snapshotSlots = std::move(candidate.snapshotSlots);
+                    if (!slot.networkCompleted.exchange(true)) --state->networkRemaining;
+                    slot.networkExhausted = true;
+                    slot.recoveryTrigger = "in-band-ready";
+                    pending = std::move(slot.pendingInterest);
+                    break;
+                }
+                if (index == state->slots.size()) {
+                    if (state->networkRemaining != 0) return;
+                    for (std::size_t i = 0; !inBandRecovery && i < state->slots.size(); ++i) {
+                        const auto& slot = state->slots[i];
+                        if (!slot.optional && slot.networkExhausted && !slot.completed.load() &&
+                            !slot.recoveryAttempted) {
+                            index = i;
                             break;
                         }
-                        state->retryQueue.pop_front();
-                        slot.retryQueued = false;
+                    }
+                }
+                if (index != state->slots.size()) {
+                        auto& slot = state->slots[index];
+                        slot.recoveryAttempted = true;
+                        slot.recoveryFailurePending = true;
+                        state->recoveryActive = true;
+                        if (repairIndex) {
+                            originals.resize(state->content.size());
+                            for (const auto member : snapshotSlots)
+                                originals[member] = state->content[member];
+                        }
+                        else originals = state->content;
+                        ++state->metrics.fecRecoveryAttempts;
+                        CollaborationRecoveryMetric record;
+                        record.objectName = (*ownedDataNames)[index].toUri();
+                        if (repairIndex)
+                            record.groupName = (*ownedDataNames)[*repairIndex].toUri();
+                        record.trigger = slot.recoveryTrigger.empty() ?
+                            "exact-retry" : slot.recoveryTrigger;
+                        record.missingPackets = repairIndex ? 1 : 0;
+                        if (!repairIndex) {
+                            for (std::size_t i = 0; i < originals.size(); ++i)
+                                if (!state->slots[i].optional && originals[i].empty())
+                                    ++record.missingPackets;
+                        }
+                        const auto attempts = slot.attempts.load(std::memory_order_relaxed);
+                        record.originalRetriesBeforeRecovery = attempts > 0 ? attempts - 1 : 0;
+                        state->metrics.recovery.push_back(std::move(record));
+                        std::size_t copiedBytes = 0;
+                        for (const auto& wire : originals) copiedBytes += wire.size();
+                        state->recordPeakRetained(
+                            state->retainedWireBytes.load(std::memory_order_relaxed) + copiedBytes +
+                            originals.size() * sizeof(ndn::Buffer) +
+                            state->queuedSnapshotSlots * sizeof(std::size_t));
+                }
+                if (index == state->slots.size()) {
+                    if (state->remaining == 0) return;
+                    state->error = "exact Data recovery did not complete every slot";
+                }
+            }
+            cancelPending(std::move(pending));
+            if (index == state->slots.size()) {
+                finishSlot(index, {}, "exact Data recovery did not complete every slot");
+                return;
+            }
+            const auto dataName = (*ownedDataNames)[index];
+            auto recoveryWork = [this, state, ownedDataNames, recoverMissing,
+                                 shouldCancel, finishSlot, index, dataName, repairIndex,
+                                 originals = std::move(originals)]() mutable {
+                std::optional<ndn::Buffer> recovered;
+                std::string error;
+                try {
+                    if (shouldCancel && shouldCancel()) {
+                        error = "cancelled during exact Data recovery";
+                    }
+                    else if (std::chrono::steady_clock::now() >= state->deadline) {
+                        error = "expired during exact Data recovery";
                     }
                     else {
-                        if (state->nextToIssue == state->slots.size()) break;
-                        index = state->nextToIssue++;
-                    }
-                    state->slots[index].inFlight = true;
-                    ++state->inFlight;
-                    state->peakInFlight = std::max(state->peakInFlight, state->inFlight);
-                    issue.push_back(index);
-                }
-            }
-            for (const auto index : issue) (*owner->expressions[index])();
-            owner->retryEvent.cancel();
-            if (retryDue && !state->completed.load()) {
-                const auto delay = std::max<std::int64_t>(0,
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        *retryDue - ExactClock::now()).count());
-                owner->retryEvent = m_scheduler.schedule(ndn::time::nanoseconds(delay), requestPump);
-            }
-            owner->networkEvent.cancel();
-            std::optional<ExactClock::time_point> networkDue;
-            {
-                std::lock_guard<std::mutex> lock(state->mutex);
-                if (!state->completed.load() && !state->networkPending.empty()) {
-                    auto start = state->networkPending.begin()->first;
-                    if (state->readySince) start = std::max(start, *state->readySince);
-                    networkDue = std::min(state->deadline, start + state->congestion.rto());
-                }
-            }
-            if (networkDue) {
-                const auto delay = std::max<std::int64_t>(0,
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        *networkDue - ExactClock::now()).count());
-                owner->networkEvent = m_scheduler.schedule(ndn::time::nanoseconds(delay),
-                    [state, weakOperation, requestPump] {
-                        const auto owner = weakOperation.lock();
-                        if (!owner || state->completed.load()) return;
-                        if (ExactClock::now() >= state->deadline) {
-                            owner->abort("hard deadline for exact Data batch");
-                            return;
-                        }
-                        std::vector<std::pair<std::size_t, std::size_t>> expired;
-                        bool ready = false;
-                        {
+                        recovered = recoverMissing(dataName, *ownedDataNames, originals);
+                        if (recovered && repairIndex && *repairIndex < originals.size() &&
+                            !originals[*repairIndex].empty()) {
+                            const auto objectName = dataName.toUri();
+                            const auto repairDataName =
+                                (*ownedDataNames)[*repairIndex].toUri();
+                            const auto repairDigest =
+                                sha256DigestString(originals[*repairIndex]);
                             std::lock_guard<std::mutex> lock(state->mutex);
-                            if (state->completed.load()) return;
-                            ready = state->readySince.has_value();
-                            const auto now = ExactClock::now();
-                            while (!state->networkPending.empty()) {
-                                auto it = state->networkPending.begin();
-                                auto start = it->first;
-                                if (ready) start = std::max(start, *state->readySince);
-                                if (start + state->congestion.rto() > now) break;
-                                auto& slot = state->slots[it->second];
-                                expired.emplace_back(it->second,
-                                    slot.attempts.load(std::memory_order_relaxed));
-                                slot.networkEntry.reset();
-                                state->networkPending.erase(it);
+                            const auto record = std::find_if(
+                                state->metrics.recovery.begin(),
+                                state->metrics.recovery.end(),
+                                [&objectName](const auto& item) {
+                                    return item.objectName == objectName;
+                                });
+                            if (record != state->metrics.recovery.end()) {
+                                record->repairDataName = repairDataName;
+                                record->repairWireSha256 = repairDigest;
                             }
                         }
-                        for (const auto& [index, attempt] : expired) {
-                            (*owner->retries[index])(ready ? "timeout" : "publication-refresh",
-                                                     attempt, ready);
+                        std::size_t copiedBytes = 0;
+                        for (const auto& wire : originals) copiedBytes += wire.size();
+                        state->recordPeakRetained(
+                            state->retainedWireBytes.load(std::memory_order_relaxed) +
+                            copiedBytes + (recovered ? recovered->size() : 0));
+                        if (!recovered || recovered->empty() ||
+                            recovered->size() > state->maxRetainedWireBytes) {
+                            error = "exact Data recovery could not reconstruct " +
+                                dataName.toUri();
                         }
-                        requestPump();
-                    });
+                    }
+                }
+                catch (const std::exception& e) {
+                    error = std::string("exact Data recovery failed: ") + e.what();
+                }
+                catch (...) {
+                    error = "exact Data recovery failed";
+                }
+                try {
+                    boost::asio::post(m_face.getIoContext(),
+                        [this, state, shouldCancel, finishSlot, index, dataName,
+                         recovered = std::move(recovered), error = std::move(error)]() mutable {
+                            if (state->completed.load() ||
+                                state->slots[index].completed.load()) return;
+                            if (shouldCancel && shouldCancel()) {
+                                finishSlot(index, {}, "cancelled during exact Data recovery");
+                                return;
+                            }
+                            if (std::chrono::steady_clock::now() >= state->deadline) {
+                                finishSlot(index, {}, "expired during exact Data recovery");
+                                return;
+                            }
+                            if (!error.empty()) {
+                                finishSlot(index, {}, std::move(error));
+                                return;
+                            }
+                            try {
+                                ndn::Data candidate(ndn::Block(ndn::span<const uint8_t>(
+                                    recovered->data(), recovered->size())));
+                                if (candidate.getName() != dataName) {
+                                    finishSlot(index, {},
+                                        "recovered exact Data name mismatch for " +
+                                        dataName.toUri());
+                                    return;
+                                }
+                                const auto parsedWire = candidate.wireEncode();
+                                if (parsedWire.size() != recovered->size() ||
+                                    !std::equal(parsedWire.begin(), parsedWire.end(),
+                                                recovered->begin())) {
+                                    finishSlot(index, {},
+                                        "recovered exact Data wire was not a single canonical packet for " +
+                                        dataName.toUri());
+                                    return;
+                                }
+                                std::function<void(const ndn::Data&)> validate;
+                                {
+                                    std::lock_guard<std::mutex> lock(state->mutex);
+                                    if (state->completed.load() ||
+                                        state->slots[index].completed.load()) return;
+                                    validate = state->slots[index].validateRecovered;
+                                }
+                                if (!validate) {
+                                    finishSlot(index, {},
+                                        "recovered exact Data validator unavailable for " +
+                                        dataName.toUri());
+                                    return;
+                                }
+                                validate(candidate);
+                            }
+                            catch (const std::exception& e) {
+                                finishSlot(index, {},
+                                    std::string("exact Data recovery failed: ") + e.what());
+                            }
+                            catch (...) {
+                                finishSlot(index, {}, "exact Data recovery failed");
+                            }
+                        });
+                }
+                catch (...) {
+                    finishSlot(index, {}, "exact Data recovery completion dispatch failed");
+                }
+            };
+            if (!m_fetchPool.post(std::move(recoveryWork))) {
+                finishSlot(index, {}, "exact Data recovery worker overloaded");
             }
         };
+        operation->recovery = advanceRecovery;
         // The returned operation owns callbacks until completion/cancellation.
         // Individual callbacks borrow the fixed slots through shared state.
         auto& expressions = operation->expressions;
@@ -13209,15 +14049,194 @@ namespace ndn_service_framework
         for (std::size_t index = 0; index < dataNames.size(); ++index) {
             const auto dataName = dataNames[index];
             auto* slot = &state->slots[index];
-            auto finish = [finishSlot, index](ndn::Buffer content, std::string error) {
+            const bool inBandRecovery = static_cast<bool>(recoveryReady);
+            const auto finishRecovered = [finishSlot, index](ndn::Buffer content, std::string error) {
                 finishSlot(index, std::move(content), std::move(error));
             };
+            auto finish = [finishSlot, index, slot, inBandRecovery]
+                          (ndn::Buffer content, std::string error) {
+                if (inBandRecovery && slot->recoveryFailurePending.load()) return;
+                finishSlot(index, std::move(content), std::move(error));
+            };
+            const auto dataValidator = validator;
+            slot->validateRecovered = [this, state, slot, finish = finishRecovered, dataName,
+                expectedProducer, requestId, keyScope, onValidatedData,
+                localWorkObserver, retainOriginalWire, signatureRejected,
+                shouldCancel, dataValidator](const ndn::Data& candidate) {
+                if (!dataValidator) {
+                    finish({}, "configured Data validator unavailable for recovered " +
+                               dataName.toUri());
+                    return;
+                }
+                auto onValidated = [state, slot, finish, dataName,
+                    expectedProducer, requestId, keyScope, onValidatedData,
+                    localWorkObserver, retainOriginalWire, signatureRejected,
+                    shouldCancel](const ndn::Data& validated) {
+                    if (state->completed.load() || slot->completed.load()) return;
+                    ndn::Buffer content;
+                    std::string error;
+                    auto admit = [&] {
+                        if (state->completed.load() || slot->completed.load()) return;
+                        if (validated.getName() != dataName ||
+                            !isSignedByIdentity(validated, expectedProducer)) {
+                            if (signatureRejected) signatureRejected->store(true);
+                            error = "recovered exact Data signer mismatch for " +
+                                dataName.toUri();
+                            return;
+                        }
+                        if (!shouldCancel) {
+                            error = "recovered exact Data current authorization fence unavailable for " +
+                                dataName.toUri();
+                            return;
+                        }
+                        bool currentExecutionAuthorizationRevalidated = false;
+                        try {
+                            if (shouldCancel()) {
+                                error = "recovered exact Data current authorization fence rejected for " +
+                                    dataName.toUri();
+                                return;
+                            }
+                            currentExecutionAuthorizationRevalidated = true;
+                        }
+                        catch (...) {
+                            error = "recovered exact Data current authorization fence failed for " +
+                                dataName.toUri();
+                            return;
+                        }
+                        if (std::chrono::steady_clock::now() >= state->deadline) {
+                            error = "recovered exact Data exceeded current deadline for " +
+                                dataName.toUri();
+                            return;
+                        }
+                        if (onValidatedData) {
+                            try {
+                                if (!onValidatedData()) {
+                                    error = "exact Data progress rejected for " +
+                                        dataName.toUri();
+                                    return;
+                                }
+                            }
+                            catch (...) {
+                                error = "exact Data progress callback failed for " +
+                                    dataName.toUri();
+                                return;
+                            }
+                        }
+                        const auto& wire = retainOriginalWire
+                            ? validated.wireEncode() : validated.getContent();
+                        if (retainOriginalWire) {
+                            const auto used = state->retainedWireBytes.fetch_add(wire.size());
+                            if (used > state->maxRetainedWireBytes ||
+                                wire.size() > state->maxRetainedWireBytes - used) {
+                                error = "recovered exact Data retained-byte limit exceeded for " +
+                                    dataName.toUri();
+                                return;
+                            }
+                            state->recordPeakRetained(used + wire.size());
+                        }
+                        content = retainOriginalWire
+                            ? ndn::Buffer(wire.begin(), wire.end())
+                            : ndn::Buffer(wire.value_begin(), wire.value_end());
+                        slot->recovered.store(true);
+                        std::string recoveryTrigger;
+                        std::string repairGroupName;
+                        std::string repairDataName;
+                        std::string repairWireSha256;
+                        std::size_t originalRetriesBeforeRecovery = 0;
+                        std::size_t missingPackets = 0;
+                        bool recoveryRecordFound = false;
+                        {
+                            std::lock_guard<std::mutex> lock(state->mutex);
+                            const auto recovery = std::find_if(
+                                state->metrics.recovery.begin(),
+                                state->metrics.recovery.end(),
+                                [&dataName](const auto& record) {
+                                    return record.objectName == dataName.toUri();
+                                });
+                            if (recovery != state->metrics.recovery.end()) {
+                                recoveryRecordFound = true;
+                                recoveryTrigger = recovery->trigger;
+                                repairGroupName = recovery->groupName;
+                                repairDataName = recovery->repairDataName;
+                                repairWireSha256 = recovery->repairWireSha256;
+                                originalRetriesBeforeRecovery =
+                                    recovery->originalRetriesBeforeRecovery;
+                                missingPackets = recovery->missingPackets;
+                            }
+                        }
+                        NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=COLLAB_DATA_RECOVERED_VALIDATED"
+                                      << " requestId=" << requestId.toUri()
+                                      << " keyScope=" << keyScope
+                                      << " dataName=" << dataName.toUri()
+                                      << " producer=" << expectedProducer.toUri()
+                                      << " bytes=" << content.size()
+                                      << " wireSha256=" << sha256DigestString(content)
+                                      << " recoveryMode=Xor"
+                                      << " recoveryRecordFound=" << (recoveryRecordFound ? "true" : "false")
+                                      << " recoveryTrigger=" << recoveryTrigger
+                                      << " repairDataName=" << repairDataName
+                                      << " repairWireSha256=" << repairWireSha256
+                                      << " missingMembers=" << missingPackets
+                                      << " originalRetriesBeforeRecovery=" << originalRetriesBeforeRecovery
+                                      << " originalDataValidatorAccepted=true"
+                                      << " currentExecutionAuthorizationRevalidated="
+                                      << (currentExecutionAuthorizationRevalidated ? "true" : "false"));
+                        if (recoveryRecordFound && !repairDataName.empty() &&
+                            !repairWireSha256.empty() && missingPackets == 1) {
+                            NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=INPUT_ADMISSION_XOR_REPAIR_ACCEPTED"
+                                          << " requestId=" << requestId.toUri()
+                                          << " dataName=" << dataName.toUri()
+                                          << " producer=" << expectedProducer.toUri()
+                                          << " repairGroupName=" << repairGroupName
+                                          << " repairDataName=" << repairDataName
+                                          << " repairWireSha256=" << repairWireSha256
+                                          << " recoveredWireSha256=" << sha256DigestString(content)
+                                          << " missingMembers=" << missingPackets
+                                          << " repairMaterialAccepted=true"
+                                          << " reconstructionDigestMatched=true"
+                                          << " originalDataValidatorAccepted=true"
+                                          << " currentExecutionAuthorizationRevalidated=true");
+                        }
+                    };
+                    runWithLocalWorkObserver(localWorkObserver,
+                        "core-exact-data-recovered-admission", admit);
+                    if (!error.empty() || !content.empty()) finish(std::move(content), std::move(error));
+                };
+                auto onRejected = [state, slot, finish, dataName,
+                    localWorkObserver, signatureRejected](const ndn::Data&,
+                        const ndn::security::ValidationError& validationError) {
+                    if (state->completed.load() || slot->completed.load()) return;
+                    if (signatureRejected) signatureRejected->store(true);
+                    std::string error;
+                    auto reject = [&] {
+                        error = "recovered exact Data signature validation failed for " +
+                            dataName.toUri() + ": " + validationError.getInfo();
+                    };
+                    runWithLocalWorkObserver(localWorkObserver,
+                        "core-exact-data-recovered-admission", reject);
+                    finish({}, std::move(error));
+                };
+                try {
+                    dataValidator->validateDataOnFace(candidate,
+                        std::move(onValidated), std::move(onRejected));
+                }
+                catch (const std::exception& e) {
+                    finish({}, std::string("recovered exact Data validator failed: ") + e.what());
+                }
+                catch (...) {
+                    finish({}, "recovered exact Data validator failed");
+                }
+            };
             auto express = std::make_shared<std::function<void()>>();
-            auto retry = std::make_shared<ExactDataFetchOperation::Impl::Retry>();
-            *retry = [state, slot, index, finish, cancelPending, requestPump,
-                      dataName, requestId, keyScope, shouldCancel]
-                     (const char* reason, std::size_t expectedAttempt, bool congestion) {
+            auto retry = std::make_shared<std::function<void(const char*, std::size_t)>>();
+            std::weak_ptr<std::function<void()>> weakExpress = express;
+            std::weak_ptr<std::function<void(const char*, std::size_t)>> weakRetry = retry;
+            const bool recoveryEnabled = static_cast<bool>(recoverMissing) && !slot->optional;
+            *retry = [this, state, slot, finish, weakExpress, dataName, requestId, keyScope,
+                      shouldCancel, recoveryEnabled, inBandRecovery, index, refill](const char* reason,
+                                                     std::size_t expectedAttempt) {
                 if (state->completed.load() || slot->completed.load() ||
+                    slot->networkExhausted.load(std::memory_order_acquire) ||
                     slot->attempts.load(std::memory_order_relaxed) != expectedAttempt) {
                     return;
                 }
@@ -13227,6 +14246,41 @@ namespace ndn_service_framework
                 }
                 if (std::chrono::steady_clock::now() >= state->deadline) {
                     finish({}, std::string(reason) + " for " + dataName.toUri());
+                    return;
+                }
+                if (std::string_view(reason) == "timeout" ||
+                    std::string_view(reason) == "congestion") {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (slot->inFlight) {
+                        slot->inFlight = false;
+                        --state->inFlight;
+                    }
+                    state->congestion.loss();
+                }
+                else {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (slot->inFlight) {
+                        slot->inFlight = false;
+                        --state->inFlight;
+                    }
+                }
+                if (recoveryEnabled && !inBandRecovery && state->strict &&
+                    !slot->recoveryAttempted.load(std::memory_order_acquire)) {
+                    slot->recoveryTrigger = reason;
+                }
+                if (state->strict && expectedAttempt >= 6) {
+                    if (std::string_view(reason) != "publication-refresh")
+                        finish({}, "strict exact Data attempt budget exhausted for " + dataName.toUri());
+                    return;
+                }
+                if (recoveryEnabled && !inBandRecovery && state->strict &&
+                    !slot->recoveryAttempted.load(std::memory_order_acquire)) {
+                    // Match the streaming retry policy: make one bounded
+                    // recovery attempt before spending the remaining exact
+                    // Data ARQ budget. Publication refresh is also a failed
+                    // exact attempt for this slot; if recovery is unavailable
+                    // or misses, ordinary finite retries resume below.
+                    finish({}, "strict exact Data recovery checkpoint");
                     return;
                 }
                 const auto retryUs = std::chrono::duration_cast<
@@ -13240,32 +14294,44 @@ namespace ndn_service_framework
                               << " reason=" << reason
                               << " nextAttempt="
                               << (slot->attempts.load(std::memory_order_relaxed) + 1));
-                ndn::ScopedPendingInterestHandle pending;
-                {
-                    std::lock_guard<std::mutex> lock(state->mutex);
-                    if (state->completed.load() || slot->completed.load() ||
-                        slot->receivedAt || slot->retryQueued || !slot->inFlight ||
-                        slot->attempts.load(std::memory_order_relaxed) != expectedAttempt) return;
-                    if (slot->networkEntry) {
-                        state->networkPending.erase(*slot->networkEntry);
-                        slot->networkEntry.reset();
-                    }
-                    if (congestion && (state->readySince || std::string_view(reason) == "congestion"))
-                        state->congestion.loss();
-                    --state->inFlight;
-                    slot->inFlight = false;
-                    slot->retryQueued = true;
-                    slot->retryAt = ExactClock::now() + std::chrono::milliseconds(5);
-                    state->retryQueue.push_back(index);
-                    pending = std::move(slot->pendingInterest);
+                if (const auto next = weakExpress.lock()) {
+                    const auto delay = state->strict
+                        ? ((std::string_view(reason) == "Nack" ||
+                            std::string_view(reason) == "congestion") ?
+                            std::min<size_t>(1000, 200u << std::min<size_t>(3, expectedAttempt - 1)) : 0u)
+                        : 5u;
+                    m_scheduler.schedule(ndn::time::milliseconds(delay),
+                        [next, state, slot, expectedAttempt, index, refill,
+                         refresh = std::string_view(reason) == "publication-refresh"] {
+                            // Nack and publication refresh can both queue recovery
+                            // for one attempt. Only the first queued recovery may
+                            // replace its pending Interest on the Face owner thread.
+                            if (!state->completed.load() && !slot->completed.load() &&
+                                slot->attempts.load(std::memory_order_relaxed) == expectedAttempt) {
+                                if (refresh) {
+                                    (*next)();
+                                    return;
+                                }
+                                {
+                                    std::lock_guard<std::mutex> lock(state->mutex);
+                                    if (slot->lastRetryEnqueuedAttempt == expectedAttempt ||
+                                        slot->retryQueued || slot->networkCompleted.load()) return;
+                                    slot->lastRetryEnqueuedAttempt = expectedAttempt;
+                                    if (slot->creditHeld) --state->activeSlots;
+                                    slot->creditHeld = false;
+                                    slot->retryQueued = true;
+                                    state->retryQueue.push_back(index);
+                                }
+                                (*refill)();
+                            }
+                        });
                 }
-                cancelPending(std::move(pending));
-                requestPump();
             };
             *express = [this, state, slot, finish, retry, dataName, expectedProducer,
                         requestId, keyScope, interestLifetimeMs, shouldCancel,
-                        index, reportFirstRead, cancelPending, phase, onValidatedData, requestPump,
-                        localWorkObserver] {
+                        reportFirstRead, cancelPending, phase, weakRetry, onValidatedData,
+                        localWorkObserver, retainOriginalWire, signatureRejected,
+                        recoverMissing, hybridKeyBootstrap, inBandRecovery, index] {
                 if (state->completed.load() || slot->completed.load()) {
                     return;
                 }
@@ -13277,45 +14343,82 @@ namespace ndn_service_framework
                     finish({}, "hard deadline for " + dataName.toUri());
                     return;
                 }
-                std::size_t attempt;
+                if (state->strict && slot->attempts.load(std::memory_order_relaxed) >= 6) return;
+                const auto attempt = slot->attempts.load(std::memory_order_relaxed) + 1;
+                if (attempt > 1 && state->strict && slot->recoveryAttempted.load() &&
+                    !slot->recovered.load() && !slot->arqFallbackRecorded.exchange(true)) {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    ++state->metrics.arqFallbacks;
+                    const auto name = dataName.toUri();
+                    const auto record = std::find_if(state->metrics.recovery.begin(),
+                        state->metrics.recovery.end(), [&name](const auto& item) {
+                            return item.objectName == name;
+                        });
+                    if (record != state->metrics.recovery.end())
+                        record->terminalState = "arq-fallback";
+                }
+                ndn::Interest interest(dataName);
+                interest.setCanBePrefix(hybridKeyBootstrap);
+                interest.setMustBeFresh(true);
+                if (!state->authorizedLocations.empty())
+                    interest.setForwardingHint({state->authorizedLocations[
+                        (attempt - 1) % state->authorizedLocations.size()]});
+                std::int64_t estimatedRtoMs = 0;
                 {
                     std::lock_guard<std::mutex> lock(state->mutex);
-                    if (state->completed.load() || slot->completed.load() || !slot->inFlight) return;
-                    attempt = slot->attempts.fetch_add(1, std::memory_order_relaxed) + 1;
-                    slot->sentAt = ExactClock::now();
-                    slot->receivedAt.reset();
-                    slot->congestionMark = 0;
-                    slot->networkEntry = state->networkPending.emplace(slot->sentAt, index);
-                    state->congestion.noteSent(index);
+                    estimatedRtoMs = std::chrono::duration_cast<
+                        std::chrono::milliseconds>(state->congestion.rto()).count();
                 }
-                state->interestCount.fetch_add(1, std::memory_order_relaxed);
-                ndn::Interest interest(dataName);
-                interest.setCanBePrefix(false);
-                interest.setMustBeFresh(true);
-                const int issuedLifetimeMs = phase == ExactDataFetchPhase::AwaitPublication
+                const auto retryIntervalMs = state->strict ?
+                    static_cast<int>(std::max<std::int64_t>(1,
+                        std::min<std::int64_t>(1000, estimatedRtoMs))) : interestLifetimeMs;
+                int issuedLifetimeMs = phase == ExactDataFetchPhase::AwaitPublication
                     ? static_cast<int>(std::max<std::int64_t>(1,
                         std::chrono::duration_cast<std::chrono::milliseconds>(
                             state->deadline - std::chrono::steady_clock::now()).count()))
-                    : interestLifetimeMs;
+                    : retryIntervalMs;
+                // Keep recovery inside the original operation deadline. The
+                // final bounded ARQ interest yields a small validation grace
+                // only when this operation actually owns a repair callback.
+                if (recoverMissing && state->strict && attempt == 6) {
+                    constexpr int RECOVERY_GRACE_MS = 250;
+                    const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        state->deadline - std::chrono::steady_clock::now()).count();
+                    if (remainingMs <= RECOVERY_GRACE_MS) {
+                        finish({}, "strict exact Data recovery grace unavailable for " +
+                                   dataName.toUri());
+                        return;
+                    }
+                    issuedLifetimeMs = std::min<int64_t>(issuedLifetimeMs,
+                        remainingMs - RECOVERY_GRACE_MS);
+                }
                 interest.setInterestLifetime(
                     ndn::time::milliseconds(issuedLifetimeMs));
+                slot->attempts.store(attempt, std::memory_order_relaxed);
+                slot->sentInterests.fetch_add(1, std::memory_order_relaxed);
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    slot->sentAt = ExactClock::now();
+                    slot->receivedAt.reset();
+                    slot->congestionMark = 0;
+                    slot->inFlight = true;
+                    ++state->inFlight;
+                    state->peakInFlight = std::max(state->peakInFlight, state->inFlight);
+                    state->congestion.noteSent(index);
+                }
                 ndn::ScopedPendingInterestHandle pending;
                 try {
                     pending = m_face.expressInterest(
                     interest,
                     [this, state, slot, finish, dataName, expectedProducer, requestId,
-                     keyScope, shouldCancel, onValidatedData, localWorkObserver, requestPump]
+                     keyScope, onValidatedData, localWorkObserver, retainOriginalWire, signatureRejected,
+                     hybridKeyBootstrap, inBandRecovery, shouldCancel]
                     (const ndn::Interest&, const ndn::Data& data) {
-                        const auto receivedAt = ExactClock::now();
-                        if (controlTimingEnvEnabled()) {
-                            NDN_LOG_WARN("NDNSF_EXACT_DATA_RECEIVE"
-                                << " name=" << data.getName().toUri(ndn::name::UriFormat::CANONICAL)
-                                << " on_data_steady_ns=" << std::chrono::duration_cast<
-                                    std::chrono::nanoseconds>(receivedAt.time_since_epoch()).count());
-                        }
-                        if (state->completed.load() || slot->completed.load()) {
+                        if (state->completed.load() || slot->completed.load() ||
+                            (inBandRecovery && slot->recoveryFailurePending.load())) {
                             return;
                         }
+                        const auto receivedAt = ExactClock::now();
                         const auto receivedUs = std::chrono::duration_cast<
                             std::chrono::microseconds>(
                             std::chrono::system_clock::now().time_since_epoch()).count();
@@ -13327,7 +14430,7 @@ namespace ndn_service_framework
                                       << " returnedName=" << data.getName().toUri()
                                       << " attempt="
                                       << slot->attempts.load(std::memory_order_relaxed));
-                        if (data.getName() != dataName) {
+                        if (!matchesReadName(dataName, data, hybridKeyBootstrap)) {
                             finish({}, "exact Data name mismatch for " +
                                        dataName.toUri());
                             return;
@@ -13338,14 +14441,13 @@ namespace ndn_service_framework
                                 return;
                             slot->receivedAt = receivedAt;
                             slot->congestionMark = data.getCongestionMark();
-                            if (slot->networkEntry) {
-                                state->networkPending.erase(*slot->networkEntry);
-                                slot->networkEntry.reset();
-                            }
                         }
-                        requestPump();
                         state->wireBytes.fetch_add(data.wireEncode().size(),
                                                    std::memory_order_relaxed);
+                        if (slot->optional) {
+                            std::lock_guard<std::mutex> lock(state->mutex);
+                            state->metrics.repairWireBytes += data.wireEncode().size();
+                        }
                         struct ValidationCompletion
                         {
                             std::mutex mutex;
@@ -13440,34 +14542,46 @@ namespace ndn_service_framework
                             };
                         auto onValidatedExactData =
                             [state, slot, dataName, expectedProducer, requestId,
-                             keyScope, shouldCancel, onValidatedData, completeValidation,
-                             localWorkObserver]
+                             keyScope, onValidatedData, completeValidation,
+                             localWorkObserver, retainOriginalWire, signatureRejected,
+                             hybridKeyBootstrap, inBandRecovery, shouldCancel]
                             (const ndn::Data& validated) {
-                                if (state->completed.load() || slot->completed.load()) return;
+                                if (state->completed.load() || slot->completed.load() ||
+                                    (inBandRecovery && slot->recoveryFailurePending.load())) return;
                                 ndn::Buffer content;
                                 std::string error;
                                 bool shouldComplete = false;
                                 auto admit = [&] {
                                     if (state->completed.load() ||
-                                        slot->completed.load()) {
+                                        slot->completed.load() ||
+                                        (inBandRecovery && slot->recoveryFailurePending.load())) {
                                         return;
                                     }
                                     shouldComplete = true;
-                                    try {
-                                        if (shouldCancel && shouldCancel()) {
-                                            error = "exact Data cancelled before admission for " +
+                                    if (shouldCancel) {
+                                        try {
+                                            if (shouldCancel()) {
+                                                error = "cancelled before exact Data admission for " +
+                                                    dataName.toUri();
+                                                return;
+                                            }
+                                        }
+                                        catch (...) {
+                                            error = "exact Data cancellation predicate failed for " +
                                                 dataName.toUri();
                                             return;
                                         }
                                     }
-                                    catch (...) {
-                                        error = "exact Data cancellation predicate failed for " +
-                                            dataName.toUri();
+                                    if (retainOriginalWire &&
+                                        std::chrono::steady_clock::now() >= state->deadline) {
+                                        error = "strict exact Data validation exceeded deadline";
                                         return;
                                     }
-                                    if (validated.getName() != dataName ||
+                                    if (!matchesReadName(dataName, validated, hybridKeyBootstrap) ||
                                         !isSignedByIdentity(validated,
                                                             expectedProducer)) {
+                                        if (signatureRejected && !slot->optional)
+                                            signatureRejected->store(true);
                                         error = "exact Data signer mismatch for " +
                                             dataName.toUri();
                                         return;
@@ -13486,7 +14600,21 @@ namespace ndn_service_framework
                                             return;
                                         }
                                     }
-                                    const auto& value = validated.getContent();
+                                    if (hybridKeyBootstrap) {
+                                        std::lock_guard<std::mutex> lock(state->mutex);
+                                        state->metrics.actualDataName = validated.getName().toUri();
+                                    }
+                                    const auto& value = retainOriginalWire
+                                        ? validated.wireEncode() : validated.getContent();
+                                    if (retainOriginalWire) {
+                                        const auto used = state->retainedWireBytes.fetch_add(value.size());
+                                        if (used > state->maxRetainedWireBytes ||
+                                            value.size() > state->maxRetainedWireBytes - used) {
+                                            error = "strict exact Data retained-byte limit exceeded";
+                                            return;
+                                        }
+                                        state->recordPeakRetained(used + value.size());
+                                    }
                                     const auto verifiedUs = std::chrono::duration_cast<
                                         std::chrono::microseconds>(
                                         std::chrono::system_clock::now().time_since_epoch()).count();
@@ -13497,8 +14625,9 @@ namespace ndn_service_framework
                                                   << " dataName=" << dataName.toUri()
                                                   << " producer=" << expectedProducer.toUri()
                                                   << " bytes=" << value.value_size());
-                                    content = ndn::Buffer(value.value_begin(),
-                                                          value.value_end());
+                                    content = retainOriginalWire
+                                        ? ndn::Buffer(value.begin(), value.end())
+                                        : ndn::Buffer(value.value_begin(), value.value_end());
                                 };
                                 runWithLocalWorkObserver(localWorkObserver,
                                     "core-exact-data-admission", admit);
@@ -13508,12 +14637,15 @@ namespace ndn_service_framework
                                 }
                             };
                         auto onRejectedExactData = [state, slot, dataName,
-                            completeValidation, localWorkObserver]
+                            completeValidation, localWorkObserver, signatureRejected, inBandRecovery]
                             (const ndn::Data&,
                              const ndn::security::ValidationError& error) {
-                                if (state->completed.load() || slot->completed.load()) return;
+                                if (state->completed.load() || slot->completed.load() ||
+                                    (inBandRecovery && slot->recoveryFailurePending.load())) return;
                                 std::string reason;
                                 auto reject = [&] {
+                                    if (signatureRejected && !slot->optional)
+                                        signatureRejected->store(true);
                                     reason = "exact Data signature validation failed for " +
                                         dataName.toUri() + ": " + error.getInfo();
                                 };
@@ -13546,11 +14678,11 @@ namespace ndn_service_framework
                         completeInlineValidation();
                     },
                     [retry, attempt](const ndn::Interest&, const ndn::lp::Nack& nack) {
-                        const bool congestion = nack.getReason() == ndn::lp::NackReason::CONGESTION;
-                        (*retry)(congestion ? "congestion" : "Nack", attempt, congestion);
+                        (*retry)(nack.getReason() == ndn::lp::NackReason::CONGESTION
+                            ? "congestion" : "Nack", attempt);
                     },
                     [retry, attempt](const ndn::Interest&) {
-                        (*retry)("timeout", attempt, true);
+                        (*retry)("timeout", attempt);
                     });
                 }
                 catch (const std::exception&) {
@@ -13581,6 +14713,44 @@ namespace ndn_service_framework
                 cancelPending(std::move(previous));
 
                 try {
+                    if (phase == ExactDataFetchPhase::AwaitPublication &&
+                        issuedLifetimeMs > retryIntervalMs && (!state->strict || attempt < 6)) {
+                        // Keep the producer's pending Interest alive while retaining
+                        // normal same-name recovery if an Interest or Data is lost.
+                        // A newer Nack/timeout attempt makes this timer obsolete.
+                        m_scheduler.schedule(ndn::time::milliseconds(retryIntervalMs),
+                            [state, slot, weakRetry, attempt, finish, dataName] {
+                                if (!state->completed.load() && !slot->completed.load() &&
+                                    !slot->networkExhausted.load(std::memory_order_acquire) &&
+                                    slot->attempts.load(std::memory_order_relaxed) == attempt) {
+                                    if (const auto renew = weakRetry.lock()) {
+                                        try {
+                                            (*renew)("publication-refresh", attempt);
+                                        }
+                                        catch (...) {
+                                            finish({}, "exact readiness renewal failed for " +
+                                                       dataName.toUri());
+                                        }
+                                    }
+                                }
+                            });
+                    }
+
+                    // A repair-enabled strict slot reserves a final RTO
+                    // callback so recovery is not coupled to a delayed Face
+                    // PIT timeout. The generation check makes a simultaneous
+                    // Nack/timeout callback harmless; the slot and operation
+                    // still share their original attempt budget and deadline.
+                    if (recoverMissing && !slot->optional && state->strict && attempt == 6) {
+                        m_scheduler.schedule(ndn::time::milliseconds(issuedLifetimeMs),
+                            [state, slot, retry, attempt, dataName] {
+                                if (!state->completed.load() && !slot->completed.load() &&
+                                    slot->attempts.load(std::memory_order_relaxed) == attempt) {
+                                    (*retry)("timeout", attempt);
+                                }
+                            });
+                    }
+
                     // In the production DI executable the Face is pumped by one
                     // thread. Face::expressInterest() queues its send handler;
                     // this later handler is therefore the dispatch barrier, not
@@ -13612,7 +14782,9 @@ namespace ndn_service_framework
                 }
             };
 
-            operation->retries.push_back(std::move(retry));
+            slot->retryAfterRecovery = [weakExpress] {
+                if (const auto resume = weakExpress.lock()) (*resume)();
+            };
             expressions.push_back(std::move(express));
         }
 
@@ -13639,7 +14811,10 @@ namespace ndn_service_framework
                 [this, operation, weakOperation, state, finishSlot, reportFirstRead] {
                     try {
                         if (state->completed.load()) return;
-                        (*operation->pump)();
+                        for (std::size_t index = 0;
+                             index < state->initialWindowSize; ++index) {
+                            (*operation->expressions[index])();
+                        }
                         (*operation->cancelPoll)();
                         const auto remaining = std::max<std::int64_t>(0,
                             std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -13690,13 +14865,19 @@ namespace ndn_service_framework
         std::uint64_t digestExpectedBytes,
         ndn::Name forwardingHint,
         const ndn::Buffer& objectKey,
-        const ndn::Name& reusableService)
+        const ndn::Name& reusableService,
+        std::size_t maxPlaintextBytes,
+        std::size_t maxSegments)
     {
+        constexpr size_t MAX_PLAINTEXT_BYTES = 64 * 1024 * 1024;
+        constexpr size_t MAX_SEGMENTS = 96 * 1024 * 1024 / ndn::MAX_NDN_PACKET_SIZE;
         const bool boundedObject = !reusableService.empty();
         const bool reusable = !objectKey.empty();
         if ((reusable && !boundedObject) ||
             (allowDigestSha256Segments && boundedObject) ||
             (boundedObject && (expectedProducer.empty() || expectedSegments != 0 ||
+            maxPlaintextBytes == 0 || maxPlaintextBytes > MAX_PLAINTEXT_BYTES ||
+            maxSegments == 0 || maxSegments > MAX_SEGMENTS ||
             (reusable && objectKey.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE)))) {
           return std::nullopt;
         }
@@ -13817,7 +14998,8 @@ namespace ndn_service_framework
                                                   expectedSegments, expectedProducer,
                                                   current, allowDigestSha256Segments,
                                                   digestSegmentBytes, digestExpectedBytes,
-                                                  forwardingHint, owner, boundedObject] {
+                                                  forwardingHint, owner, boundedObject,
+                                                  maxPlaintextBytes, maxSegments] {
             if (owner->terminalRequested.load()) return;
             if (current && !current()) {
                 {
@@ -14360,19 +15542,19 @@ namespace ndn_service_framework
             if (boundedObject) {
                 const std::weak_ptr<ndn::SegmentFetcher> weakFetcher = fetcher;
                 auto* faceIo = &m_face.getIoContext();
+                const auto maxEncodedBytes = maxPlaintextBytes + 512;
                 fetcher->afterSegmentValidated.connect(
-                    [weakFetcher, faceIo, fetchStats, dataName, completed, mutex, cv, error]
+                    [weakFetcher, faceIo, fetchStats, dataName, completed, mutex, cv, error,
+                     maxEncodedBytes, maxSegments]
                     (const ndn::Data& data) {
-                        constexpr size_t MAX_SEGMENTS = 96 * 1024 * 1024 / ndn::MAX_NDN_PACKET_SIZE;
-                        constexpr size_t MAX_ENCODED_BYTES = 64 * 1024 * 1024 + 512;
                         const auto& final = data.getFinalBlock();
                         const auto& name = data.getName();
                         if (dataName.isPrefixOf(name) && name.size() == dataName.size() + 1 &&
                             name.at(-1).isSegment() && final && final->isSegment() &&
                             name.at(-1).toSegment() <= final->toSegment() &&
-                            final->toSegment() < MAX_SEGMENTS &&
-                            fetchStats->validatedSegments <= MAX_SEGMENTS &&
-                            fetchStats->validatedContentBytes <= MAX_ENCODED_BYTES) return;
+                            final->toSegment() < maxSegments &&
+                            fetchStats->validatedSegments <= maxSegments &&
+                            fetchStats->validatedContentBytes <= maxEncodedBytes) return;
                         {
                             std::lock_guard<std::mutex> lock(*mutex);
                             *error = "reusable object transfer exceeds its name/segment/byte bounds";
@@ -14585,6 +15767,18 @@ namespace ndn_service_framework
         const auto deadline = std::chrono::steady_clock::now() +
                               std::chrono::milliseconds(fetchTimeoutMs);
         std::unique_lock<std::mutex> lock(*mutex);
+        const auto storeFetchMetrics = [&] {
+            if (metrics == nullptr) return;
+            metrics->actualDataName = dataName.toUri();
+            metrics->transportPayloadBytes = fetchStats->validatedContentBytes;
+            metrics->wireBytes = fetchStats->validatedWireBytes;
+            metrics->receivedWireBytes = fetchStats->receivedWireBytes;
+            metrics->localCopyBytes = encoded->size();
+            metrics->interestCount = exactSegmentFetch ? fetchStats->interestCount :
+                fetchStats->receivedSegments + fetchStats->timeouts + fetchStats->nacks;
+            metrics->retryCount = exactSegmentFetch ? fetchStats->retryCount :
+                fetchStats->timeouts + fetchStats->nacks;
+        };
         cv->wait_until(lock, deadline, [&completed] { return completed->load(); });
         if (!completed->load()) {
             owner->terminalRequested.store(true);
@@ -14609,10 +15803,12 @@ namespace ndn_service_framework
             lock.lock();
             cv->wait_for(lock, std::chrono::milliseconds(20),
                          [owner] { return owner->cleanupDone; });
+            storeFetchMetrics();
             NDN_LOG_ERROR("Timed out fetching collaboration large Data " << dataName.toUri());
             return std::nullopt;
         }
         if (!error->empty()) {
+            storeFetchMetrics();
             NDN_LOG_ERROR("Failed fetching collaboration large Data "
                           << dataName.toUri() << ": " << *error);
             return std::nullopt;
@@ -14639,18 +15835,7 @@ namespace ndn_service_framework
             fetchStats->validatedSegments,
             fetchStats->timeouts,
             fetchStats->nacks);
-        if (metrics != nullptr) {
-            metrics->actualDataName = dataName.toUri();
-            metrics->transportPayloadBytes = fetchStats->validatedContentBytes;
-            metrics->wireBytes = fetchStats->validatedWireBytes;
-            // SegmentFetcher does not expose a separate metadata accounting
-            // boundary here; leave it unknown instead of reporting zero.
-            metrics->localCopyBytes = encoded->size();
-            if (exactSegmentFetch) {
-                metrics->interestCount = fetchStats->interestCount;
-                metrics->retryCount = fetchStats->retryCount;
-            }
-        }
+        storeFetchMetrics();
         if (telemetryExportEnabled) {
             const auto snapshot =
                 m_networkTelemetry.getDependencyEdge(identity, producerProvider, keyScope);
@@ -14715,6 +15900,7 @@ namespace ndn_service_framework
                                      plaintext)) {
                 return std::nullopt;
             }
+            if (boundedObject && plaintext.size() > maxPlaintextBytes) return std::nullopt;
             if (fetchTimingEnabled) {
                 const auto decryptEnd = std::chrono::steady_clock::now();
                 NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=decrypt"
@@ -14787,157 +15973,205 @@ namespace ndn_service_framework
             });
     }
 
-    void ServiceProvider::deliverCollaborationData(const CollaborationData& data)
+    void ServiceProvider::retireCollaborationInput(const ndn::Name& requestId)
     {
-        std::vector<std::function<void(const CollaborationData&)>> callbacks;
-        std::vector<CollaborationSubscription> contextCallbacks;
         {
             std::lock_guard<std::mutex> lock(m_collaborationMutex);
-            const ndn::Name requestId(data.sessionId);
-            m_collaborationDataByRequest[requestId].push_back(data);
+            const auto found = m_collaborationInputRequests.find(requestId);
+            if (found != m_collaborationInputRequests.end()) {
+                found->second->failed->store(true);
+                m_collaborationInputRequests.erase(found);
+            }
+            m_collaborationDataByRequest.erase(requestId);
+            m_collaborationSubscriptions.erase(std::remove_if(
+                m_collaborationSubscriptions.begin(), m_collaborationSubscriptions.end(),
+                [&requestId](const auto& entry) { return entry->requestId == requestId; }),
+                m_collaborationSubscriptions.end());
+        }
+        m_collaborationCv.notify_all();
+    }
+
+    void ServiceProvider::failCollaborationInput(const ndn::Name& requestId,
+                                                 const std::string& reason)
+    {
+        std::shared_ptr<CollaborationInputRequestState> state;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            const auto found = m_collaborationInputRequests.find(requestId);
+            if (found == m_collaborationInputRequests.end()) return;
+            state = found->second;
+            if (state->failed->exchange(true)) return;
+            m_collaborationDataByRequest.erase(requestId);
+        }
+        m_collaborationCv.notify_all();
+        boost::asio::post(m_face.getIoContext(),
+            [control = m_registrationControl, state, requestId, reason] {
+                auto* owner = control->acquireOwner();
+                if (!owner) return;
+                const auto lease = std::shared_ptr<void>(owner,
+                    [control](void*) { control->releaseOwner(); });
+                owner->publishExecutionFailureOnEventLoop(state->requester, owner->identity,
+                    state->service, requestId, state->request, reason, state->selectionDigest);
+            });
+    }
+
+    void ServiceProvider::enqueueCollaborationCallback(
+        const ndn::Name& requestId, std::function<void()> callback)
+    {
+        std::shared_ptr<CollaborationInputRequestState> state;
+        std::shared_ptr<void> capacity;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            const auto found = m_collaborationInputRequests.find(requestId);
+            if (found != m_collaborationInputRequests.end()) {
+                state = found->second;
+                if (state->bounded) {
+                    if (!m_inputBudget) m_inputBudget = std::make_shared<detail::CollaborationInputBudget>();
+                    capacity = m_inputBudget->reserve(state->service.toUri(), {0, 0, 1, 0}, state->limits);
+                }
+            }
+        }
+        if (state) {
+            if (state->failed->load() || !state->current()) return;
+            if ((state->bounded && !capacity) || m_handlerPool.getThreadCount() == 0 ||
+                !m_handlerPool.post([state, capacity, callback = std::move(callback)] {
+                    if (!state->failed->load() && state->current()) callback();
+                }))
+                failCollaborationInput(requestId, "INPUT_OVERLOADED");
+            return;
+        }
+        // An absent request is retired; queued/replayed callbacks cannot
+        // recreate execution authority or run inline on Face.
+    }
+
+    void ServiceProvider::deliverCollaborationData(const CollaborationData& data)
+    {
+        const ndn::Name requestId(data.sessionId);
+        std::shared_ptr<CollaborationInputRequestState> state;
+        std::shared_ptr<void> retention;
+        bool conflictingDuplicate = false;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            if (!m_collaborationServiceNamesByRequest.count(requestId)) return;
+            const auto found = m_collaborationInputRequests.find(requestId);
+            if (found == m_collaborationInputRequests.end()) return;
+            if (found != m_collaborationInputRequests.end()) {
+                state = found->second;
+                const auto existing = m_collaborationDataByRequest.find(requestId);
+                if (state->bounded && existing != m_collaborationDataByRequest.end()) {
+                    for (const auto& record : existing->second) {
+                        const auto& previous = record->data;
+                        if (previous.producer == data.producer && previous.keyScope == data.keyScope &&
+                            previous.topic == data.topic && previous.sequence == data.sequence) {
+                            if (previous.producerRole == data.producerRole && previous.payload == data.payload) return;
+                            conflictingDuplicate = true;
+                            break;
+                        }
+                    }
+                }
+                if (state->bounded) {
+                    if (!m_inputBudget) m_inputBudget = std::make_shared<detail::CollaborationInputBudget>();
+                    retention = m_inputBudget->reserve(state->service.toUri(),
+                        {1, data.payload.size(), 0, 0}, state->limits);
+                }
+            }
+        }
+        if (state && (state->failed->load() || !state->current())) return;
+        if (conflictingDuplicate) {
+            failCollaborationInput(requestId, "INPUT_OBJECT_MISMATCH");
+            return;
+        }
+        if (state && state->bounded && !retention) {
+            failCollaborationInput(requestId, "INPUT_OVERLOADED");
+            return;
+        }
+        auto record = std::make_shared<const CollaborationInputNotification>(
+            CollaborationInputNotification{data, std::move(retention)});
+        std::vector<std::shared_ptr<const CollaborationSubscription>> callbacks;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            if (!m_collaborationServiceNamesByRequest.count(requestId)) return;
+            if (!m_collaborationInputRequests.count(requestId)) return;
+            if (state && state->failed->load()) return;
+            m_collaborationDataByRequest[requestId].push_back(record);
             for (const auto& subscription : m_collaborationSubscriptions) {
-                if (!subscription.requestId.equals(requestId)) {
-                    continue;
-                }
-                if (subscription.keyScope != data.keyScope) {
-                    continue;
-                }
-                if (!subscription.topicPrefix.isPrefixOf(data.topic)) {
-                    continue;
-                }
-                if (subscription.onData) {
-                    callbacks.push_back(subscription.onData);
-                }
-                if (subscription.onContextData) {
-                    contextCallbacks.push_back(subscription);
-                }
+                if (subscription->requestId == requestId && subscription->keyScope == data.keyScope &&
+                    subscription->topicPrefix.isPrefixOf(data.topic) &&
+                    (subscription->onData || subscription->onContextData))
+                    callbacks.push_back(subscription);
             }
         }
         m_collaborationCv.notify_all();
-        for (auto& callback : callbacks) {
-            auto invoke = [callback = std::move(callback), data]() {
-                callback(data);
-            };
-            if (m_handlerPool.getThreadCount() == 0 ||
-                !m_handlerPool.post(invoke)) {
-                invoke();
-            }
-        }
-        for (auto& subscription : contextCallbacks) {
-            auto invoke = [this, subscription = std::move(subscription), data]() mutable {
-                CollaborationContext ctx(*this,
-                                         subscription.requesterName,
-                                         subscription.requestId,
-                                         subscription.requestMessage,
-                                         subscription.assignment);
-                subscription.onContextData(ctx, data);
-            };
-            if (m_handlerPool.getThreadCount() == 0 ||
-                !m_handlerPool.post(invoke)) {
-                invoke();
-            }
+        for (const auto& subscription : callbacks) {
+            enqueueCollaborationCallback(requestId, [this, subscription, record] {
+                if (subscription->onData) subscription->onData(record->data);
+                if (subscription->onContextData) {
+                    CollaborationContext context(*this, subscription->requesterName,
+                        subscription->requestId, subscription->requestMessage, subscription->assignment);
+                    subscription->onContextData(context, record->data);
+                }
+            });
         }
     }
 
     void ServiceProvider::addCollaborationSubscription(
-        const ndn::Name& requestId,
-        KeyScope keyScope,
-        Topic topicPrefix,
+        const ndn::Name& requestId, KeyScope keyScope, Topic topicPrefix,
         std::function<void(const CollaborationData&)> onData)
     {
-        if (!onData) {
-            return;
-        }
-
-        std::vector<CollaborationData> existing;
+        if (!onData) return;
+        auto subscription = std::make_shared<CollaborationSubscription>();
+        subscription->requestId = requestId;
+        subscription->keyScope = std::move(keyScope);
+        subscription->topicPrefix = std::move(topicPrefix);
+        subscription->onData = std::move(onData);
+        std::vector<std::shared_ptr<const CollaborationInputNotification>> existing;
         {
             std::lock_guard<std::mutex> lock(m_collaborationMutex);
-            CollaborationSubscription subscription;
-            subscription.requestId = requestId;
-            subscription.keyScope = std::move(keyScope);
-            subscription.topicPrefix = std::move(topicPrefix);
-            subscription.onData = onData;
-
-            auto it = m_collaborationDataByRequest.find(requestId);
-            if (it != m_collaborationDataByRequest.end()) {
-                for (const auto& data : it->second) {
-                    if (data.keyScope == subscription.keyScope &&
-                        subscription.topicPrefix.isPrefixOf(data.topic)) {
-                        existing.push_back(data);
-                    }
-                }
+            const auto found = m_collaborationDataByRequest.find(requestId);
+            if (found != m_collaborationDataByRequest.end()) {
+                for (const auto& record : found->second)
+                    if (record->data.keyScope == subscription->keyScope &&
+                        subscription->topicPrefix.isPrefixOf(record->data.topic)) existing.push_back(record);
             }
-            m_collaborationSubscriptions.push_back(std::move(subscription));
+            m_collaborationSubscriptions.push_back(subscription);
         }
-
-        for (const auto& data : existing) {
-            auto invoke = [onData, data]() {
-                onData(data);
-            };
-            if (m_handlerPool.getThreadCount() == 0 ||
-                !m_handlerPool.post(invoke)) {
-                invoke();
-            }
-        }
+        for (const auto& record : existing)
+            enqueueCollaborationCallback(requestId,
+                [subscription, record] { subscription->onData(record->data); });
     }
 
     void ServiceProvider::addCollaborationSubscription(
-        const ndn::Name& requesterName,
-        const ndn::Name& requestId,
-        RequestMessage requestMessage,
-        CollaborationAssignment assignment,
-        KeyScope keyScope,
-        Topic topicPrefix,
+        const ndn::Name& requesterName, const ndn::Name& requestId,
+        RequestMessage requestMessage, CollaborationAssignment assignment,
+        KeyScope keyScope, Topic topicPrefix,
         std::function<void(CollaborationContext&, const CollaborationData&)> onData)
     {
-        if (!onData) {
-            return;
-        }
-
-        std::vector<CollaborationData> existing;
+        if (!onData) return;
+        auto subscription = std::make_shared<CollaborationSubscription>();
+        subscription->requesterName = requesterName;
+        subscription->requestId = requestId;
+        subscription->requestMessage = std::move(requestMessage);
+        subscription->assignment = std::move(assignment);
+        subscription->keyScope = std::move(keyScope);
+        subscription->topicPrefix = std::move(topicPrefix);
+        subscription->onContextData = std::move(onData);
+        std::vector<std::shared_ptr<const CollaborationInputNotification>> existing;
         {
             std::lock_guard<std::mutex> lock(m_collaborationMutex);
-            CollaborationSubscription subscription;
-            subscription.requesterName = requesterName;
-            subscription.requestId = requestId;
-            subscription.keyScope = std::move(keyScope);
-            subscription.topicPrefix = std::move(topicPrefix);
-            subscription.requestMessage = requestMessage;
-            subscription.assignment = assignment;
-            subscription.onContextData = onData;
-
-            auto it = m_collaborationDataByRequest.find(requestId);
-            if (it != m_collaborationDataByRequest.end()) {
-                for (const auto& data : it->second) {
-                    if (data.keyScope == subscription.keyScope &&
-                        subscription.topicPrefix.isPrefixOf(data.topic)) {
-                        existing.push_back(data);
-                    }
-                }
+            const auto found = m_collaborationDataByRequest.find(requestId);
+            if (found != m_collaborationDataByRequest.end()) {
+                for (const auto& record : found->second)
+                    if (record->data.keyScope == subscription->keyScope &&
+                        subscription->topicPrefix.isPrefixOf(record->data.topic)) existing.push_back(record);
             }
-            m_collaborationSubscriptions.push_back(std::move(subscription));
+            m_collaborationSubscriptions.push_back(subscription);
         }
-
-        for (const auto& data : existing) {
-            auto invoke = [this,
-                           requesterName,
-                           requestId,
-                           requestMessage,
-                           assignment,
-                           onData,
-                           data]() mutable {
-                CollaborationContext ctx(*this,
-                                         requesterName,
-                                         requestId,
-                                         requestMessage,
-                                         assignment);
-                onData(ctx, data);
-            };
-            if (m_handlerPool.getThreadCount() == 0 ||
-                !m_handlerPool.post(invoke)) {
-                invoke();
-            }
-        }
+        for (const auto& record : existing)
+            enqueueCollaborationCallback(requestId, [this, subscription, record] {
+                CollaborationContext context(*this, subscription->requesterName, subscription->requestId,
+                    subscription->requestMessage, subscription->assignment);
+                subscription->onContextData(context, record->data);
+            });
     }
 
     void ServiceProvider::addCollaborationReceiveFilter(
@@ -14951,7 +16185,7 @@ namespace ndn_service_framework
         subscription.keyScope = std::move(keyScope);
         subscription.topicPrefix = std::move(topicPrefix);
         subscription.receiveFilterOnly = true;
-        m_collaborationSubscriptions.push_back(std::move(subscription));
+        m_collaborationSubscriptions.push_back(std::make_shared<const CollaborationSubscription>(std::move(subscription)));
     }
 
     ServiceProvider::CollaborationWorkFence
@@ -15028,7 +16262,8 @@ namespace ndn_service_framework
         auto state = std::make_shared<FetchState>();
         state->requestId = requestId;
         state->assignment = std::move(assignment);
-        state->assignment.preparationFetchReceipt.emplace();
+        CollaborationPreparationFetchReceipt receipt;
+        state->assignment.preparationFetchReceipt = std::move(receipt);
         if (expectedScopedInput) {
             state->assignment.preparationFetchReceipt->inputDisposition =
                 InputFetchDisposition::MISSING;
@@ -15335,7 +16570,7 @@ namespace ndn_service_framework
                                 return;
                             }
                             state->failed = true;
-                            if (!state->error.empty()) {
+                    if (!state->error.empty()) {
                                 state->error += "; ";
                             }
                             state->error += dataName.toUri() + ": " +
@@ -15643,7 +16878,8 @@ namespace ndn_service_framework
             if (it == m_collaborationDataByRequest.end()) {
                 return result;
             }
-            for (const auto& data : it->second) {
+            for (const auto& record : it->second) {
+                const auto& data = record->data;
                 if (data.keyScope != keyScope) {
                     continue;
                 }
@@ -15665,7 +16901,9 @@ namespace ndn_service_framework
             std::chrono::milliseconds(timeoutMs),
             [&] {
                 current = matches();
-                return current.size() >= minCount;
+                const auto state = m_collaborationInputRequests.find(requestId);
+                return current.size() >= minCount || state == m_collaborationInputRequests.end() ||
+                    state->second->failed->load();
             });
         return current;
     }
@@ -15724,7 +16962,8 @@ namespace ndn_service_framework
             std::lock_guard<std::mutex> lock(m_collaborationMutex);
             bool hasReceiveFilter = false;
             bool matchesReceiveFilter = false;
-            for (const auto& filter : m_collaborationSubscriptions) {
+            for (const auto& record : m_collaborationSubscriptions) {
+                const auto& filter = *record;
                 if (!filter.requestId.equals(parsed->requestId)) {
                     continue;
                 }
@@ -18744,12 +19983,20 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         const ndn::Name& referenceName, const std::string& serviceName,
         std::chrono::steady_clock::time_point admittedDeadline,
         std::function<bool()> current, DataNameReadMode readMode,
-        const ndn::Name& explicitProducer, const ScopedProtectedObjectKeys* objectKeys)
+        const ndn::Name& explicitProducer, const ScopedProtectedObjectKeys* objectKeys,
+        ndn::ConstBufferPtr authenticatedEnvelope,
+        const ProtectedBlobManifest* authenticatedManifest,
+        std::shared_ptr<const HybridMessageKeyOriginals> authenticatedKeys)
     {
         ndn::Name encryptedDataName = referenceName;
         std::optional<ProtectedBlobManifest> expectedManifest;
         const auto stopping = m_fetchStopping;
         LargeDataFetchResult result;
+        if (authenticatedKeys && (explicitProducer.empty() || !authenticatedEnvelope ||
+                                  !authenticatedKeys->retention)) {
+            result.errorMessage = "Core key originals require an owned authenticated envelope";
+            return result;
+        }
         if (stopping->load()) {
             result.errorMessage = "provider is stopping";
             return result;
@@ -18769,13 +20016,31 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         const auto manifestProducer = ProtectedBlobManifest::inferProducer(referenceName, readMode);
         const bool explicitProducerBound = !explicitProducer.empty();
+        if (authenticatedEnvelope && !explicitProducerBound) {
+            result.errorMessage = "prevalidated envelope requires explicit Producer";
+            return result;
+        }
         const auto producer = explicitProducerBound ? explicitProducer :
             extractLargeDataProducerPrefix(referenceName);
         const bool canonicalData = ProtectedBlobManifest::inferDataProducer(referenceName, readMode).has_value();
-        if (explicitProducerBound && (readMode != DataNameReadMode::StrictCanonical ||
-            !explicitProducer.isPrefixOf(referenceName) ||
-            referenceName.size() <= explicitProducer.size() ||
-            !referenceName.at(-1).isVersion() || manifestProducer || canonicalData)) {
+        if (authenticatedManifest) {
+            try {
+                if (!authenticatedEnvelope || !explicitProducerBound ||
+                    authenticatedManifest->producer != explicitProducer ||
+                    authenticatedManifest->getName(readMode) != referenceName ||
+                    authenticatedManifest->authorizationScope.compare(0, 9, "/SERVICE/") != 0 ||
+                    ndn::Name(authenticatedManifest->authorizationScope.substr(8)) != ndn::Name(serviceName))
+                    throw std::invalid_argument("prevalidated manifest binding mismatch");
+                expectedManifest = *authenticatedManifest;
+                encryptedDataName = expectedManifest->dataPrefix;
+            }
+            catch (const std::exception& error) { result.errorMessage = error.what(); return result; }
+        }
+        const bool authenticatedCanonicalData = authenticatedEnvelope && canonicalData &&
+            ProtectedBlobManifest::inferDataProducer(referenceName, readMode) == std::optional<ndn::Name>(explicitProducer);
+        if (explicitProducerBound && !authenticatedManifest && (readMode != DataNameReadMode::StrictCanonical ||
+            !explicitProducer.isPrefixOf(referenceName) || referenceName.size() <= explicitProducer.size() ||
+            ((!referenceName.at(-1).isVersion() || manifestProducer || canonicalData) && !authenticatedCanonicalData))) {
             result.errorMessage = "INVALID_IMMUTABLE_PROTECTED_DATA_NAME";
             return result;
         }
@@ -18807,7 +20072,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
         // Immutable manifest references use one exact Interest before the
         // standard segment fetch. Both stages share the existing deadline.
-        if (manifestProducer) {
+        if (manifestProducer && !authenticatedManifest) {
             struct ManifestFetch {
                 std::mutex mutex;
                 std::condition_variable cv;
@@ -19011,6 +20276,11 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             cv->notify_one();
         };
 
+        if (authenticatedEnvelope) {
+            *encodedEnvelope = std::move(authenticatedEnvelope);
+            completed->store(true);
+        }
+        else {
         boost::asio::post(m_face.getIoContext(), [this, stopping, current, overallDeadline, dataValidator, encryptedDataName,
                                                   mutex, owner, finish,
                                                   interestLifetimeMs, fetchTimeoutMs, expectedManifest,
@@ -19116,7 +20386,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         });
         lock.lock();
         const bool cleaned = cv->wait_for(lock,
-            std::chrono::milliseconds(std::min(interestLifetimeMs, 20)),
+            std::chrono::milliseconds(std::min(interestLifetimeMs, 1000)),
             [owner] { return owner->cleanupDone; });
         lock.unlock();
         if (!cleaned) {
@@ -19136,6 +20406,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return fetchLegacyNacAbe();
         }
 
+        }
         auto envelope = std::make_shared<HybridMessageEnvelope>();
         try {
             if (!*encodedEnvelope) {
@@ -19294,7 +20565,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             boost::asio::post(m_face.getIoContext(),
                 [control = m_registrationControl, stopping, current, overallDeadline,
                  serviceName, envelope, finishDecrypt, decryptCompleted, producer, explicitProducerBound,
-                 decryptMutex, decryptCv, decryptError]() mutable {
+                 decryptMutex, decryptCv, decryptError, authenticatedKeys]() mutable {
                     if (stopping->load() || std::chrono::steady_clock::now() >= overallDeadline ||
                         (current && !current())) return;
                     auto* owner = control->acquireOwner();
@@ -19309,7 +20580,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                         const ndn::Data& packet) {
                         return dataValidator->isProducerSignerAuthorized(packet, producer);
                     };
-                    const auto onKey = [control, stopping, current, overallDeadline,
+                    auto onKey = [control, stopping, current, overallDeadline,
                                         serviceName, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
                             if (stopping->load() || std::chrono::steady_clock::now() >= overallDeadline ||
                                 (current && !current())) return;
@@ -19333,6 +20604,39 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                             }
                             decryptCv->notify_one();
                         };
+                    if (authenticatedKeys) {
+                        try {
+                            for (const auto& packet : authenticatedKeys->wrappedPackets) {
+                                if (!packet || !authorize(*packet))
+                                    throw std::runtime_error("Core wrapper Producer authority rejected");
+                            }
+                            auto decoded = decodeVerifiedHybridMessageKeyPackets(
+                                keyDataName, authenticatedKeys->wrappedPackets);
+                            decoded.second.parse();
+                            const ndn::Name ckRoot(decoded.second.get(ndn::tlv::Name));
+                            const auto& keys = authenticatedKeys->ckPackets;
+                            if (!detail::isNacCkLocator(ckRoot, producer) ||
+                                keys.empty() || !keys.front() || keys.front()->getName().empty() ||
+                                keys.front()->getName().getPrefix(-1) != ckRoot)
+                                throw std::runtime_error("Core original CK locator mismatch");
+                            const auto valid = [stopping, current, overallDeadline] {
+                                return !stopping->load() &&
+                                    std::chrono::steady_clock::now() < overallDeadline &&
+                                    (!current || current());
+                            };
+                            auto inputLease = owner->m_nacConsumerTransport->provide(keys, valid);
+                            owner->activeNacConsumer().consumeWithCkAuthorization(
+                                decoded.first, decoded.second, producer, authorize, valid,
+                                [onKey, inputLease, authenticatedKeys](const ndn::Buffer& key) mutable {
+                                    onKey(key);
+                                },
+                                [onError, inputLease, authenticatedKeys](const std::string& error) {
+                                    onError(error);
+                                });
+                        }
+                        catch (const std::exception& error) { onError(error.what()); }
+                        return;
+                    }
                     if (!explicitProducerBound) {
                         consumeHybridMessageKeyWrapper(owner->m_face, owner->nac_validator,
                             owner->activeNacConsumer(), keyDataName, authorize, onKey, onError);
@@ -19478,6 +20782,16 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             offer.setField("intentDigest",
                            sourceRequest->getDeploymentIntent().computeDigest());
             offer.setField("observedAtUs", std::to_string(nowMicroseconds()));
+            requestAckMessage.setProviderCapabilityOffer(offer);
+        }
+        const auto inputService = m_collaborationServices.find(serviceName);
+        if (status && inputService != m_collaborationServices.end() &&
+            inputService->second.admissionLimits && inputService->second.registrationState &&
+            !inputService->second.registrationState->closed) {
+            auto offer = requestAckMessage.hasProviderCapabilityOffer()
+                ? requestAckMessage.getProviderCapabilityOffer() : ProviderCapabilityOffer{};
+            offer.setField("collaborationInputProfiles", "data-admission-v1");
+            offer.setField("dependencyRecoveryProfiles", "arq-v1,xor-packet-set-v1");
             requestAckMessage.setProviderCapabilityOffer(offer);
         }
         std::optional<ProviderCapabilityOffer> baseCapabilityOffer;
@@ -20764,6 +22078,11 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 // request-identity lifetime of the names map.
                 m_collaborationRegistrationStates.erase(requestId);
                 m_collaborationDataByRequest.erase(requestId);
+                m_collaborationInputRequests.erase(requestId);
+                m_collaborationSubscriptions.erase(std::remove_if(
+                    m_collaborationSubscriptions.begin(), m_collaborationSubscriptions.end(),
+                    [&requestId](const auto& entry) { return entry->requestId == requestId; }),
+                    m_collaborationSubscriptions.end());
                 m_collaborationScopeKeysByRequest.erase(requestId);
                 m_collaborationScopeKeyDataNamesByRequest.erase(requestId);
                 m_pendingEncryptedCollaborationData.erase(requestId);

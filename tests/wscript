@@ -5,6 +5,42 @@ top = '..'
 import os
 
 def build(bld):
+    bld.program(target='../spec226-nac-transport', name='spec226-nac-transport',
+                source=['main.cpp', 'unit-tests/nac-consumer-transport.t.cpp',
+                        '../ndn-service-framework/nac-consumer-transport.cpp'],
+                includes=['..', '../ndn-service-framework'],
+                use='NDN_CXX NAC-ABE BOOST OPENSSL DL',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                defines=['HAVE_TESTS'], install_path=None)
+    # MiniNDN test actors need public peer certificates in each isolated PIB.
+    bld.program(target='../spec226-public-trust-installer',
+                name='spec226-public-trust-installer',
+                source=['minindn/spec226-public-trust-installer.cpp'],
+                defines=['NDN_CXX_WITH_TESTS'],
+                use='NDN_CXX', install_path='${BINDIR}')
+    bld.program(target='../spec226-input-identity', name='spec226-input-identity',
+                source=['main.cpp', 'unit-tests/collaboration-input-identity.t.cpp',
+                        'integration-tests/ndnsf-integration-fixture.cpp'],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                defines=['HAVE_TESTS'], rpath=[bld.bldnode.abspath()], install_path=None)
+    bld.program(target='../spec226-dependency-recovery', name='spec226-dependency-recovery',
+                source=['main.cpp', 'unit-tests/dependency-recovery.t.cpp',
+                        'unit-tests/stream.t.cpp', 'unit-tests/stream-facade.t.cpp',
+                        'unit-tests/stream-predictive.t.cpp',
+                        'integration-tests/ndnsf-integration-fixture.cpp'],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-std=c++17', '-O0', '-g0'], defines=['HAVE_TESTS'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+    bld.program(target='../spec226-input-admission', name='spec226-input-admission',
+                source=['main.cpp', 'integration-tests/collaboration-input-admission.t.cpp',
+                        'integration-tests/ndnsf-integration-fixture.cpp'],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-std=c++17', '-O0', '-g0'], defines=['HAVE_TESTS'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
     # Keep the CLI fixture reachable in native-only builds; preserve its output path.
     bld.program(target='../examples/spec189-cli-oracle-tests', name='spec189-cli-oracle-tests',
                 source=[bld.path.find_node('fixtures/spec189/cli-oracle.cpp')],

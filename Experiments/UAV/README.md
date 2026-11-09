@@ -11,10 +11,41 @@ simulates hovering UAVs; it does not qualify flight or moving-camera tracking.
 
 Prepare these inputs before launching:
 
-- Install the native `UavTrackingNode`, `UavTrackingGroundStation` and
+The maintained installer has a runtime-only action. It does not rebuild the
+native stack. Supply a Torchreid 1.4.0 wheel whose SHA-256 is admitted by the
+lock, built from author revision `f8cd150fdf77e8d9e1ed143b7f308c2c609ded50`;
+the PyPI same-name package is not a replacement. For example:
+
+```bash
+NDNSF_PERSON_PYTHON=/usr/bin/python3.10 \
+NDNSF_PERSON_WHEELS=/absolute/path/to/verified-wheels \
+  bash install_ndnsf_stack.sh --person-runtime /absolute/path/to/person-cpu
+```
+
+This installs the exact hashed CPU lock in an isolated environment, verifies
+the runtime inventory and real imports, and downloads hash-checked YOLO26n and
+OSNet x1.0 MSMT17 weights into its `share/ndnsf/models/` directory. Existing
+environments must already match the lock; the installer does not overwrite
+another environment. `--plan` performs no installation or downloads. Use an
+absolute stable base interpreter, not one from a disposable environment.
+
+For real indoor footage, the [EPFL laboratory sequences](https://www.epfl.ch/labs/cvlab/data/data-pom-index-php/)
+provide four synchronized 25 FPS cameras. Cameras 0, 1 and 2 of the four-person
+sequence are suitable source inputs for a small three-view integration probe.
+EPFL permits research use and requests citation for published results; retain
+this attribution in the source manifest. Its ground-truth files are separate
+offline inputs. Source download URLs are
+`https://documents.epfl.ch/groups/c/cv/cvlab-pom-video1/www/4p-c{0,1,2}.avi`.
+These videos are operator inputs and are not downloaded by the installer.
+The [OSNet author's model repository](https://huggingface.co/kaiyangzhou/osnet)
+supplies the fixed weight revision selected by the installer; successful
+installation alone does not qualify tracking or cross-camera accuracy.
+
+- Install the native `UavDroneApp`, `UavGroundStationApp` and
   `App_ServiceController` programs and tracking modules through the maintained
   Waf build/install workflow. The runner resolves installed programs, not
-  binaries from the build tree.
+  binaries from the build tree. Select `--application-mode main` explicitly;
+  the historical `compat` mode uses the separate tracking programs.
 - Use a CPython 3.10 inference environment matching
   [`requirements-person.lock`](../../NDNSF-UAV-APP/tracking/requirements-person.lock).
   Its comments describe the verified-wheel and hash requirements, including
@@ -70,30 +101,32 @@ and Mininet Python modules. Use a fresh, dedicated output directory. These
 are operator command templates, not a claim that these example paths exist.
 
 ```bash
-TRACKING_PYTHON=/absolute/path/to/cpu-environment/bin/python
+LAUNCHER_PYTHON=/absolute/path/to/minindn-control/bin/python
+WORKER_PYTHON=/absolute/path/to/person-cpu/bin/python
 DEMO_PYTHONPATH=/usr/local/libexec/ndnsf-uav/tracking:/path/to/mini-ndn:/path/to/mininet-module-parent
 PERSON_PROFILE=/absolute/path/to/person-cpu-profile.json
 SOURCE_MANIFEST=/absolute/path/to/three-view-sources.json
-DETECTOR_MODEL=/absolute/path/to/yolo11n.pt
-REID_MODEL=/absolute/path/to/osnet-weights.pth
+DETECTOR_MODEL=/absolute/path/to/person-cpu/share/ndnsf/models/yolo26n.pt
+REID_MODEL=/absolute/path/to/person-cpu/share/ndnsf/models/osnet_x1_0_msmt17.pth
 DEMO_RUN_ROOT=/absolute/path/to/new-person-run
 
 person_args=(
+  --application-mode main
   --model "$DETECTOR_MODEL"
   --tracking-profile "$PERSON_PROFILE"
   --source-manifest "$SOURCE_MANIFEST"
   --reid-model "$REID_MODEL"
-  --worker-python "$TRACKING_PYTHON"
+  --worker-python "$WORKER_PYTHON"
   --output-dir "$DEMO_RUN_ROOT"
   --run-seconds 1.5 --window-count 3 --global-deadline-ms 180000
 )
 
-env PYTHONPATH="$DEMO_PYTHONPATH" "$TRACKING_PYTHON" \
+env PYTHONPATH="$DEMO_PYTHONPATH" "$LAUNCHER_PYTHON" \
   -m Experiments.UAV.run_multicamera_tracking_demo \
   "${person_args[@]}" --prepare --preflight
 
 sudo env DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
-  PYTHONPATH="$DEMO_PYTHONPATH" "$TRACKING_PYTHON" \
+  PYTHONPATH="$DEMO_PYTHONPATH" "$LAUNCHER_PYTHON" \
   -m Experiments.UAV.run_multicamera_tracking_demo \
   "${person_args[@]}" --run
 ```
@@ -144,7 +177,9 @@ is the only processing/tracking/inference node; `gs` is the Ground Station.
 The Controller is a separate process and identity inside `gs`, and the
 compute-host renderer is a separate process inside `compute`; neither is a
 sixth MiniNDN node. The manifest therefore has five network nodes and seven
-application processes. Every node has its own NFD; no extra forwarder is
+application processes in `compat` mode. Main mode instead has six top-level
+applications: Controller, GS, three camera applications and compute; worker
+children are counted separately by the run receipt. Every node has its own NFD; no extra forwarder is
 allowed.
 
 `run_multicamera_tracking_demo.py` is the only Spec191 entrypoint. `--prepare`

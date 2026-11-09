@@ -81,6 +81,7 @@ BOOST_FIXTURE_TEST_CASE(CancelBeforeDispatchKeepsBorrowedFaceAliveAndAllowsNextR
   const auto oldGeneration = job.snapshot().generation;
   definition.jobId = "job-2";
   definition.runId = "run-2";
+  definition.outputDirectory = root / "output-2";
   BOOST_REQUIRE(job.start(definition, &reason) == TrackingAdmission::ACCEPTED);
   BOOST_CHECK_EQUAL(job.snapshot().generation, oldGeneration + 1);
   BOOST_CHECK(job.requestCancel(definition.jobId) == TrackingCancelResult::REQUESTED);

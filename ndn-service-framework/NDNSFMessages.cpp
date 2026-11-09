@@ -1932,6 +1932,7 @@ ServiceSelectionMessage::operator=(const ServiceSelectionMessage& other)
         }
         streamEventKeyGrant_ = other.streamEventKeyGrant_;
         recipientEncryptedAssignment_ = other.recipientEncryptedAssignment_;
+        collaborationDataflowMetadata_ = other.collaborationDataflowMetadata_;
         m_wire.reset();
     }
     return *this;
@@ -1947,6 +1948,21 @@ void ServiceSelectionMessage::setProviderToken(const std::string& providerToken)
 
 void ServiceSelectionMessage::setAssignmentPayload(const ndn::Buffer& payload) {
     assignmentPayload_ = payload;
+}
+
+void ServiceSelectionMessage::setCollaborationDataflowMetadata(
+    const CollaborationDataflowMetadataV1& metadata) {
+    metadata.wireEncode();
+    collaborationDataflowMetadata_ = metadata;
+    m_wire.reset();
+}
+bool ServiceSelectionMessage::hasCollaborationDataflowMetadata() const {
+    return collaborationDataflowMetadata_.has_value();
+}
+const CollaborationDataflowMetadataV1&
+ServiceSelectionMessage::getCollaborationDataflowMetadata() const {
+    if (!collaborationDataflowMetadata_) throw std::logic_error("no collaboration dataflow metadata");
+    return *collaborationDataflowMetadata_;
 }
 
 void ServiceSelectionMessage::setPolicyEpoch(size_t policyEpoch) {
@@ -2109,6 +2125,7 @@ void ServiceSelectionMessage::Clear() {
     inlineSignedInputData_.reset();
     streamEventKeyGrant_.reset();
     recipientEncryptedAssignment_.reset();
+    collaborationDataflowMetadata_.reset();
     m_wire.reset();
 }
 
@@ -2163,6 +2180,7 @@ ndn::Block ServiceSelectionMessage::WireEncode() const {
     }
     if (streamEventKeyGrant_) block.push_back(*streamEventKeyGrant_);
     if (recipientEncryptedAssignment_) block.push_back(recipientEncryptedAssignment_->WireEncode());
+    if (collaborationDataflowMetadata_) block.push_back(collaborationDataflowMetadata_->wireEncode());
     block.encode();
     m_wire = block;
     return m_wire;
@@ -2270,6 +2288,11 @@ bool ServiceSelectionMessage::WireDecode(const ndn::Block& block) {
             RecipientEncryptedAssignment assignment;
             if (!assignment.WireDecode(b)) return false;
             recipientEncryptedAssignment_ = std::move(assignment);
+        }
+        else if (b.type() == 0xF400) {
+            if (collaborationDataflowMetadata_) return false;
+            try { collaborationDataflowMetadata_ = CollaborationDataflowMetadataV1::wireDecode(b); }
+            catch (const std::exception&) { Clear(); return false; }
         }
     }
 

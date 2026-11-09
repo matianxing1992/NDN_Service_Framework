@@ -1350,7 +1350,19 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     return;
   }
   std::optional<TensorBundle> reconstructed;
-  BOOST_REQUIRE_NO_THROW(reconstructed = fetched.get());
+  try {
+    reconstructed = fetched.get();
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL("dependency transfer failed before reconstruction: " << error.what()
+      << " manifest_interests=" << manifestInterests.load()
+      << " segment_interests=" << segmentInterests
+      << " source_interest_transmissions=" << sourceInterestTransmissions
+      << " source_interest_names=" << issuedSourceInterests.size()
+      << " unique_packets=" << uniquePackets.size()
+      << " requested_segments=" << requestedSegments.size()
+      << " largest_wire=" << largestPacket);
+  }
   BOOST_REQUIRE(reconstructed);
   if (observedSizing) {
     BOOST_CHECK(reconstructed->payload == original.payload);

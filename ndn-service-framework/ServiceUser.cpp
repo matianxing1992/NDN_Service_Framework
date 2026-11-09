@@ -1758,6 +1758,70 @@ namespace ndn_service_framework
             const std::vector<SelectedParticipant>& participants,
             std::string& reason)
         {
+            if (plan.roles.empty()) {
+                reason = "empty collaboration plan";
+                return false;
+            }
+            bool strict = false;
+            bool legacy = false;
+            bool duplicateRole = false;
+            std::set<std::string> roles;
+            for (const auto& role : plan.roles) {
+                if (!role.inputAdmissionProfile.empty() &&
+                    role.inputAdmissionProfile != "data-admission-v1") {
+                    reason = "INPUT_PROFILE_UNSUPPORTED";
+                    return false;
+                }
+                strict |= !role.inputAdmissionProfile.empty();
+                legacy |= role.inputAdmissionProfile.empty();
+                duplicateRole |= !roles.insert(role.role).second;
+            }
+            if (strict && duplicateRole) {
+                reason = "duplicate collaboration role";
+                return false;
+            }
+            if ((strict && legacy) ||
+                (plan.dependencyTransport.redundancy != DependencyRedundancy::None &&
+                 plan.dependencyTransport.redundancy != DependencyRedundancy::Xor) ||
+                (!strict && plan.dependencyTransport.redundancy != DependencyRedundancy::None)) {
+                reason = "INPUT_PROFILE_UNSUPPORTED";
+                return false;
+            }
+            if (strict) {
+                CollaborationDataflowMetadataV1 metadata;
+                metadata.dependencyRecoveryProfile =
+                    plan.dependencyTransport.redundancy == DependencyRedundancy::Xor
+                        ? "xor-packet-set-v1" : "arq-v1";
+                for (const auto& participant : participants) {
+                    if (!roles.count(participant.role) ||
+                        !participant.ack.ack.hasProviderCapabilityOffer()) {
+                        reason = "INPUT_PROFILE_UNSUPPORTED";
+                        return false;
+                    }
+                    const auto& offer = participant.ack.ack.getProviderCapabilityOffer();
+                    const auto supports = [&offer](const std::string& field, const std::string& value) {
+                        if (!offer.hasField(field)) return false;
+                        const std::string list = "," + offer.getField(field) + ",";
+                        return list.find("," + value + ",") != std::string::npos;
+                    };
+                    if (!supports("collaborationInputProfiles", "data-admission-v1") ||
+                        !supports("dependencyRecoveryProfiles", "arq-v1")) {
+                        reason = "INPUT_PROFILE_UNSUPPORTED";
+                        return false;
+                    }
+                    if (plan.dependencyTransport.redundancy == DependencyRedundancy::Xor &&
+                        !supports("dependencyRecoveryProfiles", "xor-packet-set-v1")) {
+                        reason = "DEPENDENCY_FEC_UNSUPPORTED";
+                        return false;
+                    }
+                    metadata.roleBindings[participant.role].push_back(participant.provider);
+                }
+                try { metadata.wireEncode(); }
+                catch (const std::exception&) {
+                    reason = "INPUT_SPEC_INVALID";
+                    return false;
+                }
+            }
             for (const auto& role : plan.roles) {
                 const auto count = static_cast<size_t>(
                     std::count_if(participants.begin(), participants.end(),
@@ -2503,6 +2567,8 @@ namespace ndn_service_framework
                 appendDigestField(canonical, std::to_string(role.maxProviders));
                 appendDigestField(canonical,
                                   role.terminalResponseOwner ? "1" : "0");
+                if (!role.inputAdmissionProfile.empty())
+                    appendDigestField(canonical, "input-profile:" + role.inputAdmissionProfile);
             }
             appendDigestField(canonical, std::to_string(plan.keyScopes.size()));
             for (const auto& scope : plan.keyScopes) {
@@ -2530,6 +2596,14 @@ namespace ndn_service_framework
                 }
             }
             appendDigestBuffer(canonical, plan.sharedAssignmentMetadata);
+            if (std::any_of(plan.roles.begin(), plan.roles.end(), [](const auto& role) {
+                    return !role.inputAdmissionProfile.empty();
+                })) {
+                appendDigestField(canonical, "dependency-recovery-v1");
+                appendDigestField(canonical,
+                    plan.dependencyTransport.redundancy == DependencyRedundancy::Xor
+                        ? "xor-packet-set-v1" : "arq-v1");
+            }
             appendDigestField(canonical, std::to_string(participants.size()));
             for (const auto& participant : participants) {
                 appendDigestField(canonical, participant.role);
@@ -6745,12 +6819,13 @@ namespace ndn_service_framework
         std::map<std::string, std::vector<ProfileAudienceMember>> next;
         for (const auto& [producer, service] : producerServices) {
             if (producer.empty() || service.empty()) return;
+            const auto producerName = producer;
             auto& audience = next[service.toUri(ndn::name::UriFormat::CANONICAL)];
-            if (std::none_of(audience.begin(), audience.end(), [&](const auto& member) {
-                    return member.producer == producer;
+            if (std::none_of(audience.begin(), audience.end(), [&producerName](const auto& member) {
+                    return member.producer == producerName;
                 })) {
-                audience.push_back(ProfileAudienceMember{producer,
-                    makePermissionFullServiceName(producer, service).toUri(ndn::name::UriFormat::CANONICAL)});
+                audience.push_back(ProfileAudienceMember{producerName,
+                    makePermissionFullServiceName(producerName, service).toUri(ndn::name::UriFormat::CANONICAL)});
             }
         }
         m_basicProfileAudiences = std::move(next);
@@ -11412,6 +11487,34 @@ namespace ndn_service_framework
             CollaborationAckCoverageHandler());
     }
 
+    ndn::Name
+    ServiceUser::BeginCollaborationWithProviders(
+        const ServiceName& service,
+        const RequestPayload& initialRequest,
+        int ackCollectionTimeMs,
+        int timeoutMs,
+        CollaborationAckClosedHandler onAckClosed,
+        ResponseHandler onFinalResponse,
+        TimeoutHandler onTimeout,
+        const RequestId& requestedRequestId,
+        CollaborationAckCoverageHandler onAckCoverage,
+        const RequestCapabilities& requestCapabilities,
+        const std::optional<StreamRequestOptions>& requestedStreamOptions,
+        std::function<void(const ndn::Buffer&)> onStreamEvent,
+        std::function<void(const ndn::Buffer&)> onStreamComplete,
+        std::function<void(const StreamedInvocationError&)> onStreamError,
+        const std::vector<ndn::Name>& providerNames)
+    {
+        return BeginCollaborationWithProviders(
+            service, initialRequest, ackCollectionTimeMs, timeoutMs,
+            std::move(onAckClosed), std::move(onFinalResponse),
+            std::move(onTimeout), requestedRequestId, std::move(onAckCoverage),
+            requestCapabilities, requestedStreamOptions,
+            std::move(onStreamEvent), std::move(onStreamComplete),
+            std::move(onStreamError), providerNames,
+            std::shared_ptr<ControlByteStatistics>{});
+    }
+
     ndn::Name ServiceUser::BeginCollaborationWithProviders(
         const ServiceName& service,
         const RequestPayload& initialRequest,
@@ -11682,12 +11785,14 @@ namespace ndn_service_framework
             const bool matched = std::any_of(
                 call.collaborationClosedAcks.begin(),
                 call.collaborationClosedAcks.end(),
-                [&participant](const StoredAck& storedAck) {
+                [&participant, &plan](const StoredAck& storedAck) {
                     return storedAck.message.getStatus() &&
                            storedAck.providerName.equals(participant.provider) &&
                            storedAck.serviceName.equals(participant.service) &&
                            storedAck.requestId.equals(participant.ack.requestId) &&
-                           ackEquals(storedAck.message, participant.ack.ack);
+                           ackEquals(storedAck.message, participant.ack.ack) &&
+                           (plan.roles.front().inputAdmissionProfile.empty() ||
+                            storedAck.message.WireEncode() == participant.ack.ack.WireEncode());
                 });
             if (!matched) {
                 throw std::invalid_argument(
@@ -14403,6 +14508,17 @@ namespace ndn_service_framework
                 return false;
             }
             for (const auto& participant : selectedParticipants) {
+                if (!pendingCall.collaborationPlan.roles.front().inputAdmissionProfile.empty() &&
+                    std::none_of(candidateAcks.begin(), candidateAcks.end(),
+                        [&participant](const StoredAck& ack) {
+                            return ack.message.getStatus() &&
+                                ack.providerName == participant.provider &&
+                                ack.serviceName == participant.service &&
+                                ack.requestId == participant.ack.requestId &&
+                                ack.message.WireEncode() == participant.ack.ack.WireEncode();
+                        })) {
+                    throw std::invalid_argument("strict participant outside authenticated ACK set");
+                }
                 if (!authorizeControllerTransition(participant.service,
                                                    ProtectedTransition::SELECTION)) {
                     throw std::runtime_error("collaboration Selection authorization rejected");
@@ -14568,6 +14684,7 @@ namespace ndn_service_framework
                 pendingCall.collaborationAssignments[provider] =
                     encodeOpaqueAssignmentSet(assignments);
             }
+            pendingCall.collaborationCommittedParticipants = selectedParticipants;
         }
         else if (pendingCall.ackCandidatesHandler) {
 
@@ -16632,6 +16749,16 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
         if (pendingIt != m_pendingCalls.end() &&
             pendingIt->second.isCollaboration) {
+            const auto& plan = pendingIt->second.collaborationPlan;
+            if (!plan.roles.empty() && !plan.roles.front().inputAdmissionProfile.empty()) {
+                CollaborationDataflowMetadataV1 metadata;
+                metadata.dependencyRecoveryProfile =
+                    plan.dependencyTransport.redundancy == DependencyRedundancy::Xor
+                        ? "xor-packet-set-v1" : "arq-v1";
+                for (const auto& participant : pendingIt->second.collaborationCommittedParticipants)
+                    metadata.roleBindings[participant.role].push_back(participant.provider);
+                selectionMessage.setCollaborationDataflowMetadata(metadata);
+            }
             // Each collaboration projection contains one local
             // Provider entry. Keep the complete role binding in
             // framework-owned shared metadata so every Provider can resolve

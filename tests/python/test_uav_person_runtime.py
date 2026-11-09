@@ -50,6 +50,23 @@ class PersonRuntimeTest(unittest.TestCase):
             self.versions, [self.distribution] if distributions is None else distributions,
             self.root)
 
+    def test_python_library_uses_loaded_artifacts_not_development_symlinks(self):
+        mappings = self.root / "maps"
+        mappings.write_text("1000-2000 r-xp 0000 00:01 1 /usr/bin/python\n")
+        self.assertIsNone(runtime._loaded_python_library(mappings))
+        library = self.root / (
+            f"libpython{sys.version_info.major}.{sys.version_info.minor}.so.1.0")
+        library.write_bytes(b"runtime library")
+        row = f"1000-2000 r-xp 0000 00:01 1 {library}\n"
+        mappings.write_text(row + row)
+        self.assertEqual(runtime._loaded_python_library(mappings), library)
+        mappings.write_text(row.rstrip() + " (deleted)\n")
+        with self.assertRaisesRegex(ValueError, "deleted"):
+            runtime._loaded_python_library(mappings)
+        mappings.write_text("x" * (runtime.MAX_METADATA_BYTES + 1))
+        with self.assertRaisesRegex(ValueError, "byte limit"):
+            runtime._loaded_python_library(mappings)
+
     def test_exact_lock_requires_complete_hashes_and_bounds(self):
         lock = self.root / "requirements.lock"
         good = "Example_Person==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n"

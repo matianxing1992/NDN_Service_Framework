@@ -46,10 +46,25 @@
 
 
 namespace ndnsf::di { class NdnsfCollaborationDependencyIo; }
-namespace ndn_service_framework::test { struct TensorOriginalOracle; }
-namespace ndn_service_framework::test { struct ExactPublicationOracle; }
+namespace ndn_service_framework::test {
+struct TensorOriginalOracle;
+struct ExactPublicationOracle;
+struct Spec226RecoveryOracle;
+}
 
 namespace ndn_service_framework{
+    class VerifiedExactDataFetchOperation;
+    class VerifiedInputObject;
+    class AdmittedInputSet;
+    class InputAdmissionOperation;
+    struct InputAdmissionResult;
+    struct CollaborationInputSpec;
+    struct DependencyPacketPlan;
+    struct ProtectedBlobManifest;
+    using InputSemanticValidator = std::function<void(const std::vector<VerifiedInputObject>&)>;
+    using DependencyPlanResolver = std::function<DependencyPacketPlan(
+        const CollaborationInputSpec&, const ndn::Data&)>;
+    namespace detail { class CollaborationInputBudget; class NacConsumerTransport; }
 
     struct LargeDataPublishResult;
     class ScopedProtectedObjectKeys;
@@ -115,6 +130,19 @@ namespace ndn_service_framework{
     };
 
     /** Native-only measurements for one collaboration object transfer. */
+    struct CollaborationRecoveryMetric
+    {
+        std::string objectName;
+        std::string groupName;
+        std::string repairDataName;
+        std::string repairWireSha256;
+        std::string trigger;
+        std::string terminalState;
+        std::size_t missingPackets = 0;
+        std::size_t originalRetriesBeforeRecovery = 0;
+        bool recoveredBeforeOriginalRetry = false;
+    };
+
     struct CollaborationTransferMetrics
     {
         std::string actualDataName;
@@ -124,6 +152,28 @@ namespace ndn_service_framework{
         std::optional<std::size_t> interestCount;
         std::optional<std::size_t> retryCount;
         std::optional<std::size_t> localCopyBytes;
+        std::size_t receivedWireBytes = 0;
+        std::size_t originalInterests = 0;
+        std::size_t originalRetries = 0;
+        std::size_t rootControlInterests = 0;
+        std::size_t rootControlRetries = 0;
+        /** Repair Interest expression attempts, including later canceled reads. */
+        std::size_t repairInterests = 0;
+        std::size_t repairRetries = 0;
+        /** Legacy sidecar operation count; always zero for the in-band profile. */
+        std::size_t repairFetches = 0;
+        std::size_t repairWireBytes = 0;
+        std::size_t repairPublishedWireBytes = 0;
+        std::size_t fecRecoveryAttempts = 0;
+        std::size_t fecRecoveredPackets = 0;
+        std::size_t fecRejectedRepairs = 0;
+        std::size_t arqFallbacks = 0;
+        std::size_t validatedOriginalWireBytes = 0;
+        std::size_t deadlineExpired = 0;
+        std::size_t peakRetainedBytes = 0;
+        std::string recoveryMode = "none";
+        std::size_t recoveryGroupDataPackets = 0;
+        std::vector<CollaborationRecoveryMetric> recovery;
         /** Optional request-owned observer supplied before an exact Data fetch. */
         CollaborationLocalWorkObserver localWorkObserver;
     };
@@ -150,6 +200,17 @@ namespace ndn_service_framework{
     {
         friend struct test::InvocationNamesOracle;
         friend struct test::TensorOriginalOracle;
+        private:
+            /** Internal Core adapter hook. Applications cannot provide
+             * recovery policy or network fetch callbacks. */
+            using ExactDataWireRecovery = std::function<std::optional<ndn::Buffer>(
+                const ndn::Name&, const std::vector<ndn::Name>&,
+                const std::vector<ndn::Buffer>&)>;
+            // A Core-only availability check returns source and repair slot indices.
+            using ExactDataRecoveryReady = std::function<
+                std::optional<std::pair<std::size_t, std::size_t>>(
+                std::size_t, const std::vector<ndn::Buffer>&,
+                std::vector<std::size_t>&)>;
         public:
             enum class ExactDataFetchPhase { Published, AwaitPublication };
             struct ExactDataBatchResult
@@ -168,6 +229,7 @@ namespace ndn_service_framework{
                 ~ExactDataFetchOperation();
                 std::future_status wait_for(std::chrono::milliseconds duration) const;
                 std::optional<ExactDataBatchResult> get();
+                CollaborationTransferMetrics metricsSnapshot() const;
                 void cancel();
               private:
                 friend class ServiceProvider;
@@ -498,6 +560,7 @@ namespace ndn_service_framework{
             /** Runtime observations only; never part of a signed assignment. */
             struct CollaborationPreparationFetchReceipt
             {
+                CollaborationPreparationFetchReceipt() = default;
                 std::uint64_t assignmentBytes = 0;
                 std::uint64_t assignmentObjects = 0;
                 std::uint64_t scopeKeyBytes = 0;
@@ -536,6 +599,10 @@ namespace ndn_service_framework{
                     std::chrono::steady_clock::time_point::min();
                 std::function<bool()> workCurrent;
                 std::optional<CollaborationPreparationFetchReceipt> preparationFetchReceipt;
+                std::string inputAdmissionProfile;
+                DependencyTransportOptions dependencyTransport;
+                std::map<CollaborationRole, std::vector<ndn::Name>> selectedRoleProviders;
+                std::optional<CollaborationAdmissionLimits> admissionLimits;
             };
 
             struct CollaborationData
@@ -563,10 +630,37 @@ namespace ndn_service_framework{
                 CollaborationRole role() const;
                 ndn::Name localProvider() const;
                 const CollaborationAssignment& assignment() const;
+                /**
+                 * Fetch and admit the complete declared input set on this
+                 * handler worker. The result retains the admitted packet owner;
+                 * the handler must still check current authority before any
+                 * later commit or publication. Do not call on Face or fetch
+                 * workers, and keep Provider/Face alive until transfers drain.
+                 */
+                AdmittedInputSet requireInputs(
+                    std::vector<CollaborationInputSpec> inputs,
+                    InputSemanticValidator validate,
+                    DependencyPlanResolver resolve = {});
+                InputAdmissionOperation startInputAdmission(
+                    std::vector<CollaborationInputSpec> inputs,
+                    InputSemanticValidator validate,
+                    DependencyPlanResolver resolve = {},
+                    std::function<void(std::exception_ptr)> onFirstReadStarted = {},
+                    std::function<bool()> onValidatedData = {});
+                InputAdmissionResult admitResolvedInputs(
+                    const std::vector<CollaborationInputSpec>& inputs,
+                    std::vector<VerifiedInputObject> objects,
+                    const InputSemanticValidator& validate);
 
                 bool hasArtifact(const ndn::Name& artifactName) const;
                 bool fetchArtifact(const ndn::Name& artifactName, int timeoutMs);
                 std::optional<ndn::Buffer> getArtifact(const ndn::Name& artifactName) const;
+                /** Fetch and decrypt a named object under this dispatch's service
+                 * authority. Failure details stay available to native callers.
+                 * Call from a worker, not the Face event loop. */
+                LargeDataFetchResult fetchEncryptedLargeDataResult(
+                    const ndn::Name& dataName,
+                    const ndn::Name& serviceName = ndn::Name());
                 std::optional<ndn::Buffer> fetchEncryptedLargeData(
                     const ndn::Name& dataName,
                     const ndn::Name& serviceName = ndn::Name());
@@ -702,10 +796,14 @@ namespace ndn_service_framework{
                 /** Fetch an original using its current request/scope-bound key
                  * grant. Both transfers share one deadline, require the actual
                  * Producer signer and stop when work authority is revoked.
+                 * The encoded transfer and decoded plaintext obey the supplied
+                 * segment and plaintext bounds.
                  */
                 std::optional<ndn::Buffer> fetchReusableLargeFromProducerCurrent(
                     const ndn::Name& dataName, KeyScope keyScope,
-                    const ndn::Name& expectedProducer, int timeoutMs);
+                    const ndn::Name& expectedProducer, int timeoutMs,
+                    std::size_t maxPlaintextBytes = 64 * 1024 * 1024,
+                    std::size_t maxSegments = 96 * 1024 * 1024 / ndn::MAX_NDN_PACKET_SIZE);
                 /**
                  * Fetch one exact-name segmented collaboration object.
                  *
@@ -742,6 +840,13 @@ namespace ndn_service_framework{
                     KeyScope keyScope,
                     const ndn::Name& expectedProducer,
                     int timeoutMs);
+                std::optional<ndn::Buffer> fetchLargeFromProducerCurrent(
+                    const ndn::Name& dataName,
+                    KeyScope keyScope,
+                    const ndn::Name& expectedProducer,
+                    std::chrono::steady_clock::time_point deadline,
+                    std::function<bool()> additionalCurrent,
+                    CollaborationTransferMetrics* metrics = nullptr);
                 /**
                  * Publish request-scoped NDNSF_DATA_V1 segments through the
                  * SVSPubSub data path.  Each pair contains the complete
@@ -867,10 +972,11 @@ namespace ndn_service_framework{
                     ExactDataFetchPhase phase,
                     std::function<bool()> onValidatedData = {});
                 /**
-                 * Fetch ordered results with an adaptive congestion window starting at 16.
-                 * maxOutstanding bounds unfinished names; zero uses the batch size as
-                 * that bound. The first-read callback follows initial-window dispatch.
-                 * Window growth requires validated Data; loss recovery retains admission checks.
+                 * Fetch ordered results with at most maxOutstanding unfinished names.
+                 * Zero selects capacity 128; the hard capacity is 256. Start up
+                 * to 32 exact Interests without probing and adapt within capacity.
+                 * The first-read callback follows initial-window dispatch;
+                 * validated Data grants new credits and retries share the window.
                  */
                 ExactDataFetchOperation startSignedExactDataBatch(
                     KeyScope keyScope,
@@ -894,6 +1000,16 @@ namespace ndn_service_framework{
                     std::function<bool()> onValidatedData,
                     std::size_t maxOutstanding,
                     CollaborationLocalWorkObserver localWorkObserver);
+                /** Strict exact fetch. Include collaboration-input.hpp to use
+                 * the result; maxOutstanding must be positive and bounded. */
+                VerifiedExactDataFetchOperation startVerifiedSignedExactDataBatch(
+                    KeyScope keyScope, const std::vector<ndn::Name>& dataNames,
+                    const ndn::Name& expectedProducer, int timeoutMs,
+                    std::function<bool()> shouldCancel,
+                    std::function<void(std::exception_ptr)> onFirstReadStarted,
+                    ExactDataFetchPhase phase, std::function<bool()> onValidatedData,
+                    std::size_t maxOutstanding,
+                    std::size_t maxWireBytes = 64 * 1024 * 1024);
                 void subscribe(KeyScope keyScope,
                                Topic topicPrefix,
                                std::function<void(const CollaborationData&)> onData);
@@ -953,6 +1069,24 @@ namespace ndn_service_framework{
             private:
                 friend class ndnsf::di::NdnsfCollaborationDependencyIo;
                 friend struct test::ExactPublicationOracle;
+                friend struct test::Spec226RecoveryOracle;
+                VerifiedExactDataFetchOperation startVerifiedSignedExactDataBatchImpl(
+                    KeyScope keyScope, const CollaborationRole& producerRole,
+                    const std::vector<ndn::Name>& dataNames,
+                    const ndn::Name& expectedProducer, int timeoutMs,
+                    std::function<bool()> shouldCancel,
+                    std::function<void(std::exception_ptr)> onFirstReadStarted,
+                    ExactDataFetchPhase phase, std::function<bool()> onValidatedData,
+                    std::size_t maxOutstanding, std::size_t maxWireBytes,
+                    std::function<void()> onReady,
+                    ExactDataWireRecovery recoverMissing = {},
+                    bool hybridKeyBootstrap = false,
+                    std::vector<std::size_t> optionalSlots = {},
+                    ExactDataRecoveryReady recoveryReady = {});
+                InputAdmissionResult admitResolvedInputsImpl(
+                    const std::vector<CollaborationInputSpec>& inputs,
+                    std::vector<VerifiedInputObject> objects,
+                    const InputSemanticValidator& validate, std::shared_ptr<void> retention);
                 std::optional<ndn::Buffer> fetchProtectedDataCurrent(
                     const ndn::Name& dataName, const ndn::Name& expectedProducer,
                     std::chrono::steady_clock::time_point deadline);
@@ -1365,6 +1499,18 @@ namespace ndn_service_framework{
                 std::vector<CollaborationRole> allowedRoles,
                 AckStrategyHandler ackHandler,
                 CollaborationHandler handler);
+            ServiceRegistration addScopedCollaborationHandler(
+                const ndn::Name& serviceName,
+                std::vector<CollaborationRole> allowedRoles,
+                AckStrategyHandler ackHandler,
+                CollaborationHandler handler,
+                CollaborationAdmissionLimits limits);
+            ServiceRegistration addScopedAsyncCollaborationHandler(
+                const ndn::Name& serviceName,
+                std::vector<CollaborationRole> allowedRoles,
+                AsyncAckStrategyHandler ackHandler,
+                CollaborationHandler handler,
+                CollaborationAdmissionLimits limits);
             ServiceRegistration addScopedAsyncCollaborationHandler(
                 const ndn::Name& serviceName,
                 std::vector<CollaborationRole> allowedRoles,
@@ -1391,6 +1537,16 @@ namespace ndn_service_framework{
                 AsyncAckStrategyHandler asyncAckHandler,
                 CollaborationHandler handler,
                 AsyncTargetedRequestHandler targetedHandler);
+            /** Register both ACK modes and the targeted handler with bounded
+             * Core input-admission capability attached to this generation. */
+            ServiceRegistration addScopedCollaborationHandler(
+                const ndn::Name& serviceName,
+                std::vector<CollaborationRole> allowedRoles,
+                AckStrategyHandler ackHandler,
+                AsyncAckStrategyHandler asyncAckHandler,
+                CollaborationHandler handler,
+                AsyncTargetedRequestHandler targetedHandler,
+                CollaborationAdmissionLimits limits);
 
             void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
@@ -2108,6 +2264,7 @@ namespace ndn_service_framework{
                 std::vector<CollaborationRole> allowedRoles;
                 // Same ownership rules as RegisteredService::registrationState.
                 std::shared_ptr<RegistrationState> registrationState;
+                std::optional<CollaborationAdmissionLimits> admissionLimits;
             };
 
             // Face-serialized helpers for scoped registration.  These run on
@@ -2165,6 +2322,23 @@ namespace ndn_service_framework{
                 bool receiveFilterOnly = false;
             };
 
+            struct CollaborationInputRequestState
+            {
+                std::shared_ptr<std::atomic<bool>> failed = std::make_shared<std::atomic<bool>>(false);
+                bool bounded = false;
+                ndn::Name requester;
+                ndn::Name service;
+                RequestMessage request;
+                std::string selectionDigest;
+                CollaborationAdmissionLimits limits;
+                std::function<bool()> current;
+            };
+            struct CollaborationInputNotification
+            {
+                CollaborationData data;
+                std::shared_ptr<void> retention;
+            };
+
             struct TargetedProviderTokenState
             {
                 ndn::Name requesterIdentity;
@@ -2209,11 +2383,15 @@ namespace ndn_service_framework{
                 std::chrono::steady_clock::time_point deadline,
                 std::function<bool()> current, DataNameReadMode readMode,
                 const ndn::Name& expectedProducer,
-                const ScopedProtectedObjectKeys* objectKeys = nullptr);
+                const ScopedProtectedObjectKeys* objectKeys = nullptr,
+                ndn::ConstBufferPtr authenticatedEnvelope = {},
+                const ProtectedBlobManifest* authenticatedManifest = nullptr,
+                std::shared_ptr<const HybridMessageKeyOriginals> authenticatedKeys = {});
             struct ImmutablePublicationOperation
             {
                 std::shared_ptr<std::mutex> authorityMutex;
                 std::shared_ptr<const ImmutableProtectedDataResult> committed;
+                bool inBandXor = false;
                 bool abandoned = false; // protected by authorityMutex
             };
             ImmutableProtectedDataResult publishImmutableProtectedDataOnFace(
@@ -2459,7 +2637,11 @@ namespace ndn_service_framework{
                 const ndn::Buffer& payload,
                 size_t maxSegmentSize,
                 int freshnessMs,
-                CollaborationTransferMetrics* metrics);
+                CollaborationTransferMetrics* metrics,
+                DependencyRedundancy redundancy = DependencyRedundancy::None,
+                size_t maxWireBytes = 64 * 1024 * 1024,
+                std::function<bool()> current = {},
+                std::shared_ptr<std::mutex> authorityMutex = {});
             ndn::Name publishCollaborationLargeDataNamed(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
@@ -2494,7 +2676,9 @@ namespace ndn_service_framework{
                 size_t maxSegmentSize, int freshnessMs, CollaborationTransferMetrics* metrics,
                 const std::function<bool()>& current,
                 const std::shared_ptr<std::mutex>& authorityMutex,
-                const ndn::Name& reusableService);
+                const ndn::Name& reusableService,
+                DependencyRedundancy redundancy = DependencyRedundancy::None,
+                size_t maxWireBytes = 64 * 1024 * 1024);
             std::optional<ndn::Buffer> fetchCollaborationLargeData(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
@@ -2515,7 +2699,9 @@ namespace ndn_service_framework{
                 std::uint64_t digestExpectedBytes = 0,
                 ndn::Name forwardingHint = {},
                 const ndn::Buffer& objectKey = {},
-                const ndn::Name& reusableService = {});
+                const ndn::Name& reusableService = {},
+                std::size_t maxPlaintextBytes = 64 * 1024 * 1024,
+                std::size_t maxSegments = 96 * 1024 * 1024 / ndn::MAX_NDN_PACKET_SIZE);
             bool publishCollaborationDataV1Segments(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
@@ -2632,7 +2818,16 @@ namespace ndn_service_framework{
                 ExactDataFetchPhase phase,
                 std::function<bool()> onValidatedData,
                 CollaborationLocalWorkObserver localWorkObserver,
-                std::size_t maxOutstanding = 0);
+                std::size_t maxOutstanding = 0,
+                bool retainOriginalWire = false,
+                std::size_t maxRetainedWireBytes = 0,
+                std::function<void()> onReady = {},
+                std::shared_ptr<std::atomic<bool>> signatureRejected = {},
+                std::vector<ndn::Name> authorizedLocations = {},
+                ExactDataWireRecovery recoverMissing = {},
+                bool hybridKeyBootstrap = false,
+                std::vector<std::size_t> optionalSlots = {},
+                ExactDataRecoveryReady recoveryReady = {});
             void publishCollaborationFinalResponse(
                 const ndn::Name& requesterName,
                 const ndn::Name& serviceName,
@@ -2645,6 +2840,9 @@ namespace ndn_service_framework{
             void onCollaborationDataMessage(
                 const ndn::svs::SVSPubSub::SubscriptionData& subscription);
             void deliverCollaborationData(const CollaborationData& data);
+            void failCollaborationInput(const ndn::Name& requestId, const std::string& reason);
+            void retireCollaborationInput(const ndn::Name& requestId);
+            void enqueueCollaborationCallback(const ndn::Name& requestId, std::function<void()> callback);
             void addCollaborationSubscription(
                 const ndn::Name& requestId,
                 KeyScope keyScope,
@@ -2735,6 +2933,8 @@ namespace ndn_service_framework{
             ndn::security::Certificate identityCert;
             ndn::security::Certificate signingCert;
             ndn::security::Certificate attrAuthorityCertificate;
+            std::shared_ptr<detail::NacConsumerTransport> m_nacConsumerTransport;
+            std::unique_ptr<ndn::Face> m_nacConsumerFace;
             ndn::nacabe::Consumer nacConsumer;
             std::unique_ptr<ndn::nacabe::Consumer> m_testNacConsumer;
             // LocalMock fixtures do not model the production Controller/AA
@@ -2874,6 +3074,7 @@ namespace ndn_service_framework{
             std::shared_ptr<std::atomic<bool>> m_fetchStopping =
                 std::make_shared<std::atomic<bool>>(false);
             BoundedWorkerPool m_fetchPool{"ServiceProvider collaboration fetches"};
+            std::shared_ptr<detail::CollaborationInputBudget> m_inputBudget;
 
             // ChanllengeID->(Token->RequestNameWithoutRequestID)
             std::map<ndn::Name,std::pair<std::string, ndn::Name>> chanllengeRecords;
@@ -2973,7 +3174,8 @@ namespace ndn_service_framework{
             mutable std::set<std::string> m_consumedTargetedProviderTokenHashes;
             mutable std::mutex m_pendingRequestMutex;
             std::map<ndn::Name, RegisteredCollaborationService> m_collaborationServices;
-            std::map<ndn::Name, std::vector<CollaborationData>> m_collaborationDataByRequest;
+            std::map<ndn::Name, std::vector<std::shared_ptr<const CollaborationInputNotification>>> m_collaborationDataByRequest;
+            std::map<ndn::Name, std::shared_ptr<CollaborationInputRequestState>> m_collaborationInputRequests;
             std::map<ndn::Name, std::map<KeyScope, ndn::Buffer>> m_collaborationScopeKeysByRequest;
             std::map<ndn::Name, std::map<KeyScope, ndn::Name>> m_collaborationScopeKeyDataNamesByRequest;
             std::map<ndn::Name, ndn::Name> m_collaborationServiceNamesByRequest;
@@ -2995,7 +3197,7 @@ namespace ndn_service_framework{
                               std::shared_ptr<DataV1SubscriptionState>>>
                 m_dataV1SubscriptionsByRequest;
             std::map<std::string, ndn::Buffer> m_collaborationArtifacts;
-            std::vector<CollaborationSubscription> m_collaborationSubscriptions;
+            std::vector<std::shared_ptr<const CollaborationSubscription>> m_collaborationSubscriptions;
             std::mutex m_collaborationMutex;
             std::condition_variable m_collaborationCv;
             std::atomic<uint64_t> m_collaborationSequence{0};

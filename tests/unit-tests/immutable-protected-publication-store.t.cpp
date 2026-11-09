@@ -93,6 +93,25 @@ BOOST_AUTO_TEST_CASE(RevisionConflictAndFailedPreparationNeverExposePartialPacke
                           changed, 32).status == Status::Reserved);
 }
 
+BOOST_AUTO_TEST_CASE(ChangingTransportAllocatesANewVersionWithoutChangingOriginalWire)
+{
+  Store store(producer, 700);
+  const auto plain = store.begin(service, generation, semantic, digest, 32);
+  BOOST_REQUIRE(plain.status == Status::Reserved);
+  const auto originals = complete(plain.dataName);
+  BOOST_REQUIRE(store.commit(plain.ticket, originals));
+  const auto oldWire = originals.front()->wireEncode();
+  const auto fec = store.begin(service, generation, semantic, digest, 32, true);
+  BOOST_REQUIRE(fec.status == Status::Reserved);
+  BOOST_CHECK(fec.dataName != plain.dataName);
+  const auto reused = store.begin(service, generation, semantic, digest, 32);
+  BOOST_REQUIRE(reused.status == Status::Reused);
+  BOOST_CHECK(reused.dataName == plain.dataName);
+  BOOST_CHECK(reused.publication->packets.front()->wireEncode() == oldWire);
+  store.rollback(fec.ticket);
+  BOOST_CHECK_EQUAL(store.reservedWireBytes(), 0);
+}
+
 BOOST_AUTO_TEST_CASE(CompleteMultiSegmentPublicationKeepsEveryOriginalAndAuxiliaryKey)
 {
   Store store(producer, 80);

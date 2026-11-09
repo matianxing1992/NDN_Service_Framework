@@ -461,6 +461,46 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
 
 NdnsfIntegrationEnvironment::~NdnsfIntegrationEnvironment()
 {
+  const auto drainFaceCallbacks = [this] {
+    std::vector<ndn::DummyClientFace*> faces;
+    if (m_userFace) faces.push_back(m_userFace.get());
+    if (m_providerFace) faces.push_back(m_providerFace.get());
+    if (m_attributeAuthorityFace) faces.push_back(m_attributeAuthorityFace.get());
+    for (auto& face : m_extraProviderFaces) {
+      if (face) faces.push_back(face.get());
+    }
+    // Exact fetch completion cancels PIT handles on the borrowed Face executor.
+    // Dispatch protocol callbacks only while their owners remain alive.
+    // Final cancellation completions are drained after transports close.
+    for (int round = 0; round < 8; ++round) {
+      for (auto* face : faces) {
+        try {
+          face->getIoContext().restart();
+          face->processEvents(ndn::time::milliseconds(1));
+          face->getIoContext().restart();
+          face->getIoContext().poll();
+        }
+        catch (...) {
+          // Teardown remains best-effort; never unwind from this destructor.
+        }
+      }
+    }
+  };
+
+  drainFaceCallbacks();
+  // Provider worker pools and registrations must quiesce while their borrowed
+  // Faces still exist. Explicitly destroy them before the Face members unwind.
+  m_provider.reset();
+  for (auto& provider : m_extraProviders) provider.reset();
+  m_user.reset();
+  // These borrowed transports retain subscription callbacks for the owners
+  // above. Close them before executing any more Face callbacks.
+  m_providerPubSub.reset();
+  m_userPubSub.reset();
+  m_extraProviderPubSubs.clear();
+  m_attributeAuthority.reset();
+  drainFaceCallbacks();
+
   if (!m_testTrustDirectory.empty()) {
     std::error_code ignored;
     std::filesystem::remove_all(m_testTrustDirectory, ignored);

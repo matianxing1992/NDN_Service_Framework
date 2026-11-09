@@ -10,6 +10,7 @@
 #include "common.hpp"
 #include "ControllerVersion.hpp"
 #include "InvocationStream.hpp"
+#include "CollaborationDataflow.hpp"
 
 namespace ndn_service_framework {
 
@@ -576,6 +577,9 @@ public:
     void setRequestIDs(const std::vector<std::string>& requestIDs);
     void setProviderToken(const std::string& providerToken);
     void setAssignmentPayload(const ndn::Buffer& payload);
+    void setCollaborationDataflowMetadata(const CollaborationDataflowMetadataV1& metadata);
+    bool hasCollaborationDataflowMetadata() const;
+    const CollaborationDataflowMetadataV1& getCollaborationDataflowMetadata() const;
     void setPolicyEpoch(size_t policyEpoch);
     void setControllerVersion(const ControllerVersion& version);
     void setAttempt(uint64_t attempt);
@@ -640,6 +644,7 @@ private:
     std::shared_ptr<const ndn::Block> inlineSignedInputData_;
     std::optional<ndn::Block> streamEventKeyGrant_;
     std::optional<RecipientEncryptedAssignment> recipientEncryptedAssignment_;
+    std::optional<CollaborationDataflowMetadataV1> collaborationDataflowMetadata_;
     mutable ndn::Block m_wire;
 };
 

@@ -56,11 +56,12 @@ public:
 
   /** Reserve before crypto/serving. A hit returns the original packet owner.
    * Changed bytes for a committed semantic revision fail across all services.
-   * A different service/controller generation gets a distinct global version.
+   * A different service/controller generation or in-band layout gets a distinct
+   * version; transport changes never rewrite an existing original packet set.
    */
   BeginResult begin(const ndn::Name& service, const ControllerVersion& generation,
                     const ndn::Name& semanticPrefix, const std::string& contentSha256,
-                    size_t plaintextBytes);
+                    size_t plaintextBytes, bool inBandXor = false);
 
   /** Reserve an exact supplied name without allocating a published version.
    * The protection digest binds the caller's complete encryption/packet context.
@@ -101,7 +102,7 @@ public:
   size_t reservedWireBytes() const;
 
 private:
-  using Key = std::tuple<ndn::Name, ndn::Name, uint64_t, uint64_t>;
+  using Key = std::tuple<ndn::Name, ndn::Name, uint64_t, uint64_t, bool>;
   struct Reservation
   {
     Key key;

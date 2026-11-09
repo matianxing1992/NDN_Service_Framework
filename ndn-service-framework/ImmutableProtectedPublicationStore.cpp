@@ -41,7 +41,8 @@ ImmutableProtectedPublicationStore::ImmutableProtectedPublicationStore(
 ImmutableProtectedPublicationStore::BeginResult
 ImmutableProtectedPublicationStore::begin(
   const ndn::Name& service, const ControllerVersion& generation,
-  const ndn::Name& semanticPrefix, const std::string& contentSha256, size_t plaintextBytes)
+  const ndn::Name& semanticPrefix, const std::string& contentSha256, size_t plaintextBytes,
+  bool inBandXor)
 {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (service.empty() || !m_producer.isPrefixOf(semanticPrefix) ||
@@ -51,7 +52,7 @@ ImmutableProtectedPublicationStore::begin(
     return {};
   }
   const Key key{semanticPrefix, service, generation.controllerGenerationTimestamp,
-                generation.controllerEpoch};
+                generation.controllerEpoch, inBandXor};
   return reserve({key, semanticPrefix, {}, contentSha256, {}, m_limits.reservationBytes});
 }
 
@@ -67,7 +68,7 @@ ImmutableProtectedPublicationStore::beginExact(
       reservationBytes > m_limits.reservationBytes) {
     return {};
   }
-  return reserve({Key{dataName, {}, 0, 0}, dataName, dataName, contentSha256,
+  return reserve({Key{dataName, {}, 0, 0, false}, dataName, dataName, contentSha256,
                   protectionSha256, reservationBytes});
 }
 

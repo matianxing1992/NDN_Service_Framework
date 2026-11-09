@@ -4,6 +4,26 @@
 
 namespace {
 
+std::unique_ptr<Gtk::Main> trackingGtkRuntime;
+
+struct TrackingGtkProcessFixture
+{
+  ~TrackingGtkProcessFixture()
+  {
+    // Fontconfig finalization is process-wide and prohibits later GTK work.
+    if (trackingGtkRuntime) {
+      trackingGtkRuntime.reset();
+      // Boost has already left the last test case during global teardown.
+      if (!ndnsf::examples::uav::finishUavGtkRuntime()) {
+        std::cerr << "GTK process resources did not drain" << std::endl;
+        std::abort();
+      }
+    }
+  }
+};
+
+BOOST_GLOBAL_FIXTURE(TrackingGtkProcessFixture);
+
 #include "NDNSF-UAV-APP/ground-station/GroundStationWindow.inc.hpp"
 
 struct GroundStationTrackingPanelTestAccess
@@ -616,7 +636,9 @@ BOOST_FIXTURE_TEST_CASE(ActualGtkPanelDrawsThreeVerifiedFramesAndReleasesItsSour
   char* arguments[] = {name, nullptr};
   char** argv = arguments;
   {
-    Gtk::Main gtk(argc, argv);
+    if (!trackingGtkRuntime) {
+      trackingGtkRuntime = std::make_unique<Gtk::Main>(argc, argv);
+    }
     install();
     GroundStationTrackingControls controls(*runtime, {definition}, true);
     {
@@ -642,7 +664,6 @@ BOOST_FIXTURE_TEST_CASE(ActualGtkPanelDrawsThreeVerifiedFramesAndReleasesItsSour
     }
     BOOST_CHECK(controls.view().state == TrackingJobState::COMPLETED);
   }
-  BOOST_REQUIRE(finishUavGtkRuntime());
 }
 
 BOOST_FIXTURE_TEST_CASE(ActualGtkCancelButtonUsesFacadeAndWaitsForNativeDrain,
@@ -653,7 +674,9 @@ BOOST_FIXTURE_TEST_CASE(ActualGtkCancelButtonUsesFacadeAndWaitsForNativeDrain,
   char* arguments[] = {name, nullptr};
   char** argv = arguments;
   {
-    Gtk::Main gtk(argc, argv);
+    if (!trackingGtkRuntime) {
+      trackingGtkRuntime = std::make_unique<Gtk::Main>(argc, argv);
+    }
     install(false, true);
     GroundStationTrackingControls controls(*runtime, {definition}, true);
     {
@@ -685,7 +708,6 @@ BOOST_FIXTURE_TEST_CASE(ActualGtkCancelButtonUsesFacadeAndWaitsForNativeDrain,
     }
     pumpTrackingGtk();
   }
-  BOOST_REQUIRE(finishUavGtkRuntime());
 }
 
 BOOST_FIXTURE_TEST_CASE(ActualGtkWholeWindowDrawsAndDisconnectsTelemetryBeforeDestruction,
@@ -696,7 +718,9 @@ BOOST_FIXTURE_TEST_CASE(ActualGtkWholeWindowDrawsAndDisconnectsTelemetryBeforeDe
   char* arguments[] = {name, nullptr};
   char** argv = arguments;
   {
-    Gtk::Main gtk(argc, argv);
+    if (!trackingGtkRuntime) {
+      trackingGtkRuntime = std::make_unique<Gtk::Main>(argc, argv);
+    }
     install();
     struct RestoreWorkingDirectory
     {
@@ -749,7 +773,6 @@ BOOST_FIXTURE_TEST_CASE(ActualGtkWholeWindowDrawsAndDisconnectsTelemetryBeforeDe
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
   }
-  BOOST_REQUIRE(finishUavGtkRuntime());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

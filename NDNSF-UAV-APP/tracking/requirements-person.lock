@@ -6,6 +6,8 @@
 # Exact package versions and artifact hashes remain enforced for every requirement.
 # Torchreid 1.4.0 is built from author revision
 # f8cd150fdf77e8d9e1ed143b7f308c2c609ded50; wheel SHA256 is pinned below.
+# Also admitted: the unmodified-source CPython 3.10.18/GCC 9 rebuild recorded in
+# specs/227-integrate-data-driven/evidence/M4/assets.md (same upstream revision).
 # This is an inference lock, not an upstream Torchreid training/development environment.
 # Upstream optional training/lint dependencies (including tb-nightly) are not resolved;
 # the exercised runtime uses the pinned stable tensorboard distribution below.
@@ -1345,7 +1347,8 @@ torch==2.4.1+cpu \
     --hash=sha256:8800deef0026011d502c0c256cc4b67d002347f63c3a38cd8e45f1f445c61364 \
     --hash=sha256:c4f2c3c026e876d4dad7629170ec14fff48c076d6c2ae0e354ab3fdc09024f00
 torchreid==1.4.0 \
-    --hash=sha256:b0d69c2fd732715954aa119b9c878bf6a107ca82bbb2a677b1babd714db77219
+    --hash=sha256:b0d69c2fd732715954aa119b9c878bf6a107ca82bbb2a677b1babd714db77219 \
+    --hash=sha256:05e42f56219e95a65ebceba854ed7ed9a312bb00ef670b8541cd61ef3726d9cf
 torchvision==0.19.1+cpu \
     --hash=sha256:148992a1c14119ea67e023dd713be5f55362c4f1ea7fa000f9beab6a980a7a60 \
     --hash=sha256:1770f2a99571098bad75a91ffa886fb97394aa677678923fba0d7aedd81e66b9 \

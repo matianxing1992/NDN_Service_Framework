@@ -433,22 +433,17 @@ approval again or hide an exception in a special-case branch.
 
 ## Host build stability
 
-- For host compilation on the six-core development host, use six jobs, a bounded
-  compiler memory budget (default 6.5 GiB) and a preflight check for at least
-  2 GiB desktop headroom. Keep two jobs available for constrained runs.
-  Keep compiler processes under the invoking user in an isolated resource group.
-  Preserve `WAFLOCK` when using an existing configured build directory.
-  `scripts/build-safe.sh build` defaults to six jobs and implements this policy.
-- Keep the Waf semaphore that compiles source units of at least 128 KiB
-  exclusively, including `ServiceUser.cpp` and `ServiceProvider.cpp`;
-  smaller units use the requested parallelism up to six compiler processes.
-  Do not raise the memory
-  limit or job count during an editor instability investigation without
-  measuring available headroom.
-- The safe-build helper may be local-only. If absent, arrange an equivalent
-  bounded Waf invocation using available OS resource controls before compiling;
-  no particular helper file is mandatory. Do not silently fall back to an
-  unrestricted parallel build. Reading or editing source needs no build launcher.
+- For host compilation on the six-core development host, use six jobs by
+  default. Do not impose a compiler memory cap, free-memory preflight threshold
+  or source-size semaphore; let Waf schedule up to the requested worker count
+  and let the kernel manage memory pressure. Reduce parallelism only after an
+  observed build or desktop stability problem. Preserve `WAFLOCK` when using an
+  existing configured build directory. `scripts/build-safe.sh build` defaults
+  to six jobs and serializes launchers that might share a Waf output tree, but
+  does not restrict the build process tree's memory or scheduling.
+- The host build helper may be local-only. If absent, run Waf with an explicit
+  job count; no particular helper is mandatory. Reading or editing source needs
+  no build launcher.
 
 ## Git boundary for documentation and specs
 

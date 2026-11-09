@@ -752,6 +752,14 @@ BOOST_AUTO_TEST_CASE(ReusableObjectGrantsPreserveScopeAndOriginalWireAcrossInvoc
   });
   BOOST_REQUIRE(first);
   BOOST_CHECK(*first == payload);
+  BOOST_CHECK(!execute([&] {
+    return firstConsumer.fetchReusableLargeFromProducerCurrent(
+      name, scope, producer.getName(), 3000, 1024, 256);
+  }));
+  BOOST_CHECK(!execute([&] {
+    return firstConsumer.fetchReusableLargeFromProducerCurrent(
+      name, scope, producer.getName(), 3000, payload.size(), 4);
+  }));
   size_t originalSegments = 0;
   {
     std::lock_guard<std::mutex> lock(wireMutex);

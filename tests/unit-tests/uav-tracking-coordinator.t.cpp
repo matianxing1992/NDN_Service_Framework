@@ -92,6 +92,9 @@ BOOST_AUTO_TEST_CASE(BuildsThreeSourceOneComputePlan)
   BOOST_CHECK_EQUAL(plan.roles[0].role, "Camera-UAV1");
   BOOST_CHECK_EQUAL(plan.roles[3].role, "Tracking-Compute");
   BOOST_CHECK(plan.roles[3].terminalResponseOwner);
+  for (const auto& role : plan.roles) {
+    BOOST_CHECK_EQUAL(role.inputAdmissionProfile, "data-admission-v1");
+  }
   BOOST_REQUIRE_EQUAL(plan.keyScopes.size(), 3);
   BOOST_CHECK_EQUAL(plan.keyScopes[0].name, "uav-tracking-input");
   BOOST_CHECK_EQUAL(plan.keyScopes[1].name, "uav-tracking-observation");
@@ -145,6 +148,9 @@ BOOST_AUTO_TEST_CASE(AddsOnlyTheExplicitCalibrationProviderRole)
   BOOST_REQUIRE_EQUAL(delegated.roles.size(), 5);
   BOOST_CHECK_EQUAL(delegated.roles[4].role, "Calibration-Provider");
   BOOST_CHECK(!delegated.roles[4].terminalResponseOwner);
+  for (const auto& role : delegated.roles) {
+    BOOST_CHECK_EQUAL(role.inputAdmissionProfile, "data-admission-v1");
+  }
   BOOST_REQUIRE_EQUAL(delegated.keyScopes[1].roles.size(), 5);
   BOOST_CHECK_EQUAL(delegated.keyScopes[1].roles[4], "Calibration-Provider");
   BOOST_REQUIRE_EQUAL(delegated.dependencies.size(), 3);

@@ -21,6 +21,7 @@
 #include "../shared/UavProtocol.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
+#include "ndn-service-framework/collaboration-input.hpp"
 #include "ndn-service-framework/strict-json.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
@@ -1738,6 +1739,59 @@ installRuntimeHandlers(ProviderRuntime& runtime,
         std::vector<std::string> observationSourceIds;
         std::vector<std::string> imageNames;
         std::vector<std::vector<VerifiedObservationReference>> observationReferences;
+        std::vector<nsf::AdmittedInputSet> admittedInputs;
+        std::vector<nsf::CollaborationInputSpec> inputSpecifications;
+        const auto fetchAdmittedInput = [&] (
+            const ndn::Name& dataName, const ndn::Name& producer,
+            const std::string& producerRole, const std::string& keyScope,
+            nsf::InputObjectEncoding encoding, uint64_t maxBytes,
+            uint64_t maxPackets) -> std::optional<ndn::Buffer> {
+          nsf::CollaborationInputSpec input;
+          input.slotId = "uav-object-" + std::to_string(inputSpecifications.size());
+          input.producerRole = producerRole;
+          input.object.name = dataName;
+          input.object.producerName = producer;
+          input.object.serviceName = context.assignment().service;
+          input.keyScope = keyScope;
+          input.encoding = encoding;
+          input.digestKind = nsf::InputDigestKind::PlaintextSha256;
+          input.maxBytes = maxBytes;
+          input.maxPackets = maxPackets;
+          const auto validate = [dataName, producer, maxBytes] (
+              const std::vector<nsf::VerifiedInputObject>& objects) {
+            if (objects.size() != 1 || objects.front().name() != dataName ||
+                objects.front().producer() != producer || objects.front().content().empty() ||
+                objects.front().content().size() > maxBytes) {
+              throw std::runtime_error("tracking input admission did not match its bounded slot");
+            }
+          };
+          inputSpecifications.push_back(input);
+          auto operation = context.startInputAdmission({input}, validate);
+          while (operation.wait_for(std::chrono::milliseconds(10)) !=
+                 std::future_status::ready) {
+            if (shutdown->load() || !context.hasCurrentWorkAuthority()) {
+              operation.cancel();
+              break;
+            }
+          }
+          auto result = operation.get();
+          if (result.status != nsf::InputAdmissionStatus::Ready || !result.inputs ||
+              !result.inputs->isCurrent() || result.inputs->objects().size() != 1) {
+            return std::nullopt;
+          }
+          ndn::Buffer content = result.inputs->objects().front().content();
+          admittedInputs.push_back(std::move(*result.inputs));
+          return content;
+        };
+        const auto selectedRoleFor = [&] (const ndn::Name& producer) {
+          const auto& selectedRoles = context.assignment().selectedRoleProviders;
+          for (const auto& [role, providers] : selectedRoles) {
+            if (std::find(providers.begin(), providers.end(), producer) != providers.end()) {
+              return role;
+            }
+          }
+          throw std::invalid_argument("tracking input producer has no selected collaboration role");
+        };
         uav::UavPersonWindowContext personContext;
         uav::VehicleWindowContext vehicleContext;
         if (vehicleComputation) {
@@ -1768,6 +1822,10 @@ installRuntimeHandlers(ProviderRuntime& runtime,
             uav::emitUavPersonTrace(std::move(trace), "fetch-start");
           }
           const auto producer = options.sourceProducers.at(static_cast<size_t>(camera.back() - '1'));
+          const auto producerRole = selectedRoleFor(producer);
+          if (producerRole != "Camera-" + camera) {
+            throw std::invalid_argument("tracking frame producer is not selected for its camera role");
+          }
           const auto dataName = useObservations
             ? uav::makeUavObservationDataName(
                 producer, camera, observationEpoch, index + 1, "FRAME", 1)
@@ -1802,11 +1860,14 @@ installRuntimeHandlers(ProviderRuntime& runtime,
                         << std::endl;
             });
           }
-          const auto payload = personComputation
-            ? context.fetchReusableLargeFromProducerCurrent(
-                dataName, uav::TRACKING_INPUT_KEY_SCOPE, producer, 10000)
-            : context.fetchLargeFromProducerCurrent(
-                dataName, uav::TRACKING_INPUT_KEY_SCOPE, producer, 10000);
+          const auto maxFrameBytes = personComputation
+            ? personComputation->profile.limits.at("maxFrameBytes")
+            : 8U * 1024U * 1024U;
+          const auto payload = fetchAdmittedInput(
+            dataName, producer, producerRole, uav::TRACKING_INPUT_KEY_SCOPE,
+            personComputation ? nsf::InputObjectEncoding::ReusableCollaborationObject
+                              : nsf::InputObjectEncoding::CollaborationLarge,
+            maxFrameBytes, 4096);
           if (cancelTriggerThread.joinable()) cancelTriggerThread.join();
           if (!payload) {
             if (options.fault == "cancel-during-active-fetch" && camera == "UAV3") {
@@ -1825,7 +1886,7 @@ installRuntimeHandlers(ProviderRuntime& runtime,
             throw std::invalid_argument("person frame exceeds its profile byte bound");
           }
           digests.push_back(sha256(*payload));
-          inputs.push_back(*payload);
+          inputs.push_back(std::move(*payload));
           imageNames.push_back(dataName.toUri());
           if (useObservations) {
             const auto sourceKey = "source_uav" + camera.substr(3) + "_id";
@@ -1836,11 +1897,12 @@ installRuntimeHandlers(ProviderRuntime& runtime,
             }
             const auto observationName = uav::makeUavObservationDataName(
               producer, camera, observationEpoch, index + 1, "OBSERVATION", 1);
-            const auto observationPayload = personComputation
-              ? context.fetchReusableLargeFromProducerCurrent(
-                  observationName, "uav-tracking-observation", producer, 10000)
-              : context.fetchLargeFromProducerCurrent(
-                  observationName, "uav-tracking-observation", producer, 10000);
+            const auto observationPayload = fetchAdmittedInput(
+              observationName, producer, "Camera-" + camera,
+              "uav-tracking-observation",
+              personComputation ? nsf::InputObjectEncoding::ReusableCollaborationObject
+                                : nsf::InputObjectEncoding::CollaborationLarge,
+              64U * 1024U, 64);
             if (!observationPayload) {
               failRole("tracking compute could not fetch " + observationName.toUri());
               return;
@@ -1959,23 +2021,20 @@ installRuntimeHandlers(ProviderRuntime& runtime,
                             << std::endl;
                 });
               }
+              const auto producerRole = selectedRoleFor(dataRef.producerIdentity);
+              if (category == "POSE" && producerRole != "Camera-" + camera) {
+                throw std::invalid_argument("POSE producer is not selected for its camera role");
+              }
               std::optional<ndn::Buffer> objectPayload;
               try {
-                if (category == "POSE") {
-                  objectPayload = personComputation
-                    ? context.fetchReusableLargeFromProducerCurrent(
-                        dataRef.exactName, "uav-tracking-observation",
-                        dataRef.producerIdentity, 10000)
-                    : context.fetchLargeFromProducerCurrent(
-                        dataRef.exactName, "uav-tracking-observation",
-                        dataRef.producerIdentity, 10000);
-                }
-                else {
-                  objectPayload = context.fetchImmutableProtectedDataCurrent(
-                    dataRef.exactName, dataRef.producerIdentity,
-                    std::min(context.assignment().workDeadline,
-                             std::chrono::steady_clock::now() + std::chrono::seconds(10)));
-                }
+                const auto encoding = category != "POSE"
+                  ? nsf::InputObjectEncoding::ImmutableProtected
+                  : personComputation
+                    ? nsf::InputObjectEncoding::ReusableCollaborationObject
+                    : nsf::InputObjectEncoding::CollaborationLarge;
+                objectPayload = fetchAdmittedInput(
+                  dataRef.exactName, dataRef.producerIdentity, producerRole,
+                  "uav-tracking-observation", encoding, 64U * 1024U, 64);
               }
               catch (...) {
                 if (cancelReferenceTriggerThread.joinable()) {
@@ -2071,7 +2130,8 @@ installRuntimeHandlers(ProviderRuntime& runtime,
               uav::validateObservationReference(dataRef, expectedName, dataRef.producerIdentity,
                                                 actualDigest, category);
               verifiedReferences.push_back({category, dataRef.exactName.toUri(), actualDigest,
-                                            dataRef.producerIdentity.toUri(), filename, *objectPayload});
+                                            dataRef.producerIdentity.toUri(), filename,
+                                            std::move(*objectPayload)});
               return true;
             };
 
@@ -2200,7 +2260,7 @@ installRuntimeHandlers(ProviderRuntime& runtime,
             observationSourceIds.push_back(sourceId);
             observationNames.push_back(observationName.toUri());
             observationDigests.push_back(sha256(*observationPayload));
-            observationInputs.push_back(*observationPayload);
+            observationInputs.push_back(std::move(*observationPayload));
             observationReferences.push_back(std::move(verifiedReferences));
           }
           if (vehicleComputation) {
@@ -2226,6 +2286,78 @@ installRuntimeHandlers(ProviderRuntime& runtime,
             }
           }
         }
+        std::map<std::string, std::string> expectedInputDigests;
+        for (size_t cameraIndex = 0; cameraIndex < imageNames.size(); ++cameraIndex) {
+          expectedInputDigests.emplace(imageNames[cameraIndex], digests[cameraIndex]);
+          if (useObservations) {
+            expectedInputDigests.emplace(observationNames[cameraIndex],
+                                         observationDigests[cameraIndex]);
+            for (const auto& reference : observationReferences[cameraIndex]) {
+              expectedInputDigests.emplace(reference.exactName, reference.contentSha256);
+            }
+          }
+        }
+        if (inputSpecifications.size() != admittedInputs.size() ||
+            inputSpecifications.size() != expectedInputDigests.size()) {
+          failRole("tracking window input set is incomplete or contains duplicate names");
+          return;
+        }
+        std::vector<nsf::VerifiedInputObject> resolvedInputs;
+        resolvedInputs.reserve(inputSpecifications.size());
+        for (size_t inputIndex = 0; inputIndex < inputSpecifications.size(); ++inputIndex) {
+          resolvedInputs.push_back(admittedInputs[inputIndex].at(
+            inputSpecifications[inputIndex].slotId));
+        }
+        const auto validateCompleteInputSet = [&] (
+            const std::vector<nsf::VerifiedInputObject>& objects) {
+          if (objects.size() != inputSpecifications.size() ||
+              objects.size() != expectedInputDigests.size()) {
+            throw std::runtime_error("tracking complete input set has an unexpected size");
+          }
+          std::map<std::string, const nsf::VerifiedInputObject*> byName;
+          for (size_t objectIndex = 0; objectIndex < objects.size(); ++objectIndex) {
+            const auto& object = objects[objectIndex];
+            const auto& specification = inputSpecifications[objectIndex];
+            const auto expected = expectedInputDigests.find(object.name().toUri());
+            if (object.name() != specification.object.name ||
+                object.producer() != specification.object.producerName ||
+                expected == expectedInputDigests.end() || object.content().empty() ||
+                object.content().size() > specification.maxBytes ||
+                sha256(object.content()) != expected->second ||
+                !byName.emplace(object.name().toUri(), &object).second) {
+              throw std::runtime_error("tracking complete input identity or digest mismatch");
+            }
+          }
+          if (useObservations) {
+            for (size_t cameraIndex = 0; cameraIndex < imageNames.size(); ++cameraIndex) {
+              const auto observation = byName.find(observationNames[cameraIndex]);
+              if (observation == byName.end()) {
+                throw std::runtime_error("tracking input set omits an observation");
+              }
+              const auto tree = parseJson(bufferText(observation->second->content()),
+                                          "admitted observation closure");
+              validateDataRef(tree.get_child("imageRef"), ndn::Name(imageNames[cameraIndex]),
+                options.sourceProducers[cameraIndex], digests[cameraIndex], "FRAME");
+              for (const auto& reference : observationReferences[cameraIndex]) {
+                const auto admittedReference = byName.find(reference.exactName);
+                if (admittedReference == byName.end() ||
+                    admittedReference->second->producer() != ndn::Name(reference.producerIdentity) ||
+                    sha256(admittedReference->second->content()) != reference.contentSha256) {
+                  throw std::runtime_error("tracking input set omits a verified observation reference");
+                }
+              }
+            }
+          }
+        };
+        auto completeAdmission = context.admitResolvedInputs(
+          inputSpecifications, std::move(resolvedInputs), validateCompleteInputSet);
+        if (completeAdmission.status != nsf::InputAdmissionStatus::Ready ||
+            !completeAdmission.inputs || !completeAdmission.inputs->isCurrent()) {
+          failRole("tracking complete input admission rejected: " + completeAdmission.reasonCode);
+          return;
+        }
+        admittedInputs.clear();
+        admittedInputs.push_back(std::move(*completeAdmission.inputs));
         const auto workerRoot = trackingWorkerRoot(options);
         if (vehicleComputation && std::filesystem::exists(workerRoot / "tracking-state.json")) {
           throw std::invalid_argument("old Python tracking state requires a fresh run workspace");
@@ -3451,6 +3583,12 @@ struct UavTrackingProvider::Impl : std::enable_shared_from_this<UavTrackingProvi
         }, nsf::ServiceProvider::ServiceInvocationMode::NormalAndTargeted));
     }
     if (runs.empty()) return;
+    nsf::CollaborationAdmissionLimits admissionLimits;
+    admissionLimits.maxRetainedObjects = 64;
+    admissionLimits.maxRetainedBytes = 96U * 1024U * 1024U;
+    admissionLimits.maxQueuedCallbacks = 32;
+    admissionLimits.maxInFlightReads = 16;
+    admissionLimits.maxInputAcquisitionMs = 10000;
     registrations.push_back(provider.addScopedCollaborationHandler(SERVICE_TRACKING_WINDOW, roles,
       [weak] (const nsf::RequestMessage& request) {
         nsf::ServiceProvider::AckDecision decision;
@@ -3476,7 +3614,7 @@ struct UavTrackingProvider::Impl : std::enable_shared_from_this<UavTrackingProvi
             catch (...) { }
           }
         }
-      }));
+      }, admissionLimits));
   }
 
   ndn::Name identity;

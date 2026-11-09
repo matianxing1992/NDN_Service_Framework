@@ -133,6 +133,8 @@ namespace ndn_service_framework{
         // owner.  Other selected roles may publish internal data and must
         // complete without claiming the shared End/Response lifecycle.
         bool terminalResponseOwner = false;
+        // Empty retains legacy wire; strict admission requires an ACK capability.
+        std::string inputAdmissionProfile;
     };
 
     struct CollaborationKeyScope
@@ -186,6 +188,7 @@ namespace ndn_service_framework{
         // separately from each exact opaque assignment.
         ndn::Buffer sharedAssignmentMetadata;
         std::shared_ptr<const ParticipantSelectionPolicy> participantSelector;
+        DependencyTransportOptions dependencyTransport;
     };
 
     /** Provider-signed and request-scope-decrypted collaboration record
@@ -1178,9 +1181,33 @@ namespace ndn_service_framework{
                                              onStreamComplete,
                                          std::function<void(const StreamedInvocationError&)>
                                              onStreamError,
+                                         const std::vector<ndn::Name>& providerNames);
+
+            /** Begin a collaboration while collecting control-byte statistics.
+             * The overload above preserves the original binary symbol.
+             */
+            ndn::Name BeginCollaborationWithProviders(
+                                         const ServiceName& service,
+                                         const RequestPayload& initialRequest,
+                                         int ackCollectionTimeMs,
+                                         int timeoutMs,
+                                         CollaborationAckClosedHandler onAckClosed,
+                                         ResponseHandler onFinalResponse,
+                                         TimeoutHandler onTimeout,
+                                         const RequestId& requestId,
+                                         CollaborationAckCoverageHandler onAckCoverage,
+                                         const RequestCapabilities& requestCapabilities,
+                                         const std::optional<StreamRequestOptions>&
+                                             streamOptions,
+                                         std::function<void(const ndn::Buffer&)>
+                                             onStreamEvent,
+                                         std::function<void(const ndn::Buffer&)>
+                                             onStreamComplete,
+                                         std::function<void(const StreamedInvocationError&)>
+                                             onStreamError,
                                          const std::vector<ndn::Name>& providerNames,
                                          std::shared_ptr<ControlByteStatistics>
-                                             controlStatistics = {});
+                                             controlStatistics);
 
             /** Commit a plan against the immutable ACK closure.
              * @param requestId Pending deferred invocation, owned by this User.

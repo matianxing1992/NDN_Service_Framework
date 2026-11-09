@@ -5,6 +5,8 @@
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndn-service-framework/CollaborationDataflow.hpp"
+#include "ndn-service-framework/collaboration-input.hpp"
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/Stream.hpp"
 #include "ndn-service-framework/common.hpp"
@@ -2158,6 +2160,120 @@ struct PyCollaborationData
   py::bytes payload;
 };
 
+class PyReadOnlyInputBuffer
+{
+public:
+  PyReadOnlyInputBuffer(
+      std::shared_ptr<const nsf::VerifiedInputObject> input,
+      std::optional<size_t> packetIndex = std::nullopt)
+    : m_input(std::move(input))
+    , m_packetIndex(packetIndex)
+  {
+    if (m_packetIndex) {
+      m_wireBlock.emplace(m_input->packets().at(*m_packetIndex)->wireEncode());
+    }
+  }
+
+  py::buffer_info
+  bufferInfo() const
+  {
+    if (m_packetIndex) {
+      const auto& wire = m_wireBlock->getBuffer();
+      return py::buffer_info(wire->data(), static_cast<ssize_t>(wire->size()), true);
+    }
+    const auto& content = m_input->content();
+    return py::buffer_info(content.data(), static_cast<ssize_t>(content.size()), true);
+  }
+
+private:
+  std::shared_ptr<const nsf::VerifiedInputObject> m_input;
+  std::optional<size_t> m_packetIndex;
+  std::optional<ndn::Block> m_wireBlock;
+};
+
+class PyVerifiedInputObject
+{
+public:
+  explicit PyVerifiedInputObject(
+      std::shared_ptr<const nsf::VerifiedInputObject> input)
+    : m_input(std::move(input))
+  {
+  }
+
+  std::string
+  name() const
+  {
+    return m_input->name().toUri();
+  }
+
+  std::string
+  producer() const
+  {
+    return m_input->producer().toUri();
+  }
+
+  PyReadOnlyInputBuffer
+  contentBuffer() const
+  {
+    (void)m_input->content();
+    return PyReadOnlyInputBuffer(m_input);
+  }
+
+  std::vector<PyReadOnlyInputBuffer>
+  packetBuffers() const
+  {
+    const auto& packets = m_input->packets();
+    std::vector<PyReadOnlyInputBuffer> output;
+    output.reserve(packets.size());
+    for (size_t i = 0; i < packets.size(); ++i) {
+      output.emplace_back(m_input, i);
+    }
+    return output;
+  }
+
+private:
+  std::shared_ptr<const nsf::VerifiedInputObject> m_input;
+};
+
+class PyAdmittedInputSet
+{
+public:
+  PyAdmittedInputSet(std::shared_ptr<const nsf::AdmittedInputSet> inputs,
+                     std::vector<std::string> slotIds)
+    : m_inputs(std::move(inputs))
+    , m_slotIds(std::move(slotIds))
+  {
+  }
+
+  PyVerifiedInputObject
+  at(const std::string& slotId) const
+  {
+    return PyVerifiedInputObject(
+      std::make_shared<const nsf::VerifiedInputObject>(m_inputs->at(slotId)));
+  }
+
+  std::vector<PyVerifiedInputObject>
+  objects() const
+  {
+    std::vector<PyVerifiedInputObject> output;
+    output.reserve(m_slotIds.size());
+    for (const auto& slotId : m_slotIds) {
+      output.push_back(at(slotId));
+    }
+    return output;
+  }
+
+  bool
+  isCurrent() const
+  {
+    return m_inputs->isCurrent();
+  }
+
+private:
+  std::shared_ptr<const nsf::AdmittedInputSet> m_inputs;
+  std::vector<std::string> m_slotIds;
+};
+
 py::dict
 selectionStatusToDict(const nsf::SelectionExecutionStatus& status)
 {
@@ -2928,6 +3044,130 @@ public:
     return assignment;
   }
 
+  PyAdmittedInputSet
+  requireInputs(const std::vector<py::dict>& specs, py::function validator)
+  {
+    if (!validator) {
+      throw std::invalid_argument("input validator is required");
+    }
+
+    const auto stringField = [](const py::dict& value, const char* key,
+                                const std::string& fallback = std::string()) {
+      if (!value.contains(key)) {
+        return fallback;
+      }
+      const auto field = value[key];
+      return field.is_none() ? fallback : py::cast<std::string>(field);
+    };
+    const auto integerField = [](const py::dict& value, const char* key,
+                                 uint64_t fallback = 0) {
+      if (!value.contains(key)) {
+        return fallback;
+      }
+      const auto field = value[key];
+      return field.is_none() ? fallback : py::cast<uint64_t>(field);
+    };
+
+    std::vector<nsf::CollaborationInputSpec> nativeSpecs;
+    std::vector<std::string> slotIds;
+    nativeSpecs.reserve(specs.size());
+    slotIds.reserve(specs.size());
+    const auto serviceName = m_ctx->assignment().service;
+    for (const auto& value : specs) {
+      nsf::CollaborationInputSpec input;
+      input.slotId = stringField(value, "slot_id");
+      input.producerRole = stringField(value, "producer_role");
+      input.keyScope = stringField(value, "key_scope");
+      input.maxBytes = integerField(value, "max_bytes");
+      input.maxPackets = integerField(value, "max_packets");
+      input.object.serviceName = serviceName;
+
+      if (!value.contains("reference")) {
+        throw std::invalid_argument("input reference must be a mapping");
+      }
+      const auto referenceField = value["reference"];
+      if (!py::isinstance<py::dict>(referenceField)) {
+        throw std::invalid_argument("input reference must be a mapping");
+      }
+      const auto reference = py::cast<py::dict>(referenceField);
+      input.object.name = ndn::Name(stringField(reference, "object_name"));
+      input.object.producerName = ndn::Name(stringField(reference, "producer_name"));
+      input.object.objectClass = stringField(reference, "object_class");
+      input.object.contentType = stringField(
+        reference, "content_type", "application/octet-stream");
+      input.object.digest = stringField(reference, "digest");
+      input.object.sizeBytes = integerField(reference, "size_bytes");
+      input.object.segmentCount = integerField(value, "segment_count");
+      input.object.freshnessMs = integerField(reference, "freshness_ms");
+
+      const auto provenance = stringField(value, "provenance_binding", "selected_role");
+      if (provenance == "selected_role") {
+        input.provenanceBinding = nsf::InputProvenanceBinding::SelectedRole;
+      }
+      else if (provenance == "authorized_object") {
+        input.provenanceBinding = nsf::InputProvenanceBinding::AuthorizedObject;
+      }
+      else {
+        throw std::invalid_argument("unsupported input provenance binding");
+      }
+
+      const auto digestKind = stringField(value, "digest_kind", "plaintext_sha256");
+      if (digestKind == "plaintext_sha256") {
+        input.digestKind = nsf::InputDigestKind::PlaintextSha256;
+      }
+      else if (digestKind == "ordered_wire_sha256") {
+        input.digestKind = nsf::InputDigestKind::OrderedWireSha256;
+      }
+      else {
+        throw std::invalid_argument("unsupported input digest kind");
+      }
+
+      const auto encoding = stringField(value, "encoding", "collaboration_large");
+      if (encoding == "collaboration_large") {
+        input.encoding = nsf::InputObjectEncoding::CollaborationLarge;
+      }
+      else if (encoding == "immutable_protected") {
+        input.encoding = nsf::InputObjectEncoding::ImmutableProtected;
+      }
+      else if (encoding == "signed_exact_packets") {
+        input.encoding = nsf::InputObjectEncoding::SignedExactPackets;
+      }
+      else {
+        throw std::invalid_argument("unsupported input object encoding");
+      }
+
+      slotIds.push_back(input.slotId);
+      nativeSpecs.push_back(std::move(input));
+    }
+
+    auto keptValidator = keepPyFunction(std::move(validator));
+    const auto validate = [keptValidator, slotIds](
+        const std::vector<nsf::VerifiedInputObject>& objects) {
+      if (objects.size() != slotIds.size()) {
+        throw std::invalid_argument("input set is incomplete");
+      }
+      py::gil_scoped_acquire gil;
+      py::dict bySlot;
+      for (size_t i = 0; i < objects.size(); ++i) {
+        auto object = std::make_shared<const nsf::VerifiedInputObject>(objects[i]);
+        bySlot[py::str(slotIds[i])] = PyVerifiedInputObject(std::move(object));
+      }
+      const auto result = (*keptValidator)(std::move(bySlot));
+      if (result.is_none() ||
+          (py::isinstance<py::bool_>(result) && result.cast<bool>())) {
+        return;
+      }
+      throw std::invalid_argument("input domain validation rejected the set");
+    };
+
+    auto admitted = [&]() {
+      py::gil_scoped_release release;
+      return m_ctx->requireInputs(std::move(nativeSpecs), validate);
+    }();
+    auto owner = std::make_shared<const nsf::AdmittedInputSet>(std::move(admitted));
+    return PyAdmittedInputSet(std::move(owner), std::move(slotIds));
+  }
+
   bool fetchArtifact(const std::string& artifactName, int timeoutMs)
   {
     return m_ctx->fetchArtifact(ndn::Name(artifactName), timeoutMs);
@@ -3059,6 +3299,14 @@ public:
     const auto wire = toBuffer(payload);
     py::gil_scoped_release release;
     m_ctx->publishFinalResponse(wire);
+  }
+
+  void publishFinalFailureResponse(const py::bytes& payload,
+                                   const std::string& errorInfo)
+  {
+    const auto wire = toBuffer(payload);
+    py::gil_scoped_release release;
+    m_ctx->publishFinalFailureResponse(wire, errorInfo);
   }
 
   void reportOperationStatus(const py::dict& payload)
@@ -3632,12 +3880,16 @@ public:
     if (!m_provider) {
       throw std::runtime_error("provider is not initialized");
     }
+    if (m_collaborationRegistrations.count(serviceName) != 0) {
+      throw std::logic_error("collaboration service is already registered");
+    }
     m_collaborationHandlers.emplace(serviceName, collaborationHandler);
     if (ackHandler) {
       m_collaborationAckHandlers.emplace(serviceName, *ackHandler);
     }
 
-    m_provider->addCollaborationHandler(
+    try {
+      auto registration = m_provider->addScopedCollaborationHandler(
       ndn::Name(serviceName),
       allowedRoles,
       nsf::ServiceProvider::AckStrategyHandler(
@@ -3693,7 +3945,14 @@ public:
           catch (const py::error_already_set& e) {
             ctx.fail(e.what());
           }
-      }));
+      }), nsf::CollaborationAdmissionLimits{});
+      m_collaborationRegistrations.emplace(serviceName, std::move(registration));
+    }
+    catch (...) {
+      m_collaborationHandlers.erase(serviceName);
+      m_collaborationAckHandlers.erase(serviceName);
+      throw;
+    }
   }
 
   void
@@ -3858,6 +4117,9 @@ public:
   stop()
   {
     m_running = false;
+    for (auto& item : m_collaborationRegistrations) {
+      item.second.close();
+    }
     {
       std::lock_guard<std::mutex> lock(m_startMutex);
       m_started = false;
@@ -3962,12 +4224,13 @@ private:
   ndn::security::Certificate m_providerCert;
   ndn::security::Certificate m_controllerCert;
   std::unique_ptr<nsf::CertificatePublisher> m_certPublisher;
-  std::unique_ptr<nsf::ServiceProvider> m_provider;
   std::map<std::string, py::function> m_handlers;
   std::map<std::string, std::shared_ptr<py::function>> m_streamingHandlers;
   std::map<std::string, py::function> m_ackHandlers;
   std::map<std::string, py::function> m_collaborationHandlers;
   std::map<std::string, py::function> m_collaborationAckHandlers;
+  std::map<std::string, nsf::ServiceProvider::ServiceRegistration>
+    m_collaborationRegistrations;
   std::shared_ptr<py::function> m_deploymentPrepareHandler;
   std::map<std::string, std::shared_ptr<py::function>>
     m_r1SelectionDecisionHandlers;
@@ -3986,6 +4249,8 @@ private:
   std::string m_error;
   std::mutex m_startMutex;
   std::condition_variable m_startCv;
+  // Core drains its callbacks before their Python owners are destroyed.
+  std::unique_ptr<nsf::ServiceProvider> m_provider;
 };
 
 class NativeServiceController
@@ -4940,11 +5205,13 @@ public:
                          int ackTimeoutMs,
                          int timeoutMs,
                          const std::map<std::string, std::string>& roleProviderAssignments = {},
-                         PyFunctionPtr ackObserver = nullptr)
+                         PyFunctionPtr ackObserver = nullptr,
+                         nsf::DependencyTransportOptions dependencyTransport = {})
   {
     nsf::CollaborationPlan plan;
     plan.ackCollectionTimeMs = ackTimeoutMs;
     plan.timeoutMs = timeoutMs;
+    plan.dependencyTransport = dependencyTransport;
 
     for (const auto& entry : roles) {
       nsf::CollaborationRoleSpec role;
@@ -4980,6 +5247,10 @@ public:
       auto terminalIt = entry.find("terminal_response_owner");
       if (terminalIt != entry.end()) {
         role.terminalResponseOwner = py::cast<bool>(terminalIt->second);
+      }
+      auto inputAdmissionIt = entry.find("input_admission_profile");
+      if (inputAdmissionIt != entry.end()) {
+        role.inputAdmissionProfile = py::cast<std::string>(inputAdmissionIt->second);
       }
       auto reqIt = entry.find("app_requirement");
       if (reqIt != entry.end() && !reqIt->second.is_none()) {
@@ -5067,7 +5338,8 @@ public:
                        int timeoutMs,
                        py::object ackObserver = py::none(),
                        const std::map<std::string, std::string>& roleProviderAssignments = {},
-                       const std::string& requestedRequestId = "")
+                       const std::string& requestedRequestId = "",
+                       nsf::DependencyTransportOptions dependencyTransport = {})
   {
     PyFunctionPtr observer;
     if (!ackObserver.is_none()) {
@@ -5083,7 +5355,8 @@ public:
                                        ackTimeoutMs,
                                        timeoutMs,
                                        roleProviderAssignments,
-                                       std::move(observer));
+                                       std::move(observer),
+                                       dependencyTransport);
 
     PyServiceResponse output;
     std::mutex mutex;
@@ -5420,12 +5693,13 @@ public:
       const std::map<std::string, std::vector<std::string>>& roleScopes,
       int ackTimeoutMs,
       int timeoutMs,
-      const std::map<std::string, std::string>& roleProviderAssignments = {})
+      const std::map<std::string, std::string>& roleProviderAssignments = {},
+      nsf::DependencyTransportOptions dependencyTransport = {})
   {
     auto plan = buildCollaborationPlan(
       serviceName, roles, keyScopes, dependencies, artifactDataNames,
       scopeKeyDataNames, roleScopes, ackTimeoutMs, timeoutMs,
-      roleProviderAssignments);
+      roleProviderAssignments, nullptr, dependencyTransport);
     // The posted callback may outlive the synchronous Python-side wait when
     // the Face event loop is delayed.  Keep its completion state on the heap;
     // capturing stack references here turns a bounded timeout into a native
@@ -5555,7 +5829,8 @@ public:
                             int ackTimeoutMs,
                             int timeoutMs,
                             const std::map<std::string, std::string>& roleProviderAssignments = {},
-                            const std::string& requestedRequestId = "")
+                            const std::string& requestedRequestId = "",
+                            nsf::DependencyTransportOptions dependencyTransport = {})
   {
     start();
     auto payload = toBuffer(initialPayload);
@@ -5568,7 +5843,9 @@ public:
                                        roleScopes,
                                        ackTimeoutMs,
                                        timeoutMs,
-                                       roleProviderAssignments);
+                                       roleProviderAssignments,
+                                       nullptr,
+                                       dependencyTransport);
     auto responseCallback = keepPyFunction(std::move(onResponse));
     auto timeoutCallback = keepPyFunction(std::move(onTimeout));
     boost::asio::post(m_face.getIoContext(),
@@ -7966,12 +8243,29 @@ PYBIND11_MODULE(_ndnsf, m)
         py::arg("hint_ranges") = std::vector<PySegmentHintRange>{},
         py::call_guard<py::gil_scoped_release>());
 
+  py::class_<PyReadOnlyInputBuffer>(m, "_ReadOnlyInputBuffer",
+                                    py::buffer_protocol())
+    .def_buffer(&PyReadOnlyInputBuffer::bufferInfo);
+
+  py::class_<PyVerifiedInputObject>(m, "_VerifiedInputObject")
+    .def_property_readonly("name", &PyVerifiedInputObject::name)
+    .def_property_readonly("producer", &PyVerifiedInputObject::producer)
+    .def_property_readonly("content_buffer", &PyVerifiedInputObject::contentBuffer)
+    .def_property_readonly("packet_buffers", &PyVerifiedInputObject::packetBuffers);
+
+  py::class_<PyAdmittedInputSet>(m, "_AdmittedInputSet")
+    .def("at", &PyAdmittedInputSet::at, py::arg("slot_id"))
+    .def_property_readonly("objects", &PyAdmittedInputSet::objects)
+    .def_property_readonly("is_current", &PyAdmittedInputSet::isCurrent);
+
   py::class_<PyCollaborationContext>(m, "CollaborationContext")
     .def_property_readonly("session_id", &PyCollaborationContext::sessionId)
     .def_property_readonly("role", &PyCollaborationContext::role)
     .def_property_readonly("requester_name", &PyCollaborationContext::requesterName)
     .def_property_readonly("local_provider", &PyCollaborationContext::localProvider)
     .def_property_readonly("assignment", &PyCollaborationContext::assignment)
+    .def("require_inputs", &PyCollaborationContext::requireInputs,
+         py::arg("inputs"), py::arg("validate"))
     .def("fetch_artifact", &PyCollaborationContext::fetchArtifact,
          py::arg("artifact_name"),
          py::arg("timeout_ms") = 5000)
@@ -8023,6 +8317,9 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("status"))
     .def("publish_final_response", &PyCollaborationContext::publishFinalResponse,
          py::arg("payload"))
+    .def("publish_final_failure_response",
+         &PyCollaborationContext::publishFinalFailureResponse,
+         py::arg("payload"), py::arg("error_info"))
     .def_property_readonly("is_streamed", &PyCollaborationContext::isStreamed)
     .def("publish_stream_event", &PyCollaborationContext::publishStreamEvent,
          py::arg("payload"))
@@ -8156,6 +8453,14 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("wait_until_ready", &NativeServiceProvider::waitUntilReady,
          py::arg("timeout_ms") = 15000)
     .def("stop", &NativeServiceProvider::stop);
+
+  py::enum_<nsf::DependencyRedundancy>(m, "NativeDependencyRedundancy")
+    .value("NONE", nsf::DependencyRedundancy::None)
+    .value("XOR", nsf::DependencyRedundancy::Xor);
+
+  py::class_<nsf::DependencyTransportOptions>(m, "NativeDependencyTransportOptions")
+    .def(py::init<>())
+    .def_readwrite("redundancy", &nsf::DependencyTransportOptions::redundancy);
 
   py::class_<NativeServiceUser>(m, "NativeServiceUser")
     .def_property_readonly("requester_identity", &NativeServiceUser::requesterIdentity)
@@ -8292,7 +8597,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("timeout_ms") = 10000,
          py::arg("ack_observer") = py::none(),
          py::arg("role_provider_assignments") = std::map<std::string, std::string>{},
-         py::arg("request_id") = "")
+         py::arg("request_id") = "",
+         py::arg("dependency_transport") = nsf::DependencyTransportOptions{})
     .def("begin_collaboration", &NativeServiceUser::beginCollaboration,
          py::arg("service"), py::arg("payload"),
          py::arg("on_ack_closed"), py::arg("on_response"),
@@ -8313,7 +8619,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("role_scopes"), py::arg("ack_timeout_ms") = 300,
          py::arg("timeout_ms") = 10000,
          py::arg("role_provider_assignments") =
-           std::map<std::string, std::string>{})
+           std::map<std::string, std::string>{},
+         py::arg("dependency_transport") = nsf::DependencyTransportOptions{})
     .def("wait_for_verified_collaboration_data",
          &NativeServiceUser::waitForVerifiedCollaborationData,
          py::arg("request_id"), py::arg("key_scope"),
@@ -8340,7 +8647,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("ack_timeout_ms") = 300,
          py::arg("timeout_ms") = 10000,
          py::arg("role_provider_assignments") = std::map<std::string, std::string>{},
-         py::arg("request_id") = "")
+         py::arg("request_id") = "",
+         py::arg("dependency_transport") = nsf::DependencyTransportOptions{})
     .def("query_collaboration_status", &NativeServiceUser::queryCollaborationStatus,
          py::arg("provider"), py::arg("service"),
          py::arg("selection_digest"), py::arg("timeout_ms") = 500)

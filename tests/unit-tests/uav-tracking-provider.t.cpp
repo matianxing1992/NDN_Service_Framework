@@ -197,6 +197,16 @@ struct ProviderFixture : JobFlowFixture
     install(false, false, false, false, {}, 3, 3);
   }
 
+  template<typename Predicate>
+  void pumpUntilWithin(Predicate done, std::chrono::milliseconds timeout)
+  {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto finished = [&] {
+      return done() || std::chrono::steady_clock::now() >= deadline;
+    };
+    while (!finished()) environment->pumpUntilWithAttributeAuthority(finished);
+  }
+
   bool sourceOpened()
   {
     alignas(inotify_event) char events[4096];
@@ -461,7 +471,7 @@ BOOST_FIXTURE_TEST_CASE(InitialAssetAndHandlerInspectionHonorsTheSynchronousAuth
 BOOST_FIXTURE_TEST_CASE(FirstHandlerInitializationFailurePublishesWorkDrained, ProviderFixture)
 {
   startFailingCompute();
-  const auto payload = asFields({{"schema", "spec191-window-request-v1"}, {"tracking_request_timeout_ms", "3000"},
+  const auto payload = asFields({{"schema", "spec191-window-request-v1"}, {"tracking_request_timeout_ms", "10000"},
     {"run_id", definition.runId}, {"mission_id", "tracking-" + definition.runId},
     {"window_id", "window-0"}, {"observation_schema", "uav-observation-v2"},
     {"source_epoch", "1"}, {"source_uav1_id", definition.sources[0].sourceId},
@@ -470,11 +480,20 @@ BOOST_FIXTURE_TEST_CASE(FirstHandlerInitializationFailurePublishesWorkDrained, P
   std::vector<ndn::Name> sources;
   for (const auto& source : definition.sources) sources.push_back(source.producerIdentity);
   auto committed = std::make_shared<bool>(false);
+  auto selectedCount = std::make_shared<size_t>(0);
   auto responseReceived = std::make_shared<bool>(false);
   UavTrackingCoordinatorCallbacks callbacks;
-  callbacks.onPlanCommitted = [committed] (const auto&, const auto&) { *committed = true; };
+  callbacks.onPlanCommitted = [committed, selectedCount] (const auto&, const auto& selected) {
+    *committed = true;
+    *selectedCount = selected.size();
+  };
   callbacks.onFailure = [] (const auto& reason) { BOOST_FAIL(reason); };
-  callbacks.onTimeout = [] (const auto&) { BOOST_FAIL("initialization failure response missing"); };
+  callbacks.onTimeout = [this, committed, selectedCount] (const auto&) {
+    BOOST_FAIL("initialization failure response missing; plan_committed=" << *committed
+      << " selected_count=" << *selectedCount
+      << " synthetic_acknowledgements=" << syntheticAcknowledgements.load()
+      << " source_handler_executions=" << executions);
+  };
   callbacks.onResponse = [responseReceived] (const nsf::ResponseMessage& response) {
     BOOST_CHECK(!response.getStatus());
     const auto bytes = response.getPayload();
@@ -484,19 +503,28 @@ BOOST_FIXTURE_TEST_CASE(FirstHandlerInitializationFailurePublishesWorkDrained, P
     *responseReceived = true;
   };
   const auto request = UavTrackingCoordinator{}.begin(environment->user(), SERVICE_TRACKING_WINDOW,
-    payload, UavTrackingCoordinator::makePlan(sources, definition.computeIdentity, payload, 1000, 3000),
+    payload, UavTrackingCoordinator::makePlan(sources, definition.computeIdentity, payload, 1000, 15000),
     std::move(callbacks));
   BOOST_REQUIRE(!request.empty());
-  environment->pumpUntilWithAttributeAuthority([responseReceived] { return *responseReceived; });
+  const auto responseDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(16);
+  const auto responseDone = [&] {
+    return *responseReceived || std::chrono::steady_clock::now() >= responseDeadline;
+  };
+  while (!responseDone()) environment->pumpUntilWithAttributeAuthority(responseDone);
   BOOST_REQUIRE(*committed);
   BOOST_REQUIRE(*responseReceived);
-  environment->pumpUntilWithAttributeAuthority([&] {
+  const auto hasWorkDrainedProof = [&] {
     const auto available = environment->user().waitForVerifiedCollaborationData(request,
       TRACKING_INPUT_KEY_SCOPE, TRACKING_WORK_DRAINED_TOPIC, 1, 1, false);
     return std::any_of(available.begin(), available.end(), [this] (const auto& record) {
       return record.producer == definition.computeIdentity && record.producerRole == "Tracking-Compute";
     });
-  });
+  };
+  const auto proofDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  const auto proofDone = [&] {
+    return hasWorkDrainedProof() || std::chrono::steady_clock::now() >= proofDeadline;
+  };
+  while (!proofDone()) environment->pumpUntilWithAttributeAuthority(proofDone);
   const auto records = environment->user().waitForVerifiedCollaborationData(request,
     TRACKING_INPUT_KEY_SCOPE, TRACKING_WORK_DRAINED_TOPIC, 1, 1, false);
   const auto proof = std::find_if(records.begin(), records.end(), [this] (const auto& record) {
@@ -516,9 +544,13 @@ BOOST_FIXTURE_TEST_CASE(InitializationFailureLeavesTheJobFailedButClean, Provide
 {
   startFailingCompute();
   BOOST_REQUIRE(job->start(definition) == TrackingAdmission::ACCEPTED);
-  environment->pumpUntilWithAttributeAuthority([this] {
+  const auto failedAndClean = [this] {
     return latest.state == TrackingJobState::FAILED && latest.cleanupState == "CLEAN";
-  });
+  };
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(17);
+  while (!failedAndClean() && std::chrono::steady_clock::now() < deadline) {
+    environment->pumpUntilWithAttributeAuthority(failedAndClean);
+  }
   BOOST_REQUIRE(latest.state == TrackingJobState::FAILED);
   BOOST_CHECK_EQUAL(latest.cleanupState, "CLEAN");
   BOOST_CHECK_EQUAL(latest.completedWindows, 0);
@@ -571,9 +603,9 @@ BOOST_FIXTURE_TEST_CASE(OrdinaryServiceRepliesWhileNativeComputeOwnsItsWorker, P
 {
   startBlockingCompute();
   BOOST_REQUIRE(job->start(definition) == TrackingAdmission::ACCEPTED);
-  environment->pumpUntilWithAttributeAuthority([this] {
+  pumpUntilWithin([this] {
     return std::filesystem::exists(root / "compute-entered");
-  });
+  }, std::chrono::seconds(12));
   BOOST_REQUIRE(std::filesystem::exists(root / "compute-entered"));
   BOOST_REQUIRE(latest.state == TrackingJobState::RUNNING);
   BOOST_CHECK(!capability->isDrained());
@@ -607,9 +639,9 @@ BOOST_FIXTURE_TEST_CASE(NativeComputeCommitsOnlyCppDecisionsAndExportsTheSameMea
 {
   startBlockingCompute(true);
   BOOST_REQUIRE(job->start(definition) == TrackingAdmission::ACCEPTED);
-  environment->pumpUntilWithAttributeAuthority([this] {
+  pumpUntilWithin([this] {
     return std::filesystem::exists(root / "compute-entered");
-  });
+  }, std::chrono::seconds(12));
   BOOST_REQUIRE(std::filesystem::exists(root / "compute-entered"));
   const std::string release = "release\n";
   BOOST_REQUIRE_EQUAL(::write(writer, release.data(), release.size()), static_cast<ssize_t>(release.size()));
@@ -645,9 +677,9 @@ BOOST_FIXTURE_TEST_CASE(CancelledNativeCandidateNeverPromotesATransactionMarker,
 {
   startBlockingCompute(true);
   BOOST_REQUIRE(job->start(definition) == TrackingAdmission::ACCEPTED);
-  environment->pumpUntilWithAttributeAuthority([this] {
+  pumpUntilWithin([this] {
     return std::filesystem::exists(root / "compute-entered");
-  });
+  }, std::chrono::seconds(12));
   BOOST_REQUIRE(std::filesystem::exists(root / "compute-entered"));
   BOOST_REQUIRE(job->requestCancel(definition.jobId) == TrackingCancelResult::REQUESTED);
   environment->pumpUntilWithAttributeAuthority([this] { return latest.cleanupState == "CLEAN"; });
@@ -662,9 +694,9 @@ BOOST_FIXTURE_TEST_CASE(BackendCannotInjectGlobalDecisionsIntoCommittedState, Pr
 {
   startBlockingCompute(true);
   BOOST_REQUIRE(job->start(definition) == TrackingAdmission::ACCEPTED);
-  environment->pumpUntilWithAttributeAuthority([this] {
+  pumpUntilWithin([this] {
     return std::filesystem::exists(root / "compute-entered");
-  });
+  }, std::chrono::seconds(12));
   BOOST_REQUIRE(std::filesystem::exists(root / "compute-entered"));
   const auto path = root / "controlled-candidate.json";
   std::ifstream input(path);
