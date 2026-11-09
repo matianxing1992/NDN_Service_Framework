@@ -18,6 +18,81 @@ An SSH-based stage-out can fail independently of computation, so verify archived
 artifacts as well as job completion. An access notice does not establish an
 account ban or a model/runtime defect.
 
+## Artifact-authority Requesters
+
+An independent artifact authority can admit several Requesters through
+`artifact_authority.authority.requester_public_key_files`, a map of Requester
+NDN identities to Ed25519 public-key files (1..4096 entries). The current
+deployment's Requester must be present. Add or remove consumers in the authority's
+operator configuration; the model publisher does not supply this registry.
+Each grant is verified with the named Requester's key. Core service permissions,
+model policy, Provider binding and grant expiry remain separate checks.
+The legacy `requester_public_key_file` with its deployment-bound Requester remains
+supported; do not combine it with the registry. This authorization interface
+alone does not provide third-party model publication or key custody.
+
+## Independent Repo storage
+
+The native `User::storePreparedModel(prepared, target, timeout)` API stores an
+already prepared model's original protected Data and signing certificate in an
+independent Repo. It uses the existing Owner storage grant, commit and complete
+wire-readback APIs. Child objects precede the model root. On partial failure,
+committed objects remain available for the same Owner's retry.
+
+This API remains for existing direct callers. Maintained deployments use `model_input`
+below instead of combining it with legacy `model_repository` or `encrypted_repository`.
+Declare the Repo actor and matching `network.repo_service`; the logical `repo_node`
+and actual Repo Provider identity have separate meanings. Storage confirmation alone
+does not provide key delegation to another User.
+
+The explicit `requester.model_input` interface separates reusable publication from consumption:
+
+```json
+"model_input": {
+  "mode": "publish-stored",
+  "repo_target": {
+    "repo_node": "/demo/repo-node",
+    "provider_identity": "/demo/repo-provider",
+    "service_prefix": "/NDNSF/Repo"
+  },
+  "preparation_state_file": "/project/user/ndnsf-di/private/model-preparation.json",
+  "private_handle_file": "/project/user/ndnsf-di/private/model-handle.json"
+}
+```
+
+This is a requester configuration fragment, used with `operation: "prepare"` or
+`ndnsf-di cluster prepare --config deployment.json`. Keep the catalog/model policy, Controller
+credentials and declared Repo actor; preparation needs no inference turns, Provider/GPU or
+ArtifactAuthority process. Provider-only `model` plan/manifest/tokenizer paths may be omitted
+from a preparation deployment (`model: {}`). CLI prepare projects these inputs before validation.
+The native Requester owns publication/recovery and exports a private handle after commit.
+
+An authorized consumer selects `mode: "stored"`, the same `repo_target` and securely delivered
+`private_handle_file`, omits `preparation_state_file` and catalog source-file paths, and supplies
+its own inference grants/keys and turns. The Repo Provider actor identity may differ from repo_node.
+The handle contains model decryption capability: keep it private and never put it in a public
+receipt. Digest packet integrity alone is not producer authentication. Ordinary `source` and
+legacy direct preparation APIs remain supported for existing callers. For request-time model
+preparation, select `mode: "source"` with the same Repo, private journal and handle fields shown
+above, plus the inference configuration. The native `User::prepareStoredModel` uses the same
+publisher/recovery and stored opener under one overall timeout. An existing private handle goes
+directly through stored admission without reading the preparation journal; only an absent handle
+starts publication/recovery. Invalid handles fail without publication fallback. Reuse needs no
+source loading or republishing; later cold/warm requests use that PreparedModel and the
+same selected-object key delivery as external preparation. Do not combine publication modes.
+For state qualification, Provider parameter `sample-kv-state-values: true` enables a bounded
+native probe alongside its existing statistics file (`.kv-samples.json`, mode0600). It samples
+prefill, first decode and finalize; normal execution leaves it disabled. These private scalar
+samples are separate from metadata-only metrics and public Data. Capturing samples alone does
+not prove equality with an independent model, and probe overhead is not normal performance.
+Native cross-process tiny-model proof does not
+qualify installed Qwen or Tiger/CUDA deployment; those require their own acceptance evidence.
+
+Provider cache defaults use the configured cache root plus a hash of the full Provider Name TLV.
+Renaming a deployment actor or choosing another URI spelling for the same Name keeps that default
+path. Explicit `artifact-cache-dir` still overrides it. Existing actor-ID cache directories are
+neither moved nor implicitly imported; specify a compatible existing path explicitly when needed.
+
 ## Installed deployment timing
 
 Slurm resident steps expose the node's allocated CPU pool while retaining GPU
@@ -3614,6 +3689,17 @@ dependency resolver installs the Name codec without App, native bindings or
 the compatibility aggregate. Install `ndnsf-di-ops[app]` when using the legacy
 App commands. The full-stack and compatibility installations already include App.
 These host packaging choices do not require rebuilding the runtime SIF.
+
+An owned Repo actor may set `parameters: {"request-timeout-ms": 30000}` to pass the
+existing native Repo operation budget explicitly. It must exceed the native250ms ACK interval
+and fit a signed32-bit integer; omission keeps the native5000ms default. Size this budget for
+one bounded packet group's fetch, validation and commit. It is separate from the complete
+preparation/job timeout; readiness still requires committed publication and handle export.
+Repo actors may also set `parameters.repo-node` to the existing persistent logical Repo Name.
+It must match an owned Requester's Repo target when provided. This lets the same infrastructure
+serve an external native client without putting Repo identity under Requester process inputs.
+Keep the exact persistent Node spelling unchanged between jobs; it is separate from the actual
+Repo Provider's Producer identity.
 
 An exact-model request sets one candidate with `exact_semantics=True`; an
 alternative-model request supplies an operator-authorized bounded candidate

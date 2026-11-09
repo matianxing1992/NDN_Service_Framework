@@ -2,6 +2,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/material-receipt.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
@@ -815,6 +817,54 @@ placementResidencyIdentity(const NativeSelectionProjectionV3& projection)
 }
 
 } // namespace
+
+void
+nativeBindStoredModelAssemblyCache(const NativeSelectionProjectionV3& projection,
+                                  NativeCanonicalOnnxAssemblerOptions& options)
+{
+  const auto& lease = projection.storedModelObjectKeyLease;
+  const auto& identity = projection.storedModelCacheIdentity;
+  if (static_cast<bool>(lease) != !identity.empty() ||
+      (lease && lease->cacheIdentity() != identity))
+    throw std::runtime_error("DI_STORED_MODEL_KEY_CACHE_IDENTITY_MISMATCH");
+  if (!lease)
+    return;
+  if (options.cacheDir.empty() || !isSha256Digest(identity))
+    throw std::runtime_error("DI_STORED_MODEL_CACHE_IDENTITY_INVALID");
+  options.cacheDir = (std::filesystem::path(options.cacheDir) / "stored" /
+    identity.substr(7)).string();
+  if (options.protectedRuntime) {
+    if (!isSha256Digest(options.roleAssemblySpecDigest))
+      throw std::runtime_error("DI_PROTECTED_ROLE_ASSEMBLY_SPEC_MISSING");
+    options.roleAssemblySpecDigest = nativePlanningDigest(
+      options.roleAssemblySpecDigest + "|" + identity);
+  }
+}
+
+boost::property_tree::ptree
+parseNativeCanonicalMaterialReceipt(const std::vector<std::uint8_t>& bytes,
+  const std::string& sourceDigest, const std::string& graphDigest,
+  const std::string& materialIdentityDigest, const std::string& materialManifestDigest)
+{
+  validateBoundedMaterialJson(bytes, "DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
+  boost::property_tree::ptree receipt;
+  try {
+    std::istringstream input(std::string(bytes.begin(), bytes.end()));
+    boost::property_tree::read_json(input, receipt);
+  }
+  catch (const std::exception&) {
+    throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
+  }
+  validateMaterialReceiptTree(receipt, "DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
+  if (receipt.get<std::string>("schema", "") != "ndnsf-di-canonical-material-receipt-v1" ||
+      receipt.get<std::string>("sourceDigest", "") != sourceDigest ||
+      receipt.get<std::string>("graphDigest", "") != graphDigest ||
+      receipt.get<std::string>("materialIdentityDigest", "") != materialIdentityDigest ||
+      receipt.get<std::string>("materialManifestDigest", "") != materialManifestDigest ||
+      !receipt.get_child_optional("materialObjects"))
+    throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_IDENTITY_MISMATCH");
+  return receipt;
+}
 
 namespace {
 
@@ -1667,7 +1717,17 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   const std::string& canonicalSourceDigest)
 {
   NativeCanonicalOnnxFetchers fetchers;
-  fetchers.getArtifact = [&ctx] (const ndn::Name& name) {
+  const auto storedObjectKeys = projection.storedModelObjectKeyLease;
+  if (static_cast<bool>(storedObjectKeys) !=
+      !projection.storedModelCacheIdentity.empty())
+    throw std::runtime_error("DI_STORED_MODEL_KEY_CACHE_IDENTITY_MISMATCH");
+  fetchers.getArtifact = [&ctx, storedObjectKeys] (const ndn::Name& name) {
+    if (storedObjectKeys) {
+      if (!storedObjectKeys->contains(name))
+        throw std::runtime_error("DI_STORED_MODEL_OBJECT_KEY_MISSING");
+      return nativeFetchAndOpenStoredModelObjectCurrent(
+        ctx, *storedObjectKeys, name, ctx.assignment().workDeadline);
+    }
     return ctx.getArtifact(name);
   };
   auto effective = options;
@@ -2746,24 +2806,8 @@ prepareNativeCanonicalOnnxRole(
         auto receiptBytes = fetchPlainObject(
           materialReceiptName, materialReceiptDigest, materialReceiptBytes,
           "material-receipt");
-        validateBoundedMaterialJson(receiptBytes, "DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
-        try {
-          std::istringstream receiptInput(std::string(receiptBytes.begin(), receiptBytes.end()));
-          boost::property_tree::read_json(receiptInput, materialReceipt);
-        }
-        catch (const std::exception&) {
-          throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
-        }
-        validateMaterialReceiptTree(materialReceipt,
-                                    "DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
-        if (materialReceipt.get<std::string>("schema", "") !=
-              "ndnsf-di-canonical-material-receipt-v1" ||
-            materialReceipt.get<std::string>("sourceDigest", "") != sourceDigest ||
-            materialReceipt.get<std::string>("graphDigest", "") != projection.assemblyContract().graphDigest ||
-            materialReceipt.get<std::string>("materialIdentityDigest", "") != materialIdentityDigest ||
-            materialReceipt.get<std::string>("materialManifestDigest", "") != materialManifestDigest ||
-            !materialReceipt.get_child_optional("materialObjects"))
-          throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_IDENTITY_MISMATCH");
+        materialReceipt = parseNativeCanonicalMaterialReceipt(receiptBytes, sourceDigest,
+          projection.assemblyContract().graphDigest, materialIdentityDigest, materialManifestDigest);
         materialObjects = &*materialReceipt.get_child_optional("materialObjects");
         materialMetadataBytes += materialReceiptBytes;
         receiptBytes.clear();
@@ -2797,7 +2841,7 @@ prepareNativeCanonicalOnnxRole(
                                     !item.second.count("bundleBytes") ||
                                     !item.second.count("bundleOffset") ||
                           bundleDigest.empty() || bundleBytes == 0 ||
-                          bundleBytes > NativeCanonicalMaterialBundleMaxBytes))
+                          bundleBytes > NativeCanonicalMaterialPublicationMaxBytes))
           throw std::runtime_error("DI_CANONICAL_MATERIAL_BUNDLE_RECEIPT_INVALID");
         const auto kind = bundleKinds.find(dataName);
         if (kind != bundleKinds.end() && kind->second != hasBundle)
@@ -2886,7 +2930,7 @@ prepareNativeCanonicalOnnxRole(
         const auto& firstObject = selectedObjects.at(group.second.front());
         const bool bundled = !firstObject.bundleDigest.empty();
         const auto fetchedBytes = bundled ? firstObject.bundleBytes : firstObject.bytes;
-        if ((bundled && fetchedBytes > NativeCanonicalMaterialBundleMaxBytes) ||
+        if ((bundled && fetchedBytes > NativeCanonicalMaterialPublicationMaxBytes) ||
             selectedMaterialBytes > assemblyControl.maxAssembledBytes ||
             fetchedBytes > assemblyControl.maxAssembledBytes - selectedMaterialBytes)
           throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
@@ -3582,12 +3626,31 @@ prepareNativeCanonicalOnnxRole(
   const NativeCanonicalOnnxAssemblerOptions& options)
 {
   NativeCanonicalOnnxFetchers fetchers;
-  fetchers.getArtifact = [&ctx] (const ndn::Name& name) {
+  const auto storedObjectKeys = projection.storedModelObjectKeyLease;
+  if (static_cast<bool>(storedObjectKeys) !=
+      !projection.storedModelCacheIdentity.empty())
+    throw std::runtime_error("DI_STORED_MODEL_KEY_CACHE_IDENTITY_MISMATCH");
+  fetchers.getArtifact = [&ctx, storedObjectKeys] (const ndn::Name& name) {
+    if (storedObjectKeys) {
+      if (!storedObjectKeys->contains(name))
+        throw std::runtime_error("DI_STORED_MODEL_OBJECT_KEY_MISSING");
+      return nativeFetchAndOpenStoredModelObjectCurrent(
+        ctx, *storedObjectKeys, name, ctx.assignment().workDeadline);
+    }
     return ctx.getArtifact(name);
   };
-  fetchers.fetchEncryptedLargeData = [&ctx] (
+  fetchers.fetchEncryptedLargeData = [&ctx, storedObjectKeys] (
       const ndn::Name& name, const ndn::Name& service) {
-    return ctx.fetchEncryptedLargeData(name, service);
+    if (!service.empty() && service != ctx.assignment().service)
+      return std::optional<ndn::Buffer>{};
+    if (storedObjectKeys) {
+      if (!storedObjectKeys->contains(name))
+        throw std::runtime_error("DI_STORED_MODEL_OBJECT_KEY_MISSING");
+      return nativeFetchAndOpenStoredModelObjectCurrent(
+        ctx, *storedObjectKeys, name,
+        ctx.assignment().workDeadline);
+    }
+    return ctx.fetchEncryptedLargeDataCurrent(name, ctx.assignment().workDeadline);
   };
   auto effective = options;
   effective.shouldCancel = [&ctx, configured = options.shouldCancel] {

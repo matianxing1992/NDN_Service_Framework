@@ -82,12 +82,14 @@ matchesPublication(const RepoObjectManifest& expected, const RepoObjectManifest&
 {
   if (expected.operationId.empty() || expected.operationId != current.operationId)
     return false;
+  if (expected.generation != 0)
+    return expected.hasSameMetadata(current);
   auto normalized = expected;
   // A failed commit may have become durable before its return value reached
   // the caller. The unique operation identity still fences its rollback.
   if (normalized.generation == 0)
     normalized.generation = current.generation;
-  return normalized.toJson() == current.toJson();
+  return normalized.hasSameMetadata(current);
 }
 
 } // namespace
@@ -528,6 +530,23 @@ RepoCore::getRangeIfCurrent(const RepoObjectManifest& expected, RepoByteRange ra
   return getRange(expected.objectName, range);
 }
 
+RepoRangeReadSnapshot
+RepoCore::openRangeSnapshot(std::shared_ptr<RepoCore> owner, RepoObjectManifest expected)
+{
+  if (!owner || expected.generation == 0 || expected.operationId.empty())
+    throw std::invalid_argument("repo-range-snapshot-owner-required");
+  auto manifest = std::make_shared<const RepoObjectManifest>(std::move(expected));
+  std::lock_guard<std::mutex> lock(owner->m_mutex);
+  if (!owner->m_store->supportsRange() &&
+      (!owner->m_store->supportsManifestLookup() || manifest->size > (1U << 20)))
+    throw std::runtime_error("repo-range-backend-not-supported-for-large-object");
+  auto read = owner->m_store->bindCurrentRangeReader(manifest);
+  return {manifest, [owner, read = std::move(read)](RepoByteRange range) {
+    std::lock_guard<std::mutex> guard(owner->m_mutex);
+    return read(range);
+  }};
+}
+
 bool
 RepoCore::removeIfCurrent(const RepoObjectManifest& expected)
 {
@@ -877,7 +896,42 @@ RepoCore::getDataPacket(const std::string& dataName,
   const std::function<bool(const RepoObjectManifest&)>& acceptObject) const
 {
   const ndn::Name name(dataName);
-  const auto record = findPacketRecord(name, acceptObject);
+  std::optional<std::pair<RepoObjectManifest, size_t>> record;
+  if (acceptObject) {
+    const auto key = name.toUri(ndn::name::UriFormat::CANONICAL);
+    const auto alternate = name.toUri(ndn::name::UriFormat::ALTERNATE);
+    if (!m_store->has(key) && (alternate == key || !m_store->has(alternate))) {
+      std::vector<std::pair<std::string, size_t>> hints;
+      {
+        std::lock_guard<std::mutex> lock(m_packetIndexProofMutex);
+        for (const auto& [object, proof] : m_packetIndexProofs) {
+          const auto found = std::find(proof.names.begin(), proof.names.end(), key);
+          if (found != proof.names.end())
+            hints.emplace_back(object, static_cast<size_t>(found - proof.names.begin()));
+        }
+      }
+      // A proof is only a locator hint. Current metadata and admission remain mandatory;
+      // never run storage calls or a caller's visibility callback under the proof mutex.
+      for (const auto& [object, index] : hints) {
+        std::optional<RepoObjectManifest> current;
+        try {
+          if (m_store->has(object)) current = m_store->getManifest(object);
+        }
+        catch (const std::out_of_range&) {
+          continue;
+        }
+        if (!current || current->objectType != "original-packet-set" ||
+            index >= current->packetNames.size() || current->packetNames[index] != key)
+          continue;
+        validateReadPacketIndex(*current);
+        if (acceptObject(*current)) {
+          record = std::make_pair(std::move(*current), index);
+          break;
+        }
+      }
+    }
+  }
+  if (!record) record = findPacketRecord(name, acceptObject);
   if (!record) {
     throw std::runtime_error("repo object is not an exact NDN Data packet: " + dataName);
   }
@@ -913,12 +967,22 @@ RepoCore::getDataPacket(
   }
   // SegmentFetcher starts with an object/locator prefix. Read the admitted
   // holder itself: a second exact lookup could select a different owner.
+  const auto canonicalPrefix = indexedName.toUri(ndn::name::UriFormat::CANONICAL);
   for (const auto& manifest : m_store->listManifests()) {
     if (manifest.objectType != "ndn-data-wire" && manifest.objectType != "original-packet-set") {
       continue;
     }
     const bool packetSet = manifest.objectType == "original-packet-set";
     if (packetSet) {
+      // Valid packet indexes use canonical Names. Reject unrelated namespaces before
+      // parsing all components; control Interests also reach the local serving filter.
+      const auto candidate = [&](const std::string& name) {
+        return canonicalPrefix == "/" ||
+          (name.compare(0, canonicalPrefix.size(), canonicalPrefix) == 0 &&
+           (name.size() == canonicalPrefix.size() || name[canonicalPrefix.size()] == '/'));
+      };
+      if (std::none_of(manifest.packetNames.begin(), manifest.packetNames.end(), candidate))
+        continue;
       validateReadPacketIndex(manifest);
     }
     const auto names = packetSet ? manifest.packetNames : std::vector<std::string>{manifest.objectName};
@@ -1031,6 +1095,14 @@ RepoCore::findPacketRecord(const ndn::Name& name,
       if (!acceptObject || acceptObject(manifest)) {
         return std::make_pair(manifest, 0);
       }
+    }
+    else if (!acceptObject && manifest.objectType == "original-packet-set" &&
+             manifest.objectName == key && !manifest.packetNames.empty() &&
+             manifest.packetNames.front() == key) {
+      // The requested packet is this object's root. Filtered searches retain
+      // their existing admission/search order across containing objects.
+      validateReadPacketIndex(manifest);
+      return std::make_pair(manifest, 0);
     }
     else if (manifest.objectType != "original-packet-set") {
       return std::nullopt;

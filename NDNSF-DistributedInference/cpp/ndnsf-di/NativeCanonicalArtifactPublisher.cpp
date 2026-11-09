@@ -197,6 +197,9 @@ ndn_service_framework::PublishedContentName publicationContentName(
     else if (label == "di-canonical-root") {
       value.kind = ContentDataKind::ModelFile; value.label = "manifest.json";
     }
+    else if (label == "di-prepared-metadata") {
+      value.kind = ContentDataKind::ModelFile; value.label = "prepared-metadata.json";
+    }
     else throw std::invalid_argument("unknown canonical publication payload role");
   }
   value.encode();
@@ -286,6 +289,71 @@ struct PreparedPublicationJob
 };
 }
 
+ndn_service_framework::LargeDataPublishResult
+nativeProtectedObjectFromReference(const NativeJson& reference)
+{
+  if (!reference.is_object() || reference.size() != 11 ||
+      nativeCanonicalJson(reference).size() > 16U * 1024U ||
+      reference.value("schema", std::string{}) != "ndnsf-di-protected-object-ref-v1" ||
+      !reference.at("plaintextBytes").is_number_unsigned())
+    throw std::invalid_argument("DI_PROTECTED_OBJECT_REFERENCE_INVALID");
+  ndn_service_framework::LargeDataPublishResult result;
+  result.dataPrefix = ndn::Name(reference.at("dataPrefix").get<std::string>());
+  result.encryptedDataName = result.dataPrefix;
+  result.manifestName = ndn::Name(reference.at("manifestName").get<std::string>());
+  const auto plaintextBytes = reference.at("plaintextBytes").get<std::uint64_t>();
+  if (plaintextBytes > std::numeric_limits<std::size_t>::max())
+    throw std::invalid_argument("DI_PROTECTED_OBJECT_REFERENCE_INVALID");
+  result.plaintextSize = static_cast<std::size_t>(plaintextBytes);
+  result.contentDigest = reference.at("contentDigest").get<std::string>();
+  result.manifestDigest = reference.at("manifestDigest").get<std::string>();
+  result.ciphertextManifestDigest = result.manifestDigest;
+  result.authorizationScope = reference.at("authorizationScope").get<std::string>();
+  result.protectionEpoch = reference.at("protectionEpoch").get<std::string>();
+  result.publicationIdentity = reference.at("publicationIdentity").get<std::string>();
+  result.keyReferenceId = reference.at("keyReferenceId").get<std::string>();
+  result.keyReferenceVersion = reference.at("keyReferenceVersion").get<std::string>();
+  if (result.dataPrefix.empty() || result.manifestName.empty() || result.plaintextSize == 0 ||
+      result.dataPrefix.wireEncode().size() > 1024 ||
+      result.manifestName.wireEncode().size() > 1024 ||
+      result.dataPrefix.toUri(ndn::name::UriFormat::CANONICAL) !=
+        reference.at("dataPrefix").get<std::string>() ||
+      result.manifestName.toUri(ndn::name::UriFormat::CANONICAL) !=
+        reference.at("manifestName").get<std::string>() ||
+      !digest(result.contentDigest) || !digest(result.manifestDigest) ||
+      !digest(result.publicationIdentity) || !digest(result.keyReferenceId) ||
+      result.authorizationScope.empty() || result.authorizationScope.size() > 1024 ||
+      result.keyReferenceVersion != "v1" || result.protectionEpoch.size() != 16 ||
+      !std::all_of(result.protectionEpoch.begin(), result.protectionEpoch.end(), [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+      }))
+    throw std::invalid_argument("DI_PROTECTED_OBJECT_REFERENCE_INVALID");
+  result.servingLocator = result.dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
+  result.encrypted = true;
+  result.success = true;
+  result.fileBacked = true;
+  return result;
+}
+
+NativeJson
+nativeProtectedObjectReference(const ndn_service_framework::LargeDataPublishResult& object)
+{
+  if (!object.success || !object.encrypted || object.encryptedDataName != object.dataPrefix ||
+      ndn::Name(object.servingLocator) != object.dataPrefix ||
+      object.ciphertextManifestDigest != object.manifestDigest)
+    throw std::invalid_argument("DI_PROTECTED_OBJECT_REFERENCE_INVALID");
+  NativeJson result{{"schema", "ndnsf-di-protected-object-ref-v1"},
+    {"dataPrefix", object.dataPrefix.toUri(ndn::name::UriFormat::CANONICAL)},
+    {"manifestName", object.manifestName.toUri(ndn::name::UriFormat::CANONICAL)},
+    {"plaintextBytes", static_cast<std::uint64_t>(object.plaintextSize)},
+    {"contentDigest", object.contentDigest}, {"manifestDigest", object.manifestDigest},
+    {"authorizationScope", object.authorizationScope}, {"protectionEpoch", object.protectionEpoch},
+    {"publicationIdentity", object.publicationIdentity}, {"keyReferenceId", object.keyReferenceId},
+    {"keyReferenceVersion", object.keyReferenceVersion}};
+  (void)nativeProtectedObjectFromReference(result);
+  return result;
+}
+
 void NativePreparedCanonicalPublication::validate() const
 {
   const auto validName = [](const std::string& value) {
@@ -331,11 +399,12 @@ void NativePreparedCanonicalPublication::validate() const
       nativePlanningDigest(canonicalManifestJson) != manifestDigest)
     throw std::invalid_argument("native prepared canonical publication is incomplete");
   if (!preparedMetadataJson.empty()) {
+    if (preparedMetadataJson.size() > NativeCanonicalMaterialPublicationMaxBytes)
+      throw std::invalid_argument("native prepared metadata exceeds publication bound");
     try {
       const auto metadata = nativeParseJson(preparedMetadataJson);
       if (!metadata.is_object() ||
           metadata.value("schema", std::string{}) != "ndnsf-di-prepared-metadata-v1" ||
-          preparedMetadataJson.size() > 256 * 1024 ||
           nativeCanonicalJson(metadata) != preparedMetadataJson)
         throw std::invalid_argument("native prepared metadata is invalid");
     }
@@ -348,6 +417,7 @@ void NativePreparedCanonicalPublication::validate() const
   if (hasPreparedMetadataReference) {
     if (!validName(preparedMetadataDataName) || !digest(preparedMetadataDigest) ||
         preparedMetadataBytes == 0 ||
+        preparedMetadataBytes > NativeCanonicalMaterialPublicationMaxBytes ||
         (!preparedMetadataJson.empty() &&
          (preparedMetadataBytes != preparedMetadataJson.size() ||
           preparedMetadataDigest != nativePlanningDigest(preparedMetadataJson))))
@@ -415,7 +485,7 @@ void NativePreparedCanonicalPublication::validate() const
         const auto payloadBytes = object.value("bytes", std::uint64_t{0});
         if (!object.contains("bundleDigest") || !object.contains("bundleBytes") ||
               !object.contains("bundleOffset") || !digest(bundleDigest) || bundleBytes == 0 ||
-              bundleBytes > NativeCanonicalMaterialBundleMaxBytes || payloadBytes == 0 ||
+              bundleBytes > NativeCanonicalMaterialPublicationMaxBytes || payloadBytes == 0 ||
               bundleOffset > bundleBytes || payloadBytes > bundleBytes - bundleOffset)
             throw std::invalid_argument("native prepared material bundle receipt is invalid");
           const auto identity = bundleIdentities.emplace(
@@ -482,13 +552,11 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
         }
         publishOptions.retention = ndn_service_framework::EncryptedLargeDataRetention::Durable;
         publishOptions.publicationIdentity = publicationIdentity;
-        if (!user->isOnIoThread())
-          return user->publishEncryptedLargeDataFromWorker(
-            request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD, publishOptions,
-            [control] { control.requireActive(); });
-        return user->publishEncryptedLargeData(
-          request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD, true, publishOptions,
-          [control] { control.requireActive(); });
+        if (user->isOnIoThread())
+          throw std::logic_error("owner-recoverable model publication requires a worker");
+        return user->publishOwnerRecoverableLargeDataFromWorker(
+          request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD, publishOptions,
+          control.deadline, [control] { control.requireActive(); });
       },
       [user, serviceName](const NativeRequestControl& control) {
         return onCoreIo(user,
@@ -498,6 +566,28 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
             const auto owner = weak.lock();
             return owner && owner->isRequestBootstrapReady(ndn::Name(serviceName));
           }, &control);
+      }, user && user->supportsDurableEncryptedLargeData(),
+      [user, serviceName](const NativeInspectedModel& model, const std::string& wire,
+                         const NativeRequestControl& control) {
+        if (user->isOnIoThread())
+          throw std::logic_error("current root control publication requires a worker");
+        awaitPublicationBootstrap([user, serviceName](const NativeRequestControl& current) {
+          return onCoreIo(user, [user, serviceName] {
+            return user->isRequestBootstrapReady(ndn::Name(serviceName));
+          }, &current);
+        }, [user] { return user->isOnIoThread(); }, control);
+        const auto request = onCoreIo(user, [user, serviceName] {
+          return user->prepareServiceRequest(serviceName);
+        }, &control);
+        ndn_service_framework::LargeDataPublishOptions options;
+        options.retention = ndn_service_framework::EncryptedLargeDataRetention::Durable;
+        options.publicationIdentity = nativePlanningDigest(
+          "ndnsf-di/current-root-control/v1/" + nativePlanningDigest(wire));
+        options.contentName = publicationContentName(model, "di-canonical-root");
+        options.contentName->label = "authorization-manifest.json";
+        return user->publishEncryptedLargeDataFromWorker(request,
+          std::vector<std::uint8_t>(wire.begin(), wire.end()), "di-current-root-control",
+          ndn::DEFAULT_FRESHNESS_PERIOD, options, [control] { control.requireActive(); });
       }}, serviceName,
       std::move(options), std::move(source))
 {
@@ -515,6 +605,7 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(Transport tra
       ndn::Name(m_serviceName).empty() || ndn::Name(m_options.artifactRoot).empty() ||
       (!m_options.packageManifestDigest.empty() && !digest(m_options.packageManifestDigest)) ||
       (!m_options.artifactProfileDigest.empty() && !digest(m_options.artifactProfileDigest)) ||
+      (m_transport.ownerRecoverable && !m_transport.durablePublish) ||
       std::any_of(m_options.layerManifestDigests.begin(), m_options.layerManifestDigests.end(),
                   [](const auto& value) { return !digest(value); }) ||
       m_transport.maxPublishedDataNameBytes == 0 ||
@@ -787,6 +878,7 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::bindPreparedAfterValidat
   return bindPreparedImpl(model, candidate, roles, publication, control, false);
 }
 
+
 NativeArtifactBinding NativeCanonicalArtifactPublisher::bindPreparedImpl(
   const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
   const std::vector<NativeSelectionRoleV3>& roles,
@@ -829,6 +921,18 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::bindPreparedImpl(
   binding.canonicalManifestJson = publication.canonicalManifestJson;
   binding.manifestDigest = publication.manifestDigest;
   binding.recipeDigest = roles.front().recipeDigest;
+  binding.ownerRecoverableObjects = publication.ownerRecoverableObjects;
+  auto rootDataName = publication.rootDataName;
+  if (m_transport.publishRootControl && publication.ownerRecoverableObjects) {
+    const auto currentRoot = m_transport.publishRootControl(model, publication.canonicalManifestJson, control);
+    if (!currentRoot.success || !currentRoot.servingLease ||
+        currentRoot.contentDigest != publication.manifestDigest ||
+        currentRoot.plaintextSize != publication.canonicalManifestJson.size() ||
+        currentRoot.manifestName.empty())
+      throw std::runtime_error("DI_CURRENT_ROOT_CONTROL_PUBLICATION_INVALID");
+    rootDataName = currentRoot.manifestName.toUri(ndn::name::UriFormat::CANONICAL);
+    binding.servingLeases.push_back(currentRoot.servingLease);
+  }
   for (const auto& role : roles) {
     if (role.artifactProfileDigest != publication.artifactProfileDigest)
       throw std::invalid_argument("native prepared publication profile differs from role");
@@ -839,7 +943,7 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::bindPreparedImpl(
     if (degree != candidate.tensorDegreesByRole.end() && degree->second > 1)
       stable.append("rank").appendNumber(role.rank);
     binding.artifactNameByRole.emplace(role.selectedRole, stable.toUri());
-    binding.sourceByRole.emplace(role.selectedRole, publication.rootDataName);
+    binding.sourceByRole.emplace(role.selectedRole, rootDataName);
     binding.artifactDigestByRole.emplace(role.selectedRole, role.artifactDigest);
   }
   const auto certificateStarted = std::chrono::steady_clock::now();
@@ -1075,6 +1179,8 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
   m_cache->sourceVerifications.fetch_add(1, std::memory_order_relaxed);
   control.requireActive();
   const bool materialBacked = source && static_cast<bool>(source->materialManifest);
+  if (source && source->preparedMetadataJson.size() > NativeCanonicalMaterialPublicationMaxBytes)
+    throw std::invalid_argument("native prepared metadata exceeds publication bound");
   if (source && source->initializerRangeSource && !source->initializerBytes && !materialBacked)
     throw std::invalid_argument("range-only prepared source requires a material manifest");
   const NativeAssemblyControl sourceControl{
@@ -1152,7 +1258,31 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
     // bounded framing allowance before any object is published. This keeps a
     // declared publication budget atomic instead of discovering exhaustion
     // after a prefix of the receipt is already visible.
-    constexpr std::uint64_t rootBudget = 16U * 1024U * 1024U;
+    std::uint64_t rootBudget = 16U * 1024U * 1024U;
+    if (transport.ownerRecoverable && !source->preparedMetadataJson.empty()) {
+      std::uint64_t objectCount = materialBacked ? 2 : 1;
+      std::uint64_t bundleBytes = 0;
+      if (!materialBacked && source->initializerBytes) ++objectCount;
+      if (materialBacked) {
+        for (const auto& payload : materialManifest->payloads) {
+          if (bundleBytes != 0 && payload.byteSize() >
+              NativeCanonicalMaterialPublicationMaxBytes - bundleBytes) {
+            ++objectCount;
+            bundleBytes = 0;
+          }
+          bundleBytes += payload.byteSize();
+        }
+        if (bundleBytes != 0) ++objectCount;
+      }
+      constexpr std::uint64_t referenceBudget = 16U * 1024U;
+      const auto metadataLimit = NativeCanonicalMaterialPublicationMaxBytes;
+      const auto sourceMetadataBytes = source->preparedMetadataJson.size();
+      if (sourceMetadataBytes > metadataLimit ||
+          objectCount > (metadataLimit - sourceMetadataBytes) / referenceBudget)
+        throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
+      const auto metadataBudget = sourceMetadataBytes + objectCount * referenceBudget;
+      rootBudget = std::max(rootBudget, metadataBudget + (4U << 10));
+    }
     std::uint64_t knownPublicationBytes = materialBacked ? 0 : source->modelBytes.size();
     if (!materialBacked && source->initializerBytes) {
       if (knownPublicationBytes > std::numeric_limits<std::uint64_t>::max() -
@@ -1235,6 +1365,7 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
         return name;
       };
       NativePreparedCanonicalPublication result;
+      result.preparedMetadataJson = source->preparedMetadataJson;
       NativeJson metadata{{"canonicalSourceBytes", model.canonicalSourceBytes},
         {"canonicalSourceDigest", model.canonicalSourceDigest}};
       if (!materialBacked) {
@@ -1292,7 +1423,7 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
           active();
           const auto& payload = materialManifest->payloads.at(index);
           if (!bundle.empty() && payload.byteSize() >
-              NativeCanonicalMaterialBundleMaxBytes - bundle.size())
+              NativeCanonicalMaterialPublicationMaxBytes - bundle.size())
             flushBundle();
           const auto offset = bundle.size();
           const auto payloadReadStarted = std::chrono::steady_clock::now();
@@ -1338,11 +1469,32 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
       }
       if (!options.packageManifestDigest.empty())
         metadata["packageManifestDigest"] = options.packageManifestDigest;
+      if (transport.ownerRecoverable && !source->preparedMetadataJson.empty()) {
+        auto preparedMetadata = nativeParseJson(source->preparedMetadataJson);
+        NativeJson objects = NativeJson::array();
+        for (const auto& published : publishedResults)
+          objects.push_back(nativeProtectedObjectReference(published));
+        preparedMetadata["protectedObjects"] = std::move(objects);
+        result.preparedMetadataJson = nativeCanonicalJson(preparedMetadata);
+        if (result.preparedMetadataJson.size() > NativeCanonicalMaterialPublicationMaxBytes)
+          throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
+        const std::vector<std::uint8_t> bytes(result.preparedMetadataJson.begin(),
+                                               result.preparedMetadataJson.end());
+        result.preparedMetadataDataName = publish(bytes, "di-prepared-metadata");
+        result.preparedMetadataDigest = nativePlanningDigest(result.preparedMetadataJson);
+        result.preparedMetadataBytes = bytes.size();
+        metadata["preparedMetadataDataName"] = result.preparedMetadataDataName;
+        metadata["preparedMetadataDigest"] = result.preparedMetadataDigest;
+        metadata["preparedMetadataBytes"] = result.preparedMetadataBytes;
+      }
       NativeJson root{{"schema", "ndnsf-di-canonical-model-manifest-v1"}, {"state", "ACTIVE"},
         {"artifactProfileDigest", options.artifactProfileDigest},
         {"modelIdentityDigest", model.descriptor.contentDigest},
         {"modelSemanticIdentityDigest", model.descriptor.modelDigest()},
         {"modelName", model.descriptor.modelName}, {"metadata", metadata}};
+      if (transport.ownerRecoverable)
+        root["publicationIdentityDigest"] = options.publicationIdentityDigest.empty()
+          ? model.canonicalSourceDigest : options.publicationIdentityDigest;
       if (!options.layerManifestDigests.empty()) root["layerManifestDigests"] = options.layerManifestDigests;
       result.canonicalManifestJson = nativeCanonicalJson(root);
       result.manifestDigest = nativePlanningDigest(result.canonicalManifestJson);
@@ -1368,6 +1520,20 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
       }
       result.publishedBytes = publishedBytes;
       result.validate();
+      if (transport.ownerRecoverable) {
+        result.rollbackOwned = false;
+        auto references = std::make_shared<std::vector<ndn_service_framework::LargeDataPublishResult>>();
+        references->reserve(publishedResults.size());
+        for (const auto& published : publishedResults) {
+          auto reference = published;
+          reference.servingLease.reset();
+          reference.rollbackDataNames.clear();
+          reference.rollbackKeyId.clear();
+          reference.rollbackServiceName.clear();
+          references->push_back(std::move(reference));
+        }
+        result.ownerRecoverableObjects = std::move(references);
+      }
       return result;
     }
     catch (...) {

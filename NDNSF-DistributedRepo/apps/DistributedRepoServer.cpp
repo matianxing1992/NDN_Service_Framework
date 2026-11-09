@@ -12,8 +12,12 @@
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
+#include <ndn-cxx/util/scope.hpp>
+
+#include <boost/asio/signal_set.hpp>
 
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -117,6 +121,39 @@ main(int argc, char* argv[])
       authorityCert,
       config.trustSchemaPath.string());
 
+    // Fence owned INSERT and validation before Provider teardown on every exit path.
+    struct OwnedInsertShutdownFence
+    {
+      ndnsf_distributed_repo::RepoNode& repo;
+      ndn_service_framework::ServiceProvider& provider;
+
+      void
+      close() noexcept
+      {
+        repo.stopOriginalPacketOperations();
+        provider.stopProducerPacketValidation();
+      }
+
+      ~OwnedInsertShutdownFence() noexcept
+      {
+        close();
+      }
+    } shutdownFence{*repo, provider};
+    bool stopping = false;
+    const auto signalActive = std::make_shared<bool>(true);
+    boost::asio::signal_set signals(face.getIoContext(), SIGINT, SIGTERM);
+    signals.async_wait([&, signalActive] (const boost::system::error_code& error, int) {
+      if (!error && *signalActive) {
+        stopping = true;
+        shutdownFence.close();
+        face.shutdown();
+        // Repo owns this context; SVS/Scheduler work otherwise keeps processEvents alive.
+        face.getIoContext().stop();
+      }
+    });
+    // A queued signal must not access owners while their destructors drain callbacks.
+    const auto disableSignal = ndn::make_scope_exit([signalActive] { *signalActive = false; });
+
     repo->registerServices(provider, publisherUser,
                            config.ackCollectionTimeMs,
                            config.requestTimeoutMs);
@@ -140,14 +177,17 @@ main(int argc, char* argv[])
             ndnsf_distributed_repo::makeRepoServiceName(config.servicePrefix, "STATUS"));
       };
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-      while (!ready() && std::chrono::steady_clock::now() < deadline)
+      while (!stopping && !ready() && std::chrono::steady_clock::now() < deadline)
         face.processEvents(ndn::time::milliseconds(20));
+      if (stopping)
+        return 0;
       if (!ready())
         throw std::runtime_error("Repo permission/decryption readiness deadline exceeded");
       std::cout << "NDNSF_REPO_READY identity="
                 << config.providerIdentity.toUri(ndn::name::UriFormat::CANONICAL) << std::endl;
     }
-    face.processEvents();
+    if (!stopping)
+      face.processEvents();
     return 0;
   }
   catch (const std::exception& error) {

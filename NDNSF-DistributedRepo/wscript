@@ -57,6 +57,13 @@ def build(bld):
                 use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
                 rpath=[bld.env.LIBDIR],
                 install_path='${BINDIR}')
+    bld.program(name='ndnsf-repo-owner-delete',
+                target='ndnsf-repo-owner-delete',
+                source=['apps/repo-owner-delete.cpp'],
+                rpath=[bld.env.LIBDIR],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                install_path='${BINDIR}')
     bld.program(name='DistributedRepoServer',
                 target='DistributedRepoServer',
                 source=['apps/DistributedRepoServer.cpp'],

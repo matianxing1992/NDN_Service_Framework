@@ -4,6 +4,7 @@
 #include "ndnsf-distributed-repo/ArtifactTypes.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -13,7 +14,9 @@
 
 namespace ndnsf_distributed_repo {
 
-inline constexpr uint64_t REPO_USER_STORAGE_LIMIT_BYTES = 1000000000ULL;
+inline constexpr uint64_t REPO_USER_STORAGE_LIMIT_BYTES = 100000000000ULL;
+/** Per-object admission/read bound; independent of the Owner's total quota. */
+inline constexpr uint64_t REPO_USER_STORAGE_OBJECT_MAX_BYTES = 1000000000ULL;
 
 struct RepoUserStorageObject
 {
@@ -562,6 +565,8 @@ struct RepoByteRange
   uint64_t lengthBytes = 0;
 };
 
+using RepoRangeReadFunction = std::function<std::vector<uint8_t>(RepoByteRange)>;
+
 RepoDeploymentMode
 parseRepoDeploymentMode(const std::string& value);
 
@@ -680,6 +685,12 @@ public:
   virtual bool supportsManifestLookup() const noexcept;
   /** True only when startup preserves unconfirmed Owner bytes for fenced recovery. */
   virtual bool supportsUserStorageRecovery() const noexcept;
+
+protected:
+  friend class RepoCore;
+  /** RepoCore retains this backend and serializes readers with its writers. */
+  virtual RepoRangeReadFunction
+  bindCurrentRangeReader(std::shared_ptr<const RepoObjectManifest> expected) const;
 };
 
 std::shared_ptr<RepoStoreBackend>

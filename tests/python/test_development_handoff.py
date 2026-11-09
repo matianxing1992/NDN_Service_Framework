@@ -316,6 +316,48 @@ def test_runtime_handoff_needs_only_ndnsf_and_selected_base(inputs, tmp_path):
         handoff.verify(relocated)
 
 
+def test_runtime_handoff_reuses_sealed_source_without_git(inputs, tmp_path, monkeypatch):
+    workspace, base, sdk, native = runtime_inputs(inputs, tmp_path)
+    original = tmp_path / 'original-runtime'
+    handoff.prepare_runtime(workspace, base, sdk, native, original)
+    source_seal = original / 'source/source-seal.json'
+    shutil.rmtree(workspace / '.git')
+
+    def reject_git(*args):
+        raise AssertionError('prepared source must not require Git')
+
+    monkeypatch.setattr(handoff, 'git', reject_git)
+    output = tmp_path / 'prepared-runtime'
+    result = handoff.prepare_runtime(workspace, base, sdk, native, output, source_seal)
+    assert result['sourceSealDigest'] == handoff.verify(original)['sourceSealDigest']
+    assert (output / 'source/workspace.tar').read_bytes() == (
+        original / 'source/workspace.tar').read_bytes()
+    relocated = tmp_path / 'prepared-relocated'
+    shutil.move(str(output), relocated)
+    handoff.render(relocated, base, tmp_path / 'prepared.def')
+    assert handoff.verify(relocated)['status'] == 'SOURCE_READY'
+
+
+@pytest.mark.parametrize('change', ['workspace', 'archive', 'symlink'])
+def test_runtime_handoff_rejects_changed_prepared_source(inputs, tmp_path, change):
+    workspace, base, sdk, native = runtime_inputs(inputs, tmp_path)
+    original = tmp_path / 'original-runtime'
+    handoff.prepare_runtime(workspace, base, sdk, native, original)
+    source_seal = original / 'source/source-seal.json'
+    if change == 'workspace':
+        (workspace / 'waf').write_text('changed source')
+    elif change == 'archive':
+        (original / 'source/workspace.tar').write_bytes(b'changed archive')
+    else:
+        alias = tmp_path / 'source-alias.json'
+        alias.symlink_to(source_seal)
+        source_seal = alias
+    output = tmp_path / 'rejected-prepared'
+    with pytest.raises((ValueError, RuntimeError), match='SOURCE_CHANGED|ARCHIVE|SYMLINK'):
+        handoff.prepare_runtime(workspace, base, sdk, native, output, source_seal)
+    assert not output.exists()
+
+
 @pytest.mark.parametrize('change', ['missing-native', 'wrong-binding', 'wrong-schema', 'symlink',
                                   'missing-tokenizer', 'changed-bridge-source'])
 def test_runtime_handoff_rejects_bad_inputs_before_output(inputs, tmp_path, change):

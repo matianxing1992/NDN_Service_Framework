@@ -1241,6 +1241,9 @@ ProviderGroupCoordinator::sealOperation(
   std::uint64_t createdAtMs,
   const std::vector<std::string>& exactDataNames)
 {
+  const auto statistics = m_options.workStatistics.lock();
+  NativeWorkScope operationWork(statistics, "tensor-operation-seal", NativeWorkKind::LOCAL);
+  NativeWorkScope contextWork(statistics, "tensor-seal-context", NativeWorkKind::LOCAL);
   if (exactDataNames.empty() || exactDataNames.size() != plaintextSegments.size()) {
     throw std::invalid_argument(
       "exact NDNSF_DATA_V1 name count does not match segment count");
@@ -1255,14 +1258,20 @@ ProviderGroupCoordinator::sealOperation(
       throw std::invalid_argument("member tensor Data names repeat a segment");
   }
   const auto snapshot = captureRuntimeKey();
+  contextWork.finish();
+  NativeWorkScope manifestWork(statistics, "tensor-collective-manifest", NativeWorkKind::LOCAL);
   auto manifest = makeManifest(operation, producerRank, sourceLayoutDigest,
                                targetLayoutDigest, tensorDigest,
                                plaintextSegments, createdAtMs);
+  manifestWork.finish();
+  NativeWorkScope keyWork(statistics, "tensor-operation-key-derive", NativeWorkKind::LOCAL);
   const auto operationKey = deriveOperationKey(snapshot.key, m_capability, manifest);
+  keyWork.finish();
   SealedCollectiveOperationV1 result;
   result.manifest = manifest;
   result.segments.reserve(plaintextSegments.size());
   for (std::size_t index = 0; index < plaintextSegments.size(); ++index) {
+    NativeWorkScope descriptorWork(statistics, "tensor-segment-descriptor", NativeWorkKind::LOCAL);
     CollectiveSegmentDescriptor descriptor;
     descriptor.requestId = manifest.requestId;
     descriptor.attemptId = manifest.attemptId;
@@ -1280,8 +1289,12 @@ ProviderGroupCoordinator::sealOperation(
     descriptor.segmentSize = manifest.segmentSize;
     descriptor.noProgressMs = manifest.noProgressMs;
     descriptor.hardDeadlineMs = manifest.hardDeadlineMs;
+    descriptorWork.finish();
     const auto& name = names[index];
+    NativeWorkScope nonceWork(statistics, "tensor-nonce-derive", NativeWorkKind::LOCAL);
     const auto nonce = deriveNonce(m_capability, manifest, name, index);
+    nonceWork.finish();
+    NativeWorkScope sealWork(statistics, "tensor-segment-aead-seal", NativeWorkKind::LOCAL);
     result.segments.push_back(NdnsfCollectiveControl::sealWithNonce(
       descriptor, name, operationKey, nonce, plaintextSegments[index]));
   }
@@ -1294,6 +1307,8 @@ ProviderGroupBytes
 ProviderGroupCoordinator::signTensorObjectManifest(
   const ProviderGroupBytes& signingBytes) const
 {
+  NativeWorkScope signWork(m_options.workStatistics.lock(), "tensor-manifest-authenticate",
+                           NativeWorkKind::LOCAL);
   if (!m_hasCapability || terminal() || signingBytes.empty()) {
     throw std::logic_error(
       "cannot sign a tensor manifest for an inactive group");
@@ -1312,6 +1327,8 @@ ProviderGroupCoordinator::verifyTensorObjectManifest(
   const ProviderGroupBytes& signingBytes,
   const ProviderGroupBytes& signature) const
 {
+  NativeWorkScope verifyWork(m_options.workStatistics.lock(), "tensor-manifest-auth-verify",
+                             NativeWorkKind::LOCAL);
   if (!m_hasCapability || terminal() || signingBytes.empty() ||
       signature.empty()) {
     return false;
@@ -1633,6 +1650,9 @@ ProviderGroupCoordinator::openSegment(
   const NdnsfDataV1Segment& segment,
   const std::string& expectedDataName)
 {
+  const auto statistics = m_options.workStatistics.lock();
+  NativeWorkScope openWork(statistics, "tensor-segment-open", NativeWorkKind::LOCAL);
+  NativeWorkScope bindingWork(statistics, "tensor-segment-binding", NativeWorkKind::LOCAL);
   const auto expectedName = explicitMemberDataName(
     m_capability, manifest.producerRank, expectedDataName);
   const auto snapshot = captureRuntimeKey();
@@ -1654,8 +1674,13 @@ ProviderGroupCoordinator::openSegment(
   if (segment.nonce != expectedNonce) {
     throw std::runtime_error("NDNSF_DATA_V1 nonce derivation mismatch");
   }
+  bindingWork.finish();
+  NativeWorkScope keyWork(statistics, "tensor-operation-key-derive", NativeWorkKind::LOCAL);
   const auto operationKey = deriveOperationKey(snapshot.key, m_capability, manifest);
+  keyWork.finish();
+  NativeWorkScope decryptWork(statistics, "tensor-segment-aead-open", NativeWorkKind::LOCAL);
   auto plaintext = NdnsfCollectiveControl::open(segment, operationKey, expectedName);
+  decryptWork.finish();
   if (!manifest.externalSegmentDigests &&
       hex(plaintext) != manifest.orderedSegmentDigests[segment.descriptor.segmentNo]) {
     throw std::runtime_error("NDNSF_DATA_V1 plaintext digest mismatch");

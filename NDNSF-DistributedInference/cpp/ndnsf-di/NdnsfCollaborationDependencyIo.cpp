@@ -31,8 +31,22 @@ namespace {
 using CollaborationTransferMetrics =
   ndn_service_framework::CollaborationTransferMetrics;
 
-// Keep published Interest bursts bounded independently of the object byte budget.
-constexpr std::uint64_t MAX_OUTSTANDING_PUBLISHED_SEGMENTS = 8;
+// Bound Interest bursts independently of the object byte budget, including early reads.
+
+std::uint64_t
+inferenceEpochForEdge(const DependencyEdge& edge)
+{
+  return edge.namingOperationStride == 0 ? 0 : edge.round / edge.namingOperationStride;
+}
+
+std::uint64_t
+publicationInferenceEpochForEdge(const DependencyEdge& edge)
+{
+  const auto targetEpoch = inferenceEpochForEdge(edge);
+  // Feedback names the next consumer epoch; publication belongs to its producer.
+  return edge.operationKind == "TOKEN_FEEDBACK" && targetEpoch > 0
+    ? targetEpoch - 1 : targetEpoch;
+}
 
 bool
 isCanonicalYoloMergeInput(const DependencyEdge& edge)
@@ -435,7 +449,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
   };
   auto fetch = [this, sessionId, edge, cancelled, reportFirstRead] {
    NativeWorkScope workerWork(m_workStatistics, "dependency-prefetch-worker",
-                              NativeWorkKind::LOCAL);
+                              NativeWorkKind::LOCAL, inferenceEpochForEdge(edge));
    try {
     if (cancelled->load(std::memory_order_acquire)) {
       throw std::runtime_error("dependency prefetch was cancelled");
@@ -514,9 +528,10 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
             remaining, fetchBudget));
           CollaborationTransferMetrics segmentMetrics;
           segmentMetrics.localWorkObserver =
-            detail::makeCollaborationWorkObserver(m_workStatistics);
+            detail::makeCollaborationWorkObserver(m_workStatistics, inferenceEpochForEdge(edge));
           NativeWorkScope fetchWait(m_workStatistics,
-                                    "dependency-exact-data-fetch-wait",
+                                    initialProducerReadiness ? "tensor-manifest-readiness-wait" :
+                                      "dependency-exact-data-fetch-wait",
                                     NativeWorkKind::WAIT);
           auto content = m_ctx.fetchSignedExactData(
             edge.transportScope.empty() ? edge.scope : edge.transportScope,
@@ -592,7 +607,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
                                              bool producerReadiness = false) {
             NativeWorkScope segmentWorkerWork(
               m_workStatistics, "dependency-segment-fetch-worker",
-              NativeWorkKind::LOCAL);
+              NativeWorkKind::LOCAL, inferenceEpochForEdge(edge));
             const auto remaining = remainingDeadlineMs(hardDeadline);
             if (remaining == 0 || cancelled->load(std::memory_order_acquire) ||
                 batchCancelled->load(std::memory_order_acquire) || coordinator->terminal() ||
@@ -617,7 +632,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
             try {
               const auto fetchTiming = detail::nativePhaseStarted();
               result.metrics.localWorkObserver =
-                detail::makeCollaborationWorkObserver(m_workStatistics);
+                detail::makeCollaborationWorkObserver(m_workStatistics, inferenceEpochForEdge(edge));
               NativeWorkScope fetchWait(m_workStatistics,
                                         "dependency-segment-fetch-wait",
                                         NativeWorkKind::WAIT);
@@ -659,12 +674,44 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
             }
             return result;
           };
-        const auto prefetchCount = edge.prefetchBundleBytes != 0 && edge.prefetchSegmentBytes != 0
-          ? 1 + (edge.prefetchBundleBytes - 1) / edge.prefetchSegmentBytes : 0;
+        // Prefill and decode can have different shapes. Only a fully validated
+        // immediately preceding decode may supply a local transport hint.
+        const bool decodeSizingEligible = edge.namingOperationStride != 0 &&
+          edge.round / edge.namingOperationStride != 0 &&
+          operation.producerRanks.size() == 1 && operation.consumerRanks.size() == 1 &&
+          (operation.kind == "PIPELINE" || operation.kind == "ACTIVATION" ||
+           operation.kind == "PIPELINE_TRANSFER");
+        const auto sizingKey = decodeSizingEligible ? nativeCanonicalJson(NativeJson{
+          {"capability", capability.capabilityDigest}, {"session", sessionId},
+          {"scope", edge.scope}, {"transportScope", edge.transportScope},
+          {"producer", producerMember->provider}, {"producerRole", edge.producerRole},
+          {"consumerRole", edge.consumerRole}, {"consumers", edge.consumerRoles},
+          {"tensors", edge.tensors}, {"bundleTensors", edge.bundleTensorNames},
+          {"tensorDigest", edge.tensorDigest}, {"layout", edge.layoutDigest},
+          {"sourceLayout", edge.collectiveSourceLayoutDigest},
+          {"targetLayout", edge.collectiveTargetLayoutDigest},
+          {"microbatch", edge.microbatch}, {"operation", operation.kind},
+          {"index", edge.round % edge.namingOperationStride},
+          {"stride", edge.namingOperationStride}}) : std::string{};
+        auto prefetchBytes = edge.prefetchBundleBytes;
+        auto prefetchSegmentBytes = edge.prefetchSegmentBytes;
+        bool observedSizingUsed = false;
+        if (!sizingKey.empty() && prefetchBytes == 0 && prefetchSegmentBytes == 0) {
+          std::lock_guard<std::mutex> lock(m_decodedSizingMutex);
+          if (m_decodedSizing && m_decodedSizing->key == sizingKey &&
+              edge.round > m_decodedSizing->round &&
+              edge.round - m_decodedSizing->round == edge.namingOperationStride) {
+            prefetchBytes = m_decodedSizing->bytes;
+            prefetchSegmentBytes = m_decodedSizing->segmentBytes;
+            observedSizingUsed = true;
+          }
+        }
+        const auto prefetchCount = prefetchBytes != 0 && prefetchSegmentBytes != 0
+          ? 1 + (prefetchBytes - 1) / prefetchSegmentBytes : 0;
         const bool speculativeWholeStarted = prefetchCount > (edge.inlineFirstSegment ? 1U : 0U) &&
-          edge.prefetchSegmentBytes <= ndn::MAX_NDN_PACKET_SIZE &&
+          prefetchSegmentBytes <= ndn::MAX_NDN_PACKET_SIZE &&
           prefetchCount <= edge.maxSegments && prefetchCount <= operation.maxSegments &&
-          edge.prefetchBundleBytes <= operation.maxBytes &&
+          prefetchBytes <= operation.maxBytes &&
           capability.maxInflightBytes / ndn::MAX_NDN_PACKET_SIZE > prefetchCount;
         bool speculativeWholeUsed = false;
         bool speculativeWholeFallback = false;
@@ -698,7 +745,8 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
                   std::memory_order_release);
               }
               return true;
-            }));
+            }, names.size(),
+            detail::makeCollaborationWorkObserver(m_workStatistics, inferenceEpochForEdge(edge))));
         }
         const bool speculativeFirstStarted = !edge.inlineFirstSegment && !speculativeWholeStarted && capability.maxInflightBytes >=
           2 * static_cast<std::uint64_t>(ndn::MAX_NDN_PACKET_SIZE);
@@ -717,7 +765,9 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
               return cancelled->load(std::memory_order_acquire) ||
                 batchCancelled->load(std::memory_order_acquire) || coordinator->terminal() ||
                 remainingDeadlineMs(hardDeadline) == 0 || speculativeExpired();
-            }, {}, ndn_service_framework::ServiceProvider::ExactDataFetchPhase::AwaitPublication));
+            }, {}, ndn_service_framework::ServiceProvider::ExactDataFetchPhase::AwaitPublication,
+            {}, 1,
+            detail::makeCollaborationWorkObserver(m_workStatistics, inferenceEpochForEdge(edge))));
         }
 
         const auto expectedConsumers = edge.consumerRoles.empty()
@@ -740,6 +790,8 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           manifestFetchedAt + std::chrono::milliseconds(edge.noProgressDeadlineMs))
             .time_since_epoch().count(), std::memory_order_release);
         const auto manifestDecodeTiming = detail::nativePhaseStarted();
+        NativeWorkScope decodeManifestWork(m_workStatistics, "tensor-manifest-decode-validate",
+                                           NativeWorkKind::LOCAL);
         auto manifest = decodeTensorObjectManifest(manifestWire);
         std::size_t parsedProducerRank = 0;
         try {
@@ -821,6 +873,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
             "TensorObjectManifestV1 does not match mustFetch authority");
         }
 
+        decodeManifestWork.finish();
         detail::logNativeWorkPhase(edge.requestId, "tensor_manifest_decode_validate",
                                   manifestDecodeTiming, edge.consumerRole);
 
@@ -871,7 +924,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
                 batchWires.insert(batchWires.begin(), ndn::Buffer(first.begin(), first.end()));
               }
               speculativeWholeUsed = true;
-              maximumBatchSize = batchWires.size();
+              maximumBatchSize = expectedContents;
               batchCalls = 1;
             }
           }
@@ -927,11 +980,11 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
                 std::chrono::milliseconds(noProgressMs)).time_since_epoch().count(),
                 std::memory_order_release);
               return true;
-            }, MAX_OUTSTANDING_PUBLISHED_SEGMENTS));
+            }, names.size(),
+            detail::makeCollaborationWorkObserver(m_workStatistics, inferenceEpochForEdge(edge))));
           batchWires.clear();
           batchOffset = 0;
-          maximumBatchSize = std::max(maximumBatchSize,
-            std::min<std::size_t>(names.size(), MAX_OUTSTANDING_PUBLISHED_SEGMENTS));
+          maximumBatchSize = std::max(maximumBatchSize, names.size());
           ++batchCalls;
         };
         // Queue the rolling window before waiting for segment0.
@@ -1067,7 +1120,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           record << "NDNSF_DI_DEPENDENCY_FETCH_PHASE"
                  << " session=" << sessionId << " scope=" << edge.scope
                  << " phase=exact_segments segment_count=" << manifest.segmentCount
-                 << " max_concurrent=" << maximumBatchSize
+                 << " window_limit=" << maximumBatchSize
                  << " batch_calls=" << batchCalls
                  << " speculative_first_started=" << speculativeFirstStarted
                  << " speculative_first_used=" << speculativeFirstUsed
@@ -1076,8 +1129,9 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
                  << " speculative_prefetch_started=" << speculativeWholeStarted
                  << " speculative_prefetch_used=" << speculativeWholeUsed
                  << " speculative_prefetch_fallback=" << speculativeWholeFallback
-                 << " prefetch_bundle_bytes=" << edge.prefetchBundleBytes
-                 << " prefetch_segment_bytes=" << edge.prefetchSegmentBytes
+                 << " speculative_prefetch_observed=" << observedSizingUsed
+                 << " prefetch_bundle_bytes=" << prefetchBytes
+                 << " prefetch_segment_bytes=" << prefetchSegmentBytes
                  << " manifest_total_bytes=" << manifest.totalBytes
                  << " inline_first_received=" << inlineFirstReceived
                  << " manifest_segment_bytes=" << manifest.segmentSize
@@ -1088,6 +1142,8 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           logRuntimeEvidence(record.str());
         }
         const auto manifestCommitmentTiming = detail::nativePhaseStarted();
+        NativeWorkScope commitmentWork(m_workStatistics, "tensor-ciphertext-commitment",
+                                       NativeWorkKind::LOCAL);
         if (manifest.compactContextRequired) {
           std::vector<std::uint8_t> digestCommitmentInput;
           for (const auto& digest : ciphertextDigests) {
@@ -1109,10 +1165,13 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
               "TensorObjectManifestV1 producer signature mismatch");
           }
         }
+        commitmentWork.finish();
         detail::logNativeWorkPhase(edge.requestId, "tensor_manifest_commitment_validate",
                                   manifestCommitmentTiming, edge.consumerRole);
 
         const auto segmentsDecodeTiming = detail::nativePhaseStarted();
+        NativeWorkScope decodeSegmentsWork(m_workStatistics, "tensor-segments-decode-open",
+                                           NativeWorkKind::LOCAL);
         std::map<std::uint64_t, std::vector<std::uint8_t>> plaintextBySegment;
         for (std::size_t segmentIndex = 0;
              segmentIndex < fetchedSegments.size(); ++segmentIndex) {
@@ -1212,9 +1271,12 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           throw std::runtime_error(
             "NDNSF_DATA_V1 exact tensor object is incomplete");
         }
+        decodeSegmentsWork.finish();
         detail::logNativeWorkPhase(edge.requestId, "tensor_segments_decode_decrypt",
                                   segmentsDecodeTiming, edge.consumerRole);
         const auto reconstructTiming = detail::nativePhaseStarted();
+        NativeWorkScope reconstructWork(m_workStatistics, "tensor-reconstruct-validate",
+                                        NativeWorkKind::LOCAL);
         TensorBundle bundle;
         bundle.name = edge.tensors.size() == 1 ?
           edge.tensors.front() : edge.plannedDataName;
@@ -1255,12 +1317,20 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
         bundle.expectedBytes = bundle.payload.size();
         attachTransferObservation(edge, bundle, "receive", transportMetrics);
         validateCanonicalYoloMergeInput(edge, bundle, m_workStatistics);
+        reconstructWork.finish();
         detail::logNativeWorkPhase(edge.requestId, "tensor_reconstruct_validate",
                                   reconstructTiming, edge.consumerRole);
         logDependencyObject(sessionId, edge, "fetch-exact-ndn",
                             bundle.payload.size(), "ok", manifest.totalBytes);
         logDependencyStageMarker("complete", sessionId, edge,
                                  m_ctx.localProvider().toUri());
+        if (!sizingKey.empty() && !m_groupCoordinator->terminal()) {
+          std::lock_guard<std::mutex> lock(m_decodedSizingMutex);
+          if (!cancelled->load(std::memory_order_acquire)) {
+            m_decodedSizing = DecodedTensorSizing{
+              sizingKey, edge.round, manifest.totalBytes, manifest.segmentSize};
+          }
+        }
         return bundle;
       }
       throw std::invalid_argument("C04 tensor endpoint is required for network dependency fetch");
@@ -1353,6 +1423,10 @@ void
 NdnsfCollaborationDependencyIo::cancelPendingPrefetches() noexcept
 {
   m_pendingPrefetchCancelled->store(true, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(m_decodedSizingMutex);
+    m_decodedSizing.reset();
+  }
   // Existing exact-fetch cancellation polling owns the Face handles.
 }
 
@@ -1369,6 +1443,36 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
                                               const DependencyEdge& edge,
                                               const TensorBundle& bundle)
 {
+  NativeWorkScope publicationWork(m_workStatistics, "tensor-output-publication",
+                                 NativeWorkKind::LOCAL, publicationInferenceEpochForEdge(edge));
+  if (m_workStatistics && m_workStatistics->epochProfilingEnabled()) {
+    NativeWorkScope layoutWork(m_workStatistics, "profile-tensor-layout", NativeWorkKind::LOCAL);
+    try {
+      if (isEncodedTensorBundle(bundle.payload)) {
+        const auto views = decodeTensorBundleViews(bundle.payload);
+        auto members = NativeJson::array();
+        for (std::size_t i = 0; i < std::min<std::size_t>(views.size(), 32); ++i) {
+          const auto& tensor = views[i];
+          members.push_back({{"name", tensor.name},
+            {"type", static_cast<std::uint32_t>(tensor.elementType)},
+            {"shape", tensor.shape}, {"bytes", tensor.payload.size()},
+            {"lineageMetadata", tensor.name == generationEpochLineageTensorName()}});
+        }
+        if (views.size() > 32)
+          m_workStatistics->addCount("profile.tensorLayoutTruncated", 1);
+        logRuntimeEvidence("NDNSF_DI_TENSOR_LAYOUT " + nativeCanonicalJson(NativeJson{
+          {"requestId", edge.requestId}, {"role", edge.producerRole},
+          {"inferenceEpoch", inferenceEpochForEdge(edge)},
+          {"producerInferenceEpoch", publicationInferenceEpochForEdge(edge)},
+          {"operation", edge.operationKind}, {"dataName", edge.plannedDataName},
+          {"bundleBytes", bundle.payload.size()}, {"tensorCount", views.size()},
+          {"members", std::move(members)}}));
+      }
+    }
+    catch (...) {
+      m_workStatistics->addCount("profile.tensorLayoutUnavailable", 1);
+    }
+  }
   if (edge.useNdnsfDataV1 && !edge.declaredByV3)
     throw std::invalid_argument("C04 tensor endpoint is required for network publication");
   if (m_protectedRuntime) {
@@ -1402,9 +1506,12 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         bundle.payload.size() > capability.maxInflightBytes) {
       throw std::length_error("tensor publication exceeds signed raw byte budget");
     }
+    NativeWorkScope packWork(m_workStatistics, "tensor-transport-pack", NativeWorkKind::LOCAL);
     const auto packed = tryPackTensorBundleForTransport(bundle.payload);
+    packWork.finish();
     const auto& packedPayload = packed ? *packed : bundle.payload;
     const auto unpackedBytes = packed ? bundle.payload.size() : 0;
+    NativeWorkScope chunksWork(m_workStatistics, "tensor-segment-build", NativeWorkKind::LOCAL);
     const auto chunkSize = std::max<std::size_t>(1, m_maxSegmentSize);
     std::vector<std::vector<std::uint8_t>> chunks;
     for (std::size_t offset = 0; offset < packedPayload.size(); offset += chunkSize) {
@@ -1415,6 +1522,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
     if (chunks.empty()) {
       throw std::invalid_argument("NDNSF_DATA_V1 cannot publish an empty tensor bundle");
     }
+    chunksWork.finish();
     if (edge.declaredByV3) {
       if (edge.manifestDataName.empty() || edge.maxSegments == 0 ||
           chunks.size() > edge.maxSegments || edge.endpointDigest.empty() ||
@@ -1432,6 +1540,8 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       constexpr std::size_t MAX_ORIGINAL_OBJECTS = 8192;
       if (bundle.payload.size() > MAX_ORIGINAL_BYTES)
         throw std::length_error("tensor publication exceeds original cache capacity");
+      NativeWorkScope fingerprintWork(m_workStatistics, "tensor-publication-fingerprint",
+                                      NativeWorkKind::LOCAL);
       const auto fingerprint = nativeCanonicalJson(NativeJson{
         {"endpoint", edge.endpointDigest}, {"object", edge.executionObjectDigest},
         {"capability", capability.capabilityDigest}, {"epoch_key", capability.epochKeyId},
@@ -1456,7 +1566,11 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         {"bundle_name", bundle.name}, {"payload_digest", sha256TensorBytes(bundle.payload)},
         {"unpacked_bytes", unpackedBytes},
         {"expected_bytes", bundle.expectedBytes}, {"expected_segments", bundle.expectedSegments}});
-      std::unique_lock<std::mutex> originalLock(m_tensorPublicationMutex);
+      fingerprintWork.finish();
+      std::unique_lock<std::mutex> originalLock(m_tensorPublicationMutex, std::defer_lock);
+      NativeWorkScope cacheLockWork(m_workStatistics, "tensor-publication-lock", NativeWorkKind::WAIT);
+      originalLock.lock();
+      cacheLockWork.finish();
       const ndn::Name objectName(edge.plannedDataName);
       auto cached = m_tensorPublications.find(objectName);
       if (cached != m_tensorPublications.end()) {
@@ -1508,12 +1622,14 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         createdAtMs,
         exactNames);
 
+      NativeWorkScope encodeWork(m_workStatistics, "tensor-segment-encode", NativeWorkKind::LOCAL);
       std::vector<std::vector<std::uint8_t>> encodedSegments;
       encodedSegments.reserve(sealed.segments.size());
       for (const auto& segment : sealed.segments) {
         encodedSegments.push_back(ProviderGroupCoordinator::encodeSegmentCompact(
           sealed.manifest, segment));
       }
+      encodeWork.finish();
 
       std::uint64_t numericProducerRank = 0;
       try {
@@ -1522,6 +1638,8 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       catch (const std::exception&) {
         throw std::runtime_error("V3 producer rank is not numeric");
       }
+      NativeWorkScope manifestWork(m_workStatistics, "tensor-object-manifest-build",
+                                   NativeWorkKind::LOCAL);
       TensorObjectManifestV1 manifest;
       manifest.capabilityDigest = canonicalSha256(capability.capabilityDigest);
       manifest.epochKeyId = capability.epochKeyId;
@@ -1563,6 +1681,11 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         m_groupCoordinator->signTensorObjectManifest(manifest.signingBytes());
       manifest.objectManifestDigest = manifest.digest();
       const auto manifestWire = encodeTensorObjectManifestContextCompact(manifest);
+      manifestWork.finish();
+      if (m_workStatistics) {
+        m_workStatistics->addCount("tensor.objectManifestBytes", manifestWire.size());
+        m_workStatistics->addCount("tensor.objectManifestCalls", 1);
+      }
 
       std::vector<std::pair<ndn::Name, ndn::Buffer>> publications;
       publications.reserve(encodedSegments.size() + 1);
@@ -1576,6 +1699,8 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
                       encodedSegments[index].end()));
       }
       CollaborationTransferMetrics transportMetrics;
+      transportMetrics.localWorkObserver = detail::makeCollaborationWorkObserver(
+        m_workStatistics, publicationInferenceEpochForEdge(edge));
       bool published = false;
       if (edge.inlineFirstSegment) {
         try {
@@ -1609,6 +1734,27 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       }
       catch (...) { accountOriginals(); throw; }
       accountOriginals();
+      if (m_workStatistics && m_workStatistics->epochProfilingEnabled()) {
+        NativeWorkScope profileWork(m_workStatistics, "profile-tensor-envelope",
+                                    NativeWorkKind::LOCAL);
+        try {
+          std::uint64_t cryptoBytes = 0;
+          for (const auto& segment : encodedSegments)
+            cryptoBytes += segment.size();
+          logRuntimeEvidence("NDNSF_DI_TENSOR_ENVELOPE " + nativeCanonicalJson(NativeJson{
+            {"requestId", edge.requestId}, {"role", edge.producerRole},
+            {"inferenceEpoch", inferenceEpochForEdge(edge)},
+            {"producerInferenceEpoch", publicationInferenceEpochForEdge(edge)},
+            {"operation", edge.operationKind}, {"dataName", edge.plannedDataName},
+            {"bundleBytes", bundle.payload.size()}, {"cryptoSegmentBytes", cryptoBytes},
+            {"manifestBytes", manifestWire.size()}, {"segments", encodedSegments.size()},
+            {"publishedDataPackets", cachedPublication.originals.size()},
+            {"inlineFirstSegment", cachedPublication.originals.size() == encodedSegments.size()}}));
+        }
+        catch (...) {
+          m_workStatistics->addCount("profile.tensorEnvelopeUnavailable", 1);
+        }
+      }
       attachTransferObservation(edge, bundle, "send", transportMetrics);
       if (!m_groupCoordinator->recordProgress(nowEpochMs())) {
         throw std::runtime_error(

@@ -393,7 +393,7 @@ std::vector<uint8_t>
 encodeUserStorageInsertRequest(const RepoUserStorageInsertRequest& request)
 {
   static constexpr uint8_t MAGIC[] = {'R', 'P', 'O', 'I', '1', '\n'};
-  if (request.schemaVersion != 1 || request.operationId.empty() ||
+  if ((request.schemaVersion != 1 && request.schemaVersion != 2) || request.operationId.empty() ||
       request.operationId.size() > 256 || request.operationId.find('\0') != std::string::npos ||
       request.generation == 0) {
     throw std::invalid_argument("repo-user-storage-insert-request-invalid");
@@ -408,6 +408,7 @@ encodeUserStorageInsertRequest(const RepoUserStorageInsertRequest& request)
     throw std::invalid_argument("repo-user-storage-insert-request-too-large");
 
   std::vector<uint8_t> encoded(std::begin(MAGIC), std::end(MAGIC));
+  encoded[4] = static_cast<uint8_t>('0' + request.schemaVersion);
   const auto appendString = [&encoded] (const std::string& value) {
     appendFramedLine(encoded, value.size());
     encoded.insert(encoded.end(), value.begin(), value.end());
@@ -570,7 +571,8 @@ decodeUserStorageInsertRequest(const std::vector<uint8_t>& request)
 {
   static constexpr uint8_t MAGIC[] = {'R', 'P', 'O', 'I', '1', '\n'};
   if (request.size() < sizeof(MAGIC) || request.size() > MAX_RANGE_FRAME_BYTES ||
-      !std::equal(std::begin(MAGIC), std::end(MAGIC), request.begin())) {
+      !std::equal(std::begin(MAGIC), std::begin(MAGIC) + 4, request.begin()) ||
+      (request[4] != '1' && request[4] != '2') || request[5] != '\n') {
     throw std::invalid_argument("repo-user-storage-insert-request-invalid");
   }
   size_t cursor = sizeof(MAGIC);
@@ -584,6 +586,7 @@ decodeUserStorageInsertRequest(const std::vector<uint8_t>& request)
   };
 
   RepoUserStorageInsertRequest decoded;
+  decoded.schemaVersion = request[4] - '0';
   decoded.operationId = takeString(256, "operation-id");
   decoded.generation = readFramedLine(request, cursor, "generation");
   const auto referenceWire = takeString(MAX_STORE_MANIFEST_BYTES, "reference");

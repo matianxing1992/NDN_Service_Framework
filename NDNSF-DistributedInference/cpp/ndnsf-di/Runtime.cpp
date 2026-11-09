@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
@@ -7,6 +8,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-publication.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-preparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp"
@@ -19,6 +23,7 @@
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/common.hpp"
 #include "ndn-service-framework/controller-certificate.hpp"
+#include "ndnsf-distributed-repo/ArtifactTypes.hpp"
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
@@ -39,6 +44,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <set>
 #include <sstream>
 #include <atomic>
@@ -260,6 +266,7 @@ struct FrozenConfig
   std::filesystem::path path;
   std::string canonicalJson;
   std::string configurationDigest;
+  std::string modelInputMode = "source";
   std::string requesterIdentity;
   std::string coreAuthorityIdentity;
   std::string group;
@@ -384,15 +391,26 @@ FrozenConfig freezeConfig(const std::filesystem::path& path,
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "schema",
                   "unsupported native requester configuration schema");
   }
+  std::string modelInputMode = "source";
+  if (root.contains("model_input")) {
+    const auto& modelInput = requiredObject(root, "model_input");
+    modelInputMode = requiredString(modelInput, "mode");
+    if (modelInputMode != "source" && modelInputMode != "publish-stored" &&
+        modelInputMode != "stored")
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "model-input",
+                    "model_input.mode is unsupported");
+  }
+  const bool publishOnly = modelInputMode == "publish-stored";
   const auto& core = requiredObject(root, "core");
-  const auto& grant = requiredObject(root, "grant");
-  const auto& offerAdmission = requiredObject(root, "offer_admission");
+  const NativeJson emptyObject = NativeJson::object();
+  const auto& grant = publishOnly ? emptyObject : requiredObject(root, "grant");
+  const auto& offerAdmission = publishOnly ? emptyObject : requiredObject(root, "offer_admission");
   const auto& limits = requiredObject(root, "limits");
   const auto& request = requiredObject(root, "request");
   const auto bootstrapMs = positiveUnsigned(limits, "bootstrap_ms");
-  if (bootstrapMs > 3600000)
+  if (bootstrapMs > 86400000)
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "limits",
-                  "bootstrap_ms exceeds one hour");
+                  "bootstrap_ms exceeds 24 hours");
   const auto bootstrapDeadline = std::chrono::steady_clock::now() +
                                  std::chrono::milliseconds(bootstrapMs);
   const auto requireBootstrapBudget = [&] {
@@ -402,7 +420,18 @@ FrozenConfig freezeConfig(const std::filesystem::path& path,
   };
   const auto& catalog = requiredObject(root, "catalog");
   const auto& source = requiredObject(catalog, "source");
-  if (source.contains("file")) {
+  if (modelInputMode == "stored") {
+    if (source.contains("file") || source.contains("initializer_file"))
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "model-input",
+                    "stored model registration must not contain source file locators");
+    (void)requiredString(source, "data_name");
+    for (const auto* digest : {"digest", "model_manifest_digest", "canonical_graph_digest"}) {
+      if (!isDigest(requiredString(source, digest)))
+        throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "catalog",
+                      std::string("stored source identity is not a sha256 digest: ") + digest);
+    }
+  }
+  else if (source.contains("file")) {
     (void)requiredString(source, "file");
   }
   else if (!repositorySourceLoaderConfigured) {
@@ -440,65 +469,72 @@ FrozenConfig freezeConfig(const std::filesystem::path& path,
                   "trust schema file is unavailable");
   }
 
-  const auto authorityIdentity = requiredString(grant, "authority_identity");
-  const auto authorityService = requiredString(grant, "authority_service");
-  const auto protectionEpoch = requiredString(grant, "protection_epoch");
-  if (!absoluteName(authorityIdentity) || !absoluteName(authorityService))
-    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
-                  "grant authority identity and service must be absolute NDN names");
-  const auto requesterKey = requiredString(grant, "requester_private_key_file");
-  const auto authorityPublicKey = requiredString(grant, "authority_public_key_file");
-  for (const auto* field : {"authority_private_key_file", "content_key_file", "content_key_id"}) {
-    if (grant.contains(field))
-      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "trust",
-                    "authority signing or content keys are not accepted by Runtime");
-  }
-  const auto requesterKeyPath = (canonicalPath.parent_path() / requesterKey).lexically_normal();
-  const auto authorityPublicKeyPath = (canonicalPath.parent_path() / authorityPublicKey).lexically_normal();
-  for (const auto& candidate : {requesterKeyPath, authorityPublicKeyPath}) {
-    if (!std::filesystem::is_regular_file(candidate, ec) || ec)
-      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "trust",
-                    "configured requester or authority public key is unavailable");
-  }
-  requireBootstrapBudget();
-  auto requesterPrivate = loadEd25519PrivateKey(requesterKeyPath);
-  auto authorityPublic = loadEd25519PublicKey(authorityPublicKeyPath);
-  requireBootstrapBudget();
   auto trustValidator = loadTrustSchema(trustSchema, group);
   requireBootstrapBudget();
-
-  const auto& offerPolicy = requiredObject(offerAdmission, "policy");
-  const auto& offerKeys = requiredObject(offerAdmission, "public_key_files");
-  if (offerKeys.empty())
-    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "offer-admission",
-                  "offer admission requires at least one public key");
-  const auto candidateDigest = requiredString(offerAdmission, "candidate_digest");
-  if (!isDigest(candidateDigest))
-    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "offer-admission",
-                  "offer admission candidate_digest is not a sha256 digest");
-  std::map<std::string, std::string> offerKeyPemById;
-  for (const auto& entry : offerKeys.items()) {
-    const auto keyId = entry.key();
-    const auto keyFile = requiredString(offerKeys, keyId.c_str());
-    const auto keyPath = (canonicalPath.parent_path() / keyFile).lexically_normal();
-    if (!std::filesystem::is_regular_file(keyPath, ec) || ec)
-      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "offer-admission",
-                    "offer admission public key file is unavailable");
-    (void)loadEd25519PublicKey(keyPath);
-    offerKeyPemById.emplace(keyId, readOperatorFile(keyPath, 65536));
-  }
+  std::string authorityIdentity;
+  std::string authorityService;
+  std::string protectionEpoch;
+  std::shared_ptr<EVP_PKEY> requesterPrivate;
+  std::shared_ptr<EVP_PKEY> authorityPublic;
   std::shared_ptr<const NativeOfferAdmission> verifiedOfferAdmission;
-  try {
+  if (!publishOnly) {
+    authorityIdentity = requiredString(grant, "authority_identity");
+    authorityService = requiredString(grant, "authority_service");
+    protectionEpoch = requiredString(grant, "protection_epoch");
+    if (!absoluteName(authorityIdentity) || !absoluteName(authorityService))
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
+                    "grant authority identity and service must be absolute NDN names");
+    const auto requesterKey = requiredString(grant, "requester_private_key_file");
+    const auto authorityPublicKey = requiredString(grant, "authority_public_key_file");
+    for (const auto* field : {"authority_private_key_file", "content_key_file", "content_key_id"}) {
+      if (grant.contains(field))
+        throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "trust",
+                      "authority signing or content keys are not accepted by Runtime");
+    }
+    const auto requesterKeyPath = (canonicalPath.parent_path() / requesterKey).lexically_normal();
+    const auto authorityPublicKeyPath = (canonicalPath.parent_path() / authorityPublicKey).lexically_normal();
+    for (const auto& candidate : {requesterKeyPath, authorityPublicKeyPath}) {
+      if (!std::filesystem::is_regular_file(candidate, ec) || ec)
+        throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "trust",
+                      "configured requester or authority public key is unavailable");
+    }
     requireBootstrapBudget();
-    verifiedOfferAdmission = std::make_shared<NativeOfferAdmission>(
-      nativeCanonicalJson(offerPolicy), offerKeyPemById, candidateDigest);
-  }
-  catch (const DiError&) {
-    throw;
-  }
-  catch (const std::exception& error) {
-    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "offer-admission",
-                  std::string("offer admission policy is invalid: ") + error.what());
+    requesterPrivate = loadEd25519PrivateKey(requesterKeyPath);
+    authorityPublic = loadEd25519PublicKey(authorityPublicKeyPath);
+    requireBootstrapBudget();
+
+    const auto& offerPolicy = requiredObject(offerAdmission, "policy");
+    const auto& offerKeys = requiredObject(offerAdmission, "public_key_files");
+    if (offerKeys.empty())
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "offer-admission",
+                    "offer admission requires at least one public key");
+    const auto candidateDigest = requiredString(offerAdmission, "candidate_digest");
+    if (!isDigest(candidateDigest))
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "offer-admission",
+                    "offer admission candidate_digest is not a sha256 digest");
+    std::map<std::string, std::string> offerKeyPemById;
+    for (const auto& entry : offerKeys.items()) {
+      const auto keyId = entry.key();
+      const auto keyFile = requiredString(offerKeys, keyId.c_str());
+      const auto keyPath = (canonicalPath.parent_path() / keyFile).lexically_normal();
+      if (!std::filesystem::is_regular_file(keyPath, ec) || ec)
+        throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "offer-admission",
+                      "offer admission public key file is unavailable");
+      (void)loadEd25519PublicKey(keyPath);
+      offerKeyPemById.emplace(keyId, readOperatorFile(keyPath, 65536));
+    }
+    try {
+      requireBootstrapBudget();
+      verifiedOfferAdmission = std::make_shared<NativeOfferAdmission>(
+        nativeCanonicalJson(offerPolicy), offerKeyPemById, candidateDigest);
+    }
+    catch (const DiError&) {
+      throw;
+    }
+    catch (const std::exception& error) {
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "offer-admission",
+                    std::string("offer admission policy is invalid: ") + error.what());
+    }
   }
 
   positiveUnsigned(limits, "max_source_bytes");
@@ -514,12 +550,16 @@ FrozenConfig freezeConfig(const std::filesystem::path& path,
       throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "request",
                     std::string("request field is not a sha256 digest: ") + digest);
   }
-  const auto timeoutMs = positiveUnsigned(request, "timeout_ms");
-  const auto ackTimeoutMs = positiveUnsigned(request, "ack_timeout_ms");
-  if (timeoutMs > static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
-      ackTimeoutMs >= timeoutMs)
-    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "request",
-                  "request timeout or ACK timeout is out of range");
+  std::uint64_t timeoutMs = 30000;
+  std::uint64_t ackTimeoutMs = 5000;
+  if (!publishOnly) {
+    timeoutMs = positiveUnsigned(request, "timeout_ms");
+    ackTimeoutMs = positiveUnsigned(request, "ack_timeout_ms");
+    if (timeoutMs > static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
+        ackTimeoutMs >= timeoutMs)
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "request",
+                    "request timeout or ACK timeout is out of range");
+  }
   const auto boundedUnsigned = [&] (const char* name, std::uint64_t fallback,
                                     std::uint64_t maximum, bool requirePositive) {
     if (!request.contains(name))
@@ -533,17 +573,18 @@ FrozenConfig freezeConfig(const std::filesystem::path& path,
                     std::string("request field is out of range: ") + name);
     return value;
   };
-  if (!request.contains("max_candidates") || !request.contains("max_policy_ms"))
+  if (!publishOnly && (!request.contains("max_candidates") ||
+                       !request.contains("max_policy_ms")))
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "request",
                   "request candidate budget requires max_candidates and max_policy_ms");
-  const auto maxCandidates = boundedUnsigned("max_candidates", 1, 1024, true);
-  const auto maxPolicyMs = boundedUnsigned("max_policy_ms", 100, 60'000, true);
-  const auto maxReentries = boundedUnsigned("max_reentries", 1, 16, false);
-  const auto noProgressMs = boundedUnsigned("no_progress_ms", 5000,
+  const auto maxCandidates = publishOnly ? 1 : boundedUnsigned("max_candidates", 1, 1024, true);
+  const auto maxPolicyMs = publishOnly ? 100 : boundedUnsigned("max_policy_ms", 100, 60'000, true);
+  const auto maxReentries = publishOnly ? 1 : boundedUnsigned("max_reentries", 1, 16, false);
+  const auto noProgressMs = publishOnly ? 5000 : boundedUnsigned("no_progress_ms", 5000,
                                              24ULL * 60ULL * 60ULL * 1000ULL, true);
-  const auto maxSegments = boundedUnsigned("max_segments", 4096, 1ULL << 20, true);
+  const auto maxSegments = publishOnly ? 4096 : boundedUnsigned("max_segments", 4096, 1ULL << 20, true);
   std::string generationMode = "TOKEN_DIAGNOSTIC";
-  if (request.contains("generation_mode"))
+  if (!publishOnly && request.contains("generation_mode"))
     generationMode = requiredString(request, "generation_mode");
   if (generationMode != "TOKEN_DIAGNOSTIC" && generationMode != "TOKEN_STREAMING")
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "request",
@@ -566,10 +607,10 @@ FrozenConfig freezeConfig(const std::filesystem::path& path,
        !isDigest(requiredString(request, "tokenizer_digest"))))
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "request",
                   "TOKEN_STREAMING requires a tokenizer digest");
-  if (protectionEpoch == "plaintext-v1")
+  if (!publishOnly && protectionEpoch == "plaintext-v1")
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "trust",
                   "protected Runtime cannot use plaintext-v1 protection epoch");
-  if (request.contains("application_request_id")) {
+  if (!publishOnly && request.contains("application_request_id")) {
     if (!request.at("application_request_id").is_string())
       throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "request",
                     "application_request_id must be a string");
@@ -585,18 +626,20 @@ FrozenConfig freezeConfig(const std::filesystem::path& path,
   // contract consumed by T002+, rather than a source JSON with omitted keys.
   auto normalized = root;
   auto& normalizedRequest = normalized["request"];
-  normalizedRequest["max_candidates"] = maxCandidates;
-  normalizedRequest["max_policy_ms"] = maxPolicyMs;
-  normalizedRequest["max_reentries"] = maxReentries;
-  normalizedRequest["no_progress_ms"] = noProgressMs;
-  normalizedRequest["max_segments"] = maxSegments;
-  normalizedRequest["generation_mode"] = generationMode;
-  if (!normalizedRequest.contains("tokenizer_digest"))
-    normalizedRequest["tokenizer_digest"] = std::string{};
+  if (!publishOnly) {
+    normalizedRequest["max_candidates"] = maxCandidates;
+    normalizedRequest["max_policy_ms"] = maxPolicyMs;
+    normalizedRequest["max_reentries"] = maxReentries;
+    normalizedRequest["no_progress_ms"] = noProgressMs;
+    normalizedRequest["max_segments"] = maxSegments;
+    normalizedRequest["generation_mode"] = generationMode;
+    if (!normalizedRequest.contains("tokenizer_digest"))
+      normalizedRequest["tokenizer_digest"] = std::string{};
+  }
   const auto canonicalJson = nativeCanonicalJson(normalized);
 
   return FrozenConfig{canonicalPath, canonicalJson,
-                      nativePlanningDigest(canonicalJson), requesterIdentity,
+                      nativePlanningDigest(canonicalJson), modelInputMode, requesterIdentity,
                       coreAuthorityIdentity, group, trustSchema, authorityIdentity,
                       authorityService, protectionEpoch, std::move(requesterPrivate),
                       std::move(authorityPublic), std::move(trustValidator),
@@ -701,7 +744,12 @@ struct CoreRuntimeOwner
 
   void close() noexcept
   {
-    if (closed.exchange(true))
+    bool alreadyClosed = false;
+    {
+      std::lock_guard<std::mutex> lock(ioLifecycleMutex);
+      alreadyClosed = closed.exchange(true, std::memory_order_acq_rel);
+    }
+    if (alreadyClosed)
       return;
     if (operationRuntime)
       operationRuntime->close();
@@ -759,6 +807,25 @@ struct CoreRuntimeOwner
     std::unique_lock<std::mutex> stopLock(ioStopMutex);
     if (ioStopped)
       return true;
+    // Repo fetch callbacks retain an owner lease until their cancellation
+    // handlers leave the Face strand.  A callback cannot wait for its own
+    // strand to drain, so leave the owner retryable in that case.
+    if (ioThread.joinable() && std::this_thread::get_id() == ioThread.get_id() &&
+        inFlight.load(std::memory_order_acquire) != 0)
+      return false;
+    {
+      std::unique_lock<std::mutex> lock(ioLifecycleMutex);
+      const auto drained = [this] {
+        return inFlight.load(std::memory_order_acquire) == 0;
+      };
+      if (deadline) {
+        if (!ioLifecycleCondition.wait_until(lock, *deadline, drained))
+          return false;
+      }
+      else {
+        ioLifecycleCondition.wait(lock, drained);
+      }
+    }
     if (ioFailed.load(std::memory_order_acquire) && ioRunning.load(std::memory_order_acquire) &&
         ioThread.joinable() && std::this_thread::get_id() != ioThread.get_id()) {
       // A failed Face remains in the recovery loop until this explicit
@@ -851,6 +918,35 @@ struct CoreRuntimeOwner
     operationRuntime.reset();
   }
 };
+
+struct CoreIoOperationLifetime
+{
+  explicit CoreIoOperationLifetime(std::shared_ptr<CoreRuntimeOwner> owner)
+    : owner(std::move(owner))
+  {
+    std::lock_guard<std::mutex> lock(this->owner->ioLifecycleMutex);
+    if (this->owner->closed.load(std::memory_order_acquire))
+      throw std::runtime_error("CORE_IO_OWNER_CLOSED");
+    this->owner->inFlight.fetch_add(1, std::memory_order_acq_rel);
+  }
+
+  ~CoreIoOperationLifetime()
+  {
+    {
+      std::lock_guard<std::mutex> lock(owner->ioLifecycleMutex);
+      owner->inFlight.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    owner->ioLifecycleCondition.notify_all();
+  }
+
+  std::shared_ptr<CoreRuntimeOwner> owner;
+};
+
+std::shared_ptr<void>
+makeCoreIoOperationLifetime(std::shared_ptr<CoreRuntimeOwner> owner)
+{
+  return std::make_shared<CoreIoOperationLifetime>(std::move(owner));
+}
 
 struct RuntimeState
 {
@@ -991,14 +1087,18 @@ void ensureRuntimeCoreTransport(const std::shared_ptr<detail::RuntimeState>& sta
   if (state->coreOwner->ioFailed.load(std::memory_order_acquire))
     throw DiError("RUNTIME_CLOSED", "local", "preparation",
                   "Runtime Core I/O failed: " + state->coreOwner->ioFailure());
-  if (state->coreUser && state->grants)
+  const auto primary = state->models.find("default");
+  if (primary == state->models.end())
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
+                  "Runtime default model identity is unavailable");
+  const bool needsInferenceGrant = primary->second.modelInputMode != "publish-stored";
+  if (state->coreUser && (state->grants || !needsInferenceGrant))
     return;
   if (state->coreUser || state->grants)
     throw DiError("RUNTIME_CLOSED", "local", "preparation",
                   "Runtime Core transport binding is incomplete");
-  const auto primary = state->models.find("default");
-  if (primary == state->models.end() || !primary->second.requesterPrivateKey ||
-      !primary->second.authorityPublicKey || !state->coreOwner->keyChain ||
+  if ((needsInferenceGrant && (!primary->second.requesterPrivateKey ||
+      !primary->second.authorityPublicKey)) || !state->coreOwner->keyChain ||
       state->coreOwner->requesterCertificate.getName().empty() ||
       state->coreOwner->authorityCertificate.getName().empty())
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
@@ -1014,14 +1114,17 @@ void ensureRuntimeCoreTransport(const std::shared_ptr<detail::RuntimeState>& sta
     serviceUser->init();
     serviceUser->fetchPermissionsFromController(
       ndn::Name(primary->second.coreAuthorityIdentity));
-    auto grants = std::make_shared<NativeAuthenticatedGrantClient>(
-      primary->second.requesterIdentity, primary->second.requesterPrivateKey,
-      primary->second.authorityIdentity, rawPublicKey(primary->second.authorityPublicKey),
-      primary->second.protectionEpoch,
-      NativeAuthenticatedGrantClient::issueThroughCore(
-        serviceUser, primary->second.authorityIdentity,
-        primary->second.authorityService),
-      NativeAuthenticatedGrantClient::publishThroughCore(serviceUser));
+    std::shared_ptr<NativeAuthenticatedGrantClient> grants;
+    if (needsInferenceGrant) {
+      grants = std::make_shared<NativeAuthenticatedGrantClient>(
+        primary->second.requesterIdentity, primary->second.requesterPrivateKey,
+        primary->second.authorityIdentity, rawPublicKey(primary->second.authorityPublicKey),
+        primary->second.protectionEpoch,
+        NativeAuthenticatedGrantClient::issueThroughCore(
+          serviceUser, primary->second.authorityIdentity,
+          primary->second.authorityService),
+        NativeAuthenticatedGrantClient::publishThroughCore(serviceUser));
+    }
     if (!state->coreOwner->ioThread.joinable())
       state->coreOwner->startIo(state->coreOwner);
     if (state->coreOwner->ioFailed.load(std::memory_order_acquire))
@@ -1038,6 +1141,43 @@ void ensureRuntimeCoreTransport(const std::shared_ptr<detail::RuntimeState>& sta
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
                   std::string("Runtime Core user cannot be created: ") + error.what());
   }
+}
+
+RepositoryPreparedLookupRequest
+preparedLookupRequest(const std::shared_ptr<detail::RuntimeState>& state,
+                      const PreparationSpec& spec, std::chrono::steady_clock::time_point deadline)
+{
+  RepositoryPreparedLookupRequest result{
+    spec.key, spec.publicationServiceName, spec.catalogConfigurationJson,
+    spec.maxAssembledBytes, deadline};
+  result.requireActive = [deadline, cancelled = spec.cancelled] {
+    if (cancelled && cancelled())
+      throw RepositorySourceError(RepositorySourceError::Kind::Cancelled,
+                                  "protected prepared lookup was cancelled");
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw RepositorySourceError(RepositorySourceError::Kind::Timeout,
+                                  "protected prepared lookup deadline expired");
+  };
+  const auto owner = [state, current = result.requireActive] {
+    current();
+    ensureRuntimeCoreTransport(state);
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->phase != detail::RuntimeState::Phase::Open || !state->coreUser)
+      throw RepositorySourceError(RepositorySourceError::Kind::Closed,
+                                  "protected prepared owner is closed");
+    return state->coreUser;
+  };
+  result.readProtected = [owner, service = ndn::Name(spec.publicationServiceName), deadline,
+                          current = result.requireActive](const auto& reference, auto bound,
+                                                           const auto& consume) {
+    owner()->readOwnerRetainedLargeDataFromWorker(
+      service, reference, bound, deadline, current, consume);
+  };
+  result.restoreProtected = [owner, service = ndn::Name(spec.publicationServiceName), deadline,
+                             current = result.requireActive](const auto& reference) {
+    return owner()->restoreOwnerRetainedLargeDataFromWorker(service, reference, deadline, current);
+  };
+  return result;
 }
 
 std::shared_ptr<const NativeKvOwnerKeyOperations>
@@ -1261,8 +1401,27 @@ std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
   if (state->conversations && state->coreOwner->keyChain &&
       !state->coreOwner->requesterCertificate.getName().empty())
     runtime.kvOwnerKeys = makeKvOwnerKeyOperations(state->coreOwner);
+  std::shared_ptr<const NativeModelObjectKeyIndexV1> modelObjectKeyIndex;
+  if (package->storedModel) {
+    if (!package->preparedPublication || !package->storedModel->repositoryTarget)
+      throw DiError("STORED_MODEL_PREPARATION_INVALID", "local", "request",
+                    "stored model package has no prepared publication receipt");
+    const auto storedModel = package->storedModel;
+    modelObjectKeyIndex = nativeBuildStoredModelObjectKeyIndex(
+      storedModel->objects.publication(), storedModel->objects, *package->preparedPublication);
+    runtime.modelObjectKeyPublisher = [user = state->coreUser,
+      service = runtime.contract.serviceName, storedModel](
+        const NativeArtifactBinding& artifacts, const NativeSelectionProjectionV3& projection,
+        const NativeFixedRoleAssignmentV1& fixed, const NativeRecipientKeyMaterialV1& recipient,
+        const std::string& boot, std::uint64_t expires, const NativeRequestControl& control) {
+      return nativePublishStoredModelObjectKeys(user, service, artifacts, storedModel->handle,
+        ndn::Name(storedModel->repositoryTarget->providerIdentity),
+        projection, fixed, recipient, boot, expires, control);
+    };
+  }
   auto preparation = package->catalog.preparation->makePreparation(
-    state->coreUser, runtime.contract.serviceName, package->preparedPublication);
+    state->coreUser, runtime.contract.serviceName, package->preparedPublication,
+    std::move(modelObjectKeyIndex));
   auto client = std::make_shared<NativeInferenceClient>(
     state->coreUser, package->catalog.preparation->adapters(), runtime,
     state->conversations,
@@ -1511,6 +1670,407 @@ Conversation User::openConversation(const PreparedModel& model,
   return model.openConversationInternal(options);
 }
 
+NativeModelRepositoryReceipt
+User::storePreparedModel(const PreparedModel& model,
+  const ndnsf_distributed_repo::RepoArtifactTarget& repository, Milliseconds timeout) const
+{
+  requirePreparedModel(model, "repository-publication");
+  if (timeout <= Milliseconds::zero() || timeout > std::chrono::hours(24))
+    throw DiError("INVALID_REPOSITORY_BUDGET", "local", "repository-publication",
+                  "repository publication timeout must be within 24 hours");
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  std::shared_ptr<detail::CoreRuntimeOwner> owner;
+  std::shared_ptr<ndn_service_framework::EncryptedLargeDataRangeStore> source;
+  detail::PreparationTicket ticket(m_state);
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    if (m_state->phase != detail::RuntimeState::Phase::Open)
+      throw DiError("RUNTIME_CLOSED", "local", "repository-publication", "Runtime is closed");
+    owner = m_state->coreOwner;
+    source = m_state->config.encryptedRangeStore;
+    if (!owner || !owner->serviceUser || !source || !model.m_package->preparedPublication)
+      throw DiError("MODEL_REPOSITORY_UNAVAILABLE", "local", "repository-publication",
+                    "prepared model has no owned durable original packet source");
+  }
+  if (owner->serviceUser->isOnIoThread() ||
+      (owner->operationRuntime && owner->operationRuntime->isWorkerThread()))
+    throw DiError("WOULD_DEADLOCK", "local", "repository-publication",
+                  "blocking repository publication cannot run on a Core executor");
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    if (m_state->phase != detail::RuntimeState::Phase::Open || m_state->coreOwner != owner)
+      throw DiError("RUNTIME_CLOSED", "local", "repository-publication", "Runtime is closed");
+    ++m_state->inFlight;
+    m_state->preparationInFlight.fetch_add(1, std::memory_order_acq_rel);
+    ticket.armed = true;
+  }
+  const auto current = [state = m_state, deadline] {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->phase != detail::RuntimeState::Phase::Open ||
+        std::chrono::steady_clock::now() >= deadline)
+      throw DiError("MODEL_REPOSITORY_CANCELLED", "local", "repository-publication",
+                    "repository publication owner closed or deadline expired");
+  };
+  return nativeStorePreparedModelPublication(*owner->serviceUser, owner->requesterCertificate,
+    *source, *model.m_package->preparedPublication, repository, deadline, current);
+}
+
+namespace detail {
+
+/** Normalize private paths and reject collisions with the publication journal. */
+std::pair<std::filesystem::path, std::filesystem::path>
+storedModelPrivatePaths(const std::filesystem::path& preparationState,
+                        const std::filesystem::path& privateHandleFile)
+{
+  if (preparationState.empty() || privateHandleFile.empty())
+    throw DiError("INVALID_MODEL_PUBLICATION", "local", "model-publication",
+                  "stored-model publication requires two private files");
+  const auto state = std::filesystem::absolute(preparationState).lexically_normal();
+  const auto handle = std::filesystem::absolute(privateHandleFile).lexically_normal();
+  if (state == handle || std::filesystem::path(state.string() + ".lock") == handle ||
+      std::filesystem::path(state.string() + ".object") == handle)
+    throw DiError("INVALID_MODEL_PUBLICATION", "local", "model-publication",
+                  "private handle must not replace preparation state or its reserved files");
+  return {state, handle};
+}
+
+/** One owner and deadline for publication followed by optional stored opening. */
+struct StoredModelPreparationOperation
+{
+  StoredModelPreparationOperation(const StoredModelPreparationOperation&) = delete;
+  StoredModelPreparationOperation& operator=(const StoredModelPreparationOperation&) = delete;
+
+  std::shared_ptr<detail::RuntimeState> state;
+  FrozenConfig frozen;
+  std::shared_ptr<detail::CoreRuntimeOwner> owner;
+  std::shared_ptr<ModelPreparationCache> cache;
+  detail::PreparationTicket ticket;
+  std::chrono::steady_clock::time_point deadline;
+
+  StoredModelPreparationOperation(std::shared_ptr<detail::RuntimeState> runtime,
+    const std::string& modelKey, const char* mode, Milliseconds timeout, const char* boundary)
+    : state(std::move(runtime))
+    , ticket(state)
+  {
+    if (!state)
+      throw DiError("RUNTIME_CLOSED", "local", boundary, "User has no Runtime state");
+    if (timeout <= Milliseconds::zero() || timeout > std::chrono::hours(24))
+      throw DiError("INVALID_MODEL_PREPARATION", "local", boundary,
+                    "model preparation requires a bounded timeout");
+    deadline = std::chrono::steady_clock::now() + timeout;
+    std::shared_ptr<ndn_service_framework::ServiceUser> serviceUser;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (state->phase != detail::RuntimeState::Phase::Open)
+        throw DiError("RUNTIME_CLOSED", "local", boundary, "Runtime is closed");
+      const auto found = state->models.find(modelKey);
+      if (found == state->models.end())
+        throw DiError("MODEL_NOT_FOUND", "local", boundary, "registered model key is unknown");
+      frozen = found->second;
+      if (frozen.modelInputMode != mode)
+        throw DiError("MODEL_INPUT_MODE_MISMATCH", "local", boundary,
+                      std::string("operation requires model_input.mode=") + mode);
+      owner = state->coreOwner;
+      cache = state->preparationCache;
+      if (!owner || !owner->operationRuntime || !cache)
+        throw DiError("RUNTIME_CLOSED", "local", boundary,
+                      "Runtime preparation owner is unavailable");
+      serviceUser = owner->serviceUser;
+      ++state->inFlight;
+      state->preparationInFlight.fetch_add(1, std::memory_order_acq_rel);
+      ticket.armed = true;
+    }
+    if (owner->operationRuntime->isWorkerThread() ||
+        (serviceUser && serviceUser->isOnIoThread()))
+      throw DiError("WOULD_DEADLOCK", "local", boundary,
+                    "blocking model preparation cannot run on a Core executor");
+  }
+
+  Milliseconds
+  remaining() const
+  {
+    const auto budget = std::chrono::duration_cast<Milliseconds>(
+      deadline - std::chrono::steady_clock::now());
+    if (budget <= Milliseconds::zero())
+      throw DiError("MODEL_PREPARATION_CANCELLED", "local", "model-preparation",
+                    "overall model preparation deadline expired");
+    return budget;
+  }
+};
+
+} // namespace detail
+
+NativeStoredModelPreparationReceipt
+User::publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
+  const std::string& modelKey,
+  const ndnsf_distributed_repo::RepoArtifactTarget& repository,
+  const std::filesystem::path& preparationState,
+  const std::filesystem::path& privateHandleFile) const
+{
+  const auto [statePath, handlePath] = detail::storedModelPrivatePaths(
+    preparationState, privateHandleFile);
+  const auto state = operation.state;
+  const auto& frozen = operation.frozen;
+  const auto& owner = operation.owner;
+  const auto& cache = operation.cache;
+  const auto deadline = operation.deadline;
+
+  if (!owner->keyChain)
+    throw DiError("RUNTIME_CLOSED", "local", "model-publication", "key chain is unavailable");
+  nativeValidateModelRepositoryTarget(repository, ndn::Name(frozen.requesterIdentity));
+  const auto current = [state, owner, deadline] {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->phase != detail::RuntimeState::Phase::Open || state->coreOwner != owner ||
+        owner->closed.load(std::memory_order_acquire) ||
+        owner->ioFailed.load(std::memory_order_acquire) ||
+        std::chrono::steady_clock::now() >= deadline)
+      throw DiError("MODEL_PUBLICATION_CANCELLED", "local", "model-publication",
+                    "Runtime owner closed, Core failed, or publication deadline expired");
+  };
+
+  ensureRuntimeCoreTransport(state);
+  std::shared_ptr<ndn_service_framework::ServiceUser> serviceUser;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->phase != detail::RuntimeState::Phase::Open || state->coreOwner != owner ||
+        !state->coreUser)
+      throw DiError("RUNTIME_CLOSED", "local", "model-publication",
+                    "Runtime Core User is unavailable");
+    serviceUser = state->coreUser;
+  }
+  if (serviceUser->isOnIoThread())
+    throw DiError("WOULD_DEADLOCK", "local", "model-publication",
+                  "blocking model publication cannot run on the Face thread");
+  current();
+
+  auto spec = preparationSpec(frozen, modelKey, state->config.repositorySourceLoader,
+                              state->config.repositorySourceProvider);
+  NativeAssemblyControl control{deadline, current, spec.maxSourceBytes, spec.maxAssembledBytes};
+  std::optional<ModelPreparationCache::MemoryReservation> admission;
+  auto loadCatalog = [spec, control, current, cache, &admission] {
+    current();
+    if (!admission)
+      admission.emplace(cache->reserveMemory(spec, spec.key));
+    auto source = spec.loadSource(spec, control.deadline);
+    current();
+    control.requireActive();
+    return NativeRequestCatalog::load(spec.catalogConfigurationJson, std::move(source), control);
+  };
+    const auto acquireOperationLifetime = [weakOwner =
+      std::weak_ptr<detail::CoreRuntimeOwner>(owner)] {
+      auto currentOwner = weakOwner.lock();
+      if (!currentOwner)
+        throw std::runtime_error("MODEL_REPO_CORE_OWNER_UNAVAILABLE");
+      return detail::makeCoreIoOperationLifetime(std::move(currentOwner));
+    };
+    auto io = nativeStoredModelRepositoryIo(serviceUser, repository, deadline, current, true,
+                                           acquireOperationLifetime);
+  const auto publication = nativePublishStoredPreparedModel(*owner->keyChain,
+    serviceUser->getName(), ndn::Name(repository.repoNode), ndn::Name{}, loadCatalog,
+    spec.catalogConfigurationJson, io, statePath);
+  current();
+  nativeExportStoredModelHandle(publication.handle, handlePath);
+  current();
+
+  NativeStoredModelPreparationReceipt receipt;
+  receipt.producer = publication.handle.producer;
+  receipt.repository = publication.handle.repository;
+  receipt.rootName = publication.handle.rootName;
+  receipt.rootWireDigest = publication.handle.rootWireDigest;
+  receipt.sourceBytes = publication.sourceBytes;
+  receipt.wireBytes = publication.wireBytes;
+  receipt.packetGroups = publication.packetGroups;
+  receipt.objectCount = publication.objectCount;
+  return receipt;
+}
+
+PreparedModel
+User::openStoredModelImpl(detail::StoredModelPreparationOperation& operation,
+  const std::string& modelKey,
+  const std::filesystem::path& privateHandleFile,
+  const ndnsf_distributed_repo::RepoArtifactTarget& repository) const
+{
+  if (privateHandleFile.empty())
+    throw DiError("INVALID_STORED_MODEL_OPEN", "local", "stored-model-open",
+                  "stored model open requires a private handle file");
+  const auto state = operation.state;
+  const auto& frozen = operation.frozen;
+  const auto& owner = operation.owner;
+  const auto& cache = operation.cache;
+  const auto deadline = operation.deadline;
+  NativeStoredModelHandle loadedHandle;
+  try {
+    loadedHandle = nativeLoadStoredModelHandle(privateHandleFile);
+    nativeValidateModelRepositoryTarget(repository, loadedHandle.producer);
+    if (ndn::Name(repository.repoNode) != loadedHandle.repository)
+      throw DiError("STORED_MODEL_REPOSITORY_MISMATCH", "local", "stored-model-open",
+                    "configured Repo route differs from the pinned model handle");
+  }
+  catch (const DiError&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw DiError("STORED_MODEL_HANDLE_INVALID", "local", "stored-model-open", error.what());
+  }
+  auto handle = std::make_shared<const NativeStoredModelHandle>(std::move(loadedHandle));
+
+  const auto current = [state, owner, deadline] {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->phase != detail::RuntimeState::Phase::Open || state->coreOwner != owner ||
+        owner->closed.load(std::memory_order_acquire) ||
+        owner->ioFailed.load(std::memory_order_acquire) ||
+        std::chrono::steady_clock::now() >= deadline)
+      throw DiError("STORED_MODEL_OPEN_CANCELLED", "local", "stored-model-open",
+                    "Runtime owner closed, Core failed, or read deadline expired");
+  };
+
+  ensureRuntimeCoreTransport(state);
+  std::shared_ptr<ndn_service_framework::ServiceUser> serviceUser;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->phase != detail::RuntimeState::Phase::Open || state->coreOwner != owner ||
+        !state->coreUser)
+      throw DiError("RUNTIME_CLOSED", "local", "stored-model-open",
+                    "Runtime Core User is unavailable");
+    serviceUser = state->coreUser;
+  }
+  if (serviceUser->isOnIoThread())
+    throw DiError("WOULD_DEADLOCK", "local", "stored-model-open",
+                  "blocking stored model open cannot run on the Face thread");
+  current();
+
+  auto spec = preparationSpec(frozen, modelKey);
+  spec.loadSource = {};
+  spec.sourceFreeStoredModel = true;
+  spec.storedModelHandle = handle;
+  auto canonicalRepository = repository;
+  canonicalRepository.repoNode = ndn::Name(repository.repoNode).toUri();
+  canonicalRepository.providerIdentity = ndn::Name(repository.providerIdentity).toUri();
+  canonicalRepository.servicePrefix = ndn::Name(repository.servicePrefix).toUri();
+  spec.storedRepositoryTarget =
+    std::make_shared<const ndnsf_distributed_repo::RepoArtifactTarget>(
+      std::move(canonicalRepository));
+  spec.runtimeBinding = state->runtimeBinding;
+  const auto acquireOperationLifetime = [weakOwner =
+    std::weak_ptr<detail::CoreRuntimeOwner>(owner)] {
+    auto currentOwner = weakOwner.lock();
+    if (!currentOwner)
+      throw std::runtime_error("MODEL_REPO_CORE_OWNER_UNAVAILABLE");
+    return detail::makeCoreIoOperationLifetime(std::move(currentOwner));
+  };
+  auto io = nativeStoredModelRepositoryIo(serviceUser, repository, deadline, current, false,
+                                         acquireOperationLifetime);
+  spec.loadStoredModel = [handle, io, configuration = spec.catalogConfigurationJson] (
+    const PreparationSpec& currentSpec, std::chrono::steady_clock::time_point jobDeadline) {
+    NativeAssemblyControl control{
+      jobDeadline,
+      [cancelled = currentSpec.cancelled, jobDeadline] {
+        if (cancelled && cancelled())
+          throw std::runtime_error("DI_NATIVE_PREPARATION_CANCELLED");
+        if (std::chrono::steady_clock::now() >= jobDeadline)
+          throw std::runtime_error("DI_NATIVE_PREPARATION_TIMEOUT");
+      },
+      currentSpec.maxSourceBytes,
+      currentSpec.maxAssembledBytes};
+    auto opened = nativeOpenStoredPreparedModel(*handle, io, control);
+    if (opened.configurationJson != nativeStoredModelConfigurationIdentity(configuration))
+      throw std::runtime_error("DI_STORED_MODEL_LOCAL_POLICY_MISMATCH");
+    return opened;
+  };
+  spec.clientFactory = [state = state] (
+    const std::shared_ptr<const PreparedModelPackage>& package) {
+    return makeRuntimeClient(state, package);
+  };
+  spec.dispatch = [owner] (std::function<void()> task) {
+    auto operation = owner->operationRuntime->acquire();
+    owner->operationRuntime->post(operation, std::move(task));
+  };
+  spec.schedule = [owner] (std::chrono::steady_clock::time_point when,
+                           std::function<void()> task) {
+    auto operation = owner->operationRuntime->acquire();
+    return owner->operationRuntime->scheduleAt(operation, when, std::move(task));
+  };
+  spec.cancelled = [state = state] {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    return state->phase != detail::RuntimeState::Phase::Open;
+  };
+  spec.acquireCommit = [state = state] (std::chrono::steady_clock::time_point until) {
+    using Guard = std::unique_lock<std::mutex>;
+    auto guard = std::make_shared<Guard>(state->mutex, std::defer_lock);
+    while (!guard->try_lock()) {
+      if (std::chrono::steady_clock::now() >= until)
+        return std::shared_ptr<void>{};
+      std::this_thread::yield();
+    }
+    if (state->phase != detail::RuntimeState::Phase::Open)
+      return std::shared_ptr<void>{};
+    return std::shared_ptr<void>(guard, static_cast<void*>(guard.get()));
+  };
+
+  try {
+    current();
+    auto prepared = cache->prepare(spec, CachePolicy::UseOrFetch, operation.remaining());
+    current();
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (state->phase != detail::RuntimeState::Phase::Open)
+        throw DiError("RUNTIME_CLOSED", "local", "stored-model-open",
+                      "Runtime closed before stored package could be returned");
+    }
+    return prepared;
+  }
+  catch (const DiError&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw mapPreparationError(error);
+  }
+}
+
+NativeStoredModelPreparationReceipt
+User::publishStoredModel(const std::string& modelKey,
+  const ndnsf_distributed_repo::RepoArtifactTarget& repository,
+  const std::filesystem::path& preparationState,
+  const std::filesystem::path& privateHandleFile, Milliseconds timeout) const
+{
+  detail::StoredModelPreparationOperation operation(m_state, modelKey, "publish-stored", timeout,
+                                            "model-publication");
+  return publishStoredModelImpl(operation, modelKey, repository, preparationState, privateHandleFile);
+}
+
+PreparedModel
+User::prepareStoredModel(const std::string& modelKey,
+  const ndnsf_distributed_repo::RepoArtifactTarget& repository,
+  const std::filesystem::path& preparationState,
+  const std::filesystem::path& privateHandleFile, Milliseconds timeout) const
+{
+  detail::StoredModelPreparationOperation operation(m_state, modelKey, "source", timeout,
+                                            "model-preparation");
+  const auto paths = detail::storedModelPrivatePaths(preparationState, privateHandleFile);
+  std::error_code error;
+  const auto status = std::filesystem::symlink_status(paths.second, error);
+  if (status.type() == std::filesystem::file_type::not_found &&
+      (!error || error == std::errc::no_such_file_or_directory)) {
+    (void)publishStoredModelImpl(operation, modelKey, repository, paths.first, paths.second);
+  }
+  else if (error) {
+    throw DiError("STORED_MODEL_HANDLE_INVALID", "local", "stored-model-open", error.message());
+  }
+  // Presence only selects the read path. The opener performs all current admission;
+  // an invalid handle or a disappearance race must never become a publication retry.
+  return openStoredModelImpl(operation, modelKey, paths.second, repository);
+}
+
+PreparedModel
+User::openStoredModel(const std::string& modelKey,
+  const std::filesystem::path& privateHandleFile,
+  const ndnsf_distributed_repo::RepoArtifactTarget& repository, Milliseconds timeout) const
+{
+  detail::StoredModelPreparationOperation operation(m_state, modelKey, "stored", timeout,
+                                            "stored-model-open");
+  return openStoredModelImpl(operation, modelKey, privateHandleFile, repository);
+}
+
 PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& options) const
 {
   logSpec220PreparationStage("begin");
@@ -1534,6 +2094,9 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
       throw DiError("MODEL_NOT_FOUND", "local", "preparation", "registered model key is unknown");
     cache = m_state->preparationCache;
     frozen = found->second;
+    if (frozen.modelInputMode != "source")
+      throw DiError("MODEL_INPUT_MODE_MISMATCH", "local", "preparation",
+                    "User::prepare is available only in source mode");
     ++m_state->inFlight;
     m_state->preparationInFlight.fetch_add(1, std::memory_order_acq_rel);
     ticket.armed = true;
@@ -1548,11 +2111,14 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
   spec.runtimeBinding = m_state->runtimeBinding;
   if (m_state->config.repositorySourceProvider) {
     const auto provider = m_state->config.repositorySourceProvider;
-    spec.lookupPrepared = [provider](const PreparationSpec& current,
+    spec.lookupPrepared = [provider, state = m_state](const PreparationSpec& current,
                                       std::chrono::steady_clock::time_point deadline) {
-      return provider->lookupPrepared(RepositoryPreparedLookupRequest{
-        current.key, current.publicationServiceName, current.catalogConfigurationJson,
-        current.maxAssembledBytes, deadline});
+      return provider->lookupPrepared(preparedLookupRequest(state, current, deadline));
+    };
+    spec.rememberPrepared = [provider, state = m_state](const PreparationSpec& current,
+      const NativePreparedCanonicalPublication& publication,
+      std::chrono::steady_clock::time_point deadline) {
+      provider->rememberPrepared(preparedLookupRequest(state, current, deadline), publication);
     };
   }
   const auto publicationServiceName = spec.publicationServiceName;
@@ -1574,6 +2140,8 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
     return catalog.preparePublication(user, publicationServiceName, model.descriptor, control);
   };
   spec.rollbackPublication = [state = m_state](const NativePreparedCanonicalPublication& publication) {
+    if (!publication.rollbackOwned)
+      return;
     if (state->config.repositoryArtifactPublisher) {
       state->config.repositoryArtifactPublisher->rollback(publication);
       return;
@@ -1680,6 +2248,9 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
       throw DiError("MODEL_NOT_FOUND", "local", "preparation", "registered model key is unknown");
     cache = m_state->preparationCache;
     frozen = found->second;
+    if (frozen.modelInputMode != "source")
+      throw DiError("MODEL_INPUT_MODE_MISMATCH", "local", "preparation",
+                    "User::prepareAsync is available only in source mode");
     ++m_state->inFlight;
     m_state->preparationInFlight.fetch_add(1, std::memory_order_acq_rel);
     ticket->armed = true;
@@ -1692,11 +2263,14 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
   spec.runtimeBinding = m_state->runtimeBinding;
   if (m_state->config.repositorySourceProvider) {
     const auto provider = m_state->config.repositorySourceProvider;
-    spec.lookupPrepared = [provider](const PreparationSpec& current,
+    spec.lookupPrepared = [provider, state = m_state](const PreparationSpec& current,
                                       std::chrono::steady_clock::time_point deadline) {
-      return provider->lookupPrepared(RepositoryPreparedLookupRequest{
-        current.key, current.publicationServiceName, current.catalogConfigurationJson,
-        current.maxAssembledBytes, deadline});
+      return provider->lookupPrepared(preparedLookupRequest(state, current, deadline));
+    };
+    spec.rememberPrepared = [provider, state = m_state](const PreparationSpec& current,
+      const NativePreparedCanonicalPublication& publication,
+      std::chrono::steady_clock::time_point deadline) {
+      provider->rememberPrepared(preparedLookupRequest(state, current, deadline), publication);
     };
   }
   const auto publicationServiceName = spec.publicationServiceName;
@@ -1718,6 +2292,8 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
     return catalog.preparePublication(user, publicationServiceName, model.descriptor, control);
   };
   spec.rollbackPublication = [state = m_state](const NativePreparedCanonicalPublication& publication) {
+    if (!publication.rollbackOwned)
+      return;
     if (state->config.repositoryArtifactPublisher) {
       state->config.repositoryArtifactPublisher->rollback(publication);
       return;

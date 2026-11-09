@@ -1,6 +1,7 @@
 #include "request-work-statistics.hpp"
 
 #include "NativeCanonicalJson.hpp"
+#include "NativeGenerationLimits.hpp"
 #include "detail/NativePhaseTiming.hpp"
 
 #include <algorithm>
@@ -13,8 +14,10 @@
 namespace ndnsf::di {
 namespace {
 
-constexpr std::size_t MAX_SPANS = 16384;
 constexpr std::size_t MAX_PHASES = 128;
+// Bound total observation work across the native generation budget. Completed
+// spans are folded immediately; live storage retains its separate bounds.
+constexpr std::size_t MAX_SPANS = (MAX_NATIVE_GENERATED_TOKENS + 1) * MAX_PHASES;
 constexpr std::size_t MAX_COUNTERS = 128;
 constexpr std::size_t MAX_THREADS = 32;
 constexpr std::size_t MAX_DEPTH = 32;
@@ -80,17 +83,21 @@ readClockDomain()
 
 } // namespace
 
-NativeWorkStatistics::NativeWorkStatistics(Clock clock)
+NativeWorkStatistics::NativeWorkStatistics(Clock clock, bool profileEpochs)
   : m_clock(clock ? std::move(clock) : Clock(readClock))
 {
+  m_statistics.epochProfiling = profileEpochs;
 }
 
 NativeWorkStatistics::Token
-NativeWorkStatistics::begin(std::string_view phaseName, NativeWorkKind kind) noexcept
+NativeWorkStatistics::begin(std::string_view phaseName, NativeWorkKind kind,
+                            std::optional<std::uint64_t> inferenceEpoch) noexcept
 {
   try {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (phaseName.empty() || phaseName.size() > 96) {
+    if (phaseName.empty() || phaseName.size() > 96 ||
+        (m_statistics.epochProfiling && inferenceEpoch &&
+         *inferenceEpoch > MAX_NATIVE_GENERATED_TOKENS)) {
       m_statistics.complete = false;
       ++m_statistics.droppedSpans;
       return 0;
@@ -123,8 +130,16 @@ NativeWorkStatistics::begin(std::string_view phaseName, NativeWorkKind kind) noe
     // Reserve before installing the frame so allocation failure cannot leave
     // an uncloseable token absent from its owner's stack.
     stack->second.reserve(stack->second.size() + 1);
+    if (!m_statistics.epochProfiling)
+      inferenceEpoch.reset();
+    else if (!inferenceEpoch && !stack->second.empty())
+      inferenceEpoch = m_frames.at(stack->second.back()).inferenceEpoch;
+    // Allocate optional summary slots before admitting a live frame. Finish
+    // must not strand an active token if profiling storage is exhausted.
+    if (m_statistics.epochProfiling && inferenceEpoch)
+      m_statistics.epochPhases[*inferenceEpoch].try_emplace(phase).first->second.kind = kind;
     const auto token = m_nextToken++;
-    m_frames.emplace(token, Frame{phase, thread, now, 0, 0});
+    m_frames.emplace(token, Frame{phase, thread, now, 0, 0, inferenceEpoch});
     stack->second.push_back(token);
     return token;
   }
@@ -170,18 +185,25 @@ NativeWorkStatistics::finish(Token token) noexcept
     std::optional<std::uint64_t> cpu;
     if (frame.started.threadCpuNs >= 0 && now.threadCpuNs >= frame.started.threadCpuNs)
       cpu = static_cast<std::uint64_t>(now.threadCpuNs - frame.started.threadCpuNs);
+    const auto fold = [&] (NativeWorkPhaseStatistics& phase) {
+      if (!phase.firstStartedSteadyNs || frame.started.wallNs < *phase.firstStartedSteadyNs)
+        phase.firstStartedSteadyNs = frame.started.wallNs;
+      if (!phase.lastFinishedSteadyNs || now.wallNs > *phase.lastFinishedSteadyNs)
+        phase.lastFinishedSteadyNs = now.wallNs;
+      ++phase.calls;
+      if (frame.childWallNs > wall || !add(phase.exclusiveWallNs, wall - frame.childWallNs))
+        m_statistics.complete = false;
+      if (!cpu || !frame.childCpuNs || *frame.childCpuNs > *cpu ||
+          !phase.exclusiveThreadCpuNs ||
+          !add(*phase.exclusiveThreadCpuNs, *cpu - *frame.childCpuNs))
+        phase.exclusiveThreadCpuNs.reset();
+    };
     auto& phase = m_statistics.phases.at(frame.phase);
-    if (!phase.firstStartedSteadyNs || frame.started.wallNs < *phase.firstStartedSteadyNs)
-      phase.firstStartedSteadyNs = frame.started.wallNs;
-    if (!phase.lastFinishedSteadyNs || now.wallNs > *phase.lastFinishedSteadyNs)
-      phase.lastFinishedSteadyNs = now.wallNs;
-    ++phase.calls;
-    if (frame.childWallNs > wall || !add(phase.exclusiveWallNs, wall - frame.childWallNs))
-      m_statistics.complete = false;
-    if (!cpu || !frame.childCpuNs || *frame.childCpuNs > *cpu ||
-        !phase.exclusiveThreadCpuNs ||
-        !add(*phase.exclusiveThreadCpuNs, *cpu - *frame.childCpuNs))
-      phase.exclusiveThreadCpuNs.reset();
+    fold(phase);
+    if (m_statistics.epochProfiling && frame.inferenceEpoch) {
+      auto& epochPhase = m_statistics.epochPhases.at(*frame.inferenceEpoch).at(frame.phase);
+      fold(epochPhase);
+    }
     stack->second.pop_back();
     if (!stack->second.empty()) {
       auto& parent = m_frames.at(stack->second.back());
@@ -265,9 +287,10 @@ NativeWorkStatistics::observeCount(std::string_view name, std::uint64_t value, b
 }
 
 NativeWorkScope::NativeWorkScope(std::shared_ptr<NativeWorkStatistics> statistics,
-                               std::string_view phase, NativeWorkKind kind) noexcept
+                               std::string_view phase, NativeWorkKind kind,
+                               std::optional<std::uint64_t> inferenceEpoch) noexcept
   : m_statistics(std::move(statistics))
-  , m_token(m_statistics ? m_statistics->begin(phase, kind) : 0)
+  , m_token(m_statistics ? m_statistics->begin(phase, kind, inferenceEpoch) : 0)
 {
 }
 
@@ -298,7 +321,9 @@ NativeWorkStatistics::observeTransfer(const StageTransferObservation& observatio
     m_statistics.transfers.push_back({observation.plannedDataName, observation.direction,
       observation.phase, epoch, observation.tensorBytes, observation.encodedPayloadBytes,
       observation.wireBytes, observation.interestCount, observation.retryCount,
-      startedNs, finishedNs, admittedNs, point, outputReadyNs});
+      startedNs, finishedNs, admittedNs, point, outputReadyNs,
+      observation.transportPayloadBytes, observation.metadataBytes,
+      observation.localCopyBytes, observation.transportLocalCopyBytes});
     m_transferMetadataBytes += bytes;
   }
   catch (...) {
@@ -334,7 +359,8 @@ std::shared_ptr<NativeWorkStatistics>
 makeNativeWorkStatistics() noexcept
 {
   try {
-    return std::make_shared<NativeWorkStatistics>();
+    return std::make_shared<NativeWorkStatistics>(
+      NativeWorkStatistics::Clock{}, detail::nativePhaseStarted().enabled);
   }
   catch (...) {
     return nullptr;
@@ -372,6 +398,10 @@ nativeWorkStatisticsToJson(const NativeWorkStatisticsSnapshot& statistics)
       {"point", point},
       {"tensorBytes", transfer.tensorBytes}, {"encodedPayloadBytes", transfer.encodedPayloadBytes},
       {"wireBytes", optionalValue(transfer.wireBytes)},
+      {"transportPayloadBytes", optionalValue(transfer.transportPayloadBytes)},
+      {"metadataBytes", optionalValue(transfer.metadataBytes)},
+      {"localCopyBytes", optionalValue(transfer.localCopyBytes)},
+      {"transportLocalCopyBytes", optionalValue(transfer.transportLocalCopyBytes)},
       {"interestCount", optionalValue(transfer.interestCount)},
       {"retryCount", optionalValue(transfer.retryCount)},
       {"startedSteadyNs", clockValue(transfer.startedSteadyNs)},
@@ -381,8 +411,8 @@ nativeWorkStatisticsToJson(const NativeWorkStatisticsSnapshot& statistics)
   }
   for (const auto& [name, value] : statistics.counts)
     result["counts"][name] = statistics.complete ? NativeJson(value) : NativeJson(nullptr);
-  for (const auto& [name, phase] : statistics.phases) {
-    result["phases"][name] = NativeJson{
+  const auto phaseJson = [&] (const NativeWorkPhaseStatistics& phase) {
+    return NativeJson{
       {"kind", kindName(phase.kind)}, {"calls", phase.calls},
       {"firstStartedSteadyNs", statistics.complete && phase.firstStartedSteadyNs
         ? NativeJson(*phase.firstStartedSteadyNs) : NativeJson(nullptr)},
@@ -392,6 +422,18 @@ nativeWorkStatisticsToJson(const NativeWorkStatisticsSnapshot& statistics)
                                                : NativeJson(nullptr)},
       {"exclusiveThreadCpuNs", statistics.complete && phase.exclusiveThreadCpuNs
         ? NativeJson(*phase.exclusiveThreadCpuNs) : NativeJson(nullptr)}};
+  };
+  for (const auto& [name, phase] : statistics.phases)
+    result["phases"][name] = phaseJson(phase);
+  if (statistics.epochProfiling) {
+    result["epochProfiling"] = true;
+    result["epochs"] = NativeJson::array();
+    for (const auto& [epoch, phases] : statistics.epochPhases) {
+      auto encoded = NativeJson::object();
+      for (const auto& [name, phase] : phases)
+        encoded[name] = phaseJson(phase);
+      result["epochs"].push_back({{"inferenceEpoch", epoch}, {"phases", std::move(encoded)}});
+    }
   }
   return nativeCanonicalJson(result);
 }

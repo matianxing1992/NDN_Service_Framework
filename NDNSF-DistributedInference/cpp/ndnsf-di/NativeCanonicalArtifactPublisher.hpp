@@ -16,6 +16,14 @@ namespace ndnsf::di {
  * All source, recipe, split and publication contract fields remain bound. */
 std::string nativeCanonicalPublicationIdentity(const NativeJson& catalog);
 
+/** Bounded nonsecret reference codec, excluding serving/rollback state.
+ * Decoding is not admission: Core must still verify the original object,
+ * owner/service bindings and current authorization before use. */
+NativeJson nativeProtectedObjectReference(
+  const ndn_service_framework::LargeDataPublishResult& object);
+ndn_service_framework::LargeDataPublishResult
+nativeProtectedObjectFromReference(const NativeJson& reference);
+
 struct NativeCanonicalPublicationOptions
 {
   std::string artifactRoot;
@@ -98,6 +106,10 @@ struct NativePreparedCanonicalPublication
   std::string preparedMetadataDataName;
   std::string preparedMetadataDigest;
   std::uint64_t preparedMetadataBytes = 0;
+  /** Exact nonsecret Core references for owner recovery and current-recipient
+   * key delivery. Operational rollback state and serving pins are excluded. */
+  std::shared_ptr<const std::vector<ndn_service_framework::LargeDataPublishResult>>
+    ownerRecoverableObjects;
 
   void validate() const;
 };
@@ -132,7 +144,9 @@ public:
   NativePreparedCanonicalPublication prepare(const NativeInspectedModel& model,
                                              const NativeRequestControl& control) const;
 
-  /** Bind a selected request to a prepare-time receipt without Core I/O. */
+  /** Bind a selected request, refreshing its small authorization root when needed.
+   * Immutable model bodies and their original protected references are reused.
+   */
   NativeArtifactBinding bindPrepared(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate,
     const std::vector<NativeSelectionRoleV3>& roles,
@@ -201,6 +215,10 @@ private:
     // Production uses Core's service-scoped bootstrap predicate. Legacy
     // controlled transports may omit it; they own their explicit fixture boundary.
     std::function<bool(const NativeRequestControl&)> bootstrapReady;
+    // Only the native isolated-key transport enables persistent owner recovery.
+    bool ownerRecoverable = false;
+    std::function<ndn_service_framework::LargeDataPublishResult(
+      const NativeInspectedModel&, const std::string&, const NativeRequestControl&)> publishRootControl;
   };
   NativeCanonicalArtifactPublisher(Transport transport, std::string serviceName,
     NativeCanonicalPublicationOptions options, SourcePort source);

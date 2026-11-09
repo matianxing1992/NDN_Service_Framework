@@ -180,7 +180,8 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
   NativeCanonicalSource source;
   source.modelBytes = {0x01, 0x02, 0x03};
   source.preparedMetadataJson = nativeCanonicalJson(NativeJson{
-    {"schema", "ndnsf-di-prepared-metadata-v1"}, {"fixture", "external-root-last"}});
+    {"schema", "ndnsf-di-prepared-metadata-v1"},
+    {"fixture", std::string(2U << 20, 'x')}});
   model.canonicalSourceDigest = nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size());
   model.canonicalSourceBytes = source.modelBytes.size();
   model.canonicalGraphDigest = digest("graph");
@@ -219,7 +220,15 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
   BOOST_CHECK_EQUAL(hit->preparedMetadataJson, source.preparedMetadataJson);
   BOOST_CHECK_EQUAL(hit->preparedMetadataDataName, committed.preparedMetadataDataName);
   BOOST_CHECK(fixture.repo->has(committed.preparedMetadataDataName));
+  BOOST_CHECK_GT(hit->preparedMetadataBytes, 1U << 20);
   BOOST_CHECK_EQUAL(provider->stats().publicationCalls, 1U);
+  {
+    auto oversized = source;
+    oversized.preparedMetadataJson.assign(NativeCanonicalMaterialPublicationMaxBytes + 1, 'x');
+    BOOST_CHECK_THROW(provider->publish("qwen", "/service", model, oversized, options, control),
+                      RepositorySourceError);
+    BOOST_CHECK(fixture.repo->has(committed.rootDataName));
+  }
 
   // Transfer estimates affect request scheduling, not immutable model bytes.
   auto hinted = catalog;

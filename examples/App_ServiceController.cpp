@@ -7,8 +7,12 @@
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/security/validator-config.hpp>
 #include <ndn-cxx/util/scheduler.hpp>
+#include <ndn-cxx/util/scope.hpp>
+
+#include <boost/asio/signal_set.hpp>
 
 #include <chrono>
+#include <csignal>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -193,6 +197,17 @@ main(int argc, char** argv)
       policyFile);
     controller.setControllerPrefix(controllerPrefix);
     controller.setBootstrapTokenFile(bootstrapTokenFile);
+    bool stopping = false;
+    const auto signalActive = std::make_shared<bool>(true);
+    boost::asio::signal_set signals(face.getIoContext(), SIGINT, SIGTERM);
+    signals.async_wait([&, signalActive] (const boost::system::error_code& error, int) {
+      if (!error && *signalActive) {
+        stopping = true;
+        controller.cancelStart();
+        face.shutdown();
+      }
+    });
+    const auto disableSignal = ndn::make_scope_exit([signalActive] { *signalActive = false; });
 
     if (revokeAfterMs >= 0 || !revokeTriggerFile.empty()) {
       const auto kind = parseRevocationKind(
@@ -296,21 +311,31 @@ main(int argc, char** argv)
     // the prefix-registration and PUBPARAMS readiness barrier.  Keep the
     // marker separate so launchers cannot confuse process liveness with
     // network/authorization readiness.
-    controller.start();
+    try {
+      controller.start();
+    }
+    catch (const std::exception&) {
+      if (!stopping)
+        throw;
+      return 0;
+    }
+    if (stopping)
+      return 0;
     std::cout << "NDNSF_CONTROLLER_READY identity="
               << controllerPrefix.toUri() << std::endl;
     if (runForMs != 0) {
       const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(runForMs);
-      while (std::chrono::steady_clock::now() < deadline) {
+      while (!stopping && std::chrono::steady_clock::now() < deadline) {
         face.getIoContext().restart();
         face.processEvents(ndn::time::milliseconds(100));
       }
       face.getIoContext().stop();
-      std::cout << "NDNSF_CONTROLLER_STOPPED reason=run-for-ms" << std::endl;
+      std::cout << "NDNSF_CONTROLLER_STOPPED reason=" << (stopping ? "signal" : "run-for-ms")
+                << std::endl;
     }
     else {
-      while (true) {
+      while (!stopping) {
         face.getIoContext().restart();
         face.processEvents(ndn::time::milliseconds(1000));
       }

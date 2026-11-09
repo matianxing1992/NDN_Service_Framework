@@ -3,13 +3,19 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelTypes.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-preparation.hpp"
 
 #include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
+
+namespace ndnsf_distributed_repo {
+struct RepoArtifactTarget;
+}
 
 namespace ndnsf::di {
 
@@ -23,6 +29,26 @@ struct FrozenPreparationRegistration
   std::string taskName;
   std::string taskContractDigest;
   std::string inputLayoutDigest;
+};
+
+/** Private stored-model capability plus its admitted immutable object map.
+ * This is retained only by the requesting Runtime package; it is never serialized
+ * into plans or passed to a Provider.
+ */
+struct NativeStoredModelBinding
+{
+  NativeStoredModelBinding(const NativeStoredModelHandle& modelHandle,
+                           NativeStoredModelCatalog admittedObjects,
+                           std::shared_ptr<const ndnsf_distributed_repo::RepoArtifactTarget> target)
+    : handle(modelHandle)
+    , objects(std::move(admittedObjects))
+    , repositoryTarget(std::move(target))
+  {
+  }
+
+  NativeStoredModelHandle handle;
+  NativeStoredModelCatalog objects;
+  std::shared_ptr<const ndnsf_distributed_repo::RepoArtifactTarget> repositoryTarget;
 };
 
 /**
@@ -51,6 +77,10 @@ struct PreparedModelPackage
   /** Prepare-time canonical publication receipt; request binding only derives
    * role names from it and never performs another Core publication. */
   std::optional<NativePreparedCanonicalPublication> preparedPublication;
+  /** Present only for source-free stored mode. Owns the private handle and
+   * root-authenticated object index for the lifetime of this prepared view.
+   */
+  std::shared_ptr<const NativeStoredModelBinding> storedModel;
 };
 
 } // namespace ndnsf::di

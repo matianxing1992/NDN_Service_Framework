@@ -407,6 +407,87 @@ BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeAcceptsConversationGrantLease, BoundGran
 BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerRejectsCancellationAfterPreparation, BoundGrantFixture)
 { checkWorkerFence(*this, false, true); }
 
+BOOST_FIXTURE_TEST_CASE(IndependentAuthorityAdmitsRegisteredRequesters, BoundGrantFixture)
+{
+  const auto authorityKey = edKey('a');
+  const auto userB = edKey('b');
+  const auto userC = edKey('c');
+  const auto providerKey = edKey('d');
+  NativeGrantIssuerConfig policy;
+  policy.authorityIdentity = "/authority";
+  policy.protectionEpoch = binding.protectionEpoch;
+  policy.keyId = "registry-model-key";
+  policy.authorityPrivateKey = authorityKey;
+  policy.requesterPublicKeys = {{"/user/b", publicKey(userB)}, {"/user/c", publicKey(userC)}};
+  policy.allowedModelManifests = {config.modelManifestDigest};
+  policy.recipientPublicKeys = {{binding.provider, publicKey(providerKey)}};
+  std::size_t keyReads = 0;
+  policy.contentKey = [&](const auto&, const auto&) {
+    ++keyReads;
+    return std::vector<std::uint8_t>(32, 7);
+  };
+  NativeSignedGrantRequest request;
+  request.providerIdentity = binding.provider;
+  request.requestId = "/NDNSF-DI/REQUEST/registry-test";
+  request.attempt = 1;
+  request.planCoreDigest = "sha256:" + std::string(64, 'c');
+  request.grantViewDigest = "sha256:" + std::string(64, 'd');
+  request.modelManifestDigest = config.modelManifestDigest;
+  request.protectionEpoch = binding.protectionEpoch;
+  request.issuedAtMs = 1000;
+  NativeArtifactGrantIssuer issuer(policy);
+  for (const auto& [name, key] : policy.requesterPublicKeys) {
+    BOOST_CHECK(issuer.isRequesterAuthorized(name));
+    request.requesterIdentity = name;
+    const auto privateKey = name == "/user/b" ? userB : userC;
+    const auto signedRequest = request.sign(*privateKey);
+    const auto grant = issuer.issue(signedRequest, 1000, 5000);
+    BOOST_CHECK_NO_THROW(detail::verifyNativeIssuedGrant(grant, signedRequest,
+      policy.authorityIdentity, publicBytes(authorityKey), 1000, 5000));
+  }
+  BOOST_CHECK_EQUAL(keyReads, 2U);
+  request.requesterIdentity = "/8=user/8=c";
+  BOOST_CHECK(issuer.isRequesterAuthorized(request.requesterIdentity));
+  BOOST_CHECK_NO_THROW(issuer.issue(request.sign(*userC), 1000, 5000));
+  request.requesterIdentity = "/user/c";
+  BOOST_CHECK_THROW(issuer.issue(request.sign(*userB), 1000, 5000), std::runtime_error);
+  request.requesterIdentity = "/unregistered";
+  BOOST_CHECK(!issuer.isRequesterAuthorized(request.requesterIdentity));
+  BOOST_CHECK_THROW(issuer.issue(request.sign(*userB), 1000, 5000), std::runtime_error);
+  BOOST_CHECK(!issuer.isRequesterAuthorized("/"));
+  BOOST_CHECK_EQUAL(keyReads, 3U);
+
+  // Current operator policy can remove B without changing the model or its key.
+  policy.requesterPublicKeys.erase("/user/b");
+  NativeArtifactGrantIssuer afterRevocation(policy);
+  request.requesterIdentity = "/user/b";
+  BOOST_CHECK_THROW(afterRevocation.issue(request.sign(*userB), 1000, 5000), std::runtime_error);
+  request.requesterIdentity = "/user/c";
+  BOOST_CHECK_NO_THROW(afterRevocation.issue(request.sign(*userC), 1000, 5000));
+  BOOST_CHECK_EQUAL(keyReads, 4U);
+
+  auto invalid = policy;
+  invalid.requesterPublicKeys.emplace("/8=user/8=c", publicKey(userC));
+  BOOST_CHECK_THROW(NativeArtifactGrantIssuer{invalid}, std::runtime_error);
+  invalid = policy;
+  invalid.requesterIdentity = "/legacy";
+  invalid.requesterPublicKey = publicKey(userB);
+  BOOST_CHECK_THROW(NativeArtifactGrantIssuer{invalid}, std::runtime_error);
+  invalid = policy;
+  invalid.requesterPublicKeys = {{"/user/c", publicKey(authorityKey)}};
+  BOOST_CHECK_THROW(NativeArtifactGrantIssuer{invalid}, std::runtime_error);
+  invalid.requesterPublicKeys.clear();
+  BOOST_CHECK_THROW(NativeArtifactGrantIssuer{invalid}, std::runtime_error);
+  invalid.requesterPublicKeys = {{"relative-user", publicKey(userB)}};
+  BOOST_CHECK_THROW(NativeArtifactGrantIssuer{invalid}, std::runtime_error);
+  invalid.requesterPublicKeys = {{"/", publicKey(userB)}};
+  BOOST_CHECK_THROW(NativeArtifactGrantIssuer{invalid}, std::runtime_error);
+  invalid.requesterPublicKeys.clear();
+  for (std::size_t i = 0; i < 4097; ++i)
+    invalid.requesterPublicKeys.emplace("/user/" + std::to_string(i), publicKey(userB));
+  BOOST_CHECK_THROW(NativeArtifactGrantIssuer{invalid}, std::runtime_error);
+}
+
 BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerRejectsExpiryDuringCompute, BoundGrantFixture)
 { checkWorkerFence(*this, true, false); }
 

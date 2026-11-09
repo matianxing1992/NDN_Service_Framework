@@ -46,6 +46,8 @@ def configure(conf):
     conf.env.NAC_LIBDIR = nac_libdir
     conf.check_cfg(package='sqlite3', args='--cflags --libs',
                    uselib_store='SQLITE', mandatory=True)
+    conf.check_cfg(package='onnxruntime', args='--cflags --libs',
+                   uselib_store='ONNXRUNTIME', mandatory=True)
     if not (runtime / 'lib/libndnsf-distributed-repo.a').is_file():
         conf.fatal('Selected installed Repo archive is missing')
     conf.check_cxx(lib='ndnsf-distributed-repo', libpath=[str(runtime / 'lib')],
@@ -55,23 +57,35 @@ def configure(conf):
 
 
 def build(bld):
+    bld.program(target='installed-onnx-model-load-probe',
+                source='installed-onnx-model-load-probe.cpp',
+                use='ONNXRUNTIME', cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=bld.env.LIBPATH_ONNXRUNTIME, install_path=None)
     runtime = Path(bld.env.RUNTIME_PREFIX)
     source_root = bld.path.parent.parent.abspath()
     # Reuse the production scheduler: the core-flow fixture is a large C++
     # translation unit and must compile exclusively under the host budget.
     Context.load_module(str(Path(source_root) / 'wscript'))
+    bld.program(target='installed-owned-initializer-probe',
+                source='installed-owned-initializer-probe.cpp',
+                includes=[str(runtime / 'include'), source_root],
+                use='REPO NDNSF CORE OPENSSL SQLITE',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib'), str(bld.env.NAC_LIBDIR)], install_path=None)
     bld.program(target='installed-kv-handoff-api', source='installed-kv-handoff-api.cpp',
                 includes=[str(runtime / 'include')],
                 use='REPO NDNSF CORE OPENSSL SQLITE',
                 cxxflags=['-std=c++17', '-O0', '-g0'],
                 rpath=[str(runtime / 'lib'), str(bld.env.NAC_LIBDIR)], install_path=None)
     bld.program(target='installed-deployment-oracle',
-                source='../../examples/Spec189TwoProviderOracle.cpp',
+                source=['../../examples/Spec189TwoProviderOracle.cpp',
+                        '../../examples/spec220-onnx-reference-oracle.cpp'],
                 includes=[str(runtime / 'include'), source_root,
                           str(Path(source_root) / 'examples')],
-                use='REPO NDNSF CORE OPENSSL SQLITE',
+                use='REPO NDNSF CORE OPENSSL SQLITE ONNXRUNTIME',
                 cxxflags=['-std=c++17', '-O0', '-g0'],
-                rpath=[str(runtime / 'lib'), str(bld.env.NAC_LIBDIR)], install_path=None)
+                rpath=[str(runtime / 'lib'), str(bld.env.NAC_LIBDIR),
+                       *bld.env.LIBPATH_ONNXRUNTIME], install_path=None)
     bld.program(target='installed-oracle-fixture',
                 source='../fixtures/spec189/cli-oracle.cpp',
                 includes=[str(runtime / 'include'), source_root],
@@ -85,6 +99,31 @@ def build(bld):
                 cxxflags=['-std=c++17', '-O0', '-g0'],
                 rpath=[str(runtime / 'lib'), str(Path(bld.env.ONNX_PREFIX) / 'lib')],
                 install_path=None)
+    bld.program(target='installed-onnx-session-consumer',
+                source='installed-onnx-session-consumer.cpp',
+                includes=[str(runtime / 'include'), source_root],
+                lib=['dl'],
+                use='NDNSF CORE ONNX BOOST_TEST OPENSSL',
+                defines=ONNX_DEFINES,
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib'), str(Path(bld.env.ONNX_PREFIX) / 'lib'),
+                       str(bld.env.NAC_LIBDIR)], install_path=None)
+    # Source lifecycle diagnosis against the sealed SDK; not installed delivery.
+    bld.program(target='native-onnx-session-source-tests',
+                source=['installed-onnx-session-consumer.cpp',
+                        '../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp'],
+                includes=[source_root, str(runtime / 'include')],
+                lib=['dl'], use='NDNSF CORE ONNX ONNXRUNTIME BOOST_TEST OPENSSL',
+                defines=ONNX_DEFINES + ['NDNSF_DI_ENABLE_ONNXRUNTIME_CPP=1'],
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib'), str(Path(bld.env.ONNX_PREFIX) / 'lib'),
+                       str(bld.env.NAC_LIBDIR)], install_path=None)
+    bld.program(target='installed-deployment-readiness-tests',
+                source=['../main.cpp', '../unit-tests/spec217-deployment-readiness.t.cpp'],
+                includes=[str(runtime / 'include'), source_root],
+                use='CORE BOOST_TEST OPENSSL',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib'), str(bld.env.NAC_LIBDIR)], install_path=None)
     bld.program(target='installed-credentials-consumer',
                 source=['installed-credentials-consumer.cpp',
                         '../unit-tests/spec217-controller-certificate.t.cpp'],
@@ -104,6 +143,12 @@ def build(bld):
                 use='REPO NDNSF CORE OPENSSL SQLITE',
                 cxxflags=['-std=c++17', '-O0', '-g0'],
                 rpath=[str(runtime / 'lib')], install_path=None)
+    bld.program(target='installed-repo-metadata-probe',
+                source='installed-repo-metadata-probe.cpp',
+                includes=[str(runtime / 'include')],
+                use='REPO NDNSF CORE OPENSSL SQLITE',
+                cxxflags=['-std=c++17', '-O0', '-g0'],
+                rpath=[str(runtime / 'lib'), str(bld.env.NAC_LIBDIR)], install_path=None)
     bld.program(target='installed-repo-catalog-consumer',
                 source=['installed-credentials-consumer.cpp',
                         '../unit-tests/spec201-transparent-repo.t.cpp'],

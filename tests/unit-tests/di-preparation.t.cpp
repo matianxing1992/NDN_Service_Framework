@@ -44,6 +44,19 @@ public:
 // deterministic C++ fixtures to hold a job at its source barrier.
 struct Spec185PreparationTestAccess
 {
+  static std::size_t reserveMemory(ModelPreparationCache& cache,
+                                   const PreparationSpec& spec)
+  {
+    auto reservation = cache.reserveMemory(spec, spec.key);
+    return reservation.bytes();
+  }
+
+  static ModelPreparationCache::MemoryReservation holdMemoryReservation(
+    ModelPreparationCache& cache, const PreparationSpec& spec)
+  {
+    return cache.reserveMemory(spec, spec.key);
+  }
+
   static PreparationHandle prepareAsync(ModelPreparationCache& cache,
                                         const PreparationSpec& spec,
                                         CachePolicy policy = CachePolicy::UseOrFetch,
@@ -792,6 +805,42 @@ BOOST_AUTO_TEST_CASE(PreparationRejectsMissingInitializerAndBudgetBeforePublicat
   catalog["source"]["initializer_digest"] = nativePlanningDigest("missing-initializer");
   BOOST_CHECK_THROW(cache.prepare(missingInitializer.withCatalog(catalog)), std::exception);
   BOOST_CHECK_EQUAL(cache.entryCount(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(StoredPublicationUsesThePreparationMemoryAdmission)
+{
+  Fixture fixture;
+  ModelPreparationCache tooSmall(1U << 20, 1, std::chrono::seconds(5));
+  BOOST_CHECK_EXCEPTION(Spec185PreparationTestAccess::reserveMemory(tooSmall, fixture.spec),
+                        std::runtime_error, [] (const std::runtime_error& error) {
+    return std::string(error.what()).find("CACHE_BUDGET_EXCEEDED") != std::string::npos;
+  });
+  BOOST_CHECK_EQUAL(tooSmall.chargedBytes(), 0U);
+  BOOST_CHECK_EQUAL(fixture.fetches, 0U);
+
+  ModelPreparationCache sufficient(4U << 20, 1, std::chrono::seconds(5));
+  auto reservation = Spec185PreparationTestAccess::holdMemoryReservation(sufficient, fixture.spec);
+  const auto reserved = reservation.bytes();
+  BOOST_CHECK(reserved > fixture.spec.maxSourceBytes);
+  BOOST_CHECK_EQUAL(sufficient.chargedBytes(), 0U);
+  BOOST_CHECK_EXCEPTION(
+    Spec185PreparationTestAccess::reserveMemory(sufficient, fixture.spec),
+    std::runtime_error, [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("CACHE_BUDGET_EXCEEDED") != std::string::npos;
+    });
+  reservation.release();
+  BOOST_CHECK_EQUAL(Spec185PreparationTestAccess::reserveMemory(sufficient, fixture.spec),
+                    reserved);
+
+  auto stored = fixture.spec;
+  stored.sourceFreeStoredModel = true;
+  stored.maxSourceBytes = 50ULL << 30;
+  stored.maxAssembledBytes = 100ULL << 30;
+  ModelPreparationCache storedCache(512ULL << 20, 1, std::chrono::seconds(5));
+  const auto metadataAdmission = Spec185PreparationTestAccess::reserveMemory(storedCache, stored);
+  BOOST_CHECK(metadataAdmission < (512ULL << 20));
+  BOOST_CHECK(metadataAdmission < stored.maxSourceBytes);
+  BOOST_CHECK(metadataAdmission < stored.maxAssembledBytes);
 }
 
 BOOST_AUTO_TEST_CASE(RequireReadyAndUseOrWaitNeverPerformAnImplicitFetch)

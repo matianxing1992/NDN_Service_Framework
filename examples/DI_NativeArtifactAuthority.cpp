@@ -142,13 +142,26 @@ main(int argc, char** argv)
 
     NativeGrantIssuerConfig issuerConfig;
     issuerConfig.authorityIdentity = identity;
-    issuerConfig.requesterIdentity = authority.at("requester_identity").get<std::string>();
     issuerConfig.protectionEpoch = authority.at("protection_epoch").get<std::string>();
     issuerConfig.keyId = authority.at("content_key_id").get<std::string>();
     issuerConfig.authorityPrivateKey = loadKey(
       base / authority.at("authority_private_key_file").get<std::string>(), true);
-    issuerConfig.requesterPublicKey = loadKey(
-      base / authority.at("requester_public_key_file").get<std::string>(), false);
+    if (authority.contains("requester_public_key_files")) {
+      if (authority.contains("requester_identity") ||
+          authority.contains("requester_public_key_file"))
+        throw std::invalid_argument("requester registry conflicts with legacy requester fields");
+      const auto& requesters = authority.at("requester_public_key_files");
+      if (!requesters.is_object() || requesters.empty() || requesters.size() > 4096)
+        throw std::invalid_argument("invalid authority requester registry");
+      for (const auto& requester : requesters.items())
+        issuerConfig.requesterPublicKeys.emplace(
+          requester.key(), loadKey(base / requester.value().get<std::string>(), false));
+    }
+    else {
+      issuerConfig.requesterIdentity = authority.at("requester_identity").get<std::string>();
+      issuerConfig.requesterPublicKey = loadKey(
+        base / authority.at("requester_public_key_file").get<std::string>(), false);
+    }
     for (const auto& manifest : authority.at("allowed_model_manifests"))
       issuerConfig.allowedModelManifests.insert(manifest.get<std::string>());
     for (const auto& recipient : authority.at("recipient_public_key_files").items())
@@ -205,8 +218,8 @@ main(int argc, char** argv)
         try {
           auto phaseStarted = detail::nativePhaseStarted();
           const auto envelope = nativeGrantAuthorityRequestFromJson(bufferText(request.getPayload()));
-          if (requesterIdentity.toUri() != envelope.request.requesterIdentity ||
-              envelope.request.requesterIdentity != issuer->requesterIdentity())
+          if (requesterIdentity != ndn::Name(envelope.request.requesterIdentity) ||
+              !issuer->isRequesterAuthorized(envelope.request.requesterIdentity))
             throw std::runtime_error("requester identity mismatch");
           const auto now = nowMs();
           if (envelope.expiresAtMs <= now || envelope.expiresAtMs - now > maxTtlMs)

@@ -6,10 +6,12 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include <ndn-cxx/lp/tags.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/scheduler.hpp>
 #include <boost/asio/post.hpp>
@@ -35,6 +37,13 @@
 namespace ndnsf::di {
 struct PrefetchWorkerOracle
 {
+  static bool
+  hasDecodedSizing(NdnsfCollaborationDependencyIo& io)
+  {
+    std::lock_guard<std::mutex> lock(io.m_decodedSizingMutex);
+    return io.m_decodedSizing.has_value();
+  }
+
   static bool
   post(NdnsfCollaborationDependencyIo& io, std::function<void()> task)
   {
@@ -289,9 +298,15 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
             bool checkpointFinalize = false)
 {
   const bool inlineDelivery = mode.rfind("inline", 0) == 0;
+  const bool observedSizing = mode.rfind("inline-observed", 0) == 0;
   const bool windowCancellation = mode == "inline-window-cancel";
   const bool windowRefill = mode == "inline-window-refill";
-  const bool boundedWindow = mode == "inline-window" || windowCancellation || windowRefill;
+  const bool windowGrowth = mode == "inline-window-growth";
+  const bool windowMark = mode == "inline-window-mark";
+  const bool windowLoss = mode == "inline-window-loss";
+  const bool adaptiveWindow = windowGrowth || windowMark || windowLoss;
+  const bool boundedWindow = mode == "inline-window" || windowCancellation || windowRefill ||
+    adaptiveWindow || mode == "prefetch" || mode == "inline-prefetch";
   ndn_service_framework::test::BootstrapProfile profile;
   profile.providerCount = 2;
   ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
@@ -313,6 +328,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   std::optional<ndn::Data> heldWindowSegment;
   bool heldWindowSegmentReleased = false;
   bool refilledBeforeHeldReply = false;
+  bool droppedWindowPacket = false;
   const auto releaseWindowSegment = [&] {
     heldWindowSegmentReleased = true;
     if (heldWindowSegment) {
@@ -328,6 +344,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   std::atomic<std::size_t> manifestInterests{0};
   std::size_t segmentNamesBeforeManifest = 0;
   std::optional<ndn::Data> heldManifest;
+  bool holdObservedManifest = false;
   std::mutex manifestNameMutex;
   std::string expectedManifestUri;
   std::map<ndn::Name, ndn::Interest> issuedSourceInterests;
@@ -361,11 +378,22 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
         if ((interest.getName().size() >= 2 && interest.getName().get(-2) == ndn::name::Component("DATA") && interest.getName().get(-1).isSegment())) {
           ++segmentInterests;
           requestedSegments.insert(interest.getName());
+          if (observedSizing && holdObservedManifest) {
+            if (mode == "inline-observed-cancel") {
+              cancelWindowFetch();
+              return;
+            }
+            if (heldManifest) {
+              segmentNamesBeforeManifest = requestedSegments.size();
+              consumerFace.receive(*heldManifest);
+              heldManifest.reset();
+            }
+          }
           if (boundedWindow) {
             unansweredSegments.insert(interest.getName());
             maximumUnansweredSegments = std::max(
               maximumUnansweredSegments, unansweredSegments.size());
-            if (windowRefill && interest.getName().get(-1).toSegment() == 9) {
+            if (windowRefill && interest.getName().get(-1).toSegment() == 17) {
               refilledBeforeHeldReply = !heldWindowSegmentReleased &&
                 heldWindowSegment.has_value();
               releaseWindowSegment();
@@ -387,6 +415,10 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
       });
   auto forwardData = producerFace.onSendData.connect([&] (const ndn::Data& data) {
     const bool root = data.getName().get(-1) == ndn::name::Component("MANIFEST");
+    if (observedSizing && root && holdObservedManifest && requestedSegments.empty()) {
+      heldManifest = data;
+      return;
+    }
     if ((mode == "prefetch" || mode == "prefetch-bytes" ||
          mode == "prefetch-chunk") && root && requestedSegments.size() < 13) {
       // Deterministic barrier: a manifest-dependent implementation cannot
@@ -402,7 +434,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
       segmentNamesBeforeManifest = requestedSegments.size();
     const bool segment = (data.getName().size() >= 2 && data.getName().get(-2) == ndn::name::Component("DATA") && data.getName().get(-1).isSegment());
     if (mutations == 0 && ((root && (mode == "signature" || mode == "bounds" ||
-                                   mode == "inline-corrupt" ||
+                                   mode == "inline-corrupt" || mode == "inline-observed-corrupt" ||
                                    mode == "inline-compressed-binding")) ||
                           (segment && mode == "ciphertext"))) {
       ++mutations;
@@ -458,6 +490,12 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
           return;
         }
         auto packet = std::make_shared<ndn::Data>(data);
+        if (windowLoss && data.getName().get(-1).toSegment() == 1 &&
+            !droppedWindowPacket) {
+          droppedWindowPacket = true;
+          return;
+        }
+        if (windowMark) packet->setTag(std::make_shared<ndn::lp::CongestionMarkTag>(1));
         deliveryScheduler.schedule(ndn::time::milliseconds(2), [&, packet] {
           unansweredSegments.erase(packet->getName());
           if (windowCancellation && !windowCancellationRequested) {
@@ -517,6 +555,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   GroupOperationV1 operation;
   const bool feedback = mode == "feedback" || mode == "feedback-next";
   operation.operationIndex = feedback ? (mode == "feedback-next" ? 5 : 2) : 7;
+  if (observedSizing && mode != "inline-observed-prefill") operation.operationIndex = 15;
   operation.kind = feedback ? "TOKEN_FEEDBACK" : "PIPELINE_TRANSFER";
   operation.producerRanks = {"0"};
   operation.consumerRanks = {"1"};
@@ -530,13 +569,26 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     (mode == "packed-operation-bounds" || mode == "inline-packed-publish-bounds") ?
       4U << 20 : mode == "prefetch-budget" ? 100000 :
       enableSpeculation ? 2U << 20 : ndn::MAX_NDN_PACKET_SIZE;
+  std::vector<GroupOperationV1> permittedOperations{operation};
+  if (observedSizing) {
+    for (const auto index : {7U, 15U, 23U, 31U}) {
+      if (index == operation.operationIndex) continue;
+      auto next = operation;
+      next.operationIndex = index;
+      permittedOperations.push_back(std::move(next));
+    }
+    std::sort(permittedOperations.begin(), permittedOperations.end(),
+      [] (const auto& left, const auto& right) {
+        return left.operationIndex < right.operationIndex;
+      });
+  }
   const auto capability = producerCoordinator->createCapability(
       requestId.toUri(), "attempt-1", planDigest, groupId, 3,
       {{producer.getName().toUri(), 0, "offer-producer",
         producer.getName().toUri()},
        {consumer.getName().toUri(), 1, "offer-consumer",
         consumer.getName().toUri()}},
-      {operation}, inflightBudget,
+      permittedOperations, inflightBudget,
       5000, 30000);
   auto consumerCoordinator =
       std::make_shared<ProviderGroupCoordinator>(options);
@@ -556,6 +608,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   endpoint.operation = operation.kind;
   endpoint.round = operation.operationIndex;
   endpoint.namingOperationStride = feedback ? 3 : 0;
+  if (observedSizing) endpoint.namingOperationStride = 8;
   endpoint.sourceKind = "ROLE";
   endpoint.producerRole = feedback ? "S1R0" : "S0R0";
   endpoint.producerRank = 0;
@@ -643,7 +696,10 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   TensorBundle original;
   original.name = endpoint.tensorId;
   original.payload.resize(mode == "inline-oversize" ? chunkSize + 17 :
-    mode == "inline-single" ? 5994 : (prefetch || boundedWindow) ? 12 * 7000 + 17 :
+    mode == "inline-single" ? 5994 :
+    adaptiveWindow ? 64 * 7000 + 17 :
+    (windowCancellation || windowRefill || mode == "inline-window") ? 20 * 7000 + 17 :
+    (prefetch || boundedWindow) ? 12 * 7000 + 17 :
     mode.empty() ? 200 * 7000 + 17 : legacy ? 19 : 7017);
   for (std::size_t index = 0; index < original.payload.size(); ++index) {
     original.payload[index] = static_cast<std::uint8_t>(index * 31 + 7);
@@ -672,7 +728,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
                         1, 0, 0, 4, 0, 0, 0, 0, 0x78};
   }
   const auto producerWork = mode == "prefetch" ? makeNativeWorkStatistics() : nullptr;
-  const auto consumerWork = mode == "prefetch" ? makeNativeWorkStatistics() : nullptr;
+  const auto consumerWork = (mode == "prefetch" || mode == "prefetch-renewals" || adaptiveWindow)
+    ? makeNativeWorkStatistics() : nullptr;
   NdnsfCollaborationDependencyIo producerIo(
       producerContext, 5000, chunkSize, 60000, producerCoordinator, nullptr, 0, producerWork);
   NdnsfCollaborationDependencyIo consumerIo(
@@ -1157,8 +1214,11 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
 
   auto fetched = consumerIo.prefetchInput("session-v3", edge);
   if (mode == "prefetch-renewals") {
-    environment.pumpUntil([&] { return earlyInterests.size() == expectedSegments + 1; });
-    BOOST_REQUIRE_EQUAL(earlyInterests.size(), expectedSegments + 1);
+    // Only the initial window is issued before any Data exists. Later slots
+    // receive credit as validated replies arrive, even before the manifest.
+    const auto initialInterests = std::min<std::size_t>(expectedSegments, 16) + 1;
+    environment.pumpUntil([&] { return earlyInterests.size() == initialInterests; });
+    BOOST_REQUIRE_EQUAL(earlyInterests.size(), initialInterests);
     // Model repeated readiness renewals without a wall-clock sleep. Nonce
     // changes do not alter the Data name or its content authority.
     for (const auto& entry : earlyInterests) {
@@ -1171,11 +1231,21 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     bool drained = false;
     boost::asio::post(producerFace.getIoContext(), [&] { drained = true; });
     environment.pumpUntil([&] { return drained; });
+    // Exercise an actual pre-publication RTO renewal. Readiness wait is not
+    // transport congestion and must not become an RTT sample after publication.
+    bool publicationReady = false;
+    deliveryScheduler.schedule(ndn::time::milliseconds(600), [&] { publicationReady = true; });
+    environment.pumpUntil([&] { return publicationReady; });
     BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
   }
   environment.pumpUntil([&] {
     return fetched.wait_for(0ms) == std::future_status::ready;
   });
+  if (mode == "inline-observed-corrupt") {
+    BOOST_CHECK_THROW(fetched.get(), std::runtime_error);
+    BOOST_CHECK(!PrefetchWorkerOracle::hasDecodedSizing(consumerIo));
+    return;
+  }
   if (windowCancellation) {
     BOOST_CHECK_THROW(fetched.get(), std::runtime_error);
     deliveryScheduler.cancelAllEvents();
@@ -1183,8 +1253,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     boost::asio::post(consumerFace.getIoContext(), [&] { drained = true; });
     environment.pumpUntil([&] { return drained; });
     BOOST_CHECK(windowCancellationRequested);
-    BOOST_CHECK_EQUAL(segmentInterests, 8U);
-    BOOST_CHECK_LE(maximumUnansweredSegments, 8U);
+    BOOST_CHECK_EQUAL(segmentInterests, 16U);
+    BOOST_CHECK_LE(maximumUnansweredSegments, 16U);
     probeCancelledSourcePending(consumerFace, environment.keyChain(),
                                 producer.getName(), issuedSourceInterests);
     return;
@@ -1277,6 +1347,54 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   std::optional<TensorBundle> reconstructed;
   BOOST_REQUIRE_NO_THROW(reconstructed = fetched.get());
   BOOST_REQUIRE(reconstructed);
+  if (observedSizing) {
+    BOOST_CHECK(reconstructed->payload == original.payload);
+    BOOST_CHECK_EQUAL(segmentNamesBeforeManifest, 0U);
+    BOOST_CHECK_EQUAL(PrefetchWorkerOracle::hasDecodedSizing(consumerIo),
+                      mode != "inline-observed-prefill");
+
+    // Advance to another authenticated operation in the same invocation.
+    endpoint.round += mode == "inline-observed-skip" ? 16 : 8;
+    if (mode == "inline-observed-batch") ++endpoint.microbatch;
+    NativePlanProjectionBuilder::certifyEndpoint(endpoint);
+    edge.round = endpoint.round;
+    edge.microbatch = endpoint.microbatch;
+    edge.collectiveOperationIndex = endpoint.round;
+    edge.endpointDigest = endpoint.endpointDigest;
+    edge.manifestContractDigest = endpoint.manifestDigest;
+    edge.executionObjectDigest = computeTensorExecutionObjectDigest(endpoint);
+    edge.plannedDataName = tensorObjectNamePrefix(endpoint);
+    edge.manifestDataName = tensorObjectManifestName(endpoint);
+    {
+      std::lock_guard<std::mutex> lock(manifestNameMutex);
+      expectedManifestUri = edge.manifestDataName;
+    }
+    requestedSegments.clear();
+    segmentInterests = 0;
+    segmentNamesBeforeManifest = 0;
+    if (mode == "inline-observed-bytes") original.payload.resize(7117, 0x19);
+    if (mode == "inline-observed-count") original.payload.resize(14017, 0x23);
+    if (mode == "inline-observed-shrink") original.payload.resize(5994);
+    const bool expectedHint = mode != "inline-observed-prefill" &&
+      mode != "inline-observed-skip" && mode != "inline-observed-batch";
+    holdObservedManifest = expectedHint;
+    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
+    auto next = consumerIo.prefetchInput("session-v3", edge);
+    environment.pumpUntil([&] { return next.wait_for(0ms) == std::future_status::ready; });
+    if (mode == "inline-observed-cancel") {
+      BOOST_CHECK_THROW(next.get(), std::runtime_error);
+      BOOST_CHECK(!PrefetchWorkerOracle::hasDecodedSizing(consumerIo));
+      BOOST_CHECK_EQUAL(segmentInterests, 1U);
+      consumerIo.drainPendingPrefetches();
+      return;
+    }
+    const auto result = next.get();
+    BOOST_CHECK(result.payload == original.payload);
+    BOOST_CHECK_EQUAL(result.expectedSegments, 1 + (original.payload.size() - 1) / chunkSize);
+    BOOST_CHECK_EQUAL(segmentNamesBeforeManifest, expectedHint ? 1U : 0U);
+    BOOST_CHECK(!heldManifest);
+    return;
+  }
   if (mode == "prefetch") {
     for (const auto& statistics : {producerWork, consumerWork}) {
       BOOST_REQUIRE(statistics);
@@ -1293,9 +1411,9 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     const auto& prefetchWorker = snapshot.phases.at("dependency-prefetch-worker");
     BOOST_CHECK(prefetchWorker.kind == NativeWorkKind::LOCAL);
     BOOST_CHECK_GT(prefetchWorker.calls, 0U);
-    BOOST_REQUIRE(snapshot.phases.count("dependency-exact-data-fetch-wait"));
+    BOOST_REQUIRE(snapshot.phases.count("tensor-manifest-readiness-wait"));
     const auto& exactFetchWait =
-      snapshot.phases.at("dependency-exact-data-fetch-wait");
+      snapshot.phases.at("tensor-manifest-readiness-wait");
     BOOST_CHECK(exactFetchWait.kind == NativeWorkKind::WAIT);
     BOOST_CHECK_GT(exactFetchWait.calls, 0U);
     BOOST_REQUIRE(snapshot.phases.count("dependency-speculative-batch-wait"));
@@ -1309,19 +1427,35 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   BOOST_CHECK_EQUAL(reconstructed->expectedSegments, expectedSegments);
   BOOST_CHECK_EQUAL(reconstructed->expectedBytes, original.payload.size());
   if (boundedWindow) {
-    BOOST_CHECK_EQUAL(expectedSegments, 13U);
-    BOOST_CHECK_EQUAL(requestedSegments.size(), 12U);
+    const bool largerWindow = windowCancellation || windowRefill || mode == "inline-window";
+    BOOST_CHECK_EQUAL(expectedSegments, adaptiveWindow ? 65U : largerWindow ? 21U : 13U);
+    const auto expectedRequests = adaptiveWindow ? 64U : largerWindow ? 20U :
+      mode == "prefetch" ? 13U : 12U;
+    BOOST_CHECK_EQUAL(requestedSegments.size(), expectedRequests);
     if (windowRefill) {
       BOOST_CHECK_MESSAGE(refilledBeforeHeldReply,
-                          "segment9 waited for the slow first window to finish");
+                          "segment17 waited for the slow first window to finish");
       deliveryScheduler.cancelAllEvents();
     }
     else {
-      BOOST_CHECK_EQUAL(segmentInterests, 12U);
+      BOOST_CHECK_EQUAL(segmentInterests, expectedRequests + (windowLoss ? 1U : 0U));
     }
     BOOST_CHECK_GT(maximumUnansweredSegments, 0U);
     BOOST_TEST_MESSAGE("SPEC216_TENSOR_WINDOW max_unanswered=" << maximumUnansweredSegments);
-    BOOST_CHECK_LE(maximumUnansweredSegments, 8U);
+    BOOST_CHECK_LE(maximumUnansweredSegments, expectedRequests);
+    if (adaptiveWindow) {
+      const auto counts = consumerWork->snapshot().counts;
+      if (windowGrowth) BOOST_CHECK_GT(maximumUnansweredSegments, 16U);
+      const auto counter = windowMark ? "core.exact-data.congestion.marks" :
+        "core.exact-data.congestion.losses";
+      BOOST_REQUIRE(counts.count(counter));
+      if (windowMark || windowLoss) {
+        BOOST_CHECK_GT(counts.at(counter), 0U);
+        BOOST_REQUIRE(counts.count("core.exact-data.congestion.decreases"));
+        BOOST_CHECK_GT(counts.at("core.exact-data.congestion.decreases"), 0U);
+      }
+      else BOOST_CHECK_EQUAL(counts.at(counter), 0U);
+    }
     BOOST_CHECK(unansweredSegments.empty());
   }
   if (mode == "inline-compressed") {
@@ -1444,7 +1578,14 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     BOOST_CHECK(binding->suffix.get(7) == makeNamingLabelComponent("S1R0"));
   }
   BOOST_CHECK_GE(packets, uniquePackets.size());
-  if (mode == "prefetch-renewals") BOOST_CHECK_EQUAL(packets, expectedSegments + 1);
+  if (mode == "prefetch-renewals") {
+    BOOST_CHECK_EQUAL(packets, expectedSegments + 1);
+    BOOST_CHECK_GT(segmentInterests, expectedSegments);
+    const auto counts = consumerWork->snapshot().counts;
+    BOOST_REQUIRE(counts.count("core.exact-data.congestion.decreases"));
+    BOOST_CHECK_EQUAL(counts.at("core.exact-data.congestion.decreases"), 0U);
+    BOOST_CHECK_EQUAL(counts.at("core.exact-data.rtt.samples"), 0U);
+  }
   BOOST_CHECK_LE(largestPacket, ndn::MAX_NDN_PACKET_SIZE);
   if (mode == "prefetch" || mode == "prefetch-bytes" || mode == "prefetch-chunk") {
     BOOST_CHECK_EQUAL(expectedSegments, 13U);
@@ -1658,6 +1799,18 @@ BOOST_AUTO_TEST_CASE(PublishedSegmentWindowRefillsBeforeSlowReply)
 {
   runTransfer("inline-window-refill");
 }
+BOOST_AUTO_TEST_CASE(PublishedSegmentWindowGrowsBeyondInitialSixteen)
+{
+  runTransfer("inline-window-growth");
+}
+BOOST_AUTO_TEST_CASE(PublishedSegmentWindowRespondsToValidatedCongestionMarks)
+{
+  runTransfer("inline-window-mark");
+}
+BOOST_AUTO_TEST_CASE(PublishedSegmentWindowRecoversDroppedData)
+{
+  runTransfer("inline-window-loss");
+}
 BOOST_AUTO_TEST_CASE(InlineManifestAcceptsPlainManifestFallback) { runTransfer("inline-fallback"); }
 BOOST_AUTO_TEST_CASE(InlineManifestFallsBackOnActualSignedPacketBound) { runTransfer("inline-oversize"); }
 BOOST_AUTO_TEST_CASE(InlineManifestCancellationStopsRemainingPrefetch) { runTransfer("inline-cancel"); }
@@ -1685,6 +1838,24 @@ BOOST_AUTO_TEST_CASE(AdvisoryByteVariationReusesAuthenticatedPrefetch) { runTran
 BOOST_AUTO_TEST_CASE(AdvisoryChunkVariationReusesAuthenticatedPrefetch) { runTransfer("prefetch-chunk"); }
 BOOST_AUTO_TEST_CASE(PrefetchRespectsActualInflightBudget) { runTransfer("prefetch-budget"); }
 BOOST_AUTO_TEST_CASE(CancellationStopsWholePrefetch) { runTransfer("prefetch-cancel"); }
+BOOST_AUTO_TEST_CASE(ValidatedDecodeSizingPrefetchesBeforeNextManifest)
+{ runTransfer("inline-observed"); }
+BOOST_AUTO_TEST_CASE(ObservedDecodeSizingAllowsSameCountByteVariation)
+{ runTransfer("inline-observed-bytes"); }
+BOOST_AUTO_TEST_CASE(ObservedDecodeSizingFallsBackForNewSegmentCount)
+{ runTransfer("inline-observed-count"); }
+BOOST_AUTO_TEST_CASE(ObservedDecodeSizingCancelsExtraReadWhenObjectShrinks)
+{ runTransfer("inline-observed-shrink"); }
+BOOST_AUTO_TEST_CASE(PrefillDoesNotSeedObservedDecodeSizing)
+{ runTransfer("inline-observed-prefill"); }
+BOOST_AUTO_TEST_CASE(SkippedDecodeEpochDoesNotReuseObservedSizing)
+{ runTransfer("inline-observed-skip"); }
+BOOST_AUTO_TEST_CASE(DifferentMicrobatchDoesNotReuseObservedSizing)
+{ runTransfer("inline-observed-batch"); }
+BOOST_AUTO_TEST_CASE(CorruptedDecodeDoesNotSeedObservedSizing)
+{ runTransfer("inline-observed-corrupt"); }
+BOOST_AUTO_TEST_CASE(CancellationClearsObservedSizingAndStopsPrefetch)
+{ runTransfer("inline-observed-cancel"); }
 BOOST_AUTO_TEST_CASE(LegacyRepresentationStillReconstructs) { runTransfer("legacy"); }
 BOOST_AUTO_TEST_CASE(RejectsChangedProducerSignature) { runTransfer("signature"); }
 BOOST_AUTO_TEST_CASE(RejectsChangedCiphertextCommitment) { runTransfer("ciphertext"); }

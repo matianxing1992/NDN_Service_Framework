@@ -2,17 +2,24 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-preparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-repository.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "tests/fixtures/spec182/native-qwen-config.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/ArtifactTypes.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
 
 #include <boost/test/unit_test.hpp>
+#include <boost/asio/io_context.hpp>
 
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/util/io.hpp>
@@ -167,6 +174,22 @@ public:
     return write(name, json);
   }
 
+  std::filesystem::path makePublishStoredConfig(const std::string& name)
+  {
+    const auto source = makeConfig(name);
+    std::ifstream input(source);
+    ndnsf::di::NativeJson root;
+    input >> root;
+    root.erase("grant");
+    root.erase("offer_admission");
+    root["model_input"] = {{"mode", "publish-stored"}};
+    auto& request = root.at("request");
+    for (const auto* field : {"max_candidates", "max_policy_ms", "generation_mode",
+                               "timeout_ms", "ack_timeout_ms"})
+      request.erase(field);
+    return write(name, ndnsf::di::nativeCanonicalJson(root));
+  }
+
   std::filesystem::path makeValidPreparationConfig(const std::string& name)
   {
     const auto configPath = makeConfig(name);
@@ -239,6 +262,82 @@ public:
       {"semantic_partition", oracle.at("partition")} };
     catalog["splitter"] = {{"kind", "YOLO"}, {"components", {component}}};
 
+    std::ifstream input(configPath);
+    ndnsf::di::NativeJson runtime;
+    input >> runtime;
+    runtime["catalog"] = catalog;
+    return write(name, ndnsf::di::nativeCanonicalJson(runtime));
+  }
+
+  std::filesystem::path makeValidQwenPreparationConfig(const std::string& name)
+  {
+    const auto configPath = makeConfig(name);
+    onnx::ModelProto model;
+    if (!model.ParseFromString(ndnsf::di::fixture::makeQwenNativeConfigOnnxSource()))
+      throw std::runtime_error("Qwen source fixture is invalid");
+    auto* weight = model.mutable_graph()->add_initializer();
+    weight->set_name("fixture_weight");
+    weight->set_data_type(onnx::TensorProto::FLOAT);
+    weight->add_float_data(1.0F);
+    auto* layer = model.mutable_graph()->mutable_node(1);
+    layer->set_op_type("Add");
+    layer->add_input("fixture_weight");
+    std::string sourceBytes;
+    if (!model.SerializeToString(&sourceBytes))
+      throw std::runtime_error("failed to serialize Qwen source fixture");
+    {
+      std::ofstream output(m_root / "model.onnx", std::ios::binary);
+      output.write(sourceBytes.data(), static_cast<std::streamsize>(sourceBytes.size()));
+    }
+
+    const auto control = ndnsf::di::NativeAssemblyControl{
+      std::chrono::steady_clock::now() + std::chrono::seconds(30), [] {}, 1 << 20, 1 << 20};
+    ndnsf::di::NativeCanonicalSource source;
+    source.modelBytes.assign(sourceBytes.begin(), sourceBytes.end());
+    const auto sourceIdentity = ndnsf::di::canonicalOnnxSourceIdentity(source, control);
+    const std::string role = "/LLM/Pipeline/Stage/0";
+    auto descriptor = ndnsf::di::fixture::completeModel({
+      "QwenFixture", ndnsf::di::nativePlanningDigest("runtime-qwen-content"),
+      ndnsf::di::nativePlanningDigest("runtime-qwen-semantics"),
+      "sha256:8f901f484f07440aef844373c95d64b6462bcbc90c0070087b4c85c78a0de2b2",
+      "onnx", "float32", "qwen", "1"});
+    descriptor.sourceRevision = "pinned-r1";
+    const auto sourceDigest = ndnsf::di::nativePlanningDigest(
+      source.modelBytes.data(), source.modelBytes.size());
+    const ndnsf::di::NativeJson catalog{
+      {"schema", "ndnsf-di-native-request-catalog-v1"},
+      {"model", ndnsf::di::nativeParseJson(descriptor.canonicalJson())},
+      {"source", {{"file", "model.onnx"}, {"data_name", "/fixture/qwen/source"},
+        {"digest", sourceDigest},
+        {"model_manifest_digest", ndnsf::di::nativePlanningDigest("runtime-qwen-manifest")},
+        {"canonical_graph_digest", sourceIdentity.graphDigest}}},
+      {"recipe", {{"artifact_profile_digest",
+          ndnsf::di::nativePlanningDigest("fixture-profile")},
+        {"assembler_descriptor_digest", ndnsf::di::nativePlanningDigest("runtime-qwen-assembler")},
+        {"backend_abi", "fixture-abi"}, {"precision", "float32"},
+        {"quantization", "none"}, {"layout", "native"}, {"padding", "none"},
+        {"protection_epoch", "epoch-1"}, {"max_source_bytes", 1 << 20},
+        {"max_assembled_bytes", 1 << 20}, {"max_nodes", 64}}},
+      {"publication", {{"artifact_root", "/fixture/qwen/artifacts"}}},
+      {"input_format", "OPAQUE"}, {"max_payload_bytes", 4096},
+      {"conversation_input", {{"kind", "OPAQUE_BYTE_TOKEN_IDS"}}},
+      {"splitter", {{"kind", "QWEN"}, {"layer_ranges", {{0, 2}}},
+        {"artifact_digests_by_role", {{role,
+          ndnsf::di::nativePlanningDigest("runtime-qwen-artifact")}}},
+        {"weight_bytes_by_role", {{role, 1}}}, {"roles", {role}},
+        {"resources_by_role", {{role, ndnsf::di::nativeParseJson(
+          ndnsf::di::NativeRoleResourceRequirement{
+            {"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}.canonicalJson())}}},
+        {"tensor_degrees", {1}}, {"input_ingress_role", role},
+        {"result_egress_role", role}}},
+      {"node_mapping", {{"embedding", {0}}, {"layer-00", {1}}, {"layer-01", {2}},
+        {"final-norm-head", {3, 4, 5, 6, 7, 8, 9}}}},
+      {"state_inputs", {{role, {{"attention_kv_in", {"attention_kv_in"}},
+        {"recurrent_state_in", {"recurrent_state_in"}},
+        {"convolution_state_in", {"convolution_state_in"}}}}}},
+      {"state_outputs", {{role, {{"attention_kv_out", {"attention_kv_out"}},
+        {"recurrent_state_out", {"recurrent_state_out"}},
+        {"convolution_state_out", {"convolution_state_out"}}}}}}};
     std::ifstream input(configPath);
     ndnsf::di::NativeJson runtime;
     input >> runtime;
@@ -338,6 +437,452 @@ BOOST_AUTO_TEST_CASE(ValidPinnedConfigurationOpensAndDefersModelSource)
   // operator metadata only; source acquisition belongs to T003/T004 prepare.
   std::filesystem::remove(configPath);
   BOOST_CHECK_NO_THROW(runtime->user());
+}
+
+BOOST_AUTO_TEST_CASE(RequestTimeStoredPreparationRejectsInvalidInputsWithoutSideEffects)
+{
+  TempRuntimeConfig files;
+  RuntimeConfig config;
+  config.nativeConfigPath = files.makeConfig("source.json").string();
+  auto runtime = Runtime::open(config);
+  const auto user = runtime->user();
+  const ndnsf_distributed_repo::RepoArtifactTarget target{"/repo", "/repo/provider", "/repo/service"};
+  const auto journal = files.root() / "preparation.json";
+  const auto handle = files.root() / "private-handle";
+  BOOST_CHECK_EXCEPTION(user.prepareStoredModel("default", target, journal, handle,
+    std::chrono::milliseconds(0)), DiError, [] (const DiError& error) {
+      return error.code() == "INVALID_MODEL_PREPARATION";
+    });
+  for (const auto& alias : {journal, std::filesystem::path(journal.string() + ".lock"),
+                            std::filesystem::path(journal.string() + ".object")}) {
+    BOOST_CHECK_EXCEPTION(user.prepareStoredModel("default", target, journal, alias), DiError,
+      [] (const DiError& error) { return error.code() == "INVALID_MODEL_PUBLICATION"; });
+  }
+  BOOST_CHECK(!std::filesystem::exists(journal));
+  BOOST_CHECK(!std::filesystem::exists(handle));
+  BOOST_CHECK(!std::filesystem::exists(journal.string() + ".lock"));
+  runtime->close();
+  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+}
+
+BOOST_AUTO_TEST_CASE(PublishStoredModeDoesNotRequireInferenceKeysOrGenerationBudget)
+{
+  TempRuntimeConfig files;
+  RuntimeConfig config;
+  config.nativeConfigPath = files.makePublishStoredConfig("publish-only.json").string();
+
+  auto runtime = Runtime::open(config);
+  BOOST_REQUIRE(runtime);
+  auto user = runtime->user();
+  BOOST_CHECK_EXCEPTION(user.prepare(), DiError, [] (const DiError& error) {
+    return error.code() == "MODEL_INPUT_MODE_MISMATCH";
+  });
+  BOOST_CHECK_EXCEPTION(user.prepareAsync(), DiError, [] (const DiError& error) {
+    return error.code() == "MODEL_INPUT_MODE_MISMATCH";
+  });
+
+  const ndnsf_distributed_repo::RepoArtifactTarget invalidTarget{
+    "invalid", "/repo/provider", "/repo/service"};
+  const auto statePath = files.root() / "publication-state.json";
+  const auto handlePath = files.root() / "private-handle";
+  BOOST_CHECK_EXCEPTION(user.prepareStoredModel("default", invalidTarget, statePath, handlePath),
+    DiError, [] (const DiError& error) { return error.code() == "MODEL_INPUT_MODE_MISMATCH"; });
+  auto lockHandlePath = handlePath;
+  lockHandlePath += ".lock";
+  BOOST_CHECK_EXCEPTION(user.publishStoredModel("default", invalidTarget,
+    statePath, statePath.string() + ".lock"), DiError, [] (const DiError& error) {
+      return error.code() == "INVALID_MODEL_PUBLICATION";
+    });
+  BOOST_CHECK_EXCEPTION(user.publishStoredModel("default", invalidTarget,
+    statePath, statePath.string() + ".object"), DiError, [] (const DiError& error) {
+      return error.code() == "INVALID_MODEL_PUBLICATION";
+    });
+  BOOST_CHECK_THROW(user.publishStoredModel("default", invalidTarget, statePath, handlePath),
+                    std::invalid_argument);
+  BOOST_CHECK(!std::filesystem::exists(statePath));
+  BOOST_CHECK(!std::filesystem::exists(handlePath));
+  BOOST_CHECK(!std::filesystem::exists(lockHandlePath));
+  runtime->close();
+  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+}
+
+BOOST_AUTO_TEST_CASE(StoredModelOpenKeepsCoreOwnerUntilQuietReadCallbacksDrain)
+{
+  TempRuntimeConfig files;
+  const auto sourcePath = files.makeValidQwenPreparationConfig("stored-source.json");
+  std::ifstream sourceInput(sourcePath);
+  ndnsf::di::NativeJson runtimeJson;
+  sourceInput >> runtimeJson;
+  auto storedCatalog = runtimeJson.at("catalog");
+  storedCatalog.at("source").erase("file");
+  const auto catalogJson = ndnsf::di::nativeCanonicalJson(storedCatalog);
+  std::ifstream modelInput(files.root() / "model.onnx", std::ios::binary);
+  ndnsf::di::NativeCanonicalSource canonicalSource;
+  canonicalSource.modelBytes.assign(std::istreambuf_iterator<char>(modelInput),
+                                   std::istreambuf_iterator<char>());
+  const ndnsf::di::NativeAssemblyControl preparationControl{
+    std::chrono::steady_clock::now() + std::chrono::seconds(30), [] {}, 1 << 20, 1 << 20};
+  const auto catalog = ndnsf::di::NativeRequestCatalog::load(
+    catalogJson, canonicalSource, preparationControl);
+  std::map<ndn::Name, std::vector<std::uint8_t>> originalPackets;
+  ndn::KeyChain publisherKeys{"pib-memory:", "tpm-memory:"};
+  ndnsf::di::NativeStoredModelPacketIo publisherIo;
+  publisherIo.requireCurrent = [] {};
+  publisherIo.commit = [&] (auto wires, const std::string&) {
+    for (auto& wire : wires) {
+      const ndn::Data packet{ndn::Block(ndn::span<const std::uint8_t>(wire))};
+      originalPackets.emplace(packet.getName(), std::move(wire));
+    }
+  };
+  publisherIo.fetch = [&] (const std::vector<ndn::Name>& names) {
+    ndnsf::di::NativeStoredModelPacketIo::PacketWires wires;
+    for (const auto& name : names)
+      wires.push_back(originalPackets.at(name));
+    return wires;
+  };
+  const auto publicationPrefix = ndn::Name("/model-preparer/models").appendVersion(1);
+  const auto publication = ndnsf::di::nativePublishStoredPreparedModel(
+    publisherKeys, ndn::Name("/model-preparer"), ndn::Name("/repo"), publicationPrefix,
+    catalog, catalogJson, publisherIo, {});
+  const auto handle = publication.handle;
+  const auto packetStore = std::make_shared<decltype(originalPackets)>(
+    std::move(originalPackets));
+  runtimeJson["catalog"] = std::move(storedCatalog);
+  runtimeJson["model_input"] = {{"mode", "stored"}};
+  const auto configPath = files.write("stored.json",
+    ndnsf::di::nativeCanonicalJson(runtimeJson));
+  std::filesystem::remove(files.root() / "model.onnx");
+  BOOST_CHECK(!std::filesystem::exists(files.root() / "model.onnx"));
+
+  ndn::security::KeyChain fixtureKeyChain{"pib-memory:", "tpm-memory:"};
+  ndn::DummyClientFace fixtureFace{fixtureKeyChain};
+  const auto userCertificate = ndn_service_framework::test::makeRsaIdentity(
+    fixtureKeyChain, ndn::Name("/user"));
+  const auto authorityCertificate = ndn_service_framework::test::makeRsaIdentity(
+    fixtureKeyChain, ndn::Name("/aa"));
+  auto fixtureUser = std::make_shared<ndn_service_framework::test::LocalServiceUser>(
+    fixtureFace, ndn::Name("/group"), userCertificate, authorityCertificate,
+    (files.root() / "trust.conf").string());
+
+  struct IoContextRunner
+  {
+    ndn::Face& face;
+    std::atomic<bool> running{true};
+    std::unique_ptr<boost::asio::io_context::work> work;
+    std::thread thread;
+
+    explicit IoContextRunner(ndn::Face& value)
+      : face(value)
+      , work(std::make_unique<boost::asio::io_context::work>(face.getIoContext()))
+      , thread([this] {
+          while (running.load(std::memory_order_acquire)) {
+            face.getIoContext().poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          }
+        })
+    {
+    }
+
+    void stop()
+    {
+      if (!running.exchange(false, std::memory_order_acq_rel))
+        return;
+      work.reset();
+      if (thread.joinable())
+        thread.join();
+    }
+
+    ~IoContextRunner()
+    {
+      stop();
+    }
+  } fixtureIo(fixtureFace);
+
+  const auto requesterKey = testEd25519Key('r');
+  auto grants = std::make_shared<ndnsf::di::NativeAuthenticatedGrantClient>(
+    "/user", requesterKey, "/aa", std::string(32, 'a'), "epoch-1",
+    [] (const ndnsf::di::NativeSignedGrantRequest&, const std::string&, std::uint64_t,
+        const ndnsf::di::NativeGrantControl&) { return ndnsf::di::NativeKeyGrant{}; },
+    [] (const std::string&, const std::string&, const ndnsf::di::NativeGrantControl&) {
+      return std::string("/fixture/grant");
+    });
+  const auto& publicKeyFiles = runtimeJson.at("offer_admission").at("public_key_files");
+  const auto keyId = publicKeyFiles.begin().key();
+  std::ifstream keyInput(files.root() / publicKeyFiles.begin().value().get<std::string>());
+  const std::string keyPem((std::istreambuf_iterator<char>(keyInput)),
+                           std::istreambuf_iterator<char>());
+  auto admission = std::make_shared<ndnsf::di::NativeOfferAdmission>(
+    runtimeJson.at("offer_admission").at("policy").dump(),
+    std::map<std::string, std::string>{{keyId, keyPem}},
+    runtimeJson.at("offer_admission").at("candidate_digest").get<std::string>());
+
+  RuntimeConfig config;
+  config.nativeConfigPath = configPath.string();
+  const auto repositoryConfig = ndnsf_distributed_repo::RepoArtifactTarget{
+    "/repo", "/repo/provider", "/repo/service"};
+  const auto handlePath = files.root() / "private-handle";
+  ndnsf::di::nativeExportStoredModelHandle(handle, handlePath);
+  struct RepoReadObservations
+  {
+    std::mutex mutex;
+    std::set<ndn::Name> fetchedNames;
+    std::atomic<bool> pauseRoot{false};
+    std::atomic<std::size_t> unexpectedInterests{0};
+  };
+  auto observations = std::make_shared<RepoReadObservations>();
+
+  struct QuietReadGate
+  {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool entered = false;
+    bool released = false;
+    bool handlerDone = false;
+  };
+  auto gate = std::make_shared<QuietReadGate>();
+  std::vector<std::shared_ptr<Runtime>> runtimes;
+  std::future<bool> openResult;
+  const auto rootName = handle.rootName;
+  auto interestGate = fixtureFace.onSendInterest.connect(
+    [&fixtureFace, packetStore, observations, gate,
+     rootName] (const ndn::Interest& interest) {
+    if (interest.getName() == rootName &&
+        observations->pauseRoot.load(std::memory_order_acquire)) {
+      std::unique_lock<std::mutex> lock(gate->mutex);
+      gate->entered = true;
+      gate->condition.notify_all();
+      gate->condition.wait(lock, [&] { return gate->released; });
+      gate->handlerDone = true;
+      lock.unlock();
+      gate->condition.notify_all();
+      return;
+    }
+    const auto found = packetStore->find(interest.getName());
+    if (found == packetStore->end()) {
+      observations->unexpectedInterests.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(observations->mutex);
+      observations->fetchedNames.insert(interest.getName());
+    }
+    const ndn::Data packet{ndn::Block(ndn::span<const std::uint8_t>(found->second))};
+    fixtureFace.receive(packet);
+  });
+  BOOST_CHECK(interestGate.isConnected());
+
+  struct StoredOpenCleanup
+  {
+    std::vector<std::shared_ptr<Runtime>>& runtimes;
+    std::future<bool>& openResult;
+    ndn::signal::Connection& interestGate;
+    IoContextRunner& io;
+    std::shared_ptr<QuietReadGate> gate;
+    std::shared_ptr<RepoReadObservations> observations;
+
+    ~StoredOpenCleanup()
+    {
+      for (const auto& runtime : runtimes)
+        runtime->close();
+      observations->pauseRoot.store(false, std::memory_order_release);
+      {
+        std::lock_guard<std::mutex> lock(gate->mutex);
+        gate->released = true;
+      }
+      gate->condition.notify_all();
+      if (openResult.valid())
+        openResult.wait_for(std::chrono::seconds(12));
+      bool drained = true;
+      for (const auto& runtime : runtimes) {
+        const auto current = runtime->drain(std::chrono::seconds(12));
+        drained = current && drained;
+      }
+      if (drained) {
+        io.stop();
+        interestGate.disconnect();
+      }
+    }
+  } cleanup{runtimes, openResult, interestGate, fixtureIo, gate, observations};
+
+  auto successfulRuntime = Runtime::open(config);
+  runtimes.push_back(successfulRuntime);
+  ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+    successfulRuntime, fixtureUser, grants, admission);
+  {
+    const auto prepared = successfulRuntime->user().openStoredModel(
+      "default", handlePath, repositoryConfig, std::chrono::seconds(10));
+    BOOST_CHECK_EQUAL(prepared.manifest().modelName, "QwenFixture");
+    const auto originalKey = prepared.receipt().preparationKeyDigest;
+    const auto reused = successfulRuntime->user().openStoredModel(
+      "default", handlePath, repositoryConfig, std::chrono::seconds(10));
+    BOOST_CHECK_EQUAL(reused.receipt().preparationKeyDigest, originalKey);
+    BOOST_CHECK(reused.receipt().origin == ndnsf::di::PreparationReceipt::Origin::CacheHit);
+    auto canonicalTarget = repositoryConfig;
+    canonicalTarget.repoNode = ndn::Name(repositoryConfig.repoNode).toUri(
+      ndn::name::UriFormat::CANONICAL);
+    canonicalTarget.providerIdentity = ndn::Name(repositoryConfig.providerIdentity).toUri(
+      ndn::name::UriFormat::CANONICAL);
+    canonicalTarget.servicePrefix = ndn::Name(repositoryConfig.servicePrefix).toUri(
+      ndn::name::UriFormat::CANONICAL);
+    const auto equivalent = successfulRuntime->user().openStoredModel(
+      "default", handlePath, canonicalTarget, std::chrono::seconds(10));
+    BOOST_CHECK_EQUAL(equivalent.receipt().preparationKeyDigest, originalKey);
+    BOOST_CHECK(equivalent.receipt().origin == ndnsf::di::PreparationReceipt::Origin::CacheHit);
+
+    auto wrongHandle = handle;
+    wrongHandle.masterKey.front() ^= 1;
+    const auto wrongHandlePath = files.root() / "wrong-private-handle";
+    ndnsf::di::nativeExportStoredModelHandle(wrongHandle, wrongHandlePath);
+    BOOST_CHECK_THROW(successfulRuntime->user().openStoredModel(
+      "default", wrongHandlePath, repositoryConfig, std::chrono::seconds(10)), std::exception);
+
+    auto alternateRepository = repositoryConfig;
+    alternateRepository.providerIdentity += "/alternate";
+    const auto rebound = successfulRuntime->user().openStoredModel(
+      "default", handlePath, alternateRepository, std::chrono::seconds(10));
+    BOOST_CHECK_NE(rebound.receipt().preparationKeyDigest, originalKey);
+  }
+  successfulRuntime->close();
+  BOOST_CHECK(successfulRuntime->drain(std::chrono::seconds(2)));
+  {
+    auto sourceJson = runtimeJson;
+    sourceJson["model_input"]["mode"] = "source";
+    sourceJson["catalog"]["source"]["file"] = (files.root() / "model.onnx").string();
+    auto sourceConfig = config;
+    sourceConfig.nativeConfigPath = files.write("source-existing-handle.json",
+      ndnsf::di::nativeCanonicalJson(sourceJson)).string();
+    auto sourceRuntime = Runtime::open(sourceConfig);
+    runtimes.push_back(sourceRuntime);
+    ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+      sourceRuntime, fixtureUser, grants, admission);
+    const auto journal = files.root() / "absent-preparation-state";
+    const auto prepared = sourceRuntime->user().prepareStoredModel(
+      "default", repositoryConfig, journal, handlePath, std::chrono::seconds(10));
+    BOOST_CHECK_EQUAL(prepared.manifest().modelName, "QwenFixture");
+    const auto reused = sourceRuntime->user().prepareStoredModel(
+      "default", repositoryConfig, journal, handlePath, std::chrono::seconds(10));
+    BOOST_CHECK(reused.receipt().origin == ndnsf::di::PreparationReceipt::Origin::CacheHit);
+    BOOST_CHECK_THROW(sourceRuntime->user().prepareStoredModel(
+      "default", repositoryConfig, journal, files.root() / "wrong-private-handle",
+      std::chrono::seconds(10)), std::exception);
+    const auto symlinkHandle = files.root() / "symlink-private-handle";
+    std::filesystem::create_symlink(handlePath, symlinkHandle);
+    BOOST_CHECK_THROW(sourceRuntime->user().prepareStoredModel(
+      "default", repositoryConfig, journal, symlinkHandle, std::chrono::seconds(10)),
+      std::exception);
+    BOOST_CHECK(!std::filesystem::exists(journal));
+    BOOST_CHECK(!std::filesystem::exists(journal.string() + ".lock"));
+    BOOST_CHECK(!std::filesystem::exists(journal.string() + ".object"));
+    sourceRuntime->close();
+    BOOST_CHECK(sourceRuntime->drain(std::chrono::seconds(2)));
+  }
+  BOOST_CHECK_EQUAL(observations->unexpectedInterests.load(), 0U);
+  {
+    std::lock_guard<std::mutex> lock(observations->mutex);
+    BOOST_REQUIRE(!observations->fetchedNames.empty());
+    for (const auto& name : observations->fetchedNames)
+      BOOST_CHECK(name.toUri().find("material-bundle-") == std::string::npos);
+    observations->fetchedNames.clear();
+  }
+
+  for (const auto mode : {"stored-close", "source-close", "source-deadline"}) {
+    const bool sourceMode = std::string(mode) != "stored-close";
+    const bool expire = std::string(mode) == "source-deadline";
+    auto quietConfig = config;
+    if (sourceMode)
+      quietConfig.nativeConfigPath = (files.root() / "source-existing-handle.json").string();
+    auto runtime = Runtime::open(quietConfig);
+    runtimes.push_back(runtime);
+    ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+      runtime, fixtureUser, grants, admission);
+    {
+      std::lock_guard<std::mutex> lock(gate->mutex);
+      gate->entered = false;
+      gate->released = false;
+      gate->handlerDone = false;
+    }
+    observations->pauseRoot.store(true, std::memory_order_release);
+    const auto journal = files.root() / "quiet-absent-preparation-state";
+    auto failure = std::make_shared<std::pair<std::string, std::chrono::milliseconds>>();
+    openResult = std::async(std::launch::async,
+      [runtime, handlePath, repositoryConfig, sourceMode, expire, journal, failure] {
+      const auto started = std::chrono::steady_clock::now();
+      try {
+        if (sourceMode)
+          (void)runtime->user().prepareStoredModel("default", repositoryConfig, journal,
+            handlePath, expire ? std::chrono::milliseconds(300) : std::chrono::milliseconds(10000));
+        else
+          (void)runtime->user().openStoredModel("default", handlePath, repositoryConfig,
+                                                std::chrono::seconds(10));
+        return false;
+      }
+      catch (const DiError& error) {
+        failure->first = error.code();
+        failure->second = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - started);
+        return true;
+      }
+      catch (...) {
+        return !expire;
+      }
+    });
+    bool reachedQuietRead = false;
+    {
+      std::unique_lock<std::mutex> lock(gate->mutex);
+      reachedQuietRead = gate->condition.wait_for(lock, std::chrono::seconds(2),
+                                                   [&] { return gate->entered; });
+    }
+    if (!expire)
+      runtime->close();
+    BOOST_REQUIRE(openResult.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+    BOOST_CHECK(reachedQuietRead);
+    BOOST_CHECK(openResult.get());
+    if (expire) {
+      BOOST_CHECK_EQUAL(failure->first, "PREPARATION_TIMEOUT");
+      // A 300 ms deadline may incur scheduling delay, but not a later transport timeout.
+      BOOST_CHECK_GE(failure->second.count(), 200);
+      BOOST_CHECK_LE(failure->second.count(), 1000);
+    }
+    runtime->close();
+    BOOST_CHECK(!runtime->drain(std::chrono::milliseconds(20)));
+    {
+      std::lock_guard<std::mutex> lock(gate->mutex);
+      gate->released = true;
+    }
+    observations->pauseRoot.store(false, std::memory_order_release);
+    gate->condition.notify_all();
+    {
+      std::unique_lock<std::mutex> lock(gate->mutex);
+      BOOST_REQUIRE(gate->condition.wait_for(lock, std::chrono::seconds(2),
+                                              [&] { return gate->handlerDone; }));
+    }
+    BOOST_REQUIRE(runtime->drain(std::chrono::seconds(2)));
+    BOOST_CHECK(!std::filesystem::exists(journal));
+  }
+  fixtureIo.stop();
+  interestGate.disconnect();
+}
+
+BOOST_AUTO_TEST_CASE(LongPreparationBootstrapBudgetRemainsBounded)
+{
+  TempRuntimeConfig files;
+  files.makeConfig("requester.json");
+  for (const auto budget : {3600000ULL, 10800000ULL, 86400000ULL}) {
+    const auto path = files.rewrite("requester.json", std::to_string(budget) + ".json",
+      "\"bootstrap_ms\":1000", "\"bootstrap_ms\":" + std::to_string(budget));
+    RuntimeConfig config;
+    config.nativeConfigPath = path.string();
+    auto runtime = Runtime::open(config);
+    BOOST_REQUIRE(runtime);
+    BOOST_CHECK_NO_THROW(runtime->user());
+  }
+  const auto oversized = files.rewrite("requester.json", "oversized.json",
+    "\"bootstrap_ms\":1000", "\"bootstrap_ms\":86400001");
+  RuntimeConfig config;
+  config.nativeConfigPath = oversized.string();
+  BOOST_CHECK_EXCEPTION(Runtime::open(config), DiError, [] (const DiError& error) {
+    return error.code() == "INVALID_RUNTIME_CONFIGURATION" && error.boundary() == "limits";
+  });
 }
 
 BOOST_AUTO_TEST_CASE(PrepareReportsSourceFailureAtPreparationBoundary)
@@ -879,6 +1424,20 @@ BOOST_AUTO_TEST_CASE(CompleteNativeContractRejectsMalformedFields)
   RuntimeConfig optionalGenerationConfig;
   optionalGenerationConfig.nativeConfigPath = optionalGeneration.string();
   BOOST_CHECK_NO_THROW(Runtime::open(optionalGenerationConfig));
+
+  const auto missingCandidateBudget = files.rewrite(
+    "requester.json", "missing-max-candidates.json", "\"max_candidates\":1,", "");
+  RuntimeConfig missingCandidateConfig;
+  missingCandidateConfig.nativeConfigPath = missingCandidateBudget.string();
+  BOOST_CHECK_EXCEPTION(Runtime::open(missingCandidateConfig), DiError,
+                        [] (const DiError& error) { return error.boundary() == "request"; });
+
+  const auto missingPolicyBudget = files.rewrite(
+    "requester.json", "missing-max-policy-ms.json", "\"max_policy_ms\":100,", "");
+  RuntimeConfig missingPolicyConfig;
+  missingPolicyConfig.nativeConfigPath = missingPolicyBudget.string();
+  BOOST_CHECK_EXCEPTION(Runtime::open(missingPolicyConfig), DiError,
+                        [] (const DiError& error) { return error.boundary() == "request"; });
 
   const auto excessiveCandidates = files.rewrite(
     "requester.json", "excessive-candidates.json", "\"max_candidates\":1",

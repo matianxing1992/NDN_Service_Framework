@@ -112,6 +112,7 @@ struct NativeGenerationExecutionContractV1
 
 struct NativeFixedExecutionTemplateV1;
 class NativeFixedPlacementCoreV1;
+class NativeStoredModelObjectKeyLease;
 
 struct NativeSelectionProjectionV3
 {
@@ -170,6 +171,13 @@ struct NativeSelectionProjectionV3
   const std::map<std::string, std::string>& providerOwnership() const;
   // Runtime identity set only by the cached invocation decoder.
   std::string fixedRoleReference;
+  // Current invocation's protected model-key table reference; never fixed state.
+  std::optional<NativeJson> modelObjectKeys;
+  // Provider-local, nonsecret stored-publication/key fingerprint. Set only
+  // after current grant and recipient-key admission; serializers omit it.
+  std::string storedModelCacheIdentity;
+  // Request-scoped admitted object keys; never serialized or retained in fixed state.
+  std::shared_ptr<const NativeStoredModelObjectKeyLease> storedModelObjectKeyLease;
 
   const NativeSelectionRoleV3& selectedRoleContract() const
   {

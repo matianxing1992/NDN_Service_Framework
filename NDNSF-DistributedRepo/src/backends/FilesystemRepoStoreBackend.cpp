@@ -5,6 +5,7 @@
 #include "ndnsf-distributed-repo/detail/StrictJson.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cctype>
 #include <cstring>
@@ -24,6 +25,20 @@ namespace ndnsf_distributed_repo {
 namespace {
 
 namespace fs = std::filesystem;
+
+using ManifestStamp = std::array<uint64_t, 7>;
+
+ManifestStamp
+manifestStamp(const fs::path& path)
+{
+  struct stat info{};
+  if (::lstat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode))
+    throw std::runtime_error("repo-file-manifest-unavailable: " + path.string());
+  return {static_cast<uint64_t>(info.st_dev), static_cast<uint64_t>(info.st_ino),
+    static_cast<uint64_t>(info.st_size), static_cast<uint64_t>(info.st_mtim.tv_sec),
+    static_cast<uint64_t>(info.st_mtim.tv_nsec), static_cast<uint64_t>(info.st_ctim.tv_sec),
+    static_cast<uint64_t>(info.st_ctim.tv_nsec)};
+}
 
 bool
 directoryPresentForUserRemoval(const fs::path& path, bool allowMissing = false)
@@ -947,6 +962,37 @@ FilesystemRepoStoreBackend::getRange(const std::string& objectName,
                                   manifest.generation,
                                   ArtifactByteRange{range.offsetBytes,
                                                     range.lengthBytes});
+}
+
+RepoRangeReadFunction
+FilesystemRepoStoreBackend::bindCurrentRangeReader(
+  std::shared_ptr<const RepoObjectManifest> expected) const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto path = manifestPath(expected->objectName);
+  auto stamp = manifestStamp(path);
+  const auto current = readManifestUnlocked(expected->objectName);
+  if (stamp != manifestStamp(path) || !current.hasSameMetadata(*expected) ||
+      isMetadataOnly(current))
+    throw std::runtime_error("repo-publication-identity-mismatch");
+  const auto reference = artifactReference(*expected);
+  return [this, expected = std::move(expected), path, stamp, reference](RepoByteRange range) mutable {
+    std::lock_guard<std::mutex> guard(m_mutex);
+    const auto observed = manifestStamp(path);
+    if (observed != stamp) {
+      const auto current = readManifestUnlocked(expected->objectName);
+      if (observed != manifestStamp(path) || !current.hasSameMetadata(*expected))
+        throw std::runtime_error("repo-publication-identity-mismatch");
+      stamp = observed;
+    }
+    if (range.offsetBytes > expected->size ||
+        range.lengthBytes > expected->size - range.offsetBytes)
+      throw std::out_of_range("repo-file-range-read-out-of-bounds");
+    if (!m_payloadStore.isCommitted(reference, expected->generation))
+      throw std::runtime_error("repo-publication-payload-unavailable");
+    return m_payloadStore.readRange(reference, expected->generation,
+                                    {range.offsetBytes, range.lengthBytes});
+  };
 }
 
 RepoObjectManifest

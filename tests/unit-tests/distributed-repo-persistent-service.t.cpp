@@ -2300,9 +2300,10 @@ BOOST_AUTO_TEST_CASE(OriginalPacketSetVerifiesReplicaCertificateBeforeContentWit
   schema << "trust-anchor { type base64 base64-string \"" << anchor << "\" }\n";
   schema.close();
   BOOST_REQUIRE(schema);
-  ndn_service_framework::ServiceUser user(
+  auto userOwner = std::make_shared<ndn_service_framework::ServiceUser>(
     ndn_service_framework::ServiceUser::LocalMockTag{}, face, ndn::Name("/group"),
     owner, authority, schemaPath.string());
+  auto& user = *userOwner;
   Oracle::configure(user, schemaPath.string(), face);
   ndn::security::MakeCertificateOptions options;
   options.version = 301;
@@ -2362,10 +2363,7 @@ BOOST_AUTO_TEST_CASE(OriginalPacketSetVerifiesReplicaCertificateBeforeContentWit
       std::vector<uint8_t>(wire.begin(), wire.end()), source.getIdentity(),
       std::chrono::steady_clock::now() + std::chrono::seconds(2));
   };
-  const auto run = [&](const RepoDataReference& selected) {
-    auto result = std::async(std::launch::async, [&] {
-      return RepoClient::fetchOriginalDataPacketSet(user, selected, verifier, 3000);
-    });
+  const auto finish = [&](std::future<std::vector<std::vector<uint8_t>>> result) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
     while (result.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready &&
            std::chrono::steady_clock::now() < deadline) {
@@ -2377,11 +2375,31 @@ BOOST_AUTO_TEST_CASE(OriginalPacketSetVerifiesReplicaCertificateBeforeContentWit
       throw std::runtime_error("replica-fetch-fixture-deadline");
     return result.get();
   };
+  const auto run = [&](const RepoDataReference& selected) {
+    return finish(std::async(std::launch::async, [&] {
+      return RepoClient::fetchOriginalDataPacketSet(user, selected, verifier, 3000);
+    }));
+  };
   BOOST_CHECK(run(reference) == expected);
   BOOST_REQUIRE_EQUAL(verified.size(), expected.size());
   BOOST_CHECK(verified.front() == certificate.getName());
   BOOST_CHECK(verified[1] == root.getName());
   BOOST_CHECK(Oracle::knowsCertificate(user, certificate.getName()));
+  const RepoArtifactTarget target{"/repo/node", "/replica/storage", "/repo/service"};
+  const std::vector<ndn::Name> names{root.getName(), segment.getName()};
+  const auto named = finish(std::async(std::launch::async, [&] {
+    return RepoClient::fetchOriginalDataPackets(userOwner, target, names, 8U << 20,
+                                               verifier, 3000);
+  }));
+  BOOST_REQUIRE_EQUAL(named.size(), 2);
+  BOOST_CHECK(named[0] == expected[0]);
+  BOOST_CHECK(named[1] == expected[1]);
+  BOOST_CHECK_THROW(finish(std::async(std::launch::async, [&] {
+    return RepoClient::fetchOriginalDataPackets(userOwner, target, names, 8U << 20,
+      [] (const ndn::Data&) { return false; }, 3000);
+  })), std::runtime_error);
+  BOOST_CHECK_THROW(RepoClient::fetchOriginalDataPackets(userOwner, target, names, 1,
+                                                       verifier, 3000), std::invalid_argument);
   BOOST_CHECK_MESSAGE(unexpectedInterests == 0U, unexpectedInterestNames.str());
   verified.clear();
   auto damaged = reference;
@@ -2650,6 +2668,7 @@ struct OwnedPacketFixture
   std::unique_ptr<ndn_service_framework::ServiceProvider> provider;
   unsigned fetches = 0;
   FilesystemRecoveryPolicy recoveryPolicy;
+  uint64_t capacityBytes;
 
   static uint64_t
   now()
@@ -2659,8 +2678,10 @@ struct OwnedPacketFixture
   }
 
   explicit OwnedPacketFixture(
-    FilesystemRecoveryPolicy policy = FilesystemRecoveryPolicy::KEEP_UNCONFIRMED)
+    FilesystemRecoveryPolicy policy = FilesystemRecoveryPolicy::KEEP_UNCONFIRMED,
+    uint64_t capacity = 4U << 20)
     : recoveryPolicy(policy)
+    , capacityBytes(capacity)
   {
     const auto producer = makeRsaIdentity(keys, ndn::Name("/provider/a"));
     const auto repo = makeRsaIdentity(keys, ndn::Name("/repo/provider"));
@@ -2709,10 +2730,10 @@ struct OwnedPacketFixture
     StorageCapability capability;
     capability.repoNode = "/repo/a";
     capability.repoMode = "persistent";
-    capability.freeBytes = 4 * 1024 * 1024;
+    capability.freeBytes = capacityBytes;
     node = std::make_shared<RepoNode>(ndn::Name("/SERVICE/repo"), capability,
       std::make_shared<FilesystemRepoStoreBackend>((temp.path() / "objects").string(),
-        4 * 1024 * 1024, 1024, "owned-node", recoveryPolicy),
+        capacityBytes, 1024, "owned-node", recoveryPolicy),
       "/repo/a", "/repo/provider",
       (temp.path() / "metadata.sqlite3").string());
   }
@@ -2727,6 +2748,23 @@ struct OwnedPacketFixture
       throw std::runtime_error(response.getErrorInfo());
     }
     return parseOperationStatusJson(responseString(response));
+  }
+
+  void
+  useDigestPackets()
+  {
+    request.schemaVersion = 2;
+    original.clear();
+    for (auto& wire : packets) {
+      ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire))};
+      keys.sign(packet, ndn::security::signingWithSha256());
+      const auto& encoded = packet.wireEncode();
+      wire.assign(encoded.begin(), encoded.end());
+      original.insert(original.end(), wire.begin(), wire.end());
+    }
+    auto& reference = request.reference;
+    reference.expectedSize = reference.packetSetMetadata->size = original.size();
+    reference.expectedSha256 = reference.packetSetMetadata->sha256 = sha256(original);
   }
 
   RepoUserStorageUsage
@@ -2792,6 +2830,139 @@ BOOST_AUTO_TEST_CASE(OwnedInsertValidatesPacketsCommitsClaimAndReopensOriginalWi
     fixture.node->handleUserStorageList(toBytes(RepoUserStorageListRequest{}.toJson()), "/owner/a")));
   BOOST_REQUIRE_EQUAL(listed.objects.size(), 1U);
   BOOST_CHECK(listed.objects.front().state == RepoUserStorageClaimState::COMMITTED);
+}
+
+BOOST_AUTO_TEST_CASE(LargeDigestOwnedUploadPreservesOriginalWireAndRecoveryManifest)
+{
+  OwnedPacketFixture fixture(FilesystemRecoveryPolicy::KEEP_UNCONFIRMED, 64U << 20);
+  fixture.request.schemaVersion = 2;
+  fixture.packets.clear();
+  fixture.original.clear();
+  auto& reference = fixture.request.reference;
+  auto& metadata = *reference.packetSetMetadata;
+  metadata.packetNames.clear();
+  metadata.packetOffsets = {0};
+  const std::vector<uint8_t> content(6144, 0x73);
+  for (unsigned i = 0; i < 4096; ++i) {
+    const auto name = i == 0 ? ndn::Name(reference.objectName) :
+      ndn::Name("/provider/a/kv").appendSegment(i);
+    ndn::Data packet{name};
+    packet.setContent(ndn::span<const uint8_t>(content));
+    fixture.keys.sign(packet, ndn::security::signingWithSha256());
+    const auto& wire = packet.wireEncode();
+    fixture.packets.emplace_back(wire.begin(), wire.end());
+    fixture.original.insert(fixture.original.end(), wire.begin(), wire.end());
+    metadata.packetNames.push_back(name.toUri(ndn::name::UriFormat::ALTERNATE));
+    metadata.packetOffsets.push_back(fixture.original.size());
+  }
+  metadata.size = reference.expectedSize = fixture.original.size();
+  metadata.sha256 = reference.expectedSha256 = sha256(fixture.original);
+  BOOST_REQUIRE_GT(reference.expectedSize, 8U << 20);
+  BOOST_REQUIRE_LE(reference.expectedSize, 32U << 20);
+  fixture.node->setDataReferenceSpoolFetcher([&](const RepoDataReference&) {
+    ++fixture.fetches;
+    auto spool = std::make_shared<detail::FaceDataReferencePacketSpool>(
+      fixture.packets.size(), fixture.original.size());
+    for (std::size_t i = 0; i < fixture.packets.size(); ++i)
+      spool->append(i, fixture.packets[i]);
+    spool->finalize();
+    return spool;
+  });
+  const auto result = fixture.insert();
+  BOOST_REQUIRE_MESSAGE(result.state == "DONE", result.message);
+  BOOST_CHECK_EQUAL(result.completedSegments, 4096U);
+  const auto encoded = encodeUserStorageInsertRequest(fixture.request);
+  const auto recovery = fixture.node->handleManifest(encoded, "/provider/a");
+  BOOST_CHECK_LE(recovery.size(), 1U << 20);
+  const auto stored = parseManifestJson(toString(recovery));
+  BOOST_REQUIRE_EQUAL(stored.packetNames.size(), metadata.packetNames.size());
+  for (std::size_t i = 0; i < stored.packetNames.size(); ++i)
+    BOOST_CHECK(ndn::Name(stored.packetNames[i]) == ndn::Name(metadata.packetNames[i]));
+  BOOST_CHECK(fixture.node->getRange(stored.objectName, {0, stored.size}) == fixture.original);
+  fixture.provider.reset();
+  fixture.node.reset();
+  fixture.open();
+  BOOST_CHECK(fixture.node->getRange(stored.objectName, {0, stored.size}) == fixture.original);
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(DigestOwnedInsertIsExplicitDurableAndBoundToTheLiveWriterGrant)
+{
+  OwnedPacketFixture fixture;
+  const auto legacy = encodeUserStorageInsertRequest(fixture.request);
+  BOOST_REQUIRE_EQUAL(legacy.at(4), '1');
+  BOOST_CHECK(encodeUserStorageInsertRequest(decodeUserStorageInsertRequest(legacy)) == legacy);
+  fixture.useDigestPackets();
+  const auto encoded = encodeUserStorageInsertRequest(fixture.request);
+  BOOST_REQUIRE_EQUAL(encoded.at(4), '2');
+  BOOST_CHECK_EQUAL(decodeUserStorageInsertRequest(encoded).schemaVersion, 2);
+  BOOST_CHECK(encodeUserStorageInsertRequest(decodeUserStorageInsertRequest(encoded)) == encoded);
+  fixture.request.schemaVersion = 1;
+  const auto defaultRejected = fixture.insert();
+  BOOST_CHECK_EQUAL(defaultRejected.state, "FAILED");
+  BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+  fixture.request.schemaVersion = 2;
+  auto wrongGrant = fixture.request.storageBinding;
+  fixture.request.storageBinding.ownerIdentity = "/owner/other";
+  const auto before = fixture.fetches;
+  BOOST_CHECK_EQUAL(fixture.insert().state, "FAILED");
+  BOOST_CHECK_EQUAL(fixture.fetches, before);
+  fixture.request.storageBinding = wrongGrant;
+  const auto result = fixture.insert();
+  BOOST_REQUIRE_MESSAGE(result.state == "DONE", result.message);
+  const auto manifest = parseManifestJson(toString(fixture.node->handleManifest(
+    encoded, "/provider/a")));
+  BOOST_CHECK(fixture.node->getRange(manifest.objectName, {0, manifest.size}) == fixture.original);
+  BOOST_CHECK_THROW(fixture.node->handleManifest(encoded, "/provider/other"), std::exception);
+  const auto charged = fixture.usage().committedBytes;
+  BOOST_REQUIRE_EQUAL(fixture.insert().state, "DONE");
+  BOOST_CHECK_EQUAL(fixture.usage().committedBytes, charged);
+  fixture.provider.reset();
+  fixture.node.reset();
+  fixture.open();
+  BOOST_CHECK(fixture.node->getRange(manifest.objectName, {0, manifest.size}) == fixture.original);
+}
+
+BOOST_AUTO_TEST_CASE(DigestOwnedInsertRejectsBadHashWrongNamespaceAndIdentityPackets)
+{
+  {
+    OwnedPacketFixture fixture;
+    fixture.request.schemaVersion = 2;
+    BOOST_CHECK_EQUAL(fixture.insert().state, "FAILED");
+    BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+  }
+  {
+    OwnedPacketFixture fixture;
+    fixture.useDigestPackets();
+    fixture.packets.back().back() ^= 1;
+    BOOST_CHECK_EQUAL(fixture.insert().state, "FAILED");
+    BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+    BOOST_CHECK(fixture.node->core().list().empty());
+  }
+  {
+    OwnedPacketFixture fixture;
+    fixture.useDigestPackets();
+    ndn::Data packet{ndn::Name("/unrelated/producer/object")};
+    fixture.keys.sign(packet, ndn::security::signingWithSha256());
+    const auto& wire = packet.wireEncode();
+    fixture.packets.back().assign(wire.begin(), wire.end());
+    BOOST_CHECK_EQUAL(fixture.insert().state, "FAILED");
+    BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+  }
+  {
+    OwnedPacketFixture fixture;
+    fixture.useDigestPackets();
+    fixture.request.reference.expectedSha256 =
+      fixture.request.reference.packetSetMetadata->sha256 = std::string(64, '0');
+    BOOST_CHECK_EQUAL(fixture.insert().state, "FAILED");
+    BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+    fixture.request.schemaVersion = 3;
+    BOOST_CHECK_THROW(encodeUserStorageInsertRequest(fixture.request), std::invalid_argument);
+    auto malformed = encodeUserStorageInsertRequest(RepoUserStorageInsertRequest{
+      2, "malformed", 1, fixture.request.reference, fixture.request.storageBinding});
+    malformed.at(4) = '3';
+    BOOST_CHECK_THROW(decodeUserStorageInsertRequest(malformed), std::invalid_argument);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(LargeOwnedPacketSetReadsOriginalWireAndRechecksDeletion)
@@ -3007,8 +3178,17 @@ BOOST_AUTO_TEST_CASE(OwnedInsertRespectsFundedQuotaBeforePublishingOriginalPacke
   SqliteArtifactMetadataStore journal((fixture.temp.path() / "metadata.sqlite3").string());
   journal.reconcileUserStorageInventory("/repo/a", {}, granted.grant.createdAtMs);
   // Seed a funded but unfinished write; no physical durability is claimed for it.
+  for (unsigned index = 0; index < 99; ++index) {
+    const auto id = "funded-" + std::to_string(index);
+    const RepoUserStorageObject item{fill.objectName + "/" + std::to_string(index),
+      std::string(64, 'a'), 1, REPO_USER_STORAGE_OBJECT_MAX_BYTES - 1, 1};
+    (void)journal.grantUserStorage("/owner/a", "/repo/a", id, "/provider/a", item.objectName,
+      granted.grant.expiresAtMs, granted.grant.createdAtMs);
+    (void)journal.reserveUserStorage("/provider/a", "/repo/a", "/owner/a", id, id, item,
+      granted.grant.createdAtMs);
+  }
   const RepoUserStorageObject funded{fill.objectName, std::string(64, 'a'), 1,
-    REPO_USER_STORAGE_LIMIT_BYTES - 128, 1};
+    REPO_USER_STORAGE_OBJECT_MAX_BYTES - 128, 1};
   journal.reserveUserStorage("/provider/a", "/repo/a", "/owner/a", fill.grantId,
     "funded-write", funded, granted.grant.createdAtMs);
   const auto before = fixture.usage();
@@ -3245,6 +3425,54 @@ BOOST_AUTO_TEST_CASE(PersistentOriginalFaceServesExactWireAndBoundsPendingWorkTh
   fixture.node.reset();
   BOOST_CHECK(pumpUntil([&] { return pending() == 0; }));
   BOOST_CHECK(received->empty());
+}
+
+BOOST_AUTO_TEST_CASE(UnbootstrappedSelectedRepoRequestWaitsUntilTimeoutOrCancellation)
+{
+  TempRoot temp;
+  ndn::KeyChain keys("pib-memory:spec222-selected-bootstrap",
+                     "tpm-memory:spec222-selected-bootstrap");
+  const auto owner = makeRsaIdentity(keys, ndn::Name("/owner/a"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/authority"));
+  ndn::DummyClientFace face(keys, ndn::DummyClientFace::Options{true, true});
+  ndn_service_framework::ServiceUser user(face, ndn::Name("/group"), owner, owner,
+    authority, writeFixedKeychainTrust(temp.path(), keys), keys);
+  // A production User with no Controller bootstrap must not enter Begin.
+  // LocalMock intentionally reports ready and cannot cover this boundary.
+  for (const bool cancel : {false, true}) {
+    const auto began = std::chrono::steady_clock::now();
+    std::atomic<unsigned> probes{0};
+    std::atomic<bool> closed{false};
+    const auto emitted = std::make_shared<std::atomic<bool>>(false);
+    auto result = std::async(std::launch::async, [&] {
+      return RepoClient::requestSelectedService(user, ndn::Name("/repo/provider"),
+        ndn::Name("/SERVICE/repo/INSERT"), {1}, 10, cancel ? 1000 : 100, emitted, [&] {
+          ++probes;
+          if (closed.load())
+            throw std::runtime_error("test-bootstrap-closed");
+        });
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (result.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready &&
+           std::chrono::steady_clock::now() < deadline) {
+      face.getIoContext().restart();
+      face.getIoContext().poll();
+      if (cancel && probes.load() >= 3)
+        closed.store(true);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    BOOST_REQUIRE(result.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready);
+    BOOST_CHECK_EXCEPTION(result.get(), std::runtime_error, [cancel] (const auto& error) {
+      return std::string(error.what()) == (cancel ? "test-bootstrap-closed"
+        : "repo-request-timeout: Provider request timed out");
+    });
+    BOOST_CHECK(!emitted->load());
+    face.getIoContext().restart();
+    face.getIoContext().poll();
+    BOOST_CHECK(!emitted->load());
+    BOOST_TEST_MESSAGE("SPEC222_REPO_BOOTSTRAP cancel=" << cancel << " wallSeconds=" <<
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count());
+  }
 }
 
 BOOST_AUTO_TEST_CASE(SelectedRepoRequestCancellationAbandonsQueuedDispatchBeforeItsDeadline)

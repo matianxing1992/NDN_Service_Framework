@@ -40,6 +40,8 @@ struct NativeGrantIssuerConfig
 {
   std::string authorityIdentity, requesterIdentity, protectionEpoch, keyId;
   std::shared_ptr<EVP_PKEY> authorityPrivateKey, requesterPublicKey;
+  /** Operator-owned requester registry; mutually exclusive with the legacy single requester. */
+  std::map<std::string, std::shared_ptr<EVP_PKEY>> requesterPublicKeys;
   std::set<std::string> allowedModelManifests;
   // Optional immutable authorization for republishing an already owned source.
   // Indexed by the original allowed manifest; never populated by a request.
@@ -82,6 +84,8 @@ public:
                        const std::string& publishedManifestJson) const;
 
   const std::string& requesterIdentity() const noexcept { return m_config.requesterIdentity; }
+  /** Operator registry membership only; Core service permission remains an independent check. */
+  bool isRequesterAuthorized(const std::string& identity) const noexcept;
   const std::string& protectionEpoch() const noexcept { return m_config.protectionEpoch; }
 
 private:

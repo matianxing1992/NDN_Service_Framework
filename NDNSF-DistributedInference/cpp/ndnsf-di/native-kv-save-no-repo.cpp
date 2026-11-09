@@ -1,3 +1,4 @@
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-save.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-owner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore-provider.hpp"

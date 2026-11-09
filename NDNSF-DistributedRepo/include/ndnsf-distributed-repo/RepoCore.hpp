@@ -18,6 +18,13 @@ namespace ndnsf_distributed_repo {
 
 struct RepoUserStorageWrite;
 
+/** Immutable metadata and an owned, transaction-fenced physical range reader. */
+struct RepoRangeReadSnapshot
+{
+  std::shared_ptr<const RepoObjectManifest> manifest;
+  RepoRangeReadFunction readRange;
+};
+
 class RepoCore
 {
 public:
@@ -65,6 +72,8 @@ public:
    * callers must never reuse it for a replacement object. */
   std::vector<uint8_t> getRangeIfCurrent(const RepoObjectManifest& expected,
                                        RepoByteRange range) const;
+  static RepoRangeReadSnapshot openRangeSnapshot(std::shared_ptr<RepoCore> owner,
+                                                 RepoObjectManifest expected);
   bool removeIfCurrent(const RepoObjectManifest& expected);
   bool abortRangesIfOwned(const RepoObjectManifest& expected);
   /** Exact Core and backend staging proof; caller retains Owner/epoch checks. */

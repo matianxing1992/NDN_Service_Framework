@@ -97,11 +97,14 @@ public:
                                          std::uint64_t length) const = 0;
 };
 
-// Protected material bundles are deliberately bounded so a post-Selection
-// consumer can reserve the complete fetched object before touching the Repo.
-// A payload larger than this limit is rejected by the publisher rather than
-// silently creating an unbounded bundle.
+// Individual material payloads and initializer reads keep a small bounded
+// window. Oversized initializers use ordered chunks rather than one allocation.
 inline constexpr std::uint64_t NativeCanonicalMaterialBundleMaxBytes = 1U << 20;
+
+// Aggregate bounded material payloads into one protected publication. Keep the
+// source read/chunk window above unchanged: publication overhead is per object,
+// while initializer access and reconstruction remain bounded to small windows.
+inline constexpr std::uint64_t NativeCanonicalMaterialPublicationMaxBytes = 64U << 20;
 
 // The material-object index is carried by an authenticated receipt rather
 // than the inline authority root.  Prepare reserves this conservative bound

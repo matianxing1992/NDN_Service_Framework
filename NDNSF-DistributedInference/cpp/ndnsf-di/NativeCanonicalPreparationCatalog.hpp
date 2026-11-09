@@ -8,6 +8,7 @@
 namespace ndnsf::di {
 
 struct Spec185PreparedModelTestAccess;
+struct NativeModelObjectKeyIndexV1;
 
 /** Bootstrap supplies authenticated catalog facts and pinned source bytes.
  * Construction checks the source against those facts; it does not authenticate
@@ -54,7 +55,8 @@ public:
     std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName) const;
   std::shared_ptr<NativeRequestPreparation> makePreparation(
     std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
-    std::optional<NativePreparedCanonicalPublication> preparedPublication) const;
+    std::optional<NativePreparedCanonicalPublication> preparedPublication,
+    std::shared_ptr<const NativeModelObjectKeyIndexV1> modelObjectKeyIndex = {}) const;
 
   NativePreparedCanonicalPublication preparePublication(
     std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
@@ -68,7 +70,8 @@ private:
     NativeCanonicalPublicationOptions, NativeCanonicalArtifactPublisher::SourcePort)>;
   std::shared_ptr<NativeRequestPreparation> makePreparation(PublisherFactory factory) const;
   std::shared_ptr<NativeRequestPreparation> makePreparation(PublisherFactory factory,
-    std::optional<NativePreparedCanonicalPublication> preparedPublication) const;
+    std::optional<NativePreparedCanonicalPublication> preparedPublication,
+    std::shared_ptr<const NativeModelObjectKeyIndexV1> modelObjectKeyIndex = {}) const;
   struct State;
   // Test-only lifetime probe. The returned weak pointer observes the exact
   // catalog source owner; it is never used by production request paths.

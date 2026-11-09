@@ -16,7 +16,7 @@ import time
 import uuid
 
 from .deployment_config import (_identifier, _object, _read_json, _string, _name,
-                                load_deployment, provider_recipient_map)
+                                load_deployment, provider_cache_path, provider_recipient_map)
 from .processes import process_identity, owned_state, stop_owned, write_json
 
 
@@ -145,6 +145,8 @@ def _snapshot(state, root=None):
             status = 'UNKNOWN'
         elif status == 'STOPPED' and not state.get('failure') and state.get('execution') == 'COMPLETE':
             status = 'COMPLETE'
+    if status == 'STOPPED' and not state.get('failure') and state.get('execution') == 'PREPARED':
+        status = 'PREPARED'
     return {'schema': state['schema'], 'deployment_id': state['deployment_id'],
             'boot_id': state['boot_id'], 'status': status, 'processes': rows,
             'operation_stage': state['status'],
@@ -188,10 +190,12 @@ def _environment(home, socket, actor_id, state):
     if 'release_sha256' in state:
         env['NDNSF_DEPLOYMENT_RELEASE_SHA256'] = state['release_sha256']
     if state.get('runtime_timing'):
-        env.update(NDNSF_DI_RUNTIME_TIMING='1', NDNSF_PHASE_TIMING='1')
+        env.update(NDNSF_DI_RUNTIME_TIMING='1', NDNSF_PHASE_TIMING='1', NDNSF_CONTROL_TIMING='1',
+                   NDNSF_HYBRID_CRYPTO_TIMING='1', NDNSF_TIMELINE_TRACE_SAMPLE_RATE='1')
         if not state.get('diagnostic_logging'):
             env['NDN_LOG'] = ('*=NONE:ndnsf.di.RuntimeEvidence=WARN:'
-                              'ndn_service_framework.TimelineTrace=WARN')
+                              'ndn_service_framework.TimelineTrace=WARN:'
+                              'ndn_service_framework.ServiceProvider=WARN')
     return env
 
 
@@ -230,7 +234,10 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None):
                 '--trust-schema', security['trust_schema']]
     elif kind in ('requester', 'artifact-authority'):
         native = dict(config['requester' if kind == 'requester' else 'artifact_authority'])
-        if kind == 'requester':
+        if kind == 'requester' and native.get('model_input', {}).get('mode') in ('source', 'publish-stored'):
+            for key in ('preparation_state_file', 'private_handle_file'):
+                _private_directory(Path(native['model_input'][key]).parent)
+        if kind == 'requester' and config.get('operation') != 'prepare':
             native.setdefault('statistics_file', str(directory / (actor['id'] + '-statistics.jsonl')))
             for turn in native['turns']:
                 for key in ('output_file', 'checkpoint_output_file'):
@@ -243,12 +250,24 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None):
         write_json(path, native)
         program = 'DI_NativeRequester' if kind == 'requester' else 'DI_NativeArtifactAuthority'
         argv = [str(prefix / program), '--config', str(path)]
+        if kind == 'requester' and config.get('operation') == 'prepare':
+            argv.append('--prepare-only')
     elif kind == 'repo':
-        argv = [str(prefix / 'DistributedRepoServer'), '--repo-node', actor['identity'],
+        requester = config['requester']
+        target = requester.get('model_input', {}).get('repo_target',
+                 requester.get('model_repository', {}))
+        repo_node = actor.get('parameters', {}).get('repo-node', actor['identity'])
+        if 'repo-node' not in actor.get('parameters', {}) and target and _name(
+                target['provider_identity'], 'repo.provider_identity') == _name(
+                actor['identity'], 'actor.identity'):
+            repo_node = target['repo_node']
+        argv = [str(prefix / 'DistributedRepoServer'), '--repo-node', repo_node,
                 '--database', str(Path(config['storage']['repo_root']) / (actor['id'] + '.sqlite')),
                 '--group-prefix', network['group'], '--provider-identity', actor['identity'],
                 '--authority-identity', controller, '--trust-schema', security['trust_schema'],
                 '--service-prefix', network['repo_service']]
+        if 'request-timeout-ms' in actor.get('parameters', {}):
+            argv += ['--request-timeout-ms', str(actor['parameters']['request-timeout-ms'])]
     else:
         params = dict(actor['parameters'])
         if not {'grant-authority-public-key', 'recipient-key-map'} <= params.keys():
@@ -258,7 +277,8 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None):
         path = directory / (actor['id'] + '-recipient.json')
         write_json(path, recipient)
         env['SPEC181_PROVIDER_RECIPIENT_KEY_MAP'] = str(path)
-        params.setdefault('artifact-cache-dir', str(Path(config['storage']['cache_root']) / actor['id']))
+        params.setdefault('artifact-cache-dir', provider_cache_path(
+            config['storage']['cache_root'], actor['identity']))
         params.setdefault('statistics-file', str(directory / (actor['id'] + '-statistics.jsonl')))
         argv = [str(prefix / 'di-native-provider'), '--serve', '--provider', actor['identity'],
                 '--group', network['group'], '--controller', controller,
@@ -450,7 +470,8 @@ def _ready(row, actor, state):
                 continue
             valid = (item.get('actor_id') == actor['id'] and item.get('boot_id') == state['boot_id'] and
                     item.get('config_sha256') == state['configuration_sha256'] and
-                    type(item.get('pid')) is int and item['pid'] == row['proof']['pid'] and
+                    type(item.get('pid')) is int and
+                    item['pid'] == row.get('namespace_proof', row['proof'])['pid'] and
                     bool(item.get('native_boot_id')) and
                     _name(item.get('identity'), 'readiness.identity') == _name(actor['identity'], 'actor.identity'))
             if valid:
@@ -475,7 +496,8 @@ def _withdrawal_matches(row, item):
                 item.get('actor_id') == row['id'] and
                 item.get('boot_id') == row['bindings']['NDNSF_DEPLOYMENT_BOOT_ID'] and
                 item.get('config_sha256') == row['bindings']['NDNSF_DEPLOYMENT_CONFIG_SHA256'] and
-                type(item.get('pid')) is int and item['pid'] == row['proof']['pid'] and
+                type(item.get('pid')) is int and
+                item['pid'] == row.get('namespace_proof', row['proof'])['pid'] and
                 bool(row.get('native_boot_id')) and
                 item.get('native_boot_id') == row['native_boot_id'] and
                 _name(item.get('identity'), 'withdrawal.identity') ==
@@ -589,7 +611,8 @@ def _nfd_config(socket, port):
             f'face_system {{ unix {{ path "{socket}" }} '
             f'tcp {{ listen yes port {port} enable_v4 yes enable_v6 no }} '
             f'udp {{ listen yes port {port} enable_v4 yes enable_v6 no mcast no }} }}\n'
-            'authorizations { authorize { certfile any privileges { faces fib strategy-choice } } }\n'
+            'authorizations { authorize {\ncertfile any\nprivileges {\n'
+            'faces\nfib\nstrategy-choice\ncs\n}\n} }\n'
             'rib { localhost_security { trust-anchor { type any } } }\n')
 
 
@@ -767,11 +790,15 @@ def _start_forwarder(config, node, state, root, directory, children, deadline, g
     _configure_group_strategy(nfdc, nfdc_env, config, directory, deadline, guard, node=node)
 
 
-def _up(source, root, timeout, debug=False, timing=False):
-    config = load_deployment(source)
+def _up(source, root, timeout, debug=False, timing=False, prepare_only=False):
+    config = (load_deployment(source, prepare_only=True) if prepare_only
+              else load_deployment(source))
+    prepare_only = config.get('operation') == 'prepare'
     if config['platform']['kind'] == 'slurm-apptainer':
         from .slurm import up
         return up(config, source, root, timeout, debug, timing)
+    if timeout > 3600:
+        raise ClusterError('timeout above 3600 seconds requires slurm-apptainer')
     _private_directory(root)
     with _lock(root):
         old = _read_state(root)
@@ -793,6 +820,7 @@ def _up(source, root, timeout, debug=False, timing=False):
                  'manager': process_identity(os.getpid()),
                  'diagnostic_logging': debug,
                  'runtime_timing': timing,
+                 'operation': 'prepare' if prepare_only else 'run',
                  'status': 'STARTING', 'launches': [], 'source': str(source)}
         state['external_references'] = [dict(id=a['id'], kind=a['kind'], identity=a['identity'],
                                               verification='NOT_PROBED')
@@ -894,7 +922,7 @@ def _up(source, root, timeout, debug=False, timing=False):
                 child, row = spawn(actor['id'], actor['kind'], argv, env, actor['node'])
                 request_child = child
                 children.append((actor, child, row))
-                state['status'] = 'REQUEST_RUNNING'
+                state['status'] = 'PREPARING' if prepare_only else 'REQUEST_RUNNING'
                 write_json(root / 'state.json', state)
                 while child.poll() is None:
                     guard()
@@ -911,10 +939,11 @@ def _up(source, root, timeout, debug=False, timing=False):
                 if terminal['status'] != 'ZERO' or terminal['forced']:
                     raise ClusterError('REQUESTER_GROUP_CLEANUP:' + terminal['status'])
             state['status'] = ('EXTERNAL_UNVERIFIED' if any(
-                r['verification'] == 'NOT_PROBED' for r in state['external_references']) else 'COMPLETE')
+                r['verification'] == 'NOT_PROBED' for r in state['external_references']) else
+                'PREPARED' if prepare_only else 'COMPLETE')
             state['storage_bytes'] = _check_budget(config)
             state['wall_seconds'] = time.monotonic() - started
-            if facility is not None:
+            if facility is not None or prepare_only:
                 state['execution'] = state['status']
                 _close(state, root, facility)
                 state['needs_closeout'] = state['status'] != 'STOPPED'
@@ -1004,20 +1033,23 @@ def _stop_provider(root, state, actor_id, timeout):
 
 def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_id=None):
     """Run the host operation or inspect/close its persisted owned processes."""
-    if type(timeout) not in (int, float) or not 0 < timeout <= 3600:
-        raise ClusterError('timeout must be in (0,3600] seconds')
-    if type(debug) is not bool or (debug and action != 'up'):
+    maximum = 86400 if action in ('up', 'prepare') else 3600
+    if type(timeout) not in (int, float) or not 0 < timeout <= maximum:
+        raise ClusterError('timeout must be in (0,%d] seconds' % maximum)
+    if type(debug) is not bool or (debug and action not in ('up', 'prepare')):
         raise ClusterError('debug must be a boolean and only applies to up')
-    if type(timing) is not bool or (timing and action != 'up'):
+    if type(timing) is not bool or (timing and action not in ('up', 'prepare')):
         raise ClusterError('timing must be a boolean and only applies to up')
     if actor_id is not None and action != 'down':
         raise ClusterError('actor selection only applies to down')
     source, root = _locator(path)
-    if action == 'up':
+    if action in ('up', 'prepare'):
         def terminate(signum, frame):
             raise KeyboardInterrupt('SIGTERM')
         handler = signal.signal(signal.SIGTERM, terminate)
         try:
+            if action == 'prepare':
+                return _up(source, root, timeout, debug, timing, prepare_only=True)
             return _up(source, root, timeout, debug, timing)
         finally:
             signal.signal(signal.SIGTERM, handler)

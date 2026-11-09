@@ -18,8 +18,11 @@
 #include "Spec189ProviderStageOracle.hpp"
 #include "spec220-onnx-reference-oracle.hpp"
 
+#include <ndn-cxx/util/scope.hpp>
+
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -36,6 +39,7 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -1011,14 +1015,26 @@ validateAllocation(const std::filesystem::path& root, const NativeJson& state,
     const auto receipt = readPrivateJson(path);
     checkBinding(receipt);
     const bool finite = kind == "requester" || kind == "nfdc";
+    const bool hostGroups = receipt.at("cleanup_scope") == "HOST_AND_NATIVE_PROCESS_GROUPS";
     if (receipt.at("schema") != "ndnsf-di-node-role-v1" || receipt.at("role_id") != id ||
         receipt.at("role_kind") != kind || receipt.at("node_id") != node ||
-        receipt.at("cleanup_scope") != "PID_NAMESPACE" || receipt.at("status") != "STOPPED" ||
+        (!hostGroups && receipt.at("cleanup_scope") != "PID_NAMESPACE") ||
+        receipt.at("status") != "STOPPED" ||
         !receipt.at("failure").is_null() ||
         !matchesHost(nodes.at(node).at("host"), receipt.at("host")) ||
         receipt.at("execution") != (finite ? "COMPLETE" : "SERVICE_STOPPED") ||
         (finite && nonnegativeInteger(receipt.at("exit_code")) != 0))
       chainFailure("deployment-role-terminal");
+    if (hostGroups && kind != "nfd" && kind != "nfdc") {
+      if (!receipt.contains("image_inspection"))
+        chainFailure("deployment-image-inspection");
+      const auto& inspection = receipt.at("image_inspection");
+      if (inspection.at("status") != "VERIFIED" || inspection.at("exitCode") != 2 ||
+          inspection.at("cleanup").at("status") != "ZERO" ||
+          inspection.at("cleanup").at("forced") != false ||
+          inspection.at("launcher_cleanup").at("forced") != false)
+        chainFailure("deployment-image-inspection");
+    }
     validateDeploymentGroups(receipt, boot, digest, true);
     if (kind != "nfdc") {
       const auto audit = readPrivateJson(root / "nodes" / node / ("host-audit-" + id + ".json"));
@@ -1031,7 +1047,18 @@ validateAllocation(const std::filesystem::path& root, const NativeJson& state,
       const auto launch = std::find_if(receipt.at("launches").begin(), receipt.at("launches").end(),
         [&] (const auto& row) { return row.at("id") == id; });
       if (launch == receipt.at("launches").end()) chainFailure("deployment-actor-not-launched");
-      const auto& native = launch->at("proof");
+      if (hostGroups && !launch->contains("namespace_proof"))
+        chainFailure("deployment-native-host-proof");
+      const auto& native = launch->at(hostGroups ? "namespace_proof" : "proof");
+      if (hostGroups) {
+        const auto& hostProof = launch->at("proof");
+        if (hostProof.at("pid") != proof.at("pid") ||
+            hostProof.at("pgid") != hostProof.at("pid") ||
+            hostProof.at("start_ticks") != native.at("start_ticks") ||
+            hostProof.at("uid") != native.at("uid") || hostProof.at("exe") != native.at("exe") ||
+            hostProof.at("bindings") != native.at("bindings"))
+          chainFailure("deployment-native-host-proof");
+      }
       if (!proof.at("nspid").is_array() || proof.at("nspid").empty() ||
           nonnegativeInteger(proof.at("pid")) <= 1 ||
           nonnegativeInteger(proof.at("nspid").back()) != nonnegativeInteger(native.at("pid")) ||
@@ -1131,15 +1158,22 @@ validateGpuAdmission(const std::filesystem::path& root, const NativeJson& state,
   const auto& admission = receipt.at("gpu_admission");
   const auto selectedUuids = check(admission, declared.size());
   const auto& probe = admission.at("native_probe");
+  const bool hostGroups = receipt.at("cleanup_scope") == "HOST_AND_NATIVE_PROCESS_GROUPS";
+  if (hostGroups && (!admission.contains("query_launch_id") ||
+      probe.at("role_id") != receipt.at("role_id")))
+    chainFailure("deployment-gpu-role-binding");
   const auto query = std::find_if(receipt.at("launches").begin(), receipt.at("launches").end(),
-    [&] (const auto& row) { return row.at("id") == probe.at("role_id"); });
+    [&] (const auto& row) { return row.at("id") ==
+      (hostGroups ? admission.at("query_launch_id") : probe.at("role_id")); });
   const NativeJson command = NativeJson::array({
     (std::filesystem::path(config.at("release").at("prefix").get<std::string>()) /
       "libexec/ndnsf-di/ndnsf-di-device-query").string(), "--count", std::to_string(declared.size())});
   if (std::set<std::string>(selectedUuids.begin(), selectedUuids.end()) != declared ||
       probe.at("step_id") != receipt.at("step_id") ||
       admission.at("visibility") != receipt.at("gpu_visibility") ||
-      query == receipt.at("launches").end() || query->at("argv") != command ||
+      query == receipt.at("launches").end() ||
+      (hostGroups && !query->contains("native_argv")) ||
+      query->at(hostGroups ? "native_argv" : "argv") != command ||
       nonnegativeInteger(query->at("exit_code")) != 0)
     chainFailure("deployment-gpu-role-binding");
   return selectedUuids;
@@ -1173,7 +1207,9 @@ validateGpuExecution(const NativeJson& row, const StatisticsRows& source, unsign
       evidence.gpuIdentitySource != "cuda-runtime-pci+driver-uuid" ||
       evidence.gpuUuid != admitted.at(ordinal) || evidence.gpuUuids != std::vector<std::string>{evidence.gpuUuid} ||
       evidence.cudaVisibleDevices != receipt.at("gpu_visibility").get<std::string>() ||
-      evidence.processId != nonnegativeInteger(native->at("proof").at("pid")) ||
+      evidence.processId != nonnegativeInteger(native->at(
+        receipt.at("cleanup_scope") == "HOST_AND_NATIVE_PROCESS_GROUPS"
+          ? "namespace_proof" : "proof").at("pid")) ||
       evidence.providerName != source.provider || evidence.providerBootId != source.boot ||
       evidence.requestId != row.at("requestId").get<std::string>() ||
       evidence.attemptEpoch != nonnegativeInteger(row.at("attemptEpoch")) ||
@@ -1258,7 +1294,8 @@ validateMiniNdn(const NativeJson& state, const NativeJson& config,
 
 NativeJson
 validateDeployment(const std::filesystem::path& statePath, bool requireMultiToken,
-                   bool requireDistributedGpu = false, bool modelReference = false)
+                   bool requireDistributedGpu = false, bool modelReference = false,
+                   const std::filesystem::path& referenceSourcePath = {})
 {
   const auto state = readJson(statePath);
   const bool slurm = state.contains("job_id");
@@ -1332,7 +1369,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       chainFailure("deployment-statistics-path");
     boundRequester.erase("statistics_file");
   }
-  if (!turns.is_array() || turns.size() < 2 ||
+  if (!turns.is_array() || turns.empty() ||
       conversation.at("turn").at("mode") != "FULL_CONTEXT" ||
       request.at("generation_mode") != "TOKEN_STREAMING" ||
       config.at("requester") != boundRequester)
@@ -1696,8 +1733,59 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       for (const auto& row : provider.requests)
         versions.insert(row.at("finalExecutionEvidence").at("runtimeVersion").get<std::string>());
     if (versions.size() != 1) chainFailure("reference-provider-runtime-version");
+    auto referenceRequester = requesterConfig;
+    if (!referenceSourcePath.empty()) {
+      const int sourceFd = ::open(referenceSourcePath.c_str(),
+                                 O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+      if (sourceFd < 0) chainFailure("reference-source-descriptor-open");
+      const auto closeSource = ndn::make_scope_exit([sourceFd] { ::close(sourceFd); });
+      struct stat sourceStat{};
+      if (::fstat(sourceFd, &sourceStat) != 0 || !S_ISREG(sourceStat.st_mode) ||
+          sourceStat.st_size < 0 || sourceStat.st_size > 16384)
+        chainFailure("reference-source-descriptor-bound");
+      std::array<char, 16385> sourceBytes{};
+      std::size_t sourceSize = 0;
+      while (sourceSize < sourceBytes.size()) {
+        const auto count = ::read(sourceFd, sourceBytes.data() + sourceSize,
+                                  sourceBytes.size() - sourceSize);
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0) chainFailure("reference-source-descriptor-read");
+        if (count == 0) break;
+        sourceSize += static_cast<std::size_t>(count);
+      }
+      if (sourceSize > 16384) chainFailure("reference-source-descriptor-bound");
+      const auto descriptor = ndnsf::di::nativeParseJson(
+        std::string(sourceBytes.data(), sourceSize));
+      if (!descriptor.is_object() || descriptor.size() != 2 ||
+          descriptor.value("schema", "") != "ndnsf-di-model-reference-source-v1" ||
+          !descriptor.contains("source") || !descriptor.at("source").is_object())
+        chainFailure("reference-source-descriptor");
+      const auto& supplied = descriptor.at("source");
+      auto expectedIdentity = requesterConfig.at("catalog").at("source");
+      auto suppliedIdentity = supplied;
+      for (const auto* key : {"file", "initializer_file"}) {
+        expectedIdentity.erase(key);
+        suppliedIdentity.erase(key);
+      }
+      if (suppliedIdentity != expectedIdentity) chainFailure("reference-source-identity");
+      auto& referenceSource = referenceRequester.at("catalog").at("source");
+      for (const auto* key : {"file", "initializer_file"}) {
+        const bool required = std::string(key) == "file" ||
+          expectedIdentity.value("initializer_bytes", std::uint64_t{0}) != 0;
+        if (!required && supplied.contains(key)) chainFailure("reference-source-extra-path");
+        if (!required) continue;
+        if (!supplied.contains(key) || !supplied.at(key).is_string() ||
+            supplied.at(key).get<std::string>().empty() ||
+            !std::filesystem::path(supplied.at(key).get<std::string>()).is_absolute())
+          chainFailure("reference-source-absolute-path");
+        referenceSource[key] = supplied.at(key);
+      }
+      receipt["referenceSourceIdentity"] = ndnsf::di::nativePlanningDigest(
+        ndnsf::di::nativeCanonicalJson(expectedIdentity));
+    }
     receipt["modelReference"] = spec220::oracle::validateOnnxReference(
-      requesterConfig, *versions.begin());
+      referenceRequester, *versions.begin());
+    receipt["checkpointAuthentication"] = receipt.at("modelReference").at("checkpointAuthentication");
     receipt["scope"] = "deployment-unsplit-model-reference";
   }
   return receipt;
@@ -2103,7 +2191,8 @@ main(int argc, char** argv)
                  " --quiet-performance] [--require-multi-token] [--rounds 1..8]"
                  " --run-root DIRECTORY\n"
               << "       " << argv[0] << " --deployment-state FILE [--require-multi-token]"
-                 " [--require-distributed-gpu] [--model-reference]\n"
+                 " [--require-distributed-gpu] [--model-reference]"
+                 " [--model-reference-source FILE]\n"
               << "       " << argv[0] << " --repo-lifecycle --repo-root DIRECTORY\n";
     return 0;
   }
@@ -2115,6 +2204,7 @@ main(int argc, char** argv)
   const char* runRootArg = nullptr;
   const char* repoRootArg = nullptr;
   const char* deploymentStateArg = nullptr;
+  const char* referenceSourceArg = nullptr;
   for (int i = 1; i < argc; ++i) {
     const std::string option(argv[i]);
     if (option == "--placement-only" && !placementOnly) placementOnly = true;
@@ -2125,6 +2215,8 @@ main(int argc, char** argv)
     else if (option == "--require-multi-token" && !multiToken) multiToken = true;
     else if (option == "--require-distributed-gpu" && !distributedGpu) distributedGpu = true;
     else if (option == "--model-reference" && !modelReference) modelReference = true;
+    else if (option == "--model-reference-source" && !referenceSourceArg && i + 1 < argc)
+      referenceSourceArg = argv[++i];
     else if (option == "--repo-lifecycle" && !repoLifecycle) repoLifecycle = true;
     else if (option == "--run-root" && !runRootArg && i + 1 < argc) runRootArg = argv[++i];
     else if (option == "--repo-root" && !repoRootArg && i + 1 < argc) repoRootArg = argv[++i];
@@ -2139,6 +2231,7 @@ main(int argc, char** argv)
     else invalidOptions = true;
   }
   if (invalidOptions || ((distributedGpu || modelReference) && !deploymentStateArg) ||
+      (referenceSourceArg && (!modelReference || !deploymentStateArg)) ||
       (deploymentStateArg && (repoLifecycle || repoRootArg || runRootArg || placementOnly ||
         cacheCompatibility || expectedRevocationFailure || quietPerformance || roundsSeen)) ||
       (repoLifecycle && (repoRootArg == nullptr || runRootArg != nullptr ||
@@ -2154,14 +2247,16 @@ main(int argc, char** argv)
                  " --quiet-performance] [--require-multi-token] [--rounds 1..8]"
                  " --run-root DIRECTORY\n"
               << "       " << argv[0] << " --deployment-state FILE [--require-multi-token]"
-                 " [--require-distributed-gpu] [--model-reference]\n"
+                 " [--require-distributed-gpu] [--model-reference]"
+                 " [--model-reference-source FILE]\n"
               << "       " << argv[0] << " --repo-lifecycle --repo-root DIRECTORY\n";
     return 2;
   }
   try {
     if (deploymentStateArg) {
       const auto receipt = validateDeployment(
-        std::filesystem::absolute(deploymentStateArg), multiToken, distributedGpu, modelReference);
+        std::filesystem::absolute(deploymentStateArg), multiToken, distributedGpu, modelReference,
+        referenceSourceArg ? std::filesystem::absolute(referenceSourceArg) : std::filesystem::path{});
       std::cout << (modelReference ? "SPEC220_CPP_MODEL_REFERENCE_PASS " :
                                     "SPEC217_CPP_DEPLOYMENT_EXECUTION_PASS ")
                 << ndnsf::di::nativeCanonicalJson(receipt) << '\n';

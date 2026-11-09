@@ -1,9 +1,10 @@
 #ifndef NDNSF_DI_PROVIDER_ARTIFACT_CACHE_HPP
 #define NDNSF_DI_PROVIDER_ARTIFACT_CACHE_HPP
 
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -20,7 +21,8 @@ namespace ndnsf::di {
  * Empty optional identities are encoded as empty fields, while every field is
  * length framed by canonicalKey().  A model name or cache directory is never
  * sufficient to address an entry.  For protected projections,
- * protectionIdentity includes the authenticated Provider security scope. The
+ * protectionIdentity includes the authenticated Provider security scope. A
+ * storedModelIdentity binds reuse to the admitted object-key fingerprint. The
  * request-specific grant name/digest are authorization/lease values, not
  * immutable model identity; the current grant is still verified before this
  * cache is called.
@@ -45,9 +47,17 @@ struct ProviderArtifactKey
   std::string securityDomain;
   std::string protectionEpoch;
   std::string protectionIdentity;
+  std::string storedModelIdentity;
 
   std::string canonicalKey() const;
 };
+
+/** Build the shared immutable artifact identity used by both Provider paths. */
+ProviderArtifactKey
+nativeProviderArtifactKey(const NativeSelectionProjectionV3& projection,
+                          const std::string& providerIdentity,
+                          const std::string& canonicalSourceName,
+                          const std::string& canonicalSourceDigest);
 
 /** A cacheable ciphertext or immutable assembled artifact descriptor.
  * Request id, grant, receipt, plaintext path and mutable runner state are

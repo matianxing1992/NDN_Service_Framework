@@ -1,3 +1,4 @@
+#include "isolated-test-trust.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include <ndn-cxx/util/sha256.hpp>
@@ -6,10 +7,12 @@
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
+#include <ndn-cxx/util/io.hpp>
 #include <ndn-svs/security-options.hpp>
 #include <ndn-svs/svspubsub.hpp>
 #include <boost/test/unit_test.hpp>
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -26,6 +29,31 @@ struct ServiceProviderTestAccess
   static ndn::Name extractLargeDataProducerPrefix(const ndn::Name& dataName)
   {
     return ServiceProvider::extractLargeDataProducerPrefix(dataName);
+  }
+
+  static void
+  scheduleCleanup(ServiceProvider& provider, const ndn::Name& key,
+                  ndn::time::milliseconds ttl, bool authoritative)
+  {
+    provider.schedulePendingRequestCleanup(key, ttl, authoritative);
+  }
+
+  static std::int64_t
+  cleanupDeadlineNs(ServiceProvider& provider, const ndn::Name& key)
+  {
+    std::lock_guard<std::mutex> lock(provider.m_pendingCleanupDeadlineMutex);
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      provider.m_pendingCleanupDeadlines.at(key).time_since_epoch()).count();
+  }
+
+  static std::int64_t
+  workDeadlineNs(ServiceProvider& provider, const ndn::Name& requester,
+                 const ndn::Name& request, const ndn::Name& service)
+  {
+    const auto fence = provider.makeCollaborationWorkFence(
+      requester, request, service, std::nullopt);
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      fence.deadline.time_since_epoch()).count();
   }
 };
 } // namespace ndn_service_framework
@@ -52,7 +80,7 @@ struct RepoFixture
   std::filesystem::path root = std::filesystem::temp_directory_path() /
     ("spec189-encrypted-repo-" + std::to_string(::getpid()));
   std::shared_ptr<RepoCore> repo;
-  RepoFixture()
+  explicit RepoFixture(uint64_t capacity = 16U << 20)
   {
     std::error_code stale;
     std::filesystem::remove_all(root, stale);
@@ -60,7 +88,7 @@ struct RepoFixture
     std::filesystem::permissions(root, std::filesystem::perms::owner_all);
     StorageCapability capability;
     capability.repoNode = "/spec189/encrypted-repo";
-    capability.freeBytes = 16U << 20;
+    capability.freeBytes = capacity;
     repo = std::make_shared<RepoCore>(capability,
       makeFilesystemRepoStore((root / "objects").string(), 1U << 20, 1U << 20));
   }
@@ -171,6 +199,56 @@ PolicyStatusData policyStatus(const ndn::Name& service,
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec189EncryptedRepo)
+
+BOOST_AUTO_TEST_CASE(ApprovedWorkHorizonIsIndependentOfSingleFetchBudget)
+{
+  ScopedEnvironmentValue budget("NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS", "1000");
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keys);
+  const auto actor = makeRsaIdentity(keys, ndn::Name("/spec220/fence/provider"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/spec220/fence/authority"));
+  IsolatedTestTrust trust{actor, authority};
+  LocalServiceProvider provider(face, ndn::Name("/spec220/fence/sync"), actor,
+                                authority, trust.schemaPath());
+  const ndn::Name requester("/spec220/fence/requester");
+  const ndn::Name service("/spec220/fence/service");
+  const ndn::Name provisional("/spec220/fence/provisional");
+  const ndn::Name approved("/spec220/fence/approved");
+  const auto pendingKey = [&](const ndn::Name& request) {
+    return ndn::Name(requester).append(service).append(request);
+  };
+  const auto twoSecondsFromNow = [] {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      (std::chrono::steady_clock::now() + std::chrono::seconds(2))
+        .time_since_epoch()).count();
+  };
+  ServiceProviderTestAccess::scheduleCleanup(provider, pendingKey(provisional),
+    ndn::time::milliseconds(120000), false);
+  const auto provisionalDeadline = ServiceProviderTestAccess::workDeadlineNs(
+    provider, requester, provisional, service);
+  BOOST_CHECK_LT(provisionalDeadline, twoSecondsFromNow());
+  BOOST_CHECK_LT(provisionalDeadline,
+    ServiceProviderTestAccess::cleanupDeadlineNs(provider, pendingKey(provisional)));
+
+  ServiceProviderTestAccess::scheduleCleanup(provider, pendingKey(approved),
+    ndn::time::milliseconds(120000), true);
+  const auto approvedDeadline = ServiceProviderTestAccess::cleanupDeadlineNs(
+    provider, pendingKey(approved));
+  BOOST_CHECK_GT(approvedDeadline, twoSecondsFromNow());
+  BOOST_CHECK_EQUAL(ServiceProviderTestAccess::workDeadlineNs(
+    provider, requester, approved, service), approvedDeadline);
+
+  // Duplicate approvals cannot extend the first authoritative cleanup horizon.
+  ServiceProviderTestAccess::scheduleCleanup(provider, pendingKey(approved),
+    ndn::time::milliseconds(240000), true);
+  BOOST_CHECK_EQUAL(ServiceProviderTestAccess::cleanupDeadlineNs(
+    provider, pendingKey(approved)), approvedDeadline);
+  BOOST_CHECK_EQUAL(ServiceProviderTestAccess::workDeadlineNs(
+    provider, requester, approved, service), approvedDeadline);
+  BOOST_CHECK_LT(ServiceProviderTestAccess::workDeadlineNs(
+    provider, requester, ndn::Name("/spec220/fence/unapproved"), service),
+    twoSecondsFromNow());
+}
 
 BOOST_AUTO_TEST_CASE(WorkerCommitKeepsIoResponsiveAndCancellationDrains)
 {
@@ -314,6 +392,95 @@ BOOST_AUTO_TEST_CASE(DuplicateAndInvalidInputDoNotRemoveCommittedData)
   BOOST_CHECK_EQUAL(lease->read(0, 10).size(), 10U);
   lease.reset();
   BOOST_CHECK(!fixture.repo->has("/ciphertext/object"));
+}
+
+BOOST_AUTO_TEST_CASE(LargeOriginalPacketIndexPreservesBoundedReadsAndMetadataFence)
+{
+  RepoFixture fixture(256U << 20);
+  auto store = std::make_shared<RepoEncryptedLargeDataStore>(fixture.repo);
+  const auto spool = (fixture.root / "spool").string();
+  const auto keyReferences = (fixture.root / "key-references").string();
+  ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ScopedEnvironmentValue referenceDir("NDNSF_DURABLE_KEY_REFERENCE_DIR", keyReferences.c_str());
+  ndn::security::KeyChain keys("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keys);
+  const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec220/range/producer"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/spec220/range/authority"));
+  const auto userAnchor = fixture.root / "user.cert";
+  const auto authorityAnchor = fixture.root / "authority.cert";
+  ndn::io::save(certificate, userAnchor.string());
+  ndn::io::save(authority, authorityAnchor.string());
+  const auto schema = fixture.root / "trust.conf";
+  std::ofstream(schema) << "rule { id range for data checker { type hierarchical } }\n"
+    << "trust-anchor { type file file-name \"" << userAnchor.string() << "\" }\n"
+    << "trust-anchor { type file file-name \"" << authorityAnchor.string() << "\" }\n";
+  InspectingUser user(face, ndn::Name("/spec220/range"), certificate, authority, schema.string());
+  user.useSigningKeyChainForSigningOnlyForTest(keys);
+  user.attachLocalMockPubSubForTest(pubsub(face, keys));
+  user.setEncryptedLargeDataRangeStore(store);
+  user.init();
+  const ndn::Name service("/spec220/range/inference");
+  user.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+  LargeDataPublishOptions options;
+  options.retention = EncryptedLargeDataRetention::Durable;
+  options.publicationIdentity = "sha256:" + std::string(64, '7');
+  const std::vector<uint8_t> plaintext(64U << 20, 0x37);
+  const auto published = user.publishEncryptedLargeData(user.prepareServiceRequest(service.toUri()),
+    plaintext, "large-original-index", ndn::time::milliseconds(1), true, options);
+  BOOST_REQUIRE_MESSAGE(published.success, published.errorMessage);
+  const auto lookup = store->lookupDurable(published.publicationIdentity);
+  BOOST_REQUIRE(lookup);
+  BOOST_REQUIRE(lookup->source);
+  const auto manifests = fixture.repo->list();
+  BOOST_REQUIRE_EQUAL(manifests.size(), 1U);
+  const auto& manifest = manifests.front();
+  BOOST_REQUIRE_GT(manifest.packetNames.size(), 9000U);
+  std::chrono::nanoseconds reads{0};
+  for (size_t i = 0; i < 128; ++i) {
+    const auto name = ndn::Name(lookup->encryptedName).appendSegment(
+      (i * 71) % (manifest.packetNames.size() - 1));
+    const auto start = std::chrono::steady_clock::now();
+    const auto wire = lookup->source->readOriginalDataPacket(name);
+    reads += std::chrono::steady_clock::now() - start;
+    const ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+    BOOST_CHECK(packet.getName() == name);
+    BOOST_CHECK_LE(wire.size(), ndn::MAX_NDN_PACKET_SIZE);
+  }
+  auto altered = manifest;
+  altered.packetNames.back().append("/tampered");
+  BOOST_CHECK_THROW(fixture.repo->getRangeIfCurrent(altered, {0, 1}), std::runtime_error);
+  BOOST_TEST_MESSAGE("LARGE_ORIGINAL_INDEX_READ_SAMPLE packets=" << manifest.packetNames.size()
+    << " reads=128 wallSeconds=" << std::chrono::duration<double>(reads).count());
+  BOOST_CHECK_THROW(RepoCore::openRangeSnapshot(fixture.repo, altered), std::runtime_error);
+
+  const auto metadataDirectory = fixture.root / "objects" / "manifests";
+  const auto metadata = std::filesystem::directory_iterator(metadataDirectory)->path();
+  const auto modifiedAt = std::filesystem::last_write_time(metadata);
+  std::ifstream input(metadata);
+  const std::string original((std::istreambuf_iterator<char>(input)), {});
+  input.close();
+  auto tampered = manifest;
+  tampered.packetNames.back().back() =
+    tampered.packetNames.back().back() == '0' ? '1' : '0';
+  const auto changed = tampered.toJson();
+  BOOST_REQUIRE_EQUAL(changed.size(), original.size());
+  std::ofstream(metadata, std::ios::trunc) << changed;
+  std::filesystem::last_write_time(metadata, modifiedAt);
+  const auto firstSegment = ndn::Name(lookup->encryptedName).appendSegment(0);
+  // A same-size rewrite with restored mtime must invalidate an already-open reader.
+  BOOST_CHECK_THROW(lookup->source->readOriginalDataPacket(firstSegment), std::runtime_error);
+  std::ofstream(metadata, std::ios::trunc) << original;
+  BOOST_CHECK_NO_THROW(lookup->source->readOriginalDataPacket(firstSegment));
+  const auto saved = metadata.string() + ".saved";
+  std::filesystem::rename(metadata, saved);
+  std::filesystem::create_symlink(saved, metadata);
+  BOOST_CHECK_THROW(lookup->source->readOriginalDataPacket(firstSegment), std::runtime_error);
+  std::filesystem::remove(metadata);
+  BOOST_CHECK_THROW(lookup->source->readOriginalDataPacket(firstSegment), std::runtime_error);
+  std::filesystem::rename(saved, metadata);
+  BOOST_CHECK_NO_THROW(lookup->source->readOriginalDataPacket(firstSegment));
+  BOOST_CHECK(fixture.repo->removeIfCurrent(manifest));
+  BOOST_CHECK_THROW(lookup->source->readOriginalDataPacket(firstSegment), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(DurablePublicationReusesRepoSourceWithoutSecondCommit)

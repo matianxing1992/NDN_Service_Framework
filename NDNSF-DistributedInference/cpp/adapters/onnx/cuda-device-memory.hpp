@@ -48,6 +48,15 @@ public:
     if (m_device) m_shutdown();
   }
 
+  /** Bind the owned driver/NVML session before accepting requests. Memory
+   * observations remain fresh and are collected only by query(). */
+  void
+  prepare()
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_device) initialize();
+  }
+
   NativeDeviceResourceObservationV3
   query(std::uint64_t capturedAtMs, std::uint64_t sequence, std::uint64_t activeRequests,
         const std::shared_ptr<NativeWorkStatistics>& statistics = {})

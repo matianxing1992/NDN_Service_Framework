@@ -28,7 +28,9 @@ class RepoEncryptedLargeDataStore final
   public:
     Source(std::shared_ptr<RepoCore> repo, RepoObjectManifest manifest,
            ndn_service_framework::EncryptedLargeDataRetention retention)
-      : m_repo(std::move(repo)), m_manifest(std::move(manifest)), m_retention(retention) {}
+      : m_repo(std::move(repo))
+      , m_snapshot(RepoCore::openRangeSnapshot(m_repo, std::move(manifest)))
+      , m_retention(retention) {}
     ~Source() override
     {
       if (m_retention == ndn_service_framework::EncryptedLargeDataRetention::Durable)
@@ -43,33 +45,43 @@ class RepoEncryptedLargeDataStore final
     {
       // Committed original packets are shared immutable objects. A request
       // lease may stop reading them, but cannot delete another request's copy.
-      if (m_manifest.objectType == "original-packet-set" && isDurable())
+      if (m_snapshot.manifest->objectType == "original-packet-set" && isDurable())
         return;
       if (m_released.exchange(true))
         return;
       // A same-name replacement belongs to a different transaction.
       try {
-        m_repo->removeIfCurrent(m_manifest);
+        m_repo->removeIfCurrent(*m_snapshot.manifest);
       }
       catch (...) {}
     }
     std::uint64_t size() const noexcept override
     {
-      return m_manifest.objectType == "original-packet-set" ? m_manifest.envelopeBytes : m_manifest.size;
+      const auto& manifest = *m_snapshot.manifest;
+      return manifest.objectType == "original-packet-set" ? manifest.envelopeBytes : manifest.size;
     }
     std::vector<std::uint8_t> readOriginalDataPacket(const ndn::Name& name) const override
     {
-      if (m_manifest.objectType != "original-packet-set" || m_released.load())
+      const auto& manifest = *m_snapshot.manifest;
+      if (manifest.objectType != "original-packet-set" || m_released.load())
         throw std::runtime_error("ORIGINAL_DATA_PACKET_UNSUPPORTED");
       const auto key = name.toUri(ndn::name::UriFormat::CANONICAL);
-      const auto found = std::find(m_manifest.packetNames.begin(), m_manifest.packetNames.end(), key);
-      if (found == m_manifest.packetNames.end())
-        throw std::out_of_range("original packet is outside source");
-      const auto index = static_cast<size_t>(found - m_manifest.packetNames.begin());
-      if (m_manifest.packetOffsets.size() != m_manifest.packetNames.size() + 1)
+      auto index = manifest.packetNames.size();
+      if (!name.empty() && name.get(-1).isSegment() && !manifest.packetNames.empty()) {
+        const auto segment = name.get(-1).toSegment();
+        if (segment < manifest.packetNames.size() - 1 && manifest.packetNames[segment + 1] == key)
+          index = static_cast<size_t>(segment + 1);
+      }
+      if (index == manifest.packetNames.size()) {
+        const auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(), key);
+        if (found == manifest.packetNames.end())
+          throw std::out_of_range("original packet is outside source");
+        index = static_cast<size_t>(found - manifest.packetNames.begin());
+      }
+      if (manifest.packetOffsets.size() != manifest.packetNames.size() + 1)
         throw std::runtime_error("DURABLE_METADATA_INVALID");
-      const auto wire = m_repo->getRangeIfCurrent(m_manifest,
-        {m_manifest.packetOffsets[index], m_manifest.packetOffsets[index + 1] - m_manifest.packetOffsets[index]});
+      const auto wire = m_snapshot.readRange(
+        {manifest.packetOffsets[index], manifest.packetOffsets[index + 1] - manifest.packetOffsets[index]});
       const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
       if (data.getName() != name || data.wireEncode().size() != wire.size())
         throw std::runtime_error("DURABLE_PACKET_NAME_MISMATCH");
@@ -78,17 +90,19 @@ class RepoEncryptedLargeDataStore final
     std::vector<std::uint8_t> read(std::uint64_t offset,
                                  std::uint64_t length) const override
     {
-      if (m_manifest.objectType == "original-packet-set")
+      if (m_snapshot.manifest->objectType == "original-packet-set")
         throw std::runtime_error("ORIGINAL_PACKET_SOURCE_HAS_NO_ENVELOPE_RANGE");
       if (offset > size() || length > size() - offset || length > kWindow)
         throw std::out_of_range("encrypted Repo range exceeds bounds");
       if (length == 0)
         return {};
-      return m_repo->getRangeIfCurrent(m_manifest, {offset, length});
+      if (m_released.load())
+        throw std::runtime_error("encrypted Repo range source is released");
+      return m_snapshot.readRange({offset, length});
     }
   private:
     std::shared_ptr<RepoCore> m_repo;
-    RepoObjectManifest m_manifest;
+    RepoRangeReadSnapshot m_snapshot;
     ndn_service_framework::EncryptedLargeDataRetention m_retention;
     mutable std::atomic<bool> m_released{false};
   };
@@ -321,38 +335,70 @@ public:
            manifest.objectType != "original-packet-set") ||
           manifest.publicationIdentity != publicationIdentity)
         continue;
-      if (manifest.protectionEpoch.empty() || manifest.keyReferenceId.empty() ||
-          manifest.keyReferenceVersion.empty() || manifest.ciphertextManifestDigest.empty() ||
-          manifest.servingLocator.empty() || manifest.contentDigest.empty() ||
-          manifest.plaintextSize == 0 || manifest.size == 0)
-        throw std::runtime_error("DURABLE_METADATA_INVALID");
+      validateDurableMetadata(manifest);
       if (found)
         throw std::runtime_error("DURABLE_IDENTITY_CONFLICT");
-      auto source = std::make_shared<Source>(
-        m_repo, manifest, ndn_service_framework::EncryptedLargeDataRetention::Durable);
-      found = ndn_service_framework::EncryptedLargeDataLookupResult{
-        manifest.objectName, manifest.publicationIdentity, manifest.protectionEpoch,
-        manifest.keyReferenceId, manifest.keyReferenceVersion,
-        manifest.ciphertextManifestDigest, manifest.servingLocator,
-        manifest.contentDigest, manifest.plaintextSize, std::move(source)};
-      if (manifest.objectType == "original-packet-set") {
-        if (manifest.envelopeBytes == 0 || manifest.dataPrefix.empty() ||
-            manifest.packetOffsets.size() != manifest.packetNames.size() + 1 ||
-            !m_repo->hasDataPacket(manifest.objectName))
-          throw std::runtime_error("DURABLE_METADATA_INVALID");
-        found->encryptedName = manifest.dataPrefix;
-        found->packetStorageFormat = "original-packet-set";
-        found->manifestName = manifest.objectName;
-        found->dataPrefix = manifest.dataPrefix;
-        found->packetWireBytes = manifest.size;
-      }
+      found = makeDurableLookup(manifest);
     }
     return found;
   }
 
   bool supportsDurableRetention() const noexcept override { return true; }
 
+  std::optional<ndn_service_framework::EncryptedLargeDataLookupResult>
+  lookupDurableObject(const std::string& publicationIdentity, const ndn::Name& manifestName,
+                      const std::function<void()>& requireActive = {}) const override
+  {
+    if (requireActive) requireActive();
+    if (publicationIdentity.empty() || manifestName.empty()) return std::nullopt;
+    auto lock = m_repo->acquirePublicationLock();
+    const auto name = manifestName.toUri(ndn::name::UriFormat::CANONICAL);
+    const auto metadata = m_repo->probeObjectMetadata(name);
+    if (requireActive) requireActive();
+    if (!metadata.manifestPresent) return std::nullopt;
+    const auto& manifest = metadata.manifest;
+    if (manifest.objectType != "original-packet-set" || manifest.objectName != name ||
+        manifest.publicationIdentity != publicationIdentity)
+      throw std::runtime_error("DURABLE_METADATA_INVALID");
+    validateDurableMetadata(manifest);
+    return makeDurableLookup(manifest);
+  }
+
 private:
+  static void
+  validateDurableMetadata(const RepoObjectManifest& manifest)
+  {
+    if (manifest.protectionEpoch.empty() || manifest.keyReferenceId.empty() ||
+        manifest.keyReferenceVersion.empty() || manifest.ciphertextManifestDigest.empty() ||
+        manifest.servingLocator.empty() || manifest.contentDigest.empty() ||
+        manifest.plaintextSize == 0 || manifest.size == 0)
+      throw std::runtime_error("DURABLE_METADATA_INVALID");
+  }
+
+  ndn_service_framework::EncryptedLargeDataLookupResult
+  makeDurableLookup(const RepoObjectManifest& manifest) const
+  {
+    auto source = std::make_shared<Source>(
+      m_repo, manifest, ndn_service_framework::EncryptedLargeDataRetention::Durable);
+    ndn_service_framework::EncryptedLargeDataLookupResult result{
+      manifest.objectName, manifest.publicationIdentity, manifest.protectionEpoch,
+      manifest.keyReferenceId, manifest.keyReferenceVersion,
+      manifest.ciphertextManifestDigest, manifest.servingLocator,
+      manifest.contentDigest, manifest.plaintextSize, std::move(source)};
+    if (manifest.objectType == "original-packet-set") {
+      if (manifest.envelopeBytes == 0 || manifest.dataPrefix.empty() ||
+          manifest.packetOffsets.size() != manifest.packetNames.size() + 1 ||
+          !m_repo->hasDataPacket(manifest.objectName))
+        throw std::runtime_error("DURABLE_METADATA_INVALID");
+      result.encryptedName = manifest.dataPrefix;
+      result.packetStorageFormat = "original-packet-set";
+      result.manifestName = manifest.objectName;
+      result.dataPrefix = manifest.dataPrefix;
+      result.packetWireBytes = manifest.size;
+    }
+    return result;
+  }
+
   std::shared_ptr<RepoCore> m_repo;
 };
 

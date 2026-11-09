@@ -18,6 +18,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.hpp"
 #include "ndnsf-integration-fixture.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/NDNSFMessages.hpp"
@@ -25,7 +27,11 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
+#include <ndn-cxx/util/segmenter.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
 #include <chrono>
@@ -36,6 +42,8 @@
 #include <fstream>
 #include <cstdlib>
 #include <algorithm>
+#include <exception>
+#include <future>
 #include <iterator>
 #include <mutex>
 #include <atomic>
@@ -635,7 +643,9 @@ BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
 // ingress with a direct assembler-only fixture.
 BOOST_AUTO_TEST_SUITE(Spec188ProviderReferenceAssembly)
 
-static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool restartHandler = false)
+static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
+                                                   bool restartHandler = false,
+                                                   bool includeStoredKeyTable = false)
 {
   // This C++ ingress fixture uses the production Provider::serve path.  The
   // only test seam injects an already-bootstrapped Core owner and a
@@ -701,16 +711,65 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
   auto verifiedRoleOwners = std::make_shared<std::vector<std::shared_ptr<const NativeSelectionRoleV3>>>();
   auto verifiedRoleOwnersMutex = std::make_shared<std::mutex>();
 
+  struct StoredReadState
+  {
+    std::mutex mutex;
+    std::map<std::string, std::pair<ndn::Name, std::vector<std::uint8_t>>> expectedByRequest;
+    std::map<ndn::Name, std::shared_ptr<const ndn::Data>> packets;
+    std::atomic<unsigned> attempts{0};
+    std::atomic<unsigned> successes{0};
+    std::atomic<unsigned> servedSegments{0};
+    std::atomic<unsigned> wrongForwardingHints{0};
+  };
+  const auto storedReads = std::make_shared<StoredReadState>();
+  ndn::ScopedInterestFilterHandle storedServing = environment.userFace().setInterestFilter(
+    ndn::Name("/spec222/model-owner"),
+    [storedReads, face = &environment.userFace()] (const ndn::InterestFilter&,
+                                                  const ndn::Interest& interest) {
+      std::shared_ptr<const ndn::Data> packet;
+      {
+        std::lock_guard<std::mutex> lock(storedReads->mutex);
+        const auto found = storedReads->packets.find(interest.getName());
+        if (found != storedReads->packets.end())
+          packet = found->second;
+      }
+      if (packet) {
+        const auto hints = interest.getForwardingHint();
+        if (hints.size() != 1 || hints[0] != ndn::Name("/spec222/repo-provider"))
+          storedReads->wrongForwardingHints.fetch_add(1, std::memory_order_relaxed);
+        storedReads->servedSegments.fetch_add(1, std::memory_order_relaxed);
+        face->put(*packet);
+      }
+    });
   auto runs = std::make_shared<std::atomic<unsigned>>(0);
   auto preparationFactory =
-    [planDigest, artifactDigest, bootId] (
-      ndn_service_framework::ServiceProvider::CollaborationContext&,
+    [planDigest, artifactDigest, bootId, storedReads] (
+      ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
       const NativeSelectionProjectionV3& projection,
       const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
       if (!protectedRuntime ||
           protectedRuntime->state() != ProtectedRuntimeState::GrantVerified ||
           projection.provider != projection.deviceBinding.provider)
         throw std::runtime_error("provider oracle preparation binding mismatch");
+      if (projection.storedModelObjectKeyLease) {
+        std::pair<ndn::Name, std::vector<std::uint8_t>> expected;
+        {
+          std::lock_guard<std::mutex> lock(storedReads->mutex);
+          expected = storedReads->expectedByRequest.at(projection.requestId);
+        }
+        storedReads->attempts.fetch_add(1, std::memory_order_relaxed);
+        std::optional<ndn::Buffer> opened;
+        try {
+          opened = nativeFetchAndOpenStoredModelObjectCurrent(ctx,
+            *projection.storedModelObjectKeyLease, expected.first, ctx.assignment().workDeadline);
+        }
+        catch (const std::exception& error) {
+          throw std::runtime_error(std::string("SPEC222_STORED_OBJECT_REJECTED: ") + error.what());
+        }
+        if (!opened || std::vector<std::uint8_t>(opened->begin(), opened->end()) != expected.second)
+          throw std::runtime_error("SPEC222_STORED_OBJECT_REJECTED: packet/ciphertext admission");
+        storedReads->successes.fetch_add(1, std::memory_order_relaxed);
+      }
       NativeModelRunnerSpec spec;
       spec.role = "/Backbone";
       spec.kind = "onnx-model";
@@ -752,6 +811,257 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
     };
   const auto providerIdentity = environment.keyChain().getPib().getIdentity(providerName);
   const auto providerCertificate = providerIdentity.getDefaultKey().getDefaultCertificate();
+  struct StoredAssignmentFixture
+  {
+    std::shared_ptr<NativeModelObjectKeyIndexV1> index;
+    NativeStoredModelHandle handle;
+    ndn::Name payloadName;
+    std::vector<std::uint8_t> plaintext;
+  };
+  std::map<int, StoredAssignmentFixture> storedFixtures;
+  const auto storedFixture = [&] (int fault) -> StoredAssignmentFixture& {
+    const auto existing = storedFixtures.find(fault);
+    if (existing != storedFixtures.end())
+      return existing->second;
+    BOOST_REQUIRE(fault >= 0 && fault <= 3 && storedFixtures.size() < 4);
+    StoredAssignmentFixture fixture;
+    fixture.index = std::make_shared<NativeModelObjectKeyIndexV1>();
+    const ndn::Name producer("/spec222/model-owner");
+    const auto prefix = ndn::Name(producer).append("STORED-MODEL").appendVersion(100 + fault);
+    fixture.handle.producer = producer;
+    fixture.handle.repository = ndn::Name("/spec222/repo");
+    fixture.handle.rootName = ndn::Name(prefix).append("root");
+    fixture.handle.rootWireDigest = nativePlanningDigest(prefix.toUri());
+    fixture.handle.masterKey.assign(32, 0x42);
+    fixture.index->storedPublication = NativeStoredModelReference{producer,
+      fixture.handle.repository, fixture.handle.rootName, fixture.handle.rootWireDigest};
+    fixture.plaintext.resize(10'000);
+    for (std::size_t i = 0; i < fixture.plaintext.size(); ++i)
+      fixture.plaintext[i] = static_cast<std::uint8_t>(i % 251);
+    ndn::Segmenter segmenter(environment.keyChain(), ndn::security::signingWithSha256());
+    const std::vector<std::uint8_t> metadataPlaintext{'m'};
+    const auto addObject = [&] (const std::string& id, bool payload) {
+      NativeStoredModelIndexedObject indexed;
+      const auto name = nativeStoredModelObjectName(prefix, id);
+      const auto& plaintext = payload ? fixture.plaintext : metadataPlaintext;
+      auto ciphertext = nativeSealStoredModelObject(fixture.handle.masterKey, producer,
+        name, plaintext, indexed.object);
+      indexed.segmentBytes = 4096;
+      if (payload && (fault == 2 || fault == 3)) {
+        ciphertext.back() ^= 1;
+        if (fault == 3)
+          indexed.object.ciphertextDigest = nativePlanningDigest(ciphertext.data(), ciphertext.size());
+      }
+      auto packets = segmenter.segment(ciphertext, name, indexed.segmentBytes,
+        ndn::time::milliseconds::zero());
+      if (payload) {
+        BOOST_REQUIRE_EQUAL(ciphertext.size(), 10'028U);
+        BOOST_REQUIRE_EQUAL(packets.size(), 3U);
+        if (fault == 1) {
+          const auto& original = packets.front()->getSignatureValue();
+          std::vector<std::uint8_t> damaged(original.value_begin(), original.value_end());
+          BOOST_REQUIRE_EQUAL(damaged.size(), 32U);
+          damaged.front() ^= 1;
+          packets.front()->setSignatureValue(
+            ndn::span<const std::uint8_t>(damaged.data(), damaged.size()));
+          BOOST_REQUIRE(!ndn::security::verifySignature(*packets.front(),
+            std::optional<ndn::security::Certificate>{}));
+        }
+        else {
+          BOOST_REQUIRE(ndn::security::verifySignature(*packets.front(),
+            std::optional<ndn::security::Certificate>{}));
+        }
+        fixture.payloadName = name;
+        fixture.index->templatePayloadIds.insert(id);
+        fixture.index->payloadIdsByDataName[name.toUri(ndn::name::UriFormat::CANONICAL)].insert(id);
+        fixture.index->payloadIdsByNode[0].insert(id);
+      }
+      else {
+        fixture.index->providerAssemblyMetadataNames.insert(
+          name.toUri(ndn::name::UriFormat::CANONICAL));
+      }
+      fixture.index->storedObjectsByName.emplace(
+        name.toUri(ndn::name::UriFormat::CANONICAL), indexed);
+      std::lock_guard<std::mutex> lock(storedReads->mutex);
+      for (const auto& packet : packets)
+        BOOST_REQUIRE(storedReads->packets.emplace(packet->getName(), packet).second);
+    };
+    for (const auto& id : {"business-root", "material-manifest", "material-receipt"})
+      addObject(id, false);
+    addObject("fixture-model-payload", true);
+    return storedFixtures.emplace(fault, std::move(fixture)).first->second;
+  };
+  std::vector<ndn::Name> storedKeyTableNames;
+  const auto attachStoredKeyTable = [&] (const std::string& fullWire,
+                                         bool useWrongRecipientKey,
+                                         bool injectPublisherFailure = false,
+                                         int objectFault = 0,
+                                         bool useWrongObjectKey = false,
+                                         int peerTableCase = 0) {
+    std::istringstream projectionInput(fullWire);
+    auto projection = nativeSelectionProjectionV3FromJson(projectionInput, "/Backbone");
+    projection.plan.modelName = "spec222-stored-key-fixture";
+    const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+    BOOST_REQUIRE(fixed);
+
+    const auto& fixture = storedFixture(objectFault);
+    NativeArtifactBinding artifacts;
+    artifacts.modelObjectKeyIndex = fixture.index;
+    auto handle = fixture.handle;
+    if (useWrongObjectKey)
+      handle.masterKey.front() ^= 1;
+    {
+      std::lock_guard<std::mutex> lock(storedReads->mutex);
+      BOOST_REQUIRE(storedReads->expectedByRequest.size() < 16);
+      storedReads->expectedByRequest[projection.requestId] = {fixture.payloadName, fixture.plaintext};
+    }
+
+    const auto certificatePublicKey = useWrongRecipientKey
+      ? environment.keyChain().getPib().getIdentity(requesterName)
+          .getDefaultKey().getDefaultCertificate().getPublicKey()
+      : providerCertificate.getPublicKey();
+    const auto certificatePublicKeyDigest = nativePlanningDigest(
+      std::string(reinterpret_cast<const char*>(providerCertificate.getPublicKey().data()),
+                  providerCertificate.getPublicKey().size()));
+    NativeRecipientKeyMaterialV1 recipient;
+    recipient.certificateName = providerCertificate.getName();
+    recipient.publicKeyDigest = certificatePublicKeyDigest;
+    recipient.publicKey.assign(certificatePublicKey.begin(), certificatePublicKey.end());
+
+    const auto now = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    const auto expiresAtMs = std::min(projection.deadlineMs, now + 30'000);
+    const auto context = nativeModelObjectKeyContext(projection, requesterName, serviceName,
+      bootId, recipient.certificateName, recipient.publicKeyDigest, expiresAtMs, now);
+    auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    NativeRequestControl control{projection.requestId, projection.attempt,
+      std::chrono::steady_clock::now() + std::chrono::seconds(10),
+      [cancelled] { return cancelled->load(std::memory_order_relaxed); }};
+    auto user = std::shared_ptr<ServiceUser>(&environment.user(), [] (ServiceUser*) {});
+    std::packaged_task<ndn_service_framework::LargeDataPublishResult()> publishTask(
+      [&] {
+        if (injectPublisherFailure)
+          throw std::runtime_error("spec222 publisher worker failure");
+        if (peerTableCase != 0) {
+          // Independent protocol peer: first prove its valid table interoperates,
+          // then mutate the admitted table without changing its recipient capsules.
+          const auto& publication = *fixture.index->storedPublication;
+          const NativeJson publicationJson{
+            {"producer", publication.producer.toUri(ndn::name::UriFormat::CANONICAL)},
+            {"repository", publication.repository.toUri(ndn::name::UriFormat::CANONICAL)},
+            {"rootName", publication.rootName.toUri(ndn::name::UriFormat::CANONICAL)},
+            {"rootWireDigest", publication.rootWireDigest}};
+          NativeJson retrieval{{"forwardingHint",
+            ndn::Name("/spec222/repo-provider").toUri(ndn::name::UriFormat::CANONICAL)}};
+          std::vector<const NativeStoredModelIndexedObject*> ordered;
+          for (const auto& item : fixture.index->storedObjectsByName)
+            ordered.push_back(&item.second);
+          std::sort(ordered.begin(), ordered.end(), [] (const auto* left, const auto* right) {
+            const auto& a = left->object.name.wireEncode();
+            const auto& b = right->object.name.wireEncode();
+            return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end());
+          });
+          NativeJson rows = NativeJson::array();
+          for (const auto* indexed : ordered) {
+            const auto& object = indexed->object;
+            const NativeJson objectJson{
+              {"name", object.name.toUri(ndn::name::UriFormat::CANONICAL)},
+              {"plaintextDigest", object.plaintextDigest},
+              {"ciphertextDigest", object.ciphertextDigest},
+              {"plaintextBytes", object.plaintextBytes},
+              {"ciphertextBytes", object.ciphertextBytes},
+              {"segmentBytes", indexed->segmentBytes}};
+            const auto aad = nativeCanonicalJson(NativeJson{
+              {"schema", "ndnsf-di-stored-model-object-key-aad-v1"},
+              {"context", context}, {"publication", publicationJson},
+              {"object", objectJson}, {"retrieval", retrieval}});
+            auto key = nativeStoredModelObjectKey(handle.masterKey, publication.producer,
+                                                   object.name);
+            struct KeyWiper
+            {
+              std::vector<std::uint8_t>& key;
+              ~KeyWiper()
+              {
+                OPENSSL_cleanse(key.data(), key.size());
+              }
+            } keyWiper{key};
+            const auto capsule = ndn_service_framework::encryptRecipientAssignment(
+              ndn::span<const std::uint8_t>(key.data(), key.size()),
+              ndn::span<const std::uint8_t>(recipient.publicKey.data(), recipient.publicKey.size()),
+              providerName, recipient.certificateName,
+              ndn::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(aad.data()),
+                                           aad.size()));
+            if (peerTableCase != 2 || object.name != fixture.payloadName)
+              rows.push_back(NativeJson{{"object", objectJson}, {"capsule", capsule.getFields()}});
+          }
+          if (peerTableCase == 4)
+            std::reverse(rows.begin(), rows.end());
+          if (peerTableCase == 5)
+            retrieval["forwardingHint"] = ndn::Name("/spec222/other-repo-provider").toUri(
+              ndn::name::UriFormat::CANONICAL);
+          NativeJson table{{"schema", "ndnsf-di-stored-model-object-keys-v1"},
+            {"context", context}, {"publication", publicationJson},
+            {"objects", std::move(rows)}, {"retrieval", retrieval}};
+          if (peerTableCase == 3) {
+            table["publication"]["rootName"] = ndn::Name(publication.rootName).append("other")
+              .toUri(ndn::name::UriFormat::CANONICAL);
+            table["publication"]["rootWireDigest"] = "sha256:" + std::string(64, 'f');
+          }
+          if (peerTableCase == 6)
+            table.erase("retrieval");
+          const auto wire = nativeCanonicalJson(table);
+          ndn_service_framework::PreparedServiceRequest request;
+          request.serviceName = serviceName;
+          request.requestId = ndn::Name(projection.requestId);
+          ndn_service_framework::LargeDataPublishOptions options;
+          options.contentName = nativeFixedRoleSourceContentName(projection, *fixed);
+          return user->publishEncryptedLargeDataFromWorker(request,
+            std::vector<std::uint8_t>(wire.begin(), wire.end()), "di-stored-model-object-keys",
+            ndn::DEFAULT_FRESHNESS_PERIOD, options, [control] { control.requireActive(); });
+        }
+        return nativePublishStoredModelObjectKeys(user,
+          serviceName.toUri(ndn::name::UriFormat::CANONICAL), artifacts, handle,
+          ndn::Name("/spec222/repo-provider"), projection, *fixed, recipient, bootId,
+          expiresAtMs, control);
+      });
+    auto publishResult = publishTask.get_future();
+    std::thread publisher(std::move(publishTask));
+    const auto publicationReady = [&] {
+      return publishResult.wait_for(std::chrono::milliseconds(0)) ==
+        std::future_status::ready;
+    };
+    std::exception_ptr pumpFailure;
+    while (!publicationReady()) {
+      if (std::chrono::steady_clock::now() >= control.deadline)
+        cancelled->store(true, std::memory_order_relaxed);
+      try {
+        environment.pumpUntil(publicationReady);
+      }
+      catch (...) {
+        if (!pumpFailure)
+          pumpFailure = std::current_exception();
+        cancelled->store(true, std::memory_order_relaxed);
+        environment.userFace().getIoContext().restart();
+      }
+    }
+    publisher.join();
+    if (pumpFailure)
+      std::rethrow_exception(pumpFailure);
+    const auto publication = publishResult.get();
+    BOOST_REQUIRE(publication.success);
+    storedKeyTableNames.push_back(publication.encryptedDataName);
+
+    auto reference = NativeJson{
+      {"schema", "ndnsf-di-stored-model-object-keys-reference-v1"},
+      {"dataName", publication.encryptedDataName.toUri(ndn::name::UriFormat::CANONICAL)},
+      {"plaintextDigest", publication.contentDigest},
+      {"plaintextBytes", publication.plaintextSize},
+      {"context", context}};
+    auto wire = nativeParseJson(fullWire);
+    wire["model_object_keys"] = std::move(reference);
+    return nativeCanonicalJson(wire);
+  };
   const auto makeFacade = [&] {
     return Provider::fromServiceProviderForTest(
     environment.providerFace(), environment.provider(), environment.keyChain(),
@@ -821,15 +1131,24 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
   NativeFixedRoleAssignmentCache userFixedRoles;
   std::atomic<unsigned> fixedSourceInterests{0};
   std::atomic<unsigned> roleSourceInterests{0};
+  std::atomic<unsigned> modelKeyTableInterests{0};
   unsigned fixedSourcePublications = 0;
   const auto fixedSourcePrefix = ndn::Name(requesterName).append("NDNSF-DI").append("assignment");
+  auto modelKeyTablePrefix = requesterName;
+  modelKeyTablePrefix.append("NDNSF").append("LARGE-DATA");
   const ndn::signal::ScopedConnection sourceInterestObserver = environment.providerFace().onSendInterest.connect(
-    [&fixedSourceInterests, &roleSourceInterests, &fixedSourcePrefix] (const ndn::Interest& interest) {
+    [&fixedSourceInterests, &roleSourceInterests, &modelKeyTableInterests,
+     &fixedSourcePrefix, &modelKeyTablePrefix, &storedKeyTableNames] (
+        const ndn::Interest& interest) {
       if (std::find(interest.getName().begin(), interest.getName().end(),
                     ndn::name::Component("ROLE")) != interest.getName().end())
         roleSourceInterests.fetch_add(1, std::memory_order_relaxed);
       if (fixedSourcePrefix.isPrefixOf(interest.getName()))
         fixedSourceInterests.fetch_add(1, std::memory_order_relaxed);
+      if (modelKeyTablePrefix.isPrefixOf(interest.getName()) ||
+          std::any_of(storedKeyTableNames.begin(), storedKeyTableNames.end(),
+            [&] (const ndn::Name& name) { return name.isPrefixOf(interest.getName()); }))
+        modelKeyTableInterests.fetch_add(1, std::memory_order_relaxed);
     });
   const auto referenceAssignment = [&] (const std::string& fullWire) {
     if (!useFixedReferences) return fullWire;
@@ -870,6 +1189,13 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
     return nativeSelectionInvocationV2ToJson(projection, *fixed, source.get());
   };
   assignmentProjection = referenceAssignment(assignmentProjection);
+  if (includeStoredKeyTable) {
+    BOOST_CHECK_EXCEPTION(attachStoredKeyTable(assignmentProjection, false, true),
+      std::runtime_error, [] (const std::runtime_error& error) {
+        return std::string(error.what()) == "spec222 publisher worker failure";
+      });
+    assignmentProjection = attachStoredKeyTable(assignmentProjection, false);
+  }
 
   auto probe = std::make_shared<ProviderRequestProbeState>();
   std::mutex probeRegistryMutex;
@@ -1028,18 +1354,32 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
   BOOST_CHECK_MESSAGE(positiveFailure.empty(), positiveFailure);
   BOOST_CHECK(probeResponseSeen(probe));
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
+  if (includeStoredKeyTable) {
+    BOOST_CHECK_GT(modelKeyTableInterests.load(std::memory_order_relaxed), 0U);
+    BOOST_CHECK_EQUAL(storedReads->attempts.load(std::memory_order_relaxed), 1U);
+    BOOST_CHECK_EQUAL(storedReads->successes.load(std::memory_order_relaxed), 1U);
+    BOOST_CHECK_EQUAL(storedReads->servedSegments.load(std::memory_order_relaxed), 3U);
+    BOOST_CHECK_EQUAL(storedReads->wrongForwardingHints.load(std::memory_order_relaxed), 0U);
+  }
   auto counters = facade.counters();
   BOOST_CHECK_EQUAL(counters.sourceFetches, 0U);
   BOOST_CHECK_EQUAL(counters.assemblies, 1U);
   BOOST_CHECK_EQUAL(counters.runnersCreated, 1U);
 
-  // The same production ingress is exercised with three authenticated
-  // Selection substitutions.  Each must fail before preparation/runner
-  // creation, leaving the positive counters unchanged.
-  const auto mutations = useFixedReferences
-    ? (restartHandler ? std::vector<int>{-1, -2, -3, 0, 1, 4, 2, 3, 5, 6, 7, 8, 9, 10}
-                      : std::vector<int>{-1, 0, 1, 4, 2, 3, 5, 6, 7, 8, 9, 10})
-    : std::vector<int>{0, 1, 2};
+  // The same production ingress is exercised with authenticated Selection
+  // substitutions.  Invalid fixed bindings and stored-key scope must fail
+  // before preparation/runner creation, leaving positive counters unchanged.
+  const std::vector<int> fixedMutations = restartHandler
+    ? std::vector<int>{-1, -2, -3, 0, 1, 4, 2, 3, 5, 6, 7, 8, 9, 10}
+    : std::vector<int>{-1, 0, 1, 4, 2, 3, 5, 6, 7, 8, 9, 10};
+  auto mutations = useFixedReferences ? fixedMutations
+    : std::vector<int>{0, 1, 2, 11, 12, 13, 14};
+  if (includeStoredKeyTable) {
+    mutations.insert(mutations.begin(), -5);
+    mutations.insert(mutations.begin(), -4);
+    for (const auto mutation : {15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+      mutations.push_back(mutation);
+  }
   unsigned expectedRuns = 1;
   unsigned warmSourceInterests = fixedSourceInterests.load(std::memory_order_relaxed);
   if (useFixedReferences) {
@@ -1073,7 +1413,7 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
     assignmentProjection = providerProjection(
       projectionProvider, requestId, planDigest, artifactDigest,
       projectionEpoch, issuedGrant.grantName, projectionGrantDigest);
-    if (mutation < 0) {
+    if (mutation < 0 || (mutation >= 11 && mutation <= 24)) {
       auto warmGrantRequest = grantRequest;
       warmGrantRequest.requestId = requestId.toUri();
       const auto warmGrant = NativeArtifactGrantIssuer(issuerConfig).issue(
@@ -1086,6 +1426,46 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
         protectionEpoch, warmGrant.grantName, warmGrant.grantDigest);
     }
     assignmentProjection = referenceAssignment(assignmentProjection);
+    if (mutation >= 11 && mutation <= 14) {
+      std::istringstream projectionInput(assignmentProjection);
+      auto projection = nativeSelectionProjectionV3FromJson(projectionInput, "/Backbone");
+      const auto contextNowMs = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+      const auto recipientCertificate = providerCertificate.getName();
+      const auto recipientKeyDigest = std::string("sha256:") + std::string(64, 'c');
+      auto keyTableName = requesterName;
+      keyTableName.append("NDNSF").append("LARGE-DATA").append("spec185-key-table");
+      auto context = nativeModelObjectKeyContext(
+        projection, requesterName, serviceName, bootId,
+        recipientCertificate, recipientKeyDigest, projection.deadlineMs, contextNowMs);
+      if (mutation == 11)
+        context["providerBootId"] = bootId + "-wrong";
+      if (mutation == 12)
+        context["attempt"] = projection.attempt + 1;
+      if (mutation == 14)
+        context["recipientCertificate"] = "/foreign/KEY/offer/ID-CERT/0";
+      if (mutation == 13)
+        keyTableName = ndn::Name("/foreign/provider/NDNSF/LARGE-DATA/spec185-key-table");
+      auto withWrongContext = nativeParseJson(assignmentProjection);
+      withWrongContext["model_object_keys"] = NativeJson{
+        {"schema", "ndnsf-di-stored-model-object-keys-reference-v1"},
+        {"dataName", keyTableName.toUri()},
+        {"plaintextDigest", std::string("sha256:") + std::string(64, 'c')},
+        {"plaintextBytes", 1024U},
+        {"context", context}};
+      assignmentProjection = nativeCanonicalJson(withWrongContext);
+    }
+    if (mutation == 15)
+      assignmentProjection = attachStoredKeyTable(assignmentProjection, true);
+    if (mutation == -4 || (mutation >= 16 && mutation <= 18))
+      assignmentProjection = attachStoredKeyTable(assignmentProjection, false, false,
+        mutation == -4 ? 0 : mutation - 15);
+    if (mutation == 19)
+      assignmentProjection = attachStoredKeyTable(assignmentProjection, false, false, 0, true);
+    if (mutation == -5 || (mutation >= 20 && mutation <= 24))
+      assignmentProjection = attachStoredKeyTable(assignmentProjection, false, false, 0, false,
+        mutation == -5 ? 1 : mutation - 18);
     if (mutation == 3) {
       auto expired = nativeParseJson(assignmentProjection);
       expired["deadline_ms"] = nowMs - 1;
@@ -1105,7 +1485,7 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
       mixed["fixed_role_ref"] = "sha256:" + std::string(64, 'f');
       assignmentProjection = nativeCanonicalJson(mixed);
     }
-    if (mutation >= 7) {
+    if (mutation >= 7 && mutation <= 10) {
       auto mixed = nativeParseJson(assignmentProjection);
       mixed["fixed_role_ref"] = "sha256:" + std::string(64, 'f');
       auto& source = mixed["fixed_role_source"];
@@ -1126,6 +1506,10 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
     }
     const auto sourceInterestsBefore = fixedSourceInterests.load(std::memory_order_relaxed);
     const auto roleSourceInterestsBefore = roleSourceInterests.load(std::memory_order_relaxed);
+    const auto modelKeyTableInterestsBefore =
+      modelKeyTableInterests.load(std::memory_order_relaxed);
+    const auto storedReadAttemptsBefore = storedReads->attempts.load(std::memory_order_relaxed);
+    const auto storedSegmentsBefore = storedReads->servedSegments.load(std::memory_order_relaxed);
     const auto assignmentProjectionForCall = assignmentProjection;
     probe = std::make_shared<ProviderRequestProbeState>();
     registerProbe(requestIdForCall, probe);
@@ -1184,6 +1568,19 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
     BOOST_CHECK(probeRequestPublished(probe));
     BOOST_CHECK(probeSelectionSeen(probe));
     const auto rejectionFailure = probeFailure(probe);
+    if (includeStoredKeyTable && (mutation == -4 || mutation == -5)) {
+      BOOST_CHECK_MESSAGE(rejectionFailure.empty(), rejectionFailure);
+      BOOST_CHECK(probeResponseSeen(probe));
+      BOOST_CHECK_EQUAL(storedReads->attempts.load(std::memory_order_relaxed),
+                        storedReadAttemptsBefore);
+      BOOST_CHECK_EQUAL(storedReads->servedSegments.load(std::memory_order_relaxed),
+                        storedSegmentsBefore);
+      ++expectedRuns;
+      BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), expectedRuns);
+      BOOST_CHECK_EQUAL(facade.counters().assemblies, 1U);
+      BOOST_CHECK_EQUAL(facade.counters().runnersCreated, 1U);
+      continue;
+    }
     if (mutation < 0) {
       BOOST_CHECK_MESSAGE(rejectionFailure.empty(), rejectionFailure);
       BOOST_CHECK(probeResponseSeen(probe));
@@ -1221,7 +1618,9 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
       continue;
     }
     BOOST_CHECK_MESSAGE(!rejectionFailure.empty(), rejectionFailure);
-    if (useFixedReferences && (mutation == 1 || mutation == 4 || mutation == 3 || mutation == 5 || mutation == 6 || mutation >= 7)) {
+    if (useFixedReferences && (mutation == 1 || mutation == 4 || mutation == 3 ||
+        mutation == 5 || mutation == 6 || (mutation >= 7 && mutation <= 10) ||
+        (mutation >= 11 && mutation <= 14))) {
       // A prompt rejection Response ends the request before its scheduled
       // status query. Otherwise retain the independent Core status oracle.
       environment.pumpUntil([&] {
@@ -1250,10 +1649,63 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
                           "Provider: " + providerFailure + "; User: " + rejectionFailure);
       BOOST_CHECK_EQUAL(fixedSourceInterests.load(std::memory_order_relaxed), sourceInterestsBefore);
     }
-    if (mutation >= 7) {
+    if (mutation >= 7 && mutation <= 10) {
       BOOST_CHECK_MESSAGE(providerFailure.find("fixed source Producer, role or plaintext name commitment mismatch") != std::string::npos,
                           "Provider: " + providerFailure + "; User: " + rejectionFailure);
       BOOST_CHECK_EQUAL(roleSourceInterests.load(std::memory_order_relaxed), roleSourceInterestsBefore);
+    }
+    if (mutation == 11 || mutation == 12 || mutation == 14) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("DI_MODEL_OBJECT_KEYS_INVALID") != std::string::npos,
+                          "Provider: " + providerFailure + "; User: " + rejectionFailure);
+      BOOST_CHECK_EQUAL(fixedSourceInterests.load(std::memory_order_relaxed), sourceInterestsBefore);
+      BOOST_CHECK_EQUAL(roleSourceInterests.load(std::memory_order_relaxed), roleSourceInterestsBefore);
+      BOOST_CHECK_EQUAL(modelKeyTableInterests.load(std::memory_order_relaxed),
+                        modelKeyTableInterestsBefore);
+    }
+    if (mutation == 13) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("fixed source Producer, role or plaintext name commitment mismatch") != std::string::npos,
+                          "Provider: " + providerFailure + "; User: " + rejectionFailure);
+      BOOST_CHECK_EQUAL(modelKeyTableInterests.load(std::memory_order_relaxed),
+                        modelKeyTableInterestsBefore);
+    }
+    if (mutation == 15) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("DI_MODEL_OBJECT_KEYS_INVALID") != std::string::npos,
+                          "Provider: " + providerFailure + "; User: " + rejectionFailure);
+      BOOST_CHECK_GT(modelKeyTableInterests.load(std::memory_order_relaxed),
+                     modelKeyTableInterestsBefore);
+    }
+    if (mutation >= 16 && mutation <= 19) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("SPEC222_STORED_OBJECT_REJECTED") != std::string::npos,
+                          "Provider: " + providerFailure + "; User: " + rejectionFailure);
+      BOOST_CHECK_EQUAL(storedReads->attempts.load(std::memory_order_relaxed),
+                        storedReadAttemptsBefore + 1);
+      BOOST_CHECK_EQUAL(storedReads->successes.load(std::memory_order_relaxed), 1U);
+      BOOST_CHECK_GT(storedReads->servedSegments.load(std::memory_order_relaxed),
+                     storedSegmentsBefore);
+    }
+    if (mutation == 19) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("failed AEAD authentication") != std::string::npos,
+                          "Provider: " + providerFailure + "; User: " + rejectionFailure);
+      BOOST_CHECK_EQUAL(storedReads->servedSegments.load(std::memory_order_relaxed),
+                        storedSegmentsBefore + 3);
+    }
+    if (mutation == 20) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("SPEC222_STORED_OBJECT_REJECTED") != std::string::npos,
+                          "Provider: " + providerFailure + "; User: " + rejectionFailure);
+      BOOST_CHECK_EQUAL(storedReads->attempts.load(std::memory_order_relaxed),
+                        storedReadAttemptsBefore + 1);
+      BOOST_CHECK_EQUAL(storedReads->servedSegments.load(std::memory_order_relaxed),
+                        storedSegmentsBefore);
+    }
+    if (mutation >= 21 && mutation <= 24) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("DI_MODEL_OBJECT_KEYS_INVALID") != std::string::npos,
+                          "Provider: " + providerFailure + "; User: " + rejectionFailure);
+      BOOST_CHECK_GT(modelKeyTableInterests.load(std::memory_order_relaxed),
+                     modelKeyTableInterestsBefore);
+      BOOST_CHECK_EQUAL(storedReads->attempts.load(std::memory_order_relaxed),
+                        storedReadAttemptsBefore);
+      BOOST_CHECK_EQUAL(storedReads->servedSegments.load(std::memory_order_relaxed),
+                        storedSegmentsBefore);
     }
     if (useFixedReferences && (mutation == 1 || mutation == 4)) {
       BOOST_CHECK_MESSAGE(providerFailure.find("DI_PROTECTED_GRANT_REJECTED") != std::string::npos,
@@ -1280,6 +1732,11 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences, bool
 BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse)
 {
   runAuthenticatedProviderAssignmentCase(false);
+}
+
+BOOST_AUTO_TEST_CASE(AuthenticatedSelectionAdmitsStoredModelKeysAndRejectsWrongCapsuleKey)
+{
+  runAuthenticatedProviderAssignmentCase(false, false, true);
 }
 
 BOOST_AUTO_TEST_CASE(FixedRoleSourceMissThenWarmHitUsesSameProviderObject)
@@ -1520,6 +1977,9 @@ BOOST_AUTO_TEST_CASE(ProviderArtifactCachePinsEvictsAndSeparatesIdentity)
   key.securityDomain = projection.securityPolicySnapshotDigest;
   key.protectionEpoch = "epoch-1";
   key.protectionIdentity = projection.provider;
+  auto differentStoredKey = key;
+  differentStoredKey.storedModelIdentity = "sha256:" + std::string(64, 'f');
+  BOOST_CHECK_NE(key.canonicalKey(), differentStoredKey.canonicalKey());
 
   auto first = cache.acquireWithRunner(key, projection, control, makeArtifact);
   BOOST_REQUIRE(first);
@@ -1558,6 +2018,401 @@ BOOST_AUTO_TEST_CASE(ProviderArtifactCachePinsEvictsAndSeparatesIdentity)
                           return std::string(error.what()).find("RUNTIME_CLOSED") !=
                                  std::string::npos;
                         });
+}
+
+BOOST_AUTO_TEST_CASE(StoredModelObjectKeyLeaseAuthenticatesAndBindsCacheIdentity)
+{
+  const ndn::Name producer("/spec222/model-owner");
+  NativeStoredModelReference publication{producer, ndn::Name("/spec222/repo"),
+    ndn::Name("/spec222/model-owner/publication/root"),
+    "sha256:" + std::string(64, 'a')};
+  const ndn::Name objectName("/spec222/model-owner/publication/objects/model");
+  const std::vector<std::uint8_t> masterKey(32, 0x42);
+  const std::vector<std::uint8_t> plaintext{'m', 'o', 'd', 'e', 'l'};
+  NativeStoredModelObject object;
+  const auto ciphertext = nativeSealStoredModelObject(
+    masterKey, producer, objectName, plaintext, object);
+  const NativeStoredModelIndexedObject indexed{object, 4096};
+
+  NativeStoredModelObjectKeyLease correct(publication, ndn::Name("/spec222/repo-provider"));
+  BOOST_CHECK_EQUAL(correct.forwardingHint(), ndn::Name("/spec222/repo-provider"));
+  BOOST_CHECK_THROW(NativeStoredModelObjectKeyLease(publication, ndn::Name{}),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(NativeStoredModelObjectKeyLease(publication, publication.producer),
+                    std::invalid_argument);
+  correct.add(indexed, nativeStoredModelObjectKey(masterKey, producer, objectName));
+  correct.finalize();
+  BOOST_CHECK(correct.contains(objectName));
+  BOOST_CHECK_EQUAL(correct.cacheIdentity().size(), 71U);
+  BOOST_CHECK_EQUAL(correct.cacheIdentity().substr(0, 7), "sha256:");
+  BOOST_CHECK(correct.open(objectName, ciphertext) == plaintext);
+
+  NativeStoredModelObjectKeyLease wrongKey(publication, ndn::Name("/spec222/repo-provider"));
+  wrongKey.add(indexed, std::vector<std::uint8_t>(32, 0x24));
+  wrongKey.finalize();
+  BOOST_CHECK_NE(wrongKey.cacheIdentity(), correct.cacheIdentity());
+  BOOST_CHECK_THROW(wrongKey.open(objectName, ciphertext), std::runtime_error);
+
+  auto corrupted = ciphertext;
+  corrupted.back() ^= 1;
+  BOOST_CHECK_THROW(correct.open(objectName, corrupted), std::runtime_error);
+
+  auto differentRoot = publication;
+  differentRoot.rootWireDigest = "sha256:" + std::string(64, 'b');
+  NativeStoredModelObjectKeyLease differentPublication(differentRoot,
+    ndn::Name("/spec222/repo-provider"));
+  differentPublication.add(indexed,
+    nativeStoredModelObjectKey(masterKey, producer, objectName));
+  differentPublication.finalize();
+  BOOST_CHECK_NE(differentPublication.cacheIdentity(), correct.cacheIdentity());
+}
+
+BOOST_AUTO_TEST_CASE(StoredModelKeyFingerprintUsesBinaryNameOrderAndCompleteCommitments)
+{
+  const ndn::Name producer("/spec222/model-owner");
+  const NativeStoredModelReference publication{producer, ndn::Name("/spec222/repo"),
+    ndn::Name("/spec222/model-owner/publication/root"), zeroDigest('a')};
+  const NativeStoredModelIndexedObject shortName{
+    {ndn::Name("/spec222/model-owner/b"), zeroDigest('1'), zeroDigest('2'), 5, 33}, 4096};
+  const NativeStoredModelIndexedObject longName{
+    {ndn::Name("/spec222/model-owner/aa"), zeroDigest('3'), zeroDigest('4'), 6, 34}, 4096};
+  const std::vector<std::uint8_t> shortKey(32, 0x42);
+  const std::vector<std::uint8_t> longKey(32, 0x43);
+  BOOST_REQUIRE(longName.object.name.toUri() < shortName.object.name.toUri());
+  const auto& shortWire = shortName.object.name.wireEncode();
+  const auto& longWire = longName.object.name.wireEncode();
+  BOOST_REQUIRE(std::vector<std::uint8_t>(shortWire.begin(), shortWire.end()) <
+    std::vector<std::uint8_t>(longWire.begin(), longWire.end()));
+
+  NativeStoredModelObjectKeyLease lease(publication, ndn::Name("/spec222/repo-provider"));
+  lease.add(longName, longKey);
+  lease.add(shortName, shortKey);
+  lease.finalize();
+  const auto expectedRow = [] (const NativeStoredModelIndexedObject& indexed,
+                               const std::vector<std::uint8_t>& key) {
+    return NativeJson{{"name", indexed.object.name.toUri(ndn::name::UriFormat::CANONICAL)},
+      {"plaintextDigest", indexed.object.plaintextDigest},
+      {"ciphertextDigest", indexed.object.ciphertextDigest},
+      {"plaintextBytes", indexed.object.plaintextBytes},
+      {"ciphertextBytes", indexed.object.ciphertextBytes},
+      {"segmentBytes", indexed.segmentBytes}, {"keyDigest", providerAssemblyDigest(key)}};
+  };
+  // The explicit short-then-long sequence is the wire order, opposite to URI order.
+  const auto expected = NativeJson{{"schema", "ndnsf-di-stored-model-cache-identity-v1"},
+    {"publication", NativeJson{
+      {"producer", publication.producer.toUri(ndn::name::UriFormat::CANONICAL)},
+      {"repository", publication.repository.toUri(ndn::name::UriFormat::CANONICAL)},
+      {"rootName", publication.rootName.toUri(ndn::name::UriFormat::CANONICAL)},
+      {"rootWireDigest", publication.rootWireDigest}}},
+    {"objects", NativeJson::array({expectedRow(shortName, shortKey),
+                                 expectedRow(longName, longKey)})}};
+  BOOST_CHECK_EQUAL(lease.cacheIdentity(), nativePlanningDigest(nativeCanonicalJson(expected)));
+  NativeStoredModelObjectKeyLease reverse(publication, ndn::Name("/spec222/repo-provider/other"));
+  reverse.add(shortName, shortKey);
+  reverse.add(longName, longKey);
+  reverse.finalize();
+  BOOST_CHECK_EQUAL(reverse.cacheIdentity(), lease.cacheIdentity());
+  for (int mutation = 0; mutation < 2; ++mutation) {
+    auto changed = shortName;
+    if (mutation == 0) {
+      ++changed.object.plaintextBytes;
+      ++changed.object.ciphertextBytes;
+    }
+    else {
+      changed.segmentBytes = 2048;
+    }
+    NativeStoredModelObjectKeyLease different(publication, ndn::Name("/spec222/repo-provider"));
+    different.add(changed, shortKey);
+    different.add(longName, longKey);
+    different.finalize();
+    BOOST_CHECK_NE(different.cacheIdentity(), lease.cacheIdentity());
+  }
+}
+
+BOOST_AUTO_TEST_CASE(ProviderArtifactKeyBuilderCarriesStoredAdmissionIdentity)
+{
+  NativeSelectionProjectionV3 projection;
+  projection.provider = "/spec222/provider";
+  projection.canonicalArtifactName = "/spec222/repo/root";
+  projection.securityPolicySnapshotDigest = "sha256:" + std::string(64, 'a');
+  projection.storedModelCacheIdentity = "sha256:" + std::string(64, 'b');
+  auto& role = projection.assembly;
+  role.modelManifestDigest = "sha256:" + std::string(64, 'c');
+  role.canonicalInitializerDigest = "sha256:" + std::string(64, 'd');
+  role.graphDigest = "sha256:" + std::string(64, 'e');
+  role.selectedRole = "/Backbone";
+  role.artifactDigest = "sha256:" + std::string(64, 'f');
+  role.recipeDigest = "sha256:" + std::string(64, '1');
+  role.backendAbi = "onnxruntime-cpu-v1";
+  role.deviceSet = {"cpu"};
+  role.precision = "float32";
+  role.quantization = "none";
+  role.layout = "canonical";
+  role.artifactProfileDigest = "sha256:" + std::string(64, '2');
+  role.protectionEpoch = "epoch-1";
+
+  const auto key = nativeProviderArtifactKey(projection, projection.provider,
+    projection.canonicalArtifactName, role.modelManifestDigest);
+  BOOST_CHECK_EQUAL(key.storedModelIdentity, projection.storedModelCacheIdentity);
+
+  auto otherProjection = projection;
+  otherProjection.storedModelCacheIdentity = "sha256:" + std::string(64, '3');
+  const auto otherKey = nativeProviderArtifactKey(otherProjection, projection.provider,
+    otherProjection.canonicalArtifactName, role.modelManifestDigest);
+  BOOST_CHECK_NE(key.canonicalKey(), otherKey.canonicalKey());
+
+  auto ordinaryProjection = projection;
+  ordinaryProjection.storedModelCacheIdentity.clear();
+  const auto ordinaryKey = nativeProviderArtifactKey(ordinaryProjection,
+    projection.provider, ordinaryProjection.canonicalArtifactName,
+    role.modelManifestDigest);
+  BOOST_CHECK(ordinaryKey.storedModelIdentity.empty());
+  BOOST_CHECK_NE(key.canonicalKey(), ordinaryKey.canonicalKey());
+}
+
+BOOST_AUTO_TEST_CASE(StoredModelKeyTableCountLimitRejectsBeforePublication)
+{
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment;
+  environment.bootstrap();
+  const ndn::Name producer("/spec222/model-owner");
+  const ndn::Name repository("/spec222/repo");
+  const ndn::Name rootName("/spec222/model-owner/publication/root");
+  const auto digest = std::string("sha256:") + std::string(64, 'a');
+  auto index = std::make_shared<NativeModelObjectKeyIndexV1>();
+  index->storedPublication = NativeStoredModelReference{
+    producer, repository, rootName, digest};
+  const std::vector<ndn::Name> metadataNames{
+    rootName,
+    ndn::Name("/spec222/model-owner/publication/manifest"),
+    ndn::Name("/spec222/model-owner/publication/receipt")};
+  const auto addObject = [&] (const ndn::Name& name) {
+    NativeStoredModelIndexedObject indexed;
+    indexed.object.name = name;
+    indexed.object.plaintextDigest = digest;
+    indexed.object.ciphertextDigest = digest;
+    indexed.object.plaintextBytes = 1;
+    indexed.object.ciphertextBytes = 29;
+    indexed.segmentBytes = 4096;
+    index->storedObjectsByName.emplace(
+      name.toUri(ndn::name::UriFormat::CANONICAL), std::move(indexed));
+  };
+  for (const auto& name : metadataNames) {
+    const auto canonical = name.toUri(ndn::name::UriFormat::CANONICAL);
+    index->providerAssemblyMetadataNames.insert(canonical);
+    addObject(name);
+  }
+  index->templatePayloadIds.insert("bundle-0");
+  for (std::uint64_t number = 0; number < 4094; ++number) {
+    const auto payload = "bundle-" + std::to_string(number);
+    const auto name = ndn::Name("/spec222/model-owner/publication/objects")
+      .append(payload);
+    const auto canonical = name.toUri(ndn::name::UriFormat::CANONICAL);
+    index->payloadIdsByDataName[canonical].insert(payload);
+    index->payloadIdsByNode[0].insert(payload);
+    addObject(name);
+  }
+  BOOST_REQUIRE_EQUAL(nativeSelectModelObjectKeyDataNames(*index, {0}).size(), 4097U);
+
+  const ndn::Name provider = environment.provider().getName();
+  const ndn::Name requestId("/spec222/key-table-bound");
+  const auto projectionWire = providerProjection(provider, requestId, digest, digest,
+    "spec222-protected-v1", "/spec222/grant/key-table-bound", digest);
+  std::istringstream projectionInput(projectionWire);
+  auto projection = nativeSelectionProjectionV3FromJson(projectionInput, "/Backbone");
+  projection.plan.modelName = "key-table-bound-model";
+  const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+  BOOST_REQUIRE(fixed);
+
+  NativeArtifactBinding artifacts;
+  artifacts.modelObjectKeyIndex = index;
+  NativeStoredModelHandle handle;
+  handle.producer = producer;
+  handle.repository = repository;
+  handle.rootName = rootName;
+  handle.rootWireDigest = digest;
+  handle.masterKey.assign(32, 0x42);
+  auto user = std::shared_ptr<ServiceUser>(&environment.user(), [] (ServiceUser*) {});
+  auto cancelled = std::make_shared<std::atomic<bool>>(false);
+  NativeRequestControl control{requestId.toUri(), 1,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10),
+    [cancelled] { return cancelled->load(std::memory_order_relaxed); }};
+  const auto contentName = nativeFixedRoleSourceContentName(projection, *fixed);
+  const auto expectedName = contentName.contentPrefix(
+    environment.user().getName(), digest.substr(7));
+  const auto expectedDataPrefix = expectedName.getPrefix(expectedName.size() - 1);
+  std::atomic<unsigned> publications{0};
+  const auto publicationObserver = environment.userFace().onSendData.connect(
+    [&] (const ndn::Data& data) {
+      if (expectedDataPrefix.isPrefixOf(data.getName()))
+        publications.fetch_add(1, std::memory_order_relaxed);
+    });
+
+  NativeRecipientKeyMaterialV1 recipient;
+  recipient.certificateName = ndn::Name("/spec222/provider/KEY/offer/ID-CERT/0");
+  recipient.publicKeyDigest = digest;
+  recipient.publicKey.assign(32, 0);
+  BOOST_CHECK_EXCEPTION(nativePublishStoredModelObjectKeys(user,
+    "/Inference/Spec222StoredKeyTable", artifacts, handle, ndn::Name("/spec222/repo-provider"),
+    projection, *fixed,
+    recipient, "spec222-provider-boot", projection.deadlineMs - 1, control),
+    std::invalid_argument, [] (const std::invalid_argument& error) {
+      return std::string(error.what()) == "DI_MODEL_OBJECT_KEYS_INVALID";
+    });
+  BOOST_CHECK_EQUAL(publications.load(std::memory_order_relaxed), 0U);
+
+  // Calibrate only fixed-size capsule fields; random hex values and AAD hashes
+  // do not change JSON length. Row bytes fit exactly, but the complete table
+  // must exceed the cap once its context, retrieval and array framing are added.
+  const auto certificate = environment.keyChain().getPib().getIdentity(provider)
+    .getDefaultKey().getDefaultCertificate();
+  const auto publicKey = certificate.getPublicKey();
+  recipient.certificateName = certificate.getName();
+  recipient.publicKey.assign(publicKey.begin(), publicKey.end());
+  recipient.publicKeyDigest = nativePlanningDigest(publicKey.data(), publicKey.size());
+  const std::vector<std::uint8_t> calibrationKey(32, 0x42);
+  const auto capsule = ndn_service_framework::encryptRecipientAssignment(
+    ndn::span<const std::uint8_t>(calibrationKey.data(), calibrationKey.size()),
+    ndn::span<const std::uint8_t>(publicKey.data(), publicKey.size()),
+    provider, recipient.certificateName, {});
+  const auto rowSize = [&] (const ndn::Name& name) {
+    return nativeCanonicalJson(NativeJson{
+      {"object", NativeJson{
+        {"name", name.toUri(ndn::name::UriFormat::CANONICAL)},
+        {"plaintextDigest", digest}, {"ciphertextDigest", digest},
+        {"plaintextBytes", 1}, {"ciphertextBytes", 29}, {"segmentBytes", 4096}}},
+      {"capsule", capsule.getFields()}}).size();
+  };
+  index->storedObjectsByName.clear();
+  index->payloadIdsByDataName.clear();
+  index->payloadIdsByNode.clear();
+  std::size_t baseRowBytes = 0;
+  for (const auto& name : metadataNames) {
+    addObject(name);
+    baseRowBytes += rowSize(name);
+  }
+  constexpr std::size_t PAYLOAD_COUNT = 2000;
+  constexpr std::size_t TABLE_CAP = 4U << 20;
+  const ndn::Name objectPrefix("/spec222/model-owner/publication/objects");
+  for (std::size_t i = 0; i < PAYLOAD_COUNT; ++i)
+    baseRowBytes += rowSize(ndn::Name(objectPrefix).append("bundle-" + std::to_string(i)));
+  BOOST_REQUIRE_LT(baseRowBytes, TABLE_CAP);
+  const auto paddingBytes = TABLE_CAP - baseRowBytes;
+  std::size_t actualRowBytes = 0;
+  ndn::Name longestObjectName;
+  std::size_t longestNameBytes = 0;
+  for (const auto& name : metadataNames)
+    actualRowBytes += rowSize(name);
+  for (std::size_t i = 0; i < PAYLOAD_COUNT; ++i) {
+    const auto payload = "bundle-" + std::to_string(i);
+    const auto padding = paddingBytes / PAYLOAD_COUNT + (i < paddingBytes % PAYLOAD_COUNT ? 1 : 0);
+    const auto name = ndn::Name(objectPrefix).append(payload + std::string(padding, 'x'));
+    const auto canonical = name.toUri(ndn::name::UriFormat::CANONICAL);
+    BOOST_REQUIRE_LE(canonical.size(), 4096U);
+    if (canonical.size() > longestNameBytes) {
+      longestNameBytes = canonical.size();
+      longestObjectName = name;
+    }
+    addObject(name);
+    index->payloadIdsByDataName[canonical].insert(payload);
+    index->payloadIdsByNode[0].insert(payload);
+    actualRowBytes += rowSize(name);
+  }
+  BOOST_REQUIRE_EQUAL(actualRowBytes, TABLE_CAP);
+  BOOST_REQUIRE_EQUAL(nativeStoredModelObjectKey(handle.masterKey, producer,
+                                                longestObjectName).size(), 32U);
+  BOOST_REQUIRE_EQUAL(nativeSelectModelObjectKeyDataNames(*index, {0}).size(), PAYLOAD_COUNT + 3);
+  control.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  BOOST_CHECK_EXCEPTION(nativePublishStoredModelObjectKeys(user,
+    "/Inference/Spec222StoredKeyTable", artifacts, handle, ndn::Name("/spec222/repo-provider"),
+    projection, *fixed, recipient, "spec222-provider-boot", projection.deadlineMs - 1, control),
+    std::invalid_argument, [] (const std::invalid_argument& error) {
+      return std::string(error.what()) == "DI_MODEL_OBJECT_KEYS_TABLE_TOO_LARGE";
+    });
+  BOOST_CHECK_EQUAL(publications.load(std::memory_order_relaxed), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(StoredModelObjectKeySelectionFollowsAssignedBundleClosure)
+{
+  const ndn::Name producer("/spec222/model-owner");
+  const auto canonicalName = [] (const std::string& name) {
+    return ndn::Name(name).toUri(ndn::name::UriFormat::CANONICAL);
+  };
+  NativeModelObjectKeyIndexV1 index;
+  index.storedPublication = NativeStoredModelReference{producer,
+    ndn::Name("/spec222/repo"), ndn::Name("/spec222/model-owner/publication/root"),
+    "sha256:" + std::string(64, 'a')};
+  const std::string root = canonicalName("/spec222/model-owner/publication/root");
+  const std::string manifest = canonicalName(
+    "/spec222/model-owner/publication/material-manifest");
+  const std::string receipt = canonicalName(
+    "/spec222/model-owner/publication/material-receipt");
+  const std::string prepared = canonicalName(
+    "/spec222/model-owner/publication/prepared-metadata");
+  const std::string catalog = canonicalName("/spec222/model-owner/publication/catalog");
+  const std::string bundleA = canonicalName(
+    "/spec222/model-owner/publication/objects/bundle-a");
+  const std::string bundleB = canonicalName(
+    "/spec222/model-owner/publication/objects/bundle-b");
+  const std::string bundleC = canonicalName(
+    "/spec222/model-owner/publication/objects/bundle-c");
+  index.providerAssemblyMetadataNames = {root, manifest, receipt};
+  index.nonProviderObjectNames = {prepared, catalog};
+  index.templatePayloadIds = {"shared-initializer"};
+  index.payloadIdsByDataName = {{bundleA, {"shared-initializer"}},
+    {bundleB, {"node-a"}}, {bundleC, {"node-b"}}};
+  index.payloadIdsByNode = {{4, {"node-a"}}, {7, {"node-b"}}};
+  for (const auto& name : {root, manifest, receipt, prepared, catalog,
+                           bundleA, bundleB, bundleC}) {
+    NativeStoredModelIndexedObject object;
+    object.object.name = ndn::Name(name);
+    object.object.plaintextDigest = "sha256:" + std::string(64, '1');
+    object.object.ciphertextDigest = "sha256:" + std::string(64, '2');
+    object.object.plaintextBytes = 1;
+    object.object.ciphertextBytes = 29;
+    object.segmentBytes = 4096;
+    index.storedObjectsByName.emplace(name, std::move(object));
+  }
+
+  const auto selected = nativeSelectModelObjectKeyDataNames(index, {4});
+  BOOST_CHECK_EQUAL(selected.size(), 5U);
+  BOOST_CHECK(selected.count(root) == 1);
+  BOOST_CHECK(selected.count(manifest) == 1);
+  BOOST_CHECK(selected.count(receipt) == 1);
+  BOOST_CHECK(selected.count(bundleA) == 1);
+  BOOST_CHECK(selected.count(bundleB) == 1);
+  BOOST_CHECK(selected.count(bundleC) == 0);
+  BOOST_CHECK(selected.count(prepared) == 0);
+  BOOST_CHECK(selected.count(catalog) == 0);
+
+  auto crossingBundle = index;
+  crossingBundle.payloadIdsByDataName.erase(bundleC);
+  crossingBundle.payloadIdsByDataName[bundleA].insert("node-b");
+  BOOST_CHECK_THROW(nativeSelectModelObjectKeyDataNames(crossingBundle, {4}),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(StoredModelKeyTableReferencesSurviveSelectionRoundTrip)
+{
+  const auto digest = "sha256:" + std::string(64, 'a');
+  const auto context = NativeJson{{"schema", "ndnsf-di-model-object-key-context-v1"},
+    {"requestId", "/spec222/request"}, {"attempt", 1}};
+  for (const auto* schema : {"ndnsf-di-model-object-keys-reference-v1",
+                             "ndnsf-di-stored-model-object-keys-reference-v1"}) {
+    const auto source = providerProjection(ndn::Name("/spec222/provider"),
+      ndn::Name("/spec222/request"), digest, digest);
+    std::istringstream sourceStream(source);
+    auto projection = nativeSelectionProjectionV3FromJson(sourceStream, "/Backbone");
+    projection.modelObjectKeys = NativeJson{{"schema", schema},
+      {"dataName", "/spec222/model-owner/NDNSF/LARGE-DATA/table"},
+      {"plaintextDigest", digest}, {"plaintextBytes", 1024}, {"context", context}};
+    const auto wire = nativeSelectionProjectionV3ToJson(projection);
+    std::istringstream input(wire);
+    const auto decoded = nativeSelectionProjectionV3FromJson(
+      input, projection.assembly.selectedRole);
+    BOOST_REQUIRE(decoded.modelObjectKeys);
+    BOOST_CHECK_EQUAL(nativeCanonicalJson(*decoded.modelObjectKeys),
+                      nativeCanonicalJson(*projection.modelObjectKeys));
+  }
 }
 
 BOOST_AUTO_TEST_CASE(ProtectedArtifactCacheColdHitBindsGrantAndRetainsCiphertext)
@@ -2370,6 +3225,81 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthoriza
   BOOST_REQUIRE_EQUAL(WEXITSTATUS(status), 0);
   BOOST_CHECK(std::filesystem::is_regular_file(execRoot / "child-success"));
   std::filesystem::remove_all(execRoot, cleanupError);
+
+  // Keep the root key unchanged while replacing only a weight key. The new
+  // admission must not reuse the previously assembled plaintext on disk.
+  const auto storedProjection = [&] (std::uint8_t weightKey,
+                                     const std::string& publicationRootDigest) {
+    NativeStoredModelReference publication{ndn::Name("/spec190/provider/protected"),
+      ndn::Name("/spec222/repo"),
+      ndn::Name("/spec190/provider/protected/publication-root"), publicationRootDigest};
+    auto lease = std::make_shared<NativeStoredModelObjectKeyLease>(publication,
+      ndn::Name("/spec222/repo-provider"));
+    const auto add = [&] (const ndn::Name& name, const std::vector<std::uint8_t>& bytes,
+                           std::uint8_t keyByte) {
+      NativeStoredModelIndexedObject object;
+      object.object = {name, providerAssemblyDigest(bytes), zeroDigest('9'),
+        bytes.size(), bytes.size() + 28};
+      object.segmentBytes = 4096;
+      lease->add(std::move(object), std::vector<std::uint8_t>(32, keyByte));
+    };
+    add(rootName, rootPayload, 0x42);
+    add(sourceName, source, weightKey);
+    lease->finalize();
+    auto stored = projection;
+    stored.storedModelObjectKeyLease = std::move(lease);
+    stored.storedModelCacheIdentity = stored.storedModelObjectKeyLease->cacheIdentity();
+    return stored;
+  };
+  const auto storedOptions = [&] (const NativeSelectionProjectionV3& stored) {
+    auto bound = options;
+    bound.cacheDir = cacheDir;
+    bound.roleAssemblySpecDigest = roleAssemblySpecDigest;
+    bound.protectedRuntime = makeRuntime();
+    nativeBindStoredModelAssemblyCache(stored, bound);
+    return bound;
+  };
+  const auto admitted = storedProjection(0x43, zeroDigest('7'));
+  auto storedColdOptions = storedOptions(admitted);
+  const auto storedCold = prepareNativeCanonicalOnnxRole(fetchers, admitted, storedColdOptions);
+  BOOST_REQUIRE(std::filesystem::is_regular_file(storedCold.path));
+  const auto storedFetches = sourceFetches.load(std::memory_order_relaxed);
+  storedColdOptions.protectedRuntime->complete();
+  auto storedWarmOptions = storedOptions(admitted);
+  const auto storedWarm = tryLoadNativeCanonicalOnnxRoleFromCache(
+    fetchers, admitted, storedWarmOptions);
+  BOOST_REQUIRE(storedWarm);
+  BOOST_CHECK_EQUAL(storedWarm->path, storedCold.path);
+  BOOST_CHECK_EQUAL(sourceFetches.load(std::memory_order_relaxed), storedFetches);
+  storedWarmOptions.protectedRuntime->complete();
+
+  for (const auto& replaced : {storedProjection(0x44, zeroDigest('7')),
+                               storedProjection(0x43, zeroDigest('8'))}) {
+    auto replacedOptions = storedOptions(replaced);
+    BOOST_CHECK_NE(replacedOptions.roleAssemblySpecDigest,
+                   storedColdOptions.roleAssemblySpecDigest);
+    BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(fetchers, replaced, replacedOptions));
+    auto rejectingFetchers = fetchers;
+    rejectingFetchers.fetchEncryptedLargeData = [] (const ndn::Name&, const ndn::Name&)
+      -> std::optional<ndn::Buffer> {
+      throw std::runtime_error("stored weight key rejected");
+    };
+    BOOST_CHECK_EXCEPTION(
+      prepareNativeCanonicalOnnxRole(rejectingFetchers, replaced, replacedOptions),
+      std::runtime_error, [] (const std::runtime_error& error) {
+        return std::string(error.what()) == "stored weight key rejected";
+      });
+    replacedOptions.protectedRuntime->cancel("stored cache negative complete");
+  }
+  auto missingLease = admitted;
+  missingLease.storedModelObjectKeyLease.reset();
+  BOOST_CHECK_THROW(storedOptions(missingLease), std::runtime_error);
+  auto missingIdentity = admitted;
+  missingIdentity.storedModelCacheIdentity.clear();
+  BOOST_CHECK_THROW(storedOptions(missingIdentity), std::runtime_error);
+  auto mismatchedIdentity = admitted;
+  mismatchedIdentity.storedModelCacheIdentity = zeroDigest('6');
+  BOOST_CHECK_THROW(storedOptions(mismatchedIdentity), std::runtime_error);
   std::filesystem::remove_all(cacheDir, cleanupError);
 }
 

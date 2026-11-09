@@ -82,6 +82,9 @@ public:
   uint64_t vectorCompatibilityThreshold() const noexcept;
 
 private:
+  RepoRangeReadFunction
+  bindCurrentRangeReader(std::shared_ptr<const RepoObjectManifest> expected) const override;
+
   struct Reservation
   {
     std::string canonicalIdentity;

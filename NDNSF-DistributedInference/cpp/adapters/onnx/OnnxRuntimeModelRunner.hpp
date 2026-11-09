@@ -17,6 +17,26 @@ namespace ndnsf::di {
 
 class OnnxRuntimeSessionCache;
 
+/** Bounded scalar observations of one actual resident KV tensor, for qualification only. */
+struct OnnxKvStateSample
+{
+  std::string inputName;
+  std::string elementType;
+  std::vector<std::int64_t> shape;
+  std::vector<std::uint64_t> indices;
+  std::vector<double> values;
+};
+
+/** Provider-owned synchronous probe. Implementations must not retain borrowed context. */
+class OnnxKvStateObserver
+{
+public:
+  virtual ~OnnxKvStateObserver() = default;
+  virtual bool wants(const RoleExecutionContext& context) const = 0;
+  virtual void record(const RoleExecutionContext& context,
+                      std::vector<OnnxKvStateSample> samples) = 0;
+};
+
 struct OnnxRuntimeProviderSelection
 {
   std::string requestedProvider;
@@ -165,6 +185,9 @@ public:
   explicit OnnxRuntimeModelRunner(
     NativeModelRunnerSpec spec,
     std::shared_ptr<OnnxRuntimeSessionCache> sessionCache);
+  OnnxRuntimeModelRunner(NativeModelRunnerSpec spec,
+                         std::shared_ptr<OnnxRuntimeSessionCache> sessionCache,
+                         std::shared_ptr<OnnxKvStateObserver> stateObserver);
   ~OnnxRuntimeModelRunner() final;
 
   std::map<std::string, TensorBundle>
@@ -252,6 +275,11 @@ void
 registerOnnxRuntimeBackend(
   RegistryNativeModelRunnerFactory& factory,
   std::shared_ptr<OnnxRuntimeSessionCache> sessionCache);
+
+void
+registerOnnxRuntimeBackend(RegistryNativeModelRunnerFactory& factory,
+                           std::shared_ptr<OnnxRuntimeSessionCache> sessionCache,
+                           std::shared_ptr<OnnxKvStateObserver> stateObserver);
 
 } // namespace ndnsf::di
 

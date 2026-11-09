@@ -24,6 +24,7 @@
 #include "PublishedContentName.hpp"
 #include "control-byte-statistics.hpp"
 
+#include <chrono>
 #include <functional>
 #include <atomic>
 #include <condition_variable>
@@ -790,6 +791,77 @@ namespace ndn_service_framework{
                 const std::string& objectLabel, ndn::time::milliseconds freshness,
                 const LargeDataPublishOptions& options,
                 const std::function<void()>& requireActive = {});
+
+            /** Worker publication with an isolated object key durably encrypted
+             * to this owner's certificate before committing original Repo Data.
+             * Requires durable options. Keep User/Face alive through return.
+             */
+            LargeDataPublishResult
+            publishOwnerRecoverableLargeDataFromWorker(
+                const PreparedServiceRequest& ctx, const std::vector<uint8_t>& plaintext,
+                const std::string& objectLabel, ndn::time::milliseconds freshness,
+                const LargeDataPublishOptions& options,
+                std::chrono::steady_clock::time_point deadline,
+                const std::function<void()>& requireActive = {});
+
+            /** Current-operation capsule; no raw key or shared receive-cache restoration.
+             * The recipient still requires its normal execution authorization.
+             * Keep this User and its running Face alive until the worker returns.
+             */
+            RecipientEncryptedAssignment
+            rewrapOwnerRetainedLargeDataKeyFromWorker(
+                const ndn::Name& service, const LargeDataPublishResult& object,
+                const ndn::security::Certificate& recipient, const ndn::Buffer& context,
+                std::chrono::steady_clock::time_point deadline,
+                const std::function<void()>& requireActive);
+
+            /** Same operation using key material admitted from a signed ACK. */
+            RecipientEncryptedAssignment
+            rewrapOwnerRetainedLargeDataKeyFromWorker(
+                const ndn::Name& service, const LargeDataPublishResult& object,
+                const ndn::Name& recipient, const ndn::Name& certificate,
+                const ndn::Buffer& publicKey, const ndn::Buffer& context,
+                std::chrono::steady_clock::time_point deadline,
+                const std::function<void()>& requireActive);
+
+            static ndn::Buffer
+            ownerRetainedLargeDataKeyAssociatedData(
+                const ndn::Name& owner, const ndn::Name& service,
+                const LargeDataPublishResult& object,
+                const ndn::security::Certificate& recipient, const ndn::Buffer& context);
+
+            static ndn::Buffer
+            ownerRetainedLargeDataKeyAssociatedData(
+                const ndn::Name& owner, const ndn::Name& service,
+                const LargeDataPublishResult& object, const ndn::Name& recipient,
+                const ndn::Name& certificate, const ndn::Buffer& publicKey,
+                const ndn::Buffer& context);
+
+            /** Borrow a bounded retained plaintext on a worker after original-packet
+             * admission and owner-key recovery. Keep User/Face alive through return.
+             * The consumer owns any subsequent application commit fence.
+             */
+            void
+            readOwnerRetainedLargeDataFromWorker(
+                const ndn::Name& service, const LargeDataPublishResult& object,
+                std::uint64_t maxPlaintextBytes, std::chrono::steady_clock::time_point deadline,
+                const std::function<void()>& requireActive,
+                const std::function<void(ndn::span<const std::uint8_t>)>& consume);
+
+            /** Restore only original encrypted packet serving, with an owned lease.
+             * Worker-only; validates the reference and exact owner recovery key.
+             * This grants no task permission and does not restore receive keys.
+             */
+            LargeDataPublishResult
+            restoreOwnerRetainedLargeDataFromWorker(
+                const ndn::Name& service, const LargeDataPublishResult& object,
+                std::chrono::steady_clock::time_point deadline,
+                const std::function<void()>& requireActive);
+
+            /** Release only the exact encrypted owner key; original Repo Data remains. */
+            void
+            forgetOwnerRetainedLargeDataKey(
+                const ndn::Name& service, const LargeDataPublishResult& object);
 
             /** True only when the configured range-store has durable ownership. */
             bool supportsDurableEncryptedLargeData() const noexcept;
@@ -2116,11 +2188,24 @@ namespace ndn_service_framework{
                 bool cancelled = false;
             };
             std::shared_ptr<LargeDataKeyReleaseState> m_largeDataKeyReleaseState;
+            std::shared_ptr<const EncryptedLargeDataRangeSource>
+            validateOwnerRetainedSourceFromWorker(
+                const ndn::Name& service, const LargeDataPublishResult& object,
+                std::chrono::steady_clock::time_point deadline,
+                const std::function<void()>& requireActive, ProtectedBlobManifest& manifest,
+                std::shared_ptr<const ndn::Data>* manifestPacket = nullptr);
+            std::shared_ptr<LargeDataFilePublication>
+            registerOriginalPacketPublication(
+                const std::shared_ptr<LargeDataFilePublication>& candidate,
+                LargeDataPublishResult& result, bool retainWhileLeased,
+                ndn::time::milliseconds retention,
+                const std::function<bool()>& versionMatches);
             LargeDataPublishResult publishEncryptedLargeDataImpl(
                 const PreparedServiceRequest&, const std::vector<uint8_t>&,
                 const std::string&, ndn::time::milliseconds, bool,
                 const std::function<void()>&, const LargeDataPublishOptions&,
-                bool marshalIo);
+                bool marshalIo, bool ownerRecoverable = false,
+                std::chrono::steady_clock::time_point ownerDeadline = {});
             void expireLargeDataPublication(const std::string& publicationKey,
                 std::weak_ptr<LargeDataFilePublication> publication);
             std::shared_ptr<EncryptedLargeDataRangeStore> m_largeDataRangeStore;

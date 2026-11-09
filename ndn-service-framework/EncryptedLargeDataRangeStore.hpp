@@ -143,6 +143,17 @@ public:
   {
     throw std::runtime_error("ORIGINAL_DATA_PACKET_UNSUPPORTED");
   }
+
+  /** Open an already committed exact reference, rather than discover its name.
+   * The caller must still validate every reference binding and original packet.
+   * Legacy adapters retain identity discovery, including its ambiguity checks.
+   */
+  virtual std::optional<EncryptedLargeDataLookupResult> lookupDurableObject(
+    const std::string& publicationIdentity, const ndn::Name& manifestName,
+    const std::function<void()>& requireActive = {}) const
+  {
+    return lookupDurable(publicationIdentity, requireActive);
+  }
 };
 
 } // namespace ndn_service_framework

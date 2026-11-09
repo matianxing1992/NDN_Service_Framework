@@ -7,6 +7,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-runtime-graph-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/cuda-device-memory.hpp"
 
 #include <onnx/onnx_pb.h>
 
@@ -275,6 +276,68 @@ makeCoordinatorMetadataSpec(const std::filesystem::path& path,
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(DiOnnxRuntimeGpuEvidence)
+
+// Run this selector alone in a fresh GPU process, before any CPU runner creates Env.
+BOOST_AUTO_TEST_CASE(FirstCudaRunnerOwnsEnvironmentBeforeProviderOptions,
+                     *boost::unit_test::disabled())
+{
+  const auto* enabled = std::getenv("NDNSF_TEST_FIRST_CUDA_SESSION");
+  BOOST_REQUIRE(enabled && std::string(enabled) == "1");
+  std::unique_ptr<CudaDeviceMemoryQuery> deviceBinding;
+  if (const auto* binding = std::getenv("NDNSF_TEST_CUDA_BINDING_BEFORE_SESSION")) {
+    BOOST_REQUIRE_EQUAL(std::string(binding), "1");
+    deviceBinding = std::make_unique<CudaDeviceMemoryQuery>(0);
+    deviceBinding->prepare();
+  }
+  GraphMetadataFixture fixture;
+  auto model = makeShapeMetadataModel();
+  auto& graph = *model.mutable_graph();
+  graph.set_name("first-cuda-session");
+  graph.clear_node();
+  auto* square = graph.add_node();
+  square->set_name("square");
+  square->set_op_type("Mul");
+  square->add_input("input");
+  square->add_input("input");
+  square->add_output("output");
+  NativeModelRunnerSpec spec;
+  spec.role = "/Test/FirstCuda/Role";
+  spec.backend = "onnxruntime-cuda";
+  spec.path = fixture.write(model);
+  spec.metadata = {{"inputNames", "input"}, {"outputNames", "output"},
+    {"forceOutputBundle", "true"}, {"outputBundleScope", "squared"},
+    {"allowCpuFallback", "false"}, {"evidence.providerName", "/test/provider/first-cuda"},
+    {"evidence.providerBootId", "first-cuda-boot"},
+    {"evidence.modelDigest", "sha256:" + std::string(64, '1')},
+    {"evidence.planDigest", "sha256:" + std::string(64, '2')},
+    {"evidence.artifactDigest", "sha256:" + std::string(64, '3')},
+    {"evidence.createdAtMs", "1"}};
+  for (unsigned attempt = 0; attempt < 2; ++attempt) {
+    spec.metadata["providerProfilePrefix"] =
+      (fixture.directory / ("cuda-" + std::to_string(attempt))).string();
+    OnnxRuntimeModelRunner runner(spec);
+    RoleExecutionContext context;
+    context.requestId = "/test/first-cuda/request/" + std::to_string(attempt);
+    context.attemptEpoch = 1;
+    context.sessionId = "first-cuda-session";
+    context.providerBootId = "first-cuda-boot";
+    context.role = spec.role;
+    context.inputsByScope.emplace("activation", makeEncodedTensorBundle("activation", {
+      {"input", TensorElementType::Float32, {2, 2}, float32Payload({1, 2, 3, 4})}}));
+    const auto outputs = runner.run(context);
+    const auto tensors = decodeTensorBundle(outputs.at("squared").payload);
+    BOOST_CHECK(findTensor(tensors, "output").payload == float32Payload({1, 4, 9, 16}));
+    const auto evidence = runner.executionEvidenceSnapshot();
+    BOOST_REQUIRE(evidence);
+    BOOST_CHECK(evidence->runnerKind == RunnerKind::OnnxRuntimeCuda);
+    BOOST_CHECK(!evidence->cpuFallbackUsed);
+    const auto& assignments = evidence->getNodeProviderAssignments();
+    BOOST_REQUIRE(!assignments.empty());
+    BOOST_CHECK(std::any_of(assignments.begin(), assignments.end(), [](const auto& item) {
+      return item.nodeName == "square_kernel_time" && item.provider == "CUDAExecutionProvider";
+    }));
+  }
+}
 
 BOOST_AUTO_TEST_CASE(GroupedAttentionWarmupUsesGraphLengthWithoutChangingRequests)
 {

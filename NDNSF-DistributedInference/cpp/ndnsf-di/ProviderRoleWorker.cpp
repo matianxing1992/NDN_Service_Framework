@@ -1074,7 +1074,7 @@ ProviderRoleResult
 ProviderRoleWorker::runReadyRole(const WorkItem& item)
 {
   NativeWorkScope roleWork(item.role.workStatistics, "role-worker",
-                          NativeWorkKind::UNCLASSIFIED);
+                          NativeWorkKind::UNCLASSIFIED, item.role.inferenceEpoch);
   if (item.executionGuard) item.executionGuard();
   if (const auto* timing = std::getenv("NDNSF_DI_RUNTIME_TIMING");
       timing != nullptr && *timing != '\0' && *timing != '0') {

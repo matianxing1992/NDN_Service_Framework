@@ -7,6 +7,7 @@ probe remote credentials. Native runtime admission remains authoritative.
 from __future__ import annotations
 
 import configparser
+import copy
 import hashlib
 import json
 import os
@@ -141,17 +142,64 @@ def _bind(target, key, expected, field, name=False):
     target[key] = expected
 
 
-def load_deployment(path):
+def provider_cache_path(cache_root, identity):
+    """Project a stable cache purpose from the full canonical Provider Name."""
+    digest = hashlib.sha256(_name(identity, 'provider.identity')).hexdigest()
+    return str(Path(cache_root) / ('provider-' + digest))
+
+
+def preparation_deployment(config):
+    """Project prepare intent before inference-only inputs are validated."""
+    result = copy.deepcopy(config)
+    result['operation'] = 'prepare'
+    requester = _object(result['requester'], 'requester')
+    model_input = _object(requester.get('model_input', {}), 'requester.model_input')
+    publish_only = model_input.get('mode') == 'publish-stored'
+    excluded = {'provider', 'artifact-authority'} if publish_only else {'provider'}
+    result['actors'] = [actor for actor in _array(result['actors'], 'actors')
+                        if _string(_object(actor, 'actor').get('kind'), 'actor.kind') not in excluded]
+    for node in _array(result['nodes'], 'nodes', True):
+        _object(node, 'node')
+        node['gpu_devices'] = []
+    for actor in result['actors']:
+        if not _boolean(actor.get('external', False), 'actor.external'):
+            _object(actor.get('resources'), 'actor.resources')['gpu_devices'] = []
+    platform = _object(result['platform'], 'platform')
+    if platform.get('kind') == 'slurm-apptainer':
+        slurm = _object(platform.get('slurm'), 'platform.slurm')
+        _object(slurm.get('gpu'), 'platform.slurm.gpu')['count'] = 0
+    request = _object(requester.setdefault('request', {}), 'requester.request')
+    request.pop('provider_names', None)
+    requester.pop('fixed_placement', None)
+    if publish_only:
+        result['model'] = {}
+        result['artifact_authority'] = {}
+        for key in ('turns', 'grant', 'offer_admission', 'conversation', 'kv_handoff',
+                    'test_stream_barrier', 'test_handoff_barrier'):
+            requester.pop(key, None)
+        for key in ('options_file', 'placement_strategy', 'placement_score_mode'):
+            request.pop(key, None)
+    return result
+
+
+def load_deployment(path, *, prepare_only=False):
     """Return normalized management/native inputs; never mutate the filesystem."""
     source = Path(path).resolve(strict=True)
     config = _object(_read_json(source), "deployment", {
         "schema", "deployment_id", "release", "platform", "nodes", "actors",
-        "network", "security", "storage", "model", "requester", "artifact_authority",
+        "network", "security", "storage", "model", "requester", "artifact_authority", "operation",
     }, {"schema", "deployment_id", "release", "platform", "nodes", "actors",
         "network", "security", "storage", "model", "requester", "artifact_authority"})
     if config["schema"] != "ndnsf-di-deployment-v1":
         _fail("schema", "unsupported schema")
     _identifier(config["deployment_id"], "deployment_id")
+    if prepare_only:
+        config = preparation_deployment(config)
+    if config.get('operation', 'run') not in ('run', 'prepare'):
+        _fail('operation', 'expected run or prepare')
+    requester_input = _object(config['requester'], 'requester')
+    model_input = _object(requester_input.get('model_input', {}), 'requester.model_input')
+    publish_only = config.get('operation') == 'prepare' and model_input.get('mode') == 'publish-stored'
     platform = _object(config["platform"], "platform", {
         "kind", "sif", "sif_sha256", "build_record", "apptainer", "slurm",
         "topology", "topology_sha256"}, {"kind"})
@@ -168,7 +216,7 @@ def load_deployment(path):
         _fail("platform", "Slurm cannot declare MiniNDN inputs")
     read_paths = {source}
 
-    def resolve(value, field, *, control=False, exists=False, directory=False):
+    def resolve(value, field, *, control=False, exists=False, directory=False, optional=False):
         candidate = Path(_string(value, field))
         if not local and not control:
             if not candidate.is_absolute() or str(candidate).startswith('//') or ".." in candidate.parts:
@@ -176,10 +224,17 @@ def load_deployment(path):
             if exists and not directory:
                 read_paths.add(candidate)
             return str(candidate)
-        candidate = (source.parent / candidate).resolve()
-        if exists and not (candidate.is_dir() if directory else candidate.is_file()):
+        candidate = source.parent / candidate
+        if field in {'requester.model_input.private_handle_file',
+                     'requester.model_input.preparation_state_file'} and any(
+                item.is_symlink() for item in (candidate, *candidate.parents)):
+            _fail(field, 'private file path must not use symlinks')
+        candidate = candidate.resolve()
+        if exists and (not optional or candidate.exists()) and not (
+                candidate.is_dir() if directory else candidate.is_file()):
             _fail(field, "required input is unavailable")
-        if exists and not os.access(candidate, os.R_OK | (os.X_OK if directory else 0)):
+        if exists and (not optional or candidate.exists()) and not os.access(
+                candidate, os.R_OK | (os.X_OK if directory else 0)):
             _fail(field, "required input is unreadable")
         if directory and candidate.exists() and not candidate.is_dir():
             _fail(field, "expected directory path")
@@ -249,7 +304,7 @@ def load_deployment(path):
         "trust_schema", "controller_certificate", "controller_policy"},
         {"trust_schema", "controller_certificate"})
     model = _object(config["model"], "model", {"plan", "manifest", "tokenizer"},
-                    {"plan", "manifest", "tokenizer"})
+                    () if config.get('operation') == 'prepare' else {"plan", "manifest", "tokenizer"})
     for key in model:
         model[key] = resolve(model[key], "model." + key, exists=True)
     storage = _object(config["storage"], "storage", {
@@ -360,9 +415,12 @@ def load_deployment(path):
         actors[actor_id] = actor
         identities.add(identity)
         by_kind[actor["kind"]].append(actor)
-    for kind in ("controller", "artifact-authority", "requester"):
+    for kind in ("controller", "requester"):
         if len(by_kind[kind]) != 1:
             _fail("actors", "requires exactly one " + kind)
+    if len(by_kind['artifact-authority']) > 1 or (
+            not publish_only and len(by_kind['artifact-authority']) != 1):
+        _fail('actors', 'requires exactly one artifact-authority except publish-only preparation')
     if by_kind["controller"][0]["external"]:
         if "controller_policy" in security:
             _fail("security.controller_policy", "external Controller cannot own policy inputs")
@@ -370,8 +428,14 @@ def load_deployment(path):
         _fail("security.controller_policy", "owned Controller requires policy input")
     for key in security:
         security[key] = resolve(security[key], "security." + key, exists=True)
-    if not by_kind["provider"] or len(by_kind["repo"]) > 1:
+    if ((not by_kind["provider"] and config.get('operation') != 'prepare') or
+            len(by_kind["repo"]) > 1):
         _fail("actors", "requires providers and at most one Repo")
+    if config.get('operation') == 'prepare' and (by_kind['provider'] or
+            any(node['gpu_devices'] for node in nodes.values()) or
+            any(actor.get('resources', {}).get('gpu_devices') for actor in actors.values()) or
+            (platform['kind'] == 'slurm-apptainer' and platform['slurm']['gpu']['count'])):
+        _fail('operation', 'prepare cannot launch Providers or reserve GPUs')
     for node_id, rows in reservations.items():
         forwarder_cpus = int(not local and nodes[node_id]['nfd']['mode'] == 'managed')
         if forwarder_cpus + sum(row["cpus"] for row in rows) > nodes[node_id]["cpus"] and not all(
@@ -446,16 +510,18 @@ def _translate_native(config, by_kind, resolve):
     network, security = config["network"], config["security"]
     controller = by_kind["controller"][0]["identity"]
     requester_identity = by_kind["requester"][0]["identity"]
-    authority_identity = by_kind["artifact-authority"][0]["identity"]
+    authority_actor = next(iter(by_kind['artifact-authority']), None)
+    authority_identity = authority_actor['identity'] if authority_actor else None
 
     writes = []
 
-    def paths(obj, fields, location, *, exists=True, directory=False):
+    def paths(obj, fields, location, *, exists=True, directory=False, optional=False):
         _object(obj, location)
         for key in fields:
             if key in obj:
-                obj[key] = resolve(obj[key], location + "." + key, exists=exists, directory=directory)
-                if not exists:
+                obj[key] = resolve(obj[key], location + "." + key, exists=exists,
+                                   directory=directory, optional=optional)
+                if not exists and not optional:
                     target = Path(obj[key])
                     if local and not directory and target.exists() and not target.is_file():
                         _fail(location + "." + key, "output must be a regular file path")
@@ -468,7 +534,7 @@ def _translate_native(config, by_kind, resolve):
 
     requester = _object(config["requester"], "requester")
     requester_external = by_kind["requester"][0]["external"]
-    authority_external = by_kind["artifact-authority"][0]["external"]
+    authority_external = authority_actor is None or authority_actor['external']
     if requester_external and requester:
         _fail("requester", "external Requester cannot own native process inputs")
     if authority_external and config["artifact_authority"]:
@@ -476,7 +542,27 @@ def _translate_native(config, by_kind, resolve):
     if not requester_external:
         _translate_requester(requester, network, security, controller, requester_identity,
                              authority_identity, paths, bind,
+                             operation=config.get('operation', 'run'),
                              allow_test_barriers=config['platform']['kind'] == 'minindn')
+        if "model_repository" in requester:
+            target = requester["model_repository"]
+            matches = [a for a in by_kind["repo"] if _name(a["identity"], "actor.identity") ==
+                       _name(target["provider_identity"], "requester.model_repository.provider_identity")]
+            if len(matches) != 1:
+                _fail("requester.model_repository", "requires one declared Repo provider")
+            if not matches[0]["external"]:
+                expected_node = matches[0]['parameters'].get('repo-node', matches[0]['identity'])
+                _bind(target, "repo_node", expected_node,
+                      "requester.model_repository.repo_node", name=True)
+        if 'repo_target' in requester.get('model_input', {}):
+            target = requester['model_input']['repo_target']
+            matches = [a for a in by_kind['repo'] if _name(a['identity'], 'actor.identity') ==
+                       _name(target['provider_identity'], 'requester.model_input.repo_target.provider_identity')]
+            if len(matches) != 1:
+                _fail('requester.model_input.repo_target', 'requires one declared Repo provider')
+            if not matches[0]['external'] and 'repo-node' in matches[0]['parameters']:
+                _bind(target, 'repo_node', matches[0]['parameters']['repo-node'],
+                      'requester.model_input.repo_target.repo_node', name=True)
         known_providers = {_name(actor["identity"], "provider.identity") for actor in by_kind["provider"]}
         request = requester["request"]
         if "provider_names" in request:
@@ -494,7 +580,7 @@ def _translate_native(config, by_kind, resolve):
     if not authority_external:
         _translate_authority(authority_config, network, security, controller, requester_identity,
                              authority_identity, paths, bind)
-    if not requester_external and not authority_external and (
+    if not requester_external and not authority_external and 'grant' in requester and (
             requester["grant"]["protection_epoch"] != authority_config["authority"]["protection_epoch"]):
         _fail("authority.protection_epoch", "conflicts with requester grant epoch")
 
@@ -507,7 +593,7 @@ def _translate_native(config, by_kind, resolve):
                 "roles", "selection-offer-key-file", "offer-backend", "offer-can-provision",
                 "offer-has-model", "permission-wait-ms", "workers", "handler-threads", "ack-threads",
                 "artifact-cache-dir", "artifact-cache-max-mib", "statistics-file",
-                "allow-selection-generation-options",
+                "allow-selection-generation-options", "sample-kv-state-values",
                 "enable-admission-lease", "require-execution-lease", "execution-policy", "admission-lease-ttl-ms",
                 "grant-authority-public-key", "recipient-key-map", "repo-fetch-timeout-ms",
                 "assembly-timeout-ms",
@@ -523,7 +609,7 @@ def _translate_native(config, by_kind, resolve):
                 selected = provider_recipient_map(parameters["recipient-key-map"], actor["identity"])
                 resolve(selected[actor["identity"]], "provider.recipient-private-key", exists=True)
             for key in ("offer-can-provision", "offer-has-model", "allow-selection-generation-options",
-                        "enable-admission-lease", "require-execution-lease"):
+                        "enable-admission-lease", "require-execution-lease", "sample-kv-state-values"):
                 if key in parameters:
                     _boolean(parameters[key], "provider.parameters." + key)
             for key in ("permission-wait-ms", "workers", "handler-threads", "ack-threads",
@@ -550,6 +636,15 @@ def _translate_native(config, by_kind, resolve):
             paths(parameters, ("selection-offer-key-file", "kv-handoff-config"), "provider.parameters")
             paths(parameters, ("artifact-cache-dir",), "provider.parameters", exists=False, directory=True)
             paths(parameters, ("statistics-file",), "provider.parameters", exists=False)
+        elif actor['kind'] == 'repo':
+            _object(parameters, 'repo.parameters', {'request-timeout-ms', 'repo-node'})
+            if 'repo-node' in parameters:
+                _name(parameters['repo-node'], 'repo.parameters.repo-node')
+            if 'request-timeout-ms' in parameters:
+                timeout = _integer(parameters['request-timeout-ms'],
+                                   'repo.parameters.request-timeout-ms', 251)
+                if timeout > 2147483647:
+                    _fail('repo.parameters.request-timeout-ms', 'exceeds native signed int')
         elif parameters:
             _fail("actor.parameters", "role parameters belong in common/native configuration")
     barrier_outputs = {requester[key][field]
@@ -565,7 +660,12 @@ def _translate_native(config, by_kind, resolve):
 
 
 def _translate_requester(requester, network, security, controller, requester_identity,
-                         authority_identity, paths, bind, *, allow_test_barriers=False):
+                         authority_identity, paths, bind, *, operation='run',
+                         allow_test_barriers=False):
+    model_input = _object(requester.get('model_input', {'mode': 'source'}), 'requester.model_input')
+    mode = model_input.get('mode')
+    if mode not in ('source', 'publish-stored', 'stored'):
+        _fail('requester.model_input.mode', 'expected source, publish-stored or stored')
     barrier_paths = set()
     for key in ('test_stream_barrier', 'test_handoff_barrier'):
         if key not in requester:
@@ -587,13 +687,50 @@ def _translate_requester(requester, network, security, controller, requester_ide
             if path in barrier_paths:
                 _fail(location + '.' + field, 'barrier output paths must be distinct')
             barrier_paths.add(path)
-    _array(requester.get("turns"), "requester.turns", True)
     _bind(requester, "schema", "ndnsf-di-native-requester-v1", "requester.schema")
+    fields = {'mode', 'repo_target', 'private_handle_file'}
+    if mode in ('source', 'publish-stored'):
+        fields.add('preparation_state_file')
+        if mode == 'publish-stored' and operation != 'prepare':
+            _fail('requester.model_input.mode', 'publish-stored requires prepare operation')
+    if mode == 'stored' and operation == 'prepare':
+        _fail('requester.model_input.mode', 'stored mode cannot prepare or republish')
+    _object(model_input, 'requester.model_input', fields, fields)
+    if mode in ('source', 'publish-stored', 'stored'):
+        if requester.keys() & {'model_repository', 'encrypted_repository', 'cache_compatibility'}:
+            _fail('requester.model_input', 'cannot combine model publication modes')
+        target = _object(model_input['repo_target'], 'requester.model_input.repo_target',
+                         {'repo_node', 'provider_identity', 'service_prefix'},
+                         {'repo_node', 'provider_identity', 'service_prefix'})
+        for key, value in target.items():
+            _name(value, 'requester.model_input.repo_target.' + key)
+        _bind(target, 'service_prefix', network.get('repo_service'),
+              'requester.model_input.repo_target.service_prefix', name=True)
+        paths(model_input, ('private_handle_file',), 'requester.model_input', exists=mode == 'stored')
+        catalog = _object(requester.get('catalog'), 'requester.catalog')
+        source = _object(catalog.get('source'), 'requester.catalog.source')
+        if mode in ('source', 'publish-stored'):
+            paths(model_input, ('preparation_state_file',), 'requester.model_input', exists=False)
+            if model_input['private_handle_file'] == model_input['preparation_state_file']:
+                _fail('requester.model_input', 'preparation state and private handle must be distinct')
+        elif source.keys() & {'file', 'initializer_file'}:
+            _fail('requester.catalog.source', 'stored mode cannot read source files')
     core = requester.setdefault("core", {})
     paths(core, ("trust_schema_file",), "requester.core")
     bind(core, {"requester_identity": requester_identity, "authority_identity": controller,
                 "group": network["group"]}, "requester.core")
     bind(core, {"trust_schema_file": security["trust_schema"]}, "requester.core", False)
+    request = requester.setdefault('request', {})
+    bind(request, {'service': network['service']}, 'requester.request')
+    if mode == 'publish-stored':
+        if 'catalog' in requester:
+            catalog = _object(requester['catalog'], 'requester.catalog')
+            if 'source' in catalog:
+                paths(catalog['source'], ('file', 'initializer_file'), 'requester.catalog.source',
+                      optional=True)
+        paths(requester, ('statistics_file',), 'requester', exists=False)
+        return
+    _array(requester.get("turns"), "requester.turns", True)
     grant = requester.setdefault("grant", {})
     _object(grant, "requester.grant", required={
         "requester_private_key_file", "authority_public_key_file", "protection_epoch"})
@@ -603,8 +740,6 @@ def _translate_requester(requester, network, security, controller, requester_ide
     bind(grant, {"authority_identity": authority_identity,
                  "authority_service": network["artifact_service"]}, "requester.grant")
     paths(grant, ("requester_private_key_file", "authority_public_key_file"), "requester.grant")
-    request = requester.setdefault("request", {})
-    bind(request, {"service": network["service"]}, "requester.request")
     paths(request, ("options_file",), "requester.request")
     if "offer_admission" in requester:
         admission = _object(requester["offer_admission"], "requester.offer_admission")
@@ -613,7 +748,16 @@ def _translate_requester(requester, network, security, controller, requester_ide
     if "catalog" in requester:
         catalog = _object(requester["catalog"], "requester.catalog")
         if "source" in catalog:
-            paths(catalog["source"], ("file", "initializer_file"), "requester.catalog.source")
+            paths(catalog["source"], ("file", "initializer_file"), "requester.catalog.source",
+                  optional=mode == 'source')
+    if "model_repository" in requester:
+        target = _object(requester["model_repository"], "requester.model_repository",
+                         {"repo_node", "provider_identity", "service_prefix"},
+                         {"repo_node", "provider_identity", "service_prefix"})
+        for key, value in target.items():
+            _name(value, "requester.model_repository." + key)
+        _bind(target, "service_prefix", network.get("repo_service"),
+              "requester.model_repository.service_prefix", name=True)
     for key in ("repository", "encrypted_repository"):
         if key in requester:
             paths(requester[key], ("path",), "requester." + key, exists=False, directory=True)
@@ -665,12 +809,30 @@ def _translate_authority(authority_config, network, security, controller, reques
     _bind(authority_config, "schema", "ndnsf-di-native-authority-v1", "artifact_authority.schema")
     authority = authority_config.setdefault("authority", {})
     _object(authority, "artifact_authority.authority", required={
-        "authority_private_key_file", "requester_public_key_file", "content_key_file",
+        "authority_private_key_file", "content_key_file",
         "recipient_public_key_files", "allowed_model_manifests", "content_key_id", "protection_epoch"})
     _string(authority["protection_epoch"], "authority.protection_epoch")
     paths(authority, ("trust_schema_file", "authority_private_key_file", "requester_public_key_file",
                       "content_key_file"), "artifact_authority.authority")
-    bind(authority, {"identity": authority_identity, "requester_identity": requester_identity,
+    if 'requester_public_key_files' in authority:
+        if 'requester_identity' in authority or 'requester_public_key_file' in authority:
+            _fail('artifact_authority.authority', 'requester registry conflicts with legacy fields')
+        requesters = _object(authority['requester_public_key_files'],
+                             'authority.requester_public_key_files')
+        if not requesters or len(requesters) > 4096:
+            _fail('authority.requester_public_key_files', 'expected 1 to 4096 requesters')
+        identities = {_name(name, 'authority.requester_public_key_files.identity')
+                      for name in requesters}
+        if len(identities) != len(requesters):
+            _fail('authority.requester_public_key_files', 'duplicate canonical requester identity')
+        if _name(requester_identity, 'requester.identity') not in identities:
+            _fail('authority.requester_public_key_files', 'current requester is not authorized')
+        paths(requesters, tuple(requesters), 'authority.requester_public_key_files')
+    else:
+        if 'requester_public_key_file' not in authority:
+            _fail('artifact_authority.authority', 'missing requester_public_key_file')
+        bind(authority, {'requester_identity': requester_identity}, 'artifact_authority.authority')
+    bind(authority, {"identity": authority_identity,
                      "controller_identity": controller, "group": network["group"],
                      "service": network["artifact_service"]}, "artifact_authority.authority")
     bind(authority, {"trust_schema_file": security["trust_schema"]}, "artifact_authority.authority", False)
@@ -679,13 +841,16 @@ def _translate_authority(authority_config, network, security, controller, reques
         paths(keys, tuple(keys), "authority.recipient_public_key_files")
 
 
-def _check_installed_files(release, ledger, by_kind):
+def _check_installed_files(release, ledger, by_kind, *, image_root=None, extra_programs=()):
     programs = {"controller": "App_ServiceController", "artifact-authority": "DI_NativeArtifactAuthority",
                 "requester": "DI_NativeRequester", "provider": "di-native-provider",
                 "repo": "DistributedRepoServer"}
     prefix = Path(release["prefix"])
+    def observed(path):
+        return image_root / path.relative_to('/') if image_root is not None else path
     required = {prefix / "bin" / executable for kind, executable in programs.items()
                 if any(not actor["external"] for actor in by_kind[kind])}
+    required.update(prefix / program for program in extra_programs)
     if any(not actor["external"] for actors in by_kind.values() for actor in actors):
         required.add(prefix / "bin/ndnsf-identity-check")
     if any(not actor["external"] for actor in by_kind["provider"]):
@@ -693,8 +858,9 @@ def _check_installed_files(release, ledger, by_kind):
     if any(not actor['external'] and actor.get('resources', {}).get('gpu_devices')
            for actors in by_kind.values() for actor in actors):
         required.add(prefix / 'libexec/ndnsf-di/ndnsf-di-device-query')
-    for path in required:
-        row = ledger["files"].get(str(path), {})
+    for identity in required:
+        row = ledger["files"].get(str(identity), {})
+        path = observed(identity)
         installed = row.get("installed", {}) if isinstance(row, dict) else {}
         if installed.get("kind") != "file" or not path.is_file() or path.is_symlink():
             _fail("release.manifest", "required installed executable missing: " + path.name)
@@ -702,8 +868,9 @@ def _check_installed_files(release, ledger, by_kind):
                 stat.S_IMODE(path.stat().st_mode) != installed.get("mode")):
             _fail("release.manifest", "installed executable identity/mode mismatch: " + path.name)
     for library in ("libndn-service-framework.so", "libndnsf-distributed-inference.so"):
-        path = prefix / "lib" / library
-        row = ledger["files"].get(str(path), {})
+        identity = prefix / "lib" / library
+        path = observed(identity)
+        row = ledger["files"].get(str(identity), {})
         installed = row.get("installed", {}) if isinstance(row, dict) else {}
         if installed.get("kind") == "symlink":
             target = installed.get("target")
@@ -712,7 +879,7 @@ def _check_installed_files(release, ledger, by_kind):
             if Path(os.readlink(path)) != Path(target):
                 _fail("release.manifest", "library link identity mismatch: " + library)
             path = path.parent / target
-            row = ledger["files"].get(str(path), {})
+            row = ledger["files"].get(str(identity.parent / target), {})
             installed = row.get("installed", {}) if isinstance(row, dict) else {}
         if installed.get("kind") != "file" or not path.is_file() or path.is_symlink():
             _fail("release.manifest", "required installed library missing: " + library)

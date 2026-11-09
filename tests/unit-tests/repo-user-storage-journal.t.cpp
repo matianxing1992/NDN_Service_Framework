@@ -5,6 +5,7 @@
 #include <boost/test/unit_test.hpp>
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <future>
 #include <limits>
@@ -97,6 +98,20 @@ void reserve(SqliteArtifactMetadataStore& store, const RepoUserStorageObject& o,
 {
   (void)store.reserveUserStorage("/provider/a", node, user, grantId, operationId, o, 1001);
 }
+
+// Fill a real metadata account without allocating model-sized payloads.
+void fillCommittedBudget(SqliteArtifactMetadataStore& store, uint64_t bytes)
+{
+  for (unsigned index = 0; bytes != 0; ++index) {
+    const auto charge = std::min(bytes, REPO_USER_STORAGE_OBJECT_MAX_BYTES);
+    const auto id = "prefill-" + std::to_string(index);
+    const auto item = object("/producer/prefill/" + std::to_string(index), charge);
+    grant(store, item, id);
+    reserve(store, item, id, id);
+    (void)store.commitUserStorage("/repo/a", "/user/u", id, 1002);
+    bytes -= charge;
+  }
+}
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec221RepoUserStorageJournal)
@@ -155,8 +170,9 @@ BOOST_AUTO_TEST_CASE(ExactLimitRejectsAdditionalByteWithoutMutatingRows)
 {
   Fixture f;
   SqliteArtifactMetadataStore store(f.database);
-  BOOST_CHECK_EQUAL(REPO_USER_STORAGE_LIMIT_BYTES, 1000000000ULL);
+  BOOST_CHECK_EQUAL(REPO_USER_STORAGE_LIMIT_BYTES, 100000000000ULL);
   BOOST_CHECK(store.reconcileUserStorageInventory("/repo/a", {}, 1000).ready);
+  fillCommittedBudget(store, 99000000000ULL);
   const auto full = object("/producer/full", 1000000000ULL);
   const auto extra = object("/producer/extra", 1);
   grant(store, full); grant(store, extra, "extra");
@@ -164,11 +180,11 @@ BOOST_AUTO_TEST_CASE(ExactLimitRejectsAdditionalByteWithoutMutatingRows)
   BOOST_CHECK_EQUAL(store.userStorageUsage("/user/u", "/repo/a").reservedBytes, 1000000000ULL);
   BOOST_CHECK_EXCEPTION(reserve(store, extra, "extra-write", "extra"),
                         std::runtime_error, hasCode("QUOTA_EXCEEDED"));
-  BOOST_CHECK_EQUAL(f.integer("SELECT COUNT(*) FROM repo_user_storage_writes"), 1U);
+  BOOST_CHECK_EQUAL(f.integer("SELECT COUNT(*) FROM repo_user_storage_writes"), 100U);
   BOOST_CHECK_EQUAL(f.integer("SELECT payload_wire_bytes FROM repo_user_storage_writes"), 999999999ULL);
   BOOST_CHECK_EQUAL(f.integer("SELECT manifest_bytes FROM repo_user_storage_writes"), 1U);
   (void)store.commitUserStorage("/repo/a", "/user/u", "write", 1002);
-  BOOST_CHECK_EQUAL(store.userStorageUsage("/user/u", "/repo/a").committedBytes, 1000000000ULL);
+  BOOST_CHECK_EQUAL(store.userStorageUsage("/user/u", "/repo/a").committedBytes, 100000000000ULL);
   BOOST_CHECK_EQUAL(store.userStorageUsage("/user/u", "/repo/a").reservedBytes, 0U);
 }
 
@@ -185,6 +201,39 @@ BOOST_AUTO_TEST_CASE(AccountsAreIndependentAcrossUsersAndNodes)
   reserve(store, full, "b-write", "b", "/user/u", "/repo/b");
   BOOST_CHECK_EQUAL(f.integer("SELECT COUNT(*) FROM repo_user_storage_writes WHERE reserved_bytes=1000000000"), 3U);
   BOOST_CHECK_EQUAL(store.userStorageUsage("/user/unused", "/repo/a").reservedBytes, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(DefaultHundredGigabyteAccountSurvivesRestartWithoutLargerObjects)
+{
+  Fixture f;
+  const auto a = object("/producer/a", 600000000);
+  const auto b = object("/producer/b", 600000000);
+  {
+    SqliteArtifactMetadataStore store(f.database);
+    BOOST_REQUIRE(store.reconcileUserStorageInventory("/repo/a", {}, 1000).ready);
+    grant(store, a, "a"); grant(store, b, "b");
+    reserve(store, a, "a", "a"); reserve(store, b, "b", "b");
+    reserve(store, a, "a", "a");
+    BOOST_CHECK_EQUAL(store.userStorageUsage("/user/u", "/repo/a").reservedBytes, 1200000000ULL);
+    (void)store.commitUserStorage("/repo/a", "/user/u", "a", 1002);
+    (void)store.commitUserStorage("/repo/a", "/user/u", "b", 1002);
+  }
+  SqliteArtifactMetadataStore reopened(f.database);
+  BOOST_REQUIRE(reopened.reconcileUserStorageInventory("/repo/a", {{a}, {b}}, 1003).ready);
+  const auto usage = reopened.userStorageUsage("/user/u", "/repo/a");
+  BOOST_CHECK_EQUAL(usage.limitBytes, 100000000000ULL);
+  BOOST_CHECK_EQUAL(usage.committedBytes, 1200000000ULL);
+  BOOST_CHECK_EQUAL(usage.reservedBytes, 0U);
+  RepoUserStorageUsageReply reply;
+  reply.usage = usage;
+  BOOST_CHECK_EQUAL(RepoUserStorageUsageReply::fromJson(reply.toJson()).usage.limitBytes,
+                    100000000000ULL);
+  BOOST_CHECK_THROW(validateRepoUserStorageObject(object("/producer/oversized", 1000000001ULL)),
+                    std::invalid_argument);
+  const auto oversized = object("/producer/oversized", 1000000001ULL);
+  grant(reopened, oversized, "oversized");
+  BOOST_CHECK_THROW(reserve(reopened, oversized, "oversized", "oversized"), std::invalid_argument);
+  BOOST_CHECK_EQUAL(reopened.userStorageUsage("/user/u", "/repo/a").reservedBytes, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(GrantScopeAndWriterAreNotCallerSelectedOwnership)
@@ -252,6 +301,7 @@ BOOST_AUTO_TEST_CASE(IndependentConnectionsSerializeQuotaAdmission)
   SqliteArtifactMetadataStore first(f.database), second(f.database);
   BOOST_REQUIRE(first.reconcileUserStorageInventory("/repo/a", {}, 1000).ready);
   BOOST_REQUIRE(second.reconcileUserStorageInventory("/repo/a", {}, 1000).ready);
+  fillCommittedBudget(first, 99000000000ULL);
   const auto a = object("/producer/a", 600000000);
   const auto b = object("/producer/b", 600000000);
   grant(first, a, "a"); grant(first, b, "b");
@@ -269,7 +319,7 @@ BOOST_AUTO_TEST_CASE(IndependentConnectionsSerializeQuotaAdmission)
   const auto rx = x.get(); const auto ry = y.get();
   BOOST_CHECK((rx == "admitted" && ry.find("QUOTA_EXCEEDED") == 0) ||
               (ry == "admitted" && rx.find("QUOTA_EXCEEDED") == 0));
-  BOOST_CHECK_EQUAL(f.integer("SELECT COUNT(*) FROM repo_user_storage_writes"), 1U);
+  BOOST_CHECK_EQUAL(f.integer("SELECT COUNT(*) FROM repo_user_storage_writes"), 100U);
   BOOST_CHECK_EQUAL(first.userStorageUsage("/user/u", "/repo/a").reservedBytes, 600000000U);
 }
 
@@ -328,6 +378,7 @@ BOOST_AUTO_TEST_CASE(ReservedCleanupTransfersFullChargeWithoutFreeingCapacity)
   Fixture f;
   SqliteArtifactMetadataStore store(f.database);
   (void)store.reconcileUserStorageInventory("/repo/a", {}, 1000);
+  fillCommittedBudget(store, 99000000000ULL);
   const auto full = object("/producer/pending", 1000000000ULL);
   const auto extra = object("/producer/extra", 1);
   grant(store, full); grant(store, extra, "extra"); reserve(store, full);
@@ -339,14 +390,14 @@ BOOST_AUTO_TEST_CASE(ReservedCleanupTransfersFullChargeWithoutFreeingCapacity)
   BOOST_CHECK_EQUAL(prepared.object.manifestBytes, full.manifestBytes);
   BOOST_CHECK_EQUAL(prepared.grantId, "grant"); BOOST_CHECK_EQUAL(prepared.committedAtMs, 1002U);
   const auto usage = store.userStorageUsage("/user/u", "/repo/a");
-  BOOST_CHECK_EQUAL(usage.committedBytes, 1000000000ULL);
+  BOOST_CHECK_EQUAL(usage.committedBytes, 100000000000ULL);
   BOOST_CHECK_EQUAL(usage.reservedBytes, 0U);
   BOOST_CHECK_EQUAL(usage.committedBytes + usage.reservedBytes, usage.limitBytes);
   const auto cancelled = store.lookupUserStorageWrite("/repo/a", "/user/u", "write");
   BOOST_REQUIRE(cancelled); BOOST_CHECK(cancelled->state == RepoUserStorageWriteState::CANCELLED);
   BOOST_CHECK_EQUAL(cancelled->reservedBytes, 0U);
   const auto listed = store.listUserStorage("/user/u", "/repo/a", {});
-  BOOST_REQUIRE_EQUAL(listed.size(), 1U);
+  BOOST_REQUIRE_EQUAL(listed.size(), 100U);
   BOOST_CHECK(listed.front().state == RepoUserStorageClaimState::CLEANUP_PREPARED);
   BOOST_CHECK_EQUAL(listed.front().cleanupId, "clear");
   BOOST_CHECK_EQUAL(store.prepareUserStorageCleanup("/user/u", "/repo/a", "clear", full.objectName, 1, 1003).committedAtMs, 1002U);
@@ -801,6 +852,7 @@ BOOST_AUTO_TEST_CASE(SameConnectionConcurrentAdmissionIsAtomic)
   Fixture f;
   SqliteArtifactMetadataStore store(f.database);
   BOOST_REQUIRE(store.reconcileUserStorageInventory("/repo/a", {}, 1000).ready);
+  fillCommittedBudget(store, 99000000000ULL);
   const auto a = object("/producer/a", 600000000);
   const auto b = object("/producer/b", 600000000);
   grant(store, a, "a"); grant(store, b, "b");
@@ -915,7 +967,7 @@ BOOST_AUTO_TEST_CASE(ManifestSettlementChangesOnlyMeasuredCharge)
     std::runtime_error, hasCode("repo-user-storage-operation-conflict"));
 }
 
-BOOST_AUTO_TEST_CASE(ManifestSettlementExactLimitAndRejectedGrowthAreAtomic)
+BOOST_AUTO_TEST_CASE(ManifestSettlementObjectBoundAndRejectedGrowthAreAtomic)
 {
   Fixture f;
   SqliteArtifactMetadataStore store(f.database);
@@ -924,8 +976,8 @@ BOOST_AUTO_TEST_CASE(ManifestSettlementExactLimitAndRejectedGrowthAreAtomic)
   a.manifestBytes = 0;
   grant(store, a); reserve(store, a);
   BOOST_CHECK_EQUAL(store.settleUserStorageReservation("/repo/a", "/user/u", "write", 1, 1002).reservedBytes, 1000000000ULL);
-  BOOST_CHECK_EXCEPTION(store.settleUserStorageReservation("/repo/a", "/user/u", "write", 2, 1003),
-    std::runtime_error, hasCode("QUOTA_EXCEEDED"));
+  BOOST_CHECK_THROW(store.settleUserStorageReservation("/repo/a", "/user/u", "write", 2, 1003),
+                    std::invalid_argument);
   BOOST_CHECK_THROW(store.settleUserStorageReservation("/repo/a", "/user/u", "write", std::numeric_limits<uint64_t>::max(), 1003), std::invalid_argument);
   BOOST_CHECK_THROW(store.settleUserStorageReservation("/repo/a", "/user/u", "write", std::numeric_limits<int64_t>::max(), 1003), std::invalid_argument);
   BOOST_CHECK_EQUAL(f.integer("SELECT manifest_bytes FROM repo_user_storage_writes"), 1U);
@@ -988,6 +1040,7 @@ BOOST_AUTO_TEST_CASE(ConcurrentManifestGrowthUsesOneAccountTransaction)
   SqliteArtifactMetadataStore first(f.database), second(f.database);
   BOOST_REQUIRE(first.reconcileUserStorageInventory("/repo/a", {}, 1000).ready);
   BOOST_REQUIRE(second.reconcileUserStorageInventory("/repo/a", {}, 1000).ready);
+  fillCommittedBudget(first, 99000000000ULL);
   const auto a = object("/producer/a", 400000000ULL);
   const auto b = object("/producer/b", 400000000ULL);
   grant(first, a, "a"); grant(second, b, "b");

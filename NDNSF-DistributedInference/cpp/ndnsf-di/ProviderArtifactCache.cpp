@@ -1,3 +1,4 @@
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
@@ -103,10 +104,39 @@ std::string ProviderArtifactKey::canonicalKey() const
                             &role, &candidateDigest, &recipeDigest, &backendAbi,
                             &device, &precision, &quantization, &layoutDigest,
                             &artifactProfile, &securityDomain, &protectionEpoch,
-                            &protectionIdentity}) {
+                            &protectionIdentity, &storedModelIdentity}) {
     result << frame(*value);
   }
   return result.str();
+}
+
+ProviderArtifactKey
+nativeProviderArtifactKey(const NativeSelectionProjectionV3& projection,
+                          const std::string& providerIdentity,
+                          const std::string& canonicalSourceName,
+                          const std::string& canonicalSourceDigest)
+{
+  const auto& role = projection.assemblyContract();
+  return ProviderArtifactKey{
+    canonicalSourceDigest,
+    canonicalSourceName,
+    projection.canonicalArtifactName,
+    role.modelManifestDigest,
+    role.canonicalInitializerDigest,
+    role.graphDigest,
+    role.selectedRole,
+    role.artifactDigest,
+    role.recipeDigest,
+    role.backendAbi,
+    role.deviceSet.empty() ? std::string{} : role.deviceSet.front(),
+    role.precision,
+    role.quantization,
+    role.layout,
+    role.artifactProfileDigest,
+    projection.securityPolicySnapshotDigest,
+    role.protectionEpoch,
+    projection.provider.empty() ? providerIdentity : projection.provider,
+    projection.storedModelCacheIdentity};
 }
 
 struct ProviderArtifactLease::Release

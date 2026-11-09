@@ -626,12 +626,13 @@ int main(int argc, char** argv)
       return value;
     };
     const auto deploymentFixture = [&](bool explicitStatistics = false,
-                                        const std::string& requesterId = "requester") {
-      quietFixture(2);
+                                        const std::string& requesterId = "requester",
+                                        unsigned turnCount = 2) {
+      quietFixture(turnCount);
       NativeJson turns = NativeJson::array();
       std::vector<std::int64_t> prefix;
       NativeJson requesterConfig;
-      for (unsigned round = 0; round < 2; ++round) {
+      for (unsigned round = 0; round < turnCount; ++round) {
         const auto suffix = round ? "-1" : "";
         const auto legacy = readJsonFile(root / "requester" /
           (std::string("config") + suffix + ".json"));
@@ -732,6 +733,12 @@ int main(int argc, char** argv)
     };
     const std::vector<std::string> deployment{
       "--deployment-state", (root / "deployment-state.json").string(), "--require-multi-token"};
+    deploymentFixture(false, "requester", 1);
+    check("", "", "", deployment);
+    auto emptyRequester = readJsonFile(root / "requester.json");
+    emptyRequester["turns"] = NativeJson::array();
+    write(root / "requester.json", emptyRequester.dump());
+    check("", "", "deployment-turn-configuration", deployment);
     deploymentFixture();
     check("", "", "", deployment);
     deploymentFixture(true);
@@ -1308,6 +1315,71 @@ int main(int argc, char** argv)
     });
     badSlurm("actors/provider-1/receipt.json", "deployment-gpu-probe-binding", [](auto& j) {
       j["gpu_admission"]["native_probe"]["job_id"] = "wrong";
+    });
+    const auto hostSlurmFixture = [&] {
+      slurmFixture();
+      const auto allocation = readJsonFile(root / "allocation.json");
+      for (const auto& role : allocation.at("roles")) {
+        const auto id = role.at("id").get<std::string>();
+        const auto node = role.at("node").get<std::string>();
+        const auto kind = role.at("kind").get<std::string>();
+        const auto path = kind == "nfd" || kind == "nfdc"
+          ? root / "nodes" / node / kind / "receipt.json"
+          : root / "actors" / id / "receipt.json";
+        auto receipt = readJsonFile(path);
+        receipt["cleanup_scope"] = "HOST_AND_NATIVE_PROCESS_GROUPS";
+        if (kind != "nfd" && kind != "nfdc") {
+          receipt["image_inspection"] = {{"status", "VERIFIED"}, {"exitCode", 2},
+            {"cleanup", {{"status", "ZERO"}, {"forced", false}}},
+            {"launcher_cleanup", {{"forced", false}}}};
+        }
+        auto& launch = receipt["launches"][0];
+        launch["namespace_proof"] = launch["proof"];
+        if (kind != "nfdc") {
+          const auto auditPath = root / "nodes" / node / ("host-audit-" + id + ".json");
+          auto audit = readJsonFile(auditPath);
+          const auto pid = audit["native_process"]["pid"];
+          launch["proof"]["pid"] = pid;
+          launch["proof"]["pgid"] = pid;
+          audit["native_process"]["pgid"] = pid;
+          privateJson(auditPath, audit);
+        }
+        if (kind == "provider") {
+          auto& query = receipt["launches"][1];
+          query["native_argv"] = query["argv"];
+          query["argv"] = NativeJson::array({"/host/control/python", "-m", "container"});
+          receipt["gpu_admission"]["query_launch_id"] = query["id"];
+          receipt["gpu_admission"]["native_probe"]["role_id"] = id;
+        }
+        privateJson(path, receipt);
+      }
+    };
+    hostSlurmFixture();
+    check("", "", "", slurmGpu);
+    const auto badHostSlurm = [&](const std::string& reason,
+                                  const std::function<void(NativeJson&)>& mutate) {
+      hostSlurmFixture();
+      const auto path = root / "actors/provider-1/receipt.json";
+      auto receipt = readJsonFile(path);
+      mutate(receipt);
+      privateJson(path, receipt);
+      check("", "", reason, slurmGpu);
+    };
+    badHostSlurm("deployment-image-inspection", [](auto& j) { j.erase("image_inspection"); });
+    badHostSlurm("deployment-image-inspection", [](auto& j) {
+      j["image_inspection"]["cleanup"]["forced"] = true;
+    });
+    badHostSlurm("deployment-native-host-proof", [](auto& j) {
+      j["launches"][0].erase("namespace_proof");
+    });
+    badHostSlurm("deployment-native-host-proof", [](auto& j) {
+      j["launches"][0]["namespace_proof"]["pid"] = 999;
+    });
+    badHostSlurm("deployment-gpu-role-binding", [](auto& j) {
+      j["gpu_admission"].erase("query_launch_id");
+    });
+    badHostSlurm("deployment-gpu-role-binding", [](auto& j) {
+      j["launches"][1]["native_argv"][0] = "/wrong/query";
     });
     const auto badGpuStatistics = [&](const std::string& reason, const std::function<void(NativeJson&)>& mutate) {
       slurmFixture();

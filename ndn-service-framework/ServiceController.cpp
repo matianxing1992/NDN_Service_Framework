@@ -11,6 +11,8 @@
 #include <ndn-cxx/util/logger.hpp>
 #include <ndn-cxx/util/random.hpp>
 #include <ndn-cxx/util/scope.hpp>
+#include <nac-abe/algo/abe-support.hpp>
+#include <openssl/crypto.h>
 
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
@@ -224,6 +226,45 @@ makeCertificateBootstrapProofData(const CertificateBootstrapRequest& request)
 
 } // namespace
 
+std::string
+PersistentKpAttributeAuthority::getMasterSecret() const
+{
+  return m_masterKey.m_msk;
+}
+
+void
+PersistentKpAttributeAuthority::restoreKeyGeneration(const std::string& publicParameters,
+                                                       const std::string& masterSecret)
+{
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  if (publicParameters.empty() || publicParameters.back() != '\0' ||
+      publicParameters.find('\0') != publicParameters.size() - 1)
+    throw std::runtime_error("invalid Controller ABE public parameters");
+  params.fromBuffer(ndn::Buffer(publicParameters.begin(), publicParameters.end()));
+  master.m_msk = masterSecret;
+  try {
+    auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+    auto key = abe.kpPrvKeyGen(params, master, "ndnsfPersistenceCheck");
+    const ndn::Buffer challenge{1, 2, 3, 4};
+    auto cipher = abe.kpEncrypt(params, {"ndnsfPersistenceCheck"}, challenge);
+    auto plain = abe.kpDecrypt(params, key, cipher);
+    if (!key.m_prv.empty())
+      OPENSSL_cleanse(&key.m_prv[0], key.m_prv.size());
+    if (plain != challenge)
+      throw std::runtime_error("Controller ABE material does not match");
+  }
+  catch (...) {
+    if (!master.m_msk.empty())
+      OPENSSL_cleanse(&master.m_msk[0], master.m_msk.size());
+    throw;
+  }
+  if (!m_masterKey.m_msk.empty())
+    OPENSSL_cleanse(&m_masterKey.m_msk[0], m_masterKey.m_msk.size());
+  m_pubParams = std::move(params);
+  m_masterKey = std::move(master);
+}
+
 ServiceController::ServiceController(ndn::Face& face,
                                      ndn::security::Certificate aaCert,
                                      ndn::security::Validator& validator,
@@ -247,7 +288,14 @@ ServiceController::ServiceController(ndn::Face& face,
   m_generationReady = initializeControllerGeneration();
 
   if (m_generationReady) {
-    initializeAbeGenerationIdentity();
+    try {
+      restoreOrPersistAbeMaterial();
+      initializeAbeGenerationIdentity();
+    }
+    catch (const std::exception& error) {
+      m_generationReady = false;
+      NDN_LOG_ERROR("Controller ABE state initialization failed: " << error.what());
+    }
   }
 
   // Convert policies into ABE attribute policies and register them in AA
@@ -255,6 +303,42 @@ ServiceController::ServiceController(ndn::Face& face,
 
   // Build fast lookup tables for Interest answering
   buildLookupTables();
+}
+
+void
+ServiceController::persistAbeMaterial()
+{
+  ControllerGenerationStore::AbeMaterial material;
+  material.owner = m_aaCert.getIdentity().toUri(ndn::name::UriFormat::CANONICAL);
+  const auto publicKey = m_aaCert.getPublicKey();
+  ndn::util::Sha256 digest;
+  digest << std::string(reinterpret_cast<const char*>(publicKey.data()), publicKey.size());
+  material.signingKeyDigest = "sha256:" + digest.toString();
+  material.policyDigest = sha256FileDigest(m_configFilePath);
+  const auto publicParams = m_aa.getPublicParametersWire();
+  material.publicParameters.assign(reinterpret_cast<const char*>(publicParams.data()),
+                                   publicParams.size());
+  material.masterSecret = m_aa.getMasterSecret();
+  m_generationStore->storeAbeMaterial(material);
+}
+
+void
+ServiceController::restoreOrPersistAbeMaterial()
+{
+  auto material = m_generationStore->loadAbeMaterial();
+  if (material) {
+    const auto publicKey = m_aaCert.getPublicKey();
+    ndn::util::Sha256 digest;
+    digest << std::string(reinterpret_cast<const char*>(publicKey.data()), publicKey.size());
+    if (material->signingKeyDigest != "sha256:" + digest.toString())
+      throw std::runtime_error("Controller signing identity changed");
+    m_aa.restoreKeyGeneration(material->publicParameters, material->masterSecret);
+    if (!material->rotationRequired && material->policyDigest == sha256FileDigest(m_configFilePath)) {
+      return;
+    }
+    m_aa.rotateKeyGeneration(1);
+  }
+  persistAbeMaterial();
 }
 
 bool
@@ -466,6 +550,7 @@ ServiceController::rotateAbeGenerationAndReissuePolicies()
   if (m_aa.getPublicParametersVersion() != publicParamsVersion) {
     m_aa.rotateKeyGeneration(publicParamsVersion);
   }
+  persistAbeMaterial();
   m_abePublicParametersName = currentAbePublicParametersName();
   m_abePublicParametersDigest = abePublicParametersDigest(
       m_aa.getPublicParametersWire());
@@ -532,11 +617,20 @@ ServiceController::isIdentityOrCertificateRevoked(
 }
 
 void
-ServiceController::advanceAuthorizationEpoch()
+ServiceController::advanceAuthorizationEpoch(bool requireAbeRotationOnRestart)
 {
   if (!hasGenerationWriter())
     throw std::runtime_error("Controller generation is not ready");
-  m_controllerVersion = m_generationStore->advanceEpoch(m_revocations);
+  try {
+    m_controllerVersion = m_generationStore->advanceEpoch(m_revocations,
+                                                          requireAbeRotationOnRestart);
+  }
+  catch (const ControllerGenerationStore::CommitUncertain&) {
+    // The rename may have succeeded even if the subsequent directory flush failed.
+    // Stop serving rather than guessing which version survived.
+    m_generationReady = false;
+    throw;
+  }
   m_policyEpoch = static_cast<size_t>(m_controllerVersion.controllerEpoch);
   m_requiredKeyEpoch = m_policyEpoch;
   m_policyValidFromMs = nowMilliseconds();
@@ -577,8 +671,8 @@ ServiceController::revoke(const RevocationTarget& target)
     advanceAuthorizationEpoch();
   }
   catch (const std::exception& error) {
-    // Durable commit did not complete, so restore the in-memory target and
-    // leave the prior ControllerVersion authoritative.
+    // Before rename, retain the prior authoritative state. If the commit
+    // outcome is uncertain, advanceAuthorizationEpoch has stopped serving.
     m_revocations.pop_back();
     NDN_LOG_ERROR("NDNSF_CONTROLLER_REVOKE_FAILED error=" << error.what());
     return false;
@@ -760,7 +854,7 @@ ServiceController::grant(const ndn::Name& identity,
       }
     }
     buildLookupTables();
-    advanceAuthorizationEpoch();
+    advanceAuthorizationEpoch(true);
   }
   catch (const std::exception& error) {
     m_userPolicies = oldUserPolicies;

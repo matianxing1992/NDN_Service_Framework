@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
 #include "ndn-service-framework/NetworkProbeRate.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
@@ -1765,6 +1766,9 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
     [](const auto& value) { return value.at("name") == "cpu"; });
   BOOST_REQUIRE(sample != f.at("seal_cases").end());
   Input input(f, *sample, true);
+  ndn::security::KeyChain recipientKeyChain(
+    "pib-memory:spec222-stored-key-table", "tpm-memory:spec222-stored-key-table");
+  (void)groupCertificates(input, recipientKeyChain);
   class Splitter final : public NativeModelSplitStrategy {
   public:
     explicit Splitter(NativeSplitCandidate candidate) : value(std::move(candidate)) {}
@@ -1845,6 +1849,39 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   BOOST_CHECK_EQUAL(selected.front().provider.toUri(), planned.terminalProvider);
   BOOST_CHECK_EQUAL(selected.front().artifactDataName.toUri(), ndn::Name("/catalog/root").toUri());
   BOOST_CHECK(!selected.front().assignmentPayload.empty());
+
+  // A stored key-table size/preflight failure must occur before the Planner
+  // publishes the fixed-role source Data object.
+  {
+    auto storedIndex = std::make_shared<NativeModelObjectKeyIndexV1>();
+    storedIndex->storedPublication = NativeStoredModelReference{
+      ndn::Name("/model-owner"), ndn::Name("/repo"),
+      ndn::Name("/model-owner/publication/root"),
+      "sha256:" + std::string(64, 'a')};
+    binding.modelObjectKeyIndex = storedIndex;
+
+    auto boundedRuntime = runtime;
+    boundedRuntime.fixedRoleAssignments = std::make_shared<NativeFixedRoleAssignmentCache>();
+    std::size_t keyTablePreflights = 0;
+    std::size_t fixedSourcePublications = 0;
+    boundedRuntime.modelObjectKeyPublisher = [&](const auto&, const auto&, const auto&,
+        const auto&, const auto&, const auto&, const auto&) ->
+        ndn_service_framework::LargeDataPublishResult {
+      ++keyTablePreflights;
+      throw std::runtime_error("stored object key table exceeds its bound");
+    };
+    boundedRuntime.fixedRoleSourcePublisher = [&](const auto&, const auto&,
+        const auto&) -> NativeFixedRoleSourceV1 {
+      ++fixedSourcePublications;
+      throw std::runtime_error("fixed-role source was published before table preflight");
+    };
+    BOOST_CHECK_THROW(planNativeRequest(boundedRuntime, {}, input.inspected, encoded,
+      splitter, NativePreSplitFirstPlacement(), preparation, admission, closure,
+      control, input.context.deadlineMs, cancelled), std::runtime_error);
+    BOOST_CHECK_EQUAL(keyTablePreflights, 1U);
+    BOOST_CHECK_EQUAL(fixedSourcePublications, 0U);
+    binding.modelObjectKeyIndex.reset();
+  }
 
   // The real planner must reuse the same fixed-source owner. Publication is a
   // controlled port here; actual encrypted publication is a separate runtime check.

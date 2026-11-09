@@ -109,6 +109,10 @@ runnerReuseKey(const NativeSelectionProjectionV3& projection,
   frame(role.artifactProfileDigest);
   frame(role.graphDigest);
   frame(role.canonicalInitializerDigest);
+  if (!projection.storedModelCacheIdentity.empty()) {
+    frame("stored-model-key-identity-v1");
+    frame(projection.storedModelCacheIdentity);
+  }
   frame(role.adapterDescriptorDigest);
   frame(role.assemblerDescriptorDigest);
   frame(role.backendAbi);

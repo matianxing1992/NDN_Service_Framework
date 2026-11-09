@@ -46,8 +46,9 @@ def initial_transfer_profile(source: Path, source_digest: str, node_mapping: dic
                              token_count: int) -> dict:
     """Analyse source shapes without saving or replacing the inference graph.
 
-    The exact input digest and empty initial KV context bound this profile.
-    Continued, recovered or different inputs cannot reuse it in C++ planning.
+    The initial estimate binds the exact input digest and empty KV context.
+    Native planning may rebind its source shape template to the current input
+    and a validated APPEND parent context; recovery does not reuse this hint.
     """
     import onnx
     from onnxruntime.tools.symbolic_shape_infer import SymbolicShapeInference
@@ -106,6 +107,7 @@ def initial_transfer_profile(source: Path, source_digest: str, node_mapping: dic
                 "past_sequence_length": 0}
     dtype_names = {onnx.TensorProto.FLOAT: "float32",
                    onnx.TensorProto.FLOAT16: "float16",
+                   onnx.TensorProto.INT32: "int32",
                    onnx.TensorProto.INT64: "int64",
                    onnx.TensorProto.BOOL: "bool",
                    onnx.TensorProto.UINT8: "uint8"}

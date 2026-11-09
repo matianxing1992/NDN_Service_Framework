@@ -1,14 +1,21 @@
 #include "tests/boost-test.hpp"
 
 #include "ndnsf-di/api.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.hpp"
+#include "ndn-service-framework/ControllerGenerationStore.hpp"
 
 #include <boost/test/unit_test.hpp>
+#include <ndn-cxx/util/scope.hpp>
+#include <openssl/crypto.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -172,6 +179,139 @@ void requireStreamProcessOracle(const std::filesystem::path& runRoot,
   }
 }
 
+void
+requireStoredProcessOracle(const std::filesystem::path& runRoot, const std::string& output,
+                           const std::filesystem::path& driverLog, bool sourcePreparation)
+{
+  requireProcessExit(output, "preparer", true, driverLog);
+  requireProcessExit(output, "requester", true, driverLog);
+  requireProcessExit(output, "requester-c", true, driverLog);
+  requireLogMarker(runRoot, "preparer.log", sourcePreparation
+    ? "ndnsf-di-native-preparation" : "ndnsf-di-stored-model-preparation");
+  requireLogMarker(runRoot, "repo.log", "NDNSF_REPO_READY");
+  requireLogMarker(runRoot, "repo-restart.log", "NDNSF_REPO_READY");
+  requireLogMarker(runRoot, "controller-restart.log", "ServiceController started...");
+  requireLogMarker(runRoot, "provider.log", "NDNSF_DI_GRANT_VERIFICATION");
+  requireLogMarker(runRoot, "provider.log", "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED");
+  const auto measurements = nativeParseJson(readFile(runRoot / "stored-process-measurements.json"));
+  if (sourcePreparation) {
+    requireProcessExit(output, "preparer-ready", true, driverLog);
+    const auto& source = measurements.at("source_preparation");
+    BOOST_CHECK_EQUAL(source.at("ready_exit_code").get<int>(), 0);
+    BOOST_CHECK(source.at("source_absent").get<bool>());
+    BOOST_CHECK(source.at("same_private_handle").get<bool>());
+  }
+  BOOST_REQUIRE(measurements.at("first_failure").is_null());
+  BOOST_REQUIRE(measurements.at("forced_cleanup").empty());
+  BOOST_REQUIRE(measurements.at("cleanup_errors").empty());
+  BOOST_REQUIRE(measurements.at("live_processes").empty());
+  BOOST_REQUIRE(measurements.at("preparer_offline").get<bool>());
+  BOOST_REQUIRE(measurements.at("source_removed").get<bool>());
+  BOOST_REQUIRE(measurements.at("credential_store_removed").get<bool>());
+  const auto& restart = measurements.at("infrastructure_restart");
+  BOOST_REQUIRE(restart.at("same_stores_and_credentials").get<bool>());
+  BOOST_REQUIRE_EQUAL(restart.at("exits").size(), 3U);
+  for (const auto& actor : restart.at("exits"))
+    BOOST_REQUIRE_EQUAL(actor.at("exit_code").get<int>(), 0);
+  {
+    const auto owner = ndn::Name("/example/hello/controller").toUri(
+      ndn::name::UriFormat::CANONICAL);
+    ndn_service_framework::ControllerGenerationStore previous(
+      runRoot / "shared/controller-before-restart.state");
+    ndn_service_framework::ControllerGenerationStore current(
+      runRoot / "shared/controller-generation.state");
+    BOOST_REQUIRE(previous.acquireWriter(owner));
+    BOOST_REQUIRE(current.acquireWriter(owner));
+    const auto previousVersion = previous.load();
+    const auto currentVersion = current.load();
+    BOOST_REQUIRE(previousVersion.has_value());
+    BOOST_REQUIRE(currentVersion.has_value());
+    BOOST_CHECK(currentVersion->controllerGenerationTimestamp >
+                previousVersion->controllerGenerationTimestamp);
+    const auto previousMaterial = previous.loadAbeMaterial();
+    const auto currentMaterial = current.loadAbeMaterial();
+    BOOST_REQUIRE(previousMaterial.has_value());
+    BOOST_REQUIRE(currentMaterial.has_value());
+    BOOST_CHECK_EQUAL(currentMaterial->owner, owner);
+    BOOST_CHECK_EQUAL(previousMaterial->owner, owner);
+    BOOST_CHECK_EQUAL(previousMaterial->signingKeyDigest, currentMaterial->signingKeyDigest);
+    BOOST_CHECK_EQUAL(previousMaterial->policyDigest, currentMaterial->policyDigest);
+    // Assert booleans so a failure cannot print private key bytes.
+    const bool samePublicParameters = !previousMaterial->publicParameters.empty() &&
+      previousMaterial->publicParameters == currentMaterial->publicParameters;
+    const bool sameMasterSecret = !previousMaterial->masterSecret.empty() &&
+      previousMaterial->masterSecret == currentMaterial->masterSecret;
+    BOOST_CHECK(samePublicParameters);
+    BOOST_CHECK(sameMasterSecret);
+  }
+  BOOST_CHECK(!std::filesystem::exists(runRoot / "requester/model.onnx"));
+  BOOST_CHECK(!std::filesystem::exists(runRoot / "requester-store"));
+  BOOST_CHECK(!std::filesystem::exists(runRoot / "bootstrap-store"));
+  requireMarker(readFile(runRoot / "nfd.conf"), "cs_max_packets 0", runRoot / "nfd.conf");
+
+  const ndn::Name producer("/example/hello/user");
+  const ndn::Name repoProvider("/example/hello/repo-provider");
+  const ndn::Name repoNode("/example/hello/repo-node");
+  BOOST_REQUIRE(repoProvider != repoNode);
+  bool foundRepoRoute = false;
+  std::istringstream routes(readFile(runRoot / "routes-after-preparer.txt"));
+  std::string token;
+  while (routes >> token) {
+    if (token.rfind("prefix=", 0) != 0)
+      continue;
+    const ndn::Name prefix(token.substr(7));
+    BOOST_CHECK(!prefix.empty());
+    BOOST_CHECK(!producer.isPrefixOf(prefix));
+    foundRepoRoute = foundRepoRoute || prefix == repoProvider;
+  }
+  BOOST_REQUIRE(foundRepoRoute);
+
+  const auto firstHandle = nativeLoadStoredModelHandle(runRoot / "consumer-b/stored-handle.json");
+  BOOST_CHECK(firstHandle.producer == producer);
+  BOOST_CHECK(firstHandle.repository == repoNode);
+  std::optional<std::string> modelContract;
+  for (const auto& name : {std::string("consumer-b"), std::string("consumer-c")}) {
+    const auto directory = runRoot / name;
+    const auto log = name == "consumer-b" ? "requester.log" : "requester-c.log";
+    requireLogMarker(runRoot, log, "NATIVE_STREAM_ORACLE_PASS");
+    requireLogMarker(runRoot, log, "NATIVE_REQUEST_SUCCEEDED");
+    requireLogMarker(runRoot, log, "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN");
+    requireLogAbsentMarker(runRoot, log, "ndnsf-di-stored-model-preparation");
+    BOOST_REQUIRE(std::filesystem::file_size(directory / "output.bin") > 0);
+    const auto handle = nativeLoadStoredModelHandle(directory / "stored-handle.json");
+    BOOST_CHECK(handle.producer == firstHandle.producer);
+    BOOST_CHECK(handle.repository == firstHandle.repository);
+    BOOST_CHECK(handle.rootName == firstHandle.rootName);
+    BOOST_CHECK(handle.rootWireDigest == firstHandle.rootWireDigest);
+    BOOST_CHECK(handle.masterKey == firstHandle.masterKey);
+
+    std::ifstream input(directory / "keys/conversation.key", std::ios::binary);
+    std::vector<NativeConversationJournalKey> journalKeys{{"active",
+      std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input), {})}};
+    std::vector<std::vector<std::uint8_t>> authenticationKeys;
+    const auto eraseKeys = ndn::make_scope_exit([&] {
+      for (auto& key : journalKeys)
+        OPENSSL_cleanse(key.bytes.data(), key.bytes.size());
+      for (auto& key : authenticationKeys)
+        OPENSSL_cleanse(key.data(), key.size());
+    });
+    authenticationKeys = nativeConversationAuthenticationKeys(name, journalKeys);
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    const auto checkpoint = nativeReadConversationCheckpoint(
+      readFile(directory / "conversation-state.json"), authenticationKeys,
+      static_cast<std::uint64_t>(now));
+    BOOST_CHECK(ndn::Name(checkpoint.at("requesterIdentity").get<std::string>()) ==
+                ndn::Name("/example/hello/" + name));
+    BOOST_CHECK_EQUAL(checkpoint.at("conversationId").get<std::string>(), "spec222-stored-" + name);
+    BOOST_CHECK_EQUAL(checkpoint.at("prefixTokenCount").get<std::uint64_t>(), 9U);
+    BOOST_CHECK_EQUAL(checkpoint.at("roleReceiptDigests").size(), 1U);
+    if (modelContract)
+      BOOST_CHECK_EQUAL(checkpoint.at("modelContractDigest").get<std::string>(), *modelContract);
+    modelContract = checkpoint.at("modelContractDigest").get<std::string>();
+  }
+}
+
 void requireReplacementProcessOracle(const std::filesystem::path& runRoot,
                                      const std::vector<std::string>& arguments)
 {
@@ -257,6 +397,11 @@ int runProcessCase(const std::string& name, const std::vector<std::string>& argu
       requireLogMarker(runRoot, "provider.log", "NDNSF_DI_GRANT_VERIFICATION");
       requireLogMarker(runRoot, "provider.log", "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED");
     }
+  }
+  else if (std::find(arguments.begin(), arguments.end(), "--stored-model-reuse") != arguments.end()) {
+    requireStoredProcessOracle(runRoot, output, log,
+      std::find(arguments.begin(), arguments.end(), "--request-time-model-preparation") !=
+        arguments.end());
   }
   else if (std::find(arguments.begin(), arguments.end(), "--replacement") != arguments.end()) {
     const bool noBackup = std::find(arguments.begin(), arguments.end(),
@@ -422,6 +567,16 @@ BOOST_AUTO_TEST_CASE(UnaryAndStreamProcessesUseNativeOracles)
     "NATIVE_REQUEST_SUCCEEDED",
     "NDNSF_DI_GRANT_VERIFICATION",
     "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED"});
+}
+
+BOOST_AUTO_TEST_CASE(StoredModelSurvivesPreparerExitForIndependentUsers)
+{
+  runProcessCase("stream", {"--stored-model-reuse"}, {});
+}
+
+BOOST_AUTO_TEST_CASE(RequestTimePreparationUsesReusableStoredModelAndReadyRecovery)
+{
+  runProcessCase("stream", {"--stored-model-reuse", "--request-time-model-preparation"}, {});
 }
 
 BOOST_AUTO_TEST_CASE(ConversationRecoveryAndReplacementRemainTerminal)

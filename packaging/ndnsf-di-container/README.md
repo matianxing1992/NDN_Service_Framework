@@ -1,5 +1,12 @@
 # NDNSF-DI Runtime Package
 
+For current builds, use the [maintained SIF build and verification
+instructions](../../Experiments/TigerCluster/docs/sif-build.md) and the
+[TigerCluster entry points](../../Experiments/TigerCluster/README.md#entry-points).
+The normal path produces a complete application SIF from a qualified dependency
+base. External APP delivery and the Spec170/182 descriptions below are historical
+compatibility context, not additional release steps or current qualification.
+
 On Tiger, run builds, model preparation/inference and large data validation in a
 Slurm compute allocation, including interactive work. The shared login node is
 for light editing, preparing/submitting jobs and bounded status queries. A
@@ -7,7 +14,7 @@ for light editing, preparing/submitting jobs and bounded status queries. A
 on the cluster login node. See the [Tiger login-node and recovery policy](../../NDNSF-DistributedInference/README.md#tiger-login-node-and-recovery-policy)
 for SSH incidents and verification of existing jobs and staged-out artifacts.
 
-**Current design update (2026-09-08):** Spec182 adopts a stable base SIF plus a
+**Historical design update (2026-09-08):** Spec182 adopts a stable base SIF plus a
 versioned external DI/UAV application bundle. This is accepted design with
 tooling migration still planned; follow the [layered delivery contract](../../specs/182-native-di-python-bindings/contracts/layered-runtime-delivery.md).
 The complete-application SIF workflow below describes the existing implementation
@@ -19,7 +26,7 @@ and historical Spec170 release, not evidence that the new launch path is ready.
 > it. Use the Spec170 quickstart as the operator checklist.
 
 This package is the implementation surface for the NDNSF-DI runtime release.
-For the current iTiger path, the first artifact is a complete SIF built on the
+For the historical Spec170 iTiger path, the first artifact is a complete SIF built on the
 local host with `adapters/slurm-apptainer/scripts/build-local-sif.sh`. Runtime
 execution uses the immutable SIF through the `slurm-apptainer` adapter. The
 legacy archive converter is retained under the explicit

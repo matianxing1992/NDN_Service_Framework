@@ -13,10 +13,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <array>
+#include <cmath>
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -489,13 +492,6 @@ freeCudaPointers(CudaRuntimeApi& cuda,
   pointers.clear();
 }
 
-Ort::Env&
-ortEnv()
-{
-  static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "ndnsf-di");
-  return env;
-}
-
 Ort::SessionOptions
 makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
                    const NativeModelRunnerSpec& spec,
@@ -640,6 +636,82 @@ copyOrtTensorToHost(const Ort::Value& source, void* destination, std::size_t byt
       std::to_string(status) + ")");
   }
 }
+
+namespace {
+
+OnnxKvStateSample
+sampleKvState(const Ort::Value& value, const std::string& inputName)
+{
+  const auto info = value.GetTensorTypeAndShapeInfo();
+  const auto count = info.GetElementCount();
+  OnnxKvStateSample sample;
+  sample.inputName = inputName;
+  sample.shape = info.GetShape();
+  std::size_t width = 0;
+  switch (info.GetElementType()) {
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT: sample.elementType = "float32"; width = 4; break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16: sample.elementType = "float16"; width = 2; break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64: sample.elementType = "int64"; width = 8; break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32: sample.elementType = "int32"; width = 4; break;
+    default: throw std::runtime_error("unsupported qualification KV scalar type");
+  }
+  if (!count || count > std::numeric_limits<std::size_t>::max() / width)
+    throw std::runtime_error("invalid qualification KV extent");
+  const auto device = value.GetTensorMemoryInfo().GetDeviceType();
+  std::optional<CudaRuntimeApi> cuda;
+  if (device == OrtMemoryInfoDeviceType_GPU) {
+    cuda.emplace();
+    if (!cuda->available())
+      throw std::runtime_error("qualification KV copy requires CUDA runtime");
+  }
+  else if (device != OrtMemoryInfoDeviceType_CPU)
+    throw std::runtime_error("unsupported qualification KV device");
+  const auto* source = static_cast<const std::uint8_t*>(value.GetTensorRawData());
+  if (!source)
+    throw std::runtime_error("missing qualification KV allocation");
+  const auto points = std::min<std::size_t>(16, count);
+  for (std::size_t i = 0; i < points; ++i) {
+    const auto index = points == 1 ? 0 :
+      ((count - 1) / (points - 1)) * i + ((count - 1) % (points - 1)) * i / (points - 1);
+    std::array<std::uint8_t, 8> bytes{};
+    if (cuda) {
+      if (cuda->memcpy(bytes.data(), source + index * width, width, cudaMemcpyDeviceToHost) != 0)
+        throw std::runtime_error("qualification KV scalar CUDA copy failed");
+    }
+    else
+      std::memcpy(bytes.data(), source + index * width, width);
+    double number = 0;
+    if (sample.elementType == "float32") {
+      float scalar;
+      std::memcpy(&scalar, bytes.data(), sizeof(scalar));
+      number = scalar;
+    }
+    else if (sample.elementType == "float16") {
+      Ort::Float16_t scalar;
+      std::memcpy(&scalar, bytes.data(), sizeof(scalar));
+      number = scalar.ToFloat();
+    }
+    else if (sample.elementType == "int64") {
+      std::int64_t scalar;
+      std::memcpy(&scalar, bytes.data(), sizeof(scalar));
+      if (scalar < -(INT64_C(1) << 53) || scalar > (INT64_C(1) << 53))
+        throw std::runtime_error("qualification KV integer exceeds exact scalar range");
+      number = static_cast<double>(scalar);
+    }
+    else {
+      std::int32_t scalar;
+      std::memcpy(&scalar, bytes.data(), sizeof(scalar));
+      number = scalar;
+    }
+    if (!std::isfinite(number))
+      throw std::runtime_error("nonfinite qualification KV scalar");
+    sample.indices.push_back(index);
+    sample.values.push_back(number);
+  }
+  return sample;
+}
+
+} // namespace
 
 OnnxRuntimeProviderSelection
 resolveRuntimeProviderSelection(const NativeModelRunnerSpec& spec)
@@ -1023,7 +1095,8 @@ class OnnxRuntimeModelRunner::SharedSession
 {
 public:
   explicit SharedSession(const NativeModelRunnerSpec& spec)
-    : selection(resolveRuntimeProviderSelection(spec))
+    : environment(ORT_LOGGING_LEVEL_WARNING, "ndnsf-di")
+    , selection(resolveRuntimeProviderSelection(spec))
     , graphMetadata(detail::inspectOnnxRuntimeGraphMetadata(spec.path,
                     selection.selectedProvider == "cuda" &&
                     spec.metadata.count("evidence.providerBootId") != 0 &&
@@ -1031,11 +1104,14 @@ public:
                     !runnerMetadataValue(
                       spec, {"providerProfilePrefix", "provider_profile_prefix"}).empty()))
     , sessionOptions(makeSessionOptions(selection, spec, graphMetadata))
-    , session(ortEnv(), spec.path.c_str(), sessionOptions)
+    , session(environment, spec.path.c_str(), sessionOptions)
   {
     detail::verifyOnnxRuntimeGraphMetadataSource(spec.path, graphMetadata);
   }
 
+  // ORT shares the native environment. Own its reference through session teardown,
+  // then release it here rather than during process-wide static destruction.
+  Ort::Env environment;
   OnnxRuntimeProviderSelection selection;
   detail::OnnxRuntimeGraphMetadata graphMetadata;
   Ort::SessionOptions sessionOptions;
@@ -1234,6 +1310,7 @@ public:
   // never cross ProviderRoleWorker, the state store, or an NDN bundle.
   std::map<std::string, NativeOpaqueStateHandleV1> stateHandleBySession;
   NativeRuntimeMetrics runtimeMetrics;
+  std::shared_ptr<OnnxKvStateObserver> stateObserver;
 
   void
   releaseConversationLocked(const std::string& conversationKey)
@@ -1312,6 +1389,14 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
 OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
   NativeModelRunnerSpec spec,
   std::shared_ptr<OnnxRuntimeSessionCache> sessionCache)
+  : OnnxRuntimeModelRunner(std::move(spec), std::move(sessionCache), nullptr)
+{
+}
+
+OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
+  NativeModelRunnerSpec spec,
+  std::shared_ptr<OnnxRuntimeSessionCache> sessionCache,
+  std::shared_ptr<OnnxKvStateObserver> stateObserver)
   : m_spec(std::move(spec))
 {
   if (m_spec.path.empty()) {
@@ -1336,6 +1421,7 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
   const auto identity = sessionEligible ? sessionIdentity(m_spec, selection) : std::string{};
   if (!sessionCache || identity.empty()) {
     m_impl = std::make_unique<Impl>(m_spec);
+    m_impl->stateObserver = std::move(stateObserver);
     initializeEvidence();
     warmup();
     logOnnxSessionLoad(m_spec, selection, false, false, 1, 0, 0);
@@ -1356,6 +1442,7 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
   const bool cacheHit = lease.cacheHit();
   m_impl = std::make_unique<Impl>(m_spec, std::move(sharedSession),
                                   std::move(lease));
+  m_impl->stateObserver = std::move(stateObserver);
   initializeEvidence();
   if (m_evidence) {
     // The load owner's warmup is complete before acquire publishes the value;
@@ -1939,6 +2026,8 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
   std::vector<std::vector<std::uint8_t>> outputHostBuffers;
   outputHostBuffers.reserve(outputs.size());
   std::uint64_t borrowedOutputBytes = 0;
+  const bool observeState = m_impl->stateObserver && m_impl->stateObserver->wants(effectiveContext);
+  std::vector<OnnxKvStateSample> stateSamples;
   for (std::size_t i = 0; i < outputs.size(); ++i) {
     auto& value = outputs[i];
     if (!value.IsTensor()) {
@@ -1962,6 +2051,12 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       // *_out makes every lookup miss and silently reintroduces a host upload.
       const auto successorInput =
         m_impl->statefulIo->stateInputForOutput(outputNames[i]);
+      if (observeState) {
+        if (stateSamples.size() >= 256)
+          throw std::runtime_error("qualification KV component bound exceeded");
+        NativeWorkScope sampleWork(ctx.workStatistics, "onnx-kv-sample", NativeWorkKind::LOCAL);
+        stateSamples.push_back(sampleKvState(value, successorInput));
+      }
       auto& stateBySession = deviceResidentState
         ? m_impl->deviceStateBySession[effectiveContext.sessionId]
         : m_impl->hostStateBySession[effectiveContext.sessionId];
@@ -2011,6 +2106,12 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     validateNamedTensorView(tensor);
     borrowedOutputBytes += tensor.payload.size();
     namedOutputs.push_back(std::move(tensor));
+  }
+  if (observeState) {
+    if (stateSamples.empty())
+      throw std::runtime_error("qualification requires resident KV state outputs");
+    NativeWorkScope sampleWork(ctx.workStatistics, "onnx-kv-sample", NativeWorkKind::LOCAL);
+    m_impl->stateObserver->record(effectiveContext, std::move(stateSamples));
   }
   for (const auto& name : metadataNames(
          m_spec, {"passthroughTensors", "passthrough_tensors"})) {
@@ -2067,7 +2168,10 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       padding.payload.assign(padding.shape.front() * sizeof(float), 0);
       appendOwnedOutput(std::move(padding));
     }
+    NativeWorkScope packWork(ctx.workStatistics, "onnx-output-bundle-encode",
+                             NativeWorkKind::LOCAL);
     TensorBundle bundle = makeEncodedTensorBundleViews("onnx-output-bundle", namedOutputs);
+    packWork.finish();
     const auto bundleScope = metadataValue(
       m_spec,
       {"outputBundleScope", "output_bundle_scope", "outputScope", "output_scope"});
@@ -2452,14 +2556,24 @@ registerOnnxRuntimeBackend(
   RegistryNativeModelRunnerFactory& factory,
   std::shared_ptr<OnnxRuntimeSessionCache> sessionCache)
 {
-  const auto creator = [sessionCache = std::move(sessionCache)] (
+  registerOnnxRuntimeBackend(factory, std::move(sessionCache), nullptr);
+}
+
+void
+registerOnnxRuntimeBackend(
+  RegistryNativeModelRunnerFactory& factory,
+  std::shared_ptr<OnnxRuntimeSessionCache> sessionCache,
+  std::shared_ptr<OnnxKvStateObserver> stateObserver)
+{
+  const auto creator = [sessionCache = std::move(sessionCache),
+                        stateObserver = std::move(stateObserver)] (
                          const NativeModelRunnerSpec& spec) {
     if (sessionCache) {
       // Keep eviction owner-local and wakeable at the next runner admission;
       // no background thread is needed for the bounded one-slot cache.
       sessionCache->evictIdle();
     }
-    return std::make_shared<OnnxRuntimeModelRunner>(spec, sessionCache);
+    return std::make_shared<OnnxRuntimeModelRunner>(spec, sessionCache, stateObserver);
   };
   // Explicit CPU/CUDA backend names constrain provider selection. Generic
   // onnxruntime retains the metadata-selected provider and legacy CPU default.
@@ -3158,6 +3272,13 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
 {
 }
 
+OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
+  NativeModelRunnerSpec spec, std::shared_ptr<OnnxRuntimeSessionCache> sessionCache,
+  std::shared_ptr<OnnxKvStateObserver>)
+  : OnnxRuntimeModelRunner(std::move(spec), std::move(sessionCache))
+{
+}
+
 OnnxRuntimeModelRunner::~OnnxRuntimeModelRunner() = default;
 
 void
@@ -3301,9 +3422,19 @@ registerOnnxRuntimeBackend(
   RegistryNativeModelRunnerFactory& factory,
   std::shared_ptr<OnnxRuntimeSessionCache> sessionCache)
 {
-  const auto creator = [sessionCache = std::move(sessionCache)] (
+  registerOnnxRuntimeBackend(factory, std::move(sessionCache), nullptr);
+}
+
+void
+registerOnnxRuntimeBackend(
+  RegistryNativeModelRunnerFactory& factory,
+  std::shared_ptr<OnnxRuntimeSessionCache> sessionCache,
+  std::shared_ptr<OnnxKvStateObserver> stateObserver)
+{
+  const auto creator = [sessionCache = std::move(sessionCache),
+                        stateObserver = std::move(stateObserver)] (
                          const NativeModelRunnerSpec& spec) {
-    return std::make_shared<OnnxRuntimeModelRunner>(spec, sessionCache);
+    return std::make_shared<OnnxRuntimeModelRunner>(spec, sessionCache, stateObserver);
   };
   // Keep the public adapter backend names distinct from the internal
   // execution-provider selection stored in runner metadata.

@@ -29,6 +29,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/runtime-logging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/statistics-file.hpp"
+#include "onnx-kv-state-probe.hpp"
 
 #include "ndn-service-framework/CertificateBootstrap.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
@@ -170,36 +171,6 @@ protectedResidentIdentityFor(const NativeSelectionProjectionV3& projection,
   return identity;
 }
 
-ProviderArtifactKey
-providerExecutableArtifactKey(const NativeSelectionProjectionV3& projection,
-                              const std::string& providerIdentity)
-{
-  const auto& role = projection.assemblyContract();
-  return ProviderArtifactKey{
-    role.modelManifestDigest,
-    projection.canonicalArtifactName,
-    projection.canonicalArtifactName,
-    role.modelManifestDigest,
-    role.canonicalInitializerDigest,
-    role.graphDigest,
-    role.selectedRole,
-    // Request/attempt offer and grant digests authenticate admission but
-    // cannot address an immutable template.  The role artifact digest and
-    // Provider security scope are stable across turns; the current grant is
-    // still verified before cache admission.
-    role.artifactDigest,
-    role.recipeDigest,
-    role.backendAbi,
-    role.deviceSet.empty() ? std::string{} : role.deviceSet.front(),
-    role.precision,
-    role.quantization,
-    role.layout,
-    role.artifactProfileDigest,
-    projection.securityPolicySnapshotDigest,
-    role.protectionEpoch,
-    projection.provider.empty() ? providerIdentity : projection.provider};
-}
-
 void
 requestShutdown(int)
 {
@@ -243,6 +214,7 @@ struct Options
   // tokenizer digest only after Selection.
   std::string tokenizerJson;
   std::string statisticsFile;
+  bool sampleKvStateValues = false;
   std::string kvHandoffConfigPath;
   bool checkKvHandoffConfig = false;
   std::string repoServiceName = "/NDNSF/DistributedRepo";
@@ -872,6 +844,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--statistics-file") {
       options.statisticsFile = readValue();
     }
+    else if (arg == "--sample-kv-state-values") {
+      options.sampleKvStateValues = true;
+    }
     else if (arg == "--repo-service") {
       options.repoServiceName = readValue();
     }
@@ -1254,7 +1229,7 @@ printUsage(const char* program)
     << "[--artifact-cache-max-mib <positive-MiB>] "
     << "[--cache-compatibility-source-dir <verified-cache-dir>] "
     << "[--tokenizer-json <path>] "
-    << "[--statistics-file <jsonl-path>] "
+    << "[--statistics-file <jsonl-path>] [--sample-kv-state-values] "
     << "[--repo-fetch-timeout-ms <ms>] [--assembly-timeout-ms <ms>] "
     << "[--conversation-retention-ms <1..3600000>] "
     << "[--repo-ack-timeout-ms <ms>] "
@@ -1443,7 +1418,15 @@ main(int argc, char** argv)
     artifactCacheConfig.assemblyJobTimeout =
       std::chrono::milliseconds(options.assemblyTimeoutMs);
     auto artifactCache = std::make_shared<ProviderArtifactCache>(artifactCacheConfig);
-    registerOnnxRuntimeBackend(*factory, sessionCache);
+    std::shared_ptr<OnnxKvStateProbe> stateProbe;
+    if (options.sampleKvStateValues) {
+      if (options.statisticsFile.empty() || options.wiringCheckOnly ||
+          options.tracerDeterministicRunner)
+        throw std::invalid_argument("KV qualification requires statistics and real ONNX execution");
+      stateProbe = std::make_shared<OnnxKvStateProbe>(
+        std::filesystem::absolute(options.statisticsFile + ".kv-samples.json"), options.providerName);
+    }
+    registerOnnxRuntimeBackend(*factory, sessionCache, std::move(stateProbe));
     factory->registerBackend(
       "native-yolo-postprocess",
       [] (const NativeModelRunnerSpec& spec) {
@@ -1610,7 +1593,10 @@ main(int argc, char** argv)
           const auto ordinal = std::stoi(text, &consumed);
           if (consumed != text.size() || std::to_string(ordinal) != text)
             throw std::runtime_error("GPU_RESOURCE_DEVICE_INVALID");
-          deviceQueries.push_back(std::make_shared<CudaDeviceMemoryQuery>(ordinal));
+          auto query = std::make_shared<CudaDeviceMemoryQuery>(ordinal);
+          // Driver initialization belongs to readiness, outside the ACK deadline.
+          query->prepare();
+          deviceQueries.push_back(std::move(query));
         }
         nativeOfferConfig->observeResources =
           [weakTelemetry, deviceQueries = std::move(deviceQueries)] (
@@ -2335,6 +2321,7 @@ main(int argc, char** argv)
                   if (protectedRuntime) {
                     assemblyOptions.roleAssemblySpecDigest = nativeAssemblyDigestFromValidatedProjection(projection);
                   }
+                  nativeBindStoredModelAssemblyCache(projection, assemblyOptions);
                   assemblyOptions.signManifest =
               [&keyChain, providerCert](const std::string& manifestBytes) {
                       return signNativeAssemblyManifest(
@@ -2357,8 +2344,10 @@ main(int argc, char** argv)
                   control.cancelled = [&ctx] {
                     return ctx.isStreamed() && ctx.streamCancelled();
                   };
-                  const auto key = providerExecutableArtifactKey(
-                    projection, assemblyProviderIdentity);
+                  const auto& role = projection.assemblyContract();
+                  const auto key = nativeProviderArtifactKey(projection,
+                    assemblyProviderIdentity, projection.canonicalArtifactName,
+                    role.modelManifestDigest);
                   const auto diskCacheHit = std::make_shared<std::atomic<bool>>(false);
                   auto lease = artifactCache->acquireWithRunner(
                     key, projection, control,

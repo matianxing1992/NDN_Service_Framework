@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "ndn-service-framework/control-byte-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/control-byte-inventory.hpp"
@@ -18,6 +19,87 @@
 namespace ndnsf::di::tests {
 
 BOOST_AUTO_TEST_SUITE(NativeRequestWorkStatistics)
+
+BOOST_AUTO_TEST_CASE(EpochProfilingInheritsScopeAndPreservesExclusiveTotals)
+{
+  NativeWorkClock now{1000, 100};
+  auto statistics = std::make_shared<NativeWorkStatistics>([&] { return now; }, true);
+  {
+    NativeWorkScope epoch(statistics, "epoch-work", NativeWorkKind::LOCAL, 0);
+    now = {1100, 200};
+    {
+      NativeWorkScope child(statistics, "pack", NativeWorkKind::LOCAL);
+      now = {1250, 300};
+    }
+    now = {1400, 500};
+  }
+  now = {1500, 600};
+  {
+    NativeWorkScope epoch(statistics, "epoch-work", NativeWorkKind::LOCAL, 1);
+    now = {1600, 650};
+    {
+      NativeWorkScope child(statistics, "pack", NativeWorkKind::LOCAL);
+      now = {1650, 675};
+    }
+    now = {1700, 700};
+  }
+  const auto result = statistics->snapshot();
+  BOOST_REQUIRE(result.complete);
+  BOOST_CHECK_EQUAL(result.activeSpans, 0U);
+  BOOST_CHECK_EQUAL(result.epochPhases.at(0).at("pack").exclusiveWallNs, 150U);
+  BOOST_CHECK_EQUAL(result.epochPhases.at(1).at("pack").exclusiveWallNs, 50U);
+  BOOST_CHECK_EQUAL(result.phases.at("pack").exclusiveWallNs, 200U);
+  BOOST_CHECK_EQUAL(result.phases.at("epoch-work").exclusiveWallNs, 400U);
+  BOOST_CHECK_EQUAL(*result.epochPhases.at(0).at("pack").exclusiveThreadCpuNs, 100U);
+  BOOST_CHECK_EQUAL(*result.phases.at("pack").exclusiveThreadCpuNs, 125U);
+  const auto encoded = nativeParseJson(nativeWorkStatisticsToJson(result));
+  BOOST_CHECK_EQUAL(encoded.at("epochs").size(), 2U);
+  BOOST_CHECK_EQUAL(encoded.at("epochs").at(0).at("inferenceEpoch"), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(EpochProfilingIsOptionalAndRejectsUnboundedEpochs)
+{
+  NativeWorkClock now{1000, 100};
+  NativeWorkStatistics ordinary([&] { return now; });
+  const auto token = ordinary.begin("work", NativeWorkKind::LOCAL, 0);
+  now = {1100, 150};
+  ordinary.finish(token);
+  BOOST_CHECK(ordinary.snapshot().epochPhases.empty());
+  BOOST_CHECK(!nativeParseJson(nativeWorkStatisticsToJson(ordinary.snapshot())).contains("epochs"));
+  NativeWorkStatistics profiled([&] { return now; }, true);
+  const auto lastValid = profiled.begin("work", NativeWorkKind::LOCAL,
+                                       MAX_NATIVE_GENERATED_TOKENS);
+  BOOST_REQUIRE_NE(lastValid, 0U);
+  now = {1200, 175};
+  profiled.finish(lastValid);
+  BOOST_CHECK_EQUAL(profiled.snapshot().epochPhases.size(), 1U);
+  BOOST_CHECK_EQUAL(profiled.begin("work", NativeWorkKind::LOCAL,
+                                  MAX_NATIVE_GENERATED_TOKENS + 1U), 0U);
+  BOOST_CHECK_EQUAL(profiled.begin("work", NativeWorkKind::LOCAL,
+                                  std::numeric_limits<std::uint64_t>::max()), 0U);
+  const auto rejected = profiled.snapshot();
+  BOOST_CHECK(!rejected.complete);
+  BOOST_CHECK_EQUAL(rejected.droppedSpans, 2U);
+  BOOST_CHECK_EQUAL(rejected.activeSpans, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(EpochProfilingRequiresExplicitCrossThreadOwnership)
+{
+  auto statistics = std::make_shared<NativeWorkStatistics>(NativeWorkStatistics::Clock{}, true);
+  {
+    NativeWorkScope epoch(statistics, "main", NativeWorkKind::WAIT, 0);
+    std::thread worker([&] {
+      { NativeWorkScope unknown(statistics, "untagged", NativeWorkKind::LOCAL); }
+      { NativeWorkScope tagged(statistics, "callback", NativeWorkKind::LOCAL, 1); }
+    });
+    worker.join();
+  }
+  const auto result = statistics->snapshot();
+  BOOST_REQUIRE(result.complete);
+  BOOST_CHECK_EQUAL(result.epochPhases.at(0).count("untagged"), 0U);
+  BOOST_CHECK_EQUAL(result.epochPhases.at(1).at("callback").calls, 1U);
+  BOOST_CHECK_EQUAL(result.phases.at("untagged").calls, 1U);
+}
 
 BOOST_AUTO_TEST_CASE(ControlInventoryMergeAndIndependentCounterBound)
 {
@@ -194,16 +276,41 @@ BOOST_AUTO_TEST_CASE(RequestAndThreadOwnershipAreBounded)
   BOOST_REQUIRE(statistics->snapshot().complete);
   NativeWorkStatistics other;
   BOOST_CHECK(other.snapshot().phases.empty());
-  for (std::size_t i = 0; i < 20000; ++i) {
+  constexpr auto observationBudget = (MAX_NATIVE_GENERATED_TOKENS + 1) * 128;
+  for (std::size_t i = 1; i < observationBudget; ++i) {
     const auto token = statistics->begin("worker", NativeWorkKind::LOCAL);
     statistics->finish(token);
   }
+  const auto full = statistics->snapshot();
+  BOOST_REQUIRE(full.complete);
+  BOOST_CHECK_EQUAL(full.droppedSpans, 0U);
+  BOOST_CHECK_EQUAL(full.phases.at("worker").calls, observationBudget);
+  BOOST_CHECK_EQUAL(statistics->begin("worker", NativeWorkKind::LOCAL), 0U);
   const auto result = statistics->snapshot();
   BOOST_CHECK(!result.complete);
   BOOST_CHECK_GT(result.droppedSpans, 0U);
   BOOST_CHECK_EQUAL(result.activeSpans, 0U);
   BOOST_CHECK_EQUAL(result.phases.size(), 1U);
-  BOOST_CHECK_LE(result.phases.at("worker").calls, 16384U);
+  BOOST_CHECK_EQUAL(result.phases.at("worker").calls, observationBudget);
+}
+
+BOOST_AUTO_TEST_CASE(LongSequentialRequestFoldsWithoutDroppingSpans)
+{
+  std::int64_t wallNs = 0;
+  NativeWorkStatistics statistics([&] { return NativeWorkClock{wallNs++, -1}; });
+  constexpr std::size_t calls = 32768;
+  for (std::size_t i = 0; i < calls; ++i) {
+    const auto token = statistics.begin("sequential", NativeWorkKind::LOCAL);
+    BOOST_REQUIRE_NE(token, 0U);
+    statistics.finish(token);
+  }
+  const auto result = statistics.snapshot();
+  BOOST_REQUIRE(result.complete);
+  BOOST_CHECK_EQUAL(result.activeSpans, 0U);
+  BOOST_CHECK_EQUAL(result.droppedSpans, 0U);
+  BOOST_REQUIRE_EQUAL(result.phases.size(), 1U);
+  BOOST_CHECK_EQUAL(result.phases.at("sequential").calls, calls);
+  BOOST_CHECK_EQUAL(result.phases.at("sequential").exclusiveWallNs, calls);
 }
 
 BOOST_AUTO_TEST_CASE(CurrentPhaseVocabularyFitsBound)
@@ -402,6 +509,9 @@ BOOST_AUTO_TEST_CASE(TransferMetadataRetainsMissingValuesAndRejectsInvalidInterv
   observation.phase = "delta";
   observation.tensorBytes = 4096;
   observation.encodedPayloadBytes = 4200;
+  observation.transportPayloadBytes = 4300;
+  observation.metadataBytes = 0;
+  observation.localCopyBytes = 4096;
   statistics.observeTransfer(observation, 7, 10, 20, 25);
   observation.tensorBytes = 0;
   const auto result = statistics.snapshot();
@@ -410,6 +520,10 @@ BOOST_AUTO_TEST_CASE(TransferMetadataRetainsMissingValuesAndRejectsInvalidInterv
   BOOST_CHECK_EQUAL(result.transfers.front().tensorBytes, 4096U);
   const auto wire = nativeParseJson(nativeWorkStatisticsToJson(result));
   BOOST_CHECK(wire.at("transfers").at(0).at("wireBytes").is_null());
+  BOOST_CHECK_EQUAL(wire.at("transfers").at(0).at("transportPayloadBytes"), 4300U);
+  BOOST_CHECK_EQUAL(wire.at("transfers").at(0).at("metadataBytes"), 0U);
+  BOOST_CHECK_EQUAL(wire.at("transfers").at(0).at("localCopyBytes"), 4096U);
+  BOOST_CHECK(wire.at("transfers").at(0).at("transportLocalCopyBytes").is_null());
   BOOST_CHECK_EQUAL(wire.at("transfers").at(0).at("admittedSteadyNs"), 25);
   statistics.observeTransfer(observation, 8, 20, 10);
   BOOST_CHECK(!statistics.snapshot().complete);

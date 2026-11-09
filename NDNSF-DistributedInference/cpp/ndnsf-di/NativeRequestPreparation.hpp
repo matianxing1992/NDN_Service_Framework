@@ -12,7 +12,11 @@
 #include <string>
 #include <vector>
 
+namespace ndn_service_framework { struct LargeDataPublishResult; }
+
 namespace ndnsf::di {
+
+struct NativeModelObjectKeyIndexV1;
 
 struct NativePreparedInput
 {
@@ -61,8 +65,9 @@ struct NativeArtifactBinding
   std::map<std::string, std::string> artifactDigestByRole;
   std::string manifestDigest;
   std::string recipeDigest;
-  // False only for an explicitly authenticated metadata-only compatibility
-  // receipt; assignedArtifact remains bound, but Core skips root prefetch.
+  // False for authenticated metadata-only compatibility receipts or stored objects
+  // that DI admits through its current object-key lease. assignedArtifact stays bound;
+  // Core skips its legacy root prefetch, while DI still verifies the model objects.
   bool artifactPrefetchRequired = true;
   // Filled by ensureArtifacts from the checked request/model, not by its
   // publication port. The sealer refuses a foreign or unbound result.
@@ -77,6 +82,11 @@ struct NativeArtifactBinding
   // metadata. Stable artifact identities are separate from sourceByRole fetch names.
   std::string canonicalManifestJson;
   std::map<std::string, std::string> artifactNameByRole;
+  // Immutable prepare-time references; current recipient controls are separate.
+  std::shared_ptr<const std::vector<ndn_service_framework::LargeDataPublishResult>>
+    ownerRecoverableObjects;
+  std::vector<std::shared_ptr<void>> servingLeases;
+  std::shared_ptr<const NativeModelObjectKeyIndexV1> modelObjectKeyIndex;
 
   void validate() const;
 };

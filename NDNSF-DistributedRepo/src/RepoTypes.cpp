@@ -1340,8 +1340,8 @@ validateRepoUserStorageObject(const RepoUserStorageObject& object)
   }
   validateDigest("sha256", object.wireSha256, "wireSha256");
   validateStoragePositive(object.generation);
-  if (object.payloadWireBytes > REPO_USER_STORAGE_LIMIT_BYTES ||
-      object.manifestBytes > REPO_USER_STORAGE_LIMIT_BYTES - object.payloadWireBytes)
+  if (object.payloadWireBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES ||
+      object.manifestBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES - object.payloadWireBytes)
     throw std::invalid_argument("repo-user-storage-invalid: object charge");
 }
 
@@ -1443,8 +1443,8 @@ RepoUserStorageListReply::toJson() const
     validateDigest("sha256", object.wireSha256, "wireSha256");
     if (claim.repoNode != repoNode || claim.ownerIdentity != ownerIdentity ||
         (!previous.empty() && object.objectName <= previous) || claim.deletedAtMs != 0 ||
-        object.payloadWireBytes > REPO_USER_STORAGE_LIMIT_BYTES ||
-        object.manifestBytes > REPO_USER_STORAGE_LIMIT_BYTES - object.payloadWireBytes)
+        object.payloadWireBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES ||
+        object.manifestBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES - object.payloadWireBytes)
       throw std::invalid_argument("repo-user-storage-invalid: list claim");
     std::string state;
     if (claim.state == RepoUserStorageClaimState::COMMITTED && claim.cleanupId.empty())
@@ -1619,7 +1619,7 @@ RepoUserStorageDeleteReply::toJson() const
   validateStorageName(ownerIdentity); validateStorageId(cleanupId);
   validateStorageName(objectName); validateStoragePositive(ownerEpoch);
   if ((state != "PENDING" && state != "DELETED") ||
-      releasedBytes > REPO_USER_STORAGE_LIMIT_BYTES ||
+      releasedBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES ||
       (state == "PENDING" && releasedBytes != 0))
     throw std::invalid_argument("repo-user-storage-invalid: delete outcome");
   return "{\"schemaVersion\":1,\"repoNode\":" + detail::quoteJson(repoNode) +
@@ -2186,7 +2186,7 @@ RepoDataReference::validateExactPacketSet() const
     throw std::invalid_argument("repo-exact-packet-digest-mismatch");
   }
   if (hasFinalSegment || !storeWirePackets || expectedSize == 0 ||
-      expectedSize > REPO_USER_STORAGE_LIMIT_BYTES || metadata.packetNames.empty() ||
+      expectedSize > REPO_USER_STORAGE_OBJECT_MAX_BYTES || metadata.packetNames.empty() ||
       metadata.packetNames.size() > 65536 || metadata.packetNames.size() > expectedSize ||
       metadata.objectType != "original-packet-set" ||
       ndn::Name(metadata.objectName) != ndn::Name(objectName) ||
@@ -2590,6 +2590,17 @@ RepoObjectManifest
 RepoStoreBackend::getManifest(const std::string& objectName) const
 {
   return get(objectName).manifest;
+}
+
+RepoRangeReadFunction
+RepoStoreBackend::bindCurrentRangeReader(std::shared_ptr<const RepoObjectManifest> expected) const
+{
+  return [this, expected = std::move(expected)](RepoByteRange range) {
+    if (!has(expected->objectName) ||
+        !getManifest(expected->objectName).hasSameMetadata(*expected))
+      throw std::runtime_error("repo-publication-identity-mismatch");
+    return getRange(expected->objectName, range);
+  };
 }
 
 RepoObjectMetadataProbe

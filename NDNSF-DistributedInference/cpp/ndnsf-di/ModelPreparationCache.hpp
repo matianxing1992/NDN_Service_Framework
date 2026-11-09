@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-preparation.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 
 #include <chrono>
@@ -60,6 +61,15 @@ struct PreparationSpec
   std::string publicationServiceName;
   std::uint64_t maxSourceBytes = 0;
   std::uint64_t maxAssembledBytes = 0;
+  /** A stored open admits only bounded catalog metadata; it never allocates the
+   * registered source or ONNX assembly limits during preparation.
+   */
+  bool sourceFreeStoredModel = false;
+  std::shared_ptr<const NativeStoredModelHandle> storedModelHandle;
+  std::shared_ptr<const ndnsf_distributed_repo::RepoArtifactTarget> storedRepositoryTarget;
+  using StoredModelLoader = std::function<NativeStoredPreparedModel(
+    const PreparationSpec&, std::chrono::steady_clock::time_point)>;
+  StoredModelLoader loadStoredModel;
 
   /** Runtime-owned factory used to bind a verified package to its existing
    * request owner. It never stores request, grant, or plan state in cache. */
@@ -105,6 +115,9 @@ struct PreparationSpec
   std::function<void()> onTerminal;
   /** Optional C++ evidence hook; exceptions are swallowed by the owner. */
   std::function<void(const MemorySnapshot&)> memoryObserver;
+  /** Persist a committed reusable receipt before releasing its source owner. */
+  std::function<void(const PreparationSpec&, const NativePreparedCanonicalPublication&,
+                     std::chrono::steady_clock::time_point)> rememberPrepared;
 };
 
 /**
@@ -131,6 +144,27 @@ private:
   friend class User;
   friend struct Spec185PreparationTestAccess;
 
+  class MemoryReservation
+  {
+  public:
+    MemoryReservation() noexcept = default;
+    MemoryReservation(ModelPreparationCache* owner, std::size_t bytes) noexcept;
+    MemoryReservation(const MemoryReservation&) = delete;
+    MemoryReservation& operator=(const MemoryReservation&) = delete;
+    MemoryReservation(MemoryReservation&& other) noexcept;
+    MemoryReservation& operator=(MemoryReservation&& other) noexcept;
+    ~MemoryReservation() noexcept;
+
+    std::size_t bytes() const noexcept;
+    void release() noexcept;
+
+  private:
+    friend class ModelPreparationCache;
+    void releaseLocked() noexcept;
+    ModelPreparationCache* m_owner = nullptr;
+    std::size_t m_bytes = 0;
+  };
+
   std::shared_ptr<PreparationHandle::State> prepareAsync(
     const PreparationSpec& spec, CachePolicy policy, std::chrono::milliseconds timeout);
 
@@ -140,6 +174,8 @@ private:
   std::shared_ptr<const PreparedModelPackage> buildPackage(
     const PreparationSpec& spec, std::chrono::steady_clock::time_point deadline,
     PreparationSpec::MemorySnapshot* memory) const;
+  MemoryReservation reserveMemory(const PreparationSpec& spec,
+                                  const std::string& protectedKey);
   PreparedModel prepareSingle(const PreparationSpec& spec, CachePolicy policy,
                               std::chrono::steady_clock::time_point deadline);
   std::shared_ptr<void> acquireLease(const std::shared_ptr<LeaseRecord>& lease);

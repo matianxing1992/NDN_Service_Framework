@@ -61,7 +61,7 @@ adapters for backend execution. Repo stores original Named Data and serves it
 without becoming its Producer or executing application tasks. Models and
 application policy belong to the application/adapters, not generic NDNSF Core.
 Production behavior in NDNSF Core, NDNSF-DI, NDNSF-UAV-APP and
-NDNSF-DistributedRepo belongs in C++. Python is a thin interface for calling
+NDNSF-DistributedRepo belongs in C++. Python is a thin host-side interface for calling
 native APIs, translating inputs and outputs, launching processes, presenting
 UI, and preparing or orchestrating experiments. Python must not be the sole
 owner of a production protocol, authorization, planning, placement, task or
@@ -136,6 +136,26 @@ approval again or hide an exception in a special-case branch.
    entry point must call the authoritative native path rather than duplicate its
    state machine. Reuse maintained APIs and launchers instead of parallel
    implementations.
+   **Prepare portable models independently of execution devices.** The default
+   ONNX preparation path publishes one reusable graph/weight package and Repo
+   handle for compatible CPU and CUDA Providers. Preparation must not require
+   knowing the concrete backend before Provider ACKs; bind that backend from
+   the selected Provider's admitted capabilities. Switching CPU/CUDA alone must
+   not trigger another export, encryption or Repo publication. Keep device- and
+   runtime-specific optimized sessions/caches local to the Provider with correct
+   cache identities. Separate model variants require demonstrated operator,
+   precision or runtime incompatibility, not a device-specific configuration
+   default. A generic capability declaration is not proof of compatibility;
+   verify actual execution on the supported backends.
+   **Container execution is C++ only.** Runtime applications, diagnostics and
+   acceptance probes inside runtime containers must use native C++ executables
+   and the installed C++ APIs. This includes inference, Controller, Authority,
+   Requester, Provider and Repo operations. Do not execute these paths through
+   in-container Python scripts, interpreters or bindings, including when a
+   binding calls native C++. Keep Python orchestration, configuration generation
+   and offline model preparation outside the runtime container. Continue using
+   Waf for configure/build/install; build-time tooling is not an exception for
+   Python runtime or diagnostic execution.
 
 6. **Owned, bounded lifecycles.** Every asynchronous worker, callback, timer,
    cache, buffer and child process needs an owner, a resource bound or backpressure
@@ -167,6 +187,16 @@ approval again or hide an exception in a special-case branch.
    relevant negative/recovery cases; do not substitute an experiment-only bypass
    or a reimplementation of production logic for that evidence. Distinguish
    static review, build, smoke tests and real end-to-end qualification.
+   Gate delivery promotion on the exact artifact: check its required files and
+   declared entry points before installation, then execute the actual installed
+   entry point in an isolated target environment outside the source checkout
+   before deployment. For host control
+   wheels, require the console launcher in the wheel and run the installed CLI;
+   for SIF delivery, verify the container-native build/SDK/ELF closure and native
+   C++ entry points. Preserve failed checks as unqualified and fix the maintained
+   packer and a missing-entry regression before retrying. Record exact artifact
+   identity and verification scope; source hashes and module imports alone do
+   not qualify the delivery.
    For changes to mechanisms shared by CPU and CUDA, first pass focused C++
    checks and a small installed MiniNDN CPU cold/warm run before deploying the
    changed NDNSF applications to Tiger or starting GPU inference. Reuse validated
@@ -174,8 +204,13 @@ approval again or hide an exception in a special-case branch.
    CPU time when available, source/config identity, pass/fail and the first failure
    boundary in the existing task/evidence record; compare with a matched CPU
    baseline when one exists. Reserve the full matched performance matrix for
-   qualification. GPU-specific runtime, device and kernel changes still require
-   their corresponding container/device checks.
+   qualification. Before a Tiger Qwen 27B GPU experiment, pass a real Tiger
+   Qwen3-0.6B GPU cold/warm run with an independent output/state oracle, actual
+   CUDA execution evidence and nonforced cleanup using the same candidate
+   application/runtime/SIF. Reuse that result while its frozen candidate remains
+   unchanged; changes to the shared code or candidate runtime/SIF require the
+   small-model gate again. GPU-specific runtime, device and kernel changes still
+   require their corresponding container/device checks.
 
 9. **Source-first static diagnosis.** Before a substantive code change or expensive
    build/experiment, inspect the actual caller, owner, inputs, outputs, state
@@ -275,7 +310,7 @@ approval again or hide an exception in a special-case branch.
   and duplicate document work. Expand an experiment only when its current
   condition cannot answer the stated question, not to seek a favorable result.
 - NDNSF-DI native behavior tests must exercise production C++ targets with C++
-  fixtures and assertions. Python may orchestrate processes or test bindings, but
+  fixtures and assertions. Host-side Python may orchestrate processes or test bindings, but
   cannot replace native behavior or cross-process end-to-end qualification.
 - Record actual commands, source/configuration identity, outcomes and first
   failure boundaries. A successful CLI help, import, build or local smoke test
@@ -318,7 +353,7 @@ approval again or hide an exception in a special-case branch.
   deployment.json`; MiniNDN requires root and `platform.kind=minindn`, an absolute
   topology path and its `sha256:` digest. Declare every topology host in `nodes`,
   distinct managed NFD sockets and separate credential homes per actor. Keep
-  Python limited to topology, configuration and process orchestration. The Qwen
+  host-side Python limited to topology, configuration and process orchestration. The Qwen
   experiment entry points accept `run --deployment deployment.json --verify`
   to invoke this owner and its C++ first/warm oracle. Explicit historical
   `--profile`/stage arguments retain compatibility experiments; their results
@@ -347,6 +382,13 @@ approval again or hide an exception in a special-case branch.
   reuses one locked workspace; explicit `--run-root` is durable evidence.
   YOLO's default result/cache paths are stable; use a fixed `--results-dir`
   for disposable retries and archive required results separately.
+  For Slurm containers, configure transient session files and publication spools
+  on separately verified allocation-local disk through `storage.scratch_root`;
+  do not derive that root from the persistent model/Repo/cache root. Check the
+  actual contained `/tmp` and bulk-data mounts, not just their host directory
+  names. Small write probes and global free space do not prove that a model-sized
+  publication fits the user's quota. Keep durable models, original Repo Data
+  and reusable caches outside allocation-private storage.
 - Finish each experiment, including failed or interrupted runs, by archiving
   its report, statistics and the measurement data needed to recompute and audit
   its results inside this repository's existing `results/` or active feature's
@@ -391,14 +433,16 @@ approval again or hide an exception in a special-case branch.
 
 ## Host build stability
 
-- For host compilation, use two jobs, a bounded compiler memory budget
-  (default 6.5 GiB) and a preflight check for at least 2 GiB desktop headroom.
+- For host compilation on the six-core development host, use six jobs, a bounded
+  compiler memory budget (default 6.5 GiB) and a preflight check for at least
+  2 GiB desktop headroom. Keep two jobs available for constrained runs.
   Keep compiler processes under the invoking user in an isolated resource group.
   Preserve `WAFLOCK` when using an existing configured build directory.
-  When available, `scripts/build-safe.sh build --jobs=2` implements this policy.
+  `scripts/build-safe.sh build` defaults to six jobs and implements this policy.
 - Keep the Waf semaphore that compiles source units of at least 128 KiB
   exclusively, including `ServiceUser.cpp` and `ServiceProvider.cpp`;
-  smaller units retain two-way parallel compilation. Do not raise the memory
+  smaller units use the requested parallelism up to six compiler processes.
+  Do not raise the memory
   limit or job count during an editor instability investigation without
   measuring available headroom.
 - The safe-build helper may be local-only. If absent, arrange an equivalent
@@ -412,14 +456,15 @@ approval again or hide an exception in a special-case branch.
   does not make them disposable: preserve them during cleanup, branch changes
   and experiment resets. Delete their contents only with explicit authorization
   for those paths; never use blanket `git clean` on the checkout.
-- The sole documentation tracking exception is
-  `docs/PAPER/named-data-network-service-framework-paper/Named_Data_Network_Service_Framework/`.
-  Its paper source, bibliography and figure assets may be tracked. Generated
-  manuscript PDFs and compilation intermediates remain ignored.
+- Paper and defense workspaces under `docs/PAPER/` use independent local-only
+  Git repositories when requested. Keep all of `docs/` ignored by this main
+  repository; do not force-add paper sources, nested repositories or submodule
+  gitlinks here. Local document commits do not authorize a remote or a push.
 - Keep paper build tools, measurement code and unused source assets in the
-  ignored sibling `NDNSF_Local/`, outside the manuscript source directory.
-- Preserve other documentation and Spec ignore rules; do not broaden this
-  exception or force-add unrelated files. Keep local Codex state and scratch out
+  sibling `NDNSF_Local/`, outside the manuscript source directory. They may be
+  versioned in the local paper repository; build caches stay ignored there.
+- Preserve documentation and Spec ignore rules; do not force-add unrelated
+  files. Keep local Codex state and scratch out
   of commits; this tracked `AGENTS.md` and bundled `skills/` are repository files.
 - Put durable implementation changes in source and tests. Keep planning and
   Spec Kit artifacts in the local `specs/` tree.

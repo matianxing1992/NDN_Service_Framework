@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -24,7 +25,7 @@ std::size_t
 checkedPacketCount(std::size_t count, uint64_t bytes)
 {
   if (count == 0 || count > MAX_ORIGINAL_DATA_PACKET_COUNT || count > bytes ||
-      bytes == 0 || bytes > REPO_USER_STORAGE_LIMIT_BYTES) {
+      bytes == 0 || bytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES) {
     throw std::invalid_argument("repo-original-packet-spool-budget-invalid");
   }
   return count;
@@ -85,6 +86,8 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   void
   launchWindow()
   {
+    if (!checkCurrent())
+      return;
     while (true) {
       std::size_t index = 0;
       {
@@ -97,7 +100,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
             if (std::chrono::steady_clock::now() >= deadline) {
               failLocked("repo-original-packet-fetch-deadline");
             }
-            else if (receivedWireBytes != reference.expectedSize) {
+            else if (exactSize && receivedWireBytes != reference.expectedSize) {
               failLocked("repo-original-packet-size-mismatch");
             }
             else {
@@ -121,13 +124,15 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   void
   expressPacket(std::size_t index, unsigned attempt)
   {
+    if (!checkCurrent())
+      return;
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
       deadline - std::chrono::steady_clock::now());
     if (remaining <= std::chrono::milliseconds::zero()) {
       fail("repo-original-packet-fetch-deadline");
       return;
     }
-    ndn::Interest interest(expectedPacketName(reference, index));
+    ndn::Interest interest(packetName(index));
     interest.setCanBePrefix(false);
     interest.setMustBeFresh(false);
     interest.setInterestLifetime(ndn::time::milliseconds(
@@ -175,6 +180,8 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   void
   onData(std::size_t index, unsigned attempt, const ndn::Data& data)
   {
+    if (!checkCurrent())
+      return;
     {
       std::lock_guard<std::mutex> lock(mutex);
       const auto pending = pendingInterests.find(index);
@@ -188,7 +195,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     }
     std::vector<uint8_t> wire;
     try {
-      if (data.getName() != expectedPacketName(reference, index)) {
+      if (data.getName() != packetName(index)) {
         onFailure(index, attempt, "repo-original-packet-name-mismatch");
         return;
       }
@@ -237,6 +244,8 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   void
   onFailure(std::size_t index, unsigned attempt, const std::string& message)
   {
+    if (!checkCurrent())
+      return;
     {
       std::lock_guard<std::mutex> lock(mutex);
       const auto pending = pendingInterests.find(index);
@@ -280,6 +289,32 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     condition.notify_all();
   }
 
+  bool
+  checkCurrent()
+  {
+    try {
+      if (requireCurrent)
+        requireCurrent();
+      return true;
+    }
+    catch (...) {
+      fail(std::chrono::steady_clock::now() >= deadline
+        ? "repo-original-packet-fetch-deadline"
+        : "repo-original-packet-fetch-cancelled");
+      return false;
+    }
+  }
+
+  ndn::Name
+  packetName(std::size_t index) const
+  {
+    return names.empty() ? expectedPacketName(reference, index) : names.at(index);
+  }
+
+  // Set once before posting launchWindow; the historic reference path retains exact-size checks.
+  bool exactSize = true;
+  std::vector<ndn::Name> names;
+  std::function<void()> requireCurrent;
   ndn::Face& face;
   boost::asio::strand<boost::asio::io_context::executor_type> strand;
   const RepoDataReference reference;
@@ -454,7 +489,7 @@ FaceDataReferenceFetcher::operator()(const RepoDataReference& reference) const
     throw std::logic_error("repo-original-packet-fetch-on-face-thread");
   }
   if (reference.dataPrefix.empty() || reference.expectedSize == 0 ||
-      reference.expectedSize > REPO_USER_STORAGE_LIMIT_BYTES) {
+      reference.expectedSize > REPO_USER_STORAGE_OBJECT_MAX_BYTES) {
     throw std::invalid_argument("repo-original-packet-reference-invalid");
   }
   const ndn::Name prefix(reference.dataPrefix);
@@ -485,19 +520,85 @@ FaceDataReferenceFetcher::operator()(const RepoDataReference& reference) const
     throw std::length_error("repo-original-packet-count-unbounded");
   }
 
+  return fetch(reference, static_cast<std::size_t>(packetCount), {}, true, {});
+}
+
+std::shared_ptr<FaceDataReferencePacketSpool>
+FaceDataReferenceFetcher::fetchNamed(const std::vector<ndn::Name>& names,
+  uint64_t maxWireBytes, const ndn::Name& forwardingHint,
+  std::function<void()> requireCurrent) const
+{
+  if (names.empty() || names.size() > 1024 || maxWireBytes < names.size() ||
+      maxWireBytes > (8U << 20) || forwardingHint.empty() ||
+      forwardingHint.wireEncode().size() > 4096)
+    throw std::invalid_argument("repo-original-named-packet-budget-invalid");
+  std::size_t nameBytes = 0;
+  std::set<ndn::Name> unique;
+  for (const auto& name : names) {
+    const auto text = name.toUri(ndn::name::UriFormat::CANONICAL);
+    if (name.empty() || text.size() > 4096 || !unique.insert(name).second ||
+        text.size() > (128U << 10) - nameBytes)
+      throw std::invalid_argument("repo-original-named-packet-name-invalid");
+    nameBytes += text.size();
+  }
+  RepoDataReference routing;
+  routing.dataPrefix = names.front().toUri();
+  routing.forwardingHint = forwardingHint.toUri();
+  routing.expectedSize = maxWireBytes;
+  return fetch(routing, names.size(), names, false, std::move(requireCurrent));
+}
+
+std::shared_ptr<FaceDataReferencePacketSpool>
+FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t packetCount,
+  std::vector<ndn::Name> names, bool exactSize, std::function<void()> requireCurrent) const
+{
+  if (m_face.getIoContext().get_executor().running_in_this_thread())
+    throw std::logic_error("repo-original-packet-fetch-on-face-thread");
+  if (requireCurrent)
+    requireCurrent();
+
   const auto deadline = std::chrono::steady_clock::now() + m_totalTimeout;
   auto admission = std::make_shared<FetchAdmission>(m_fetchActive, m_lifetime);
   auto state = std::make_shared<FetchState>(m_face, reference,
     static_cast<std::size_t>(packetCount), m_windowSize, m_interestLifetime, deadline, admission);
+  state->exactSize = exactSize;
+  state->names = std::move(names);
+  state->requireCurrent = std::move(requireCurrent);
   boost::asio::post(state->strand, [state] { state->launchWindow(); });
 
   std::unique_lock<std::mutex> lock(state->mutex);
-  if (!state->condition.wait_until(lock, deadline, [&] { return state->done; })) {
+  while (!state->done) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      lock.unlock();
+      boost::asio::post(state->strand, [state] {
+        state->fail("repo-original-packet-fetch-deadline");
+      });
+      throw std::runtime_error("repo-original-packet-fetch-deadline");
+    }
+    const auto wakeAt = std::min(deadline, now + std::chrono::milliseconds(25));
+    if (state->condition.wait_until(lock, wakeAt, [&] { return state->done; }))
+      break;
+
+    // Runtime close/cancellation must wake a quiet Face wait without waiting for
+    // the network deadline. Keep the admission lease in FetchState until the
+    // posted cancellation drains the outstanding Face callbacks.
     lock.unlock();
-    boost::asio::post(state->strand, [state] {
-      state->fail("repo-original-packet-fetch-deadline");
-    });
-    throw std::runtime_error("repo-original-packet-fetch-deadline");
+    bool current = true;
+    try {
+      if (state->requireCurrent)
+        state->requireCurrent();
+    }
+    catch (...) {
+      current = false;
+    }
+    if (!current) {
+      const auto error = std::chrono::steady_clock::now() >= deadline
+        ? "repo-original-packet-fetch-deadline" : "repo-original-packet-fetch-cancelled";
+      boost::asio::post(state->strand, [state, error] { state->fail(error); });
+      throw std::runtime_error(error);
+    }
+    lock.lock();
   }
   if (!state->error.empty()) {
     const auto error = state->error;
@@ -508,10 +609,14 @@ FaceDataReferenceFetcher::operator()(const RepoDataReference& reference) const
   auto spool = std::move(state->spool);
   lock.unlock();
   spool->finalize();
+  if (state->requireCurrent)
+    state->requireCurrent();
   if (std::chrono::steady_clock::now() >= deadline) {
     throw std::runtime_error("repo-original-packet-fetch-deadline");
   }
-  state->admission.reset();
+  // Named reads can retain an Actor owner in the lease. Keep it until any queued callbacks drain.
+  if (state->exactSize)
+    state->admission.reset();
   return spool;
 }
 

@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore-provider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
@@ -2763,6 +2764,24 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       }
       logProviderBoundaryStdout("POST_PROTECTED_GRANT_DONE", stageRequestId,
                                 ctx.localProvider().toUri(), role);
+      if (selectionProjection && selectionProjection->modelObjectKeys) {
+        if (!protectedRuntime || protectedRuntime->state() != ProtectedRuntimeState::GrantVerified)
+          throw std::invalid_argument("model object keys require the verified current role grant");
+        NativeWorkScope modelKeys(workStatistics, "model-object-key-admission",
+                                  NativeWorkKind::UNCLASSIFIED);
+        auto objectKeyLease = nativeInstallModelObjectKeys(
+          ctx, *selectionProjection, config.providerBootId,
+          ctx.assignment().workDeadline, workStatistics);
+        const bool storedReference = selectionProjection->modelObjectKeys->value(
+          "schema", std::string{}) == "ndnsf-di-stored-model-object-keys-reference-v1";
+        if (storedReference != static_cast<bool>(objectKeyLease))
+          throw std::runtime_error("DI_STORED_MODEL_OBJECT_KEY_LEASE_MISMATCH");
+        selectionProjection->storedModelObjectKeyLease = std::move(objectKeyLease);
+        if (selectionProjection->storedModelObjectKeyLease) {
+          selectionProjection->storedModelCacheIdentity =
+            selectionProjection->storedModelObjectKeyLease->cacheIdentity();
+        }
+      }
       const auto makeNetworkIo = [&] (std::size_t prefetchWorkerCount) {
         return std::make_shared<NdnsfCollaborationDependencyIo>(
           ctx, timeoutBudget.dependencyFetchMs, config.maxSegmentSize,

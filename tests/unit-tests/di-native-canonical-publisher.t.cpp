@@ -1,9 +1,11 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "tests/fixtures/spec182/native-catalog-test-access.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/native-owned-initializer-file.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "tests/integration-tests/isolated-test-trust.hpp"
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
@@ -11,6 +13,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-preparation-index.hpp"
+#include "ndn-service-framework/ProtectedBlobManifest.hpp"
 
 #include <onnx/onnx_pb.h>
 #include <onnx/checker.h>
@@ -29,28 +34,6 @@
 #include <limits>
 #include <random>
 #include <utility>
-
-namespace ndnsf::di {
-class NativeCanonicalPublisherTestAccess
-{
-public:
-  using Transport = NativeCanonicalArtifactPublisher::Transport;
-  static NativeCanonicalArtifactPublisher create(Transport transport,
-    NativeCanonicalPublicationOptions options, NativeCanonicalArtifactPublisher::SourcePort source)
-  { return NativeCanonicalArtifactPublisher(std::move(transport), "/service", std::move(options), std::move(source)); }
-};
-class NativeCanonicalCatalogTestAccess
-{
-public:
-  static std::shared_ptr<NativeRequestPreparation> create(
-    const NativeCanonicalPreparationCatalog& catalog, NativeCanonicalPublisherTestAccess::Transport transport)
-  {
-    return catalog.makePreparation([transport](auto options, auto source) {
-      return NativeCanonicalPublisherTestAccess::create(transport, std::move(options), std::move(source));
-    });
-  }
-};
-}
 
 namespace {
 using namespace ndnsf::di;
@@ -91,7 +74,7 @@ std::vector<std::uint8_t> unhex(const std::string& text)
   return bytes;
 }
 
-struct Input
+struct CanonicalPublisherInput
 {
   std::shared_ptr<NativeCanonicalSource> source = std::make_shared<NativeCanonicalSource>();
   NativeInspectedModel model;
@@ -99,7 +82,7 @@ struct Input
   std::vector<NativeSelectionRoleV3> roles;
   NativeCanonicalPublicationOptions options;
   NativeRequestControl control{"/request", 1, Clock::now() + std::chrono::seconds(10), {}};
-  explicit Input(bool external = false)
+  explicit CanonicalPublisherInput(bool external = false)
   {
     std::ifstream stream("tests/fixtures/spec182/dependency-probes/extraction-vectors.json");
     if (!stream) throw std::runtime_error("missing frozen ONNX source fixture");
@@ -204,6 +187,121 @@ struct TransportFixture
 }
 
 BOOST_AUTO_TEST_SUITE(Spec182CanonicalPublisher)
+
+using Input = CanonicalPublisherInput;
+
+BOOST_AUTO_TEST_CASE(ModelObjectKeysBindCurrentInvocationAndRecipient)
+{
+  Input input;
+  NativeSelectionProjectionV3 projection;
+  projection.provider = "/provider";
+  projection.requestId = "/request/1";
+  projection.attempt = 1;
+  projection.hasGrantBinding = true;
+  projection.grantName = "/controller/grant/1";
+  projection.deadlineMs = 2000;
+  projection.selectedRole = input.roles.front();
+  projection.planCoreDigest = nativePlanningDigest("core");
+  projection.planDigest = nativePlanningDigest("plan");
+  projection.ackClosedDigest = nativePlanningDigest("ack");
+  projection.offerDigest = nativePlanningDigest("offer");
+  projection.grantDigest = nativePlanningDigest("grant");
+  projection.securityPolicySnapshotDigest = nativePlanningDigest("policy");
+  const ndn::Name certificate("/provider/KEY/key/issuer/v=1");
+  const auto keyDigest = nativePlanningDigest("recipient public key");
+  auto context = [&](const auto& value, const std::string& boot = "boot-1") {
+    return nativeModelObjectKeyContext(value, ndn::Name("/requester"),
+      ndn::Name("/service"), boot, certificate, keyDigest, 1500, 1000);
+  };
+  const auto original = context(projection);
+  BOOST_CHECK_EQUAL(original.at("modelManifestDigest").get<std::string>(),
+                    input.roles.front().modelManifestDigest);
+  BOOST_CHECK(context(projection, "boot-2") != original);
+  for (unsigned mutation = 0; mutation < 10; ++mutation) {
+    auto changed = projection;
+    switch (mutation) {
+      case 0: changed.requestId = "/request/2"; break;
+      case 1: ++changed.attempt; break;
+      case 2: changed.grantName = "/controller/grant/2"; break;
+      case 3: changed.grantDigest = nativePlanningDigest("other grant"); break;
+      case 4: changed.planDigest = nativePlanningDigest("other plan"); break;
+      case 5: changed.ackClosedDigest = nativePlanningDigest("other ack"); break;
+      case 6: changed.selectedRole.selectedRole = "/other-role"; break;
+      case 7: ++changed.selectedRole.rank; break;
+      case 8: changed.selectedRole.modelManifestDigest = nativePlanningDigest("other model"); break;
+      case 9: changed.securityPolicySnapshotDigest = nativePlanningDigest("other policy"); break;
+    }
+    BOOST_CHECK(context(changed) != original);
+  }
+  auto invalid = projection;
+  invalid.hasGrantBinding = false;
+  BOOST_CHECK_THROW(context(invalid), std::invalid_argument);
+  invalid = projection;
+  invalid.deadlineMs = 1499;
+  BOOST_CHECK_THROW(context(invalid), std::invalid_argument);
+  invalid = projection;
+  invalid.selectedRole.protectionEpoch = "plaintext-v1";
+  BOOST_CHECK_THROW(context(invalid), std::invalid_argument);
+  invalid = projection;
+  invalid.provider = "/foreign-provider";
+  BOOST_CHECK_THROW(context(invalid), std::invalid_argument);
+  invalid = projection;
+  invalid.offerDigest = "missing digest";
+  BOOST_CHECK_THROW(context(invalid), std::invalid_argument);
+  BOOST_CHECK_THROW(context(projection, ""), std::invalid_argument);
+  BOOST_CHECK_THROW(nativeModelObjectKeyContext(projection, ndn::Name("/requester"),
+    ndn::Name("/service"), "boot-1", certificate, keyDigest, 1000, 1000),
+    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(ModelObjectKeySelectionRejectsBundlesAcrossProviderAssignments)
+{
+  const auto canonicalName = [](const std::string& uri) {
+    return ndn::Name(uri).toUri(ndn::name::UriFormat::CANONICAL);
+  };
+  NativeModelObjectKeyIndexV1 index;
+  index.providerAssemblyMetadataNames = {canonicalName("/model/root"),
+    canonicalName("/model/material"), canonicalName("/model/receipt")};
+  index.nonProviderObjectNames = {canonicalName("/model/source"),
+    canonicalName("/model/prepared-metadata")};
+  index.templatePayloadIds = {"template"};
+  index.payloadIdsByNode = {{0, {"node-0", "shared-init"}},
+                            {1, {"node-1", "shared-init"}}};
+  const auto bundleName = [&canonicalName](const std::string& suffix) {
+    return canonicalName("/model/bundle/" + suffix);
+  };
+  index.payloadIdsByDataName = {{bundleName("template"), {"template"}},
+                                {bundleName("node-0"), {"node-0"}},
+                                {bundleName("node-1"), {"node-1"}},
+                                {bundleName("shared"), {"shared-init"}}};
+
+  const auto first = nativeSelectModelObjectKeyDataNames(index, {0});
+  const auto second = nativeSelectModelObjectKeyDataNames(index, {1});
+  for (const auto& name : index.providerAssemblyMetadataNames) {
+    BOOST_CHECK(first.count(name) == 1);
+    BOOST_CHECK(second.count(name) == 1);
+  }
+  BOOST_CHECK(first.count(bundleName("template")) == 1);
+  BOOST_CHECK(first.count(bundleName("node-0")) == 1);
+  BOOST_CHECK(first.count(bundleName("shared")) == 1);
+  BOOST_CHECK(first.count(bundleName("node-1")) == 0);
+  BOOST_CHECK(second.count(bundleName("template")) == 1);
+  BOOST_CHECK(second.count(bundleName("node-1")) == 1);
+  BOOST_CHECK(second.count(bundleName("shared")) == 1);
+  BOOST_CHECK(second.count(bundleName("node-0")) == 0);
+  BOOST_CHECK(first.count(canonicalName("/model/source")) == 0);
+  BOOST_CHECK(first.count(canonicalName("/model/prepared-metadata")) == 0);
+
+  index.payloadIdsByDataName.erase(bundleName("node-0"));
+  index.payloadIdsByDataName.erase(bundleName("node-1"));
+  index.payloadIdsByDataName.emplace(bundleName("mixed"),
+                                     std::set<std::string>{"node-0", "node-1"});
+  BOOST_CHECK_THROW(nativeSelectModelObjectKeyDataNames(index, {0}), std::invalid_argument);
+  BOOST_CHECK_THROW(nativeSelectModelObjectKeyDataNames(index, {1}), std::invalid_argument);
+  const auto both = nativeSelectModelObjectKeyDataNames(index, {0, 1});
+  BOOST_CHECK(both.count(bundleName("mixed")) == 1);
+}
+
 BOOST_AUTO_TEST_CASE(DelayedBootstrapPrecedesPublicationAndDoesNotDelayCacheReuse)
 {
   for (const bool prepareOnly : {true, false}) {
@@ -389,6 +487,282 @@ BOOST_AUTO_TEST_CASE(PublishedReferencesPreferImmutableManifestNames)
   BOOST_CHECK_EQUAL(prepared.rootDataName, expected);
   BOOST_CHECK_EQUAL(prepared.sourceDataName, expected);
 }
+BOOST_AUTO_TEST_CASE(PreparedReceiptRetainsSourceCatalogMetadata)
+{
+  Input input;
+  TransportFixture io;
+  input.source->preparedMetadataJson = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-prepared-metadata-v1"},
+    {"sourceDigest", input.model.canonicalSourceDigest},
+    {"fixtureGraphFacts", std::string(600000, 'x')}});
+  BOOST_REQUIRE_GT(input.source->preparedMetadataJson.size(), 256U * 1024U);
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    io.transport(), input.options, input.resolver());
+  const auto prepared = publisher.prepare(input.model, input.control);
+  BOOST_CHECK(!prepared.ownerRecoverableObjects);
+  BOOST_CHECK_EQUAL(prepared.preparedMetadataJson, input.source->preparedMetadataJson);
+  const auto calls = io.payloads.size();
+  const auto cached = publisher.prepare(input.model, input.control);
+  BOOST_CHECK_EQUAL(cached.preparedMetadataJson, prepared.preparedMetadataJson);
+  BOOST_CHECK_EQUAL(io.payloads.size(), calls);
+  auto referenceOnly = prepared;
+  referenceOnly.preparedMetadataJson.clear();
+  referenceOnly.preparedMetadataDataName = "/producer/prepared-metadata";
+  referenceOnly.preparedMetadataDigest = nativePlanningDigest(input.source->preparedMetadataJson);
+  referenceOnly.preparedMetadataBytes = NativeCanonicalMaterialPublicationMaxBytes + 1;
+  BOOST_CHECK_THROW(referenceOnly.validate(), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(OwnerRecoverableReceiptRetainsExactCoreReferencesWithoutOperationalState)
+{
+  Input input;
+  TransportFixture io;
+  const NativeJson catalog{
+    {"model", nativeParseJson(input.model.descriptor.canonicalJson())},
+    {"source", {{"digest", input.model.canonicalSourceDigest},
+                 {"bytes", input.model.canonicalSourceBytes}}},
+    {"recipe", {{"artifact_profile_digest", input.options.artifactProfileDigest}}}};
+  input.options.publicationIdentityDigest = nativeCanonicalPublicationIdentity(catalog);
+  input.source->preparedMetadataJson = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-prepared-metadata-v1"}, {"fixtureGraphFacts", "retained"}});
+  auto invalid = io.transport();
+  invalid.ownerRecoverable = true;
+  BOOST_CHECK_THROW(NativeCanonicalPublisherTestAccess::create(
+    invalid, input.options, input.resolver()), std::invalid_argument);
+  auto transport = io.transport();
+  const auto publish = transport.publish;
+  transport.ownerRecoverable = true;
+  transport.durablePublish = [publish](const auto& request, const auto& bytes,
+    const auto& label, const auto& publicationIdentity, const auto& contentName,
+    const auto& control) {
+    auto result = publish(request, bytes, label, contentName, control);
+    result.publicationIdentity = publicationIdentity;
+    result.keyReferenceId = nativePlanningDigest("fixture object key reference");
+    result.keyReferenceVersion = "v1";
+    result.protectionEpoch = std::string(16, 'a');
+    result.dataPrefix = contentName.contentPrefix(ndn::Name("/requester"),
+      result.contentDigest.substr(7)).append("PROTECTED")
+      .append(makeNamingDigestComponent(nativePlanningDigest("fixture protection").substr(7)))
+      .append("DATA");
+    result.encryptedDataName = result.dataPrefix;
+    result.manifestName = ndn::Name(result.dataPrefix.getPrefix(-1)).append("MANIFEST").append(
+      makeNamingDigestComponent(result.manifestDigest.substr(7)));
+    result.ciphertextManifestDigest = result.manifestDigest;
+    result.servingLocator = result.dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
+    result.servingLease = std::make_shared<int>(1);
+    result.rollbackDataNames = {result.encryptedDataName.toUri()};
+    result.rollbackKeyId = "fixture rollback key";
+    result.rollbackServiceName = request.serviceName.toUri();
+    return result;
+  };
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    std::move(transport), input.options, input.resolver());
+  const auto prepared = publisher.prepare(input.model, input.control);
+  BOOST_REQUIRE(prepared.ownerRecoverableObjects);
+  BOOST_REQUIRE_EQUAL(prepared.ownerRecoverableObjects->size(), io.payloads.size());
+  BOOST_CHECK(!prepared.rollbackOwned);
+  BOOST_CHECK_EQUAL(prepared.servingLeases.size(), io.payloads.size());
+  const auto metadata = nativeParseJson(prepared.preparedMetadataJson);
+  BOOST_CHECK_EQUAL(metadata.at("fixtureGraphFacts").get<std::string>(), "retained");
+  BOOST_CHECK_EQUAL(metadata.at("protectedObjects").size() + 2, io.payloads.size());
+  BOOST_REQUIRE_GE(io.labels.size(), 2U);
+  BOOST_CHECK_EQUAL(io.labels.back(), "di-canonical-root");
+  BOOST_CHECK_EQUAL(io.labels.at(io.labels.size() - 2), "di-prepared-metadata");
+  const auto root = nativeParseJson(prepared.canonicalManifestJson);
+  BOOST_CHECK_EQUAL(root.at("metadata").at("preparedMetadataDataName").get<std::string>(),
+                    prepared.preparedMetadataDataName);
+  BOOST_CHECK_EQUAL(prepared.preparedMetadataDigest,
+                    nativePlanningDigest(prepared.preparedMetadataJson));
+  for (std::size_t i = 0; i < io.payloads.size(); ++i) {
+    const auto& object = prepared.ownerRecoverableObjects->at(i);
+    BOOST_CHECK_EQUAL(object.objectId, io.labels.at(i));
+    BOOST_CHECK_EQUAL(object.plaintextSize, io.payloads.at(i).size());
+    BOOST_CHECK_EQUAL(object.contentDigest, nativePlanningDigest(
+      io.payloads.at(i).data(), io.payloads.at(i).size()));
+    BOOST_CHECK_EQUAL(object.manifestDigest, nativePlanningDigest("Core transport metadata"));
+    BOOST_CHECK_EQUAL(object.keyReferenceId, nativePlanningDigest("fixture object key reference"));
+    BOOST_CHECK(!object.publicationIdentity.empty());
+    BOOST_CHECK(!object.servingLease);
+    BOOST_CHECK(object.rollbackDataNames.empty());
+    BOOST_CHECK(object.rollbackKeyId.empty());
+    BOOST_CHECK(object.rollbackServiceName.empty());
+    const auto reference = nativeProtectedObjectReference(object);
+    const auto decoded = nativeProtectedObjectFromReference(reference);
+    BOOST_CHECK(decoded.dataPrefix == object.dataPrefix);
+    BOOST_CHECK(decoded.manifestName == object.manifestName);
+    BOOST_CHECK_EQUAL(decoded.manifestDigest, object.manifestDigest);
+    BOOST_CHECK_EQUAL(decoded.publicationIdentity, object.publicationIdentity);
+    BOOST_CHECK(!decoded.servingLease);
+    BOOST_CHECK(decoded.rollbackDataNames.empty());
+    auto changed = reference;
+    changed["secret"] = "unexpected";
+    BOOST_CHECK_THROW(nativeProtectedObjectFromReference(changed), std::invalid_argument);
+    changed = reference;
+    changed["plaintextBytes"] = -1;
+    BOOST_CHECK_THROW(nativeProtectedObjectFromReference(changed), std::invalid_argument);
+    changed = reference;
+    changed["protectionEpoch"] = "shared legacy epoch";
+    BOOST_CHECK_THROW(nativeProtectedObjectFromReference(changed), std::invalid_argument);
+  }
+
+  const auto directory = std::filesystem::temp_directory_path() /
+    ("spec220-protected-index-" + std::to_string(::getpid()));
+  BOOST_REQUIRE(std::filesystem::create_directory(directory));
+  struct Cleanup
+  {
+    std::filesystem::path path;
+    ~Cleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
+  } cleanup{directory};
+  RepositoryPreparedLookupRequest lookup;
+  lookup.serviceName = "/service";
+  lookup.catalogConfigurationJson = nativeCanonicalJson(catalog);
+  lookup.maxPublicationBytes = NativeCanonicalMaterialPublicationMaxBytes;
+  lookup.deadline = input.control.deadline;
+  lookup.requireActive = [] {};
+  std::size_t reads = 0;
+  std::size_t restores = 0;
+  lookup.readProtected = [&](const auto& object, auto maximum, const auto& consume) {
+    ++reads;
+    BOOST_CHECK(object.manifestName.toUri(ndn::name::UriFormat::CANONICAL) == prepared.rootDataName ||
+      object.manifestName.toUri(ndn::name::UriFormat::CANONICAL) == prepared.preparedMetadataDataName);
+    BOOST_CHECK_LE(object.plaintextSize, maximum);
+    for (std::size_t i = 0; i < prepared.ownerRecoverableObjects->size(); ++i) {
+      if (prepared.ownerRecoverableObjects->at(i).manifestName == object.manifestName) {
+        consume(ndn::span<const std::uint8_t>(io.payloads.at(i).data(), io.payloads.at(i).size()));
+        return;
+      }
+    }
+    throw std::runtime_error("fixture original object missing");
+  };
+  lookup.restoreProtected = [&](const auto& object) {
+    ++restores;
+    auto result = object;
+    result.servingLease = std::make_shared<int>(1);
+    return result;
+  };
+  ProtectedPreparationIndex index(directory, ndn::Name("/requester"));
+  BOOST_CHECK(!index.lookup(lookup));
+  for (const auto& object : *prepared.ownerRecoverableObjects) {
+    const auto name = object.manifestName.toUri(ndn::name::UriFormat::CANONICAL);
+    const auto producer = ProtectedBlobManifest::inferProducer(object.manifestName);
+    BOOST_TEST_MESSAGE("INDEX_REFERENCE label=" << object.objectId
+      << " root=" << (name == prepared.rootDataName)
+      << " metadata=" << (name == prepared.preparedMetadataDataName)
+      << " producer=" << (producer ? producer->toUri() : "unresolved")
+      << " bytes=" << object.plaintextSize
+      << " rootBytes=" << prepared.canonicalManifestJson.size()
+      << " metadataBytes=" << prepared.preparedMetadataBytes
+      << " rootDigest=" << (object.contentDigest == prepared.manifestDigest)
+      << " metadataDigest=" << (object.contentDigest == prepared.preparedMetadataDigest));
+  }
+  index.remember(lookup, prepared);
+  BOOST_CHECK_EQUAL(reads, 0U);
+  ProtectedPreparationIndex restarted(directory, ndn::Name("/requester"));
+  const auto hit = restarted.lookup(lookup);
+  BOOST_REQUIRE(hit);
+  BOOST_CHECK_EQUAL(hit->rootDataName, prepared.rootDataName);
+  BOOST_CHECK_EQUAL(hit->canonicalManifestJson, prepared.canonicalManifestJson);
+  BOOST_CHECK_EQUAL(hit->preparedMetadataJson, prepared.preparedMetadataJson);
+  BOOST_CHECK_EQUAL(hit->publishedBytes, 0U);
+  BOOST_CHECK_EQUAL(reads, 2U);
+  BOOST_CHECK_EQUAL(restores, prepared.ownerRecoverableObjects->size());
+  BOOST_CHECK_EQUAL(hit->servingLeases.size(), restores);
+  const auto publishedCount = io.payloads.size();
+  index.remember(lookup, prepared);
+  BOOST_CHECK_EQUAL(io.payloads.size(), publishedCount);
+  const auto durableRoot = directory / "durable";
+  BOOST_REQUIRE(std::filesystem::create_directory(durableRoot));
+  ProtectedPreparationIndex durable(durableRoot, ndn::Name("/requester"));
+  const auto migrated = durable.lookupWithLegacy(lookup, directory);
+  BOOST_REQUIRE(migrated);
+  BOOST_CHECK_EQUAL(migrated->rootDataName, prepared.rootDataName);
+  BOOST_CHECK_EQUAL(migrated->preparedMetadataJson, prepared.preparedMetadataJson);
+  BOOST_CHECK_EQUAL(migrated->publishedBytes, 0U);
+  BOOST_CHECK_EQUAL(io.payloads.size(), publishedCount);
+  // The raw cache may disappear in the next allocation. Its private index is
+  // no longer needed once the verified pointer has moved to durable storage.
+  const auto withoutRawCache = durable.lookupWithLegacy(lookup, directory / "absent-raw-cache");
+  BOOST_REQUIRE(withoutRawCache);
+  BOOST_CHECK_EQUAL(withoutRawCache->manifestDigest, prepared.manifestDigest);
+  ProtectedPreparationIndex missingParent(directory / "absent-parent", ndn::Name("/requester"));
+  BOOST_CHECK_THROW(missingParent.lookupWithLegacy(lookup, directory), RepositorySourceError);
+  BOOST_REQUIRE(restarted.lookup(lookup));
+  ProtectedPreparationIndex otherOwner(durableRoot, ndn::Name("/other-requester"));
+  BOOST_CHECK(!otherOwner.lookupWithLegacy(lookup, directory));
+  auto cancelled = lookup;
+  cancelled.requireActive = [] { throw std::runtime_error("fixture cancelled"); };
+  BOOST_CHECK_THROW(restarted.lookup(cancelled), RepositorySourceError);
+  BOOST_CHECK_THROW(durable.lookupWithLegacy(cancelled, directory), RepositorySourceError);
+  auto expired = lookup;
+  expired.deadline = Clock::now() - std::chrono::seconds(1);
+  BOOST_CHECK_THROW(restarted.lookup(expired), RepositorySourceError);
+  auto altered = catalog;
+  altered["source"]["digest"] = nativePlanningDigest("different source");
+  auto different = lookup;
+  different.catalogConfigurationJson = nativeCanonicalJson(altered);
+  BOOST_CHECK(!restarted.lookup(different));
+  auto corruptRead = lookup;
+  corruptRead.readProtected = [](const auto&, auto, const auto& consume) {
+    const std::vector<std::uint8_t> corrupt{'x'};
+    consume(ndn::span<const std::uint8_t>(corrupt.data(), corrupt.size()));
+  };
+  BOOST_CHECK_THROW(restarted.lookup(corruptRead), RepositorySourceError);
+  auto conflict = lookup;
+  conflict.restoreProtected = [](const auto& object) {
+    auto result = object;
+    result.contentDigest = nativePlanningDigest("different object");
+    result.servingLease = std::make_shared<int>(1);
+    return result;
+  };
+  BOOST_CHECK_THROW(restarted.lookup(conflict), RepositorySourceError);
+  std::filesystem::path pointer;
+  for (const auto& entry : std::filesystem::directory_iterator(directory / "prepared-owner-index")) {
+    if (entry.path().extension() == ".json") {
+      BOOST_REQUIRE(pointer.empty());
+      pointer = entry.path();
+    }
+  }
+  BOOST_REQUIRE(!pointer.empty());
+  std::filesystem::permissions(pointer, std::filesystem::perms::group_read,
+                               std::filesystem::perm_options::add);
+  BOOST_CHECK_THROW(restarted.lookup(lookup), RepositorySourceError);
+  std::filesystem::permissions(pointer,
+    std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+  const auto saved = std::filesystem::path(pointer.string() + ".saved");
+  std::filesystem::rename(pointer, saved);
+  std::filesystem::create_symlink(saved, pointer);
+  BOOST_CHECK_THROW(restarted.lookup(lookup), RepositorySourceError);
+  std::filesystem::remove(pointer);
+  std::filesystem::rename(saved, pointer);
+  {
+    std::ofstream output(pointer, std::ios::trunc);
+    output << "{}";
+  }
+  BOOST_CHECK_THROW(restarted.lookup(lookup), RepositorySourceError);
+  BOOST_REQUIRE(durable.lookupWithLegacy(lookup, directory));
+  // A corrupt authoritative pointer must never fall back to the legacy root.
+  for (const auto& entry : std::filesystem::directory_iterator(durableRoot / "prepared-owner-index")) {
+    if (entry.path().extension() == ".json") {
+      std::ofstream output(entry.path(), std::ios::trunc);
+      output << "{}";
+    }
+  }
+  BOOST_CHECK_THROW(durable.lookupWithLegacy(lookup, directory / "absent-raw-cache"),
+                    RepositorySourceError);
+}
+
+BOOST_AUTO_TEST_CASE(PreparedMetadataOversizeFailsBeforePublication)
+{
+  Input input;
+  TransportFixture io;
+  input.source->preparedMetadataJson.assign(NativeCanonicalMaterialPublicationMaxBytes + 1, 'x');
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    io.transport(), input.options, input.resolver());
+  BOOST_CHECK_THROW(publisher.prepare(input.model, input.control), std::invalid_argument);
+  BOOST_CHECK(io.payloads.empty());
+  BOOST_CHECK_EQUAL(io.beginCalls, 0U);
+}
+
 BOOST_AUTO_TEST_CASE(PreparedReceiptIndexDoesNotRetainServingLeases)
 {
   Input input; TransportFixture io;
@@ -960,6 +1334,8 @@ BOOST_AUTO_TEST_CASE(PublishesOwnedInlineAndExternalSourcesThroughPreparation)
 BOOST_AUTO_TEST_CASE(MaterialBackedPublicationOmitsWholeModelAndPreflightsUnionBudget)
 {
   Input input;
+  // Catalog preparation supplies the recipe's profile to the publication owner.
+  input.options.artifactProfileDigest = input.roles.front().artifactProfileDigest;
   NativeAssemblyControl materialControl{
     input.control.deadline, [&] { input.control.requireActive(); }, 1U << 20, 1U << 20};
   const auto identity = canonicalOnnxSourceIdentity(*input.source, materialControl);
@@ -1021,6 +1397,55 @@ BOOST_AUTO_TEST_CASE(MaterialBackedPublicationOmitsWholeModelAndPreflightsUnionB
                     input.model.canonicalSourceBytes);
   BOOST_REQUIRE(!io.labels.empty());
   BOOST_CHECK_EQUAL(io.labels.back(), "di-canonical-root");
+  auto referenceOnly = receipt;
+  referenceOnly.materialManifest.reset();
+  const auto publications = io.payloads.size();
+  const auto binding = publisher.bindPrepared(input.model, input.candidate, input.roles,
+                                             referenceOnly, input.control);
+  BOOST_CHECK(!binding.modelObjectKeyIndex);
+  BOOST_CHECK_EQUAL(io.payloads.size(), publications);
+}
+
+BOOST_AUTO_TEST_CASE(MaterialPublicationAggregatesSmallReadWindows)
+{
+  Input input;
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromArray(input.source->modelBytes.data(),
+                                    static_cast<int>(input.source->modelBytes.size())));
+  auto* weight = model.mutable_graph()->add_initializer();
+  weight->set_name("publication-bulk-weight");
+  weight->set_data_type(onnx::TensorProto::UINT8);
+  const auto rawBytes = 3 * NativeCanonicalMaterialBundleMaxBytes + 16;
+  weight->add_dims(static_cast<std::int64_t>(rawBytes));
+  weight->set_raw_data(std::string(rawBytes, '\x5a'));
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  input.source->modelBytes.assign(wire.begin(), wire.end());
+  NativeAssemblyControl control{input.control.deadline, [] {}, 8U << 20, 8U << 20};
+  const auto identity = canonicalOnnxSourceIdentity(*input.source, control);
+  input.model.canonicalSourceBytes = wire.size();
+  input.model.canonicalSourceDigest = nativePlanningDigest(wire);
+  input.model.canonicalGraphDigest = identity.graphDigest;
+  input.source->materialManifest = deriveNativeCanonicalMaterialManifest(*input.source, control);
+  for (const auto& payload : input.source->materialManifest->payloads)
+    BOOST_CHECK_LE(payload.byteSize(), NativeCanonicalMaterialBundleMaxBytes);
+
+  TransportFixture io;
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    io.transport(), input.options, input.resolver());
+  const auto receipt = publisher.prepare(input.model, input.control);
+  receipt.validate();
+  std::size_t bundles = 0;
+  for (std::size_t i = 0; i < io.labels.size(); ++i) {
+    if (io.labels[i].find("di-material-bundle-") != 0)
+      continue;
+    ++bundles;
+    BOOST_CHECK_GT(io.payloads[i].size(), NativeCanonicalMaterialBundleMaxBytes);
+    BOOST_CHECK_LE(io.payloads[i].size(), NativeCanonicalMaterialPublicationMaxBytes);
+  }
+  BOOST_CHECK_EQUAL(bundles, 1U);
+  BOOST_CHECK(std::all_of(receipt.materialDataNames.begin(), receipt.materialDataNames.end(),
+    [&] (const auto& name) { return name == receipt.materialDataNames.front(); }));
 }
 
 BOOST_AUTO_TEST_CASE(ExternalInitializerUsesBoundedChunksAndReassemblesAfterSelection)
@@ -1496,6 +1921,121 @@ BOOST_AUTO_TEST_CASE(CausalConvExternalWeightsDoNotSupplyShapeValues)
   }
 }
 
+BOOST_AUTO_TEST_CASE(HybridAttentionExternalParametersDoNotSupplyShapeValues)
+{
+  const Input fixture;
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(30), [] {}, 1U << 20, 1U << 20};
+  for (const std::string op : {"LinearAttentionGate", "GatedRMSNorm", "MRotaryEmbedding"}) {
+    BOOST_TEST_CONTEXT(op) {
+      onnx::ModelProto model;
+      model.set_ir_version(10);
+      model.add_opset_import()->set_version(22);
+      auto* contrib = model.add_opset_import();
+      contrib->set_domain("com.microsoft");
+      contrib->set_version(1);
+      auto* graph = model.mutable_graph();
+      graph->set_name("spec220-hybrid-attention-shape");
+      auto* node = graph->add_node();
+      node->set_domain("com.microsoft");
+      node->set_op_type(op);
+      const auto addValue = [&] (bool input, const char* name, int dtype,
+                                 std::initializer_list<std::int64_t> dims) {
+        auto* value = input ? graph->add_input() : graph->add_output();
+        value->set_name(name);
+        auto* type = value->mutable_type()->mutable_tensor_type();
+        type->set_elem_type(dtype);
+        for (const auto dim : dims) type->mutable_shape()->add_dim()->set_dim_value(dim);
+      };
+      const auto parameter = [&] (const char* name, int dtype,
+                                  std::initializer_list<std::int64_t> dims) {
+        node->add_input(name);
+        auto* tensor = graph->add_initializer();
+        tensor->set_name(name);
+        tensor->set_data_type(dtype);
+        std::size_t bytes = dtype == onnx::TensorProto::FLOAT ? 4 : 2;
+        for (const auto dim : dims) {
+          tensor->add_dims(dim);
+          bytes *= static_cast<std::size_t>(dim);
+        }
+        tensor->set_raw_data(std::string(bytes, '\0'));
+      };
+      addValue(true, "X", onnx::TensorProto::FLOAT16, {1, 2, 8});
+      addValue(false, "Y", onnx::TensorProto::FLOAT16, {1, 2, 8});
+      node->add_input("X");
+      if (op == "LinearAttentionGate") {
+        parameter("dt_bias", onnx::TensorProto::FLOAT, {8});
+        parameter("decay_scale", onnx::TensorProto::FLOAT, {8});
+      }
+      else if (op == "GatedRMSNorm") {
+        parameter("scale", onnx::TensorProto::FLOAT16, {4});
+        addValue(true, "gate", onnx::TensorProto::FLOAT16, {1, 2, 8});
+        node->add_input("gate");
+      }
+      else {
+        addValue(true, "positions", onnx::TensorProto::INT64, {3, 1, 2});
+        node->add_input("positions");
+        parameter("cos_cache", onnx::TensorProto::FLOAT16, {8, 2});
+        parameter("sin_cache", onnx::TensorProto::FLOAT16, {8, 2});
+        auto* heads = node->add_attribute();
+        heads->set_name("num_heads");
+        heads->set_type(onnx::AttributeProto::INT);
+        heads->set_i(2);
+        auto* section = node->add_attribute();
+        section->set_name("mrope_section");
+        section->set_type(onnx::AttributeProto::INTS);
+        for (const auto value : {1, 1, 0}) section->add_ints(value);
+      }
+      node->add_output("Y");
+      const auto makeSource = [&] {
+        std::string wire;
+        if (!model.SerializeToString(&wire)) throw std::runtime_error("fixture serialization");
+        NativeCanonicalSource source;
+        source.modelBytes.assign(wire.begin(), wire.end());
+        return source;
+      };
+      auto descriptor = fixture.model.descriptor;
+      descriptor.precision = "fp16";
+      descriptor = fixture::completeModel(std::move(descriptor));
+      const auto inlined = inspectNativeOnnxSourceGraph(makeSource(), descriptor, control);
+      std::vector<std::uint8_t> backing;
+      for (auto& tensor : *graph->mutable_initializer()) {
+        const auto raw = tensor.raw_data();
+        const auto offset = backing.size();
+        backing.insert(backing.end(), raw.begin(), raw.end());
+        tensor.clear_raw_data();
+        tensor.set_data_location(onnx::TensorProto::EXTERNAL);
+        for (const auto& field : std::map<std::string, std::string>{
+               {"location", "weights.bin"}, {"offset", std::to_string(offset)},
+               {"length", std::to_string(raw.size())}}) {
+          auto* entry = tensor.add_external_data();
+          entry->set_key(field.first);
+          entry->set_value(field.second);
+        }
+      }
+      auto source = makeSource();
+      source.initializerBytes = backing;
+      const auto external = inspectNativeOnnxSourceGraph(source, descriptor, control);
+      BOOST_CHECK_EQUAL(external.graphMetadataJson, inlined.graphMetadataJson);
+      BOOST_CHECK_EQUAL(external.canonicalIdentity.graphDigest, inlined.canonicalIdentity.graphDigest);
+      BOOST_CHECK_EQUAL(external.canonicalIdentity.initializerDigest,
+                        inlined.canonicalIdentity.initializerDigest);
+      for (const bool foreignDomain : {false, true}) {
+        model.mutable_opset_import(1)->set_version(foreignDomain ? 1 : 2);
+        if (foreignDomain) {
+          model.mutable_opset_import(1)->set_domain("fixture.unknown");
+          node->set_domain("fixture.unknown");
+        }
+        source.modelBytes = makeSource().modelBytes;
+        BOOST_CHECK_EXCEPTION(inspectNativeOnnxSourceGraph(source, descriptor, control),
+          std::runtime_error, [] (const auto& error) {
+            return std::string(error.what()).find("SHAPE_INPUT_UNSUPPORTED") != std::string::npos;
+          });
+      }
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(SingleInitializerBeyondProtobufLimitStreamsIntoExternalFile)
 {
   struct GeneratedRange final : NativeCanonicalByteRangeSource
@@ -1646,6 +2186,77 @@ BOOST_AUTO_TEST_CASE(InitializerFileOwnerSurvivesUnlinkAndRejectsChangedOrInvali
   errno = 0;
   BOOST_CHECK_EQUAL(::fcntl(ownedFd, F_GETFD), -1);
   BOOST_CHECK_EQUAL(errno, EBADF);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedInitializerSnapshotReusesDigestAndKeepsCancellationAndBounds)
+{
+  char path[] = "/var/tmp/ndnsf-di-owned-initializer-XXXXXX";
+  const int fd = ::mkstemp(path);
+  BOOST_REQUIRE_GE(fd, 0);
+  const std::vector<std::uint8_t> bytes(2U << 20, 17);
+  BOOST_REQUIRE_EQUAL(::write(fd, bytes.data(), bytes.size()), bytes.size());
+  BOOST_REQUIRE_EQUAL(::close(fd), 0);
+  struct Cleanup {
+    const char* path;
+    ~Cleanup() { ::unlink(path); }
+  } cleanup{path};
+  const int probe = ::open(path, O_RDONLY | O_CLOEXEC);
+  BOOST_REQUIRE_GE(probe, 0);
+  const bool supportsLease = ::fcntl(probe, F_SETLEASE, F_RDLCK) == 0;
+  if (supportsLease) BOOST_REQUIRE_EQUAL(::fcntl(probe, F_SETLEASE, F_UNLCK), 0);
+  BOOST_REQUIRE_EQUAL(::close(probe), 0);
+  bool cancelled = false;
+  NativeAssemblyControl control{Clock::now() + std::chrono::seconds(30), [&] {
+    if (cancelled) throw std::runtime_error("owned snapshot cancelled");
+  }, bytes.size(), bytes.size()};
+  const auto expected = nativePlanningDigest(bytes.data(), bytes.size());
+  NativeCanonicalSource source;
+  source.initializerRangeSource = takeNativeCanonicalInitializerFile(
+    path, bytes.size(), expected, control);
+  BOOST_CHECK(!std::filesystem::exists(path));
+  const auto readCharacters = [] {
+    std::ifstream input("/proc/self/io");
+    std::string name;
+    std::uint64_t count;
+    while (input >> name >> count) if (name == "rchar:") return count;
+    throw std::runtime_error("native test I/O counters unavailable");
+  };
+  const auto before = readCharacters();
+  for (int i = 0; i < 3; ++i)
+    BOOST_CHECK_EQUAL(nativeCanonicalInitializerDigest(source, control), expected);
+  const auto delta = readCharacters() - before;
+  if (supportsLease) BOOST_CHECK_LT(delta, bytes.size());
+  BOOST_TEST_MESSAGE("OWNED_INITIALIZER_DIGEST_IO lease=" << supportsLease
+                     << " bytes=" << bytes.size() << " repeat_rchar=" << delta);
+  cancelled = true;
+  BOOST_CHECK_THROW(nativeCanonicalInitializerDigest(source, control), std::runtime_error);
+  cancelled = false;
+  control.maxSourceBytes = bytes.size() - 1;
+  BOOST_CHECK_THROW(nativeCanonicalInitializerDigest(source, control), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedInitializerWithOutstandingWriterRetainsByteVerification)
+{
+  char path[] = "/var/tmp/ndnsf-di-writable-initializer-XXXXXX";
+  const int fd = ::mkstemp(path);
+  BOOST_REQUIRE_GE(fd, 0);
+  struct Cleanup {
+    int fd;
+    const char* path;
+    ~Cleanup() { ::close(fd); ::unlink(path); }
+  } cleanup{fd, path};
+  const std::vector<std::uint8_t> bytes{3, 7, 11, 19, 23};
+  BOOST_REQUIRE_EQUAL(::write(fd, bytes.data(), bytes.size()), bytes.size());
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(30), [] {}, 1024, 1024};
+  const auto expected = nativePlanningDigest(bytes.data(), bytes.size());
+  NativeCanonicalSource source;
+  source.initializerRangeSource = takeNativeCanonicalInitializerFile(
+    path, bytes.size(), expected, control);
+  BOOST_CHECK(!std::filesystem::exists(path));
+  const std::uint8_t changed = 31;
+  BOOST_REQUIRE_EQUAL(::pwrite(fd, &changed, 1, 0), 1);
+  BOOST_CHECK_NE(nativeCanonicalInitializerDigest(source, control), expected);
 }
 
 BOOST_AUTO_TEST_CASE(RangeFileMutationAfterAdmissionCannotPublishStaleMaterialDigest)

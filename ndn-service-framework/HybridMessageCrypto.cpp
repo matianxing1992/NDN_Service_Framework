@@ -1,9 +1,12 @@
 #include "HybridMessageCrypto.hpp"
 #include "utils.hpp"
 #include "ProducerDataNaming.hpp"
+#include "ProtectedBlobManifest.hpp"
 #include <ndn-cxx/util/segmenter.hpp>
 #include <ndn-cxx/util/segment-fetcher.hpp>
 #include <ndn-cxx/util/scheduler.hpp>
+#include <ndn-cxx/util/scope.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/scope_exit.hpp>
@@ -16,6 +19,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -29,6 +33,7 @@ randomBuffer(size_t size)
 {
     ndn::Buffer buffer(size);
     if (RAND_bytes(buffer.data(), static_cast<int>(buffer.size())) != 1) {
+        OPENSSL_cleanse(buffer.data(), buffer.size());
         throw std::runtime_error("RAND_bytes failed");
     }
     return buffer;
@@ -52,6 +57,20 @@ wrappedCipherDigest(ndn::span<const uint8_t> cipher)
     if (!SHA256(cipher.data(), cipher.size(), digest))
         throw std::runtime_error("hybrid wrapper digest failed");
     return hexEncode(ndn::span<const uint8_t>(digest, sizeof(digest)));
+}
+
+HybridMessageKey
+createMessageKey(const ndn::Name& serviceName, const ndn::Name& senderPrefix,
+                 const std::string& accessAttribute)
+{
+  const auto epochBytes = randomBuffer(8);
+  HybridMessageKey key;
+  key.epochId = hexEncode(ndn::span<const uint8_t>(epochBytes.data(), epochBytes.size()));
+  key.keyName = makeHybridMessageKeyName(serviceName, senderPrefix, accessAttribute, key.epochId);
+  key.keyId = key.keyName.toUri(ndn::name::UriFormat::CANONICAL);
+  key.createdAt = std::chrono::steady_clock::now();
+  key.key = randomBuffer(HybridMessageCrypto::MESSAGE_KEY_SIZE);
+  return key;
 }
 
 bool
@@ -116,15 +135,7 @@ HybridMessageCrypto::getOrCreateSendKey(const ndn::Name& serviceName,
     }
 
     if (rotate) {
-        const auto epochBytes = randomBuffer(8);
-        HybridMessageKey key;
-        key.epochId = hexEncode(ndn::span<const uint8_t>(epochBytes.data(), epochBytes.size()));
-        key.key = randomBuffer(MESSAGE_KEY_SIZE);
-        key.createdAt = now;
-        key.uses = 0;
-        key.keyName = makeHybridMessageKeyName(serviceName, senderPrefix,
-                                               accessAttribute, key.epochId);
-        key.keyId = key.keyName.toUri(ndn::name::UriFormat::CANONICAL);
+        auto key = createMessageKey(serviceName, senderPrefix, accessAttribute);
         it = m_sendKeys.insert_or_assign(scope, key).first;
         m_sendKeyServices[scope] = serviceName;
         m_wrappedSendKeys.erase(key.keyId);
@@ -135,6 +146,18 @@ HybridMessageCrypto::getOrCreateSendKey(const ndn::Name& serviceName,
 
     ++it->second.uses;
     return it->second;
+}
+
+HybridMessageKey
+HybridMessageCrypto::createIsolatedSendKey(const ndn::Name& serviceName,
+                                           const ndn::Name& senderPrefix,
+                                           const std::string& accessAttribute,
+                                           HybridCryptoCounters& counters)
+{
+  auto key = createMessageKey(serviceName, senderPrefix, accessAttribute);
+  key.uses = 1;
+  ++counters.hybrid_key_epoch_created;
+  return key;
 }
 
 HybridMessageKey
@@ -818,6 +841,7 @@ hybridAesGcmDecrypt(const ndn::Buffer& key,
     }
     EVP_CIPHER_CTX_free(ctx);
     if (!ok) {
+        if (!plaintext.empty()) OPENSSL_cleanse(plaintext.data(), plaintext.size());
         plaintext.clear();
         return false;
     }
@@ -918,6 +942,58 @@ secureStatusAssociatedData(const ndn::Name& dataName,
       requesterIdentity.toUri(ndn::name::UriFormat::CANONICAL) + "|" + providerIdentity.toUri(ndn::name::UriFormat::CANONICAL) + "|" +
       std::to_string(attempt) + "|" + hybridCompactKeyId(keyId) + "|" + epochId;
     return ndn::Buffer(reinterpret_cast<const uint8_t*>(text.data()), text.size());
+}
+
+std::string
+protectedBlobEnvelopeBindingError(const ProtectedBlobManifest& manifest,
+                                  const ndn::Name& service,
+                                  const HybridMessageEnvelope& envelope)
+{
+  if (envelope.getEpochId() != manifest.protectionEpoch)
+    return "manifest protection epoch mismatch";
+  try {
+    if (hybridCompactKeyId(manifest.keyIdentifier) != hybridCompactKeyId(envelope.getKeyId()))
+      return "manifest key identifier mismatch";
+    const auto matches = [&](ndn::name::UriFormat format) {
+      const auto text = manifest.keyIdentifier + "|" + envelope.getEpochId() + "|" +
+        service.toUri(format) + "|" + manifest.authorizationScope;
+      return "sha256:" + wrappedCipherDigest(ndn::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(text.data()), text.size())) == manifest.keyReferenceId;
+    };
+    if (!matches(ndn::name::UriFormat::CANONICAL) && !matches(ndn::name::UriFormat::ALTERNATE))
+      return "manifest key reference mismatch";
+  }
+  catch (const std::exception&) {
+    return "manifest key identifier mismatch";
+  }
+  return {};
+}
+
+bool
+decryptProtectedBlobPayload(const ndn::Name& dataPrefix, const ndn::Name& service,
+                            const HybridMessageEnvelope& envelope, const ndn::Buffer& key,
+                            ndn::Buffer& plaintext, bool& contentMismatch,
+                            std::optional<std::uint64_t> expectedBytes)
+{
+  contentMismatch = false;
+  const auto aadText = dataPrefix.toUri(ndn::name::UriFormat::CANONICAL) + "|" +
+    envelope.getMessageType() + "|" + service.toUri(ndn::name::UriFormat::CANONICAL);
+  const ndn::Buffer aad(aadText.begin(), aadText.end());
+  if (!hybridAesGcmDecrypt(key, envelope, aad, plaintext)) {
+    if (!plaintext.empty()) OPENSSL_cleanse(plaintext.data(), plaintext.size());
+    plaintext.clear();
+    return false;
+  }
+  ndn::util::Sha256 hash;
+  hash.update(ndn::span<const std::uint8_t>(plaintext.data(), plaintext.size()));
+  const auto digest = hash.computeDigest();
+  contentMismatch = dataPrefix.size() < 4 ||
+    dataPrefix[-4] != ndn::name::Component(ndn::span<const std::uint8_t>(
+      digest->data(), digest->size())) || (expectedBytes && plaintext.size() != *expectedBytes);
+  if (!contentMismatch) return true;
+  if (!plaintext.empty()) OPENSSL_cleanse(plaintext.data(), plaintext.size());
+  plaintext.clear();
+  return false;
 }
 
 std::string
@@ -1042,7 +1118,8 @@ encryptRecipientAssignment(ndn::span<const uint8_t> plaintext,
 {
     if (plaintext.size() * 2 > DeploymentControlMessage::MAX_FIELD_VALUE)
         throw std::invalid_argument("recipient assignment exceeds inline bound");
-    const auto key = randomBuffer(HybridMessageCrypto::MESSAGE_KEY_SIZE);
+    auto key = randomBuffer(HybridMessageCrypto::MESSAGE_KEY_SIZE);
+    auto eraseKey = ndn::make_scope_exit([&] { OPENSSL_cleanse(key.data(), key.size()); });
     const auto encrypted = hybridAesGcmEncrypt(key, plaintext, associatedData);
     const auto wrapped = wrapSelectionGatedInputKey(key, recipientPublicKey);
     uint8_t aadDigest[SHA256_DIGEST_LENGTH];
@@ -1101,9 +1178,12 @@ decryptRecipientAssignment(const RecipientEncryptedAssignment& encrypted,
     SHA256(associatedData.data(), associatedData.size(), aadDigest);
     if (encrypted.getField("aadDigest") != hexEncode(
           ndn::span<const uint8_t>(aadDigest, sizeof(aadDigest)))) return false;
-    const auto key = unwrapSelectionGatedInputKey(
+    auto key = unwrapSelectionGatedInputKey(
       selectionGatedUnhex(encrypted.getField("wrappedAssignmentKey")),
       expectedRecipientCertName, keyChain);
+    auto eraseKey = ndn::make_scope_exit([&] {
+      if (!key.empty()) OPENSSL_cleanse(key.data(), key.size());
+    });
     HybridMessageEnvelope envelope;
     envelope.setNonce(selectionGatedUnhex(encrypted.getField("nonce")));
     envelope.setCipherText(selectionGatedUnhex(encrypted.getField("ciphertext")));
@@ -1111,8 +1191,11 @@ decryptRecipientAssignment(const RecipientEncryptedAssignment& encrypted,
     if (!hybridAesGcmDecrypt(key, envelope, associatedData, plaintext)) return false;
     uint8_t payloadDigest[SHA256_DIGEST_LENGTH];
     SHA256(plaintext.data(), plaintext.size(), payloadDigest);
-    return encrypted.getField("assignmentDigest") == hexEncode(
-      ndn::span<const uint8_t>(payloadDigest, sizeof(payloadDigest)));
+    if (encrypted.getField("assignmentDigest") == hexEncode(
+          ndn::span<const uint8_t>(payloadDigest, sizeof(payloadDigest)))) return true;
+    if (!plaintext.empty()) OPENSSL_cleanse(plaintext.data(), plaintext.size());
+    plaintext.clear();
+    return false;
 }
 
 } // namespace ndn_service_framework

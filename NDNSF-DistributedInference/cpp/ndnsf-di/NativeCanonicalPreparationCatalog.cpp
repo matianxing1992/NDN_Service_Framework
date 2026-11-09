@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 
 #include <atomic>
 #include <limits>
@@ -207,6 +208,7 @@ NativeCanonicalPreparationCatalog::releaseTransientSourceBytes() const
     // allocation/termination inside a noexcept cleanup path.
     auto reduced = std::make_shared<NativeCanonicalSource>();
     reduced->materialManifest = source->materialManifest;
+    reduced->preparedMetadataJson = source->preparedMetadataJson;
     std::atomic_store_explicit(&item.second.source,
       std::shared_ptr<const NativeCanonicalSource>(std::move(reduced)),
       std::memory_order_release);
@@ -264,12 +266,13 @@ std::shared_ptr<NativeRequestPreparation> NativeCanonicalPreparationCatalog::mak
 std::shared_ptr<NativeRequestPreparation>
 NativeCanonicalPreparationCatalog::makePreparation(
   std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
-  std::optional<NativePreparedCanonicalPublication> preparedPublication) const
+  std::optional<NativePreparedCanonicalPublication> preparedPublication,
+  std::shared_ptr<const NativeModelObjectKeyIndexV1> modelObjectKeyIndex) const
 {
   return makePreparation([user = std::move(user), serviceName = std::move(serviceName)](
     auto options, auto source) {
     return NativeCanonicalArtifactPublisher(user, serviceName, std::move(options), std::move(source));
-  }, std::move(preparedPublication));
+  }, std::move(preparedPublication), std::move(modelObjectKeyIndex));
 }
 
 NativePreparedCanonicalPublication
@@ -303,7 +306,8 @@ NativeCanonicalPreparationCatalog::makePreparation(PublisherFactory factory) con
 
 std::shared_ptr<NativeRequestPreparation>
 NativeCanonicalPreparationCatalog::makePreparation(
-  PublisherFactory factory, std::optional<NativePreparedCanonicalPublication> preparedPublication) const
+  PublisherFactory factory, std::optional<NativePreparedCanonicalPublication> preparedPublication,
+  std::shared_ptr<const NativeModelObjectKeyIndexV1> modelObjectKeyIndex) const
 {
   const auto state = m_state;
   auto publishers = std::make_shared<std::map<std::string, NativeCanonicalArtifactPublisher>>();
@@ -320,6 +324,8 @@ NativeCanonicalPreparationCatalog::makePreparation(
   }
   if (preparedPublication)
     preparedPublication->validate();
+  if (modelObjectKeyIndex && !preparedPublication)
+    throw std::invalid_argument("stored object key index requires a prepared publication");
   return std::shared_ptr<NativeRequestPreparation>(new NativeRequestPreparation(state->adapters,
     NativeRequestPreparation::OwnedInspection{
       [state](const NativePreparedInput& input, const NativeModelDescriptor& model) {
@@ -332,17 +338,32 @@ NativeCanonicalPreparationCatalog::makePreparation(
         return false;
       }
     },
-    [state, publishers, preparedPublication = std::move(preparedPublication)](
+    [state, publishers, preparedPublication = std::move(preparedPublication),
+     modelObjectKeyIndex = std::move(modelObjectKeyIndex)](
       const auto& model, const auto& candidate, const auto& roles, const auto& control) {
       control.requireActive();
       state->find(model);
+      NativeArtifactBinding binding;
       if (preparedPublication)
         // makePreparation() validated the receipt before this const capture;
         // keep request-time binding limited to request/model/role checks and
         // root consistency rather than rescanning material receipts.
-        return publishers->at(model.descriptor.canonicalJson()).bindPreparedAfterValidation(
+        binding = publishers->at(model.descriptor.canonicalJson()).bindPreparedAfterValidation(
           model, candidate, roles, *preparedPublication, control);
-      return publishers->at(model.descriptor.canonicalJson())(model, candidate, roles, control);
+      else
+        binding = publishers->at(model.descriptor.canonicalJson())(model, candidate, roles, control);
+      if (modelObjectKeyIndex) {
+        binding.modelObjectKeyIndex = modelObjectKeyIndex;
+        // Stored ciphertext is admitted and opened by DI with the current object-key lease.
+        // Core's legacy artifact prefetch cannot decode that transport.
+        if (modelObjectKeyIndex->storedPublication) {
+          binding.artifactPrefetchRequired = false;
+          // Without Core's alias cache, the assignment names the original stored root.
+          for (auto& artifact : binding.artifactNameByRole)
+            artifact.second = binding.sourceByRole.at(artifact.first);
+        }
+      }
+      return binding;
     },
     [state](const auto& model, const auto& candidate, const auto& control) {
       return state->find(model).roles.prepare(model, candidate, control);

@@ -365,6 +365,40 @@ BOOST_AUTO_TEST_CASE(OwnedCudaQueryReadsFreshValuesAndDrainsItsSession)
   config.observeResources = {};
   BOOST_CHECK_EQUAL(count(1), 1U);
   reset();
+  {
+    auto prepared = std::make_shared<CudaDeviceMemoryQuery>(0);
+    BOOST_REQUIRE_EQUAL(::setenv(key, "memory-device-missing", 1), 0);
+    BOOST_CHECK_THROW(prepared->prepare(), std::runtime_error);
+    BOOST_CHECK_EQUAL(count(0), 1U);
+    BOOST_CHECK_EQUAL(count(1), 1U);
+    BOOST_REQUIRE_EQUAL(::unsetenv(key), 0);
+    prepared->prepare();
+    prepared->prepare();
+    BOOST_CHECK_EQUAL(count(0), 2U);
+    BOOST_CHECK_EQUAL(count(2), 2U);
+    BOOST_CHECK_EQUAL(count(3), 0U);
+    auto preparedConfig = providerConfig(signedOffers);
+    preparedConfig.backends = {"onnxruntime-cuda"};
+    preparedConfig.devices = {"cuda:0"};
+    preparedConfig.observeResources = [prepared] (
+        std::uint64_t now, const std::shared_ptr<NativeWorkStatistics>& work) {
+      return std::vector<NativeDeviceResourceObservationV3>{prepared->query(now, 4, 0, work)};
+    };
+    std::optional<NativeWorkStatisticsSnapshot> offerWork;
+    preparedConfig.workObserver = [&] (const std::string&, const auto& work) { offerWork = work; };
+    const auto offered = issueNativeProviderOfferV3(requestWire(), preparedConfig, 5000);
+    BOOST_REQUIRE(offered && offered->status);
+    BOOST_REQUIRE(offerWork && offerWork->complete);
+    BOOST_CHECK_EQUAL(offerWork->phases.count("gpu-resource-initialize"), 0U);
+    BOOST_CHECK_EQUAL(count(3), 1U);
+    BOOST_REQUIRE_EQUAL(::setenv(key, "memory-low", 1), 0);
+    BOOST_CHECK_EQUAL(prepared->query(5001, 5, 0).freeMemoryMb, 50U);
+    BOOST_CHECK_EQUAL(count(0), 2U);
+    BOOST_CHECK_EQUAL(count(3), 2U);
+    BOOST_REQUIRE_EQUAL(::unsetenv(key), 0);
+  }
+  BOOST_CHECK_EQUAL(count(1), 2U);
+  reset();
   const auto recoveryWork = makeNativeWorkStatistics();
   BOOST_REQUIRE(recoveryWork);
   BOOST_REQUIRE_EQUAL(::setenv(key, "memory-device-missing", 1), 0);

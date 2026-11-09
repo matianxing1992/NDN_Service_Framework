@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include <ndn-cxx/name.hpp>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <algorithm>
@@ -11,6 +12,15 @@ namespace {
 std::runtime_error reject(const char* message)
 {
   return std::runtime_error(std::string("DI_PROTECTED_GRANT_REJECTED: ") + message);
+}
+std::string
+identityKey(const std::string& identity)
+{
+  if (identity.empty() || identity.front() != '/')
+    throw reject("identity requires an absolute NDN name");
+  const ndn::Name name(identity);
+  if (name.empty()) throw reject("requester identity is empty");
+  return name.toUri(ndn::name::UriFormat::CANONICAL);
 }
 bool digest(const std::string& v)
 {
@@ -50,18 +60,32 @@ NativeSignedGrantRequest NativeSignedGrantRequest::sign(EVP_PKEY& key) const
 NativeArtifactGrantIssuer::NativeArtifactGrantIssuer(NativeGrantIssuerConfig config)
   : m_config(std::move(config))
 {
-  if (m_config.authorityIdentity.empty() || m_config.requesterIdentity.empty() ||
-      m_config.authorityIdentity == m_config.requesterIdentity || m_config.keyId.empty() ||
+  if (!m_config.requesterIdentity.empty() || m_config.requesterPublicKey) {
+    if (!m_config.requesterPublicKeys.empty() || m_config.requesterIdentity.empty() ||
+        !m_config.requesterPublicKey)
+      throw reject("use either the requester registry or a complete legacy requester");
+    m_config.requesterPublicKeys.emplace(m_config.requesterIdentity, m_config.requesterPublicKey);
+  }
+  if (m_config.authorityIdentity.empty() || m_config.keyId.empty() ||
       m_config.protectionEpoch.empty() || !m_config.authorityPrivateKey ||
-      !m_config.requesterPublicKey || !m_config.contentKey ||
+      m_config.requesterPublicKeys.empty() || m_config.requesterPublicKeys.size() > 4096 ||
+      !m_config.contentKey ||
       EVP_PKEY_id(m_config.authorityPrivateKey.get()) != EVP_PKEY_ED25519 ||
-      EVP_PKEY_id(m_config.requesterPublicKey.get()) != EVP_PKEY_ED25519 ||
-      EVP_PKEY_cmp(m_config.authorityPrivateKey.get(), m_config.requesterPublicKey.get()) == 1 ||
       m_config.allowedModelManifests.empty() || m_config.allowedResidencyTiers.empty() ||
       m_config.allowedResidencyTiers.count("") ||
       std::any_of(m_config.allowedModelManifests.begin(), m_config.allowedModelManifests.end(),
                   [](const auto& value) { return !digest(value); }))
     throw reject("operator issuer configuration is incomplete or not independent");
+  std::map<std::string, std::shared_ptr<EVP_PKEY>> requesters;
+  for (const auto& [identity, key] : m_config.requesterPublicKeys) {
+    if (identityKey(identity) == identityKey(m_config.authorityIdentity) || !key ||
+        EVP_PKEY_id(key.get()) != EVP_PKEY_ED25519 ||
+        EVP_PKEY_cmp(m_config.authorityPrivateKey.get(), key.get()) == 1)
+      throw reject("requester registry entry is incomplete or not independent");
+    if (!requesters.emplace(identityKey(identity), key).second)
+      throw reject("duplicate requester identity");
+  }
+  m_config.requesterPublicKeys = std::move(requesters);
   // Fail configuration before any request can consume a content key.
   for (const auto& entry : m_config.recipientPublicKeys)
     if (entry.first.empty() || !entry.second)
@@ -77,6 +101,17 @@ NativeArtifactGrantIssuer::NativeArtifactGrantIssuer(NativeGrantIssuerConfig con
   detail::signNativeGrantBytes(*m_config.authorityPrivateKey, "issuer-key-preflight");
 }
 
+bool
+NativeArtifactGrantIssuer::isRequesterAuthorized(const std::string& identity) const noexcept
+{
+  try {
+    return m_config.requesterPublicKeys.count(identityKey(identity)) != 0;
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
+
 NativeKeyGrant NativeArtifactGrantIssuer::issue(const NativeSignedGrantRequest& request,
   std::uint64_t nowMs, std::uint64_t expiresAtMs) const
 {
@@ -87,13 +122,14 @@ NativeKeyGrant NativeArtifactGrantIssuer::issue(const NativeSignedGrantRequest& 
   std::uint64_t nowMs, std::uint64_t expiresAtMs, const std::string& publishedManifestJson) const
 {
   const auto bytes = request.signingBytes();
-  if (request.requesterIdentity != m_config.requesterIdentity ||
-      request.providerIdentity == request.requesterIdentity ||
+  const auto requester = m_config.requesterPublicKeys.find(identityKey(request.requesterIdentity));
+  if (requester == m_config.requesterPublicKeys.end() ||
+      identityKey(request.providerIdentity) == identityKey(request.requesterIdentity) ||
       request.protectionEpoch != m_config.protectionEpoch ||
       expiresAtMs <= nowMs || request.issuedAtMs > nowMs ||
       std::any_of(request.allowedResidencyTiers.begin(), request.allowedResidencyTiers.end(),
         [&](const auto& tier) { return !m_config.allowedResidencyTiers.count(tier); }) ||
-      !detail::verifyNativeGrantBytes(*m_config.requesterPublicKey, bytes, request.requesterSignature))
+      !detail::verifyNativeGrantBytes(*requester->second, bytes, request.requesterSignature))
     throw reject("request signature or operator policy rejected");
   std::string keyManifest = request.modelManifestDigest;
   if (!m_config.allowedModelManifests.count(keyManifest)) {

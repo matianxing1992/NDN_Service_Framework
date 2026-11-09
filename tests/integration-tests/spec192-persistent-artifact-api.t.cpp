@@ -4,6 +4,9 @@
 #include "ndnsf-integration-fixture.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-packets.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-publication.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-repository.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
@@ -11,12 +14,15 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
+#include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
 #include "NDNSF-DistributedRepo/src/face-data-reference-fetcher.hpp"
 #include "ndn-service-framework/NDNSFMessages.hpp"
 #include "ndn-service-framework/utils.hpp"
 
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
+#include <ndn-cxx/util/signal/scoped-connection.hpp>
+#include <ndn-cxx/util/scope.hpp>
 #include <ndn-svs/security-options.hpp>
 #include <ndn-svs/svspubsub.hpp>
 
@@ -2696,6 +2702,21 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
 BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticatedRepoServices)
 {
   TempRoot temporary;
+  std::vector<std::pair<const char*, std::optional<std::string>>> previousEnvironment;
+  auto restoreEnvironment = ndn::make_scope_exit([&] {
+    for (const auto& [name, value] : previousEnvironment) {
+      if (value) ::setenv(name, value->c_str(), 1);
+      else ::unsetenv(name);
+    }
+  });
+  for (const auto& [name, directory] : std::vector<std::pair<const char*, const char*>>{
+         {"NDNSF_DURABLE_KEY_REFERENCE_DIR", "model-owner-keys"},
+         {"NDNSF_REQUEST_LARGE_DATA_DIR", "model-staging"}}) {
+    const char* previous = std::getenv(name);
+    previousEnvironment.emplace_back(name, previous ? std::optional<std::string>(previous) :
+                                                     std::nullopt);
+    BOOST_REQUIRE_EQUAL(::setenv(name, (temporary.path() / directory).c_str(), 1), 0);
+  }
   const ndn::Name servicePrefix("/NDNSF/Repo/owner-client");
   BootstrapProfile profile;
   profile.groupPrefix = "/ndnsf/spec221/client/group";
@@ -3048,6 +3069,166 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   BOOST_CHECK_EQUAL(repo::RepoUserStorageDeleteReply::fromJson(responseString(response)).state,
     "DELETED");
   BOOST_CHECK(node->core().list().empty());
+  // The DI helper consumes the existing protected owner receipt and the same
+  // authenticated RepoClient path; it does not prepare or re-sign model Data.
+  repo::StorageCapability sourceCapability;
+  sourceCapability.repoNode = "/logical/model-source";
+  sourceCapability.freeBytes = 4U << 20;
+  auto sourceRepo = std::make_shared<repo::RepoCore>(sourceCapability,
+    repo::makeFilesystemRepoStore((temporary.path() / "model-source").string(),
+                                 1U << 20, 1U << 20));
+  auto sourceStore = std::make_shared<repo::RepoEncryptedLargeDataStore>(sourceRepo);
+  sourceWriter->setEncryptedLargeDataRangeStore(sourceStore);
+  const auto modelDeadline = std::chrono::steady_clock::now() + 90s;
+  const auto request = runWithFacePump(environment, [&] {
+    auto completion = std::make_shared<std::promise<PreparedServiceRequest>>();
+    auto result = completion->get_future();
+    sourceWriter->postToIo([&, completion] {
+      try { completion->set_value(sourceWriter->prepareServiceRequest(
+        repoService(servicePrefix, "INSERT").toUri())); }
+      catch (...) { completion->set_exception(std::current_exception()); }
+    });
+    return result.get();
+  });
+  const auto publishModelObject = [&](const std::string& label, const std::string& payload) {
+    LargeDataPublishOptions options;
+    options.retention = EncryptedLargeDataRetention::Durable;
+    options.publicationIdentity = di::nativePlanningDigest(label);
+    auto result = runWithFacePump(environment, [&] {
+      return sourceWriter->publishOwnerRecoverableLargeDataFromWorker(request,
+        std::vector<std::uint8_t>(payload.begin(), payload.end()), label,
+        ndn::time::milliseconds(1000),
+        options, modelDeadline);
+    });
+    BOOST_REQUIRE_MESSAGE(result.success, result.errorMessage);
+    return result;
+  };
+  const auto sourceObject = publishModelObject("model-body", std::string(16000, 'w'));
+  const std::string metadataJson = "{\"schema\":\"ndnsf-di-prepared-metadata-v1\"}";
+  const auto metadataObject = publishModelObject("model-metadata", metadataJson);
+  const std::string rootJson = "{\"model\":\"fixture\"}";
+  const auto rootObject = publishModelObject("model-root", rootJson);
+  di::NativePreparedCanonicalPublication publication;
+  publication.sourceDataName = sourceObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL);
+  publication.rootDataName = rootObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL);
+  publication.canonicalManifestJson = rootJson;
+  publication.manifestDigest = rootObject.contentDigest;
+  publication.preparedMetadataJson = metadataJson;
+  publication.preparedMetadataDataName = metadataObject.manifestName.toUri(
+    ndn::name::UriFormat::CANONICAL);
+  publication.preparedMetadataDigest = metadataObject.contentDigest;
+  publication.preparedMetadataBytes = metadataJson.size();
+  publication.ownerRecoverableObjects = std::make_shared<const std::vector<LargeDataPublishResult>>(
+    std::vector<LargeDataPublishResult>{rootObject, sourceObject, metadataObject});
+  const auto storeModel = [&](const auto& value, const auto& current) {
+    return runWithFacePump(environment, [&] {
+      return di::nativeStorePreparedModelPublication(*sourceWriter, producer, *sourceStore,
+        value, target, modelDeadline, current);
+    });
+  };
+  const std::function<void()> active = [] {};
+  auto incomplete = publication;
+  incomplete.ownerRecoverableObjects = std::make_shared<const std::vector<LargeDataPublishResult>>(
+    std::vector<LargeDataPublishResult>{rootObject, metadataObject});
+  BOOST_CHECK_THROW(storeModel(incomplete, active), std::runtime_error);
+  BOOST_CHECK(node->core().list().empty());
+  BOOST_CHECK_THROW(storeModel(publication, std::function<void()>([] {
+    throw std::runtime_error("cancelled model storage");
+  })), std::runtime_error);
+  BOOST_CHECK(node->core().list().empty());
+  BOOST_CHECK_THROW(storeModel(publication, std::function<void()>([&] {
+    if (node->core().has(metadataObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL)))
+      throw std::runtime_error("cancelled before model root");
+  })), std::runtime_error);
+  BOOST_CHECK(node->core().has(sourceObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL)));
+  BOOST_CHECK(!node->core().has(rootObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL)));
+  const auto storedModel = storeModel(publication, active);
+  BOOST_CHECK(storedModel.rootName == rootObject.manifestName);
+  BOOST_CHECK_EQUAL(storedModel.protectedObjects, 3U);
+  BOOST_CHECK_EQUAL(storedModel.packetGroups, 4U);
+  BOOST_CHECK_GT(storedModel.wireBytes, 16000U);
+  BOOST_CHECK_EQUAL(node->core().list().size(), 4U);
+  const repo::RepoArtifactTarget canonicalTarget{
+    ndn::Name(target.repoNode).toUri(ndn::name::UriFormat::CANONICAL),
+    ndn::Name(target.providerIdentity).toUri(ndn::name::UriFormat::CANONICAL),
+    ndn::Name(target.servicePrefix).toUri(ndn::name::UriFormat::CANONICAL)};
+  const auto repeatedModel = runWithFacePump(environment, [&] {
+    return di::nativeStorePreparedModelPublication(*sourceWriter, producer, *sourceStore,
+      publication, canonicalTarget, modelDeadline, active);
+  });
+  BOOST_CHECK_EQUAL(repeatedModel.wireBytes, storedModel.wireBytes);
+  BOOST_CHECK_EQUAL(node->core().list().size(), 4U);
+  for (const auto& object : *publication.ownerRecoverableObjects) {
+    const auto original = sourceStore->lookupDurableObject(object.publicationIdentity,
+                                                           object.manifestName);
+    BOOST_REQUIRE(original);
+    BOOST_CHECK(node->core().getDataPacket(
+      object.manifestName.toUri(ndn::name::UriFormat::CANONICAL)) ==
+      original->source->readOriginalDataPacket(object.manifestName));
+  }
+  // Exercise the actual DI packet port, not an in-memory substitute for Repo.
+  ndn::KeyChain digestKeys("pib-memory:stored-model", "tpm-memory:stored-model");
+  const auto storedDeadline = std::chrono::steady_clock::now() + 90s;
+  const auto modelPrefix = ndn::Name(sourceIdentity).append("stored-model").appendVersion(1);
+  const std::vector<uint8_t> expectedLayer(9000, 0x5a);
+  std::vector<di::NativeStoredModelInput> modelInputs{
+    {"catalog", {1, 2, 3}}, {"manifest", {4, 5, 6}}, {"layer", expectedLayer}};
+  std::size_t modelPosition = 0;
+  std::size_t sourceReads = 0;
+  const auto storedPublication = runWithFacePump(environment, [&] {
+    const auto transport = di::nativeStoredModelRepositoryIo(sourceWriter, target,
+      storedDeadline, active, true);
+    return di::nativePublishStoredModel(digestKeys, sourceIdentity,
+      ndn::Name(target.providerIdentity), modelPrefix, di::nativePlanningDigest("stored-model"),
+      "catalog", "manifest", [&]() -> std::optional<di::NativeStoredModelInput> {
+        if (modelPosition == modelInputs.size()) return std::nullopt;
+        ++sourceReads;
+        return std::move(modelInputs[modelPosition++]);
+      }, transport);
+  });
+  BOOST_CHECK_EQUAL(sourceReads, 3U);
+  BOOST_CHECK_EQUAL(storedPublication.objectCount, 3U);
+  const auto storedRootWire = node->core().getDataPacket(
+    storedPublication.handle.rootName.toUri(ndn::name::UriFormat::CANONICAL));
+  runWithFacePump(environment, [&] {
+    const auto transport = di::nativeStoredModelRepositoryIo(sourceWriter, target,
+      storedDeadline, active, true);
+    BOOST_REQUIRE(transport.requireCommitted);
+    transport.requireCommitted(storedPublication.handle.rootName,
+      storedPublication.handle.rootWireDigest, storedRootWire.size());
+    BOOST_CHECK_THROW(transport.requireCommitted(storedPublication.handle.rootName,
+      "sha256:" + std::string(64, '0'), storedRootWire.size()), std::runtime_error);
+    BOOST_CHECK_THROW(transport.requireCommitted(storedPublication.handle.rootName,
+      storedPublication.handle.rootWireDigest, storedRootWire.size() + 1), std::runtime_error);
+    BOOST_CHECK_THROW(transport.requireCommitted(ndn::Name("/unrelated/root"),
+      storedPublication.handle.rootWireDigest, storedRootWire.size()), std::runtime_error);
+    return true;
+  });
+  modelInputs.clear();
+  const auto objectCount = node->core().list().size();
+  std::size_t sourceModelReplies = 0;
+  ndn::signal::ScopedConnection originalSourceObserver(environment.providerFace(0).onSendData.connect(
+    [&](const ndn::Data& data) {
+      if (modelPrefix.isPrefixOf(data.getName())) ++sourceModelReplies;
+    }));
+  BOOST_CHECK(secondOwner->getName() != storedPublication.handle.producer);
+  runWithFacePump(environment, [&] {
+    const auto transport = di::nativeStoredModelRepositoryIo(secondOwner, target,
+      storedDeadline, active);
+    BOOST_CHECK(!transport.commit);
+    BOOST_CHECK(!transport.requireCommitted);
+    const auto catalog = di::nativeLoadStoredModelCatalog(storedPublication.handle, transport);
+    BOOST_CHECK(di::nativeReadStoredModelObject(storedPublication.handle, catalog, "layer",
+                                               transport) == expectedLayer);
+    auto wrongKey = storedPublication.handle;
+    wrongKey.masterKey.front() ^= 1;
+    BOOST_CHECK_THROW(di::nativeReadStoredModelObject(wrongKey, catalog, "layer", transport),
+                      std::runtime_error);
+    return true;
+  });
+  BOOST_CHECK_EQUAL(sourceReads, 3U);
+  BOOST_CHECK_EQUAL(sourceModelReplies, 0U);
+  BOOST_CHECK_EQUAL(node->core().list().size(), objectCount);
   node->stopOriginalPacketOperations();
 }
 

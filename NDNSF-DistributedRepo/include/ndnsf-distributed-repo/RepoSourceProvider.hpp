@@ -281,10 +281,23 @@ public:
         preparedMetadataDigest = metadata.value("preparedMetadataDigest", std::string{});
         preparedMetadataBytes = metadata.value("preparedMetadataBytes", std::uint64_t{0});
         if (preparedMetadataDataName.empty() || preparedMetadataDigest.empty() || preparedMetadataBytes == 0 ||
-            preparedMetadataBytes > 256U * 1024U)
+            preparedMetadataBytes > ndnsf::di::NativeCanonicalMaterialPublicationMaxBytes)
           reject("prepared metadata reference is incomplete");
         if (checkObject(preparedMetadataDataName, preparedMetadataDigest, preparedMetadataBytes)) {
-          const auto metadataBytes = m_repo->get(preparedMetadataDataName);
+          std::vector<std::uint8_t> metadataBytes;
+          metadataBytes.reserve(static_cast<std::size_t>(preparedMetadataBytes));
+          for (std::uint64_t offset = 0; offset < preparedMetadataBytes;) {
+            if (std::chrono::steady_clock::now() >= request.deadline)
+              throw ndnsf::di::RepositorySourceError(
+                ndnsf::di::RepositorySourceError::Kind::Timeout,
+                "repository prepared metadata read deadline expired");
+            const auto length = std::min<std::uint64_t>(1U << 20, preparedMetadataBytes - offset);
+            const auto part = m_repo->getRange(preparedMetadataDataName, {offset, length});
+            if (part.size() != length)
+              reject("prepared metadata range is incomplete");
+            metadataBytes.insert(metadataBytes.end(), part.begin(), part.end());
+            offset += length;
+          }
           const std::string metadataWire(metadataBytes.begin(), metadataBytes.end());
           if (metadataWire.size() != preparedMetadataBytes ||
               ndnsf::di::nativePlanningDigest(metadataWire) != preparedMetadataDigest)
@@ -672,6 +685,10 @@ public:
     const auto preparedMetadataDigest = source.preparedMetadataJson.empty()
       ? std::string{} : ndnsf::di::nativePlanningDigest(source.preparedMetadataJson);
     const auto preparedMetadataBytes = static_cast<std::uint64_t>(source.preparedMetadataJson.size());
+    if (preparedMetadataBytes > ndnsf::di::NativeCanonicalMaterialPublicationMaxBytes)
+      throw ndnsf::di::RepositorySourceError(
+        ndnsf::di::RepositorySourceError::Kind::Unavailable,
+        "repository prepared metadata exceeds publication bound");
     if (!source.preparedMetadataJson.empty()) {
       preparedMetadata = ndnsf::di::nativeParseJson(source.preparedMetadataJson);
       if (!preparedMetadata.is_object() ||

@@ -1,14 +1,18 @@
 #include "spec220-onnx-reference-oracle.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <onnxruntime_cxx_api.h>
+#include <ndn-cxx/util/scope.hpp>
+#include <openssl/crypto.h>
 #include <openssl/sha.h>
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -23,7 +27,9 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace spec220::oracle {
 namespace {
@@ -141,6 +147,66 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
 {
   if (expectedRuntimeVersion.empty() || expectedRuntimeVersion != Ort::GetVersionString())
     reject("runtime-version");
+  const auto& turns = requester.at("turns");
+  if (turns.empty() || turns.size() > 8) reject("turn-bound");
+  std::vector<NativeConversationJournalKey> journalKeys;
+  std::vector<std::vector<std::uint8_t>> authenticationKeys;
+  const auto wipeKeys = ndn::make_scope_exit([&] {
+    for (auto& key : journalKeys) OPENSSL_cleanse(key.bytes.data(), key.bytes.size());
+    for (auto& key : authenticationKeys) OPENSSL_cleanse(key.data(), key.size());
+  });
+  const auto& conversation = requester.at("conversation");
+  const auto& journal = conversation.at("journal");
+  const auto& keyFiles = journal.at("keys");
+  if (!keyFiles.is_array() || keyFiles.empty() || keyFiles.size() > 16)
+    reject("checkpoint-key-configuration");
+  journalKeys.reserve(keyFiles.size());
+  std::set<std::string> keyIds;
+  for (const auto& key : keyFiles) {
+    const auto id = key.at("id").get<std::string>();
+    const std::filesystem::path path = key.at("file").get<std::string>();
+    if (id.empty() || !keyIds.insert(id).second || !path.is_absolute())
+      reject("checkpoint-key-configuration");
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) reject("checkpoint-private-key");
+    const auto closeKey = ndn::make_scope_exit([fd] { ::close(fd); });
+    struct stat info{};
+    if (::fstat(fd, &info) || !S_ISREG(info.st_mode) || info.st_uid != ::geteuid() ||
+        info.st_nlink != 1 || (info.st_mode & 077) != 0 || info.st_size != 32)
+      reject("checkpoint-private-key");
+    journalKeys.push_back({id, std::vector<std::uint8_t>(32)});
+    auto& bytes = journalKeys.back().bytes;
+    std::size_t offset = 0;
+    while (offset != bytes.size()) {
+      const auto size = ::read(fd, bytes.data() + offset, bytes.size() - offset);
+      if (size < 0 && errno == EINTR) continue;
+      if (size <= 0) reject("checkpoint-private-key");
+      offset += static_cast<std::size_t>(size);
+    }
+  }
+  authenticationKeys = nativeConversationAuthenticationKeys(
+    journal.at("identity").get<std::string>(), journalKeys);
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  std::vector<NativeJson> admittedCheckpoints;
+  admittedCheckpoints.reserve(turns.size());
+  for (const auto& turn : turns) {
+    NativeJson checkpoint;
+    try {
+      checkpoint = nativeReadConversationCheckpoint(
+        readSmall(turn.at("checkpoint_output_file").get<std::string>()), authenticationKeys,
+        static_cast<std::uint64_t>(now));
+    }
+    catch (const std::exception&) {
+      reject("checkpoint-authentication");
+    }
+    const auto& owner = conversation.at("owner");
+    if (checkpoint.at("requesterIdentity") != owner.at("requester_identity") ||
+        checkpoint.at("serviceName") != owner.at("service_name") ||
+        checkpoint.at("securityDomainDigest") != owner.at("security_domain_digest"))
+      reject("checkpoint-owner-binding");
+    admittedCheckpoints.push_back(std::move(checkpoint));
+  }
   const auto& catalog = requester.at("catalog");
   const auto& source = catalog.at("source");
   const auto sourceBound = requester.at("limits").at("max_source_bytes").get<std::uint64_t>();
@@ -161,8 +227,6 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
     stateBound += bytes;
   }
   if (!stateBound) reject("state-budget");
-  const auto& turns = requester.at("turns");
-  if (turns.empty() || turns.size() > 8) reject("turn-bound");
   Ort::Env environment(ORT_LOGGING_LEVEL_WARNING, "ndnsf-unsplit-reference");
   Ort::SessionOptions sessionOptions;
   sessionOptions.SetIntraOpNumThreads(1);
@@ -354,8 +418,7 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
       }
       states.swap(nextStates);
     }
-    const auto checkpoint = nativeParseJson(readSmall(
-      turn.at("checkpoint_output_file").get<std::string>()));
+    const auto& checkpoint = admittedCheckpoints.at(round);
     const auto conversation = checkpoint.at("conversationId").get<std::string>();
     if ((round && conversation != previousConversation) ||
         checkpoint.at("contextEpoch").get<std::uint64_t>() != round + 1 ||
@@ -373,7 +436,7 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
   return {{"scope", "unsplit-greedy-output-and-state-progression"},
     {"runtimeVersion", Ort::GetVersionString()}, {"executionProvider", "CPUExecutionProvider"},
     {"sourceDigest", source.at("digest")}, {"loadWallSeconds", loadSeconds}, {"rounds", rounds},
-    {"providerStateValuesCompared", false}, {"checkpointAuthentication", "NOT_EVALUATED"},
+    {"providerStateValuesCompared", false}, {"checkpointAuthentication", "VERIFIED"},
     {"performanceQualification", "NOT_RUN"}};
 }
 

@@ -37,6 +37,49 @@
 namespace ndnsf_distributed_repo {
 
 namespace {
+struct BoundUserFace
+{
+  ndn::Face* face = nullptr;
+  std::shared_ptr<void> lease;
+  std::shared_ptr<void> operationLifetime;
+};
+
+BoundUserFace
+bindUserFace(ndn_service_framework::ServiceUser& user,
+             std::chrono::steady_clock::time_point deadline,
+             std::shared_ptr<ndn_service_framework::ServiceUser> owner = {},
+             std::shared_ptr<void> operationLifetime = {},
+             const std::function<void()>& requireCurrent = {})
+{
+  struct Binding
+  {
+    std::mutex mutex;
+    std::condition_variable condition;
+    ndn::Face* face = nullptr;
+    std::shared_ptr<void> operationLifetime;
+  };
+  const auto binding = std::make_shared<Binding>();
+  auto lease = user.postToIoWithFace(
+    [binding, owner = std::move(owner), operationLifetime] (ndn::Face& face) {
+    {
+      std::lock_guard<std::mutex> lock(binding->mutex);
+      binding->face = &face;
+      binding->operationLifetime = operationLifetime;
+    }
+    binding->condition.notify_all();
+  });
+  std::unique_lock<std::mutex> lock(binding->mutex);
+  while (binding->face == nullptr) {
+    if (requireCurrent)
+      requireCurrent();
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline)
+      throw std::runtime_error("repo-original-packet-set-face-deadline");
+    binding->condition.wait_until(lock, std::min(deadline, now + std::chrono::milliseconds(25)));
+  }
+  return {binding->face, std::move(lease), std::move(binding->operationLifetime)};
+}
+
 std::string
 toLowerHex(std::string value)
 {
@@ -536,7 +579,7 @@ RepoClient::fetchOriginalDataPacketSet(
   reference.validateExactPacketSet();
   if (!verifyProducerSignature || timeoutMs <= 0 || !reference.packetSetMetadata ||
       limits.maxPacketCount == 0 || limits.maxPacketCount > 65536 ||
-      limits.maxPacketWireBytes == 0 || limits.maxPacketWireBytes > REPO_USER_STORAGE_LIMIT_BYTES ||
+      limits.maxPacketWireBytes == 0 || limits.maxPacketWireBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES ||
       reference.expectedSize > limits.maxPacketWireBytes ||
       reference.packetSetMetadata->packetNames.size() > limits.maxPacketCount)
     throw std::invalid_argument("repo-original-packet-set-budget-invalid");
@@ -556,33 +599,14 @@ RepoClient::fetchOriginalDataPacketSet(
       throw std::runtime_error("repo-original-packet-set-deadline");
   };
   current();
-  struct FaceBinding
-  {
-    std::mutex mutex;
-    std::condition_variable condition;
-    ndn::Face* face = nullptr;
-  };
-  auto binding = std::make_shared<FaceBinding>();
-  auto lease = user.postToIoWithFace([binding](ndn::Face& face) {
-    {
-      std::lock_guard<std::mutex> lock(binding->mutex);
-      binding->face = &face;
-    }
-    binding->condition.notify_all();
-  });
-  ndn::Face* face = nullptr;
-  {
-    std::unique_lock<std::mutex> lock(binding->mutex);
-    if (!binding->condition.wait_until(lock, deadline, [&] { return binding->face != nullptr; }))
-      throw std::runtime_error("repo-original-packet-set-face-deadline");
-    face = binding->face;
-  }
+  auto binding = bindUserFace(user, deadline);
   current();
   const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
     deadline - std::chrono::steady_clock::now());
   if (remaining <= std::chrono::milliseconds::zero())
     throw std::runtime_error("repo-original-packet-set-deadline");
-  detail::FaceDataReferenceFetcher fetcher(*face, remaining, remaining, 16, std::move(lease));
+  detail::FaceDataReferenceFetcher fetcher(*binding.face, remaining, remaining, 16,
+                                           std::move(binding.lease));
   const auto spool = fetcher(reference);
   current();
   if (spool->packetCount() != metadata.packetNames.size() ||
@@ -617,6 +641,62 @@ RepoClient::fetchOriginalDataPacketSet(
   return wires;
 }
 
+std::vector<std::vector<uint8_t>>
+RepoClient::fetchOriginalDataPackets(
+  std::shared_ptr<ndn_service_framework::ServiceUser> user, const RepoArtifactTarget& target,
+  const std::vector<ndn::Name>& names, uint64_t maxWireBytes,
+  const std::function<bool(const ndn::Data&)>& verifyPacket, int timeoutMs,
+  const std::function<void()>& requireCurrent, std::shared_ptr<void> operationLifetime)
+{
+  validateUserStorageClientTarget(target, timeoutMs);
+  if (!user || !verifyPacket || names.empty() || names.size() > 1024 ||
+      maxWireBytes < names.size() || maxWireBytes > (8U << 20))
+    throw std::invalid_argument("repo-original-named-packet-request-invalid");
+  if (user->isOnIoThread())
+    throw std::logic_error("repo-original-packet-fetch-on-face-thread");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  const auto current = [&] {
+    if (requireCurrent)
+      requireCurrent();
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw std::runtime_error("repo-original-packet-fetch-deadline");
+  };
+  current();
+  auto binding = bindUserFace(*user, deadline, user, operationLifetime, requireCurrent);
+  struct Lifetime
+  {
+    std::shared_ptr<ndn_service_framework::ServiceUser> user;
+    std::shared_ptr<void> lease;
+    std::shared_ptr<void> operationLifetime;
+  };
+  const auto lifetime = std::make_shared<Lifetime>(
+    Lifetime{user, std::move(binding.lease), std::move(binding.operationLifetime)});
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+    deadline - std::chrono::steady_clock::now());
+  current();
+  detail::FaceDataReferenceFetcher fetcher(*binding.face, remaining, remaining, 16, lifetime);
+  const auto spool = fetcher.fetchNamed(names, maxWireBytes, ndn::Name(target.providerIdentity),
+    [requireCurrent, deadline] {
+      if (requireCurrent)
+        requireCurrent();
+      if (std::chrono::steady_clock::now() >= deadline)
+        throw std::runtime_error("repo-original-packet-fetch-deadline");
+    });
+  current();
+  std::vector<std::vector<uint8_t>> wires;
+  wires.reserve(names.size());
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    current();
+    auto wire = spool->readPacket(i);
+    const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire))};
+    if (packet.getName() != names[i] || !verifyPacket(packet))
+      throw std::runtime_error("repo-original-packet-verification-failed");
+    wires.push_back(std::move(wire));
+  }
+  current();
+  return wires;
+}
+
 VerifiedRepoUserStoragePacketSetV1
 RepoClient::fetchOriginalDataPacketSetFromUserStorage(
   ndn_service_framework::ServiceUser& owner,
@@ -634,7 +714,7 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
       limits.maxListedObjectsPerScan > 1000000 || limits.maxListingWireBytes == 0 ||
       limits.maxListingWireBytes > (64ULL << 20) || limits.maxPacketCount == 0 ||
       limits.maxPacketCount > 65536 || limits.maxPacketWireBytes == 0 ||
-      limits.maxPacketWireBytes > REPO_USER_STORAGE_LIMIT_BYTES ||
+      limits.maxPacketWireBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES ||
       limits.maxManifestWireBytes == 0 || limits.maxManifestWireBytes > (16ULL << 20) ||
       limits.ackCollectionTimeMs <= 0 || timeoutMs <= limits.ackCollectionTimeMs) {
     throw std::invalid_argument("repo-user-storage-packet-set-request-invalid");
@@ -807,7 +887,7 @@ RepoClient::commitUserStorageOriginalPackets(
   if (!nextOriginalPacket || !verifyProducerSignature || ackCollectionTimeMs <= 0 ||
       timeoutMs <= ackCollectionTimeMs || !request.reference.packetSetMetadata ||
       request.reference.expectedSize == 0 ||
-      request.reference.expectedSize > REPO_USER_STORAGE_LIMIT_BYTES)
+      request.reference.expectedSize > REPO_USER_STORAGE_OBJECT_MAX_BYTES)
     throw std::invalid_argument("repo-original-publication-invalid");
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
   const auto current = [&] {
@@ -1020,6 +1100,13 @@ struct SelectedRequestResult
 
 struct SelectedRequestStart
 {
+  enum class DispatchState
+  {
+    QUEUED,
+    WAITING_FOR_BOOTSTRAP,
+    STARTED
+  };
+
   enum class CommitState
   {
     Available,
@@ -1030,6 +1117,7 @@ struct SelectedRequestStart
   std::atomic<bool> abandoned{false};
   std::atomic<CommitState> commitState{CommitState::Available};
   std::atomic<bool> cancellationIssued{false};
+  std::atomic<DispatchState> dispatchState{DispatchState::QUEUED};
 };
 
 void
@@ -1865,8 +1953,9 @@ RepoClient::requestSelectedService(
     "repo-request-timeout: Provider request timed out";
   auto result = std::make_shared<SelectedRequestResult>();
   auto startState = std::make_shared<SelectedRequestStart>();
-  ndn::Buffer requestPayload;
-  if (!payload.empty()) requestPayload = ndn::Buffer(payload.data(), payload.size());
+  std::shared_ptr<const ndn::Buffer> requestPayload = payload.empty()
+    ? std::make_shared<ndn::Buffer>()
+    : std::make_shared<ndn::Buffer>(payload.data(), payload.size());
   const std::vector<ndn::Name> providers{providerIdentity};
   const auto cancelRequest = [&user, startState] (const ndn::Name& requestId) {
     if (!user.isOnIoThread() ||
@@ -1892,6 +1981,17 @@ RepoClient::requestSelectedService(
         completeSelectedRequest(result, timeoutError);
         return;
       }
+      // Core readiness is Face-owned. A fresh User must receive its NAC
+      // material, permissions and service ControllerVersion before Begin.
+      // The caller's existing waiter owns bounded reprobes without emitting.
+      if (!user.isRequestBootstrapReady(serviceName, providers)) {
+        startState->dispatchState.store(
+          SelectedRequestStart::DispatchState::WAITING_FOR_BOOTSTRAP,
+          std::memory_order_release);
+        return;
+      }
+      startState->dispatchState.store(SelectedRequestStart::DispatchState::STARTED,
+                                      std::memory_order_release);
       const auto remainingTimeoutMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(
           deadline - std::chrono::steady_clock::now()).count();
@@ -1902,7 +2002,7 @@ RepoClient::requestSelectedService(
       }
       const auto invocationTimeoutMs = static_cast<int>(remainingTimeoutMs);
       const auto requestId = user.BeginCollaborationWithProviders(
-        serviceName, requestPayload, ackCollectionTimeMs, invocationTimeoutMs,
+        serviceName, *requestPayload, ackCollectionTimeMs, invocationTimeoutMs,
         [&user, result, startState, providerIdentity, serviceName,
          ackCollectionTimeMs, invocationTimeoutMs, deadline, timeoutError,
          requestMayHaveBeenEmitted, cancelRequest]
@@ -2122,48 +2222,58 @@ RepoClient::requestSelectedService(
       }
     }
   };
-  try {
-    user.postToIo(std::move(startRequest));
-  }
-  catch (const std::exception& error) {
-    startState->abandoned.store(true, std::memory_order_release);
-    if (std::chrono::steady_clock::now() >= deadline) {
-      completeSelectedRequest(result, timeoutError);
+  const auto postRequest = [&] {
+    try {
+      user.postToIo(startRequest);
     }
-    else {
-      completeSelectedRequest(result, error.what());
+    catch (const std::exception& error) {
+      startState->abandoned.store(true, std::memory_order_release);
+      if (std::chrono::steady_clock::now() >= deadline) {
+        completeSelectedRequest(result, timeoutError);
+      }
+      else {
+        completeSelectedRequest(result, error.what());
+      }
     }
-  }
-  catch (...) {
-    startState->abandoned.store(true, std::memory_order_release);
-    if (std::chrono::steady_clock::now() >= deadline) {
-      completeSelectedRequest(result, timeoutError);
+    catch (...) {
+      startState->abandoned.store(true, std::memory_order_release);
+      if (std::chrono::steady_clock::now() >= deadline) {
+        completeSelectedRequest(result, timeoutError);
+      }
+      else {
+        completeSelectedRequest(
+          result, "repo-request-start-failed: selected Provider request could not start");
+      }
     }
-    else {
-      completeSelectedRequest(
-        result, "repo-request-start-failed: selected Provider request could not start");
-    }
-  }
+  };
+  postRequest();
   std::unique_lock<std::mutex> lock(result->mutex);
   std::exception_ptr interruption;
   bool completed = false;
-  if (!requireCurrent) {
-    completed = result->condition.wait_until(lock, deadline, [&] { return result->done; });
-  }
-  else {
-    while (!result->done && std::chrono::steady_clock::now() < deadline) {
+  while (!result->done && std::chrono::steady_clock::now() < deadline) {
+    if (requireCurrent) {
       lock.unlock();
       try { requireCurrent(); }
       catch (...) { interruption = std::current_exception(); }
       lock.lock();
       if (interruption)
         break;
-      result->condition.wait_until(lock,
-        std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(10)),
-        [&] { return result->done; });
     }
-    completed = result->done && !interruption;
+    auto expectedDispatch = SelectedRequestStart::DispatchState::WAITING_FOR_BOOTSTRAP;
+    if (!result->done && startState->dispatchState.compare_exchange_strong(
+          expectedDispatch, SelectedRequestStart::DispatchState::QUEUED,
+          std::memory_order_acq_rel)) {
+      lock.unlock();
+      postRequest();
+      lock.lock();
+    }
+    const auto wake = !requireCurrent && startState->dispatchState.load(
+      std::memory_order_acquire) == SelectedRequestStart::DispatchState::STARTED
+      ? deadline
+      : std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(10));
+    result->condition.wait_until(lock, wake, [&] { return result->done; });
   }
+  completed = result->done && !interruption;
   if (!completed) {
     startState->abandoned.store(true, std::memory_order_release);
     auto expectedCommitState = SelectedRequestStart::CommitState::Available;

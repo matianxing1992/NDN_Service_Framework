@@ -67,6 +67,7 @@ struct CountingStore : RepoStoreBackend
   std::shared_ptr<RepoStoreBackend> delegate;
   mutable size_t enumerations = 0;
   mutable size_t usageScans = 0;
+  std::optional<RepoObjectManifest> extraCatalogEntry;
   void put(const RepoObjectManifest& m, std::vector<uint8_t> p) override { delegate->put(m, std::move(p)); }
   void putManifest(const RepoObjectManifest& m) override { delegate->putManifest(m); }
   StoredObject get(const std::string& n) const override { return delegate->get(n); }
@@ -81,7 +82,9 @@ struct CountingStore : RepoStoreBackend
   std::vector<RepoObjectManifest> listManifests() const override
   {
     ++enumerations;
-    return delegate->listManifests();
+    auto result = delegate->listManifests();
+    if (extraCatalogEntry) result.insert(result.begin(), *extraCatalogEntry);
+    return result;
   }
   bool hasCommittedPayload(const RepoObjectManifest& manifest) const override
   { return delegate->hasCommittedPayload(manifest); }
@@ -91,6 +94,8 @@ struct CountingStore : RepoStoreBackend
   std::vector<uint8_t> getRange(const std::string& n, RepoByteRange r) const override
   { return delegate->getRange(n, r); }
   RepoObjectManifest getManifest(const std::string& n) const override { return delegate->getManifest(n); }
+  RepoObjectMetadataProbe probeObjectMetadata(const std::string& n) const override
+  { return delegate->probeObjectMetadata(n); }
   bool supportsRange() const noexcept override { return delegate->supportsRange(); }
   bool supportsManifestLookup() const noexcept override { return delegate->supportsManifestLookup(); }
   void abortRanges(const std::string& n) override { delegate->abortRanges(n); }
@@ -1151,6 +1156,210 @@ BOOST_AUTO_TEST_CASE(NodeInsertCommitsCompleteOriginalSetOrNothing)
   badWire.back().back() ^= 1;
   BOOST_CHECK_EQUAL(node.insertWirePackets(reference, badWire).state, "FAILED");
   for (const auto& item : set.packets) BOOST_CHECK(node.getDataPacket(item.first.toUri()) == item.second);
+}
+
+BOOST_AUTO_TEST_CASE(NodeInsertEnumeratesCatalogPerGroupAndPreservesImmutablePackets)
+{
+  Fixture fixture;
+  std::vector<size_t> scans;
+  for (const auto segments : {16U, 64U}) {
+    const auto suffix = std::to_string(segments);
+    auto store = std::make_shared<CountingStore>(fixture.store(("node-batch-" + suffix).c_str()));
+    RepoNode node(ndn::Name("/repo/batch"), fixture.capability(), store);
+    const auto insert = [&](const PacketSet& set,
+                            const std::vector<std::vector<uint8_t>>& wires) {
+      RepoDataReference reference;
+      reference.objectName = set.options.manifestName;
+      reference.dataPrefix = set.manifest.producer.toUri();
+      reference.expectedSize = set.options.packetWireBytes;
+      return node.insertWirePackets(reference, wires);
+    };
+    const auto wiresFor = [](const PacketSet& set) {
+      std::vector<std::vector<uint8_t>> wires;
+      for (const auto& entry : set.packets) wires.push_back(entry.second);
+      return wires;
+    };
+    PacketSet background("/actual/background", 8);
+    BOOST_REQUIRE_EQUAL(insert(background, wiresFor(background)).state, "DONE");
+    PacketSet incoming("/actual/incoming", segments);
+    const auto wires = wiresFor(incoming);
+    store->enumerations = 0;
+    BOOST_REQUIRE_EQUAL(insert(incoming, wires).state, "DONE");
+    scans.push_back(store->enumerations);
+
+    auto changed = wires;
+    ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wires.back().data(), wires.back().size())));
+    data.setContent(std::vector<uint8_t>(4000, 255));
+    ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+    keys.sign(data, ndn::security::signingWithSha256());
+    const auto& encoded = data.wireEncode();
+    changed.back().assign(encoded.begin(), encoded.end());
+    const auto conflict = insert(incoming, changed);
+    BOOST_CHECK_EQUAL(conflict.state, "FAILED");
+    BOOST_CHECK_NE(conflict.message.find("repo-data-wire-conflict"), std::string::npos);
+    BOOST_CHECK(node.getDataPacket(incoming.packets.back().first.toUri()) == wires.back());
+
+    auto legacyStore = fixture.store(("node-legacy-" + suffix).c_str());
+    RepoNode legacy(ndn::Name("/repo/legacy"), fixture.capability(), legacyStore);
+    legacy.core().putDataPacket(incoming.packets.back().first.toUri(), changed.back());
+    RepoDataReference reference;
+    reference.objectName = incoming.options.manifestName;
+    reference.dataPrefix = incoming.manifest.producer.toUri();
+    reference.expectedSize = incoming.options.packetWireBytes;
+    const auto legacyConflict = legacy.insertWirePackets(reference, wires);
+    BOOST_CHECK_EQUAL(legacyConflict.state, "FAILED");
+    BOOST_CHECK_NE(legacyConflict.message.find("repo-data-wire-conflict"), std::string::npos);
+    BOOST_CHECK(legacy.getDataPacket(incoming.packets.back().first.toUri()) == changed.back());
+  }
+  BOOST_REQUIRE_EQUAL(scans.size(), 2U);
+  BOOST_CHECK_LE(scans.back(), scans.front() + 2);
+}
+
+BOOST_AUTO_TEST_CASE(ExactOriginalRootLookupAvoidsCatalogEnumeration)
+{
+  Fixture fixture;
+  auto store = std::make_shared<CountingStore>(fixture.store("exact-original-root"));
+  auto repo = std::make_shared<RepoCore>(fixture.capability(), store);
+  RepoEncryptedLargeDataStore backend(repo);
+  PacketSet selected("/actual/exact-original-root");
+  const auto commit = [&](PacketSet& set) {
+    size_t cursor = 0;
+    return backend.commitOriginalDataPackets(set.manifest.getName(), set.options,
+      [&]() -> std::optional<std::pair<ndn::Name, std::vector<uint8_t>>> {
+        if (cursor == set.packets.size()) return std::nullopt;
+        return set.packets[cursor++];
+      });
+  };
+  auto source = commit(selected);
+  for (unsigned i = 0; i < 3; ++i) {
+    PacketSet unrelated("/actual/unrelated-root-" + std::to_string(i));
+    (void)commit(unrelated);
+  }
+  store->enumerations = 0;
+  const auto root = selected.manifest.getName();
+  BOOST_CHECK(repo->hasDataPacket(root.toUri()));
+  BOOST_CHECK(repo->getDataPacket(root.toUri()) == selected.packets.front().second);
+  const auto found = backend.lookupDurableObject(selected.options.publicationIdentity, root);
+  BOOST_REQUIRE(found);
+  BOOST_CHECK(found->source->readOriginalDataPacket(root) == selected.packets.front().second);
+  BOOST_CHECK_EQUAL(store->enumerations, 0U);
+
+  unsigned admissionCalls = 0;
+  BOOST_CHECK_THROW(repo->getDataPacket(root.toUri(), [&](const RepoObjectManifest&) {
+    ++admissionCalls;
+    return false;
+  }), std::runtime_error);
+  BOOST_CHECK_GT(admissionCalls, 0U);
+  BOOST_CHECK_THROW(backend.lookupDurableObject("sha256:wrong-publication", root),
+                    std::runtime_error);
+  BOOST_CHECK(!backend.lookupDurableObject(selected.options.publicationIdentity,
+    ndn::Name("/actual/missing-original-root")));
+  BOOST_CHECK(source->readOriginalDataPacket(root) == selected.packets.front().second);
+}
+
+BOOST_AUTO_TEST_CASE(FilteredExactReadsUseProofHintsButRecheckCurrentMetadataAndPolicy)
+{
+  Fixture fixture;
+  auto store = std::make_shared<CountingStore>(fixture.store("filtered-proof-hints"));
+  auto repo = std::make_shared<RepoCore>(fixture.capability(), store);
+  RepoEncryptedLargeDataStore backend(repo);
+  PacketSet selected("/actual/filtered-proof-hints");
+  size_t cursor = 0;
+  auto source = backend.commitOriginalDataPackets(selected.manifest.getName(), selected.options,
+    [&]() -> std::optional<std::pair<ndn::Name, std::vector<uint8_t>>> {
+      if (cursor == selected.packets.size()) return std::nullopt;
+      return selected.packets[cursor++];
+    });
+  BOOST_REQUIRE(source);
+  const auto admit = [](const RepoObjectManifest&) { return true; };
+  BOOST_CHECK(repo->getDataPacket(selected.packets.front().first.toUri(), admit) ==
+              selected.packets.front().second);
+  store->enumerations = 0;
+  for (size_t i = 1; i < selected.packets.size(); ++i)
+    BOOST_CHECK(repo->getDataPacket(selected.packets[i].first.toUri(), admit) ==
+                selected.packets[i].second);
+  BOOST_CHECK_EQUAL(store->enumerations, 0U);
+
+  auto current = repo->getManifest(selected.options.manifestName);
+  const auto directory = fixture.root / "filtered-proof-hints" / "manifests";
+  const auto entry = std::filesystem::directory_iterator(directory);
+  BOOST_REQUIRE(entry != std::filesystem::directory_iterator{});
+  const auto sidecar = entry->path();
+  const auto replace = [&](const RepoObjectManifest& metadata) {
+    std::ofstream output(sidecar, std::ios::binary | std::ios::trunc);
+    output << metadata.toJson();
+    output.close();
+    BOOST_REQUIRE(output.good());
+  };
+  ++current.generation;
+  current.policyEpoch = "changed-current-policy";
+  replace(current);
+  bool observedCurrent = false;
+  BOOST_CHECK_THROW(repo->getDataPacket(selected.packets.back().first.toUri(),
+    [&](const RepoObjectManifest& metadata) {
+      observedCurrent = metadata.generation == current.generation &&
+                        metadata.policyEpoch == current.policyEpoch;
+      return false;
+    }), std::runtime_error);
+  BOOST_CHECK(observedCurrent);
+  BOOST_CHECK(repo->getDataPacket(selected.packets.back().first.toUri(),
+    [&](const RepoObjectManifest& metadata) {
+      return metadata.generation == current.generation && metadata.policyEpoch == current.policyEpoch;
+    }) == selected.packets.back().second);
+
+  auto invalid = current;
+  ++invalid.packetOffsets.back();
+  replace(invalid);
+  BOOST_CHECK_THROW(repo->getDataPacket(selected.packets.back().first.toUri(), admit),
+                    std::invalid_argument);
+  replace(current);
+  BOOST_REQUIRE(store->erase(current.objectName));
+  BOOST_CHECK_THROW(repo->getDataPacket(selected.packets.back().first.toUri(), admit),
+                    std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(PrefixReadSkipsUnrelatedIndexesAndStillAdmitsItsHolder)
+{
+  Fixture fixture;
+  auto store = std::make_shared<CountingStore>(fixture.store("prefix-candidates"));
+  auto repo = std::make_shared<RepoCore>(fixture.capability(), store);
+  RepoEncryptedLargeDataStore backend(repo);
+  PacketSet selected("/actual/prefix-candidates");
+  size_t cursor = 0;
+  auto source = backend.commitOriginalDataPackets(selected.manifest.getName(), selected.options,
+    [&]() -> std::optional<std::pair<ndn::Name, std::vector<uint8_t>>> {
+      if (cursor == selected.packets.size()) return std::nullopt;
+      return selected.packets[cursor++];
+    });
+  BOOST_REQUIRE(source);
+
+  RepoObjectManifest unrelated;
+  unrelated.objectType = "original-packet-set";
+  unrelated.objectName = ndn::Name("/unrelated/object").toUri(ndn::name::UriFormat::CANONICAL);
+  unrelated.packetNames = {unrelated.objectName};
+  // A corrupt noncandidate must not force index parsing or block another Producer.
+  unrelated.packetOffsets = {0};
+  store->extraCatalogEntry = unrelated;
+  ndn::Interest missing(ndn::Name("/controller/DKEY"));
+  missing.setCanBePrefix(true);
+  BOOST_CHECK_EXCEPTION(repo->getDataPacket(missing), std::runtime_error,
+    [](const std::runtime_error& error) {
+      return std::string(error.what()) == "repo-original-packet-interest-not-found";
+    });
+  ndn::Interest prefix(selected.manifest.dataPrefix);
+  prefix.setCanBePrefix(true);
+  BOOST_CHECK(repo->getDataPacket(prefix) == selected.packets[1].second);
+  unsigned admissions = 0;
+  BOOST_CHECK_THROW(repo->getDataPacket(prefix, [&](const RepoObjectManifest&) {
+    ++admissions;
+    return false;
+  }), std::runtime_error);
+  BOOST_CHECK_EQUAL(admissions, 1U);
+
+  auto invalidCandidate = repo->getManifest(selected.options.manifestName);
+  invalidCandidate.packetOffsets.pop_back();
+  store->extraCatalogEntry = invalidCandidate;
+  BOOST_CHECK_THROW(repo->getDataPacket(prefix), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(RepeatedPacketSourceReadsKeepCurrentMetadataGuards)

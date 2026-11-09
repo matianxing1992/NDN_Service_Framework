@@ -14,6 +14,9 @@
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
 #include <ndn-cxx/name.hpp>
+#include <ndn-cxx/security/certificate.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
+#include <ndn-cxx/util/logger.hpp>
 #include <boost/asio/post.hpp>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
@@ -41,12 +44,22 @@
 
 namespace ndnsf_distributed_repo {
 
+NDN_LOG_INIT(ndnsf_distributed_repo.RepoNode);
+
 namespace {
 
 // Current Spec192 clients may collect Repo ACKs for 30 seconds. Keep the
 // corresponding Request/Selection state for another 30 seconds so the final
 // Selection can reach its Provider after collection closes.
 constexpr uint64_t REPO_PENDING_SELECTION_TTL_MS = 60'000;
+
+bool
+isOwnedInsertRequest(const std::vector<uint8_t>& request)
+{
+  static constexpr uint8_t PREFIX[] = {'R', 'P', 'O', 'I'};
+  return request.size() >= 6 && std::equal(std::begin(PREFIX), std::end(PREFIX), request.begin()) &&
+    (request[4] == '1' || request[4] == '2') && request[5] == '\n';
+}
 
 std::vector<uint8_t>
 payloadOf(const ndn_service_framework::RequestMessage& request)
@@ -570,9 +583,13 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
     } release{m_originalDataPending};
     try {
       if (std::chrono::steady_clock::now() >= job.deadline) {
+        NDN_LOG_DEBUG("original packet expired before lookup name=" << job.interest.getName());
         continue;
       }
+      NDN_LOG_DEBUG("original packet lookup begin name=" << job.interest.getName());
       const auto wire = getDataPacket(job.interest);
+      NDN_LOG_DEBUG("original packet lookup ready name=" << job.interest.getName()
+                    << " bytes=" << wire.size());
       ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
       auto completion = std::make_shared<PendingRelease>();
       completion->count = std::move(release.count);
@@ -582,15 +599,19 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
         const auto self = owner.lock();
         if (!self || !self->isOriginalDataServingReady() ||
             std::chrono::steady_clock::now() >= deadline) {
+          NDN_LOG_DEBUG("original packet unavailable before put name=" << data.getName());
           return;
         }
         face.put(data);
+        NDN_LOG_DEBUG("original packet put name=" << data.getName());
         // Keep admission charged through Face's queued put, not only this callback.
         boost::asio::post(face.getIoContext(), [completion] {});
       });
     }
-    catch (const std::exception&) {
+    catch (const std::exception& error) {
       // A missing/unadmitted packet is an ordinary retrieval miss.
+      NDN_LOG_DEBUG("original packet lookup miss name=" << job.interest.getName()
+                    << " reason=" << error.what());
     }
   }
 }
@@ -1885,6 +1906,7 @@ RepoNode::insertWirePacketsImpl(
     std::optional<ndn_service_framework::ProtectedBlobManifest> transportRoot;
     std::vector<uint64_t> packetOffsets{0};
     std::vector<std::string> packetNames;
+    std::map<std::string, std::size_t> packetIndices;
     packetNames.reserve(packetCount);
     const ndn::Name expectedPrefix(reference.dataPrefix);
     if (reference.hasFinalSegment) {
@@ -1964,14 +1986,9 @@ RepoNode::insertWirePacketsImpl(
         throw std::runtime_error("repo-exact-packet-order-mismatch");
       }
       const auto dataName = data.getName().toUri(ndn::name::UriFormat::CANONICAL);
-      if (std::find(packetNames.begin(), packetNames.end(), dataName) != packetNames.end()) {
+      if (!packetIndices.emplace(dataName, i).second) {
         throw std::runtime_error(
           "repo-packet-set-invalid: duplicate NDN Data name: " + dataName);
-      }
-      if (m_core.hasDataPacket(dataName) &&
-          m_core.getDataPacket(dataName) != packetWire) {
-        throw std::runtime_error(
-          "repo-data-wire-conflict: immutable NDN Data name conflict: " + dataName);
       }
       packetNames.push_back(dataName);
       packetOffsets.push_back(totalSize);
@@ -2018,6 +2035,26 @@ RepoNode::insertWirePacketsImpl(
       status.message = "fetched wire packet sha256 mismatch";
       rememberStatus(status);
       return status;
+    }
+
+    // Enumerate once per admitted group. Core repeats the immutable admission under its
+    // commit lock; do not retain a negative lookup beyond this transaction.
+    const auto checkStoredPacket = [&](const std::string& name) {
+      const auto found = packetIndices.find(name);
+      if (found != packetIndices.end() &&
+          m_core.getDataPacket(name) != readPacket(found->second)) {
+        throw std::runtime_error(
+          "repo-data-wire-conflict: immutable NDN Data name conflict: " + name);
+      }
+    };
+    for (const auto& stored : m_core.list()) {
+      if (requireActive) requireActive();
+      if (stored.objectType == "ndn-data-wire") {
+        checkStoredPacket(ndn::Name(stored.objectName).toUri(ndn::name::UriFormat::CANONICAL));
+      }
+      else if (stored.objectType == "original-packet-set") {
+        for (const auto& name : stored.packetNames) checkStoredPacket(name);
+      }
     }
 
     RepoObjectManifest manifest;
@@ -2643,10 +2680,7 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
                        const std::string& requesterIdentity,
                        bool networkRequest)
 {
-  static constexpr uint8_t OWNED_MAGIC[] = {'R', 'P', 'O', 'I', '1', '\n'};
-  const bool isOwnedRequest = request.size() >= sizeof(OWNED_MAGIC) &&
-    std::equal(std::begin(OWNED_MAGIC), std::end(OWNED_MAGIC), request.begin());
-  if (!isOwnedRequest) {
+  if (!isOwnedInsertRequest(request)) {
     if (networkRequest && m_artifactMetadataStore) {
       throw std::runtime_error("repo-persistent-operation-required: INSERT requires Owner binding");
     }
@@ -2663,7 +2697,7 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
       (!owned.reference.packetSetMetadata && (!owned.reference.hasFinalSegment ||
        owned.reference.finalSegment < owned.reference.firstSegment)) ||
       owned.reference.expectedSize == 0 ||
-      owned.reference.expectedSize > REPO_USER_STORAGE_LIMIT_BYTES ||
+      owned.reference.expectedSize > REPO_USER_STORAGE_OBJECT_MAX_BYTES ||
       (!owned.reference.packetSetMetadata &&
        owned.reference.finalSegment - owned.reference.firstSegment >= owned.reference.expectedSize)) {
     throw std::invalid_argument("repo-user-storage-insert-reference-invalid-or-unbounded");
@@ -2715,7 +2749,7 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
     }
     const auto validationDeadline = std::chrono::steady_clock::now() +
       std::chrono::milliseconds(std::max(1, validationTimeoutMs));
-    if (!m_ownedPacketValidator) {
+    if (owned.schemaVersion == 1 && !m_ownedPacketValidator) {
       throw std::runtime_error("repo-original-packet-validator-unavailable");
     }
     const auto requireActive = [this, validationDeadline] {
@@ -2725,7 +2759,8 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
       }
     };
     const auto producerPrefix = ndn::Name(requesterIdentity);
-    const auto validateSource = [this, &producerPrefix, validationDeadline](
+    const auto validateSource = [this, &producerPrefix, validationDeadline,
+                                 digestPackets = owned.schemaVersion == 2](
         std::size_t packetCount,
         const std::function<std::vector<uint8_t>(std::size_t)>& readPacket) {
       auto digest = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>(
@@ -2742,7 +2777,18 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
         if (packetWire.empty() || packetWire.size() > ndn::MAX_NDN_PACKET_SIZE) {
           throw std::runtime_error("repo-original-packet-validation-wire-size-invalid");
         }
-        if (!m_ownedPacketValidator(packetWire, producerPrefix, validationDeadline)) {
+        bool valid = false;
+        if (digestPackets) {
+          const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(packetWire))};
+          valid = packet.wireEncode().size() == packetWire.size() &&
+            producerPrefix.isPrefixOf(packet.getName()) && packet.getName() != producerPrefix &&
+            packet.getSignatureType() == ndn::tlv::DigestSha256 &&
+            ndn::security::verifySignature(packet, std::optional<ndn::security::Certificate>{});
+        }
+        else {
+          valid = m_ownedPacketValidator(packetWire, producerPrefix, validationDeadline);
+        }
+        if (!valid) {
           throw std::runtime_error("repo-original-packet-signature-unauthorized-or-invalid");
         }
         if (EVP_DigestUpdate(digest.get(), packetWire.data(), packetWire.size()) != 1) {
@@ -2836,9 +2882,7 @@ std::vector<uint8_t>
 RepoNode::handleManifest(const std::vector<uint8_t>& request,
                          const std::string& authenticatedWriter) const
 {
-  static constexpr uint8_t OWNED_MAGIC[] = {'R', 'P', 'O', 'I', '1', '\n'};
-  if (request.size() >= sizeof(OWNED_MAGIC) &&
-      std::equal(std::begin(OWNED_MAGIC), std::end(OWNED_MAGIC), request.begin())) {
+  if (isOwnedInsertRequest(request)) {
     if (authenticatedWriter.empty() || !m_artifactMetadataStore)
       throw std::runtime_error("repo-owned-manifest-authentication-required");
     const auto query = decodeUserStorageInsertRequest(request);

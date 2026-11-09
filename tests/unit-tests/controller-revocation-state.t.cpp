@@ -66,6 +66,70 @@ makeRefreshStatus(const ControllerVersion& version,
 
 BOOST_AUTO_TEST_SUITE(ControllerRevocationState)
 
+BOOST_AUTO_TEST_CASE(AbeMaterialPersistsAndMarksRotationBeforeRestart)
+{
+  DefaultGenerationFiles files;
+  const auto owner = ndn::Name("/controller/a").toUri(ndn::name::UriFormat::CANONICAL);
+  ControllerGenerationStore::AbeMaterial material;
+  material.owner = owner;
+  material.signingKeyDigest = "sha256:" + std::string(64, 'a');
+  material.policyDigest = "sha256:" + std::string(64, 'b');
+  material.publicParameters = "public";
+  material.masterSecret = "private";
+  {
+    ControllerGenerationStore store(files.legacy);
+    BOOST_REQUIRE(store.acquireWriter(owner));
+    store.startGeneration(1000);
+    store.storeAbeMaterial(material);
+    store.advanceEpoch({}, true);
+  }
+  {
+    ControllerGenerationStore store(files.legacy);
+    BOOST_REQUIRE(store.acquireWriter(owner));
+    auto restored = store.loadAbeMaterial();
+    BOOST_REQUIRE(restored);
+    BOOST_CHECK(restored->rotationRequired);
+    BOOST_CHECK(restored->masterSecret == material.masterSecret);
+    restored->rotationRequired = false;
+    store.storeAbeMaterial(*restored);
+    BOOST_CHECK(!store.loadAbeMaterial()->rotationRequired);
+  }
+  std::filesystem::permissions(files.legacy, std::filesystem::perms::group_read,
+                               std::filesystem::perm_options::add);
+  ControllerGenerationStore unsafe(files.legacy);
+  BOOST_REQUIRE(unsafe.acquireWriter(owner));
+  BOOST_CHECK_THROW(unsafe.loadAbeMaterial(), std::runtime_error);
+  std::filesystem::permissions(files.legacy, std::filesystem::perms::group_read,
+                               std::filesystem::perm_options::remove);
+  {
+    std::fstream state(files.legacy, std::ios::in | std::ios::out | std::ios::binary);
+    state.seekg(-1, std::ios::end);
+    char last = 0;
+    state.get(last);
+    state.seekp(-1, std::ios::end);
+    state.put(last == '0' ? '1' : '0');
+  }
+  BOOST_CHECK_THROW(unsafe.loadAbeMaterial(), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(LegacyVersionOnlyStateRemainsReadable)
+{
+  DefaultGenerationFiles files;
+  {
+    std::ofstream state(files.legacy, std::ios::binary);
+    const std::array<char, 16> version{{0, 0, 0, 0, 0, 0, 3, static_cast<char>(0xe8),
+                                        0, 0, 0, 0, 0, 0, 0, 1}};
+    state.write(version.data(), version.size());
+  }
+  std::filesystem::permissions(files.legacy, std::filesystem::perms::owner_read |
+                                            std::filesystem::perms::owner_write);
+  ControllerGenerationStore store(files.legacy);
+  const auto version = store.load();
+  BOOST_REQUIRE(version);
+  BOOST_CHECK_EQUAL(version->controllerGenerationTimestamp, 1000);
+  BOOST_CHECK_EQUAL(version->controllerEpoch, 1);
+}
+
 BOOST_AUTO_TEST_CASE(DefaultGenerationSeparatesIdentitiesAndPreservesRevocations)
 {
   DefaultGenerationFiles files;

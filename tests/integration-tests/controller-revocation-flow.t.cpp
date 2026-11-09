@@ -2604,6 +2604,54 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusRoundTripPreservesAuthorityScopes)
   std::filesystem::remove(statePath.string() + ".lock");
 }
 
+BOOST_AUTO_TEST_CASE(ServiceControllerReusesAbePairAcrossRestartAndAfterRevocation)
+{
+  const auto statePath = std::filesystem::temp_directory_path() /
+    ("ndnsf-controller-abe-restart-" + std::to_string(::getpid()) + ".bin");
+  std::filesystem::remove(statePath);
+  std::filesystem::remove(statePath.string() + ".lock");
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
+  ndn::KeyChain keys("pib-memory:spec220-abe-persistence", "tpm-memory:spec220-abe-persistence");
+  const auto certificate = keys.createIdentity(ndn::Name("/controller/spec220-abe"),
+                                                ndn::RsaKeyParams(2048))
+                             .getDefaultKey().getDefaultCertificate();
+  std::string originalDigest;
+  std::string revokedDigest;
+  {
+    boost::asio::io_context io;
+    ndn::DummyClientFace face(io, keys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController controller(face, certificate, validator, "examples/hello.policies");
+    originalDigest = controller.getPolicyStatus(ndn::Name(SERVICE)).getAbePublicParametersDigest();
+    BOOST_REQUIRE(!originalDigest.empty());
+  }
+  {
+    boost::asio::io_context io;
+    ndn::DummyClientFace face(io, keys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController controller(face, certificate, validator, "examples/hello.policies");
+    BOOST_REQUIRE(controller.getControllerVersion().isValid());
+    BOOST_CHECK_EQUAL(controller.getPolicyStatus(ndn::Name(SERVICE)).getAbePublicParametersDigest(),
+                      originalDigest);
+    BOOST_REQUIRE(controller.revoke(makeIdentityRevocation("/example/hello/user")));
+    revokedDigest = controller.getPolicyStatus(ndn::Name(SERVICE)).getAbePublicParametersDigest();
+    BOOST_CHECK_NE(revokedDigest, originalDigest);
+  }
+  {
+    boost::asio::io_context io;
+    ndn::DummyClientFace face(io, keys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController controller(face, certificate, validator, "examples/hello.policies");
+    BOOST_REQUIRE(controller.getControllerVersion().isValid());
+    BOOST_CHECK_EQUAL(controller.getPolicyStatus(ndn::Name(SERVICE)).getAbePublicParametersDigest(),
+                      revokedDigest);
+    BOOST_CHECK(controller.isRevoked(ndn::Name("/example/hello/user"), ndn::Name(SERVICE)));
+  }
+  ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
+  std::filesystem::remove(statePath);
+  std::filesystem::remove(statePath.string() + ".lock");
+}
+
 BOOST_AUTO_TEST_CASE(ServiceControllerRestoresRevocationsAfterRestart)
 {
   const auto statePath = std::filesystem::temp_directory_path() /

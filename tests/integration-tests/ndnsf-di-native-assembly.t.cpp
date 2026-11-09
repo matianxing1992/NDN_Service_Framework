@@ -1069,7 +1069,7 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
     if (selectedIds.count(payload.payloadId) == 0) continue;
     auto name = "/spec189/material/packed/" + std::to_string(bundleIndex);
     if (!bundles[name].empty() && payload.byteSize() >
-        NativeCanonicalMaterialBundleMaxBytes - bundles[name].size())
+        NativeCanonicalMaterialPublicationMaxBytes - bundles[name].size())
       name = "/spec189/material/packed/" + std::to_string(++bundleIndex);
     auto& bundle = bundles[name];
     payloadNames.at(payload.payloadId) = name;
@@ -1077,11 +1077,12 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
     const auto bytes = payload.copyBytes();
     bundle.insert(bundle.end(), bytes.begin(), bytes.end());
   }
-  BOOST_REQUIRE_GE(bundles.size(), 3U);
+  BOOST_REQUIRE_EQUAL(bundles.size(), 1U);
   for (auto& item : bundles) {
-    if (item.second.size() <= NativeCanonicalMaterialBundleMaxBytes - 4)
+    if (item.second.size() <= NativeCanonicalMaterialPublicationMaxBytes - 4)
       item.second.insert(item.second.end(), {0xde, 0xad, 0xbe, 0xef});
-    BOOST_REQUIRE_LE(item.second.size(), NativeCanonicalMaterialBundleMaxBytes);
+    BOOST_REQUIRE_GT(item.second.size(), NativeCanonicalMaterialBundleMaxBytes);
+    BOOST_REQUIRE_LE(item.second.size(), NativeCanonicalMaterialPublicationMaxBytes);
   }
   std::ostringstream materialObjects;
   materialObjects << '[';
@@ -1461,6 +1462,46 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
              std::string::npos;
     });
   std::filesystem::remove_all(badOptions.cacheDir, cleanupError);
+  auto largeBundleReceipt = NativeJson::parse(receiptText);
+  for (auto& object : largeBundleReceipt["materialObjects"]) {
+    if (object.contains("bundleBytes"))
+      object["bundleBytes"] = NativeCanonicalMaterialPublicationMaxBytes + 1;
+  }
+  const auto largeBundleText = nativeCanonicalJson(largeBundleReceipt);
+  const std::vector<std::uint8_t> largeBundleBytes(largeBundleText.begin(), largeBundleText.end());
+  auto largeBundleRoot = NativeJson::parse(rootText);
+  largeBundleRoot["metadata"]["materialReceiptBytes"] = largeBundleBytes.size();
+  largeBundleRoot["metadata"]["materialReceiptDigest"] = digest(largeBundleBytes);
+  const auto largeBundleRootText = nativeCanonicalJson(largeBundleRoot);
+  const std::vector<std::uint8_t> largeBundleRootBytes(
+    largeBundleRootText.begin(), largeBundleRootText.end());
+  auto largeBundleProjection = projection;
+  largeBundleProjection.assembly.modelManifestDigest = digest(largeBundleRootBytes);
+  largeBundleProjection.assembly.recipeDigest = recipeDigestFor(largeBundleProjection.assembly);
+  auto largeBundleFetchers = fetchers;
+  largeBundleFetchers.getArtifact = [=] (const ndn::Name& name) -> std::optional<ndn::Buffer> {
+    if (name != rootName) return std::nullopt;
+    return ndn::Buffer(largeBundleRootBytes.data(), largeBundleRootBytes.size());
+  };
+  largeBundleFetchers.fetchEncryptedLargeData = [=] (const ndn::Name& name,
+                                                   const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (name == receiptName)
+      return ndn::Buffer(largeBundleBytes.data(), largeBundleBytes.size());
+    return fetchers.fetchEncryptedLargeData(name, service);
+  };
+  auto largeBundleOptions = options;
+  largeBundleOptions.reportProgress = {};
+  largeBundleOptions.cacheDir = options.cacheDir + "-oversized-bundle";
+  std::filesystem::remove_all(largeBundleOptions.cacheDir, cleanupError);
+  BOOST_CHECK_EXCEPTION(
+    prepareNativeCanonicalOnnxRole(largeBundleFetchers, largeBundleProjection, largeBundleOptions),
+    std::runtime_error, [] (const auto& error) {
+      return std::string(error.what()).find("DI_CANONICAL_MATERIAL_BUNDLE_RECEIPT_INVALID") !=
+             std::string::npos;
+    });
+  BOOST_CHECK(spoolPaths(largeBundleOptions.cacheDir).empty());
+  std::filesystem::remove_all(largeBundleOptions.cacheDir, cleanupError);
   std::filesystem::remove_all(options.cacheDir, cleanupError);
 
   projection.assembly.maxAssembledBytes = fetchBudget - 1U;
@@ -1474,7 +1515,9 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
     });
   BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), manifestName.toUri()), 1U);
   BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), receiptName.toUri()), 1U);
-  BOOST_CHECK(std::any_of(selectedIds.begin(), selectedIds.end(), [&] (const auto& payloadId) {
+  // All selected slices share one serving object. Its complete size must fit
+  // before retrieval; a rejected budget cannot fetch a partial bundle.
+  BOOST_CHECK(std::none_of(selectedIds.begin(), selectedIds.end(), [&] (const auto& payloadId) {
     return std::count(fetches->begin(), fetches->end(), payloadNames.at(payloadId)) != 0;
   }));
   for (const auto& payload : materialSource.materialManifest->payloads)

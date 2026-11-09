@@ -3,8 +3,13 @@
 
 #include <ndn-cxx/security/signing-helpers.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <future>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace ndn_service_framework::test {
 using namespace std::chrono_literals;
@@ -106,6 +111,48 @@ BOOST_AUTO_TEST_CASE(SignedPacketLimitAndRejectedBatchVisibility)
   BOOST_REQUIRE(recovered);
   BOOST_CHECK_EQUAL_COLLECTIONS(recovered->begin(), recovered->end(),
                                 first.begin(), first.end());
+
+  auto observed = std::make_shared<std::vector<std::string>>();
+  CollaborationTransferMetrics metrics;
+  metrics.localWorkObserver.owner = observed;
+  metrics.localWorkObserver.observe = [] (const std::shared_ptr<void>& owner,
+      std::string_view phase, CollaborationLocalWorkObserver::Operation operation, void* context) {
+    std::static_pointer_cast<std::vector<std::string>>(owner)->emplace_back(phase);
+    operation(context);
+  };
+  const auto observedName = makeName("observed-publication");
+  BOOST_REQUIRE(publisher.publishSignedExactData("wire-limit", {{observedName, first}},
+    60000, &metrics));
+  BOOST_REQUIRE(metrics.transportPayloadBytes);
+  BOOST_CHECK_EQUAL(*metrics.transportPayloadBytes, first.size());
+  for (const auto* phase : {"core-tensor-data-construct", "core-tensor-data-sign",
+      "core-tensor-data-producer-admission", "core-tensor-data-wire-encode",
+      "core-tensor-ims-insert", "core-tensor-pending-satisfy"})
+    BOOST_CHECK_EQUAL(std::count(observed->begin(), observed->end(), phase), 1U);
+  const auto observedPayload = fetch(observedName);
+  BOOST_REQUIRE(observedPayload);
+  BOOST_CHECK_EQUAL_COLLECTIONS(observedPayload->begin(), observedPayload->end(),
+                                first.begin(), first.end());
+
+  // The asynchronous Context path must retain the observer for every packet,
+  // including replacements dispatched after the initial bounded window.
+  const auto batchSecondName = makeName("observed-batch-second");
+  BOOST_REQUIRE(publisher.publishSignedExactData(
+    "wire-limit", {{batchSecondName, first}}, 60000));
+  observed->clear();
+  auto batch = receiver.startSignedExactDataBatch("wire-limit",
+    {observedName, batchSecondName}, producer.getName(), 250, {}, {},
+    ServiceProvider::ExactDataFetchPhase::Published, {}, 1, metrics.localWorkObserver);
+  environment.pumpUntil([&] { return batch.wait_for(0ms) == std::future_status::ready; });
+  const auto batchResult = batch.get();
+  BOOST_REQUIRE(batchResult);
+  BOOST_REQUIRE_EQUAL(batchResult->contents.size(), 2U);
+  for (const auto& content : batchResult->contents)
+    BOOST_CHECK_EQUAL_COLLECTIONS(content.begin(), content.end(), first.begin(), first.end());
+  BOOST_CHECK_EQUAL(std::count(observed->begin(), observed->end(),
+                              "core-exact-data-validator-call"), 2U);
+  BOOST_CHECK_EQUAL(std::count(observed->begin(), observed->end(),
+                              "core-exact-data-admission"), 2U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

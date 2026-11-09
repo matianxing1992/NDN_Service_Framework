@@ -173,6 +173,10 @@ def _allocation_result(state, result):
     result['status'] = ('COMPLETE' if complete and not value['external_references'] else
                         'EXTERNAL_UNVERIFIED' if complete else
                         'INTERRUPTED' if value['execution'] == 'INTERRUPTED' else 'FAILED')
+    if result['status'] == 'COMPLETE' and config.get('operation') == 'prepare':
+        result['status'] = 'PREPARED'
+        result['execution'] = 'PREPARED'
+        result['requester']['completion'] = 'PREPARED'
 
 
 def _failed_allocation(root, state, reference):
@@ -421,7 +425,13 @@ def up(config, source, root, timeout, debug=False, timing=False):
                     # boundary before COMPLETE or STOPPED can be reported.
                     state['status'] = 'AWAITING_NODE_AUDIT'
                     _save(root, state)
-                    return snapshot(state, timeout=min(30, _remaining(deadline)))
+                    closed = snapshot(state, timeout=min(30, _remaining(deadline)))
+                    if (config.get('operation') == 'prepare' and
+                            closed['status'] == 'PREPARED' and closed['actor_cleanup'] == 'ZERO'):
+                        state.update(status='STOPPED', needs_closeout=False)
+                        _save(root, state)
+                        closed['operation_stage'] = 'STOPPED'
+                    return closed
                 time.sleep(min(0.25, _remaining(deadline)))
         except (Exception, KeyboardInterrupt) as error:
             state['failure'] = str(error) or type(error).__name__

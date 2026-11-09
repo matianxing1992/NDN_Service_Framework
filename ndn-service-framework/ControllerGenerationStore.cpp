@@ -2,7 +2,9 @@
 
 #include <ndn-cxx/name.hpp>
 #include <ndn-cxx/util/sha256.hpp>
+#include <openssl/crypto.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -22,9 +24,48 @@ namespace ndn_service_framework {
 namespace {
 
 constexpr char STATE_MAGIC[] = "NDNSFCS2";
+constexpr char ABE_STATE_MAGIC[] = "NDNSFCS3";
 constexpr size_t STATE_MAGIC_SIZE = sizeof(STATE_MAGIC) - 1;
 constexpr char LOCK_MAGIC[] = "NDNSF-FLOCK-1";
 constexpr size_t MAX_LEASE_BYTES = 16384;
+constexpr size_t MAX_ABE_FIELD_BYTES = 1U << 20;
+
+class PrivateFileInputBuffer : public std::streambuf
+{
+public:
+  explicit PrivateFileInputBuffer(int fd)
+    : m_fd(fd)
+  {
+    setg(m_buffer.data(), m_buffer.data(), m_buffer.data());
+  }
+
+  ~PrivateFileInputBuffer() override
+  {
+    OPENSSL_cleanse(m_buffer.data(), m_buffer.size());
+    ::close(m_fd);
+  }
+
+protected:
+  int_type underflow() override
+  {
+    if (gptr() < egptr())
+      return traits_type::to_int_type(*gptr());
+    ssize_t count;
+    do {
+      count = ::read(m_fd, m_buffer.data(), m_buffer.size());
+    } while (count < 0 && errno == EINTR);
+    if (count < 0)
+      throw std::runtime_error("cannot read Controller generation state");
+    if (count == 0)
+      return traits_type::eof();
+    setg(m_buffer.data(), m_buffer.data(), m_buffer.data() + count);
+    return traits_type::to_int_type(*gptr());
+  }
+
+private:
+  int m_fd;
+  std::array<char, 8192> m_buffer{};
+};
 
 struct LeaseRecord
 {
@@ -87,7 +128,98 @@ readU64(std::istream& stream)
   return value;
 }
 
+void
+writeString(int fd, const std::string& value)
+{
+  writeU64(fd, value.size());
+  writeAll(fd, value.data(), value.size());
+}
+
+void
+readStringInto(std::istream& stream, std::string& value, size_t limit)
+{
+  const auto length = readU64(stream);
+  if (length == 0 || length > limit)
+    throw std::runtime_error("invalid Controller ABE state field length");
+  value.assign(static_cast<size_t>(length), '\0');
+  stream.read(&value[0], static_cast<std::streamsize>(value.size()));
+  if (stream.gcount() != static_cast<std::streamsize>(value.size()))
+    throw std::runtime_error("truncated Controller ABE state");
+}
+
+bool
+isDigest(const std::string& value)
+{
+  return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
+    std::all_of(value.begin() + 7, value.end(), [] (unsigned char ch) {
+      return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') ||
+             (ch >= 'A' && ch <= 'F');
+    });
+}
+
+bool
+isValidAbeMaterial(const ControllerGenerationStore::AbeMaterial& material)
+{
+  return !material.owner.empty() && material.owner.size() <= MAX_LEASE_BYTES - 64 &&
+    material.owner.find_first_of("\r\n\t ") == std::string::npos &&
+    isDigest(material.signingKeyDigest) && isDigest(material.policyDigest) &&
+    !material.publicParameters.empty() && material.publicParameters.size() <= MAX_ABE_FIELD_BYTES &&
+    !material.masterSecret.empty() && material.masterSecret.size() <= MAX_ABE_FIELD_BYTES;
+}
+
+std::string
+abeMaterialDigest(const ControllerGenerationStore::AbeMaterial& material)
+{
+  ndn::util::Sha256 hash;
+  hash << std::string("NDNSF-CONTROLLER-ABE-STATE-V1");
+  for (const auto* field : {&material.owner, &material.signingKeyDigest,
+                            &material.policyDigest, &material.publicParameters,
+                            &material.masterSecret}) {
+    hash << (std::to_string(field->size()) + ":");
+    hash << *field;
+  }
+  hash << std::string(material.rotationRequired ? "1" : "0");
+  return "sha256:" + hash.toString();
+}
+
+bool
+sameRevocations(const std::vector<RevocationTarget>& left,
+                const std::vector<RevocationTarget>& right)
+{
+  if (left.size() != right.size())
+    return false;
+  for (size_t i = 0; i < left.size(); ++i) {
+    const auto a = left[i].wireEncode();
+    const auto b = right[i].wireEncode();
+    if (a.size() != b.size() || !std::equal(a.data(), a.data() + a.size(), b.data()))
+      return false;
+  }
+  return true;
+}
+
 } // namespace
+
+ControllerGenerationStore::AbeMaterial&
+ControllerGenerationStore::AbeMaterial::operator=(const AbeMaterial& other)
+{
+  if (this != &other) {
+    if (!masterSecret.empty())
+      OPENSSL_cleanse(&masterSecret[0], masterSecret.size());
+    owner = other.owner;
+    signingKeyDigest = other.signingKeyDigest;
+    policyDigest = other.policyDigest;
+    publicParameters = other.publicParameters;
+    masterSecret = other.masterSecret;
+    rotationRequired = other.rotationRequired;
+  }
+  return *this;
+}
+
+ControllerGenerationStore::AbeMaterial::~AbeMaterial()
+{
+  if (!masterSecret.empty())
+    OPENSSL_cleanse(&masterSecret[0], masterSecret.size());
+}
 
 ControllerGenerationStore::ControllerGenerationStore(std::filesystem::path statePath)
   : m_statePath(std::move(statePath))
@@ -248,7 +380,8 @@ ControllerGenerationStore::requireWriter() const
 std::optional<ControllerVersion>
 ControllerGenerationStore::load() const
 {
-  if (!std::filesystem::exists(m_statePath))
+  struct stat info{};
+  if (::lstat(m_statePath.c_str(), &info) != 0 && errno == ENOENT)
     return std::nullopt;
   return loadState().version;
 }
@@ -256,11 +389,21 @@ ControllerGenerationStore::load() const
 ControllerGenerationStore::PersistedState
 ControllerGenerationStore::loadState() const
 {
-  if (!std::filesystem::exists(m_statePath))
-    return {};
-  std::ifstream state(m_statePath, std::ios::binary);
-  if (!state)
+  const int fd = ::open(m_statePath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) {
+    if (errno == ENOENT)
+      return {};
     throw std::runtime_error("cannot open Controller generation state");
+  }
+  PrivateFileInputBuffer buffer(fd);
+  struct stat info{};
+  if (::fstat(fd, &info) != 0)
+    throw std::runtime_error("cannot inspect Controller generation state");
+  if (!S_ISREG(info.st_mode) || info.st_uid != ::geteuid() || info.st_nlink != 1 ||
+      (info.st_mode & 0022) != 0)
+    throw std::runtime_error("unsafe Controller generation state");
+  std::istream state(&buffer);
+  state.exceptions(std::ios::badbit);
 
   char magic[STATE_MAGIC_SIZE] = {};
   state.read(magic, STATE_MAGIC_SIZE);
@@ -268,7 +411,10 @@ ControllerGenerationStore::loadState() const
     throw std::runtime_error("truncated Controller generation state");
 
   PersistedState result;
-  if (std::equal(std::begin(magic), std::end(magic), STATE_MAGIC)) {
+  const bool hasAbeMaterial = std::equal(std::begin(magic), std::end(magic), ABE_STATE_MAGIC);
+  if (hasAbeMaterial && (info.st_mode & 0077) != 0)
+    throw std::runtime_error("Controller ABE state must be private");
+  if (hasAbeMaterial || std::equal(std::begin(magic), std::end(magic), STATE_MAGIC)) {
     result.version.controllerGenerationTimestamp = readU64(state);
     result.version.controllerEpoch = readU64(state);
     const auto count = readU64(state);
@@ -290,13 +436,32 @@ ControllerGenerationStore::loadState() const
         throw std::runtime_error("invalid persisted revocation");
       result.revocations.push_back(std::move(target));
     }
+    if (hasAbeMaterial) {
+      result.abeMaterial.emplace();
+      auto& material = *result.abeMaterial;
+      const auto rotationRequired = readU64(state);
+      if (rotationRequired > 1)
+        throw std::runtime_error("invalid Controller ABE rotation state");
+      material.rotationRequired = rotationRequired != 0;
+      readStringInto(state, material.owner, MAX_LEASE_BYTES - 64);
+      readStringInto(state, material.signingKeyDigest, 71);
+      readStringInto(state, material.policyDigest, 71);
+      readStringInto(state, material.publicParameters, MAX_ABE_FIELD_BYTES);
+      readStringInto(state, material.masterSecret, MAX_ABE_FIELD_BYTES);
+      std::string checksum;
+      readStringInto(state, checksum, 71);
+      if (!isValidAbeMaterial(material) || checksum != abeMaterialDigest(material) ||
+          state.peek() != std::char_traits<char>::eof())
+        throw std::runtime_error("invalid Controller ABE state");
+    }
   }
   else {
     // Read-only compatibility with the original version-only record.  The
     // next atomic write upgrades it to the revocation-preserving format.
-    state.clear();
-    state.seekg(0);
-    result.version.controllerGenerationTimestamp = readU64(state);
+    uint64_t generation = 0;
+    for (const char byte : magic)
+      generation = (generation << 8) | static_cast<uint8_t>(byte);
+    result.version.controllerGenerationTimestamp = generation;
     result.version.controllerEpoch = readU64(state);
     if (!result.version.isValid() || state.peek() != std::char_traits<char>::eof())
       throw std::runtime_error("invalid Controller generation state");
@@ -310,10 +475,34 @@ ControllerGenerationStore::loadRevocations() const
   return loadState().revocations;
 }
 
+std::optional<ControllerGenerationStore::AbeMaterial>
+ControllerGenerationStore::loadAbeMaterial() const
+{
+  requireWriter();
+  auto material = loadState().abeMaterial;
+  if (material && material->owner != m_owner)
+    throw std::runtime_error("Controller ABE state identity mismatch");
+  return material;
+}
+
+void
+ControllerGenerationStore::storeAbeMaterial(const AbeMaterial& material)
+{
+  requireWriter();
+  if (!isValidAbeMaterial(material) || material.owner != m_owner)
+    throw std::invalid_argument("invalid Controller ABE material");
+  auto current = loadState();
+  if (!current.version.isValid() || (current.abeMaterial && current.abeMaterial->owner != m_owner))
+    throw std::runtime_error("Controller ABE state identity mismatch");
+  current.abeMaterial = material;
+  persist(current.version, current.revocations, current.abeMaterial);
+}
+
 void
 ControllerGenerationStore::persist(
     const ControllerVersion& version,
-    const std::vector<RevocationTarget>& revocations) const
+    const std::vector<RevocationTarget>& revocations,
+    const std::optional<AbeMaterial>& abeMaterial) const
 {
   requireWriter();
   if (!version.isValid())
@@ -324,7 +513,7 @@ ControllerGenerationStore::persist(
   if (fd < 0)
     throw std::runtime_error("cannot create private Controller generation state");
   try {
-    writeAll(fd, STATE_MAGIC, STATE_MAGIC_SIZE);
+    writeAll(fd, abeMaterial ? ABE_STATE_MAGIC : STATE_MAGIC, STATE_MAGIC_SIZE);
     writeU64(fd, version.controllerGenerationTimestamp);
     writeU64(fd, version.controllerEpoch);
     writeU64(fd, revocations.size());
@@ -332,6 +521,17 @@ ControllerGenerationStore::persist(
       const auto wire = target.wireEncode();
       writeU64(fd, wire.size());
       writeAll(fd, reinterpret_cast<const char*>(wire.data()), wire.size());
+    }
+    if (abeMaterial) {
+      if (!isValidAbeMaterial(*abeMaterial) || abeMaterial->owner != m_owner)
+        throw std::runtime_error("invalid Controller ABE material");
+      writeU64(fd, abeMaterial->rotationRequired ? 1 : 0);
+      writeString(fd, abeMaterial->owner);
+      writeString(fd, abeMaterial->signingKeyDigest);
+      writeString(fd, abeMaterial->policyDigest);
+      writeString(fd, abeMaterial->publicParameters);
+      writeString(fd, abeMaterial->masterSecret);
+      writeString(fd, abeMaterialDigest(*abeMaterial));
     }
     if (::fsync(fd) != 0)
       throw std::runtime_error("cannot flush Controller generation state");
@@ -352,6 +552,15 @@ ControllerGenerationStore::persist(
     std::filesystem::remove(temporary);
     throw std::runtime_error("cannot atomically replace Controller generation state");
   }
+  const auto parent = m_statePath.parent_path().empty() ? std::filesystem::path(".") :
+                                                        m_statePath.parent_path();
+  const int dirFd = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (dirFd < 0)
+    throw CommitUncertain("cannot open Controller state directory for flush");
+  const int flushResult = ::fsync(dirFd);
+  ::close(dirFd);
+  if (flushResult != 0)
+    throw CommitUncertain("cannot flush Controller state directory");
 }
 
 ControllerVersion
@@ -362,6 +571,8 @@ ControllerGenerationStore::startGeneration(
   if (nowMs == 0)
     throw std::invalid_argument("Controller generation timestamp must be nonzero");
   const auto previous = loadState();
+  if (previous.abeMaterial && previous.abeMaterial->owner != m_owner)
+    throw std::runtime_error("Controller ABE state identity mismatch");
   uint64_t generation = nowMs;
   if (previous.version.isValid()) {
     if (previous.version.controllerGenerationTimestamp == std::numeric_limits<uint64_t>::max())
@@ -369,23 +580,28 @@ ControllerGenerationStore::startGeneration(
     generation = std::max(generation, previous.version.controllerGenerationTimestamp + 1);
   }
   const ControllerVersion version{generation, 1};
-  persist(version, revocations);
+  persist(version, revocations, previous.abeMaterial);
   return version;
 }
 
 ControllerVersion
 ControllerGenerationStore::advanceEpoch(
-    const std::vector<RevocationTarget>& revocations)
+    const std::vector<RevocationTarget>& revocations, bool requireAbeRotationOnRestart)
 {
   requireWriter();
-  const auto previous = loadState();
+  auto previous = loadState();
+  if (previous.abeMaterial && previous.abeMaterial->owner != m_owner)
+    throw std::runtime_error("Controller ABE state identity mismatch");
   if (!previous.version.isValid())
     throw std::runtime_error("Controller generation has not started");
   if (previous.version.controllerEpoch == std::numeric_limits<uint64_t>::max())
     throw std::overflow_error("Controller epoch overflow");
   const ControllerVersion version{previous.version.controllerGenerationTimestamp,
                                   previous.version.controllerEpoch + 1};
-  persist(version, revocations);
+  if (previous.abeMaterial &&
+      (requireAbeRotationOnRestart || !sameRevocations(previous.revocations, revocations)))
+    previous.abeMaterial->rotationRequired = true;
+  persist(version, revocations, previous.abeMaterial);
   return version;
 }
 

@@ -13,6 +13,8 @@ usage: build-local-sif.sh \
   --definition PATH --sif PATH --record PATH --source-seal PATH \
   [--host-gate-manifest PATH | --build-only] \
   [--resume-final-rootfs PATH] \
+  [--builder-checkpoint PATH --builder-checkpoint-retention PATH \
+   --builder-checkpoint-sdk-sha256 sha256:HEX] \
   [--strict-host-source-seal] \
   --apptainer PATH --expected-apptainer VERSION
 
@@ -34,6 +36,9 @@ host_gate_manifest=''
 strict_host_source_seal=0
 build_only=0
 resume_final_rootfs=''
+builder_checkpoint=''
+builder_checkpoint_retention=''
+builder_checkpoint_sdk_sha256=''
 apptainer_bin=''
 expected_version=''
 
@@ -47,11 +52,20 @@ while (($#)); do
     --strict-host-source-seal) strict_host_source_seal=1; shift ;;
     --build-only) build_only=1; shift ;;
     --resume-final-rootfs) resume_final_rootfs=${2:-}; shift 2 ;;
+    --builder-checkpoint) builder_checkpoint=${2:-}; shift 2 ;;
+    --builder-checkpoint-retention) builder_checkpoint_retention=${2:-}; shift 2 ;;
+    --builder-checkpoint-sdk-sha256) builder_checkpoint_sdk_sha256=${2:-}; shift 2 ;;
     --apptainer) apptainer_bin=${2:-}; shift 2 ;;
     --expected-apptainer) expected_version=${2:-}; shift 2 ;;
     *) usage ;;
   esac
 done
+
+if [ -n "$builder_checkpoint$builder_checkpoint_retention$builder_checkpoint_sdk_sha256" ]; then
+  [ -n "$builder_checkpoint" ] && [ -n "$builder_checkpoint_retention" ] && \
+    [ -n "$builder_checkpoint_sdk_sha256" ] && [ -z "$resume_final_rootfs" ] && \
+    [ "$build_only" = 1 ] || usage
+fi
 
 [ -n "$definition" ] && [ -n "$sif" ] && [ -n "$record" ] && \
   [ -n "$source_seal" ] && [ -n "$apptainer_bin" ] && \
@@ -287,6 +301,31 @@ if ! boundary_json=$(python3 "$boundary_validator" --definition "$definition"); 
 fi
 
 mkdir -p "$(dirname "$sif")" "$(dirname "$record")"
+original_definition="$definition"
+checkpoint_record=''
+checkpoint_record_sha256=''
+if [ -n "$builder_checkpoint" ]; then
+  # This lease covers admission, Apptainer consumption and post-build verification.
+  # The helper checks the private directory before opening anything for execution.
+  [ -d "$builder_checkpoint" ] && [ ! -L "$builder_checkpoint" ] || exit 4
+  [ "$(readlink -f "$builder_checkpoint")" = "$builder_checkpoint" ] || exit 4
+  [ "$(stat -c %u "$builder_checkpoint")" = "$(id -u)" ] || exit 4
+  [ "$(stat -c %a "$builder_checkpoint")" = 700 ] || exit 4
+  [ -f "$builder_checkpoint/.active.lock" ] && [ ! -L "$builder_checkpoint/.active.lock" ] || exit 4
+  [ "$(stat -c %u "$builder_checkpoint/.active.lock")" = "$(id -u)" ] || exit 4
+  exec 8>"$builder_checkpoint/.active.lock"
+  flock -n 8
+  checkpoint_record="$record.builder-checkpoint.json"
+  checkpoint_definition="$record.builder-checkpoint.def"
+  checkpoint_helper="$script_dir/native-builder-checkpoint.py"
+  checkpoint_args=(--checkpoint-root "$builder_checkpoint"
+    --retention-record "$builder_checkpoint_retention" --definition "$original_definition"
+    --source-seal "$source_seal" --base-sdk-sha256 "$builder_checkpoint_sdk_sha256"
+    --derived-definition "$checkpoint_definition" --record "$checkpoint_record")
+  boundary_json=$(python3 "$checkpoint_helper" prepare "${checkpoint_args[@]}")
+  checkpoint_record_sha256="sha256:$(sha256sum "$checkpoint_record" | awk '{print $1}')"
+  definition="$checkpoint_definition"
+fi
 partial="$sif.partial"
 record_partial="$record.partial"
 rm -f "$partial" "$record_partial"
@@ -303,11 +342,17 @@ base_sif=''
 base_sif_sha256=''
 base_sif_bytes='0'
 if [ "$bootstrap" = localimage ]; then
-  base_sif=$(awk -F: '
+  if [ -n "$builder_checkpoint" ]; then
+    # The dependency base belongs to the unchanged final stage, not its
+    # execution-free retained-install builder input.
+    base_sif=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["baseImage"])' "$boundary_json")
+  else
+    base_sif=$(awk -F: '
     tolower($1) ~ /^[[:space:]]*from[[:space:]]*$/ {
       value=substr($0, index($0, ":") + 1)
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); print value; exit
     }' "$definition")
+  fi
   [ -n "$base_sif" ] || { echo LOCAL_SIF_BASE_MISSING_FROM >&2; exit 4; }
   case "$base_sif" in
     /*) ;;
@@ -318,6 +363,14 @@ if [ "$bootstrap" = localimage ]; then
   base_sif_sha256=$(sha256sum "$base_sif" | awk '{print $1}')
   base_sif_bytes=$(stat -c '%s' "$base_sif")
 fi
+
+# A pathname and available bytes do not establish disk-backed build storage.
+build_tmp=${APPTAINER_TMPDIR:-${TMPDIR:-/tmp}}
+mkdir -p "$build_tmp"
+build_tmp_filesystem=$(findmnt -n -o FSTYPE -T "$build_tmp")
+case "$build_tmp_filesystem" in
+  ''|rootfs|ramfs|tmpfs) echo LOCAL_SIF_BUILD_TMP_REQUIRES_DISK >&2; exit 4 ;;
+esac
 
 echo "LOCAL_SIF_BUILD_START definition=$definition output=$sif apptainer=$local_version binary=$apptainer_bin"
 # Bound packing queues independently of the build cgroup and host RAM size.
@@ -340,6 +393,10 @@ if [ -n "$resume_final_rootfs" ]; then
 else
   "$apptainer_bin" build --no-cleanup --force \
     --mksquashfs-args "$mksquashfs_args" "$partial" "$definition"
+fi
+if [ -n "$builder_checkpoint" ]; then
+  python3 "$checkpoint_helper" verify "${checkpoint_args[@]}" \
+    --expected-record-sha256 "$checkpoint_record_sha256" >/dev/null
 fi
 [ -s "$partial" ] || { echo LOCAL_SIF_EMPTY >&2; exit 4; }
 inspect_json=$("$apptainer_bin" inspect --json "$partial")
@@ -422,7 +479,8 @@ python3 - "$record_partial" "$definition" "$definition_sha256" "$source_seal" \
   "$base_sif" "$base_sif_sha256" "$base_sif_bytes" "$ndnsf_labels_json" \
   "$apptainer_bin" "$apptainer_sha256" "$boundary_json" \
   "$source_validation_json" "$host_gate_json" "$spec175_input_preflight_json" \
-  "$spec175_preflight_json" "$build_only" "$resume_final_rootfs" "$mksquashfs_args" <<'PY'
+  "$spec175_preflight_json" "$build_only" "$resume_final_rootfs" "$mksquashfs_args" \
+  "$checkpoint_record" "$checkpoint_record_sha256" "$original_definition" <<'PY'
 import hashlib
 import json
 import os
@@ -433,7 +491,8 @@ import sys
  base_sif, base_sif_sha, base_sif_bytes, labels_json,
  apptainer_bin, apptainer_sha, boundary_json, source_validation_json,
  host_gate_json, spec175_input_preflight_json,
- spec175_preflight_json, build_only, resume_final_rootfs, mksquashfs_args) = sys.argv[1:]
+ spec175_preflight_json, build_only, resume_final_rootfs, mksquashfs_args,
+ checkpoint_record, checkpoint_record_sha256, original_definition) = sys.argv[1:]
 build_input = {
     "definition": {"path": definition, "sha256": "sha256:" + definition_sha},
     "method": "local-apptainer-definition",
@@ -448,6 +507,13 @@ if base_sif:
 if resume_final_rootfs:
     build_input['method'] = 'local-apptainer-definition-final-rootfs-resume'
     build_input['resumedFinalRootfs'] = resume_final_rootfs
+if checkpoint_record:
+    build_input['nativeCompilation'] = 'reused-container-builder'
+    build_input['builderCheckpoint'] = {
+        'path': checkpoint_record, 'sha256': checkpoint_record_sha256}
+    build_input['originalDefinition'] = {
+        'path': original_definition,
+        'sha256': 'sha256:' + hashlib.sha256(open(original_definition, 'rb').read()).hexdigest()}
 body = {
     "schemaVersion": "ndnsf-local-sif-build-v3",
     "status": "BUILT_UNQUALIFIED" if build_only == '1' else "PASS",

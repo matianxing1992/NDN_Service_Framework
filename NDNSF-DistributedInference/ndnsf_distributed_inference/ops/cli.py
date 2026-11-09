@@ -30,12 +30,14 @@ def build_parser():
     commands = cluster.add_subparsers(dest="cluster_command", required=True)
     check = commands.add_parser("check", help="check configuration without launching actors")
     check.add_argument("--config", required=True)
-    for name in ('up', 'status', 'down'):
+    for name in ('up', 'prepare', 'status', 'down'):
         command = commands.add_parser(name)
         command.add_argument('--config', required=True)
         command.add_argument('--timeout', type=float, default=1800,
-                             help='bounded operation deadline in seconds (maximum 3600)')
-        if name == 'up':
+                             help=('bounded operation deadline in seconds (maximum 86400 for '
+                                   'Slurm up/prepare, otherwise 3600)' if name in ('up', 'prepare') else
+                                   'bounded operation deadline in seconds (maximum 3600)'))
+        if name in ('up', 'prepare'):
             command.add_argument('--debug', action='store_true',
                                  help='enable NDN diagnostic logs for this boot')
             command.add_argument('--timing', action='store_true',
@@ -100,8 +102,10 @@ def main(argv=None, *, deployment_factory=None, client_factory=None):
             from .trust_resources import describe_failure
             parser.error(describe_failure(error))
         print(json.dumps(result, sort_keys=True))
-        return 0 if (args.cluster_command != 'up' or not result.get('failure')) and result.get('status') in {
-            'CONFIGURATION_CHECKED', 'COMPLETE', 'STOPPED', 'ABSENT', 'SERVICES_READY',
+        if args.cluster_command == 'prepare':
+            return 0 if result.get('status') == 'PREPARED' and not result.get('failure') else 1
+        return 0 if (args.cluster_command not in ('up', 'prepare') or not result.get('failure')) and result.get('status') in {
+            'CONFIGURATION_CHECKED', 'COMPLETE', 'PREPARED', 'STOPPED', 'ABSENT', 'SERVICES_READY',
             'ACTOR_STOPPED'} else 1
     if not args.state_root:
         parser.error("--state-root is required for legacy commands")

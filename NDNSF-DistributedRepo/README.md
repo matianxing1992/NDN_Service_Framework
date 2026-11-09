@@ -1,5 +1,24 @@
 # NDNSF-DistributedRepo
 
+The native `ndnsf-repo-owner-delete` command exposes the existing authenticated Owner cleanup API.
+Use `--help` for its explicit target, trust and credential options. Its bounded request file is a
+`RepoUserStorageDeleteRequest`, for example
+`{"schemaVersion":1,"cleanupId":"recover-1","objectName":"/owner/object","ownerEpoch":1}`.
+Only a validated `DELETED` reply exits0; `PENDING` exits2 without claiming storage release.
+Reuse the cleanup ID after an uncertain outcome. For a known interrupted preparation, target only
+the independently identified Reserved object/epoch, preserve committed groups and staged ciphertext,
+then restart the same Repo for its existing reconciliation. This does not bypass permission checks
+or automatically delete quarantine. An interrupt drains an issued ordinary request within its
+remaining deadline and exits130; it does not claim remote cancellation.
+
+Native Owner-bound original-packet INSERT defaults to schema 1 (`RPOI1`), retaining identity/trust
+signature checks. Explicit schema 2 (`RPOI2`) accepts only valid DigestSha256 packets beneath the
+authenticated writer's prefix. It retains the live storage grant, exact ordered packet commitment,
+quota, immutable transaction and original-wire readback checks. MANIFEST accepts the same explicit
+frame. Digest signatures provide integrity within this authenticated transaction; consumers must
+obtain a trusted root/object commitment separately. This mode does not change Core control-message
+validation or existing callers' default behavior. Repo stores and serves the original Data unchanged.
+
 NDNSF-DistributedRepo is an experimental C++ subproject for a distributed,
 NDN-native, policy-controlled artifact and intermediate-data storage layer for
 NDNSF applications.
@@ -127,6 +146,14 @@ The C++ `RepoDeploymentMode` parser retains legacy values for source
 compatibility; those values do not alter the standalone server's Persistent
 role. The separate `StorageCapability.acceptsBackupReplica` field controls
 whether a candidate may be selected for backup placement.
+
+Original-packet User Storage accounts have a total quota of 100 GB
+(100,000,000,000 bytes) per Owner. Committed packet bytes, manifests and pending
+reservations count across objects and survive restarts. This is an admission
+limit, not a disk reservation or a guarantee of available filesystem capacity.
+Individual objects retain their 1 GB bound, and bounded-read limits remain
+unchanged. Large models use multiple existing material objects; raising the
+account quota does not increase transfer buffers or bypass object validation.
 
 ## Catalog and Replica Discovery
 

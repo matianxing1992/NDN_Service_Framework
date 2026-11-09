@@ -1,4 +1,6 @@
 #include "examples/spec220-onnx-reference-oracle.hpp"
+#include "examples/onnx-kv-state-probe.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
@@ -10,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <numeric>
 #include <string>
 #include <vector>
 #include <unistd.h>
@@ -24,6 +27,34 @@ struct ReferenceFixture
      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   NativeJson requester;
   onnx::ModelProto model;
+
+  NativeJson
+  checkpoint(unsigned round, std::uint64_t prefixCount) const
+  {
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    NativeJson value{{"schema", "ndnsf-di-conversation-checkpoint-v1"}, {"version", 1},
+      {"conversationId", "independent-reference-conversation"}, {"contextEpoch", round + 1},
+      {"parentContextEpoch", round}, {"prefixTokenCount", prefixCount},
+      {"requesterIdentity", "/reference-user"}, {"serviceName", "/reference-service"},
+      {"securityDomainDigest", "sha256:" + std::string(64, 'a')},
+      {"modelContractDigest", "sha256:" + std::string(64, 'b')},
+      {"planRoleMapDigest", "sha256:" + std::string(64, 'c')},
+      {"logicalPrefixDigest", "sha256:" + std::string(64, 'd')},
+      {"roleReceiptDigests", {{"/role", "sha256:" + std::string(64, 'e')}}},
+      {"issuedAtMs", now}, {"expiresAtMs", now + 60000}};
+    return signCheckpoint(std::move(value));
+  }
+
+  static NativeJson
+  signCheckpoint(NativeJson value)
+  {
+    value.erase("checkpointDigest");
+    value.erase("signature");
+    const auto keys = nativeConversationAuthenticationKeys("reference-fixture",
+      {{"active", std::vector<std::uint8_t>(32, 'k')}});
+    return nativeParseJson(nativeSignConversationCheckpoint(std::move(value), keys.front()));
+  }
 
   std::string
   write(const std::string& name, const NativeJson& value)
@@ -89,6 +120,16 @@ struct ReferenceFixture
     requester = {{"limits", {{"max_source_bytes", 1024 * 1024}}},
       {"catalog", {{"splitter", {{"resources_by_role", {{"role", {{"kv_bytes", 4096}}}}}}}}},
       {"turns", NativeJson::array()}};
+    const auto keyPath = directory / "conversation.key";
+    std::ofstream(keyPath, std::ios::binary) << std::string(32, 'k');
+    std::filesystem::permissions(keyPath, std::filesystem::perms::owner_read |
+      std::filesystem::perms::owner_write);
+    requester["conversation"] = {
+      {"journal", {{"identity", "reference-fixture"},
+        {"keys", {{{"id", "active"}, {"file", keyPath.string()}}}}}},
+      {"owner", {{"requester_identity", "/reference-user"},
+        {"service_name", "/reference-service"},
+        {"security_domain_digest", "sha256:" + std::string(64, 'a')}}}};
     saveModel();
     for (unsigned round = 0; round < 2; ++round) {
       const std::vector<std::int64_t> ids = round ? std::vector<std::int64_t>{3} :
@@ -110,8 +151,7 @@ struct ReferenceFixture
         {"options_file", write("options-" + suffix, options)},
         {"output_file", write("output-" + suffix, {{"tokenIds", {1, 1}}})},
         {"checkpoint_output_file", write("checkpoint-" + suffix,
-          {{"conversationId", "independent-reference-conversation"}, {"contextEpoch", round + 1},
-           {"prefixTokenCount", round ? 7 : 4}})}});
+          checkpoint(round, round ? 7 : 4))}});
     }
   }
 
@@ -151,6 +191,136 @@ BOOST_AUTO_TEST_CASE(IndependentTokensAndColdWarmStateProgression)
     .get<std::string>(), nativePlanningDigest(reinterpret_cast<const std::uint8_t*>(warm.data()),
                                             warm.size() * sizeof(std::int64_t)));
   BOOST_CHECK(!result.at("providerStateValuesCompared").get<bool>());
+  BOOST_CHECK_EQUAL(result.at("checkpointAuthentication").get<std::string>(), "VERIFIED");
+}
+
+BOOST_AUTO_TEST_CASE(IndependentReferenceAcceptsOneColdRequest)
+{
+  ReferenceFixture fixture;
+  fixture.requester["turns"].erase(fixture.requester["turns"].begin() + 1);
+  const auto result = spec220::oracle::validateOnnxReference(
+    fixture.requester, Ort::GetVersionString());
+  BOOST_REQUIRE_EQUAL(result.at("rounds").size(), 1U);
+  BOOST_CHECK_EQUAL(result.at("rounds").at(0).at("modelCalls").get<unsigned>(), 3U);
+  BOOST_CHECK_EQUAL(result.at("rounds").at(0).at("prefixTokens").get<unsigned>(), 4U);
+  BOOST_CHECK_EQUAL(result.at("checkpointAuthentication").get<std::string>(), "VERIFIED");
+}
+
+BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
+{
+  for (const auto stateType : {onnx::TensorProto::INT64, onnx::TensorProto::FLOAT,
+                               onnx::TensorProto::FLOAT16}) {
+    ReferenceFixture fixture;
+    if (stateType != onnx::TensorProto::INT64) {
+      auto* graph = fixture.model.mutable_graph();
+      graph->mutable_input(3)->mutable_type()->mutable_tensor_type()->set_elem_type(stateType);
+      graph->mutable_output(0)->mutable_type()->mutable_tensor_type()->set_elem_type(stateType);
+      graph->mutable_node(0)->set_input(1, "state-input-tokens");
+      auto* cast = graph->add_node();
+      cast->set_name("state-token-cast");
+      cast->set_op_type("Cast");
+      cast->add_input("input_ids");
+      cast->add_output("state-input-tokens");
+      auto* type = cast->add_attribute();
+      type->set_name("to"); type->set_type(onnx::AttributeProto::INT); type->set_i(stateType);
+      graph->mutable_node()->SwapElements(0, graph->node_size() - 1);
+      fixture.saveModel();
+    }
+    for (const auto initialSize : {2U, 20U}) {
+      const auto destination = fixture.directory /
+        ("private-kv-" + std::to_string(initialSize) + ".json");
+      auto probe = std::make_shared<OnnxKvStateProbe>(destination, "/reference-provider");
+      RegistryNativeModelRunnerFactory factory;
+      registerOnnxRuntimeBackend(factory, nullptr, probe);
+      NativeModelRunnerSpec spec;
+      spec.role = "/role";
+      spec.kind = "onnx";
+      spec.backend = "onnxruntime";
+      spec.path = (fixture.directory / "model.onnx").string();
+      spec.metadata = {{"inputNames", "input_ids,attention_mask,position_ids,past"},
+        {"providerIdentity", "/reference-provider"}, {"providerBootId", "probe-boot"},
+        {"outputNames", "present,logits"}, {"stateInputNames", "past"},
+        {"stateOutputNames", "present"}, {"stateSuccessorMap", "past=present"},
+        {"positionInputPolicy", "qwen-causal-position-v1"}, {"tokenInputName", "input_ids"},
+        {"attentionMaskInputName", "attention_mask"}, {"positionIdsInputName", "position_ids"}};
+      auto runner = factory.create(spec);
+      BOOST_CHECK(!std::filesystem::exists(destination));
+      OnnxRuntimeModelRunner baseline(spec);
+      std::vector<std::int64_t> prefix;
+      for (std::uint64_t epoch = 0; epoch < 3; ++epoch) {
+        std::vector<std::int64_t> ids(epoch ? 1 : initialSize, 1);
+        if (!epoch)
+          std::iota(ids.begin(), ids.end(), 0);
+        prefix.insert(prefix.end(), ids.begin(), ids.end());
+        RoleExecutionContext context;
+        context.requestId = "probe-request";
+        context.sessionId = "probe-session";
+        context.providerBootId = "probe-boot";
+        context.role = "/role";
+        context.attemptEpoch = 1;
+        context.inferenceEpoch = epoch;
+        context.streamingStateExecution = true;
+        context.generationInputTokenCount = ids.size();
+        GenerationEpochLineageV1 lineage;
+        lineage.requestId = context.requestId;
+        lineage.attemptEpoch = 1;
+        lineage.planDigest = "sha256:" + std::string(64, 'b');
+        lineage.generationId = std::string(32, '1');
+        lineage.streamEpoch = epoch + 1;
+        lineage.inferenceEpoch = epoch;
+        lineage.transitionKind = epoch == 0 ? GenerationEpochLineageV1::PREFILL :
+          epoch == 1 ? GenerationEpochLineageV1::DECODE :
+                       GenerationEpochLineageV1::CHECKPOINT_FINALIZE;
+        lineage.logicalPrefixDigest = nativeConversationPrefixDigest(prefix);
+        lineage.logicalPrefixTokenCount = prefix.size();
+        lineage.positionDigest = "sha256:" + std::string(64, 'c');
+        context.generationLineage = lineage;
+        std::vector<std::uint8_t> data(ids.size() * sizeof(std::int64_t));
+        std::memcpy(data.data(), ids.data(), data.size());
+        TensorBundle input;
+        input.name = "input_ids";
+        input.payload = encodeTensorBundle({{"input_ids", TensorElementType::Int64,
+          {1, static_cast<std::int64_t>(ids.size())}, std::move(data)}});
+        context.inputsByScope.emplace("input_ids", std::move(input));
+        const auto observed = runner->run(context);
+        const auto expected = baseline.run(context);
+        BOOST_REQUIRE_EQUAL(observed.size(), expected.size());
+        for (const auto& output : observed) {
+          BOOST_REQUIRE(expected.count(output.first));
+          BOOST_CHECK(output.second.payload == expected.at(output.first).payload);
+        }
+        std::ifstream file(destination);
+        NativeJson samples;
+        file >> samples;
+        BOOST_CHECK_EQUAL(samples.at("records").size(), epoch + 1);
+        const auto& record = samples.at("records").back();
+        BOOST_CHECK_EQUAL(record.at("inferenceEpoch").get<std::uint64_t>(), epoch);
+        BOOST_CHECK_EQUAL(record.at("logicalPrefixTokenCount").get<std::uint32_t>(), prefix.size());
+        const auto& tensor = record.at("tensors").at(0);
+        BOOST_CHECK_EQUAL(tensor.at("inputName").get<std::string>(), "past");
+        const std::string expectedType = stateType == onnx::TensorProto::FLOAT ? "float32" :
+          stateType == onnx::TensorProto::FLOAT16 ? "float16" : "int64";
+        BOOST_CHECK_EQUAL(tensor.at("elementType").get<std::string>(), expectedType);
+        BOOST_CHECK(tensor.at("shape") == NativeJson({1, prefix.size()}));
+        const auto points = std::min<std::size_t>(16, prefix.size());
+        std::vector<std::uint64_t> indices;
+        std::vector<std::int64_t> values;
+        for (std::size_t i = 0; i < points; ++i) {
+          const auto index = points == 1 ? 0 : i * (prefix.size() - 1) / (points - 1);
+          indices.push_back(index);
+          values.push_back(prefix.at(index));
+        }
+        BOOST_CHECK(tensor.at("values") == NativeJson(values));
+        BOOST_CHECK(tensor.at("indices") == NativeJson(indices));
+      }
+      const auto mode = std::filesystem::status(destination).permissions();
+      BOOST_CHECK((mode & std::filesystem::perms::group_all) == std::filesystem::perms::none);
+      BOOST_CHECK((mode & std::filesystem::perms::others_all) == std::filesystem::perms::none);
+      BOOST_CHECK_THROW(OnnxKvStateProbe(destination, "/reference-provider"), std::exception);
+      runner->releaseSessionState("probe-session");
+      baseline.releaseSessionState("probe-session");
+    }
+  }
 }
 
 BOOST_AUTO_TEST_CASE(RejectsTamperedTokenCheckpointSourceAndRuntime)
@@ -162,8 +332,7 @@ BOOST_AUTO_TEST_CASE(RejectsTamperedTokenCheckpointSourceAndRuntime)
     std::exception, [] (const auto& e) { return reason(e, "token-mismatch"); });
   changed = fixture.requester;
   changed["turns"][1]["checkpoint_output_file"] = fixture.write("wrong-checkpoint.json",
-    {{"conversationId", "independent-reference-conversation"}, {"contextEpoch", 2},
-     {"prefixTokenCount", 8}});
+    fixture.checkpoint(1, 8));
   BOOST_CHECK_EXCEPTION(spec220::oracle::validateOnnxReference(changed, Ort::GetVersionString()),
     std::exception, [] (const auto& e) { return reason(e, "checkpoint-state-progression"); });
   changed = fixture.requester;
@@ -172,6 +341,53 @@ BOOST_AUTO_TEST_CASE(RejectsTamperedTokenCheckpointSourceAndRuntime)
     std::exception, [] (const auto& e) { return reason(e, "source-digest"); });
   BOOST_CHECK_EXCEPTION(spec220::oracle::validateOnnxReference(fixture.requester, "other-runtime"),
     std::exception, [] (const auto& e) { return reason(e, "runtime-version"); });
+}
+
+BOOST_AUTO_TEST_CASE(RejectsUnauthenticatedExpiredAndForeignOwnerCheckpoints)
+{
+  ReferenceFixture fixture;
+  for (const auto& kind : {"signature", "expiry", "key-identity", "owner"}) {
+    auto changed = fixture.requester;
+    auto checkpoint = fixture.checkpoint(0, 4);
+    std::string boundary = "checkpoint-authentication";
+    if (std::string(kind) == "signature")
+      checkpoint["signature"] = std::string(64, '0');
+    else if (std::string(kind) == "expiry") {
+      checkpoint["issuedAtMs"] = 1;
+      checkpoint["expiresAtMs"] = 2;
+      checkpoint = fixture.signCheckpoint(std::move(checkpoint));
+    }
+    else if (std::string(kind) == "key-identity")
+      changed["conversation"]["journal"]["identity"] = "wrong-reference-fixture";
+    else {
+      changed["conversation"]["owner"]["requester_identity"] = "/other-user";
+      boundary = "checkpoint-owner-binding";
+    }
+    changed["turns"][0]["checkpoint_output_file"] =
+      fixture.write(std::string(kind) + ".json", checkpoint);
+    BOOST_CHECK_EXCEPTION(spec220::oracle::validateOnnxReference(changed, Ort::GetVersionString()),
+      std::exception, [&] (const auto& e) { return reason(e, boundary); });
+  }
+  std::ofstream(fixture.directory / "conversation.key", std::ios::binary) << std::string(32, 'x');
+  BOOST_CHECK_EXCEPTION(spec220::oracle::validateOnnxReference(
+    fixture.requester, Ort::GetVersionString()), std::exception,
+    [] (const auto& e) { return reason(e, "checkpoint-authentication"); });
+}
+
+BOOST_AUTO_TEST_CASE(RejectsNonprivateAndSymlinkCheckpointKeys)
+{
+  ReferenceFixture fixture;
+  auto changed = fixture.requester;
+  const auto link = fixture.directory / "key-link";
+  std::filesystem::create_symlink(fixture.directory / "conversation.key", link);
+  changed["conversation"]["journal"]["keys"][0]["file"] = link.string();
+  BOOST_CHECK_EXCEPTION(spec220::oracle::validateOnnxReference(changed, Ort::GetVersionString()),
+    std::exception, [] (const auto& e) { return reason(e, "checkpoint-private-key"); });
+  std::filesystem::permissions(fixture.directory / "conversation.key",
+    std::filesystem::perms::group_read, std::filesystem::perm_options::add);
+  BOOST_CHECK_EXCEPTION(spec220::oracle::validateOnnxReference(
+    fixture.requester, Ort::GetVersionString()), std::exception,
+    [] (const auto& e) { return reason(e, "checkpoint-private-key"); });
 }
 
 BOOST_AUTO_TEST_CASE(RejectsStateThatDidNotAdvanceAndInsufficientBudget)

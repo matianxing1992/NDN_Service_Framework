@@ -4,6 +4,7 @@
 #include "ndn-service-framework/OperationRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-publication.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 
@@ -12,12 +13,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <functional>
 #include <vector>
+#include <ndn-cxx/name.hpp>
 
 namespace ndnsf::di {
 
@@ -140,6 +143,25 @@ struct RepositoryPreparedLookupRequest
   std::string catalogConfigurationJson;
   std::uint64_t maxPublicationBytes = 0;
   std::chrono::steady_clock::time_point deadline{};
+  /** Operation-scoped Core owner ports, never retained by a source provider. */
+  std::function<void()> requireActive;
+  std::function<void(const ndn_service_framework::LargeDataPublishResult&, std::uint64_t,
+    const std::function<void(ndn::span<const std::uint8_t>)>&)> readProtected;
+  std::function<ndn_service_framework::LargeDataPublishResult(
+    const ndn_service_framework::LargeDataPublishResult&)> restoreProtected;
+};
+
+/** Public result of model preparation. It contains no private decryption capability. */
+struct NativeStoredModelPreparationReceipt
+{
+  ndn::Name producer;
+  ndn::Name repository;
+  ndn::Name rootName;
+  std::string rootWireDigest;
+  std::uint64_t sourceBytes = 0;
+  std::uint64_t wireBytes = 0;
+  std::uint64_t packetGroups = 0;
+  std::uint64_t objectCount = 0;
 };
 
 /** Production source-owner boundary for Runtime preparation. */
@@ -159,6 +181,10 @@ public:
   virtual std::optional<NativePreparedCanonicalPublication> lookupPrepared(
     const RepositoryPreparedLookupRequest&) const
   { return std::nullopt; }
+  /** Remember only a complete immutable receipt. No model bytes are copied. */
+  virtual void rememberPrepared(const RepositoryPreparedLookupRequest&,
+                                const NativePreparedCanonicalPublication&) const
+  {}
 };
 
 /** Durable publication owner for Runtime::prepare. Loading verified source
@@ -179,7 +205,11 @@ public:
   virtual void rollback(const NativePreparedCanonicalPublication& publication) const noexcept = 0;
 };
 
-namespace detail { struct RuntimeState; struct RuntimeTestAccess; }
+namespace detail {
+struct RuntimeState;
+struct RuntimeTestAccess;
+struct StoredModelPreparationOperation;
+}
 
 class Runtime;
 enum class PreparationStatus { Pending, Ready, Failed, Cancelled };
@@ -256,6 +286,43 @@ public:
   PreparedModel prepare(const std::string& modelKey = "default",
                         const PrepareOptions& options = {}) const;
 
+  /** Store this User's prepared original Data in an independent Repo.
+   * This confirms storage, not key delegation or permission for another User.
+   * Partial failure retains existing Repo objects for Owner reconciliation.
+   */
+  NativeModelRepositoryReceipt
+  storePreparedModel(const PreparedModel& model,
+    const ndnsf_distributed_repo::RepoArtifactTarget& repository,
+    Milliseconds timeout = Milliseconds{300000}) const;
+
+  /** Prepare source materials once, publish the encrypted immutable model package, and atomically
+   * export the private decryption handle. Requires model_input.mode=publish-stored. */
+  NativeStoredModelPreparationReceipt
+  publishStoredModel(const std::string& modelKey,
+    const ndnsf_distributed_repo::RepoArtifactTarget& repository,
+    const std::filesystem::path& preparationState,
+    const std::filesystem::path& privateHandleFile,
+    Milliseconds timeout = Milliseconds{300000}) const;
+
+  /** Prepare or recover the same stored model package used by external preparation,
+   * then open it for inference. Source mode only; both phases share one deadline.
+   */
+  PreparedModel
+  prepareStoredModel(const std::string& modelKey,
+    const ndnsf_distributed_repo::RepoArtifactTarget& repository,
+    const std::filesystem::path& preparationState,
+    const std::filesystem::path& privateHandleFile,
+    Milliseconds timeout = Milliseconds{300000}) const;
+
+  /** Open a previously published immutable model without its source or an
+   * Owner index. The private handle pins the root; Repo access is read-only.
+   */
+  PreparedModel
+  openStoredModel(const std::string& modelKey,
+    const std::filesystem::path& privateHandleFile,
+    const ndnsf_distributed_repo::RepoArtifactTarget& repository,
+    Milliseconds timeout = Milliseconds{300000}) const;
+
   /** Submit one request on behalf of this User using a prepared model. */
   RequestHandle request(const PreparedModel& model, const Input& input,
                         const RequestOptions& options = {}) const;
@@ -277,6 +344,17 @@ private:
                 std::string profileName);
 
   void requirePreparedModel(const PreparedModel& model, const char* boundary) const;
+
+  NativeStoredModelPreparationReceipt
+  publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
+    const std::string& modelKey, const ndnsf_distributed_repo::RepoArtifactTarget& repository,
+    const std::filesystem::path& preparationState,
+    const std::filesystem::path& privateHandleFile) const;
+
+  PreparedModel
+  openStoredModelImpl(detail::StoredModelPreparationOperation& operation,
+    const std::string& modelKey, const std::filesystem::path& privateHandleFile,
+    const ndnsf_distributed_repo::RepoArtifactTarget& repository) const;
 
   std::shared_ptr<detail::RuntimeState> m_state;
   std::string m_profileName;

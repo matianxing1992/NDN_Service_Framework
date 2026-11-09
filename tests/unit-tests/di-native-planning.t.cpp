@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "tests/fixtures/spec182/native-catalog-test-access.hpp"
 #include "tests/fixtures/spec182/native-qwen-config.hpp"
 #include "tests/fixtures/spec182/native-candidate-json-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
@@ -8,14 +9,19 @@
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-preparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 
 #include <boost/test/unit_test.hpp>
+#include <onnx/shape_inference/implementation.h>
 
 #include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <unistd.h>
 #include <algorithm>
 #include <limits>
 #include <openssl/evp.h>
@@ -115,6 +121,98 @@ checkQwenPlannerMigration(NativeSplitCandidate& actual, const NativeJson& frozen
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec182NativePlanning)
+
+BOOST_AUTO_TEST_CASE(SourceInitializerAnnotationsDoNotDisableShapeInference)
+{
+  for (const std::string mode : {"missing", "scalar", "known", "unresolved",
+                                 "custom", "legacy", "interface"}) {
+    onnx::ModelProto proto;
+    proto.set_ir_version(8);
+    proto.add_opset_import()->set_version(mode == "legacy" ? 13 : 14);
+    auto* g = proto.mutable_graph();
+    g->set_name("source-reshape-rank");
+    const auto port = [](auto* value, const std::string& name, int dtype,
+                         const std::vector<std::int64_t>& shape) {
+      value->set_name(name);
+      auto* type = value->mutable_type()->mutable_tensor_type();
+      type->set_elem_type(dtype);
+      type->mutable_shape();
+      for (const auto dimension : shape)
+        type->mutable_shape()->add_dim()->set_dim_value(dimension);
+    };
+    port(g->add_input(), "position", onnx::TensorProto::INT64, {1, 5});
+    port(g->add_input(), "shape", onnx::TensorProto::INT64, {2});
+    if (mode == "unresolved") {
+      auto* dimension = g->mutable_input(1)->mutable_type()->mutable_tensor_type()
+                          ->mutable_shape()->mutable_dim(0);
+      dimension->clear_dim_value();
+      dimension->set_dim_param("unknown_width");
+    }
+    auto* boundary = g->add_value_info();
+    port(boundary, "boundary", onnx::TensorProto::INT64, mode == "known"
+      ? std::vector<std::int64_t>{1, 5} : std::vector<std::int64_t>{});
+    if (mode != "known" && mode != "scalar")
+      boundary->mutable_type()->mutable_tensor_type()->clear_shape();
+    port(g->add_output(), "result", onnx::TensorProto::INT64, {});
+    g->mutable_output(0)->mutable_type()->mutable_tensor_type()->clear_shape();
+    auto* reshape = g->add_node();
+    reshape->set_op_type("Reshape");
+    if (mode == "custom") {
+      reshape->set_domain("custom");
+      auto* imported = proto.add_opset_import();
+      imported->set_domain("custom");
+      imported->set_version(1);
+    }
+    reshape->add_input("position");
+    reshape->add_input("shape");
+    reshape->add_output("boundary");
+    auto* consume = g->add_node();
+    consume->set_op_type("Identity");
+    consume->add_input("boundary");
+    consume->add_output("result");
+    // Initializer/type consistency is checked before per-node inference;
+    // ordinary node inference errors may be suppressed by ONNX's default mode.
+    if (mode == "interface")
+      port(g->add_input(), "bad_input", onnx::TensorProto::FLOAT, {3});
+    else
+      port(g->add_value_info(), "bad_input", onnx::TensorProto::FLOAT, {3});
+    port(g->add_output(), "bad_output", onnx::TensorProto::FLOAT, {2});
+    auto* initializer = g->add_initializer();
+    initializer->set_name("bad_input");
+    initializer->set_data_type(onnx::TensorProto::FLOAT);
+    initializer->add_dims(2);
+    initializer->add_float_data(0.0F);
+    initializer->add_float_data(0.0F);
+    auto* bad = g->add_node();
+    bad->set_op_type("Identity");
+    bad->add_input("bad_input");
+    bad->add_output("bad_output");
+    auto inferenceProbe = proto;
+    BOOST_REQUIRE_THROW(onnx::shape_inference::InferShapes(inferenceProbe), std::exception);
+    const auto wire = proto.SerializeAsString();
+    NativeCanonicalSource source;
+    source.modelBytes.assign(wire.begin(), wire.end());
+    NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(10),
+      [] {}, 1U << 20, 1U << 20};
+    const auto inspected = inspectNativeOnnxSourceGraph(source,
+      model("qwen", "rank-fixture", digest("rank-graph")), control);
+    const auto edge = std::find_if(inspected.graph.edges.begin(), inspected.graph.edges.end(),
+      [](const auto& value) { return value.tensor.name == "boundary"; });
+    BOOST_REQUIRE(edge != inspected.graph.edges.end());
+    BOOST_CHECK_EQUAL(edge->tensor.dtype, "int64");
+    const auto expectedRank = mode == "missing" || mode == "known" ? 2U : 0U;
+    BOOST_CHECK_MESSAGE(edge->tensor.shape.size() == expectedRank,
+                        mode << " rank=" << edge->tensor.shape.size() << " expected=" << expectedRank);
+    if (mode == "known" && edge->tensor.shape.size() == 2) {
+      BOOST_CHECK_EQUAL(std::get<std::int64_t>(edge->tensor.shape[0]), 1);
+      BOOST_CHECK_EQUAL(std::get<std::int64_t>(edge->tensor.shape[1]), 5);
+    }
+    BOOST_CHECK_EQUAL(std::string(source.modelBytes.begin(), source.modelBytes.end()), wire);
+    const auto originalIdentity = canonicalOnnxSourceIdentity(source, control);
+    BOOST_CHECK_EQUAL(inspected.canonicalIdentity.graphDigest, originalIdentity.graphDigest);
+    BOOST_CHECK_EQUAL(inspected.canonicalIdentity.initializerDigest, originalIdentity.initializerDigest);
+  }
+}
 
 BOOST_AUTO_TEST_CASE(QwenLayerSplitProducesCanonicalRankOneCandidate)
 {
@@ -320,6 +418,7 @@ BOOST_AUTO_TEST_CASE(SmolLm2LlamaCatalogRoutesToNativePlanner)
   }
   NativeCanonicalSource source;
   source.modelBytes = sourceBytes;
+  configuration["source"]["file"] = "/absent-preparing-user/model.onnx";
   BOOST_TEST_CHECKPOINT("before Smol catalog load");
   const auto loaded = NativeRequestCatalog::load(configuration.dump(), source, control);
   BOOST_TEST_CHECKPOINT("after Smol catalog load");
@@ -343,6 +442,279 @@ BOOST_AUTO_TEST_CASE(SmolLm2LlamaCatalogRoutesToNativePlanner)
   referenceMaterials->validate();
   reference.materialManifest = referenceMaterials;
   BOOST_REQUIRE(!reference.preparedMetadataJson.empty());
+  // Exercise the production stored-package writer and actual reference-only catalog restore.
+  // This is metadata/planner qualification, not a real SmolLM inference result.
+  ndn::KeyChain storedKeys("pib-memory:", "tpm-memory:");
+  std::map<ndn::Name, std::vector<std::uint8_t>> originalPackets;
+  std::map<ndn::Name, std::pair<std::string, std::uint64_t>> committedGroups;
+  NativeStoredModelPacketIo storedIo;
+  storedIo.requireCurrent = [] {};
+  storedIo.commit = [&](auto wires, const std::string& digest) {
+    BOOST_REQUIRE(!wires.empty());
+    const ndn::Data first{ndn::Block(ndn::span<const std::uint8_t>(wires.front()))};
+    std::uint64_t wireBytes = 0;
+    for (auto& wire : wires) {
+      wireBytes += wire.size();
+      const ndn::Data packet{ndn::Block(ndn::span<const std::uint8_t>(wire))};
+      const auto prior = originalPackets.find(packet.getName());
+      if (prior != originalPackets.end()) BOOST_REQUIRE(prior->second == wire);
+      else originalPackets.emplace(packet.getName(), std::move(wire));
+    }
+    committedGroups[first.getName()] = {digest, wireBytes};
+  };
+  storedIo.requireCommitted = [&](const ndn::Name& name, const std::string& digest,
+                                  std::uint64_t size) {
+    BOOST_REQUIRE_EQUAL(committedGroups.at(name).first, digest);
+    BOOST_REQUIRE_EQUAL(committedGroups.at(name).second, size);
+  };
+  std::set<ndn::Name> fetched;
+  storedIo.fetch = [&](const std::vector<ndn::Name>& names) {
+    NativeStoredModelPacketIo::PacketWires result;
+    for (const auto& name : names) {
+      fetched.insert(name);
+      result.push_back(originalPackets.at(name));
+    }
+    return result;
+  };
+  auto storedConfiguration = configuration;
+  storedConfiguration["source"]["file"] = "/absent-preparing-user/model.onnx";
+  const auto stored = nativePublishStoredPreparedModel(storedKeys, ndn::Name("/model-preparer"),
+    ndn::Name("/repo"), ndn::Name("/model-preparer/models").appendVersion(1), loaded,
+    nativeCanonicalJson(storedConfiguration), storedIo);
+  const auto writerIo = storedIo;
+  const auto packetsBeforeBadMapping = originalPackets.size();
+  auto badMapping = storedConfiguration;
+  badMapping["node_mapping"]["layer-00"] = NativeJson::array({0, 1, 10, 11, 12});
+  BOOST_CHECK_THROW(nativePublishStoredPreparedModel(storedKeys, ndn::Name("/model-preparer"),
+    ndn::Name("/repo"), ndn::Name("/model-preparer/models").appendVersion(2), loaded,
+    nativeCanonicalJson(badMapping), storedIo), std::invalid_argument);
+  BOOST_CHECK_EQUAL(originalPackets.size(), packetsBeforeBadMapping);
+  auto badRecipe = storedConfiguration;
+  badRecipe["recipe"]["padding"] = "foreign-padding";
+  BOOST_CHECK_THROW(nativePublishStoredPreparedModel(storedKeys, ndn::Name("/model-preparer"),
+    ndn::Name("/repo"), ndn::Name("/model-preparer/models").appendVersion(3), loaded,
+    nativeCanonicalJson(badRecipe), storedIo), std::invalid_argument);
+  BOOST_CHECK_EQUAL(originalPackets.size(), packetsBeforeBadMapping);
+  storedIo.commit = {}; // A is absent; the consumer has no write callback or source callback.
+  storedIo.requireCommitted = {};
+  const auto reopened = nativeOpenStoredPreparedModel(stored.handle, storedIo, control);
+  BOOST_CHECK_EQUAL(reopened.catalog.model.descriptor.modelDigest(), descriptor.modelDigest());
+  BOOST_CHECK(!nativeParseJson(reopened.configurationJson).at("source").contains("file"));
+  BOOST_REQUIRE(reopened.catalog.planningCache);
+  BOOST_CHECK_EQUAL(reopened.catalog.planningCache->candidates.size(), candidates.size());
+  BOOST_CHECK(!reopened.publication.ownerRecoverableObjects);
+  std::map<std::string, std::string> bundleByPayload;
+  for (std::size_t i = 0; i < reopened.publication.materialPayloadIds.size(); ++i)
+    bundleByPayload.emplace(reopened.publication.materialPayloadIds[i],
+                           reopened.publication.materialDataNames[i]);
+  const auto& templateBundle = bundleByPayload.at(referenceMaterials->templatePayloadId);
+  std::map<std::uint64_t, std::string> nodeBundles;
+  for (const auto& item : referenceMaterials->references) {
+    if (item.kind == "graph-node") {
+      nodeBundles[item.nodeIndex] = bundleByPayload.at(item.payloadId);
+      BOOST_CHECK(nodeBundles.at(item.nodeIndex) != templateBundle);
+    }
+  }
+  BOOST_CHECK(nodeBundles.at(1) == nodeBundles.at(10)); // same semantic layer
+  BOOST_CHECK(nodeBundles.at(1) != nodeBundles.at(2));  // another semantic layer
+  for (const auto& packetName : fetched)
+    BOOST_CHECK(packetName.toUri().find("material-bundle-") == std::string::npos);
+  const auto materialName = reopened.objects.objects().begin()->second.object.name;
+  BOOST_CHECK(stored.handle.producer.isPrefixOf(materialName));
+  auto wrongHandle = stored.handle;
+  wrongHandle.masterKey.at(0) ^= 1;
+  BOOST_CHECK_THROW(nativeOpenStoredPreparedModel(wrongHandle, storedIo, control), std::exception);
+  const auto rejectsMalformedPackage = [&](const auto& mutate) {
+    // A fresh isolated publication is internally hash/GCM-valid. Only the semantic package
+    // inconsistency should make open fail, rather than stale outer hashes or absent Data.
+    std::map<std::string, std::vector<std::uint8_t>> inputs;
+    for (const auto& item : reopened.objects.objects())
+      inputs[item.first] = nativeReadStoredModelObject(stored.handle, reopened.objects,
+                                                     item.first, storedIo);
+    auto json = [&](const std::string& id) {
+      return nativeParseJson(std::string(inputs.at(id).begin(), inputs.at(id).end()));
+    };
+    auto material = json("material-manifest");
+    auto receipt = json("material-receipt");
+    auto businessRoot = json("business-root");
+    mutate(material, receipt, businessRoot, inputs);
+    auto storeJson = [&](const std::string& id, const NativeJson& value) {
+      const auto text = nativeCanonicalJson(value);
+      inputs[id] = std::vector<std::uint8_t>(text.begin(), text.end());
+      return nativePlanningDigest(text);
+    };
+    const auto materialDigest = storeJson("material-manifest", material);
+    receipt["materialIdentityDigest"] = materialDigest;
+    receipt["materialManifestDigest"] = materialDigest;
+    const auto receiptDigest = storeJson("material-receipt", receipt);
+    auto& facts = businessRoot["metadata"];
+    facts["materialIdentityDigest"] = materialDigest;
+    facts["materialManifestDigest"] = materialDigest;
+    facts["materialManifestBytes"] = inputs.at("material-manifest").size();
+    facts["materialReceiptDigest"] = receiptDigest;
+    facts["materialReceiptBytes"] = inputs.at("material-receipt").size();
+    storeJson("business-root", businessRoot);
+    std::map<ndn::Name, std::vector<std::uint8_t>> isolatedPackets;
+    auto io = storedIo;
+    io.commit = [&](auto wires, const std::string&) {
+      for (auto& wire : wires) {
+        const ndn::Data packet{ndn::Block(ndn::span<const std::uint8_t>(wire))};
+        BOOST_REQUIRE(isolatedPackets.emplace(packet.getName(), std::move(wire)).second);
+      }
+    };
+    io.fetch = [&](const std::vector<ndn::Name>& names) {
+      NativeStoredModelPacketIo::PacketWires result;
+      for (const auto& name : names) result.push_back(isolatedPackets.at(name));
+      return result;
+    };
+    auto it = inputs.begin();
+    const auto broken = nativePublishStoredModel(storedKeys, stored.handle.producer,
+      stored.handle.repository, ndn::Name("/model-preparer/models").appendVersion(1),
+      reopened.objects.modelDigest(), reopened.objects.catalogId(), "business-root",
+      [&]() -> std::optional<NativeStoredModelInput> {
+        if (it == inputs.end()) return std::nullopt;
+        NativeStoredModelInput value{it->first, it->second};
+        ++it;
+        return value;
+      }, io);
+    io.commit = {};
+    BOOST_CHECK_THROW(nativeOpenStoredPreparedModel(broken.handle, io, control), std::exception);
+  };
+  for (const std::string kind : {"graph-template", "graph-node", "shared-initializer"}) {
+    rejectsMalformedPackage([&](auto& material, auto& receipt, auto&, auto&) {
+      auto& refs = material["references"];
+      const auto found = std::find_if(refs.begin(), refs.end(),
+        [&](const auto& value) { return value.at("kind") == kind; });
+      BOOST_REQUIRE(found != refs.end());
+      const auto removedId = found->at("payloadId");
+      refs.erase(found);
+      auto& rows = receipt["materialObjects"];
+      rows.erase(std::remove_if(rows.begin(), rows.end(),
+        [&](const auto& row) { return row.at("payloadId") == removedId; }), rows.end());
+    });
+  }
+  rejectsMalformedPackage([](auto&, auto&, auto& root, auto&) {
+    root["metadata"]["canonicalSourceBytes"] =
+      root["metadata"]["canonicalSourceBytes"].template get<std::uint64_t>() + 1;
+  });
+  rejectsMalformedPackage([&](auto&, auto& receipt, auto&, auto& inputs) {
+    const auto& firstName = nodeBundles.at(1);
+    const auto& secondName = nodeBundles.at(2);
+    const auto objectId = [&](const std::string& name) {
+      const auto found = std::find_if(reopened.objects.objects().begin(),
+        reopened.objects.objects().end(), [&](const auto& object) {
+          return object.second.object.name == ndn::Name(name);
+        });
+      BOOST_REQUIRE(found != reopened.objects.objects().end());
+      return found->first;
+    };
+    const auto firstId = objectId(firstName);
+    const auto secondId = objectId(secondName);
+    const auto offset = inputs.at(firstId).size();
+    auto& combined = inputs.at(firstId);
+    const auto& second = inputs.at(secondId);
+    combined.insert(combined.end(), second.begin(), second.end());
+    const auto digest = nativePlanningDigest(combined.data(), combined.size());
+    for (auto& row : receipt["materialObjects"]) {
+      if (row.at("dataName") != firstName && row.at("dataName") != secondName) continue;
+      if (row.at("dataName") == secondName)
+        row["bundleOffset"] = row["bundleOffset"].template get<std::uint64_t>() + offset;
+      row["dataName"] = firstName;
+      row["bundleBytes"] = combined.size();
+      row["bundleDigest"] = digest;
+    }
+    inputs.erase(secondId);
+  });
+  char preparationDirectory[] = "/var/tmp/spec222-prepared-XXXXXX";
+  BOOST_REQUIRE(::mkdtemp(preparationDirectory));
+  struct PreparationDirectory
+  {
+    std::filesystem::path path;
+    ~PreparationDirectory()
+    {
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+    }
+  } privateDirectory{preparationDirectory};
+  auto changedConfiguration = storedConfiguration;
+  changedConfiguration["max_payload_bytes"] = 2048;
+  const auto changedCatalog = NativeRequestCatalog::load(
+    nativeCanonicalJson(changedConfiguration), source, control);
+  BOOST_CHECK_EQUAL(changedCatalog.model.descriptor.modelDigest(),
+                    loaded.model.descriptor.modelDigest());
+  for (const bool interrupted : {false, true}) {
+    const auto prefix = ndn::Name("/model-preparer/models").appendVersion(interrupted ? 5 : 4);
+    const auto state = privateDirectory.path / (interrupted ? "partial" : "ready");
+    auto initialIo = writerIo;
+    if (interrupted) {
+      initialIo.commit = [&](auto wires, const std::string& digest) {
+        writerIo.commit(std::move(wires), digest);
+        throw std::runtime_error("lost commit reply");
+      };
+      BOOST_CHECK_THROW(nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
+        stored.handle.repository, prefix, loaded, nativeCanonicalJson(storedConfiguration),
+        initialIo, state), std::runtime_error);
+    }
+    else {
+      BOOST_CHECK_NO_THROW(nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
+        stored.handle.repository, prefix, loaded, nativeCanonicalJson(storedConfiguration),
+        initialIo, state));
+    }
+    const auto packetsBeforeMismatch = originalPackets.size();
+    BOOST_CHECK_THROW(nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
+      stored.handle.repository, prefix, changedCatalog, nativeCanonicalJson(changedConfiguration),
+      writerIo, state), std::exception);
+    BOOST_CHECK_EQUAL(originalPackets.size(), packetsBeforeMismatch);
+    const auto recovered = nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
+      stored.handle.repository, prefix, loaded, nativeCanonicalJson(storedConfiguration),
+      writerIo, state);
+    BOOST_CHECK_NO_THROW(nativeOpenStoredPreparedModel(recovered.handle, storedIo, control));
+    const auto packetsBeforeReadyHit = originalPackets.size();
+    const auto readyHit = nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
+      stored.handle.repository, prefix, loaded, nativeCanonicalJson(storedConfiguration),
+      writerIo, state);
+    BOOST_CHECK_EQUAL(readyHit.handle.rootWireDigest, recovered.handle.rootWireDigest);
+    BOOST_CHECK_EQUAL(readyHit.wireBytes, 0);
+    BOOST_CHECK_EQUAL(readyHit.sourceBytes, 0);
+    BOOST_CHECK_EQUAL(originalPackets.size(), packetsBeforeReadyHit);
+  }
+  std::size_t lazySourceCalls = 0;
+  const std::function<NativeRequestCatalog()> lazySource = [&] {
+    ++lazySourceCalls;
+    return loaded;
+  };
+  const auto lazyState = privateDirectory.path / "lazy-source";
+  const auto lazyPublication = nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
+    stored.handle.repository, {}, lazySource, nativeCanonicalJson(storedConfiguration),
+    writerIo, lazyState);
+  BOOST_CHECK_EQUAL(lazySourceCalls, 1);
+  BOOST_CHECK_NO_THROW(nativeOpenStoredPreparedModel(lazyPublication.handle, storedIo, control));
+  const std::function<NativeRequestCatalog()> unavailableSource = []() -> NativeRequestCatalog {
+    throw std::runtime_error("original source is offline");
+  };
+  auto changedAdvisory = storedConfiguration;
+  changedAdvisory["request_transfer_profiles"] = NativeJson::array();
+  const auto writesBeforeLazyHit = originalPackets.size();
+  const auto lazyReady = nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
+    stored.handle.repository, {}, unavailableSource, nativeCanonicalJson(changedAdvisory),
+    writerIo, lazyState);
+  BOOST_CHECK_EQUAL(lazyReady.handle.rootWireDigest, lazyPublication.handle.rootWireDigest);
+  BOOST_CHECK_EQUAL(originalPackets.size(), writesBeforeLazyHit);
+  BOOST_CHECK_EQUAL(lazyReady.sourceBytes, 0);
+  BOOST_CHECK_EQUAL(lazyReady.wireBytes, 0);
+  NativeCanonicalCatalogTestAccess::releaseSourceBytes(*loaded.preparation);
+  const auto reducedSource = loaded.preparation->sourceRefFor(loaded.model.descriptor);
+  BOOST_REQUIRE(reducedSource);
+  BOOST_CHECK(reducedSource->modelBytes.empty());
+  BOOST_CHECK_EQUAL(reducedSource->preparedMetadataJson, reference.preparedMetadataJson);
+  BOOST_CHECK(!verifiedSource->modelBytes.empty());
+  NativeCanonicalSource reducedReference;
+  reducedReference.preparedMetadataJson = reducedSource->preparedMetadataJson;
+  reducedReference.materialManifest = referenceMaterials;
+  BOOST_CHECK_NO_THROW(NativeRequestCatalog::load(configuration.dump(), reducedReference, control));
+  NativeCanonicalCatalogTestAccess::releaseSourceBytes(*loaded.preparation);
+  BOOST_CHECK_EQUAL(loaded.preparation->sourceRefFor(loaded.model.descriptor)->preparedMetadataJson,
+                    reference.preparedMetadataJson);
   BOOST_CHECK_NO_THROW(NativeRequestCatalog::load(configuration.dump(), reference, control));
   auto underweight = configuration;
   for (const auto& role : roles)

@@ -128,9 +128,9 @@ ArtifactReference
 artifactReference()
 {
   return ArtifactReference{
-    "/app/model/v1", "sha256", ARTIFACT_SHA256,
+    "/app/provider/model/v1", "sha256", ARTIFACT_SHA256,
     sizeof(ARTIFACT_BYTES) - 1, "artifact-manifest-v2",
-    "/app/manifest/v1", "/app/provider", "epoch-1"};
+    "/app/provider/manifest/v1", "/app/provider", "epoch-1"};
 }
 
 void
@@ -282,6 +282,14 @@ databaseBundleHashes(const fs::path& database)
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec192LegacyRepoImportUnit)
+
+BOOST_AUTO_TEST_CASE(rejectsReferencesOutsideTheOriginalPublisher)
+{
+  auto reference = artifactReference();
+  BOOST_CHECK_NO_THROW(reference.validateProducerOwnership());
+  reference.logicalName = "/app/model/v1";
+  BOOST_CHECK_THROW(reference.validateProducerOwnership(), ArtifactValidationError);
+}
 
 BOOST_AUTO_TEST_CASE(importsArtifactProfileWithoutMutatingWalSourceAndResumes)
 {

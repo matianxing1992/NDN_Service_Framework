@@ -14,6 +14,7 @@ namespace ndnsf::di {
 struct NativeConversationTurn;
 struct NativeKvOwnerKeyOperations;
 class NativeConversationCoordinator;
+struct NativeRecipientKeyMaterialV1;
 
 /** Type-erased cooperative ports captured by one request operation. */
 struct NativeStrategyPorts
@@ -56,6 +57,10 @@ struct NativeRequestRuntime
   std::function<NativeFixedRoleSourceV1(
     const NativeSelectionProjectionV3&, const NativeFixedRoleAssignmentV1&,
     const NativeRequestControl&)> fixedRoleSourcePublisher;
+  std::function<ndn_service_framework::LargeDataPublishResult(
+    const NativeArtifactBinding&, const NativeSelectionProjectionV3&,
+    const NativeFixedRoleAssignmentV1&, const NativeRecipientKeyMaterialV1&,
+    const std::string&, std::uint64_t, const NativeRequestControl&)> modelObjectKeyPublisher;
 };
 
 std::shared_ptr<const ndn_service_framework::ParticipantSelectionPolicy>
@@ -94,6 +99,7 @@ struct NativePlannedRequest
   // Original branch's immutable selected-role expectations for READY admission.
   std::map<std::string, NativeConversationRecoveryExpectationV1> recoveryExpectations;
   std::shared_ptr<const NativeJson> recoveryParent;
+  std::vector<ndn_service_framework::LargeDataPublishResult> modelObjectKeyTables;
 };
 
 /** The exact first-pass intent plus responses received before the attempt deadline. */

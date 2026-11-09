@@ -7,10 +7,12 @@
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <future>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -82,6 +84,16 @@ private:
   std::mutex m_tensorPublicationMutex;
   std::map<ndn::Name, CachedTensorPublication> m_tensorPublications;
   std::size_t m_tensorPublicationBytes = 0;
+  // One invocation-owned advisory, learned only from a fully admitted decode
+  // object. It never authorizes input or replaces the next signed manifest.
+  struct DecodedTensorSizing {
+    std::string key;
+    std::uint64_t round = 0;
+    std::uint64_t bytes = 0;
+    std::uint64_t segmentBytes = 0;
+  };
+  std::mutex m_decodedSizingMutex;
+  std::optional<DecodedTensorSizing> m_decodedSizing;
   std::shared_ptr<std::atomic<bool>> m_pendingPrefetchCancelled =
     std::make_shared<std::atomic<bool>>(false);
   // Dedicated invocation workers must drain before the state above is released.

@@ -1693,6 +1693,17 @@ BOOST_AUTO_TEST_CASE(RunnerReuseRequiresMatchingOutputBinding)
   BOOST_CHECK(!genericCache.lookup(differentContract, "/provider/a", "boot-a", {}));
   BOOST_CHECK(!genericCache.lookup(changedOutput, "/provider/a", "boot-b", {}));
 
+  NativeProviderRunnerReuseCache storedModelCache(2);
+  auto storedModelProjection = first;
+  storedModelProjection.storedModelCacheIdentity = "sha256:" + std::string(64, 'a');
+  storedModelCache.publish(storedModelProjection, "/provider/a", "boot-a", {}, runner);
+  BOOST_CHECK(storedModelCache.lookup(storedModelProjection,
+    "/provider/a", "boot-a", {}) == runner);
+  auto differentObjectKey = storedModelProjection;
+  differentObjectKey.storedModelCacheIdentity = "sha256:" + std::string(64, 'b');
+  BOOST_CHECK(!storedModelCache.lookup(differentObjectKey,
+    "/provider/a", "boot-a", {}));
+
   NativeProviderRunnerReuseCache boundCache(1);
   auto mutableProjection = first;
   auto bound = boundCache.bindPublisher(mutableProjection, "/provider/a", "boot-a", {});
@@ -2481,6 +2492,61 @@ BOOST_AUTO_TEST_CASE(RequestTransferProfileRequiresCompleteSourceBoundBundle)
   changed = profile; changed["dependencies"][0]["tensors"][0] =
     changed["dependencies"][0]["tensors"][1];
   BOOST_CHECK(!estimate(changed, source, input));
+}
+
+BOOST_AUTO_TEST_CASE(RequestTransferProfileSupportsScalarInt32)
+{
+  const auto source = nativePlanningDigest("pipeline-source");
+  const auto input = nativePlanningDigest("pipeline-input");
+  NativeSelectionRoleV3 producer, consumer;
+  producer.selectedRole = "encoder";
+  consumer.selectedRole = "decoder";
+  producer.expectedOutputs = {{"hidden", "float32", {1, 3, 4}}};
+  producer.expectedInputs = {{"length", "int32", {}}};
+  consumer.expectedInputs = producer.expectedOutputs;
+  consumer.expectedInputs.push_back(producer.expectedInputs.front());
+  NativeDependencySpec dependency;
+  dependency.producers = {"encoder"};
+  dependency.consumers = {"decoder"};
+  dependency.tensors = {"logical-hidden"};
+  dependency.operationKind = "ACTIVATION";
+  NativeJson profile{{"schema", "ndnsf-di-request-transfer-profile-v1"},
+    {"source_digest", source}, {"input_digest", input}, {"initial_context", true},
+    {"dependencies", NativeJson::array({NativeJson{{"producer_role", "encoder"},
+      {"consumer_role", "decoder"}, {"tensors", NativeJson::array({
+        NativeJson{{"name", "hidden"}, {"dtype", "float32"}, {"shape", {1, 3, 4}}},
+        NativeJson{{"name", "length"}, {"dtype", "int32"},
+                   {"shape", NativeJson::array()}}})}}})}};
+  NamedTensor hidden;
+  hidden.name = "hidden";
+  hidden.shape = {1, 3, 4};
+  hidden.payload.resize(48);
+  NamedTensor length;
+  length.name = "length";
+  length.elementType = TensorElementType::Int32;
+  length.payload.resize(4);
+  const auto wire = encodeTensorBundle({hidden, length});
+  const auto bytes = estimateNativeRequestTransferBytesV1(
+    profile, source, input, dependency, {producer, consumer});
+  BOOST_REQUIRE(bytes);
+  BOOST_CHECK_EQUAL(*bytes, 52U);
+  const auto encoded = estimateNativeRequestTransferEncodedBytesV1(
+    profile, source, input, dependency, {producer, consumer});
+  BOOST_REQUIRE(encoded);
+  BOOST_CHECK_EQUAL(*encoded, wire.size());
+  BOOST_CHECK(!estimateNativeRequestTransferEncodedBytesV1(
+    profile, source, nativePlanningDigest("other-input"), dependency, {producer, consumer}));
+  auto incomplete = profile;
+  incomplete["dependencies"][0]["tensors"].erase(1);
+  BOOST_CHECK(!estimateNativeRequestTransferEncodedBytesV1(
+    incomplete, source, input, dependency, {producer, consumer}));
+  dependency.operationKind = "ALL_REDUCE";
+  BOOST_CHECK(!estimateNativeRequestTransferBytesV1(
+    profile, source, input, dependency, {producer, consumer}));
+  dependency.operationKind = "ACTIVATION";
+  dependency.producers.push_back("foreign");
+  BOOST_CHECK(!estimateNativeRequestTransferBytesV1(
+    profile, source, input, dependency, {producer, consumer}));
 }
 
 BOOST_AUTO_TEST_CASE(WholeRosterV4ProfileSelectionIsAtomicInProductionHelper)

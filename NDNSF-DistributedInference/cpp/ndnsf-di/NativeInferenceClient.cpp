@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
@@ -3526,6 +3527,15 @@ NativeInferenceClient::NativeInferenceClient(
     return NativeFixedRoleSourceV1{published.encryptedDataName.toUri(),
       nativePlanningDigest(wire), wire.size(), published.servingLease};
   };
+  if (!configured.modelObjectKeyPublisher) {
+    configured.modelObjectKeyPublisher = [user = m_user, service = runtime.contract.serviceName](
+      const NativeArtifactBinding& artifacts, const NativeSelectionProjectionV3& projection,
+      const NativeFixedRoleAssignmentV1& fixed, const NativeRecipientKeyMaterialV1& recipient,
+      const std::string& boot, std::uint64_t expires, const NativeRequestControl& control) {
+      return nativePublishModelObjectKeys(user, service, artifacts, projection, fixed,
+                                          recipient, boot, expires, control);
+    };
+  }
   m_runtime = std::make_shared<const NativeRequestRuntime>(std::move(configured));
   m_conversations = std::move(conversations);
 }

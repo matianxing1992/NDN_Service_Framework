@@ -6,8 +6,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/runtime-logging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/statistics-file.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-preparation-index.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/native-owned-initializer-file.hpp"
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
@@ -586,9 +588,11 @@ class NativeRepoSourceOwner final : public RepositorySourceProvider
 public:
   NativeRepoSourceOwner(std::filesystem::path root, std::filesystem::path base,
                         ndn::Name producer,
-                        std::shared_ptr<ndnsf_distributed_repo::RepoSourceProvider> preparedOwner)
+                        std::shared_ptr<ndnsf_distributed_repo::RepoSourceProvider> preparedOwner,
+                        std::filesystem::path preparedIndexRoot)
     : m_root(std::move(root)), m_base(std::move(base)), m_producer(std::move(producer)),
       m_preparedOwner(std::move(preparedOwner)),
+      m_protectedIndex(std::move(preparedIndexRoot), m_producer),
       m_api(ndnsf_distributed_repo::ArtifactRepositoryApi::makeInApp(
         {m_root, m_producer.toUri(ndn::name::UriFormat::CANONICAL)}))
   {
@@ -688,7 +692,7 @@ public:
     if (source.contains("initializer_file"))
       result.initializerRangeSource = loadFile("initializer_file", "initializer_digest", "initializer",
         [&] (const auto& path, std::uint64_t size, const std::string& expected) {
-          return openNativeCanonicalInitializerFile(path.string(), size, expected,
+          return takeNativeCanonicalInitializerFile(path.string(), size, expected,
             {request.deadline, checkDeadline, request.maxSourceBytes, request.maxSourceBytes});
         });
     return result;
@@ -703,7 +707,15 @@ public:
   std::optional<NativePreparedCanonicalPublication> lookupPrepared(
     const RepositoryPreparedLookupRequest& request) const override
   {
+    if (auto prepared = m_protectedIndex.lookupWithLegacy(request, m_root))
+      return prepared;
     return m_preparedOwner->lookupPrepared(request);
+  }
+
+  void rememberPrepared(const RepositoryPreparedLookupRequest& request,
+                        const NativePreparedCanonicalPublication& publication) const override
+  {
+    m_protectedIndex.remember(request, publication);
   }
 
 private:
@@ -711,6 +723,7 @@ private:
   std::filesystem::path m_base;
   ndn::Name m_producer;
   std::shared_ptr<ndnsf_distributed_repo::RepoSourceProvider> m_preparedOwner;
+  ProtectedPreparationIndex m_protectedIndex;
   mutable ndnsf_distributed_repo::ArtifactRepositoryApi m_api;
 };
 
@@ -718,18 +731,22 @@ int
 run(int argc, char** argv)
 {
   if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "Usage: DI_NativeRequester --config FILE [--input FILE --output FILE]\n"
+    std::cout << "Usage: DI_NativeRequester --config FILE "
+                 "[--prepare-only | --input FILE --output FILE]\n"
                  "Config schema: ndnsf-di-native-requester-v1\n"
                  "Optional statistics_file writes one JSONL timing row per turn.\n"
                  "A config with a turns array runs every turn in one native Conversation.\n"
-                 "The request is routed through Runtime -> User::prepare -> User::request.\n";
+                 "The request uses Runtime -> native model preparation -> User::request.\n";
     return 0;
   }
   const bool legacyArgs = argc == 7 && std::string(argv[1]) == "--config" &&
     std::string(argv[3]) == "--input" && std::string(argv[5]) == "--output";
   const bool turnsArgs = argc == 3 && std::string(argv[1]) == "--config";
-  if (!legacyArgs && !turnsArgs) {
-    std::cerr << "Usage: DI_NativeRequester --config FILE [--input FILE --output FILE]\n";
+  const bool prepareOnly = argc == 4 && std::string(argv[1]) == "--config" &&
+    std::string(argv[3]) == "--prepare-only";
+  if (!legacyArgs && !turnsArgs && !prepareOnly) {
+    std::cerr << "Usage: DI_NativeRequester --config FILE "
+                 "[--prepare-only | --input FILE --output FILE]\n";
     return 2;
   }
 
@@ -739,14 +756,77 @@ run(int argc, char** argv)
   const auto config = readJson(configPath);
   if (config.get<std::string>("schema", {}) != "ndnsf-di-native-requester-v1")
     throw std::invalid_argument("unsupported requester configuration schema");
+  const auto modelInput = config.get_child_optional("model_input");
+  const auto modelInputMode = modelInput
+    ? modelInput->get<std::string>("mode", "") : std::string("source");
+  if (modelInputMode != "source" && modelInputMode != "publish-stored" &&
+      modelInputMode != "stored")
+    throw std::invalid_argument("model_input.mode is unsupported");
+
+  std::optional<ndnsf_distributed_repo::RepoArtifactTarget> modelRepository;
+  if (const auto target = config.get_child_optional("model_repository")) {
+    modelRepository.emplace(ndnsf_distributed_repo::RepoArtifactTarget{
+      target->get<std::string>("repo_node"), target->get<std::string>("provider_identity"),
+      target->get<std::string>("service_prefix")});
+    nativeValidateModelRepositoryTarget(*modelRepository,
+      ndn::Name(config.get<std::string>("core.requester_identity")));
+  }
+  std::optional<ndnsf_distributed_repo::RepoArtifactTarget> storedModelRepository;
+  std::filesystem::path storedPreparationState;
+  std::filesystem::path storedPrivateHandle;
+  if (modelInputMode == "publish-stored" || (modelInputMode == "source" && !legacyArgs)) {
+    if ((modelInputMode == "publish-stored" && !prepareOnly) || modelRepository ||
+        config.get_child_optional("encrypted_repository") ||
+        config.get_child_optional("cache_compatibility"))
+      throw std::invalid_argument(
+        "source/stored publication cannot select another publication mode; "
+        "publish-stored requires --prepare-only");
+    if (!modelInput)
+      throw std::invalid_argument("source mode requires explicit model_input publication fields");
+    const auto target = modelInput->get_child_optional("repo_target");
+    if (!target)
+      throw std::invalid_argument("model_input.repo_target is required for model preparation");
+    storedModelRepository.emplace(ndnsf_distributed_repo::RepoArtifactTarget{
+      target->get<std::string>("repo_node"), target->get<std::string>("provider_identity"),
+      target->get<std::string>("service_prefix")});
+    nativeValidateModelRepositoryTarget(*storedModelRepository,
+      ndn::Name(config.get<std::string>("core.requester_identity")));
+    const auto stateFile = modelInput->get_optional<std::string>("preparation_state_file");
+    const auto handleFile = modelInput->get_optional<std::string>("private_handle_file");
+    if (!stateFile || !handleFile || stateFile->empty() || handleFile->empty())
+      throw std::invalid_argument(
+        "model preparation requires preparation_state_file and private_handle_file");
+    storedPreparationState = relativeTo(base, *stateFile);
+    storedPrivateHandle = relativeTo(base, *handleFile);
+    if (std::filesystem::absolute(storedPreparationState).lexically_normal() ==
+        std::filesystem::absolute(storedPrivateHandle).lexically_normal())
+      throw std::invalid_argument(
+        "preparation_state_file and private_handle_file must be different files");
+  }
+  else if (modelInputMode == "stored") {
+    if (prepareOnly || modelRepository || config.get_child_optional("encrypted_repository") ||
+        config.get_child_optional("cache_compatibility") ||
+        modelInput->get_optional<std::string>("preparation_state_file"))
+      throw std::invalid_argument(
+        "stored mode requires inference and cannot select source or publication inputs");
+    const auto target = modelInput->get_child_optional("repo_target");
+    const auto handleFile = modelInput->get_optional<std::string>("private_handle_file");
+    if (!target || !handleFile || handleFile->empty())
+      throw std::invalid_argument(
+        "stored mode requires model_input.repo_target and private_handle_file");
+    storedModelRepository.emplace(ndnsf_distributed_repo::RepoArtifactTarget{
+      target->get<std::string>("repo_node"), target->get<std::string>("provider_identity"),
+      target->get<std::string>("service_prefix")});
+    storedPrivateHandle = relativeTo(base, *handleFile);
+  }
   const auto& request = config.get_child("request");
-  const auto turns = readTurnSpecs(
+  const auto turns = prepareOnly ? std::vector<TurnSpec>{} : readTurnSpecs(
     config, base,
     legacyArgs ? std::optional<std::filesystem::path>(
       std::filesystem::absolute(argv[4]).lexically_normal()) : std::nullopt,
     legacyArgs ? std::optional<std::filesystem::path>(
       std::filesystem::absolute(argv[6]).lexically_normal()) : std::nullopt);
-  const bool groupedTurns = turns.front().conversationId.has_value();
+  const bool groupedTurns = !turns.empty() && turns.front().conversationId.has_value();
   if (turns.size() > 1 && !config.get_child_optional("conversation"))
     throw std::invalid_argument("NATIVE_TURNS_REQUIRES_CONVERSATION");
   if (groupedTurns) {
@@ -830,7 +910,7 @@ run(int argc, char** argv)
       sourceCachePath = base / sourceCachePath;
     runtimeConfig.repositorySourceProvider = std::make_shared<NativeRepoSourceOwner>(
       std::move(sourceCachePath), base,
-      ndn::Name(config.get<std::string>("core.requester_identity")), std::move(sourceOwner));
+      ndn::Name(config.get<std::string>("core.requester_identity")), std::move(sourceOwner), path);
   }
   if (const auto compatibility = config.get_child_optional("cache_compatibility")) {
     if (compatibility->get<bool>("enabled", false)) {
@@ -881,7 +961,8 @@ run(int argc, char** argv)
   prepareOptions.timeout = runtimeConfig.preparationJobTimeout;
   logSpec220PreparationStage("runtime-open.begin");
   std::optional<KvHandoffOptions> kvHandoff;
-  if (const auto handoffConfig = config.get_child_optional("kv_handoff")) {
+  if (const auto handoffConfig = config.get_child_optional("kv_handoff");
+      !prepareOnly && handoffConfig) {
     kvHandoff = readKvHandoffOptions(*handoffConfig);
     if (groupedTurns || !config.get_child_optional("conversation") || turns.size() < 2 ||
         kvHandoff->afterTurn >= turns.size() - 1)
@@ -892,16 +973,82 @@ run(int argc, char** argv)
   auto runtime = Runtime::open(std::move(runtimeConfig));
   logSpec220PreparationStage("runtime-open.complete");
   std::shared_ptr<const PlacementStrategy> requestPlacementStrategy;
-  if (!requestPlacementStrategyId.empty()) {
+  if (!prepareOnly && !requestPlacementStrategyId.empty()) {
     requestPlacementStrategy = runtime->placementStrategy(requestPlacementStrategyId);
     if (diagnosticOutputEnabled())
       std::cout << "NATIVE_REQUEST_PLACEMENT strategy="
               << requestPlacementStrategyId << std::endl;
   }
   auto user = runtime->user();
+  if (modelInputMode == "publish-stored") {
+    const auto receipt = user.publishStoredModel("default", *storedModelRepository,
+      storedPreparationState, storedPrivateHandle, prepareOptions.timeout);
+    runtime->close();
+    if (!runtime->drain(std::chrono::seconds(5)))
+      throw std::runtime_error("NATIVE_PREPARATION_DRAIN_TIMEOUT");
+    std::cout << nativeCanonicalJson(NativeJson{
+      {"type", "ndnsf-di-stored-model-preparation"}, {"status", "PUBLISHED"},
+      {"model", {
+        {"producer", receipt.producer.toUri(ndn::name::UriFormat::CANONICAL)},
+        {"repository", receipt.repository.toUri(ndn::name::UriFormat::CANONICAL)},
+        {"rootName", receipt.rootName.toUri(ndn::name::UriFormat::CANONICAL)},
+        {"rootWireDigest", receipt.rootWireDigest},
+      }},
+      {"sourceBytes", receipt.sourceBytes}, {"wireBytes", receipt.wireBytes},
+      {"packetGroups", receipt.packetGroups}, {"objects", receipt.objectCount},
+    }) << std::endl;
+    return 0;
+  }
   logSpec220PreparationStage("user-prepare.begin");
-  const auto prepared = user.prepare("default", prepareOptions);
+  std::optional<PreparedModel> preparedView;
+  if (modelInputMode == "stored") {
+    if (!storedModelRepository)
+      throw std::logic_error("stored model Repo target was not configured");
+    preparedView.emplace(user.openStoredModel("default", storedPrivateHandle,
+      *storedModelRepository, prepareOptions.timeout));
+  }
+  else if (!legacyArgs) {
+    if (!storedModelRepository)
+      throw std::logic_error("source model Repo target was not configured");
+    preparedView.emplace(user.prepareStoredModel("default", *storedModelRepository,
+      storedPreparationState, storedPrivateHandle, prepareOptions.timeout));
+  }
+  else {
+    preparedView.emplace(user.prepare("default", prepareOptions));
+  }
   logSpec220PreparationStage("user-prepare.complete");
+  std::optional<NativeModelRepositoryReceipt> stored;
+  if (modelRepository)
+    stored = user.storePreparedModel(*preparedView, *modelRepository, prepareOptions.timeout);
+  if (prepareOnly) {
+    const auto receipt = preparedView->receipt();
+    preparedView.reset();
+    runtime->close();
+    if (!runtime->drain(std::chrono::seconds(5)))
+      throw std::runtime_error("NATIVE_PREPARATION_DRAIN_TIMEOUT");
+    NativeJson result{
+      {"type", "ndnsf-di-native-preparation"}, {"status", "PREPARED"},
+      {"preparationKeyDigest", receipt.preparationKeyDigest},
+      {"manifestDigest", receipt.manifestDigest}, {"elapsedMs", receipt.elapsed.count()}
+    };
+    if (stored) {
+      result["originalPacketRepository"] = NativeJson{
+        {"repoNode", modelRepository->repoNode},
+        {"providerIdentity", modelRepository->providerIdentity},
+        {"servicePrefix", modelRepository->servicePrefix},
+        {"producer", stored->producer.toUri(ndn::name::UriFormat::CANONICAL)},
+        {"certificateName", stored->certificateName.toUri(ndn::name::UriFormat::CANONICAL)},
+        {"rootName", stored->rootName.toUri(ndn::name::UriFormat::CANONICAL)},
+        {"rootDigest", stored->rootDigest},
+        {"metadataName", stored->metadataName.toUri(ndn::name::UriFormat::CANONICAL)},
+        {"metadataDigest", stored->metadataDigest}, {"wireBytes", stored->wireBytes},
+        {"packetGroups", stored->packetGroups}, {"protectedObjects", stored->protectedObjects}
+      };
+    }
+    std::cout << nativeCanonicalJson(result) << std::endl;
+    return 0;
+  }
+  const auto& prepared = *preparedView;
 
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(

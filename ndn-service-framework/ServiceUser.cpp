@@ -35,8 +35,10 @@
 #include <system_error>
 #include <thread>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <ndn-cxx/security/certificate.hpp>
@@ -141,6 +143,8 @@ namespace ndn_service_framework
         std::shared_ptr<const detail::OriginalPacketFile> originalPackets;
         std::shared_ptr<const ndn::Data> manifestPacket;
         bool originalPacketSource = false;
+        // Immutable isolated-key material; serving ciphertext grants no execution authority.
+        bool ownerRecoverable = false;
         std::weak_ptr<void> servingLease;
         std::shared_ptr<void> keyLease;
         std::string serviceName;
@@ -1173,6 +1177,273 @@ namespace ndn_service_framework
                 // Pruning is best effort.  The strict version check remains
                 // the authoritative fail-closed guard for a stale reference.
             }
+        }
+
+        std::string
+        ownerObjectBinding(const ndn::Name& owner, const ndn::Name& service,
+                           const LargeDataPublishResult& object)
+        {
+          if (object.servingLocator.size() > 4096 || owner.empty() || service.empty() ||
+              !object.encrypted ||
+              object.dataPrefix != object.encryptedDataName ||
+              !owner.isPrefixOf(object.dataPrefix) || object.dataPrefix == owner ||
+              ProtectedBlobManifest::inferProducer(object.manifestName) != owner ||
+              ndn::Name(object.servingLocator) != object.dataPrefix ||
+              object.authorizationScope != makeAbeServiceAttribute(service, "SERVICE") ||
+              !isSha256Digest(object.contentDigest) || !isSha256Digest(object.manifestDigest) ||
+              object.manifestDigest != object.ciphertextManifestDigest ||
+              !isSha256Digest(object.publicationIdentity) ||
+              !isSha256Digest(object.keyReferenceId) || object.keyReferenceVersion != "v1" ||
+              object.protectionEpoch.size() != 16 || !isLowerHex(object.protectionEpoch) ||
+              object.plaintextSize == 0) {
+            throw std::invalid_argument("OWNER_OBJECT_REFERENCE_INVALID");
+          }
+          checkNamingNameSize(owner);
+          checkNamingNameSize(service);
+          checkNamingNameSize(object.dataPrefix);
+          checkNamingNameSize(object.manifestName);
+          std::vector<NamingDigestField> fields;
+          const auto name = [&](std::uint16_t tag, const ndn::Name& value) {
+            const auto& wire = value.wireEncode();
+            fields.push_back({tag, 1, {wire.begin(), wire.end()}});
+          };
+          const auto text = [&](std::uint16_t tag, const std::string& value) {
+            fields.push_back({tag, 2, {value.begin(), value.end()}});
+          };
+          name(1, owner);
+          name(2, service);
+          name(3, object.dataPrefix);
+          name(4, object.manifestName);
+          text(5, object.contentDigest);
+          text(6, object.manifestDigest);
+          text(7, object.authorizationScope);
+          text(8, object.protectionEpoch);
+          text(9, object.publicationIdentity);
+          text(10, object.keyReferenceId);
+          text(11, object.keyReferenceVersion);
+          std::vector<std::uint8_t> size(8);
+          for (std::size_t i = 0; i < size.size(); ++i)
+            size[7 - i] = static_cast<std::uint64_t>(object.plaintextSize) >> (8 * i);
+          fields.push_back({12, 3, std::move(size)});
+          return computeNamingDigest("ndnsf/isolated-object-v1/reference", fields);
+        }
+
+        ndn::Buffer
+        ownerObjectAssociatedData(const std::string& binding,
+                                  const ndn::security::Certificate& certificate,
+                                  ndn::span<const std::uint8_t> context = {})
+        {
+          const auto& wire = certificate.wireEncode();
+          if (wire.size() > 8192 || context.size() > DeploymentControlMessage::MAX_WIRE_SIZE)
+            throw std::invalid_argument("OWNER_KEY_CONTEXT_TOO_LARGE");
+          const auto contextBytes = context.empty() ? std::vector<std::uint8_t>{} :
+            std::vector<std::uint8_t>(context.begin(), context.end());
+          const auto digest = computeNamingDigest(
+            context.empty() ? "ndnsf/isolated-object-v1/owner" :
+                              "ndnsf/isolated-object-v1/recipient",
+            {{1, 2, {binding.begin(), binding.end()}},
+             {2, 4, {wire.begin(), wire.end()}},
+             {3, 4, contextBytes}});
+          return ndn::Buffer(digest.begin(), digest.end());
+        }
+
+        class OwnerKeyFd
+        {
+        public:
+          explicit OwnerKeyFd(int fd = -1)
+            : m_fd(fd)
+          {
+          }
+          ~OwnerKeyFd()
+          {
+            if (m_fd >= 0) ::close(m_fd);
+          }
+          OwnerKeyFd(const OwnerKeyFd&) = delete;
+          OwnerKeyFd& operator=(const OwnerKeyFd&) = delete;
+          int
+          get() const
+          {
+            return m_fd;
+          }
+          void
+          reset(int fd)
+          {
+            if (m_fd >= 0) ::close(m_fd);
+            m_fd = fd;
+          }
+          int
+          release()
+          {
+            const auto fd = m_fd;
+            m_fd = -1;
+            return fd;
+          }
+        private:
+          int m_fd;
+        };
+
+        void
+        checkOwnerKeyFd(int fd, bool directory = false)
+        {
+          struct stat info{};
+          if (fd < 0 || ::fstat(fd, &info) != 0 || info.st_uid != ::getuid() ||
+              (info.st_mode & 07777) != (directory ? 0700 : 0600) ||
+              (directory ? !S_ISDIR(info.st_mode) :
+                           (!S_ISREG(info.st_mode) || info.st_nlink != 1)))
+            throw std::runtime_error("OWNER_KEY_PRIVATE_STORAGE_INVALID");
+        }
+
+        // This is a bounded encrypted-key intent store, not an object catalog.
+        // All operations use directory-relative, no-follow opens under one lock.
+        class OwnerKeyDirectory
+        {
+        public:
+          explicit OwnerKeyDirectory(const ndn::Name& owner)
+          {
+            const auto path = durableKeyReferenceStorePath(owner).string() + ".owner-keys";
+            std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+            if (::mkdir(path.c_str(), 0700) != 0 && errno != EEXIST)
+              throw std::runtime_error("OWNER_KEY_DIRECTORY_CREATE_FAILED");
+            m_directory.reset(::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+            checkOwnerKeyFd(m_directory.get(), true);
+            m_lock.reset(::openat(m_directory.get(), ".lock",
+                                 O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600));
+            checkOwnerKeyFd(m_lock.get());
+            if (::flock(m_lock.get(), LOCK_EX | LOCK_NB) != 0)
+              throw std::runtime_error("OWNER_KEY_LOCK_FAILED");
+          }
+
+          RecipientEncryptedAssignment
+          read(const std::string& binding) const
+          {
+            const auto name = binding + ".key";
+            OwnerKeyFd file(::openat(m_directory.get(), name.c_str(),
+                                    O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+            if (file.get() < 0 && errno == ENOENT)
+              throw std::runtime_error("OWNER_KEY_INTENT_MISSING");
+            checkOwnerKeyFd(file.get());
+            struct stat info{};
+            if (::fstat(file.get(), &info) != 0 || info.st_size <= 0 ||
+                info.st_size > static_cast<off_t>(DeploymentControlMessage::MAX_WIRE_SIZE))
+              throw std::runtime_error("OWNER_KEY_RECORD_SIZE_INVALID");
+            ndn::Buffer bytes(static_cast<std::size_t>(info.st_size));
+            std::size_t offset = 0;
+            while (offset < bytes.size()) {
+              const auto count = ::read(file.get(), bytes.data() + offset, bytes.size() - offset);
+              if (count < 0 && errno == EINTR) continue;
+              if (count <= 0) throw std::runtime_error("OWNER_KEY_RECORD_READ_FAILED");
+              offset += static_cast<std::size_t>(count);
+            }
+            RecipientEncryptedAssignment capsule;
+            const ndn::Block block(ndn::span<const std::uint8_t>(bytes.data(), bytes.size()));
+            if (block.size() != bytes.size() || !capsule.WireDecode(block) ||
+                !capsule.hasField("recoveryDomain") ||
+                capsule.getField("recoveryDomain") != "isolated-object-v1" ||
+                !capsule.hasField("objectBinding") || capsule.getField("objectBinding") != binding)
+              throw std::runtime_error("OWNER_KEY_RECORD_INVALID");
+            return capsule;
+          }
+
+          void
+          write(const std::string& binding, const RecipientEncryptedAssignment& capsule)
+          {
+            const auto& wire = capsule.WireEncode();
+            if (wire.size() > DeploymentControlMessage::MAX_WIRE_SIZE)
+              throw std::runtime_error("OWNER_KEY_RECORD_SIZE_INVALID");
+            const auto name = binding + ".key";
+            struct stat existing{};
+            if (::fstatat(m_directory.get(), name.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0 ||
+                errno != ENOENT)
+              throw std::runtime_error("OWNER_KEY_INTENT_ALREADY_EXISTS");
+            OwnerKeyFd scan(::dup(m_directory.get()));
+            std::unique_ptr<DIR, decltype(&::closedir)> entries(
+              ::fdopendir(scan.get()), &::closedir);
+            if (!entries) throw std::runtime_error("OWNER_KEY_DIRECTORY_READ_FAILED");
+            scan.release(); // fdopendir owns the descriptor after success.
+            std::size_t records = 0;
+            errno = 0;
+            while (const auto* entry = ::readdir(entries.get())) {
+              const std::string item(entry->d_name);
+              if (item == "." || item == ".." || item == ".lock") continue;
+              if (item.size() == 69 && item.compare(0, 5, ".tmp-") == 0 &&
+                  isLowerHex(item.substr(5))) {
+                OwnerKeyFd stale(::openat(m_directory.get(), item.c_str(),
+                                          O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+                checkOwnerKeyFd(stale.get());
+                if (::unlinkat(m_directory.get(), item.c_str(), 0) != 0)
+                  throw std::runtime_error("OWNER_KEY_TEMP_CLEANUP_FAILED");
+              }
+              else if (item.size() == 68 && item.substr(64) == ".key" &&
+                       isLowerHex(item.substr(0, 64))) {
+                if (++records >= DURABLE_KEY_REFERENCE_MAX_RECORDS)
+                  throw std::runtime_error("OWNER_KEY_CAPACITY_EXCEEDED");
+              }
+              else throw std::runtime_error("OWNER_KEY_DIRECTORY_ENTRY_INVALID");
+              errno = 0;
+            }
+            if (errno != 0) throw std::runtime_error("OWNER_KEY_DIRECTORY_READ_FAILED");
+            const auto temporary = ".tmp-" + generateSecureStatusKeyHex();
+            OwnerKeyFd file(::openat(m_directory.get(), temporary.c_str(),
+                                    O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0600));
+            checkOwnerKeyFd(file.get());
+            auto cleanup = ndn::make_scope_exit([&] {
+              ::unlinkat(m_directory.get(), temporary.c_str(), 0);
+            });
+            std::size_t offset = 0;
+            while (offset < wire.size()) {
+              const auto count = ::write(file.get(), wire.data() + offset, wire.size() - offset);
+              if (count < 0 && errno == EINTR) continue;
+              if (count <= 0) throw std::runtime_error("OWNER_KEY_RECORD_WRITE_FAILED");
+              offset += static_cast<std::size_t>(count);
+            }
+            if (::fsync(file.get()) != 0 ||
+                ::renameat(m_directory.get(), temporary.c_str(), m_directory.get(), name.c_str()) != 0)
+              throw std::runtime_error("OWNER_KEY_INTENT_COMMIT_FAILED");
+            if (::fsync(m_directory.get()) != 0) {
+              // No Repo call can have started while this write has not returned.
+              const bool removed = ::unlinkat(m_directory.get(), name.c_str(), 0) == 0;
+              ::fsync(m_directory.get());
+              throw std::runtime_error(removed ? "OWNER_KEY_INTENT_COMMIT_FAILED" :
+                "OWNER_KEY_INTENT_COMMIT_FAILED; OWNER_KEY_INTENT_RETAINED");
+            }
+          }
+
+          void
+          forget(const std::string& binding)
+          {
+            const auto name = binding + ".key";
+            if (::unlinkat(m_directory.get(), name.c_str(), 0) != 0 && errno != ENOENT)
+              throw std::runtime_error("OWNER_KEY_FORGET_FAILED");
+            if (::fsync(m_directory.get()) != 0)
+              throw std::runtime_error("OWNER_KEY_FORGET_FAILED");
+          }
+        private:
+          OwnerKeyFd m_directory;
+          OwnerKeyFd m_lock;
+        };
+
+        ndn::Buffer
+        recoverOwnerObjectKey(const ndn::Name& owner, const std::string& binding,
+                              const RecipientEncryptedAssignment& capsule,
+                              const ndn::KeyChain& keyChain)
+        {
+          const ndn::Name certificateName(capsule.getField("recipientCertName"));
+          if (ndn::security::extractIdentityFromCertName(certificateName) != owner)
+            throw std::runtime_error("OWNER_KEY_CERTIFICATE_IDENTITY_INVALID");
+          const auto key = keyChain.getPib().getIdentity(owner).getKey(
+            ndn::security::extractKeyNameFromCertName(certificateName));
+          const auto certificate = key.getCertificate(certificateName);
+          const auto aad = ownerObjectAssociatedData(binding, certificate);
+          ndn::Buffer secret;
+          auto eraseOnFailure = ndn::make_scope_exit([&] {
+            if (!secret.empty()) OPENSSL_cleanse(secret.data(), secret.size());
+          });
+          if (!decryptRecipientAssignment(capsule, owner, certificateName, keyChain, aad, secret) ||
+              secret.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE)
+            throw std::runtime_error("OWNER_KEY_CAPSULE_DECRYPT_FAILED");
+          ndn::Buffer result;
+          result.swap(secret);
+          return result;
         }
 
         std::uintmax_t
@@ -6890,11 +7161,404 @@ namespace ndn_service_framework
                                               true, requireActive, options, true);
     }
 
+    LargeDataPublishResult
+    ServiceUser::publishOwnerRecoverableLargeDataFromWorker(
+        const PreparedServiceRequest& ctx, const std::vector<uint8_t>& plaintext,
+        const std::string& objectLabel, ndn::time::milliseconds freshness,
+        const LargeDataPublishOptions& options, std::chrono::steady_clock::time_point deadline,
+        const std::function<void()>& requireActive)
+    {
+      if (isOnIoThread())
+        throw std::logic_error("owner-recoverable publication requires a worker");
+      if (options.retention != EncryptedLargeDataRetention::Durable) {
+        LargeDataPublishResult result;
+        result.errorMessage = "OWNER_RECOVERY_REQUIRES_DURABLE_RETENTION";
+        return result;
+      }
+      const auto current = [&] {
+        if (requireActive) requireActive();
+        if (std::chrono::steady_clock::now() >= deadline)
+          throw std::runtime_error("OWNER_KEY_OPERATION_EXPIRED");
+      };
+      current();
+      return publishEncryptedLargeDataImpl(ctx, plaintext, objectLabel, freshness,
+                                           true, current, options, true, true, deadline);
+    }
+
+    ndn::Buffer
+    ServiceUser::ownerRetainedLargeDataKeyAssociatedData(
+        const ndn::Name& owner, const ndn::Name& service,
+        const LargeDataPublishResult& object, const ndn::security::Certificate& recipient,
+        const ndn::Buffer& context)
+    {
+      const auto key = recipient.getPublicKey();
+      return ownerRetainedLargeDataKeyAssociatedData(owner, service, object,
+        recipient.getIdentity(), recipient.getName(), ndn::Buffer(key.begin(), key.end()), context);
+    }
+
+    ndn::Buffer
+    ServiceUser::ownerRetainedLargeDataKeyAssociatedData(
+        const ndn::Name& owner, const ndn::Name& service, const LargeDataPublishResult& object,
+        const ndn::Name& recipient, const ndn::Name& certificate,
+        const ndn::Buffer& publicKey, const ndn::Buffer& context)
+    {
+      if (context.empty()) throw std::invalid_argument("OWNER_KEY_CURRENT_CONTEXT_REQUIRED");
+      if (publicKey.empty() || publicKey.size() > 8192 || context.size() > 65536 ||
+          recipient.empty() || ndn::security::extractIdentityFromCertName(certificate) != recipient)
+        throw std::invalid_argument("OWNER_KEY_CURRENT_RECIPIENT_REQUIRED");
+      checkNamingNameSize(recipient);
+      checkNamingNameSize(certificate);
+      const auto binding = ownerObjectBinding(owner, service, object);
+      const auto& certificateWire = certificate.wireEncode();
+      const auto digest = computeNamingDigest("ndnsf/isolated-object-v1/recipient-ack-key",
+        {{1, 2, {binding.begin(), binding.end()}},
+         {2, 1, {certificateWire.begin(), certificateWire.end()}},
+         {3, 4, {publicKey.begin(), publicKey.end()}},
+         {4, 4, {context.begin(), context.end()}}});
+      return ndn::Buffer(digest.begin(), digest.end());
+    }
+
+    std::shared_ptr<const EncryptedLargeDataRangeSource>
+    ServiceUser::validateOwnerRetainedSourceFromWorker(
+        const ndn::Name& service, const LargeDataPublishResult& object,
+        std::chrono::steady_clock::time_point deadline,
+        const std::function<void()>& current, ProtectedBlobManifest& manifest,
+        std::shared_ptr<const ndn::Data>* manifestPacket)
+    {
+      current();
+      std::shared_ptr<EncryptedLargeDataRangeStore> store;
+      {
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        store = m_largeDataRangeStore;
+      }
+      if (!store || !store->supportsOriginalDataPackets())
+        throw std::runtime_error("OWNER_ORIGINAL_PACKET_STORE_REQUIRED");
+      const auto retained = store->lookupDurableObject(
+        object.publicationIdentity, object.manifestName, current);
+      if (!retained) throw std::runtime_error("OWNER_ORIGINAL_OBJECT_MISSING");
+      if (!retained->source || !retained->source->isDurable() ||
+          retained->packetStorageFormat != "original-packet-set" ||
+          ndn::Name(retained->encryptedName) != object.dataPrefix ||
+          retained->publicationIdentity != object.publicationIdentity ||
+          retained->protectionEpoch != object.protectionEpoch ||
+          retained->keyReferenceId != object.keyReferenceId ||
+          retained->keyReferenceVersion != object.keyReferenceVersion ||
+          retained->ciphertextManifestDigest != object.manifestDigest ||
+          ndn::Name(retained->servingLocator) != object.dataPrefix ||
+          retained->contentDigest != object.contentDigest ||
+          retained->plaintextSize != object.plaintextSize ||
+          ndn::Name(retained->manifestName) != object.manifestName ||
+          ndn::Name(retained->dataPrefix) != object.dataPrefix)
+        throw std::runtime_error("OWNER_ORIGINAL_OBJECT_REFERENCE_MISMATCH");
+      const auto wire = retained->source->readOriginalDataPacket(object.manifestName);
+      if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE ||
+          !validateProducerPacketWireUntil(wire, identity, deadline))
+        throw std::runtime_error("OWNER_ORIGINAL_MANIFEST_VALIDATION_FAILED");
+      current();
+      const ndn::Data root(ndn::Block(ndn::span<const std::uint8_t>(wire.data(), wire.size())));
+      const auto& content = root.getContent();
+      const std::vector<std::uint8_t> payload(content.value(), content.value() + content.value_size());
+      manifest = ProtectedBlobManifest::decode(payload, identity, object.manifestName);
+      const auto expectedDigest = makeNamingDigestComponent(object.contentDigest.substr(7));
+      if (root.getName() != object.manifestName ||
+          sha256DigestString(ndn::Buffer(payload.begin(), payload.end())) != object.manifestDigest ||
+          manifest.dataPrefix != object.dataPrefix ||
+          manifest.plaintextBytes != object.plaintextSize ||
+          manifest.envelopeBytes != retained->source->size() ||
+          manifest.keyReferenceId != object.keyReferenceId ||
+          manifest.protectionEpoch != object.protectionEpoch ||
+          manifest.keyIdentifier != makeHybridMessageKeyName(
+            service, identity, object.authorizationScope, object.protectionEpoch).toUri(
+              ndn::name::UriFormat::CANONICAL) ||
+          ndn::Name(manifest.authorizationScope) != ndn::Name("/SERVICE").append(service) ||
+          manifest.plaintextDigest != std::vector<std::uint8_t>(
+            expectedDigest.value(), expectedDigest.value() + expectedDigest.value_size()))
+        throw std::runtime_error("OWNER_ORIGINAL_MANIFEST_REFERENCE_MISMATCH");
+      if (manifestPacket) *manifestPacket = std::make_shared<const ndn::Data>(root);
+      return retained->source;
+    }
+
+    std::shared_ptr<ServiceUser::LargeDataFilePublication>
+    ServiceUser::registerOriginalPacketPublication(
+        const std::shared_ptr<LargeDataFilePublication>& candidate,
+        LargeDataPublishResult& result, bool retainWhileLeased,
+        ndn::time::milliseconds retention, const std::function<bool()>& versionMatches)
+    {
+      if (!candidate || !candidate->originalPacketSource ||
+          !candidate->rangeSource || !candidate->manifestPacket || !versionMatches)
+        throw std::logic_error("original packet registration requires a validated source");
+      const auto key = candidate->baseName.toUri();
+      std::unique_lock<std::shared_mutex> fence(m_protectedReuseMutex);
+      if (!versionMatches()) throw std::runtime_error("DURABLE_STALE_CONTROLLER_VERSION");
+      std::lock_guard<std::mutex> lock(_cache_mutex);
+      const auto existing = m_largeDataFiles.find(key);
+      if (existing != m_largeDataFiles.end()) {
+        const auto& publication = existing->second;
+        if (!publication || publication->publicationIdentity != candidate->publicationIdentity ||
+            publication->ownerRecoverable != candidate->ownerRecoverable ||
+            !publication->manifestPacket || publication->manifestPacket->wireEncode() !=
+              candidate->manifestPacket->wireEncode())
+          throw std::runtime_error("ORIGINAL_PACKET_REGISTRATION_CONFLICT");
+        if (retainWhileLeased) {
+          result.servingLease = publication->servingLease.lock();
+          if (!result.servingLease) {
+            result.servingLease = std::make_shared<unsigned char>(0);
+            publication->servingLease = result.servingLease;
+          }
+        }
+        return publication;
+      }
+      if (retainWhileLeased) {
+        result.servingLease = std::make_shared<unsigned char>(0);
+        candidate->servingLease = result.servingLease;
+      }
+      auto retired = m_retiredProtectedPrefixes.extract(key);
+      try {
+        m_largeDataFiles.emplace(key, candidate);
+        m_scheduler.schedule(retention,
+          [this, key, weak = std::weak_ptr<LargeDataFilePublication>(candidate)] {
+            expireLargeDataPublication(key, weak);
+          });
+      }
+      catch (...) {
+        m_largeDataFiles.erase(key);
+        if (!retired.empty()) m_retiredProtectedPrefixes.insert(std::move(retired));
+        throw;
+      }
+      return candidate;
+    }
+
+    LargeDataPublishResult
+    ServiceUser::restoreOwnerRetainedLargeDataFromWorker(
+        const ndn::Name& service, const LargeDataPublishResult& object,
+        std::chrono::steady_clock::time_point deadline,
+        const std::function<void()>& requireActive)
+    {
+      if (isOnIoThread()) throw std::logic_error("owner serving restore requires a worker");
+      if (!requireActive) throw std::invalid_argument("OWNER_KEY_CURRENT_OPERATION_REQUIRED");
+      const auto current = [&] {
+        requireActive();
+        if (std::chrono::steady_clock::now() >= deadline)
+          throw std::runtime_error("OWNER_KEY_OPERATION_EXPIRED");
+      };
+      current();
+      const auto binding = ownerObjectBinding(identity, service, object);
+      ProtectedBlobManifest manifest;
+      std::shared_ptr<const ndn::Data> root;
+      const auto source = validateOwnerRetainedSourceFromWorker(
+        service, object, deadline, current, manifest, &root);
+      RecipientEncryptedAssignment capsule;
+      {
+        OwnerKeyDirectory directory(identity);
+        capsule = directory.read(binding);
+      }
+      auto candidate = std::make_shared<LargeDataFilePublication>();
+      candidate->baseName = manifest.dataPrefix;
+      candidate->fileSize = source->size();
+      candidate->segmentCount = manifest.segmentCount;
+      candidate->maxSegmentBytes = manifest.segmentBytes;
+      candidate->windowCapacity = largeDataWindowSegments();
+      candidate->rangeSource = source;
+      candidate->originalPacketSource = true;
+      candidate->ownerRecoverable = true;
+      candidate->manifestPacket = root;
+      candidate->serviceName = service.toUri();
+      candidate->publicationIdentity = object.publicationIdentity;
+      const auto retention = largeDataFileRetention();
+      auto task = std::make_shared<std::packaged_task<LargeDataPublishResult()>>([&] {
+        current();
+        auto& keyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+        auto secret = recoverOwnerObjectKey(identity, binding, capsule, keyChain);
+        auto eraseSecret = ndn::make_scope_exit([&] {
+          OPENSSL_cleanse(secret.data(), secret.size());
+        });
+        current();
+        auto result = object;
+        result.servingLease.reset();
+        result.rollbackDataNames.clear();
+        result.rollbackKeyId.clear();
+        result.rollbackServiceName.clear();
+        result.errorMessage.clear();
+        registerOriginalPacketPublication(candidate, result, true, retention, [] { return true; });
+        result.success = true;
+        result.fileBacked = true;
+        return result;
+      });
+      auto completed = task->get_future();
+      auto lease = postToIoWithFace([task](ndn::Face&) { (*task)(); });
+      auto result = completed.get();
+      current();
+      return result;
+    }
+
+    RecipientEncryptedAssignment
+    ServiceUser::rewrapOwnerRetainedLargeDataKeyFromWorker(
+        const ndn::Name& service, const LargeDataPublishResult& object,
+        const ndn::security::Certificate& recipient, const ndn::Buffer& context,
+        std::chrono::steady_clock::time_point deadline,
+        const std::function<void()>& requireActive)
+    {
+      if (!requireActive || !recipient.isValid() || !isRsaCertificate(recipient))
+        throw std::invalid_argument("OWNER_KEY_CURRENT_RECIPIENT_REQUIRED");
+      const auto key = recipient.getPublicKey();
+      return rewrapOwnerRetainedLargeDataKeyFromWorker(service, object,
+        recipient.getIdentity(), recipient.getName(), ndn::Buffer(key.begin(), key.end()),
+        context, deadline, requireActive);
+    }
+
+    RecipientEncryptedAssignment
+    ServiceUser::rewrapOwnerRetainedLargeDataKeyFromWorker(
+        const ndn::Name& service, const LargeDataPublishResult& object,
+        const ndn::Name& recipient, const ndn::Name& certificate,
+        const ndn::Buffer& publicKey, const ndn::Buffer& context,
+        std::chrono::steady_clock::time_point deadline,
+        const std::function<void()>& requireActive)
+    {
+      if (isOnIoThread()) throw std::logic_error("owner key rewrap requires a worker");
+      if (!requireActive) throw std::invalid_argument("OWNER_KEY_CURRENT_OPERATION_REQUIRED");
+      ndn::security::transform::PublicKey parsedKey;
+      parsedKey.loadPkcs8(publicKey);
+      if (parsedKey.getKeyType() != ndn::KeyType::RSA)
+        throw std::invalid_argument("OWNER_KEY_CURRENT_RECIPIENT_REQUIRED");
+      const auto current = [&] {
+        requireActive();
+        if (std::chrono::steady_clock::now() >= deadline)
+          throw std::runtime_error("OWNER_KEY_OPERATION_EXPIRED");
+      };
+      current();
+      const auto binding = ownerObjectBinding(identity, service, object);
+      const auto aad = ownerRetainedLargeDataKeyAssociatedData(
+        identity, service, object, recipient, certificate, publicKey, context);
+      ProtectedBlobManifest manifest;
+      // Pin the immutable snapshot until the key operation has drained.
+      const auto source = validateOwnerRetainedSourceFromWorker(
+        service, object, deadline, current, manifest);
+      RecipientEncryptedAssignment capsule;
+      {
+        OwnerKeyDirectory directory(identity);
+        capsule = directory.read(binding);
+      }
+      auto task = std::make_shared<std::packaged_task<RecipientEncryptedAssignment()>>([&] {
+        current();
+        auto& keyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+        auto secret = recoverOwnerObjectKey(identity, binding, capsule, keyChain);
+        auto eraseSecret = ndn::make_scope_exit([&] {
+          OPENSSL_cleanse(secret.data(), secret.size());
+        });
+        current();
+        return encryptRecipientAssignment(secret, publicKey, recipient, certificate, aad);
+      });
+      auto completed = task->get_future();
+      auto lease = postToIoWithFace([task](ndn::Face&) { (*task)(); });
+      auto result = completed.get(); // Drain callbacks even if the deadline expires.
+      current();
+      return result;
+    }
+
+    void
+    ServiceUser::readOwnerRetainedLargeDataFromWorker(
+        const ndn::Name& service, const LargeDataPublishResult& object,
+        std::uint64_t maxPlaintextBytes, std::chrono::steady_clock::time_point deadline,
+        const std::function<void()>& requireActive,
+        const std::function<void(ndn::span<const std::uint8_t>)>& consume)
+    {
+      if (isOnIoThread()) throw std::logic_error("owner retained read requires a worker");
+      constexpr std::uint64_t MAX_OWNER_PLAINTEXT = 64U << 20;
+      constexpr std::uint64_t MAX_ENVELOPE_OVERHEAD = 1U << 20;
+      if (!requireActive || !consume || maxPlaintextBytes == 0 ||
+          maxPlaintextBytes > MAX_OWNER_PLAINTEXT || object.plaintextSize > maxPlaintextBytes)
+        throw std::invalid_argument("OWNER_READ_BOUND_OR_CALLBACK_INVALID");
+      const auto current = [&] {
+        requireActive();
+        if (std::chrono::steady_clock::now() >= deadline)
+          throw std::runtime_error("OWNER_KEY_OPERATION_EXPIRED");
+      };
+      current();
+      const auto binding = ownerObjectBinding(identity, service, object);
+      ProtectedBlobManifest manifest;
+      const auto source = validateOwnerRetainedSourceFromWorker(
+        service, object, deadline, current, manifest);
+      if (manifest.envelopeBytes > maxPlaintextBytes + MAX_ENVELOPE_OVERHEAD)
+        throw std::runtime_error("OWNER_ENVELOPE_SIZE_EXCEEDED");
+      auto encoded = std::make_shared<ndn::Buffer>();
+      encoded->reserve(manifest.envelopeBytes);
+      for (std::uint64_t segment = 0; segment < manifest.segmentCount; ++segment) {
+        current();
+        const auto name = ndn::Name(manifest.dataPrefix).appendSegment(segment);
+        const auto wire = source->readOriginalDataPacket(name);
+        if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE ||
+            !validateProducerPacketWireUntil(wire, identity, deadline))
+          throw std::runtime_error("OWNER_ORIGINAL_SEGMENT_VALIDATION_FAILED");
+        const ndn::Data packet(ndn::Block(ndn::span<const std::uint8_t>(wire.data(), wire.size())));
+        const auto expectedSize = std::min(manifest.segmentBytes,
+          manifest.envelopeBytes - static_cast<std::uint64_t>(encoded->size()));
+        const auto& content = packet.getContent();
+        if (packet.getName() != name ||
+            packet.getFinalBlock() != ndn::name::Component::fromSegment(manifest.segmentCount - 1) ||
+            content.value_size() != expectedSize)
+          throw std::runtime_error("OWNER_ORIGINAL_SEGMENT_BINDING_INVALID");
+        encoded->insert(encoded->end(), content.value(), content.value() + content.value_size());
+      }
+      if (encoded->size() != manifest.envelopeBytes)
+        throw std::runtime_error("OWNER_ORIGINAL_ENVELOPE_SIZE_MISMATCH");
+      HybridMessageEnvelope envelope;
+      {
+        const ndn::ConstBufferPtr ownedWire = encoded;
+        const ndn::Block wire(ownedWire);
+        if (wire.size() != encoded->size() || !envelope.WireDecode(wire))
+          throw std::runtime_error("OWNER_ORIGINAL_ENVELOPE_INVALID");
+      }
+      encoded.reset(); // Release assembled wire before the authenticated plaintext allocation.
+      const auto error = protectedBlobEnvelopeBindingError(manifest, service, envelope);
+      if (!error.empty()) throw std::runtime_error(error);
+      if (envelope.getMessageType() != "REQUEST-LARGE" ||
+          envelope.getCipherText().size() != manifest.plaintextBytes)
+        throw std::runtime_error("OWNER_ORIGINAL_ENVELOPE_BINDING_INVALID");
+      RecipientEncryptedAssignment capsule;
+      {
+        OwnerKeyDirectory directory(identity);
+        capsule = directory.read(binding);
+      }
+      auto task = std::make_shared<std::packaged_task<ndn::Buffer()>>([&] {
+        current();
+        auto& keyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+        return recoverOwnerObjectKey(identity, binding, capsule, keyChain);
+      });
+      auto completed = task->get_future();
+      auto lease = postToIoWithFace([task](ndn::Face&) { (*task)(); });
+      auto key = completed.get();
+      auto eraseKey = ndn::make_scope_exit([&] { OPENSSL_cleanse(key.data(), key.size()); });
+      current();
+      ndn::Buffer plaintext;
+      auto erasePlaintext = ndn::make_scope_exit([&] {
+        if (!plaintext.empty()) OPENSSL_cleanse(plaintext.data(), plaintext.size());
+      });
+      bool contentMismatch = false;
+      if (!decryptProtectedBlobPayload(manifest.dataPrefix, service, envelope, key,
+                                        plaintext, contentMismatch, manifest.plaintextBytes))
+        throw std::runtime_error(contentMismatch ? "OWNER_PLAINTEXT_IDENTITY_MISMATCH" :
+                                                  "OWNER_PAYLOAD_AUTHENTICATION_FAILED");
+      current();
+      consume(ndn::span<const std::uint8_t>(plaintext.data(), plaintext.size()));
+      current();
+    }
+
+    void
+    ServiceUser::forgetOwnerRetainedLargeDataKey(
+        const ndn::Name& service, const LargeDataPublishResult& object)
+    {
+      if (isOnIoThread()) throw std::logic_error("owner key release requires a worker");
+      const auto binding = ownerObjectBinding(identity, service, object);
+      OwnerKeyDirectory directory(identity);
+      directory.forget(binding);
+    }
+
     LargeDataPublishResult ServiceUser::publishEncryptedLargeDataImpl(
         const PreparedServiceRequest& ctx, const std::vector<uint8_t>& plaintext,
         const std::string& objectLabel, ndn::time::milliseconds freshness,
         bool retainWhileLeased, const std::function<void()>& requireActive,
-        const LargeDataPublishOptions& options, bool marshalIo)
+        const LargeDataPublishOptions& options, bool marshalIo, bool ownerRecoverable,
+        std::chrono::steady_clock::time_point ownerDeadline)
     {
         LargeDataPublishResult result;
         enum PublicationPhase : std::size_t {
@@ -7047,6 +7711,12 @@ namespace ndn_service_framework
             }
         }
         catch (const std::exception& error) { result.errorMessage = error.what(); return result; }
+        if (ownerRecoverable) {
+          // A legacy service-shared key must never be retrofitted into this path.
+          durablePublicationBase = "sha256:" + computeNamingDigest(
+            "ndnsf-naming/owner-recoverable-publication-v1",
+            {{1, 2, {durablePublicationBase.begin(), durablePublicationBase.end()}}});
+        }
         std::string durablePublicationIdentity = durablePublicationBase;
         ndn::Name encryptedDataName;
         ProtectedBlobIdentity blobIdentity;
@@ -7132,6 +7802,7 @@ namespace ndn_service_framework
 
         bool wrappedKeyReferenceHeld = false;
         std::string wrappedKeyId;
+        bool ownerIntentRetained = false;
         try {
             const auto messageType = std::string("REQUEST-LARGE");
             if (requireActive) requireActive();
@@ -7140,6 +7811,7 @@ namespace ndn_service_framework
             std::optional<DurableLargeDataKeyReference> durableReference;
             bool migrateLegacyReference = false;
             bool repairReferenceFromRepo = false;
+            bool refreshOwnerReference = false;
             if (durable) {
                 auto lookupTiming = measure(DURABLE_LOOKUP);
                 const auto referenceVersionMatches = [&]() {
@@ -7168,6 +7840,23 @@ namespace ndn_service_framework
                             durableHit->ciphertextManifestDigest &&
                         ndn::Name(durableReference->servingLocator) == encryptedDataName;
                 };
+                const auto referenceForCurrentVersion = [&] {
+                    return DurableLargeDataKeyReference{
+                        durablePublicationIdentity,
+                        ctx.serviceName.toUri(),
+                        durableHit->encryptedName,
+                        result.contentDigest,
+                        result.plaintextSize,
+                        durableVersioned ? durableControllerVersion->controllerEpoch : 0,
+                        durableVersioned ?
+                            durableControllerVersion->controllerGenerationTimestamp : 0,
+                        durableHit->protectionEpoch,
+                        durableHit->keyReferenceId,
+                        durableHit->keyReferenceVersion,
+                        durableHit->ciphertextManifestDigest,
+                        durableHit->servingLocator,
+                        durableHit->manifestName, durableHit->packetStorageFormat};
+                };
                 const auto rebindDurableIdentity = [&] {
                     const auto versionText = durableVersioned
                         ? durableControllerVersion->toString() : "unversioned";
@@ -7193,21 +7882,7 @@ namespace ndn_service_framework
                         // reconstruct the non-secret V2 reference after a
                         // crash between durable commit and reference rename;
                         // no key or plaintext is recovered from Repo.
-                        durableReference = DurableLargeDataKeyReference{
-                            durablePublicationIdentity,
-                            ctx.serviceName.toUri(),
-                            durableHit->encryptedName,
-                            result.contentDigest,
-                            result.plaintextSize,
-                            durableVersioned ? durableControllerVersion->controllerEpoch : 0,
-                            durableVersioned ?
-                                durableControllerVersion->controllerGenerationTimestamp : 0,
-                            durableHit->protectionEpoch,
-                            durableHit->keyReferenceId,
-                            durableHit->keyReferenceVersion,
-                            durableHit->ciphertextManifestDigest,
-                            durableHit->servingLocator,
-                            durableHit->manifestName, durableHit->packetStorageFormat};
+                        durableReference = referenceForCurrentVersion();
                         repairReferenceFromRepo = true;
                     }
                 };
@@ -7227,6 +7902,18 @@ namespace ndn_service_framework
                     }
                     if (migrateLegacyReference && !referenceMetadataMatches()) {
                         migrateLegacyReference = false;
+                    }
+                    // Status advancement may prune this non-secret reference.
+                    // An isolated Owner key remains recoverable: validate the
+                    // original manifest and capsule below before committing a
+                    // reconstructed current reference or registering serving.
+                    if (ownerRecoverable) {
+                        if (durableReference && !referenceMetadataMatches())
+                            throw std::runtime_error("OWNER_DURABLE_REFERENCE_MISMATCH");
+                        if (!durableReference || !referenceVersionMatches()) {
+                            durableReference = referenceForCurrentVersion();
+                            refreshOwnerReference = true;
+                        }
                     }
                     // A missing/old reference cannot authorize the existing
                     // ciphertext.  Rebind to a version-derived immutable
@@ -7280,6 +7967,9 @@ namespace ndn_service_framework
                     const auto rootWire = durableHit->source->readOriginalDataPacket(manifestName);
                     if (rootWire.empty() || rootWire.size() > ndn::MAX_NDN_PACKET_SIZE)
                         throw std::runtime_error("DURABLE_LOOKUP_UNREADABLE");
+                    if (ownerRecoverable &&
+                        !validateProducerPacketWireUntil(rootWire, identity, ownerDeadline))
+                      throw std::runtime_error("OWNER_ORIGINAL_MANIFEST_VALIDATION_FAILED");
                     const auto restoredRoot = std::make_shared<ndn::Data>(ndn::Block(
                         ndn::span<const std::uint8_t>(rootWire.data(), rootWire.size())));
                     if (restoredRoot->getName() != manifestName)
@@ -7317,8 +8007,22 @@ namespace ndn_service_framework
                     result.servingLocator = durableHit->servingLocator;
                     result.fileBacked = true;
 
-                    const auto publicationKey = encryptedDataName.toUri();
-                    if (migrateLegacyReference || repairReferenceFromRepo ||
+                    if (ownerRecoverable) {
+                      const auto binding = ownerObjectBinding(identity, ctx.serviceName, result);
+                      RecipientEncryptedAssignment capsule;
+                      {
+                        OwnerKeyDirectory directory(identity);
+                        capsule = directory.read(binding);
+                      }
+                      onIo([&] {
+                        auto& keyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+                        auto secret = recoverOwnerObjectKey(identity, binding, capsule, keyChain);
+                        OPENSSL_cleanse(secret.data(), secret.size());
+                      });
+                      if (requireActive) requireActive();
+                    }
+
+                    if (migrateLegacyReference || repairReferenceFromRepo || refreshOwnerReference ||
                         durableReference->packetStorageFormat != "original-packet-set" ||
                         durableReference->needsLocationMigration) {
                         std::lock_guard<std::mutex> commitFence(
@@ -7342,69 +8046,27 @@ namespace ndn_service_framework
                                 "DURABLE_KEY_REFERENCE_STORE_UNAVAILABLE");
                         }
                     }
+                    auto candidate = std::make_shared<LargeDataFilePublication>();
+                    candidate->baseName = encryptedDataName;
+                    candidate->fileSize = durableHit->source->size();
+                    candidate->segmentCount = restoredManifest.segmentCount;
+                    candidate->maxSegmentBytes = restoredManifest.segmentBytes;
+                    candidate->freshness = freshness;
+                    candidate->windowCapacity = largeDataWindowSegments();
+                    candidate->rangeSource = durableHit->source;
+                    candidate->originalPacketSource = true;
+                    candidate->ownerRecoverable = ownerRecoverable;
+                    candidate->manifestPacket = restoredRoot;
+                    candidate->serviceName = ctx.serviceName.toUri();
+                    candidate->publicationIdentity = result.publicationIdentity;
+                    candidate->controllerVersioned = durableVersioned;
+                    if (durableVersioned)
+                        candidate->controllerVersion = *durableControllerVersion;
                     std::shared_ptr<LargeDataFilePublication> publication;
-                    bool scheduleExpiry = false;
-                    {
-                        std::unique_lock<std::shared_mutex> fence(m_protectedReuseMutex);
-                        if (!durableVersionMatches()) {
-                            throw std::runtime_error(
-                                "DURABLE_STALE_CONTROLLER_VERSION");
-                        }
-                        std::lock_guard<std::mutex> lock(_cache_mutex);
-                        const auto existing = m_largeDataFiles.find(publicationKey);
-                        if (existing != m_largeDataFiles.end()) {
-                            publication = existing->second;
-                            if (retainWhileLeased) {
-                                auto lease = publication->servingLease.lock();
-                                if (!lease) {
-                                    result.servingLease = std::make_shared<unsigned char>(0);
-                                    publication->servingLease = result.servingLease;
-                                }
-                                else {
-                                    result.servingLease = std::move(lease);
-                                }
-                            }
-                        }
-                        else {
-                            publication = std::make_shared<LargeDataFilePublication>();
-                            publication->baseName = encryptedDataName;
-                            publication->fileSize = durableHit->source->size();
-                            publication->segmentCount = 1 +
-                                (publication->fileSize - 1) / maxSegmentBytes;
-                            publication->maxSegmentBytes = maxSegmentBytes;
-                            publication->freshness = freshness;
-                            publication->windowCapacity = largeDataWindowSegments();
-                            publication->rangeSource = durableHit->source;
-                            publication->originalPacketSource = true;
-                            publication->manifestPacket = restoredRoot;
-                            publication->segmentCount = restoredManifest.segmentCount;
-                            publication->maxSegmentBytes = restoredManifest.segmentBytes;
-                            publication->serviceName = ctx.serviceName.toUri();
-                            publication->publicationIdentity = result.publicationIdentity;
-                            publication->controllerVersioned = durableVersioned;
-                            if (durableVersioned)
-                                publication->controllerVersion = *durableControllerVersion;
-                            m_retiredProtectedPrefixes.erase(publicationKey);
-                            if (retainWhileLeased) {
-                                result.servingLease = std::make_shared<unsigned char>(0);
-                                publication->servingLease = result.servingLease;
-                            }
-                            const auto [it, inserted] = m_largeDataFiles.emplace(
-                                publicationKey, publication);
-                            if (!inserted)
-                                throw std::runtime_error(
-                                    "duplicate durable large-data publication name");
-                            (void)it;
-                            scheduleExpiry = true;
-                        }
-                    }
-                    if (scheduleExpiry) {
-                        const auto expiry = *fileBackedRetention;
-                        onIo([&] { m_scheduler.schedule(expiry, [this, publicationKey,
-                                                       weakPublication = std::weak_ptr<LargeDataFilePublication>(publication)] {
-                            expireLargeDataPublication(publicationKey, weakPublication);
-                        }); });
-                    }
+                    onIo([&] {
+                        publication = registerOriginalPacketPublication(candidate, result,
+                            retainWhileLeased, *fileBackedRetention, durableVersionMatches);
+                    });
                     if (publication->manifestPacket)
                         result.manifestName = publication->manifestPacket->getName();
                     NDN_LOG_INFO("LARGE_DATA_PUBLISH_DURABLE_HIT"
@@ -7417,12 +8079,17 @@ namespace ndn_service_framework
             }
 
             HybridMessageKey key;
+            auto eraseLocalKey = ndn::make_scope_exit([&] {
+              if (!key.key.empty()) OPENSSL_cleanse(key.key.data(), key.key.size());
+            });
             measureCall(KEY_STATE, [&] { onIo([&] {
                 if (!m_largeDataKeyReleaseState) {
                     m_largeDataKeyReleaseState = std::make_shared<LargeDataKeyReleaseState>();
                     m_largeDataKeyReleaseState->crypto = &m_hybridMessageCrypto;
                 }
-                key = m_hybridMessageCrypto.getOrCreateSendKey(
+                key = ownerRecoverable ? m_hybridMessageCrypto.createIsolatedSendKey(
+                    ctx.serviceName, identity, accessAttribute, m_hybridCryptoCounters) :
+                  m_hybridMessageCrypto.getOrCreateSendKey(
                     ctx.serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
             }); });
             wrappedKeyId = key.keyId;
@@ -7571,7 +8238,19 @@ namespace ndn_service_framework
                 std::shared_ptr<LargeDataFilePublication> publication;
                 const auto publicationKey = encryptedDataName.toUri();
                 std::string pendingPublicationKey;
+                std::string ownerIntentBinding;
+                bool ownerCommitMayHaveStarted = false;
                 auto rollback = [&] {
+                    if (ownerIntentRetained && !ownerCommitMayHaveStarted) {
+                      try {
+                        OwnerKeyDirectory ownerDirectory(identity);
+                        ownerDirectory.forget(ownerIntentBinding);
+                        ownerIntentRetained = false;
+                      }
+                      catch (...) {
+                        // Report retained recovery material with the original failure.
+                      }
+                    }
                     if (!pendingPublicationKey.empty()) {
                         std::lock_guard<std::mutex> commitFence(
                             m_protectedReferenceCommitMutex);
@@ -7723,6 +8402,30 @@ namespace ndn_service_framework
                         }, requireActive);
                     });
                     if (durable) {
+                        if (ownerRecoverable) {
+                          result.encryptedDataName = encryptedDataName;
+                          result.ciphertextManifestDigest = result.manifestDigest;
+                          result.servingLocator = encryptedDataName.toUri();
+                          const auto binding = ownerObjectBinding(identity, ctx.serviceName, result);
+                          ownerIntentBinding = binding;
+                          RecipientEncryptedAssignment capsule;
+                          measureCall(KEY_WRAP, [&] { onIo([&] {
+                            const auto aad = ownerObjectAssociatedData(binding, identityCert);
+                            capsule = encryptRecipientAssignment(key.key, identityCert.getPublicKey(),
+                                                                  identity, identityCert.getName(), aad);
+                          }); });
+                          capsule.setField("recoveryDomain", "isolated-object-v1");
+                          capsule.setField("objectBinding", binding);
+                          if (requireActive) requireActive();
+                          measureCall(KEY_REFERENCE, [&] {
+                            OwnerKeyDirectory directory(identity);
+                            directory.write(binding, capsule);
+                          });
+                          ownerIntentRetained = true;
+                          // Retain this bounded intent if Repo commit is uncertain.
+                          // Capsule presence alone never admits a remote object.
+                          if (requireActive) requireActive();
+                        }
                         auto commitTiming = measure(STORE_COMMIT);
                         EncryptedLargeDataCommitOptions commitOptions;
                         commitOptions.retention = options.retention;
@@ -7741,6 +8444,7 @@ namespace ndn_service_framework
                         commitOptions.packetWireBytes = rootWire.size() +
                             publication->originalPackets->storageBytes() - segmentCount * 2 * sizeof(std::uint64_t);
                         std::uint64_t next = 0;
+                        ownerCommitMayHaveStarted = ownerRecoverable;
                         publication->rangeSource = rangeStore->commitOriginalDataPackets(result.manifestName,
                             commitOptions, [&]() -> std::optional<std::pair<ndn::Name, std::vector<std::uint8_t>>> {
                             if (requireActive) requireActive();
@@ -7760,6 +8464,7 @@ namespace ndn_service_framework
                                 std::vector<std::uint8_t>(rootWire.begin(), rootWire.end()))
                             throw std::runtime_error("DURABLE_ORIGINAL_PACKET_COMMIT_INVALID");
                         publication->originalPacketSource = true;
+                        publication->ownerRecoverable = ownerRecoverable;
                         publication->originalPackets.reset();
                     }
                     // This metric counts serving reads, not preparation reads.
@@ -8234,6 +8939,8 @@ namespace ndn_service_framework
                 m_hybridMessageCrypto.eraseWrappedSendKey(ctx.serviceName, wrappedKeyId);
             }
             result.errorMessage = e.what();
+            if (ownerIntentRetained)
+              result.errorMessage += "; OWNER_KEY_INTENT_RETAINED";
         }
         return result;
     }
@@ -8272,7 +8979,8 @@ namespace ndn_service_framework
             }
             for (auto it = m_largeDataFiles.begin(); it != m_largeDataFiles.end();) {
                 const auto& publication = it->second;
-                if (!publication || publication->serviceName != serviceName.toUri() ||
+                if (!publication || publication->ownerRecoverable ||
+                    publication->serviceName != serviceName.toUri() ||
                     (publication->controllerVersioned &&
                      publication->controllerVersion.compare(version) >= 0)) {
                     ++it;
@@ -16427,7 +17135,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 }
             }
         }
-        if (publication && !publication->publicationIdentity.empty()) {
+        if (publication && !publication->ownerRecoverable &&
+            !publication->publicationIdentity.empty()) {
             bool current = true;
             // Do not acquire the Controller mutex while holding the cache
             // mutex.  The protected read-side fence prevents a status

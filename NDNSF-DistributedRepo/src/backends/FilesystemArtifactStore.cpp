@@ -3586,6 +3586,8 @@ SqliteArtifactMetadataStore::reserveUserStorage(
   validateUserStorageName(writer); validateUserStorageName(node); validateUserStorageName(owner);
   validateUserStorageId(grantId); validateUserStorageId(operationId);
   const auto charge = userStorageCharge(object);
+  if (charge > REPO_USER_STORAGE_OBJECT_MAX_BYTES)
+    throw std::invalid_argument("repo-user-storage-invalid: object exceeds byte limit");
   checkedUserStorageInteger(nowMs, true);
   std::lock_guard<std::mutex> guard(m_impl->mutex);
   requireUserStorageProfile(m_impl->userStorageCatalogAvailable, true, m_impl->migration.writesEnabled);
@@ -3679,6 +3681,8 @@ SqliteArtifactMetadataStore::settleUserStorageReservation(
   const auto previousManifestBytes = write->object.manifestBytes;
   write->object.manifestBytes = finalManifestBytes;
   const auto charge = userStorageCharge(write->object);
+  if (charge > REPO_USER_STORAGE_OBJECT_MAX_BYTES)
+    throw std::invalid_argument("repo-user-storage-invalid: object exceeds byte limit");
   const auto usage = readUserStorageUsage(m_impl->database, node, owner);
   if (usage.reservedBytes < oldCharge)
     throw std::runtime_error("repo-user-storage-inventory-conflict: reservation usage");
@@ -3884,7 +3888,7 @@ SqliteArtifactMetadataStore::prepareUserStorageCleanup(const std::string& owner,
         write.grant.objectName != objectName || write.grant.ownerEpoch != ownerEpoch ||
         write.object.objectName != objectName || nowMs < write.updatedAtMs ||
         write.reservedBytes != userStorageCharge(write.object) ||
-        write.reservedBytes > REPO_USER_STORAGE_LIMIT_BYTES)
+        write.reservedBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES)
       throw std::runtime_error("repo-user-storage-cleanup-conflict");
     if (userStorageRow(m_impl->database, pending.get()))
       throw std::runtime_error("repo-user-storage-cleanup-conflict");

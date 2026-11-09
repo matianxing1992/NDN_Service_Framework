@@ -40,6 +40,16 @@ namespace ndn_service_framework {
 // assert revocation filtering without bypassing the real policy tables.
 struct ServiceControllerTestAccess;
 
+/** Restore a Controller-owned KP-ABE generation before it serves requests. */
+class PersistentKpAttributeAuthority : public ndn::nacabe::KpAttributeAuthority
+{
+public:
+  using KpAttributeAuthority::KpAttributeAuthority;
+
+  std::string getMasterSecret() const;
+  void restoreKeyGeneration(const std::string& publicParameters, const std::string& masterSecret);
+};
+
 // ======= 你工程里应该已有这些：PolicyParser / Policy types / AA =======
 // 这里保持“只声明，不定义”，避免跟你工程冲突。
 // 你可以删掉这段 forward decl，改为 include 你自己的头文件。
@@ -125,7 +135,9 @@ private:
   static std::string certificateDigest(const ndn::security::Certificate& certificate);
   bool isIdentityOrCertificateRevoked(const ndn::Name& identity,
                                       const std::string& certificateDigest) const;
-  void advanceAuthorizationEpoch();
+  void advanceAuthorizationEpoch(bool requireAbeRotationOnRestart = false);
+  void restoreOrPersistAbeMaterial();
+  void persistAbeMaterial();
   void initializeAbeGenerationIdentity();
   void rotateAbeGenerationAndReissuePolicies();
   /** Retry a failed ABE rotation (R1).  While m_abeRotationPending is set the
@@ -217,7 +229,7 @@ private:
   ndn::security::Validator& m_validator;
 
   ndn::KeyChain m_keyChain;
-  ndn::nacabe::KpAttributeAuthority m_aa;
+  PersistentKpAttributeAuthority m_aa;
   ndn::Name m_abePublicParametersName;
   std::string m_abePublicParametersDigest;
 

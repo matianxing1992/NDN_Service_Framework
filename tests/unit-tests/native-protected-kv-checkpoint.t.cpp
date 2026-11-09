@@ -568,9 +568,9 @@ BOOST_AUTO_TEST_CASE(PrivateKeyBufferWipesSuccessfulClearedAndDigestRejectedOutp
       const bool accepted = ndn_service_framework::decryptRecipientAssignment(changed,
         fixture.recipient.getIdentity(), fixture.recipient.getName(), fixture.recipientKeys, aad, output);
       BOOST_CHECK_EQUAL(accepted, variant == 0);
-      BOOST_CHECK_EQUAL(output.size(), variant == 1 ? 0U : 32U);
+      BOOST_CHECK_EQUAL(output.size(), variant == 0 ? 32U : 0U);
       BOOST_REQUIRE_GE(output.capacity(), 32U);
-      if (variant != 1) BOOST_CHECK(output == secret);
+      if (variant == 0) BOOST_CHECK(output == secret);
     }
     BOOST_CHECK_EQUAL(output.size(), output.capacity());
     BOOST_CHECK(std::all_of(output.begin(), output.end(), [](auto byte) { return byte == 0; }));

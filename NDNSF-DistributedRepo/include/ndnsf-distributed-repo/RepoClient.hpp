@@ -155,6 +155,20 @@ public:
     RepoUserStoragePacketSetFetchLimits limits = {},
     const std::function<void()>& requireCurrent = {});
 
+  /** Fetch explicitly named original packets with a byte upper bound, without an Owner listing.
+   * The caller pins application commitments separately and supplies packet verification.
+   * No exact size/digest or authorization proof is fabricated. Uses the existing Face window,
+   * retry and spool owner. Caller keeps its event loop running until cancellation/drain completes;
+   * the operation retains the User and its Face lease while callbacks remain pending, and can
+   * retain an additional operation owner through that same callback drain.
+   */
+  static std::vector<std::vector<uint8_t>> fetchOriginalDataPackets(
+    std::shared_ptr<ndn_service_framework::ServiceUser> user, const RepoArtifactTarget& target,
+    const std::vector<ndn::Name>& names, uint64_t maxWireBytes,
+    const std::function<bool(const ndn::Data&)>& verifyPacket, int timeoutMs,
+    const std::function<void()>& requireCurrent = {},
+    std::shared_ptr<void> operationLifetime = {});
+
   /**
    * Page the authenticated Owner listing for one exact claim, fetch its Repo
    * manifest and every original packet from the selected Provider, then
@@ -481,6 +495,10 @@ public:
    * Run one request through the normal ACK/selection/Response path while
    * restricting both ACK collection and final selection to one application-
    * selected Provider identity.
+   * The same timeout covers authorization bootstrap and the invocation.
+   * Readiness checks run on the existing Face context without blocking it;
+   * deadline/cancellation before readiness abandons bootstrap without emission.
+   * The caller keeps User and Face alive and running while queued work drains.
    * The optional emission latch is caller-owned: clear it once before a
    * multi-request target attempt; this helper only sets it.
    */

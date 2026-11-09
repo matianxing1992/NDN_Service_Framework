@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -89,7 +90,21 @@ public:
   std::shared_ptr<FaceDataReferencePacketSpool>
   operator()(const RepoDataReference& reference) const;
 
+  /** Fetch explicitly named original packets under a wire-byte upper bound.
+   * No manifest, digest or exact size is invented. Application admission remains caller-owned.
+   * Uses the same window, retries, spool, cancellation and single-operation admission as operator().
+   * requireCurrent may run concurrently on the waiting thread and Face strand; it must be
+   * thread-safe and must not block on work that requires the Face strand.
+   */
+  std::shared_ptr<FaceDataReferencePacketSpool>
+  fetchNamed(const std::vector<ndn::Name>& names, uint64_t maxWireBytes,
+             const ndn::Name& forwardingHint, std::function<void()> requireCurrent = {}) const;
+
 private:
+  std::shared_ptr<FaceDataReferencePacketSpool>
+  fetch(const RepoDataReference& routing, std::size_t packetCount,
+        std::vector<ndn::Name> names, bool exactSize, std::function<void()> requireCurrent) const;
+
   ndn::Face& m_face;
   std::chrono::milliseconds m_interestLifetime;
   std::chrono::milliseconds m_totalTimeout;

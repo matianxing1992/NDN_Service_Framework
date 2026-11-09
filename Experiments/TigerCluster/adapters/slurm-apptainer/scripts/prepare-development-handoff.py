@@ -272,7 +272,7 @@ def prepare(lock_path, workspaces, wheels, output, native_inputs=None):
     return verify(output)
 
 
-def prepare_runtime(workspace, base_sif, base_sdk, native_inputs, output):
+def prepare_runtime(workspace, base_sif, base_sdk, native_inputs, output, source_seal=None):
     """Seal only repository source; external SDK payload stays in the base SIF."""
     workspace, base_sif, base_sdk, native_inputs, output = map(
         Path, (workspace, base_sif, base_sdk, native_inputs, output))
@@ -282,7 +282,25 @@ def prepare_runtime(workspace, base_sif, base_sdk, native_inputs, output):
         fail("HANDOFF_OUTPUT_EXISTS")
     if not all(path.is_file() for path in (base_sif, base_sdk, native_inputs)):
         fail("HANDOFF_RUNTIME_INPUT_MISSING")
-    revision = git(workspace, "rev-parse", "HEAD")
+    selected = module('runtime_source_selection', HERE / 'prepare-local-sif-source.py')
+    source_hashes = {str(name): digest(workspace / name)
+                     for name in selected.selected_files(workspace)}
+    if source_seal is not None:
+        source_seal = Path(source_seal)
+        reject_symlink_components(source_seal, "HANDOFF_RUNTIME_INPUT")
+        reject_symlink_components(source_seal.parent / 'workspace.tar', "HANDOFF_RUNTIME_INPUT")
+        validator = module('runtime_prepared_source', HERE / 'validate-local-sif-source.py')
+        validator.validate(source_seal)
+        prepared = json.loads(source_seal.read_text(encoding='utf-8'))
+        if prepared.get('dependencies') or source_hashes != {
+                row['path']: row['sha256']
+                for row in prepared['files']}:
+            fail("HANDOFF_RUNTIME_SOURCE_CHANGED")
+        revision = prepared['sourceRevision']
+        if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{40}', revision):
+            fail("HANDOFF_RUNTIME_SOURCE_REVISION_INVALID")
+    else:
+        revision = git(workspace, "rev-parse", "HEAD")
     lock = {
         "schema": RUNTIME_LOCK_SCHEMA, "release": "ndnsf-di-runtime",
         "repositories": {"ndnsf": {"revision": revision}},
@@ -294,14 +312,17 @@ def prepare_runtime(workspace, base_sif, base_sdk, native_inputs, output):
     require_tokenizer_sdk(base_sdk, {
         TOKENIZER_PREFIX + name: digest(workspace / (TOKENIZER_PREFIX + name))
         for name in TOKENIZER_FILES})
-    selected = module('runtime_source_selection', HERE / 'prepare-local-sif-source.py')
-    require_nac_sdk(base_sdk, {str(name): digest(workspace / name)
-                              for name in selected.selected_files(workspace)})
+    require_nac_sdk(base_sdk, source_hashes)
     output.mkdir(parents=True)
-    subprocess.run([
-        sys.executable, str(HERE / "prepare-local-sif-source.py"),
-        "--workspace", str(workspace), "--output-dir", str(output / "source"),
-    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if source_seal is None:
+        subprocess.run([
+            sys.executable, str(HERE / "prepare-local-sif-source.py"),
+            "--workspace", str(workspace), "--output-dir", str(output / "source"),
+        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    else:
+        (output / 'source').mkdir()
+        shutil.copyfile(source_seal, output / 'source/source-seal.json')
+        shutil.copyfile(source_seal.parent / 'workspace.tar', output / 'source/workspace.tar')
     seal_path = output / "source/source-seal.json"
     seal = json.loads(seal_path.read_text(encoding="utf-8"))
     if seal["sourceRevision"] != revision or seal.get("dependencies"):
@@ -444,6 +465,8 @@ def main():
     runtime = modes.add_parser("prepare-runtime", help="Seal NDNSF against an existing base SDK")
     for name in ("workspace", "base-sif", "base-sdk", "native-inputs", "output"):
         runtime.add_argument("--" + name, required=True, type=Path)
+    runtime.add_argument('--source-seal', type=Path,
+                         help='Reuse a validated source seal and adjacent workspace.tar without Git')
     check = modes.add_parser("verify")
     check.add_argument("--bundle", required=True, type=Path)
     rendering = modes.add_parser("render")
@@ -459,7 +482,7 @@ def main():
                 args.wheels, args.output, args.native_inputs)
         elif args.mode == "prepare-runtime":
             result = prepare_runtime(args.workspace, args.base_sif, args.base_sdk,
-                                     args.native_inputs, args.output)
+                                     args.native_inputs, args.output, args.source_seal)
         elif args.mode == "render":
             result = render(args.bundle, args.base_sif, args.output)
         else:

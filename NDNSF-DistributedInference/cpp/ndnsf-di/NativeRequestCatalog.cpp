@@ -367,6 +367,8 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   model.modelManifestDigest = sourceConfig.at("model_manifest_digest").get<std::string>();
   model.canonicalGraphDigest = sourceConfig.at("canonical_graph_digest").get<std::string>();
   if (referenceOnly) {
+    if (source.preparedMetadataJson.size() > NativeCanonicalMaterialPublicationMaxBytes)
+      throw std::invalid_argument("native prepared metadata exceeds publication bound");
     const auto metadata = nativeParseJson(source.preparedMetadataJson);
     if (metadata.value("schema", std::string{}) != "ndnsf-di-prepared-metadata-v1")
       throw std::invalid_argument("unsupported native prepared metadata schema");

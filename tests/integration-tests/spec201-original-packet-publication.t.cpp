@@ -9,6 +9,7 @@
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/security/validator-null.hpp>
 #include <ndn-cxx/util/io.hpp>
+#include <ndn-cxx/util/scope.hpp>
 #include <ndn-svs/security-options.hpp>
 #include <ndn-svs/svspubsub.hpp>
 #include <algorithm>
@@ -19,6 +20,7 @@
 #include <fstream>
 #include <future>
 #include <iomanip>
+#include <openssl/crypto.h>
 #include <openssl/sha.h>
 #include <sstream>
 #include <sys/wait.h>
@@ -399,7 +401,7 @@ BOOST_AUTO_TEST_CASE(PersistentWorkerPublicationRetainsAndServesEveryDurableObje
   ndn_service_framework::test::IsolatedTestTrust fixedTrust{actor, authority};
   auto user = std::make_unique<LocalServiceUser>(face, ndn::Name("/spec201/raw"), actor,
                                                 authority, fixedTrust.schemaPath());
-  user->useSigningKeyChainForSigningOnlyForTest(keys);
+  user->useSigningKeyChainForTest(keys);
   user->attachLocalMockPubSubForTest(pubsub(face, keys));
   user->setEncryptedLargeDataRangeStore(durableStore);
   user->init();
@@ -407,7 +409,6 @@ BOOST_AUTO_TEST_CASE(PersistentWorkerPublicationRetainsAndServesEveryDurableObje
     io.poll();
     io.restart();
   }
-  user->prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
   const auto request = user->prepareServiceRequest(service.toUri());
   const std::vector<uint8_t> plaintext(PAYLOAD_BYTES, 0x42);
   std::vector<LargeDataPublishResult> publications;
@@ -432,6 +433,18 @@ BOOST_AUTO_TEST_CASE(PersistentWorkerPublicationRetainsAndServesEveryDurableObje
 
   const auto started = std::chrono::steady_clock::now();
   const auto deadline = started + std::chrono::minutes(6);
+  bool producerReady = false;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto task = std::make_shared<std::packaged_task<bool()>>([&] {
+      return user->isNacProducerReadyForTest();
+    });
+    auto completed = task->get_future();
+    boost::asio::post(io, [task] { (*task)(); });
+    producerReady = completed.get();
+    if (producerReady) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (!producerReady) firstFailure = "real NAC producer public parameters unavailable";
   const auto fetchData = [&face, &io](const ndn::Name& name) -> std::optional<ndn::Data> {
     auto promise = std::make_shared<std::promise<ndn::Data>>();
     auto delivered = std::make_shared<std::atomic_bool>(false);
@@ -446,7 +459,7 @@ BOOST_AUTO_TEST_CASE(PersistentWorkerPublicationRetainsAndServesEveryDurableObje
       return std::nullopt;
     return future.get();
   };
-  for (size_t i = 0; i < OBJECT_COUNT; ++i) {
+  for (size_t i = 0; i < OBJECT_COUNT && firstFailure.empty(); ++i) {
     if (std::chrono::steady_clock::now() >= deadline) {
       firstFailure = "persistent worker publication deadline exceeded";
       break;
@@ -567,6 +580,541 @@ BOOST_AUTO_TEST_CASE(PersistentWorkerPublicationRetainsAndServesEveryDurableObje
   BOOST_CHECK_EQUAL(repoObjectCount, OBJECT_COUNT);
   BOOST_CHECK_LE(metrics.peakWindowSegments, 8U);
   BOOST_CHECK_MESSAGE(firstFailure.empty(), firstFailure);
+}
+
+BOOST_AUTO_TEST_CASE(OwnerRecoverablePublicationRewrapsAfterUserReconstruction)
+{
+  using namespace ndnsf_distributed_repo;
+  const auto root = fs::temp_directory_path() /
+    ("spec220-owner-recovery-" + std::to_string(::getpid()));
+  fs::create_directories(root);
+  struct Cleanup
+  {
+    fs::path path;
+    ~Cleanup() { std::error_code error; fs::remove_all(path, error); }
+  } cleanup{root};
+  const auto spool = (root / "spool").string();
+  const auto references = (root / "references").string();
+  ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ScopedEnvironmentValue keyDir("NDNSF_DURABLE_KEY_REFERENCE_DIR", references.c_str());
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  const auto actor = makeRsaIdentity(keys, ndn::Name("/spec220/owner"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/spec220/authority"));
+  const auto recipient = makeRsaIdentity(keys, ndn::Name("/spec220/recipient"));
+  const auto replacement = makeRsaIdentity(keys, ndn::Name("/spec220/replacement"));
+  ndn_service_framework::test::IsolatedTestTrust trust{actor, authority};
+  StorageCapability capability;
+  capability.repoNode = "/spec220/owner-repo";
+  capability.freeBytes = 64U << 20;
+  auto repo = std::make_shared<RepoCore>(capability,
+    makeFilesystemRepoStore((root / "repo").string(), 1U << 20, 1U << 20));
+  auto store = std::make_shared<RepoEncryptedLargeDataStore>(repo);
+  LocalServiceUser* user = nullptr;
+  struct Session
+  {
+    Session(ndn::KeyChain& keys, const ndn::security::Certificate& actor,
+            const ndn::security::Certificate& authority, const std::string& schema,
+            const std::shared_ptr<EncryptedLargeDataRangeStore>& store,
+            LocalServiceUser*& owner)
+      : face(io, keys, {true, true})
+      , authorityFace(io, keys, {false, true})
+      , user(owner)
+      , work(boost::asio::make_work_guard(io))
+    {
+      // The bounded original-packet oracle explicitly observes sentData.
+      face.linkTo(authorityFace);
+      attributeAuthority = std::make_unique<ndn::nacabe::KpAttributeAuthority>(
+        authority, authorityFace, authorityValidator, keys);
+      ownedUser = std::make_unique<LocalServiceUser>(face, ndn::Name("/spec220/raw"),
+                                                     actor, authority, schema);
+      user = ownedUser.get();
+      try {
+        // Real NAC producer: no prepareHybridSendKeyForTest or seeded wrappers.
+        user->useSigningKeyChainForTest(keys);
+        user->attachLocalMockPubSubForTest(pubsub(face, keys));
+        user->setEncryptedLargeDataRangeStore(store);
+        user->init();
+        thread = std::thread([this] { io.run(); });
+      }
+      catch (...) {
+        user = nullptr;
+        throw; // ownedUser is destroyed before either Face, including constructor failure.
+      }
+    }
+    ~Session()
+    {
+      io.stop();
+      if (thread.joinable()) thread.join();
+      ownedUser.reset();
+      user = nullptr;
+      // The old io_context is never restarted after its owners are destroyed.
+      attributeAuthority.reset();
+    }
+    boost::asio::io_context io;
+    ndn::DummyClientFace face;
+    ndn::DummyClientFace authorityFace;
+    ndn::security::ValidatorNull authorityValidator;
+    std::unique_ptr<ndn::nacabe::KpAttributeAuthority> attributeAuthority;
+    std::unique_ptr<LocalServiceUser> ownedUser;
+    LocalServiceUser*& user;
+    boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work;
+    std::thread thread;
+  };
+  auto session = std::make_unique<Session>(keys, actor, authority, trust.schemaPath(), store, user);
+  const ndn::Name service("/spec220/model");
+  const auto onIo = [&](auto function) {
+    using Result = decltype(function());
+    auto task = std::make_shared<std::packaged_task<Result()>>(std::move(function));
+    auto completed = task->get_future();
+    boost::asio::post(session->io, [task] { (*task)(); });
+    return completed.get();
+  };
+  const auto request = onIo([&] { return user->prepareServiceRequest(service.toUri()); });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  bool ready = false;
+  while (std::chrono::steady_clock::now() < deadline) {
+    ready = onIo([&] { return user->isNacProducerReadyForTest(); });
+    if (ready) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  BOOST_REQUIRE_MESSAGE(ready, "real NAC producer did not admit public parameters");
+  const auto publish = [&](const std::string& label, const std::vector<std::uint8_t>& bytes) {
+    LargeDataPublishOptions options;
+    options.retention = EncryptedLargeDataRetention::Durable;
+    options.publicationIdentity = keyReferenceDigest(label);
+    return user->publishOwnerRecoverableLargeDataFromWorker(
+      request, bytes, label, ndn::time::milliseconds(1000), options, deadline);
+  };
+  const std::vector<std::uint8_t> payloadA(32768, 0x42);
+  const std::vector<std::uint8_t> payloadB(4096, 0x43);
+  const auto objectA = publish("owner-a", payloadA);
+  BOOST_REQUIRE_MESSAGE(objectA.success, objectA.errorMessage);
+  fs::path recordA;
+  for (const auto& entry : fs::recursive_directory_iterator(root / "references")) {
+    if (entry.path().extension() == ".key") {
+      BOOST_REQUIRE(recordA.empty());
+      recordA = entry.path();
+    }
+  }
+  BOOST_REQUIRE(!recordA.empty());
+  BOOST_CHECK(fs::status(recordA).permissions() ==
+              (fs::perms::owner_read | fs::perms::owner_write));
+  std::ifstream savedRecord(recordA, std::ios::binary);
+  const std::string recordBytes{std::istreambuf_iterator<char>(savedRecord),
+                                 std::istreambuf_iterator<char>()};
+  const auto restoreRecord = [&] {
+    std::ofstream output(recordA, std::ios::binary | std::ios::trunc);
+    output.write(recordBytes.data(), recordBytes.size());
+    output.close();
+    fs::permissions(recordA, fs::perms::owner_read | fs::perms::owner_write);
+  };
+  const auto objectB = publish("owner-b", payloadB);
+  BOOST_REQUIRE_MESSAGE(objectB.success, objectB.errorMessage);
+  BOOST_CHECK_NE(objectA.protectionEpoch, objectB.protectionEpoch);
+  std::vector<fs::path> capacityRecords;
+  for (std::size_t i = 0; capacityRecords.size() < 4094; ++i) {
+    std::ostringstream name;
+    name << std::hex << std::setw(64) << std::setfill('0') << i << ".key";
+    const auto path = recordA.parent_path() / name.str();
+    if (fs::exists(path)) continue;
+    std::ofstream output(path, std::ios::binary);
+    output.close();
+    fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write);
+    capacityRecords.push_back(path);
+  }
+  const auto overCapacity = publish("owner-over-capacity", payloadA);
+  BOOST_CHECK(!overCapacity.success);
+  BOOST_CHECK_EQUAL(overCapacity.errorMessage, "OWNER_KEY_CAPACITY_EXCEEDED");
+  BOOST_CHECK_EQUAL(repo->list().size(), 2U); // No Repo commit follows a failed key intent.
+  for (const auto& path : capacityRecords) fs::remove(path);
+  const auto keyCount = [&] {
+    std::size_t count = 0;
+    for (const auto& entry : fs::directory_iterator(recordA.parent_path()))
+      if (entry.path().extension() == ".key") ++count;
+    return count;
+  };
+  LargeDataPublishOptions cancelledOptions;
+  cancelledOptions.retention = EncryptedLargeDataRetention::Durable;
+  cancelledOptions.publicationIdentity = keyReferenceDigest("cancelled-before-repo");
+  const auto cancelledBeforeCommit = user->publishOwnerRecoverableLargeDataFromWorker(
+    request, payloadA, "cancelled-before-repo", ndn::time::milliseconds(1000),
+    cancelledOptions, deadline, [&] {
+      if (keyCount() > 2) throw std::runtime_error("cancelled-before-repo");
+    });
+  BOOST_CHECK(!cancelledBeforeCommit.success);
+  BOOST_CHECK_EQUAL(cancelledBeforeCommit.errorMessage, "cancelled-before-repo");
+  BOOST_CHECK_EQUAL(keyCount(), 2U);
+  BOOST_CHECK_EQUAL(repo->list().size(), 2U);
+  const auto storedA = store->lookupDurable(objectA.publicationIdentity, {});
+  const auto storedB = store->lookupDurable(objectB.publicationIdentity, {});
+  BOOST_REQUIRE(storedA && storedB);
+  const auto originalManifest = storedA->source->readOriginalDataPacket(objectA.manifestName);
+  const auto exact = store->lookupDurableObject(
+    objectA.publicationIdentity, objectA.manifestName);
+  BOOST_REQUIRE(exact && exact->source);
+  BOOST_CHECK_EQUAL(exact->manifestName,
+    objectA.manifestName.toUri(ndn::name::UriFormat::CANONICAL));
+  BOOST_CHECK(exact->source->readOriginalDataPacket(objectA.manifestName) == originalManifest);
+  BOOST_CHECK_THROW(store->lookupDurableObject(objectB.publicationIdentity, objectA.manifestName),
+                    std::runtime_error);
+  BOOST_CHECK(!store->lookupDurableObject(objectA.publicationIdentity, ndn::Name("/missing")));
+  BOOST_CHECK_THROW(store->lookupDurableObject(objectA.publicationIdentity, objectA.manifestName,
+    [] { throw std::runtime_error("cancelled exact lookup"); }), std::runtime_error);
+  const ndn::Data manifest(ndn::Block(ndn::span<const std::uint8_t>(
+    originalManifest.data(), originalManifest.size())));
+  BOOST_REQUIRE(ndn::security::verifySignature(manifest, actor));
+  const ndn::Buffer context{1, 2, 3, 4};
+  const std::function<void()> current = [] {};
+  std::size_t consumed = 0;
+  const std::function<void(ndn::span<const std::uint8_t>)> consumeA = [&](auto bytes) {
+    ++consumed;
+    BOOST_CHECK_EQUAL_COLLECTIONS(bytes.begin(), bytes.end(), payloadA.begin(), payloadA.end());
+  };
+  const auto readA = [&] {
+    user->readOwnerRetainedLargeDataFromWorker(
+      service, objectA, payloadA.size(), deadline, current, consumeA);
+  };
+  BOOST_CHECK_NO_THROW(readA());
+  BOOST_CHECK_EQUAL(consumed, 1U);
+  BOOST_CHECK_THROW(user->readOwnerRetainedLargeDataFromWorker(
+    service, objectA, payloadA.size(), deadline, current, [](auto) {
+      throw std::runtime_error("consumer failed");
+    }), std::runtime_error);
+  BOOST_CHECK_THROW(user->readOwnerRetainedLargeDataFromWorker(
+    service, objectA, payloadA.size() - 1, deadline, current, consumeA), std::invalid_argument);
+  BOOST_CHECK_THROW(user->readOwnerRetainedLargeDataFromWorker(
+    service, objectA, payloadA.size(), std::chrono::steady_clock::now(), current, consumeA),
+    std::runtime_error);
+  BOOST_CHECK_EQUAL(consumed, 1U);
+  const auto unwrap = [&](const RecipientEncryptedAssignment& capsule,
+                          const ndn::security::Certificate& receiver,
+                          const LargeDataPublishResult& object, const ndn::Buffer& binding) {
+    return onIo([&] {
+      ndn::Buffer secret;
+      const auto aad = ServiceUser::ownerRetainedLargeDataKeyAssociatedData(
+        actor.getIdentity(), service, object, receiver, binding);
+      if (!decryptRecipientAssignment(capsule, receiver.getIdentity(), receiver.getName(),
+                                      keys, aad, secret))
+        throw std::runtime_error("recipient capsule did not bind the expected object/context");
+      return secret;
+    });
+  };
+  const auto first = user->rewrapOwnerRetainedLargeDataKeyFromWorker(
+    service, objectA, recipient, context, deadline, current);
+  auto keyA = unwrap(first, recipient, objectA, context);
+  auto eraseA = ndn::make_scope_exit([&] { OPENSSL_cleanse(keyA.data(), keyA.size()); });
+  const auto recipientKey = recipient.getPublicKey();
+  const ndn::Buffer admittedKey(recipientKey.begin(), recipientKey.end());
+  const auto fromOffer = user->rewrapOwnerRetainedLargeDataKeyFromWorker(
+    service, objectA, recipient.getIdentity(), recipient.getName(), admittedKey,
+    context, deadline, current);
+  auto offeredSecret = unwrap(fromOffer, recipient, objectA, context);
+  auto eraseOffered = ndn::make_scope_exit([&] {
+    OPENSSL_cleanse(offeredSecret.data(), offeredSecret.size());
+  });
+  BOOST_CHECK_EQUAL_COLLECTIONS(offeredSecret.begin(), offeredSecret.end(), keyA.begin(), keyA.end());
+  BOOST_CHECK_THROW(user->rewrapOwnerRetainedLargeDataKeyFromWorker(
+    service, objectA, ndn::Name("/wrong-recipient"), recipient.getName(), admittedKey,
+    context, deadline, current), std::exception);
+  BOOST_CHECK(std::search(recordBytes.begin(), recordBytes.end(), keyA.begin(), keyA.end(),
+    [](char stored, std::uint8_t secret) { return static_cast<std::uint8_t>(stored) == secret; }) ==
+      recordBytes.end());
+  BOOST_CHECK_THROW(unwrap(first, recipient, objectA, ndn::Buffer{5}), std::runtime_error);
+  const auto envelopeFor = [&](const auto& stored) {
+    const ndn::Name rootName(stored->manifestName);
+    const auto rootBytes = stored->source->readOriginalDataPacket(rootName);
+    const ndn::Data rootPacket(ndn::Block(ndn::span<const std::uint8_t>(
+      rootBytes.data(), rootBytes.size())));
+    if (rootPacket.getName() != rootName || !ndn::security::verifySignature(rootPacket, actor))
+      throw std::runtime_error("original manifest signature/name failed");
+    const auto& rootContent = rootPacket.getContent();
+    const auto descriptor = ProtectedBlobManifest::decode(
+      std::vector<std::uint8_t>(rootContent.value(), rootContent.value() + rootContent.value_size()),
+      actor.getIdentity(), rootName);
+    if (descriptor.envelopeBytes > (1U << 20) || descriptor.segmentCount == 0)
+      throw std::runtime_error("fixture envelope exceeds its bounded input");
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(descriptor.envelopeBytes);
+    for (std::uint64_t i = 0; i < descriptor.segmentCount; ++i) {
+      const auto name = ndn::Name(descriptor.dataPrefix).appendSegment(i);
+      const auto original = stored->source->readOriginalDataPacket(name);
+      const ndn::Data packet(ndn::Block(ndn::span<const std::uint8_t>(
+        original.data(), original.size())));
+      if (packet.getName() != name || !ndn::security::verifySignature(packet, actor) ||
+          packet.getFinalBlock() != ndn::name::Component::fromSegment(descriptor.segmentCount - 1))
+        throw std::runtime_error("original segment signature/name/final block failed");
+      const auto& content = packet.getContent();
+      if (content.value_size() > descriptor.envelopeBytes - bytes.size())
+        throw std::runtime_error("original segment exceeds declared envelope size");
+      bytes.insert(bytes.end(), content.value(), content.value() + content.value_size());
+    }
+    if (bytes.size() != descriptor.envelopeBytes)
+      throw std::runtime_error("original segments do not match declared envelope size");
+    HybridMessageEnvelope envelope;
+    if (!envelope.WireDecode(ndn::Block(ndn::span<const std::uint8_t>(bytes.data(), bytes.size()))))
+      throw std::runtime_error("original envelope cannot be decoded");
+    return envelope;
+  };
+  const auto dataAad = [&](const LargeDataPublishResult& object) {
+    const auto text = object.dataPrefix.toUri(ndn::name::UriFormat::CANONICAL) +
+      "|REQUEST-LARGE|" + service.toUri(ndn::name::UriFormat::CANONICAL);
+    return ndn::Buffer(text.begin(), text.end());
+  };
+  ndn::Buffer plaintext;
+  BOOST_REQUIRE(hybridAesGcmDecrypt(keyA, envelopeFor(storedA), dataAad(objectA), plaintext));
+  BOOST_CHECK_EQUAL_COLLECTIONS(plaintext.begin(), plaintext.end(), payloadA.begin(), payloadA.end());
+  bool contentMismatch = false;
+  BOOST_REQUIRE(decryptProtectedBlobPayload(objectA.dataPrefix, service, envelopeFor(storedA),
+    keyA, plaintext, contentMismatch, payloadA.size()));
+  BOOST_CHECK(!contentMismatch);
+  BOOST_CHECK_EQUAL_COLLECTIONS(plaintext.begin(), plaintext.end(), payloadA.begin(), payloadA.end());
+  BOOST_CHECK(!decryptProtectedBlobPayload(objectA.dataPrefix, service, envelopeFor(storedA),
+    keyA, plaintext, contentMismatch, payloadA.size() - 1));
+  BOOST_CHECK(contentMismatch);
+  BOOST_CHECK(plaintext.empty());
+  BOOST_CHECK(!decryptProtectedBlobPayload(objectB.dataPrefix, service, envelopeFor(storedB),
+    keyA, plaintext, contentMismatch));
+  BOOST_CHECK(!contentMismatch);
+  BOOST_CHECK(plaintext.empty());
+  plaintext.assign(8, 0x42);
+  BOOST_CHECK(!decryptProtectedBlobPayload(objectA.dataPrefix, service, envelopeFor(storedA),
+    ndn::Buffer{}, plaintext, contentMismatch));
+  BOOST_CHECK(!contentMismatch);
+  BOOST_CHECK(plaintext.empty());
+  BOOST_CHECK(!hybridAesGcmDecrypt(keyA, envelopeFor(storedB), dataAad(objectB), plaintext));
+  onIo([&] {
+    // Force a different PIB default; the saved exact old certificate still owns key A.
+    const auto identity = keys.getPib().getIdentity(actor.getIdentity());
+    const auto rotated = keys.createKey(identity, ndn::RsaKeyParams(2048));
+    keys.setDefaultKey(identity, rotated);
+  });
+  session.reset();
+  session = std::make_unique<Session>(keys, actor, authority, trust.schemaPath(), store, user);
+  BOOST_CHECK_EQUAL(onIo([&] { return user->getLargeDataServingMetricsForTest().publicationCount; }),
+                    0U);
+  BOOST_CHECK_THROW(user->restoreOwnerRetainedLargeDataFromWorker(
+    service, objectA, std::chrono::steady_clock::now(), current), std::runtime_error);
+  const auto restored = user->restoreOwnerRetainedLargeDataFromWorker(
+    service, objectA, deadline, current);
+  BOOST_REQUIRE(restored.servingLease);
+  BOOST_CHECK(restored.encryptedDataName == objectA.encryptedDataName);
+  BOOST_CHECK_EQUAL(onIo([&] { return user->getLargeDataServingMetricsForTest().segmentReadCount; }),
+                    0U);
+  const auto receiveOriginal = [&](const ndn::Name& name) {
+    const auto begin = onIo([&] {
+      const auto count = session->face.sentData.size();
+      session->face.receive(ndn::Interest(name));
+      return count;
+    });
+    while (std::chrono::steady_clock::now() < deadline) {
+      auto bytes = onIo([&] {
+        for (std::size_t i = begin; i < session->face.sentData.size(); ++i) {
+          const auto& data = session->face.sentData.at(i);
+          if (data.getName() == name) {
+            const auto& wire = data.wireEncode();
+            return std::vector<std::uint8_t>(wire.data(), wire.data() + wire.size());
+          }
+        }
+        return std::vector<std::uint8_t>{};
+      });
+      if (!bytes.empty()) return bytes;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    throw std::runtime_error("restored original packet was not served");
+  };
+  BOOST_CHECK(receiveOriginal(objectA.manifestName) == originalManifest);
+  const ndn::Data rootPacket(ndn::Block(ndn::span<const std::uint8_t>(
+    originalManifest.data(), originalManifest.size())));
+  const auto& rootContent = rootPacket.getContent();
+  const auto descriptor = ProtectedBlobManifest::decode(
+    std::vector<std::uint8_t>(rootContent.value(), rootContent.value() + rootContent.value_size()),
+    actor.getIdentity(), objectA.manifestName);
+  BOOST_REQUIRE_GT(descriptor.segmentCount, 1U);
+  for (std::uint64_t i = 0; i < descriptor.segmentCount; ++i) {
+    const auto name = ndn::Name(objectA.dataPrefix).appendSegment(i);
+    BOOST_CHECK(receiveOriginal(name) == storedA->source->readOriginalDataPacket(name));
+  }
+  // Exercise the real recipient Context, without seeding its receive-key cache.
+  // workCurrent is a controlled dispatch fence here; real grant admission is
+  // checked separately by the installed DI deployment.
+  {
+    std::unique_ptr<ndn::DummyClientFace> receiverFace;
+    std::unique_ptr<LocalServiceProvider> provider;
+    auto closeReceiver = ndn::make_scope_exit([&] {
+      onIo([&] { provider.reset(); receiverFace.reset(); });
+    });
+    onIo([&] {
+      receiverFace = std::make_unique<ndn::DummyClientFace>(session->io, keys,
+        ndn::DummyClientFace::Options{false, true});
+      receiverFace->linkTo(session->face);
+      provider = std::make_unique<LocalServiceProvider>(*receiverFace,
+        ndn::Name("/spec220/raw"), recipient, authority, trust.schemaPath());
+      provider->useSigningKeyChainForTest(keys);
+    });
+    ServiceProvider::CollaborationAssignment assignment;
+    assignment.service = service;
+    assignment.workDeadline = deadline;
+    assignment.workCurrent = [] { return true; };
+    ServiceProvider::CollaborationContext receiver(*provider, actor.getIdentity(),
+      ndn::Name("/spec220/scoped-key-request"), RequestMessage{}, assignment);
+    auto copiedReceiver = receiver;
+    const auto recipientDigest = keyReferenceDigest(std::string(
+      reinterpret_cast<const char*>(admittedKey.data()), admittedKey.size()));
+    BOOST_CHECK(!receiver.installProtectedObjectKeyCurrent(objectB, fromOffer,
+      recipient.getName(), recipientDigest, context, deadline));
+    BOOST_CHECK(!receiver.installProtectedObjectKeyCurrent(objectA, fromOffer,
+      recipient.getName(), recipientDigest, ndn::Buffer{9}, deadline));
+    BOOST_REQUIRE(receiver.installProtectedObjectKeyCurrent(objectA, fromOffer,
+      recipient.getName(), recipientDigest, context, deadline));
+    BOOST_CHECK(receiver.installProtectedObjectKeyCurrent(objectA, fromOffer,
+      recipient.getName(), recipientDigest, context, deadline));
+    const auto received = copiedReceiver.fetchEncryptedLargeDataCurrent(objectA.manifestName, deadline);
+    BOOST_REQUIRE(received);
+    BOOST_CHECK_EQUAL_COLLECTIONS(received->begin(), received->end(), payloadA.begin(), payloadA.end());
+    BOOST_CHECK(receiver.revokeCurrentWorkAuthority());
+    BOOST_CHECK(!copiedReceiver.fetchEncryptedLargeDataCurrent(objectA.manifestName, deadline));
+    BOOST_CHECK(!receiver.installProtectedObjectKeyCurrent(objectA, fromOffer,
+      recipient.getName(), recipientDigest, context, deadline));
+  }
+  const auto reused = publish("owner-a", payloadA);
+  BOOST_REQUIRE_MESSAGE(reused.success, reused.errorMessage);
+  BOOST_CHECK(reused.encryptedDataName == objectA.encryptedDataName);
+  BOOST_CHECK(reused.manifestName == objectA.manifestName);
+  BOOST_CHECK_EQUAL(reused.protectionEpoch, objectA.protectionEpoch);
+  BOOST_CHECK_NO_THROW(readA());
+  BOOST_CHECK_EQUAL(consumed, 2U);
+  const auto installVersion = [&](std::uint64_t epoch) {
+    return onIo([&] {
+      const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+      PolicyStatusData status;
+      status.setServiceName(service);
+      status.setControllerVersion(ControllerVersion{2200, epoch});
+      status.setValidity(now - 1000, now + 60000);
+      status.setPolicyDigest(keyReferenceDigest("policy"));
+      status.setControllerCertificate(authority.getName());
+      return user->installControllerStatus(status);
+    });
+  };
+  BOOST_REQUIRE(installVersion(1));
+  BOOST_REQUIRE(installVersion(2));
+  BOOST_CHECK_EQUAL(onIo([&] { return user->getLargeDataServingMetricsForTest().publicationCount; }),
+                    1U);
+  BOOST_CHECK(receiveOriginal(objectA.manifestName) == originalManifest);
+  const auto firstSegment = ndn::Name(objectA.dataPrefix).appendSegment(0);
+  BOOST_CHECK(receiveOriginal(firstSegment) == storedA->source->readOriginalDataPacket(firstSegment));
+  BOOST_CHECK_LE(onIo([&] { return user->getLargeDataServingMetricsForTest().peakWindowSegments; }),
+                 8U);
+  const auto afterRestart = user->rewrapOwnerRetainedLargeDataKeyFromWorker(
+    service, objectA, replacement, context, deadline, current);
+  auto recovered = unwrap(afterRestart, replacement, objectA, context);
+  auto eraseRecovered = ndn::make_scope_exit([&] {
+    OPENSSL_cleanse(recovered.data(), recovered.size());
+  });
+  BOOST_CHECK_EQUAL_COLLECTIONS(recovered.begin(), recovered.end(), keyA.begin(), keyA.end());
+  BOOST_CHECK_EQUAL(repo->list().size(), 2U);
+  BOOST_CHECK(storedA->source->readOriginalDataPacket(objectA.manifestName) == originalManifest);
+  // An interrupted model preparation has no complete root pointer. Retrying its
+  // content publication after a Controller restart must also reuse the object.
+  const auto resumed = publish("owner-a", payloadA);
+  BOOST_REQUIRE_MESSAGE(resumed.success, resumed.errorMessage);
+  BOOST_CHECK(resumed.encryptedDataName == objectA.encryptedDataName);
+  BOOST_CHECK(resumed.manifestName == objectA.manifestName);
+  BOOST_CHECK_EQUAL(resumed.protectionEpoch, objectA.protectionEpoch);
+  BOOST_CHECK_EQUAL(resumed.keyReferenceId, objectA.keyReferenceId);
+  BOOST_CHECK_EQUAL(resumed.publicationIdentity, objectA.publicationIdentity);
+  BOOST_CHECK_EQUAL(repo->list().size(), 2U);
+  const auto resumedB = publish("owner-b", payloadB);
+  BOOST_REQUIRE_MESSAGE(resumedB.success, resumedB.errorMessage);
+  BOOST_CHECK(resumedB.manifestName == objectB.manifestName);
+  BOOST_CHECK_EQUAL(resumedB.keyReferenceId, objectB.keyReferenceId);
+  BOOST_CHECK_EQUAL(repo->list().size(), 2U);
+  const auto rewrapA = [&] {
+    return user->rewrapOwnerRetainedLargeDataKeyFromWorker(
+      service, objectA, replacement, context, deadline, current);
+  };
+  fs::permissions(recordA, fs::perms::owner_read | fs::perms::owner_write |
+                           fs::perms::group_read);
+  BOOST_CHECK_EXCEPTION(rewrapA(), std::runtime_error, [](const auto& error) {
+    return std::string(error.what()) == "OWNER_KEY_PRIVATE_STORAGE_INVALID";
+  });
+  restoreRecord();
+  {
+    std::ofstream output(recordA, std::ios::binary | std::ios::trunc);
+    const std::string oversized(DeploymentControlMessage::MAX_WIRE_SIZE + 1, 'x');
+    output.write(oversized.data(), oversized.size());
+  }
+  BOOST_CHECK_EXCEPTION(rewrapA(), std::runtime_error, [](const auto& error) {
+    return std::string(error.what()) == "OWNER_KEY_RECORD_SIZE_INVALID";
+  });
+  restoreRecord();
+  {
+    RecipientEncryptedAssignment corrupted;
+    BOOST_REQUIRE(corrupted.WireDecode(ndn::Block(ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(recordBytes.data()), recordBytes.size()))));
+    auto cipher = corrupted.getField("ciphertext");
+    BOOST_REQUIRE(!cipher.empty());
+    cipher[0] = cipher[0] == '0' ? '1' : '0';
+    corrupted.setField("ciphertext", cipher);
+    const auto wire = corrupted.WireEncode();
+    std::ofstream output(recordA, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(wire.data()), wire.size());
+  }
+  BOOST_CHECK_EXCEPTION(rewrapA(), std::runtime_error, [](const auto& error) {
+    return std::string(error.what()) == "OWNER_KEY_CAPSULE_DECRYPT_FAILED";
+  });
+  BOOST_CHECK_EXCEPTION(readA(), std::runtime_error, [](const auto& error) {
+    return std::string(error.what()) == "OWNER_KEY_CAPSULE_DECRYPT_FAILED";
+  });
+  const auto rejectedResume = publish("owner-a", payloadA);
+  BOOST_CHECK(!rejectedResume.success);
+  BOOST_CHECK_EQUAL(repo->list().size(), 2U);
+  BOOST_CHECK_EQUAL(consumed, 2U);
+  restoreRecord();
+  const auto externalRecord = root / "external-key-record";
+  fs::copy_file(recordA, externalRecord);
+  fs::remove(recordA);
+  fs::create_symlink(externalRecord, recordA);
+  BOOST_CHECK_EXCEPTION(rewrapA(), std::runtime_error, [](const auto& error) {
+    return std::string(error.what()) == "OWNER_KEY_PRIVATE_STORAGE_INVALID";
+  });
+  fs::remove(recordA);
+  restoreRecord();
+  fs::remove(externalRecord);
+  BOOST_CHECK_NO_THROW(rewrapA());
+  auto wrong = objectA;
+  wrong.contentDigest = keyReferenceDigest("different-content");
+  BOOST_CHECK_THROW(user->rewrapOwnerRetainedLargeDataKeyFromWorker(
+    service, wrong, replacement, context, deadline, current), std::exception);
+  BOOST_CHECK_THROW(user->rewrapOwnerRetainedLargeDataKeyFromWorker(
+    service, objectA, replacement, context, std::chrono::steady_clock::now(), current),
+    std::runtime_error);
+  const std::function<void()> cancelled = [] { throw std::runtime_error("cancelled"); };
+  BOOST_CHECK_THROW(user->readOwnerRetainedLargeDataFromWorker(
+    service, objectA, payloadA.size(), deadline, cancelled, consumeA), std::runtime_error);
+  BOOST_CHECK_EQUAL(consumed, 2U);
+  BOOST_CHECK_THROW(user->rewrapOwnerRetainedLargeDataKeyFromWorker(
+    service, objectA, replacement, context, deadline, cancelled), std::runtime_error);
+  user->forgetOwnerRetainedLargeDataKey(service, objectA);
+  BOOST_CHECK_THROW(readA(), std::exception);
+  BOOST_CHECK_EQUAL(consumed, 2U);
+  BOOST_CHECK_EQUAL(keyCount(), 1U);
+  BOOST_CHECK_THROW(user->rewrapOwnerRetainedLargeDataKeyFromWorker(
+    service, objectA, replacement, context, deadline, current), std::exception);
+  BOOST_CHECK_NO_THROW(user->rewrapOwnerRetainedLargeDataKeyFromWorker(
+    service, objectB, replacement, context, deadline, current));
+  BOOST_CHECK_EQUAL(repo->list().size(), 2U);
+  BOOST_CHECK(storedA->source->readOriginalDataPacket(objectA.manifestName) == originalManifest);
+  BOOST_REQUIRE(onIo([&] {
+    return keys.getPib().getIdentity(actor.getIdentity()).getDefaultKey()
+      .getDefaultCertificate().getName() != actor.getName();
+  }));
+  onIo([&] {
+    const auto owner = keys.getPib().getIdentity(actor.getIdentity());
+    keys.deleteCertificate(owner.getKey(actor.getKeyName()), actor.getName());
+  });
+  BOOST_CHECK_THROW(user->rewrapOwnerRetainedLargeDataKeyFromWorker(
+    service, objectB, replacement, context, deadline, current), std::exception);
 }
 
 BOOST_AUTO_TEST_CASE(StrictReaderRejectsLegacyAndMalformedNamesBeforeInterest)

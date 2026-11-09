@@ -6,8 +6,14 @@ from setuptools.command.build_py import build_py as _build_py
 
 class build_py(_build_py):
     def run(self):
-        super().run()
         root = Path(__file__).resolve().parents[4]
+        launcher_source = root / 'NDNSF-DistributedInference/ndnsf_di_launcher.py'
+        if not launcher_source.is_file():
+            raise RuntimeError('OPS_CONSOLE_LAUNCHER_MISSING: ' + str(launcher_source))
+        super().run()
+        launcher = Path(self.build_lib) / 'ndnsf_di_launcher.py'
+        if not launcher.is_file() or launcher.read_bytes() != launcher_source.read_bytes():
+            raise RuntimeError('OPS_CONSOLE_LAUNCHER_NOT_PACKAGED: ' + str(launcher))
         for relative in ("packaging/ndnsf-di-container/lib/allocation_topology.py",
                          "Experiments/TigerCluster/runtime/processes.py"):
             source = root / relative

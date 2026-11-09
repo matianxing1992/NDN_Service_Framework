@@ -1258,6 +1258,8 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
   // additional token/model step.  The terminal role itself returns at
   // maxGeneratedTokens, so this does not extend generation.
   for (std::size_t epoch = 0; epoch <= config.maxEpochs; ++epoch) {
+    NativeWorkScope epochWork(config.workStatistics, "epoch-control",
+                              NativeWorkKind::UNCLASSIFIED, epoch);
     throwIfStopped(config);
     traceEpoch("epoch_start", config.role, epoch);
     RoleSpec executable;

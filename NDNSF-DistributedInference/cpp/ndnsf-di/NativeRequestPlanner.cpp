@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-owner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
 #include "request-work-statistics.hpp"
@@ -1938,7 +1939,10 @@ NativePlannedRequest planNativeRequestImpl(
     NativeWorkScope projectionWork(control.workStatistics, "projection-build", NativeWorkKind::LOCAL);
     phaseStarted = planPhaseStarted();
     std::unique_ptr<NativeGroupKeyAdmission> recipientKeys;
-    if (!execution.dependencies.empty() || restoring) {
+    const bool hasStoredModelObjects = core.artifacts.modelObjectKeyIndex &&
+      core.artifacts.modelObjectKeyIndex->storedPublication.has_value();
+    if (!execution.dependencies.empty() || restoring || core.artifacts.ownerRecoverableObjects ||
+        hasStoredModelObjects) {
       std::vector<ndn_service_framework::AckSelectionCandidate> selectedAcks;
       for (const auto& ack : closure.candidates)
         if (core.offerDigestByProvider.count(ack.providerName.toUri())) selectedAcks.push_back(ack);
@@ -2024,6 +2028,8 @@ NativePlannedRequest planNativeRequestImpl(
     NativeWorkScope selectionWork(control.workStatistics, "selection-build",
                                   NativeWorkKind::LOCAL);
     if (!runtime.fixedRoleSourcePublisher) {
+      if (core.artifacts.ownerRecoverableObjects)
+        throw std::invalid_argument("protected model objects require the fixed role source path");
       roleWires = NativePlanSealer::projectAndEncodeAll(ownedSealed, projections);
     }
     else {
@@ -2047,6 +2053,34 @@ NativePlannedRequest planNativeRequestImpl(
           invocation.fixedExecutionTemplateOwner = fixed->executionTemplate();
           invocation.selectedRole = {};
           invocation.assembly = {};
+        }
+        if (core.artifacts.ownerRecoverableObjects || hasStoredModelObjects) {
+          if (core.artifacts.ownerRecoverableObjects && hasStoredModelObjects)
+            throw std::invalid_argument("stored and Owner model-object key sources cannot be mixed");
+          if (!runtime.modelObjectKeyPublisher || !recipientKeys)
+            throw std::invalid_argument("protected model objects require their current recipient key port");
+          const auto grant = std::find_if(result.sealed.grants.begin(), result.sealed.grants.end(),
+            [&](const auto& value) { return value.provider == provider && value.role == role; });
+          if (grant == result.sealed.grants.end())
+            throw std::invalid_argument("protected model object role grant is missing");
+          const auto& recipient = recipientKeys->recipient(provider);
+          const auto& offered = recipientKeys->offer(provider).observation();
+          const auto expires = std::min({wireDeadlineMs, core.expiresAtMs,
+                                         grant->expiresAtMs, offered.expiresAtMs});
+          const auto table = runtime.modelObjectKeyPublisher(core.artifacts, invocation, *fixed,
+            recipient, offered.bootEpoch, expires, control);
+          if (!table.success || !table.servingLease)
+            throw std::invalid_argument("protected model object key publication failed");
+          invocation.modelObjectKeys = NativeJson{
+            {"schema", hasStoredModelObjects
+              ? "ndnsf-di-stored-model-object-keys-reference-v1"
+              : "ndnsf-di-model-object-keys-reference-v1"},
+            {"dataName", table.encryptedDataName.toUri(ndn::name::UriFormat::CANONICAL)},
+            {"plaintextDigest", table.contentDigest}, {"plaintextBytes", table.plaintextSize},
+            {"context", nativeModelObjectKeyContext(invocation, ndn::Name(runtime.requesterIdentity),
+              ndn::Name(runtime.contract.serviceName), offered.bootEpoch, recipient.certificateName,
+              recipient.publicKeyDigest, expires, epochMs())}};
+          result.modelObjectKeyTables.push_back(table);
         }
         auto source = runtime.fixedRoleAssignments->source(
           runtime.requesterIdentity, runtime.contract.serviceName, *fixed, control.workStatistics);
@@ -2352,7 +2386,7 @@ static std::optional<std::uint64_t> estimateRequestTransferBytes(
     if (!selected || !selected->at("tensors").is_array() ||
         selected->at("tensors").size() != shared.size()) return std::nullopt;
     const std::map<std::string, std::uint64_t> widths{
-      {"float32", 4}, {"float16", 2}, {"int64", 8}, {"bool", 1}, {"uint8", 1}};
+      {"float32", 4}, {"float16", 2}, {"int32", 4}, {"int64", 8}, {"bool", 1}, {"uint8", 1}};
     std::set<std::string> seen;
     std::uint64_t total = 0;
     std::vector<TensorBundleEncodingMember> members;

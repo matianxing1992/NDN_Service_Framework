@@ -84,6 +84,122 @@ wireOf(const ndn::Data& data)
 
 BOOST_AUTO_TEST_SUITE(FaceDataReferenceFetcher)
 
+BOOST_AUTO_TEST_CASE(NamedReadUsesUpperBoundWithoutInventingExactManifest)
+{
+  FacePump pump;
+  const std::vector<ndn::Name> names{
+    ndn::Name("/publisher/model/root"), ndn::Name("/publisher/model/index/v=0/seg=0")};
+  std::map<ndn::Name, ndn::Data> packets;
+  std::vector<std::vector<uint8_t>> expected;
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    auto data = makeData(names[i], static_cast<uint8_t>(i));
+    expected.push_back(wireOf(data));
+    packets.emplace(names[i], std::move(data));
+  }
+  std::atomic<bool> routeMatches{true};
+  auto connection = pump.face.onSendInterest.connect([&] (const ndn::Interest& interest) {
+    if (interest.getForwardingHint().size() != 1 ||
+        interest.getForwardingHint().front() != ndn::Name("/repo/actor") ||
+        interest.getCanBePrefix() || interest.getMustBeFresh())
+      routeMatches.store(false);
+    const auto found = packets.find(interest.getName());
+    if (found != packets.end())
+      pump.face.receive(found->second);
+  });
+  FacePumpStop stop{pump};
+  const detail::FaceDataReferenceFetcher fetcher(pump.face, 100ms, 1s, 2);
+  const auto spool = fetcher.fetchNamed(names, 4096, ndn::Name("/repo/actor"));
+  BOOST_REQUIRE_EQUAL(spool->packetCount(), 2);
+  BOOST_CHECK_LT(spool->totalWireBytes(), 4096);
+  BOOST_CHECK(spool->readPacket(0) == expected[0]);
+  BOOST_CHECK(spool->readPacket(1) == expected[1]);
+  BOOST_CHECK(routeMatches.load());
+}
+
+BOOST_AUTO_TEST_CASE(NamedReadRejectsDuplicateBudgetAndCancelledOwnerBeforeInterests)
+{
+  FacePump pump;
+  std::atomic<std::size_t> interests{0};
+  auto connection = pump.face.onSendInterest.connect([&] (const auto&) { ++interests; });
+  FacePumpStop stop{pump};
+  const detail::FaceDataReferenceFetcher fetcher(pump.face, 100ms, 1s, 2);
+  const ndn::Name name("/publisher/model/root");
+  BOOST_CHECK_THROW(fetcher.fetchNamed({name, name}, 4096, ndn::Name("/repo")),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(fetcher.fetchNamed({name}, (8U << 20) + 1, ndn::Name("/repo")),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(fetcher.fetchNamed({name}, 4096, ndn::Name("/repo"), [] {
+    throw std::runtime_error("owner closed");
+  }), std::runtime_error);
+  BOOST_CHECK_EQUAL(interests.load(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(NamedReadWakesOnOwnerCancellationAndRetainsAdmissionUntilDrain)
+{
+  FacePump pump;
+  const auto name = ndn::Name("/publisher/model/root");
+  const auto data = makeData(name, 7);
+  std::atomic<bool> cancelled{false};
+  std::atomic<bool> respond{false};
+  auto connection = pump.face.onSendInterest.connect(
+    [&] (const ndn::Interest& interest) {
+      if (respond.load(std::memory_order_acquire) && interest.getName() == name)
+        pump.face.receive(data);
+    });
+  FacePumpStop stop{pump};
+  const detail::FaceDataReferenceFetcher fetcher(pump.face, 1s, 2s, 1);
+  std::thread cancelOwner([&] {
+    std::this_thread::sleep_for(50ms);
+    cancelled.store(true, std::memory_order_release);
+  });
+  const auto start = std::chrono::steady_clock::now();
+  BOOST_CHECK_EXCEPTION(
+    fetcher.fetchNamed({name}, 4096, ndn::Name("/repo"), [&] {
+      if (cancelled.load(std::memory_order_acquire))
+        throw std::runtime_error("owner closed");
+    }), std::runtime_error, [] (const std::runtime_error& error) {
+      return std::string(error.what()) == "repo-original-packet-fetch-cancelled";
+    });
+  cancelOwner.join();
+  BOOST_CHECK(std::chrono::steady_clock::now() - start < 500ms);
+
+  // Cancellation is posted to the Face strand. A new operation may start only
+  // after that owner has cancelled its pending Interest and drained the lease.
+  respond.store(true, std::memory_order_release);
+  const auto drainDeadline = std::chrono::steady_clock::now() + 1s;
+  bool fetched = false;
+  while (!fetched && std::chrono::steady_clock::now() < drainDeadline) {
+    try {
+      const auto spool = fetcher.fetchNamed({name}, 4096, ndn::Name("/repo"));
+      fetched = spool->packetCount() == 1 && spool->readPacket(0) == wireOf(data);
+    }
+    catch (const std::runtime_error& error) {
+      if (std::string(error.what()) != "repo-original-packet-fetch-busy")
+        throw;
+      std::this_thread::sleep_for(5ms);
+    }
+  }
+  BOOST_CHECK(fetched);
+}
+
+BOOST_AUTO_TEST_CASE(NamedReadKeepsLeaseUntilPausedCallbacksDrain)
+{
+  ndn::DummyClientFace face;
+  std::weak_ptr<int> observed;
+  {
+    auto owner = std::make_shared<int>(1);
+    observed = owner;
+    const detail::FaceDataReferenceFetcher fetcher(face, 10ms, 5ms, 1, owner);
+    owner.reset();
+    BOOST_CHECK_THROW(fetcher.fetchNamed({ndn::Name("/publisher/model/root")}, 4096,
+                                        ndn::Name("/repo")), std::runtime_error);
+  }
+  BOOST_CHECK(!observed.expired());
+  face.getIoContext().restart();
+  (void)face.getIoContext().poll();
+  BOOST_CHECK(observed.expired());
+}
+
 BOOST_AUTO_TEST_CASE(PreservesOriginalPacketsAndExactInterestNames)
 {
   FacePump pump;
@@ -403,7 +519,7 @@ BOOST_AUTO_TEST_CASE(SpoolRejectsUnboundedBudgetsBeforeAllocatingPacketIndex)
   BOOST_CHECK_THROW(detail::FaceDataReferencePacketSpool(0, 100), std::invalid_argument);
   BOOST_CHECK_THROW(detail::FaceDataReferencePacketSpool(1000001, 1000001),
     std::invalid_argument);
-  BOOST_CHECK_THROW(detail::FaceDataReferencePacketSpool(1, REPO_USER_STORAGE_LIMIT_BYTES + 1),
+  BOOST_CHECK_THROW(detail::FaceDataReferencePacketSpool(1, REPO_USER_STORAGE_OBJECT_MAX_BYTES + 1),
     std::invalid_argument);
   detail::FaceDataReferencePacketSpool spool(2, 8);
   BOOST_CHECK_THROW(spool.finalize(), std::runtime_error);

@@ -50,6 +50,8 @@ namespace ndn_service_framework::test { struct TensorOriginalOracle; }
 
 namespace ndn_service_framework{
 
+    struct LargeDataPublishResult;
+    class ScopedProtectedObjectKeys;
     struct ServiceProviderTestAccess;
 
     using RequestPayload = ndn::Buffer;
@@ -581,6 +583,15 @@ namespace ndn_service_framework{
                 std::optional<ndn::Buffer> fetchImmutableProtectedDataCurrent(
                     const ndn::Name& exactName, const ndn::Name& expectedProducer,
                     std::chrono::steady_clock::time_point deadline);
+                /** Fetch exact DigestSha256-signed segments for a root-authenticated
+                 * encrypted object. The caller must validate the root/index descriptor,
+                 * exact byte count and segment geometry before opening the object. */
+                std::optional<ndn::Buffer> fetchDigestLargeDataCurrent(
+                    const ndn::Name& dataPrefix, const ndn::Name& expectedProducer,
+                    std::size_t expectedSegments, std::uint32_t segmentBytes,
+                    std::uint64_t expectedBytes,
+                    std::chrono::steady_clock::time_point deadline,
+                    const ndn::Name& forwardingHint = {});
                 /** Publish/reuse a static fact under the actual provider prefix.
                  * Core appends a typed version and retains original protected
                  * packets for the actor lifetime. Same-revision changed bytes
@@ -608,6 +619,17 @@ namespace ndn_service_framework{
                     const ndn::Buffer& associatedData,
                     std::chrono::steady_clock::time_point deadline,
                     const std::function<void(const ndn::Buffer&)>& consume);
+                /** Admit one exact object key under this dispatch's current authority.
+                 * The application first validates the table's model/role/context.
+                 * Keys remain local to Context copies and never enter the shared
+                 * receive-key cache. Worker-only; no execution permission is granted.
+                 */
+                bool installProtectedObjectKeyCurrent(
+                    const LargeDataPublishResult& object,
+                    const RecipientEncryptedAssignment& capsule,
+                    const ndn::Name& recipientCertificate,
+                    const std::string& publicKeyDigest, const ndn::Buffer& context,
+                    std::chrono::steady_clock::time_point deadline);
                 /** Sign one bounded application Data under this Provider's
                  * complete prefix. Worker-only; the actual KeyChain operation
                  * runs on Face under current dispatch authority. This does not
@@ -819,9 +841,10 @@ namespace ndn_service_framework{
                     ExactDataFetchPhase phase,
                     std::function<bool()> onValidatedData = {});
                 /**
-                 * Fetch ordered results with at most maxOutstanding unfinished names.
-                 * Zero retains unlimited dispatch. The first-read callback follows
-                 * initial-window dispatch; replacements require validated Data.
+                 * Fetch ordered results with an adaptive congestion window starting at 16.
+                 * maxOutstanding bounds unfinished names; zero uses the batch size as
+                 * that bound. The first-read callback follows initial-window dispatch.
+                 * Window growth requires validated Data; loss recovery retains admission checks.
                  */
                 ExactDataFetchOperation startSignedExactDataBatch(
                     KeyScope keyScope,
@@ -833,6 +856,18 @@ namespace ndn_service_framework{
                     ExactDataFetchPhase phase,
                     std::function<bool()> onValidatedData,
                     std::size_t maxOutstanding);
+                /** Observe local work for every packet in an asynchronous batch. */
+                ExactDataFetchOperation startSignedExactDataBatch(
+                    KeyScope keyScope,
+                    const std::vector<ndn::Name>& dataNames,
+                    const ndn::Name& expectedProducer,
+                    int timeoutMs,
+                    std::function<bool()> shouldCancel,
+                    std::function<void(std::exception_ptr)> onFirstReadStarted,
+                    ExactDataFetchPhase phase,
+                    std::function<bool()> onValidatedData,
+                    std::size_t maxOutstanding,
+                    CollaborationLocalWorkObserver localWorkObserver);
                 void subscribe(KeyScope keyScope,
                                Topic topicPrefix,
                                std::function<void(const CollaborationData&)> onData);
@@ -915,6 +950,7 @@ namespace ndn_service_framework{
                 ndn::Name m_requestId;
                 RequestMessage m_requestMessage;
                 CollaborationAssignment m_assignment;
+                std::shared_ptr<ScopedProtectedObjectKeys> m_objectKeys;
                 std::shared_ptr<std::atomic<bool>> m_workAuthorityRevoked =
                     std::make_shared<std::atomic<bool>>(false);
                 std::shared_ptr<std::mutex> m_workAuthorityCommitMutex =
@@ -2114,7 +2150,8 @@ namespace ndn_service_framework{
                 const ndn::Name& encryptedDataName, const std::string& serviceName,
                 std::chrono::steady_clock::time_point deadline,
                 std::function<bool()> current, DataNameReadMode readMode,
-                const ndn::Name& expectedProducer);
+                const ndn::Name& expectedProducer,
+                const ScopedProtectedObjectKeys* objectKeys = nullptr);
             struct ImmutablePublicationOperation
             {
                 std::shared_ptr<std::mutex> authorityMutex;
@@ -2394,7 +2431,11 @@ namespace ndn_service_framework{
                 std::size_t expectedSegments,
                 CollaborationTransferMetrics* metrics,
                 ndn::Name expectedProducer = {},
-                std::function<bool()> current = {});
+                std::function<bool()> current = {},
+                bool allowDigestSha256Segments = false,
+                std::uint32_t digestSegmentBytes = 0,
+                std::uint64_t digestExpectedBytes = 0,
+                ndn::Name forwardingHint = {});
             bool publishCollaborationDataV1Segments(
                 const ndn::Name& requestId,
                 const std::string& keyScope,

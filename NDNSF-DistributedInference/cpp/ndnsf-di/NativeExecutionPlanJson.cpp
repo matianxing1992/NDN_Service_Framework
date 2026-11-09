@@ -1920,6 +1920,8 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   }
   if (typedRoot.contains("protected_kv_restore"))
     projection.protectedKvRestore = typedRoot.at("protected_kv_restore");
+  if (typedRoot.contains("model_object_keys"))
+    projection.modelObjectKeys = typedRoot.at("model_object_keys");
   if (projection.conversationStateReference) {
     if (!projection.conversationTurnBinding ||
         projection.conversationStateReference->conversationId !=
@@ -2672,6 +2674,7 @@ NativeJson selectionInvocationFields(const NativeSelectionProjectionV3& value,
   if (value.conversationStateReference) root["conversation_state_reference"] = jsonValue(*value.conversationStateReference);
   if (value.conversationTurnBinding) root["conversation_turn_binding"] = jsonValue(*value.conversationTurnBinding);
   if (value.protectedKvRestore) root["protected_kv_restore"] = *value.protectedKvRestore;
+  if (value.modelObjectKeys) root["model_object_keys"] = *value.modelObjectKeys;
   if (value.hasGrantBinding) {
     root["grant_binding"] = {{"provider", value.provider}, {"request_id", value.requestId},
       {"attempt", value.attempt}, {"plan_core_digest", value.planCoreDigest},

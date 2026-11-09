@@ -18,7 +18,8 @@ import time
 from types import SimpleNamespace
 
 from . import cluster
-from .deployment_config import _digest_file, _name, _read_json, provider_recipient_map
+from .deployment_config import (_digest_file, _name, _read_json, provider_cache_path,
+                                provider_recipient_map)
 from .trust_resources import TrustResourceError, describe_failure
 
 
@@ -80,7 +81,10 @@ def _large_data_mount(config, actor, evidence, mounts):
     if mounts.get(evidence) != 'rw' or any(
             _contains(target, path) or _contains(path, target) for path in mounts):
         raise cluster.ClusterError('CONTAINER_LARGE_DATA_TARGET_CONFLICT')
-    source = _canonical(evidence / 'large-data')
+    # Publications are disposable bulk data, not durable measurement evidence.
+    # Bind the spool to this exact actor/boot through its unique evidence path.
+    source = _canonical(Path(config['storage']['scratch_root']) / 'large-data' /
+                        hashlib.sha256(str(evidence).encode()).hexdigest())
     cluster._private_directory(source)
     return source, target
 
@@ -269,8 +273,57 @@ def _prepare_repository_locks(paths):
             os.close(descriptor)
 
 
+def _oracle_reference_inputs(config, args):
+    """Resolve verifier-only inputs; C++ retains model/checkpoint admission."""
+    descriptor = getattr(args, 'model_reference_source', None)
+    enabled = bool(getattr(args, 'model_reference', False) or descriptor)
+    if not enabled:
+        return [], [], set()
+    if args.management != 'oracle':
+        raise cluster.ClusterError('CONTAINER_MODEL_REFERENCE_ORACLE_ONLY')
+    if not os.environ.get('SLURM_JOB_ID'):
+        raise cluster.ClusterError('CONTAINER_MODEL_REFERENCE_REQUIRES_SLURM')
+    expected = config['requester'].get('catalog', {}).get('source', {})
+    if not isinstance(expected, dict):
+        raise cluster.ClusterError('CONTAINER_REFERENCE_SOURCE_REQUIRED:catalog')
+    supplied = expected
+    command, inputs = ['--model-reference'], []
+    if descriptor:
+        descriptor = _canonical(descriptor)
+        info = descriptor.lstat()
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 16384:
+            raise cluster.ClusterError('CONTAINER_REFERENCE_DESCRIPTOR_INVALID')
+        document = _read_json(descriptor)
+        if (not isinstance(document, dict) or set(document) != {'schema', 'source'} or
+                document['schema'] != 'ndnsf-di-model-reference-source-v1' or
+                not isinstance(document['source'], dict)):
+            raise cluster.ClusterError('CONTAINER_REFERENCE_DESCRIPTOR_INVALID')
+        supplied = document['source']
+        identity = lambda value: {k: v for k, v in value.items()
+                                  if k not in ('file', 'initializer_file')}
+        if identity(supplied) != identity(expected):
+            raise cluster.ClusterError('CONTAINER_REFERENCE_SOURCE_IDENTITY')
+        command += ['--model-reference-source', str(descriptor)]
+        inputs.append(descriptor)
+    fields = ['file']
+    if expected.get('initializer_bytes', 0):
+        fields.append('initializer_file')
+    elif 'initializer_file' in supplied:
+        raise cluster.ClusterError('CONTAINER_REFERENCE_EXTRA_INITIALIZER')
+    for field in fields:
+        if not isinstance(supplied.get(field), str) or not supplied[field]:
+            raise cluster.ClusterError('CONTAINER_REFERENCE_SOURCE_REQUIRED:' + field)
+        inputs.append(_canonical(supplied[field]))
+    keys = config['requester'].get('conversation', {}).get('journal', {}).get('keys', [])
+    if (not isinstance(keys, list) or not 0 < len(keys) <= 16 or
+            any(not isinstance(item, dict) or not isinstance(item.get('file'), str)
+                for item in keys)):
+        raise cluster.ClusterError('CONTAINER_REFERENCE_CHECKPOINT_KEYS_REQUIRED')
+    return command, inputs, {_canonical(item['file']) for item in keys}
+
+
 def role_mounts(config, source, actor=None, *, node=None, management=None,
-                trust_resources=()):
+                trust_resources=(), oracle_inputs=(), verification_keys=()):
     """Preserve absolute runtime paths while exposing only one role's inputs."""
     source = _canonical(source)
     node = node or next(item for item in config['nodes'] if item['id'] == actor['node'])
@@ -294,13 +347,20 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
     protected = [Path(item['credential_home']) for item in config['actors']
                  if not item['external'] and (kind == 'oracle' or item['node'] == node['id']) and
                  (management or item['id'] != role_id)]
+    credential_homes = {_canonical(path) for path in protected}
+    verification_keys = {_canonical(path) for path in verification_keys}
+    if (oracle_inputs or verification_keys) and kind != 'oracle':
+        raise cluster.ClusterError('CONTAINER_REFERENCE_INPUTS_ORACLE_ONLY')
     requester = config['requester']
     authority = config['artifact_authority'].get('authority', {})
     if kind != 'requester':
         if 'requester_private_key_file' in requester.get('grant', {}):
             protected.append(Path(requester['grant']['requester_private_key_file']))
+        protected.extend(Path(value) for key, value in requester.get('model_input', {}).items()
+                         if key in ('private_handle_file', 'preparation_state_file'))
         journal = requester.get('conversation', {}).get('journal', {})
-        protected.extend(Path(item['file']) for item in journal.get('keys', []))
+        if kind != 'oracle' or not verification_keys:
+            protected.extend(Path(item['file']) for item in journal.get('keys', []))
     if kind != 'artifact-authority':
         protected.extend(Path(authority[key]) for key in ('authority_private_key_file', 'content_key_file')
                          if key in authority)
@@ -322,10 +382,23 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
     protected = [_canonical(path) for path in protected]
     mounts = {}
     repository_locks = set()
-    def add(path, *, writable=False, directory=False, credential=False, create_file=False):
+    def add(path, *, writable=False, directory=False, credential=False, create_file=False,
+            verification_key=False):
         value = _canonical(path)
         _admit_runtime_mount(value, config)
-        if any(_contains(value, secret) or _contains(secret, value) for secret in protected):
+        excluded = set()
+        if verification_key:
+            if (kind != 'oracle' or value not in verification_keys or writable or directory or
+                    credential or create_file):
+                raise cluster.ClusterError('CONTAINER_REFERENCE_KEY_INVALID')
+            info = value.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+                    info.st_nlink != 1 or info.st_mode & 0o77 or info.st_size != 32):
+                raise cluster.ClusterError('CONTAINER_REFERENCE_KEY_NOT_PRIVATE')
+            # Expose one declared verification key, never its credential directory.
+            excluded = credential_homes
+        if any((_contains(value, secret) or _contains(secret, value)) and secret not in excluded
+               for secret in protected):
             raise cluster.ClusterError('CONTAINER_FOREIGN_CREDENTIAL_EXPOSURE:' + str(value))
         if directory:
             if writable:
@@ -375,10 +448,14 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
                 add(requester.get('statistics_file', str(runtime / (current['id'] + '-statistics.jsonl'))))
             else:
                 add(current['parameters'].get('statistics-file', str(runtime / (current['id'] + '-statistics.jsonl'))))
-        for turn in requester['turns']:
+        for turn in requester.get('turns', []):
             for key in ('input_file', 'options_file', 'output_file', 'checkpoint_output_file'):
                 if key in turn:
                     add(turn[key])
+        for path in oracle_inputs:
+            add(path)
+        for path in sorted(verification_keys):
+            add(path, verification_key=True)
         return role_id, home, evidence, mounts, repository_locks
     if kind == 'nfd':
         add(Path(node['nfd']['socket']).parent, writable=True, directory=True)
@@ -413,7 +490,8 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
         add(params['recipient-key-map'])
         for path in provider_recipient_map(params['recipient-key-map'], actor['identity']).values():
             add(path)
-        add(params.get('artifact-cache-dir', str(Path(config['storage']['cache_root']) / role_id)),
+        add(params.get('artifact-cache-dir', provider_cache_path(
+                config['storage']['cache_root'], actor['identity'])),
             writable=True, directory=True)
         if 'statistics-file' in params:
             output(params['statistics-file'])
@@ -428,18 +506,31 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
                 add(authority[key])
         for path in authority.get('recipient_public_key_files', {}).values():
             add(path)
+        for path in authority.get('requester_public_key_files', {}).values():
+            add(path)
     elif kind == 'requester':
-        for key, path in requester['grant'].items():
+        for key, path in requester.get('grant', {}).items():
             if key.endswith('_file'):
                 add(path)
         for path in requester.get('offer_admission', {}).get('public_key_files', {}).values():
             add(path)
+        model_input = requester.get('model_input', {})
+        if model_input.get('mode') == 'stored':
+            add(model_input['private_handle_file'])
+        elif model_input.get('mode') in ('source', 'publish-stored'):
+            for key in ('preparation_state_file', 'private_handle_file'):
+                output(model_input[key])
         if 'options_file' in requester.get('request', {}):
             add(requester['request']['options_file'])
         catalog = requester['catalog']
         for obj in (catalog, catalog.get('source', {})):
             for key in ('file', 'initializer_file'):
                 if key in obj:
+                    if (obj is catalog.get('source') and
+                            model_input.get('mode') in ('source', 'publish-stored') and
+                            not Path(obj[key]).exists()):
+                        # Native journal recovery decides whether the source is needed.
+                        continue
                     add(obj[key])
         for key in ('repository', 'encrypted_repository'):
             if key in requester:
@@ -449,7 +540,7 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
                 add(lock, writable=True, create_file=True)
         if 'source_cache_path' in requester.get('repository', {}):
             add(requester['repository']['source_cache_path'], writable=True, directory=True)
-        for turn in requester['turns']:
+        for turn in requester.get('turns', []):
             for key in ('input_file', 'options_file'):
                 add(turn[key])
             for key in ('output_file', 'checkpoint_output_file'):
@@ -581,6 +672,19 @@ def role_cpu_affinity(config, node, actor, management, available):
 
 def execute(args):
     config = load_frozen(args.deployment, args.configuration_sha256, args.boot_id, args.release_sha256)
+    reference_command, reference_inputs, verification_keys = _oracle_reference_inputs(config, args)
+    if getattr(args, 'command', None) in ([], ['--']) and args.management not in (
+            'oracle', 'gpu-probe'):
+        # Keep process orchestration on the host; each child enters the image
+        # through this module's explicit native-command route.
+        from . import node as node_owner
+        args.host_container = True
+        result = node_owner.run_role(args)
+        print(json.dumps(result, sort_keys=True))
+        if result['status'] != 'STOPPED' or result['execution'] not in (
+                'COMPLETE', 'SERVICE_STOPPED'):
+            raise cluster.ClusterError(result.get('failure') or 'NATIVE_ROLE_FAILED')
+        return
     oracle = args.management == 'oracle'
     if not oracle and not os.environ.get('SLURM_JOB_ID'):
         raise cluster.ClusterError('APPTAINER_RUN_REQUIRES_SLURM')
@@ -589,11 +693,12 @@ def execute(args):
         raise cluster.ClusterError('CONTAINER_OWNED_ACTOR_REQUIRED')
     node_id = actor['node'] if actor else args.node
     node = next((item for item in config['nodes'] if item['id'] == node_id), None)
-    if node is None or (not oracle and node['host'] not in (
+    if node is None or ((not oracle or reference_command) and node['host'] not in (
             socket.gethostname(), socket.gethostname().split('.')[0])):
         raise cluster.ClusterError('CONTAINER_ALLOCATION_NODE_MISMATCH')
     role_id, home, evidence, mounts, repository_locks = role_mounts(
-        config, args.deployment, actor, node=node, management=args.management)
+        config, args.deployment, actor, node=node, management=args.management,
+        oracle_inputs=reference_inputs, verification_keys=verification_keys)
     large_data_mount = _large_data_mount(config, actor, evidence, mounts)
     target_plan = dict(mounts)
     if large_data_mount:
@@ -648,6 +753,7 @@ def execute(args):
         workload = [str(Path(config['release']['prefix']) / 'bin/spec190-multiturn-oracle'),
                     '--deployment-state', str(args.deployment.parent / 'allocation.json'),
                     '--require-multi-token']
+        workload += reference_command
         gpu_nodes = {item['node'] for item in config['actors'] if not item['external'] and
                      item['kind'] == 'provider' and item['resources']['gpu_devices']}
         if len(gpu_nodes) >= 2:
@@ -658,20 +764,7 @@ def execute(args):
         if args.command not in ([], ['--']):
             raise cluster.ClusterError('CONTAINER_GPU_PROBE_WORKLOAD_FIXED')
     elif not workload:
-        # Use the image-installed console script's own interpreter/shebang.
-        # Host sys.executable and an assumed image venv path are not portable.
-        workload = [str(Path(config['release']['prefix']) / 'bin/ndnsf-di'), '_node',
-                    '--deployment', str(args.deployment), '--boot-id', args.boot_id,
-                    '--configuration-sha256', args.configuration_sha256,
-                    '--release-sha256', args.release_sha256, '--timeout', str(args.timeout)]
-        if args.actor:
-            workload += ['--actor', args.actor]
-        else:
-            workload += ['--management', args.management, '--node', args.node]
-        if args.debug:
-            workload.append('--debug')
-        if getattr(args, 'timing', False):
-            workload.append('--timing')
+        raise cluster.ClusterError('CONTAINER_NATIVE_COMMAND_REQUIRED')
     if image is None:
         image = stage_image(config, args, evidence, home, role_id, node['nfd']['socket'])
     _prepare_repository_locks(repository_locks)
@@ -683,6 +776,18 @@ def execute(args):
     # cleanenv retains the exact image's declared dependency PATH. Passing the
     # host-side generic PATH here would hide image-specific SDK/venv prefixes.
     env.pop('PATH')
+    if actor is not None:
+        runtime = evidence / 'runtime' / config['deployment_id']
+        cluster._private_directory(runtime)
+        _, native_env = cluster._native_launch(config, actor, runtime,
+            {'boot_id': args.boot_id, 'configuration_sha256': args.configuration_sha256,
+             'release_sha256': args.release_sha256,
+             'diagnostic_logging': args.debug, 'runtime_timing': getattr(args, 'timing', False)},
+            visible_devices=visibility)
+        # Preserve the native command's credentials and backend/thread settings.
+        # Loader search paths remain the image's own declared environment.
+        env.update({key: value for key, value in native_env.items()
+                    if key not in ('PATH', 'LD_LIBRARY_PATH', 'PYTHONPATH')})
     env.update(PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1')
     if os.environ.get('SLURM_JOB_ID'):
         env['SLURM_JOB_ID'] = os.environ['SLURM_JOB_ID']
@@ -713,7 +818,13 @@ def execute(args):
     command += ['--env-file', str(env_file)]
     if large_data_mount:
         source, target = large_data_mount
-        command += ['--bind', str(source) + ':' + str(target) + ':rw']
+        # libc tmpfile() uses /tmp rather than the configured bulk-data path.
+        # Keep the contained session's temporary files on this actor's disk,
+        # independently of the explicit Core bulk-data mount.
+        workdir = _canonical(source.parent / (source.name + '-session'))
+        cluster._private_directory(workdir)
+        command += ['--workdir', str(workdir),
+                    '--bind', str(source) + ':' + str(target) + ':rw']
     if journal_mount:
         parent, target = journal_mount
         command += ['--bind', str(parent) + ':' + str(target) + ':ro']
@@ -750,6 +861,8 @@ def main(argv=None):
     parser.add_argument('--timeout', type=float, default=300)
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--timing', action='store_true')
+    parser.add_argument('--model-reference', action='store_true')
+    parser.add_argument('--model-reference-source', type=Path)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if not math.isfinite(args.timeout) or args.timeout <= 0 or (args.management and not args.node):

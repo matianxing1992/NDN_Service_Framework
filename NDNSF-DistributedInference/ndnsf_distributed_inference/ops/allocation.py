@@ -76,10 +76,19 @@ def read_role(args, role, *, job_id=None):
     expected = dict(schema='ndnsf-di-node-role-v1', boot_id=args.boot_id,
                     configuration_sha256=args.configuration_sha256, release_sha256=args.release_sha256,
                     role_id=role['id'], role_kind=role['kind'], node_id=role['node'],
-                    job_id=job_id if job_id is not None else os.environ['SLURM_JOB_ID'],
-                    cleanup_scope='PID_NAMESPACE')
+                    job_id=job_id if job_id is not None else os.environ['SLURM_JOB_ID'])
     if any(value.get(key) != item for key, item in expected.items()):
         raise cluster.ClusterError('ALLOCATION_ROLE_RECEIPT_MISMATCH:' + role['id'])
+    if value.get('cleanup_scope') not in ('PID_NAMESPACE', 'HOST_AND_NATIVE_PROCESS_GROUPS'):
+        raise cluster.ClusterError('ALLOCATION_ROLE_CLEANUP_SCOPE_MISMATCH:' + role['id'])
+    if (value['cleanup_scope'] == 'HOST_AND_NATIVE_PROCESS_GROUPS' and
+            role['kind'] not in ('nfd', 'nfdc') and value.get('readiness') in (
+                'NATIVE_READY', 'FINITE_RUNNING', 'FINITE_EXITED', 'WITHDRAWN')):
+        inspection = value.get('image_inspection') or {}
+        cleanup = inspection.get('cleanup') or {}
+        if (inspection.get('status') != 'VERIFIED' or cleanup.get('status') != 'ZERO' or
+                cleanup.get('forced') or (inspection.get('launcher_cleanup') or {}).get('forced')):
+            raise cluster.ClusterError('ALLOCATION_IMAGE_INSPECTION_MISSING:' + role['id'])
     if not isinstance(value.get('step_id'), str) or not re.fullmatch(r'[0-9]+', value['step_id']):
         raise cluster.ClusterError('ALLOCATION_ROLE_STEP_ID_MISSING:' + role['id'])
     return value
@@ -93,7 +102,8 @@ def _job_cgroup(value, job):
 
 
 def _native_match(proof, receipt, role):
-    native = next((row.get('proof') for row in receipt.get('launches', []) if row['id'] == role['id']), None)
+    native = next((row.get('namespace_proof', row.get('proof'))
+                   for row in receipt.get('launches', []) if row['id'] == role['id']), None)
     return bool(native and isinstance(proof, dict) and proof.get('nspid') and
                 proof['nspid'][-1] == native['pid'] and proof['uid'] == os.getuid() and
                 proof['start_ticks'] == native['start_ticks'] and proof['exe'] == native['exe'] and
@@ -235,7 +245,7 @@ def step_arguments(config, role, gpu_allocation=None):
     # GPU steps must overlap, but their native processes need distinct CPU sets.
     # Expose the node's allocated pool; the container owner binds its role before exec.
     cpus = node['cpus'] if resident else resources['cpus']
-    command = ['srun', '--overlap', '--exact', '--nodes=1', '--ntasks=1',
+    command = ['srun', '--overlap', '--exact', '--export=ALL', '--nodes=1', '--ntasks=1',
                '--nodelist=' + node['host'], '--cpus-per-task=' + str(cpus)]
     if resident:
         command.append('--cpu-bind=threads')
@@ -607,6 +617,10 @@ def run_allocation(args, config):
                             if not value or value['status'] != 'STOPPED' or any(
                                     row['status'] != 'ZERO' for row in value['cleanup']):
                                 raise cluster.ClusterError('ALLOCATION_ROLE_CLEANUP_UNKNOWN:' + role['id'])
+                            if value['execution'] == 'FAILED' or value.get('failure'):
+                                state.update(execution='FAILED', failure=state['failure'] or
+                                    'ALLOCATION_ROLE_FAILED:' + role['id'] + ':' +
+                                    str(value.get('failure')))
                         except (OSError, ValueError, RuntimeError, KeyError) as error:
                             state.update(status='UNKNOWN', failure=state['failure'] or str(error))
                     for node in config['nodes']:
@@ -640,7 +654,7 @@ def main(argv=None):
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--timing', action='store_true')
     args = parser.parse_args(argv)
-    if (not math.isfinite(args.timeout) or not 0 < args.timeout <= 3600 or
+    if (not math.isfinite(args.timeout) or not 0 < args.timeout <= 86400 or
             not os.environ.get('SLURM_JOB_ID') or not os.environ.get('SLURM_JOB_NODELIST') or
             (args.evidence and args.evidence != args.deployment.parent) or
             (args.observe_role and not args.audit_node) or

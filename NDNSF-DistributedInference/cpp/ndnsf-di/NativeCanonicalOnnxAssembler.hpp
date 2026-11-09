@@ -94,6 +94,13 @@ struct NativeCanonicalOnnxAssemblerOptions
   std::shared_ptr<NativePersistentRecipeResidencyIndex> persistentRecipeResidencyIndex;
 };
 
+/** Bind every local assembly cache to the current admitted stored-object keys.
+ * Call once on fresh options, after configuring the protected runtime and role digest.
+ */
+void
+nativeBindStoredModelAssemblyCache(const NativeSelectionProjectionV3& projection,
+                                  NativeCanonicalOnnxAssemblerOptions& options);
+
 /** Exact identity for one decrypted protected assembled model. */
 struct NativeProtectedPlaintextCacheKey
 {

@@ -13,6 +13,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRunnerReuseCache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
@@ -406,43 +408,6 @@ makeProtectedResidentAuthority(
   return authority;
 }
 
-ProviderArtifactKey
-providerArtifactKey(const NativeSelectionProjectionV3& projection,
-                    const std::string& providerIdentity,
-                    const std::string& canonicalSourceName,
-                    const std::string& canonicalSourceDigest)
-{
-  const auto& role = projection.assemblyContract();
-  return ProviderArtifactKey{
-    canonicalSourceDigest,
-    canonicalSourceName,
-    projection.canonicalArtifactName,
-    role.modelManifestDigest,
-    role.canonicalInitializerDigest,
-    role.graphDigest,
-    role.selectedRole,
-    // offerDigest authenticates this request/attempt's admission and is not
-    // an immutable artifact identity.  The role artifact digest is stable
-    // across turns while the remaining fields bind the exact assembly.
-    role.artifactDigest,
-    role.recipeDigest,
-    role.backendAbi,
-    role.deviceSet.empty() ? std::string{} : role.deviceSet.front(),
-    role.precision,
-    role.quantization,
-    role.layout,
-    role.artifactProfileDigest,
-    // GroupCapabilityV1 is request/attempt scoped (it binds requestId and
-    // attemptId). It authenticates the current selection but cannot address
-    // an immutable Provider artifact template. The policy snapshot is the
-    // stable security-domain identity; protectionIdentity below keeps
-    // request-specific grant identity out of the template key. The current
-    // grant remains verified before cache admission.
-    projection.securityPolicySnapshotDigest,
-    role.protectionEpoch,
-    projection.provider.empty() ? providerIdentity : projection.provider};
-}
-
 std::filesystem::path
 providerCachedModelPath(const std::string& cacheDir,
                         const NativeSelectionProjectionV3& projection,
@@ -486,7 +451,18 @@ providerCanonicalSourceIdentity(
 {
   if (projection.canonicalArtifactName.empty())
     throw std::runtime_error("DI_PROVIDER_ARTIFACT_ROOT_IDENTITY_MISSING");
-  const auto rootPayload = ctx.getArtifact(ndn::Name(projection.canonicalArtifactName));
+  const auto rootName = ndn::Name(projection.canonicalArtifactName);
+  std::optional<ndn::Buffer> rootPayload;
+  if (projection.storedModelObjectKeyLease) {
+    if (!projection.storedModelObjectKeyLease->contains(rootName))
+      throw std::runtime_error("DI_STORED_MODEL_OBJECT_KEY_MISSING");
+    rootPayload = nativeFetchAndOpenStoredModelObjectCurrent(
+      ctx, *projection.storedModelObjectKeyLease, rootName,
+      ctx.assignment().workDeadline);
+  }
+  else {
+    rootPayload = ctx.getArtifact(rootName);
+  }
   if (!rootPayload || rootPayload->empty())
     throw std::runtime_error("DI_PROVIDER_ARTIFACT_ROOT_IDENTITY_UNAVAILABLE");
   if (sha256TensorBytes(std::vector<std::uint8_t>(rootPayload->begin(), rootPayload->end())) !=
@@ -1787,6 +1763,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
         if (protectedRuntime) {
           options.roleAssemblySpecDigest = nativeAssemblyDigestFromValidatedProjection(projection);
         }
+        nativeBindStoredModelAssemblyCache(projection, options);
         options.signManifest = [keyChain, providerCert](const std::string& bytes) {
           return keyChain == nullptr ? std::string{} :
             signAssemblyManifest(*keyChain, providerCert, bytes);
@@ -1817,7 +1794,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
             return ctx.isStreamed() && ctx.streamCancelled();
           };
           const auto sourceIdentity = providerCanonicalSourceIdentity(ctx, projection);
-          const auto key = providerArtifactKey(
+          const auto key = nativeProviderArtifactKey(
             projection, providerIdentity, sourceIdentity.first, sourceIdentity.second);
           const auto diskCacheHit = std::make_shared<std::atomic<bool>>(false);
           auto lease = artifactCache->acquireWithRunner(

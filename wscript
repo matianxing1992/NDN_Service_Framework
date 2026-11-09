@@ -12,8 +12,8 @@ APPNAME = 'ndn-service-framework'
 GIT_TAG_PREFIX = 'ndn-service-framework-'
 
 # Large translation units consumed several GiB each in sanitizer builds.
-# Give them an exclusive compilation slot while retaining two-way parallel
-# compilation by default, or four-way for an explicit -j4 build.
+# Give them an exclusive compilation slot while allowing the requested
+# parallelism for smaller units, bounded to six compiler processes.
 # A waiting large unit drains existing work
 # before it starts; this also avoids starving it behind smaller tasks.
 class _CompileMemorySlots(Task.TaskSemaphore):
@@ -33,7 +33,7 @@ class _CompileMemorySlots(Task.TaskSemaphore):
 def limit_compile_memory_concurrency(generator):
     compile_slots = getattr(generator.bld, '_ndnsf_compile_memory_slots', None)
     if compile_slots is None:
-        compile_slots = _CompileMemorySlots(4 if generator.bld.jobs == 4 else 2)
+        compile_slots = _CompileMemorySlots(min(generator.bld.jobs, 6))
         generator.bld._ndnsf_compile_memory_slots = compile_slots
     for task in getattr(generator, 'compiled_tasks', []):
         if task.inputs:
@@ -1045,6 +1045,9 @@ def build(bld):
                 ('NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-save-no-repo.cpp'
                  if 'repo' in bld.env.NDNSF_COMPONENTS else
                  'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-save-repo.cpp'),
+                ('NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-no-repo.cpp'
+                 if 'repo' in bld.env.NDNSF_COMPONENTS else
+                 'NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-publication.cpp'),
                 *([] if 'repo' in bld.env.NDNSF_COMPONENTS else
                   ['NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-owner-repo.cpp',
                    'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-publication-repo.cpp',

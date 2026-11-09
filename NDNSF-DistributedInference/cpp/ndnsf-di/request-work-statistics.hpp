@@ -46,6 +46,8 @@ struct NativeWorkStatisticsSnapshot
   std::size_t droppedSpans = 0;
   std::size_t activeSpans = 0;
   std::map<std::string, NativeWorkPhaseStatistics> phases;
+  bool epochProfiling = false;
+  std::map<std::uint64_t, std::map<std::string, NativeWorkPhaseStatistics>> epochPhases;
   std::map<std::string, std::uint64_t> counts;
   struct Transfer
   {
@@ -63,6 +65,10 @@ struct NativeWorkStatisticsSnapshot
     std::int64_t admittedSteadyNs = 0;
     NativeTransferPoint point = NativeTransferPoint::UNSPECIFIED;
     std::int64_t outputReadySteadyNs = 0;
+    std::optional<std::size_t> transportPayloadBytes;
+    std::optional<std::size_t> metadataBytes;
+    std::optional<std::size_t> localCopyBytes;
+    std::optional<std::size_t> transportLocalCopyBytes;
   };
   std::vector<Transfer> transfers;
 };
@@ -79,11 +85,15 @@ public:
   using Clock = std::function<NativeWorkClock()>;
   using Token = std::uint64_t;
 
-  explicit NativeWorkStatistics(Clock clock = {});
+  explicit NativeWorkStatistics(Clock clock = {}, bool profileEpochs = false);
 
   /** Zero means unavailable; statistics never change the execution outcome. */
   Token
-  begin(std::string_view phase, NativeWorkKind kind) noexcept;
+  begin(std::string_view phase, NativeWorkKind kind,
+        std::optional<std::uint64_t> inferenceEpoch = std::nullopt) noexcept;
+
+  bool
+  epochProfilingEnabled() const noexcept { return m_statistics.epochProfiling; }
 
   /** Must close the innermost span on the thread that opened it. */
   void
@@ -123,6 +133,7 @@ private:
     NativeWorkClock started;
     std::uint64_t childWallNs = 0;
     std::optional<std::uint64_t> childCpuNs = 0;
+    std::optional<std::uint64_t> inferenceEpoch;
   };
 
   Clock m_clock;
@@ -139,7 +150,8 @@ class NativeWorkScope
 {
 public:
   NativeWorkScope(std::shared_ptr<NativeWorkStatistics> statistics,
-                  std::string_view phase, NativeWorkKind kind) noexcept;
+                  std::string_view phase, NativeWorkKind kind,
+                  std::optional<std::uint64_t> inferenceEpoch = std::nullopt) noexcept;
   ~NativeWorkScope();
 
   void

@@ -7,7 +7,7 @@ build_repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 build_unit="ndnsf-build-${UID}-$$"
 build_memory_limit=${NDNSF_BUILD_MEMORY_LIMIT:-6656M}
 if (( $# == 0 )); then
-    set -- build --jobs=2
+    set -- build --jobs=6
 fi
 build_command=()
 if [[ $1 == run ]]; then
@@ -37,8 +37,9 @@ if (( ${#build_command[@]} == 0 )); then
                 *) continue ;;
             esac
         fi
-        if [[ $build_jobs_value != 1 && $build_jobs_value != 2 && $build_jobs_value != 4 ]]; then
-            echo 'Safe host builds accept only --jobs=1, --jobs=2 or explicit --jobs=4' >&2
+        if [[ $build_jobs_value != 1 && $build_jobs_value != 2 &&
+              $build_jobs_value != 4 && $build_jobs_value != 6 ]]; then
+            echo 'Safe host builds accept only --jobs=1, --jobs=2, --jobs=4 or --jobs=6' >&2
             exit 2
         fi
         build_jobs_seen=true
@@ -48,7 +49,7 @@ if (( ${#build_command[@]} == 0 )); then
         exit 2
     fi
     if ! $build_jobs_seen; then
-        set -- "$@" --jobs=2
+        set -- "$@" --jobs=6
     fi
     build_command=("$build_repo/waf" "$@")
 fi

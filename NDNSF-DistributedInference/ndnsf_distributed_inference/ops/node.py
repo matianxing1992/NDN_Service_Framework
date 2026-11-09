@@ -7,10 +7,13 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import socket
 import stat
+import subprocess
+import sys
 import time
 
 from . import cluster
@@ -32,20 +35,201 @@ def _receipt(state, target):
         'role_id', 'role_kind', 'node_id', 'host', 'job_id', 'step_id', 'pid_namespace',
         'status', 'readiness', 'execution', 'exit_code', 'failure', 'launches', 'cleanup',
         'started_at', 'wall_seconds', 'gpu_visibility', 'logical_devices', 'gpu_admission',
-        'runtime_timing')}
-    payload.update(schema='ndnsf-di-node-role-v1', cleanup_scope='PID_NAMESPACE',
+        'runtime_timing', 'image_inspection')}
+    payload.update(schema='ndnsf-di-node-role-v1',
+                   cleanup_scope=('HOST_AND_NATIVE_PROCESS_GROUPS' if state.get('host_container')
+                                  else 'PID_NAMESPACE'),
                    host_audit='UNKNOWN')
     write_json(target, payload)
     return payload
 
 
-def _finite(state, root, argv, env, guard, *, allow_route_not_found=False):
+def _container_command(args, argv, *, separate_session=True):
+    command = [sys.executable, '-I', '-m', 'ndnsf_distributed_inference.ops.container',
+               '--deployment', str(args.deployment), '--boot-id', args.boot_id,
+               '--configuration-sha256', args.configuration_sha256,
+               '--release-sha256', args.release_sha256, '--timeout', str(args.timeout)]
+    command += (['--actor', args.actor] if args.actor else
+                ['--management', args.management, '--node', args.node])
+    if args.debug:
+        command.append('--debug')
+    if getattr(args, 'timing', False):
+        command.append('--timing')
+    return [*command, '--', *(['/usr/bin/setsid'] if separate_session else []), *argv]
+
+
+def _stop_container_launcher(child):
+    # Popen owns this unreaped direct child and its newly created session.
+    # Do not use this transient ownership proof for persisted recovery.
+    result = {'forced': False}
+    if child.poll() is not None:
+        return dict(result, exitCode=child.returncode)
+    try:
+        os.killpg(child.pid, signal.SIGTERM)
+        child.wait(timeout=5)
+    except ProcessLookupError:
+        child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        if child.poll() is None:
+            os.killpg(child.pid, signal.SIGKILL)
+            result['forced'] = True
+        child.wait(timeout=5)
+    return dict(result, exitCode=child.returncode)
+
+
+def _native_container_process(child, expected_exe, bindings):
+    """Find one owned native descendant, never another matching deployment."""
+    from .allocation import _job_cgroup
+    matches = []
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            proof = cluster.process_identity(int(entry.name))
+            if (not proof or proof['uid'] != os.getuid() or proof.get('exe') != expected_exe or
+                    proof.get('bindings') != bindings or proof['pgid'] != proof['pid']):
+                continue
+            current = proof['pid']
+            for _ in range(64):
+                if current == child.pid:
+                    break
+                fields = (Path('/proc') / str(current) / 'stat').read_text().rsplit(')', 1)[1].split()
+                current = int(fields[1])
+                if current <= 1:
+                    break
+            if current != child.pid:
+                continue
+            cgroup = (entry / 'cgroup').read_text()
+            step = os.environ['SLURM_STEP_ID']
+            if (not _job_cgroup(cgroup, os.environ['SLURM_JOB_ID']) or not re.search(
+                    r'(?:^|/)step[_-]' + re.escape(step) + r'(?:/|\.|$)', cgroup)):
+                continue
+            status = (entry / 'status').read_text().splitlines()
+            pids = [int(value) for line in status if line.startswith('NSpid:')
+                    for value in line.split()[1:]]
+            if not pids or pids[0] != proof['pid']:
+                continue
+            namespace = os.readlink(entry / 'ns/pid')
+            matches.append((proof, pids[-1], namespace))
+        except (OSError, ValueError, KeyError, IndexError, UnicodeError):
+            continue
+    if len(matches) > 1:
+        raise cluster.ClusterError('NATIVE_CONTAINER_PROCESS_AMBIGUOUS')
+    return matches[0] if matches else None
+
+
+class _ContainerChild:
+    """Expose the native host PID while retaining the owned launcher wait handle."""
+
+    def __init__(self, child, proof):
+        self.child = child
+        self.pid = proof['pid']
+
+    @property
+    def returncode(self):
+        return self.child.returncode
+
+    def poll(self):
+        return self.child.poll()
+
+    def wait(self, timeout=None):
+        return self.child.wait(timeout=timeout)
+
+
+def _inspect_container_install(args, config, by_kind, state, root, env, guard):
+    # This existing C++ worker waits for a complete input frame before doing
+    # any assembly. Keep its pipe empty and open while inspecting the image.
+    relative = 'libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker'
+    executable = str(Path(config['release']['prefix']) / relative)
+    inspection = dict(status='STARTING', purpose='IMAGE_ROOT_INSPECTION', expectedExitCode=2,
+                      exitCheck='CODE_ONLY')
+    state['image_inspection'] = inspection
+    bindings = {key: env[key] for key in ('NDNSF_DEPLOYMENT_ACTOR_ID',
+                'NDNSF_DEPLOYMENT_BOOT_ID', 'NDNSF_DEPLOYMENT_CONFIG_SHA256')}
+    child = subprocess.Popen(_container_command(args, [executable, '--stdio-v1',
+        '--metadata-bytes', '0']), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, env=env, start_new_session=True)
+    proof = None
+    failed = False
+    try:
+        while True:
+            guard()
+            match = _native_container_process(child, executable, bindings)
+            if match:
+                proof, _, namespace = match
+                inspection.update(native_proof=proof, pid_namespace=namespace)
+                break
+            if child.poll() is not None:
+                raise cluster.ClusterError('IMAGE_INSPECTION_HOLDER_EXIT:' + str(child.returncode))
+            time.sleep(0.02)
+        write_json(root / 'state.json', state)
+        _check_installed_files(config['release'],
+            _read_json(Path(config['release']['manifest'])), by_kind,
+            image_root=Path('/proc') / str(proof['pid']) / 'root', extra_programs=(relative,))
+        guard()
+        child.stdin.close()
+        child.stdin = None
+        child.wait(timeout=5)
+        data = child.stdout.read(4097)
+        inspection.update(exitCode=child.returncode, outputBytes=len(data),
+                           outputHex=data.hex() if len(data) <= 4096 else None)
+        if child.returncode != 2 or len(data) > 4096:
+            raise cluster.ClusterError('IMAGE_INSPECTION_HOLDER_EXIT')
+        inspection['status'] = 'VERIFIED'
+    except BaseException:
+        failed = True
+        inspection['status'] = 'FAILED'
+        raise
+    finally:
+        errors = []
+        try:
+            if proof is not None:
+                inspection['cleanup'] = cluster.stop_owned(proof)
+                if (inspection['cleanup']['status'] != 'ZERO' or
+                        inspection['cleanup'].get('forced')):
+                    errors.append('native holder cleanup unverified or forced')
+        except Exception as error:
+            errors.append(str(error))
+        try:
+            inspection['launcher_cleanup'] = _stop_container_launcher(child)
+            if inspection['launcher_cleanup']['forced']:
+                errors.append('holder launcher cleanup forced')
+        except Exception as error:
+            errors.append(str(error))
+        for stream in (child.stdin, child.stdout):
+            if stream is not None:
+                stream.close()
+        inspection['cleanup_errors'] = errors
+        if errors:
+            print('IMAGE_INSPECTION_CLOSEOUT_ERRORS ' + json.dumps(errors), file=sys.stderr)
+        if errors and not failed:
+            inspection['status'] = 'FAILED'
+            raise cluster.ClusterError('IMAGE_INSPECTION_CLEANUP:' + ';'.join(errors))
+    write_json(root / 'state.json', state)
+
+
+def _finite(state, root, argv, env, guard, *, allow_route_not_found=False,
+            container_args=None):
     tag = 'management-' + str(len(state['launches']))
     owned_env = dict(env, NDNSF_DEPLOYMENT_ACTOR_ID=tag)
-    child, row = cluster._spawn(state, root, tag, 'management', argv, owned_env, guard)
-    while child.poll() is None:
-        guard()
-        time.sleep(0.05)
+    launched = []
+    def launch(command, **kwargs):
+        child = subprocess.Popen(command, **kwargs)
+        launched.append(child)
+        return child
+    command = (_container_command(container_args, argv, separate_session=False)
+               if container_args else argv)
+    try:
+        child, row = cluster._spawn(state, root, tag, 'management', command, owned_env,
+                                    guard, **({'launcher': launch} if container_args else {}))
+        if container_args:
+            row['native_argv'] = argv
+        while child.poll() is None:
+            guard()
+            time.sleep(0.05)
+    finally:
+        for pending in launched:
+            _stop_container_launcher(pending)
     row['exit_code'] = child.returncode
     write_json(root / 'state.json', state)
     with Path(row['log']).open('rb') as stream:
@@ -59,13 +243,15 @@ def _finite(state, root, argv, env, guard, *, allow_route_not_found=False):
     return output
 
 
-def _identity(config, actor, state, root, env, guard):
+def _identity(config, actor, state, root, env, guard, container_args=None):
     executable = str(Path(config['release']['prefix']) / 'bin/ndnsf-identity-check')
-    _finite(state, root, [executable, actor['credential_home'], actor['identity']], env, guard)
+    _finite(state, root, [executable, actor['credential_home'], actor['identity']], env, guard,
+            container_args=container_args)
 
 
-def _management(config, node, state, root, env, guard):
-    executable = shutil.which('nfdc')
+def _management(config, node, state, root, env, guard, container_args=None):
+    executable = (str(Path(config['release']['prefix']) / 'bin/nfdc') if container_args else
+                  shutil.which('nfdc'))
     if not executable:
         raise cluster.ClusterError('NATIVE_NFDC_UNAVAILABLE')
     faces = {}
@@ -74,7 +260,8 @@ def _management(config, node, state, root, env, guard):
         for attempt in range(_ROUTE_READBACK_ATTEMPTS if check == 'route' else 1):
             guard()
             options = {'allow_route_not_found': True} if check == 'route' else {}
-            output = _finite(state, root, [executable, *command['argv']], env, guard, **options)
+            output = _finite(state, root, [executable, *command['argv']], env, guard,
+                              container_args=container_args, **options)
             if check != 'route' or output.strip() != 'Route not found':
                 break
             if attempt + 1 == _ROUTE_READBACK_ATTEMPTS:
@@ -102,6 +289,7 @@ def _management(config, node, state, root, env, guard):
 
 
 def run_role(args):
+    host_container = getattr(args, 'host_container', False)
     config = load_frozen(args.deployment, args.configuration_sha256, args.boot_id,
                          args.release_sha256, private_parent=False)
     actor = next((item for item in config['actors'] if item['id'] == args.actor), None)
@@ -115,9 +303,17 @@ def run_role(args):
     kind = actor['kind'] if actor else args.management
     bindings = {'NDNSF_DEPLOYMENT_ACTOR_ID': role_id, 'NDNSF_DEPLOYMENT_BOOT_ID': args.boot_id,
                 'NDNSF_DEPLOYMENT_CONFIG_SHA256': args.configuration_sha256}
-    if (any(os.environ.get(key) != value for key, value in bindings.items()) or
-            not os.environ.get('SLURM_JOB_ID') or not os.environ.get('SLURM_STEP_ID')):
-        raise cluster.ClusterError('NATIVE_ROLE_ENVIRONMENT_BINDING_MISMATCH')
+    expected_bindings = dict(bindings)
+    if host_container:
+        expected_bindings['NDNSF_DEPLOYMENT_ACTOR_ID'] = management_role_id('step', role_id)
+    mismatches = {key: dict(expected=value, observed=os.environ.get(key))
+                  for key, value in expected_bindings.items() if os.environ.get(key) != value}
+    for key in ('SLURM_JOB_ID', 'SLURM_STEP_ID'):
+        if not os.environ.get(key):
+            mismatches[key] = dict(expected='allocated job/step', observed=os.environ.get(key))
+    if mismatches:
+        raise cluster.ClusterError('NATIVE_ROLE_ENVIRONMENT_BINDING_MISMATCH:' +
+                                   json.dumps(mismatches, sort_keys=True))
     evidence = (args.deployment.parent / 'actors' / role_id if actor else
                 args.deployment.parent / 'nodes' / node_id / kind)
     root = evidence / 'runtime' / config['deployment_id']
@@ -135,8 +331,10 @@ def run_role(args):
                  'readiness': 'UNVERIFIED', 'execution': 'STARTING', 'exit_code': None,
                  'failure': None, 'launches': [], 'diagnostic_logging': args.debug,
                  'runtime_timing': getattr(args, 'timing', False),
+                 'host_container': host_container,
                  'started_at': time.time(), 'wall_seconds': 0}
         started = time.monotonic()
+        container_children = []
         deadline = started + args.timeout
         stopping = False
         ready = False
@@ -168,6 +366,25 @@ def run_role(args):
             write_json(root / 'state.json', state)
             return _receipt(state, receipt)
 
+        def launch_native(argv, **kwargs):
+            child = subprocess.Popen(_container_command(args, argv), **kwargs)
+            container_children.append(child)
+            expected = str(Path(argv[0]).resolve())
+            while True:
+                guard()
+                match = _native_container_process(child, expected, bindings)
+                if match:
+                    proof, namespace_pid, namespace = match
+                    row = state['launches'][-1]
+                    row['proof'] = proof
+                    row['namespace_proof'] = dict(proof, pid=namespace_pid, pgid=namespace_pid)
+                    state['pid_namespace'] = namespace
+                    return _ContainerChild(child, proof)
+                if child.poll() is not None:
+                    raise cluster.ClusterError('NATIVE_CONTAINER_CHILD_EXIT:' + role_id + ':' +
+                                               str(child.returncode))
+                time.sleep(0.02)
+
         handler = signal.signal(signal.SIGTERM, terminate)
         save()
         try:
@@ -176,20 +393,33 @@ def run_role(args):
             cluster._private_directory(home)
             # The outer wrapper removes host loader overrides. These values
             # belong to the exact image, including its CUDA and NFD libraries.
-            image_environment = {key: os.environ[key] for key in ('PATH', 'LD_LIBRARY_PATH')
-                                 if key in os.environ}
+            image_environment = ({key: os.environ[key] for key in ('PATH', 'LD_LIBRARY_PATH')
+                                  if key in os.environ} if not host_container else {})
             env = cluster._environment(home, node['nfd']['socket'], role_id, state)
+            if host_container:
+                env.update({key: value for key, value in os.environ.items()
+                            if key.startswith('SLURM_')})
             env.update(image_environment)
-            state['gpu_visibility'] = step_visibility(actor)
+            visibility_owner = actor
+            if host_container and actor and actor['resources']['gpu_devices']:
+                visibility_owner = {'resources': {'gpu_devices':
+                    [None] * config['platform']['slurm']['gpu']['count']}}
+            state['gpu_visibility'] = step_visibility(visibility_owner)
             state['logical_devices'] = ['cuda:' + str(index) for index in
                                          range(len(actor['resources']['gpu_devices']))] if actor else []
             if actor:
                 by_kind = {key: [] for key in ('controller', 'artifact-authority', 'requester', 'provider', 'repo')}
                 by_kind[kind] = [actor]
-                _check_installed_files(config['release'], _read_json(Path(config['release']['manifest'])), by_kind)
+                if not host_container:
+                    _check_installed_files(config['release'],
+                                           _read_json(Path(config['release']['manifest'])), by_kind)
                 argv, env = cluster._native_launch(config, actor, root, state,
                                                    visible_devices=state['gpu_visibility'])
                 env.update(image_environment)
+                if host_container:
+                    env.update({key: value for key, value in os.environ.items()
+                                if key.startswith('SLURM_')})
+                    _inspect_container_install(args, config, by_kind, state, root, env, guard)
                 if actor['resources']['gpu_devices']:
                     env.update({key: os.environ[key] for key in (
                         'SLURM_JOB_ID', 'SLURM_STEP_ID', 'SLURM_STEP_GPUS')})
@@ -197,30 +427,40 @@ def run_role(args):
                                                      'gpu-allocation.json', args, config, node)
                     selected = gpu_slots(actor, allocation)
                     expected_uuids = [allocation['devices'][index]['uuid'] for index in selected]
+                    if host_container:
+                        state['gpu_visibility'] = ','.join(expected_uuids)
                     query = str(Path(config['release']['prefix']) / 'libexec/ndnsf-di/ndnsf-di-device-query')
-                    output = _finite(state, root, [query, '--count', str(len(selected))], env, guard)
-                    observed = read_gpu_probe(output, args, node, state['launches'][-1]['id'],
+                    output = _finite(state, root, [query, '--count', str(len(selected))], env, guard,
+                                     container_args=args if host_container else None)
+                    observed = read_gpu_probe(output, args, node,
+                        role_id if host_container else state['launches'][-1]['id'],
                         len(selected), visibility=state['gpu_visibility'], step_id=os.environ['SLURM_STEP_ID'])
                     if [item['uuid'] for item in observed['devices']] != expected_uuids:
                         raise cluster.ClusterError('NATIVE_STEP_GPU_UUID_MISMATCH:' + role_id)
+                    if host_container:
+                        observed['query_launch_id'] = state['launches'][-1]['id']
                     state['gpu_admission'] = observed
                     save()
-                _identity(config, actor, state, root, env, guard)
+                _identity(config, actor, state, root, env, guard,
+                           container_args=args if host_container else None)
             elif kind == 'nfdc':
-                _management(config, node, state, root, env, guard)
+                _management(config, node, state, root, env, guard,
+                             container_args=args if host_container else None)
                 state.update(readiness='MANAGEMENT_VERIFIED', execution='COMPLETE', exit_code=0)
             else:
                 endpoint = Path(node['nfd']['socket'])
                 if node['nfd']['mode'] != 'managed' or endpoint.exists() or endpoint.is_symlink():
                     raise cluster.ClusterError('NATIVE_NFD_SOCKET_NOT_OWNED')
-                executable = shutil.which('nfd')
+                executable = (str(Path(config['release']['prefix']) / 'bin/nfd') if host_container
+                              else shutil.which('nfd'))
                 if not executable:
                     raise cluster.ClusterError('NATIVE_NFD_UNAVAILABLE')
                 path = root / 'nfd.conf'
                 path.write_text(cluster._nfd_config(node['nfd']['socket'], node['nfd']['port']))
                 argv = [executable, '--config', str(path)]
             if kind != 'nfdc':
-                child, row = cluster._spawn(state, root, role_id, kind, argv, env, guard)
+                child, row = cluster._spawn(state, root, role_id, kind, argv, env, guard,
+                                            **({'launcher': launch_native} if host_container else {}))
             if kind == 'requester':
                 state['requester'] = {'completion': 'RUNNING', 'exit_code': None}
                 # Requester is a finite command, not a serving actor. Its native
@@ -271,10 +511,50 @@ def run_role(args):
         finally:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             try:
-                cluster._close(state, root)
+                close_error = None
+                cleanup_errors = []
+                try:
+                    cluster._close(state, root)
+                except BaseException as error:
+                    close_error = error
+                    # Receipt I/O may fail before _close reaches the native
+                    # process. Drain its verified group without another write.
+                    if host_container:
+                        for owned in state['launches']:
+                            if owned['id'] == role_id and cluster._valid_intent(owned, state):
+                                try:
+                                    cluster._recover(owned)
+                                    closed = cluster._stop_launch(owned)
+                                    if closed['status'] != 'ZERO' or closed.get('forced'):
+                                        cleanup_errors.append(closed)
+                                except Exception as cleanup_error:
+                                    cleanup_errors.append(str(cleanup_error))
+                finally:
+                    for launcher in container_children:
+                        try:
+                            closed = _stop_container_launcher(launcher)
+                            terminal = next((item for item in state.get('cleanup', [])
+                                             if item['id'] == role_id), None)
+                            if terminal is not None:
+                                terminal.setdefault('exitCode', closed['exitCode'])
+                                if closed['forced']:
+                                    terminal['forced'] = True
+                        except Exception as cleanup_error:
+                            cleanup_errors.append(str(cleanup_error))
+                if close_error is not None or cleanup_errors:
+                    print('NATIVE_ROLE_CLOSEOUT_ERRORS ' + json.dumps({
+                        'state_error': str(close_error) if close_error else None,
+                        'cleanup_errors': cleanup_errors}), file=sys.stderr)
+                    if close_error is not None:
+                        raise close_error
+                    raise cluster.ClusterError('NATIVE_CONTAINER_LAUNCHER_CLEANUP_FAILED')
                 terminal = next((item for item in state['cleanup'] if item['id'] == role_id), {})
                 if state['exit_code'] is None:
                     state['exit_code'] = terminal.get('exitCode')
+                if (state['execution'] == 'SERVICE_STOPPED' and
+                        state['exit_code'] not in (0, -signal.SIGTERM, 128 + signal.SIGTERM)):
+                    state.update(execution='FAILED', failure='NATIVE_ROLE_SHUTDOWN_EXIT:' +
+                                 role_id + ':' + str(state['exit_code']))
                 if ((kind == 'requester' and state['execution'] == 'COMPLETE') or
                         state['readiness'] == 'WITHDRAWN') and (
                         terminal.get('status') != 'ZERO' or terminal.get('forced')):

@@ -5,6 +5,19 @@ top = '..'
 import os
 
 def build(bld):
+    # Keep the CLI fixture reachable in native-only builds; preserve its output path.
+    bld.program(target='../examples/spec189-cli-oracle-tests', name='spec189-cli-oracle-tests',
+                source=[bld.path.find_node('fixtures/spec189/cli-oracle.cpp')],
+                includes=['..'],
+                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'], install_path=None)
+    bld.program(target='../spec222-repo-owner-cli', name='spec222-repo-owner-cli',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/repo-owner-delete-cli.t.cpp')],
+                includes=['..', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                cxxflags=['-fPIC', '-O0', '-g0'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
     # Additive stored-model format: compile production codecs and the shared
     # private-file writer directly, without another DI/Controller state machine.
     for suffix in ('', '-asan'):
@@ -21,6 +34,30 @@ def build(bld):
                             bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.cpp')],
                     includes=['..'], use='NDN_CXX BOOST OPENSSL DL',
                     cxxflags=flags, linkflags=links, install_path=None)
+    # Revalidate the restored Controller baseline without linking the inference backend.
+    bld.program(target='../spec222-controller-baseline', name='spec222-controller-baseline',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/controller-revocation-state.t.cpp'),
+                        bld.path.find_node('unit-tests/controller-revocation-policy.t.cpp'),
+                        bld.path.find_node('integration-tests/controller-revocation-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+    if 'repo' in bld.env.NDNSF_COMPONENTS:
+        # Instrument the changed asynchronous fetcher, reusing its native lifecycle fixtures.
+        bld.program(target='../spec222-repo-fetcher-asan', name='spec222-repo-fetcher-asan',
+                    source=[bld.path.find_node('main.cpp'),
+                            bld.path.find_node('unit-tests/face-data-reference-fetcher.t.cpp'),
+                            bld.srcnode.find_node(
+                                'NDNSF-DistributedRepo/src/face-data-reference-fetcher.cpp')],
+                    includes=['..', '../NDNSF-DistributedRepo/include'],
+                    use='ndnsf-distributed-repo ndn-service-framework NDN_CXX BOOST OPENSSL DL',
+                    cxxflags=['-std=c++17', '-O0', '-g0', '-fno-omit-frame-pointer',
+                              '-fsanitize=address,undefined'],
+                    linkflags=['-fsanitize=address,undefined'],
+                    rpath=[bld.bldnode.abspath()], install_path=None)
     # SDK capability fixture: no NDNSF services or model weights are required.
     if bld.env.HAVE_ONNXRUNTIME_CPP:
         probe_env = bld.env.derive()
@@ -226,10 +263,12 @@ def build(bld):
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/original-packet-store-contract.t.cpp'),
                         bld.path.find_node('unit-tests/published-content-name.t.cpp'),
-                        bld.path.find_node('unit-tests/producer-signer-policy.t.cpp')],
+                        bld.path.find_node('unit-tests/producer-signer-policy.t.cpp'),
+                        bld.path.find_node('unit-tests/generic-dynamic-api-crypto-auth.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
-                cxxflags=['-fPIC'], rpath=[bld.bldnode.abspath()], install_path=None)
+                defines=['HAVE_TESTS'], cxxflags=['-fPIC'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
 
     bld.program(target='../spec201-naming-installed-consumer',
                 name='spec201-naming-installed-consumer',
@@ -685,8 +724,24 @@ def build(bld):
     # link-only failures even though the installable DI library built cleanly.
     # The compatibility OnnxRuntimeModelRunner.cpp source remains harmless and
     # is retained by the same glob as the production library.
+    repo_enabled = 'repo' in bld.env.NDNSF_COMPONENTS
+    di_integration_use = 'ndnsf-distributed-repo ' if repo_enabled else ''
+    di_integration_excludes = [
+        ('NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-save-no-repo.cpp'
+         if repo_enabled else
+         'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-save-repo.cpp'),
+        ('NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-no-repo.cpp'
+         if repo_enabled else
+         'NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-publication.cpp'),
+        *([] if repo_enabled else [
+            'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-owner-repo.cpp',
+            'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-publication-repo.cpp',
+            'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore-repo.cpp',
+        ]),
+    ]
     di_integration_sources = bld.path.parent.ant_glob(
-        'NDNSF-DistributedInference/cpp/ndnsf-di/*.cpp') + \
+        'NDNSF-DistributedInference/cpp/ndnsf-di/*.cpp',
+        excl=di_integration_excludes) + \
         bld.path.parent.ant_glob(
             'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp') + \
         bld.path.parent.ant_glob(
@@ -711,6 +766,7 @@ def build(bld):
     # Source-defined state and resource contracts use the maintained native
     # planning/publication fixtures. Sanitize the changed production units.
     model_contract_sources = [
+        'NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-preparation.cpp',
         'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
@@ -793,7 +849,7 @@ def build(bld):
                         bld.path.find_node('unit-tests/spec190-resident-session.t.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use=di_integration_use + 'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -822,7 +878,8 @@ def build(bld):
                         bld.path.find_node('unit-tests/spec190-terminal-drain.t.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndnsf-distributed-inference ndn-service-framework ' +
+                use='ndnsf-distributed-inference ' + di_integration_use +
+                    'ndn-service-framework ' +
                     framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -855,7 +912,8 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' +
+                use='ndnsf-distributed-inference ' + di_integration_use +
+                    'ndn-service-framework ' +
                     framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -920,7 +978,8 @@ def build(bld):
                         bld.path.find_node('unit-tests/distributed-inference-native-preparation-context.t.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use='ndnsf-distributed-inference ' + di_integration_use +
+                    'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -1024,7 +1083,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndn-service-framework ndnsf-distributed-repo ' + framework_use + ' ONNXRUNTIME',
+                use='ndn-service-framework ' + di_integration_use + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM',
                          'SPEC189_REQUEST_SELECTOR'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -1041,7 +1100,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/spec189-placement-oracle.t.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use=di_integration_use + 'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS', 'SPEC189_PLACEMENT_SELECTOR'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -1100,7 +1159,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use=di_integration_use + 'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -1117,7 +1176,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use=di_integration_use + 'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -1133,7 +1192,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndn-service-framework ndnsf-distributed-repo ' + framework_use + ' ONNXRUNTIME',
+                use='ndn-service-framework ' + di_integration_use + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM',
                          'SPEC194_PLACEMENT_COMPOSITION_SELECTOR'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -1151,7 +1210,8 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use='ndnsf-distributed-inference ' + di_integration_use +
+                    'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM',
                          'SPEC187_YOLO_SELECTOR'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -1173,7 +1233,8 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use='ndnsf-distributed-inference ' + di_integration_use +
+                    'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM',
                          'SPEC188_YOLO_SELECTOR'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -1193,7 +1254,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use=di_integration_use + 'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -1210,7 +1271,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use=di_integration_use + 'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -1262,13 +1323,25 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use=di_integration_use + 'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # This profile links the real unavailable-component implementation without Repo.
+    bld.program(target='../spec220-model-repository-no-repo',
+                name='spec220-model-repository-no-repo',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/model-repository-no-repo.t.cpp'),
+                        bld.path.parent.find_node(
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-no-repo.cpp')],
+                includes=framework_includes + ['../NDNSF-DistributedRepo/include'],
+                use=framework_use, cxxflags=['-fPIC', '-O0', '-g0'],
+                linkflags=['-Wl,--no-relax'], install_path=None)
 
     # The same wire/lifetime oracle linked directly to the production DI target.
     bld.program(target='../spec199-prefetch-transport', name='spec199-prefetch-transport',
                 source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/exact-data-congestion-window.t.cpp'),
                         bld.path.find_node('integration-tests/spec181-exact-tensor-transport.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=framework_includes,
@@ -1317,7 +1390,7 @@ def build(bld):
                         bld.path.find_node('unit-tests/distributed-inference-protected-runtime-grant.t.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
-                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use=di_integration_use + 'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
@@ -1333,6 +1406,16 @@ def build(bld):
                 defines=['HAVE_TESTS'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Read-only diagnostics against an operator-pinned source and transfer profile.
+    bld.program(target='../native-source-transfer-profile',
+                name='native-source-transfer-profile',
+                source=[bld.path.find_node('standalone/native-source-transfer-profile.cpp')],
+                includes=['..', '../ndn-service-framework',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
+                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST OPENSSL PROTOBUF NAC-ABE NDNSD DL',
+                cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Keep the conversation restore runner-lifetime regression independently runnable.
@@ -1562,7 +1645,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                        framework_sources + di_integration_sources,
                 includes=framework_includes,
-                use=framework_use + ' ONNXRUNTIME',
+                use=di_integration_use + framework_use + ' ONNXRUNTIME',
                 # Keep NAC-ABE's test visibility contract enabled for the
                 # integration target as well as the unit-test target.
                 defines=['HAVE_TESTS'],

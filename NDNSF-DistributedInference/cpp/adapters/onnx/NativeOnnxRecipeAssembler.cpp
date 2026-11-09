@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/native-owned-initializer-file.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
@@ -33,6 +34,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -340,6 +342,47 @@ public:
   InitializerFileRangeSource(const InitializerFileRangeSource&) = delete;
   InitializerFileRangeSource& operator=(const InitializerFileRangeSource&) = delete;
 
+  void
+  consumeTemporaryPath(const std::string& path)
+  {
+    struct stat descriptor{}, named{};
+    if (::fstat(m_fd, &descriptor) != 0 || ::lstat(path.c_str(), &named) != 0 ||
+        descriptor.st_dev != named.st_dev || descriptor.st_ino != named.st_ino ||
+        descriptor.st_uid != ::geteuid() || descriptor.st_nlink != 1 ||
+        (descriptor.st_mode & 07777) != 0600)
+      fail("INITIALIZER_PRIVATE_FILE");
+    // A brief read lease proves that no writable descriptor survives. Once
+    // unlinked, ordinary opens cannot introduce a new writer to this snapshot.
+    const bool leased = ::fcntl(m_fd, F_SETLEASE, F_RDLCK) == 0;
+    const int removed = ::unlink(path.c_str());
+    struct stat unlinked{};
+    const bool privateSnapshot = removed == 0 && ::fstat(m_fd, &unlinked) == 0 &&
+      unlinked.st_nlink == 0;
+    const int released = leased ? ::fcntl(m_fd, F_SETLEASE, F_UNLCK) : 0;
+    if (removed != 0 || released != 0) fail("INITIALIZER_PRIVATE_FILE");
+    m_snapshot = leased && privateSnapshot;
+  }
+
+  std::optional<std::string>
+  snapshotDigest() const
+  {
+    if (!validFile()) fail("INITIALIZER_FILE");
+    struct stat status{};
+    if (::fstat(m_fd, &status) != 0 || status.st_nlink != 0)
+      return std::nullopt;
+    std::lock_guard<std::mutex> lock(m_digestMutex);
+    return m_snapshot ? m_digest : std::nullopt;
+  }
+
+  void
+  rememberSnapshotDigest(const std::string& digest) const
+  {
+    if (!validFile()) fail("INITIALIZER_FILE");
+    if (!m_snapshot) return;
+    std::lock_guard<std::mutex> lock(m_digestMutex);
+    m_digest = digest;
+  }
+
   std::uint64_t
   size() const noexcept override
   {
@@ -378,6 +421,9 @@ private:
 
   int m_fd = -1;
   const std::uint64_t m_size;
+  bool m_snapshot = false;
+  mutable std::mutex m_digestMutex;
+  mutable std::optional<std::string> m_digest;
 };
 
 /**
@@ -2089,6 +2135,10 @@ void materializeShapeInferenceInitializers(
   policies[{"com.microsoft", "MatMulNBits", 1}] = {};
   // CausalConvWithState v1 uses weight dimensions, not weight or bias values.
   policies[{"com.microsoft", "CausalConvWithState", 1}] = {};
+  // ORT v1.31.1 bert_defs.cc: these v1 outputs inherit activation shapes;
+  // gate/norm weights and rotary cache values do not determine output extents.
+  for (const char* op : {"LinearAttentionGate", "GatedRMSNorm", "MRotaryEmbedding"})
+    policies[{"com.microsoft", op, 1}] = {};
   std::unordered_set<std::string> externalInitializers;
   for (const auto& initializer : sourceModel.graph().initializer())
     if (initializer.data_location() == onnx::TensorProto::EXTERNAL)
@@ -2852,13 +2902,28 @@ nativeCanonicalInitializerDigest(const NativeCanonicalSource& source,
     checkActive(control);
     return {};
   }
-  return digestInitializerRange(source, 0, nativeCanonicalInitializerByteSize(source), control);
+  checkActive(control);
+  const auto bytes = nativeCanonicalInitializerByteSize(source);
+  if (control.maxSourceBytes == 0 || bytes > control.maxSourceBytes)
+    fail("INITIALIZER_RANGE");
+  // Generic and dual representations still receive complete byte verification.
+  const auto file = source.initializerBytes ? nullptr :
+    std::dynamic_pointer_cast<const InitializerFileRangeSource>(source.initializerRangeSource);
+  if (file) {
+    if (const auto digest = file->snapshotDigest()) {
+      checkActive(control);
+      return *digest;
+    }
+  }
+  const auto digest = digestInitializerRange(source, 0, bytes, control);
+  if (file) file->rememberSnapshotDigest(digest);
+  return digest;
 }
 
-std::shared_ptr<const NativeCanonicalByteRangeSource>
-openNativeCanonicalInitializerFile(const std::string& path, std::uint64_t bytes,
-                                   const std::string& expectedDigest,
-                                   const NativeAssemblyControl& control)
+static std::shared_ptr<const NativeCanonicalByteRangeSource>
+openInitializerFile(const std::string& path, std::uint64_t bytes,
+                    const std::string& expectedDigest, const NativeAssemblyControl& control,
+                    bool consumeTemporary)
 {
   checkActive(control);
   if (bytes == 0 || control.maxSourceBytes == 0 || bytes > control.maxSourceBytes ||
@@ -2867,12 +2932,28 @@ openNativeCanonicalInitializerFile(const std::string& path, std::uint64_t bytes,
         return std::string_view("0123456789abcdef").find(value) != std::string_view::npos;
       }))
     fail("INITIALIZER_FILE");
-  auto owner = std::make_shared<const InitializerFileRangeSource>(path, bytes);
+  auto owner = std::make_shared<InitializerFileRangeSource>(path, bytes);
+  if (consumeTemporary) owner->consumeTemporaryPath(path);
   NativeCanonicalSource source;
   source.initializerRangeSource = owner;
   if (nativeCanonicalInitializerDigest(source, control) != expectedDigest)
     fail("INITIALIZER_DIGEST");
   return owner;
+}
+
+std::shared_ptr<const NativeCanonicalByteRangeSource>
+openNativeCanonicalInitializerFile(const std::string& path, std::uint64_t bytes,
+                                   const std::string& expectedDigest,
+                                   const NativeAssemblyControl& control)
+{
+  return openInitializerFile(path, bytes, expectedDigest, control, false);
+}
+
+std::shared_ptr<const NativeCanonicalByteRangeSource>
+takeNativeCanonicalInitializerFile(const std::string& path, std::uint64_t bytes,
+  const std::string& expectedDigest, const NativeAssemblyControl& control)
+{
+  return openInitializerFile(path, bytes, expectedDigest, control, true);
 }
 
 std::shared_ptr<const NativeCanonicalSource::MaterialManifest>
@@ -3763,6 +3844,19 @@ inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
   materializeShapeInferenceInitializers(
     inferred, original, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr, control,
     &materializedBudget, &source);
+  // TensorProto owns initializer types and dimensions. Redundant value_info
+  // can contain stale exporter annotations that abort official inference.
+  // Normalize only this inspection copy; preserve all input/output contracts.
+  std::set<std::string> inferenceInitializerNames;
+  for (const auto& initializer : inferred.graph().initializer()) {
+    checkActive(control);
+    inferenceInitializerNames.insert(initializer.name());
+  }
+  auto* valueInfo = inferred.mutable_graph()->mutable_value_info();
+  valueInfo->erase(std::remove_if(valueInfo->begin(), valueInfo->end(), [&](const auto& value) {
+    checkActive(control);
+    return inferenceInitializerNames.count(value.name()) != 0;
+  }), valueInfo->end());
   try { inferNativeShapes(inferred); }
   catch (const std::exception&) {
     // Python infer_shapes returns a copy. A failed C++ inference may have

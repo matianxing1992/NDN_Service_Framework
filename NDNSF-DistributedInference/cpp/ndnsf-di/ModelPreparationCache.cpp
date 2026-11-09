@@ -5,6 +5,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-publication.hpp"
+
+#include "ndnsf-distributed-repo/ArtifactTypes.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -19,6 +22,8 @@ namespace ndnsf::di {
 NDN_LOG_INIT(ndnsf.di.Spec220PreparationTrace);
 
 namespace {
+
+constexpr std::size_t STORED_METADATA_ADMISSION_BYTES = 448u * 1024u * 1024u;
 
 bool digest(const std::string& value)
 {
@@ -70,6 +75,25 @@ void validateSpecIdentity(const PreparationSpec& spec)
     throw std::invalid_argument("preparation catalog is detached from requester configuration");
   if (nativePlanningDigest(spec.configurationJson) != spec.configurationDigest)
     throw std::invalid_argument("preparation configuration digest differs from pinned identity");
+  if (spec.sourceFreeStoredModel) {
+    // Request-time source preparation opens the same stored package; its frozen mode stays source.
+    const auto mode = runtime.value("model_input", NativeJson::object()).value(
+      "mode", std::string{"source"});
+    if (!spec.loadStoredModel || !spec.storedModelHandle || !spec.storedRepositoryTarget ||
+        !digest(spec.storedModelHandle->rootWireDigest) ||
+        (mode != "stored" && mode != "source") ||
+        spec.loadSource || spec.lookupPrepared || spec.preparePublication ||
+        spec.repositoryArtifactPublisher)
+      throw std::invalid_argument("stored preparation owner is incomplete or mixed with source loading");
+    spec.storedModelHandle->validate();
+    nativeValidateModelRepositoryTarget(*spec.storedRepositoryTarget,
+                                        spec.storedModelHandle->producer);
+    if (ndn::Name(spec.storedRepositoryTarget->repoNode) != spec.storedModelHandle->repository)
+      throw std::invalid_argument("stored preparation repository differs from pinned handle");
+  }
+  else if (spec.loadStoredModel || spec.storedModelHandle || spec.storedRepositoryTarget) {
+    throw std::invalid_argument("stored preparation capability is set outside stored mode");
+  }
   if (!runtime.contains("request") || !runtime.at("request").is_object())
     throw std::invalid_argument("preparation requester configuration is invalid");
   const auto& request = runtime.at("request");
@@ -141,7 +165,7 @@ std::string preparationIdentityDigest(const PreparationSpec& spec)
   }
   if (runtime.is_object())
     runtime["catalog"] = catalog;
-  const NativeJson identity{
+  NativeJson identity{
     {"schema", "ndnsf-di-preparation-identity-v1"},
     {"runtime", runtime},
     {"catalog", catalog},
@@ -150,6 +174,20 @@ std::string preparationIdentityDigest(const PreparationSpec& spec)
     {"input_layout_digest", spec.inputLayoutDigest},
     {"max_source_bytes", spec.maxSourceBytes},
     {"max_assembled_bytes", spec.maxAssembledBytes}};
+  if (spec.sourceFreeStoredModel) {
+    const auto& handle = *spec.storedModelHandle;
+    const auto& target = *spec.storedRepositoryTarget;
+    identity["stored_binding"] = NativeJson{
+      {"producer", handle.producer.toUri()},
+      {"repository", handle.repository.toUri()},
+      {"root_name", handle.rootName.toUri()},
+      {"root_wire_digest", handle.rootWireDigest},
+      {"capability_digest", nativePlanningDigest(std::string(
+        reinterpret_cast<const char*>(handle.masterKey.data()), handle.masterKey.size()))},
+      {"repo_node", ndn::Name(target.repoNode).toUri()},
+      {"provider_identity", ndn::Name(target.providerIdentity).toUri()},
+      {"service_prefix", ndn::Name(target.servicePrefix).toUri()}};
+  }
   return nativePlanningDigest(nativeCanonicalJson(identity));
 }
 
@@ -329,6 +367,64 @@ ModelPreparationCache::ModelPreparationCache(std::size_t maxBytes,
     throw std::invalid_argument("preparation cache limits must be positive");
 }
 
+ModelPreparationCache::MemoryReservation::MemoryReservation(
+  ModelPreparationCache* owner, std::size_t bytes) noexcept
+  : m_owner(owner), m_bytes(bytes)
+{}
+
+ModelPreparationCache::MemoryReservation::MemoryReservation(MemoryReservation&& other) noexcept
+  : m_owner(other.m_owner), m_bytes(other.m_bytes)
+{
+  other.m_owner = nullptr;
+  other.m_bytes = 0;
+}
+
+ModelPreparationCache::MemoryReservation&
+ModelPreparationCache::MemoryReservation::operator=(MemoryReservation&& other) noexcept
+{
+  if (this != &other) {
+    release();
+    m_owner = other.m_owner;
+    m_bytes = other.m_bytes;
+    other.m_owner = nullptr;
+    other.m_bytes = 0;
+  }
+  return *this;
+}
+
+ModelPreparationCache::MemoryReservation::~MemoryReservation() noexcept
+{
+  release();
+}
+
+std::size_t
+ModelPreparationCache::MemoryReservation::bytes() const noexcept
+{
+  return m_bytes;
+}
+
+void
+ModelPreparationCache::MemoryReservation::releaseLocked() noexcept
+{
+  if (!m_owner)
+    return;
+  if (m_owner->m_reservedBytes >= m_bytes)
+    m_owner->m_reservedBytes -= m_bytes;
+  else
+    m_owner->m_reservedBytes = 0;
+  m_owner = nullptr;
+  m_bytes = 0;
+}
+
+void
+ModelPreparationCache::MemoryReservation::release() noexcept
+{
+  if (!m_owner)
+    return;
+  std::lock_guard<std::mutex> lock(m_owner->m_mutex);
+  releaseLocked();
+}
+
 ModelPreparationCache::~ModelPreparationCache() noexcept
 {
   std::vector<WorkerRecord> workers;
@@ -370,6 +466,64 @@ std::shared_ptr<void> ModelPreparationCache::acquireLease(
     ++lease->holders;
   }
   return result;
+}
+
+ModelPreparationCache::MemoryReservation
+ModelPreparationCache::reserveMemory(const PreparationSpec& spec,
+                                    const std::string& protectedKey)
+{
+  std::size_t reservation = 0;
+  if (spec.maxSourceBytes > std::numeric_limits<std::size_t>::max() ||
+      spec.maxAssembledBytes > std::numeric_limits<std::size_t>::max())
+    throw std::runtime_error("DI_NATIVE_PREPARATION_SIZE_OVERFLOW");
+  if (spec.sourceFreeStoredModel) {
+    // Reserve twice the format's 212 MiB index/catalog/metadata wire ceiling,
+    // plus bounded container overhead. This is cache admission, not OS RAM.
+    addSize(reservation, STORED_METADATA_ADMISSION_BYTES);
+  }
+  else {
+    addSize(reservation, static_cast<std::size_t>(spec.maxSourceBytes));
+    // A separate initializer can be as large as the bounded model source.
+    addSize(reservation, static_cast<std::size_t>(spec.maxSourceBytes));
+    addSize(reservation, static_cast<std::size_t>(spec.maxAssembledBytes));
+  }
+  addSize(reservation, spec.configurationJson.size());
+  addSize(reservation, spec.catalogConfigurationJson.size());
+  addSize(reservation, 256u * 1024u);
+
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto retired = retiredBytes();
+  if (retired > m_maxBytes || reservation > m_maxBytes - retired ||
+      m_reservedBytes > m_maxBytes - retired - reservation)
+    throw std::runtime_error("DI_NATIVE_PREPARATION_CACHE_BUDGET_EXCEEDED");
+  const auto available = m_maxBytes - retired;
+  for (;;) {
+    const bool overBudget = m_chargedBytes > available ||
+      m_reservedBytes > available - m_chargedBytes ||
+      reservation > available - m_chargedBytes - m_reservedBytes;
+    if (!overBudget)
+      break;
+    auto victim = m_entries.end();
+    for (auto candidate = m_entries.begin(); candidate != m_entries.end(); ++candidate) {
+      if (!protectedKey.empty() && candidate->first == protectedKey)
+        continue;
+      bool pinned = false;
+      if (candidate->second.lease) {
+        std::lock_guard<std::mutex> leaseLock(candidate->second.lease->book->mutex);
+        pinned = candidate->second.lease->holders != 0;
+      }
+      if (!pinned && (victim == m_entries.end() ||
+                      candidate->second.lastUse < victim->second.lastUse))
+        victim = candidate;
+    }
+    if (victim == m_entries.end() ||
+        m_chargedBytes < victim->second.package->retainedBytes)
+      throw std::runtime_error("DI_NATIVE_PREPARATION_CACHE_BUDGET_EXCEEDED");
+    m_chargedBytes -= victim->second.package->retainedBytes;
+    m_entries.erase(victim);
+  }
+  m_reservedBytes += reservation;
+  return MemoryReservation(this, reservation);
 }
 
 void ModelPreparationCache::retireLease(const std::shared_ptr<LeaseRecord>& lease)
@@ -417,7 +571,7 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   validateSpecIdentity(spec);
 
   auto& memory = *memorySnapshot;
-  memory.ortPreparationBudgetBytes = spec.maxAssembledBytes;
+  memory.ortPreparationBudgetBytes = spec.sourceFreeStoredModel ? 0 : spec.maxAssembledBytes;
   const auto updatePeak = [&] {
     std::size_t total = 0;
     const auto addSaturating = [&] (std::size_t value) {
@@ -435,7 +589,15 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   const auto& request = runtime.at("request");
 
   std::optional<NativePreparedCanonicalPublication> preparedPublication;
-  if (spec.lookupPrepared) {
+  std::optional<NativeStoredPreparedModel> storedModel;
+  if (spec.sourceFreeStoredModel) {
+    logSpec220PreparationStage("stored-open.begin");
+    storedModel = spec.loadStoredModel(spec, deadline);
+    storedModel->publication.validate();
+    preparedPublication = std::move(storedModel->publication);
+    logSpec220PreparationStage("stored-open.complete");
+  }
+  else if (spec.lookupPrepared) {
     logSpec220PreparationStage("prepared-lookup.begin");
     preparedPublication = spec.lookupPrepared(spec, deadline);
     if (preparedPublication)
@@ -449,8 +611,9 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     [deadline, cancelled = spec.cancelled] { requireActive(deadline, cancelled); },
     spec.maxSourceBytes,
     spec.maxAssembledBytes};
-  const bool completePreparedHit = preparedPublication && !publicationRepairRequired &&
-    !preparedPublication->preparedMetadataJson.empty();
+  const bool completePreparedHit = spec.sourceFreeStoredModel ||
+    (preparedPublication && !publicationRepairRequired &&
+     !preparedPublication->preparedMetadataJson.empty());
   NativeCanonicalSource source;
   NativeRequestCatalog catalog;
   if (completePreparedHit) {
@@ -458,10 +621,15 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     // root. Canonical model and initializer bytes are not reread.
     source.materialManifest = preparedPublication->materialManifest;
     source.preparedMetadataJson = preparedPublication->preparedMetadataJson;
-    logSpec220PreparationStage("catalog-load-reference-hit.begin");
-    catalog = NativeRequestCatalog::load(spec.catalogConfigurationJson,
-                                         std::move(source), control);
-    logSpec220PreparationStage("catalog-load-reference-hit.complete");
+    if (storedModel) {
+      catalog = std::move(storedModel->catalog);
+    }
+    else {
+      logSpec220PreparationStage("catalog-load-reference-hit.begin");
+      catalog = NativeRequestCatalog::load(spec.catalogConfigurationJson,
+                                           std::move(source), control);
+      logSpec220PreparationStage("catalog-load-reference-hit.complete");
+    }
     memory.sourceBytes = 0;
     memory.initializerBytes = 0;
     updatePeak();
@@ -509,7 +677,7 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   // not kept alive by a local shared_ptr while material bundles are published.
   {
     const auto preparedSource = catalog.preparation->sourceRefFor(descriptor);
-    if (preparedSource->materialManifest) {
+    if (preparedSource->materialManifest && !spec.sourceFreeStoredModel) {
       for (const auto& payload : preparedSource->materialManifest->payloads)
         addSize(memory.materialBytes, payload.byteSize());
     }
@@ -633,8 +801,10 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   // fit before invoking the publisher, so a budget failure cannot leave
   // source/root objects orphaned after an otherwise successful commit.
   auto projectedRetained = retained;
-  addSize(projectedRetained, static_cast<std::size_t>(spec.maxSourceBytes));
-  addSize(projectedRetained, static_cast<std::size_t>(spec.maxAssembledBytes));
+  if (!spec.sourceFreeStoredModel) {
+    addSize(projectedRetained, static_cast<std::size_t>(spec.maxSourceBytes));
+    addSize(projectedRetained, static_cast<std::size_t>(spec.maxAssembledBytes));
+  }
   addSize(projectedRetained, spec.configurationJson.size());
   addSize(projectedRetained, spec.catalogConfigurationJson.size());
   addSize(projectedRetained, std::size_t{256} * 1024);
@@ -674,12 +844,44 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     memory.encryptedPublicationBytes = preparedPublication->publishedBytes;
     memory.storeCount = 1;
     updatePeak();
+    if (spec.rememberPrepared) {
+      spec.rememberPrepared(spec, *preparedPublication, deadline);
+      publicationControl.requireActive();
+    }
   }
-  addSize(retained, static_cast<std::size_t>(spec.maxSourceBytes));
-  addSize(retained, static_cast<std::size_t>(spec.maxAssembledBytes));
+  if (!spec.sourceFreeStoredModel) {
+    addSize(retained, static_cast<std::size_t>(spec.maxSourceBytes));
+    addSize(retained, static_cast<std::size_t>(spec.maxAssembledBytes));
+  }
   addSize(retained, spec.configurationJson.size());
   addSize(retained, spec.catalogConfigurationJson.size());
   addSize(retained, std::size_t{256} * 1024);
+  std::shared_ptr<const NativeStoredModelBinding> storedBinding;
+  if (storedModel) {
+    auto binding = std::make_shared<NativeStoredModelBinding>(
+      *spec.storedModelHandle, std::move(storedModel->objects), spec.storedRepositoryTarget);
+    addSize(retained, sizeof(NativeStoredModelBinding));
+    addSize(retained, sizeof(ndnsf_distributed_repo::RepoArtifactTarget));
+    addSize(retained, binding->repositoryTarget->repoNode.size());
+    addSize(retained, binding->repositoryTarget->providerIdentity.size());
+    addSize(retained, binding->repositoryTarget->servicePrefix.size());
+    addSize(retained, binding->handle.producer.wireEncode().size());
+    addSize(retained, binding->handle.repository.wireEncode().size());
+    addSize(retained, binding->handle.rootName.wireEncode().size());
+    addSize(retained, binding->handle.rootWireDigest.size());
+    addSize(retained, binding->handle.masterKey.size());
+    addSize(retained, binding->objects.modelDigest().size());
+    addSize(retained, binding->objects.catalogId().size());
+    addSize(retained, binding->objects.manifestId().size());
+    for (const auto& item : binding->objects.objects()) {
+      addSize(retained, sizeof(NativeStoredModelIndexedObject));
+      addSize(retained, item.first.size());
+      addSize(retained, item.second.object.name.wireEncode().size());
+      addSize(retained, item.second.object.plaintextDigest.size());
+      addSize(retained, item.second.object.ciphertextDigest.size());
+    }
+    storedBinding = std::move(binding);
+  }
   if (retained > m_maxBytes)
     throw std::runtime_error("DI_NATIVE_PREPARATION_CACHE_BUDGET_EXCEEDED");
   auto registration = std::make_shared<const FrozenPreparationRegistration>(
@@ -695,7 +897,7 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
                          std::move(capabilities), keyDigest, retained,
                          std::make_shared<NativePreSplitFirstPlacement>(),
                          spec.runtimeBinding, std::move(modelReference),
-                         preparedPublication});
+                         preparedPublication, std::move(storedBinding)});
   logSpec220PreparationStage("package-construction.complete");
   // Catalog construction and prepare-time publication may transiently need
   // the canonical bytes. The published package carries only identity,
@@ -756,59 +958,10 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
   // before invoking the cancellation probe, whose implementation may take
   // that same mutex (the Runtime User path does exactly this).
   requireActive(deadline, spec.cancelled);
-  std::size_t reservation = 0;
-  if (spec.maxSourceBytes > std::numeric_limits<std::size_t>::max() ||
-      spec.maxAssembledBytes > std::numeric_limits<std::size_t>::max())
-    throw std::runtime_error("DI_NATIVE_PREPARATION_SIZE_OVERFLOW");
-  addSize(reservation, static_cast<std::size_t>(spec.maxSourceBytes));
-  // The source contract permits a separate initializer file of the same
-  // bounded size; reserve both inputs before staging the assembled package.
-  addSize(reservation, static_cast<std::size_t>(spec.maxSourceBytes));
-  addSize(reservation, static_cast<std::size_t>(spec.maxAssembledBytes));
-  addSize(reservation, spec.configurationJson.size());
-  addSize(reservation, spec.catalogConfigurationJson.size());
-  // Parser and container allocations are not represented by serialized input
-  // sizes.  Keep a conservative scratch allowance in the admission charge.
-  addSize(reservation, 256u * 1024u);
-  bool reservationHeld = false;
+  auto admission = reserveMemory(spec, key);
+  const auto reservation = admission.bytes();
   {
     std::lock_guard<std::mutex> lock(m_mutex);
-    const auto retired = retiredBytes();
-    if (retired > m_maxBytes || reservation > m_maxBytes - retired ||
-        m_reservedBytes > m_maxBytes - retired - reservation)
-      throw std::runtime_error("DI_NATIVE_PREPARATION_CACHE_BUDGET_EXCEEDED");
-    const auto available = m_maxBytes - retired;
-    // Evict candidates while holding the reservation mutex.  A separate
-    // evictable-byte estimate is racy because another builder can pin an
-    // entry before this reservation is recorded.
-    for (;;) {
-      const bool overBudget = m_chargedBytes > available ||
-        m_reservedBytes > available - m_chargedBytes ||
-        reservation > available - m_chargedBytes - m_reservedBytes;
-      if (!overBudget)
-        break;
-      auto victim = m_entries.end();
-      for (auto candidate = m_entries.begin(); candidate != m_entries.end(); ++candidate) {
-        // A refresh retains the old package until its replacement commits.
-        if (candidate->first == key)
-          continue;
-        bool pinned = false;
-        if (candidate->second.lease) {
-          std::lock_guard<std::mutex> leaseLock(candidate->second.lease->book->mutex);
-          pinned = candidate->second.lease->holders != 0;
-        }
-        if (!pinned && (victim == m_entries.end() ||
-                        candidate->second.lastUse < victim->second.lastUse))
-          victim = candidate;
-      }
-      if (victim == m_entries.end() ||
-          m_chargedBytes < victim->second.package->retainedBytes)
-        throw std::runtime_error("DI_NATIVE_PREPARATION_CACHE_BUDGET_EXCEEDED");
-      m_chargedBytes -= victim->second.package->retainedBytes;
-      m_entries.erase(victim);
-    }
-    m_reservedBytes += reservation;
-    reservationHeld = true;
     ++m_parseCount;
   }
   logSpec220PreparationStage("prepare-single.reserved");
@@ -865,8 +1018,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
         found->second.generation > spec.jobGeneration) {
       found->second.lastUse = m_nextUse++;
       auto lease = found->second.lease;
-      m_reservedBytes -= reservation;
-      reservationHeld = false;
+      admission.releaseLocked();
       auto result = PreparedModel(found->second.package,
         PreparationReceipt{PreparationReceipt::Origin::CacheHit,
           found->second.package->preparationKeyDigest,
@@ -880,8 +1032,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
       const auto jobs = m_jobs.find(key);
       if (jobs != m_jobs.end() && jobs->second.refresh &&
           jobs->second.refresh->generation > spec.jobGeneration) {
-        m_reservedBytes -= reservation;
-        reservationHeld = false;
+        admission.releaseLocked();
         // This package is the valid result of the caller's own preparation.
         // A newer refresh may supersede the cache entry, but returning this
         // package after rolling back its publication would leave its receipt
@@ -966,8 +1117,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
     if (m_nextGeneration <= generation)
       m_nextGeneration = generation + 1;
     m_chargedBytes = newCharged;
-    m_reservedBytes -= reservation;
-    reservationHeld = false;
+    admission.releaseLocked();
     // The package is now owned by the cache.  Any later allocation failure
     // while constructing the return receipt must not roll back its durable
     // publication and leave the cached package unusable.
@@ -983,11 +1133,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
   }
   catch (...) {
     rollbackPackagePublication();
-    if (reservationHeld) {
-      std::lock_guard<std::mutex> lock(m_mutex);
-      m_reservedBytes -= reservation;
-      reservationHeld = false;
-    }
+    admission.release();
     throw;
   }
 }

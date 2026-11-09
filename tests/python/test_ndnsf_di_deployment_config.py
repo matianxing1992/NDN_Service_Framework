@@ -2,6 +2,7 @@
 
 import copy
 import contextlib
+import io
 import hashlib
 import importlib
 import importlib.util
@@ -24,6 +25,61 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize('timeout', [21600, 86400])
+def test_slurm_up_preserves_long_finite_deadline(ops, tmp_path, monkeypatch, timeout):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    slurm = importlib.import_module('_spec217_ops.slurm')
+    path = tmp_path / 'deployment.json'
+    monkeypatch.setattr(cluster, '_locator', lambda _: (path, tmp_path / 'state'))
+    monkeypatch.setattr(cluster, 'load_deployment', lambda _: {
+        'platform': {'kind': 'slurm-apptainer'}})
+    received = []
+    monkeypatch.setattr(slurm, 'up', lambda *args: received.append(args[3]) or 'dispatched')
+    assert cluster.run_cluster('up', path, timeout=timeout) == 'dispatched'
+    assert received == [timeout]
+
+
+@pytest.mark.parametrize('platform', ['host', 'minindn'])
+def test_long_deadline_rejects_local_launch_before_side_effects(ops, tmp_path, monkeypatch,
+                                                             platform):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    monkeypatch.setattr(cluster, 'load_deployment', lambda _: {'platform': {'kind': platform}})
+    root = tmp_path / 'must-not-create'
+    with pytest.raises(cluster.ClusterError, match='requires slurm-apptainer'):
+        cluster._up(tmp_path / 'deployment.json', root, 21600)
+    assert not root.exists()
+
+
+@pytest.mark.parametrize('action,timeout', [('up', value) for value in
+    (True, 0, -1, float('nan'), float('inf'), 86401)] +
+    [('status', 3601), ('down', 3601)])
+def test_cluster_deadline_rejects_invalid_before_configuration(ops, tmp_path, action, timeout):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    with pytest.raises(cluster.ClusterError, match='timeout must be'):
+        cluster.run_cluster(action, tmp_path / 'absent.json', timeout=timeout)
+
+
+def test_allocation_long_deadline_reaches_bound_configuration_check(ops, monkeypatch, tmp_path):
+    allocation = importlib.import_module('_spec217_ops.allocation')
+    monkeypatch.setenv('SLURM_JOB_ID', '123')
+    monkeypatch.setenv('SLURM_JOB_NODELIST', 'fixture-node')
+    received = []
+    monkeypatch.setattr(allocation, 'load_frozen', lambda *args: {})
+    def run(args, config):
+        received.append(args.timeout)
+        return dict(status='STOPPED', execution='COMPLETE', failure=None)
+    monkeypatch.setattr(allocation, 'run_allocation', run)
+    argv = ['--deployment', str(tmp_path / 'configuration.json'), '--boot-id', 'boot',
+            '--configuration-sha256', 'a' * 64, '--release-sha256', 'b' * 64,
+            '--timeout', '21600']
+    assert allocation.main(argv) == 0
+    assert received == [21600]
+    with pytest.raises(SystemExit) as error:
+        allocation.main(argv[:-1] + ['86401'])
+    assert error.value.code == 2
+    assert received == [21600]
 
 
 def test_provider_close_honors_native_drain_budget_above_old_process_cap(ops, tmp_path):
@@ -389,6 +445,8 @@ def ops(tmp_path_factory):
                     ignore=shutil.ignore_patterns("build", "dist", "*.egg-info", "__pycache__"))
     package = source / "ndnsf_distributed_inference"
     package.mkdir(exist_ok=True)
+    shutil.copyfile(ROOT / "NDNSF-DistributedInference/ndnsf_di_launcher.py",
+                    source / 'ndnsf_di_launcher.py')
     shutil.copyfile(ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
                     package / "__init__.py")
     shutil.copytree(ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/ops", package / "ops",
@@ -448,6 +506,45 @@ def ops(tmp_path_factory):
             del sys.modules[name]
 
 
+def test_ops_wheel_console_entry_runs_outside_source_checkout(ops, tmp_path):
+    parser, _ = ops
+    installed = Path(parser.__file__)
+    fixture_environment = next(parent for parent in installed.parents
+                               if (parent/'pyvenv.cfg').is_file())
+    wheels = sorted((fixture_environment.parent/'wheels').glob('*.whl'))
+    wheel = next(path for path in wheels if path.name.startswith('ndnsf_di_ops-'))
+    with zipfile.ZipFile(wheel) as archive:
+        assert archive.read('ndnsf_di_launcher.py') == (
+            ROOT/'NDNSF-DistributedInference/ndnsf_di_launcher.py').read_bytes()
+    environment = tmp_path/'control'
+    venv.EnvBuilder(with_pip=False, system_site_packages=True).create(environment)
+    python = str(environment/'bin/python')
+    subprocess.run([python, '-m', 'pip', 'install', '--no-deps', '--force-reinstall',
+                    *map(str, wheels)], check=True, capture_output=True, text=True, timeout=60)
+    unrelated = tmp_path/'unrelated'
+    unrelated.mkdir()
+    result = subprocess.run([str(environment/'bin/ndnsf-di'), '--help'], cwd=unrelated,
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    assert 'cluster' in result.stdout
+
+
+def test_ops_packer_rejects_missing_declared_console_launcher(tmp_path):
+    source = tmp_path/'source/NDNSF-DistributedInference'
+    profile = source/'packaging/python/ops'
+    shutil.copytree(ROOT/'NDNSF-DistributedInference/packaging/python/ops', profile,
+                    ignore=shutil.ignore_patterns('build', 'dist', '*.egg-info', '__pycache__'))
+    package = source/'ndnsf_distributed_inference/ops'
+    package.mkdir(parents=True)
+    (package/'__init__.py').write_text('')
+    result = subprocess.run([sys.executable, '-m', 'pip', 'wheel', '--no-deps',
+        '--no-build-isolation', str(profile), '-w', str(tmp_path/'wheels')],
+        capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0
+    assert 'OPS_CONSOLE_LAUNCHER_MISSING' in result.stdout + result.stderr
+    assert not list((tmp_path/'wheels').glob('ndnsf_di_ops-*.whl'))
+
+
 @pytest.fixture
 def deployment(tmp_path):
     for name in ("trust.conf", "controller.cert", "policy.json", "plan.json", "manifest.json",
@@ -470,7 +567,8 @@ def deployment(tmp_path):
     (tmp_path / "installed.json").write_text(json.dumps(ledger))
     actors = []
     for actor_id, kind in (("controller", "controller"), ("authority", "artifact-authority"),
-                           ("requester", "requester"), ("p0", "provider"), ("p1", "provider")):
+                           ("requester", "requester"), ("repo", "repo"),
+                           ("p0", "provider"), ("p1", "provider")):
         home = tmp_path / "credentials" / actor_id
         home.mkdir(parents=True)
         actors.append({"id": actor_id, "kind": kind, "identity": "/test/" + actor_id,
@@ -483,13 +581,21 @@ def deployment(tmp_path):
         "nodes": [{"id": "local", "host": "local", "cpus": 8, "gpu_devices": [],
                    "nfd": {"mode": "managed", "socket": "nfd.sock", "address": "127.0.0.1", "port": 6363}}],
         "actors": actors,
-        "network": {"group": "/test/group", "service": "/test/inference", "artifact_service": "/test/grant"},
+        "network": {"group": "/test/group", "service": "/test/inference",
+                    "artifact_service": "/test/grant", "repo_service": "/test/repo-service"},
         "security": {"trust_schema": "trust.conf", "controller_certificate": "controller.cert",
                      "controller_policy": "policy.json"},
         "storage": {**{key: key for key in ("state_root", "evidence_root", "scratch_root", "cache_root", "repo_root")},
                     "max_bytes": 1024 * 1024},
         "model": {"plan": "plan.json", "manifest": "manifest.json", "tokenizer": "tokenizer.json"},
-        "requester": {"grant": {"requester_private_key_file": "key.pem", "authority_public_key_file": "key.pem",
+        "requester": {"model_input": {
+                          "mode": "source",
+                          "repo_target": {"repo_node": "/test/repo-node",
+                                          "provider_identity": "/test/repo",
+                                          "service_prefix": "/test/repo-service"},
+                          "preparation_state_file": "private-model/preparation.json",
+                          "private_handle_file": "private-model/handle.json"},
+                      "grant": {"requester_private_key_file": "key.pem", "authority_public_key_file": "key.pem",
                                   "protection_epoch": "epoch-1"},
                       "catalog": {"source": {"file": "plan.json"}},
                       "turns": [{"input_file": "input.bin", "options_file": "options.json",
@@ -507,6 +613,373 @@ def write_config(root, config):
     path = root / "deployment.json"
     path.write_text(json.dumps(config))
     return path
+
+
+@pytest.mark.parametrize('canonical', [False, True])
+@pytest.mark.parametrize('external', [False, True])
+def test_model_repository_binds_declared_independent_repo(ops, deployment, canonical, external):
+    parser, _ = ops
+    root, config = deployment
+    actor = {'id': 'model-repo', 'kind': 'repo',
+             'identity': '/test/model-repo', 'external': external}
+    if not external:
+        (root / 'credentials/model-repo').mkdir()
+        actor.update(node='local', credential_home='credentials/model-repo', resources={'cpus': 1})
+    config['actors'] = [item for item in config['actors'] if item['kind'] != 'repo'] + [actor]
+    config['network']['repo_service'] = '/test/repo-service'
+    target = dict(repo_node='/logical/repo' if external else actor['identity'],
+                  provider_identity='/test/model-repo',
+                  service_prefix='/test/repo-service')
+    if canonical:
+        target = {k: '/8=' + v[1:].replace('/', '/8=') for k, v in target.items()}
+    config['requester']['model_input']['repo_target'] = target
+    result = parser.load_deployment(write_config(root, config))
+    assert result['requester']['model_input']['repo_target']['service_prefix'] == '/test/repo-service'
+
+
+@pytest.mark.parametrize('case', ['undeclared', 'service', 'unknown_field'])
+def test_model_repository_rejects_unbound_target(ops, deployment, case):
+    parser, _ = ops
+    root, config = deployment
+    config['actors'] = [item for item in config['actors'] if item['kind'] != 'repo'] + [
+        {'id': 'model-repo', 'kind': 'repo', 'identity': '/test/model-repo', 'external': True}]
+    config['network']['repo_service'] = '/test/repo-service'
+    target = dict(repo_node='/logical/repo', provider_identity='/test/model-repo',
+                  service_prefix='/test/repo-service')
+    if case == 'undeclared':
+        target['provider_identity'] = '/test/missing'
+    elif case == 'service':
+        target['service_prefix'] = '/test/wrong-service'
+    else:
+        target['fallback'] = True
+    config['requester']['model_input']['repo_target'] = target
+    with pytest.raises(ValueError):
+        parser.load_deployment(write_config(root, config))
+
+
+def test_authority_requester_registry_retains_independent_consumer_keys(ops, deployment):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = deployment
+    authority = config['artifact_authority']['authority']
+    authority.pop('requester_public_key_file')
+    requester = next(a['identity'] for a in config['actors'] if a['kind'] == 'requester')
+    authority['requester_public_key_files'] = {requester: 'key.pem', '/future/user': 'key.pem'}
+    result = module.load_deployment(write_config(root, config))
+    actual = result['artifact_authority']['authority']
+    assert actual['requester_public_key_files'] == {
+        requester: str(root / 'key.pem'), '/future/user': str(root / 'key.pem')}
+    assert 'requester_identity' not in actual
+    assert 'requester_public_key_file' not in actual
+
+
+@pytest.mark.parametrize('case, expected', [
+    ('mixed', 'conflicts with legacy'),
+    ('missing-current', 'current requester is not authorized'),
+    ('empty', 'expected 1 to 4096'),
+    ('missing-key', 'unavailable'),
+    ('duplicate-name', 'duplicate canonical requester'),
+])
+def test_authority_requester_registry_rejects_invalid_policy(ops, deployment, case, expected):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = deployment
+    authority = config['artifact_authority']['authority']
+    old = authority.pop('requester_public_key_file')
+    requester = next(a['identity'] for a in config['actors'] if a['kind'] == 'requester')
+    authority['requester_public_key_files'] = {requester: old}
+    if case == 'mixed':
+        authority['requester_public_key_file'] = old
+    elif case == 'missing-current':
+        authority['requester_public_key_files'] = {'/other': old}
+    elif case == 'empty':
+        authority['requester_public_key_files'] = {}
+    elif case == 'missing-key':
+        authority['requester_public_key_files'][requester] = 'absent.pem'
+    elif case == 'duplicate-name':
+        alias = '/' + '/'.join('8=' + component for component in requester.split('/') if component)
+        assert alias != requester
+        authority['requester_public_key_files'][alias] = old
+    with pytest.raises(module.DeploymentConfigError, match=expected):
+        module.load_deployment(write_config(root, config))
+
+
+def test_prepare_projection_is_frozen_without_provider_or_gpu_roles(ops, deployment):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    allocation = importlib.import_module('_spec217_ops.allocation')
+    root, config = deployment
+    config['requester']['request'] = {'provider_names': ['/test/p0', '/test/p1']}
+    config['requester']['fixed_placement'] = {'role_providers': {'stage0': '/test/p0'}}
+    original = module.load_deployment(write_config(root, config))
+    before = copy.deepcopy(original)
+    projected = module.preparation_deployment(original)
+    assert original == before
+    assert projected['operation'] == 'prepare'
+    assert not any(actor['kind'] == 'provider' for actor in projected['actors'])
+    assert not any(node['gpu_devices'] for node in projected['nodes'])
+    assert 'provider_names' not in projected['requester']['request']
+    assert 'fixed_placement' not in projected['requester']
+    assert projected['model'] == original['model']
+    assert projected['storage'] == original['storage']
+    frozen = module.load_deployment(write_config(root, projected))
+    assert not any(role['kind'] == 'provider' for role in allocation._roles(frozen))
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    requester = next(actor for actor in frozen['actors'] if actor['kind'] == 'requester')
+    directory = root / 'rendered'
+    directory.mkdir()
+    argv, env = cluster._native_launch(frozen, requester, directory,
+        dict(boot_id='a' * 32, configuration_sha256='b' * 64))
+    assert argv[-1] == '--prepare-only'
+    assert Path(argv[0]).name == 'DI_NativeRequester'
+    assert env['CUDA_VISIBLE_DEVICES'] == ''
+    assert not (root / 'evidence_root').exists()
+    frozen.pop('operation')
+    with pytest.raises(module.DeploymentConfigError, match='requires providers'):
+        module.load_deployment(write_config(root, frozen))
+
+
+def test_source_preparation_preserves_native_recovery_inputs(ops, deployment):
+    parser, _ = ops
+    root, config = deployment
+    config['requester']['catalog']['source'] = {
+        'file': 'absent-model.onnx', 'initializer_file': 'absent-model.data'}
+    result = parser.load_deployment(write_config(root, config))
+    model_input = result['requester']['model_input']
+    assert model_input['mode'] == 'source'
+    assert model_input['repo_target']['repo_node'] == '/test/repo-node'
+    assert model_input['private_handle_file'] == str(root / 'private-model/handle.json')
+    assert model_input['preparation_state_file'] == str(root / 'private-model/preparation.json')
+    # Only native recovery can decide whether this source factory must run.
+    assert result['requester']['catalog']['source']['file'] == str(root / 'absent-model.onnx')
+    assert not (root / 'private-model').exists()
+
+
+@pytest.mark.parametrize('field', ['repo_target', 'preparation_state_file', 'private_handle_file'])
+def test_source_preparation_rejects_missing_native_publication_fields(ops, deployment, field):
+    parser, _ = ops
+    root, config = deployment
+    config['requester']['model_input'].pop(field)
+    with pytest.raises(ValueError):
+        parser.load_deployment(write_config(root, config))
+    assert not (root / 'private-model').exists()
+
+
+def _stored_deployment(deployment, *, prepare):
+    root, original = deployment
+    config = copy.deepcopy(original)
+    repo = next(actor for actor in config['actors'] if actor['kind'] == 'repo')
+    repo['identity'] = '/test/repo-provider'
+    config['network']['repo_service'] = '/test/repo-service'
+    model_input = dict(mode='publish-stored' if prepare else 'stored',
+        repo_target=dict(repo_node='/test/repo-node', provider_identity='/test/repo-provider',
+                         service_prefix='/test/repo-service'),
+        private_handle_file='private-model/handle.json')
+    config['requester']['model_input'] = model_input
+    if prepare:
+        config['operation'] = 'prepare'
+        config['actors'] = [a for a in config['actors']
+                            if a['kind'] not in ('provider', 'artifact-authority')]
+        config['artifact_authority'] = {}
+        config['model'] = {}
+        config['requester'].pop('grant')
+        config['requester'].pop('turns')
+        model_input['preparation_state_file'] = 'private-model/preparation.json'
+    else:
+        config['requester']['catalog']['source'].pop('file')
+        parent = root / 'private-model'
+        parent.mkdir(mode=0o700)
+        (parent / 'handle.json').write_text('private handle fixture; native parser not exercised')
+        (parent / 'handle.json').chmod(0o600)
+    return root, config
+
+
+def test_direct_stored_preparation_needs_no_inference_credentials_or_turns(ops, deployment):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    root, config = _stored_deployment(deployment, prepare=True)
+    frozen = module.load_deployment(write_config(root, config))
+    assert frozen['model'] == {} and frozen['artifact_authority'] == {}
+    assert 'grant' not in frozen['requester'] and 'turns' not in frozen['requester']
+    assert not (root / 'private-model').exists()
+    directory = root / 'rendered'
+    directory.mkdir()
+    state = dict(boot_id='a' * 32, configuration_sha256='b' * 64)
+    requester = next(a for a in frozen['actors'] if a['kind'] == 'requester')
+    argv, _ = cluster._native_launch(frozen, requester, directory, state)
+    assert argv[-1] == '--prepare-only'
+    assert (root / 'private-model').stat().st_mode & 0o777 == 0o700
+    repo = next(a for a in frozen['actors'] if a['kind'] == 'repo')
+    argv, _ = cluster._native_launch(frozen, repo, directory, state)
+    assert argv[argv.index('--repo-node') + 1] == '/test/repo-node'
+    assert argv[argv.index('--provider-identity') + 1] == '/test/repo-provider'
+    assert not (root / 'evidence_root').exists()
+
+
+@pytest.mark.parametrize('timeout', [None, 30000, 2147483647])
+def test_repo_operation_budget_reaches_native_launch(ops, deployment, timeout):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    root, config = _stored_deployment(deployment, prepare=True)
+    repo = next(actor for actor in config['actors'] if actor['kind'] == 'repo')
+    if timeout is not None:
+        repo.setdefault('parameters', {})['request-timeout-ms'] = timeout
+    frozen = module.load_deployment(write_config(root, config))
+    actor = next(actor for actor in frozen['actors'] if actor['kind'] == 'repo')
+    state = dict(boot_id='a' * 32, configuration_sha256='b' * 64)
+    argv, _ = cluster._native_launch(frozen, actor, root, state)
+    if timeout is None:
+        assert '--request-timeout-ms' not in argv
+    else:
+        assert argv.count('--request-timeout-ms') == 1
+        assert argv[argv.index('--request-timeout-ms') + 1] == str(timeout)
+
+
+@pytest.mark.parametrize('parameters', [
+    {'request-timeout-ms': value} for value in (0, 250, -1, True, '30000', 2147483648)
+] + [{'request_timeout_ms': 30000}])
+def test_repo_operation_budget_rejects_invalid_before_launch(ops, deployment, parameters):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = _stored_deployment(deployment, prepare=True)
+    repo = next(actor for actor in config['actors'] if actor['kind'] == 'repo')
+    repo['parameters'] = parameters
+    with pytest.raises(ValueError, match='repo.parameters'):
+        module.load_deployment(write_config(root, config))
+    assert not (root / 'state_root').exists()
+    assert not (root / 'evidence_root').exists()
+
+
+@pytest.mark.parametrize('value', [1, 'true', None])
+def test_kv_state_probe_requires_boolean_before_launch(ops, deployment, value):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = deployment
+    config['actors'][-1].setdefault('parameters', {})['sample-kv-state-values'] = value
+    with pytest.raises(ValueError, match='sample-kv-state-values'):
+        module.load_deployment(write_config(root, config))
+    assert not (root / 'state_root').exists()
+
+
+def test_cli_prepare_intent_precedes_inference_validation(ops, deployment):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = _stored_deployment(deployment, prepare=True)
+    config.pop('operation')
+    config['requester']['turns'] = [{'input_file': 'absent-input', 'options_file': 'absent-options'}]
+    config['model'] = dict(plan='absent-plan', manifest='absent-manifest', tokenizer='absent-tokenizer')
+    path = write_config(root, config)
+    frozen = module.load_deployment(path, prepare_only=True)
+    assert frozen['operation'] == 'prepare' and frozen['model'] == {}
+    assert 'turns' not in frozen['requester']
+    assert config.get('operation') is None  # Input configuration is not mutated.
+
+
+def test_owned_repo_node_is_independent_of_external_requester(ops, deployment):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    root, config = _stored_deployment(deployment, prepare=False)
+    for actor in config['actors']:
+        if actor['kind'] not in ('controller', 'repo'):
+            for key in ('node', 'credential_home', 'resources', 'parameters'):
+                actor.pop(key, None)
+            actor['external'] = True
+    config['requester'] = {}
+    config['artifact_authority'] = {}
+    repo = next(actor for actor in config['actors'] if actor['kind'] == 'repo')
+    repo['parameters'] = {'repo-node': '/test/persistent-node', 'request-timeout-ms': 30000}
+    frozen = module.load_deployment(write_config(root, config))
+    actor = next(actor for actor in frozen['actors'] if actor['kind'] == 'repo')
+    state = dict(boot_id='a' * 32, configuration_sha256='b' * 64)
+    argv, _ = cluster._native_launch(frozen, actor, root, state)
+    assert argv[argv.index('--repo-node') + 1] == '/test/persistent-node'
+    assert argv[argv.index('--provider-identity') + 1] == '/test/repo-provider'
+    assert argv[argv.index('--request-timeout-ms') + 1] == '30000'
+
+
+@pytest.mark.parametrize('node', ['/test/repo-node', '/different', '/', 4])
+def test_owned_repo_node_must_match_requester_target(ops, deployment, node):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = _stored_deployment(deployment, prepare=True)
+    repo = next(actor for actor in config['actors'] if actor['kind'] == 'repo')
+    repo['parameters'] = {'repo-node': node}
+    if node == '/test/repo-node':
+        module.load_deployment(write_config(root, config))
+    else:
+        with pytest.raises(ValueError, match='repo_node|repo-node'):
+            module.load_deployment(write_config(root, config))
+        assert not (root / 'state_root').exists()
+
+
+@pytest.mark.parametrize('kind', [[], {}, None, 0])
+def test_prepare_raw_actor_kind_uses_configuration_error(ops, deployment, kind):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = deployment
+    config['actors'][0]['kind'] = kind
+    with pytest.raises(module.DeploymentConfigError, match='actor.kind'):
+        module.load_deployment(write_config(root, config), prepare_only=True)
+    assert not (root / 'evidence_root').exists()
+
+
+def test_stored_consumer_handle_is_input_and_repo_identity_is_preserved(ops, deployment):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = _stored_deployment(deployment, prepare=False)
+    frozen = module.load_deployment(write_config(root, config))
+    value = frozen['requester']['model_input']
+    assert value['private_handle_file'] == str(root / 'private-model' / 'handle.json')
+    assert value['repo_target']['repo_node'] == '/test/repo-node'
+    assert 'file' not in frozen['requester']['catalog']['source']
+    (root / 'private-model' / 'handle.json').unlink()
+    with pytest.raises(module.DeploymentConfigError, match='required input is unavailable'):
+        module.load_deployment(write_config(root, config))
+
+
+@pytest.mark.parametrize('case,expected', [
+    ('run-publish', 'requires prepare'), ('prepare-stored', 'cannot prepare'),
+    ('mixed', 'cannot combine'), ('source-file', 'cannot read source'),
+    ('symlink', 'must not use symlinks'), ('foreign-repo', 'declared Repo provider')])
+def test_stored_modes_reject_inconsistent_projection(ops, deployment, case, expected):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = _stored_deployment(deployment, prepare=False)
+    if case == 'run-publish':
+        config['requester']['model_input']['mode'] = 'publish-stored'
+    elif case == 'prepare-stored':
+        config = module.preparation_deployment(config)
+    elif case == 'mixed':
+        config['requester']['encrypted_repository'] = {'path': 'alternate-store'}
+    elif case == 'source-file':
+        config['requester']['catalog']['source']['file'] = 'plan.json'
+    elif case == 'symlink':
+        path = root / 'private-model' / 'handle.json'
+        path.rename(path.with_suffix('.original'))
+        path.symlink_to(path.with_suffix('.original'))
+    elif case == 'foreign-repo':
+        config['requester']['model_input']['repo_target']['provider_identity'] = '/other/repo'
+    with pytest.raises(module.DeploymentConfigError, match=expected):
+        module.load_deployment(write_config(root, config))
+    assert not (root / 'evidence_root').exists()
+
+
+def test_prepare_projection_drops_scheduler_gpu_reservation(ops):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    config = {'actors': [], 'nodes': [{'gpu_devices': ['0', '1']}],
+              'platform': {'kind': 'slurm-apptainer', 'slurm': {'gpu': {'count': 2}}},
+              'requester': {}}
+    prepared = module.preparation_deployment(config)
+    assert prepared['platform']['slurm']['gpu']['count'] == 0
+    assert config['platform']['slurm']['gpu']['count'] == 2
+
+
+@pytest.mark.parametrize('status,failure,expected', [
+    ('STOPPED', 'PREPARATION_TIMEOUT', 1), ('STOPPED', None, 1),
+    ('COMPLETE', None, 1), ('PREPARED', None, 0), ('PREPARED', 'EDQUOT', 1)])
+def test_prepare_cli_failure_is_not_successful_cleanup(ops, deployment, monkeypatch,
+                                                       status, failure, expected):
+    cli = importlib.import_module('_spec217_ops.cli')
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    root, config = deployment
+    path = write_config(root, config)
+    received = []
+    def run(action, *args, **kwargs):
+        received.append(action)
+        return {'status': status, 'failure': failure}
+    monkeypatch.setattr(cluster, 'run_cluster', run)
+    assert cli.main(['cluster', 'prepare', '--config', str(path)]) == expected
+    assert received == ['prepare']
 
 
 def trust_resource_bytes(schema, extra=()):
@@ -1183,7 +1656,7 @@ def test_controller_readiness_precedes_dependent_launches(
     else:
         assert result['status'] == 'EXTERNAL_UNVERIFIED'
         assert spawned[0] == 'controller'
-        assert sorted(spawned[1:]) == ['artifact-authority', 'provider', 'provider']
+        assert sorted(spawned[1:]) == ['artifact-authority', 'provider', 'provider', 'repo']
     assert controller_polls == 2
 
 
@@ -1416,6 +1889,7 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     config['actors'][-1]['parameters'] = {'grant-authority-public-key': 'key.pem',
         'recipient-key-map': 'recipients.json', 'enable-admission-lease': False,
         'allow-selection-generation-options': True, 'repo-fetch-timeout-ms': 900000,
+        'sample-kv-state-values': True,
         'conversation-retention-ms': 3600000, 'assembly-timeout-ms': 900000,
         'artifact-cache-max-mib': 131072}
     path = write_config(base, config)
@@ -1430,9 +1904,13 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     monkeypatch.setenv('NDN_LOG', '*=TRACE')
     monkeypatch.setenv('NDNSF_DI_RUNTIME_TIMING', 'untrusted-shell-value')
     monkeypatch.setenv('NDNSF_PHASE_TIMING', 'untrusted-shell-value')
+    monkeypatch.setenv('NDNSF_CONTROL_TIMING', 'untrusted-shell-value')
+    monkeypatch.setenv('NDNSF_HYBRID_CRYPTO_TIMING', 'untrusted-shell-value')
+    monkeypatch.setenv('NDNSF_TIMELINE_TRACE_SAMPLE_RATE', 'untrusted-shell-value')
     argv, env = cluster._native_launch(native, native['actors'][-1], directory, state)
     assert argv[0] == str(base / 'release/bin/di-native-provider')
     assert '--allow-selection-generation-options' in argv
+    assert '--sample-kv-state-values' in argv
     assert argv[argv.index('--repo-fetch-timeout-ms') + 1] == '900000'
     assert argv[argv.index('--conversation-retention-ms') + 1] == '3600000'
     assert argv[argv.index('--assembly-timeout-ms') + 1] == '900000'
@@ -1442,9 +1920,11 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     assert '--grant-authority-public-key' not in argv
     assert 'PYTHONPATH' not in env and 'LD_LIBRARY_PATH' not in env
     assert env['NDN_LOG'] == ('*=DEBUG' if debug else (
-        '*=NONE:ndnsf.di.RuntimeEvidence=WARN:ndn_service_framework.TimelineTrace=WARN'
+        '*=NONE:ndnsf.di.RuntimeEvidence=WARN:ndn_service_framework.TimelineTrace=WARN:'
+        'ndn_service_framework.ServiceProvider=WARN'
         if timing else '*=NONE'))
-    for key in ('NDNSF_DI_RUNTIME_TIMING', 'NDNSF_PHASE_TIMING'):
+    for key in ('NDNSF_DI_RUNTIME_TIMING', 'NDNSF_PHASE_TIMING', 'NDNSF_CONTROL_TIMING',
+                'NDNSF_HYBRID_CRYPTO_TIMING', 'NDNSF_TIMELINE_TRACE_SAMPLE_RATE'):
         assert env.get(key) == ('1' if timing else None)
     assert env['HOME'] == str(base / 'credentials/p1')
     assert env['NDN_CLIENT_TPM'] == 'tpm-file:'
@@ -1793,11 +2273,11 @@ def test_optional_owned_and_external_repo(ops, deployment):
     parser, _ = ops
     root, config = deployment
     repo = {"id": "repo", "kind": "repo", "identity": "/test/repo", "external": True}
-    config["actors"].append(repo)
+    config["actors"] = [actor for actor in config['actors'] if actor['kind'] != 'repo'] + [repo]
     config["network"]["repo_service"] = "/test/repo-service"
     parsed = parser.load_deployment(write_config(root, config))
     assert parsed["actors"][-1]["external"] is True
-    (root / "credentials/repo").mkdir()
+    (root / "credentials/repo").mkdir(exist_ok=True)
     repo.update(external=False, node="local", credential_home="credentials/repo", resources={"cpus": 1})
     parser.load_deployment(write_config(root, config))
 
@@ -1874,6 +2354,9 @@ def _tiger_config(root, config):
     config["requester"]["grant"]["requester_private_key_file"] = "/remote/requester-private.pem"
     config["requester"]["grant"]["authority_public_key_file"] = "/remote/authority-public.pem"
     config["requester"]["catalog"]["source"]["file"] = "/remote/model.onnx"
+    for key in ('preparation_state_file', 'private_handle_file'):
+        config['requester']['model_input'][key] = '/remote/private-model/' + Path(
+            config['requester']['model_input'][key]).name
     for turn in config["requester"]["turns"]:
         for key in turn:
             turn[key] = "/remote/" + turn[key]
@@ -2164,7 +2647,7 @@ def test_native_large_data_directory_uses_owned_budgeted_disk(node_container, ac
         container.cluster._private_directory(home)
         repo.update(id=actor_id, kind='repo', identity='/test/repo',
                     credential_home=str(home), parameters={})
-        config['actors'].append(repo)
+        config['actors'] = [actor for actor in config['actors'] if actor['kind'] != 'repo'] + [repo]
         config['network']['repo_service'] = '/test/repo-service'
         # The extra real host child exceeds this fixture's six-CPU pool.
         for actor in config['actors']:
@@ -2175,14 +2658,22 @@ def test_native_large_data_directory_uses_owned_budgeted_disk(node_container, ac
     item = json.loads(capture.read_text())
     argv = item['argv']
     binds = [argv[index + 1] for index, word in enumerate(argv) if word == '--bind']
-    source = frozen.parent / 'actors' / actor_id / 'large-data'
+    evidence = frozen.parent / 'actors' / actor_id
+    source = (Path(config['storage']['scratch_root']) / 'large-data' /
+              hashlib.sha256(str(evidence).encode()).hexdigest())
+    assert frozen.parent not in source.parents
     assert str(source) + ':/tmp/ndnsf-large-data:rw' in binds
     assert not any(bind.endswith(':/tmp:rw') for bind in binds)
     assert source.stat().st_uid == os.getuid() and source.stat().st_mode & 0o7777 == 0o700
+    session = Path(argv[argv.index('--workdir') + 1])
+    assert session.parent == source.parent and session != source
+    assert session.stat().st_uid == os.getuid() and session.stat().st_mode & 0o7777 == 0o700
     assert 'NDNSF_REQUEST_LARGE_DATA_DIR=' not in item['envfile']
     before = container.cluster._check_budget(config)
     (source / 'publication.wire').write_bytes(b'x' * 1024)
     assert container.cluster._check_budget(config) == before + 1024
+    (session / 'libc-spool').write_bytes(b'y' * 2048)
+    assert container.cluster._check_budget(config) == before + 3072
 
 
 @pytest.mark.parametrize('bad', ['symlink', 'file', 'mode'])
@@ -2190,7 +2681,9 @@ def test_large_data_source_rejects_unsafe_directory_before_staging(node_containe
     config, container, frozen, capture, run = node_container
     evidence = frozen.parent / 'actors/requester'
     container.cluster._private_directory(evidence)
-    source = evidence / 'large-data'
+    source = (Path(config['storage']['scratch_root']) / 'large-data' /
+              hashlib.sha256(str(evidence).encode()).hexdigest())
+    container.cluster._private_directory(source.parent)
     if bad == 'symlink':
         source.symlink_to(frozen.parent.parent, target_is_directory=True)
     elif bad == 'file':
@@ -2241,7 +2734,96 @@ def test_journal_parent_checks_new_large_data_target_before_staging(node_contain
                            actor='requester', management=None, node=None)
     with pytest.raises(container.cluster.ClusterError, match='CONTAINER_JOURNAL_PARENT_CONFLICT'):
         container.execute(args)
-    assert created == [evidence / 'large-data']
+    assert created == [Path(config['storage']['scratch_root']) / 'large-data' /
+                       hashlib.sha256(str(evidence).encode()).hexdigest()]
+
+
+def test_provider_cache_default_uses_full_name_and_canonical_wire(ops, tmp_path):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root = tmp_path / 'cache'
+    first = module.provider_cache_path(root, '/site-a/provider')
+    assert first == module.provider_cache_path(root, '/8=site-a/8=provider')
+    assert first != module.provider_cache_path(root, '/site-b/provider')
+    assert Path(first).parent == root
+    assert not root.exists()
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_provider_cache_launch_and_mount_agree_after_actor_rename(node_container, explicit):
+    config, container, frozen, capture, run = node_container
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    actor = next(a for a in config['actors'] if a['kind'] == 'provider')
+    directory = frozen.parent / 'rendered'
+    directory.mkdir(mode=0o700)
+    state = dict(boot_id='a' * 32, configuration_sha256='b' * 64)
+    if explicit:
+        actor['parameters']['artifact-cache-dir'] = str(frozen.parent.parent / 'explicit-cache')
+    argv, _ = cluster._native_launch(config, actor, directory, state)
+    expected = argv[argv.index('--artifact-cache-dir') + 1]
+    old_actor_directory = Path(config['storage']['cache_root']) / actor['id']
+    actor['id'] = 'renamed-provider-process'
+    argv, _ = cluster._native_launch(config, actor, directory, state)
+    assert argv[argv.index('--artifact-cache-dir') + 1] == expected
+    container.cluster.write_json(frozen, config)
+    mounts = container.role_mounts(config, frozen, actor)[3]
+    assert mounts[Path(expected)] == 'rw'
+    assert old_actor_directory not in mounts
+    if explicit:
+        assert expected == actor['parameters']['artifact-cache-dir']
+
+
+@pytest.mark.parametrize('mode', ['source', 'publish-stored', 'stored'])
+def test_stored_model_private_paths_have_only_requester_mounts(node_container, mode):
+    config, container, frozen, capture, run = node_container
+    private = frozen.parent.parent / 'stored-private'
+    container.cluster._private_directory(private)
+    handle = private / 'handle.json'
+    handle.write_text('private model handle mount fixture')
+    handle.chmod(0o600)
+    model_input = dict(mode=mode, private_handle_file=str(handle))
+    if mode in ('source', 'publish-stored'):
+        model_input['preparation_state_file'] = str(private / 'preparation.json')
+    if mode == 'publish-stored':
+        config['operation'] = 'prepare'
+        for key in ('grant', 'turns', 'conversation', 'offer_admission'):
+            config['requester'].pop(key, None)
+    config['requester']['model_input'] = model_input
+    requester = next(a for a in config['actors'] if a['kind'] == 'requester')
+    container.cluster.write_json(frozen, config)
+    mounts = container.role_mounts(config, frozen, requester)[3]
+    if mode == 'stored':
+        assert mounts[handle] == 'ro'
+        assert private not in mounts
+    else:
+        assert mounts[private] == 'rw'
+    provider = next(a for a in config['actors'] if a['kind'] == 'provider')
+    provider_mounts = container.role_mounts(config, frozen, provider)[3]
+    assert not any(container._contains(path, handle) for path in provider_mounts)
+
+
+def test_source_ready_mounts_do_not_require_absent_native_source(node_container):
+    config, container, frozen, _, _ = node_container
+    source = config['requester']['catalog']['source']
+    absent = frozen.parent.parent / 'absent-source-model.onnx'
+    source['file'] = str(absent)
+    actor = next(a for a in config['actors'] if a['kind'] == 'requester')
+    container.cluster.write_json(frozen, config)
+    mounts = container.role_mounts(config, frozen, actor)[3]
+    assert absent not in mounts
+    assert not absent.exists()
+
+
+def test_authority_mounts_each_registered_requester_public_key(node_container):
+    config, container, frozen, capture, run = node_container
+    key = frozen.parent.parent / 'additional-requester-public.pem'
+    key.write_text('public key mount fixture')
+    authority = config['artifact_authority']['authority']
+    authority.pop('requester_public_key_file', None)
+    authority['requester_public_key_files'] = {'/test/requester': str(key)}
+    actor = next(a for a in config['actors'] if a['kind'] == 'artifact-authority')
+    container.cluster.write_json(frozen, config)
+    mounts = container.role_mounts(config, frozen, actor)[3]
+    assert mounts[key] == 'ro'
 
 
 def test_requester_journal_mount_preserves_state_and_hides_other_identities(node_container):
@@ -2322,17 +2904,19 @@ def test_requester_journal_parent_cannot_mask_image_runtime(node_container):
     assert not (evidence / 'journal-parent').exists()
 
 
-def test_requester_repo_mounts_keep_native_sidecar_inode_and_contents(node_container):
+@pytest.mark.parametrize('existing', [False, True])
+def test_requester_repo_mounts_keep_native_sidecar_inode_and_contents(node_container, existing):
     config, container, frozen, capture, run = node_container
     parent = Path(config['storage']['repo_root'])
     parent.mkdir(mode=0o700)
-    paths = [parent / 'canonical', parent / 'encrypted']
-    for key, path in zip(('repository', 'encrypted_repository'), paths):
+    paths = [parent / 'canonical']
+    for key, path in zip(('repository',), paths):
         config['requester'][key] = {'path': str(path), 'max_bytes': 1024}
     first = Path(str(paths[0]) + '.authority.lock')
-    first.write_bytes(b'previous native owner\n')
-    first.chmod(0o600)
-    identity = (first.stat().st_dev, first.stat().st_ino)
+    if existing:
+        first.write_bytes(b'previous native owner\n')
+        first.chmod(0o600)
+        identity = (first.stat().st_dev, first.stat().st_ino)
     result = run('--actor', 'requester')
     assert result.returncode == 0, result.stderr
     argv = json.loads(capture.read_text())['argv']
@@ -2344,9 +2928,11 @@ def test_requester_repo_mounts_keep_native_sidecar_inode_and_contents(node_conta
         assert str(lock) + ':' + str(lock) + ':rw' in binds
         assert lock.stat().st_mode & 0o777 == 0o600
         assert lock.stat().st_uid == os.getuid() and lock.stat().st_nlink == 1
-    assert first.read_bytes() == b'previous native owner\n'
-    assert (first.stat().st_dev, first.stat().st_ino) == identity
-    assert Path(str(paths[1]) + '.authority.lock').read_bytes() == b''
+    if existing:
+        assert first.read_bytes() == b'previous native owner\n'
+        assert (first.stat().st_dev, first.stat().st_ino) == identity
+    else:
+        assert first.read_bytes() == b''
 
 
 @pytest.mark.parametrize('bad', ['symlink', 'hardlink', 'directory', 'mode', 'owner'])
@@ -2618,20 +3204,23 @@ def test_normalized_wrapper_cannot_start_an_external_forwarder(node_container):
 
 
 @pytest.mark.parametrize('timing', (False, True))
-def test_wrapper_default_enters_image_installed_native_owner(node_container, timing):
-    config, _, _, capture, run = node_container
-    result = run('--actor', 'p0', *(['--timing'] if timing else []), workload=None)
-    assert result.returncode == 0, result.stderr
-    item = json.loads(capture.read_text())
-    argv = item['argv']
-    entry = str(Path(config['release']['prefix']) / 'bin/ndnsf-di')
-    assert entry in argv and argv[argv.index(entry) + 1] == '_node'
-    assert 'PATH=' not in item['envfile']
-    assert ('--timing' in argv) is timing
-    assert ('NDNSF_DI_RUNTIME_TIMING=1\n' in item['envfile']) is timing
-    assert ('NDNSF_PHASE_TIMING=1\n' in item['envfile']) is timing
-    ledger = config['release']['manifest']
-    assert ledger + ':' + ledger + ':ro' in argv
+def test_wrapper_default_keeps_role_owner_on_host(node_container, timing, monkeypatch):
+    config, container, frozen, capture, _ = node_container
+    owner = importlib.import_module('_spec217_ops.node')
+    calls = []
+    def run_role(args):
+        calls.append(args)
+        return dict(status='STOPPED', execution='COMPLETE')
+    monkeypatch.setattr(owner, 'run_role', run_role)
+    frozen.parent.mkdir(mode=0o700, exist_ok=True)
+    container.cluster.write_json(frozen, config)
+    args = _role_args(config, frozen, actor='p0')
+    args.command = []
+    args.timing = timing
+    container.execute(args)
+    assert len(calls) == 1 and calls[0].host_container is True
+    assert calls[0].timing is timing
+    assert not capture.exists()
 
 
 def _role_args(config, frozen, actor='requester', management=None, timeout=1):
@@ -2641,6 +3230,282 @@ def _role_args(config, frozen, actor='requester', management=None, timeout=1):
         release_sha256=hashlib.sha256(Path(config['release']['manifest']).read_bytes()).hexdigest(),
         actor=actor, management=management, node='local' if management else None,
         timeout=timeout, debug=False)
+
+
+def test_host_container_commands_keep_native_helpers_in_owned_groups(ops):
+    owner = importlib.import_module('_spec217_ops.node')
+    args = SimpleNamespace(deployment=Path('/owned/configuration.json'), boot_id='b' * 32,
+        configuration_sha256='a' * 64, release_sha256='c' * 64, timeout=30,
+        actor='provider', management=None, node=None, debug=False, timing=False)
+    native = ['/opt/di/bin/di-native-provider', '--serve']
+    actor = owner._container_command(args, native)
+    helper = owner._container_command(args, native, separate_session=False)
+    assert actor[actor.index('--') + 1:] == ['/usr/bin/setsid', *native]
+    assert helper[helper.index('--') + 1:] == native
+    assert '_node' not in actor and 'ndnsf-di' not in actor
+
+
+def test_native_steps_explicitly_export_bindings_from_isolated_batch(ops):
+    allocation = importlib.import_module('_spec217_ops.allocation')
+    config = dict(nodes=[dict(id='node', host='fixture-host', cpus=1, nfd=dict(mode='managed'))])
+    for kind in ('nfd', 'nfdc', 'requester', 'controller', 'provider', 'audit'):
+        role = dict(id=kind, kind=kind, node='node', resources=dict(cpus=1, gpu_devices=[]))
+        command = allocation.step_arguments(config, role)
+        assert command.count('--export=ALL') == 1
+        assert '--gres=none' in command
+
+
+def test_host_gpu_owner_keeps_step_pool_mask_until_container_scopes_actor(node_container,
+                                                                       monkeypatch):
+    config, container, frozen, _, _ = node_container
+    owner = importlib.import_module('_spec217_ops.node')
+    actor = next(item for item in config['actors'] if item['id'] == 'p0')
+    actor['resources']['gpu_devices'] = ['3']
+    config['nodes'][0]['gpu_devices'] = ['3', '1']
+    config['platform']['slurm']['gpu']['count'] = 2
+    container.cluster.write_json(frozen, config)
+    args = _role_args(config, frozen, actor='p0', timeout=3)
+    args.host_container = True
+    _role_environment(monkeypatch, args, 'step.p0')
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '0,1')
+    monkeypatch.setenv('SLURM_STEP_GPUS', '2,6')
+    pool_event = _gpu_event(config, args, container.management_role_id('gpu-probe', 'local'))
+    pool = container.read_gpu_probe(json.dumps(pool_event), args, config['nodes'][0],
+                                   pool_event['role_id'], 2)
+    container.cluster.write_json(frozen.parent/'nodes/local/gpu-allocation.json', pool)
+    def inspect(args, config, kinds, state, root, env, guard):
+        assert env['CUDA_VISIBLE_DEVICES'] == '0,1'
+    monkeypatch.setattr(owner, '_inspect_container_install', inspect)
+    monkeypatch.setattr(owner, '_identity', lambda *a, **kw: None)
+    def finite(state, root, argv, env, guard, **kwargs):
+        assert env['CUDA_VISIBLE_DEVICES'] == '0,1'
+        tag = 'management-0'
+        bindings = dict(NDNSF_DEPLOYMENT_ACTOR_ID=tag,
+            NDNSF_DEPLOYMENT_BOOT_ID=args.boot_id,
+            NDNSF_DEPLOYMENT_CONFIG_SHA256=args.configuration_sha256)
+        state['launches'].append(dict(id=tag, kind='management', bindings=bindings,
+            expected_exe='/not-started', spawn_failed=True, native_argv=argv, exit_code=0))
+        return json.dumps(_gpu_event(config, args, 'p0', ['GPU-3333-abcd'], 'GPU-3333-abcd'))
+    monkeypatch.setattr(owner, '_finite', finite)
+    original = container.cluster._native_launch
+    def launch(current, actor, root, state, **kwargs):
+        _, env = original(current, actor, root, state, **kwargs)
+        assert env['CUDA_VISIBLE_DEVICES'] == '0,1'
+        event = dict(event='NDNSF_DEPLOYMENT_READY', actor_id=actor['id'],
+            identity=actor['identity'], boot_id=args.boot_id,
+            config_sha256=args.configuration_sha256, native_boot_id='native')
+        code = ('import json,os,signal,time; e=' + repr(event) +
+                '; e["pid"]=os.getpid(); print(json.dumps(e),flush=True); '
+                'time.sleep(.2); os.kill(os.getppid(),signal.SIGTERM); time.sleep(60)')
+        return [sys.executable, '-c', code], env
+    monkeypatch.setattr(container.cluster, '_native_launch', launch)
+    monkeypatch.setattr(owner, '_container_command', lambda args, argv: argv)
+    def capture(child, executable, bindings):
+        proof = container.cluster.process_identity(child.pid)
+        if proof and proof.get('exe') == executable and proof.get('bindings') == bindings:
+            return proof, proof['pid'], os.readlink('/proc/self/ns/pid')
+        return None
+    monkeypatch.setattr(owner, '_native_container_process', capture)
+    result = owner.run_role(args)
+    assert result['execution'] == 'SERVICE_STOPPED' and result['failure'] is None
+    assert result['gpu_visibility'] == 'GPU-3333-abcd'
+    assert result['logical_devices'] == ['cuda:0']
+    assert result['gpu_admission']['query_launch_id'] == 'management-0'
+
+
+def test_host_finite_keeps_native_arguments_separate_from_launcher(ops, tmp_path, monkeypatch):
+    owner = importlib.import_module('_spec217_ops.node')
+    state = dict(boot_id='b'*32, configuration_sha256='a'*64,
+                 evidence_root=str(tmp_path), launches=[])
+    native = ['/opt/di/libexec/ndnsf-di/ndnsf-di-device-query', '--count', '1']
+    launcher = [sys.executable, '-c', 'import time; print("{}",flush=True); time.sleep(0.05)']
+    monkeypatch.setattr(owner, '_container_command',
+        lambda args, argv, separate_session: launcher)
+    env = owner.cluster._environment(tmp_path/'home', tmp_path/'nfd.sock', 'provider', state)
+    output = owner._finite(state, tmp_path, native, env, lambda: None,
+                            container_args=SimpleNamespace())
+    assert output.strip() == '{}'
+    row = state['launches'][0]
+    assert row['native_argv'] == native and row['argv'] == launcher
+    assert row['id'] == 'management-0' and row['exit_code'] == 0
+
+
+def test_native_ready_and_withdrawal_use_namespace_pid(ops, tmp_path):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    actor = dict(id='provider', kind='provider', identity='/test/provider')
+    state = dict(boot_id='b' * 32, configuration_sha256='a' * 64)
+    log = tmp_path / 'ready.log'
+    row = dict(id=actor['id'], kind='provider', log=str(log), proof=dict(pid=12345),
+        namespace_proof=dict(pid=7), bindings=dict(NDNSF_DEPLOYMENT_ACTOR_ID='provider',
+            NDNSF_DEPLOYMENT_BOOT_ID=state['boot_id'],
+            NDNSF_DEPLOYMENT_CONFIG_SHA256=state['configuration_sha256']))
+    event = dict(event='NDNSF_DEPLOYMENT_READY', actor_id='provider',
+        identity=actor['identity'], boot_id=state['boot_id'],
+        config_sha256=state['configuration_sha256'], native_boot_id='native', pid=7)
+    log.write_text(json.dumps(event) + '\n')
+    assert cluster._ready(row, actor, state)
+    withdrawal = dict(event, event='NDNSF_DEPLOYMENT_WITHDRAWN', withdrawal_id='withdraw-1')
+    assert cluster._withdrawal_matches(row, withdrawal)
+    event['pid'] = row['proof']['pid']
+    log.write_text(json.dumps(event) + '\n')
+    assert not cluster._ready(row, actor, state)
+    withdrawal['pid'] = row['proof']['pid']
+    assert not cluster._withdrawal_matches(row, withdrawal)
+
+
+def test_installed_identity_gate_reads_image_root_and_rejects_modified_bytes(ops, tmp_path):
+    parser, _ = ops
+    image = tmp_path / 'image'
+    prefix = Path('/opt/ndnsf-image')
+    ledger = dict(files={})
+    programs = ['bin/DI_NativeRequester', 'bin/ndnsf-identity-check',
+                'libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker']
+    for relative in programs + ['lib/libndn-service-framework.so',
+                                'lib/libndnsf-distributed-inference.so']:
+        identity = prefix / relative
+        actual = image / identity.relative_to('/')
+        actual.parent.mkdir(parents=True, exist_ok=True)
+        actual.write_bytes(relative.encode())
+        mode = 0o755 if relative in programs else 0o644
+        actual.chmod(mode)
+        ledger['files'][str(identity)] = dict(installed=dict(kind='file', mode=mode,
+            sha256=hashlib.sha256(actual.read_bytes()).hexdigest()))
+    by_kind = {kind: [] for kind in ('controller', 'artifact-authority', 'requester', 'provider', 'repo')}
+    by_kind['requester'] = [dict(external=False)]
+    kwargs = dict(image_root=image, extra_programs=(programs[-1],))
+    parser._check_installed_files(dict(prefix=str(prefix)), ledger, by_kind, **kwargs)
+    holder = image / (prefix / programs[-1]).relative_to('/')
+    holder.write_bytes(b'modified holder')
+    with pytest.raises(parser.DeploymentConfigError, match='identity/mode mismatch'):
+        parser._check_installed_files(dict(prefix=str(prefix)), ledger, by_kind, **kwargs)
+
+
+@pytest.mark.parametrize('mismatch', [None, 'uid', 'group', 'binding', 'ancestor', 'step'])
+def test_native_capture_requires_descendant_job_step_and_role(ops, tmp_path, monkeypatch, mismatch):
+    owner = importlib.import_module('_spec217_ops.node')
+    proc = tmp_path / 'proc'
+    entry = proc / '100'
+    (entry / 'ns').mkdir(parents=True)
+    (entry / 'stat').write_text('100 (native) S ' + ('1' if mismatch == 'ancestor' else '90') + '\n')
+    (entry / 'status').write_text('NSpid:\t100\t7\n')
+    (entry / 'cgroup').write_text('0::/slurm/job_123/step_' + ('5' if mismatch == 'step' else '4'))
+    (entry / 'ns/pid').symlink_to('pid:[42]')
+    bindings = dict(NDNSF_DEPLOYMENT_ACTOR_ID='provider', NDNSF_DEPLOYMENT_BOOT_ID='b' * 32,
+                    NDNSF_DEPLOYMENT_CONFIG_SHA256='a' * 64)
+    proof = dict(pid=100, pgid=100, uid=os.getuid(), start_ticks=123, state='S',
+                 exe='/opt/di/provider', bindings=dict(bindings))
+    if mismatch == 'uid':
+        proof['uid'] += 1
+    elif mismatch == 'group':
+        proof['pgid'] = 90
+    elif mismatch == 'binding':
+        proof['bindings']['NDNSF_DEPLOYMENT_BOOT_ID'] = 'foreign'
+    monkeypatch.setenv('SLURM_JOB_ID', '123')
+    monkeypatch.setenv('SLURM_STEP_ID', '4')
+    monkeypatch.setattr(owner, 'Path', lambda value: proc if value == '/proc' else Path(value))
+    monkeypatch.setattr(owner.cluster, 'process_identity', lambda pid: proof if pid == 100 else None)
+    result = owner._native_container_process(SimpleNamespace(pid=90), '/opt/di/provider', bindings)
+    if mismatch is None:
+        assert result == (proof, 7, 'pid:[42]')
+    else:
+        assert result is None
+
+
+@pytest.mark.parametrize('failure', [None, 'manifest', 'receipt', 'eof'])
+def test_image_inspection_keeps_empty_pipe_and_cleans_on_failure(ops, tmp_path, monkeypatch,
+                                                               failure):
+    owner = importlib.import_module('_spec217_ops.node')
+    calls = []
+    child = SimpleNamespace(pid=90, stdin=io.BytesIO(), stdout=io.BytesIO(b'error-frame'),
+                            returncode=None)
+    child.poll = lambda: child.returncode
+    def wait(timeout=None):
+        if failure == 'eof':
+            raise subprocess.TimeoutExpired('holder', timeout)
+        child.returncode = 2
+        return 2
+    child.wait = wait
+    proof = dict(pid=100)
+    monkeypatch.setattr(owner.subprocess, 'Popen', lambda *a, **kw: child)
+    monkeypatch.setattr(owner, '_native_container_process', lambda *a: (proof, 7, 'pid:[42]'))
+    def check(*args, **kwargs):
+        assert child.stdin is not None and not child.stdin.closed
+        assert child.stdin.getvalue() == b''
+        assert kwargs['extra_programs'] == ('libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker',)
+        calls.append('verify')
+        if failure == 'manifest':
+            raise ValueError('manifest mismatch')
+    monkeypatch.setattr(owner, '_check_installed_files', check)
+    monkeypatch.setattr(owner, '_read_json', lambda _: {})
+    def write(*args):
+        if failure == 'receipt':
+            raise OSError('quota exhausted')
+    monkeypatch.setattr(owner, 'write_json', write)
+    def stop(record):
+        calls.append('native-cleanup')
+        if child.returncode is None:
+            child.returncode = -15
+        return dict(status='ZERO', forced=False)
+    monkeypatch.setattr(owner.cluster, 'stop_owned', stop)
+    def stop_launcher(_):
+        calls.append('launcher-cleanup')
+        return dict(forced=False, exitCode=child.returncode)
+    monkeypatch.setattr(owner, '_stop_container_launcher', stop_launcher)
+    args = SimpleNamespace(deployment=tmp_path/'configuration.json', boot_id='b'*32,
+        configuration_sha256='a'*64, release_sha256='c'*64, timeout=30,
+        actor='requester', management=None, node=None, debug=False)
+    state = {}
+    env = dict(NDNSF_DEPLOYMENT_ACTOR_ID='requester', NDNSF_DEPLOYMENT_BOOT_ID='b'*32,
+               NDNSF_DEPLOYMENT_CONFIG_SHA256='a'*64)
+    invoke = lambda: owner._inspect_container_install(args,
+        dict(release=dict(prefix='/opt/di', manifest='/owned/manifest.json')), {}, state,
+        tmp_path, env, lambda: None)
+    if failure is None:
+        invoke()
+        assert state['image_inspection']['status'] == 'VERIFIED'
+        assert state['image_inspection']['exitCode'] == 2
+    else:
+        with pytest.raises((ValueError, OSError, subprocess.TimeoutExpired)):
+            invoke()
+        assert state['image_inspection']['status'] == 'FAILED'
+    assert calls[-2:] == ['native-cleanup', 'launcher-cleanup']
+    assert child.stdout.closed
+
+
+@pytest.mark.parametrize('interrupted_capture', [False, True])
+def test_host_role_drains_native_group_despite_closeout_quota_error(node_container, monkeypatch,
+                                                                  interrupted_capture):
+    config, container, frozen, _, _ = node_container
+    owner = importlib.import_module('_spec217_ops.node')
+    args = _role_args(config, frozen, actor='requester', timeout=0.3)
+    args.host_container = True
+    _role_environment(monkeypatch, args, 'step.requester')
+    monkeypatch.setattr(owner, 'load_frozen', lambda *a, **kw: config)
+    monkeypatch.setattr(owner, '_identity', lambda *a, **kw: None)
+    monkeypatch.setattr(owner, '_inspect_container_install', lambda *a, **kw: None)
+    monkeypatch.setattr(owner, '_container_command', lambda args, argv: argv)
+    children = []
+    def launch(current, actor, root, state, **kwargs):
+        env = container.cluster._environment(actor['credential_home'],
+            current['nodes'][0]['nfd']['socket'], actor['id'], state)
+        return [sys.executable, '-c', 'import time; time.sleep(60)'], env
+    monkeypatch.setattr(container.cluster, '_native_launch', launch)
+    def capture(child, executable, bindings):
+        proof = container.cluster.process_identity(child.pid)
+        if proof and proof.get('exe') == executable and proof.get('bindings') == bindings:
+            children.append(proof)
+            if interrupted_capture:
+                return None
+            return proof, proof['pid'], os.readlink('/proc/self/ns/pid')
+        return None
+    monkeypatch.setattr(owner, '_native_container_process', capture)
+    def close(*args):
+        raise OSError('EDQUOT injected at closeout write')
+    monkeypatch.setattr(container.cluster, '_close', close)
+    with pytest.raises(OSError, match='EDQUOT injected'):
+        owner.run_role(args)
+    assert children
+    assert all(container.cluster.owned_state(proof) == 'EXITED' for proof in children)
 
 
 @pytest.mark.parametrize('timing', (False, True))
@@ -2663,7 +3528,8 @@ def _role_environment(monkeypatch, args, role_id):
 @pytest.mark.parametrize('mode', ['complete', 'wrong-ready', 'service-exit', 'service-stop',
                                  'timeout', 'identity-fail', 'residual-worker', 'cancel-ready',
                                  'cancel-pre-ready', 'cancel-requester', 'stale-cancel',
-                                 'malformed-cancel', 'provider-withdrawn', 'withdrawal-wrong-boot'])
+                                 'malformed-cancel', 'provider-withdrawn', 'withdrawal-wrong-boot',
+                                 'cancel-crash'])
 def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_container, monkeypatch, mode):
     config, container, frozen, _, run = node_container
     node = importlib.import_module('_spec217_ops.node')
@@ -2686,7 +3552,7 @@ def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_conta
     ledger_path.write_text(json.dumps(ledger))
     actor_id = ('p0' if mode in ('service-exit', 'service-stop', 'wrong-ready', 'cancel-ready',
                                'cancel-pre-ready', 'stale-cancel', 'malformed-cancel',
-                               'provider-withdrawn', 'withdrawal-wrong-boot') else 'requester')
+                               'provider-withdrawn', 'withdrawal-wrong-boot', 'cancel-crash') else 'requester')
     assert run('--actor', actor_id).returncode == 0
     args = _role_args(config, frozen, actor=actor_id, timeout=0.4)
     args.timing = mode == 'complete'
@@ -2716,7 +3582,10 @@ def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_conta
             if mode == 'withdrawal-wrong-boot':
                 code += 'item["boot_id"]="wrong-boot"; '
             code += 'print(json.dumps(item),flush=True)'
+        if mode == 'cancel-crash':
+            code += '; import signal; signal.signal(signal.SIGTERM, lambda *_: os._exit(134))'
         if mode in ('cancel-ready', 'cancel-pre-ready', 'cancel-requester', 'stale-cancel',
+                    'cancel-crash',
                     'malformed-cancel'):
             marker = (frozen.parent / 'actors' / actor_id / 'runtime' /
                       config['deployment_id'] / 'cancel.json')
@@ -2766,6 +3635,10 @@ def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_conta
     elif mode in ('cancel-pre-ready', 'cancel-requester'):
         assert result['execution'] == 'INTERRUPTED'
         assert result['failure'] == 'DEPLOYMENT_CANCELLED'
+    elif mode == 'cancel-crash':
+        assert result['execution'] == 'FAILED'
+        assert result['failure'] == 'NATIVE_ROLE_SHUTDOWN_EXIT:p0:134'
+        assert result['exit_code'] == 134
     else:
         assert result['execution'] == 'FAILED' and result['failure']
         if mode == 'wrong-ready':
@@ -2884,6 +3757,8 @@ if mode=='service-fail' and kind=='controller':
 def stop(signum,frame):
  value.update(status='STOPPED',execution='INTERRUPTED' if kind=='requester' else 'SERVICE_STOPPED',
               exit_code=-signum)
+ if mode=='shutdown-crash' and kind=='provider':
+  value.update(execution='FAILED',failure='NATIVE_ROLE_SHUTDOWN_EXIT:'+role+':134',exit_code=134)
  write(path,value); event(['stopped',role]); sys.exit(0)
 signal.signal(signal.SIGTERM,stop)
 runtime=path.parent/'runtime'/payload['deployment_id']
@@ -2962,7 +3837,7 @@ while True:
 
 @pytest.mark.parametrize('mode', ['complete', 'wrong-ready', 'service-fail', 'service-degraded',
                                  'requester-fail', 'audit-fail', 'timeout', 'signal', 'pre-entry-fail',
-                                 'ignore-cancel', 'pre-ready-cancel', 'negative-cache'])
+                                 'ignore-cancel', 'pre-ready-cancel', 'negative-cache', 'shutdown-crash'])
 def test_allocation_owner_orders_real_steps_and_keeps_failure_boundaries(
         allocation_facility, monkeypatch, mode):
     config, module, args, scenario, events, children = allocation_facility
@@ -2980,7 +3855,7 @@ def test_allocation_owner_orders_real_steps_and_keeps_failure_boundaries(
         assert result['failure'] is None and result['oracle'] == 'NOT_RUN'
         launches = [row[1] for row in rows if row[0] == 'role']
         assert launches == [module.management_role_id('nfd', config['nodes'][0]['id']),
-                            'controller', 'authority', 'p0', 'p1', 'requester']
+                            'controller', 'authority', 'repo', 'p0', 'p1', 'requester']
         assert rows.index(['routes']) < rows.index(['role', 'controller'])
         assert rows.index(['audit', 'controller']) < rows.index(['role', 'authority'])
         expected_stop_order = list(reversed(launches[:-1]))
@@ -2993,6 +3868,9 @@ def test_allocation_owner_orders_real_steps_and_keeps_failure_boundaries(
             assert ['role', 'requester'] not in rows
         if mode == 'audit-fail':
             assert result['status'] == 'UNKNOWN'
+        if mode == 'shutdown-crash':
+            assert result['status'] == 'STOPPED'
+            assert result['failure'].startswith('ALLOCATION_ROLE_FAILED:')
         if mode == 'pre-entry-fail':
             assert result['status'] == 'STOPPED' and result['execution'] == 'FAILED'
             assert not (args.deployment.parent / 'actors/controller/receipt.json').exists()
@@ -3112,6 +3990,8 @@ def test_resident_cpu_partition_uses_observed_ids_and_preserves_gpu_overlap(node
     allocation = importlib.import_module('_spec217_ops.allocation')
     node = config['nodes'][0]
     residents = [actor for actor in config['actors'] if not actor['external']]
+    for actor in residents:
+        actor['resources']['allow_sharing'] = False
     node['cpus'] = 1 + sum(actor['resources']['cpus'] for actor in residents)
     observed = set(range(32, 32 + node['cpus']))
     sets = [container.role_cpu_affinity(config, node, None, 'nfd', observed)]
@@ -3322,7 +4202,9 @@ def test_gpu_probe_wrapper_uses_exact_native_tool_without_nfd_or_model_mount(nod
 
 
 @pytest.mark.parametrize('distributed', [False, True])
-def test_post_job_oracle_wrapper_uses_fixed_cpu_workload_and_exact_read_only_files(node_container, distributed):
+@pytest.mark.parametrize('reference', ['quiet', 'source', 'descriptor'])
+def test_post_job_oracle_wrapper_uses_fixed_cpu_workload_and_exact_read_only_files(
+        node_container, distributed, reference):
     config, container, frozen, capture, run = node_container
     owner = importlib.import_module('_spec217_ops.allocation')
     config['nodes'][0]['host'] = 'compute-a'
@@ -3360,17 +4242,44 @@ def test_post_job_oracle_wrapper_uses_fixed_cpu_workload_and_exact_read_only_fil
         for key in ('input_file', 'options_file', 'output_file', 'checkpoint_output_file'):
             if key in turn and not Path(turn[key]).exists():
                 container.cluster.write_json(Path(turn[key]), {})
+    extra, reference_files = [], []
+    environment = {'SLURM_JOB_ID': '', 'SLURM_STEP_ID': ''}
+    if reference != 'quiet':
+        config['nodes'][0]['host'] = socket.gethostname()
+        environment = {'SLURM_JOB_ID': '12345', 'SLURM_STEP_ID': '3'}
+        source = config['requester']['catalog']['source']
+        reference_files.append(Path(source['file']))
+        requester = next(actor for actor in config['actors'] if actor['kind'] == 'requester')
+        journal_key = Path(requester['credential_home']) / 'checkpoint-verification.key'
+        journal_key.write_bytes(b'k' * 32)
+        journal_key.chmod(0o600)
+        config['requester'].setdefault('conversation', {})['journal'] = {
+            'keys': [{'file': str(journal_key)}]}
+        reference_files.append(journal_key)
+        extra = ['--model-reference']
+        if reference == 'descriptor':
+            descriptor = frozen.parent / 'reference-source.json'
+            container.cluster.write_json(descriptor, {
+                'schema': 'ndnsf-di-model-reference-source-v1', 'source': dict(source)})
+            source.pop('file')
+            reference_files.append(descriptor)
+            extra = ['--model-reference-source', str(descriptor)]
     result = run('--management', 'oracle', '--node', 'local', workload=None,
-                 environment={'SLURM_JOB_ID': '', 'SLURM_STEP_ID': ''})
+                 *extra, environment=environment)
     assert result.returncode == 0, result.stderr
     item = json.loads(capture.read_text())
     expected = [str(Path(config['release']['prefix']) / 'bin/spec190-multiturn-oracle'),
                 '--deployment-state', str(frozen.parent / 'allocation.json'), '--require-multi-token']
+    if reference != 'quiet':
+        expected.append('--model-reference')
+        if reference == 'descriptor':
+            expected += ['--model-reference-source', str(descriptor)]
     if distributed:
         expected.append('--require-distributed-gpu')
     assert item['argv'][-len(expected):] == expected
     assert '--nv' not in item['argv']
-    assert 'SLURM_JOB_ID=' not in item['envfile']
+    if reference == 'quiet':
+        assert 'SLURM_JOB_ID=' not in item['envfile']
     binds = [item['argv'][index + 1] for index, value in enumerate(item['argv']) if value == '--bind']
     writable = [value for value in binds if value.endswith(':rw')]
     assert len(writable) == 2  # Verifier HOME and its own evidence only.
@@ -3379,8 +4288,24 @@ def test_post_job_oracle_wrapper_uses_fixed_cpu_workload_and_exact_read_only_fil
     if distributed:
         checkpoint = config['requester']['turns'][0]['checkpoint_output_file']
         assert checkpoint + ':' + checkpoint + ':ro' in binds
-    assert not any(path in bind for path in config['model'].values() for bind in binds)
-    assert not any(actor['credential_home'] in bind for actor in config['actors'] for bind in binds)
+    allowed_reference_paths = {str(path) for path in reference_files}
+    assert not any(path in bind for path in config['model'].values()
+                   if path not in allowed_reference_paths for bind in binds)
+    assert not any(bind.split(':')[0] == actor['credential_home']
+                   for actor in config['actors'] for bind in binds)
+    for path in reference_files:
+        assert str(path) + ':' + str(path) + ':ro' in binds
+    if reference != 'quiet':
+        refused = run('--management', 'oracle', '--node', 'local', *extra, workload=None,
+                      environment={'SLURM_JOB_ID': ''})
+        assert refused.returncode != 0
+        assert 'CONTAINER_MODEL_REFERENCE_REQUIRES_SLURM' in refused.stderr
+        journal_key.chmod(0o644)
+        refused = run('--management', 'oracle', '--node', 'local', *extra, workload=None,
+                      environment=environment)
+        assert refused.returncode != 0
+        assert 'CONTAINER_REFERENCE_KEY_NOT_PRIVATE' in refused.stderr
+        journal_key.chmod(0o600)
     assert not any(config['nodes'][0]['nfd']['socket'] in bind for bind in binds)
     blocked = run('--management', 'oracle', '--node', 'local', workload=('/bin/true',),
                   environment={'SLURM_JOB_ID': ''})
@@ -4171,8 +5096,9 @@ if OUTCOME == 'late-exit': raise SystemExit(9)
 
 @pytest.mark.parametrize('lost_submit_reply', [False, True])
 @pytest.mark.parametrize('timing', (False, True))
+@pytest.mark.parametrize('action', ('up', 'prepare'))
 def test_installed_slurm_caller_persists_intent_and_never_resubmits(
-        ops, deployment, monkeypatch, lost_submit_reply, timing):
+        ops, deployment, monkeypatch, lost_submit_reply, timing, action):
     parser, cli = ops
     root, config = deployment
     config = _tiger_config(root, config)
@@ -4194,6 +5120,11 @@ def test_installed_slurm_caller_persists_intent_and_never_resubmits(
         reference = state['job_reference']
         if command[0] == 'sbatch':
             assert state['status'] == 'SUBMITTING' and reference['job_id'] is None
+            if action == 'prepare':
+                frozen = json.loads((Path(state['evidence_root']) / 'configuration.json').read_text())
+                assert frozen['operation'] == 'prepare'
+                assert frozen['platform']['slurm']['gpu']['count'] == 0
+                assert not any(actor['kind'] == 'provider' for actor in frozen['actors'])
             assert hashlib.sha256(options['input'].encode()).hexdigest() == reference['script_sha256']
             assert '--deployment' in options['input']
             assert ('--timing' in options['input']) is timing
@@ -4212,17 +5143,17 @@ def test_installed_slurm_caller_persists_intent_and_never_resubmits(
             raise AssertionError('unexpected scheduler side effect: ' + str(command))
         return subprocess.CompletedProcess(command, 0, stdout=output, stderr='')
     monkeypatch.setattr(backend, 'SlurmApptainerAdapter', lambda: adapter_type(runner=runner))
-    first = manager.run_cluster('up', path, timeout=5, timing=timing)
+    first = manager.run_cluster(action, path, timeout=5, timing=timing)
     assert first['status'] == 'UNKNOWN'  # Scheduler completion cannot prove node cleanup/native success.
     assert first['job_reference']['job_id'] == '42'
     state = json.loads(state_path.read_text())
     boot = state['boot_id']
     assert state['needs_closeout']
     first_count = len(calls)
-    repeated = manager.run_cluster('up', path, timeout=0.25)
+    repeated = manager.run_cluster(action, path, timeout=0.25)
     assert repeated['boot_id'] == boot and repeated['status'] == 'UNKNOWN'
     assert all(0 < value <= 0.25 for value in timeouts[first_count:])
-    assert cli.main(['cluster', 'up', '--config', str(path), '--timeout', '5']) == 1
+    assert cli.main(['cluster', action, '--config', str(path), '--timeout', '5']) == 1
     assert sum(command[0] == 'sbatch' for command in calls) == 1
     # Public status/down locate the persisted reference even after model/image inputs vanish.
     (root / 'candidate.sif').unlink()
@@ -4332,7 +5263,7 @@ def test_cluster_check_never_imports_app_or_spawns_processes(ops, deployment, mo
         sys.meta_path.remove(hook)
     summary = json.loads(capsys.readouterr().out)
     assert summary["status"] == "CONFIGURATION_CHECKED"
-    assert summary["owned_actors"] == 5
+    assert summary["owned_actors"] == 6
     assert "key.pem" not in json.dumps(summary)
     assert not (root / "state_root").exists()
 

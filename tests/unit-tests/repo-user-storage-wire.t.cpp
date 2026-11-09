@@ -49,6 +49,47 @@ sampleGrant()
 
 BOOST_AUTO_TEST_SUITE(Spec221RepoUserStorageWire)
 
+BOOST_AUTO_TEST_CASE(StoredModelUploadGeometryFitsBinaryInsertAndRecoveryManifest)
+{
+  // Exercise both independent limits: packet count and aggregate Name text.
+  for (const unsigned width : {96U, 2000U}) {
+    auto request = sampleInsert();
+    request.schemaVersion = 2;
+    auto& reference = request.reference;
+    auto& metadata = *reference.packetSetMetadata;
+    metadata.packetNames.clear();
+    metadata.packetOffsets = {0};
+    metadata.envelopeBytes = 0;
+    metadata.dataPrefix.clear();
+    std::size_t nameBytes = 0;
+    std::uint64_t wireBytes = 0;
+    for (unsigned i = 0; i < 4096; ++i) {
+      const auto name = ndn::Name("/producer").append(std::string(width, 'p'))
+        .appendSegment(i).toUri(ndn::name::UriFormat::ALTERNATE);
+      if (nameBytes + name.size() > (512U << 10)) break;
+      nameBytes += name.size();
+      wireBytes += 8192;
+      metadata.packetNames.push_back(name);
+      metadata.packetOffsets.push_back(wireBytes);
+    }
+    BOOST_REQUIRE_GT(metadata.packetNames.size(), width == 96 ? 1024U : 64U);
+    reference.objectName = metadata.objectName = metadata.packetNames.front();
+    reference.expectedSize = metadata.size = wireBytes;
+    reference.validateExactPacketSet();
+    BOOST_CHECK_LE(wireBytes, 32U << 20);
+    BOOST_CHECK_LE(reference.toJson().size(), 1U << 20);
+    const auto encoded = encodeUserStorageInsertRequest(request);
+    const auto restored = decodeUserStorageInsertRequest(encoded);
+    BOOST_CHECK(restored.reference.toJson() == reference.toJson());
+    metadata.operationId = request.operationId;
+    metadata.generation = request.generation;
+    metadata.lifecycleState = "COMMITTED";
+    const auto manifest = metadata.toJson();
+    BOOST_CHECK_LE(manifest.size(), 1U << 20);
+    BOOST_CHECK(parseManifestJson(manifest).packetNames == metadata.packetNames);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(OriginalPacketInsertRoundTripPreservesNamesAndBinding)
 {
   const auto original = sampleInsert();

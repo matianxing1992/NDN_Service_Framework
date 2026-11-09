@@ -8,7 +8,8 @@
 namespace spec220::oracle {
 
 /** Independently replay pinned greedy cold/warm inputs through the unsplit CPU model.
- * Does not authenticate checkpoints or compare provider-resident state values.
+ * Authenticates checkpoints with the configured private journal keys, but does not
+ * compare provider-resident state values. Deployment key-file paths must be absolute.
  */
 ndnsf::di::NativeJson
 validateOnnxReference(const ndnsf::di::NativeJson& requester,

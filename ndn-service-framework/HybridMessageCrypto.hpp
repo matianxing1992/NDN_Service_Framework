@@ -5,13 +5,17 @@
 #include "common.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
 
 namespace ndn_service_framework {
+
+struct ProtectedBlobManifest;
 
 struct HybridAeadResult
 {
@@ -51,6 +55,13 @@ public:
                                               const std::string& statusHandle,
                                               const std::string& recipientKeyId,
                                               HybridCryptoCounters& counters);
+
+  /** Create one object key without retaining it in the shared send-key cache.
+   * The caller owns its lifetime, wrapping and eventual secret erasure.
+   */
+  HybridMessageKey
+  createIsolatedSendKey(const ndn::Name& serviceName, const ndn::Name& senderPrefix,
+                        const std::string& accessAttribute, HybridCryptoCounters& counters);
 
     void cacheReceiveKey(const std::string& keyId,
                          const std::string& epochId,
@@ -190,6 +201,24 @@ bool hybridAesGcmDecrypt(const ndn::Buffer& key,
                          const HybridMessageEnvelope& envelope,
                          ndn::span<const uint8_t> associatedData,
                          ndn::Buffer& plaintext);
+
+/** Check the signed descriptor's epoch/key binding before obtaining a key.
+ * Empty means admitted. Packet signature/Producer admission remains with the caller.
+ */
+std::string
+protectedBlobEnvelopeBindingError(const ProtectedBlobManifest& manifest,
+                                  const ndn::Name& service,
+                                  const HybridMessageEnvelope& envelope);
+
+/** Authenticate a producer-bound BLOB and its plaintext identity.
+ * Use after envelope binding admission. Failure erases plaintext; contentMismatch
+ * distinguishes a digest/size mismatch from failed AES authentication.
+ */
+bool
+decryptProtectedBlobPayload(const ndn::Name& dataPrefix, const ndn::Name& service,
+                            const HybridMessageEnvelope& envelope, const ndn::Buffer& key,
+                            ndn::Buffer& plaintext, bool& contentMismatch,
+                            std::optional<std::uint64_t> expectedBytes = std::nullopt);
 
 std::string hybridMessageTypeForName(const ndn::Name& name);
 std::string hybridMessageTypeForName(const ndn::Name& name,

@@ -361,6 +361,53 @@ BOOST_AUTO_TEST_CASE(HybridKeyEpochRotatesByUsesAndNonceIsUnique)
   BOOST_CHECK_EQUAL(counters.hybrid_key_rotation_uses.load(), 1);
 }
 
+BOOST_AUTO_TEST_CASE(IsolatedObjectKeysDoNotDiscloseOtherObjectsOrReplaceControlKey)
+{
+  HybridMessageCrypto crypto;
+  HybridCryptoCounters counters;
+  const ndn::Name service("/HELLO");
+  const ndn::Name sender("/test/user/alice");
+  const auto control = crypto.getOrCreateSendKey(
+    service, sender, "/SERVICE/HELLO", "REQUEST-LARGE", counters);
+  const auto objectA = crypto.createIsolatedSendKey(service, sender, "/SERVICE/HELLO", counters);
+  const auto objectB = crypto.createIsolatedSendKey(service, sender, "/SERVICE/HELLO", counters);
+  BOOST_CHECK_NE(objectA.keyId, objectB.keyId);
+  BOOST_CHECK_NE(objectA.keyId, control.keyId);
+  BOOST_CHECK_EQUAL(objectA.key.size(), HybridMessageCrypto::MESSAGE_KEY_SIZE);
+  BOOST_CHECK_EQUAL(objectA.uses, 1U);
+
+  const ndn::Buffer payload{1, 2, 3, 4};
+  const ndn::Buffer aad{5, 6, 7, 8};
+  for (const auto* source : {&objectA, &objectB, &control}) {
+    const auto encrypted = hybridAesGcmEncrypt(source->key, payload, aad);
+    HybridMessageEnvelope envelope;
+    envelope.setKeyId(source->keyId);
+    envelope.setEpochId(source->epochId);
+    envelope.setMessageType("REQUEST-LARGE");
+    envelope.setNonce(encrypted.nonce);
+    envelope.setCipherText(encrypted.ciphertext);
+    envelope.setAuthTag(encrypted.tag);
+    ndn::Buffer recovered;
+    BOOST_REQUIRE(hybridAesGcmDecrypt(source->key, envelope, aad, recovered));
+    BOOST_CHECK_EQUAL_COLLECTIONS(recovered.begin(), recovered.end(),
+                                  payload.begin(), payload.end());
+    if (source != &objectA) {
+      ndn::Buffer rejected;
+      BOOST_CHECK(!hybridAesGcmDecrypt(objectA.key, envelope, aad, rejected));
+    }
+  }
+
+  const auto reusedControl = crypto.getOrCreateSendKey(
+    service, sender, "/SERVICE/HELLO", "REQUEST-LARGE", counters);
+  BOOST_CHECK_EQUAL(reusedControl.keyId, control.keyId);
+  BOOST_CHECK_EQUAL_COLLECTIONS(reusedControl.key.begin(), reusedControl.key.end(),
+                                control.key.begin(), control.key.end());
+  BOOST_CHECK_EQUAL(reusedControl.uses, 2U);
+  BOOST_CHECK_EQUAL(counters.hybrid_key_epoch_created.load(), 3U);
+  // Only the ordinary control key is retained by the crypto cache.
+  BOOST_CHECK_EQUAL(crypto.invalidateService(service), 1U);
+}
+
 BOOST_AUTO_TEST_CASE(HybridMessageCryptoInvalidatesOnlyAffectedService)
 {
   HybridMessageCrypto crypto;
