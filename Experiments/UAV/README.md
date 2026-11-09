@@ -1,5 +1,136 @@
 # Spec191 UAV tracking experiment
 
+## Indoor person tracking on CPU
+
+The same `run_multicamera_tracking_demo.py` entrypoint supports three indoor
+video sources and one compute node running YOLO, ByteTrack and pretrained
+OSNet. Native C++ assigns the global person IDs; the Ground Station renders
+its validated results and frames retrieved from the source nodes. The CPU
+path uses PyTorch and does not require CUDA. Replay with fixed cameras
+simulates hovering UAVs; it does not qualify flight or moving-camera tracking.
+
+Prepare these inputs before launching:
+
+- Install the native `UavTrackingNode`, `UavTrackingGroundStation` and
+  `App_ServiceController` programs and tracking modules through the maintained
+  Waf build/install workflow. The runner resolves installed programs, not
+  binaries from the build tree.
+- Use a CPython 3.10 inference environment matching
+  [`requirements-person.lock`](../../NDNSF-UAV-APP/tracking/requirements-person.lock).
+  Its comments describe the verified-wheel and hash requirements, including
+  the Torchreid wheel. MiniNDN and Mininet must also be importable by the
+  launcher interpreter. FFmpeg/ffprobe and the MiniNDN system dependencies
+  must be installed.
+- Provide the detector and OSNet checkpoint files. Copy
+  [`uav_person_tracking_demo.json`](../../NDNSF-UAV-APP/configs/uav_person_tracking_demo.json)
+  to an operator-owned profile, replace its zero `detectorDigest` and
+  `reidDigest` with `sha256:` plus each file's SHA-256, and keep
+  `requestedDevice` set to `cpu`. Set camera relations for the actual setup;
+  unverified relations are development assumptions. Do not use the zero-hash
+  template as a runnable profile.
+- Create the source-only JSON manifest described below. Ground truth belongs
+  only to the separate offline evaluator, not the source manifest or
+  application inputs.
+
+The source manifest has these required top-level fields:
+`schema` (`uav-person-source-manifest-v1`), `dataset` (nonempty `name`, `uri`,
+`license`), `commonStartUs`, `durationUs`, and `cameras`. The camera array is
+ordered `UAV1`, `UAV2`, `UAV3`. Each entry has exactly `cameraId`, `viewId`,
+`videoPath`, `videoDigest` and `videoStartUs`. Paths may be absolute or relative
+to the manifest. Use three distinct files, contents and view IDs; each video
+digest is `sha256:` plus its SHA-256. `videoStartUs` maps each video's media
+time to `commonStartUs`. The interval must be covered by all three videos and
+contain whole 0.5-second windows. A three-window probe needs `durationUs` of
+1500000; a 120-window run needs 60000000. Declaring a time mapping does not
+establish physical synchronization or complete cross-camera annotations.
+
+Add the optional top-level `datasetOrigin` as `real-captured` or
+`synthetic-rendered`, and use the same value in the separate evaluation
+manifest. Preparation receipts, run receipts and metrics retain this field.
+Older manifests without it remain usable for development and offline scoring;
+qualification requires an explicit, matching origin. Rendered video still uses
+the actual models and native execution path. The separate run-receipt
+`synthetic` flag describes mock execution, and must remain false for qualification.
+
+After an independent data review, the offline evaluator accepts an explicit local
+`--data-admission FILE` together with `--run-receipt FILE`. The admission record
+binds the reviewed source, evaluator and profile digests, dataset origin and
+preparation audit. It is local review evidence, not network authorization. The
+evaluator checks these bindings and the audit digest, then reports its assessment
+in `qualificationEvidence` without changing the original runtime receipt. Actual
+CPU telemetry and verified installed closure are required to classify unknown
+execution as non-mock; an explicit mock remains a mock. All accuracy, completeness,
+resource, deadline and cleanup gates still apply. Without this optional record,
+the existing unassessed runtime qualification remains unchanged.
+
+The following Bash template runs a three-window CPU probe from the repository
+root after replacing the absolute input paths. `DEMO_PYTHONPATH` must include
+the installed tracking directory and the directories containing the MiniNDN
+and Mininet Python modules. Use a fresh, dedicated output directory. These
+are operator command templates, not a claim that these example paths exist.
+
+```bash
+TRACKING_PYTHON=/absolute/path/to/cpu-environment/bin/python
+DEMO_PYTHONPATH=/usr/local/libexec/ndnsf-uav/tracking:/path/to/mini-ndn:/path/to/mininet-module-parent
+PERSON_PROFILE=/absolute/path/to/person-cpu-profile.json
+SOURCE_MANIFEST=/absolute/path/to/three-view-sources.json
+DETECTOR_MODEL=/absolute/path/to/yolo11n.pt
+REID_MODEL=/absolute/path/to/osnet-weights.pth
+DEMO_RUN_ROOT=/absolute/path/to/new-person-run
+
+person_args=(
+  --model "$DETECTOR_MODEL"
+  --tracking-profile "$PERSON_PROFILE"
+  --source-manifest "$SOURCE_MANIFEST"
+  --reid-model "$REID_MODEL"
+  --worker-python "$TRACKING_PYTHON"
+  --output-dir "$DEMO_RUN_ROOT"
+  --run-seconds 1.5 --window-count 3 --global-deadline-ms 180000
+)
+
+env PYTHONPATH="$DEMO_PYTHONPATH" "$TRACKING_PYTHON" \
+  -m Experiments.UAV.run_multicamera_tracking_demo \
+  "${person_args[@]}" --prepare --preflight
+
+sudo env DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+  PYTHONPATH="$DEMO_PYTHONPATH" "$TRACKING_PYTHON" \
+  -m Experiments.UAV.run_multicamera_tracking_demo \
+  "${person_args[@]}" --run
+```
+
+For a host without a desktop, add `--headless` to both commands; its records
+do not prove that GUI windows were shown. Keep the same inputs and output
+root between preparation and its run. After a network attempt, use a new
+output root for another attempt; preserve the first attempt's evidence.
+`--run-seconds` must equal the manifest interval, and `--window-count` must
+equal its 2 Hz window count. Unavailable requested devices and
+checkpoint/profile mismatches fail preflight; there is no automatic device
+fallback. The run verifies its frozen installed-file hashes, so keep the
+installation unchanged during a run. Person mode cannot be combined with legacy motion, custom
+observation profiles/adapters, source cutovers or custom trust inputs.
+
+Inspect `manifest.json`, `preflight.json`, `person-run-receipt.json` and
+`person-cleanup.json` in the output root. For the GUI three-window probe, check
+three committed windows, nine admitted/received frames, actual CPU devices,
+complete timing/resources and zero remaining owned processes. A GUI run also
+needs nine displayed frames; retain actual screenshots with their
+run/mission/window/result-digest bindings. The GS-received source JPEGs and
+original result JSON are bound in
+`private/ground-station/presentation/window-N/presentation.json`; the renderer
+does not obtain its display results from the compute worker's private files.
+Global/local badges and association status are native outputs. Source videos
+may already contain annotations; such burned-in boxes are not native output.
+Unknown geometry keeps speed, course and range unavailable. Replay lag is
+shown explicitly and must not be reported as real-time performance.
+Headless runs can establish processing, reception and cleanup observations;
+GUI display timestamps and complete capture-to-display timing remain unavailable.
+
+The current local CPU development probe has exercised three native windows,
+nine frames and three actual GUI captures. Formal data admission,
+cross-camera accuracy, two complete qualification runs and the full failure
+matrix remain incomplete. Development footage or successful process exits
+do not replace those checks.
+
 The canonical MiniNDN topology has exactly five network nodes:
 
 ```text
@@ -29,6 +160,23 @@ or copy them. Results must be collected through validated NDNSF named Data; a
 path, process exit, or preflight JSON is not a result. Runtime evidence belongs
 under the ignored run directory and the Spec191 evidence files record whether
 each gate is implemented, executed, or measured.
+
+Legacy and explicit Spec210 modes use a run-local fixed-root trust policy by
+default. Offline preparation writes the public policy under
+`private/config/uav-trust-schema.conf`; it creates no private keys. At run time,
+the maintained `ndnsec` provisioner creates `/example/uav` and the six required
+root-signed actor certificates in the run's private keychain, records public
+certificate hashes in `manifest.json`, and then starts the native applications.
+Use a fresh output directory for each network attempt. A second owner or an
+already populated managed keychain is rejected before credentials are changed.
+
+A distinct explicit `--trust-schema` remains caller-owned: provision its fixed
+root and matching actor certificates in the run's keychain before running.
+The runner pins that file and preserves those credentials. Arbitrary custom
+schema syntax and certificate chains are checked by the native validator;
+offline preflight does not certify them. `type any` is rejected by the native
+fixed-root policy. Compatibility runtime qualification is recorded separately
+from plan construction and Python wiring tests.
 
 ## Spec210 metric observation
 

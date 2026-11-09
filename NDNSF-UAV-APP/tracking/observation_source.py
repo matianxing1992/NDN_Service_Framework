@@ -173,16 +173,20 @@ def _validate_external_data_ref(value: Any, *, camera_id: Any, revision: Any) ->
             not 1 <= revision <= MAX_TIME_US:
         raise ValueError("external calibration reference requires a valid camera and revision")
     producer_prefix = "" if producer == "/" else producer
-    name_prefix = f"{producer_prefix}/UAV/CALIBRATION/{camera_id}/{revision}/v="
+    if not isinstance(digest, str) or len(digest) != 71 or not digest.startswith("sha256:") or \
+            any(char not in "0123456789abcdef" for char in digest[7:]):
+        raise ValueError("externalDataRef.contentSha256 must be a lowercase SHA-256 digest")
+    revision_prefix = f"{producer_prefix}/UAV/CALIBRATION/{camera_id}/{revision}/"
+    name_prefix = revision_prefix + "v="
+    bound_prefix = revision_prefix + digest[7:] + "/v="
+    if exact_name.startswith(bound_prefix):
+        name_prefix = bound_prefix
     if not exact_name.startswith(name_prefix):
         raise ValueError("externalDataRef.exactName must name this camera and calibration revision")
     version = exact_name[len(name_prefix):]
     if not version.isascii() or not version.isdecimal() or version.startswith("0") or \
             not 1 <= int(version) <= MAX_NDN_VERSION:
         raise ValueError("externalDataRef.exactName requires a canonical typed version")
-    if not isinstance(digest, str) or len(digest) != 71 or not digest.startswith("sha256:") or \
-            any(char not in "0123456789abcdef" for char in digest[7:]):
-        raise ValueError("externalDataRef.contentSha256 must be a lowercase SHA-256 digest")
 
 
 def _numeric_string(value: Any, *, integer: bool) -> str:

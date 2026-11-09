@@ -58,6 +58,84 @@ def build(bld):
                               '-fsanitize=address,undefined'],
                     linkflags=['-fsanitize=address,undefined'],
                     rpath=[bld.bldnode.abspath()], install_path=None)
+    bld.program(target='../uav-vehicle-tracking-engine-tests', name='uav-vehicle-tracking-engine-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/uav-vehicle-tracking-engine.t.cpp'),
+                        bld.srcnode.find_node('NDNSF-UAV-APP/tracking/uav-vehicle-tracking-engine.cpp'),
+                        bld.srcnode.find_node('NDNSF-UAV-APP/shared/uav-byte-track-state.cpp'),
+                        bld.srcnode.find_node('NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp')],
+                includes=['..'], use='NDN_CXX BOOST', install_path=None)
+    bld.program(target='../spec228-tracking-config-tests', name='spec228-tracking-config-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/uav-tracking-config.t.cpp'),
+                        bld.srcnode.find_node('NDNSF-UAV-APP/tracking/uav-tracking-config.cpp'),
+                        bld.srcnode.find_node('NDNSF-UAV-APP/shared/UavSourceGeneration.cpp'),
+                        bld.srcnode.find_node('NDNSF-UAV-APP/shared/uav-person-tracking-profile.cpp'),
+                        bld.srcnode.find_node('NDNSF-UAV-APP/shared/uav-person-computation.cpp')],
+                includes=['..'], use='NDN_CXX BOOST OPENSSL DL',
+                cxxflags=['-std=c++17', '-O0', '-g0'], install_path=None)
+    if 'uav' in bld.env.NDNSF_COMPONENTS:
+        bld.program(target='../spec228-tracking-main-app-tests',
+                    name='spec228-tracking-main-app-tests',
+                    lib=['pangoft2-1.0', 'fontconfig'],
+                    source=[bld.path.find_node('main.cpp'),
+                            bld.path.find_node('integration-tests/uav-tracking-main-app.t.cpp'),
+                            bld.path.find_node('integration-tests/uav-tracking-presentation.t.cpp'),
+                            bld.path.find_node('integration-tests/request-scoped-response-confidentiality.t.cpp'),
+                            bld.path.find_node('unit-tests/uav-ack-publication.t.cpp'),
+                            bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
+                    includes=['..', '../ndn-service-framework'],
+                    use='uav-main-common uav-tracking-job-core ndn-service-framework NDN_CXX NDN_SVS '
+                        'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL gtkmm GSTREAMER',
+                    cxxflags=['-std=c++17', '-O0', '-g0'],
+                    defines=['HAVE_TESTS', 'NDNSF_UAV_MAIN_APP_TEST_SEAM'],
+                    rpath=[bld.bldnode.abspath()], install_path=None)
+        bld.program(target='../spec228-tracking-main-drone-tests',
+                    name='spec228-tracking-main-drone-tests',
+                    source=[bld.path.find_node('main.cpp'),
+                            bld.path.find_node('integration-tests/uav-tracking-main-drone.t.cpp'),
+                            bld.path.find_node('integration-tests/uav-static-metadata.t.cpp'),
+                            bld.path.find_node('integration-tests/uav-vehicle-packet-capacity.t.cpp'),
+                            bld.path.find_node('integration-tests/uav-observation-flow.t.cpp'),
+                            bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
+                    includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                    use='uav-main-common uav-tracking-provider-core uav-tracking-job-core '
+                        'ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS '
+                        'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL gtkmm sqlite3 GSTREAMER',
+                    cxxflags=['-std=c++17', '-O0', '-g0'],
+                    defines=['HAVE_TESTS', 'NDNSF_UAV_MAIN_APP_TEST_SEAM'],
+                    rpath=[bld.bldnode.abspath()], install_path=None)
+        bld.program(target='../spec228-tracking-provider-tests',
+                    name='spec228-tracking-provider-tests',
+                    source=[bld.path.find_node('main.cpp'),
+                            bld.path.find_node('unit-tests/uav-tracking-provider.t.cpp'),
+                            bld.path.find_node('unit-tests/uav-person-result.t.cpp'),
+                            bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
+                    includes=['..', '../ndn-service-framework'],
+                    use='uav-tracking-provider-core uav-tracking-job-core ndn-service-framework '
+                        'NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                    cxxflags=['-std=c++17', '-O0', '-g0'],
+                    defines=['HAVE_TESTS'], rpath=[bld.bldnode.abspath()], install_path=None)
+        bld.program(target='../spec228-tracking-job-flow-tests',
+                    name='spec228-tracking-job-flow-tests',
+                    source=[bld.path.find_node('main.cpp'),
+                            bld.path.find_node('integration-tests/uav-tracking-job-flow.t.cpp'),
+                            bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
+                    includes=['..', '../ndn-service-framework'],
+                    use='uav-tracking-job-core ndn-service-framework NDN_CXX NDN_SVS '
+                        'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                    cxxflags=['-std=c++17', '-O0', '-g0'],
+                    defines=['HAVE_TESTS'], rpath=[bld.bldnode.abspath()], install_path=None)
+        bld.program(target='../spec228-tracking-job-tests', name='spec228-tracking-job-tests',
+                    source=[bld.path.find_node('main.cpp'),
+                            bld.path.find_node('unit-tests/uav-tracking-job.t.cpp'),
+                            bld.path.find_node('unit-tests/uav-tracking-coordinator.t.cpp'),
+                            bld.path.find_node('unit-tests/uav-tracking-result-verifier.t.cpp')],
+                    includes=['..', '../ndn-service-framework'],
+                    use='uav-tracking-job-core ndn-service-framework NDN_CXX NDN_SVS '
+                        'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                    cxxflags=['-std=c++17', '-O0', '-g0'],
+                    defines=['HAVE_TESTS'], rpath=[bld.bldnode.abspath()], install_path=None)
     # SDK capability fixture: no NDNSF services or model weights are required.
     if bld.env.HAVE_ONNXRUNTIME_CPP:
         probe_env = bld.env.derive()
@@ -90,6 +168,11 @@ def build(bld):
                     cxxflags=['-std=c++17', '-O1', '-g1', '-fno-omit-frame-pointer',
                               '-fsanitize=' + sanitizer],
                     linkflags=['-fsanitize=' + sanitizer], install_path=None)
+    bld.program(target='../spec219-cached-signer-fixture',
+                name='spec219-cached-signer-fixture',
+                source=['standalone/spec219-cached-signer-fixture.cpp'],
+                use='NDN_CXX BOOST OPENSSL', cxxflags=['-O0', '-g0'],
+                install_path='${LIBEXECDIR}/ndnsf-tests')
     offer_source = bld.srcnode.find_node(
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp')
     bld.program(target='../spec217-provider-offer-tests', name='spec217-provider-offer-tests',
@@ -320,7 +403,7 @@ def build(bld):
         flags = ['-fsanitize=address', '-fno-omit-frame-pointer'] if sanitize else []
         bld.program(target='../' + target, name=target, source=grant_sources,
                     includes=['..', '../ndn-service-framework'],
-                    use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL', cxxflags=flags,
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL', cxxflags=flags,
                     linkflags=flags, rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Focused production-entry parity; use the configured native dependency
@@ -1148,7 +1231,7 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Spec185 B0C DI delegation selector.  Link the production
-    # NativeInferenceClient and the complete DI source closure.  The target
+    # NativeInferenceClient through the maintained production DI library. The target
     # includes the Core-only fail-closed checks plus real Provider-backed ACK,
     # durable-cancel, and conversation-commit-failure fixtures.
     bld.program(target='../spec185-di-core-operation',
@@ -1156,10 +1239,9 @@ def build(bld):
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/di-core-operation.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-di-core-flow.t.cpp'),
-                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
-                       di_integration_sources,
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=framework_includes,
-                use=di_integration_use + 'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -1557,7 +1639,13 @@ def build(bld):
                             'NDNSF-UAV-APP/shared/UavObservationStream.cpp',
                             'NDNSF-UAV-APP/shared/UavSourceGeneration.cpp',
                             'NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp',
+                            'NDNSF-UAV-APP/shared/uav-person-tracking-profile.cpp',
+                            'NDNSF-UAV-APP/shared/uav-person-computation.cpp',
+                            'NDNSF-UAV-APP/shared/uav-person-published-frame.cpp',
+                            'NDNSF-UAV-APP/shared/uav-person-tracking.cpp',
+                            'NDNSF-UAV-APP/shared/uav-byte-track-state.cpp',
                             'NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp',
+                            'NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp',
                             'NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp',
                             'NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp',
                             'NDNSF-UAV-APP/tracking/UavTrackingSession.cpp',
@@ -1623,6 +1711,8 @@ def build(bld):
                         bld.path.find_node('integration-tests/uav-collaboration-flow.t.cpp'),
                         bld.path.find_node('integration-tests/uav-multiview-flow.t.cpp'),
                         bld.path.find_node('integration-tests/uav-tracking-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/uav-person-tracking-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/uav-person-admission.t.cpp'),
                         bld.path.find_node('integration-tests/uav-observation-flow.t.cpp'),
                         bld.path.find_node('integration-tests/controller-revocation-flow.t.cpp'),
                         bld.path.find_node('integration-tests/controller-version-refresh.t.cpp'),
@@ -1640,6 +1730,14 @@ def build(bld):
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/tracking/UavTrackingSession.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-tracking-profile.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-computation.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-tracking.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-byte-track-state.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-window-admission.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/drone/UavCollaborationParticipant.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
@@ -1750,6 +1848,17 @@ def build(bld):
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 rpath=[bld.bldnode.abspath()], install_path=None)
+    # Exercise the retained packet owner directly, including sanitizer builds,
+    # without pulling unrelated framework/DI execution into its lifetime oracle.
+    bld.program(target='../immutable-publication-store-tests',
+                name='immutable-publication-store-tests',
+                source=[bld.path.find_node('standalone/uav-immutable-publication-main.cpp'),
+                        bld.path.find_node('unit-tests/immutable-protected-publication-store.t.cpp'),
+                        bld.path.parent.find_node(
+                            'ndn-service-framework/ImmutableProtectedPublicationStore.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                defines=bld.env['DEFINES_NAC-ABE'],
+                use='NDN_CXX BOOST', install_path=None)
     # Focused external-library ownership oracle; no Core objects or copied DSO.
     bld.program(target='../spec202-openabe-policy-lifecycle',
                 name='spec202-openabe-policy-lifecycle',
@@ -1767,4 +1876,87 @@ def build(bld):
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Focus the new native person tracking boundary without rebuilding unrelated suites.
+    bld.program(target='../uav-person-tracking-tests', name='uav-person-tracking-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/uav-person-profile.t.cpp'),
+                        bld.path.find_node('unit-tests/uav-person-tracking.t.cpp'),
+                        bld.path.find_node('unit-tests/uav-person-sequence.t.cpp'),
+                        bld.path.parent.find_node(
+                            'NDNSF-UAV-APP/shared/uav-person-tracking.cpp'),
+                        bld.path.parent.find_node(
+                            'NDNSF-UAV-APP/shared/uav-byte-track-state.cpp'),
+                        bld.path.parent.find_node(
+                            'NDNSF-UAV-APP/shared/uav-person-tracking-profile.cpp')],
+                includes=['..'], use='NDN_CXX BOOST', install_path=None)
+
+    # Exercise native results, child-to-transaction integration and the legacy schema boundary.
+    bld.program(target='../uav-person-result-tests', name='uav-person-result-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/uav-person-result.t.cpp'),
+                        bld.path.find_node('unit-tests/uav-tracking-result-verifier.t.cpp'),
+                        bld.path.find_node('unit-tests/uav-tracking-worker-transaction.t.cpp'),
+                        bld.path.find_node('integration-tests/uav-person-tracking-flow.t.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavProtocol.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-tracking-profile.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-tracking.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-byte-track-state.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-window-admission.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp'),
+                        bld.path.find_node('integration-tests/uav-tracking-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/uav-observation-flow.t.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavFrameIngress.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavMultiViewRecognition.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/tracking/UavTrackingSession.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Real validated Core collaboration ingress composed with native person admission.
+    bld.program(target='../uav-person-admission-tests', name='uav-person-admission-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('integration-tests/uav-person-admission.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavProtocol.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-tracking-profile.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-computation.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-tracking.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-byte-track-state.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                defines=['HAVE_TESTS'], rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Actual owned worker process and native cancellation/output/reaping oracles.
+    bld.program(target='../uav-tracking-worker-process-tests',
+                name='uav-tracking-worker-process-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/uav-tracking-worker-process.t.cpp'),
+                        bld.path.parent.find_node(
+                            'NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp')],
+                includes=['..'], use='NDN_CXX BOOST', install_path=None)
+
+    # Native frozen computation inventory and maintained signed request bindings.
+    bld.program(target='../uav-person-computation-tests', name='uav-person-computation-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/uav-person-computation.t.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-computation.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-tracking-profile.cpp')],
+                includes=['..'], use='NDN_CXX BOOST', install_path=None)
+
+    bld.program(target='../uav-person-published-frame-tests', name='uav-person-published-frame-tests',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/uav-person-published-frame.t.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-published-frame.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavProtocol.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 rpath=[bld.bldnode.abspath()], install_path=None)

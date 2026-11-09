@@ -3285,6 +3285,10 @@ namespace ndn_service_framework
 
     ServiceUser::~ServiceUser()
     {
+        for (auto& call : m_pendingCalls) {
+            for (auto& fetch : call.second.largeResponseFetches) fetch.second->stop();
+            call.second.largeResponseFetches.clear();
+        }
         stopProducerPacketValidation();
         {
             std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
@@ -4433,6 +4437,8 @@ namespace ndn_service_framework
         if (pendingCall == m_pendingCalls.end()) {
             return;
         }
+        for (auto& fetch : pendingCall->second.largeResponseFetches) fetch.second->stop();
+        pendingCall->second.largeResponseFetches.clear();
         const auto eraseAtUs = nowMicroseconds();
         auto& record = m_pendingCallTraceHistory[requestId];
         if (record.createdAtUs == 0) {
@@ -4989,39 +4995,15 @@ namespace ndn_service_framework
         const auto payload = pendingCall->second.requestMessage.getPayload();
         const auto strategy = pendingCall->second.strategy;
         const auto timeoutMs = pendingCall->second.timeoutMs;
-        const auto ackTimeoutMs = pendingCall->second.ackTimeoutMs;
-        const bool scheduleAckTimeout = pendingCall->second.scheduleAckTimeoutAfterPublish;
-        const bool scheduleImmediateAckTimeout =
-            pendingCall->second.scheduleImmediateAckTimeoutAfterPublish;
         pendingCall->second.learnedAckProviderCountAtPublish =
             getRecentAckProviderCount(serviceName, nowMicroseconds());
 
-        PublishRequestV2(providers, serviceName, requestId, payload, strategy);
-
-        pendingCall = m_pendingCalls.find(requestId);
-        if (pendingCall == m_pendingCalls.end()) {
-            return;
-        }
-        if (scheduleAckTimeout && !pendingCall->second.ackTimeoutScheduled) {
-            pendingCall->second.ackTimeoutScheduled = true;
-            if (ackTimeoutMs > 0) {
-                pendingCall->second.ackWindowDeadlineUs =
-                    pendingCall->second.publishedAtUs +
-                    static_cast<uint64_t>(ackTimeoutMs) * 1000;
-                m_scheduler.schedule(ndn::time::milliseconds(ackTimeoutMs), [this, requestId]() {
-                    handleAckCollectionTimeout(requestId);
-                });
-            }
-            else if (scheduleImmediateAckTimeout) {
-                m_scheduler.schedule(ndn::time::milliseconds(0), [this, requestId]() {
-                    handleAckCollectionTimeout(requestId);
-                });
-            }
-        }
+        // The absolute invocation deadline also bounds publication preparation.
         if (!pendingCall->second.requestTimeoutScheduled) {
             pendingCall->second.requestTimeoutScheduled = true;
             scheduleRequestTimeout(requestId, timeoutMs);
         }
+        PublishRequestV2(providers, serviceName, requestId, payload, strategy);
     }
 
     size_t ServiceUser::getEffectiveAdaptiveAdmissionWindow() const
@@ -7002,11 +6984,6 @@ namespace ndn_service_framework
         NDN_LOG_DEBUG(" selected serviceName=" << serviceName.toUri()
                   << " final request name=" << requestName.toUri()
                   << " userToken=" << requestMessage.getUserToken());
-        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_PUBLISHED timestamp_us="
-                  << nowMicroseconds()
-                  << " requestId=" << requestId.toUri()
-                  << " serviceName=" << serviceName.toUri()
-                  << " requestName=" << requestName.toUri());
         NDN_LOG_DEBUG("PublishRequestV2 selected serviceName=" << serviceName.toUri()
                      << " final request name=" << requestName.toUri());
 
@@ -7018,7 +6995,6 @@ namespace ndn_service_framework
             pendingIt->second.requestNameWithoutPrefix = requestNameWithoutPrefix;
             pendingIt->second.requestMessage = requestMessage;
             pendingIt->second.strategy = strategy;
-            pendingIt->second.publishedAtUs = nowMicroseconds();
             pendingIt->second.responseRetryEnabled =
                 m_responseRetryOptions.enabled &&
                 strategy == ndn_service_framework::tlv::FirstResponding &&
@@ -7031,7 +7007,6 @@ namespace ndn_service_framework
             pendingIt->second.responseMaxAttempts =
                 m_responseRetryOptions.maxAttempts;
         }
-        updateRequestLifecycleState(requestId, RequestLifecycleState::REQUEST_PUBLISHED);
 
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_PUBLISH_BEGIN timestamp_us="
                   << nowMicroseconds()
@@ -7044,21 +7019,95 @@ namespace ndn_service_framework
                              {{"serviceName", serviceName.toUri()},
                               {"strategy", std::to_string(strategy)}});
         }
+        m_strategyMap.emplace(requestId, strategy);
+        if (strategy == tlv::RandomSelection) {
+            m_AckInfoMap[requestId] = std::vector<ndn_service_framework::AckInfo>();
+        }
+        auto publicationFinished = [this, requestId, serviceName, requestName, strategy]
+            (bool success, const std::string& reason) {
+          auto pending = m_pendingCalls.find(requestId);
+          if (pending == m_pendingCalls.end() || pending->second.timedOut ||
+              pending->second.serviceName != serviceName) {
+            return;
+          }
+          if (!success) {
+            NDN_LOG_WARN("Request publication failed requestId=" << requestId
+                         << " reason=" << reason);
+            return;
+          }
+          const auto publishedAtUs = nowMicroseconds();
+          if (pending->second.publishedAtUs != 0 ||
+              (pending->second.requestDeadlineUs != 0 &&
+               publishedAtUs >= pending->second.requestDeadlineUs)) {
+            return;
+          }
+          pending->second.publishedAtUs = publishedAtUs;
+          if (pending->second.scheduleAckTimeoutAfterPublish &&
+              !pending->second.ackTimeoutScheduled) {
+            pending->second.ackTimeoutScheduled = true;
+            const auto ackTimeoutMs = pending->second.ackTimeoutMs;
+            if (ackTimeoutMs > 0) {
+              pending->second.ackWindowDeadlineUs = publishedAtUs +
+                static_cast<uint64_t>(ackTimeoutMs) * 1000;
+              m_scheduler.schedule(ndn::time::milliseconds(ackTimeoutMs), [this, requestId] {
+                handleAckCollectionTimeout(requestId);
+              });
+            }
+            else if (pending->second.scheduleImmediateAckTimeoutAfterPublish) {
+              m_scheduler.schedule(ndn::time::milliseconds(0), [this, requestId] {
+                handleAckCollectionTimeout(requestId);
+              });
+            }
+          }
+          if (strategy == tlv::RandomSelection) {
+            m_scheduler.schedule(100_ms, [this, requestId] {
+              auto ackInfoVec = m_AckInfoMap.find(requestId);
+              if (ackInfoVec == m_AckInfoMap.end()) {
+                NDN_LOG_ERROR("AckInfo vector not found for RequestID: " << requestId);
+                return;
+              }
+              if (ackInfoVec->second.empty()) {
+                NDN_LOG_ERROR("No AckInfo found within 100 ms for RequestID: " << requestId);
+                NDN_LOG_INFO("Change strategy of " << requestId << " to FirstResponding");
+                m_strategyMap[requestId] = tlv::FirstResponding;
+                m_AckInfoMap.erase(ackInfoVec);
+                return;
+              }
+              const auto randomAckInfo = ackInfoVec->second[rand() % ackInfoVec->second.size()];
+              NDN_LOG_INFO("Chosen AckInfo for RandomSelection: "
+                           << randomAckInfo.providerName << " " << randomAckInfo.requestID);
+              PublishServiceSelectionMessageV2(randomAckInfo.providerName,
+                                               randomAckInfo.serviceName,
+                                               randomAckInfo.requestID);
+            });
+          }
+          NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_PUBLISHED timestamp_us="
+                        << publishedAtUs << " requestId=" << requestId
+                        << " serviceName=" << serviceName << " requestName=" << requestName);
+          // Callbacks may cancel the invocation; retain no iterator afterwards.
+          updateRequestLifecycleState(requestId, RequestLifecycleState::REQUEST_PUBLISHED);
+        };
         if (m_requestPublisher) {
-            m_requestPublisher(requestId,
-                               requestName,
-                               serviceProviderNames,
-                               serviceName,
-                               requestMessage,
-                               strategy);
+            // This explicit synchronous publisher has no completion callback.
+            const auto publisher = m_requestPublisher;
+            publicationFinished(true, "");
+            if (m_pendingCalls.find(requestId) == m_pendingCalls.end()) return;
+            publisher(requestId, requestName, serviceProviderNames,
+                      serviceName, requestMessage, strategy);
+        }
+        else if (m_isLocalMock && !m_svsps && !m_localPublicationHandler) {
+            // Preserve explicitly offline fixtures that model publication logically.
+            publicationFinished(true, "");
         }
         else {
-            PublishMessage(requestName, requestNameWithoutPrefix, requestMessage);
+            PublishMessage(requestName, requestNameWithoutPrefix, requestMessage,
+                           std::move(publicationFinished));
         }
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_PUBLISH_RETURN timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " serviceName=" << serviceName.toUri());
+        pendingIt = m_pendingCalls.find(requestId);
         if (m_timelineTrace) {
             logTimelineTrace("user", "request_publish_done", requestId,
                              {{"serviceName", serviceName.toUri()},
@@ -7068,37 +7117,6 @@ namespace ndn_service_framework
                                   pendingIt->second.streamOptions->attemptEpoch != 0 ?
                                 std::to_string(pendingIt->second.streamOptions->attemptEpoch) :
                                 "request"}});
-        }
-
-        m_strategyMap.emplace(requestId, strategy);
-
-        if (strategy == tlv::RandomSelection){
-            m_AckInfoMap[requestId] = std::vector<ndn_service_framework::AckInfo>();
-
-            m_scheduler.schedule(100_ms,[this, requestId](){
-                auto ackInfoVec = m_AckInfoMap.find(requestId);
-                if (ackInfoVec == m_AckInfoMap.end()){
-                    NDN_LOG_ERROR("AckInfo vector not found for RequestID: " << requestId.toUri());
-                    return;
-                }
-
-                if (ackInfoVec->second.size() == 0){
-                    NDN_LOG_ERROR("After waiting for 100 ms, No AckInfo found for RequestID: " << requestId.toUri());
-                    NDN_LOG_INFO("Change strategy of "<< requestId<< " to FirstResponding");
-                    m_strategyMap[requestId] = tlv::FirstResponding;
-                    m_AckInfoMap.erase(ackInfoVec);
-                    return;
-                }
-
-                auto randomAckInfo = ackInfoVec->second[rand() % ackInfoVec->second.size()];
-                NDN_LOG_INFO("Choosen AckInfo for RandomSelection: "
-                             << randomAckInfo.providerName.toUri() << " "
-                             << randomAckInfo.requestID.toUri());
-                PublishServiceSelectionMessageV2(
-                    randomAckInfo.providerName,
-                    randomAckInfo.serviceName,
-                    randomAckInfo.requestID);
-            });
         }
     }
 
@@ -12336,160 +12354,156 @@ namespace ndn_service_framework
         return handleDecryptedResponseByName(responseName, responseMessage);
     }
 
+  ServiceUser::LargeResponseFetch::~LargeResponseFetch()
+  {
+    stop();
+  }
+
+  void
+  ServiceUser::LargeResponseFetch::stop()
+  {
+    if (terminal) return;
+    terminal = true;
+    deadline.cancel();
+    onComplete.disconnect();
+    onError.disconnect();
+    if (fetcher) fetcher->stop();
+    fetcher.reset();
+  }
+
+  void
+  ServiceUser::startLargeResponseReferenceFetch(
+    ResponseMessage responseMessage, const ndn::Name& responseName,
+    const ndn::Name& serviceName, const ndn::Name& requestId,
+    const ndn::Name& providerName)
+  {
+    const auto reference = parseLargeDataReferencePayload(responseMessage.getPayload());
+    auto pending = m_pendingCalls.find(requestId);
+    if (!reference || pending == m_pendingCalls.end()) return;
+    const auto current = [this, requestId] {
+      const auto call = m_pendingCalls.find(requestId);
+      if (call == m_pendingCalls.end() || call->second.timedOut) return false;
+      const auto& state = call->second;
+      const auto deadline = state.requestDeadlineUs != 0 ? state.requestDeadlineUs :
+        (state.timeoutMs > 0 ? state.createdAtUs + uint64_t(state.timeoutMs) * 1000 : 0);
+      return deadline == 0 || nowMicroseconds() < deadline;
+    };
+    if (!current()) {
+      finalizeTimedOutPendingCall(requestId);
+      return;
+    }
+    auto owner = std::make_shared<LargeResponseFetch>();
+    if (!pending->second.largeResponseFetches.emplace(providerName, owner).second) return;
+    const auto weakOwner = std::weak_ptr<LargeResponseFetch>(owner);
+    const bool timing = isTruthyEnv("NDNSF_RESPONSE_LARGE_FETCH_TIMING");
+    const auto started = std::chrono::steady_clock::now();
+    const auto finish = [this, weakOwner, current, responseMessage, responseName,
+                         serviceName, requestId, providerName, timing, started]
+      (ndn::ConstBufferPtr buffer, std::string error) {
+      const auto active = weakOwner.lock();
+      if (!active || active->terminal) return;
+      // stop() removes Interests/timers synchronously. Its queued self release
+      // retains only SegmentFetcher, never this User or invocation key state.
+      active->stop();
+      auto call = m_pendingCalls.find(requestId);
+      if (call == m_pendingCalls.end()) return;
+      call->second.largeResponseFetches.erase(providerName);
+      removeName(call->second.largeResponseReferenceProvidersInFlight, providerName);
+      if (!current()) {
+        finalizeTimedOutPendingCall(requestId);
+        return;
+      }
+      if (!authorizeControllerTransition(serviceName, ProtectedTransition::RESPONSE_DELIVERY)) {
+        return;
+      }
+      std::optional<ResponseMessage> resolved;
+      const auto decodeStarted = std::chrono::steady_clock::now();
+      if (error.empty() && buffer) {
+        try {
+          resolved = decodeLargeResponseReferencePayload(
+            responseMessage, responseName, serviceName, *buffer, error);
+        }
+        catch (const std::exception& failure) {
+          error = failure.what();
+        }
+      }
+      if (timing) {
+        NDN_LOG_INFO("NDNSF_RESPONSE_LARGE_FETCH_TIMING event="
+          << (resolved ? "complete" : "error") << " responseName=" << responseName
+          << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - started).count() / 1000.0
+          << " encoded_bytes=" << (buffer ? buffer->size() : 0)
+          << " decode_ms=" << std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - decodeStarted).count() / 1000.0);
+      }
+      if (!current()) {
+        finalizeTimedOutPendingCall(requestId);
+        return;
+      }
+      if (!resolved) {
+        NDN_LOG_ERROR("Failed to resolve large response reference: " << error);
+        ResponseMessage failure(responseMessage);
+        failure.setStatus(false);
+        failure.setErrorInfo("large response reference fetch failed: " + error);
+        handleDecryptedResponse(requestId, providerName, failure, true);
+        return;
+      }
+      handleDecryptedResponse(requestId, providerName, *resolved, true);
+    };
+    owner->deadline = m_scheduler.schedule(ndn::time::seconds(30), [finish] {
+      finish({}, "large response fetch timed out");
+    });
+    try {
+      if (!reference->encrypted || reference->dataName.empty()) {
+        finish({}, "large response reference is not encrypted or has empty Data name");
+        return;
+      }
+      const int lifetimeMs = std::max(50,
+        intEnvOrDefault("NDNSF_RESPONSE_LARGE_INTEREST_LIFETIME_MS", 4000));
+      ndn::Interest interest(reference->dataName);
+      interest.setCanBePrefix(true);
+      interest.setMustBeFresh(true);
+      interest.setInterestLifetime(ndn::time::milliseconds(lifetimeMs));
+      ndn::SegmentFetcher::Options options;
+      options.probeLatestVersion = false;
+      options.useConstantCwnd = true;
+      options.initCwnd = std::max(1, intEnvOrDefault("NDNSF_RESPONSE_LARGE_FETCH_INIT_CWND", 8));
+      options.maxTimeout = ndn::time::seconds(10);
+      options.interestLifetime = ndn::time::milliseconds(lifetimeMs);
+      auto transportValidator = validator;
+      owner->fetcher = ndn::SegmentFetcher::start(m_face, interest,
+        transportValidator->getConfiguredValidatorForSegmentFetcher(), options);
+      owner->onComplete = owner->fetcher->onComplete.connect(
+        [finish, transportValidator] (ndn::ConstBufferPtr buffer) {
+          finish(std::move(buffer), {});
+        });
+      owner->onError = owner->fetcher->onError.connect(
+        [finish, transportValidator] (uint32_t code, const std::string& reason) {
+          finish({}, "SegmentFetcher error " + std::to_string(code) + ": " + reason);
+        });
+      if (timing) {
+        NDN_LOG_INFO("NDNSF_RESPONSE_LARGE_FETCH_TIMING event=start dataName="
+          << reference->dataName << " interest_lifetime_ms=" << lifetimeMs
+          << " init_cwnd=" << options.initCwnd);
+      }
+    }
+    catch (const std::exception& failure) {
+      finish({}, failure.what());
+    }
+  }
+
     std::optional<ResponseMessage>
-    ServiceUser::resolveLargeResponseReferencePayload(
+    ServiceUser::decodeLargeResponseReferencePayload(
         const ResponseMessage& responseMessage,
         const ndn::Name& responseName,
         const ndn::Name& serviceName,
+        const ndn::Buffer& encodedEnvelope,
         std::string& errorMessage)
     {
         const auto reference = parseLargeDataReferencePayload(responseMessage.getPayload());
-        if (!reference) {
-            return responseMessage;
-        }
-        if (!reference->encrypted) {
-            errorMessage = "large response reference is not encrypted";
-            return std::nullopt;
-        }
-        if (reference->dataName.empty()) {
-            errorMessage = "large response reference has empty Data name";
-            return std::nullopt;
-        }
-
-        auto completed = std::make_shared<std::atomic<bool>>(false);
-        auto mutex = std::make_shared<std::mutex>();
-        auto cv = std::make_shared<std::condition_variable>();
-        auto error = std::make_shared<std::string>();
-        auto encodedEnvelope = std::make_shared<ndn::Buffer>();
-        const int interestLifetimeMs =
-            std::max(50, intEnvOrDefault("NDNSF_RESPONSE_LARGE_INTEREST_LIFETIME_MS", 4000));
-        const double fetchInitCwnd = static_cast<double>(
-            std::max(1, intEnvOrDefault("NDNSF_RESPONSE_LARGE_FETCH_INIT_CWND", 8)));
-        const bool fetchTimingEnabled = isTruthyEnv("NDNSF_RESPONSE_LARGE_FETCH_TIMING");
-        const auto fetchStart = std::chrono::steady_clock::now();
-
-        boost::asio::post(m_face.getIoContext(),
-            [this,
-             dataName = reference->dataName,
-             completed,
-             mutex,
-             cv,
-             error,
-             encodedEnvelope,
-             interestLifetimeMs,
-             fetchInitCwnd,
-             fetchTimingEnabled,
-             fetchStart] {
-                ndn::Interest interest(dataName);
-                interest.setCanBePrefix(true);
-                interest.setMustBeFresh(true);
-                interest.setInterestLifetime(ndn::time::milliseconds(interestLifetimeMs));
-
-                try {
-                    ndn::SegmentFetcher::Options options;
-                    options.probeLatestVersion = false;
-                    options.useConstantCwnd = true;
-                    options.initCwnd = fetchInitCwnd;
-                    options.maxTimeout = ndn::time::seconds(10);
-                    options.interestLifetime = ndn::time::milliseconds(interestLifetimeMs);
-                    if (fetchTimingEnabled) {
-                        NDN_LOG_INFO("NDNSF_RESPONSE_LARGE_FETCH_TIMING event=start"
-                                     << " dataName=" << dataName.toUri()
-                                     << " interest_lifetime_ms=" << interestLifetimeMs
-                                     << " init_cwnd=" << fetchInitCwnd);
-                    }
-                    // Large response segments are Provider-signed Data.  Use
-                    // the same configured trust-schema validator as the
-                    // normal SVS/Data path; ValidatorNull here would allow a
-                    // forged segment to reach request-scoped decryption.
-                    auto transportValidator = validator;
-                    auto fetcher = ndn::SegmentFetcher::start(m_face,
-                                                               interest,
-                                                               transportValidator->getConfiguredValidatorForSegmentFetcher(),
-                                                               options);
-                    fetcher->onComplete.connect(
-                        [completed,
-                         mutex,
-                         cv,
-                         encodedEnvelope,
-                         transportValidator,
-                         dataName,
-                         fetchTimingEnabled,
-                         fetchStart,
-                         interestLifetimeMs,
-                         fetchInitCwnd](ndn::ConstBufferPtr buffer) {
-                            {
-                                std::lock_guard<std::mutex> lock(*mutex);
-                                encodedEnvelope->assign(buffer->begin(), buffer->end());
-                                completed->store(true);
-                            }
-                            if (fetchTimingEnabled) {
-                                const auto elapsedMs =
-                                    std::chrono::duration_cast<std::chrono::microseconds>(
-                                        std::chrono::steady_clock::now() - fetchStart).count() /
-                                    1000.0;
-                                NDN_LOG_INFO("NDNSF_RESPONSE_LARGE_FETCH_TIMING event=complete"
-                                             << " dataName=" << dataName.toUri()
-                                             << " elapsed_ms=" << elapsedMs
-                                             << " encoded_bytes=" << buffer->size()
-                                             << " interest_lifetime_ms=" << interestLifetimeMs
-                                             << " init_cwnd=" << fetchInitCwnd);
-                            }
-                            cv->notify_one();
-                        });
-                    fetcher->onError.connect(
-                        [completed,
-                         mutex,
-                         cv,
-                         error,
-                         transportValidator,
-                         dataName,
-                         fetchTimingEnabled,
-                         fetchStart,
-                         interestLifetimeMs,
-                         fetchInitCwnd](uint32_t code, const std::string& msg) {
-                            {
-                                std::lock_guard<std::mutex> lock(*mutex);
-                                *error = "SegmentFetcher error " + std::to_string(code) +
-                                         ": " + msg;
-                                completed->store(true);
-                            }
-                            if (fetchTimingEnabled) {
-                                const auto elapsedMs =
-                                    std::chrono::duration_cast<std::chrono::microseconds>(
-                                        std::chrono::steady_clock::now() - fetchStart).count() /
-                                    1000.0;
-                                NDN_LOG_INFO("NDNSF_RESPONSE_LARGE_FETCH_TIMING event=error"
-                                             << " dataName=" << dataName.toUri()
-                                             << " elapsed_ms=" << elapsedMs
-                                             << " code=" << code
-                                             << " message=" << msg
-                                             << " interest_lifetime_ms=" << interestLifetimeMs
-                                             << " init_cwnd=" << fetchInitCwnd);
-                            }
-                            cv->notify_one();
-                        });
-                }
-                catch (const std::exception& e) {
-                    {
-                        std::lock_guard<std::mutex> lock(*mutex);
-                        *error = std::string("large response fetch/decrypt failed: ") + e.what();
-                        completed->store(true);
-                    }
-                    cv->notify_one();
-                }
-            });
-
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        std::unique_lock<std::mutex> lock(*mutex);
-        cv->wait_until(lock, deadline, [&completed] { return completed->load(); });
-        if (!completed->load()) {
-            errorMessage = "large response fetch timed out for " + reference->dataName.toUri();
-            return std::nullopt;
-        }
-        if (!error->empty()) {
-            errorMessage = "large response fetch failure for " +
-                           reference->dataName.toUri() + ": " + *error;
+        if (!reference) return responseMessage;
+        if (!reference->encrypted || reference->dataName.empty()) {
+            errorMessage = "large response reference is not encrypted or has empty Data name";
             return std::nullopt;
         }
 
@@ -12577,10 +12591,10 @@ namespace ndn_service_framework
             std::vector<ndn::Buffer> authenticatedNonces;
             size_t offset = 0;
             size_t segmentIndex = 0;
-            while (offset < encodedEnvelope->size()) {
+            while (offset < encodedEnvelope.size()) {
                 auto [parsed, block] = ndn::Block::fromBuffer(ndn::span<const uint8_t>(
-                    encodedEnvelope->data() + offset,
-                    encodedEnvelope->size() - offset));
+                    encodedEnvelope.data() + offset,
+                    encodedEnvelope.size() - offset));
                 if (!parsed || block.type() != AeadEnvelope::TYPE || block.size() == 0) {
                     errorMessage =
                         "request-scoped large response contains malformed segment envelope";
@@ -12630,6 +12644,13 @@ namespace ndn_service_framework
                 (!reference->digest.empty() &&
                  sha256DigestString(plaintext) != reference->digest)) {
                 errorMessage = "request-scoped large response size or digest mismatch";
+                return std::nullopt;
+            }
+            const auto& call = pendingIt->second;
+            const auto deadlineUs = call.requestDeadlineUs != 0 ? call.requestDeadlineUs :
+                (call.timeoutMs > 0 ? call.createdAtUs + uint64_t(call.timeoutMs) * 1000 : 0);
+            if (deadlineUs != 0 && nowMicroseconds() >= deadlineUs) {
+                errorMessage = "request deadline expired before large response replay commit";
                 return std::nullopt;
             }
             if (!m_requestScopedNonceRegistry.reserveBatch(
@@ -12875,52 +12896,8 @@ namespace ndn_service_framework
             }
             addUniqueName(pendingIt->second.largeResponseReferenceProvidersInFlight,
                           providerName);
-            auto resolveAndFinish =
-                [this, responseName, serviceName, requestId, providerName,
-                 responseMessage = std::move(responseMessage)]() mutable {
-                    std::string error;
-                    auto resolved =
-                        resolveLargeResponseReferencePayload(responseMessage,
-                                                             responseName,
-                                                             serviceName,
-                                                             error);
-                    boost::asio::post(m_face.getIoContext(),
-                        [this, responseName, requestId, providerName,
-                         resolved = std::move(resolved),
-                         responseMessage = std::move(responseMessage),
-                         error = std::move(error)]() mutable {
-                            if (!resolved) {
-                                auto pending = m_pendingCalls.find(requestId);
-                                if (pending != m_pendingCalls.end()) {
-                                    removeName(
-                                        pending->second.largeResponseReferenceProvidersInFlight,
-                                        providerName);
-                                }
-                                NDN_LOG_ERROR("Failed to resolve large response reference: "
-                                              << error);
-                                ResponseMessage failure(responseMessage);
-                                failure.setStatus(false);
-                                failure.setErrorInfo("large response reference fetch failed: " +
-                                                     error);
-                                if (!handleDecryptedResponse(requestId, providerName,
-                                                             failure, true)) {
-                                    NDN_LOG_DEBUG("OnResponse: no pending async callback for "
-                                                  << responseName);
-                                }
-                                return;
-                            }
-                            if (!handleDecryptedResponse(requestId, providerName,
-                                                         *resolved, true)) {
-                                NDN_LOG_DEBUG("OnResponse: no pending async callback for "
-                                              << responseName);
-                            }
-                        });
-                };
-            if (m_handlerPool.getThreadCount() > 0 &&
-                m_handlerPool.post(resolveAndFinish)) {
-                return;
-            }
-            std::thread(resolveAndFinish).detach();
+            startLargeResponseReferenceFetch(std::move(responseMessage), responseName,
+                                             serviceName, requestId, providerName);
             return;
         }
         if (!handleDecryptedResponseByName(responseName, responseMessage)) {
@@ -17896,7 +17873,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 if (messageType == "REQUEST" || messageType == "SELECTION") {
                     const auto owner = m_pendingCalls.find(requestId);
                     if (owner == m_pendingCalls.end() || owner->second.timedOut ||
-                        owner->second.serviceName != serviceName) {
+                        owner->second.serviceName != serviceName ||
+                        (owner->second.requestDeadlineUs != 0 &&
+                         nowMicroseconds() >= owner->second.requestDeadlineUs)) {
                         if (onPublished) onPublished(false, "invocation owner is no longer active");
                         return;
                     }

@@ -1210,6 +1210,13 @@ class CollaborationContext:
         This keeps the same request-scoped hybrid encryption and segment
         retrieval semantics as :meth:`publish_large`, but lets a distributed
         plan make object names predictable for dataflow prefetch.
+
+        An exact repeat reuses the original signed packets. Reusing a name
+        with changed content, request/key context, segmentation, or freshness
+        raises ValueError. Native retention is Provider-owned and finite:
+        8192 objects/128 MiB wire, up to 64 MiB plaintext per object; conservative
+        packet reservation can reject smaller objects. Capacity or expired work
+        returns an empty name; no fallback renames or re-encrypts an old object.
         """
 
         return str(self._native.publish_large_named(

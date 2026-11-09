@@ -4175,6 +4175,9 @@ private:
 
 class DroneServiceContainer
 {
+#ifdef NDNSF_UAV_MAIN_APP_TEST_SEAM
+  friend struct DroneTrackingTestAccess;
+#endif
 private:
   class RepoStatusLocalHelper
   {
@@ -4235,12 +4238,14 @@ public:
                std::string mavlinkUdpListenPort, std::string mavlinkSerialDevice,
                std::string mavlinkSerialBaud,
                bool configurePx4SitlDemoParams,
-               VideoPublisher::CameraRuntimeOptions cameraOptions)
+               VideoPublisher::CameraRuntimeOptions cameraOptions,
+               std::optional<UavTrackingProviderConfig> trackingConfig = std::nullopt)
     : m_serveCertificates(serveCertificates)
     , m_config(std::move(config))
     , m_droneId(std::move(droneId))
     , m_available(available)
     , m_identity(droneIdentity(m_config, m_droneId))
+    , m_trackingConfig(std::move(trackingConfig))
     , m_coreContainer({
         m_identity,
         m_config.groupPrefix,
@@ -4256,6 +4261,13 @@ public:
     , m_configurePx4SitlDemoParams(configurePx4SitlDemoParams)
     , m_cameraOptions(std::move(cameraOptions))
   {
+    if (m_trackingConfig) {
+      validateTrackingProviderConfig(*m_trackingConfig);
+      if (m_trackingConfig->producerIdentity != m_identity ||
+          m_trackingConfig->droneId != m_droneId) {
+        throw std::invalid_argument("tracking catalog does not belong to this Drone");
+      }
+    }
     // MiniNDN/SITL may start several Drone processes under one UID (and a
     // rootless user namespace maps every node to UID 0).  Scope the
     // initialization lock to the process HOME so independent node keychains
@@ -4278,14 +4290,46 @@ public:
 
   ~DroneServiceContainer()
   {
-    m_coreContainer.stop();
-    m_statusCallback = nullptr;
+    if (!shutdownRuntime()) std::terminate();
+  }
+
+  /** Call off the Face thread; retain communication and callback dependencies until drained. */
+  bool
+  shutdownRuntime()
+  {
+    std::lock_guard<std::mutex> shutdownLock(m_shutdownMutex);
+    if (m_shutdownComplete) return true;
+    if (!m_shutdownDeadline) {
+      m_shutdownDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    }
+    m_shutdownRequested = true;
+    m_containerReady = false;
+    m_ordinaryCallbacks.close();
+    UavTrackingProvider* tracking = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(m_containerMutex);
+      tracking = m_trackingCapability.get();
+      if (tracking) {
+        tracking->stopAdmission();
+        tracking->cancelActiveWork();
+      }
+    }
+    while (!m_ordinaryCallbacks.isDrained() || (tracking && !tracking->isDrained())) {
+      if (std::chrono::steady_clock::now() >= *m_shutdownDeadline) {
+        publishStatus("DRONE_RUNTIME_SHUTDOWN cleanup=INCOMPLETE boundary=callback-drain");
+        return false;
+      }
+      std::this_thread::sleep_for(10ms);
+    }
+    // An admitted VideoStart can create this producer; join only after its body drains.
     stopObjectDetectionLoop();
     m_done = true;
     m_face.getIoContext().stop();
-    if (m_faceThread.joinable()) {
-      m_faceThread.join();
-    }
+    if (m_faceThread.joinable()) m_faceThread.join();
+    m_coreContainer.stop();
+    m_statusCallback = nullptr;
+    m_shutdownComplete = true;
+    return true;
   }
 
   void
@@ -4326,7 +4370,8 @@ public:
         m_user->setHandlerThreads(1);
         publishStatus("NDNSF startup stage=service-install");
         m_coreContainer.useUser("drone-user", *m_user);
-        installServiceInstances();
+        installServiceInstances(*m_provider);
+        installTrackingCapability(*m_provider);
         publishStatus("NDNSF startup stage=provider-init");
         m_provider->init();
         publishStatus("NDNSF startup stage=provider-permissions");
@@ -4335,25 +4380,32 @@ public:
         m_user->init();
         publishStatus("NDNSF startup stage=user-permissions");
         m_user->fetchPermissionsFromController(m_config.controllerPrefix);
+        if (m_shutdownRequested.load()) throw std::runtime_error("Drone startup cancelled");
         publishStatus("NDNSF startup stage=core-start");
         m_coreContainer.start();
         m_containerReady = true;
         publishStatus("NDNSF runtime ready");
 
-        auto nextServiceAdvertisement = std::chrono::steady_clock::now();
-        while (!m_done.load()) {
-          m_face.getIoContext().run_for(std::chrono::milliseconds(10));
+      }
+      catch (const std::exception& error) {
+        handleRuntimeFailure(error.what());
+      }
+      auto nextServiceAdvertisement = std::chrono::steady_clock::now();
+      while (!m_done.load()) {
+        try {
           m_face.getIoContext().restart();
+          m_face.getIoContext().run_for(10ms);
           const auto now = std::chrono::steady_clock::now();
-          if (now >= nextServiceAdvertisement) {
+          if (!m_runtimeFailed.load() && !m_shutdownRequested.load() &&
+              now >= nextServiceAdvertisement) {
             publishServiceAdvertisements();
             nextServiceAdvertisement = now + std::chrono::seconds(15);
           }
         }
-      }
-      catch (const std::exception& e) {
-        publishStatus(std::string("NDNSF runtime error: ") + e.what());
-        m_done = true;
+        catch (const std::exception& error) {
+          handleRuntimeFailure(error.what());
+          std::this_thread::sleep_for(10ms);
+        }
       }
     });
   }
@@ -4366,7 +4418,7 @@ public:
       if (m_containerReady.load()) {
         return true;
       }
-      if (m_done.load()) {
+      if (m_done.load() || m_runtimeFailed.load()) {
         return false;
       }
       std::this_thread::sleep_for(50ms);
@@ -4690,13 +4742,96 @@ private:
   }
 
   void
-  installServiceInstances()
+  installTrackingCapability(ndn_service_framework::ServiceProvider& provider)
+  {
+    if (!m_trackingConfig) return;
+    std::lock_guard<std::mutex> lock(m_containerMutex);
+    if (m_shutdownRequested.load() || m_runtimeFailed.load()) {
+      throw std::runtime_error("Drone is closing before tracking installation");
+    }
+    if (m_trackingCapability) throw std::logic_error("tracking capability already installed");
+    auto capability = std::make_unique<UavTrackingProvider>(*m_trackingConfig);
+    capability->registerServices(provider);
+    m_trackingCapability = std::move(capability);
+  }
+
+  void
+  handleRuntimeFailure(const std::string& reason)
+  {
+    m_runtimeFailed = true;
+    m_containerReady = false;
+    m_ordinaryCallbacks.close();
+    publishStatus("NDNSF runtime error: " + reason);
+    std::lock_guard<std::mutex> lock(m_containerMutex);
+    if (m_trackingCapability) {
+      m_trackingCapability->stopAdmission();
+      m_trackingCapability->cancelActiveWork();
+    }
+    else if (m_ordinaryCallbacks.isDrained()) {
+      m_done = true;
+    }
+  }
+
+  ndn_service_framework::ServiceProvider::AckStrategyHandler
+  guardAck(ndn_service_framework::ServiceProvider::AckStrategyHandler handler)
+  {
+    return m_ordinaryCallbacks.protect(std::move(handler),
+      [] (const ndn_service_framework::RequestMessage&) {
+        ndn_service_framework::ServiceProvider::AckDecision decision;
+        decision.status = false;
+        decision.message = "Drone is shutting down";
+        return decision;
+      });
+  }
+
+  ndn_service_framework::ServiceProvider::SimpleRequestHandler
+  guardSimpleRequest(ndn_service_framework::ServiceProvider::SimpleRequestHandler handler)
+  {
+    return m_ordinaryCallbacks.protect(std::move(handler),
+      [] (const ndn_service_framework::RequestMessage&) {
+        return makeResponse(false, "", "Drone is shutting down");
+      });
+  }
+
+  ndn_service_framework::ServiceProvider::RequestHandler
+  guardRequest(ndn_service_framework::ServiceProvider::RequestHandler handler)
+  {
+    return m_ordinaryCallbacks.protect(std::move(handler), [] (const auto&...) {
+      return makeResponse(false, "", "Drone is shutting down");
+    });
+  }
+
+  ndn_service_framework::ServiceProvider::CollaborationHandler
+  guardRole(ndn_service_framework::ServiceProvider::CollaborationHandler handler)
+  {
+    return m_ordinaryCallbacks.protect(std::move(handler),
+      [] (ndn_service_framework::ServiceProvider::CollaborationContext& context,
+          const ndn_service_framework::RequestMessage&) {
+        context.fail("Drone is shutting down");
+      });
+  }
+
+  std::function<void()>
+  guardFace(std::function<void()> handler)
+  {
+    return m_ordinaryCallbacks.protect(std::move(handler), [] {});
+  }
+
+  std::function<void(const ndn_service_framework::ResponseMessage&)>
+  guardResponse(std::function<void(const ndn_service_framework::ResponseMessage&)> handler)
+  {
+    return m_ordinaryCallbacks.protect(std::move(handler),
+      [] (const ndn_service_framework::ResponseMessage&) {});
+  }
+
+  void
+  installServiceInstances(ndn_service_framework::ServiceProvider& provider)
   {
     using ServiceInvocationMode = ndn_service_framework::ServiceProvider::ServiceInvocationMode;
 
-    m_provider->setHandlerThreads(2);
-    m_provider->setAckThreads(2);
-    m_provider->setPerformanceMode(false);
+    provider.setHandlerThreads(2);
+    provider.setAckThreads(2);
+    provider.setPerformanceMode(false);
 
     std::shared_ptr<FlightControllerBackend> backend;
     if (m_flightControllerBackend == "udp" || m_flightControllerBackend == "mavlink-router") {
@@ -4785,10 +4920,10 @@ private:
     m_recordingManifestLocalHelper->registerService(m_coreContainer.localRegistry(),
                                                    localRecordingManifestServiceName());
 
-    m_provider->addService(
+    provider.addService(
       droneVideoControlService(m_config, m_droneId),
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+      guardAck(ackHandler),
+      guardSimpleRequest(
         [this](const ndn_service_framework::RequestMessage& request) {
           const auto fields = decodeFields(payloadToString(request));
           const auto action = fieldOr(fields, "action", "start");
@@ -4847,10 +4982,10 @@ private:
         }),
       ServiceInvocationMode::NormalOnly);
 
-    m_provider->addService(
+    provider.addService(
       droneCameraRecordingManifestService(m_config, m_droneId),
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::RequestHandler(
+      guardAck(ackHandler),
+      guardRequest(
         [this](const ndn::Name& requesterIdentity,
                const ndn::Name&,
                const ndn::Name&,
@@ -4881,19 +5016,19 @@ private:
         }),
       ServiceInvocationMode::NormalOnly);
 
-    m_provider->addService(
+    provider.addService(
       droneCameraRepoCatalogService(m_config, m_droneId),
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+      guardAck(ackHandler),
+      guardSimpleRequest(
         [this](const ndn_service_framework::RequestMessage&) {
           return makeResponse(true, encodeFields(recordingCatalogFields()));
         }),
       ServiceInvocationMode::NormalOnly);
 
-    m_provider->addService(
+    provider.addService(
       droneMavlinkParametersService(m_config, m_droneId),
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+      guardAck(ackHandler),
+      guardSimpleRequest(
         [backend, this](const ndn_service_framework::RequestMessage&) {
           auto snapshot = backend->parameterSnapshot();
           snapshot.droneId = m_droneId;
@@ -4901,10 +5036,10 @@ private:
         }),
       ServiceInvocationMode::NormalOnly);
 
-    m_provider->addService(
+    provider.addService(
       droneMavlinkParameterEditService(m_config, m_droneId),
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+      guardAck(ackHandler),
+      guardSimpleRequest(
         [backend, this](const ndn_service_framework::RequestMessage& request) {
           const auto fields = decodeFields(payloadToString(request));
           auto editRequest = VehicleParameterEditRequest::fromFields(fields);
@@ -4924,19 +5059,19 @@ private:
         }),
       ServiceInvocationMode::NormalOnly);
 
-    m_provider->addService(
+    provider.addService(
       dronePreflightChecklistService(m_config, m_droneId),
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+      guardAck(ackHandler),
+      guardSimpleRequest(
         [this](const ndn_service_framework::RequestMessage&) {
           return makeResponse(true, encodeFields(preflightChecklistFields()));
         }),
       ServiceInvocationMode::NormalOnly);
 
-    m_provider->addService(
+    provider.addService(
       droneMavlinkAnalyzeSnapshotService(m_config, m_droneId),
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+      guardAck(ackHandler),
+      guardSimpleRequest(
         [this, missionState, missionMutex](const ndn_service_framework::RequestMessage&) {
           MissionState mission;
           {
@@ -4947,10 +5082,10 @@ private:
         }),
       ServiceInvocationMode::NormalOnly);
 
-    m_provider->addService(
+    provider.addService(
       m_config.serviceMavlinkExecute,
       ndn_service_framework::ServiceProvider::AckStrategyHandler{},
-      ndn_service_framework::ServiceProvider::RequestHandler(
+      guardRequest(
         [backend, this, missionState, missionMutex](
           const ndn::Name&, const ndn::Name&, const ndn::Name&,
           const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
@@ -5019,10 +5154,10 @@ private:
           return makeResponse(true, encodeFields(telemetry));
         };
 
-    m_provider->addService(
+    provider.addService(
       m_config.serviceTelemetryStatus,
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::RequestHandler(
+      guardAck(ackHandler),
+      guardRequest(
         [telemetryHandler](const ndn::Name&, const ndn::Name&,
                            const ndn::Name& serviceName, const ndn::Name& requestId,
                            const ndn_service_framework::RequestMessage& request) {
@@ -5041,10 +5176,10 @@ private:
         }),
       ServiceInvocationMode::NormalAndTargeted);
 
-    m_provider->addService(
+    provider.addService(
       m_config.serviceCameraFrame,
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+      guardAck(ackHandler),
+      guardSimpleRequest(
         [this](const ndn_service_framework::RequestMessage&) {
           const auto frameId = "frame-" + std::to_string(nowMilliseconds());
           const auto image = buildMockJpeg(m_droneId, frameId);
@@ -5058,10 +5193,10 @@ private:
         }),
       ServiceInvocationMode::NormalOnly);
 
-    m_provider->addService(
+    provider.addService(
       m_config.serviceMissionAssign,
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(missionAckHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+      guardAck(missionAckHandler),
+      guardSimpleRequest(
         [backend, this, missionState, missionMutex, missionBusy](
           const ndn_service_framework::RequestMessage& request) {
           const auto fields = decodeFields(payloadToString(request));
@@ -5249,10 +5384,10 @@ private:
       return evidence.isValid(reason) &&
              evidence.exactDataName.toUri().find("://") == std::string::npos;
     };
-    m_provider->addService(
+    provider.addService(
       m_config.serviceIncidentAnalyze,
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(incidentAckHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+      guardAck(incidentAckHandler),
+      guardSimpleRequest(
         [this](const ndn_service_framework::RequestMessage& request) {
           const auto fields = decodeFields(payloadToString(request));
           const auto missionId = fieldOr(fields, "mission_id", "");
@@ -5295,12 +5430,12 @@ private:
           }));
         }),
       ServiceInvocationMode::NormalOnly);
-    m_provider->addCollaborationHandler(
+    provider.addCollaborationHandler(
       m_config.serviceIncidentAnalyze,
       std::vector<ndn_service_framework::CollaborationRole>{
         "EvidenceSource", "DetectorReporter"},
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(incidentAckHandler),
-      [this, parseIncidentEvidence](ndn_service_framework::ServiceProvider::CollaborationContext& context,
+      guardAck(incidentAckHandler),
+      guardRole([this, parseIncidentEvidence](ndn_service_framework::ServiceProvider::CollaborationContext& context,
                                     const ndn_service_framework::RequestMessage& request) {
         const char* injectedFailure = std::getenv("NDNSF_SPEC176_FAILURE_CASE");
         const std::string failureCase = injectedFailure == nullptr ?
@@ -5416,7 +5551,7 @@ private:
           {"evidence_name", evidence.exactDataName.toUri()},
           {"evidence_digest", evidence.contentDigest},
         })));
-      });
+      }));
   }
 
   ndn::Name
@@ -5498,7 +5633,7 @@ private:
           {"target_objects", "Car,Truck"},
           {"image_source", "ground-station-latest-decoded-video-frame"},
         });
-        boost::asio::post(m_face.getIoContext(), [this, payload, frameSeq] {
+        boost::asio::post(m_face.getIoContext(), guardFace([this, payload, frameSeq] {
           if (!m_user || !m_containerReady.load()) {
             return;
           }
@@ -5511,7 +5646,7 @@ private:
             ndn_service_framework::ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
             2000,
             [](const ndn::Name&) {},
-            [this, frameSeq](const ndn_service_framework::ResponseMessage& response) {
+            guardResponse([this, frameSeq](const ndn_service_framework::ResponseMessage& response) {
               if (!response.getStatus()) {
                 return;
               }
@@ -5522,8 +5657,8 @@ private:
                 publishStatus("object detection frame=" + std::to_string(frameSeq) +
                               " objects=" + fieldOr(fields, "objects", "unknown"));
               }
-            });
-        });
+            }));
+        }));
         ++frameSeq;
       }
     });
@@ -5544,6 +5679,7 @@ private:
   std::string m_droneId;
   bool m_available;
   ndn::Name m_identity;
+  const std::optional<UavTrackingProviderConfig> m_trackingConfig;
   ndn_service_framework::ServiceContainer m_coreContainer;
   std::unique_ptr<RecordingManifestLocalHelper> m_recordingManifestLocalHelper;
   std::unique_ptr<RepoStatusLocalHelper> m_repoStatusLocalHelper;
@@ -5557,7 +5693,11 @@ private:
   bool m_configurePx4SitlDemoParams = false;
   VideoPublisher::CameraRuntimeOptions m_cameraOptions;
   ndn::Face m_face;
+#ifdef NDNSF_UAV_MAIN_APP_TEST_SEAM
+  ndn::KeyChain m_keyChain{"pib-memory:", "tpm-memory:"};
+#else
   ndn::KeyChain m_keyChain;
+#endif
   ndn::security::Certificate m_providerCert;
   ndn::security::Certificate m_controllerCert;
   std::unique_ptr<ndn_service_framework::CertificatePublisher> m_certPublisher;
@@ -5567,11 +5707,18 @@ private:
   mutable std::mutex m_incidentQueueMutex;
   UavBoundedWorkQueue m_incidentQueue{32};
   std::unique_ptr<VideoPublisher> m_videoPublisher;
+  std::unique_ptr<UavTrackingProvider> m_trackingCapability;
+  DroneCallbackGate m_ordinaryCallbacks;
   std::shared_ptr<FlightControllerBackend> m_backend;
   mutable std::mutex m_containerMutex;
   std::thread m_faceThread;
   std::thread m_objectDetectionThread;
   std::function<void(std::string)> m_statusCallback;
+  std::mutex m_shutdownMutex;
+  std::optional<std::chrono::steady_clock::time_point> m_shutdownDeadline;
+  bool m_shutdownComplete = false;
+  std::atomic<bool> m_shutdownRequested{false};
+  std::atomic<bool> m_runtimeFailed{false};
   std::atomic<bool> m_containerReady{false};
   std::atomic<bool> m_done{false};
   std::atomic<bool> m_objectDetectionDone{true};

@@ -270,6 +270,8 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None):
             argv += ['--request-timeout-ms', str(actor['parameters']['request-timeout-ms'])]
     else:
         params = dict(actor['parameters'])
+        if 'core-work-timeout-ms' in params:
+            env['NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS'] = str(params.pop('core-work-timeout-ms'))
         if not {'grant-authority-public-key', 'recipient-key-map'} <= params.keys():
             raise ClusterError('Provider requires grant-authority-public-key and recipient-key-map')
         env['SPEC181_GRANT_AUTHORITY_PUBLIC_KEY'] = params.pop('grant-authority-public-key')

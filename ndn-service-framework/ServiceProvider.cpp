@@ -660,6 +660,19 @@ namespace ndn_service_framework
             return "sha256:" + hex;
         }
 
+  ndn::Name
+  makeCollaborationObjectGrantName(const ndn::Name& producer, const ndn::Name& service,
+                                   const std::string& scope, const ndn::Name& objectName,
+                                   const ndn::Name& requestId)
+  {
+    const auto& wire = objectName.wireEncode();
+    auto name = producer;
+    name.append("NDNSF").append("COLLAB-OBJECT-KEY").append(service.toUri()).append(scope)
+      .append(sha256DigestString(ndn::Buffer(wire.begin(), wire.end())))
+      .append(requestId).appendVersion(1);
+    return name;
+  }
+
         ndn::Name
         makeProviderAuthorizationAttribute(const ndn::Name& serviceName)
         {
@@ -4562,6 +4575,18 @@ namespace ndn_service_framework
         m_hybridMessageCrypto.cacheReceiveKey(keyId, epochId, key);
     }
 
+    size_t
+    ServiceProvider::evictImsPrefixForTest(const ndn::Name& prefix)
+    {
+      if (!m_isLocalMock || !identity.isPrefixOf(prefix) || prefix.size() <= identity.size()) {
+        throw std::invalid_argument("IMS eviction requires a LocalMock Producer prefix");
+      }
+      std::lock_guard<std::mutex> lock(_cache_mutex);
+      const auto previous = m_IMS.size();
+      m_IMS.erase(prefix);
+      return previous - m_IMS.size();
+    }
+
     HybridMessageKey
     ServiceProvider::prepareHybridSendKeyForTest(
         const ndn::Name& serviceName,
@@ -5858,6 +5883,24 @@ namespace ndn_service_framework
         };
     }
 
+    ServiceProvider::ServiceRegistration::CollaborationHandlerDrainWaiter
+    ServiceProvider::ServiceRegistration::makeCollaborationHandlerDrainWaiter() const
+    {
+        const auto state = std::atomic_load(&m_state);
+        if (!state) {
+            return [](std::chrono::milliseconds) { return true; };
+        }
+        return [state](std::chrono::milliseconds timeout) {
+            if (timeout.count() < 0) {
+                throw std::invalid_argument("collaboration handler drain timeout is negative");
+            }
+            std::unique_lock<std::mutex> lock(state->targetedHandlerMutex);
+            return state->targetedHandlersDrained.wait_for(lock, timeout, [&state] {
+                return state->activeCollaborationHandlers == 0;
+            });
+        };
+    }
+
     bool
     ServiceProvider::ServiceRegistration::closed() const noexcept
     {
@@ -6485,6 +6528,16 @@ namespace ndn_service_framework
         };
     }
 
+    std::function<bool()>
+    ServiceProvider::CollaborationContext::cancelWhenWorkNotCurrent(
+        std::function<bool()> external) const
+    {
+        const auto current = currentWorkPredicate(m_assignment.workDeadline);
+        return [current, external = std::move(external)] {
+            return !current() || (external && external());
+        };
+    }
+
     ImmutableProtectedDataResult
     ServiceProvider::CollaborationContext::publishImmutableProtectedData(
         const ndn::Name& semanticPrefix, const ndn::Buffer& payload)
@@ -6558,16 +6611,33 @@ namespace ndn_service_framework
     ServiceProvider::CollaborationContext::revokeCurrentWorkAuthority() noexcept
     {
         if (!m_workAuthorityCommitMutex) return false;
-        std::lock_guard<std::mutex> lock(*m_workAuthorityCommitMutex);
-        return m_workAuthorityRevoked &&
-            !m_workAuthorityRevoked->exchange(true, std::memory_order_acq_rel);
+        bool revoked = false;
+        {
+            std::lock_guard<std::mutex> lock(*m_workAuthorityCommitMutex);
+            revoked = m_workAuthorityRevoked &&
+                !m_workAuthorityRevoked->exchange(true, std::memory_order_acq_rel);
+        }
+        // Keep stream admission in Core and preserve lock order: never acquire
+        // the publisher/pending-request locks under the exact-publication lock.
+        // A failure here never restores exact-object work authority. Callers
+        // requiring a stream fence must also inspect streamCancelled().
+        try {
+            if (const auto publisher = streamPublisher())
+                publisher->fail("current work authority revoked");
+        }
+        catch (...) {}
+        return revoked;
     }
 
     bool
     ServiceProvider::CollaborationContext::hasCurrentWorkAuthority() const noexcept
     {
-        return m_workAuthorityRevoked &&
-            !m_workAuthorityRevoked->load(std::memory_order_acquire);
+        try {
+            return currentWorkPredicate(m_assignment.workDeadline)();
+        }
+        catch (...) {
+            return false;
+        }
     }
 
     bool
@@ -6843,14 +6913,73 @@ namespace ndn_service_framework
         int freshnessMs,
         CollaborationTransferMetrics* metrics)
     {
-        return m_provider.publishCollaborationLargeDataNamed(m_requestId,
-                                                             std::move(keyScope),
-                                                             dataName,
-                                                             payload,
-                                                             maxSegmentSize,
-                                                             freshnessMs,
-                                                             metrics);
+        const auto revoked = m_workAuthorityRevoked;
+        const auto workCurrent = m_assignment.workCurrent;
+        const auto deadline = m_assignment.workDeadline;
+        const auto current = [revoked, workCurrent, deadline] {
+            return revoked && !revoked->load(std::memory_order_acquire) &&
+                (!workCurrent || (workCurrent() &&
+                 std::chrono::steady_clock::now() < deadline));
+        };
+        return m_provider.publishCollaborationLargeDataNamedCurrent(
+            m_requestId, keyScope, dataName, payload, maxSegmentSize, freshnessMs,
+            metrics, current, m_workAuthorityCommitMutex);
     }
+
+  ndn::Name
+  ServiceProvider::CollaborationContext::publishReusableLargeNamed(
+    KeyScope keyScope, const ndn::Name& dataName, const ndn::Buffer& payload,
+    size_t maxSegmentSize, int freshnessMs)
+  {
+    const auto current = currentWorkPredicate(m_assignment.workDeadline);
+    if (m_assignment.service.empty() || dataName.empty() || payload.empty() ||
+        !dataName.at(-1).isVersion() || dataName.at(-1).toVersion() == 0 || !current()) {
+      return {};
+    }
+    return m_provider.publishCollaborationLargeDataNamedCurrent(
+      m_requestId, keyScope, dataName, payload, maxSegmentSize, freshnessMs,
+      nullptr, current, m_workAuthorityCommitMutex, m_assignment.service);
+  }
+
+  std::optional<ndn::Buffer>
+  ServiceProvider::CollaborationContext::fetchReusableLargeFromProducerCurrent(
+    const ndn::Name& dataName, KeyScope keyScope,
+    const ndn::Name& expectedProducer, int timeoutMs)
+  {
+    const auto deadline = std::min(m_assignment.workDeadline,
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs));
+    const auto current = currentWorkPredicate(deadline);
+    if (timeoutMs <= 0 || m_assignment.service.empty() || expectedProducer.empty() ||
+        !expectedProducer.isPrefixOf(dataName) || dataName.size() <= expectedProducer.size() ||
+        !dataName.at(-1).isVersion() || dataName.at(-1).toVersion() == 0 || !current()) {
+      return std::nullopt;
+    }
+    const auto remainingMs = [&] {
+      return static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now()).count());
+    };
+    int budgetMs = remainingMs();
+    if (budgetMs <= 0) return std::nullopt;
+    const auto grantName = makeCollaborationObjectGrantName(
+      expectedProducer, m_assignment.service, keyScope, dataName, m_requestId);
+    auto grant = m_provider.fetchCollaborationLargeData(
+      m_requestId, keyScope, grantName, budgetMs, 0, nullptr,
+      expectedProducer, current, false, 0, 0, {}, {}, m_assignment.service);
+    if (!grant || grant->size() != 103 || !current()) return std::nullopt;
+    ndn::Buffer objectKey(grant->begin(), grant->begin() + 32);
+    const std::string digest(grant->begin() + 32, grant->end());
+    if (digest.compare(0, 7, "sha256:") != 0 ||
+        !std::all_of(digest.begin() + 7, digest.end(), [] (unsigned char c) {
+          return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        })) return std::nullopt;
+    budgetMs = remainingMs();
+    if (budgetMs <= 0) return std::nullopt;
+    auto result = m_provider.fetchCollaborationLargeData(
+      m_requestId, keyScope, dataName, budgetMs, 0, nullptr,
+      expectedProducer, current, false, 0, 0, {}, objectKey, m_assignment.service);
+    if (!result || !current() || sha256DigestString(*result) != digest) return std::nullopt;
+    return result;
+  }
 
     std::optional<ndn::Buffer>
     ServiceProvider::CollaborationContext::fetchLarge(const ndn::Name& dataName,
@@ -6994,8 +7123,10 @@ namespace ndn_service_framework
         int freshnessMs,
         CollaborationTransferMetrics* metrics)
     {
-        return m_provider.publishCollaborationSignedExactData(
-            m_requestId, std::move(keyScope), objects, freshnessMs, metrics);
+        return m_provider.publishCollaborationOwnedExactData(
+            m_requestId, keyScope, objects, freshnessMs, metrics, nullptr,
+            std::numeric_limits<std::size_t>::max(),
+            currentWorkPredicate(m_assignment.workDeadline), m_workAuthorityCommitMutex);
     }
 
     bool
@@ -7007,7 +7138,8 @@ namespace ndn_service_framework
         std::size_t maxWireBytes)
     {
         return m_provider.publishCollaborationOwnedExactData(
-            m_requestId, keyScope, objects, freshnessMs, metrics, &originals, maxWireBytes);
+            m_requestId, keyScope, objects, freshnessMs, metrics, &originals, maxWireBytes,
+            currentWorkPredicate(m_assignment.workDeadline), m_workAuthorityCommitMutex);
     }
 
     bool
@@ -7016,7 +7148,8 @@ namespace ndn_service_framework
         const std::vector<std::shared_ptr<const ndn::Data>>& originals,
         CollaborationTransferMetrics* metrics)
     {
-        return m_provider.replayCollaborationOwnedExactData(originals, metrics);
+        return m_provider.replayCollaborationOwnedExactData(originals, metrics,
+            currentWorkPredicate(m_assignment.workDeadline), m_workAuthorityCommitMutex);
     }
 
     std::optional<ndn::Buffer>
@@ -7074,7 +7207,7 @@ namespace ndn_service_framework
     {
         return m_provider.fetchCollaborationSignedExactData(
             m_requestId, std::move(keyScope), dataName,
-            expectedProducer, timeoutMs, std::move(shouldCancel), metrics,
+            expectedProducer, timeoutMs, cancelWhenWorkNotCurrent(std::move(shouldCancel)), metrics,
             std::move(onFirstReadStarted), phase);
     }
 
@@ -7091,7 +7224,8 @@ namespace ndn_service_framework
     {
         return m_provider.fetchCollaborationSignedExactDataBatch(
             m_requestId, keyScope, dataNames, expectedProducer, timeoutMs,
-            std::move(shouldCancel), metrics, std::move(onFirstReadStarted), phase);
+            cancelWhenWorkNotCurrent(std::move(shouldCancel)), metrics,
+            std::move(onFirstReadStarted), phase);
     }
 
     std::optional<std::vector<ndn::Buffer>>
@@ -7108,7 +7242,8 @@ namespace ndn_service_framework
     {
         return m_provider.fetchCollaborationSignedExactDataBatch(
             m_requestId, keyScope, dataNames, expectedProducer, timeoutMs,
-            std::move(shouldCancel), metrics, std::move(onFirstReadStarted), phase,
+            cancelWhenWorkNotCurrent(std::move(shouldCancel)), metrics,
+            std::move(onFirstReadStarted), phase,
             std::move(onValidatedData));
     }
 
@@ -7125,7 +7260,7 @@ namespace ndn_service_framework
     {
         return m_provider.startCollaborationSignedExactDataBatch(
             m_requestId, keyScope, dataNames, expectedProducer, timeoutMs,
-            std::move(shouldCancel), std::move(onFirstReadStarted), phase,
+            cancelWhenWorkNotCurrent(std::move(shouldCancel)), std::move(onFirstReadStarted), phase,
             std::move(onValidatedData), {});
     }
 
@@ -7161,7 +7296,8 @@ namespace ndn_service_framework
     {
         return m_provider.startCollaborationSignedExactDataBatch(
             m_requestId, keyScope, dataNames, expectedProducer, timeoutMs,
-            std::move(shouldCancel), std::move(onFirstReadStarted), phase,
+            cancelWhenWorkNotCurrent(std::move(shouldCancel)),
+            std::move(onFirstReadStarted), phase,
             std::move(onValidatedData), std::move(localWorkObserver), maxOutstanding);
     }
 
@@ -7781,6 +7917,16 @@ namespace ndn_service_framework
         }
         std::lock_guard<std::mutex> lock(m_selectionExecutionStatusMutex);
         auto& status = m_selectionExecutionStatuses[selectionDigest];
+        // Role retirement releases resources; it cannot turn a failed or
+        // cancelled shared selection into a successful execution. Keep this
+        // decision under the status owner lock, including multi-role cleanup.
+        if (state == SelectionExecutionState::Completed &&
+            (status.state == SelectionExecutionState::Failed ||
+             status.state == SelectionExecutionState::Rejected ||
+             status.state == SelectionExecutionState::Expired ||
+             status.state == SelectionExecutionState::Cancelled)) {
+            return;
+        }
         status.providerName = providerName;
         status.serviceName = serviceName;
         status.requestId = requestId;
@@ -9663,6 +9809,38 @@ namespace ndn_service_framework
         };
         assignment.workDeadline = workFence.deadline;
         assignment.workCurrent = current;
+        if (registrationState && !registrationState->tryBeginCollaborationHandler()) {
+            publishExecutionFailureOnEventLoop(
+                requesterName, providerName, serviceName, requestId, requestMessage,
+                "collaboration registration closed before preparation", selectionDigest);
+            return true;
+        }
+        struct CollaborationHandlerCallLease
+        {
+            std::shared_ptr<RegistrationState> state;
+
+            explicit CollaborationHandlerCallLease(std::shared_ptr<RegistrationState> value)
+                : state(std::move(value)) {}
+
+            ~CollaborationHandlerCallLease()
+            {
+                if (state) {
+                    state->finishCollaborationHandler();
+                }
+            }
+        };
+        std::shared_ptr<CollaborationHandlerCallLease> callLease;
+        try {
+            if (registrationState) {
+                callLease = std::make_shared<CollaborationHandlerCallLease>(registrationState);
+            }
+        }
+        catch (...) {
+            if (registrationState) {
+                registrationState->finishCollaborationHandler();
+            }
+            throw;
+        }
         const bool expectedScopedInput = [&] {
             if (!requestMessage.hasRequestCapabilities()) return false;
             const auto& capabilities = requestMessage.getRequestCapabilities();
@@ -9681,8 +9859,12 @@ namespace ndn_service_framework
              requestMessage,
              selectionDigest,
              current,
-             handler](bool ready, std::string error,
+             handler,
+             callLease = std::move(callLease)](bool ready, std::string error,
                       CollaborationAssignment assignment) mutable {
+                // Clear the retained callback's owner, but keep preparation
+                // counted until this callback has finished posting the task.
+                auto preparationLease = std::move(callLease);
                 const bool traceAssignmentFetch =
                     isTruthyEnv("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE");
                 if (traceAssignmentFetch) {
@@ -9722,7 +9904,8 @@ namespace ndn_service_framework
                      current,
                      stopping = m_fetchStopping,
                      assignment = std::move(assignment),
-                     handler]() mutable {
+                     handler,
+                     callLease = preparationLease]() mutable {
                         if (stopping->load()) return;
                         if (!current()) {
                             if (stopping->load()) return;
@@ -11271,6 +11454,17 @@ namespace ndn_service_framework
         return name;
     }
 
+    ImmutableProtectedPublicationStore&
+    ServiceProvider::getImmutablePublicationStore()
+    {
+      std::lock_guard<std::mutex> lock(_cache_mutex);
+      if (!m_immutableProtectedPublications) {
+        m_immutableProtectedPublications =
+          std::make_unique<ImmutableProtectedPublicationStore>(identity, m_processStartedAtUs);
+      }
+      return *m_immutableProtectedPublications;
+    }
+
     ImmutableProtectedDataResult
     ServiceProvider::publishImmutableProtectedDataOnFace(
         const ndn::Name& service, const ndn::Name& semanticPrefix,
@@ -11307,11 +11501,7 @@ namespace ndn_service_framework
             generation = policyUnderLock();
         }
         if (!generation) return {false, {}, {}, "PROTECTED_CONTROLLER_VERSION_UNAVAILABLE"};
-        if (!m_immutableProtectedPublications) {
-            m_immutableProtectedPublications =
-                std::make_unique<ImmutableProtectedPublicationStore>(identity, m_processStartedAtUs);
-        }
-        auto& publications = *m_immutableProtectedPublications;
+        auto& publications = getImmutablePublicationStore();
         const auto digest = sha256DigestString(payload);
         const auto admission = publications.begin(service, *generation, semanticPrefix,
                                                    digest, payload.size());
@@ -11475,106 +11665,245 @@ namespace ndn_service_framework
         int freshnessMs,
         CollaborationTransferMetrics* metrics)
     {
-        if (dataName.empty()) {
-            NDN_LOG_ERROR("Cannot publish collaboration large Data with empty name");
-            return {};
-        }
-        if (!identity.isPrefixOf(dataName)) {
-            NDN_LOG_ERROR("Collaboration large Data name " << dataName.toUri()
-                          << " is outside provider identity " << identity.toUri());
-            return {};
-        }
+        return publishCollaborationLargeDataNamedCurrent(
+            requestId, keyScope, dataName, payload, maxSegmentSize, freshnessMs, metrics, {}, {});
+    }
 
-        ndn::Buffer scopeKey;
-        {
-            std::lock_guard<std::mutex> lock(m_collaborationMutex);
-            auto requestIt = m_collaborationScopeKeysByRequest.find(requestId);
-            if (requestIt != m_collaborationScopeKeysByRequest.end()) {
-                auto keyIt = requestIt->second.find(keyScope);
-                if (keyIt != requestIt->second.end()) {
-                    scopeKey = keyIt->second;
-                }
-            }
-        }
-        if (scopeKey.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
-            NDN_LOG_ERROR("Missing collaboration scope key for named large Data "
-                          << requestId.toUri() << " scope=" << keyScope);
-            return {};
-        }
+    ndn::Name
+    ServiceProvider::publishCollaborationLargeDataNamedCurrent(
+      const ndn::Name& requestId,
+      const std::string& keyScope,
+      const ndn::Name& dataName,
+      const ndn::Buffer& payload,
+      size_t maxSegmentSize,
+      int freshnessMs,
+      CollaborationTransferMetrics* metrics,
+      const std::function<bool()>& current,
+      const std::shared_ptr<std::mutex>& authorityMutex)
+    {
+      return publishCollaborationLargeDataNamedCurrent(requestId, keyScope, dataName,
+        payload, maxSegmentSize, freshnessMs, metrics, current, authorityMutex, {});
+    }
 
-        HybridMessageEnvelope envelope;
-        const std::string keyId = "collab-large|" + requestId.toUri() + "|" + keyScope;
-        envelope.setKeyId(keyId);
-        envelope.setEpochId("session");
-        envelope.setMessageType("COLLAB-LARGE");
-        const std::string adText = dataName.toUri() + "|COLLAB-LARGE|" +
-                                   requestId.toUri() + "|" + keyScope;
-        const ndn::Buffer ad(reinterpret_cast<const uint8_t*>(adText.data()), adText.size());
-        auto encrypted = hybridAesGcmEncrypt(
-            scopeKey,
+    ndn::Name
+    ServiceProvider::publishCollaborationLargeDataNamedCurrent(
+      const ndn::Name& requestId, const std::string& keyScope,
+      const ndn::Name& dataName, const ndn::Buffer& payload,
+      size_t maxSegmentSize, int freshnessMs, CollaborationTransferMetrics* metrics,
+      const std::function<bool()>& current,
+      const std::shared_ptr<std::mutex>& authorityMutex,
+      const ndn::Name& reusableService)
+    {
+      const bool reusable = !reusableService.empty();
+      if (dataName.empty()) {
+        NDN_LOG_ERROR("Cannot publish collaboration large Data with empty name");
+        return {};
+      }
+      if (!identity.isPrefixOf(dataName)) {
+        NDN_LOG_ERROR("Collaboration large Data name " << dataName.toUri()
+               << " is outside provider identity " << identity.toUri());
+        return {};
+      }
+
+      // This separate owner bounds immutable named objects for the Provider
+      // lifetime. It does not change the versioned REQUEST-LARGE defaults.
+      constexpr size_t MAX_NAMED_WIRE_BYTES = 128 * 1024 * 1024;
+      constexpr size_t MAX_NAMED_PLAINTEXT_BYTES = 64 * 1024 * 1024;
+      constexpr size_t MAX_NAMED_RESERVATION_BYTES = 96 * 1024 * 1024;
+      constexpr size_t MAX_NAMED_OBJECTS = 8192;
+      const size_t segmentBytes = maxSegmentSize == 0 ? 7000 : maxSegmentSize;
+      const int effectiveFreshness = freshnessMs <= 0 ? 60000 : freshnessMs;
+      if (requestId.empty() || dataName.size() <= identity.size() ||
+        dataName.wireEncode().size() > 8192 || requestId.wireEncode().size() > 8192 ||
+        keyScope.size() > 1024 || payload.size() > MAX_NAMED_PLAINTEXT_BYTES ||
+        segmentBytes > ndn::MAX_NDN_PACKET_SIZE || (current && !current()) ||
+        m_fetchStopping->load()) {
+        return {};
+      }
+      const std::string keyId = "collab-large|" + requestId.toUri() + "|" + keyScope;
+      // AES-GCM preserves payload length. The key id and 512 bytes bound all
+      // remaining envelope fields/TLV headers; check the bound after encoding.
+      const size_t encodedBound = payload.size() + keyId.size() + 512;
+      const size_t segmentCountBound = encodedBound / segmentBytes +
+        (encodedBound % segmentBytes != 0);
+      if (segmentCountBound > MAX_NAMED_RESERVATION_BYTES / ndn::MAX_NDN_PACKET_SIZE) {
+        return {};
+      }
+      const size_t reservationBytes = segmentCountBound * ndn::MAX_NDN_PACKET_SIZE;
+
+      ndn::Buffer scopeKey;
+      {
+        std::lock_guard<std::mutex> lock(m_collaborationMutex);
+        auto requestIt = m_collaborationScopeKeysByRequest.find(requestId);
+        if (requestIt != m_collaborationScopeKeysByRequest.end()) {
+          auto keyIt = requestIt->second.find(keyScope);
+          if (keyIt != requestIt->second.end()) {
+            scopeKey = keyIt->second;
+          }
+        }
+      }
+      if (scopeKey.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+        NDN_LOG_ERROR("Missing collaboration scope key for named large Data "
+               << requestId.toUri() << " scope=" << keyScope);
+        return {};
+      }
+
+      std::ostringstream binding;
+      const auto appendField = [&binding] (const std::string& value) {
+        binding << std::to_string(value.size()) << ':' << value;
+      };
+      if (reusable) {
+        appendField("COLLAB-OBJECT");
+        appendField(reusableService.toUri());
+        appendField(keyScope);
+      }
+      else {
+        appendField(requestId.toUri());
+        appendField(keyScope);
+        appendField(sha256DigestString(scopeKey));
+      }
+      appendField(std::to_string(segmentBytes));
+      appendField(std::to_string(effectiveFreshness));
+      appendField(m_signingInfo.getSignerName().toUri());
+      appendField(std::to_string(static_cast<int>(m_signingInfo.getSignerType())));
+      const auto bindingText = binding.str();
+      const auto protectionDigest = sha256DigestString(ndn::Buffer(
+        reinterpret_cast<const uint8_t*>(bindingText.data()), bindingText.size()));
+
+      ImmutableProtectedPublicationStore::Packets packets;
+      ndn::Buffer objectKey;
+      auto& publications = getImmutablePublicationStore();
+      const auto admission = publications.beginExact(
+        ImmutableProtectedPublicationStore::Limits{
+          MAX_NAMED_OBJECTS, MAX_NAMED_WIRE_BYTES, MAX_NAMED_PLAINTEXT_BYTES,
+          MAX_NAMED_RESERVATION_BYTES}, dataName, sha256DigestString(payload),
+        protectionDigest, payload.size(), reservationBytes);
+      using Status = ImmutableProtectedPublicationStore::Status;
+      if (admission.status == Status::IdentityConflict) {
+        throw std::invalid_argument("immutable named Data publication conflict");
+      }
+      const bool reused = admission.status == Status::Reused;
+      if (reused) {
+        std::unique_lock<std::mutex> authorityLock;
+        if (authorityMutex) authorityLock = std::unique_lock<std::mutex>(*authorityMutex);
+        if ((current && !current()) || m_fetchStopping->load()) return {};
+        packets = admission.publication->packets;
+        objectKey = admission.publication->objectKey;
+        if (reusable && objectKey.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) return {};
+      }
+      else if (admission.status == Status::Reserved) {
+        try {
+          HybridMessageEnvelope envelope;
+          if (reusable) {
+            objectKey.resize(HybridMessageCrypto::MESSAGE_KEY_SIZE);
+            ndn::random::generateSecureBytes(
+              ndn::span<uint8_t>(objectKey.data(), objectKey.size()));
+          }
+          envelope.setKeyId(reusable ? sha256DigestString(objectKey) : keyId);
+          envelope.setEpochId(reusable ? "object" : "session");
+          envelope.setMessageType(reusable ? "COLLAB-OBJECT" : "COLLAB-LARGE");
+          const std::string adText = dataName.toUri() +
+            (reusable ? "|COLLAB-OBJECT|" + reusableService.toUri() :
+                        "|COLLAB-LARGE|" + requestId.toUri()) + "|" + keyScope;
+          const ndn::Buffer ad(reinterpret_cast<const uint8_t*>(adText.data()), adText.size());
+          auto encrypted = hybridAesGcmEncrypt(
+            reusable ? objectKey : scopeKey,
             ndn::span<const uint8_t>(payload.data(), payload.size()),
             ndn::span<const uint8_t>(ad.data(), ad.size()));
-        envelope.setNonce(encrypted.nonce);
-        envelope.setCipherText(encrypted.ciphertext);
-        envelope.setAuthTag(encrypted.tag);
-        auto block = envelope.WireEncode();
-        ndn::Buffer encoded(block.begin(), block.end());
+          envelope.setNonce(encrypted.nonce);
+          envelope.setCipherText(encrypted.ciphertext);
+          envelope.setAuthTag(encrypted.tag);
+          const auto block = envelope.WireEncode();
+          if (block.size() > encodedBound) {
+            throw std::runtime_error("named Data envelope exceeded reserved encoding bound");
+          }
+          auto& activeKeyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+          ndn::Segmenter segmenter(activeKeyChain, m_signingInfo);
+          const auto segments = segmenter.segment(
+            ndn::span<const uint8_t>(block.data(), block.size()), dataName,
+            segmentBytes, ndn::time::milliseconds(effectiveFreshness));
+          packets.assign(segments.begin(), segments.end());
+          if (reusable && (!validator ||
+              std::any_of(packets.begin(), packets.end(), [&] (const auto& packet) {
+                return !validator->isProducerSignerAuthorized(*packet, identity);
+              }))) {
+            throw std::runtime_error("reusable object has an unauthorized Producer signer");
+          }
+          std::unique_lock<std::mutex> authorityLock;
+          if (authorityMutex) authorityLock = std::unique_lock<std::mutex>(*authorityMutex);
+          if ((current && !current()) || m_fetchStopping->load()) {
+            publications.rollbackExact(admission.ticket);
+            return {};
+          }
+          if (!publications.commitExact(admission.ticket, packets, objectKey)) {
+            throw std::runtime_error("named Data original packet commit rejected");
+          }
+        }
+        catch (...) {
+          publications.rollbackExact(admission.ticket);
+          throw;
+        }
+      }
+      else {
+        return {};
+      }
+      // Face/IMS operations occur after the original-owner and authority locks
+      // have been released; dispatch may invoke callbacks inline.
+      size_t encodedBytes = 0;
+      for (const auto& packet : packets) encodedBytes += packet->getContent().value_size();
 
-        auto& activeKeyChain = m_testSigningKeyChain ?
-            *m_testSigningKeyChain : m_keyChain;
-        ndn::Segmenter segmenter(activeKeyChain, m_signingInfo);
-        auto segments = segmenter.segment(
-            ndn::span<const uint8_t>(encoded.data(), encoded.size()),
-            dataName,
-            maxSegmentSize == 0 ? 7000 : maxSegmentSize,
-            ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
-
-        const bool activePut =
-            boolEnvOrDefault("NDNSF_COLLAB_LARGE_ACTIVE_PUT", true);
-        const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
-        for (const auto& data : segments) {
-            insertDataIntoIMS(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
+      const bool activePut =
+        boolEnvOrDefault("NDNSF_COLLAB_LARGE_ACTIVE_PUT", true);
+      const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
+      for (const auto& data : packets) {
+        insertDataIntoIMS(*data, ndn::time::milliseconds(effectiveFreshness));
+      }
+      if (activePut) {
+        enqueueDataOnFace(m_face, packets);
+        if (fetchTimingEnabled) {
+          for (const auto& data : packets) {
+            NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
+                  << " event=segment_active_put"
+                  << " mode=producer-active-put"
+                  << " timestamp_us=" << nowMicroseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " keyScope=" << keyScope
+                  << " dataName=" << dataName.toUri()
+                  << " segmentName=" << data->getName().toUri()
+                  << " wire_bytes=" << data->wireEncode().size());
+          }
         }
-        if (activePut) {
-            std::vector<std::shared_ptr<const ndn::Data>> packets;
-            packets.reserve(segments.size());
-            for (const auto& data : segments) {
-                packets.push_back(data);
-            }
-            enqueueDataOnFace(m_face, packets);
-            if (fetchTimingEnabled) {
-                for (const auto& data : segments) {
-                    NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
-                                 << " event=segment_active_put"
-                                 << " mode=producer-active-put"
-                                 << " timestamp_us=" << nowMicroseconds()
-                                 << " requestId=" << requestId.toUri()
-                                 << " keyScope=" << keyScope
-                                 << " dataName=" << dataName.toUri()
-                                 << " segmentName=" << data->getName().toUri()
-                                 << " wire_bytes=" << data->wireEncode().size());
-                }
-            }
+      }
+      if (metrics != nullptr) {
+        metrics->actualDataName = dataName.toUri();
+        std::size_t wireBytes = 0;
+        for (const auto& data : packets) {
+          wireBytes += data->wireEncode().size();
         }
-        if (metrics != nullptr) {
-            metrics->actualDataName = dataName.toUri();
-            std::size_t wireBytes = 0;
-            for (const auto& data : segments) {
-                wireBytes += data->wireEncode().size();
-            }
-            metrics->transportPayloadBytes = encoded.size();
-            metrics->wireBytes = wireBytes;
-            metrics->metadataBytes = wireBytes >= encoded.size() ?
-                wireBytes - encoded.size() : 0;
-            metrics->interestCount = 0;
-            metrics->retryCount = 0;
-            metrics->localCopyBytes = encoded.size();
+        metrics->transportPayloadBytes = encodedBytes;
+        metrics->wireBytes = wireBytes;
+        metrics->metadataBytes = wireBytes >= encodedBytes ? wireBytes - encodedBytes : 0;
+        metrics->interestCount = 0;
+        metrics->retryCount = 0;
+        metrics->localCopyBytes = reused ? 0 : encodedBytes;
+      }
+      if (reusable) {
+        const auto digest = sha256DigestString(payload);
+        ndn::Buffer grant(objectKey);
+        grant.insert(grant.end(), digest.begin(), digest.end());
+        const auto grantName = makeCollaborationObjectGrantName(
+          identity, reusableService, keyScope, dataName, requestId);
+        if (publishCollaborationLargeDataNamedCurrent(requestId, keyScope, grantName,
+              grant, 7000, effectiveFreshness, nullptr, current, authorityMutex).empty()) {
+          return {};
         }
-        NDN_LOG_DEBUG("COLLAB_LARGE_NAMED_PUBLISHED name=" << dataName.toUri()
-                      << " plaintextBytes=" << payload.size()
-                      << " segments=" << segments.size()
-                      << " activePut=" << activePut);
-        return dataName;
+      }
+      NDN_LOG_DEBUG("COLLAB_LARGE_NAMED_PUBLISHED name=" << dataName.toUri()
+             << " plaintextBytes=" << payload.size()
+             << " segments=" << packets.size()
+             << " reused=" << reused
+             << " activePut=" << activePut);
+      return dataName;
     }
 
     bool
@@ -12082,6 +12411,20 @@ namespace ndn_service_framework
         std::vector<std::shared_ptr<const ndn::Data>>* originals,
         std::size_t maxWireBytes)
     {
+        return publishCollaborationOwnedExactData(requestId, keyScope, objects,
+            freshnessMs, metrics, originals, maxWireBytes, {}, {});
+    }
+
+    bool
+    ServiceProvider::publishCollaborationOwnedExactData(
+        const ndn::Name& requestId, const std::string& keyScope,
+        const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+        int freshnessMs, CollaborationTransferMetrics* metrics,
+        std::vector<std::shared_ptr<const ndn::Data>>* originals,
+        std::size_t maxWireBytes, const std::function<bool()>& current,
+        const std::shared_ptr<std::mutex>& authorityMutex)
+    {
+        if (m_fetchStopping->load() || (current && !current())) return false;
         if (objects.empty()) {
             NDN_LOG_ERROR("Exact collaboration publication is empty"
                           << " requestId=" << requestId.toUri()
@@ -12191,6 +12534,11 @@ namespace ndn_service_framework
                 throw std::length_error("exact signed tensor original cache capacity");
             totalWireBytes += item.wireSize;
         }
+        std::unique_lock<std::mutex> authorityLock;
+        if (authorityMutex) authorityLock = std::unique_lock<std::mutex>(*authorityMutex);
+        // Admit the whole batch before exposing any original, IMS entry or
+        // pending-Interest reply. Explicit Context revocation shares this lock.
+        if (m_fetchStopping->load() || (current && !current())) return false;
         if (originals != nullptr) {
             originals->clear();
             originals->reserve(prepared.size());
@@ -12200,6 +12548,10 @@ namespace ndn_service_framework
             runWithLocalWorkObserver(workObserver, "core-tensor-ims-insert", [&] {
                 m_IMS.insert(*item.data, freshness);
             });
+        }
+        if (authorityLock.owns_lock()) authorityLock.unlock();
+        // Face dispatch must not run under the Context authority mutex.
+        for (const auto& item : prepared) {
             runWithLocalWorkObserver(workObserver, "core-tensor-pending-satisfy", [&] {
                 satisfyPendingImsInterestsLocked(*item.data);
             });
@@ -12236,6 +12588,16 @@ namespace ndn_service_framework
         const std::vector<std::shared_ptr<const ndn::Data>>& originals,
         CollaborationTransferMetrics* metrics)
     {
+        return replayCollaborationOwnedExactData(originals, metrics, {}, {});
+    }
+
+    bool
+    ServiceProvider::replayCollaborationOwnedExactData(
+        const std::vector<std::shared_ptr<const ndn::Data>>& originals,
+        CollaborationTransferMetrics* metrics, const std::function<bool()>& current,
+        const std::shared_ptr<std::mutex>& authorityMutex)
+    {
+        if (m_fetchStopping->load() || (current && !current())) return false;
         if (originals.empty()) return false;
         std::size_t payloadBytes = 0, wireBytes = 0;
         std::unique_lock<std::mutex> immutableLock(_cache_mutex);
@@ -12255,10 +12617,13 @@ namespace ndn_service_framework
                 existing.wireEncode() != original->second->wireEncode())
                 throw std::invalid_argument("immutable exact original replay conflict");
         }
-        for (const auto& packet : originals) {
+        std::unique_lock<std::mutex> authorityLock;
+        if (authorityMutex) authorityLock = std::unique_lock<std::mutex>(*authorityMutex);
+        if (m_fetchStopping->load() || (current && !current())) return false;
+        for (const auto& packet : originals)
             m_IMS.insert(*packet, packet->getFreshnessPeriod());
-            satisfyPendingImsInterestsLocked(*packet);
-        }
+        if (authorityLock.owns_lock()) authorityLock.unlock();
+        for (const auto& packet : originals) satisfyPendingImsInterestsLocked(*packet);
         if (metrics) {
             metrics->actualDataName = originals.front()->getName().toUri();
             metrics->transportPayloadBytes = payloadBytes;
@@ -12939,7 +13304,7 @@ namespace ndn_service_framework
                     pending = m_face.expressInterest(
                     interest,
                     [this, state, slot, finish, dataName, expectedProducer, requestId,
-                     keyScope, onValidatedData, localWorkObserver, requestPump]
+                     keyScope, shouldCancel, onValidatedData, localWorkObserver, requestPump]
                     (const ndn::Interest&, const ndn::Data& data) {
                         const auto receivedAt = ExactClock::now();
                         if (controlTimingEnvEnabled()) {
@@ -13075,7 +13440,7 @@ namespace ndn_service_framework
                             };
                         auto onValidatedExactData =
                             [state, slot, dataName, expectedProducer, requestId,
-                             keyScope, onValidatedData, completeValidation,
+                             keyScope, shouldCancel, onValidatedData, completeValidation,
                              localWorkObserver]
                             (const ndn::Data& validated) {
                                 if (state->completed.load() || slot->completed.load()) return;
@@ -13088,6 +13453,18 @@ namespace ndn_service_framework
                                         return;
                                     }
                                     shouldComplete = true;
+                                    try {
+                                        if (shouldCancel && shouldCancel()) {
+                                            error = "exact Data cancelled before admission for " +
+                                                dataName.toUri();
+                                            return;
+                                        }
+                                    }
+                                    catch (...) {
+                                        error = "exact Data cancellation predicate failed for " +
+                                            dataName.toUri();
+                                        return;
+                                    }
                                     if (validated.getName() != dataName ||
                                         !isSignedByIdentity(validated,
                                                             expectedProducer)) {
@@ -13311,8 +13688,18 @@ namespace ndn_service_framework
         bool allowDigestSha256Segments,
         std::uint32_t digestSegmentBytes,
         std::uint64_t digestExpectedBytes,
-        ndn::Name forwardingHint)
+        ndn::Name forwardingHint,
+        const ndn::Buffer& objectKey,
+        const ndn::Name& reusableService)
     {
+        const bool boundedObject = !reusableService.empty();
+        const bool reusable = !objectKey.empty();
+        if ((reusable && !boundedObject) ||
+            (allowDigestSha256Segments && boundedObject) ||
+            (boundedObject && (expectedProducer.empty() || expectedSegments != 0 ||
+            (reusable && objectKey.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE)))) {
+          return std::nullopt;
+        }
         // A /SERVICE scope is a request-input authorization scope, not a
         // collaboration tensor scope.  Such objects carry their own
         // NAC-wrapped hybrid key inside the envelope, so the service-
@@ -13430,7 +13817,7 @@ namespace ndn_service_framework
                                                   expectedSegments, expectedProducer,
                                                   current, allowDigestSha256Segments,
                                                   digestSegmentBytes, digestExpectedBytes,
-                                                  forwardingHint, owner] {
+                                                  forwardingHint, owner, boundedObject] {
             if (owner->terminalRequested.load()) return;
             if (current && !current()) {
                 {
@@ -13970,6 +14357,33 @@ namespace ndn_service_framework
                         producerAuthorized->store(false);
                     }
                 });
+            if (boundedObject) {
+                const std::weak_ptr<ndn::SegmentFetcher> weakFetcher = fetcher;
+                auto* faceIo = &m_face.getIoContext();
+                fetcher->afterSegmentValidated.connect(
+                    [weakFetcher, faceIo, fetchStats, dataName, completed, mutex, cv, error]
+                    (const ndn::Data& data) {
+                        constexpr size_t MAX_SEGMENTS = 96 * 1024 * 1024 / ndn::MAX_NDN_PACKET_SIZE;
+                        constexpr size_t MAX_ENCODED_BYTES = 64 * 1024 * 1024 + 512;
+                        const auto& final = data.getFinalBlock();
+                        const auto& name = data.getName();
+                        if (dataName.isPrefixOf(name) && name.size() == dataName.size() + 1 &&
+                            name.at(-1).isSegment() && final && final->isSegment() &&
+                            name.at(-1).toSegment() <= final->toSegment() &&
+                            final->toSegment() < MAX_SEGMENTS &&
+                            fetchStats->validatedSegments <= MAX_SEGMENTS &&
+                            fetchStats->validatedContentBytes <= MAX_ENCODED_BYTES) return;
+                        {
+                            std::lock_guard<std::mutex> lock(*mutex);
+                            *error = "reusable object transfer exceeds its name/segment/byte bounds";
+                            completed->store(true);
+                        }
+                        cv->notify_one();
+                        boost::asio::post(*faceIo, [weakFetcher] {
+                            if (auto active = weakFetcher.lock()) active->stop();
+                        });
+                    });
+            }
             if (fetchTimingEnabled) {
                 auto segmentReceivedAt = std::make_shared<
                     std::unordered_map<std::string, std::chrono::steady_clock::time_point>>();
@@ -14050,8 +14464,9 @@ namespace ndn_service_framework
                 [completed, mutex, cv, encoded, error, producerAuthorized, expectedProducer,
                  requestId, keyScope, dataName, fetchTimeoutMs,
                  interestLifetimeMs, fetchTimingEnabled, fetchInitCwnd, fetchStart, fetchStats,
-                 transportValidator]
+                 transportValidator, boundedObject]
                 (ndn::ConstBufferPtr buffer) {
+                    if (boundedObject && completed->load()) return;
                     if (!expectedProducer.empty() && !producerAuthorized->load()) {
                         {
                             std::lock_guard<std::mutex> lock(*mutex);
@@ -14274,15 +14689,27 @@ namespace ndn_service_framework
             const auto decryptStart = std::chrono::steady_clock::now();
             ndn::Block block(*encoded);
             HybridMessageEnvelope envelope;
-            envelope.WireDecode(block);
-            const std::string adText = dataName.toUri() + "|COLLAB-LARGE|" +
-                                       requestId.toUri() + "|" + keyScope;
+            const bool decoded = envelope.WireDecode(block);
+            const auto expectedObjectKeyId = reusable
+              ? (envelope.getVersion() >= 2
+                  ? hybridCompactKeyId(sha256DigestString(objectKey))
+                  : sha256DigestString(objectKey))
+              : std::string();
+            if (boundedObject && (!decoded ||
+                (envelope.getVersion() != 1 && envelope.getVersion() != 2) ||
+                envelope.getAlgorithm() != "AES-256-GCM" || envelope.hasWrappedMessageKey() ||
+                envelope.getMessageType() != (reusable ? "COLLAB-OBJECT" : "COLLAB-LARGE") ||
+                (reusable && (envelope.getKeyId() != expectedObjectKeyId ||
+                              envelope.getEpochId() != "object")))) return std::nullopt;
+            const std::string adText = dataName.toUri() +
+              (reusable ? "|COLLAB-OBJECT|" + reusableService.toUri() :
+                          "|COLLAB-LARGE|" + requestId.toUri()) + "|" + keyScope;
             // Large Data is signed segment-by-segment. AES-GCM also binds the
             // ciphertext to the versioned large object name and request scope.
             const ndn::Buffer ad(reinterpret_cast<const uint8_t*>(adText.data()),
                                  adText.size());
             ndn::Buffer plaintext;
-            if (!hybridAesGcmDecrypt(scopeKey,
+            if (!hybridAesGcmDecrypt(reusable ? objectKey : scopeKey,
                                      envelope,
                                      ndn::span<const uint8_t>(ad.data(), ad.size()),
                                      plaintext)) {
@@ -17843,8 +18270,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
     bool ServiceProvider::replyFromIMS(const ndn::Interest &interest)
     {
-        if (m_immutableProtectedPublications) {
-            if (const auto original = m_immutableProtectedPublications->find(interest)) {
+        ImmutableProtectedPublicationStore* publications = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(_cache_mutex);
+            publications = m_immutableProtectedPublications.get();
+        }
+        if (publications) {
+            if (const auto original = publications->find(interest)) {
                 const bool timingEnabled = controlTimingEnvEnabled();
                 const auto queuedAt = timingEnabled ? std::chrono::steady_clock::now() :
                     std::chrono::steady_clock::time_point{};

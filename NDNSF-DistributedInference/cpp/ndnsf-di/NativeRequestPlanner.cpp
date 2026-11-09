@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-cancellation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-owner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
@@ -2151,6 +2152,11 @@ NativePlannedRequest planNativeRequestImpl(
     }
     for (const auto& scope : scopes)
       plan.keyScopes.push_back({scope.first, std::vector<std::string>(scope.second.begin(), scope.second.end())});
+    if (!conversationTurn && options.generation && options.generation->enabled) {
+      if (scopes.count(detail::NATIVE_CANCELLATION_SCOPE))
+        throw std::invalid_argument("execution dataflow uses reserved cancellation scope");
+      plan.keyScopes.push_back({detail::NATIVE_CANCELLATION_SCOPE, execution.roles});
+    }
     if (conversationTurn) {
       plan.keyScopes.push_back({"ndnsf-di-conversation-state-v1", execution.roles});
     }

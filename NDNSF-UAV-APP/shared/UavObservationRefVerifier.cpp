@@ -1,10 +1,23 @@
 #include "UavObservationRefVerifier.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <regex>
 #include <stdexcept>
 
 namespace ndnsf::examples::uav {
+
+ndn::Name
+makeUavStaticObservationPrefix(const ndn::Name& revisionPrefix,
+                               const std::string& canonicalContentSha256)
+{
+  if (revisionPrefix.empty() ||
+      !std::regex_match(canonicalContentSha256, std::regex("sha256:[0-9a-f]{64}"))) {
+    throw std::runtime_error("static observation prefix or digest is malformed");
+  }
+  auto prefix = revisionPrefix;
+  return prefix.append(canonicalContentSha256.substr(7));
+}
 
 ParsedObservationReference
 parseObservationReference(const std::string& exactName, const std::string& contentSha256,
@@ -44,18 +57,26 @@ requireObservationReferenceNameShape(const ParsedObservationReference& reference
   const auto reject = [&] {
     throw std::runtime_error(category + " DataRef has an invalid typed name shape");
   };
+  const auto suffixSize = reference.exactName.size() -
+    std::min(reference.exactName.size(), prefix.size());
   if (reference.producerIdentity.empty() || !prefix.isPrefixOf(reference.exactName) ||
-      reference.exactName.size() != prefix.size() + (isStatic ? 2 : 1)) {
+      (isStatic ? suffixSize != 2 && suffixSize != 3 : suffixSize != 1)) {
     reject();
   }
   if (isStatic) {
-    const auto& component = reference.exactName.get(-2);
+    const auto& component = reference.exactName.get(prefix.size());
     const auto revision = component.toUri();
     uint64_t value = 0;
     if (!component.isGeneric() || revision.empty() || revision.front() == '0') reject();
     const auto parsed = std::from_chars(revision.data(), revision.data() + revision.size(), value);
     if (parsed.ec != std::errc() || parsed.ptr != revision.data() + revision.size() || value == 0)
       reject();
+    if (suffixSize == 3) {
+      const auto& digest = reference.exactName.get(-2);
+      if (!digest.isGeneric() || reference.contentSha256.size() != 71 ||
+          !std::regex_match(reference.contentSha256, std::regex("sha256:[0-9a-f]{64}")) ||
+          digest.toUri() != reference.contentSha256.substr(7)) reject();
+    }
   }
   const auto& version = reference.exactName.get(-1);
   try {
@@ -74,7 +95,15 @@ validateObservationReference(const ParsedObservationReference& reference,
                              const std::string& expectedDigest,
                              const std::string& category)
 {
-  if (reference.exactName != expectedName || reference.contentSha256 != expectedDigest ||
+  bool nameMatches = reference.exactName == expectedName;
+  const bool isStatic = category == "CLOCK" || category == "CALIBRATION" || category == "GROUND";
+  if (!nameMatches && isStatic && !expectedName.empty() &&
+      expectedName.get(-1).isVersion()) {
+    auto boundName = makeUavStaticObservationPrefix(expectedName.getPrefix(-1), expectedDigest);
+    boundName.append(expectedName.get(-1));
+    nameMatches = reference.exactName == boundName;
+  }
+  if (!nameMatches || reference.contentSha256 != expectedDigest ||
       reference.producerIdentity != expectedProducer) {
     throw std::runtime_error("observation " + category +
                              " DataRef does not match its exact object");

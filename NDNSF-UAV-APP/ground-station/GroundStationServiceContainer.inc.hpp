@@ -103,12 +103,60 @@ public:
 
   ~GroundStationServiceContainer()
   {
-    shutdownRuntime();
+    if (!shutdownRuntime()) {
+      std::terminate();
+    }
   }
 
-  void
+  /** Called by the owning application thread while the Face can still drain work. */
+  bool
   shutdownRuntime()
   {
+    std::lock_guard<std::mutex> shutdownGuard(m_shutdownMutex);
+    if (m_shutdownComplete) {
+      return true;
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_trackingDispatchMutex);
+      m_trackingDispatchOpen = false;
+      if (!m_shutdownRequested.exchange(true)) {
+        m_shutdownDeadline = std::chrono::steady_clock::now() + 10s;
+      }
+    }
+    if (m_trackingJob) {
+      if (m_trackingFace->getIoContext().get_executor().running_in_this_thread()) {
+        NDN_LOG_ERROR("GS_RUNTIME_SHUTDOWN requires a non-Face caller");
+        return false;
+      }
+      struct DrainProbe
+      {
+        std::atomic<bool> pending{false};
+        std::atomic<bool> drained{false};
+      };
+      // A timed-out probe retains its state until the Face consumes it.
+      auto probe = std::make_shared<DrainProbe>();
+      if (!m_trackingStopPosted.exchange(true)) {
+        boost::asio::post(m_trackingFace->getIoContext(), [this] {
+          m_trackingJob->stop([] (const TrackingCleanupResult&) {});
+        });
+      }
+      while (std::chrono::steady_clock::now() < m_shutdownDeadline) {
+        if (probe->drained.load() && !probe->pending.load()) {
+          break;
+        }
+        if (!probe->pending.exchange(true)) {
+          boost::asio::post(m_trackingFace->getIoContext(), [this, probe] {
+            probe->drained = m_trackingJob->isDrained() && m_trackingProbePending->load() == 0;
+            probe->pending = false;
+          });
+        }
+        std::this_thread::sleep_for(10ms);
+      }
+      if (!probe->drained.load() || probe->pending.load()) {
+        NDN_LOG_ERROR("GS_RUNTIME_SHUTDOWN phase=tracking-drain cleanup=INCOMPLETE");
+        return false;
+      }
+    }
     // The face thread sets m_done when startup fails.  Cleanup must still join
     // that thread; returning solely because the flag is already set would let
     // the std::thread destructor call std::terminate while reporting the real
@@ -139,6 +187,8 @@ public:
     stopYoloWorker();
     stopDecoder();
     NDN_LOG_INFO("GS_RUNTIME_SHUTDOWN phase=workers-joined");
+    m_shutdownComplete = true;
+    return true;
   }
 
   void
@@ -159,6 +209,7 @@ public:
         m_user->init();
         m_coreContainer.useUser("ground-station", *m_user);
         m_user->fetchPermissionsFromController(m_config.controllerPrefix);
+        installTrackingOwner(*m_user, m_face);
         installServiceInstances();
         m_objectDetectionProvider->init();
         m_coreContainer.useProvider("object-detection", *m_objectDetectionProvider);
@@ -172,14 +223,21 @@ public:
           startYoloWorkerLocked();
         });
 
-        while (!m_done.load()) {
-          m_face.getIoContext().run_for(std::chrono::milliseconds(10));
-          m_face.getIoContext().restart();
-        }
       }
-      catch (const std::exception& e) {
-        publishStatus(std::string("NDNSF runtime error: ") + e.what());
-        m_done = true;
+      catch (const std::exception& error) {
+        handleRuntimeFailure(error.what());
+      }
+      // Even failed initialization may already own asynchronous tracking work.
+      // The application thread closes dependencies only after this loop drains it.
+      while (!m_done.load()) {
+        try {
+          m_face.getIoContext().restart();
+          m_face.getIoContext().run_for(10ms);
+        }
+        catch (const std::exception& error) {
+          handleRuntimeFailure(error.what());
+          std::this_thread::sleep_for(10ms);
+        }
       }
     });
   }
@@ -192,7 +250,7 @@ public:
       if (m_containerReady.load()) {
         return true;
       }
-      if (m_done.load()) {
+      if (m_done.load() || m_runtimeFailed.load()) {
         return false;
       }
       std::this_thread::sleep_for(50ms);
@@ -271,6 +329,197 @@ public:
   config() const
   {
     return m_config;
+  }
+
+  using TrackingTelemetryHandler =
+    std::function<void(bool, std::string, uint64_t, uint64_t)>;
+
+  /** Probe one prepared participant through the injected User; no flight command. */
+  bool
+  requestTrackingTelemetry(const std::string& jobId, const ndn::Name& producer,
+                           const std::string& droneId, TrackingTelemetryHandler completion)
+  {
+    if (!completion || jobId.empty() || jobId.size() > 128 || droneId.empty() ||
+        droneId.size() > 128 || producer.empty() || producer.size() > 64) return false;
+    const auto started = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+    auto once = std::make_shared<std::atomic<bool>>(false);
+    const auto pending = m_trackingProbePending;
+    auto finish = [once, pending, started, completion = std::move(completion)] (
+                    bool verified, std::string reason) mutable {
+      if (once->exchange(true)) return;
+      const auto ended = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+      if (ended < started || ended - started > 2000) {
+        verified = false;
+        reason = "telemetry responsiveness exceeded 2000ms";
+      }
+      pending->fetch_sub(1);
+      try {
+        completion(verified, reason.substr(0, 512), started, ended);
+      }
+      catch (const std::exception& error) {
+        NDN_LOG_ERROR("GS_TRACKING_TELEMETRY_CALLBACK error=" << error.what());
+      }
+      catch (...) {
+        NDN_LOG_ERROR("GS_TRACKING_TELEMETRY_CALLBACK unknown exception");
+      }
+    };
+    std::lock_guard<std::mutex> lock(m_trackingDispatchMutex);
+    if (!m_trackingDispatchOpen || !m_trackingUser || !m_trackingFace ||
+        pending->load() >= 4 || m_shutdownRequested.load() || m_runtimeFailed.load()) return false;
+    pending->fetch_add(1);
+    try {
+      boost::asio::post(m_trackingFace->getIoContext(),
+        [this, jobId, producer, droneId, finish = std::move(finish)] () mutable {
+          try {
+            if (m_shutdownRequested.load() || m_runtimeFailed.load() || !m_containerReady.load() ||
+                !m_activeTrackingDefinition || m_activeTrackingDefinition->jobId != jobId) {
+              finish(false, "tracking telemetry runtime/job unavailable");
+              return;
+            }
+            const auto& definition = *m_activeTrackingDefinition;
+            const bool bound = (producer == definition.computeIdentity &&
+                                droneId == definition.computeDroneId) ||
+              std::any_of(definition.sources.begin(), definition.sources.end(), [&] (const auto& source) {
+                return source.producerIdentity == producer && source.droneId == droneId;
+              });
+            if (!bound) {
+              finish(false, "tracking telemetry participant binding mismatch");
+              return;
+            }
+            auto request = makeRequest(encodeFields(
+              {{"type", "telemetry-status"}, {"target_drone", droneId}}));
+            const auto id = m_trackingUser->RequestServiceTargeted(
+              producer, m_config.serviceTelemetryStatus, std::move(request), 2000,
+              [finish] (const ndn::Name&) mutable { finish(false, "telemetry timeout"); },
+              [finish, droneId] (const ndn_service_framework::ResponseMessage& response) mutable {
+                try {
+                  const auto bytes = response.getPayload();
+                  if (!response.getStatus() || bytes.empty() || bytes.size() > 65536) {
+                    finish(false, "telemetry response rejected/oversize");
+                    return;
+                  }
+                  const auto fields = decodeFields(std::string(bytes.begin(), bytes.end()));
+                  const auto timestamp = fieldOr(fields, "timestamp_ms", "");
+                  const bool verified = fieldOr(fields, "drone_id", "") == droneId &&
+                    !fieldOr(fields, "flight_controller_backend", "").empty() &&
+                    !timestamp.empty() && timestamp.size() <= 20 &&
+                    std::all_of(timestamp.begin(), timestamp.end(), [] (unsigned char ch) {
+                      return ch >= '0' && ch <= '9';
+                    });
+                  finish(verified, verified ? "verified ordinary telemetry" : "telemetry payload mismatch");
+                }
+                catch (const std::exception& error) {
+                  finish(false, error.what());
+                }
+              });
+            if (id.empty()) finish(false, "telemetry dispatch rejected");
+          }
+          catch (const std::exception& error) {
+            finish(false, error.what());
+          }
+        });
+    }
+    catch (...) {
+      pending->fetch_sub(1);
+      return false;
+    }
+    return true;
+  }
+
+  using TrackingAdmissionHandler = std::function<void(TrackingAdmission, std::string)>;
+  using TrackingCancelHandler = std::function<void(TrackingCancelResult, std::string)>;
+
+  /** True transfers one bounded command to the Face; false schedules no callback. */
+  bool
+  startTracking(TrackingJobDefinition definition, TrackingAdmissionHandler completion)
+  {
+    std::lock_guard<std::mutex> guard(m_trackingDispatchMutex);
+    if (!m_trackingDispatchOpen || m_trackingCommandPending || !m_containerReady.load()) {
+      return false;
+    }
+    m_trackingCommandPending = true;
+    boost::asio::post(m_trackingFace->getIoContext(),
+      [this, definition = std::move(definition), completion = std::move(completion)] {
+        releaseTrackingCommand();
+        auto admission = TrackingAdmission::NOT_READY;
+        std::string reason = "runtime-closing";
+        if (!m_shutdownRequested.load() && !m_runtimeFailed.load()) {
+          try {
+            validateTrackingJobDefinition(definition);
+            if (!checkTrackingAuthority(definition, "tracking_start", &reason)) {
+              admission = TrackingAdmission::UNAUTHORIZED;
+            }
+            else if (m_trackingProbePending->load() != 0 || !m_trackingJob->isDrained() ||
+                     (m_trackingJob->snapshot().state != TrackingJobState::IDLE &&
+                      m_trackingJob->snapshot().cleanupState != "CLEAN")) {
+              admission = TrackingAdmission::BUSY;
+              reason = "previous tracking job is active or cleanup is incomplete";
+            }
+            else if (m_usedTrackingRuns.size() >= 16 ||
+                     m_usedTrackingRuns.count(definition.runId) != 0 ||
+                     std::any_of(definition.sources.begin(), definition.sources.end(),
+                       [this] (const auto& source) {
+                         return m_usedTrackingEpochs.count(
+                           {source.producerIdentity, source.sourceEpoch}) != 0;
+                       })) {
+              admission = TrackingAdmission::INVALID;
+              reason = "prepared-identity-reused-or-catalog-full";
+            }
+            else {
+              admission = m_trackingJob->start(definition, &reason);
+              if (admission == TrackingAdmission::ACCEPTED) {
+                m_activeTrackingDefinition = definition;
+                m_usedTrackingRuns.insert(definition.runId);
+                for (const auto& source : definition.sources) {
+                  m_usedTrackingEpochs.emplace(source.producerIdentity, source.sourceEpoch);
+                }
+              }
+            }
+          }
+          catch (const std::exception& error) {
+            admission = TrackingAdmission::INVALID;
+            reason = error.what();
+          }
+        }
+        if (completion) completion(admission, std::move(reason));
+      });
+    return true;
+  }
+
+  bool
+  cancelTracking(std::string jobId, TrackingCancelHandler completion)
+  {
+    std::lock_guard<std::mutex> guard(m_trackingDispatchMutex);
+    if (!m_trackingDispatchOpen || m_trackingCommandPending || !m_containerReady.load()) {
+      return false;
+    }
+    m_trackingCommandPending = true;
+    boost::asio::post(m_trackingFace->getIoContext(),
+      [this, jobId = std::move(jobId), completion = std::move(completion)] {
+        releaseTrackingCommand();
+        auto result = TrackingCancelResult::WRONG_JOB;
+        std::string reason = "wrong-job-or-runtime-closing";
+        if (!m_shutdownRequested.load() && !m_runtimeFailed.load() && m_activeTrackingDefinition &&
+            m_activeTrackingDefinition->jobId == jobId) {
+          if (checkTrackingAuthority(*m_activeTrackingDefinition, "tracking_cancel", &reason)) {
+            result = m_trackingJob->requestCancel(jobId);
+          }
+          else {
+            result = TrackingCancelResult::UNAUTHORIZED;
+          }
+        }
+        if (completion) completion(result, std::move(reason));
+      });
+    return true;
+  }
+
+  TrackingSnapshot
+  trackingSnapshot() const
+  {
+    std::lock_guard<std::mutex> guard(m_trackingSnapshotMutex);
+    return m_trackingSnapshot;
   }
 
   void
@@ -837,6 +1086,7 @@ public:
     snapshot.updatedMs = nowMilliseconds();
     snapshot.missionPlan = missionPlanSnapshot();
     snapshot.missionProgress = missionProgressSnapshot();
+    snapshot.tracking = trackingSnapshot();
     {
       std::lock_guard<std::mutex> guard(m_operatorAuthorityAlertMutex);
       snapshot.operatorAuthorityAlerts = m_operatorAuthorityAlerts;
@@ -5193,6 +5443,75 @@ public:
   }
 
 private:
+  /** Face-thread failure handling retains borrowed dependencies through local drain. */
+  void
+  handleRuntimeFailure(const std::string& reason)
+  {
+    m_runtimeFailed = true;
+    m_containerReady = false;
+    {
+      std::lock_guard<std::mutex> guard(m_trackingDispatchMutex);
+      m_trackingDispatchOpen = false;
+    }
+    publishStatus("NDNSF runtime error: " + reason);
+    if (!m_trackingJob) {
+      m_done = true;
+    }
+    else if (!m_trackingStopPosted.exchange(true)) {
+      m_trackingJob->stop([] (const TrackingCleanupResult&) {});
+    }
+  }
+
+  bool
+  checkTrackingAuthority(const TrackingJobDefinition& definition, const std::string& command,
+                         std::string* reason) const
+  {
+    const auto lease = operatorAuthorityLease();
+    std::string detail;
+    const auto now = nowMilliseconds();
+    for (const auto& source : definition.sources) {
+      if (!lease.allowsCommand(source.droneId, command, now, detail)) {
+        if (reason) *reason = source.droneId + ":" + detail;
+        return false;
+      }
+    }
+    const bool allowed = lease.allowsCommand(definition.computeDroneId, command, now, detail);
+    if (reason) *reason = definition.computeDroneId + ":" + detail;
+    return allowed;
+  }
+
+  void
+  releaseTrackingCommand()
+  {
+    std::lock_guard<std::mutex> guard(m_trackingDispatchMutex);
+    m_trackingCommandPending = false;
+  }
+
+  void
+  installTrackingOwner(ndn_service_framework::ServiceUser& user, ndn::Face& face)
+  {
+    std::lock_guard<std::mutex> guard(m_trackingDispatchMutex);
+    if (m_trackingJob || m_shutdownRequested.load() || m_runtimeFailed.load()) {
+      throw std::logic_error("tracking owner already installed or runtime closing");
+    }
+    m_trackingFace = &face;
+    m_trackingUser = &user;
+    m_trackingJob = std::make_unique<UavTrackingJob>(user, face,
+      [this] (const TrackingJobDefinition& definition, std::string* reason) {
+        return !m_shutdownRequested.load() && !m_runtimeFailed.load() &&
+               checkTrackingAuthority(definition, "tracking_start", reason);
+      },
+      [this] (const TrackingSnapshot& snapshot) {
+        std::lock_guard<std::mutex> snapshotGuard(m_trackingSnapshotMutex);
+        m_trackingSnapshot = snapshot;
+      });
+    m_trackingDispatchOpen = true;
+  }
+
+#ifdef NDNSF_UAV_MAIN_APP_TEST_SEAM
+  friend struct GroundStationTrackingTestAccess;
+#endif
+
   void
   issueDefaultOperatorLease()
   {
@@ -9399,11 +9718,35 @@ private:
   std::mutex m_latestDecodedFrameMutex;
   std::vector<uint8_t> m_latestDecodedFrame;
   ndn::Face m_face;
+#ifdef NDNSF_UAV_MAIN_APP_TEST_SEAM
+  ndn::KeyChain m_keyChain{"pib-memory:", "tpm-memory:"};
+#else
   ndn::KeyChain m_keyChain;
+#endif
   ndn::security::Certificate m_gsCert;
   ndn::security::Certificate m_controllerCert;
   std::unique_ptr<ndn_service_framework::CertificatePublisher> m_certPublisher;
   std::unique_ptr<ndn_service_framework::ServiceUser> m_user;
+  // Installed on the Face; borrowed dependencies outlive the owned job and callbacks.
+  std::unique_ptr<UavTrackingJob> m_trackingJob;
+  ndn::Face* m_trackingFace = nullptr;
+  ndn_service_framework::ServiceUser* m_trackingUser = nullptr;
+  std::shared_ptr<std::atomic<size_t>> m_trackingProbePending =
+    std::make_shared<std::atomic<size_t>>(0);
+  std::optional<TrackingJobDefinition> m_activeTrackingDefinition;
+  std::set<std::string> m_usedTrackingRuns;
+  std::set<std::pair<ndn::Name, uint64_t>> m_usedTrackingEpochs;
+  mutable std::mutex m_trackingSnapshotMutex;
+  TrackingSnapshot m_trackingSnapshot;
+  std::mutex m_trackingDispatchMutex;
+  bool m_trackingDispatchOpen = false;
+  bool m_trackingCommandPending = false;
+  std::mutex m_shutdownMutex;
+  std::atomic<bool> m_shutdownRequested{false};
+  std::atomic<bool> m_trackingStopPosted{false};
+  std::atomic<bool> m_runtimeFailed{false};
+  bool m_shutdownComplete = false;
+  std::chrono::steady_clock::time_point m_shutdownDeadline;
   mutable std::mutex m_liveStreamMutex;
   std::shared_ptr<ndn_service_framework::LiveStreamConsumerHandle> m_liveStreamHandle;
   std::shared_ptr<ndn_service_framework::PredictiveStreamSubscriber>

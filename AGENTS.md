@@ -601,3 +601,7 @@ and task context. Report a blocker only after bounded retries fail.
 This instruction cannot intercept failures that occur before a model turn is
 created. For those host-side failures, the Codex IDE/CLI itself must provide
 retry or model fallback; never claim that an agent instruction can catch them.
+
+<!-- SPEC_KIT_PLAN_START -->
+Active implementation plan is at specs/231-collaboration-semantics/plan.md.
+<!-- SPEC_KIT_PLAN_END -->

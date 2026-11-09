@@ -44,6 +44,10 @@ public:
   ndn::Name publish(ndn_service_framework::ServiceProvider::CollaborationContext& context,
                     const std::string& keyScope, const PublishedFrame& frame,
                     int freshnessMs = 60000) const;
+  /** Person windows may be replayed by a new authorized invocation. */
+  ndn::Name publish(ndn_service_framework::ServiceProvider::CollaborationContext& context,
+                    const std::string& keyScope, const PublishedFrame& frame,
+                    int freshnessMs, bool reusable) const;
   void clear();
   size_t retainedBytes() const noexcept { return m_retainedBytes; }
 
