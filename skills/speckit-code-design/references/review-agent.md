@@ -17,6 +17,13 @@
 找到首个问题后继续审完其余改动。具体 finding 使用 `[P1/P2/P3] 标题 — file:line`，给出触发条件、源码因果与影响，定位最小相关范围；P0 只用于无条件严重阻断。缺陷须有证据、可行动，不制造风格问题、推测性故障或把旧问题说成本次引入。
 
 设计缺失、既有阻塞和未读路径单列为 coverage/design gap，不伪造 regression finding；控制当前任务正确性时同样阻止静态门。无缺陷写 No findings，并附实际覆盖、设计符合性、待运行验证和残余不确定性，由工作流判定是否 STATIC_PASS。
+同时按 [review-gate.md](review-gate.md#core-goal-and-necessity-review) 检查受审需求/任务
+本身的必要性；多余机制、重复工作与可复用证据的处置放在同一审查，不只追查遗漏，
+也不把每条建议变成新任务。scope/design 判断与 introduced-regression findings 分开。
+设计符合性与源码审查同时按该参考的
+[Call-Chain Design Review](review-gate.md#call-chain-design-review) 逐跳核实业务链，
+在已有 FLOW/coverage 记录中解释关键数据、状态、异步和失败细节；关键边未读写 gap。
+不能把符号列表、孤立 helper、调用图或局部测试当成生产闭环证明。
 实际覆盖至少包括生产调用方/默认接线、测试或 harness 及其 oracle、构建注册/source
 closure；这些未读时写 coverage gap，不能仅凭 No findings 记 `STATIC_PASS`。批次漏检与
 构建测量按 [batch-quality-gates.md](batch-quality-gates.md) 的结果字段归档，不在本参考另建报告。

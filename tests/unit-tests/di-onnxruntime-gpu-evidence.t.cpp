@@ -763,6 +763,60 @@ BOOST_AUTO_TEST_CASE(ShapeConstantsMustRemainModelMaterialDuringWarmup)
   BOOST_CHECK_EQUAL(failed.phases.at("onnx-run-envelope").calls, 2U);
 }
 
+BOOST_AUTO_TEST_CASE(UnrankedBoundaryInputSkipsSyntheticWarmupOnCpu)
+{
+  // The canonical Qwen 4B source records cross-stage shape constants in
+  // value_info without a usable shape.  A role that exposes such a tensor as
+  // an input cannot produce a valid synthetic readiness value: Reshape
+  // requires a rank-1 vector and the zero placeholder would be rank 0.  The
+  // runner records the skip and lets the first real request supply the
+  // producer's tensors.
+  GraphMetadataFixture fixture;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(18);
+  auto& graph = *model.mutable_graph();
+  auto* hidden = graph.add_input();
+  hidden->set_name("hidden");
+  auto* hiddenType = hidden->mutable_type()->mutable_tensor_type();
+  hiddenType->set_elem_type(onnx::TensorProto::FLOAT);
+  hiddenType->mutable_shape()->add_dim()->set_dim_value(1);
+  hiddenType->mutable_shape()->add_dim()->set_dim_value(128);
+  auto* target = graph.add_input();
+  target->set_name("target");
+  target->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::INT64);
+  auto* output = graph.add_output();
+  output->set_name("output");
+  auto* outputType = output->mutable_type()->mutable_tensor_type();
+  outputType->set_elem_type(onnx::TensorProto::FLOAT);
+  for (int i = 0; i < 4; ++i)
+    outputType->mutable_shape()->add_dim()->set_dim_value(1);
+  auto* reshape = graph.add_node();
+  reshape->set_name("boundary-reshape");
+  reshape->set_op_type("Reshape");
+  reshape->add_input("hidden");
+  reshape->add_input("target");
+  reshape->add_output("output");
+  NativeModelRunnerSpec spec;
+  spec.role = "/Warmup/Unranked";
+  spec.backend = "onnxruntime-cpu";
+  spec.metadata = {
+    {"unrankedInputNames", "target"},
+    {"evidence.providerName", "/test/provider/unranked"},
+    {"evidence.providerBootId", "unranked-boot"},
+    {"evidence.modelDigest", "sha256:" + std::string(64, '1')},
+    {"evidence.planDigest", "sha256:" + std::string(64, '2')},
+    {"evidence.artifactDigest", "sha256:" + std::string(64, '3')},
+    {"evidence.createdAtMs", "1"}};
+  spec.path = fixture.write(model);
+  OnnxRuntimeModelRunner runner(spec);
+  const auto evidence = runner.executionEvidenceSnapshot();
+  BOOST_REQUIRE(evidence);
+  BOOST_CHECK(!evidence->warmupCompleted);
+  BOOST_CHECK(evidence->warmupSkippedUnrankedInput);
+  BOOST_CHECK(evidence->loadCompleted);
+}
+
 BOOST_AUTO_TEST_CASE(BorrowedOrtOutputsKeepAuxiliaryWireAndIndependentLifetime)
 {
   GraphMetadataFixture fixture;

@@ -1116,6 +1116,10 @@ public:
   detail::OnnxRuntimeGraphMetadata graphMetadata;
   Ort::SessionOptions sessionOptions;
   Ort::Session session;
+
+  // Shared by the load owner and every cache-hit wrapper so a skipped
+  // unranked-input warm-up is not reported as a completed warm-up.
+  bool warmupSkippedUnrankedInput = false;
 };
 
 class OnnxRuntimeModelRunner::Impl
@@ -1445,9 +1449,13 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
   m_impl->stateObserver = std::move(stateObserver);
   initializeEvidence();
   if (m_evidence) {
-    // The load owner's warmup is complete before acquire publishes the value;
-    // this wrapper has its own evidence object but does not repeat warmup.
-    m_evidence->warmupCompleted = true;
+    // The load owner's warmup ran (or was skipped for an unranked input)
+    // before acquire publishes the value; this wrapper has its own evidence
+    // object but does not repeat warmup.
+    if (m_impl->sharedSession->warmupSkippedUnrankedInput)
+      m_evidence->warmupSkippedUnrankedInput = true;
+    else
+      m_evidence->warmupCompleted = true;
     m_evidence->validate();
   }
   const auto counters = sessionCache->counters();
@@ -1484,6 +1492,23 @@ OnnxRuntimeModelRunner::warmup()
   RoleExecutionContext warmup;
   warmup.sessionId = "native-runtime-warmup";
   warmup.role = m_spec.role;
+  // A boundary input whose authenticated contract carries no rank (the
+  // canonical source value_info has no usable shape) cannot be given a valid
+  // synthetic value: structural consumers such as Reshape require a concrete
+  // rank-1 shape vector, and no zero placeholder satisfies that.  The first
+  // real request supplies the producer's actual tensors and is the executable
+  // readiness evidence for this CPU session.  Record the skip explicitly
+  // instead of feeding a rank-0 placeholder that fails the probe.
+  const auto unrankedInputs = metadataNames(
+    m_spec, {"unrankedInputNames", "unranked_input_names"});
+  if (m_impl->selection.selectedProvider == "cpu" && !unrankedInputs.empty()) {
+    m_impl->sharedSession->warmupSkippedUnrankedInput = true;
+    if (m_evidence) {
+      m_evidence->warmupSkippedUnrankedInput = true;
+      m_evidence->validate();
+    }
+    return;
+  }
   Ort::AllocatorWithDefaultOptions allocator;
   const auto inputCount = m_impl->session.GetInputCount();
   for (std::size_t index = 0; index < inputCount; ++index) {

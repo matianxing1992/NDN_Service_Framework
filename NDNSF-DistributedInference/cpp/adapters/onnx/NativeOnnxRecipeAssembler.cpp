@@ -3348,18 +3348,28 @@ materializeCanonicalModel(NativeCanonicalSource& source,
       value.set_name(contract.name);
       auto* tensor = value.mutable_type()->mutable_tensor_type();
       tensor->set_elem_type(dtypeCode(contract.dtype));
-      auto* shape = tensor->mutable_shape();
-      for (const auto& dimension : contract.shape) {
-        auto* dim = shape->add_dim();
-        if (std::holds_alternative<std::int64_t>(dimension)) {
-          const auto number = std::get<std::int64_t>(dimension);
-          if (number < 0) fail("MATERIAL_BOUNDARY");
-          dim->set_dim_value(number);
-        }
-        else {
-          const auto& symbol = std::get<std::string>(dimension);
-          if (symbol.empty()) fail("MATERIAL_BOUNDARY");
-          dim->set_dim_param(symbol);
+      // An empty contract shape records an authenticated source tensor whose
+      // metadata carried no rank (ONNX value_info without a shape field).  The
+      // wire contract cannot distinguish that from a rank-0 scalar, so leave
+      // the shape field absent: an empty TensorShapeProto would assert a
+      // scalar boundary type, and ONNX consumers such as Reshape reject a
+      // rank-0 shape input ("shape input must be 1D tensor").  Unknown rank
+      // keeps the role boundary consistent with compareBoundaryContracts(),
+      // which compares the dimension count only.
+      if (!contract.shape.empty()) {
+        auto* shape = tensor->mutable_shape();
+        for (const auto& dimension : contract.shape) {
+          auto* dim = shape->add_dim();
+          if (std::holds_alternative<std::int64_t>(dimension)) {
+            const auto number = std::get<std::int64_t>(dimension);
+            if (number < 0) fail("MATERIAL_BOUNDARY");
+            dim->set_dim_value(number);
+          }
+          else {
+            const auto& symbol = std::get<std::string>(dimension);
+            if (symbol.empty()) fail("MATERIAL_BOUNDARY");
+            dim->set_dim_param(symbol);
+          }
         }
       }
       return value;

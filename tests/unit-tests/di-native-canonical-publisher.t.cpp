@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-material-fragment-cache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "tests/fixtures/spec182/native-catalog-test-access.hpp"
@@ -20,6 +21,7 @@
 #include <onnx/onnx_pb.h>
 #include <onnx/checker.h>
 #include <onnx/defs/schema.h>
+#include <onnxruntime_cxx_api.h>
 #include <ndn-cxx/util/sha256.hpp>
 
 #include <fstream>
@@ -2549,6 +2551,147 @@ BOOST_AUTO_TEST_CASE(MaterializedRoleRebuildsInternalStageBoundary)
                     onnx::TensorProto::FLOAT);
   BOOST_REQUIRE_EQUAL(role.graph().output(0).type().tensor_type().shape().dim_size(), 2);
   BOOST_CHECK_EQUAL(role.graph().output(0).type().tensor_type().shape().dim(1).dim_value(), 4);
+}
+
+BOOST_AUTO_TEST_CASE(MaterializedRoleKeepsUnrankedBoundaryTensor)
+{
+  // The 4B canonical source records some cross-stage Reshape shape constants
+  // in value_info with an empty shape message (declared rank 0) although the
+  // producing Constant is 1-D.  A role that consumes such a tensor receives
+  // it as a boundary contract whose shape array is empty: the contract has no
+  // rank information.  Materializing the empty array as an empty
+  // TensorShapeProto would assert a scalar input, and ORT rejects the role at
+  // Reshape shape inference ("shape input must be 1D tensor").  Keep the
+  // boundary unranked instead; ORT accepts an input without a shape.
+  NativeCanonicalSource source;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(17);
+  model.mutable_graph()->set_name("spec189-unranked-boundary");
+  auto* input = model.mutable_graph()->add_input();
+  input->set_name("x");
+  input->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(6);
+  auto* output = model.mutable_graph()->add_output();
+  output->set_name("z");
+  output->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT);
+  auto* outputShape = output->mutable_type()->mutable_tensor_type()->mutable_shape();
+  outputShape->add_dim()->set_dim_value(1);
+  outputShape->add_dim()->set_dim_value(3);
+  outputShape->add_dim()->set_dim_value(2);
+  // A shape constant owned by another role, plus the value_info entry the
+  // canonical source carries for its output.
+  auto* shapeInfo = model.mutable_graph()->add_value_info();
+  shapeInfo->set_name("reshape_shape");
+  shapeInfo->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::INT64);
+  shapeInfo->mutable_type()->mutable_tensor_type()->mutable_shape();
+  auto* constant = model.mutable_graph()->add_node();
+  constant->set_op_type("Constant");
+  constant->add_output("reshape_shape");
+  auto* value = constant->add_attribute();
+  value->set_name("value");
+  value->set_type(onnx::AttributeProto::TENSOR);
+  auto* tensor = value->mutable_t();
+  tensor->set_data_type(onnx::TensorProto::INT64);
+  tensor->add_dims(3);
+  for (const std::int64_t dimension : {1, 3, 2})
+    tensor->add_int64_data(dimension);
+  auto* reshape = model.mutable_graph()->add_node();
+  reshape->set_op_type("Reshape");
+  reshape->add_input("x");
+  reshape->add_input("reshape_shape");
+  reshape->add_output("z");
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  source.modelBytes.assign(wire.begin(), wire.end());
+
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(30), [] {}, 1U << 20, 1U << 20};
+  source.materialManifest = deriveNativeCanonicalMaterialManifest(source, control);
+  BOOST_REQUIRE(source.materialManifest);
+  source.materialPayloads = source.materialManifest->payloads;
+  const std::vector<NativeAssemblyTensorContractV3> inputs{
+    {"x", "float32", {std::int64_t(1), std::int64_t(6)}},
+    {"reshape_shape", "int64", {}}};
+  const std::vector<NativeAssemblyTensorContractV3> outputs{
+    {"z", "float32", {std::int64_t(1), std::int64_t(3), std::int64_t(2)}}};
+
+  const auto assembled = materializeNativeCanonicalModel(
+    source, {1}, inputs, outputs, control);
+  onnx::ModelProto role;
+  BOOST_REQUIRE(role.ParseFromArray(assembled.data(), static_cast<int>(assembled.size())));
+  BOOST_REQUIRE_EQUAL(role.graph().node_size(), 1);
+  BOOST_REQUIRE_EQUAL(role.graph().input_size(), 2);
+  if (role.graph().input(0).name() == "reshape_shape") {
+    BOOST_CHECK(!role.graph().input(0).type().tensor_type().has_shape());
+    BOOST_REQUIRE(role.graph().input(1).type().tensor_type().has_shape());
+    BOOST_CHECK_EQUAL(role.graph().input(1).type().tensor_type().shape().dim_size(), 2);
+  }
+  else {
+    BOOST_CHECK_EQUAL(role.graph().input(0).name(), "x");
+    BOOST_REQUIRE(role.graph().input(0).type().tensor_type().has_shape());
+    BOOST_REQUIRE_EQUAL(role.graph().input(1).name(), "reshape_shape");
+    BOOST_CHECK(!role.graph().input(1).type().tensor_type().has_shape());
+  }
+  // The materialized-role certificate path intentionally skips the full ONNX
+  // checker (which requires a shape on every graph input) because the source
+  // value declaration is not authentic rank information.  ORT remains the
+  // authoritative producer-side load check for this role model.
+  Ort::Env environment(ORT_LOGGING_LEVEL_ERROR, "spec189-unranked-boundary");
+  Ort::SessionOptions options;
+  options.SetIntraOpNumThreads(1);
+  BOOST_CHECK_NO_THROW(Ort::Session session(environment, assembled.data(),
+                                            assembled.size(), options));
+}
+
+BOOST_AUTO_TEST_CASE(MaterialFragmentCacheIsContentAddressedAndValidated)
+{
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec222-material-fragment-cache-" + std::to_string(::getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  struct Cleanup
+  {
+    std::filesystem::path path;
+    ~Cleanup()
+    {
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+    }
+  } cleanup{root};
+  NativeMaterialFragmentCache cache(root / "material");
+  const std::string payload = "native material payload bytes";
+  const auto payloadBytes = ndn::span<const std::uint8_t>(
+    reinterpret_cast<const std::uint8_t*>(payload.data()), payload.size());
+  ndn::util::Sha256 hasher;
+  hasher.update(payloadBytes);
+  auto hex = hasher.toString();
+  std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  const auto digest = "sha256:" + hex;
+  BOOST_CHECK(cache.write(digest, payloadBytes));
+  const auto read = cache.read(digest, payload.size(), 1024);
+  BOOST_REQUIRE(read);
+  BOOST_CHECK(std::equal(read->begin(), read->end(), payload.begin(), payload.end()));
+  BOOST_CHECK(!cache.read(digest, payload.size() + 1, 1024));
+  BOOST_CHECK(!cache.read("sha256:" + std::string(64, '0'), 1, 1024));
+  BOOST_CHECK(!cache.read("sha256:../" + std::string(61, '0'), 1, 1024));
+  // Damaged content is ignored and replaced on the next verified write.
+  const auto path = root / "material" / "sha256" / hex.substr(0, 2) / hex;
+  {
+    std::ofstream output(path, std::ios::trunc | std::ios::binary);
+    output << "tampered";
+    BOOST_REQUIRE(output.good());
+  }
+  BOOST_CHECK(!cache.read(digest, payload.size(), 1024));
+  BOOST_CHECK(cache.write(digest, payloadBytes));
+  BOOST_CHECK(cache.read(digest, payload.size(), 1024));
+  // A symlink is never followed.
+  std::filesystem::remove(path);
+  std::filesystem::create_symlink(root / "material" / "elsewhere", path);
+  BOOST_CHECK(!cache.read(digest, payload.size(), 1024));
 }
 
 BOOST_AUTO_TEST_CASE(RejectsSourceAndCanonicalIdentityBeforePublication)

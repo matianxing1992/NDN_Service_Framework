@@ -28,6 +28,16 @@ active health checks；这些检查只证明指针/工作流一致性，不能�
 
 让接手者知道改什么、为什么、怎么改、如何调用、怎样验收。设计覆盖受影响的接口、职责、重要字段与状态；不预写普通局部变量或每行实现。
 
+## Core Goal And Necessary Work
+
+先从当前用户决定确定一个核心成果、完成边界和必要验收，再检查 Spec 自身是否偏离；
+FR/SC 或任务中已经写入某项工作，并不自动证明它必要。审计同时检查逻辑完整性、步骤
+与依赖是否可执行，以及哪些工作不该做；不能只补缺项而使 Spec 持续膨胀。
+按 [review-gate.md](references/review-gate.md#core-goal-and-necessity-review) 做反事实必要性
+检查，在同一审查中给出保留、复用、合并、删除或移出本 Spec 的建议及最小剩余路径。
+必要的安全、兼容、生命周期、独立验证和真实阻塞前置属于核心成果的支撑，不能为了
+精简而删除；用户已批准的行为不能擅自缩减。审计默认不修改受审 Spec 或产品代码。
+
 ## Scope
 
 遵守用户当前授权。仅设计或审查时不启动实现、构建或实验；不自动回填旧 Spec。
@@ -60,6 +70,9 @@ active health checks；这些检查只证明指针/工作流一致性，不能�
 ## Design Before Coding
 
 1. 核对当前源码、调用方、构建入口和旧实现。区分 existing、planned 与未知事实。
+   按 [Call-Chain Design Review](references/review-gate.md#call-chain-design-review)
+   从具体业务入口沿真实调用、数据/状态传递、异步/消息边追到结果消费与失败收尾；
+   逐跳说明关键机制，先建立现状链，再定位目标改动，不以类/API 清单代替设计。
 2. 明确成果、架构所有权、兼容/退出路径；优先复用共享 API。
 3. 用 [symbol-contract.md](references/symbol-contract.md) 描述受影响类、方法、重要字段：
    责任、输入来源、返回/失败、所有权/寿命、并发、使用示例和必要英文注释。

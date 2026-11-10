@@ -72,7 +72,25 @@ Classify the outcome as keep, simplify, remove/revert, correct or unverified.
 Do not invent a defect merely to recommend fewer lines. A necessary explanation
 of a security boundary or negative result must remain even when it adds length.
 
+For a Spec or plan, examine whether its requirements and tasks are necessary,
+not only whether the implementation follows them. Anchor the core outcome and
+completion boundary in current user decisions. Ask what outcome or required
+prerequisite would fail if an item were omitted; its own requirement ID is not
+proof of need. Identify existing paths/evidence to reuse, work to merge, and
+concrete remove/defer recommendations, then state the smallest remaining path.
+Keep this in the existing review; do not automatically add tasks or a backlog,
+shrink approved behavior, or remove required safety and acceptance checks.
+
 ### Code checks
+
+For a design or code audit, follow a concrete operation through the real entry,
+wiring, caller/callee and message edges to result consumption and failure cleanup.
+Explain material argument sources, guards, state commits, async ownership and error
+propagation with source locations; distinguish existing, planned and unverified edges.
+An API inventory or diagram alone does not establish a working chain. Reuse the
+existing flow/contract and review record. In NDNSF, apply the shared
+`skills/speckit-code-design/references/review-gate.md` section `Call-Chain Design Review`
+for the detailed contract rather than defining a second checklist here.
 
 Apply affected repository engineering rules to the actual path: naming and wire
 parity, trust and authorization, ownership, dependency admission, bounded async

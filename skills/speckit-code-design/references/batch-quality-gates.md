@@ -341,10 +341,10 @@ Spec 文档或唯一 evidence record。每次创建或修改 code-backed artifac
 | `speckit-specify` | 为每个故事/FR/SC 写明真实入口或参与者、可观察结果、独立判据、必要负例/恢复路径；未知项保持显式 |
 | `speckit-plan` | 为每个逻辑批次冻结行为边界、成员、实现/验收依赖、共享选择器、负责人和稳定出口 |
 | `speckit-tasks` | 生成批次表、逐单元 `Execution Progress` 和结果记录字段；任务必须覆盖实现、调用方、测试/harness、构建接线的适用范围 |
-| `speckit-analyze` | 把缺少入口、调用方、测试注册、构建注册、独立 oracle 或批次出口列为一致性发现；保持只读 |
-| `speckit-audit` | 在代码现实和验证设计维度检查上述覆盖，并区分静态、构建、运行与资格证据 |
+| `speckit-analyze` | 按 review-gate 的核心目标/必要性检查范围和依赖，再检查入口、测试注册、构建、oracle 与出口的一致性；保持只读 |
+| `speckit-audit` | 检查需求和任务本身是否必要，提出保留/复用/合并/删减/移出及最小剩余路径；结合源码区分静态、构建、运行与资格证据 |
 | `speckit-implement` | 小任务静态门后继续同批；稳定出口后执行批末组合审查、统一构建/测试并填写全部结果字段 |
-| `speckit-converge` | 对生产接线、测试/harness、构建 closure 的遗漏追加有独立出口的修复任务，不用大而泛的补漏卡掩盖边界 |
+| `speckit-converge` | 先复用现有路径、证据和未完成任务，只为必要且未覆盖的真实缺口追加有独立出口的任务；范围待决时不宣称收敛 |
 | `speckit-checklist` | 把入口、可观察结果、独立 oracle、负例、依赖和可测指标作为需求质量检查项，而不是检查实现是否运行 |
 | `speckit-clarify` | 在需求仍可澄清时补齐入口、oracle、负例/恢复边界和 native C++ selector；不把澄清写成已实现证据 |
 | `speckit-constitution` | 修改原则时同步 plan/spec/tasks 模板和相关 skill，保留本 reference 的批次、证据和 native-test 不变量 |

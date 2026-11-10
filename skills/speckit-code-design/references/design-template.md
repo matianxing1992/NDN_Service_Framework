@@ -76,6 +76,12 @@ Parameter Review 必须回答：
 
 给每条主流程稳定 FLOW ID。使用调用表，复杂流程可补 Mermaid sequenceDiagram；图中的符号必须存在于清单或核实过的现有接口。
 
+按 [Call-Chain Design Review](review-gate.md#call-chain-design-review) 从具体业务入口
+逐跳核实并解释；同一 FLOW 说明现状、目标和受影响的边，标记 existing/planned/unverified。
+在 Caller → callee 单元格或契约链接中给出当前 baseline 的调用/注册/dispatch 源码位置；
+异步及跨节点边说明实际触发机制。后续列写具体值来源、校验与提交顺序、消费者动作和
+失败 owner，不能只重复步骤标题。已有符号的定义位置不能代替调用边证据。
+
 | Step | Caller → callee | Actual arguments and source | Transformation / validation | Return / event | State change | Failure / cleanup owner |
 | --- | --- | --- | --- | --- | --- | --- |
 

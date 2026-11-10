@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/material-receipt.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-material-fragment-cache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
@@ -797,6 +798,27 @@ bindNativeRunnerOutputScopes(const NativeSelectionProjectionV3& projection,
   for (std::size_t index = 0; index < roleSpec.outputs.size(); ++index)
     spec.metadata["outputScope." + std::to_string(index)] =
       roleSpec.outputs[index].scope;
+}
+
+/**
+ * Bind the authenticated boundary inputs whose assembly contract has no shape.
+ * The value declaration carries no rank information (the canonical source
+ * value_info has no usable shape), so the runner cannot synthesize a valid
+ * readiness warm-up tensor for structural consumers such as Reshape.  The
+ * Provider records the warm-up skip instead of feeding a rank-0 placeholder.
+ */
+void
+bindNativeRunnerUnrankedInputs(const NativeSelectionProjectionV3& projection,
+                               NativeModelRunnerSpec& spec)
+{
+  std::string names;
+  for (const auto& contract : projection.assemblyContract().expectedInputs) {
+    if (!contract.shape.empty()) continue;
+    if (!names.empty()) names += ',';
+    names += contract.name;
+  }
+  if (!names.empty())
+    spec.metadata["unrankedInputNames"] = std::move(names);
 }
 
 NativeProviderResidencyIdentityV4
@@ -2068,6 +2090,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
           spec.metadata["cachePositionInputName"] = generation.cachePositionInputName;
     }
     bindNativeRunnerOutputScopes(projection, spec);
+    bindNativeRunnerUnrankedInputs(projection, spec);
     if (options.reportProgress)
       options.reportProgress("CACHE_HIT", 0.90);
     return spec;
@@ -2925,11 +2948,96 @@ prepareNativeCanonicalOnnxRole(
       ndn::util::Sha256 spoolHash;
       std::uint64_t spoolBytes = 0;
       std::size_t selectedMaterialIndex = 0;
+      // Content-addressed material payload cache.  It is role/recipe neutral:
+      // any authenticated payload digest selected by this role can be reused.
+      std::optional<NativeMaterialFragmentCache> fragmentCache;
+      if (!options.cacheDir.empty())
+        fragmentCache.emplace(std::filesystem::path(options.cacheDir) / "material");
+      const auto appendMaterialPayload = [&] (const std::string& payloadId,
+                                              const MaterialObjectReceipt& item,
+                                              const std::uint8_t* bytes,
+                                              const char* status) {
+        if (spoolBytes > assemblyControl.maxAssembledBytes ||
+            item.bytes > assemblyControl.maxAssembledBytes - spoolBytes)
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
+        writeMaterial(spoolFd, bytes, item.bytes);
+        spoolHash.update(ndn::span<const std::uint8_t>(bytes, item.bytes));
+        NativeCanonicalSource::MaterialPayload payload;
+        payload.payloadId = payloadId;
+        payload.digest = item.digest;
+        payload.rangeOffset = spoolBytes;
+        payload.rangeSize = item.bytes;
+        canonicalSource.materialPayloads.push_back(std::move(payload));
+        spoolBytes += item.bytes;
+        logMaterialFetchRange("material-payload", ndn::Name(item.dataName),
+                              status, item.bytes, item.digest, item.digest);
+        ++selectedMaterialIndex;
+        const double materialProgress = selectedIds.empty() ? 0.55 :
+          0.25 + 0.40 * static_cast<double>(selectedMaterialIndex) /
+            static_cast<double>(selectedIds.size());
+        reportProgress("MATERIAL_PAYLOAD_VERIFIED", materialProgress);
+      };
       for (const auto& group : payloadsByObject) {
         assemblyControl.requireActive();
         const auto& firstObject = selectedObjects.at(group.second.front());
         const bool bundled = !firstObject.bundleDigest.empty();
         const auto fetchedBytes = bundled ? firstObject.bundleBytes : firstObject.bytes;
+        // Fragment cache: role-neutral payloads keyed by digest.  A serving
+        // group is taken entirely from the cache only when every selected
+        // payload is present and digest-valid; otherwise fall back to the
+        // authenticated bundle fetch and populate the cache with the verified
+        // slices.  The authenticated material manifest/receipt remains the
+        // selection authority; the cache only supplies bytes.
+        std::vector<std::optional<std::vector<std::uint8_t>>> cachedPayloads;
+        bool cachedGroup = fragmentCache.has_value();
+        if (cachedGroup) {
+          cachedPayloads.reserve(group.second.size());
+          for (const auto& payloadId : group.second) {
+            const auto object = selectedObjects.find(payloadId);
+            if (object == selectedObjects.end()) {
+              cachedGroup = false;
+              break;
+            }
+            cachedPayloads.push_back(fragmentCache->read(
+              object->second.digest, object->second.bytes,
+              NativeCanonicalMaterialBundleMaxBytes));
+            if (!cachedPayloads.back()) {
+              cachedGroup = false;
+              break;
+            }
+          }
+        }
+        if (cachedGroup) {
+          std::uint64_t cachedBytes = 0;
+          for (const auto& bytes : cachedPayloads)
+            cachedBytes += bytes->size();
+          if (selectedMaterialBytes > assemblyControl.maxAssembledBytes ||
+              cachedBytes > assemblyControl.maxAssembledBytes - selectedMaterialBytes)
+            throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
+          selectedMaterialBytes += cachedBytes;
+          for (std::size_t index = 0; index < group.second.size(); ++index) {
+            assemblyControl.requireActive();
+            const auto& payloadId = group.second[index];
+            const auto object = selectedObjects.find(payloadId);
+            const auto reference = std::find_if(materialManifest->references.begin(),
+              materialManifest->references.end(), [&] (const auto& candidate) {
+                return candidate.payloadId == payloadId ||
+                  std::find(candidate.chunkPayloadIds.begin(), candidate.chunkPayloadIds.end(),
+                            payloadId) != candidate.chunkPayloadIds.end();
+              });
+            if (reference == materialManifest->references.end())
+              throw std::runtime_error("DI_CANONICAL_MATERIAL_REFERENCE_MISSING");
+            const bool chunkPayload = reference->payloadId != payloadId;
+            if ((!chunkPayload && (reference->digest != object->second.digest ||
+                                   reference->bytes != object->second.bytes)) ||
+                (chunkPayload && object->second.bytes > NativeCanonicalMaterialBundleMaxBytes))
+              throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_MISMATCH");
+            appendMaterialPayload(payloadId, object->second,
+                                  cachedPayloads[index]->data(),
+                                  "fragment-cache-hit");
+          }
+          continue;
+        }
         if ((bundled && fetchedBytes > NativeCanonicalMaterialPublicationMaxBytes) ||
             selectedMaterialBytes > assemblyControl.maxAssembledBytes ||
             fetchedBytes > assemblyControl.maxAssembledBytes - selectedMaterialBytes)
@@ -2966,25 +3074,10 @@ prepareNativeCanonicalOnnxRole(
           const auto* slice = fetched.data() + static_cast<std::size_t>(sliceOffset);
           if (sha256Hex(ndn::span<const std::uint8_t>(slice, item.bytes)) != item.digest)
             throw std::runtime_error("DI_CANONICAL_MATERIAL_PAYLOAD_DIGEST_MISMATCH");
-          if (spoolBytes > assemblyControl.maxAssembledBytes ||
-              item.bytes > assemblyControl.maxAssembledBytes - spoolBytes)
-            throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
-          writeMaterial(spoolFd, slice, item.bytes);
-          spoolHash.update(ndn::span<const std::uint8_t>(slice, item.bytes));
-          NativeCanonicalSource::MaterialPayload payload;
-          payload.payloadId = payloadId;
-          payload.digest = item.digest;
-          payload.rangeOffset = spoolBytes;
-          payload.rangeSize = item.bytes;
-          canonicalSource.materialPayloads.push_back(std::move(payload));
-          spoolBytes += item.bytes;
-          logMaterialFetchRange("material-payload", ndn::Name(item.dataName),
-                                "verified", item.bytes, item.digest, item.digest);
-          ++selectedMaterialIndex;
-          const double materialProgress = selectedIds.empty() ? 0.55 :
-            0.25 + 0.40 * static_cast<double>(selectedMaterialIndex) /
-              static_cast<double>(selectedIds.size());
-          reportProgress("MATERIAL_PAYLOAD_VERIFIED", materialProgress);
+          appendMaterialPayload(payloadId, item, slice, "verified");
+          if (fragmentCache)
+            fragmentCache->write(item.digest,
+                                 ndn::span<const std::uint8_t>(slice, item.bytes));
         }
       }
       const auto closeStatus = ::close(spoolFd);
@@ -3580,6 +3673,7 @@ prepareNativeCanonicalOnnxRole(
       spec.metadata["assembledCachePath"] = finalModel.string();
     }
     bindNativeRunnerOutputScopes(projection, spec);
+    bindNativeRunnerUnrankedInputs(projection, spec);
     requireActiveAssembly(options, projection.deadlineMs);
     logAssemblyProgressLine(projection, "RUNNER_SPEC_READY", 1.0, 0, "runner");
     if (!protectedRole) std::filesystem::remove_all(rootPath);

@@ -141,6 +141,10 @@ void ExecutionEvidence::validate() const
     throw std::invalid_argument(
       "execution evidence cannot warm before model load");
   }
+  if (warmupSkippedUnrankedInput && !loadCompleted) {
+    throw std::invalid_argument(
+      "execution evidence cannot skip warm-up before model load");
+  }
   if (executionCompleted && (processId == 0 || requestId.empty() ||
                             attemptEpoch == 0 || exactForwardCacheHit)) {
     throw std::invalid_argument("completed execution evidence lacks a fresh request observation");
@@ -241,6 +245,7 @@ std::string executionEvidenceToJson(const ExecutionEvidence& evidence)
   root.put("cpuFallbackUsed", evidence.cpuFallbackUsed);
   root.put("loadCompleted", evidence.loadCompleted);
   root.put("warmupCompleted", evidence.warmupCompleted);
+  root.put("warmupSkippedUnrankedInput", evidence.warmupSkippedUnrankedInput);
   root.put("gpuUuid", evidence.gpuUuid);
   if (!evidence.gpuUuids.empty()) {
     root.add_child("gpuUuids", stringArray(evidence.gpuUuids));
@@ -298,6 +303,8 @@ ExecutionEvidence executionEvidenceFromJson(const std::string& json)
   evidence.cpuFallbackUsed = root.get<bool>("cpuFallbackUsed", false);
   evidence.loadCompleted = root.get<bool>("loadCompleted", false);
   evidence.warmupCompleted = root.get<bool>("warmupCompleted", false);
+  evidence.warmupSkippedUnrankedInput =
+    root.get<bool>("warmupSkippedUnrankedInput", false);
   evidence.gpuUuid = root.get<std::string>("gpuUuid", "");
   evidence.gpuUuids = readStringArray(root, "gpuUuids");
   evidence.providerProfilePath = root.get<std::string>("providerProfilePath", "");

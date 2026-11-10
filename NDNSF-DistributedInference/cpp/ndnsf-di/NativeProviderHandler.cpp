@@ -1630,7 +1630,8 @@ validateNativeProviderRuntimeReadiness(
   if (!evidence.loadCompleted) {
     return "DI_RUNTIME_MODEL_NOT_LOADED";
   }
-  if (!evidence.warmupCompleted) {
+  if (!evidence.warmupCompleted &&
+      !(evidence.warmupSkippedUnrankedInput && evidence.deviceKind == "cpu")) {
     return "DI_RUNTIME_WARMUP_INCOMPLETE";
   }
   if (std::find(evidence.roles.begin(), evidence.roles.end(), expectedRole) ==

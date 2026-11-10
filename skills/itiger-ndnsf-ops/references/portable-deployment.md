@@ -238,3 +238,71 @@ grant/material/placement/restore等项目仍是NOT_EVALUATED；
 `specs/217-portable-di-deployment/evidence/b217-11.md`及相关原始receipt。
 证据目录是本地历史输入，fresh checkout可能没有；缺失时重新核对相关实际边界，
 不把此参考作为运行或通过证明。
+
+## 2026-11 Qwen3-4B CPU 缓存、配额与挂载教训
+
+本节来自 Spec222 的 4B CPU + Tiger 实验（r28–r34）。这是操作经验，
+不把其中的 job/镜像编号设为默认值；新任务仍以当前源码、配置和证据为准。
+
+### 配额与版本保留
+
+- `df` 的整盘可用空间不是用户/项目 quota。小文件 `scp` 报
+  `Disk quota exceeded` 就是配额边界；`df` 仍显示空闲并不能否定它。
+- 4B 的 fragment cache（约 12–23GB）与 Provider 的 `material.spool` 各占一份，
+  二者在同一 `cache_root` 上叠加。按“最新 cache + 本次 spool + assembled 模型”
+  估算峰值，而不是只看模型大小。
+- 每种数据只保留最新可用版本：同一用途的最新 SIF、最新 cache、最新 release
+  manifest；新候选可用后，旧候选 SIF（约 4.3GB/个）和旧 cache 按显式 allowlist
+  回收。保留 build record、`runtime.def`、preflight 和 evidence 作为身份记录。
+- 只删 superseded 的 `ndnsf.sif`/旧 cache；不删模型、Repo、当前 assembled cache、
+  证据和 build 元数据。回收后做一次有界写入探针；`df` 不变但配额已满时，
+  以实际写入失败为准。
+
+### cache_root 必须在容器内可见
+
+- 部署的 `run-container.sh` 把 `$scratch:/scratch:rw` 绑定进容器，宿主 `/scratch`
+  在容器内被部署 scratch 覆盖。把 `storage.cache_root` 放到宿主 `/scratch/...`
+  会在 Provider 启动的 `IMAGE_ROOT_INSPECTION` 阶段失败：
+  `IMAGE_INSPECTION_HOLDER_EXIT:1`（expected exit 2），与模型/推理无关。
+- 优先把 `cache_root` 放在站点默认可见的 `/project/...`，或放在显式 bind 的路径下；
+  `/project` 的用户配额要同时覆盖 cache 和 spool。
+- 换 `cache_root` 等于换运行身份/挂载面：先核对容器内路径可达，再重跑；
+  不要把它当成纯配置。
+
+### 用 assembled cache 做快速迭代
+
+- assembled role cache 在
+  `<cache_root>/provider-*/stored/<identity>/assembled/<role>/<recipeDigest>/`，
+  含 `model.onnx`（+`.data`）、`manifest.json` 和 Provider 签名的
+  `manifest.signature`；命中后跳过 material fetch 和角色组装。
+- fragment cache 在 `<providerCacheDir>/material/sha256/...`，按 payload digest
+  寻址、与角色无关；首次填充后，后续整组命中不再走 NDN。
+- 冷组装路径和 assembled-cache 命中路径都必须绑定完整的 runner 元数据。本次 4B
+  的 Stage-1 在冷路径缺少 `unrankedInputNames`，warmup 仍用 rank-0 占位符，报
+  `Reshape ... shape tensor must be a vector`；assembled-cache 命中路径有绑定，
+  因此 32 tokens 成功。改 runner 元数据后要同时验证两条路径。
+- 用 assembled cache 复现时，先看 `CACHE_ACQUIRE`、`RUNNER_CREATE_BEGIN` 和
+  `EXECUTION_EVIDENCE_UPDATE` 的 `warmupSkippedUnrankedInput`；不要把 warmup
+  失败当成真实执行失败。
+
+### 本地 0.6B 与 Tiger 包络
+
+- 本地 0.6B 是逻辑门：覆盖 installed 应用、Repo stored 读取和通用角色装配，
+  但不覆盖 4B 源的空 shape 常量、SIF 挂载/quota/55 分钟 request 上限，
+  以及两 Provider 的运行时依赖。不要把 0.6B PASS 当成 4B 部署验证。
+- 4B 的 shape 元数据要单独做 fixture；容器 mount、`cache_root` 和配额要在本地
+  或单机用同一 SIF/config schema 做 preflight，再上 Tiger。
+
+### 提交与 oracle
+
+- 每次提交前查全群和自己的 queue；`PENDING (Priority)` 在节点有 16 个空闲 CPU 时
+  也可能排不上。换节点（如 itiger03→itiger02）后确认新 allocation 启动，再取消旧
+  作业；不要并发跑两份共享 Repo store 的部署。
+- 4B 一 turn 32 tokens 的 inference 成功不等于 oracle PASS。
+  `run-27b-cpu-first.sh` 会在 deployment down 后用
+  `reference-oracle.sbatch --wait` 提交独立 oracle，oracle 也可能
+  `PENDING (Priority)`；owner 的 `oracle: NOT_RUN` /
+  `CLI_COMPLETE_ORACLE_PENDING` 是待验证状态，不能写成 PASS。
+- 27B：51GB material 的首次 NDN fetch 在 55 分钟窗口内不现实；先做离线/本地
+  fragment 填充或更快的本地读取，再谈 27B 推理。存储按 cache+spool+Repo 预算，
+  内存按 64G 以上估算，不照搬 4B 的 32G/13 CPU。

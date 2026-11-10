@@ -101,5 +101,18 @@ NDNSF 层统一拥有本仓库的 Core、DI、Repo、UAV、绑定和实验入口
 所有 owned processes 必须清理；leader 退出不代表其进程组已清理。
 失败后先诊断首边界，源/依赖/config/harness变化回到最早失效门；仅重跑受影响范围。
 
+## Tiger Storage, Cache And Local-Gate Boundaries
+
+- `/project` 的 `df` 不是用户 quota。每种数据只保留最新 SIF/cache/preflight；新候选
+  可用后旧候选 SIF（约 4.3GB/个）和旧 cache 按显式 allowlist 回收；峰值按
+  cache+spool+assembled 估算，回收后用有界写入探针确认。
+- `storage.cache_root` 必须在容器内可见：部署把 `$scratch` 绑到 `/scratch`，宿主
+  `/scratch` 会被遮蔽。放在 `/project/...` 或显式 bind 路径，否则 Provider 在
+  `IMAGE_ROOT_INSPECTION` 阶段以 `IMAGE_INSPECTION_HOLDER_EXIT:1` 失败。
+- 先用 assembled cache 做快速复现；冷组装和 assembled-cache 命中两条 spec 路径都要
+  绑定完整 runner 元数据，`warmup` skip 失败与真实执行失败要分开诊断。
+- 本地 0.6B/小模型只证明逻辑；4B 的 shape 元数据、容器挂载、quota、request 超时和
+  两 Provider 运行时依赖要单独 preflight，不能把 0.6B PASS 当成 4B 部署验证。
+
 按实际证据区分 package checks、build、local runtime、cluster functional 和 performance。
 本地两实例只能 LOCAL_PASS；未完成运行不能填写 PASS。结束后同步任务与交接记录，附明确版本、结果、限制和下一步。

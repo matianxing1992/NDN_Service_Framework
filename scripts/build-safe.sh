@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Bound the entire build process tree so memory exhaustion stops the build
-# instead of killing the desktop. Execute compiler processes as the caller.
+# Isolate the build process tree without imposing a compiler memory cap.
+# Execute compiler processes as the caller; stop the group on an OOM failure.
 set -euo pipefail
 
 build_repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 build_unit="ndnsf-build-${UID}-$$"
-build_memory_limit=${NDNSF_BUILD_MEMORY_LIMIT:-6656M}
 if (( $# == 0 )); then
     set -- build --jobs=6
 fi
@@ -62,14 +61,6 @@ if ! flock -n 9; then
     exit 75
 fi
 
-# Account for desktop headroom before launching; a static job count alone
-# does not reflect large resident tmpfs artifacts or other applications.
-build_limit_bytes=$(numfmt --from=iec "$build_memory_limit")
-build_available_kib=$(awk '$1 == "MemAvailable:" {print $2}' /proc/meminfo)
-if (( build_available_kib * 1024 < build_limit_bytes + 2 * 1024 * 1024 * 1024 )); then
-    echo "Insufficient memory headroom for a $build_memory_limit build and 2 GiB desktop reserve" >&2
-    exit 75
-fi
 build_active_units=$(systemctl list-units --state=activating,active,deactivating --no-legend --plain \
     "ndnsf-build-${UID}-*.service")
 if [[ -n $build_active_units ]]; then
@@ -94,12 +85,12 @@ fi
 if [[ -n ${NDNSF_RUNTIME_RPATH:-} ]]; then
     build_environment+=(--setenv="NDNSF_RUNTIME_RPATH=$NDNSF_RUNTIME_RPATH")
 fi
-echo "Build scope: ${build_unit}.service; memory limit ${build_memory_limit}"
+echo "Build scope: ${build_unit}.service; no compiler memory cap"
 sudo -n systemd-run --quiet --wait --pipe --collect \
     --unit="$build_unit" --uid="$UID" --gid="$(id -g)" \
     --working-directory="$(pwd)" \
-    --property="MemoryLimit=$build_memory_limit" \
+    --property=MemoryLimit=infinity --property=MemoryMax=infinity \
     --property=MemoryAccounting=yes --property=OOMScoreAdjust=600 \
     --property=OOMPolicy=stop --property=KillMode=control-group \
-    --property=Nice=10 "${build_environment[@]}" \
+    "${build_environment[@]}" \
     "${build_command[@]}"

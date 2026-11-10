@@ -6,13 +6,16 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 
 int
 main(int argc, char** argv)
 {
   try {
-    if (argc != 3)
-      throw std::invalid_argument("usage: installed-material-plan-probe MODEL EXPECTED_DIGEST");
+    const bool identityOnly = argc == 6 && std::string(argv[3]) == "--identity";
+    if (argc != 3 && !identityOnly)
+      throw std::invalid_argument("usage: installed-material-plan-probe MODEL EXPECTED_DIGEST"
+                                 " [--identity INITIALIZER EXPECTED_INITIALIZER_DIGEST]");
     const std::filesystem::path path(argv[1]);
     const auto bytes = std::filesystem::file_size(path);
     if (!path.is_absolute() || path != std::filesystem::canonical(path) ||
@@ -37,13 +40,34 @@ main(int argc, char** argv)
     const auto start = Clock::now();
     const auto cpu = std::clock();
     ndnsf::di::NativeAssemblyControl control;
-    control.deadline = start + std::chrono::seconds(60);
-    control.maxSourceBytes = 1ULL << 30;
-    control.maxAssembledBytes = 1ULL << 30;
+    control.deadline = start + std::chrono::seconds(identityOnly ? 600 : 60);
+    control.maxSourceBytes = 1ULL << (identityOnly ? 36 : 30);
+    control.maxAssembledBytes = control.maxSourceBytes;
     control.requireActive = [deadline = control.deadline] {
       if (Clock::now() >= deadline)
         throw std::runtime_error("native material plan probe deadline");
     };
+    if (identityOnly) {
+      const std::filesystem::path initializer(argv[4]);
+      const auto initializerBytes = std::filesystem::file_size(initializer);
+      if (!initializer.is_absolute() || initializer != std::filesystem::canonical(initializer) ||
+          !std::filesystem::is_regular_file(initializer) || initializerBytes == 0 ||
+          initializerBytes > control.maxSourceBytes - bytes)
+        throw std::invalid_argument("bounded canonical initializer required");
+      source.initializerRangeSource = ndnsf::di::openNativeCanonicalInitializerFile(
+        initializer.string(), initializerBytes, argv[5], control);
+      const auto identity = ndnsf::di::canonicalOnnxSourceIdentity(source, control);
+      std::cout << "{\"phase\":\"native-canonical-identity\",\"graphDigest\":\""
+                << identity.graphDigest << "\",\"initializerDigest\":\""
+                << identity.initializerDigest << "\",\"initializerBytes\":" << initializerBytes
+                << ",\"wallSeconds\":"
+                << std::chrono::duration<double>(Clock::now() - start).count()
+                << ",\"cpuSeconds\":"
+                << static_cast<double>(std::clock() - cpu) / CLOCKS_PER_SEC
+                << ",\"scope\":\"native identity only; no publication or inference\"}"
+                << std::endl;
+      return 0;
+    }
     const auto manifest = ndnsf::di::deriveNativeCanonicalMaterialManifest(source, control);
     uint64_t materialBytes = 0;
     uint64_t largest = 0;

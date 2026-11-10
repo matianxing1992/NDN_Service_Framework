@@ -59,6 +59,12 @@ struct ExecutionEvidence
   bool cpuFallbackUsed = false;
   bool loadCompleted = false;
   bool warmupCompleted = false;
+  // A CPU role may expose a boundary input whose authenticated contract
+  // carries no rank (the canonical source value_info has no usable shape).
+  // No synthetic zero tensor can be a valid warm-up value for structural
+  // consumers such as Reshape; the first real request supplies the producer's
+  // tensors and is the executable evidence for this session.
+  bool warmupSkippedUnrankedInput = false;
   std::string gpuUuid;
   std::vector<std::string> gpuUuids;
   std::string providerProfilePath;
