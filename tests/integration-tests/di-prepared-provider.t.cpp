@@ -643,7 +643,18 @@ BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
 // ingress with a direct assembler-only fixture.
 BOOST_AUTO_TEST_SUITE(Spec188ProviderReferenceAssembly)
 
-static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
+class ProviderOwnershipProbe : public ServiceProvider
+{
+public:
+  static std::weak_ptr<MessageValidator>
+  messageValidator(const ServiceProvider& provider)
+  {
+    return provider.*(&ProviderOwnershipProbe::validator);
+  }
+};
+
+static std::weak_ptr<MessageValidator>
+runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
                                                    bool restartHandler = false,
                                                    bool includeStoredKeyTable = false)
 {
@@ -660,6 +671,7 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
   environment.bootstrap();
   environment.user().setUseTokens(false);
   environment.provider().setUseTokens(false);
+  const auto validatorLifetime = ProviderOwnershipProbe::messageValidator(environment.provider());
 
   const auto serviceName = environment.profile().serviceName;
   const auto providerName = environment.provider().getName();
@@ -1727,6 +1739,7 @@ static void runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
   // the caller's integration environment.
   facade.stop();
   BOOST_REQUIRE(facade.drain(std::chrono::milliseconds(2000)));
+  return validatorLifetime;
 }
 
 BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse)
@@ -1736,7 +1749,10 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
 
 BOOST_AUTO_TEST_CASE(AuthenticatedSelectionAdmitsStoredModelKeysAndRejectsWrongCapsuleKey)
 {
-  runAuthenticatedProviderAssignmentCase(false, false, true);
+  const auto validator = runAuthenticatedProviderAssignmentCase(false, false, true);
+  // Exact-fetch callbacks retain the configured validator. It must expire
+  // after the real Face/Provider environment drains, including failed reads.
+  BOOST_CHECK(validator.expired());
 }
 
 BOOST_AUTO_TEST_CASE(FixedRoleSourceMissThenWarmHitUsesSameProviderObject)

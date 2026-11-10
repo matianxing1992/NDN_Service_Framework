@@ -14950,6 +14950,7 @@ namespace ndn_service_framework
         struct LargeFetchOwner {
             std::shared_ptr<ndn::SegmentFetcher> fetcher;
             std::shared_ptr<std::function<void()>> cancelPoll;
+            std::function<void()> cancelExact;
             std::atomic<bool> terminalRequested{false};
             bool cleanupDone = false;
         };
@@ -15010,8 +15011,40 @@ namespace ndn_service_framework
                 cv->notify_one();
                 return;
             }
+            if (current) {
+                auto cancelPoll = std::make_shared<std::function<void()>>();
+                const std::weak_ptr<std::function<void()>> weakCancelPoll = cancelPoll;
+                const std::weak_ptr<LargeFetchOwner> weakOwner = owner;
+                *cancelPoll = [this, weakCancelPoll, weakOwner, current,
+                               completed, mutex, cv, error] {
+                    const auto activeOwner = weakOwner.lock();
+                    if (!activeOwner || completed->load()) return;
+                    if (!current()) {
+                        if (activeOwner->cancelExact) activeOwner->cancelExact();
+                        auto activeFetcher = std::move(activeOwner->fetcher);
+                        if (activeFetcher) activeFetcher->stop();
+                        {
+                            std::lock_guard<std::mutex> lock(*mutex);
+                            if (!completed->load()) {
+                                *error = "large-data fetch cancelled by dispatch authority";
+                                completed->store(true);
+                            }
+                        }
+                        cv->notify_one();
+                        return;
+                    }
+                    m_scheduler.schedule(ndn::time::milliseconds(10), [weakCancelPoll] {
+                        if (const auto poll = weakCancelPoll.lock()) (*poll)();
+                    });
+                };
+                owner->cancelPoll = std::move(cancelPoll);
+                const auto activeCancelPoll = owner->cancelPoll;
+                (*activeCancelPoll)();
+            }
+            if (completed->load()) return;
             if (exactSegmentFetch) {
                 struct ExactFetchState {
+                    std::map<size_t, ndn::ScopedPendingInterestHandle> pending;
                     std::vector<ndn::Buffer> contents;
                     std::vector<bool> received;
                     std::vector<bool> inFlight;
@@ -15033,6 +15066,14 @@ namespace ndn_service_framework
                 state->dataReceived.resize(expectedSegments);
                 state->remaining = expectedSegments;
                 state->targetSegments = expectedSegments;
+                const std::weak_ptr<ExactFetchState> weakState = state;
+                owner->cancelExact = [weakState] {
+                    if (const auto active = weakState.lock()) {
+                        active->failed = true;
+                        active->pending.clear();
+                        std::vector<ndn::Buffer>{}.swap(active->contents);
+                    }
+                };
                 const auto fetchDeadline = fetchStart + std::chrono::milliseconds(fetchTimeoutMs);
                 if (fetchTimingEnabled) {
                     NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=start"
@@ -15054,7 +15095,7 @@ namespace ndn_service_framework
                                          exactSegmentInterestLifetimeMs, fetchTimingEnabled,
                                          fetchInitCwnd, exactSegmentWindow, fetchStart,
                                          fetchStats, state] {
-                    if (state->failed || state->remaining != 0) {
+                    if (state->failed || completed->load() || state->remaining != 0) {
                         return;
                     }
                     ndn::Buffer assembled;
@@ -15068,11 +15109,14 @@ namespace ndn_service_framework
                         const auto& content = state->contents[i];
                         assembled.insert(assembled.end(), content.begin(), content.end());
                     }
+                    state->pending.clear();
+                    std::vector<ndn::Buffer>{}.swap(state->contents);
                     const auto completeTime = std::chrono::steady_clock::now();
                     fetchStats->completeWall = std::chrono::system_clock::now();
                     const auto elapsedMs = elapsedMsSince(fetchStart, completeTime);
                     {
                         std::lock_guard<std::mutex> lock(*mutex);
+                        if (completed->load()) return;
                         *encoded = std::move(assembled);
                         completed->store(true);
                     }
@@ -15119,6 +15163,8 @@ namespace ndn_service_framework
                         return;
                     }
                     state->failed = true;
+                    state->pending.clear();
+                    std::vector<ndn::Buffer>{}.swap(state->contents);
                     fetchStats->completeWall = std::chrono::system_clock::now();
                     const auto elapsedMs = elapsedMsSince(
                         fetchStart, std::chrono::steady_clock::now());
@@ -15156,13 +15202,20 @@ namespace ndn_service_framework
 
                 auto expressSegment = std::make_shared<std::function<void(size_t)>>();
                 auto issueMoreSegments = std::make_shared<std::function<void()>>();
+                const std::weak_ptr<std::function<void(size_t)>> weakExpressSegment = expressSegment;
+                const std::weak_ptr<std::function<void()>> weakIssueMoreSegments = issueMoreSegments;
                 *expressSegment = [this, dataValidator, state, fetchStats, finishIfComplete, failOnce,
-                                   expressSegment, issueMoreSegments, completed,
+                                   weakExpressSegment, weakIssueMoreSegments, completed,
                                    fetchTimingEnabled, fetchStart, fetchDeadline,
                                    exactSegmentInterestLifetimeMs, requestId, keyScope,
                                     dataName, expectedProducer,
                                     allowDigestSha256Segments, digestSegmentBytes,
                                     digestExpectedBytes, forwardingHint](size_t i) {
+                    // Pending callbacks own continuations; recursive edges must not
+                    // keep completed fetches and their segment buffers alive.
+                    const auto expressSegment = weakExpressSegment.lock();
+                    const auto issueMoreSegments = weakIssueMoreSegments.lock();
+                    if (!expressSegment || !issueMoreSegments) return;
                     if (state->failed || completed->load() || i >= state->targetSegments ||
                         i >= state->received.size() || state->received[i] ||
                         state->inFlight[i]) {
@@ -15208,12 +15261,13 @@ namespace ndn_service_framework
                     auto processValidated =
                         std::make_shared<std::function<void(const ndn::Data&)>>();
                     *processValidated = [dataValidator, expectedProducer, state, fetchStats,
-                                         finishIfComplete, failOnce, i,
+                                         finishIfComplete, failOnce, completed, i,
                                          issueMoreSegments, fetchTimingEnabled, fetchStart,
                                           requestId, keyScope, dataName,
                                           allowDigestSha256Segments, digestSegmentBytes,
                                           digestExpectedBytes]
                         (const ndn::Data& data) {
+                            if (completed->load()) return;
                             if (state->failed || i >= state->received.size() ||
                                 i >= state->targetSegments || state->received[i]) {
                                 (*issueMoreSegments)();
@@ -15309,12 +15363,14 @@ namespace ndn_service_framework
                             finishIfComplete();
                             (*issueMoreSegments)();
                         };
-                    m_face.expressInterest(
+                    state->pending.emplace(i, m_face.expressInterest(
                         interest,
                         [dataValidator, state, fetchStats, failOnce, processValidated, i,
                          issueMoreSegments, fetchTimingEnabled, fetchStart, requestId,
-                         keyScope, dataName, allowDigestSha256Segments]
+                         keyScope, dataName, allowDigestSha256Segments, completed]
                         (const ndn::Interest&, const ndn::Data& data) {
+                            state->pending.erase(i);
+                            if (completed->load()) return;
                             const auto receivedAt = std::chrono::steady_clock::now();
                             if (i < state->inFlight.size() && state->inFlight[i]) {
                                 state->inFlight[i] = false;
@@ -15386,10 +15442,12 @@ namespace ndn_service_framework
                                     });
                             }
                         },
-                        [state, fetchStats, failOnce, expressSegment, issueMoreSegments,
+                        [state, fetchStats, failOnce, expressSegment, issueMoreSegments, completed,
                          fetchTimingEnabled, fetchStart, fetchDeadline, requestId, keyScope,
                          dataName, i]
                         (const ndn::Interest& interest, const ndn::lp::Nack&) {
+                            state->pending.erase(i);
+                            if (completed->load()) return;
                             ++fetchStats->nacks;
                             if (i < state->inFlight.size() && state->inFlight[i]) {
                                 state->inFlight[i] = false;
@@ -15424,10 +15482,12 @@ namespace ndn_service_framework
                             (*expressSegment)(i);
                             (*issueMoreSegments)();
                         },
-                        [state, fetchStats, failOnce, expressSegment, issueMoreSegments,
+                        [state, fetchStats, failOnce, expressSegment, issueMoreSegments, completed,
                          fetchTimingEnabled, fetchStart, fetchDeadline, requestId, keyScope,
                          dataName, i]
                         (const ndn::Interest& interest) {
+                            state->pending.erase(i);
+                            if (completed->load()) return;
                             ++fetchStats->timeouts;
                             if (i < state->inFlight.size() && state->inFlight[i]) {
                                 state->inFlight[i] = false;
@@ -15461,10 +15521,10 @@ namespace ndn_service_framework
                             }
                             (*expressSegment)(i);
                             (*issueMoreSegments)();
-                        });
+                        }));
                 };
-                *issueMoreSegments = [state, expressSegment, exactSegmentWindow] {
-                    while (!state->failed &&
+                *issueMoreSegments = [state, expressSegment, completed, exactSegmentWindow] {
+                    while (!state->failed && !completed->load() &&
                            state->inFlightCount < exactSegmentWindow &&
                            state->nextSegmentToIssue < state->targetSegments) {
                         const size_t segment = state->nextSegmentToIssue++;
@@ -15733,35 +15793,6 @@ namespace ndn_service_framework
                     }
                     cv->notify_one();
                 });
-            if (current) {
-                auto cancelPoll = std::make_shared<std::function<void()>>();
-                std::weak_ptr<std::function<void()>> weakCancelPoll = cancelPoll;
-                std::weak_ptr<LargeFetchOwner> weakOwner = owner;
-                *cancelPoll = [this, weakCancelPoll, weakOwner, current,
-                               completed, mutex, cv, error] {
-                    const auto activeOwner = weakOwner.lock();
-                    if (activeOwner == nullptr || completed->load()) return;
-                    if (!current()) {
-                        auto activeFetcher = std::move(activeOwner->fetcher);
-                        if (activeFetcher != nullptr) activeFetcher->stop();
-                        {
-                            std::lock_guard<std::mutex> lock(*mutex);
-                            if (!completed->load()) {
-                                *error = "large-data fetch cancelled by dispatch authority";
-                                completed->store(true);
-                            }
-                        }
-                        cv->notify_one();
-                        return;
-                    }
-                    m_scheduler.schedule(ndn::time::milliseconds(10), [weakCancelPoll] {
-                        if (const auto poll = weakCancelPoll.lock()) (*poll)();
-                    });
-                };
-                owner->cancelPoll = std::move(cancelPoll);
-                const auto activeCancelPoll = owner->cancelPoll;
-                (*activeCancelPoll)();
-            }
         });
 
         const auto deadline = std::chrono::steady_clock::now() +
@@ -15788,6 +15819,8 @@ namespace ndn_service_framework
             auto* faceIo = &m_face.getIoContext();
             boost::asio::post(*faceIo, [owner, mutex, cv, faceIo] {
                 owner->cancelPoll.reset();
+                if (owner->cancelExact) owner->cancelExact();
+                owner->cancelExact = {};
                 auto active = std::move(owner->fetcher);
                 if (active) active->stop();
                 active.reset();

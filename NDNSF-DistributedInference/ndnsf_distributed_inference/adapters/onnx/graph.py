@@ -765,11 +765,13 @@ def to_model_graph_snapshot(
         if producer_index not in node_ids or any(
                 index not in node_ids for index in consumer_indices):
             raise ValueError("ONNX tensor dependency references an unknown node")
+        # Edges identify dependent nodes, not the number of their input ports.
+        consumer_nodes = tuple(sorted(set(consumer_indices)))
         tensor = summary.tensor(tensor_name)
         edges.append(TensorEdgeView(
             edge_id=tensor_name,
             producer=node_ids[producer_index],
-            consumers=tuple(node_ids[index] for index in consumer_indices),
+            consumers=tuple(node_ids[index] for index in consumer_nodes),
             dtype=tensor.dtype or "unknown",
             shape=tensor.shape,
             estimated_bytes=tensor.size_bytes,

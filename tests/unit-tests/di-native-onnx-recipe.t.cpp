@@ -44,6 +44,7 @@
 #include <openssl/sha.h>
 
 #include <chrono>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -52,6 +53,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -1257,12 +1259,24 @@ BOOST_AUTO_TEST_CASE(FinalizeRejectsEmptyAndOversizeModel)
     recipe.maxAssembledBytes, true);
   BOOST_CHECK_EQUAL(outcome.failureCode, "DI_NATIVE_ONNX_WORKER_RESULT");
 
-  // Model beyond the request budget (the recipe cap itself would also trip).
-  const std::vector<std::uint8_t> big(recipe.maxAssembledBytes + 1, 0x01);
+  // Use a valid small fixture and independently cross each declared bound.
+  // The negative oracle needs a one-byte excess, not an 8 GiB allocation.
+  const auto model = fromHex(row.get<std::string>("modelHex"));
+  BOOST_REQUIRE_GT(model.size(), 1);
+  const auto metadata = okResultMetadata(row, model);
+  BOOST_REQUIRE(finalizeNativeOnnxWorkerResponse(
+    true, 0, metadata, model, recipe, recipe.maxAssembledBytes, true).ok);
   outcome = finalizeNativeOnnxWorkerResponse(
-    true, 0, okResultMetadata(row, big), big, recipe,
+    true, 0, metadata, model, recipe, model.size() - 1, true);
+  BOOST_CHECK_EQUAL(outcome.failureCode, "DI_NATIVE_ONNX_WORKER_RESULT");
+  BOOST_CHECK_EQUAL(outcome.failureMessage, "worker model bytes violate the assembly budget");
+  auto boundedRecipe = recipe;
+  boundedRecipe.maxAssembledBytes = model.size() - 1;
+  outcome = finalizeNativeOnnxWorkerResponse(
+    true, 0, metadata, model, boundedRecipe,
     recipe.maxAssembledBytes, true);
   BOOST_CHECK_EQUAL(outcome.failureCode, "DI_NATIVE_ONNX_WORKER_RESULT");
+  BOOST_CHECK_EQUAL(outcome.failureMessage, "worker model bytes violate the assembly budget");
 }
 
 BOOST_AUTO_TEST_CASE(FinalizeRejectsModelDigestMismatch)
@@ -1455,6 +1469,72 @@ BOOST_AUTO_TEST_CASE(MetadataCarriesOptionalFileSourceIdentity)
 // deliberately-misbehaving test tools.
 // ---------------------------------------------------------------------------
 
+namespace {
+
+class ScopedWorkerStderrCapture
+{
+public:
+  ScopedWorkerStderrCapture()
+    : m_file(std::tmpfile())
+  {
+    if (m_file == nullptr) throw std::runtime_error("cannot open stderr capture");
+    m_original = ::dup(STDERR_FILENO);
+    if (m_original < 0 || ::dup2(::fileno(m_file), STDERR_FILENO) < 0) {
+      if (m_original >= 0) ::close(m_original);
+      std::fclose(m_file);
+      throw std::runtime_error("cannot redirect worker stderr");
+    }
+  }
+
+  ~ScopedWorkerStderrCapture()
+  {
+    ::dup2(m_original, STDERR_FILENO);
+    ::close(m_original);
+    std::fclose(m_file);
+  }
+
+  std::string
+  contents() const
+  {
+    struct stat status{};
+    const auto fd = ::fileno(m_file);
+    if (::fstat(fd, &status) != 0 || status.st_size <= 0) return {};
+    std::string output(static_cast<std::size_t>(status.st_size), '\0');
+    const auto count = ::pread(fd, output.data(), output.size(), 0);
+    if (count < 0) throw std::runtime_error("cannot read worker stderr");
+    output.resize(static_cast<std::size_t>(count));
+    return output;
+  }
+
+private:
+  std::FILE* m_file;
+  int m_original = -1;
+};
+
+std::set<std::filesystem::path>
+privateWorkerHomes()
+{
+  std::set<std::filesystem::path> homes;
+  const auto prefix = "ndnsf-di-onnx-worker-home-" + std::to_string(::getpid()) + "-";
+  for (const auto& entry :
+       std::filesystem::directory_iterator(std::filesystem::temp_directory_path())) {
+    if (entry.path().filename().string().compare(0, prefix.size(), prefix) == 0) {
+      homes.insert(std::filesystem::absolute(entry.path()));
+    }
+  }
+  return homes;
+}
+
+std::size_t
+openDescriptorCount()
+{
+  return static_cast<std::size_t>(std::distance(
+    std::filesystem::directory_iterator("/proc/self/fd"),
+    std::filesystem::directory_iterator{}));
+}
+
+} // namespace
+
 BOOST_AUTO_TEST_CASE(SubprocessUnregisteredThenRegisteredMatchesInProcess)
 {
   const std::string worker = spec182RequireBinary("DI_NativeOnnxAssemblyWorker");
@@ -1472,9 +1552,23 @@ BOOST_AUTO_TEST_CASE(SubprocessUnregisteredThenRegisteredMatchesInProcess)
 
   const NativeCertifiedAssembly inProcess = assembleInProcess(source, recipe);
 
+  const auto homesBefore = privateWorkerHomes();
   registerNativeOnnxWorkerLocation({worker, ""});
+  ScopedWorkerStderrCapture capture;
   const NativeCertifiedAssembly viaWorker =
     runNativeOnnxAssemblyWorker(source, recipe, control);
+#ifdef __linux__
+  const auto diagnostic = capture.contents();
+  const std::string usagePrefix = "NDNSF_DI_WORKER_POST_EXEC_USAGE ";
+  const auto usageStart = diagnostic.find(usagePrefix);
+  BOOST_REQUIRE(usageStart != std::string::npos);
+  std::istringstream usageJson(diagnostic.substr(
+    usageStart + usagePrefix.size(),
+    diagnostic.find('\n', usageStart) - usageStart - usagePrefix.size()));
+  boost::property_tree::ptree usage;
+  boost::property_tree::read_json(usageJson, usage);
+  BOOST_CHECK_GT(usage.get<std::uint64_t>("peakRssBytes"), 0);
+#endif
 
   // Byte identity is asserted through digests: the worker's own claimed
   // digest, the independent recomputation over the returned bytes, and the
@@ -1485,6 +1579,7 @@ BOOST_AUTO_TEST_CASE(SubprocessUnregisteredThenRegisteredMatchesInProcess)
   BOOST_CHECK_EQUAL(viaWorker.nodeCount, inProcess.nodeCount);
   BOOST_CHECK(viaWorker.inputNames == inProcess.inputNames);
   BOOST_CHECK(viaWorker.outputNames == inProcess.outputNames);
+  BOOST_CHECK(privateWorkerHomes() == homesBefore);
 }
 
 BOOST_AUTO_TEST_CASE(SubprocessFileBackedMaterializedRoleMatchesInProcess)
@@ -1551,14 +1646,53 @@ BOOST_AUTO_TEST_CASE(SubprocessCrashBySignalReported)
   const auto& row = workerAcceptRow();
   const auto source = sourceFromRow(row);
   const auto recipe = recipeFromVector(row);
+  const auto homesBefore = privateWorkerHomes();
   // A child that ends its stdout by dying from SIGKILL must be classified by
   // the signal, not as an incomplete or exited worker.
-  BOOST_CHECK_EQUAL(
-    expectWorkerThrow([&] {
-      runNativeOnnxAssemblyWorkerAt({tool, ""}, source, recipe,
-                                    extractionControl());
-    }),
-    "DI_NATIVE_ONNX_WORKER_SIGNALED");
+  std::string code;
+  std::string diagnostic;
+  {
+    ScopedWorkerStderrCapture capture;
+    code = expectWorkerThrow([&] {
+      runNativeOnnxAssemblyWorkerAt({tool, ""}, source, recipe, extractionControl());
+    });
+    diagnostic = capture.contents();
+  }
+  BOOST_CHECK_EQUAL(code, "DI_NATIVE_ONNX_WORKER_SIGNALED");
+  BOOST_CHECK(diagnostic.find("child-stderr: spec182 signal tool diagnostic") !=
+              std::string::npos);
+  const std::string usagePrefix = "NDNSF_DI_WORKER_USAGE ";
+  const auto usageStart = diagnostic.find(usagePrefix);
+  BOOST_REQUIRE(usageStart != std::string::npos);
+  std::istringstream usageJson(diagnostic.substr(
+    usageStart + usagePrefix.size(),
+    diagnostic.find('\n', usageStart) - usageStart - usagePrefix.size()));
+  boost::property_tree::ptree usage;
+  boost::property_tree::read_json(usageJson, usage);
+  BOOST_CHECK_EQUAL(usage.get<int>("schema"), 1);
+  BOOST_CHECK_GT(usage.get<std::uint64_t>("peakRssBytes"), 0);
+  BOOST_CHECK_GT(usage.get<std::int64_t>("reapedSteadyNs"),
+                 usage.get<std::int64_t>("startedSteadyNs"));
+  BOOST_REQUIRE(usage.get<bool>("parentPeakAvailable"));
+  BOOST_CHECK_GT(usage.get<std::uint64_t>("parentPeakAtReapBytes"), 0);
+  BOOST_CHECK(privateWorkerHomes() == homesBefore);
+}
+
+BOOST_FIXTURE_TEST_CASE(SubprocessSpawnFailureReleasesHomeAndDescriptors,
+                       WorkerDiscoveryFixture)
+{
+  // This file passes the byte/hash preflight, then exec fails because the
+  // declared interpreter does not exist. Exercise cleanup after allocation.
+  const auto tool = writeWorker("bad-interpreter", "#!/definitely/missing/interpreter\n");
+  const auto& row = workerAcceptRow();
+  const auto homesBefore = privateWorkerHomes();
+  const auto descriptorsBefore = openDescriptorCount();
+  BOOST_CHECK_EQUAL(expectWorkerThrow([&] {
+    runNativeOnnxAssemblyWorkerAt({tool.string(), ""}, sourceFromRow(row),
+                                  recipeFromVector(row), extractionControl());
+  }), "DI_NATIVE_ONNX_WORKER_SPAWN");
+  BOOST_CHECK(privateWorkerHomes() == homesBefore);
+  BOOST_CHECK_EQUAL(openDescriptorCount(), descriptorsBefore);
 }
 
 BOOST_AUTO_TEST_CASE(SubprocessCancelBeforeStartAndActiveGate)
@@ -1598,18 +1732,51 @@ BOOST_AUTO_TEST_CASE(SubprocessCancelDuringBlockingWorkerEscalatesKill)
   const auto source = sourceFromRow(row);
   const auto recipe = recipeFromVector(row);
   const auto started = std::chrono::steady_clock::now();
+  const auto homesBefore = privateWorkerHomes();
+  bool sawPrivateHome = false;
+  bool sawChildEnvironment = false;
+  auto control = workerControlFor(std::chrono::milliseconds(250));
+  control.requireActive = [&] {
+    for (const auto& home : privateWorkerHomes()) {
+      if (homesBefore.count(home) != 0) continue;
+      sawPrivateHome = true;
+      struct stat status{};
+      BOOST_REQUIRE_EQUAL(::stat(home.c_str(), &status), 0);
+      BOOST_CHECK_EQUAL(status.st_mode & 0777, 0700);
+      BOOST_CHECK_EQUAL(status.st_uid, ::geteuid());
+      if (const auto callerHome = std::getenv("HOME")) {
+        BOOST_CHECK(home != std::filesystem::path(callerHome));
+      }
+      std::ifstream children("/proc/self/task/" + std::to_string(::getpid()) +
+                             "/children");
+      pid_t childPid = -1;
+      while (children >> childPid) {
+        std::ifstream input("/proc/" + std::to_string(childPid) + "/environ");
+        const std::string environment((std::istreambuf_iterator<char>(input)),
+                                      std::istreambuf_iterator<char>{});
+        std::istringstream entries(environment);
+        std::string entry;
+        while (std::getline(entries, entry, '\0')) {
+          if (entry == "HOME=" + home.string()) sawChildEnvironment = true;
+        }
+      }
+    }
+  };
 
   // The blocking tool ignores SIGTERM, so the transport must spend its full
   // 1s TERM window and escalate to SIGKILL before returning the timeout.
   const std::string code = expectWorkerThrow([&] {
     runNativeOnnxAssemblyWorkerAt({tool, ""}, source, recipe,
-                                  workerControlFor(std::chrono::milliseconds(250)));
+                                  control);
   });
   const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
     std::chrono::steady_clock::now() - started).count();
   BOOST_CHECK_EQUAL(code, "DI_NATIVE_ONNX_ASSEMBLY_TIMEOUT");
   BOOST_CHECK(elapsedMs >= 1000);
   BOOST_CHECK(elapsedMs < 5000);
+  BOOST_CHECK(sawPrivateHome);
+  BOOST_CHECK(sawChildEnvironment);
+  BOOST_CHECK(privateWorkerHomes() == homesBefore);
 }
 
 BOOST_AUTO_TEST_CASE(SubprocessSilentExitsReported)
@@ -1617,6 +1784,7 @@ BOOST_AUTO_TEST_CASE(SubprocessSilentExitsReported)
   const auto& row = workerAcceptRow();
   const auto source = sourceFromRow(row);
   const auto recipe = recipeFromVector(row);
+  const auto homesBefore = privateWorkerHomes();
   const std::string silent0 =
     spec182RequireBinary("spec182-worker-tool-silent0");
   // Exit zero but no response frame: the stream ended before any result.
@@ -1636,6 +1804,7 @@ BOOST_AUTO_TEST_CASE(SubprocessSilentExitsReported)
                                     extractionControl());
     }),
     "DI_NATIVE_ONNX_WORKER_EXITED");
+  BOOST_CHECK(privateWorkerHomes() == homesBefore);
 }
 
 BOOST_AUTO_TEST_CASE(SubprocessGarbageStdoutRejected)

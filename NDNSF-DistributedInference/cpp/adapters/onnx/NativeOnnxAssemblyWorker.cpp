@@ -4,7 +4,7 @@
 //   OA02 runNativeOnnxAssemblyWorker[At]  - parent transport: fixed installed
 //       binary, registered library identity, spawn with only stdio mapped,
 //       nonblocking pipes polled in both directions, steady deadline and
-//       requireActive on every round, cancel TERM -> 1s -> KILL -> waitpid.
+//       requireActive on every round, cancel TERM -> 1s -> KILL -> wait4.
 //       A late success has to pass requireActive again before publication.
 //   OA03 runNativeOnnxAssemblyWorkerMain - worker child: closes every
 //       non-stdio descriptor, parses one request frame under the fixed
@@ -28,6 +28,7 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -41,6 +42,7 @@
 #include <spawn.h>
 #include <stdexcept>
 #include <string>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1579,6 +1581,103 @@ private:
   int m_fd = -1;
 };
 
+std::string
+createPrivateWorkerHome()
+{
+  std::filesystem::path tempRoot;
+  try {
+    tempRoot = std::filesystem::absolute(std::filesystem::temp_directory_path());
+  }
+  catch (...) {
+    workerFail("WORKER_HOME");
+  }
+  auto pattern = (tempRoot / ("ndnsf-di-onnx-worker-home-" +
+    std::to_string(::getpid()) + "-XXXXXX")).string();
+  if (::mkdtemp(pattern.data()) == nullptr) {
+    workerFail("WORKER_HOME");
+  }
+  return pattern;
+}
+
+void
+recordWorkerPostExecHighWater() noexcept
+{
+#ifdef __linux__
+  // wait4's lifetime maximum also includes the pre-exec address space.
+  // VmHWM belongs to this worker's current, post-exec memory image.
+  auto* file = std::fopen("/proc/self/status", "r");
+  if (file == nullptr) return;
+  char line[256];
+  while (std::fgets(line, sizeof(line), file) != nullptr) {
+    if (std::strncmp(line, "VmHWM:", 6) != 0) continue;
+    unsigned long long kib = 0;
+    char unit[3]{};
+    if (std::sscanf(line + 6, "%llu %2s", &kib, unit) == 2 &&
+        std::strcmp(unit, "kB") == 0 && kib > 0 &&
+        kib <= std::numeric_limits<unsigned long long>::max() / 1024) {
+      std::fprintf(stderr, "NDNSF_DI_WORKER_POST_EXEC_RSS_BYTES %llu\n", kib * 1024);
+    }
+    break;
+  }
+  std::fclose(file);
+#endif
+}
+
+void
+forwardWorkerPostExecHighWater(pid_t pid, const std::string& diagnostic) noexcept
+{
+  try {
+    const std::string prefix = "NDNSF_DI_WORKER_POST_EXEC_RSS_BYTES ";
+    const auto begin = diagnostic.find(prefix);
+    if (begin == std::string::npos || (begin > 0 && diagnostic[begin - 1] != '\n')) return;
+    const auto valueBegin = begin + prefix.size();
+    const auto end = diagnostic.find('\n', valueBegin);
+    if (end == std::string::npos || end - valueBegin > 20) return;
+    std::uint64_t bytes = 0;
+    if (parseStrictDecimal(diagnostic.substr(valueBegin, end - valueBegin), bytes) && bytes > 0) {
+      std::fprintf(stderr,
+        "NDNSF_DI_WORKER_POST_EXEC_USAGE {\"pid\":%lld,\"peakRssBytes\":%llu}\n",
+        static_cast<long long>(pid), static_cast<unsigned long long>(bytes));
+    }
+  }
+  catch (...) {
+    // Missing measurement is reported as unavailable; inference is unchanged.
+  }
+}
+
+void
+recordWorkerUsage(pid_t pid, std::chrono::steady_clock::time_point started,
+                  const rusage& childUsage) noexcept
+{
+  rusage parentUsage{};
+  const bool parentAvailable = ::getrusage(RUSAGE_SELF, &parentUsage) == 0;
+  const auto rssBytes = [] (long value) {
+#ifdef __APPLE__
+    return static_cast<unsigned long long>(value);
+#else
+    return static_cast<unsigned long long>(value) * 1024;
+#endif
+  };
+  const auto cpuNs = [] (const timeval& value) {
+    return static_cast<unsigned long long>(value.tv_sec) * 1000000000ULL +
+           static_cast<unsigned long long>(value.tv_usec) * 1000;
+  };
+  const auto startedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    started.time_since_epoch()).count();
+  const auto reapedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+  // One structured measurement per reaped child, independent of diagnostic
+  // logging. External sampling can miss this short-lived process completely.
+  std::fprintf(stderr,
+    "NDNSF_DI_WORKER_USAGE {\"schema\":1,\"pid\":%lld,\"startedSteadyNs\":%lld,"
+    "\"reapedSteadyNs\":%lld,\"peakRssBytes\":%llu,\"userCpuNs\":%llu,"
+    "\"systemCpuNs\":%llu,\"parentPeakAvailable\":%s,\"parentPeakAtReapBytes\":%llu}\n",
+    static_cast<long long>(pid), static_cast<long long>(startedNs),
+    static_cast<long long>(reapedNs), rssBytes(childUsage.ru_maxrss),
+    cpuNs(childUsage.ru_utime), cpuNs(childUsage.ru_stime),
+    parentAvailable ? "true" : "false", rssBytes(parentUsage.ru_maxrss));
+}
+
 class WorkerProcess
 {
 public:
@@ -1588,6 +1687,7 @@ public:
     if (fromChild >= 0) close(fromChild);
     if (childErr >= 0) close(childErr);
     if (m_modelFd >= 0) close(m_modelFd);
+    cleanupPrivateHome();
   }
 
   void start(const NativeOnnxWorkerLocation& location,
@@ -1595,6 +1695,16 @@ public:
              int modelFd = -1)
   {
     m_modelFd = modelFd;
+    // Allocate the private HOME and environment before raw spawn resources.
+    // A startup exception must not leave child-side pipes or spawn actions.
+    m_privateHome = createPrivateWorkerHome();
+    const char* pathValue = std::getenv("PATH");
+    const char* libraryPath = std::getenv("LD_LIBRARY_PATH");
+    const std::string pathEnv = std::string("PATH=") +
+      (pathValue != nullptr ? pathValue : "");
+    const std::string ldEnv = std::string("LD_LIBRARY_PATH=") +
+      (libraryPath != nullptr ? libraryPath : "");
+    const std::string homeEnv = "HOME=" + m_privateHome;
     int stdinPipe[2] = {-1, -1};
     int stdoutPipe[2] = {-1, -1};
     int stderrPipe[2] = {-1, -1};
@@ -1630,15 +1740,9 @@ public:
     posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
     posix_spawnattr_setpgroup(&attributes, 0);
 
-    // Minimal environment: only loader-relevant variables survive.  The
-    // worker never receives credentials or request state through the env.
-    const char* pathValue = std::getenv("PATH");
-    const char* libraryPath = std::getenv("LD_LIBRARY_PATH");
-    const std::string pathEnv = std::string("PATH=") +
-      (pathValue != nullptr ? pathValue : "");
-    const std::string ldEnv = std::string("LD_LIBRARY_PATH=") +
-      (libraryPath != nullptr ? libraryPath : "");
-    char* envp[3] = {nullptr, nullptr, nullptr};
+    // Do not let ndn-cxx fall back to the caller's working-directory PIB.
+    // Credentials and request state never enter this isolated environment.
+    char* envp[4] = {nullptr, nullptr, nullptr, nullptr};
     std::size_t envCount = 0;
     if (pathValue != nullptr) {
       envp[envCount++] = const_cast<char*>(pathEnv.c_str());
@@ -1646,6 +1750,7 @@ public:
     if (libraryPath != nullptr) {
       envp[envCount++] = const_cast<char*>(ldEnv.c_str());
     }
+    envp[envCount++] = const_cast<char*>(homeEnv.c_str());
     envp[envCount] = nullptr;
 
     // Fixed argv: the declared metadata length is the actually serialized
@@ -1670,6 +1775,7 @@ public:
     sigemptyset(&ignore.sa_mask);
     sigaction(SIGPIPE, &ignore, &previous);
 
+    m_spawnStarted = std::chrono::steady_clock::now();
     const int spawnResult =
       posix_spawn(&pid, location.path.c_str(), &actions, &attributes,
                   const_cast<char* const*>(argv), envp);
@@ -1711,16 +1817,35 @@ public:
   {
     if (reaped || !started) return reaped;
     int status = 0;
-    const pid_t result = waitpid(pid, &status, WNOHANG);
+    rusage usage{};
+    const pid_t result = ::wait4(pid, &status, WNOHANG, &usage);
     if (result == pid) {
       reaped = true;
       m_status = status;
+      recordWorkerUsage(pid, m_spawnStarted, usage);
     }
     else if (result < 0 && errno != EINTR) {
       // ESRCH/ECHILD: gone already; keep m_status as unknown (-1).
       reaped = true;
     }
     return reaped;
+  }
+
+  bool
+  cleanupPrivateHome() noexcept
+  {
+    if (m_privateHome.empty()) return true;
+    if (started && !reaped) return false;
+    try {
+      std::error_code error;
+      std::filesystem::remove_all(m_privateHome, error);
+      if (error) return false;
+      m_privateHome.clear();
+      return true;
+    }
+    catch (...) {
+      return false;
+    }
   }
 
   bool exitedZero() const
@@ -1743,6 +1868,10 @@ public:
   int fromChild = -1;
   int childErr = -1;
   int m_modelFd = -1;
+
+private:
+  std::string m_privateHome;
+  std::chrono::steady_clock::time_point m_spawnStarted;
 };
 
 } // namespace
@@ -1983,6 +2112,10 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
       // ended: a reaped child may still have written a complete frame whose
       // bytes sit unread in the pipe.
       if (stdoutEof && child.reaped && !response.complete()) {
+        drainChildStderr();
+        if (!stderrLog.empty()) {
+          childDiag("child-stderr: " + stderrLog);
+        }
         if (child.wasSignaled()) {
           workerFail("WORKER_SIGNALED");
         }
@@ -1992,6 +2125,9 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
         workerFail("WORKER_EXITED");
       }
       if (writeDone && stdoutEof && response.complete() && child.reaped) {
+        if (!child.cleanupPrivateHome()) {
+          workerFail("WORKER_HOME_CLEANUP");
+        }
         break;
       }
 
@@ -2130,6 +2266,7 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
     // child's final stderr write. Drain once after reap so graph-stage
     // diagnostics are not lost before the failure is reported to Provider.
     drainChildStderr();
+    forwardWorkerPostExecHighWater(child.pid, stderrLog);
     const std::string metadataJson(response.metadata().begin(),
                                    response.metadata().end());
     entryActiveGate(control);  // the mandatory final requireActive
@@ -2164,6 +2301,14 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
     // Cancellation or failure: terminate the worker side first (TERM, 1s,
     // KILL), reap it, then rethrow the original error.
     child.killAndReap();
+    if (!child.cleanupPrivateHome()) {
+      try {
+        childDiag("worker private HOME cleanup failed");
+      }
+      catch (...) {
+        // A diagnostic allocation failure must not mask the original error.
+      }
+    }
     throw;
   }
 }
@@ -2408,6 +2553,7 @@ runNativeOnnxAssemblyWorkerMain(int argc, char** argv)
     if (!wroteResponse) {
       return 2;
     }
+    recordWorkerPostExecHighWater();
     return 0;
   }
   catch (const std::exception& error) {

@@ -40,6 +40,8 @@ main()
 {
   makeStdioBlocking();
   drainStdin();
+  static constexpr char diagnostic[] = "spec182 signal tool diagnostic\n";
+  (void)write(STDERR_FILENO, diagnostic, sizeof(diagnostic) - 1);
   ::kill(::getpid(), SIGKILL);
   for (;;) {
     pause();

@@ -204,6 +204,26 @@ class SplitCandidateContractTest(unittest.TestCase):
             ("PIPELINE_RANGE", "HYBRID_RANK", "HYBRID_RANK"),
         )
 
+    def test_onnx_dependency_graph_deduplicates_repeated_input_ports(self):
+        adapter = build_object_detection_adapter()
+        summary = OnnxGraphSummary(
+            model_path="repeated-input.onnx",
+            inputs=("input",),
+            outputs=("result",),
+            initializers=(),
+            tensors={name: OnnxTensorInfo(name, "float32", (1, 4), 16)
+                     for name in ("input", "hidden", "result")},
+            nodes=(
+                OnnxNodeInfo(0, "feature", "Identity", ("input",), ("hidden",)),
+                OnnxNodeInfo(1, "sum", "Add", ("hidden", "hidden"), ("result",)),
+            ),
+            tensor_producers={"hidden": 0, "result": 1},
+            tensor_consumers={"input": (0,), "hidden": (1, 1)},
+        )
+        graph = to_model_graph_snapshot(summary, adapter.descriptor)
+        edge = next(item for item in graph.edges if item.edge_id == "hidden")
+        self.assertEqual(edge.consumers, (graph.nodes[1].node_id,))
+
     def test_onnx_dependency_graph_keeps_unknown_tensor_size_explicit(self):
         adapter = build_object_detection_adapter()
         summary = OnnxGraphSummary(
