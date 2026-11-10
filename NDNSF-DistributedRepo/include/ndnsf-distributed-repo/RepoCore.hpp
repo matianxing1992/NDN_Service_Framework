@@ -250,7 +250,7 @@ private:
   // to the manifests that can contain it. A fresh Repo builds this from the
   // durable manifests so exact packet reads never scan the whole store.
   void buildPacketBaseIndex() const;
-  std::optional<RepoObjectManifest> findIndexedOriginalPacket(
+  std::optional<std::pair<RepoObjectManifest, size_t>> findIndexedOriginalPacket(
     const std::string& packetName) const;
   mutable std::mutex m_packetBaseIndexMutex;
   mutable std::unordered_map<std::string, std::vector<std::string>> m_packetBaseIndex;

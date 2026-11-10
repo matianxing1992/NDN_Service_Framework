@@ -161,7 +161,7 @@ RepoCore::buildPacketBaseIndex() const
   m_packetBaseIndexBuilt = true;
 }
 
-std::optional<RepoObjectManifest>
+std::optional<std::pair<RepoObjectManifest, size_t>>
 RepoCore::findIndexedOriginalPacket(const std::string& packetName) const
 {
   buildPacketBaseIndex();
@@ -177,9 +177,10 @@ RepoCore::findIndexedOriginalPacket(const std::string& packetName) const
     const auto manifest = m_store->getManifest(objectName);
     if (manifest.objectType != "original-packet-set" || manifest.objectName != objectName)
       continue;
-    if (std::find(manifest.packetNames.begin(), manifest.packetNames.end(), packetName) !=
-        manifest.packetNames.end())
-      return manifest;
+    const auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(),
+                                 packetName);
+    if (found != manifest.packetNames.end())
+      return std::make_pair(manifest, static_cast<size_t>(found - manifest.packetNames.begin()));
   }
   return std::nullopt;
 }
@@ -1208,14 +1209,11 @@ RepoCore::findPacketRecord(const ndn::Name& name,
   // Fast durable path: resolve the containing packet-set manifest from the
   // packet-name base index built from all stored manifests at startup.
   try {
-    if (const auto manifest = findIndexedOriginalPacket(alternateKey)) {
-      validateReadPacketIndex(*manifest);
-      if (!acceptObject || acceptObject(*manifest)) {
-        const auto found = std::find(manifest->packetNames.begin(),
-                                     manifest->packetNames.end(), alternateKey);
-        return std::make_pair(*manifest,
-          static_cast<size_t>(found - manifest->packetNames.begin()));
-      }
+    // The index is keyed by the numeric canonical URI form, which is what the
+    // stored manifests record; the mnemonic ALTERNATE form never matches.
+    if (const auto indexed = findIndexedOriginalPacket(key)) {
+      validateReadPacketIndex(indexed->first);
+      if (!acceptObject || acceptObject(indexed->first)) return indexed;
       return std::nullopt;
     }
   }
