@@ -643,7 +643,15 @@ FilesystemRepoStoreBackend::confirmUserStorageRemoval(const RepoUserStorageObjec
 size_t
 FilesystemRepoStoreBackend::size() const
 {
-  return listManifests().size();
+  std::lock_guard<std::mutex> lock(m_mutex);
+  size_t total = 0;
+  const fs::path directory = fs::path(m_rootPath) / "manifests";
+  std::error_code error;
+  for (const auto& entry : fs::directory_iterator(directory, error)) {
+    if (!error && entry.is_regular_file() && entry.path().extension() == ".json")
+      ++total;
+  }
+  return total;
 }
 
 std::vector<RepoObjectManifest>
@@ -659,7 +667,11 @@ FilesystemRepoStoreBackend::listManifests() const
     }
     const auto key = entry.path().filename().string();
     present.insert(key);
-    manifests.push_back(parseManifestCachedUnlocked(key, readText(entry.path())));
+    if (const auto cached = cachedManifestUnlocked(entry.path())) {
+      manifests.push_back(*cached);
+      continue;
+    }
+    manifests.push_back(parseManifestCachedUnlocked(key, readText(entry.path()), &entry.path()));
   }
   for (auto cached = m_catalogParseCache.begin(); cached != m_catalogParseCache.end();) {
     if (!present.count(cached->first)) {
@@ -1422,22 +1434,57 @@ FilesystemRepoStoreBackend::readManifestUnlocked(const std::string& objectName) 
   if (!fs::exists(path)) {
     throw std::out_of_range("repo-object-not-found: " + objectName);
   }
-  auto manifest = parseManifestCachedUnlocked(path.filename().string(), readText(path));
+  auto manifest = parseManifestCachedUnlocked(path.filename().string(), readText(path), &path);
   if (manifest.objectName != objectName) {
     throw std::runtime_error("repo-file-metadata-key-mismatch");
   }
   return manifest;
 }
 
+std::optional<RepoObjectManifest>
+FilesystemRepoStoreBackend::cachedManifestUnlocked(const fs::path& path) const
+{
+  const auto found = m_catalogParseCache.find(path.filename().string());
+  if (found == m_catalogParseCache.end())
+    return std::nullopt;
+  struct stat status{};
+  if (::stat(path.c_str(), &status) != 0 || !S_ISREG(status.st_mode))
+    return std::nullopt;
+  const auto mtime = static_cast<std::int64_t>(status.st_mtim.tv_sec) * 1000000000LL +
+                     static_cast<std::int64_t>(status.st_mtim.tv_nsec);
+  if (static_cast<std::uint64_t>(status.st_size) != found->second.fileSize ||
+      mtime != found->second.mtimeNanoseconds ||
+      static_cast<std::uint64_t>(status.st_ino) != found->second.inode)
+    return std::nullopt;
+  return found->second.parsed;
+}
+
 RepoObjectManifest
 FilesystemRepoStoreBackend::parseManifestCachedUnlocked(const std::string& key,
-                                                        std::string encoded) const
+                                                        std::string encoded,
+                                                        const fs::path* source) const
 {
   constexpr size_t maxEncodedBytes = 64U * 1024U * 1024U;
   constexpr size_t maxEntries = 4096;
+  const auto identity = [source] {
+    CachedManifest value;
+    struct stat status{};
+    if (source != nullptr && ::stat(source->c_str(), &status) == 0 && S_ISREG(status.st_mode)) {
+      value.fileSize = static_cast<std::uint64_t>(status.st_size);
+      value.mtimeNanoseconds = static_cast<std::int64_t>(status.st_mtim.tv_sec) * 1000000000LL +
+                               static_cast<std::int64_t>(status.st_mtim.tv_nsec);
+      value.inode = static_cast<std::uint64_t>(status.st_ino);
+    }
+    return value;
+  }();
   auto found = m_catalogParseCache.find(key);
-  if (found != m_catalogParseCache.end() && found->second.encoded == encoded)
+  if (found != m_catalogParseCache.end() && found->second.encoded == encoded) {
+    // Content is unchanged; keep the entry usable for later stat-validated hits.
+    found->second.fileSize = identity.fileSize;
+    found->second.mtimeNanoseconds = identity.mtimeNanoseconds;
+    found->second.inode = identity.inode;
     return found->second.parsed;
+  }
   if (found != m_catalogParseCache.end()) {
     m_catalogEncodedBytes -= found->second.encoded.size();
     m_catalogParseCache.erase(found);
@@ -1456,7 +1503,11 @@ FilesystemRepoStoreBackend::parseManifestCachedUnlocked(const std::string& key,
   }
   if (encoded.size() <= maxEncodedBytes) {
     const auto bytes = encoded.size();
-    m_catalogParseCache.emplace(key, CachedManifest{std::move(encoded), parsed});
+    CachedManifest entry{std::move(encoded), parsed};
+    entry.fileSize = identity.fileSize;
+    entry.mtimeNanoseconds = identity.mtimeNanoseconds;
+    entry.inode = identity.inode;
+    m_catalogParseCache.emplace(key, std::move(entry));
     m_catalogEncodedBytes += bytes;
   }
   return parsed;

@@ -192,9 +192,9 @@ PY
     export NDNSF_WAF_INSTALL_PAYLOAD=1
     rm -rf /opt/ndnsf-waf-dest
     if [ "$NDNSF_RUNTIME_PROFILE" = di-runtime ]; then
-      ./waf install -j2 -v --destdir=/opt/ndnsf-waf-dest
+      ./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest
     else
-      ./waf install -j2 -v --destdir=/opt/ndnsf-waf-dest --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-repo,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,ndnsf-identity-check,DI_NativeRequester,DI_NativeArtifactAuthority,DistributedRepoServer,NDNSF_RepoPacketServer,spec190-multiturn-oracle,di-native-provider,di-native-assembly-worker,ndnsf-di-device-query,di-native-fault-provider,spec187-yolo-minindn
+      ./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-repo,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,ndnsf-identity-check,DI_NativeRequester,DI_NativeArtifactAuthority,DistributedRepoServer,NDNSF_RepoPacketServer,spec190-multiturn-oracle,di-native-provider,di-native-assembly-worker,ndnsf-di-device-query,di-native-fault-provider,spec187-yolo-minindn
     fi
     test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker
     test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/libexec/ndnsf-di/ndnsf-di-device-query

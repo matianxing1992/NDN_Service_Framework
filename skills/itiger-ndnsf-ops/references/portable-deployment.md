@@ -36,6 +36,12 @@ Tiger 登录节点是共享入口，只做轻量编辑、作业准备/提交和�
 
 保留source seal、依赖/SDK锁、构建记录、SIF SHA、native/扩展清单、host wheel、
 release manifest、模型/tokenizer、配置和oracle身份。Git HEAD不能覆盖未提交字节。
+先核对 seal/manifest 是否涵盖实际必需闭包，再按声明路径及必需参数验证；不凭假设
+增加模块名，也不能因必需依赖未声明就忽略它。对脚本参数错误、错误路径或调度失败
+记录首边界并修脚本；源和运行闭包未变时复用已建 SIF，重新执行受影响的准入。
+若 SIF 交付 Python 扩展，还须在该镜像或 ABI 相同的 builder 中检查 import、
+SOABI、RPATH 和动态链接闭包；若交付 MiniNDN runner，检查真实入口的 `--help`。
+这些检查不替代原生推理验收。
 
 准备产物通过不等于绑定通过；绑定产物已写出也不等于调用端验证通过。
 运行前要求本轮绑定成功、owner清理完整、相同准备记录/主机、绑定原始输出摘要，
@@ -53,13 +59,35 @@ host上的srun负责进入各节点的精确SIF；容器内运行NFD/nfdc和nati
 跨节点路由覆盖实际请求/控制和Producer命名空间，按配置核对双向连接；
 节点地址从当前配置或DNS得到，不能由rank或主机后缀推断。
 
-## GPU资源可见、可准入、实际执行分别取证
+## 每次提交前查询全群资源：CPU和GPU作业统一适用
 
-- 查询全部候选节点的CPU、内存、GRES类型及已分配量，并检查自己的在途job。
-  硬件目录或旧节点快照不证明当前空闲。使用明确且足够的CPU/内存/GPU/walltime预算；
-  资源不足时继续扫描全部符合约束的节点，或保留唯一有效排队作业。
-  当前会话用户要求等待600s后重试；单节点繁忙或一轮无空闲资源不是直接停止任务的理由。
-  每次等待后重查全群及自己的queue，不自行杀他人的任务或无故重建镜像。
+申请新的Slurm allocation前必须重新检查，覆盖推理、模型准备、构建、诊断、独立oracle
+及顺序脚本的每个后续提交；不能只在实验开始时查一次。allocation内已有角色的srun step
+复用该allocation的预算，不必逐个重复全群检查。
+
+- 用轻量查询取得全群快照：`sinfo -N`、`scontrol show node`、`scontrol show reservation`，
+  以及`squeue`中的运行/排队作业和自己的在途job。记录查询时间；汇总各节点GPU型号/数量、
+  未分配GPU、空闲CPU核、内存调度余量、状态和预约。整节点预约或故障节点不能算可用。
+  内存调度余量按`max(0, RealMemory-AllocMem-MemSpecLimit)`计算并标明单位，
+  它不是Linux MemAvailable；GPU未分配数量也不是设备实际空闲显存。
+- 按本阶段的实际需求匹配CPU、内存、GPU和已验证存储；CPU模型准备/推理不因GPU繁忙而停止。
+  不沿用GPU部署的多余CPU/GPU请求，也不凭空降低必要内存或超时来制造可调度/通过。
+  请求按角色峰值逐项估算，并记录估算依据：Qwen3-4B 两个 CPU Provider 时每个 Provider
+  约 8GB（4.4GB 权重半区加工作集），加 Controller、Authority、Requester、Repo 合计约
+  32GB 足够；沿用旧的 64GB 请求只会缩小 backfill 可插入窗口，导致长期排队。
+  排不上时先按需求把内存和 walltime 降到覆盖真实峰值的水平再投，其次才考虑换节点；
+  下调去掉的是余量，不是必要预算，也不能低于已核实的峰值。
+  优先当前合格节点；都繁忙时比较当前作业预计释放时间及队列，保留一个有效排队作业。
+  `squeue --start`与`sbatch --test-only`仅为预测；后者必须携带实际CPU/内存/GRES/时长等参数，
+  不能拿默认1CPU预测比较真实大作业，也不能把新测试作业的预测当成已有排队作业的保证。
+- 入口支持候选池时交由Slurm选择；入口要求具体host时，按当前全群观察生成配置，
+  不默认绑定示例或历史成功服务器。排队期间每600s复查全群及自己的queue。
+  其他合格节点先可用时，仅对尚未执行的作业经维护CLI关闭、确认终态/零残留后改投；
+  已运行的作业继续，不因预测变化重启，不并发提交重复实验，不杀他人任务或绕过预约。
+  换节点更新host/IP、GPU映射和配置/运行身份，核对实际挂载与节点本地缓存；复用SIF、
+  持久Controller材料和已提交Repo模型，不因换服务器重建镜像或重新导出、发布模型。
+
+## GPU资源可见、可准入、实际执行分别取证
 - Slurm物理GPU标识、`SLURM_STEP_GPUS`、step的`CUDA_VISIBLE_DEVICES`、
   容器内CUDA逻辑ordinal、UUID和配置设备号是不同层。
   使用维护路径的`allocated:N`等受支持映射，保留实际step环境及UUID；
@@ -68,6 +96,9 @@ host上的srun负责进入各节点的精确SIF；容器内运行NFD/nfdc和nati
   native签名offer必须提供该设备的新鲜资源观察，不能仅靠硬编码“足够显存”。
   CUDA ordinal到UUID、NVML显存和offer准入的生产逻辑在C++，
   不用实验Python遥测替代。
+- 对本次 Qwen 27B GPU 流程，先用同一候选 SIF 和部署路径完成 0.6B 的 cold/warm、
+  独立 oracle 与正常退出检查；共享机制修改先通过本地原生检查和 installed MiniNDN
+  CPU cold/warm。小模型通过只证明该条件下的路径，不能代替大模型结果。
 - 实际GPU证据绑定request/attempt/plan、provider进程、模型及分配，并核对ORT
   execution provider/profile中的CUDA执行与CPU fallback策略。
   归档profile实际指向的文件；不因JSON里写着CUDA就算GPU执行通过。
@@ -78,6 +109,9 @@ host上的srun负责进入各节点的精确SIF；容器内运行NFD/nfdc和nati
 
 `df -h`/`df -i`、用户/项目quota与目标文件系统的实际写入能力是不同检查。
 按身份和路径查询可用配额；不可查询时明确未知。
+区分每个 Provider 的应用缓存上限与文件系统/账号配额：提高配置不会增加系统配额。
+`EDQUOT` 及当时的目录占用只能确定写入边界，不能反推具体配额。Memphis 通用 HPC
+页面描述的默认值可能针对其他集群，不能未经核实套用于 iTiger 账号。
 [iTiger官方Wiki](https://github.com/itiger-cluster/itiger-cluster.github.io/wiki/Running-A-Model)
 写明HOME默认20GB并建议大环境使用`/project`；该页最后编辑于2024年，
 不能替代当前账号配额查询，更不能把`df`显示的整盘容量称为个人额度。
@@ -90,6 +124,25 @@ Slurm job-private /tmp 可随 allocation 回收；/var/tmp 不能一概视为随
 同节点两次作业间文件仍在也不证明永久保留。可复用模型、Repo 和缓存放入已确认
 保留策略/容量的稳定目录；临时盘只承接可丢弃的 staging 和中间副本。
 内容、Producer 和保护上下文匹配时复用原生提交记录，不因换作业就重新导出或发布。
+`/scratch/$USER` 需要在实际计算节点内验证：登录节点和计算节点的同名路径可能
+对应不同的节点本地盘，且账号可能无权创建该目录。已观察到的 job-private `/tmp`
+可位于计算节点 NVMe；每次在实际 allocation 中核对挂载、可写性和容量，不能承诺
+跨作业保留。可用现有 Provider `artifact-cache-dir` 将下载/组装缓存放到该盘，
+按完整 Provider 身份使用稳定的逻辑路径；持久模型原件、Requester Repo 和必需
+密钥保留在已确认可复用的共享存储。预算分别包含每个 Provider 的缓存峰值。
+
+模型准备中断后，完整 root 命中不证明部分对象可恢复。核对内容和 Producer 身份、
+原始 Data、Owner 密钥与保护上下文；对比准备前后的对象身份和字节数，区分首次
+补齐缺失材料与重复发布。相同明文摘要的受保护对象可能有不同 key、epoch 和引用，
+不能只凭摘要相同删除。一次本地 C++/CPU 检查证明了部分对象跨版本复用；具体模型
+和目标环境仍需各自的跨作业验证，不能把该检查推导为 27B 已通过。
+
+用户要求将 Controller 的公参/主密钥配对、根证书、对应私钥及必要的撤销和代际状态
+保存在 `/project/$USER` 并优先复用。先核对实际实现、身份和原有凭据；密钥目录
+0700、私有文件0600，仅向对应角色提供。首次建立、正常重启和合法换代要区分，
+损坏或身份冲突不能静默覆盖；持久密钥不代替当前授权/撤销检查。当前 Controller
+generation 与签名凭据已有持久路径；最近一次源码审查发现 ABE master/public pair
+跨进程恢复尚未实现。后续应复查实际源码及恢复证据，不得假定拷贝证书或目录已完成。
 构建中间文件、可重建传输副本使用实际allocation内的节点本地临时盘；
 核对`TMPDIR`、`SLURM_TMPDIR`和mount，不假定变量存在或跨节点共享。
 在作业内检查可用空间；空闲字节不是个人预约额度。作业结束前归档必要证据，
@@ -167,6 +220,11 @@ SSH恢复但资源不足时继续资源轮询，不能把登录恢复当成实�
 加和wall分区与嵌套测量分开。普通性能运行关闭诊断/per-token日志，
 保留必要结构化测量。归档可重算数据、相关日志、首失败、命令和身份，
 验证可读后才按allowlist清理可重建产物，不搬迁整个临时树来冒充归档。
+分开报告模型准备、首次请求及 warm 请求；传输大小注明载荷或 wire，速率注明
+字节和时间边界。不要把整体耗时减 ONNX 时间称为网络时间，也不要把嵌套耗时相加。
+清理原始 profile 前保存必要的分组统计与文件摘要，核对归档完整、作业已停止及
+文件身份；按 inode/link 计实际释放量。删除逐事件数据后，明确无法重放时间线或
+重新计算未保留的分位数。历史原始 profile 与当前失败调查所需数据分别判断。
 
 分别报告安装闭包、build/ABI、local inference、cluster CPU、GPU执行、
 两节点依赖执行、oracle与host清理。quiet-execution oracle未评估的
