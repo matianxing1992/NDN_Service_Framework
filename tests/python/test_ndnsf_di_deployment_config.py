@@ -446,7 +446,7 @@ def ops(tmp_path_factory):
     package = source / "ndnsf_distributed_inference"
     package.mkdir(exist_ok=True)
     shutil.copyfile(ROOT / "NDNSF-DistributedInference/ndnsf_di_launcher.py",
-                    source / 'ndnsf_di_launcher.py')
+                    source / "ndnsf_di_launcher.py")
     shutil.copyfile(ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
                     package / "__init__.py")
     shutil.copytree(ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/ops", package / "ops",
@@ -479,7 +479,13 @@ def ops(tmp_path_factory):
                    check=True, capture_output=True, text=True, timeout=120)
     assert len(list(wheels.glob("*.whl"))) == 2
     environment = root / 'environment'
-    venv.EnvBuilder(with_pip=False, system_site_packages=True).create(environment)
+    base_python = Path(sys._base_executable).resolve(strict=True)
+    subprocess.run([str(base_python), '-I', '-m', 'venv', '--without-pip',
+                    '--system-site-packages', '--symlinks', str(environment)],
+                   check=True, capture_output=True, text=True, timeout=30)
+    subprocess.run([str(environment / 'bin/python3'), '-I', '-c',
+                    'import encodings,sys; assert sys.prefix == sys.argv[1]', str(environment)],
+                   check=True, capture_output=True, text=True, timeout=10)
     installed_root = environment / 'lib' / ('python%d.%d' % sys.version_info[:2]) / 'site-packages'
     for wheel in wheels.glob("*.whl"):
         with zipfile.ZipFile(wheel) as archive:
@@ -524,6 +530,30 @@ def test_ops_wheel_console_entry_runs_outside_source_checkout(ops, tmp_path):
     unrelated = tmp_path/'unrelated'
     unrelated.mkdir()
     result = subprocess.run([str(environment/'bin/ndnsf-di'), '--help'], cwd=unrelated,
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    assert 'cluster' in result.stdout
+
+
+def test_shipped_ops_console_entrypoint_resolves_in_isolated_install(ops, tmp_path):
+    parser, _ = ops
+    site = Path(parser.__file__).parents[2]
+    python = site.parents[2] / 'bin/python3'
+    poison = tmp_path / 'poison'
+    poison.mkdir()
+    (poison / 'ndnsf_di_launcher.py').write_text('raise RuntimeError("CHECKOUT_IMPORTED")\n')
+    code = ('import importlib.metadata as m,sys; from pathlib import Path; '
+            'dist=m.distribution("ndnsf-di-ops"); site=Path(sys.argv[1]).resolve(); '
+            'assert Path(dist.locate_file("")).resolve()==site; '
+            'entry=next(e for e in dist.entry_points '
+            'if e.group=="console_scripts" and e.name=="ndnsf-di"); '
+            'assert entry.value=="ndnsf_di_launcher:main"; '
+            'import ndnsf_di_launcher as boot; '
+            'assert Path(boot.__file__).resolve()==site/"ndnsf_di_launcher.py"; '
+            'assert entry.load() is boot.main; '
+            'sys.argv=["ndnsf-di","--help"]; raise SystemExit(entry.load()())')
+    result = subprocess.run([str(python), '-I', '-c', code, str(site)],
+                            env=dict(os.environ, PYTHONPATH=str(poison)),
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
     assert 'cluster' in result.stdout
@@ -1880,18 +1910,26 @@ def test_cluster_ready_record_is_bound_to_the_real_child_boot_and_name(ops, depl
 
 @pytest.mark.parametrize('debug', (False, True))
 @pytest.mark.parametrize('timing', (False, True))
+@pytest.mark.parametrize('core_budget', (None, 100, 600000))
 def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
-        ops, deployment, monkeypatch, debug, timing):
+        ops, deployment, monkeypatch, debug, timing, core_budget):
     parser, _ = ops
     base, config = deployment
     (base / 'trust-root-registry-v1.json').write_text('{}')
-    (base / 'recipients.json').write_text(json.dumps({'/8=test/8=p1': 'key.pem'}))
+    (base / 'other-provider-key.pem').write_bytes(b'other Provider configuration fixture\n')
+    (base / 'recipients.json').write_text(json.dumps({
+        '/8=test/8=p1': 'key.pem', '/test/p0': 'other-provider-key.pem'}))
+    config['requester']['request'] = {'timeout_ms': 600000}
+    config['actors'][-2]['parameters'] = {'grant-authority-public-key': 'key.pem',
+        'recipient-key-map': 'recipients.json'}
     config['actors'][-1]['parameters'] = {'grant-authority-public-key': 'key.pem',
         'recipient-key-map': 'recipients.json', 'enable-admission-lease': False,
         'allow-selection-generation-options': True, 'repo-fetch-timeout-ms': 900000,
         'sample-kv-state-values': True,
         'conversation-retention-ms': 3600000, 'assembly-timeout-ms': 900000,
         'artifact-cache-max-mib': 131072}
+    if core_budget is not None:
+        config['actors'][-1]['parameters']['core-work-timeout-ms'] = core_budget
     path = write_config(base, config)
     native = parser.load_deployment(path)
     cluster = importlib.import_module('_spec217_ops.cluster')
@@ -1907,6 +1945,7 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     monkeypatch.setenv('NDNSF_CONTROL_TIMING', 'untrusted-shell-value')
     monkeypatch.setenv('NDNSF_HYBRID_CRYPTO_TIMING', 'untrusted-shell-value')
     monkeypatch.setenv('NDNSF_TIMELINE_TRACE_SAMPLE_RATE', 'untrusted-shell-value')
+    monkeypatch.setenv('NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS', 'untrusted-shell-value')
     argv, env = cluster._native_launch(native, native['actors'][-1], directory, state)
     assert argv[0] == str(base / 'release/bin/di-native-provider')
     assert '--allow-selection-generation-options' in argv
@@ -1918,6 +1957,10 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     assert '--enable-admission-lease' not in argv
     assert '--recipient-key-map' not in argv
     assert '--grant-authority-public-key' not in argv
+    assert '--core-work-timeout-ms' not in argv
+    assert env.get('NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS') == (
+        str(core_budget) if core_budget is not None else None)
+    assert native['actors'][-1]['parameters'].get('core-work-timeout-ms') == core_budget
     assert 'PYTHONPATH' not in env and 'LD_LIBRARY_PATH' not in env
     assert env['NDN_LOG'] == ('*=DEBUG' if debug else (
         '*=NONE:ndnsf.di.RuntimeEvidence=WARN:ndn_service_framework.TimelineTrace=WARN:'
@@ -1932,6 +1975,99 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     mapping = Path(env['SPEC181_PROVIDER_RECIPIENT_KEY_MAP'])
     assert json.loads(mapping.read_text()) == {'/test/p1': str(base / 'key.pem')}
     assert mapping.stat().st_mode & 0o777 == 0o600
+    for actor in native['actors'][:-1]:
+        other_argv, other_env = cluster._native_launch(native, actor, directory, state)
+        assert 'NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS' not in other_env
+        assert '--core-work-timeout-ms' not in other_argv
+
+
+@pytest.mark.parametrize('budget', [100, 30000, 600000])
+def test_provider_core_work_timeout_validation_is_read_only(ops, deployment, budget):
+    parser, _ = ops
+    root, config = deployment
+    config['requester']['request'] = {'timeout_ms': 600000}
+    config['actors'][-1]['parameters'] = {'core-work-timeout-ms': budget}
+    path = write_config(root, config)
+    before = sorted(str(item.relative_to(root)) for item in root.rglob('*'))
+    translated = parser.load_deployment(path)
+    assert translated['actors'][-1]['parameters'] == {'core-work-timeout-ms': budget}
+    assert sorted(str(item.relative_to(root)) for item in root.rglob('*')) == before
+    assert json.loads(path.read_text()) == config
+
+
+@pytest.mark.parametrize('budget', [0, 99, -1, True, False, 100.0, 600000.0,
+                                  '600000', None, [], {}])
+def test_provider_core_work_timeout_rejects_invalid_types_and_minimum(ops, deployment, budget):
+    parser, _ = ops
+    root, config = deployment
+    config['requester']['request'] = {'timeout_ms': 600000}
+    config['actors'][-1]['parameters'] = {'core-work-timeout-ms': budget}
+    with pytest.raises(parser.DeploymentConfigError, match='expected integer >= 100'):
+        parser.load_deployment(write_config(root, config))
+    assert not (root / 'state_root').exists()
+
+
+@pytest.mark.parametrize('budget, request_timeout, message', [
+    (600001, 700000, '600000'), (1000, 999, r'exceeds requester\.request\.timeout_ms')])
+def test_provider_core_work_timeout_rejects_excess_budget(
+        ops, deployment, budget, request_timeout, message):
+    parser, _ = ops
+    root, config = deployment
+    config['requester']['request'] = {'timeout_ms': request_timeout}
+    config['actors'][-1]['parameters'] = {'core-work-timeout-ms': budget}
+    with pytest.raises(parser.DeploymentConfigError, match=message):
+        parser.load_deployment(write_config(root, config))
+    assert not (root / 'state_root').exists()
+
+
+@pytest.mark.parametrize('request_timeout', ['absent', None, True, False, 0, -1, 100.0, '600000'])
+def test_provider_core_work_timeout_requires_explicit_integer_request_budget(
+        ops, deployment, request_timeout):
+    parser, _ = ops
+    root, config = deployment
+    config['requester']['request'] = (
+        {} if request_timeout == 'absent' else {'timeout_ms': request_timeout})
+    config['actors'][-1]['parameters'] = {'core-work-timeout-ms': 100}
+    with pytest.raises(parser.DeploymentConfigError, match=r'requester\.request\.timeout_ms'):
+        parser.load_deployment(write_config(root, config))
+    assert not (root / 'state_root').exists()
+
+
+@pytest.mark.parametrize('kind', ['controller', 'artifact-authority', 'requester', 'repo'])
+def test_provider_core_work_timeout_rejects_other_actor_kinds(ops, deployment, kind):
+    parser, _ = ops
+    root, config = deployment
+    if kind == 'repo':
+        (root / 'credentials/repo').mkdir()
+        config['network']['repo_service'] = '/test/repo-service'
+        config['actors'].append(dict(id='repo', kind='repo', identity='/test/repo', node='local',
+            credential_home='credentials/repo', resources={'cpus': 1}))
+    actor = next(row for row in config['actors'] if row['kind'] == kind)
+    actor['parameters'] = {'core-work-timeout-ms': 100}
+    with pytest.raises(parser.DeploymentConfigError, match='role parameters belong'):
+        parser.load_deployment(write_config(root, config))
+    assert not (root / 'state_root').exists()
+
+
+@pytest.mark.parametrize('kind', ['provider', 'requester'])
+def test_provider_core_work_timeout_rejects_external_process_ownership(ops, deployment, kind):
+    parser, _ = ops
+    root, config = deployment
+    config['requester']['request'] = {'timeout_ms': 600000}
+    config['actors'][-1]['parameters'] = {'core-work-timeout-ms': 100}
+    actor = next(row for row in config['actors'] if row['kind'] == kind)
+    for key in ('node', 'credential_home', 'resources'):
+        actor.pop(key)
+    actor['external'] = True
+    if kind == 'requester':
+        config['requester'] = {}
+        message = 'managed Requester'
+    else:
+        actor['parameters'] = {'core-work-timeout-ms': 100}
+        message = 'external references cannot own process inputs'
+    with pytest.raises(parser.DeploymentConfigError, match=message):
+        parser.load_deployment(write_config(root, config))
+    assert not (root / 'state_root').exists()
 
 
 def test_controller_generation_path_is_stable_private_and_native_owned(

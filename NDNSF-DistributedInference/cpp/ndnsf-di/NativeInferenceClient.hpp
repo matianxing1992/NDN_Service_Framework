@@ -119,6 +119,13 @@ struct NativeInferenceEvent
 struct NativeInferenceDiagnostics
 {
   std::uint64_t observationDropped = 0;
+  // Local cancel and local client drain do not establish remote confirmation.
+  // These receipts apply to ordinary TOKEN_STREAMING generation only.
+  bool cancellationRequested = false;
+  std::uint64_t cancellationExpectedRoles = 0;
+  std::uint64_t cancellationFencedRoles = 0;
+  std::uint64_t cancellationDrainedRoles = 0;
+  bool cancellationUnconfirmed = false;
 };
 
 using NativeEventReader = ndn_service_framework::OperationReader<NativeInferenceEvent>;

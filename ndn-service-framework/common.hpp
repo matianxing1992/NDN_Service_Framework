@@ -353,6 +353,12 @@ namespace ndn_service_framework{
         }
 
         bool
+        isCurrentThread() const noexcept
+        {
+            return currentPool() == this;
+        }
+
+        bool
         post(std::function<void()> task)
         {
             if (!task) {
@@ -414,6 +420,8 @@ namespace ndn_service_framework{
                     m_tasks.pop_front();
                 }
 
+                const auto previousPool = currentPool();
+                currentPool() = this;
                 try {
                     task();
                 }
@@ -423,7 +431,15 @@ namespace ndn_service_framework{
                 catch (...) {
                     NDN_LOG_ERROR(m_name << " task failed with unknown exception");
                 }
+                currentPool() = previousPool;
             }
+        }
+
+        static const BoundedWorkerPool*&
+        currentPool() noexcept
+        {
+            static thread_local const BoundedWorkerPool* pool = nullptr;
+            return pool;
         }
 
     private:

@@ -5,11 +5,13 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
 #include <boost/property_tree/json_parser.hpp>
+#include <openssl/crypto.h>
 #include <openssl/sha.h>
 #include <chrono>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <string>
 
 namespace {
 std::uint64_t nowMs()
@@ -33,13 +35,35 @@ std::string digest(const std::vector<std::uint8_t>& value)
 int main(int argc, char** argv)
 {
   using namespace ndnsf::di;
+  const bool credentialsOnly = argc == 3 && std::string(argv[2]) == "--credentials-only";
   boost::property_tree::ptree result;
   result.put("boundary", "BEFORE_ASSEMBLY");
-  result.put("transport", argc == 3 ? "wire-fixture" : "ndn");
+  result.put("transport", credentialsOnly ? "none" : (argc == 3 ? "wire-fixture" : "ndn"));
   try {
-    if (argc != 2 && argc != 3) throw std::runtime_error("expected metadata [wire-fixture]");
+    if (argc != 2 && argc != 3) throw std::runtime_error("expected metadata [wire-fixture|--credentials-only]");
     boost::property_tree::ptree input;
     boost::property_tree::read_json(argv[1], input);
+    if (credentialsOnly) {
+      auto config = loadNativeProtectedGrantConfig(
+        input.get<std::string>("provider"),
+        nativeProtectedModelFamily(input.get<std::string>("modelName")),
+        input.get<std::string>("protectionEpoch"));
+      struct PrivateMaterialGuard
+      {
+        std::string& material;
+        ~PrivateMaterialGuard()
+        {
+          OPENSSL_cleanse(material.data(), material.size());
+        }
+      } guard{config.recipientKey.material};
+      if (config.authorityIdentity != input.get<std::string>("expectedAuthority")) {
+        throw std::runtime_error("configured authority differs from deployment issuer");
+      }
+      result.put("status", "CREDENTIALS_CHECKED");
+      std::cout << "SPEC181_NATIVE_GRANT_RESULT ";
+      boost::property_tree::write_json(std::cout, result, false);
+      return 0;
+    }
     const auto& grant = input.get_child("binding");
     ProtectedRuntimeBindingV1 binding;
     binding.provider = grant.get<std::string>("provider");

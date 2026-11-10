@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Isolate the build process tree without imposing a compiler memory cap.
-# Execute compiler processes as the caller; stop the group on an OOM failure.
+# Launch a host build with the requested Waf parallelism and no imposed
+# process-tree memory limit. The kernel manages memory pressure normally.
 set -euo pipefail
 
 build_repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-build_unit="ndnsf-build-${UID}-$$"
 if (( $# == 0 )); then
     set -- build --jobs=6
 fi
+
 build_command=()
 if [[ $1 == run ]]; then
     shift
@@ -15,14 +15,9 @@ if [[ $1 == run ]]; then
     shift
     (( $# )) || { echo 'A build command is required' >&2; exit 2; }
     build_command=("$@")
-elif [[ $1 != build ]]; then
-    echo 'build-safe.sh accepts waf build or run -- COMMAND' >&2
-    exit 2
-fi
-# Explicit build arguments must not silently restore Waf's CPU-based default.
-build_jobs_seen=false
-build_jobs_pending=false
-if (( ${#build_command[@]} == 0 )); then
+elif [[ $1 == build ]]; then
+    build_jobs_seen=false
+    build_jobs_pending=false
     for build_arg in "$@"; do
         build_jobs_value=
         if $build_jobs_pending; then
@@ -38,7 +33,7 @@ if (( ${#build_command[@]} == 0 )); then
         fi
         if [[ $build_jobs_value != 1 && $build_jobs_value != 2 &&
               $build_jobs_value != 4 && $build_jobs_value != 6 ]]; then
-            echo 'Safe host builds accept only --jobs=1, --jobs=2, --jobs=4 or --jobs=6' >&2
+            echo 'Host builds accept --jobs=1, --jobs=2, --jobs=4 or --jobs=6' >&2
             exit 2
         fi
         build_jobs_seen=true
@@ -51,46 +46,17 @@ if (( ${#build_command[@]} == 0 )); then
         set -- "$@" --jobs=6
     fi
     build_command=("$build_repo/waf" "$@")
+else
+    echo 'build-safe.sh accepts waf build or run -- COMMAND' >&2
+    exit 2
 fi
-command -v systemd-run >/dev/null
-sudo -n true
 
+# Serialize independent build invocations that might share a Waf output tree.
 exec 9>"${XDG_RUNTIME_DIR:-/run/user/$UID}/ndnsf-build.lock"
 if ! flock -n 9; then
-    echo 'Another isolated build launcher is active' >&2
+    echo 'Another host build launcher is active' >&2
     exit 75
 fi
 
-build_active_units=$(systemctl list-units --state=activating,active,deactivating --no-legend --plain \
-    "ndnsf-build-${UID}-*.service")
-if [[ -n $build_active_units ]]; then
-    echo 'An isolated build is active or stopping; wait before starting another' >&2
-    exit 75
-fi
-
-cleanup_build() {
-    sudo -n systemctl stop "${build_unit}.service" >/dev/null 2>&1 || true
-}
-trap cleanup_build EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
-build_environment=(--setenv="PATH=$PATH" --setenv="HOME=$HOME")
-if [[ -n ${TMPDIR:-} ]]; then
-    build_environment+=(--setenv="TMPDIR=$TMPDIR")
-fi
-if [[ -n ${WAFLOCK:-} ]]; then
-    build_environment+=(--setenv="WAFLOCK=$WAFLOCK")
-fi
-if [[ -n ${NDNSF_RUNTIME_RPATH:-} ]]; then
-    build_environment+=(--setenv="NDNSF_RUNTIME_RPATH=$NDNSF_RUNTIME_RPATH")
-fi
-echo "Build scope: ${build_unit}.service; no compiler memory cap"
-sudo -n systemd-run --quiet --wait --pipe --collect \
-    --unit="$build_unit" --uid="$UID" --gid="$(id -g)" \
-    --working-directory="$(pwd)" \
-    --property=MemoryLimit=infinity --property=MemoryMax=infinity \
-    --property=MemoryAccounting=yes --property=OOMScoreAdjust=600 \
-    --property=OOMPolicy=stop --property=KillMode=control-group \
-    "${build_environment[@]}" \
-    "${build_command[@]}"
+echo 'Host build memory limit: none'
+exec "${build_command[@]}"

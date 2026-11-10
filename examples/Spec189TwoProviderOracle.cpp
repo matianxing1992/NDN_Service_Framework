@@ -1495,7 +1495,9 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     if (providers.back().provider != identity)
       chainFailure("deployment-provider-identity");
   }
-  if (providers.size() < 2 || requesters != 1)
+  // Deployment mode also supports a declared single-stage CPU workload.
+  // Per-round role/checkpoint coverage below still admits every executed role.
+  if (providers.empty() || requesters != 1)
     chainFailure("deployment-role-coverage");
   if (requireDistributedGpu && gpuNodes.size() < 2)
     chainFailure("deployment-distributed-gpu-required");
@@ -1593,7 +1595,20 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
               .get<std::string>());
         }
       }
-      if (executionNamespaces.size() < 2)
+      if (providers.size() == 1) {
+        std::string requesterNamespace;
+        for (const auto& actor : config.at("actors")) {
+          if (actor.at("id") == requesterId) {
+            requesterNamespace = state.at("facility").at("nodes")
+              .at(actor.at("node").get<std::string>()).at("network_namespace")
+              .get<std::string>();
+          }
+        }
+        if (observations.size() != 1 || executionNamespaces.size() != 1 ||
+            requesterNamespace.empty() || executionNamespaces.count(requesterNamespace) != 0)
+          chainFailure("deployment-minindn-single-stage-not-remote");
+      }
+      else if (executionNamespaces.size() < 2)
         chainFailure("deployment-minindn-execution-not-distributed");
     }
     NativeJson roleMap = NativeJson::array();
@@ -1722,6 +1737,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   }
   NativeJson receipt{{"scope", "deployment-quiet-execution"}, {"bootId", boot},
     {"platform", slurm ? "slurm-apptainer" : minindn ? "minindn" : "single-host"},
+    {"declaredComputeProviders", providers.size()},
     {"gpuNodes", gpuNodes}, {"distributedGpu", requireDistributedGpu ? "VERIFIED" : "NOT_REQUIRED"},
     {"configurationSha256", digest}, {"rounds", results}, {"cleanup", "ZERO_NONFORCED"},
     {"materialFetch", "NOT_EVALUATED"}, {"grantAudit", "NOT_EVALUATED"},

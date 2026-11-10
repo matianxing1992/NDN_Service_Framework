@@ -67,6 +67,9 @@ struct BootstrapProfile
   // Opt into the actual Core cryptographic and per-inner validator for
   // invocation protocol qualification, rather than the fixture transport bypass.
   bool validateSvsPackets = false;
+  // Apply the maintained Core resource-budget defaults before SVS construction.
+  // Existing fixtures retain their library-default transport conditions.
+  bool useProductionSvsTransportOptions = false;
   // Optional controller-authorized collaboration roles included in the
   // bootstrap ProviderPermission wave. Empty keeps legacy fixture behavior.
   std::vector<std::string> providerRoles;
@@ -80,6 +83,13 @@ struct BootstrapProfile
   bool providerCanActAsUser = false;
 };
 
+enum class SignatureDataFault
+{
+  OUTER_SIGNATURE,
+  INNER_PROVIDER_SIGNER,
+  INNER_SIGNATURE
+};
+
 struct FaultProfile
 {
   bool dropPackets = false;
@@ -87,6 +97,16 @@ struct FaultProfile
   bool reorderPackets = false;
   // Selective application Data loss keeps unrelated admission traffic intact.
   std::function<bool(const ndn::Data&)> dropDataPredicate;
+  // Bounded user-to-provider outer Data signature damage, selected by exact test predicate.
+  std::function<bool(const ndn::Data&)> tamperSignatureDataPredicate;
+  // One bounded budget across retrieved and piggyback copies; exhausted copies are dropped.
+  size_t tamperSignatureDataCount = 0;
+  std::function<bool(const ndn::Data&)> tamperSignaturePiggyPredicate;
+  std::function<void(const ndn::Interest&, const ndn::Interest&)> inspectSignaturePiggyMutation;
+  // Reuse the exact predicate/budget for inner faults with a User-signed outer.
+  SignatureDataFault signatureDataFault = SignatureDataFault::OUTER_SIGNATURE;
+  // Synchronously inspect the actual mutation before delivery; owned by request scope.
+  std::function<void(const ndn::Data&)> inspectSignatureDataMutation;
   // Cursor-scoped stream faults are applied only to exact NDNSF EVENT
   // Interest/Data packets in the named direction.  They coexist with the
   // legacy whole-request flags above so formal Spec175 cases can perturb one
@@ -113,6 +133,9 @@ struct PacketBridgeStats
   size_t droppedStreamDataPackets = 0;
   size_t duplicatedStreamDataPackets = 0;
   size_t tamperedStreamDataPackets = 0;
+  size_t tamperedSignatureDataPackets = 0;
+  size_t tamperedSignaturePiggyPackets = 0;
+  size_t signatureFaultBudgetDrops = 0;
   size_t reorderedStreamDataPairs = 0;
   size_t droppedStreamInterests = 0;
   std::string firstDroppedName;
@@ -169,6 +192,10 @@ public:
   NdnsfIntegrationEnvironment(const NdnsfIntegrationEnvironment&) = delete;
   NdnsfIntegrationEnvironment& operator=(const NdnsfIntegrationEnvironment&) = delete;
 
+  /** Stop the User and its attached publication ingress while keeping the
+   * external Faces, providers, io_contexts and trust alive for late-data tests.
+   * Call only between Face pump turns, with no dedicated User I/O worker. */
+  void destroyUserForTest();
   void bootstrap();
   void pumpUntil(const std::function<bool()>& done);
   void pumpUntilReady();
@@ -181,6 +208,8 @@ public:
   void resetRequest(RequestScope& scope);
   void flushReorderedPackets();
   PacketBridgeStats bridgeStats() const;
+  /** Read the actual Provider transport validator's atomic rejection counter. */
+  size_t providerValidationFailureCountForTest() const;
 
   EnvironmentStatus status() const { return m_status; }
   const EnvironmentSnapshot& snapshot() const { return m_snapshot; }

@@ -269,6 +269,16 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
       if (producer != metadata.at("tensorProducers").end() && owned.count(producer->get<std::uint64_t>()))
         outputs.emplace(item.name, NativeAssemblyTensorContractV3{item.name, item.dtype, item.shape});
     }
+    const auto stateOutputs = candidate.roleStateOutputsByRole.find(name);
+    if (stateOutputs != candidate.roleStateOutputsByRole.end()) {
+      for (const auto& item : stateOutputs->second) {
+        const auto producer = metadata.at("tensorProducers").find(item.name);
+        if (producer == metadata.at("tensorProducers").end() ||
+            !owned.count(producer->get<std::uint64_t>()))
+          throw std::invalid_argument("native role state output is not produced by its source role");
+        outputs.emplace(item.name, tensor(metadata.at("tensors").at(item.name)));
+      }
+    }
     if (inputs.empty() || outputs.empty())
       throw std::invalid_argument("native role source boundary requires input and output tensors");
     const auto checkState = [&](const auto& declared, const auto& actual) {

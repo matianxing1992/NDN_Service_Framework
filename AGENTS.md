@@ -378,7 +378,7 @@ approval again or hide an exception in a special-case branch.
   disabling logs must not bypass functional, security or lifecycle checks.
 - Reuse a stable disk workspace per purpose rather than creating a fresh
   model-sized build/staging directory for every retry. When available, prefer
-  `python3 scripts/ndnsf-di-workspace.py PURPOSE --root /tmp/ndnsf-di-workspaces-$(id -u) -- COMMAND {workspace}`;
+  `python3 scripts/ndnsf-di-workspace.py --root /tmp/ndnsf-di-workspaces-$(id -u) PURPOSE -- COMMAND {workspace}`;
   it resets only its marked scratch directory under an exclusive lock.
   Commands run inside that directory and receive `TMPDIR` and
   `NDNSF_DI_WORKSPACE`. Use absolute command/source paths. This bounds retained
@@ -467,7 +467,9 @@ approval again or hide an exception in a special-case branch.
   user's explicit request; do not silently restore the old two-job default.
   Keep compiler processes under the invoking user in an isolated resource group.
   Preserve `WAFLOCK` when using an existing configured build directory.
-  `scripts/build-safe.sh build` defaults to six jobs and implements this policy.
+  `scripts/build-safe.sh build` defaults to six jobs and serializes launchers
+  sharing a Waf output tree; it imposes no memory limit. The invoking launcher
+  supplies the isolated resource group and its OOM cleanup policy.
 - Preserve isolated process ownership, build locking and OOM termination so a
   failed compiler does not leave other workers running. Inherit the host's swap
   configuration; do not set MemorySwap/MemorySwapMax or change system settings.
@@ -639,3 +641,7 @@ and task context. Report a blocker only after bounded retries fail.
 This instruction cannot intercept failures that occur before a model turn is
 created. For those host-side failures, the Codex IDE/CLI itself must provide
 retry or model fallback; never claim that an agent instruction can catch them.
+
+<!-- SPEC_KIT_PLAN_START -->
+Active implementation plan is at specs/231-collaboration-semantics/plan.md.
+<!-- SPEC_KIT_PLAN_END -->

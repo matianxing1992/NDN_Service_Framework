@@ -439,6 +439,24 @@ addTimeUncertainty(std::array<double, 36>& covariance, const PoseSample& first,
 } // namespace
 
 bool
+isCaptureTimeWithinClock(const ClockBinding& clock, uint64_t captureTimeUs)
+{
+  if (!validClock(clock) || captureTimeUs > MAX_TIME_US) return false;
+  const auto inverse = (static_cast<long double>(captureTimeUs) - clock.bUs) / clock.a;
+  if (!std::isfinite(inverse)) return false;
+  const auto deviceTime = std::clamp(std::round(inverse),
+    static_cast<long double>(clock.validFromUs), static_cast<long double>(clock.validUntilUs));
+  const auto tick = static_cast<uint64_t>(deviceTime);
+  const auto matches = [&] (uint64_t candidate) {
+    const auto mapped = toRunTimeUs(clock, candidate);
+    return mapped && *mapped == captureTimeUs;
+  };
+  // Adjacent ticks preserve valid rounding at the mapper's nonnegative/range boundaries.
+  return matches(tick) || (tick > clock.validFromUs && matches(tick - 1)) ||
+         (tick < clock.validUntilUs && matches(tick + 1));
+}
+
+bool
 FrameKey::operator<(const FrameKey& other) const noexcept
 {
   return std::tie(sourceId, cameraId, epoch, sequence) <

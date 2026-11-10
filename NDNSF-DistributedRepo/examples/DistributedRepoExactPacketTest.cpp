@@ -214,8 +214,9 @@ main(int argc, char** argv)
     std::cerr << "Usage: DistributedRepoExactPacketTest [--seed-original-packets ROOT PRODUCER | --verify-original-packets ROOT FETCH_DIR]\n";
     return 2;
   }
-  char directory[] = "/tmp/ndnsf-repo-exact-packet-XXXXXX";
-  if (!::mkdtemp(directory)) throw std::runtime_error("cannot create exact packet fixture");
+  auto directory = (std::filesystem::temp_directory_path() /
+                    "ndnsf-repo-exact-packet-XXXXXX").string();
+  if (!::mkdtemp(directory.data())) throw std::runtime_error("cannot create exact packet fixture");
   const std::filesystem::path root(directory);
   struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code e; std::filesystem::remove_all(path, e); } } cleanup{root};
   const auto openStore = [&] { return makeTieredRepoStore(
@@ -321,10 +322,22 @@ main(int argc, char** argv)
 
     auto conflicting = originalWires;
     conflicting.front().back() ^= 0x01;
-    const auto conflict = node.insertWirePackets(reference, conflicting);
+    const auto corrupted = node.insertWirePackets(reference, conflicting);
+    require(corrupted.state == "FAILED" &&
+            corrupted.message == "fetched wire packet sha256 mismatch",
+            "corrupted wire did not fail reference digest validation: " + corrupted.message);
+    auto conflictReference = reference;
+    std::vector<uint8_t> conflictingBytes;
+    for (const auto& wire : conflicting) {
+      conflictingBytes.insert(conflictingBytes.end(), wire.begin(), wire.end());
+    }
+    conflictReference.expectedSha256 = sha256Hex(conflictingBytes);
+    const auto conflict = node.insertWirePackets(conflictReference, conflicting);
     require(conflict.state == "FAILED", "same-name different-wire conflict was accepted");
     require(conflict.message.find("conflict") != std::string::npos,
-            "conflict failure did not explain immutable-name conflict");
+            "conflict failure did not explain immutable-name conflict: " + conflict.message);
+    require(RepoClient::getDataPackets(node, storedManifest) == originalWires,
+            "rejected corruption or name conflict changed the original packets");
   }
 
   {

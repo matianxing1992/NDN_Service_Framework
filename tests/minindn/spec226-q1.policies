@@ -1,0 +1,44 @@
+name /example/uav/controller/NDNSF/ControllerPolicy/v1
+
+provider-policies
+{
+    provider-policy
+    {
+        for /example/uav/source-adapter/UAV1
+        allow
+        {
+            /Spec226/Admission
+            /Spec226/Admission/ROLE/source
+        }
+    }
+    provider-policy
+    {
+        for /example/uav/source-adapter/UAV2
+        allow
+        {
+            /Spec226/Admission
+            /Spec226/Admission/ROLE/source
+        }
+    }
+    provider-policy
+    {
+        for /example/uav/compute
+        allow
+        {
+            /Spec226/Admission
+            /Spec226/Admission/ROLE/consumer
+        }
+    }
+}
+
+user-policies
+{
+    user-policy
+    {
+        for /example/uav/gs
+        allow
+        {
+            /Spec226/Admission
+        }
+    }
+}

@@ -430,6 +430,9 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
   FrameworkProvider::CollaborationAssignment assignment;
   assignment.role = "worker";
   assignment.service = ndn::Name("/DI/collective");
+  // This transport fixture owns bounded authority; it does not test Core dispatch.
+  assignment.workDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
+  assignment.workCurrent = [] { return true; };
   FrameworkProvider::CollaborationContext producerContext(
       producer, ndn::Name("/test/user"), ndn::Name("/request/provider-context"),
       ndn_service_framework::RequestMessage(), assignment);

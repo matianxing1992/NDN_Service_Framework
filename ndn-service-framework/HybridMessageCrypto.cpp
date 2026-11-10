@@ -546,6 +546,89 @@ prepareHybridMessageKeyPackets(const ndn::Name& service, const ndn::Name& sender
     return originals;
 }
 
+namespace {
+struct HybridKeyWrapperAssembly
+{
+    ndn::Name object;
+    ndn::name::Component commitment;
+    std::optional<uint64_t> finalSegment;
+    std::map<uint64_t, ndn::Block> wires;
+    std::size_t bytes = 0;
+
+    void append(const ndn::Name& locator, const ndn::Data& packet)
+    {
+        const auto& name = packet.getName();
+        if (!locator.isPrefixOf(name) || name.size() != locator.size() + 2 ||
+            name[-2].type() != ndn::tlv::GenericNameComponent ||
+            name[-2].value_size() != 32 || !name[-1].isSegment() ||
+            !packet.getFinalBlock() || !packet.getFinalBlock()->isSegment() ||
+            packet.wireEncode().size() > ndn::MAX_NDN_PACKET_SIZE)
+            throw std::runtime_error("hybrid key wrapper namespace or geometry mismatch");
+        const auto segment = name[-1].toSegment();
+        const auto final = packet.getFinalBlock()->toSegment();
+        if (finalSegment && *finalSegment != final)
+            throw std::runtime_error("hybrid key wrapper FinalBlock changed during fetch");
+        if (final >= 128 || segment > final || name[-1] != ndn::name::Component::fromSegment(segment) ||
+            *packet.getFinalBlock() != ndn::name::Component::fromSegment(final))
+            throw std::runtime_error("hybrid key wrapper segment budget exceeded");
+        if (object.empty()) {
+            finalSegment = final;
+            object = name.getPrefix(-1);
+            commitment = name[-2];
+        }
+        if (object != name.getPrefix(-1))
+            throw std::runtime_error("hybrid key wrapper object changed during fetch");
+        const auto existing = wires.find(segment);
+        if (existing != wires.end()) {
+            if (existing->second != packet.wireEncode())
+                throw std::runtime_error("hybrid key wrapper immutable segment conflict");
+            return;
+        }
+        if (packet.getContent().value_size() > 65536 - bytes)
+            throw std::runtime_error("hybrid key wrapper exceeds envelope limit");
+        bytes += packet.getContent().value_size();
+        wires.emplace(segment, packet.wireEncode());
+    }
+
+    ndn::Block decode(ndn::ConstBufferPtr cipher) const
+    {
+        if (!cipher || cipher->empty() || cipher->size() != bytes ||
+            cipher->size() > 65536 || object.empty() || !finalSegment ||
+            wires.size() != *finalSegment + 1 ||
+            commitment != makeNamingDigestComponent(wrappedCipherDigest(
+              ndn::span<const uint8_t>(cipher->data(), cipher->size()))))
+            throw std::runtime_error("hybrid key wrapper cipher commitment mismatch");
+        ndn::Block block(cipher);
+        if (block.size() != cipher->size())
+            throw std::runtime_error("hybrid key wrapper is not a valid NAC Block");
+        block.parse();
+        return block;
+    }
+};
+} // namespace
+
+std::pair<ndn::Name, ndn::Block>
+decodeVerifiedHybridMessageKeyPackets(const ndn::Name& locator,
+  const std::vector<std::shared_ptr<const ndn::Data>>& packets)
+{
+    checkNamingNameSize(locator);
+    if (packets.empty() || packets.size() > 128)
+        throw std::invalid_argument("hybrid key wrapper packet count rejected");
+    HybridKeyWrapperAssembly assembly;
+    for (const auto& packet : packets) {
+        if (!packet) throw std::invalid_argument("hybrid key wrapper original missing");
+        assembly.append(locator, *packet);
+    }
+    auto cipher = std::make_shared<ndn::Buffer>();
+    cipher->reserve(assembly.bytes);
+    for (const auto& entry : assembly.wires) {
+        const ndn::Data packet(entry.second);
+        const auto& content = packet.getContent();
+        cipher->insert(cipher->end(), content.value_begin(), content.value_end());
+    }
+    return {assembly.object, assembly.decode(std::move(cipher))};
+}
+
 void
 fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validator,
   const ndn::Name& locator,
@@ -565,7 +648,7 @@ fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validato
   std::function<void(const std::string&)> failure,
   std::function<bool()> current)
 {
-    struct State : std::enable_shared_from_this<State> {
+    struct State : HybridKeyWrapperAssembly, std::enable_shared_from_this<State> {
         boost::asio::io_context* io = nullptr;
         std::unique_ptr<ndn::Scheduler> scheduler;
         ndn::scheduler::EventId guard;
@@ -587,11 +670,6 @@ fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validato
             });
         }
         bool done = false;
-        ndn::Name object;
-        ndn::name::Component commitment;
-        std::optional<uint64_t> finalSegment;
-        std::map<uint64_t, ndn::Block> wires;
-        std::size_t bytes = 0;
         std::weak_ptr<ndn::SegmentFetcher> fetcher;
     };
     if (current) {
@@ -651,41 +729,8 @@ fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validato
         try { authorized = authorizeProducer && authorizeProducer(packet); }
         catch (const std::exception&) { }
         if (!authorized) { reject("hybrid key wrapper signer is not authorized for Producer"); return; }
-        const auto& name = packet.getName();
-        if (!locator.isPrefixOf(name) || name.size() != locator.size() + 2 ||
-            name[-2].type() != 8 || name[-2].value_size() != 32 || !name[-1].isSegment() ||
-            !packet.getFinalBlock() || !packet.getFinalBlock()->isSegment() ||
-            packet.wireEncode().size() > ndn::MAX_NDN_PACKET_SIZE) {
-            reject("hybrid key wrapper namespace or geometry mismatch"); return;
-        }
-        const auto segment = name[-1].toSegment();
-        const auto final = packet.getFinalBlock()->toSegment();
-        if (state->finalSegment && *state->finalSegment != final) {
-            reject("hybrid key wrapper FinalBlock changed during fetch"); return;
-        }
-        if (final >= 128 || segment > final || name[-1] != ndn::name::Component::fromSegment(segment) ||
-            *packet.getFinalBlock() != ndn::name::Component::fromSegment(final)) {
-            reject("hybrid key wrapper segment budget exceeded"); return;
-        }
-        if (state->object.empty()) {
-            state->finalSegment = final;
-            state->object = name.getPrefix(-1);
-            state->commitment = name[-2];
-        }
-        if (state->object != name.getPrefix(-1)) {
-            reject("hybrid key wrapper object changed during fetch"); return;
-        }
-        const auto existing = state->wires.find(segment);
-        if (existing != state->wires.end()) {
-            if (!(existing->second == packet.wireEncode()))
-                reject("hybrid key wrapper immutable segment conflict");
-            return;
-        }
-        if (packet.getContent().value_size() > 65536 - state->bytes) {
-            reject("hybrid key wrapper exceeds envelope limit"); return;
-        }
-        state->bytes += packet.getContent().value_size();
-        state->wires.emplace(segment, packet.wireEncode());
+        try { state->append(locator, packet); }
+        catch (const std::exception& error) { reject(error.what()); }
     });
     fetcher->onComplete.connect([state, success, reject](ndn::ConstBufferPtr cipher) {
         if (state->done) return;
@@ -696,16 +741,7 @@ fetchHybridMessageKeyWrapper(ndn::Face& face, ndn::security::Validator& validato
         }
         std::optional<ndn::Block> block;
         try {
-            if (!cipher || cipher->empty() || cipher->size() > 65536 || state->object.empty() ||
-                state->commitment != makeNamingDigestComponent(wrappedCipherDigest(
-                  ndn::span<const uint8_t>(cipher->data(), cipher->size())))) {
-                reject("hybrid key wrapper cipher commitment mismatch"); return;
-            }
-            block.emplace(ndn::span<const uint8_t>(cipher->data(), cipher->size()));
-            if (block->size() != cipher->size()) {
-                reject("hybrid key wrapper is not a valid NAC Block"); return;
-            }
-            block->parse();
+            block.emplace(state->decode(std::move(cipher)));
         }
         catch (const std::exception&) { reject("hybrid key wrapper is not a valid NAC Block"); return; }
         state->done = true;

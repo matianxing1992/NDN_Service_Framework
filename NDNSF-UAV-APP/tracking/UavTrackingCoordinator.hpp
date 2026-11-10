@@ -2,11 +2,16 @@
 
 #include "ndn-service-framework/ServiceUser.hpp"
 
+#include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
 namespace ndnsf::examples::uav {
+
+using UavTrackingAckRequirements =
+  std::map<std::string, std::map<std::string, std::string>>;
 
 struct UavTrackingCoordinatorCallbacks
 {
@@ -17,6 +22,22 @@ struct UavTrackingCoordinatorCallbacks
   std::function<void(const std::string&)> onFailure;
 };
 
+/** Canonical whole-window request budget; only historical unmarked callers may omit it. */
+uint64_t
+readUavTrackingRequestTimeout(const std::map<std::string, std::string>& fields, bool required);
+
+/** Public selection metadata only; formal input is independently admitted after Selection. */
+std::map<std::string, std::string>
+makeUavTrackingDiscoveryFields(const std::map<std::string, std::string>& initialFields);
+
+/** Read signed discovery fields for ACK admission, never for executing a task. */
+std::map<std::string, std::string>
+readUavTrackingAckFields(const ndn_service_framework::RequestMessage& request);
+
+/** Reject disagreement between public selection metadata and decrypted formal input. */
+void
+validateUavTrackingDiscoveryBinding(const ndn_service_framework::RequestMessage& request);
+
 class UavTrackingCoordinator
 {
 public:
@@ -26,7 +47,8 @@ public:
            const ndn::Buffer& assignmentPayload,
            int ackCollectionTimeMs = 1000,
            int timeoutMs = 30000,
-           ndn::Name calibrationProvider = ndn::Name());
+           ndn::Name calibrationProvider = ndn::Name(),
+           UavTrackingAckRequirements ackRequirements = {});
 
   static bool
   hasRequiredParticipants(

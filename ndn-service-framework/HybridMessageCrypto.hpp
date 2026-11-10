@@ -163,6 +163,20 @@ std::vector<std::shared_ptr<ndn::Data>> prepareHybridMessageKeyPackets(
   const std::string& epoch, ndn::span<const uint8_t> cipher,
   ndn::KeyChain& keyChain, const ndn::security::SigningInfo& signingInfo,
   ndn::time::milliseconds freshness, uint32_t contentType);
+
+/** Original key material acquired and validated by the Core dependency owner.
+ * These bytes alone confer no trust, permission or input admission. */
+struct HybridMessageKeyOriginals
+{
+  std::vector<std::shared_ptr<const ndn::Data>> wrappedPackets;
+  std::vector<std::shared_ptr<const ndn::Data>> ckPackets;
+  std::shared_ptr<void> retention;
+};
+
+/** Apply the maintained wrapper geometry/commitment decoder to originals
+ * already validated under the caller's trust, Producer and current fence. */
+std::pair<ndn::Name, ndn::Block> decodeVerifiedHybridMessageKeyPackets(
+  const ndn::Name& locator, const std::vector<std::shared_ptr<const ndn::Data>>& packets);
 /** One asynchronous wrapper retrieval; admit the complete signed object and
  * cipher commitment before handing bytes to the existing NAC decryptor. */
 void fetchHybridMessageKeyWrapper(

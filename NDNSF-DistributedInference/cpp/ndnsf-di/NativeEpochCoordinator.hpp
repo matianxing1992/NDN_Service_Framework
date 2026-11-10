@@ -8,6 +8,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -132,6 +133,9 @@ struct NativeEpochCoordinatorConfig
   // Same request authority used by prepared roles, propagated through queued
   // execution and state staging; no generation-specific authorization owner.
   std::function<void()> executionGuard;
+  // Ordinary request cancellation shares this lock with deferred state commits.
+  // Empty preserves the existing independently owned coordinator path.
+  std::shared_ptr<std::mutex> executionCommitMutex;
   RoleExecutionContext::StreamEventSink eventSink;
   std::function<void(const RoleSpec&, const ProviderRoleResult&)> resultObserver;
 };

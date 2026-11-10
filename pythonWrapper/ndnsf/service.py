@@ -23,12 +23,30 @@ from typing import Any, Callable, Mapping, Optional, Union
 from . import _ndnsf
 from .runtime_telemetry import (
     CollaborationSelectionStatus,
+    DataProductReference,
     ProviderCapabilityHint,
     ServiceOperationStatus,
     parse_ack_metadata,
     to_plain,
 )
 from .service_discovery import ServiceDiscoveryRecord
+
+
+DependencyRedundancy = getattr(_ndnsf, "NativeDependencyRedundancy", None)
+DependencyTransportOptions = getattr(
+    _ndnsf, "NativeDependencyTransportOptions", None)
+
+
+def _dependency_transport_kwargs(value):
+    if value is None:
+        return {}
+    if DependencyTransportOptions is None:
+        raise RuntimeError(
+            "the installed native extension does not support dependency transport options")
+    if not isinstance(value, DependencyTransportOptions):
+        raise TypeError(
+            "dependency_transport must be a native DependencyTransportOptions")
+    return {"dependency_transport": value}
 
 
 class CollaborationDeadlineExceeded(TimeoutError):
@@ -1016,6 +1034,129 @@ class CollaborationRole:
     min_providers: int = 1
     max_providers: int = 1
     terminal_response_owner: bool = False
+    input_admission_profile: str = ""
+
+
+@dataclass(frozen=True)
+class CollaborationInputSpec:
+    """One exact named input required by a collaboration handler."""
+
+    slot_id: str
+    reference: DataProductReference
+    key_scope: str
+    max_bytes: int
+    max_packets: int
+    producer_role: str = ""
+    provenance_binding: str = "selected_role"
+    digest_kind: str = ""
+    encoding: str = "collaboration_large"
+    segment_count: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reference, DataProductReference):
+            if isinstance(self.reference, Mapping):
+                object.__setattr__(
+                    self, "reference",
+                    DataProductReference.from_dict(dict(self.reference)))
+            else:
+                raise TypeError("reference must be a DataProductReference or mapping")
+        if not self.slot_id or not self.key_scope:
+            raise ValueError("slot_id and key_scope are required")
+        if self.max_bytes <= 0 or self.max_packets <= 0 or self.segment_count < 0:
+            raise ValueError("input bounds must be positive")
+        if self.provenance_binding not in {"selected_role", "authorized_object"}:
+            raise ValueError("unsupported provenance_binding")
+        if self.encoding not in {
+            "collaboration_large", "immutable_protected", "signed_exact_packets"
+        }:
+            raise ValueError("unsupported input encoding")
+        digest_kind = self.digest_kind
+        if not digest_kind:
+            digest_kind = (
+                "ordered_wire_sha256"
+                if self.encoding == "signed_exact_packets"
+                else "plaintext_sha256"
+            )
+            object.__setattr__(self, "digest_kind", digest_kind)
+        if digest_kind not in {"plaintext_sha256", "ordered_wire_sha256"}:
+            raise ValueError("unsupported digest_kind")
+
+    def _to_native(self) -> dict[str, Any]:
+        reference = self.reference
+        if not reference.producer_name:
+            raise ValueError("input reference must name its Producer")
+        return {
+            "slot_id": self.slot_id,
+            "producer_role": self.producer_role,
+            "provenance_binding": self.provenance_binding,
+            "reference": {
+                "object_name": reference.object_name,
+                "producer_name": reference.producer_name,
+                "object_class": reference.object_class,
+                "content_type": reference.content_type,
+                "digest": reference.digest,
+                "size_bytes": reference.size_bytes,
+                "freshness_ms": reference.ttl_ms,
+            },
+            "digest_kind": self.digest_kind,
+            "key_scope": self.key_scope,
+            "encoding": self.encoding,
+            "max_bytes": self.max_bytes,
+            "max_packets": self.max_packets,
+            "segment_count": self.segment_count,
+        }
+
+
+class VerifiedInputObject:
+    """Read-only view of one Core-verified object."""
+
+    __slots__ = ("_native",)
+
+    def __init__(self, native) -> None:
+        if not isinstance(native, _ndnsf._VerifiedInputObject):
+            raise TypeError("VerifiedInputObject can only wrap a native verified view")
+        self._native = native
+
+    @property
+    def name(self) -> str:
+        return str(self._native.name)
+
+    @property
+    def producer(self) -> str:
+        return str(self._native.producer)
+
+    @property
+    def content(self) -> memoryview:
+        return memoryview(self._native.content_buffer)
+
+    @property
+    def packets(self) -> tuple[memoryview, ...]:
+        return tuple(memoryview(packet) for packet in self._native.packet_buffers)
+
+
+class AdmittedInputSet:
+    """Immutable slot access to a native admitted input set."""
+
+    __slots__ = ("_native",)
+
+    def __init__(self, native) -> None:
+        if not isinstance(native, _ndnsf._AdmittedInputSet):
+            raise TypeError("AdmittedInputSet can only wrap a native admitted set")
+        self._native = native
+
+    def at(self, slot_id: str) -> VerifiedInputObject:
+        return VerifiedInputObject(self._native.at(str(slot_id)))
+
+    def __getitem__(self, slot_id: str) -> VerifiedInputObject:
+        return self.at(slot_id)
+
+    @property
+    def objects(self) -> tuple[VerifiedInputObject, ...]:
+        return tuple(VerifiedInputObject(value) for value in self._native.objects)
+
+    @property
+    def is_current(self) -> bool:
+        return bool(self._native.is_current)
 
 
 @dataclass(frozen=True)
@@ -1092,7 +1233,7 @@ class CollaborationContext:
 
     The object is valid only while the Python collaboration handler is running.
     Applications can publish scoped intermediate data, wait for peer data, fetch
-    assigned artifacts, and publish the final response.
+    assigned artifacts, admit exact named inputs, and publish the final response.
     """
 
     def __init__(self, native) -> None:
@@ -1137,6 +1278,39 @@ class CollaborationContext:
             assignment_payload=assignment_payload,
             role_providers=role_providers,
         )
+
+    def require_inputs(
+        self,
+        inputs: list[CollaborationInputSpec],
+        validate: Callable[[Mapping[str, VerifiedInputObject]], Optional[bool]],
+    ) -> AdmittedInputSet:
+        """Wait for Core to admit every declared input, then return slot views.
+
+        The validator receives individually verified inputs keyed by slot.
+        Return ``False`` or raise to reject the complete set; return ``None`` or
+        ``True`` to accept it. Native Core owns acquisition and authorization.
+        """
+        if not callable(validate):
+            raise TypeError("validate must be callable")
+        specs = list(inputs)
+        if any(not isinstance(item, CollaborationInputSpec) for item in specs):
+            raise TypeError("inputs must contain CollaborationInputSpec values")
+
+        def validate_native(by_slot):
+            views = MappingProxyType({
+                str(slot): VerifiedInputObject(native)
+                for slot, native in by_slot.items()
+            })
+            result = validate(views)
+            if result is None or result is True:
+                return True
+            if result is False:
+                return False
+            raise TypeError("input validator must return None, True or False")
+
+        native = self._native.require_inputs(
+            [item._to_native() for item in specs], validate_native)
+        return AdmittedInputSet(native)
 
     def fetch_artifact(self, artifact_name: str, timeout_ms: int = 5000) -> bool:
         return bool(self._native.fetch_artifact(artifact_name, timeout_ms))
@@ -1210,6 +1384,13 @@ class CollaborationContext:
         This keeps the same request-scoped hybrid encryption and segment
         retrieval semantics as :meth:`publish_large`, but lets a distributed
         plan make object names predictable for dataflow prefetch.
+
+        An exact repeat reuses the original signed packets. Reusing a name
+        with changed content, request/key context, segmentation, or freshness
+        raises ValueError. Native retention is Provider-owned and finite:
+        8192 objects/128 MiB wire, up to 64 MiB plaintext per object; conservative
+        packet reservation can reject smaller objects. Capacity or expired work
+        returns an empty name; no fallback renames or re-encrypts an old object.
         """
 
         return str(self._native.publish_large_named(
@@ -1405,6 +1586,13 @@ class CollaborationContext:
     def publish_final_response(self, payload: bytes) -> None:
         self._native.publish_final_response(bytes(payload))
 
+    def publish_final_failure_response(self, payload: bytes, error_info: str) -> None:
+        """Send a unary terminal failure to the requester.
+
+        A streamed terminal owner must finish through the stream failure API.
+        """
+        self._native.publish_final_failure_response(bytes(payload), str(error_info))
+
     @property
     def is_streamed(self) -> bool:
         return bool(getattr(self._native, "is_streamed", False))
@@ -1554,7 +1742,7 @@ def _from_native_verified_collaboration_data(
 
 def _role_to_dict(role: CollaborationRole | dict) -> dict:
     if isinstance(role, CollaborationRole):
-        return {
+        value = {
             "role": role.role,
             "service": role.service,
             "artifact": role.artifact,
@@ -1565,8 +1753,16 @@ def _role_to_dict(role: CollaborationRole | dict) -> dict:
             "min_providers": role.min_providers,
             "max_providers": role.max_providers,
             "terminal_response_owner": role.terminal_response_owner,
+            "input_admission_profile": role.input_admission_profile,
         }
-    return dict(role)
+    else:
+        value = dict(role)
+    if "inputAdmissionProfile" in value:
+        raise TypeError("use input_admission_profile for collaboration roles")
+    profile = str(value.get("input_admission_profile", ""))
+    if profile not in ("", "data-admission-v1"):
+        raise ValueError(f"unsupported input admission profile: {profile}")
+    return value
 
 
 def _dependency_to_dict(dep: CollaborationDependency | dict) -> dict:
@@ -1725,6 +1921,7 @@ class CollaborationInvocation:
         role_scopes: Optional[dict[str, list[str]]] = None,
         role_provider_assignments: Optional[dict[str, str]] = None,
         assignment_payloads_by_role: Optional[Mapping[str, bytes]] = None,
+        dependency_transport: Optional[DependencyTransportOptions] = None,
     ) -> bool:
         closed = self.acks_closed()
         if ack_closed_digest != closed.digest:
@@ -1753,6 +1950,7 @@ class CollaborationInvocation:
             self.ack_timeout_ms,
             self.timeout_ms,
             dict(role_provider_assignments or {}),
+            **_dependency_transport_kwargs(dependency_transport),
         ))
 
     def result(self, timeout_ms: Optional[int] = None) -> ServiceResponse:
@@ -3304,6 +3502,7 @@ class ServiceUser:
         ack_observer: Optional[Callable[[list[AckCandidate]], None]] = None,
         assignment_context: Optional[object] = None,
         request_id: str = "",
+        dependency_transport: Optional[DependencyTransportOptions] = None,
     ) -> ServiceResponse:
         """Run a generic multi-provider collaboration.
 
@@ -3361,6 +3560,7 @@ class ServiceUser:
             native_ack_observer,
             role_provider_assignments,
             request_id,
+            **_dependency_transport_kwargs(dependency_transport),
         )
         return _from_native_response(response)
 
@@ -3381,6 +3581,7 @@ class ServiceUser:
         timeout_ms: int = 10000,
         assignment_context: Optional[object] = None,
         request_id: str = "",
+        dependency_transport: Optional[DependencyTransportOptions] = None,
     ) -> None:
         """Submit a generic multi-provider collaboration without blocking."""
 
@@ -3403,6 +3604,7 @@ class ServiceUser:
             timeout_ms,
             role_provider_assignments,
             request_id,
+            **_dependency_transport_kwargs(dependency_transport),
         )
 
     def start(self) -> None:

@@ -26,6 +26,7 @@ from ndnsf_distributed_inference.runtime_v1 import RuntimeTelemetryV1
 from Experiments.NDNSF_DI_NativeTracer_Minindn import (
     build_failure_breakdown,
     collect_negative_ack_reason_counters,
+    user_driver_command,
 )
 
 
@@ -38,6 +39,17 @@ class _FakeProvider:
 
 
 class NegativeAckReasonContractTest(unittest.TestCase):
+    def test_native_tracer_forwards_only_explicit_input_admission_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy_dir = Path(tmp)
+            legacy = user_driver_command(policy_dir, 1, 1, 0)
+            strict = user_driver_command(
+                policy_dir, 1, 1, 0,
+                input_admission_profile="data-admission-v1")
+
+        self.assertNotIn("--input-admission-profile", legacy)
+        self.assertIn("--input-admission-profile data-admission-v1", strict)
+
     def test_artifact_readiness_uses_recommended_reason_codes(self) -> None:
         state = ArtifactProvisioningState(
             component="qwen-stage",
@@ -215,6 +227,26 @@ class NegativeAckReasonContractTest(unittest.TestCase):
         self.assertEqual(breakdown["timeoutCount"], 1)
         self.assertEqual(breakdown["negativeAckEventCount"], 2)
         self.assertEqual(breakdown["negativeAckReasons"], {"QUEUE_FULL": 2})
+
+    def test_failure_breakdown_uses_aggregate_counts_without_request_status(self) -> None:
+        breakdown = build_failure_breakdown(
+            {
+                "requestCount": 2,
+                "successCount": 2,
+                "failureCount": 0,
+                "requests": [
+                    {"index": 0, "eventCount": 8, "tokens": [1, 2]},
+                    {"index": 1, "eventCount": 8, "tokens": [1, 2]},
+                ],
+            },
+            {},
+        )
+
+        self.assertEqual(breakdown["requestCount"], 2)
+        self.assertEqual(breakdown["successCount"], 2)
+        self.assertEqual(breakdown["failureCount"], 0)
+        self.assertEqual(breakdown["timeoutCount"], 0)
+        self.assertEqual(breakdown["otherFailureCount"], 0)
 
 
 if __name__ == "__main__":

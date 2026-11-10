@@ -618,9 +618,11 @@ def _verify_reference_closure(input_dir: Path, camera: str, producer: str,
             semantic_prefix = (["UAV", category, camera] if category == "CALIBRATION"
                                else ["UAV", category])
             valid_shape = (
-                len(suffix) == len(semantic_prefix) + 2 and
-                suffix[:-2] == semantic_prefix and
-                _positive_name_uint64(suffix[-2]) and
+                len(suffix) in {len(semantic_prefix) + 2, len(semantic_prefix) + 3} and
+                suffix[:len(semantic_prefix)] == semantic_prefix and
+                _positive_name_uint64(suffix[len(semantic_prefix)]) and
+                (len(suffix) == len(semantic_prefix) + 2 or
+                 suffix[-2] == content_digest[7:]) and
                 suffix[-1].startswith("v=") and
                 _positive_name_uint64(suffix[-1][2:])
             )
@@ -659,6 +661,9 @@ def _verify_reference_closure(input_dir: Path, camera: str, producer: str,
         else:
             sample_sequence = _integer(decoded.get("sampleSequence"), "pose sample sequence", positive=True)
             expected_name = f"{reference_producer}/UAV/OBS/{camera}/{epoch}/{sequence}/POSE/v={sample_sequence}"
+        if category in {"CLOCK", "CALIBRATION", "GROUND"} and \
+                len(suffix) == len(semantic_prefix) + 3:
+            expected_name = expected_name.rsplit("/", 1)[0] + "/" + content_digest[7:] + "/" + suffix[-1]
         if exact_name != expected_name:
             raise ValueError(f"{category} exact name does not match its record identity for {camera}")
 
@@ -713,9 +718,11 @@ def load_verified_observation_bundle(input_dir: Path, manifest_path: Path) -> di
         camera = _string(entry["cameraId"], "cameraId")
         if camera not in CAMERAS or camera in result:
             raise ValueError("verified input manifest has duplicate/unknown camera")
-        producer = f"/example/uav/drone/{camera}"
-        if entry["producerIdentity"] != producer:
-            raise ValueError("verified input producer identity mismatch")
+        # Native admission supplies the authenticated Producer; a camera slot
+        # does not determine its namespace. Keep checking the original names.
+        producer = _string(entry["producerIdentity"], "producerIdentity")
+        if not producer.startswith("/") or producer.endswith("/") or "//" in producer:
+            raise ValueError("verified input producer identity is not an absolute prefix")
         for name in ("imageName", "observationName"):
             if not isinstance(entry[name], str) or not entry[name].startswith(producer + "/UAV/"):
                 raise ValueError(f"{name} is not in the source producer namespace")

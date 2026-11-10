@@ -1203,6 +1203,12 @@ BOOST_AUTO_TEST_CASE(GeneratedMultiLayerModelSplitsAndAssemblesWithCleanup)
     {firstRole, {nativePlanningDigest("artifact-0")}},
     {secondRole, {nativePlanningDigest("artifact-1")}}};
   candidate.rankArtifactDigestsByRole = candidate.artifactsByRole;
+  candidate.roleStateInputsByRole = {
+    {firstRole, {{"X", "float32", {std::int64_t{1}, std::int64_t{2}}, std::uint64_t{8}}}},
+    {secondRole, {{"H2", "float32", {std::int64_t{1}, std::int64_t{3}}, std::uint64_t{12}}}}};
+  candidate.roleStateOutputsByRole = {
+    {firstRole, {{"H0", "float32", {std::int64_t{1}, std::int64_t{3}}, std::uint64_t{12}}}},
+    {secondRole, {{"Y", "float32", {std::int64_t{1}, std::int64_t{2}}, std::uint64_t{8}}}}};
   candidate.tensorDegreesByRole = {{firstRole, 1}, {secondRole, 1}};
   candidate.requirementsByRole = {
     {firstRole, {{"onnxruntime"}, 36, 0, 0, 0, 0, 1.0}},
@@ -1229,8 +1235,24 @@ BOOST_AUTO_TEST_CASE(GeneratedMultiLayerModelSplitsAndAssemblesWithCleanup)
   BOOST_REQUIRE_EQUAL(roles.size(), 2U);
   BOOST_REQUIRE_EQUAL(roles[0].nodeIndices.size(), 3U);
   BOOST_REQUIRE_EQUAL(roles[1].nodeIndices.size(), 1U);
+  auto foreignState = candidate;
+  foreignState.roleStateOutputsByRole[firstRole] = {
+    {"Y", "float32", {std::int64_t{1}, std::int64_t{2}}, std::uint64_t{8}}};
+  foreignState.candidateDigest = foreignState.computedDigest();
+  BOOST_CHECK_THROW(preparer.prepare(inspected, foreignState, requestControl),
+                    std::invalid_argument);
+  auto wrongStateType = candidate;
+  wrongStateType.roleStateOutputsByRole[firstRole].front().dtype = "int64";
+  wrongStateType.candidateDigest = wrongStateType.computedDigest();
+  BOOST_CHECK_THROW(preparer.prepare(inspected, wrongStateType, requestControl),
+                    std::invalid_argument);
   BOOST_CHECK(roles[0].expectedInputs.front().name == "X");
-  BOOST_CHECK(roles[0].expectedOutputs.front().name == "H2");
+  const auto hasFirstOutput = [&] (const std::string& name) {
+    return std::any_of(roles[0].expectedOutputs.begin(), roles[0].expectedOutputs.end(),
+      [&] (const auto& item) { return item.name == name; });
+  };
+  BOOST_CHECK(hasFirstOutput("H0"));
+  BOOST_CHECK(hasFirstOutput("H2"));
   BOOST_CHECK(roles[1].expectedInputs.front().name == "H2");
   BOOST_CHECK(roles[1].expectedOutputs.front().name == "Y");
   BOOST_CHECK(roles[0].nodeIndices != roles[1].nodeIndices);
@@ -1240,7 +1262,10 @@ BOOST_AUTO_TEST_CASE(GeneratedMultiLayerModelSplitsAndAssemblesWithCleanup)
   BOOST_CHECK_EQUAL(first.nodeCount, 3U);
   BOOST_CHECK_EQUAL(second.nodeCount, 1U);
   BOOST_CHECK_EQUAL(first.inputNames.front(), "X");
-  BOOST_CHECK_EQUAL(first.outputNames.front(), "H2");
+  BOOST_CHECK(std::find(first.outputNames.begin(), first.outputNames.end(), "H0") !=
+              first.outputNames.end());
+  BOOST_CHECK(std::find(first.outputNames.begin(), first.outputNames.end(), "H2") !=
+              first.outputNames.end());
   BOOST_CHECK_EQUAL(second.inputNames.front(), "H2");
   BOOST_CHECK_EQUAL(second.outputNames.front(), "Y");
   BOOST_CHECK(!first.modelBytes.empty());

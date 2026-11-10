@@ -596,8 +596,21 @@ def _translate_native(config, by_kind, resolve):
                 "allow-selection-generation-options", "sample-kv-state-values",
                 "enable-admission-lease", "require-execution-lease", "execution-policy", "admission-lease-ttl-ms",
                 "grant-authority-public-key", "recipient-key-map", "repo-fetch-timeout-ms",
-                "assembly-timeout-ms",
+                "assembly-timeout-ms", "core-work-timeout-ms",
                 "conversation-retention-ms", "kv-handoff-config"})
+            if "core-work-timeout-ms" in parameters:
+                field = "provider.parameters.core-work-timeout-ms"
+                work_timeout = _integer(parameters["core-work-timeout-ms"], field, minimum=100)
+                if work_timeout > 600000:
+                    _fail(field, "exceeds Core work limit 600000 ms")
+                if requester_external:
+                    _fail(field, "requires a managed Requester with an explicit request budget")
+                if "timeout_ms" not in requester["request"]:
+                    _fail(field, "requires explicit requester.request.timeout_ms")
+                request_timeout = _integer(requester["request"]["timeout_ms"],
+                                           "requester.request.timeout_ms")
+                if work_timeout > request_timeout:
+                    _fail(field, "exceeds requester.request.timeout_ms")
             grant_fields = {"grant-authority-public-key", "recipient-key-map"}
             if parameters.keys() & grant_fields and not grant_fields <= parameters.keys():
                 _fail("provider.parameters", "grant public hint and recipient key map are required together")
