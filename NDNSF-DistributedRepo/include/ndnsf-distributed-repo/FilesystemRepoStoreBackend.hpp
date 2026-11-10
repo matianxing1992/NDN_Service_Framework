@@ -97,6 +97,9 @@ private:
   {
     std::string encoded;
     RepoObjectManifest parsed;
+    std::uint64_t fileSize = 0;
+    std::int64_t mtimeNanoseconds = 0;
+    std::uint64_t inode = 0;
   };
 
   ArtifactReference artifactReference(const RepoObjectManifest& manifest) const;
@@ -105,8 +108,12 @@ private:
                                          const std::string& wireSha256) const;
   RepoObjectManifest readManifest(const std::string& objectName) const;
   RepoObjectManifest readManifestUnlocked(const std::string& objectName) const;
-  RepoObjectManifest
-  parseManifestCachedUnlocked(const std::string& key, std::string encoded) const;
+  /** Return the cached parse when the file identity (inode, size, mtime) is unchanged.
+   * Listing every manifest must not re-read unchanged files on each status query. */
+  std::optional<RepoObjectManifest>
+  cachedManifestUnlocked(const std::filesystem::path& path) const;
+  RepoObjectManifest parseManifestCachedUnlocked(const std::string& key, std::string encoded,
+                                                 const std::filesystem::path* source = nullptr) const;
   void writeManifest(const RepoObjectManifest& manifest) const;
   bool isDigestReferencedUnlocked(const std::string& digest,
                                   const std::string& exceptObjectName) const;

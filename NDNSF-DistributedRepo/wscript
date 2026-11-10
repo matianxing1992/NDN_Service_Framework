@@ -108,6 +108,20 @@ def build(bld):
                 use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
                 install_path=None)
 
+    bld.program(name='RepoStoredReadRestart',
+                target='RepoStoredReadRestart',
+                source=['examples/RepoStoredReadRestart.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                install_path=None)
+
+    bld.program(name='RepoObjectKeyProbe',
+                target='RepoObjectKeyProbe',
+                source=['examples/RepoObjectKeyProbe.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                install_path=None)
+
     bld.program(name='Spec188RepoFileBackend',
                 target='Spec188RepoFileBackend',
                 source=['examples/Spec188RepoFileBackend.cpp'],

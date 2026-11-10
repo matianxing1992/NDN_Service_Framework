@@ -246,6 +246,16 @@ private:
   std::unordered_map<std::string, RangeReservation> m_rangeReservations;
   uint64_t m_reservedRangeBytes = 0;
 
+  // Maps a packet-name base (the packet name without its trailing segment)
+  // to the manifests that can contain it. A fresh Repo builds this from the
+  // durable manifests so exact packet reads never scan the whole store.
+  void buildPacketBaseIndex() const;
+  std::optional<RepoObjectManifest> findIndexedOriginalPacket(
+    const std::string& packetName) const;
+  mutable std::mutex m_packetBaseIndexMutex;
+  mutable std::unordered_map<std::string, std::vector<std::string>> m_packetBaseIndex;
+  mutable bool m_packetBaseIndexBuilt = false;
+
   struct PacketIndexProof
   {
     uint64_t size = 0;

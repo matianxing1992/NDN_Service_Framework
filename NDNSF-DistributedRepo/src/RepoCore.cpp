@@ -32,11 +32,27 @@ validatePacketIndex(const RepoObjectManifest& manifest)
       manifest.packetOffsets.front() != 0 || manifest.packetOffsets.back() != manifest.size ||
       manifest.objectName != manifest.packetNames.front())
     throw std::invalid_argument("repo-invalid-original-packet-index");
-  std::set<ndn::Name> names;
+  // Stored packet names may be recorded in either canonical or alternate URI form;
+  // the writer's form must round-trip as a plain string. Compare strings, because
+  // ndn::Name cannot parse the alternate type prefixes, and keep every structural
+  // invariant that makes the index unambiguous.
+  std::set<std::string> names;
+  std::string prefix;
   for (size_t i = 0; i < manifest.packetNames.size(); ++i) {
-    const ndn::Name name(manifest.packetNames[i]);
-    if (name.empty() || name.toUri(ndn::name::UriFormat::CANONICAL) != manifest.packetNames[i] ||
-        !names.insert(name).second || manifest.packetOffsets[i + 1] <= manifest.packetOffsets[i] ||
+    const auto& text = manifest.packetNames[i];
+    const auto slash = text.find_last_of('/');
+    if (text.empty() || text.front() != '/' || text.size() > 4096 || slash == 0 ||
+        slash == std::string::npos)
+      throw std::invalid_argument("repo-invalid-original-packet-index");
+    if (i == 0) {
+      prefix = text.substr(0, slash);
+    }
+    else if (text.compare(0, slash, prefix) != 0 || text.size() <= prefix.size() ||
+             text[prefix.size()] != '/') {
+      throw std::invalid_argument("repo-invalid-original-packet-index");
+    }
+    if (!names.insert(text).second ||
+        manifest.packetOffsets[i + 1] <= manifest.packetOffsets[i] ||
         manifest.packetOffsets[i + 1] - manifest.packetOffsets[i] > ndn::MAX_NDN_PACKET_SIZE)
       throw std::invalid_argument("repo-invalid-original-packet-index");
   }
@@ -92,6 +108,14 @@ matchesPublication(const RepoObjectManifest& expected, const RepoObjectManifest&
   return normalized.hasSameMetadata(current);
 }
 
+std::string
+packetBaseName(const std::string& alternatePacket)
+{
+  const auto slash = alternatePacket.find_last_of('/');
+  if (slash == std::string::npos || slash == 0) return {};
+  return alternatePacket.substr(0, slash);
+}
+
 } // namespace
 
 RepoCore::RepoCore(StorageCapability capability, std::shared_ptr<RepoStoreBackend> store)
@@ -106,6 +130,58 @@ RepoCore::RepoCore(StorageCapability capability, std::shared_ptr<RepoStoreBacken
   // The change journal is process-local. An empty durable store may still
   // have deleted objects whose tombstones disappeared across a restart.
   m_catalogReconciliationRequired = true;
+  try {
+    buildPacketBaseIndex();
+  }
+  catch (const std::exception& error) {
+    // Lookups keep the durable fallback if an unusual legacy manifest
+    // cannot be enumerated during startup.
+    NDN_LOG_WARN("NDNSF_REPO_PACKET_INDEX_UNAVAILABLE " << error.what());
+  }
+}
+
+void
+RepoCore::buildPacketBaseIndex() const
+{
+  {
+    std::lock_guard<std::mutex> lock(m_packetBaseIndexMutex);
+    if (m_packetBaseIndexBuilt) return;
+  }
+  std::unordered_map<std::string, std::vector<std::string>> index;
+  for (const auto& manifest : m_store->listManifests()) {
+    if (manifest.objectType != "original-packet-set" || manifest.objectName.empty() ||
+        manifest.packetNames.empty() || manifest.objectName != manifest.packetNames.front())
+      continue;
+    auto base = packetBaseName(manifest.objectName);
+    if (!base.empty()) index[std::move(base)].push_back(manifest.objectName);
+  }
+  std::lock_guard<std::mutex> lock(m_packetBaseIndexMutex);
+  if (m_packetBaseIndexBuilt) return;
+  m_packetBaseIndex = std::move(index);
+  m_packetBaseIndexBuilt = true;
+}
+
+std::optional<RepoObjectManifest>
+RepoCore::findIndexedOriginalPacket(const std::string& packetName) const
+{
+  buildPacketBaseIndex();
+  std::vector<std::string> candidates;
+  {
+    std::lock_guard<std::mutex> lock(m_packetBaseIndexMutex);
+    const auto found = m_packetBaseIndex.find(packetBaseName(packetName));
+    if (found == m_packetBaseIndex.end()) return std::nullopt;
+    candidates = found->second;
+  }
+  for (const auto& objectName : candidates) {
+    if (!m_store->has(objectName)) continue;
+    const auto manifest = m_store->getManifest(objectName);
+    if (manifest.objectType != "original-packet-set" || manifest.objectName != objectName)
+      continue;
+    if (std::find(manifest.packetNames.begin(), manifest.packetNames.end(), packetName) !=
+        manifest.packetNames.end())
+      return manifest;
+  }
+  return std::nullopt;
 }
 
 RepoObjectManifest
@@ -1089,6 +1165,27 @@ RepoCore::findPacketRecord(const ndn::Name& name,
   const std::function<bool(const RepoObjectManifest&)>& acceptObject) const
 {
   const auto key = name.toUri(ndn::name::UriFormat::CANONICAL);
+  // Stored manifests and their packet name lists use the ALTERNATE URI form, so an
+  // exact lookup must compare against that form; a canonical string never matches.
+  const auto alternateKey = name.toUri(ndn::name::UriFormat::ALTERNATE);
+  if (alternateKey != key && m_store->has(alternateKey)) {
+    const auto manifest = m_store->getManifest(alternateKey);
+    if (manifest.objectType == "original-packet-set" &&
+        (acceptObject ? acceptObject(manifest) : manifest.objectName == alternateKey)) {
+      const auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(),
+                                   alternateKey);
+      if (found != manifest.packetNames.end()) {
+        validateReadPacketIndex(manifest);
+        return std::make_pair(manifest,
+          static_cast<size_t>(found - manifest.packetNames.begin()));
+      }
+    }
+    else if (manifest.objectType == "ndn-data-wire") {
+      if (!acceptObject || acceptObject(manifest)) {
+        return std::make_pair(manifest, 0);
+      }
+    }
+  }
   if (m_store->has(key)) {
     const auto manifest = m_store->getManifest(key);
     if (manifest.objectType == "ndn-data-wire") {
@@ -1108,6 +1205,45 @@ RepoCore::findPacketRecord(const ndn::Name& name,
       return std::nullopt;
     }
   }
+  // Fast durable path: resolve the containing packet-set manifest from the
+  // packet-name base index built from all stored manifests at startup.
+  try {
+    if (const auto manifest = findIndexedOriginalPacket(alternateKey)) {
+      validateReadPacketIndex(*manifest);
+      if (!acceptObject || acceptObject(*manifest)) {
+        const auto found = std::find(manifest->packetNames.begin(),
+                                     manifest->packetNames.end(), alternateKey);
+        return std::make_pair(*manifest,
+          static_cast<size_t>(found - manifest->packetNames.begin()));
+      }
+      return std::nullopt;
+    }
+  }
+  catch (const std::exception&) {
+    // The durable fallback below remains authoritative for unusual stores.
+  }
+  // A stored packet name is <objectName>/<segment>. Resolving that containing
+  // object directly avoids scanning every manifest (and every packet name in it)
+  // whenever the Repo process did not insert the object itself.
+  if (name.size() > 1) {
+    // The object name is the first packet name, stored in ALTERNATE form.
+    const auto object = ndn::Name(name).getPrefix(-1).appendSegment(0);
+    const auto parentKey = object.toUri(ndn::name::UriFormat::ALTERNATE);
+    if (m_store->has(parentKey)) {
+      const auto manifest = m_store->getManifest(parentKey);
+      if (manifest.objectType == "original-packet-set" && manifest.objectName == parentKey) {
+        const auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(),
+                                     alternateKey);
+        if (found != manifest.packetNames.end()) {
+          validateReadPacketIndex(manifest);
+          if (!acceptObject || acceptObject(manifest)) {
+            return std::make_pair(manifest,
+              static_cast<size_t>(found - manifest.packetNames.begin()));
+          }
+        }
+      }
+    }
+  }
   const auto alternate = name.toUri(ndn::name::UriFormat::ALTERNATE);
   if (alternate != key && m_store->has(alternate)) {
     const auto legacy = m_store->getManifest(alternate);
@@ -1117,7 +1253,10 @@ RepoCore::findPacketRecord(const ndn::Name& name,
   }
   for (const auto& manifest : m_store->listManifests()) {
     if (manifest.objectType != "original-packet-set") continue;
-    const auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(), key);
+    auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(),
+                           alternateKey);
+    if (found == manifest.packetNames.end() && alternateKey != key)
+      found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(), key);
     if (found != manifest.packetNames.end()) {
       validateReadPacketIndex(manifest);
       if (acceptObject && !acceptObject(manifest)) {

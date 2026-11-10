@@ -309,6 +309,17 @@ approval again or hide an exception in a special-case branch.
   and the smallest change or check that closes it; remove speculative variants
   and duplicate document work. Expand an experiment only when its current
   condition cannot answer the stated question, not to seek a favorable result.
+- Storage and Repo changes must be proven locally before any cluster run, with the
+  same read API production uses: write an object, then reopen the store in a new
+  process or instance (simulating a Repo restart) and read it back by name. An
+  in-process round trip is not evidence: it hits the writer's in-memory index and hides
+  exactly the restart-time lookup defects that a fresh Repo exposes. A small local
+  probe costs minutes; rediscovering the same class of defect through a Slurm
+  deployment costs a rebuild plus a queue wait.
+- Before using an external library API, read its installed header for the actual
+  namespace, signature and version guard. Guessing from memory (`ndn::util::Segmenter`
+  instead of `ndn::Segmenter`, a `Name` constructor that does not exist) produces failed
+  compiles and misleading retries; one `grep` in `/usr/local/include/ndn-cxx` settles it.
 - NDNSF-DI native behavior tests must exercise production C++ targets with C++
   fixtures and assertions. Host-side Python may orchestrate processes or test bindings, but
   cannot replace native behavior or cross-process end-to-end qualification.
@@ -367,11 +378,27 @@ approval again or hide an exception in a special-case branch.
   disabling logs must not bypass functional, security or lifecycle checks.
 - Reuse a stable disk workspace per purpose rather than creating a fresh
   model-sized build/staging directory for every retry. When available, prefer
-  `python3 scripts/ndnsf-di-workspace.py PURPOSE -- COMMAND {workspace}`;
+  `python3 scripts/ndnsf-di-workspace.py --root /tmp/ndnsf-di-workspaces-$(id -u) PURPOSE -- COMMAND {workspace}`;
   it resets only its marked scratch directory under an exclusive lock.
   Commands run inside that directory and receive `TMPDIR` and
   `NDNSF_DI_WORKSPACE`. Use absolute command/source paths. This bounds retained
   scratch history to the latest run per purpose, not a per-run byte quota.
+  For new host-side disposable compilation objects, installation staging,
+  temporary builds and transport duplicates, use an explicitly owned purpose
+  directory under `/tmp`, not `/var/tmp`. Verify that the actual filesystem is
+  disk-backed and has enough capacity; `/tmp` can be RAM-backed on other hosts
+  or inside containers. Set `TMPDIR` and explicit build/staging paths accordingly;
+  do not assume that `TMPDIR` overrides a tool's configured output directory.
+  Keep model caches, original Repo Data, retained experiment workspaces,
+  credentials and durable evidence outside automatically cleaned scratch.
+  Preserve `/var/tmp` itself and existing required contents; do not migrate or
+  delete them merely to adopt this convention. Close each task by removing its own
+  purpose directories and staging outputs from `/tmp` once their outputs are archived
+  or superseded; a finished build or test run must not leave tens of gigabytes behind. Remove idle regenerable outputs
+  after use through an explicit allowlist, retaining required build configuration
+  and active outputs. `/tmp` permits system cleanup but does not guarantee timed
+  cleanup: check the host policy and perform task closeout instead of relying on
+  automatic deletion. Never enable blanket cleanup of active temporary trees.
 - Create host control environments from a resolved, stable base interpreter,
   never another disposable environment. Verify interpreter links and `pyvenv.cfg`
   before retiring older environments. Reuse the current validated environment
@@ -433,17 +460,35 @@ approval again or hide an exception in a special-case branch.
 
 ## Host build stability
 
-- For host compilation on the six-core development host, use six jobs by
-  default. Do not impose a compiler memory cap, free-memory preflight threshold
-  or source-size semaphore; let Waf schedule up to the requested worker count
-  and let the kernel manage memory pressure. Reduce parallelism only after an
-  observed build or desktop stability problem. Preserve `WAFLOCK` when using an
-  existing configured build directory. `scripts/build-safe.sh build` defaults
-  to six jobs and serializes launchers that might share a Waf output tree, but
-  does not restrict the build process tree's memory or scheduling.
-- The host build helper may be local-only. If absent, run Waf with an explicit
-  job count; no particular helper is mandatory. Reading or editing source needs
-  no build launcher.
+- For host compilation on the six-core development host, default to six jobs
+  without an artificial compiler memory cap or a desktop-headroom admission gate.
+  Do not serialize large source units: Waf's requested job count controls all
+  compilation tasks. Lower concurrency only after an observed OOM or at the
+  user's explicit request; do not silently restore the old two-job default.
+  Keep compiler processes under the invoking user in an isolated resource group.
+  Preserve `WAFLOCK` when using an existing configured build directory.
+  `scripts/build-safe.sh build` defaults to six jobs and serializes launchers
+  sharing a Waf output tree; it imposes no memory limit. The invoking launcher
+  supplies the isolated resource group and its OOM cleanup policy.
+- Preserve isolated process ownership, build locking and OOM termination so a
+  failed compiler does not leave other workers running. Inherit the host's swap
+  configuration; do not set MemorySwap/MemorySwapMax or change system settings.
+- The helper may be local-only. If absent, use Waf with `--jobs=6` and equivalent
+  process ownership/cleanup. Reading or editing source needs no build launcher.
+- The global stack installer must build outside the source checkout: pass
+  `NDNSF_BUILD_DIR` as a verified disk-backed path under `/var/tmp` (for example
+  `/var/tmp/ndnsf-di-install-build`) and add `NDNSF_REUSE_BUILD_DIR=1` for later runs so
+  only changed units recompile. The installer records `.ndnsf-stack-build.json` in that
+  directory and refuses a build directory inside the checkout. Its default
+  `/var/tmp/ndnsf-build.*` out-directory starts from scratch every time and leaves tens of
+  gigabytes behind.
+- Cluster SIF application-layer builds have their own budget. The container build
+  (`adapters/slurm-apptainer/templates/development-runtime.def.in`) must compile with the
+  cores the allocation actually gives (`./waf install -j"$(nproc)"`), never a hard-coded
+  `-j2`, and the build allocation must request the CPUs and memory that parallelism needs
+  (measured: 324 translation units took about 20 minutes at `-j2` with a 2-CPU/16G job;
+  request 8 CPU/32G or more when the queue allows). Change only parallelism and allocation
+  size, never compiler flags, target lists or output identity.
 
 ## Git boundary for documentation and specs
 

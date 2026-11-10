@@ -23,6 +23,9 @@ failure log 和持久 evidence。缺少可选历史文件不阻断无关工作�
 Tiger 登录节点仅用于轻量编辑、准备/提交作业和状态查询。模型导出、推理、
 镜像构建及大规模数据扫描/完整摘要校验须通过 Slurm 在计算节点执行，包括交互运行。
 SSH 故障公告、恢复检查和跨作业存储判断见下方 portable-deployment 参考。
+用户要求的容器内推理及生产协议使用 C++ 原生应用；Python 可在宿主侧做配置、
+提交和离线分析。对确需交付的 Python 绑定仍须核验容器内构建及 ABI，
+不因此把 Python 变成容器内推理依赖。
 
 ## Repository Routing
 
@@ -43,6 +46,13 @@ SSH 故障公告、恢复检查和跨作业存储判断见下方 portable-deploy
 处理当前安装、SIF复用、Slurm部署、GPU、配额或SSH故障时，读取
 [portable-deployment.md](references/portable-deployment.md)。该参考提炼最新实验中的决策，
 不把某次模型、节点、账号、镜像号或资源预算设为默认值。
+每次申请新的Slurm allocation前，必须先查询全群资源和自己的在途作业，再选择节点；
+这覆盖CPU/GPU推理、模型准备、构建、诊断和独立oracle，也覆盖顺序脚本的后续提交。
+遵循该参考的统一提交前资源检查、排队/换节点及600秒复查规则，复用镜像与持久模型。
+资源按本次角色的真实峰值估算，不照抄历史请求：例如 Qwen3-4B 两个 CPU Provider，
+每个 Provider 只需约8GB内存（其模型半区约4.4GB权重加工作集），整节点约32GB即可；
+沿用旧的64GB请求只会降低 backfill 机会并占用无关容量。排不上时先按需求下调内存和
+walltime，再考虑换节点，不必无限等待；下调只去掉余量，不能低于已核实的峰值。
 Spec170/175参考仅在恢复对应历史工作流时读取；其中的旧镜像、固定profile、
 本地构建限定和checklist不自动适用于当前选定部署。当前host管理只支持一个local节点；
 Slurm多节点路径不能被描述为通用SSH跨真机启动器。
@@ -63,7 +73,7 @@ NDNSF 层统一拥有本仓库的 Core、DI、Repo、UAV、绑定和实验入口
 - 模型、输入、token数、节点或Provider布局等已支持配置变化，更新配置/运行身份并复用
   同一合格镜像。先定位实际消费端：只有容器内运行闭包改变才重建SIF；
   容器外host控制工具修复可独立发布wheel并重验其生命周期，不能据此声称镜像内副本已更新。
-- base 验收覆盖真实 C++ compile/link/run、Python ABI/import 和动态加载路径；仅 NumPy/NFD smoke
+- base 验收覆盖真实 C++ compile/link/run 和动态加载路径；交付 Python 扩展时另核对其 ABI/import；仅 NumPy/NFD smoke
   不证明 SDK 闭包。base 通过后才构建 NDNSF 候选，再做本地 C++ 模型/请求链与规定绑定验收。
   base PASS、candidate build、YOLO runner、MiniNDN 和 Tiger 结论分别记录，不相互代替。
 - 验收最终 base SIF 后按 `docs/base-sif-build.md` 封存镜像、摘要、SDK manifest、输入和真实证据；
@@ -71,12 +81,12 @@ NDNSF 层统一拥有本仓库的 Core、DI、Repo、UAV、绑定和实验入口
 
 - 固定 NDNSF、NAC-ABE、NDN-SVS 及NDNSD等直接ABI消费者的实际版本；未提交改动须显式纳入来源身份，不能只记录 HEAD。
   交付 definition、source archives、依赖 manifest 与校验说明；所有输入使用可迁移布局和摘要。
-- base builder 在容器内构建外部依赖；NDNSF builder 消费同一 base，在容器内编译仓库目标和 Python 扩展；禁止把宿主 `.so`、venv 或 Python.h 当成容器运行闭包。
+- base builder 在容器内构建外部依赖；NDNSF builder 消费同一 base，在容器内编译仓库目标及本次交付所需的 Python 扩展；禁止把宿主 `.so`、venv 或 Python.h 当成容器运行闭包。
   ABI变化后清理依赖对象，核对 include/lib/pkg-config、实际 loaded libraries、SOABI、RPATH 和版本。
-- 安装前清理本交付拥有的旧 runtime 输出；两扩展、NAC/SVS/Core与应用二进制进入 manifest。
+- 安装前清理本交付拥有的旧 runtime 输出；已交付的扩展、NAC/SVS/Core与应用二进制进入 manifest。
   final artifact 摘要必须与 builder 记录一致；成功 import 或相同 SONAME 不能证明 ABI兼容。
 - base SIF、wheels、模型、tokenizer、adapter、配置、oracle/harness分别标明摘要、提供方式和是否包含。
-  外部依赖未提供时写明缺口；保留当前生产 Python helper，不提前声称完成无 Python 迁移。
+  外部依赖未提供时写明缺口；根据实际源码和运行闭包报告 Python 依赖，不能仅凭目标架构声称已移除。
 - 凭据、私钥、token、个人账户配置不入 Git。公开证书与摘要可记录；每角色独立 HOME/PIB/TPM，不分发根私钥。
 
 ## Authorized Execution And Evidence
